@@ -1,0 +1,130 @@
+site_name: Persisting
+site_description: Persistent Storage for Parameters, KV Cache, and Trajectories
+site_url: https://github.com/DeepLink-org/Persisting
+docs_dir: src
+
+repo_name: DeepLink-org/Persisting
+repo_url: https://github.com/DeepLink-org/Persisting
+
+theme:
+  name: material
+  custom_dir: overrides
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.tracking
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+          site_name: "Persisting Documentation"
+        - locale: zh
+          name: 中文
+          build: true
+          site_name: "Persisting 文档"
+          nav_translations:
+            Home: 首页
+            Installation: 安装指南
+            Getting Started: 入门指南
+            Guide: 用户指南
+            Queue Backends: 队列后端
+            Lance Backend: Lance 后端
+            Persisting Backend: 增强后端
+            Custom Backends: 自定义后端
+            Design: 设计文档
+            Architecture: 架构设计
+            WAL: Write-Ahead Log
+            API Reference: API 参考
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: numpy
+            docstring_options:
+              ignore_init_summary: yes
+            merge_init_into_class: yes
+            show_submodules: no
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Getting Started: quickstart.md
+  - Guide:
+    - guide/index.md
+    - Queue Backends: guide/backends.md
+    - Lance Backend: guide/lance.md
+    - Persisting Backend: guide/persisting.md
+    - Custom Backends: guide/custom.md
+  - Design:
+    - design/index.md
+    - Architecture: design/architecture.md
+    - WAL: design/wal.md
+  - API Reference: api_reference.md
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/reiase/Persisting
+
+extra_css:
+  - assets/stylesheets/home.css
+
+copyright: © 2025 Persisting. All rights reserved.
+

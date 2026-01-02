@@ -1,0 +1,826 @@
+{% extends "main.html" %}
+
+{% block tabs %}
+  {{ super() }}
+
+  <style>
+    /* Prevent horizontal overflow */
+    body {
+      overflow-x: hidden;
+    }
+
+    /* Hide main content for home page */
+    .md-content {
+      display: none;
+    }
+
+    /* Hide table of contents */
+    @media screen and (min-width: 60em) {
+      .md-sidebar--secondary {
+        display: none;
+      }
+    }
+
+    /* Hide navigation */
+    @media screen and (min-width: 76.25em) {
+      .md-sidebar--primary {
+        display: none;
+      }
+    }
+
+    /* Make header static */
+    .md-header {
+      position: initial;
+    }
+
+    .md-main__inner {
+      margin: 0;
+    }
+
+    /* Style Learn More links */
+    .persisting-feature-section .md-button,
+    .persisting-intro-section .md-button:not(.md-button--primary) {
+      background-color: transparent;
+      color: #475569;
+      text-decoration: underline;
+      border: none;
+      box-shadow: none;
+    }
+
+    .persisting-feature-section .md-button:hover,
+    .persisting-intro-section .md-button:not(.md-button--primary):hover {
+      background-color: transparent;
+      color: #64748B;
+      text-decoration: underline;
+    }
+
+    /* Feature Cards Section */
+    .persisting-features-grid {
+      padding: 80px 0;
+      background: linear-gradient(180deg, rgba(71, 85, 105, 0.03) 0%, transparent 100%);
+    }
+
+    .persisting-features-grid .container {
+      width: 100%;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+
+    .persisting-features-grid h2 {
+      text-align: center;
+      font-size: 2.5rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--md-primary-fg-color);
+    }
+
+    .persisting-features-grid .section-subtitle {
+      text-align: center;
+      font-size: 1.1rem;
+      opacity: 0.7;
+      margin-bottom: 48px;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+    }
+
+    .feature-card {
+      background: var(--md-default-bg-color);
+      border: 1px solid rgba(71, 85, 105, 0.15);
+      border-radius: 16px;
+      padding: 32px;
+      transition: all 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: linear-gradient(90deg, #334155, #64748B);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .feature-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 12px 40px rgba(71, 85, 105, 0.2);
+      border-color: rgba(71, 85, 105, 0.4);
+    }
+
+    .feature-card:hover::before {
+      opacity: 1;
+    }
+
+    .feature-icon {
+      font-size: 2.5rem;
+      margin-bottom: 16px;
+      display: block;
+    }
+
+    .feature-card h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: var(--md-typeset-color);
+    }
+
+    .feature-card p {
+      font-size: 0.95rem;
+      line-height: 1.6;
+      opacity: 0.8;
+      margin: 0;
+    }
+
+    /* Quick Start Section */
+    .persisting-quickstart {
+      padding: 80px 0;
+      background-color: var(--md-default-bg-color);
+    }
+
+    .persisting-quickstart .container {
+      width: 100%;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+
+    .persisting-quickstart h2 {
+      text-align: center;
+      font-size: 2.5rem;
+      font-weight: 600;
+      margin-bottom: 48px;
+      color: var(--md-primary-fg-color);
+    }
+
+    .quickstart-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+
+    .quickstart-step {
+      display: flex;
+      gap: 24px;
+      align-items: flex-start;
+    }
+
+    .step-number {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #334155, #475569);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .step-content {
+      flex: 1;
+    }
+
+    .step-content h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: var(--md-typeset-color);
+    }
+
+    .step-content .code-block {
+      background: #1e1e2e;
+      border-radius: 12px;
+      padding: 20px;
+      overflow-x: auto;
+    }
+
+    .step-content .code-block pre {
+      margin: 0;
+      background: transparent;
+    }
+
+    .step-content .code-block code {
+      font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+      font-size: 0.9rem;
+      line-height: 1.6;
+      color: #cdd6f4;
+    }
+
+    /* Use Cases Section */
+    .persisting-usecases {
+      padding: 80px 0;
+      background: linear-gradient(180deg, transparent 0%, rgba(71, 85, 105, 0.04) 100%);
+    }
+
+    .persisting-usecases .container {
+      width: 100%;
+      max-width: 1140px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+
+    .persisting-usecases h2 {
+      text-align: center;
+      font-size: 2.5rem;
+      font-weight: 600;
+      margin-bottom: 48px;
+      color: var(--md-primary-fg-color);
+    }
+
+    .usecases-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+    }
+
+    .usecase-card {
+      background: linear-gradient(135deg, rgba(71, 85, 105, 0.05) 0%, rgba(100, 116, 139, 0.05) 100%);
+      border-radius: 16px;
+      padding: 32px;
+      border: 1px solid rgba(71, 85, 105, 0.15);
+    }
+
+    .usecase-icon {
+      font-size: 2rem;
+      margin-bottom: 16px;
+    }
+
+    .usecase-card h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: var(--md-typeset-color);
+    }
+
+    .usecase-card p {
+      font-size: 0.95rem;
+      line-height: 1.6;
+      opacity: 0.8;
+      margin: 0;
+    }
+
+    /* Integration Section */
+    .persisting-integration {
+      padding: 80px 0;
+      background-color: var(--md-default-bg-color);
+    }
+
+    .persisting-integration .container {
+      width: 100%;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 0 20px;
+    }
+
+    .persisting-integration h2 {
+      text-align: center;
+      font-size: 2.5rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--md-primary-fg-color);
+    }
+
+    .persisting-integration .section-subtitle {
+      text-align: center;
+      font-size: 1.1rem;
+      opacity: 0.7;
+      margin-bottom: 48px;
+    }
+
+    .integration-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 24px;
+    }
+
+    .integration-card {
+      text-align: center;
+      padding: 32px 24px;
+      background: var(--md-default-bg-color);
+      border-radius: 16px;
+      border: 1px solid rgba(71, 85, 105, 0.15);
+      transition: all 0.3s ease;
+    }
+
+    .integration-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 12px 40px rgba(71, 85, 105, 0.15);
+    }
+
+    .integration-icon {
+      font-size: 3rem;
+      margin-bottom: 12px;
+    }
+
+    .integration-card h4 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin: 0;
+      color: var(--md-typeset-color);
+    }
+
+    /* Community Section */
+    .persisting-community {
+      padding: 80px 0;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+      color: white;
+    }
+
+    .persisting-community .container {
+      width: 100%;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 0 20px;
+      text-align: center;
+    }
+
+    .persisting-community h2 {
+      font-size: 2.5rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+
+    .persisting-community .section-subtitle {
+      font-size: 1.1rem;
+      opacity: 0.8;
+      margin-bottom: 40px;
+    }
+
+    .community-links {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .community-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 32px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      color: white;
+      text-decoration: none;
+      font-weight: 500;
+      transition: all 0.3s ease;
+    }
+
+    .community-link:hover {
+      background: rgba(255, 255, 255, 0.2);
+      transform: translateY(-2px);
+      color: white;
+    }
+
+    .community-link svg {
+      width: 24px;
+      height: 24px;
+      fill: currentColor;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .persisting-features-grid h2,
+      .persisting-quickstart h2,
+      .persisting-usecases h2,
+      .persisting-integration h2,
+      .persisting-community h2 {
+        font-size: 2rem;
+      }
+
+      .quickstart-step {
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .community-links {
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .community-link {
+        width: 100%;
+        max-width: 300px;
+        justify-content: center;
+      }
+    }
+  </style>
+
+  <script>
+    // Fix palette toggle jumping to bottom of page
+    (function() {
+      let savedScrollY = 0;
+      let isTogglingPalette = false;
+
+      if ('scrollRestoration' in history) {
+        history.scrollRestoration = 'manual';
+      }
+
+      const preventScroll = function() {
+        if (isTogglingPalette) {
+          window.scrollTo(0, savedScrollY);
+        }
+      };
+
+      document.addEventListener('click', function(e) {
+        const paletteLabel = e.target.closest('[for^="__palette"]');
+        if (paletteLabel) {
+          savedScrollY = window.scrollY;
+          isTogglingPalette = true;
+          window.addEventListener('scroll', preventScroll, { passive: false });
+          setTimeout(function() {
+            isTogglingPalette = false;
+            window.removeEventListener('scroll', preventScroll);
+          }, 100);
+        }
+      }, true);
+
+      window.addEventListener('hashchange', function(e) {
+        if (window.location.hash.startsWith('#__palette')) {
+          e.preventDefault();
+          window.scrollTo(0, savedScrollY);
+          history.replaceState(null, null, window.location.pathname);
+        }
+      }, false);
+
+      document.addEventListener('DOMContentLoaded', function() {
+        const paletteInputs = document.querySelectorAll('input[name="__palette"]');
+        paletteInputs.forEach(function(input) {
+          input.addEventListener('change', function() {
+            window.scrollTo(0, savedScrollY);
+          });
+        });
+      });
+    })();
+  </script>
+
+  <!-- Hero Section -->
+  <section class="mdx-container">
+    <div class="container">
+      <div class="intro-message">
+        <div class="hero-logo">
+          <span class="hero-icon">💾</span>
+          <h1>Persisting</h1>
+        </div>
+        {% if config.theme.language == "zh" %}
+        <h3>参数、KV Cache 和 Trajectory 的持久化存储</h3>
+        {% else %}
+        <h3>Persistent Storage for Parameters, KV Cache, and Trajectories</h3>
+        {% endif %}
+        <hr class="intro-divider" />
+        <ul class="list-inline">
+          <li>
+            <a href="quickstart/" class="md-button md-button--primary">{% if config.theme.language == "zh" %}快速开始{% else %}Get Started{% endif %}</a>
+          </li>
+          <li>
+            <a href="guide/" class="md-button">{% if config.theme.language == "zh" %}用户指南{% else %}User Guide{% endif %}</a>
+          </li>
+          <li>
+            <a href="design/" class="md-button">{% if config.theme.language == "zh" %}设计文档{% else %}Design Docs{% endif %}</a>
+          </li>
+          <li>
+            <a href="https://github.com/reiase/Persisting" class="md-button" target="_blank" rel="noopener">GitHub</a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Core Features Grid -->
+  <section class="persisting-features-grid">
+    <div class="container">
+      {% if config.theme.language == "zh" %}
+      <h2>核心特性</h2>
+      <p class="section-subtitle">为 AI 系统设计的高性能持久化存储</p>
+      {% else %}
+      <h2>Core Features</h2>
+      <p class="section-subtitle">High-performance persistent storage designed for AI systems</p>
+      {% endif %}
+      <div class="features-grid">
+        <div class="feature-card">
+          <span class="feature-icon">🔌</span>
+          {% if config.theme.language == "zh" %}
+          <h3>可插拔后端</h3>
+          <p>支持多种存储后端，包括内存、Lance、以及自定义实现。按需选择最适合的存储方案。</p>
+          {% else %}
+          <h3>Pluggable Backends</h3>
+          <p>Support for multiple storage backends including Memory, Lance, and custom implementations. Choose the best storage for your needs.</p>
+          {% endif %}
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">⚡</span>
+          {% if config.theme.language == "zh" %}
+          <h3>Lance 集成</h3>
+          <p>基于 Lance 列式存储格式，提供高性能随机访问、向量搜索和零拷贝版本控制。</p>
+          {% else %}
+          <h3>Lance Integration</h3>
+          <p>Built on Lance columnar format for high-performance random access, vector search, and zero-copy versioning.</p>
+          {% endif %}
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">📝</span>
+          {% if config.theme.language == "zh" %}
+          <h3>Write-Ahead Log</h3>
+          <p>内置 WAL 支持，确保数据持久性和崩溃恢复能力，适合生产环境部署。</p>
+          {% else %}
+          <h3>Write-Ahead Log</h3>
+          <p>Built-in WAL support ensures data durability and crash recovery, suitable for production deployments.</p>
+          {% endif %}
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">🔄</span>
+          {% if config.theme.language == "zh" %}
+          <h3>Pulsing 集成</h3>
+          <p>与 Pulsing Actor 框架无缝集成，为分布式队列提供持久化能力。</p>
+          {% else %}
+          <h3>Pulsing Integration</h3>
+          <p>Seamless integration with Pulsing Actor framework, providing persistence for distributed queues.</p>
+          {% endif %}
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">📊</span>
+          {% if config.theme.language == "zh" %}
+          <h3>Schema 演进</h3>
+          <p>支持 Schema 动态演进，无需停机即可更新数据结构，适应不断变化的需求。</p>
+          {% else %}
+          <h3>Schema Evolution</h3>
+          <p>Support for dynamic schema evolution without downtime, adapting to changing requirements.</p>
+          {% endif %}
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">📈</span>
+          {% if config.theme.language == "zh" %}
+          <h3>监控指标</h3>
+          <p>内置 Prometheus 指标导出，实时监控存储性能和健康状态。</p>
+          {% else %}
+          <h3>Monitoring Metrics</h3>
+          <p>Built-in Prometheus metrics export for real-time monitoring of storage performance and health.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Quick Start Section -->
+  <section class="persisting-quickstart">
+    <div class="container">
+      <h2>{% if config.theme.language == "zh" %}快速开始{% else %}Quick Start{% endif %}</h2>
+      <div class="quickstart-steps">
+        <div class="quickstart-step">
+          <div class="step-number">1</div>
+          <div class="step-content">
+            <h3>{% if config.theme.language == "zh" %}安装 Persisting{% else %}Install Persisting{% endif %}</h3>
+            <div class="code-block">
+              <pre><code class="language-bash">pip install persisting
+
+# Or install with Pulsing
+pip install persisting[pulsing]</code></pre>
+            </div>
+          </div>
+        </div>
+        <div class="quickstart-step">
+          <div class="step-number">2</div>
+          <div class="step-content">
+            <h3>{% if config.theme.language == "zh" %}注册后端到 Pulsing{% else %}Register Backend with Pulsing{% endif %}</h3>
+            <div class="code-block">
+              <pre><code class="language-python">from pulsing.queue import register_backend
+from persisting.queue import LanceBackend, PersistingBackend
+
+# Register Lance backend
+register_backend("lance", LanceBackend)
+
+# Or register enhanced Persisting backend
+register_backend("persisting", PersistingBackend)</code></pre>
+            </div>
+          </div>
+        </div>
+        <div class="quickstart-step">
+          <div class="step-number">3</div>
+          <div class="step-content">
+            <h3>{% if config.theme.language == "zh" %}使用持久化队列{% else %}Use Persistent Queue{% endif %}</h3>
+            <div class="code-block">
+              <pre><code class="language-python">from pulsing.queue import write_queue, read_queue
+
+# Create queue with Lance persistence
+writer = await write_queue(
+    system, "my_topic",
+    backend="lance",
+    storage_path="/data/queues"
+)
+
+# Write data
+await writer.put({"id": "1", "value": 42})
+await writer.flush()  # Persist to disk</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Use Cases Section -->
+  <section class="persisting-usecases">
+    <div class="container">
+      <h2>{% if config.theme.language == "zh" %}应用场景{% else %}Use Cases{% endif %}</h2>
+      <div class="usecases-grid">
+        <div class="usecase-card">
+          <div class="usecase-icon">🧠</div>
+          {% if config.theme.language == "zh" %}
+          <h3>KV Cache 存储</h3>
+          <p>高效存储和检索 LLM 推理过程中的 KV Cache，支持跨会话复用，降低重复计算成本。</p>
+          {% else %}
+          <h3>KV Cache Storage</h3>
+          <p>Efficiently store and retrieve KV Cache from LLM inference, supporting cross-session reuse to reduce computation costs.</p>
+          {% endif %}
+        </div>
+        <div class="usecase-card">
+          <div class="usecase-icon">📚</div>
+          {% if config.theme.language == "zh" %}
+          <h3>Trajectory 存储</h3>
+          <p>持久化存储强化学习和训练过程中的 Trajectory 数据，支持离线分析和经验回放。</p>
+          {% else %}
+          <h3>Trajectory Storage</h3>
+          <p>Persistent storage for RL and training trajectories, supporting offline analysis and experience replay.</p>
+          {% endif %}
+        </div>
+        <div class="usecase-card">
+          <div class="usecase-icon">⚙️</div>
+          {% if config.theme.language == "zh" %}
+          <h3>参数检查点</h3>
+          <p>高效保存和加载模型参数检查点，支持增量更新和版本管理。</p>
+          {% else %}
+          <h3>Parameter Checkpoints</h3>
+          <p>Efficiently save and load model parameter checkpoints with support for incremental updates and versioning.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Integration Section -->
+  <section class="persisting-integration">
+    <div class="container">
+      {% if config.theme.language == "zh" %}
+      <h2>生态集成</h2>
+      <p class="section-subtitle">与 AI 生态系统无缝协作</p>
+      {% else %}
+      <h2>Ecosystem Integration</h2>
+      <p class="section-subtitle">Seamless integration with AI ecosystem</p>
+      {% endif %}
+      <div class="integration-grid">
+        <div class="integration-card">
+          <div class="integration-icon">⚡</div>
+          <h4>Pulsing</h4>
+        </div>
+        <div class="integration-card">
+          <div class="integration-icon">🔍</div>
+          <h4>Probing</h4>
+        </div>
+        <div class="integration-card">
+          <div class="integration-icon">🗃️</div>
+          <h4>Lance</h4>
+        </div>
+        <div class="integration-card">
+          <div class="integration-icon">🏹</div>
+          <h4>Apache Arrow</h4>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- What is Persisting Section -->
+  <section class="persisting-intro-section">
+    <div class="container">
+      <div class="persisting-intro-content">
+        {% if config.theme.language == "zh" %}
+        <h2>为什么选择 Persisting？</h2>
+        <p>
+          Persisting 是为 AI 系统量身定制的持久化存储解决方案。
+          它基于 Lance 列式存储格式，提供高性能的数据读写能力，
+          同时与 Pulsing Actor 框架深度集成，为分布式队列提供可靠的持久化支持。
+          无论是 KV Cache、Trajectory 还是模型参数，Persisting 都能高效处理。
+        </p>
+        <a href="guide/" class="md-button md-button--primary">了解更多 →</a>
+        {% else %}
+        <h2>Why Persisting?</h2>
+        <p>
+          Persisting is a persistent storage solution tailored for AI systems.
+          Built on the Lance columnar format, it provides high-performance data read/write capabilities
+          while deeply integrating with the Pulsing Actor framework to provide reliable persistence for distributed queues.
+          Whether it's KV Cache, Trajectories, or model parameters, Persisting handles them efficiently.
+        </p>
+        <a href="guide/" class="md-button md-button--primary">Learn More →</a>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <!-- Feature: Pluggable Storage -->
+  <section class="persisting-feature-section">
+    <div class="container">
+      <div class="persisting-feature-content">
+        <div class="persisting-feature-text">
+          {% if config.theme.language == "zh" %}
+          <h2>可插拔的存储后端</h2>
+          <p>
+            Persisting 提供灵活的存储后端架构。
+            你可以根据需求选择内存后端（用于测试）、Lance 后端（用于生产）或实现自定义后端。
+          </p>
+          <p>
+            所有后端遵循统一的 <code>StorageBackend</code> 协议，确保 API 一致性。
+            切换后端只需修改一个参数，无需更改业务逻辑。
+          </p>
+          <a href="guide/backends/" class="md-button">了解更多 →</a>
+          {% else %}
+          <h2>Pluggable Storage Backends</h2>
+          <p>
+            Persisting provides a flexible storage backend architecture.
+            Choose Memory backend (for testing), Lance backend (for production), or implement custom backends based on your needs.
+          </p>
+          <p>
+            All backends follow the unified <code>StorageBackend</code> protocol, ensuring API consistency.
+            Switch backends with a single parameter change, no business logic modifications required.
+          </p>
+          <a href="guide/backends/" class="md-button">Learn More →</a>
+          {% endif %}
+        </div>
+        <div class="persisting-feature-demo">
+          <div class="code-preview">
+            <pre><code class="language-python"># Switch between backends easily
+from pulsing.queue import write_queue
+
+# Memory backend for testing
+writer = await write_queue(system, "test",
+    backend="memory")
+
+# Lance backend for persistence
+writer = await write_queue(system, "prod",
+    backend="lance",
+    storage_path="/data/queues")
+
+# Custom backend
+from persisting.queue import PersistingBackend
+writer = await write_queue(system, "advanced",
+    backend=PersistingBackend,
+    backend_options={"enable_wal": True})</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Community Section -->
+  <section class="persisting-community">
+    <div class="container">
+      {% if config.theme.language == "zh" %}
+      <h2>加入社区</h2>
+      <p class="section-subtitle">Persisting 是开源的、社区驱动的项目。欢迎参与！</p>
+      {% else %}
+      <h2>Join the Community</h2>
+      <p class="section-subtitle">Persisting is open source and community-driven. Get involved!</p>
+      {% endif %}
+      <div class="community-links">
+        <a href="https://github.com/reiase/Persisting" class="community-link" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+          </svg>
+          GitHub
+        </a>
+        <a href="https://github.com/reiase/Persisting/issues" class="community-link" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+          </svg>
+          {% if config.theme.language == "zh" %}问题追踪{% else %}Issues{% endif %}
+        </a>
+        <a href="https://github.com/reiase/Persisting/discussions" class="community-link" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M21 6h-2v9H6v2c0 .55.45 1 1 1h11l4 4V7c0-.55-.45-1-1-1zm-4 6V3c0-.55-.45-1-1-1H3c-.55 0-1 .45-1 1v14l4-4h10c.55 0 1-.45 1-1z"/>
+          </svg>
+          {% if config.theme.language == "zh" %}讨论区{% else %}Discussions{% endif %}
+        </a>
+      </div>
+    </div>
+  </section>
+
+{% endblock %}
+
+{% block content %}{% endblock %}
+{% block footer %}
+  {{ super() }}
+{% endblock %}
+
