@@ -20,14 +20,14 @@ pip install persisting[pulsing]
 ## 基本用法
 
 ```python
-from pulsing.queue import register_backend, write_queue
-from persisting.queue import PersistingBackend
+import pulsing as pul
+import persisting as pst
 
 # 注册后端
-register_backend("persisting", PersistingBackend)
+pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
 
 # 创建带增强功能的写入器
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="production_topic",
     backend="persisting",
@@ -59,7 +59,9 @@ await writer.flush()
 ### 完整配置示例
 
 ```python
-writer = await write_queue(
+import pulsing as pul
+
+writer = await pul.queue.write_queue(
     system,
     topic="advanced_topic",
     backend="persisting",
@@ -90,7 +92,9 @@ WAL 通过在应用更改前将其写入日志来确保数据持久性：
 ### 启用 WAL
 
 ```python
-writer = await write_queue(
+import pulsing as pul
+
+writer = await pul.queue.write_queue(
     system, "topic",
     backend="persisting",
     backend_options={"enable_wal": True},
@@ -102,8 +106,10 @@ writer = await write_queue(
 启动时，后端自动从 WAL 恢复未提交的数据：
 
 ```python
+import pulsing as pul
+
 # 崩溃后，数据自动恢复
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system, "topic",
     backend="persisting",
     backend_options={"enable_wal": True},
@@ -145,7 +151,9 @@ await writer.put({"id": "2", "name": "Bob", "age": 30})
 ### 示例
 
 ```python
-writer = await write_queue(
+import pulsing as pul
+
+writer = await pul.queue.write_queue(
     system, "topic",
     backend="persisting",
     backend_options={"compression": "zstd"},
@@ -185,8 +193,10 @@ print(stats)
 ### 生产配置
 
 ```python
+import pulsing as pul
+
 # 推荐的生产设置
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="production",
     backend="persisting",
@@ -204,8 +214,10 @@ writer = await write_queue(
 ### 高吞吐量
 
 ```python
+import pulsing as pul
+
 # 用于高吞吐量工作负载
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="high_throughput",
     backend="persisting",
@@ -220,8 +232,10 @@ writer = await write_queue(
 ### 高持久性
 
 ```python
+import pulsing as pul
+
 # 用于关键数据
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="critical_data",
     backend="persisting",

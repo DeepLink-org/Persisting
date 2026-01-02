@@ -31,14 +31,14 @@ pip install persisting[pulsing]
 ```
 
 ```python
-from pulsing.queue import register_backend, write_queue
-from persisting.queue import LanceBackend
+import pulsing as pul
+import persisting as pst
 
 # 注册 Lance 后端
-register_backend("lance", LanceBackend)
+pul.queue.register_backend("lance", pst.queue.LanceBackend)
 
 # 使用持久化队列
-writer = await write_queue(system, "my_topic",
+writer = await pul.queue.write_queue(system, "my_topic",
     backend="lance",
     storage_path="/data/queues")
 

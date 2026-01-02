@@ -141,13 +141,13 @@ class SimpleBackend:
 ## 注册自定义后端
 
 ```python
-from pulsing.queue import register_backend, write_queue
+import pulsing as pul
 
 # 注册后端
-register_backend("simple", SimpleBackend)
+pul.queue.register_backend("simple", SimpleBackend)
 
 # 使用它
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="my_topic",
     backend="simple",
@@ -272,18 +272,18 @@ async def get_stream(
 
 ```python
 import pytest
-from pulsing.queue import register_backend, write_queue, read_queue
+import pulsing as pul
 
 @pytest.fixture
 def custom_backend():
-    register_backend("custom", CustomBackend)
+    pul.queue.register_backend("custom", CustomBackend)
     yield
     # 如需清理
 
 @pytest.mark.asyncio
 async def test_custom_backend_write_read(actor_system, custom_backend):
     # 写入
-    writer = await write_queue(
+    writer = await pul.queue.write_queue(
         actor_system,
         topic="test",
         backend="custom",
@@ -294,7 +294,7 @@ async def test_custom_backend_write_read(actor_system, custom_backend):
     await writer.flush()
     
     # 读取
-    reader = await read_queue(actor_system, "test")
+    reader = await pul.queue.read_queue(actor_system, "test")
     records = await reader.get(limit=10)
     
     assert len(records) == 1

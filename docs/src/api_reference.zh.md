@@ -228,14 +228,14 @@ class PersistingBackend:
 ### 基本用法
 
 ```python
-from pulsing.queue import register_backend, write_queue, read_queue
-from persisting.queue import LanceBackend
+import pulsing as pul
+import persisting as pst
 
 # 注册后端
-register_backend("lance", LanceBackend)
+pul.queue.register_backend("lance", pst.queue.LanceBackend)
 
 # 创建写入器
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="example",
     backend="lance",
@@ -247,18 +247,19 @@ await writer.put({"id": "1", "value": 42})
 await writer.flush()
 
 # 读取数据
-reader = await read_queue(system, "example")
+reader = await pul.queue.read_queue(system, "example")
 records = await reader.get(limit=10)
 ```
 
 ### 使用 WAL
 
 ```python
-from persisting.queue import PersistingBackend
+import pulsing as pul
+import persisting as pst
 
-register_backend("persisting", PersistingBackend)
+pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
 
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="durable",
     backend="persisting",
@@ -272,7 +273,9 @@ writer = await write_queue(
 ### 流式处理
 
 ```python
-reader = await read_queue(system, "example")
+import pulsing as pul
+
+reader = await pul.queue.read_queue(system, "example")
 
 # 非阻塞流
 async for record in reader.get_stream(limit=100):

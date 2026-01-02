@@ -20,14 +20,14 @@ pip install persisting[pulsing]
 ## 基本用法
 
 ```python
-from pulsing.queue import register_backend, write_queue, read_queue
-from persisting.queue import LanceBackend
+import pulsing as pul
+import persisting as pst
 
 # 注册后端
-register_backend("lance", LanceBackend)
+pul.queue.register_backend("lance", pst.queue.LanceBackend)
 
 # 创建写入器
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="my_topic",
     backend="lance",
@@ -42,7 +42,7 @@ await writer.put({"id": "2", "text": "World", "vector": [0.4, 0.5, 0.6]})
 await writer.flush()
 
 # 读取数据
-reader = await read_queue(system, "my_topic")
+reader = await pul.queue.read_queue(system, "my_topic")
 records = await reader.get(limit=10)
 ```
 
@@ -57,7 +57,9 @@ records = await reader.get(limit=10)
 ### 配置示例
 
 ```python
-writer = await write_queue(
+import pulsing as pul
+
+writer = await pul.queue.write_queue(
     system,
     topic="configured_topic",
     backend="lance",
@@ -129,7 +131,9 @@ await writer.flush()
 达到 `flush_threshold` 时，数据自动持久化：
 
 ```python
-writer = await write_queue(
+import pulsing as pul
+
+writer = await pul.queue.write_queue(
     system, "topic",
     backend="lance",
     backend_options={"flush_threshold": 500},
@@ -145,7 +149,9 @@ for i in range(600):
 Lance 后端支持高效的流式处理：
 
 ```python
-reader = await read_queue(system, "my_topic")
+import pulsing as pul
+
+reader = await pul.queue.read_queue(system, "my_topic")
 
 # 非阻塞流
 async for record in reader.get_stream(offset=0, limit=100):

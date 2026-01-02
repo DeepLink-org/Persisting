@@ -598,14 +598,14 @@ pip install persisting[pulsing]</code></pre>
           <div class="step-content">
             <h3>{% if config.theme.language == "zh" %}注册后端到 Pulsing{% else %}Register Backend with Pulsing{% endif %}</h3>
             <div class="code-block">
-              <pre><code class="language-python">from pulsing.queue import register_backend
-from persisting.queue import LanceBackend, PersistingBackend
+              <pre><code class="language-python">import pulsing as pul
+import persisting as pst
 
 # Register Lance backend
-register_backend("lance", LanceBackend)
+pul.queue.register_backend("lance", pst.queue.LanceBackend)
 
 # Or register enhanced Persisting backend
-register_backend("persisting", PersistingBackend)</code></pre>
+pul.queue.register_backend("persisting", pst.queue.PersistingBackend)</code></pre>
             </div>
           </div>
         </div>
@@ -614,10 +614,10 @@ register_backend("persisting", PersistingBackend)</code></pre>
           <div class="step-content">
             <h3>{% if config.theme.language == "zh" %}使用持久化队列{% else %}Use Persistent Queue{% endif %}</h3>
             <div class="code-block">
-              <pre><code class="language-python">from pulsing.queue import write_queue, read_queue
+              <pre><code class="language-python">import pulsing as pul
 
 # Create queue with Lance persistence
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system, "my_topic",
     backend="lance",
     storage_path="/data/queues"
@@ -762,21 +762,21 @@ await writer.flush()  # Persist to disk</code></pre>
         <div class="persisting-feature-demo">
           <div class="code-preview">
             <pre><code class="language-python"># Switch between backends easily
-from pulsing.queue import write_queue
+import pulsing as pul
+import persisting as pst
 
 # Memory backend for testing
-writer = await write_queue(system, "test",
+writer = await pul.queue.write_queue(system, "test",
     backend="memory")
 
 # Lance backend for persistence
-writer = await write_queue(system, "prod",
+writer = await pul.queue.write_queue(system, "prod",
     backend="lance",
     storage_path="/data/queues")
 
-# Custom backend
-from persisting.queue import PersistingBackend
-writer = await write_queue(system, "advanced",
-    backend=PersistingBackend,
+# Enhanced backend with WAL
+writer = await pul.queue.write_queue(system, "advanced",
+    backend=pst.queue.PersistingBackend,
     backend_options={"enable_wal": True})</code></pre>
           </div>
         </div>

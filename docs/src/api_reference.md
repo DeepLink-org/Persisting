@@ -229,14 +229,14 @@ Inherits all methods from `LanceBackend` with enhanced behavior:
 ### Basic Usage
 
 ```python
-from pulsing.queue import register_backend, write_queue, read_queue
-from persisting.queue import LanceBackend
+import pulsing as pul
+import persisting as pst
 
 # Register backend
-register_backend("lance", LanceBackend)
+pul.queue.register_backend("lance", pst.queue.LanceBackend)
 
 # Create writer
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="example",
     backend="lance",
@@ -248,18 +248,19 @@ await writer.put({"id": "1", "value": 42})
 await writer.flush()
 
 # Read data
-reader = await read_queue(system, "example")
+reader = await pul.queue.read_queue(system, "example")
 records = await reader.get(limit=10)
 ```
 
 ### With WAL
 
 ```python
-from persisting.queue import PersistingBackend
+import pulsing as pul
+import persisting as pst
 
-register_backend("persisting", PersistingBackend)
+pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
 
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="durable",
     backend="persisting",
@@ -273,7 +274,9 @@ writer = await write_queue(
 ### Streaming
 
 ```python
-reader = await read_queue(system, "example")
+import pulsing as pul
+
+reader = await pul.queue.read_queue(system, "example")
 
 # Non-blocking stream
 async for record in reader.get_stream(limit=100):

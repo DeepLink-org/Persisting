@@ -20,14 +20,14 @@ pip install persisting[pulsing]
 ## Basic Usage
 
 ```python
-from pulsing.queue import register_backend, write_queue
-from persisting.queue import PersistingBackend
+import pulsing as pul
+import persisting as pst
 
 # Register the backend
-register_backend("persisting", PersistingBackend)
+pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
 
 # Create writer with enhanced features
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="production_topic",
     backend="persisting",
@@ -59,7 +59,9 @@ await writer.flush()
 ### Full Configuration Example
 
 ```python
-writer = await write_queue(
+import pulsing as pul
+
+writer = await pul.queue.write_queue(
     system,
     topic="advanced_topic",
     backend="persisting",
@@ -90,7 +92,9 @@ Write Request → WAL → Buffer → Lance Storage
 ### Enabling WAL
 
 ```python
-writer = await write_queue(
+import pulsing as pul
+
+writer = await pul.queue.write_queue(
     system, "topic",
     backend="persisting",
     backend_options={"enable_wal": True},
@@ -102,8 +106,10 @@ writer = await write_queue(
 On startup, the backend automatically recovers uncommitted data from WAL:
 
 ```python
+import pulsing as pul
+
 # After a crash, data is recovered automatically
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system, "topic",
     backend="persisting",
     backend_options={"enable_wal": True},
@@ -145,7 +151,9 @@ await writer.put({"id": "2", "name": "Bob", "age": 30})
 ### Example
 
 ```python
-writer = await write_queue(
+import pulsing as pul
+
+writer = await pul.queue.write_queue(
     system, "topic",
     backend="persisting",
     backend_options={"compression": "zstd"},
@@ -185,8 +193,10 @@ print(stats)
 ### Production Configuration
 
 ```python
+import pulsing as pul
+
 # Recommended production settings
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="production",
     backend="persisting",
@@ -204,8 +214,10 @@ writer = await write_queue(
 ### High Throughput
 
 ```python
+import pulsing as pul
+
 # For high throughput workloads
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="high_throughput",
     backend="persisting",
@@ -220,8 +232,10 @@ writer = await write_queue(
 ### High Durability
 
 ```python
+import pulsing as pul
+
 # For critical data
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="critical_data",
     backend="persisting",

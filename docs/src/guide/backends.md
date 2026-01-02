@@ -53,9 +53,9 @@ class StorageBackend(Protocol):
 Simple in-memory storage without persistence:
 
 ```python
-from pulsing.queue import write_queue
+import pulsing as pul
 
-writer = await write_queue(system, "topic", backend="memory")
+writer = await pul.queue.write_queue(system, "topic", backend="memory")
 ```
 
 **Characteristics:**
@@ -72,11 +72,11 @@ writer = await write_queue(system, "topic", backend="memory")
 Lance-based persistent storage:
 
 ```python
-from pulsing.queue import register_backend, write_queue
-from persisting.queue import LanceBackend
+import pulsing as pul
+import persisting as pst
 
-register_backend("lance", LanceBackend)
-writer = await write_queue(system, "topic", backend="lance", storage_path="/data")
+pul.queue.register_backend("lance", pst.queue.LanceBackend)
+writer = await pul.queue.write_queue(system, "topic", backend="lance", storage_path="/data")
 ```
 
 **Characteristics:**
@@ -93,11 +93,11 @@ writer = await write_queue(system, "topic", backend="lance", storage_path="/data
 Enhanced backend with advanced features:
 
 ```python
-from pulsing.queue import register_backend, write_queue
-from persisting.queue import PersistingBackend
+import pulsing as pul
+import persisting as pst
 
-register_backend("persisting", PersistingBackend)
-writer = await write_queue(
+pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
+writer = await pul.queue.write_queue(
     system, "topic",
     backend="persisting",
     storage_path="/data",
@@ -130,16 +130,16 @@ writer = await write_queue(
 Register custom backends with Pulsing:
 
 ```python
-from pulsing.queue import register_backend, get_backend_class, list_backends
+import pulsing as pul
 
 # Register a backend
-register_backend("my_backend", MyBackendClass)
+pul.queue.register_backend("my_backend", MyBackendClass)
 
 # Get a registered backend
-backend_class = get_backend_class("my_backend")
+backend_class = pul.queue.get_backend_class("my_backend")
 
 # List all backends
-available = list_backends()
+available = pul.queue.list_backends()
 print(available)  # ['memory', 'my_backend', ...]
 ```
 

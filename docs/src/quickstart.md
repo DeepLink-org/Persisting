@@ -13,26 +13,29 @@ pip install persisting[pulsing]
 ### Step 2: Register Backend with Pulsing
 
 ```python
-from pulsing.queue import register_backend
-from persisting.queue import LanceBackend
+import pulsing as pul
+import persisting as pst
 
 # Register the Lance backend
-register_backend("lance", LanceBackend)
+pul.queue.register_backend("lance", pst.queue.LanceBackend)
 ```
 
 ### Step 3: Create a Persistent Queue
 
 ```python
 import asyncio
-from pulsing.actor import create_actor_system, SystemConfig
-from pulsing.queue import write_queue, read_queue
+import pulsing as pul
+import persisting as pst
 
 async def main():
+    # Register backend
+    pul.queue.register_backend("lance", pst.queue.LanceBackend)
+    
     # Create actor system
-    system = await create_actor_system(SystemConfig.standalone())
+    system = await pul.actor.create_actor_system(pul.actor.SystemConfig.standalone())
     
     # Create queue writer with Lance persistence
-    writer = await write_queue(
+    writer = await pul.queue.write_queue(
         system,
         topic="my_data",
         backend="lance",
@@ -49,7 +52,7 @@ async def main():
     await writer.flush()
     
     # Create queue reader
-    reader = await read_queue(system, "my_data")
+    reader = await pul.queue.read_queue(system, "my_data")
     
     # Read data
     async for record in reader.get_stream():
@@ -65,8 +68,10 @@ asyncio.run(main())
 ### Memory Backend (for testing)
 
 ```python
+import pulsing as pul
+
 # Memory backend is built into Pulsing (no persistence)
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="test_topic",
     backend="memory",
@@ -76,12 +81,12 @@ writer = await write_queue(
 ### Lance Backend (recommended for production)
 
 ```python
-from pulsing.queue import register_backend
-from persisting.queue import LanceBackend
+import pulsing as pul
+import persisting as pst
 
-register_backend("lance", LanceBackend)
+pul.queue.register_backend("lance", pst.queue.LanceBackend)
 
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="prod_topic",
     backend="lance",
@@ -92,12 +97,12 @@ writer = await write_queue(
 ### Persisting Backend (enhanced features)
 
 ```python
-from pulsing.queue import register_backend
-from persisting.queue import PersistingBackend
+import pulsing as pul
+import persisting as pst
 
-register_backend("persisting", PersistingBackend)
+pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
 
-writer = await write_queue(
+writer = await pul.queue.write_queue(
     system,
     topic="advanced_topic",
     backend="persisting",
