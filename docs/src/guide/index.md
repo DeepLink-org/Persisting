@@ -17,7 +17,7 @@ Persisting provides persistent storage for parameters, KV Cache, and trajectorie
 │  multi-dim lookup · streaming append · batch get      │
 ├───────────────────────────────────────────────────────┤
 │  Persisting Core                                      │
-│  TAA (addressing) · Tiering (GPU/Host/SSD) · Route    │
+│  TTAS (addressing) · Tiering (GPU/Host/SSD) · Route    │
 ├───────────────────────────────────────────────────────┤
 │  Storage Engine: Lance                                │
 │  columnar format · SSD persist · baseline read path   │
@@ -46,5 +46,5 @@ Lance storage engine's append-only access pattern — for trajectory collection 
 
 ## Next Steps
 
-- For the tensor memory API, see the [design docs](../design/index.md) and the [TAA specification](../design/tensor_address_algebra.md).
+- For the tensor memory API, see the [design docs](../design/index.md) and the [TTAS specification](../design/tensor_address_algebra.md).
 - For streaming append, continue with the [Queue Backends](backends.md) overview.

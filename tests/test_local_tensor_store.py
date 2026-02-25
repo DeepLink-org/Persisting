@@ -1,4 +1,4 @@
-"""单机存储：TAA Region → CPU tensor；API 与 llms.binding.md 一致（open → kv[key] → h.tensor()/h.put）。"""
+"""单机存储：TTAS Region → CPU tensor；API 与 llms.binding.md 一致（open → kv[key] → h.tensor()/h.put）。"""
 
 import pytest
 

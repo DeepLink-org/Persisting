@@ -1,4 +1,4 @@
-//! Tensor Address Algebra (TAA) — Rust implementation for Persisting.
+//! Tiered Tensor Address Space (TTAS) — Rust implementation for Persisting.
 //! See design: docs/src/design/tensor_address_algebra.md
 
 mod block_io;

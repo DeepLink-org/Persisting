@@ -18,9 +18,9 @@ Persisting provides **distributed tiered memory** for AI workloads — data live
 │  Persisting: Distributed Tiered Memory                   │
 │                                                          │
 │  ┌──────────┐   ┌──────────┐   ┌──────────────────────┐ │
-│  │   TAA    │   │ Tiering  │   │  Placement / Route   │ │
-│  │ (address │   │ GPU/Host │   │  (via Pulsing actors) │ │
-│  │  algebra)│   │  /SSD    │   │                      │ │
+│  │   TTAS   │   │ Tiering  │   │  Placement / Route   │ │
+│  │ (tiered  │   │ GPU/Host │   │  (via Pulsing actors) │ │
+│  │  tensor) │   │  /SSD    │   │                      │ │
 │  └──────────┘   └──────────┘   └──────────────────────┘ │
 │                                                          │
 ├──────────────────────────────────────────────────────────┤
@@ -64,15 +64,16 @@ PGAS (UPC, Chapel, X10) gave HPC a global address space, but it assumed:
 
 AI workloads need something different:
 
-| | PGAS | Persisting (TAA) |
+| | PGAS | TTAS (Persisting) |
 |-|------|------------------|
+| **Full name** | Partitioned Global **Address Space** | **T**iered **T**ensor **A**ddress **S**pace |
 | **Dimensions** | 1 (rank) | N (session, layer, head, time, shard, ...) |
 | **Address model** | Linear | Multi-dimensional (point / range / set per dim) |
 | **Access API** | shmem put/get | Tensor subscript: `kv["s1", 0, 2, 0:512]` |
 | **Tiering** | None (flat memory) | GPU ↔ host ↔ SSD, policy-driven |
 | **Distribution** | Language runtime | Pulsing actor runtime |
 
-PGAS failed in HPC because "a nicer address space" alone doesn't move the Pareto curve. Persisting learns from that: the address algebra (TAA) is an **internal implementation detail** — what matters is the tiered memory performance it enables.
+PGAS failed in HPC because "a nicer address space" alone doesn't move the Pareto curve. Persisting learns from that: the **Tiered Tensor Address Space (TTAS)** is internal infrastructure — what matters is the tiered memory performance it enables.
 
 ## Use Cases
 
@@ -146,7 +147,7 @@ records = await queue.get(limit=100)
 | SSD / NVMe | ~ms | Large (Lance storage engine) |
 | Remote node | ~ms | Cluster-wide (via Pulsing) |
 
-SSD 层（Lance）提供持久化兜底。上层 tier 是对它的逐级加速——数据放置和晋升/淘汰由 TAA 地址结构（分区键、有序维度）驱动。
+SSD 层（Lance）提供持久化兜底。上层 tier 是对它的逐级加速——数据放置和晋升/淘汰由 TTAS 地址结构（分区键、有序维度）驱动。
 
 ## Installation
 
@@ -158,7 +159,7 @@ pip install persisting
 
 | Phase | Goal | Status |
 |-------|------|--------|
-| P0 | Lance 存储引擎 + TAA 寻址 + key encoding | In progress |
+| P0 | Lance 存储引擎 + TTAS 寻址 + key encoding | In progress |
 | P1 | KV Cache offloading (single node, GPU ↔ host ↔ SSD) | Next |
 | P2 | Cross-node KV Cache sharing (via Pulsing) | Planned |
 | P3 | Parameter serving + trajectory storage | Planned |

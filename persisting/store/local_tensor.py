@@ -113,10 +113,10 @@ def region_to_index(
     shape: tuple[int, ...],
     catalog: dict[Dimension, dict[Any, int]] | None = None,
 ) -> tuple[int | slice | np.ndarray, ...]:
-    """将 TAA Region 转为 numpy 高级索引元组。
+    """将 TTAS Region 转为 numpy 高级索引元组。
 
     Args:
-        region: TAA Region（各维约束的合取）
+        region: TTAS Region（各维约束的合取）
         dims: 维度顺序，与 shape 一一对应
         shape: 各维大小
         catalog: 可选，str/bytes 维度到整数下标的映射，catalog[dim][coord] -> int
@@ -182,7 +182,7 @@ class TensorLayout:
         return self._catalog
 
     def region_to_index(self, region: Region) -> tuple[int | slice | np.ndarray, ...]:
-        """TAA Region → numpy 风格索引元组（供 Backing.read/write 使用）。"""
+        """TTAS Region → numpy 风格索引元组（供 Backing.read/write 使用）。"""
         return region_to_index(region, self._dims, self._shape, self._catalog)
 
 
@@ -192,7 +192,7 @@ class TensorLayout:
 
 
 class Backing(Protocol):
-    """存储后端：按索引读写，不关心 TAA。"""
+    """存储后端：按索引读写，不关心 TTAS。"""
 
     @property
     def shape(self) -> tuple[int, ...]: ...
@@ -482,7 +482,7 @@ class SafetensorsBacking:
 class LocalTensorStore:
     """Tensor 存储：元数据（TensorLayout）+ 存储后端（Backing），二者分离。
 
-    便于日后替换 Backing 为 mmap、GPU 等，而不改 TAA/Region 逻辑。
+    便于日后替换 Backing 为 mmap、GPU 等，而不改 TTAS/Region 逻辑。
     """
 
     __slots__ = ("_layout", "_backing")
@@ -534,7 +534,7 @@ class LocalTensorStore:
         raise AttributeError("numpy 仅适用于 NumpyBacking，当前 backing 为 %s" % type(self._backing).__name__)
 
     def get(self, region: Region) -> np.ndarray:
-        """按 TAA Region 读出，返回拷贝。"""
+        """按 TTAS Region 读出，返回拷贝。"""
         idx = self._layout.region_to_index(region)
         return self._backing.read(idx)
 

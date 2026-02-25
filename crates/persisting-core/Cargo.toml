@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Rust core for Persisting (TAA, block I/O, tiered loop, page fault)"
+description = "Rust core for Persisting (TTAS, block I/O, tiered loop, page fault)"
 
 [lib]
 name = "_core"

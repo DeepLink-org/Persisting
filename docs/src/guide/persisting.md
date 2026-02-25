@@ -56,7 +56,6 @@ print(stats["metrics"])
 
 Planned additions:
 
-- Write-Ahead Log (WAL) for crash recovery
 - Compaction support
 - Prometheus metrics export
 

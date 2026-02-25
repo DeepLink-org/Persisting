@@ -89,7 +89,8 @@ plugins:
             Custom Backends: 自定义后端
             Design: 设计文档
             Architecture: 架构设计
-            WAL: Write-Ahead Log
+            Distributed Tiered Storage: 分布式分层存储
+            Similar Systems Reference: 类似系统参考
             API Reference: API 参考
   - mkdocstrings:
       handlers:
@@ -114,7 +115,8 @@ nav:
   - Design:
     - design/index.md
     - Architecture: design/architecture.md
-    - WAL: design/wal.md
+    - Distributed Tiered Storage: design/distributed_tiered_storage.md
+    - Similar Systems Reference: design/similar_systems_reference.md
   - API Reference: api_reference.md
 
 extra:

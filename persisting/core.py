@@ -1,4 +1,4 @@
-"""Tensor Address Algebra (TAA) — Rust implementation.
+"""Tiered Tensor Address Space (TTAS) — Rust implementation.
 
 Re-exports from the native module ``persisting._core`` (built with maturin).
 轻量访问：用 TensorView(dims) 得到 tensor，再 tensor[{SESSION: xx}, :, 0:100] 或 tensor["s1", :, 0:100] 得到 Region。

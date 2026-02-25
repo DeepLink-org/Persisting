@@ -451,7 +451,7 @@ class PersistingBackend(LanceBackend):
     """LanceBackend with metrics collection.
 
     Adds lightweight counters on top of LanceBackend for observability.
-    Future versions will add WAL and compaction support.
+    Future versions may add compaction support.
 
     Args:
         bucket_id: Bucket identifier.

@@ -1,4 +1,4 @@
-"""Persisting Store — 单机分层存储，TAA 地址映射到本地 CPU tensor；元数据与 Backing 分离。"""
+"""Persisting Store — 单机分层存储，TTAS 地址映射到本地 CPU tensor；元数据与 Backing 分离。"""
 
 from .block import BlockId, block_to_region, region_to_blocks
 from .block_store import BlockStore

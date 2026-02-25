@@ -65,5 +65,5 @@ print(stats["metrics"])
 ## 下一步
 
 - [用户指南](guide/index.md) — 详细指南
-- [设计文档](design/index.md) — 架构和 TAA 规范
+- [设计文档](design/index.md) — 架构和 TTAS 规范
 - [API 参考](api_reference.md) — 完整 API 文档

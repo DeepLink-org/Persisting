@@ -22,7 +22,7 @@ Together: a runtime where actors communicate via Pulsing and share tensor data v
 
 ## Features
 
-- **Tensor Address Algebra (TAA)** — Multi-dimensional addressing model for AI data (KV Cache, parameters, trajectories).
+- **Tiered Tensor Address Space (TTAS)** — Multi-dimensional, tiered address space for AI data (KV Cache, parameters, trajectories); the counterpart to PGAS.
 - **Tiered Memory** — GPU ↔ host ↔ SSD, transparent to application code.
 - **Pulsing Distribution** — Cross-node data access via Pulsing's actor runtime.
 - **Tensor-style API** — `kv["s1", 0, 2, 0:512].tensor()` — slice by subscript, materialize on demand.

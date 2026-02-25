@@ -12,7 +12,7 @@
 **Persisting** provides **distributed tiered memory** for AI workloads: parameters, KV cache, trajectories. Data is addressed by **multi-dimensional tensor subscript**; it lives across GPU, host memory, and SSD; **materialization** pulls it on demand.
 
 - **Control plane**: Pulsing (actor discovery, messaging).
-- **Data plane**: Persisting (TAA addressing, tiering, placement).
+- **Data plane**: Persisting (TTAS addressing, tiering, placement).
 
 **Two main surfaces:**
 
@@ -121,7 +121,7 @@ Tiers are **transparent** to the user: `h.tensor()` reads from the fastest avail
 
 ### 2.7 Pin / Unpin (tiered, when eviction is enabled)
 
-*Design direction; full alignment with two timelines and device-driven prefetch/eviction is not yet implemented. See `docs/src/design/pin_unpin_mechanism_discussion.md`.*
+*Design direction; full alignment with two timelines and device-driven prefetch/eviction is not yet implemented.*
 
 When the backend uses **bounded L1 + eviction** (e.g. `backend="tiered"` with `l1_max_blocks` and `eviction="lru"`), pin/unpin is available as follows.
 
@@ -242,9 +242,9 @@ async for batch in queue.stream(limit=1000, wait=True, timeout=5.0):
 
 ---
 
-## 4. Advanced: TAA
+## 4. Advanced: TTAS (Tiered Tensor Address Space)
 
-For routing, planning, or batch optimization, the addressing layer is exposed as TAA (Tensor Address Algebra). Implemented in the Rust crate **persisting-core**, public API is **persisting.core**:
+For routing, planning, or batch optimization, the addressing layer is exposed as TTAS (Tiered Tensor Address Space — the counterpart to PGAS). Implemented in the Rust crate **persisting-core**, public API is **persisting.core**:
 
 ```python
 from persisting.core import (
@@ -264,7 +264,7 @@ assert is_range_query(region, TIME)
 key = project_prefix(region, [SESSION, LAYER, HEAD])
 ```
 
-TAA is **internal** for most users; `kv[key].tensor()` is the primary surface.
+TTAS is **internal** for most users; `kv[key].tensor()` is the primary surface.
 
 ---
 

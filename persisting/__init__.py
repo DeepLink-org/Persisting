@@ -1,7 +1,7 @@
 """Persisting — Persistent Storage for Parameters, KV Cache, and Trajectories.
 
 Distributed tiered memory for AI workloads:
-- Multi-dimensional address space (TAA) for KV Cache, parameters, trajectories
+- Multi-dimensional address space (TTAS) for KV Cache, parameters, trajectories
 - GPU / host / SSD tiering, transparent to application code
 - Lance storage engine as SSD-layer baseline
 

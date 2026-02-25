@@ -1,4 +1,4 @@
-"""Block：存储与传输的基本单元，TAA Region 与分层存储的桥接。
+"""Block：存储与传输的基本单元，TTAS Region 与分层存储的桥接。
 
 - BlockId = (partition_key, block_id)：逻辑块标识。
 - region_to_blocks：Region → BlockId 列表。
@@ -52,13 +52,13 @@ def region_to_blocks(
     block_tokens: int,
     shape: tuple[int, ...],
 ) -> list[BlockId]:
-    """将 TAA Region 转为覆盖该 Region 的 BlockId 列表。
+    """将 TTAS Region 转为覆盖该 Region 的 BlockId 列表。
 
     要求：region 在 prefix_dims（= dims 除 order_dim）上均为 Point，以便得到 partition_key；
     order_dim 上为 Range 或 Point。
 
     Args:
-        region: TAA Region
+        region: TTAS Region
         dims: 维度顺序，与 shape 一致
         order_dim: 有序维度（块在该维上切分）
         block_tokens: 每块在 order_dim 上的元素个数
@@ -120,7 +120,7 @@ def block_to_region(
     block_tokens: int,
     shape: tuple[int, ...],
 ) -> Region:
-    """将 BlockId 转为对应的 TAA Region（该块在 order_dim 上的区间 + prefix 为 Point）。"""
+    """将 BlockId 转为对应的 TTAS Region（该块在 order_dim 上的区间 + prefix 为 Point）。"""
     if len(dims) != len(shape):
         raise ValueError("dims 与 shape 长度须一致")
     prefix_dims = tuple(d for d in dims if d is not order_dim)

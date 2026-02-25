@@ -1,18 +1,18 @@
 # Persisting 分布式分层存储 — 综合设计文档
 
-**文档用途**：供技术团队 review 与讨论的统一设计稿，涵盖寻址模型（TAA）、Block 存储、虚拟地址映射（mmap + UFFD）、分布式路由（Pulsing）与传输选路。
+**文档用途**：供技术团队 review 与讨论的统一设计稿，涵盖寻址模型（TTAS）、Block 存储、虚拟地址映射（mmap + UFFD）、分布式路由（Pulsing）与传输选路。
 
 ---
 
-## 1. TAA 设计概要（寻址模型）
+## 1. TTAS 设计概要（寻址模型）
 
-TAA（Tensor Address Algebra）是 Persisting 数据面的**寻址模型**：只做地址语义，无 I/O、无存储。详细形式化见 [Tensor Address Algebra](tensor_address_algebra.md)。
+TTAS（Tiered Tensor Address Space，分层张量地址空间）是 Persisting 数据面的**寻址模型**：只做地址语义，无 I/O、无存储。详细形式化见 [分层张量地址空间（TTAS）](tensor_address_algebra.md)（含与 PGAS 对照）。
 
 ### 1.1 角色与边界
 
 - **解决什么**：为 KV Cache、PS/Optimizer state、轨迹等场景提供统一多维寻址（点查、单维范围、滑窗预取），并通过确定性规范化与 lowering 优化分区裁剪、批量合并与预取生成。
 - **不做什么**：不做通用查询优化器/执行引擎、不做物理连续字节假设、不做分层 placement 在线决策。
-- **用户可见**：`kv["s1", 0, 2, 0:512].tensor()`。TAA 在底层驱动寻址与路由，用户无需直接操作。
+- **用户可见**：`kv["s1", 0, 2, 0:512].tensor()`。TTAS 在底层驱动寻址与路由，用户无需直接操作。
 
 ### 1.2 数据模型
 
@@ -43,13 +43,13 @@ TAA（Tensor Address Algebra）是 Persisting 数据面的**寻址模型**：只
 - **NF-RangeQuery**：order_dim 为 Range，其余为 Point → `range_scan(prefix, lo, hi)`
 - 非 NF 的 Region 须在上层拆解后再提交
 
-### 1.6 TAA 不是一个"层"
+### 1.6 TTAS 不是一个"层"
 
-TAA 是贯穿各层的寻址模型，不是独立的软件层：
-- **TensorNamespace / Handler** 使用 TAA 做用户下标 → Region
-- **DistributedStore** 使用 TAA 做 partition_key 路由
-- **BlockStore** 使用 TAA 做 Region → Block 列表
-- **TensorLayout** 使用 TAA 做 Region → 数组索引
+TTAS 是贯穿各层的寻址模型，不是独立的软件层：
+- **TensorNamespace / Handler** 使用 TTAS 做用户下标 → Region
+- **DistributedStore** 使用 TTAS 做 partition_key 路由
+- **BlockStore** 使用 TTAS 做 Region → Block 列表
+- **TensorLayout** 使用 TTAS 做 Region → 数组索引
 
 ---
 
@@ -69,17 +69,17 @@ TAA 是贯穿各层的寻址模型，不是独立的软件层：
 Block = (namespace, partition_key, block_id) → 一段页对齐的连续 tensor 数据
 ```
 
-- **partition_key**：TAA prefix_dims 各维的 Point 值。如 KV Cache 场景下 `("s1", 0, 2)` = (session, layer, head)。
+- **partition_key**：TTAS prefix_dims 各维的 Point 值。如 KV Cache 场景下 `("s1", 0, 2)` = (session, layer, head)。
 - **block_id**：order_dim 上的区间编号。如 time 维的 `[0, 64)`、`[64, 128)` 分别为 block 0、block 1。
 - **Block 大小**：固定，页对齐。例如 KV Cache 中 64 tokens × 128 head_dim × fp16 = 16KB = 4 个 4KB 页。
 - **每个 Block** 独立跟踪所在层级（GPU / CPU / SSD / Remote）和状态（present / evicted / migrating）。
 
-### 2.3 TAA Region → Block 列表
+### 2.3 TTAS Region → Block 列表
 
 给定一个 Region：
 - prefix_dims 均为 Point → 确定 partition_key
 - order_dim 为 Range(lo, hi) → 计算覆盖的 block_id 范围：`[lo // block_tokens, (hi - 1) // block_tokens]`
-- 结果：该 Region 覆盖的 Block 列表（每个 Block 有确定的 TAA 地址）
+- 结果：该 Region 覆盖的 Block 列表（每个 Block 有确定的 TTAS 地址）
 
 ```python
 def region_to_blocks(region, schema, block_tokens):
@@ -101,7 +101,7 @@ partition_dims = (SESSION,)
 block_tokens = 64
 
 用户请求：kv["s1", 0, 2, 0:512].tensor()
-  ↓ TAA 解析
+  ↓ TTAS 解析
 Region: SESSION=Point("s1"), LAYER=Point(0), HEAD=Point(2), TIME=Range(0,512)
   ↓ region_to_blocks
 partition_key = ("s1", 0, 2)
@@ -229,11 +229,11 @@ class BlockMappedBacking:
 
 | 组件 | 职责 |
 |------|------|
-| **TensorNamespace / Handler** | 用户接口。`open() → kv[key] → h.tensor() / h.put(data)`。使用 TAA 做下标 → Region。 |
-| **DistributedStore** | 分布式路由。使用 TAA 的 partition_dims 做路由决策，本地请求发给本机 BlockStore，远程请求经 Pulsing 解析端点后发给远程 BlockStore。 |
+| **TensorNamespace / Handler** | 用户接口。`open() → kv[key] → h.tensor() / h.put(data)`。使用 TTAS 做下标 → Region。 |
+| **DistributedStore** | 分布式路由。使用 TTAS 的 partition_dims 做路由决策，本地请求发给本机 BlockStore，远程请求经 Pulsing 解析端点后发给远程 BlockStore。 |
 | **BlockStore**（每节点一个） | 单节点分层存储 + 对外服务。管理本机 L0/L1/L3 的 Block，跟踪每 Block 所在层级，miss 时 fetch。通过 mmap + UFFD 对上层暴露连续虚拟空间。可被远程节点通过 RPC/RDMA 访问。 |
 
-TAA 是贯穿各层的寻址模型，不是独立的一层。
+TTAS 是贯穿各层的寻址模型，不是独立的一层。
 
 ### 4.2 四级存储层
 
@@ -250,7 +250,7 @@ TAA 是贯穿各层的寻址模型，不是独立的一层。
   Node A                                                    Node B
   ┌─────────────────────────────────────────┐              ┌──────────────────────────────────────────┐
   │  kv["s1", 0, 2, 0:512].tensor()        │              │  kv["s1", 0, 2, 0:512].tensor()         │
-  │       │ TAA: Region → Block 列表         │              │       │                                  │
+  │       │ TTAS: Region → Block 列表        │              │       │                                  │
   │       ▼                                 │              │       ▼                                  │
   │  DistributedStore                       │              │  DistributedStore                        │
   │    partition_key → home=A? 本地          │              │    partition_key → home=A? 远程           │
@@ -559,7 +559,7 @@ class Transport(Protocol):
 
 ### 8.1 Placement
 
-- Pulsing 的集群视图 + TAA 的 partition_dims → "某 partition_key 的 home 节点"
+- Pulsing 的集群视图 + TTAS 的 partition_dims → "某 partition_key 的 home 节点"
 - DistributedStore 据此决定：访问本机 BlockStore 还是远程
 
 ### 8.2 演进路径
@@ -572,7 +572,7 @@ class Transport(Protocol):
 ### 8.3 一致性
 
 - v1：单写多读或会话内一致
-- 后续：可在 TAA 上加版本或在 BlockStore 上加租约
+- 后续：可在 TTAS 上加版本或在 BlockStore 上加租约
 
 ---
 
@@ -590,11 +590,11 @@ class Transport(Protocol):
 
 ## 10. 小结
 
-- **Block 是基本单元**：存储、传输、缓存、驱逐全部以 Block 为粒度。Block 有 TAA 地址，大小页对齐。
+- **Block 是基本单元**：存储、传输、缓存、驱逐全部以 Block 为粒度。Block 有 TTAS 地址，大小页对齐。
 - **Block 是物理现实，连续空间是承诺**：底层按 Block 存储（不连续），上层通过 mmap + 用户态缺页处理（CPU）或 CUDA Virtual Memory API（GPU）将不连续 Block 映射为连续虚拟空间。对 numpy/torch 透明。
 - **跨平台缺页机制**：Linux 用 userfaultfd（UFFDIO_COPY 原子填页），macOS 用 Mach exception handler（EXC_BAD_ACCESS + Mach port），开发阶段可用 mprotect+SIGSEGV 降级。BlockStore 内部抽象为 `PageFaultHandler` 接口，按平台选实现。
 - **Backing 协议不变**：`BlockMappedBacking.read(indices)` 和 `NumpyBacking.read(indices)` 写法完全一样——都是 `self._arr[indices].copy()`。缺页处理对用户线程透明，所有平台效果相同。
-- **TAA 贯穿各层**：用户接口（Region）、分布式路由（partition_key）、Block 寻址（region_to_blocks）、数组索引（region_to_index）都使用 TAA，但 TAA 本身不是一个"层"。
+- **TTAS 贯穿各层**：用户接口（Region）、分布式路由（partition_key）、Block 寻址（region_to_blocks）、数组索引（region_to_index）都使用 TTAS，但 TTAS 本身不是一个"层"。
 - **三层组件**：TensorNamespace（用户接口）→ DistributedStore（路由）→ BlockStore（单节点分层存储 + 服务化），清晰分工。
 - **UFFD 是优化不是必须**：Phase 1 用显式 miss/fetch，Phase 2 加 UFFD 做透明化。
 - **控制面与数据面分离**：Pulsing 做控制面（发现、路由），Block 传输走 RDMA/PCIe/NVLink 做数据面。

@@ -1,5 +1,5 @@
 """
-TAA 轻量访问：tensor[{SESSION: xx}, :, 0:100] 做 address planning。
+TTAS 轻量访问：tensor[{SESSION: xx}, :, 0:100] 做 address planning。
 
 通过 TensorView(dims) 得到 tensor，用 tensor[..., :, 0:100] 构造 Region，
 再用 canonicalize / project_prefix / is_point_query / is_range_query 做 planning。
@@ -22,7 +22,7 @@ try:
     )
 except ImportError as e:
     pytest.skip(
-        f"persisting._core 未安装或不可用，跳过 TAA 测试: {e}",
+        f"persisting._core 未安装或不可用，跳过 TTAS 测试: {e}",
         allow_module_level=True,
     )
 

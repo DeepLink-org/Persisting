@@ -22,7 +22,7 @@ hide: toc
 
 ## 核心特性
 
-- **Tensor Address Algebra (TAA)** — 面向 AI 数据（KV Cache、参数、轨迹）的多维寻址模型。
+- **分层张量地址空间（TTAS / Tiered Tensor Address Space）** — 面向 AI 数据（KV Cache、参数、轨迹）的多维、分层地址空间；与 PGAS 对标的说法。
 - **分层内存** — GPU ↔ host ↔ SSD，对应用透明。
 - **Pulsing 分布式** — 通过 Pulsing 的 actor 运行时实现跨节点数据访问。
 - **Tensor 式 API** — `kv["s1", 0, 2, 0:512].tensor()` — 下标切片，按需物化。

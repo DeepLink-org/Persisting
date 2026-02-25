@@ -65,5 +65,5 @@ print(stats["metrics"])
 ## Next Steps
 
 - [User Guide](guide/index.md) — Detailed guides
-- [Design Docs](design/index.md) — Architecture and TAA specification
+- [Design Docs](design/index.md) — Architecture and TTAS specification
 - [API Reference](api_reference.md) — Full API documentation
