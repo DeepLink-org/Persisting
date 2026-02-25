@@ -1,151 +1,57 @@
-# Queue Backends
+# Queue Capabilities
 
-This guide provides an overview of the storage backends available in Persisting.
+Overview of `persisting.Queue` — the unified API for append-only persistent queues.
 
-## Backend Protocol
-
-All backends implement the `StorageBackend` protocol:
+## Queue API
 
 ```python
-from typing import Protocol, AsyncIterator, Any
+from persisting import Queue
 
-class StorageBackend(Protocol):
-    """Protocol for pluggable storage backends."""
-    
-    async def put(self, record: dict[str, Any]) -> None:
-        """Store a single record."""
-        ...
-    
-    async def put_batch(self, records: list[dict[str, Any]]) -> None:
-        """Store multiple records."""
-        ...
-    
-    async def get(self, offset: int = 0, limit: int | None = None) -> list[dict[str, Any]]:
-        """Retrieve records."""
-        ...
-    
-    async def get_stream(
-        self,
-        offset: int = 0,
-        limit: int | None = None,
-        block: bool = False
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Stream records."""
-        ...
-    
-    async def flush(self) -> None:
-        """Persist buffered data."""
-        ...
-    
-    async def stats(self) -> dict[str, Any]:
-        """Get storage statistics."""
-        ...
-    
-    def total_count(self) -> int:
-        """Get total record count."""
-        ...
+queue = Queue("my_topic", storage_path="./data")
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+records = await queue.get(limit=100)
 ```
 
-## Available Backends
+## With Metrics
 
-### MemoryBackend (Pulsing)
-
-Simple in-memory storage without persistence:
+For production observability, enable operation counters:
 
 ```python
-import pulsing as pul
-
-writer = await pul.queue.write_queue(system, "topic", backend="memory")
+queue = Queue("my_topic", storage_path="./data", enable_metrics=True)
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+stats = await queue.stats()
 ```
 
-**Characteristics:**
+## Queue Options
 
-- ✅ Fast read/write
-- ✅ No dependencies
-- ❌ No persistence
-- ❌ Data lost on restart
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `storage_path` | `str` | `"./data"` | Root directory for queue data |
+| `batch_size` | `int` | `100` | Auto-flush when buffer reaches this size |
+| `enable_metrics` | `bool` | `False` | Collect operation counters (put/get/flush counts) |
 
-**Use cases:** Testing, development, temporary data
+## Comparison
 
-### LanceBackend (Persisting)
+| Feature | Queue (default) | Queue (enable_metrics=True) |
+|---------|-----------------|-----------------------------|
+| Persistence | Yes | Yes |
+| Recovery on restart | Yes | Yes |
+| Auto-flush | Yes | Yes |
+| Operation metrics | No | Yes |
 
-Lance-based persistent storage:
+## Implementation
 
-```python
-import pulsing as pul
-import persisting as pst
+`Queue` uses Lance-based persistent storage internally:
 
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
-writer = await pul.queue.write_queue(system, "topic", backend="lance", storage_path="/data")
-```
+- **Columnar storage** — Efficient on-disk format
+- **Memory buffering** — Write coalescing for throughput
+- **Auto-flush** — Persist when buffer reaches `batch_size`
 
-**Characteristics:**
-
-- ✅ High-performance columnar storage
-- ✅ Data persistence
-- ✅ Version control
-- ✅ Vector search support
-
-**Use cases:** Production workloads, ML data storage
-
-### PersistingBackend (Persisting)
-
-Enhanced backend with advanced features:
-
-```python
-import pulsing as pul
-import persisting as pst
-
-pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
-writer = await pul.queue.write_queue(
-    system, "topic",
-    backend="persisting",
-    storage_path="/data",
-    backend_options={"enable_wal": True}
-)
-```
-
-**Characteristics:**
-
-- ✅ All Lance features
-- ✅ Write-Ahead Log (WAL)
-- ✅ Schema evolution
-- ✅ Prometheus metrics
-
-**Use cases:** Production with durability requirements
-
-## Backend Comparison
-
-| Feature | Memory | Lance | Persisting |
-|---------|--------|-------|------------|
-| Persistence | ❌ | ✅ | ✅ |
-| WAL | ❌ | ❌ | ✅ |
-| Compression | ❌ | ✅ | ✅ |
-| Metrics | ❌ | ❌ | ✅ |
-| Schema Evolution | N/A | ❌ | ✅ |
-| Vector Search | ❌ | ✅ | ✅ |
-
-## Backend Registration
-
-Register custom backends with Pulsing:
-
-```python
-import pulsing as pul
-
-# Register a backend
-pul.queue.register_backend("my_backend", MyBackendClass)
-
-# Get a registered backend
-backend_class = pul.queue.get_backend_class("my_backend")
-
-# List all backends
-available = pul.queue.list_backends()
-print(available)  # ['memory', 'my_backend', ...]
-```
+When `enable_metrics=True`, it uses an extended backend that tracks `put_count`, `get_count`, `flush_count`, and `last_flush_time`.
 
 ## Next Steps
 
-- [Lance Backend](lance.md) - Detailed Lance backend guide
-- [Persisting Backend](persisting.md) - Enhanced backend features
-- [Custom Backends](custom.md) - Implement your own backend
-
+- [Lance Backend](lance.md) — What Queue does internally (buffering, flush, storage)
+- [Custom Backends](custom.md) — Implement your own backend for internal use

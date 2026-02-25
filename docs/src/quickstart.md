@@ -1,139 +1,69 @@
 # Quick Start
 
-This guide will help you get started with Persisting in minutes.
+Get started with Persisting in 5 minutes.
 
-## Basic Usage
+## What You're Getting
 
-### Step 1: Install Persisting
+Persisting provides persistent storage for parameters, KV Cache, and trajectories — with Lance as the storage engine and GPU/host/SSD tiering. Currently available: **streaming append** (append-only queue). Coming soon: **tensor memory API** for multi-dimensional access.
+
+## Step 1: Install
 
 ```bash
-pip install persisting[pulsing]
+pip install persisting[lance]
 ```
 
-### Step 2: Register Backend with Pulsing
+## Step 2: Tensor Memory (coming soon)
+
+The primary API — tensor-style subscript access to tiered memory:
 
 ```python
-import pulsing as pul
-import persisting as pst
+import persisting
+from persisting.core import Dimension
 
-# Register the Lance backend
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
+SESSION = Dimension("session", "str")
+LAYER   = Dimension("layer", "int")
+HEAD    = Dimension("head", "int")
+TIME    = Dimension("time", "int")
+
+kv = persisting.open("kvcache/v1",
+    dims=(SESSION, LAYER, HEAD, TIME), order_dim=TIME)
+
+arr = kv["s1", 0, 2, 0:512].tensor()
 ```
 
-### Step 3: Create a Persistent Queue
+## Step 3: Streaming Append (available now)
+
+Append-only queue on Lance storage engine — for trajectory collection and event streaming:
 
 ```python
 import asyncio
-import pulsing as pul
-import persisting as pst
+from persisting import Queue
 
 async def main():
-    # Register backend
-    pul.queue.register_backend("lance", pst.queue.LanceBackend)
-    
-    # Create actor system
-    system = await pul.actor.create_actor_system(pul.actor.SystemConfig.standalone())
-    
-    # Create queue writer with Lance persistence
-    writer = await pul.queue.write_queue(
-        system,
-        topic="my_data",
-        backend="lance",
-        storage_path="/data/queues",
-        num_buckets=4,
-        batch_size=100,
-    )
-    
-    # Write data
+    queue = Queue("my_topic", storage_path="./data")
+
     for i in range(10):
-        await writer.put({"id": str(i), "value": i * 10})
-    
-    # Flush to persist
-    await writer.flush()
-    
-    # Create queue reader
-    reader = await pul.queue.read_queue(system, "my_data")
-    
-    # Read data
-    async for record in reader.get_stream():
-        print(f"Read: {record}")
-    
-    await system.shutdown()
+        await queue.put({"id": str(i), "value": i * 10})
+    await queue.flush()
+
+    records = await queue.get(limit=100)
+    print(f"Read {len(records)} records")
 
 asyncio.run(main())
 ```
 
-## Using Different Backends
-
-### Memory Backend (for testing)
+With metrics:
 
 ```python
-import pulsing as pul
-
-# Memory backend is built into Pulsing (no persistence)
-writer = await pul.queue.write_queue(
-    system,
-    topic="test_topic",
-    backend="memory",
-)
+queue = Queue("my_topic", storage_path="./data", enable_metrics=True)
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+stats = await queue.stats()
+print(stats["metrics"])
 ```
-
-### Lance Backend (recommended for production)
-
-```python
-import pulsing as pul
-import persisting as pst
-
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
-
-writer = await pul.queue.write_queue(
-    system,
-    topic="prod_topic",
-    backend="lance",
-    storage_path="/data/queues",
-)
-```
-
-### Persisting Backend (enhanced features)
-
-```python
-import pulsing as pul
-import persisting as pst
-
-pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
-
-writer = await pul.queue.write_queue(
-    system,
-    topic="advanced_topic",
-    backend="persisting",
-    storage_path="/data/queues",
-    backend_options={
-        "enable_wal": True,
-        "compression": "zstd",
-    },
-)
-```
-
-## Backend Options
-
-### Lance Backend Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `flush_threshold` | int | 1000 | Records before auto-flush |
-
-### Persisting Backend Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enable_wal` | bool | False | Enable Write-Ahead Log |
-| `compression` | str | None | Compression algorithm |
-| `enable_metrics` | bool | False | Enable Prometheus metrics |
 
 ## Next Steps
 
-- [User Guide](guide/index.md) - Learn more about storage backends
-- [Lance Backend](guide/lance.md) - Lance backend details
-- [Persisting Backend](guide/persisting.md) - Enhanced backend features
-- [API Reference](api_reference.md) - Detailed API documentation
-
+- [User Guide](guide/index.md) — Detailed guides
+- [Design Docs](design/index.md) — Architecture and TAA specification
+- [API Reference](api_reference.md) — Full API documentation

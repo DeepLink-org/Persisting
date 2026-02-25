@@ -1,151 +1,57 @@
-# 队列后端
+# 队列能力概览
 
-本指南概述 Persisting 中可用的存储后端。
+`persisting.Queue` 是追加式持久化队列的统一 API。
 
-## 后端协议
-
-所有后端实现 `StorageBackend` 协议：
+## Queue API
 
 ```python
-from typing import Protocol, AsyncIterator, Any
+from persisting import Queue
 
-class StorageBackend(Protocol):
-    """可插拔存储后端协议。"""
-    
-    async def put(self, record: dict[str, Any]) -> None:
-        """存储单条记录。"""
-        ...
-    
-    async def put_batch(self, records: list[dict[str, Any]]) -> None:
-        """存储多条记录。"""
-        ...
-    
-    async def get(self, offset: int = 0, limit: int | None = None) -> list[dict[str, Any]]:
-        """检索记录。"""
-        ...
-    
-    async def get_stream(
-        self,
-        offset: int = 0,
-        limit: int | None = None,
-        block: bool = False
-    ) -> AsyncIterator[dict[str, Any]]:
-        """流式读取记录。"""
-        ...
-    
-    async def flush(self) -> None:
-        """持久化缓冲数据。"""
-        ...
-    
-    async def stats(self) -> dict[str, Any]:
-        """获取存储统计信息。"""
-        ...
-    
-    def total_count(self) -> int:
-        """获取总记录数。"""
-        ...
+queue = Queue("my_topic", storage_path="./data")
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+records = await queue.get(limit=100)
 ```
 
-## 可用后端
+## 启用指标
 
-### MemoryBackend (Pulsing)
-
-无持久化的简单内存存储：
+生产环境可观测时，可开启操作计数器：
 
 ```python
-import pulsing as pul
-
-writer = await pul.queue.write_queue(system, "topic", backend="memory")
+queue = Queue("my_topic", storage_path="./data", enable_metrics=True)
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+stats = await queue.stats()
 ```
 
-**特性：**
+## 选项
 
-- ✅ 快速读写
-- ✅ 无依赖
-- ❌ 无持久化
-- ❌ 重启后数据丢失
+| 选项 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `storage_path` | `str` | `"./data"` | 队列数据根目录 |
+| `batch_size` | `int` | `100` | 缓冲达到此数量时自动 flush |
+| `enable_metrics` | `bool` | `False` | 收集操作计数器（put/get/flush 次数） |
 
-**用途：** 测试、开发、临时数据
+## 对比
 
-### LanceBackend (Persisting)
+| 功能 | Queue（默认） | Queue（enable_metrics=True） |
+|------|---------------|------------------------------|
+| 持久化 | 是 | 是 |
+| 重启恢复 | 是 | 是 |
+| 自动 flush | 是 | 是 |
+| 操作指标 | 否 | 是 |
 
-基于 Lance 的持久化存储：
+## 实现
 
-```python
-import pulsing as pul
-import persisting as pst
+`Queue` 内部使用基于 Lance 的持久化存储：
 
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
-writer = await pul.queue.write_queue(system, "topic", backend="lance", storage_path="/data")
-```
+- **列式存储** — 高效磁盘格式
+- **内存缓冲** — 写入合并提升吞吐
+- **自动 flush** — 缓冲达到 `batch_size` 时落盘
 
-**特性：**
-
-- ✅ 高性能列式存储
-- ✅ 数据持久化
-- ✅ 版本控制
-- ✅ 向量搜索支持
-
-**用途：** 生产工作负载、ML 数据存储
-
-### PersistingBackend (Persisting)
-
-具有高级功能的增强后端：
-
-```python
-import pulsing as pul
-import persisting as pst
-
-pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
-writer = await pul.queue.write_queue(
-    system, "topic",
-    backend="persisting",
-    storage_path="/data",
-    backend_options={"enable_wal": True}
-)
-```
-
-**特性：**
-
-- ✅ 所有 Lance 功能
-- ✅ Write-Ahead Log (WAL)
-- ✅ Schema 演进
-- ✅ Prometheus 指标
-
-**用途：** 有持久性要求的生产环境
-
-## 后端比较
-
-| 功能 | Memory | Lance | Persisting |
-|------|--------|-------|------------|
-| 持久化 | ❌ | ✅ | ✅ |
-| WAL | ❌ | ❌ | ✅ |
-| 压缩 | ❌ | ✅ | ✅ |
-| 指标 | ❌ | ❌ | ✅ |
-| Schema 演进 | N/A | ❌ | ✅ |
-| 向量搜索 | ❌ | ✅ | ✅ |
-
-## 后端注册
-
-向 Pulsing 注册自定义后端：
-
-```python
-import pulsing as pul
-
-# 注册后端
-pul.queue.register_backend("my_backend", MyBackendClass)
-
-# 获取已注册的后端
-backend_class = pul.queue.get_backend_class("my_backend")
-
-# 列出所有后端
-available = pul.queue.list_backends()
-print(available)  # ['memory', 'my_backend', ...]
-```
+当 `enable_metrics=True` 时，使用扩展后端追踪 `put_count`、`get_count`、`flush_count` 和 `last_flush_time`。
 
 ## 下一步
 
-- [Lance 后端](lance.md) - 详细的 Lance 后端指南
-- [Persisting 后端](persisting.md) - 增强后端功能
-- [自定义后端](custom.md) - 实现自己的后端
-
+- [Lance 后端](lance.md) — Queue 内部机制（缓冲、flush、存储）
+- [自定义后端](custom.md) — 实现自己的后端供内部使用

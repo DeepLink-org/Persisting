@@ -596,36 +596,22 @@ pip install persisting[pulsing]</code></pre>
         <div class="quickstart-step">
           <div class="step-number">2</div>
           <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}注册后端到 Pulsing{% else %}Register Backend with Pulsing{% endif %}</h3>
+            <h3>{% if config.theme.language == "zh" %}创建队列{% else %}Create a Queue{% endif %}</h3>
             <div class="code-block">
-              <pre><code class="language-python">import pulsing as pul
-import persisting as pst
+              <pre><code class="language-python">from persisting import Queue
 
-# Register Lance backend
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
-
-# Or register enhanced Persisting backend
-pul.queue.register_backend("persisting", pst.queue.PersistingBackend)</code></pre>
+queue = Queue("my_topic", storage_path="./data")</code></pre>
             </div>
           </div>
         </div>
         <div class="quickstart-step">
           <div class="step-number">3</div>
           <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}使用持久化队列{% else %}Use Persistent Queue{% endif %}</h3>
+            <h3>{% if config.theme.language == "zh" %}写入与读取{% else %}Write and Read{% endif %}</h3>
             <div class="code-block">
-              <pre><code class="language-python">import pulsing as pul
-
-# Create queue with Lance persistence
-writer = await pul.queue.write_queue(
-    system, "my_topic",
-    backend="lance",
-    storage_path="/data/queues"
-)
-
-# Write data
-await writer.put({"id": "1", "value": 42})
-await writer.flush()  # Persist to disk</code></pre>
+              <pre><code class="language-python">await queue.put({"id": "1", "value": 42})
+await queue.flush()
+records = await queue.get(limit=100)</code></pre>
             </div>
           </div>
         </div>
@@ -761,23 +747,15 @@ await writer.flush()  # Persist to disk</code></pre>
         </div>
         <div class="persisting-feature-demo">
           <div class="code-preview">
-            <pre><code class="language-python"># Switch between backends easily
-import pulsing as pul
-import persisting as pst
+            <pre><code class="language-python">from persisting import Queue
 
-# Memory backend for testing
-writer = await pul.queue.write_queue(system, "test",
-    backend="memory")
+# Create queues with different storage paths
+queue = Queue("my_topic", storage_path="./data")
 
-# Lance backend for persistence
-writer = await pul.queue.write_queue(system, "prod",
-    backend="lance",
-    storage_path="/data/queues")
-
-# Enhanced backend with WAL
-writer = await pul.queue.write_queue(system, "advanced",
-    backend=pst.queue.PersistingBackend,
-    backend_options={"enable_wal": True})</code></pre>
+# Write and read
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+records = await queue.get(limit=100)</code></pre>
           </div>
         </div>
       </div>

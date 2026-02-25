@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["crates/persisting-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["reiase"]
+license = "Apache-2.0"
+description = "Persistent Storage for Parameters, KV Cache, and Trajectories"

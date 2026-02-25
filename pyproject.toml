@@ -10,6 +10,7 @@ authors = [
 ]
 dependencies = [
     "pulsing",
+    "tensordict>=0.6.0",
 ]
 
 [project.optional-dependencies]
@@ -17,20 +18,28 @@ lance = [
     "lance>=0.9.0",
     "pyarrow>=14.0.0",
 ]
+safetensors = [
+    "safetensors>=0.4.0",
+]
 all = [
     "persisting[lance]",
+    "persisting[safetensors]",
 ]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    "maturin>=1.0",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.maturin]
+module-name = "persisting._core"
+manifest-path = "crates/persisting-core/Cargo.toml"
+python-packages = ["persisting"]
+sdist-include = ["LICENSE", "README.md"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["persisting"]
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [tool.ruff]
 line-length = 100
@@ -39,4 +48,7 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
 

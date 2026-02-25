@@ -1,7 +1,7 @@
 ---
 template: home.html
-title: Persisting - AI 系统持久化存储
-description: 为参数、KV Cache 和 Trajectory 提供的持久化存储解决方案。基于 Lance 列式存储格式，与 Pulsing Actor 框架深度集成。
+title: Persisting - 参数、KV Cache 与轨迹的持久化存储
+description: AI 分布式分层内存——为 Pulsing 扩展多维寻址、GPU/host/SSD 分层、基于 actor 运行时的分布式数据面。
 hide: toc
 ---
 
@@ -9,52 +9,55 @@ hide: toc
 
 # Persisting
 
-**Persisting** 是为 AI 系统设计的持久化存储解决方案，为参数、KV Cache 和 Trajectory 提供高效存储。
+**参数、KV Cache 与轨迹的持久化存储。**
+
+为 [Pulsing](https://github.com/DeepLink-org/pulsing)（分布式 actor 运行时）扩展分布式分层内存：GPU ↔ host ↔ SSD + 多维 tensor 寻址 + 基于 Pulsing 的分布式能力。
+
+## 核心思路
+
+- **Pulsing** = 控制面（actor 发现、消息传递、生命周期）
+- **Persisting** = 数据面（多维地址、分层内存、放置策略）
+
+二者组合：actor 间通过 Pulsing 通信，通过 Persisting 共享 tensor 数据——数据在多层存储上分布，以 tensor 下标寻址，按需物化。
 
 ## 核心特性
 
-- **可插拔后端** - 支持多种存储后端，包括内存、Lance 和自定义实现。
-- **Lance 集成** - 基于 Lance 列式存储格式，提供高性能随机访问和零拷贝版本控制。
-- **Write-Ahead Log** - 内置 WAL 支持，确保数据持久性和崩溃恢复。
-- **Pulsing 集成** - 与 Pulsing Actor 框架无缝集成，为分布式队列提供持久化能力。
-- **Schema 演进** - 支持动态 Schema 演进，无需停机。
-- **监控指标** - 内置 Prometheus 指标导出，实时监控存储状态。
+- **Tensor Address Algebra (TAA)** — 面向 AI 数据（KV Cache、参数、轨迹）的多维寻址模型。
+- **分层内存** — GPU ↔ host ↔ SSD，对应用透明。
+- **Pulsing 分布式** — 通过 Pulsing 的 actor 运行时实现跨节点数据访问。
+- **Tensor 式 API** — `kv["s1", 0, 2, 0:512].tensor()` — 下标切片，按需物化。
 
 ## 快速开始
 
 ```bash
-# 安装
 pip install persisting
-
-# 或与 Pulsing 一起安装
-pip install persisting[pulsing]
 ```
 
 ```python
-import pulsing as pul
-import persisting as pst
+import persisting
+from persisting.core import Dimension
 
-# 注册 Lance 后端
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
+SESSION = Dimension("session", "str")
+LAYER   = Dimension("layer", "int")
+HEAD    = Dimension("head", "int")
+TIME    = Dimension("time", "int")
 
-# 使用持久化队列
-writer = await pul.queue.write_queue(system, "my_topic",
-    backend="lance",
-    storage_path="/data/queues")
+kv = persisting.open("kvcache/v1",
+    dims=(SESSION, LAYER, HEAD, TIME), order_dim=TIME)
 
-await writer.put({"id": "1", "value": 42})
-await writer.flush()
+arr = kv["s1", 0, 2, 0:512].tensor()
 ```
 
 ## 应用场景
 
-- **KV Cache 存储** - 存储和检索 LLM KV Cache，支持跨会话复用。
-- **Trajectory 存储** - 持久化存储强化学习和训练过程中的 Trajectory 数据。
-- **参数检查点** - 高效的模型参数检查点存储，支持版本管理。
+| 场景 | 维度 | 主要访问模式 |
+|-----|------|------------|
+| **KV Cache Offloading** | (session, layer, head, time) | 点查 + 范围扫描 + 预取 |
+| **参数服务** | (param_id, shard) | 批量点查 |
+| **轨迹存储** | (run_id, time) | 顺序范围扫描 |
 
 ## 社区
 
-- [GitHub 仓库](https://github.com/reiase/Persisting)
-- [问题追踪](https://github.com/reiase/Persisting/issues)
-- [讨论区](https://github.com/reiase/Persisting/discussions)
-
+- [GitHub 仓库](https://github.com/DeepLink-org/Persisting)
+- [问题追踪](https://github.com/DeepLink-org/Persisting/issues)
+- [讨论区](https://github.com/DeepLink-org/Persisting/discussions)

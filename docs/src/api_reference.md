@@ -1,336 +1,224 @@
 # API Reference
 
-This document provides a detailed API reference for Persisting.
+Persisting extends Pulsing with distributed tiered memory. This page documents the currently available APIs. The tensor memory API (`persisting.open`, `Handler`, tiered access) is under development — see the [design docs](design/index.md) for the specification.
 
-## persisting.queue
+## Queue
+
+High-level persistent queue backed by Lance storage. Use this for all queue operations.
+
+### Constructor
+
+```python
+from persisting import Queue
+
+queue = Queue(
+    name: str,
+    storage_path: str = "./data",
+    *,
+    batch_size: int = 100,
+    auto_flush_interval_sec: float = 0.0,
+    enable_metrics: bool = False,
+)
+```
+
+- `name`: Queue name (topic) — used as subdirectory under `storage_path`.
+- `storage_path`: Root directory for queue data.
+- `batch_size`: Auto-flush when buffer reaches this size.
+- `auto_flush_interval_sec`: If > 0, flush at this interval (seconds).
+- `enable_metrics`: Collect operation counters (put/get/flush).
+
+### Methods
+
+```python
+# Write
+await queue.put({"id": "1", "value": 42})
+await queue.put_batch([{"id": "2", "value": 100}, ...])
+await queue.flush()
+
+# Read
+records = await queue.get(limit=100, offset=0)
+
+# Stats
+stats = await queue.stats()
+len(queue)  # total_count
+queue.close()
+```
+
+### Example
+
+```python
+from persisting import Queue
+
+queue = Queue("my_topic", storage_path="./data")
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+records = await queue.get(limit=100)
+```
+
+---
+
+## Internal Backends (persisting.queue)
+
+These backends power `persisting.Queue`. Most users should use `Queue` directly.
 
 ### LanceBackend
 
-High-performance storage backend using Lance columnar format.
+Lance-based persistent storage backend for Pulsing streaming queues.
 
 ```python
 class LanceBackend:
-    """Lance-based storage backend for Pulsing queues."""
-    
     def __init__(
         self,
         bucket_id: int,
         storage_path: str,
         batch_size: int = 100,
-        flush_threshold: int = 1000,
         **kwargs,
-    ) -> None:
-        """
-        Initialize Lance backend.
-        
-        Parameters
-        ----------
-        bucket_id : int
-            Unique identifier for this bucket.
-        storage_path : str
-            Path to store Lance dataset.
-        batch_size : int, optional
-            Batch size for operations (default: 100).
-        flush_threshold : int, optional
-            Number of records before auto-flush (default: 1000).
-        **kwargs
-            Additional options (ignored).
-        """
+    ) -> None
 ```
 
-#### Methods
+**Parameters:**
 
-##### put
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `bucket_id` | `int` | — | Bucket identifier (assigned by Pulsing) |
+| `storage_path` | `str` | — | Directory for Lance dataset files |
+| `batch_size` | `int` | `100` | Auto-flush when buffer reaches this size |
+
+**Methods:**
+
+#### put
 
 ```python
-async def put(self, record: dict[str, Any]) -> None:
-    """
-    Store a single record.
-    
-    Parameters
-    ----------
-    record : dict[str, Any]
-        Record to store.
-    """
+async def put(self, record: dict[str, Any]) -> None
 ```
 
-##### put_batch
+Store a single record. Auto-flushes when buffer reaches `batch_size`.
+
+#### put_batch
 
 ```python
-async def put_batch(self, records: list[dict[str, Any]]) -> None:
-    """
-    Store multiple records efficiently.
-    
-    Parameters
-    ----------
-    records : list[dict[str, Any]]
-        Records to store.
-    """
+async def put_batch(self, records: list[dict[str, Any]]) -> None
 ```
 
-##### get
+Store multiple records at once.
+
+#### get
 
 ```python
-async def get(
-    self,
-    offset: int = 0,
-    limit: int | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Retrieve records from storage.
-    
-    Parameters
-    ----------
-    offset : int, optional
-        Starting offset (default: 0).
-    limit : int | None, optional
-        Maximum records to return (default: None = all).
-    
-    Returns
-    -------
-    list[dict[str, Any]]
-        Retrieved records.
-    """
+async def get(self, limit: int, offset: int) -> list[dict[str, Any]]
 ```
 
-##### get_stream
+Read records from storage (persisted + buffered).
+
+#### get_stream
 
 ```python
 async def get_stream(
     self,
-    offset: int = 0,
-    limit: int | None = None,
-    block: bool = False,
-) -> AsyncIterator[dict[str, Any]]:
-    """
-    Stream records from storage.
-    
-    Parameters
-    ----------
-    offset : int, optional
-        Starting offset (default: 0).
-    limit : int | None, optional
-        Maximum records to return (default: None = unlimited).
-    block : bool, optional
-        If True, wait for new records when caught up (default: False).
-    
-    Yields
-    ------
-    dict[str, Any]
-        Records from storage.
-    """
+    limit: int,
+    offset: int,
+    wait: bool = False,
+    timeout: float | None = None,
+) -> AsyncIterator[list[dict[str, Any]]]
 ```
 
-##### flush
+Stream records in batches. When `wait=True`, blocks until new data arrives or `timeout` is reached.
+
+#### flush
 
 ```python
-async def flush(self) -> None:
-    """
-    Persist buffered data to Lance storage.
-    
-    Writes all buffered records to the Lance dataset and
-    clears the buffer.
-    """
+async def flush(self) -> None
 ```
 
-##### stats
+Persist all buffered records to the Lance dataset on disk.
+
+#### stats
 
 ```python
-async def stats(self) -> dict[str, Any]:
-    """
-    Get storage statistics.
-    
-    Returns
-    -------
-    dict[str, Any]
-        Statistics including:
-        - bucket_id: Bucket identifier
-        - total_count: Total record count
-        - buffer_count: Records in buffer
-        - persisted_count: Records in Lance
-        - storage_path: Path to Lance dataset
-    """
+async def stats(self) -> dict[str, Any]
 ```
 
-##### total_count
+Returns storage statistics:
 
 ```python
-def total_count(self) -> int:
-    """
-    Get total record count.
-    
-    Returns
-    -------
-    int
-        Total number of records (buffer + persisted).
-    """
+{
+    "bucket_id": 0,
+    "backend": "lance",
+    "storage_path": "./data",
+    "buffer_size": 42,
+    "persisted_count": 1000,
+    "total_count": 1042,
+}
 ```
+
+#### total_count
+
+```python
+def total_count(self) -> int
+```
+
+Returns total record count (persisted + buffered).
 
 ---
 
 ### PersistingBackend
 
-Enhanced storage backend with WAL, compression, and metrics.
+Extends `LanceBackend` with operation metrics.
 
 ```python
-class PersistingBackend:
-    """Enhanced storage backend with enterprise features."""
-    
+class PersistingBackend(LanceBackend):
     def __init__(
         self,
         bucket_id: int,
         storage_path: str,
         batch_size: int = 100,
-        enable_wal: bool = False,
-        compression: str | None = None,
-        enable_metrics: bool = False,
-        wal_sync_interval: float = 1.0,
-        max_wal_size: int = 100 * 1024 * 1024,
+        enable_metrics: bool = True,
         **kwargs,
-    ) -> None:
-        """
-        Initialize Persisting backend.
-        
-        Parameters
-        ----------
-        bucket_id : int
-            Unique identifier for this bucket.
-        storage_path : str
-            Path to store data.
-        batch_size : int, optional
-            Batch size for operations (default: 100).
-        enable_wal : bool, optional
-            Enable Write-Ahead Log (default: False).
-        compression : str | None, optional
-            Compression algorithm: "zstd", "lz4", "snappy" (default: None).
-        enable_metrics : bool, optional
-            Enable Prometheus metrics (default: False).
-        wal_sync_interval : float, optional
-            WAL sync interval in seconds (default: 1.0).
-        max_wal_size : int, optional
-            Maximum WAL file size in bytes (default: 100MB).
-        **kwargs
-            Additional options (ignored).
-        """
+    ) -> None
 ```
 
-#### Methods
+**Additional Parameters:**
 
-Inherits all methods from `LanceBackend` with enhanced behavior:
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `enable_metrics` | `bool` | `True` | Collect operation counters |
 
-- `put()` - Writes to WAL first if enabled
-- `flush()` - Truncates WAL after successful flush
-- `stats()` - Includes WAL and compression info
+**Additional Methods:**
+
+#### get_metrics
+
+```python
+def get_metrics(self) -> dict[str, int | float]
+```
+
+Returns a snapshot of collected metrics:
+
+```python
+{
+    "put_count": 42,
+    "get_count": 10,
+    "flush_count": 3,
+    "last_flush_time": 1708012345.0,
+}
+```
+
+The `stats()` method also includes a `"metrics"` key when metrics are enabled.
 
 ---
 
-## Usage Examples
+## StorageBackend Protocol
 
-### Basic Usage
-
-```python
-import pulsing as pul
-import persisting as pst
-
-# Register backend
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
-
-# Create writer
-writer = await pul.queue.write_queue(
-    system,
-    topic="example",
-    backend="lance",
-    storage_path="/data/queues",
-)
-
-# Write data
-await writer.put({"id": "1", "value": 42})
-await writer.flush()
-
-# Read data
-reader = await pul.queue.read_queue(system, "example")
-records = await reader.get(limit=10)
-```
-
-### With WAL
+Defined in `pulsing.streaming.backend`. Any class implementing these methods can be used as a storage backend:
 
 ```python
-import pulsing as pul
-import persisting as pst
-
-pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
-
-writer = await pul.queue.write_queue(
-    system,
-    topic="durable",
-    backend="persisting",
-    backend_options={
-        "enable_wal": True,
-        "wal_sync_interval": 0.1,
-    },
-)
-```
-
-### Streaming
-
-```python
-import pulsing as pul
-
-reader = await pul.queue.read_queue(system, "example")
-
-# Non-blocking stream
-async for record in reader.get_stream(limit=100):
-    process(record)
-
-# Blocking stream (waits for new data)
-async for record in reader.get_stream(block=True):
-    process(record)
-```
-
----
-
-## Exceptions
-
-### StorageError
-
-Base exception for storage operations.
-
-```python
-class StorageError(Exception):
-    """Base exception for storage operations."""
-    pass
-```
-
-### WALError
-
-Exception for WAL-related errors.
-
-```python
-class WALError(StorageError):
-    """Exception for WAL operations."""
-    pass
-```
-
----
-
-## Type Definitions
-
-### StorageBackend Protocol
-
-```python
-from typing import Protocol, AsyncIterator, Any
-
 class StorageBackend(Protocol):
-    """Protocol for pluggable storage backends."""
-    
     async def put(self, record: dict[str, Any]) -> None: ...
     async def put_batch(self, records: list[dict[str, Any]]) -> None: ...
-    async def get(self, offset: int = 0, limit: int | None = None) -> list[dict[str, Any]]: ...
-    async def get_stream(
-        self, offset: int = 0, limit: int | None = None, block: bool = False
-    ) -> AsyncIterator[dict[str, Any]]: ...
+    async def get(self, limit: int, offset: int) -> list[dict[str, Any]]: ...
+    async def get_stream(self, limit: int, offset: int, wait: bool = False, timeout: float | None = None) -> AsyncIterator[list[dict[str, Any]]]: ...
     async def flush(self) -> None: ...
     async def stats(self) -> dict[str, Any]: ...
     def total_count(self) -> int: ...
 ```
 
+Custom backends implementing this interface can be passed to `Queue` internals or used directly where needed.

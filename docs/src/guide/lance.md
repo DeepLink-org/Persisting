@@ -1,188 +1,107 @@
 # Lance Backend
 
-The Lance backend provides high-performance persistent storage using the Lance columnar data format.
+`Queue` uses Lance-based persistent storage internally. This page explains how it works.
 
 ## Overview
 
-Lance is a modern columnar data format optimized for ML workflows. The `LanceBackend` brings these capabilities to Pulsing queues:
+[Lance](https://github.com/lancedb/lance) is a columnar data format optimized for ML workflows. `Queue` builds on Lance for persistence:
 
-- **High-performance random access** - Efficient retrieval of any record
-- **Columnar storage** - Optimal for analytical queries
-- **Version control** - Built-in data versioning
-- **Vector search** - Native support for similarity search
+- **Columnar storage** — Efficient on-disk format
+- **Memory buffering** — Write coalescing for throughput
+- **Auto-flush** — Persist when buffer reaches `batch_size`
+- **Recovery** — Persisted record count recovered on restart
 
 ## Installation
 
 ```bash
-pip install persisting[pulsing]
+pip install persisting[lance]
 ```
 
-## Basic Usage
+## Usage
 
 ```python
-import pulsing as pul
-import persisting as pst
+from persisting import Queue
 
-# Register the backend
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
+queue = Queue("my_topic", storage_path="./data/queues")
 
-# Create writer
-writer = await pul.queue.write_queue(
-    system,
-    topic="my_topic",
-    backend="lance",
-    storage_path="/data/queues",
-)
+# Write
+await queue.put({"id": "1", "text": "Hello", "value": 42})
+await queue.put({"id": "2", "text": "World", "value": 100})
+await queue.flush()
 
-# Write data
-await writer.put({"id": "1", "text": "Hello", "vector": [0.1, 0.2, 0.3]})
-await writer.put({"id": "2", "text": "World", "vector": [0.4, 0.5, 0.6]})
-
-# Flush to persist
-await writer.flush()
-
-# Read data
-reader = await pul.queue.read_queue(system, "my_topic")
-records = await reader.get(limit=10)
+# Read
+records = await queue.get(limit=10)
 ```
 
 ## Configuration
 
-### Backend Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `flush_threshold` | int | 1000 | Records before auto-flush |
-
-### Example Configuration
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `batch_size` | `int` | `100` | Auto-flush when buffer reaches this size |
+| `storage_path` | `str` | — | Directory for queue data (queue name becomes subdirectory) |
 
 ```python
-import pulsing as pul
-
-writer = await pul.queue.write_queue(
-    system,
-    topic="configured_topic",
-    backend="lance",
-    storage_path="/data/queues",
-    batch_size=100,
-    backend_options={
-        "flush_threshold": 500,
-    },
+queue = Queue(
+    "topic",
+    storage_path="./data",
+    batch_size=500,
 )
 ```
 
 ## Data Storage
 
-### Directory Structure
+Records are stored as a Lance dataset at `{storage_path}/{name}/data.lance`:
 
 ```
-/data/queues/
+./data/queues/
 └── my_topic/
-    └── bucket_0/
-        ├── data.lance/
-        │   ├── _versions/
-        │   │   ├── 1.manifest
-        │   │   └── 2.manifest
-        │   └── data/
-        │       ├── 0.lance
-        │       └── 1.lance
-        └── ...
+    └── data.lance/
+        ├── _versions/
+        └── data/
 ```
 
-### Schema
+Schema is inferred from the first batch of records. Supported types:
 
-The Lance backend automatically infers schema from the first record:
+| Python type | Arrow type |
+|-------------|------------|
+| `int` | `int64` |
+| `float` | `float64` |
+| `bool` | `bool` |
+| Other | `string` |
 
-```python
-# First record defines schema
-await writer.put({
-    "id": "1",
-    "text": "Hello",
-    "value": 42,
-    "vector": [0.1, 0.2, 0.3],
-})
+## Buffering and Flush
 
-# Subsequent records must match schema
-await writer.put({
-    "id": "2",
-    "text": "World",
-    "value": 100,
-    "vector": [0.4, 0.5, 0.6],
-})
-```
+Records accumulate in a memory buffer. Flush happens when:
 
-## Performance
-
-### Buffering
-
-The Lance backend buffers records in memory before persisting:
+1. Buffer reaches `batch_size` (auto-flush)
+2. `flush()` is called explicitly
 
 ```python
+queue = Queue("topic", storage_path="./data")
+
 # Records are buffered
 for i in range(100):
-    await writer.put({"id": str(i), "value": i})
+    await queue.put({"id": str(i), "value": i})
 
-# Explicit flush persists to disk
-await writer.flush()
-```
-
-### Auto-flush
-
-When `flush_threshold` is reached, data is automatically persisted:
-
-```python
-import pulsing as pul
-
-writer = await pul.queue.write_queue(
-    system, "topic",
-    backend="lance",
-    backend_options={"flush_threshold": 500},
-)
-
-# After 500 records, auto-flush occurs
-for i in range(600):
-    await writer.put({"id": str(i), "value": i})
-```
-
-## Streaming
-
-The Lance backend supports efficient streaming:
-
-```python
-import pulsing as pul
-
-reader = await pul.queue.read_queue(system, "my_topic")
-
-# Non-blocking stream
-async for record in reader.get_stream(offset=0, limit=100):
-    process(record)
-
-# Blocking stream (waits for new data)
-async for record in reader.get_stream(block=True):
-    process(record)
+# Explicit flush ensures persistence
+await queue.flush()
 ```
 
 ## Statistics
 
-Get storage statistics:
-
 ```python
-stats = await writer.stats()
-print(f"Total records: {stats['total_count']}")
-print(f"Buffered: {stats['buffer_count']}")
-print(f"Persisted: {stats['persisted_count']}")
+stats = await queue.stats()
+# {
+#     "bucket_id": 0,
+#     "backend": "lance",
+#     "storage_path": "./data/my_topic",
+#     "buffer_size": 42,
+#     "persisted_count": 1000,
+#     "total_count": 1042,
+# }
 ```
-
-## Best Practices
-
-1. **Choose appropriate batch size** - Larger batches improve write throughput
-2. **Flush regularly** - Call `flush()` to ensure data durability
-3. **Use appropriate storage path** - Use fast SSD storage for production
-4. **Monitor buffer size** - Avoid memory pressure with large buffers
 
 ## Next Steps
 
-- [Persisting Backend](persisting.md) - Enhanced features with WAL
-- [Custom Backends](custom.md) - Implement your own backend
-- [API Reference](../api_reference.md) - Detailed API documentation
-
+- [Custom Backends](custom.md) — Implement your own backend
+- [API Reference](../api_reference.md) — Full API documentation

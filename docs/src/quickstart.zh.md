@@ -1,139 +1,69 @@
 # 快速开始
 
-本指南将帮助你在几分钟内开始使用 Persisting。
+5 分钟上手 Persisting。
 
-## 基本用法
+## 你将获得什么
 
-### 步骤 1：安装 Persisting
+Persisting 为参数、KV Cache 和轨迹提供持久化存储——以 Lance 为存储引擎，GPU/host/SSD 分层。当前已可用：**流式追加**（append-only 队列）。即将推出：**Tensor Memory API**（多维寻址访问）。
+
+## 步骤 1：安装
 
 ```bash
-pip install persisting[pulsing]
+pip install persisting[lance]
 ```
 
-### 步骤 2：向 Pulsing 注册后端
+## 步骤 2：Tensor Memory（即将推出）
+
+主要 API——tensor 下标式访问分层内存：
 
 ```python
-import pulsing as pul
-import persisting as pst
+import persisting
+from persisting.core import Dimension
 
-# 注册 Lance 后端
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
+SESSION = Dimension("session", "str")
+LAYER   = Dimension("layer", "int")
+HEAD    = Dimension("head", "int")
+TIME    = Dimension("time", "int")
+
+kv = persisting.open("kvcache/v1",
+    dims=(SESSION, LAYER, HEAD, TIME), order_dim=TIME)
+
+arr = kv["s1", 0, 2, 0:512].tensor()
 ```
 
-### 步骤 3：创建持久化队列
+## 步骤 3：流式追加（已可用）
+
+Lance 存储引擎上的 append-only 队列——用于轨迹收集和事件流：
 
 ```python
 import asyncio
-import pulsing as pul
-import persisting as pst
+from persisting import Queue
 
 async def main():
-    # 注册后端
-    pul.queue.register_backend("lance", pst.queue.LanceBackend)
-    
-    # 创建 Actor 系统
-    system = await pul.actor.create_actor_system(pul.actor.SystemConfig.standalone())
-    
-    # 创建使用 Lance 持久化的队列写入器
-    writer = await pul.queue.write_queue(
-        system,
-        topic="my_data",
-        backend="lance",
-        storage_path="/data/queues",
-        num_buckets=4,
-        batch_size=100,
-    )
-    
-    # 写入数据
+    queue = Queue("my_topic", storage_path="./data")
+
     for i in range(10):
-        await writer.put({"id": str(i), "value": i * 10})
-    
-    # 刷新以持久化
-    await writer.flush()
-    
-    # 创建队列读取器
-    reader = await pul.queue.read_queue(system, "my_data")
-    
-    # 读取数据
-    async for record in reader.get_stream():
-        print(f"读取: {record}")
-    
-    await system.shutdown()
+        await queue.put({"id": str(i), "value": i * 10})
+    await queue.flush()
+
+    records = await queue.get(limit=100)
+    print(f"读取了 {len(records)} 条记录")
 
 asyncio.run(main())
 ```
 
-## 使用不同的后端
-
-### 内存后端（用于测试）
+带指标：
 
 ```python
-import pulsing as pul
-
-# 内存后端内置于 Pulsing（无持久化）
-writer = await pul.queue.write_queue(
-    system,
-    topic="test_topic",
-    backend="memory",
-)
+queue = Queue("my_topic", storage_path="./data", enable_metrics=True)
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+stats = await queue.stats()
+print(stats["metrics"])
 ```
-
-### Lance 后端（推荐用于生产）
-
-```python
-import pulsing as pul
-import persisting as pst
-
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
-
-writer = await pul.queue.write_queue(
-    system,
-    topic="prod_topic",
-    backend="lance",
-    storage_path="/data/queues",
-)
-```
-
-### Persisting 后端（增强功能）
-
-```python
-import pulsing as pul
-import persisting as pst
-
-pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
-
-writer = await pul.queue.write_queue(
-    system,
-    topic="advanced_topic",
-    backend="persisting",
-    storage_path="/data/queues",
-    backend_options={
-        "enable_wal": True,
-        "compression": "zstd",
-    },
-)
-```
-
-## 后端选项
-
-### Lance 后端选项
-
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `flush_threshold` | int | 1000 | 自动刷新前的记录数 |
-
-### Persisting 后端选项
-
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enable_wal` | bool | False | 启用 Write-Ahead Log |
-| `compression` | str | None | 压缩算法 |
-| `enable_metrics` | bool | False | 启用 Prometheus 指标 |
 
 ## 下一步
 
-- [用户指南](guide/index.md) - 了解更多关于存储后端
-- [Lance 后端](guide/lance.md) - Lance 后端详情
-- [Persisting 后端](guide/persisting.md) - 增强后端功能
-- [API 参考](api_reference.md) - 详细 API 文档
-
+- [用户指南](guide/index.md) — 详细指南
+- [设计文档](design/index.md) — 架构和 TAA 规范
+- [API 参考](api_reference.md) — 完整 API 文档

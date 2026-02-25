@@ -1,35 +1,31 @@
-"""Persisting 存储后端 - Lance 持久化实现
+"""Persisting Queue Backend — Lance columnar storage engine.
 
-提供 Pulsing 队列系统的持久化后端：
-- LanceBackend: 基础 Lance 持久化
-- PersistingBackend: 增强版（WAL、监控指标等）
+Provides persistent storage backends:
+- LanceBackend: Lance-based persistence with memory buffering and auto-flush
+- PersistingBackend: LanceBackend + metrics collection
 
-使用方式：
-    from pulsing.queue import write_queue, register_backend
-    from persisting.queue import LanceBackend, PersistingBackend
-    
-    # 注册后端
-    register_backend("lance", LanceBackend)
-    register_backend("persisting", PersistingBackend)
-    
-    # 使用 Lance 后端
-    writer = await write_queue(system, "topic", backend="lance")
-    
-    # 使用增强版后端
-    writer = await write_queue(system, "topic", backend="persisting")
+These are internal implementations. Users should use persisting.Queue instead:
+
+    from persisting import Queue
+    queue = Queue("my_topic", storage_path="./data")
+    await queue.put({"id": "1", "value": 42})
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
+import pickle
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from .metadata import BatchMeta
+from .tensor_serde import ZEROCOPY_PREFIX, decode_rows, encode_rows
+
 logger = logging.getLogger(__name__)
 
-# 尝试导入 Lance
 try:
     import lance
     import pyarrow as pa
@@ -43,19 +39,73 @@ except ImportError:
     )
 
 
+def _infer_arrow_table(records: list[dict[str, Any]]) -> "pa.Table":
+    """Convert dicts to a PyArrow Table with basic type inference."""
+    field_names: set[str] = set()
+    for r in records:
+        field_names.update(r.keys())
+
+    arrays: dict[str, pa.Array] = {}
+    for name in sorted(field_names):
+        values = [r.get(name) for r in records]
+        non_null = [v for v in values if v is not None]
+        if non_null and all(isinstance(v, bool) for v in non_null):
+            arrays[name] = pa.array(values, type=pa.bool_())
+        elif non_null and all(isinstance(v, int) for v in non_null):
+            arrays[name] = pa.array(values, type=pa.int64())
+        elif non_null and all(isinstance(v, (int, float)) for v in non_null):
+            arrays[name] = pa.array(values, type=pa.float64())
+        elif non_null and all(isinstance(v, str) for v in non_null):
+            arrays[name] = pa.array(values, type=pa.string())
+        elif non_null and all(isinstance(v, (bytes, bytearray)) for v in non_null):
+            arrays[name] = pa.array(
+                [bytes(v) if v is not None else None for v in values],
+                type=pa.binary(),
+            )
+        else:
+            arrays[name] = pa.array(
+                [pickle.dumps(v, protocol=pickle.HIGHEST_PROTOCOL) if v is not None else None for v in values],
+                type=pa.binary(),
+            )
+    return pa.table(arrays)
+
+
+def _table_to_dicts(table: "pa.Table") -> list[dict[str, Any]]:
+    """Convert a PyArrow Table to a list of dicts."""
+    columns = table.column_names
+    rows: list[dict[str, Any]] = []
+    for i in range(table.num_rows):
+        row: dict[str, Any] = {}
+        for col in columns:
+            value = table[col][i].as_py()
+            if isinstance(value, (bytes, bytearray)):
+                raw = bytes(value)
+                if raw.startswith(ZEROCOPY_PREFIX):
+                    value = raw
+                else:
+                    try:
+                        value = pickle.loads(raw)
+                    except Exception:
+                        value = raw
+            row[col] = value
+        rows.append(row)
+    return rows
+
+
 class LanceBackend:
-    """Lance 持久化后端
-    
-    特点：
-    - 内存缓冲 + Lance 持久化
-    - 批量写入优化
-    - 支持阻塞等待新数据
-    - 数据恢复（重启后自动加载已持久化数据）
-    
+    """Lance persistent storage backend for Pulsing streaming queues.
+
+    Data flow: records → memory buffer → Lance dataset (on flush).
+    Reads merge persisted data and in-memory buffer transparently.
+
+    Auto-persist: Flush when buffer >= batch_size, and optionally every
+    auto_flush_interval_sec (if > 0).
+
     Args:
-        bucket_id: 桶 ID
-        storage_path: 存储路径
-        batch_size: 批处理大小，达到此数量自动 flush
+        bucket_id: Bucket identifier.
+        storage_path: Directory for Lance dataset files.
+        batch_size: Auto-flush threshold (number of buffered records).
+        auto_flush_interval_sec: If > 0, flush buffer to Lance at this interval (seconds).
     """
 
     def __init__(
@@ -63,62 +113,207 @@ class LanceBackend:
         bucket_id: int,
         storage_path: str,
         batch_size: int = 100,
-        **kwargs,
+        auto_flush_interval_sec: float = 0.0,
+        **kwargs: Any,
     ):
         self.bucket_id = bucket_id
         self.storage_path = Path(storage_path)
         self.batch_size = batch_size
+        self.auto_flush_interval_sec = auto_flush_interval_sec
+        self.zerocopy_mode = str(kwargs.get("zerocopy_mode", "auto"))
 
-        # 内存缓冲区
-        self.buffer: list[dict[str, Any]] = []
-        self.persisted_count: int = 0
+        self._buffer: list[dict[str, Any]] = []
+        self._persisted_count: int = 0
 
-        # 锁和条件变量
         self._lock = asyncio.Lock()
         self._condition = asyncio.Condition(self._lock)
+        self._flush_task: asyncio.Task[None] | None = None
+        self._closed = False
+        self._consumption_status: dict[str, set[int]] = {}
+        self._zerocopy_stats: dict[str, int] = {
+            "put_envelopes": 0,
+            "read_envelopes": 0,
+            "fallback_pickled": 0,
+        }
 
-        # 确保目录存在
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self._dataset_path = self.storage_path / "data.lance"
 
-        # 恢复已持久化记录数
-        if self._dataset_path.exists() and LANCE_AVAILABLE:
-            try:
-                self.persisted_count = lance.dataset(self._dataset_path).count_rows()
-                logger.debug(
-                    f"LanceBackend[{self.bucket_id}] recovered {self.persisted_count} records"
-                )
-            except Exception:
-                pass
+        self._recover()
+
+        if self.auto_flush_interval_sec > 0:
+            self._flush_task = asyncio.create_task(self._auto_flush_loop())
+
+    # ------------------------------------------------------------------
+    # StorageBackend protocol
+    # ------------------------------------------------------------------
 
     def total_count(self) -> int:
-        return self.persisted_count + len(self.buffer)
+        return self._persisted_count + len(self._buffer)
 
     async def put(self, record: dict[str, Any]) -> None:
         async with self._condition:
-            self.buffer.append(record)
-            should_flush = len(self.buffer) >= self.batch_size
+            self._buffer.append(record)
+            need_flush = len(self._buffer) >= self.batch_size
             self._condition.notify_all()
 
-        if should_flush:
+        if need_flush:
             await self.flush()
             async with self._condition:
                 self._condition.notify_all()
 
     async def put_batch(self, records: list[dict[str, Any]]) -> None:
         async with self._condition:
-            self.buffer.extend(records)
-            should_flush = len(self.buffer) >= self.batch_size
+            self._buffer.extend(records)
+            need_flush = len(self._buffer) >= self.batch_size
             self._condition.notify_all()
 
-        if should_flush:
+        if need_flush:
             await self.flush()
             async with self._condition:
                 self._condition.notify_all()
 
+    async def put_tensor(
+        self,
+        data: Any,
+        *,
+        partition_id: str = "default",
+        custom_meta: dict[int, dict[str, Any]] | None = None,
+    ) -> BatchMeta:
+        """Put TensorDict-like data and return generated BatchMeta."""
+        async with self._condition:
+            start_index = self.total_count()
+            rows, batch_meta = encode_rows(
+                data,
+                partition_id=partition_id,
+                start_global_index=start_index,
+                custom_meta=custom_meta,
+                zerocopy_mode=self.zerocopy_mode,
+            )
+            self._buffer.extend(rows)
+            for row in rows:
+                for value in row.values():
+                    if isinstance(value, (bytes, bytearray)):
+                        raw = bytes(value)
+                        if raw.startswith(ZEROCOPY_PREFIX):
+                            self._zerocopy_stats["put_envelopes"] += 1
+                        else:
+                            self._zerocopy_stats["fallback_pickled"] += 1
+            need_flush = len(self._buffer) >= self.batch_size
+            self._condition.notify_all()
+
+        if need_flush:
+            await self.flush()
+            async with self._condition:
+                self._condition.notify_all()
+        return batch_meta
+
     async def get(self, limit: int, offset: int) -> list[dict[str, Any]]:
         async with self._lock:
-            return self._read_records(offset, limit)
+            return self._read(offset, limit)
+
+    async def get_by_indices(self, indices: list[int]) -> list[dict[str, Any]]:
+        """Read records by row indices (for sampler-aligned consumption).
+
+        Indices are in logical order (0 = first record). Efficient for
+        contiguous runs; non-contiguous indices are merged into runs internally.
+        """
+        if not indices:
+            return []
+        async with self._lock:
+            out: list[dict[str, Any]] = []
+            # Split into contiguous runs
+            runs: list[tuple[int, int]] = []
+            i = 0
+            while i < len(indices):
+                start = indices[i]
+                j = i + 1
+                while j < len(indices) and indices[j] == indices[j - 1] + 1:
+                    j += 1
+                runs.append((start, j - i))
+                i = j
+            for start, length in runs:
+                out.extend(self._read(start, length))
+            return out
+
+    async def get_data(self, batch_meta: BatchMeta, fields: list[str] | None = None) -> Any:
+        rows = await self.get_by_indices(batch_meta.global_indexes)
+        for row in rows:
+            for value in row.values():
+                if isinstance(value, (bytes, bytearray)) and bytes(value).startswith(ZEROCOPY_PREFIX):
+                    self._zerocopy_stats["read_envelopes"] += 1
+        return decode_rows(rows, fields=fields or batch_meta.field_names)
+
+    async def get_meta(
+        self,
+        fields: list[str],
+        batch_size: int,
+        task_name: str = "default",
+        sampler: Any = None,
+        **sampling_kwargs: Any,
+    ) -> BatchMeta:
+        from .metadata import FieldMeta, SampleMeta
+
+        async with self._lock:
+            total = self.total_count()
+            consumed = self._consumption_status.setdefault(task_name, set())
+            ready = [idx for idx in range(total) if idx not in consumed]
+
+        if sampler is not None:
+            sampled, marked = sampler.sample(ready, batch_size, **sampling_kwargs)
+        else:
+            sampled = ready[:batch_size]
+            marked = sampled
+
+        samples = [
+            SampleMeta(
+                partition_id=sampling_kwargs.get("partition_id", "default"),
+                global_index=idx,
+                fields={
+                    field: FieldMeta(
+                        name=field,
+                        dtype=None,
+                        shape=None,
+                        production_status="ready",
+                    )
+                    for field in fields
+                },
+            )
+            for idx in sampled
+        ]
+
+        if marked:
+            async with self._lock:
+                self._consumption_status.setdefault(task_name, set()).update(marked)
+        return BatchMeta(samples=samples)
+
+    async def mark_consumed(self, task_name: str, global_indexes: list[int]) -> None:
+        async with self._lock:
+            self._consumption_status.setdefault(task_name, set()).update(global_indexes)
+
+    async def reset_consumption(self, task_name: str) -> None:
+        async with self._lock:
+            self._consumption_status.pop(task_name, None)
+
+    async def clear(self, global_indexes: list[int]) -> None:
+        if not global_indexes:
+            return
+        async with self._lock:
+            all_rows = self._read(0, self.total_count())
+            index_set = set(global_indexes)
+            remained = [row for i, row in enumerate(all_rows) if i not in index_set]
+            self._buffer = []
+            self._persisted_count = len(remained)
+
+            if LANCE_AVAILABLE:
+                table = _infer_arrow_table(remained) if remained else None
+                if table is None:
+                    if self._dataset_path.exists():
+                        shutil.rmtree(self._dataset_path, ignore_errors=True)
+                else:
+                    lance.write_dataset(table, self._dataset_path, mode="overwrite")
+            else:
+                self._buffer = remained
 
     async def get_stream(
         self,
@@ -127,53 +322,48 @@ class LanceBackend:
         wait: bool = False,
         timeout: float | None = None,
     ) -> AsyncIterator[list[dict[str, Any]]]:
-        current_offset = offset
+        pos = offset
         remaining = limit
 
         while remaining > 0:
             async with self._condition:
-                total = self.total_count()
-
-                if current_offset >= total:
-                    if wait:
-                        try:
-                            if timeout:
-                                await asyncio.wait_for(
-                                    self._condition.wait(), timeout=timeout
-                                )
-                            else:
-                                await self._condition.wait()
-                            continue
-                        except asyncio.TimeoutError:
-                            return
-                    else:
+                if pos >= self.total_count():
+                    if not wait:
+                        return
+                    try:
+                        coro = self._condition.wait()
+                        if timeout:
+                            await asyncio.wait_for(coro, timeout=timeout)
+                        else:
+                            await coro
+                        continue
+                    except asyncio.TimeoutError:
                         return
 
-                records = self._read_records(current_offset, min(remaining, 100))
+                batch = self._read(pos, min(remaining, 100))
 
-            if records:
-                yield records
-                current_offset += len(records)
-                remaining -= len(records)
+            if batch:
+                yield batch
+                pos += len(batch)
+                remaining -= len(batch)
             elif not wait:
                 break
 
     async def flush(self) -> None:
         async with self._lock:
-            if not self.buffer:
+            if not self._buffer:
                 return
-            records = self.buffer[:]
-            self.buffer = []
+            to_write = self._buffer[:]
+            self._buffer = []
 
         if not LANCE_AVAILABLE:
-            logger.error("Lance not available, cannot persist data")
+            logger.error("Lance not available — cannot persist data")
             async with self._lock:
-                self.buffer = records + self.buffer
+                self._buffer = to_write + self._buffer
             return
 
         try:
-            table = self._records_to_table(records)
-
+            table = _infer_arrow_table(to_write)
             if self._dataset_path.exists():
                 existing = lance.dataset(self._dataset_path).to_table()
                 combined = pa.concat_tables([existing, table])
@@ -181,90 +371,93 @@ class LanceBackend:
             else:
                 lance.write_dataset(table, self._dataset_path, mode="create")
 
-            self.persisted_count += len(records)
-            logger.debug(f"LanceBackend[{self.bucket_id}] flushed {len(records)} records")
-
+            self._persisted_count += len(to_write)
+            logger.debug(f"LanceBackend[{self.bucket_id}] flushed {len(to_write)} records")
         except Exception as e:
-            logger.error(f"LanceBackend[{self.bucket_id}] flush error: {e}")
+            logger.error(f"LanceBackend[{self.bucket_id}] flush failed: {e}")
             async with self._lock:
-                self.buffer = records + self.buffer
+                self._buffer = to_write + self._buffer
 
     async def stats(self) -> dict[str, Any]:
         async with self._lock:
             return {
                 "bucket_id": self.bucket_id,
-                "buffer_size": len(self.buffer),
-                "persisted_count": self.persisted_count,
-                "total_count": self.total_count(),
                 "backend": "lance",
                 "storage_path": str(self.storage_path),
+                "zerocopy_mode": self.zerocopy_mode,
+                "buffer_size": len(self._buffer),
+                "persisted_count": self._persisted_count,
+                "total_count": self.total_count(),
+                "zerocopy": self._zerocopy_stats.copy(),
             }
 
-    def _read_records(self, offset: int, limit: int) -> list[dict[str, Any]]:
-        """读取数据：先读持久化，再读内存缓冲"""
-        records = []
-
-        # 从持久化数据读取
-        if offset < self.persisted_count and self._dataset_path.exists() and LANCE_AVAILABLE:
+    async def _auto_flush_loop(self) -> None:
+        """Background task: flush buffer at auto_flush_interval_sec."""
+        while not self._closed:
             try:
-                dataset = lance.dataset(self._dataset_path)
-                persisted_limit = min(limit, self.persisted_count - offset)
-                table = dataset.to_table(offset=offset, limit=persisted_limit)
+                await asyncio.sleep(self.auto_flush_interval_sec)
+                if self._closed:
+                    break
+                await self.flush()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("LanceBackend[%s] auto-flush error: %s", self.bucket_id, e)
+
+    def close(self) -> None:
+        """Stop auto-flush task. Safe to call multiple times."""
+        self._closed = True
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _recover(self) -> None:
+        """Recover persisted record count on startup."""
+        if self._dataset_path.exists() and LANCE_AVAILABLE:
+            try:
+                self._persisted_count = lance.dataset(self._dataset_path).count_rows()
+                logger.debug(
+                    f"LanceBackend[{self.bucket_id}] recovered {self._persisted_count} records"
+                )
+            except Exception:
+                pass
+
+    def _read(self, offset: int, limit: int) -> list[dict[str, Any]]:
+        """Read records: persisted first, then memory buffer."""
+        records: list[dict[str, Any]] = []
+
+        if offset < self._persisted_count and self._dataset_path.exists() and LANCE_AVAILABLE:
+            try:
+                ds = lance.dataset(self._dataset_path)
+                n = min(limit, self._persisted_count - offset)
+                table = ds.to_table(offset=offset, limit=n)
                 if table.num_rows > 0:
-                    columns = table.column_names
-                    for i in range(table.num_rows):
-                        records.append({col: table[col][i].as_py() for col in columns})
+                    records.extend(_table_to_dicts(table))
             except Exception as e:
                 logger.error(f"LanceBackend[{self.bucket_id}] read error: {e}")
 
-        # 从内存缓冲读取
         if len(records) < limit:
-            buffer_offset = max(0, offset - self.persisted_count)
-            buffer_limit = limit - len(records)
-            buffer_records = self.buffer[buffer_offset : buffer_offset + buffer_limit]
-            records.extend(buffer_records)
+            buf_offset = max(0, offset - self._persisted_count)
+            buf_limit = limit - len(records)
+            records.extend(self._buffer[buf_offset : buf_offset + buf_limit])
 
         return records
 
-    def _records_to_table(self, records: list[dict[str, Any]]) -> "pa.Table":
-        """将记录转换为 PyArrow Table"""
-        field_names = set()
-        for record in records:
-            field_names.update(record.keys())
 
-        arrays = {}
-        for field_name in field_names:
-            values = [record.get(field_name) for record in records]
-            if all(isinstance(v, int) for v in values if v is not None):
-                arrays[field_name] = pa.array(values, type=pa.int64())
-            elif all(isinstance(v, float) for v in values if v is not None):
-                arrays[field_name] = pa.array(values, type=pa.float64())
-            elif all(isinstance(v, bool) for v in values if v is not None):
-                arrays[field_name] = pa.array(values, type=pa.bool_())
-            else:
-                arrays[field_name] = pa.array(
-                    [str(v) if v is not None else None for v in values],
-                    type=pa.string(),
-                )
+class PersistingBackend(LanceBackend):
+    """LanceBackend with metrics collection.
 
-        return pa.table(arrays)
+    Adds lightweight counters on top of LanceBackend for observability.
+    Future versions will add WAL and compaction support.
 
-
-class PersistingBackend:
-    """增强的持久化后端
-    
-    在 LanceBackend 基础上增加：
-    - WAL (Write-Ahead Log) 用于故障恢复
-    - 监控指标
-    - 更灵活的配置
-    
     Args:
-        bucket_id: 桶 ID
-        storage_path: 存储路径
-        batch_size: 批处理大小
-        enable_wal: 是否启用 WAL
-        enable_metrics: 是否启用监控指标
-        compaction_threshold: 触发压缩的文件数阈值
+        bucket_id: Bucket identifier.
+        storage_path: Directory for Lance dataset files.
+        batch_size: Auto-flush threshold.
+        enable_metrics: Whether to collect operation metrics.
     """
 
     def __init__(
@@ -272,281 +465,51 @@ class PersistingBackend:
         bucket_id: int,
         storage_path: str,
         batch_size: int = 100,
-        enable_wal: bool = True,
         enable_metrics: bool = True,
-        compaction_threshold: int = 10,
-        **kwargs,
+        **kwargs: Any,
     ):
-        self.bucket_id = bucket_id
-        self.storage_path = Path(storage_path)
-        self.batch_size = batch_size
-        self.enable_wal = enable_wal
+        super().__init__(
+            bucket_id=bucket_id,
+            storage_path=storage_path,
+            batch_size=batch_size,
+            **kwargs,
+        )
         self.enable_metrics = enable_metrics
-        self.compaction_threshold = compaction_threshold
-
-        # 内存缓冲区
-        self.buffer: list[dict[str, Any]] = []
-        self.persisted_count: int = 0
-
-        # 锁和条件变量
-        self._lock = asyncio.Lock()
-        self._condition = asyncio.Condition(self._lock)
-
-        # 监控指标
-        self._metrics = {
+        self._metrics: dict[str, int | float] = {
             "put_count": 0,
             "get_count": 0,
             "flush_count": 0,
-            "bytes_written": 0,
-            "last_flush_time": 0,
+            "last_flush_time": 0.0,
         }
 
-        # 确保目录存在
-        self.storage_path.mkdir(parents=True, exist_ok=True)
-        self._dataset_path = self.storage_path / "data.lance"
-        self._wal_path = self.storage_path / "wal"
-
-        # 初始化
-        self._init_storage()
-
-    def _init_storage(self) -> None:
-        """初始化存储"""
-        # 恢复已持久化记录数
-        if self._dataset_path.exists() and LANCE_AVAILABLE:
-            try:
-                self.persisted_count = lance.dataset(self._dataset_path).count_rows()
-            except Exception:
-                pass
-
-        # 初始化 WAL
-        if self.enable_wal:
-            self._wal_path.mkdir(parents=True, exist_ok=True)
-            self._recover_from_wal()
-
-        logger.info(
-            f"PersistingBackend[{self.bucket_id}] initialized at {self.storage_path}, "
-            f"persisted_count={self.persisted_count}, wal={self.enable_wal}"
-        )
-
-    def _recover_from_wal(self) -> None:
-        """从 WAL 恢复数据"""
-        # TODO: 实现 WAL 恢复逻辑
-        pass
-
-    def _write_wal(self, records: list[dict[str, Any]]) -> None:
-        """写入 WAL"""
-        if not self.enable_wal:
-            return
-        # TODO: 实现 WAL 写入逻辑
-        pass
-
-    def _clear_wal(self) -> None:
-        """清理 WAL"""
-        if not self.enable_wal:
-            return
-        # TODO: 实现 WAL 清理逻辑
-        pass
-
-    def total_count(self) -> int:
-        return self.persisted_count + len(self.buffer)
-
     async def put(self, record: dict[str, Any]) -> None:
-        async with self._condition:
-            self.buffer.append(record)
-            should_flush = len(self.buffer) >= self.batch_size
-            self._condition.notify_all()
-
-            if self.enable_metrics:
-                self._metrics["put_count"] += 1
-
-        # 写入 WAL
-        self._write_wal([record])
-
-        if should_flush:
-            await self.flush()
-            async with self._condition:
-                self._condition.notify_all()
+        if self.enable_metrics:
+            self._metrics["put_count"] += 1
+        await super().put(record)
 
     async def put_batch(self, records: list[dict[str, Any]]) -> None:
-        async with self._condition:
-            self.buffer.extend(records)
-            should_flush = len(self.buffer) >= self.batch_size
-            self._condition.notify_all()
-
-            if self.enable_metrics:
-                self._metrics["put_count"] += len(records)
-
-        # 写入 WAL
-        self._write_wal(records)
-
-        if should_flush:
-            await self.flush()
-            async with self._condition:
-                self._condition.notify_all()
+        if self.enable_metrics:
+            self._metrics["put_count"] += len(records)
+        await super().put_batch(records)
 
     async def get(self, limit: int, offset: int) -> list[dict[str, Any]]:
-        async with self._lock:
-            if self.enable_metrics:
-                self._metrics["get_count"] += 1
-            return self._read_records(offset, limit)
-
-    async def get_stream(
-        self,
-        limit: int,
-        offset: int,
-        wait: bool = False,
-        timeout: float | None = None,
-    ) -> AsyncIterator[list[dict[str, Any]]]:
-        current_offset = offset
-        remaining = limit
-
-        while remaining > 0:
-            async with self._condition:
-                total = self.total_count()
-
-                if current_offset >= total:
-                    if wait:
-                        try:
-                            if timeout:
-                                await asyncio.wait_for(
-                                    self._condition.wait(), timeout=timeout
-                                )
-                            else:
-                                await self._condition.wait()
-                            continue
-                        except asyncio.TimeoutError:
-                            return
-                    else:
-                        return
-
-                records = self._read_records(current_offset, min(remaining, 100))
-
-            if records:
-                yield records
-                current_offset += len(records)
-                remaining -= len(records)
-            elif not wait:
-                break
+        if self.enable_metrics:
+            self._metrics["get_count"] += 1
+        return await super().get(limit, offset)
 
     async def flush(self) -> None:
-        async with self._lock:
-            if not self.buffer:
-                return
-            records = self.buffer[:]
-            self.buffer = []
-
-        if not LANCE_AVAILABLE:
-            logger.error("Lance not available, cannot persist data")
-            async with self._lock:
-                self.buffer = records + self.buffer
-            return
-
-        try:
-            table = self._records_to_table(records)
-
-            if self._dataset_path.exists():
-                existing = lance.dataset(self._dataset_path).to_table()
-                combined = pa.concat_tables([existing, table])
-                lance.write_dataset(combined, self._dataset_path, mode="overwrite")
-            else:
-                lance.write_dataset(table, self._dataset_path, mode="create")
-
-            self.persisted_count += len(records)
-
-            # 清理 WAL
-            self._clear_wal()
-
-            if self.enable_metrics:
-                self._metrics["flush_count"] += 1
-                self._metrics["last_flush_time"] = time.time()
-
-            logger.debug(
-                f"PersistingBackend[{self.bucket_id}] flushed {len(records)} records"
-            )
-
-        except Exception as e:
-            logger.error(f"PersistingBackend[{self.bucket_id}] flush error: {e}")
-            async with self._lock:
-                self.buffer = records + self.buffer
+        await super().flush()
+        if self.enable_metrics:
+            self._metrics["flush_count"] += 1
+            self._metrics["last_flush_time"] = time.time()
 
     async def stats(self) -> dict[str, Any]:
-        async with self._lock:
-            stats = {
-                "bucket_id": self.bucket_id,
-                "buffer_size": len(self.buffer),
-                "persisted_count": self.persisted_count,
-                "total_count": self.total_count(),
-                "backend": "persisting",
-                "storage_path": str(self.storage_path),
-                "wal_enabled": self.enable_wal,
-            }
-            if self.enable_metrics:
-                stats["metrics"] = self._metrics.copy()
-            return stats
+        base = await super().stats()
+        base["backend"] = "persisting"
+        if self.enable_metrics:
+            base["metrics"] = self._metrics.copy()
+        return base
 
-    def _read_records(self, offset: int, limit: int) -> list[dict[str, Any]]:
-        """读取数据：先读持久化，再读内存缓冲"""
-        records = []
-
-        # 从持久化数据读取
-        if offset < self.persisted_count and self._dataset_path.exists() and LANCE_AVAILABLE:
-            try:
-                dataset = lance.dataset(self._dataset_path)
-                persisted_limit = min(limit, self.persisted_count - offset)
-                table = dataset.to_table(offset=offset, limit=persisted_limit)
-                if table.num_rows > 0:
-                    columns = table.column_names
-                    for i in range(table.num_rows):
-                        records.append({col: table[col][i].as_py() for col in columns})
-            except Exception as e:
-                logger.error(f"PersistingBackend[{self.bucket_id}] read error: {e}")
-
-        # 从内存缓冲读取
-        if len(records) < limit:
-            buffer_offset = max(0, offset - self.persisted_count)
-            buffer_limit = limit - len(records)
-            buffer_records = self.buffer[buffer_offset : buffer_offset + buffer_limit]
-            records.extend(buffer_records)
-
-        return records
-
-    def _records_to_table(self, records: list[dict[str, Any]]) -> "pa.Table":
-        """将记录转换为 PyArrow Table"""
-        field_names = set()
-        for record in records:
-            field_names.update(record.keys())
-
-        arrays = {}
-        for field_name in field_names:
-            values = [record.get(field_name) for record in records]
-            if all(isinstance(v, int) for v in values if v is not None):
-                arrays[field_name] = pa.array(values, type=pa.int64())
-            elif all(isinstance(v, float) for v in values if v is not None):
-                arrays[field_name] = pa.array(values, type=pa.float64())
-            elif all(isinstance(v, bool) for v in values if v is not None):
-                arrays[field_name] = pa.array(values, type=pa.bool_())
-            else:
-                arrays[field_name] = pa.array(
-                    [str(v) if v is not None else None for v in values],
-                    type=pa.string(),
-                )
-
-        return pa.table(arrays)
-
-    # ============================================================
-    # Persisting 特有功能
-    # ============================================================
-
-    async def compact(self) -> None:
-        """手动触发压缩"""
-        # TODO: 实现压缩逻辑
-        logger.info(f"PersistingBackend[{self.bucket_id}] compaction triggered")
-
-    async def create_index(self, column: str) -> None:
-        """为指定列创建索引"""
-        # TODO: 实现索引创建逻辑
-        logger.info(f"PersistingBackend[{self.bucket_id}] index created on {column}")
-
-    def get_metrics(self) -> dict[str, Any]:
-        """获取监控指标（用于 Prometheus 等）"""
+    def get_metrics(self) -> dict[str, int | float]:
+        """Return a snapshot of collected metrics."""
         return self._metrics.copy()

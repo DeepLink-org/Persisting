@@ -1,91 +1,50 @@
 # 用户指南
 
-欢迎阅读 Persisting 用户指南。本指南涵盖核心概念和使用模式。
+欢迎阅读 Persisting 用户指南。
 
-## 概述
+## Persisting 是什么？
 
-Persisting 为 Pulsing 的分布式队列系统提供持久化存储后端。它支持可靠的数据存储，具有以下特性：
-
-- **基于 Lance 的持久化** - 高性能列式存储
-- **Write-Ahead Log (WAL)** - 数据持久性保证
-- **Schema 演进** - 灵活的数据结构变更
-- **监控** - 内置指标和可观测性
+Persisting 为参数、KV Cache 和轨迹提供持久化存储。数据分布在 GPU、host 内存和 SSD 上——以 tensor 下标寻址，按需物化。
 
 ## 架构
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Pulsing 队列                         │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │
-│  │ QueueWriter │  │ QueueReader │  │   Queue     │     │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘     │
-│         │                │                │             │
-│         └────────────────┼────────────────┘             │
-│                          ▼                              │
-│              ┌───────────────────────┐                  │
-│              │   StorageManager      │                  │
-│              └───────────┬───────────┘                  │
-│                          ▼                              │
-│              ┌───────────────────────┐                  │
-│              │   BucketStorage       │                  │
-│              └───────────┬───────────┘                  │
-│                          │                              │
-└──────────────────────────┼──────────────────────────────┘
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│                  StorageBackend 协议                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-│  │MemoryBackend│  │ LanceBackend│  │PersistingBackend│  │
-│  └─────────────┘  └─────────────┘  └─────────────────┘  │
-│       (Pulsing)        (Persisting)     (Persisting)     │
-└──────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  应用层                                               │
+│  kv["s1", 0, 2, 0:512].tensor()                      │
+├───────────────────────────────────────────────────────┤
+│  访问模式                                             │
+│  多维查找 · 流式追加 · 批量点查                        │
+├───────────────────────────────────────────────────────┤
+│  Persisting 核心                                      │
+│  TAA (寻址) · 分层 (GPU/Host/SSD) · 路由              │
+├───────────────────────────────────────────────────────┤
+│  存储引擎: Lance                                      │
+│  列式格式 · SSD 持久化 · 基线读取路径                  │
+└───────────────────────────────────────────────────────┘
 ```
 
-## 核心概念
+## 指南
 
-### 存储后端
+### Tensor Memory（即将推出）
 
-存储后端实现 `StorageBackend` 协议，提供不同的存储策略：
-
-| 后端 | 位置 | 持久化 | 用途 |
-|------|------|--------|------|
-| `MemoryBackend` | Pulsing | 否 | 测试、临时数据 |
-| `LanceBackend` | Persisting | 是 | 生产工作负载 |
-| `PersistingBackend` | Persisting | 是 | 高级功能（WAL、指标） |
-
-### 后端注册
-
-使用前必须注册后端：
+主要 API——tensor 下标式访问分层内存：
 
 ```python
-from pulsing.queue import register_backend
-from persisting.queue import LanceBackend
-
-register_backend("lance", LanceBackend)
+kv = persisting.open("kvcache/v1", dims=(...), order_dim=TIME)
+arr = kv["s1", 0, 2, 0:512].tensor()
 ```
 
-### 后端选择
+### 流式追加（已可用）
 
-创建队列时指定后端：
+Lance 存储引擎上的 append-only 访问模式——用于轨迹收集和事件流。这是当前已可用的生产能力。
 
-```python
-from pulsing.queue import write_queue
-
-# 按名称（必须已注册）
-writer = await write_queue(system, "topic", backend="lance")
-
-# 直接使用类
-writer = await write_queue(system, "topic", backend=LanceBackend)
-```
-
-## 本指南主题
-
-- [队列后端](backends.md) - 存储后端概述
-- [Lance 后端](lance.md) - 使用 Lance 进行持久化
-- [Persisting 后端](persisting.md) - 带 WAL 的增强后端
-- [自定义后端](custom.md) - 实现自定义后端
+- [队列后端](backends.md) — 存储后端概述
+- [Lance 后端](lance.md) — 使用 Lance 进行持久化
+- [Persisting 后端](persisting.md) — 带指标的增强后端
+- [自定义后端](custom.md) — 实现自定义后端
 
 ## 下一步
 
-选择最符合你需求的主题，或继续阅读[队列后端](backends.md)概述。
-
+- Tensor Memory API 请参阅[设计文档](../design/index.md)和 [TAA 规范](../design/tensor_address_algebra.md)。
+- 流式追加请继续阅读[队列后端](backends.md)概述。

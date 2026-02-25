@@ -1,78 +1,48 @@
 # Installation
 
-This guide covers the installation of Persisting.
-
 ## Requirements
 
-- Python 3.10 or higher
-- pip or uv package manager
+- Python 3.10+
+- Pulsing (installed automatically as dependency)
 
-## Installation Methods
-
-### Using pip
+## Install
 
 ```bash
-# Basic installation
+# Recommended: with Lance support
+pip install persisting[lance]
+
+# Minimal (without Lance — for custom backends only)
 pip install persisting
-
-# With Pulsing integration
-pip install persisting[pulsing]
-
-# With all optional dependencies
-pip install persisting[all]
-```
-
-### Using uv
-
-```bash
-# Basic installation
-uv pip install persisting
-
-# With Pulsing integration
-uv pip install persisting[pulsing]
 ```
 
 ### From Source
 
 ```bash
-# Clone the repository
-git clone https://github.com/reiase/Persisting.git
+git clone https://github.com/DeepLink-org/Persisting.git
 cd Persisting
-
-# Install in development mode
-pip install -e .
-
-# Or with uv
-uv pip install -e .
+pip install -e ".[lance]"
 ```
 
-## Dependencies
-
-Persisting has the following dependencies:
-
-| Package | Version | Description |
-|---------|---------|-------------|
-| `lance` | >=0.9.0 | Lance columnar data format |
-| `pyarrow` | >=14.0.0 | Apache Arrow for data interchange |
-| `pulsing` | >=0.1.0 | (Optional) Pulsing Actor framework |
-
-## Verification
-
-Verify your installation:
+## Verify
 
 ```python
 import persisting
 print(persisting.__version__)
 
-# Check available backends
 from persisting.queue import LanceBackend, PersistingBackend
-print("LanceBackend available:", LanceBackend is not None)
-print("PersistingBackend available:", PersistingBackend is not None)
+print("LanceBackend:", LanceBackend)
+print("PersistingBackend:", PersistingBackend)
 ```
+
+## Dependencies
+
+| Package | Version | Required | Description |
+|---------|---------|----------|-------------|
+| `pulsing` | >=0.1.0 | Yes | Distributed actor runtime (control plane) |
+| `lance` | >=0.9.0 | Optional (`[lance]`) | Lance columnar storage |
+| `pyarrow` | >=14.0.0 | Optional (`[lance]`) | Apache Arrow |
 
 ## Next Steps
 
-- [Quick Start](quickstart.md) - Get started with Persisting
-- [User Guide](guide/index.md) - Learn about storage backends
-- [API Reference](api_reference.md) - Detailed API documentation
-
+- [Quick Start](quickstart.md) — Get started in 5 minutes
+- [API Reference](api_reference.md) — Full API documentation

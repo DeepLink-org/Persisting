@@ -1,335 +1,146 @@
 # API 参考
 
-本文档提供 Persisting 的详细 API 参考。
+Persisting 为 Pulsing 扩展分布式分层内存。本页面记录当前已可用的 API。Tensor Memory API（`persisting.open`、`Handler`、分层访问）正在开发中——规范请参阅[设计文档](design/index.md)。
 
-## persisting.queue
+## Queue
+
+高层持久化队列，由 Lance 存储引擎支撑。所有队列操作应使用此类。
+
+### 构造函数
+
+```python
+from persisting import Queue
+
+queue = Queue(
+    name: str,
+    storage_path: str = "./data",
+    *,
+    batch_size: int = 100,
+    auto_flush_interval_sec: float = 0.0,
+    enable_metrics: bool = False,
+)
+```
+
+- `name`: 队列名称（主题）— 用作 `storage_path` 下的子目录。
+- `storage_path`: 队列数据根目录。
+- `batch_size`: 缓冲达到此大小时自动 flush。
+- `auto_flush_interval_sec`: 若 > 0，按此间隔（秒）flush。
+- `enable_metrics`: 收集操作计数器（put/get/flush）。
+
+### 方法
+
+```python
+# 写入
+await queue.put({"id": "1", "value": 42})
+await queue.put_batch([{"id": "2", "value": 100}, ...])
+await queue.flush()
+
+# 读取
+records = await queue.get(limit=100, offset=0)
+
+# 统计
+stats = await queue.stats()
+len(queue)  # total_count
+queue.close()
+```
+
+### 示例
+
+```python
+from persisting import Queue
+
+queue = Queue("my_topic", storage_path="./data")
+await queue.put({"id": "1", "value": 42})
+await queue.flush()
+records = await queue.get(limit=100)
+```
+
+---
+
+## 内部后端 (persisting.queue)
+
+这些后端为 `persisting.Queue` 提供底层实现。大多数用户应直接使用 `Queue`。
 
 ### LanceBackend
 
-使用 Lance 列式格式的高性能存储后端。
+基于 Lance 的持久化存储后端。
 
 ```python
 class LanceBackend:
-    """基于 Lance 的 Pulsing 队列存储后端。"""
-    
     def __init__(
         self,
         bucket_id: int,
         storage_path: str,
         batch_size: int = 100,
-        flush_threshold: int = 1000,
         **kwargs,
-    ) -> None:
-        """
-        初始化 Lance 后端。
-        
-        参数
-        ----------
-        bucket_id : int
-            此 bucket 的唯一标识符。
-        storage_path : str
-            存储 Lance 数据集的路径。
-        batch_size : int, 可选
-            操作的批次大小（默认: 100）。
-        flush_threshold : int, 可选
-            自动刷新前的记录数（默认: 1000）。
-        **kwargs
-            其他选项（忽略）。
-        """
+    ) -> None
 ```
 
-#### 方法
+**参数：**
 
-##### put
+| 名称 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `bucket_id` | `int` | — | 桶标识符（由 Pulsing 分配） |
+| `storage_path` | `str` | — | Lance 数据集存储目录 |
+| `batch_size` | `int` | `100` | 缓冲达到此数量时自动 flush |
 
-```python
-async def put(self, record: dict[str, Any]) -> None:
-    """
-    存储单条记录。
-    
-    参数
-    ----------
-    record : dict[str, Any]
-        要存储的记录。
-    """
-```
+**方法：**
 
-##### put_batch
-
-```python
-async def put_batch(self, records: list[dict[str, Any]]) -> None:
-    """
-    高效存储多条记录。
-    
-    参数
-    ----------
-    records : list[dict[str, Any]]
-        要存储的记录。
-    """
-```
-
-##### get
-
-```python
-async def get(
-    self,
-    offset: int = 0,
-    limit: int | None = None,
-) -> list[dict[str, Any]]:
-    """
-    从存储检索记录。
-    
-    参数
-    ----------
-    offset : int, 可选
-        起始偏移量（默认: 0）。
-    limit : int | None, 可选
-        返回的最大记录数（默认: None = 全部）。
-    
-    返回
-    -------
-    list[dict[str, Any]]
-        检索到的记录。
-    """
-```
-
-##### get_stream
-
-```python
-async def get_stream(
-    self,
-    offset: int = 0,
-    limit: int | None = None,
-    block: bool = False,
-) -> AsyncIterator[dict[str, Any]]:
-    """
-    从存储流式读取记录。
-    
-    参数
-    ----------
-    offset : int, 可选
-        起始偏移量（默认: 0）。
-    limit : int | None, 可选
-        返回的最大记录数（默认: None = 无限制）。
-    block : bool, 可选
-        如果为 True，追上时等待新记录（默认: False）。
-    
-    生成
-    ------
-    dict[str, Any]
-        来自存储的记录。
-    """
-```
-
-##### flush
-
-```python
-async def flush(self) -> None:
-    """
-    将缓冲数据持久化到 Lance 存储。
-    
-    将所有缓冲记录写入 Lance 数据集并清空缓冲区。
-    """
-```
-
-##### stats
-
-```python
-async def stats(self) -> dict[str, Any]:
-    """
-    获取存储统计信息。
-    
-    返回
-    -------
-    dict[str, Any]
-        统计信息包括:
-        - bucket_id: Bucket 标识符
-        - total_count: 总记录数
-        - buffer_count: 缓冲区中的记录数
-        - persisted_count: Lance 中的记录数
-        - storage_path: Lance 数据集路径
-    """
-```
-
-##### total_count
-
-```python
-def total_count(self) -> int:
-    """
-    获取总记录数。
-    
-    返回
-    -------
-    int
-        总记录数（缓冲区 + 已持久化）。
-    """
-```
+| 方法 | 说明 |
+|------|------|
+| `put(record)` | 写入单条记录 |
+| `put_batch(records)` | 批量写入 |
+| `get(limit, offset)` | 读取记录（持久化 + 缓冲） |
+| `get_stream(limit, offset, wait, timeout)` | 流式读取，`wait=True` 时阻塞等待新数据 |
+| `flush()` | 将缓冲区数据落盘到 Lance |
+| `stats()` | 返回存储统计信息 |
+| `total_count()` | 返回总记录数 |
 
 ---
 
 ### PersistingBackend
 
-带 WAL、压缩和指标的增强存储后端。
+继承 `LanceBackend`，增加操作指标。
 
 ```python
-class PersistingBackend:
-    """带企业级功能的增强存储后端。"""
-    
+class PersistingBackend(LanceBackend):
     def __init__(
         self,
         bucket_id: int,
         storage_path: str,
         batch_size: int = 100,
-        enable_wal: bool = False,
-        compression: str | None = None,
-        enable_metrics: bool = False,
-        wal_sync_interval: float = 1.0,
-        max_wal_size: int = 100 * 1024 * 1024,
+        enable_metrics: bool = True,
         **kwargs,
-    ) -> None:
-        """
-        初始化 Persisting 后端。
-        
-        参数
-        ----------
-        bucket_id : int
-            此 bucket 的唯一标识符。
-        storage_path : str
-            存储数据的路径。
-        batch_size : int, 可选
-            操作的批次大小（默认: 100）。
-        enable_wal : bool, 可选
-            启用 Write-Ahead Log（默认: False）。
-        compression : str | None, 可选
-            压缩算法: "zstd", "lz4", "snappy"（默认: None）。
-        enable_metrics : bool, 可选
-            启用 Prometheus 指标（默认: False）。
-        wal_sync_interval : float, 可选
-            WAL 同步间隔（秒）（默认: 1.0）。
-        max_wal_size : int, 可选
-            最大 WAL 文件大小（字节）（默认: 100MB）。
-        **kwargs
-            其他选项（忽略）。
-        """
+    ) -> None
 ```
 
-#### 方法
+**额外参数：**
 
-继承 `LanceBackend` 的所有方法，并增强行为：
+| 名称 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enable_metrics` | `bool` | `True` | 是否收集操作计数器 |
 
-- `put()` - 如果启用则首先写入 WAL
-- `flush()` - 成功刷新后截断 WAL
-- `stats()` - 包含 WAL 和压缩信息
+**额外方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `get_metrics()` | 返回指标快照 |
+
+指标字段：`put_count`、`get_count`、`flush_count`、`last_flush_time`。
 
 ---
 
-## 使用示例
+## StorageBackend 协议
 
-### 基本用法
-
-```python
-import pulsing as pul
-import persisting as pst
-
-# 注册后端
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
-
-# 创建写入器
-writer = await pul.queue.write_queue(
-    system,
-    topic="example",
-    backend="lance",
-    storage_path="/data/queues",
-)
-
-# 写入数据
-await writer.put({"id": "1", "value": 42})
-await writer.flush()
-
-# 读取数据
-reader = await pul.queue.read_queue(system, "example")
-records = await reader.get(limit=10)
-```
-
-### 使用 WAL
+后端实现（LanceBackend、PersistingBackend）遵循此协议：
 
 ```python
-import pulsing as pul
-import persisting as pst
-
-pul.queue.register_backend("persisting", pst.queue.PersistingBackend)
-
-writer = await pul.queue.write_queue(
-    system,
-    topic="durable",
-    backend="persisting",
-    backend_options={
-        "enable_wal": True,
-        "wal_sync_interval": 0.1,
-    },
-)
-```
-
-### 流式处理
-
-```python
-import pulsing as pul
-
-reader = await pul.queue.read_queue(system, "example")
-
-# 非阻塞流
-async for record in reader.get_stream(limit=100):
-    process(record)
-
-# 阻塞流（等待新数据）
-async for record in reader.get_stream(block=True):
-    process(record)
-```
-
----
-
-## 异常
-
-### StorageError
-
-存储操作的基础异常。
-
-```python
-class StorageError(Exception):
-    """存储操作的基础异常。"""
-    pass
-```
-
-### WALError
-
-WAL 相关错误的异常。
-
-```python
-class WALError(StorageError):
-    """WAL 操作的异常。"""
-    pass
-```
-
----
-
-## 类型定义
-
-### StorageBackend 协议
-
-```python
-from typing import Protocol, AsyncIterator, Any
-
 class StorageBackend(Protocol):
-    """可插拔存储后端的协议。"""
-    
     async def put(self, record: dict[str, Any]) -> None: ...
     async def put_batch(self, records: list[dict[str, Any]]) -> None: ...
-    async def get(self, offset: int = 0, limit: int | None = None) -> list[dict[str, Any]]: ...
-    async def get_stream(
-        self, offset: int = 0, limit: int | None = None, block: bool = False
-    ) -> AsyncIterator[dict[str, Any]]: ...
+    async def get(self, limit: int, offset: int) -> list[dict[str, Any]]: ...
+    async def get_stream(self, limit: int, offset: int, wait: bool = False, timeout: float | None = None) -> AsyncIterator[list[dict[str, Any]]]: ...
     async def flush(self) -> None: ...
     async def stats(self) -> dict[str, Any]: ...
     def total_count(self) -> int: ...
 ```
-

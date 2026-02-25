@@ -1,7 +1,7 @@
 ---
 template: home.html
-title: Persisting - Persistent Storage for AI Systems
-description: Persistent storage solution for Parameters, KV Cache, and Trajectories. Built on Lance columnar format with Pulsing Actor framework integration.
+title: Persisting - Persistent Storage for Parameters, KV Cache, and Trajectories
+description: Distributed tiered memory for AI — extends Pulsing with multi-dimensional addressing, GPU/host/SSD tiering, and distribution via actor runtime.
 hide: toc
 ---
 
@@ -9,52 +9,55 @@ hide: toc
 
 # Persisting
 
-**Persisting** is a persistent storage solution for AI systems, providing efficient storage for Parameters, KV Cache, and Trajectories.
+**Persistent Storage for Parameters, KV Cache, and Trajectories.**
 
-## Key Features
+Extends [Pulsing](https://github.com/DeepLink-org/pulsing) (distributed actor runtime) with distributed tiered memory: GPU ↔ host ↔ SSD, multi-dimensional tensor addressing, Pulsing-powered distribution.
 
-- **Pluggable Backends** - Support for multiple storage backends including Memory, Lance, and custom implementations.
-- **Lance Integration** - Built on Lance columnar format for high-performance random access and zero-copy versioning.
-- **Write-Ahead Log** - Built-in WAL support ensures data durability and crash recovery.
-- **Pulsing Integration** - Seamless integration with Pulsing Actor framework for distributed queue persistence.
-- **Schema Evolution** - Support for dynamic schema evolution without downtime.
-- **Monitoring Metrics** - Built-in Prometheus metrics export for real-time monitoring.
+## Core Idea
+
+- **Pulsing** = control plane (actor discovery, messaging, lifecycle)
+- **Persisting** = data plane (multi-dimensional addresses, tiered memory, placement)
+
+Together: a runtime where actors communicate via Pulsing and share tensor data via Persisting — data lives across memory tiers, addressed by tensor-style subscript, materialized on demand.
+
+## Features
+
+- **Tensor Address Algebra (TAA)** — Multi-dimensional addressing model for AI data (KV Cache, parameters, trajectories).
+- **Tiered Memory** — GPU ↔ host ↔ SSD, transparent to application code.
+- **Pulsing Distribution** — Cross-node data access via Pulsing's actor runtime.
+- **Tensor-style API** — `kv["s1", 0, 2, 0:512].tensor()` — slice by subscript, materialize on demand.
 
 ## Quick Start
 
 ```bash
-# Install
 pip install persisting
-
-# Or install with Pulsing
-pip install persisting[pulsing]
 ```
 
 ```python
-import pulsing as pul
-import persisting as pst
+import persisting
+from persisting.core import Dimension
 
-# Register Lance backend
-pul.queue.register_backend("lance", pst.queue.LanceBackend)
+SESSION = Dimension("session", "str")
+LAYER   = Dimension("layer", "int")
+HEAD    = Dimension("head", "int")
+TIME    = Dimension("time", "int")
 
-# Use persistent queue
-writer = await pul.queue.write_queue(system, "my_topic",
-    backend="lance",
-    storage_path="/data/queues")
+kv = persisting.open("kvcache/v1",
+    dims=(SESSION, LAYER, HEAD, TIME), order_dim=TIME)
 
-await writer.put({"id": "1", "value": 42})
-await writer.flush()
+arr = kv["s1", 0, 2, 0:512].tensor()
 ```
 
 ## Use Cases
 
-- **KV Cache Storage** - Store and retrieve LLM KV Cache for cross-session reuse.
-- **Trajectory Storage** - Persistent storage for RL and training trajectories.
-- **Parameter Checkpoints** - Efficient model parameter checkpoint storage with versioning.
+| Use Case | Dimensions | Primary Access Pattern |
+|----------|-----------|----------------------|
+| **KV Cache Offloading** | (session, layer, head, time) | Point query + range scan + prefetch |
+| **Parameter Serving** | (param_id, shard) | Batch point query |
+| **Trajectory Storage** | (run_id, time) | Sequential range scan |
 
 ## Community
 
-- [GitHub Repository](https://github.com/reiase/Persisting)
-- [Issue Tracker](https://github.com/reiase/Persisting/issues)
-- [Discussions](https://github.com/reiase/Persisting/discussions)
-
+- [GitHub Repository](https://github.com/DeepLink-org/Persisting)
+- [Issue Tracker](https://github.com/DeepLink-org/Persisting/issues)
+- [Discussions](https://github.com/DeepLink-org/Persisting/discussions)

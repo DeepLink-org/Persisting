@@ -1,91 +1,50 @@
 # User Guide
 
-Welcome to the Persisting User Guide. This guide covers the core concepts and usage patterns.
+Welcome to the Persisting User Guide.
 
-## Overview
+## What is Persisting?
 
-Persisting provides persistent storage backends for Pulsing's distributed queue system. It enables reliable data storage with features like:
-
-- **Lance-based persistence** - High-performance columnar storage
-- **Write-Ahead Log (WAL)** - Data durability guarantees
-- **Schema evolution** - Flexible data structure changes
-- **Monitoring** - Built-in metrics and observability
+Persisting provides persistent storage for parameters, KV Cache, and trajectories. Data lives across GPU, host memory, and SSD — addressed by tensor-style subscript, materialized on demand.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Pulsing Queue                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │
-│  │ QueueWriter │  │ QueueReader │  │   Queue     │     │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘     │
-│         │                │                │             │
-│         └────────────────┼────────────────┘             │
-│                          ▼                              │
-│              ┌───────────────────────┐                  │
-│              │   StorageManager      │                  │
-│              └───────────┬───────────┘                  │
-│                          ▼                              │
-│              ┌───────────────────────┐                  │
-│              │   BucketStorage       │                  │
-│              └───────────┬───────────┘                  │
-│                          │                              │
-└──────────────────────────┼──────────────────────────────┘
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│                  StorageBackend Protocol                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-│  │MemoryBackend│  │ LanceBackend│  │PersistingBackend│  │
-│  └─────────────┘  └─────────────┘  └─────────────────┘  │
-│       (Pulsing)        (Persisting)     (Persisting)     │
-└──────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Application                                          │
+│  kv["s1", 0, 2, 0:512].tensor()                      │
+├───────────────────────────────────────────────────────┤
+│  Access Patterns                                      │
+│  multi-dim lookup · streaming append · batch get      │
+├───────────────────────────────────────────────────────┤
+│  Persisting Core                                      │
+│  TAA (addressing) · Tiering (GPU/Host/SSD) · Route    │
+├───────────────────────────────────────────────────────┤
+│  Storage Engine: Lance                                │
+│  columnar format · SSD persist · baseline read path   │
+└───────────────────────────────────────────────────────┘
 ```
 
-## Core Concepts
+## Guides
 
-### Storage Backends
+### Tensor Memory (coming soon)
 
-Storage backends implement the `StorageBackend` protocol and provide different storage strategies:
-
-| Backend | Location | Persistence | Use Case |
-|---------|----------|-------------|----------|
-| `MemoryBackend` | Pulsing | No | Testing, temporary data |
-| `LanceBackend` | Persisting | Yes | Production workloads |
-| `PersistingBackend` | Persisting | Yes | Advanced features (WAL, metrics) |
-
-### Backend Registration
-
-Backends must be registered before use:
+The primary API — tensor-style subscript access to tiered memory:
 
 ```python
-from pulsing.queue import register_backend
-from persisting.queue import LanceBackend
-
-register_backend("lance", LanceBackend)
+kv = persisting.open("kvcache/v1", dims=(...), order_dim=TIME)
+arr = kv["s1", 0, 2, 0:512].tensor()
 ```
 
-### Backend Selection
+### Streaming Append (available now)
 
-Specify the backend when creating a queue:
+Lance storage engine's append-only access pattern — for trajectory collection and event streaming. This is the currently available, production-ready capability.
 
-```python
-from pulsing.queue import write_queue
-
-# By name (must be registered)
-writer = await write_queue(system, "topic", backend="lance")
-
-# By class directly
-writer = await write_queue(system, "topic", backend=LanceBackend)
-```
-
-## Topics in This Guide
-
-- [Queue Backends](backends.md) - Overview of storage backends
-- [Lance Backend](lance.md) - Using Lance for persistence
-- [Persisting Backend](persisting.md) - Enhanced backend with WAL
-- [Custom Backends](custom.md) - Implementing custom backends
+- [Queue Backends](backends.md) — Overview of storage backends
+- [Lance Backend](lance.md) — Using Lance for persistence
+- [Persisting Backend](persisting.md) — Enhanced backend with metrics
+- [Custom Backends](custom.md) — Implementing custom backends
 
 ## Next Steps
 
-Choose the topic that best matches your needs, or continue with the [Queue Backends](backends.md) overview.
-
+- For the tensor memory API, see the [design docs](../design/index.md) and the [TAA specification](../design/tensor_address_algebra.md).
+- For streaming append, continue with the [Queue Backends](backends.md) overview.
