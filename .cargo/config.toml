@@ -1,0 +1,19 @@
+# PyO3（`persisting-core`）：构建脚本会用 PATH 里的 `python`/`python3`，不会读 pyenv 的「全局版本」。
+# IDE / 非登录 shell 里若未 `eval "$(pyenv init -)"`，往往会先命中系统自带的旧 Python（例如 3.9），与 `.python-version` 无关。
+#
+# 在本仓库根任选其一后再执行 `cargo build` / `cargo test`：
+#
+# 1) 显式指定解释器（推荐）：
+#    export PYO3_PYTHON="$(pyenv which python)"
+#
+# 2) 固定到本仓库 `.python-version` 对应的 pyenv 安装路径（不依赖 PATH）：
+#    export PYO3_PYTHON="$HOME/.pyenv/versions/$(cat .python-version)/bin/python"
+#
+# 3) maturin develop：必须先有可识别的虚拟环境（否则报错），任选其一：
+#    - 在仓库根创建并激活：python -m venv .venv && source .venv/bin/activate
+#      （Windows：.venv\Scripts\activate），再 pip install maturin && maturin develop --release
+#    - 或已 conda activate / 其它 venv 且设置了 CONDA_PREFIX / VIRTUAL_ENV
+#    不想用 venv 时：maturin build --release，再 pip install target/wheels/*.whl
+#
+# 注意：不要在下面使用 `${HOME}/...` 形式的 `[env]`——当前 Cargo 传入子进程时可能不会展开变量，
+# PyO3 会收到含字面量 `${HOME}` 的路径而报错。

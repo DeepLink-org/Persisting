@@ -4,18 +4,25 @@
 mod block_io;
 #[cfg(unix)]
 mod mmap_region;
+#[cfg(target_os = "macos")]
+mod page_fault_darwin;
 mod tiered_loop;
 #[cfg(target_os = "linux")]
 mod uffd;
-#[cfg(target_os = "macos")]
-mod page_fault_darwin;
 
-use pyo3::exceptions::{PyKeyError, PyValueError};
+use persisting_proto::{
+    SearchAddRequest, SearchImportLanceRequest, SearchIndexDeleteRequest, SearchIndexListRequest,
+    SearchIndexRebuildRequest, SearchIndexReorderRequest, SearchIndexRequest, SearchQueryRequest,
+    TrajectoryAppendRequest,
+    TrajectoryReplayRequest, TrajectoryStatsRequest,
+};
+use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 use std::collections::BTreeMap;
-use std::sync::RwLock;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 // ---------------------------------------------------------------------------
 // Dimension & CoordValue
@@ -38,7 +45,12 @@ impl Dimension {
             "int" | "i64" => "int",
             "str" | "string" => "str",
             "bytes" => "bytes",
-            _ => return Err(PyValueError::new_err(format!("unknown dimension kind: {}", kind))),
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown dimension kind: {}",
+                    kind
+                )))
+            }
         };
         Ok(Self {
             name,
@@ -312,7 +324,9 @@ impl Address {
             dims.push(item?.extract::<Dimension>()?);
         }
         if dims.is_empty() {
-            return Err(PyValueError::new_err("subscript must be Dimension or sequence of Dimensions"));
+            return Err(PyValueError::new_err(
+                "subscript must be Dimension or sequence of Dimensions",
+            ));
         }
         let vals: Vec<PyObject> = dims
             .iter()
@@ -427,7 +441,9 @@ impl Region {
         if let Some(existing) = map.remove(&d) {
             match meet_constraint(&existing, &c) {
                 MeetResult::Empty => {
-                    return Err(PyValueError::new_err("region[dim]=c: constraint meet is empty"));
+                    return Err(PyValueError::new_err(
+                        "region[dim]=c: constraint meet is empty",
+                    ));
                 }
                 MeetResult::Constraint(merged) => {
                     if let Some(m) = simplify_constraint(merged) {
@@ -466,10 +482,8 @@ impl Region {
 impl Region {
     fn from_map(mut map: BTreeMap<Dimension, Constraint>) -> Self {
         map.retain(|_, c| simplify_constraint(c.clone()).is_some());
-        let mut opt_map: BTreeMap<Dimension, Option<Constraint>> = map
-            .into_iter()
-            .map(|(k, v)| (k, Some(v)))
-            .collect();
+        let mut opt_map: BTreeMap<Dimension, Option<Constraint>> =
+            map.into_iter().map(|(k, v)| (k, Some(v))).collect();
         for (_, opt) in opt_map.iter_mut() {
             let taken = opt.take().unwrap();
             if let Some(s) = simplify_constraint(taken) {
@@ -507,7 +521,9 @@ fn constraint_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Constraint> {
         }
         return Ok(Constraint::Set(set));
     }
-    Err(PyValueError::new_err("constraint must be Point, Range, or SetC"))
+    Err(PyValueError::new_err(
+        "constraint must be Point, Range, or SetC",
+    ))
 }
 
 fn constraint_to_py(c: &Constraint, py: Python<'_>) -> PyResult<PyObject> {
@@ -551,7 +567,10 @@ fn project_prefix(
             match addr.values.get(&d) {
                 Some(v) => out.push(coord_value_to_py(v, py)),
                 None => {
-                    return Err(PyValueError::new_err(format!("dimension {} not in address", d.name)))
+                    return Err(PyValueError::new_err(format!(
+                        "dimension {} not in address",
+                        d.name
+                    )))
                 }
             }
         }
@@ -597,6 +616,288 @@ fn is_range_query(region: &Region, order_dim: &Dimension) -> bool {
     has_range
 }
 
+#[pyfunction]
+fn engine_protocol_version() -> u32 {
+    persisting_engine::PROTOCOL_VERSION
+}
+
+/// Optional bincode wire: caller encodes `RpcRequest` / decodes `RpcResponse` (see `persisting-proto`).
+#[pyfunction]
+fn engine_dispatch(py: Python<'_>, request: &[u8]) -> PyResult<Py<PyBytes>> {
+    let out = persisting_engine::dispatch_bytes(request);
+    Ok(PyBytes::new(py, &out).into())
+}
+
+#[pyfunction]
+fn search_embed_text(text: &str, embedding_dim: usize) -> PyResult<Vec<f32>> {
+    persisting_engine::agent_search::embed_text(text, embedding_dim).map_err(py_runtime_error)
+}
+
+#[pyfunction]
+#[pyo3(signature = (dataset, text, id=None, metadata=None, embedding_dim=384))]
+fn search_add(
+    py: Python<'_>,
+    dataset: String,
+    text: String,
+    id: Option<String>,
+    metadata: Option<Bound<'_, PyDict>>,
+    embedding_dim: usize,
+) -> PyResult<Py<PyAny>> {
+    let meta = match metadata {
+        None => None,
+        Some(d) => Some(pythonize::depythonize(d.as_any())?),
+    };
+    let req = SearchAddRequest {
+        dataset,
+        id,
+        text,
+        metadata: meta,
+        embedding_dim,
+    };
+    let resp = persisting_engine::search_add(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+#[pyo3(signature = (dataset, query, mode="hybrid", k=10, embedding_dim=384, text_column="text", filter=None, nprobes=None, minimum_nprobes=None, maximum_nprobes=None, adaptive_nprobes_margin=None))]
+fn search_query(
+    py: Python<'_>,
+    dataset: String,
+    query: String,
+    mode: &str,
+    k: usize,
+    embedding_dim: usize,
+    text_column: &str,
+    filter: Option<String>,
+    nprobes: Option<usize>,
+    minimum_nprobes: Option<usize>,
+    maximum_nprobes: Option<usize>,
+    adaptive_nprobes_margin: Option<f32>,
+) -> PyResult<Py<PyAny>> {
+    let req = SearchQueryRequest {
+        dataset,
+        query,
+        mode: mode.to_string(),
+        k,
+        embedding_dim,
+        text_column: text_column.to_string(),
+        filter,
+        nprobes,
+        minimum_nprobes,
+        maximum_nprobes,
+        adaptive_nprobes_margin,
+    };
+    let resp = persisting_engine::search_query(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+#[pyo3(signature = (dataset, vector_column="embedding", text_column="text", metric="cosine", num_partitions=None, ivf_max_iters=None, ivf_balance_factor=None, ivf_balance_postprocess=None, ivf_postprocess_max_cluster_ratio=None, ivf_sample_rate=None, ivf_target_partition_size=None, ivf_shuffle_partition_batches=None, ivf_shuffle_partition_concurrency=None, pq_num_sub_vectors=None, pq_num_bits=None, pq_max_iters=None, pq_kmeans_redos=None, pq_sample_rate=None))]
+fn search_index(
+    py: Python<'_>,
+    dataset: String,
+    vector_column: &str,
+    text_column: &str,
+    metric: &str,
+    num_partitions: Option<usize>,
+    ivf_max_iters: Option<usize>,
+    ivf_balance_factor: Option<f32>,
+    ivf_balance_postprocess: Option<bool>,
+    ivf_postprocess_max_cluster_ratio: Option<f32>,
+    ivf_sample_rate: Option<usize>,
+    ivf_target_partition_size: Option<usize>,
+    ivf_shuffle_partition_batches: Option<usize>,
+    ivf_shuffle_partition_concurrency: Option<usize>,
+    pq_num_sub_vectors: Option<usize>,
+    pq_num_bits: Option<u8>,
+    pq_max_iters: Option<usize>,
+    pq_kmeans_redos: Option<usize>,
+    pq_sample_rate: Option<usize>,
+) -> PyResult<Py<PyAny>> {
+    let req = SearchIndexRequest {
+        dataset,
+        vector_column: vector_column.to_string(),
+        text_column: text_column.to_string(),
+        metric: metric.to_string(),
+        num_partitions,
+        ivf_max_iters,
+        ivf_balance_factor,
+        ivf_balance_postprocess,
+        ivf_postprocess_max_cluster_ratio,
+        ivf_sample_rate,
+        ivf_target_partition_size,
+        ivf_shuffle_partition_batches,
+        ivf_shuffle_partition_concurrency,
+        pq_num_sub_vectors,
+        pq_num_bits,
+        pq_max_iters,
+        pq_kmeans_redos,
+        pq_sample_rate,
+    };
+    let resp = persisting_engine::search_index(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+fn search_index_list(py: Python<'_>, dataset: String) -> PyResult<Py<PyAny>> {
+    let req = SearchIndexListRequest { dataset };
+    let resp = persisting_engine::search_index_list(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+fn search_index_delete(py: Python<'_>, dataset: String, index_name: String) -> PyResult<Py<PyAny>> {
+    let req = SearchIndexDeleteRequest {
+        dataset,
+        index_name,
+    };
+    let resp = persisting_engine::search_index_delete(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+#[pyo3(signature = (dataset, index_name=None, retrain=true, merge_num_indices=None))]
+fn search_index_rebuild(
+    py: Python<'_>,
+    dataset: String,
+    index_name: Option<String>,
+    retrain: bool,
+    merge_num_indices: Option<usize>,
+) -> PyResult<Py<PyAny>> {
+    let req = SearchIndexRebuildRequest {
+        dataset,
+        index_name,
+        retrain,
+        merge_num_indices,
+    };
+    let resp = persisting_engine::search_index_rebuild(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+#[pyo3(signature = (dataset, pivot_index, target=None, in_place=false))]
+fn search_index_reorder(
+    py: Python<'_>,
+    dataset: String,
+    pivot_index: String,
+    target: Option<String>,
+    in_place: bool,
+) -> PyResult<Py<PyAny>> {
+    let req = SearchIndexReorderRequest {
+        dataset,
+        pivot_index,
+        target,
+        in_place,
+    };
+    let resp = persisting_engine::search_index_reorder(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+#[pyo3(signature = (target_dataset, source_lance, source_text_column="text", source_id_column=None, embedding_dim=384, limit=None))]
+fn search_import_lance(
+    py: Python<'_>,
+    target_dataset: String,
+    source_lance: String,
+    source_text_column: &str,
+    source_id_column: Option<String>,
+    embedding_dim: usize,
+    limit: Option<usize>,
+) -> PyResult<Py<PyAny>> {
+    let req = SearchImportLanceRequest {
+        target_dataset,
+        source_lance,
+        source_text_column: source_text_column.to_string(),
+        source_id_column,
+        embedding_dim,
+        limit,
+    };
+    let resp = persisting_engine::search_import_lance(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+fn trajectory_append(py: Python<'_>, storage: String, name: String, records: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let records_ronl: String = if let Ok(s) = records.extract::<String>() {
+        s
+    } else if let Ok(list) = records.downcast::<PyList>() {
+        let mut s = String::new();
+        for item in list.iter() {
+            let v: serde_json::Value = pythonize::depythonize(item.as_any())?;
+            s.push_str(
+                &ron::to_string(&v).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            );
+            s.push('\n');
+        }
+        s
+    } else {
+        return Err(PyTypeError::new_err(
+            "records must be str (RONL body) or list of dict-like objects",
+        ));
+    };
+    let req = TrajectoryAppendRequest {
+        storage,
+        name,
+        records_ronl,
+    };
+    let resp = persisting_engine::trajectory_append(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+#[pyo3(signature = (storage, name, trajectory_id=None, offset=0, limit=None))]
+fn trajectory_replay(
+    py: Python<'_>,
+    storage: String,
+    name: String,
+    trajectory_id: Option<String>,
+    offset: usize,
+    limit: Option<usize>,
+) -> PyResult<Py<PyAny>> {
+    let req = TrajectoryReplayRequest {
+        storage,
+        name,
+        trajectory_id,
+        offset,
+        limit,
+    };
+    let resp = persisting_engine::trajectory_replay(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+#[pyfunction]
+fn trajectory_stats(py: Python<'_>, storage: String, name: String) -> PyResult<Py<PyAny>> {
+    let req = TrajectoryStatsRequest { storage, name };
+    let resp = persisting_engine::trajectory_stats(req).map_err(py_runtime_error)?;
+    Ok(pythonize::pythonize(py, &resp)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .unbind())
+}
+
+fn py_runtime_error(error: impl std::fmt::Display) -> PyErr {
+    PyRuntimeError::new_err(error.to_string())
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Dimension>()?;
@@ -609,6 +910,20 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(project_prefix, m)?)?;
     m.add_function(wrap_pyfunction!(is_point_query, m)?)?;
     m.add_function(wrap_pyfunction!(is_range_query, m)?)?;
+    m.add_function(wrap_pyfunction!(engine_protocol_version, m)?)?;
+    m.add_function(wrap_pyfunction!(engine_dispatch, m)?)?;
+    m.add_function(wrap_pyfunction!(search_embed_text, m)?)?;
+    m.add_function(wrap_pyfunction!(search_add, m)?)?;
+    m.add_function(wrap_pyfunction!(search_query, m)?)?;
+    m.add_function(wrap_pyfunction!(search_index, m)?)?;
+    m.add_function(wrap_pyfunction!(search_index_list, m)?)?;
+    m.add_function(wrap_pyfunction!(search_index_delete, m)?)?;
+    m.add_function(wrap_pyfunction!(search_index_rebuild, m)?)?;
+    m.add_function(wrap_pyfunction!(search_index_reorder, m)?)?;
+    m.add_function(wrap_pyfunction!(search_import_lance, m)?)?;
+    m.add_function(wrap_pyfunction!(trajectory_append, m)?)?;
+    m.add_function(wrap_pyfunction!(trajectory_replay, m)?)?;
+    m.add_function(wrap_pyfunction!(trajectory_stats, m)?)?;
     m.add_function(wrap_pyfunction!(block_io::block_read, m)?)?;
     m.add_function(wrap_pyfunction!(block_io::block_write, m)?)?;
     #[cfg(unix)]

@@ -1,6 +1,8 @@
 # Design Documents
 
-This section contains design documents for Persisting — persistent storage for parameters, KV Cache, and trajectories.
+Design documents for Persisting — addressing model, tiered storage, queue persistence, and CLI command design.
+
+---
 
 ## Architecture
 
@@ -27,43 +29,38 @@ This section contains design documents for Persisting — persistent storage for
 └────────────────────────────────────────────────────────┘
 ```
 
-- **Storage Engine (Lance)**: SSD 层文件格式，提供持久化兜底——最差情况从文件读，上层所有优化都是对此的加速。
-- **Persisting Core**: TTAS（分层张量地址空间）寻址、分层内存（GPU ↔ host ↔ SSD）、放置与路由。
-- **Access Patterns**: 同一存储引擎上的不同访问模式——streaming append（轨迹）、multi-dim lookup（KV Cache）、batch point query（PS）。
+- **Storage Engine (Lance)**: SSD-layer file format providing the persistence baseline. All upper-layer optimizations accelerate the "read from file" path.
+- **Persisting Core**: TTAS addressing, tiered memory (GPU ↔ host ↔ SSD), placement and routing.
+- **Access Patterns**: Different access patterns on the same storage engine — streaming append (trajectories), multi-dim lookup (KV Cache), batch point query (PS).
+
+---
 
 ## Core Design
 
-- [分层张量地址空间 (TTAS)](tensor_address_algebra.md) — The addressing model (counterpart to PGAS): multi-dimensional, tiered addresses, constraint algebra, lowering to storage engine primitives. TTAS vs PGAS 对照见该文档 0.2 节。
-- [Architecture](architecture.md) — Storage engine integration, streaming append (Lance queue backend).
-- [Distributed Tiered Storage](distributed_tiered_storage.md) — Four-tier storage (GPU / local CPU / remote CPU / SSD), Userfaultfd-driven paging, RDMA/NVLink/PCIe transport.
+- [Tiered Tensor Address Space (TTAS)](tensor_address_algebra.md) — Addressing model (counterpart to PGAS): multi-dimensional addresses, constraint algebra, canonicalization and lowering
+- [Architecture](architecture.md) — Queue persistence architecture: LanceBackend, concurrency model, Pulsing integration
+- [Distributed Tiered Storage](distributed_tiered_storage.md) — Four-tier storage (GPU / CPU / Remote / SSD), Block model, mmap + UFFD virtual address mapping
 
-## Reference & Feasibility
+## CLI
 
-- [Architecture & Core Abstractions](architecture_core_abstractions.zh.md) — Store / Namespace / Backend (中文)
-- [Unified Storage Feasibility](unified_storage_feasibility.zh.md) — PS / KV Cache / Trajectory unification analysis (中文)
-- [LMCache KV Cache Reference](lmcache_kvcache_reference.zh.md) — LMCache analysis for KV implementation reference (中文)
-- [Persisting vs TransferQueue 打分点评](persisting_vs_transferqueue_scoring.md) — Queue 链路与 TransferQueue 的维度打分与场景推荐 (中文)
-- [TransferQueue 与 Pulsing Queue 接口设计对比](transfer_queue_interface_comparison.md) — 接口逐项对照、迁移建议与性能差异分析 (中文)
-- [类似系统参考](similar_systems_reference.md) — 与分布式分层存储相关的系统（LMCache、UMap、CUDA UVM 等）对比与可借鉴点
+- [CLI Architecture](cli_architecture.zh.md) — Engine discovery, lazy loading, async Job ABI, wire format, version constants (中文)
+- [`persisting search` command design](cli_search_command.zh.md) — Command tree, parameters, interaction design (中文)
+- [`persisting trajectory` command design](cli_trajectory_command.zh.md) — Command tree, parameters, interaction design (中文)
 
-## Historical / Internal
+## Reference & Analysis
 
-### Reviews & design–implementation alignment
+- [LMCache KV Cache Reference](lmcache_kvcache_reference.zh.md) — LMCache analysis for KV implementation (中文)
+- [Persisting vs TransferQueue Scoring](persisting_vs_transferqueue_scoring.md) — Dimensional comparison of Queue vs TransferQueue (中文)
+- [TransferQueue vs Pulsing Queue Interface Comparison](transfer_queue_interface_comparison.md) — Side-by-side API comparison and migration notes (中文)
+- [Similar Systems Reference](similar_systems_reference.md) — LMCache, UMap, CUDA UVM and other related systems
 
-- [TTAS Design Review (historical)](tensor_address_algebra_review.md) — Review of addressing model v1; superseded by [TTAS / tensor_address_algebra](tensor_address_algebra.md)
+## Implementation Tracking
 
-### Discussion & implementation steps
-
-- [Tiered Storage Implementation Steps](tiered_storage_implementation_steps.md) — 分层存储实现步骤与单测清单（Step 1–11 等）
-
-### Other project-level docs
-
-- [PERSISTING_REVIEW_AND_ROADMAP](../../PERSISTING_REVIEW_AND_ROADMAP.md) — 项目 review 与路线图
-- [PERSISTING_VS_PULSING_REVIEW](../../PERSISTING_VS_PULSING_REVIEW.md) — Persisting 与 Pulsing 对比 review
+- [Tiered Storage Implementation Steps](../dev/tiered_storage_implementation_steps.md) — Step 1–11 implementation log and test checklist
 
 ## Design Principles
 
-1. **Lance is the floor** — Lance 存储引擎提供 SSD 层的持久化兜底。GPU 缓存、host 内存池、跨节点共享都是对"从文件读"这条 baseline 的逐级加速。
-2. **One engine, multiple access patterns** — 同一个 Lance 存储引擎上的不同访问模式（streaming append / multi-dim lookup / batch get），不是独立的子系统。
-3. **TTAS is internal** — Users see `kv[key].tensor()`. TTAS (Tiered Tensor Address Space) powers addressing, routing, and batch optimization under the hood.
-4. **Performance is the product** — The value of Persisting is measured by KV Cache P99, GPU utilization, and memory efficiency — not by the elegance of the address model.
+1. **Lance is the floor** — Lance provides the SSD persistence baseline. GPU cache, host memory pools, and cross-node sharing accelerate the "read from file" path.
+2. **One engine, multiple access patterns** — Streaming append, multi-dim lookup, and batch get share the same Lance storage engine.
+3. **TTAS is internal** — Users see `kv[key].tensor()`. TTAS powers addressing, routing, and batch optimization under the hood.
+4. **Performance is the product** — Persisting's value is measured by KV Cache P99, GPU utilization, and memory efficiency.

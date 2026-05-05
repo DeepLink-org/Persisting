@@ -42,6 +42,7 @@ docs/
     ├── quickstart.md   # Quick start guide
     ├── guide/          # User guide
     ├── design/         # Design documents
+    ├── dev/            # Implementation tracking
     ├── api_reference.md # API reference
     └── assets/         # Static assets
         └── stylesheets/

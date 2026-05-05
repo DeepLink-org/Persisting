@@ -35,6 +35,7 @@ dev = [
 module-name = "persisting._core"
 manifest-path = "crates/persisting-core/Cargo.toml"
 python-packages = ["persisting"]
+features = ["python-extension"]
 sdist-include = ["LICENSE", "README.md"]
 
 [build-system]

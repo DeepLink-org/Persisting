@@ -1,0 +1,30 @@
+[package]
+name = "persisting-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Persisting engine: Lance-backed search, trajectory, and stable C ABI"
+
+[lib]
+name = "persisting_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1"
+lance = { path = "/Users/reiase/workspace/lance/rust/lance", features = ["aws", "azure", "gcp"] }
+lance-core = { path = "/Users/reiase/workspace/lance/rust/lance-core" }
+lance-index = { path = "/Users/reiase/workspace/lance/rust/lance-index" }
+lance-linalg = { path = "/Users/reiase/workspace/lance/rust/lance-linalg" }
+lance-table = { path = "/Users/reiase/workspace/lance/rust/lance-table" }
+futures = "0.3"
+uuid = "1"
+persisting-proto = { path = "../persisting-proto" }
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+persisting-proto = { path = "../persisting-proto" }
+tempfile = "3"

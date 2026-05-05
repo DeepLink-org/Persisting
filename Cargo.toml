@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/persisting-core"]
+members = [
+    "crates/persisting-proto",
+    "crates/persisting-engine",
+    "crates/persisting-core",
+    "crates/persisting-cli",
+]
 
 [workspace.package]
 version = "0.1.0"

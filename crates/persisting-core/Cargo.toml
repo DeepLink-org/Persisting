@@ -6,13 +6,22 @@ authors.workspace = true
 license.workspace = true
 description = "Rust core for Persisting (TTAS, block I/O, tiered loop, page fault)"
 
+[features]
+python-extension = ["pyo3/extension-module"]
+
 [lib]
 name = "_core"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+persisting-engine = { path = "../persisting-engine" }
+persisting-proto = { path = "../persisting-proto" }
 libc = "0.2"
-pyo3 = { version = "0.23", default-features = false, features = ["extension-module", "abi3-py310", "macros"] }
+# 与 pyproject.toml `requires-python >=3.10` 一致；构建时用 PYO3_PYTHON 指向 3.10+（见 `.cargo/config.toml`）。
+pyo3 = { version = "0.23", default-features = false, features = ["abi3-py310", "macros"] }
+pythonize = "0.23"
+ron = "0.8"
+serde_json = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.6"
