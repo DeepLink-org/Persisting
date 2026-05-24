@@ -1,21 +1,39 @@
 //! CLI loads `libpersisting_engine` lazily and calls **`persisting_engine_submit`** / **`job_poll`** /
 //! **`job_take_result`**（异步 job + 进度；见 `persisting_proto::invoke_abi`）。
 
+mod capture;
+mod trajectory_detail;
+mod trajectory_format;
+mod trajectory_stdout_toml;
+
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use libloading::{Library, Symbol};
 use persisting_proto::{
-    RequestBody, ResponseBody, RpcRequest, RpcResponse, SearchAddRequest, SearchImportLanceRequest,
-    SearchIndexDeleteRequest, SearchIndexListRequest, SearchIndexReorderRequest,
-    SearchIndexRebuildRequest, SearchIndexRequest, SearchQueryRequest, TrajectoryAppendRequest,
-    TrajectoryReplayRequest, TrajectoryStatsRequest,
-    PROTOCOL_VERSION, RON_ABI_VERSION,
+    RequestBody, ResponseBody, RpcRequest, RpcResponse, SearchAddBatchRequest, SearchAddRequest,
+    SearchImportLanceRequest, SearchIndexDeleteRequest, SearchIndexListRequest,
+    SearchIndexRebuildRequest, SearchIndexReorderRequest, SearchIndexRequest, SearchQueryRequest,
+    TrajectoryAppendRequest, TrajectoryReplayRequest, TrajectoryReplayResponse,
+    TrajectoryStatsRequest, TrajectoryStatsResponse, TrajectoryStorageFormat, PROTOCOL_VERSION,
+    RON_ABI_VERSION,
 };
 use serde::{Deserialize, Serialize};
+
+use persisting_engine::trajectory::{
+    merge_traj_location, resolve_traj_read_location, TrajLocation,
+};
+use trajectory_detail::{build_detail_node, print_trajectory_stats_detail, SpawnLinkInfo};
+use trajectory_format::{TrajectoryAddFormat, TrajectoryFormatManager, TrajectoryStorageCli};
+use trajectory_stdout_toml::{
+    print_trajectory_append_as_toml, print_trajectory_replay_as_toml,
+    print_trajectory_stats_as_toml,
+};
 
 type RonAbiVersionFn = unsafe extern "C" fn() -> u32;
 
@@ -45,15 +63,12 @@ struct LazyEngine<'a> {
 
 impl<'a> LazyEngine<'a> {
     fn new(cli: &'a Cli) -> Self {
-        Self {
-            cli,
-            engine: None,
-        }
+        Self { cli, engine: None }
     }
 
     fn engine_mut(&mut self) -> Result<&Engine> {
         if self.engine.is_none() {
-            let path = resolve_engine_path(self.cli)?;
+            let path = resolve_engine_path(self.cli.core_lib.as_deref())?;
             self.engine = Some(Engine::load(&path)?);
         }
         Ok(self.engine.as_ref().unwrap())
@@ -64,6 +79,14 @@ impl<'a> LazyEngine<'a> {
         let eng = self.engine_mut()?;
         let out = eng.invoke_engine_ron(payload)?;
         print_engine_ron_response(&out)
+    }
+
+    /// 调用引擎并校验响应，不打印（用于大批量 `SearchAdd` 的中间行）。
+    fn invoke_engine_ron_silent(&mut self, payload: &str) -> Result<String> {
+        let eng = self.engine_mut()?;
+        let out = eng.invoke_engine_ron(payload)?;
+        parse_engine_ron_response(&out)?;
+        Ok(out)
     }
 }
 
@@ -93,51 +116,116 @@ impl Engine {
 
     fn invoke_engine_ron(&self, payload: &str) -> Result<String> {
         let submit: Symbol<persisting_proto::PersistingEngineSubmitFn> = unsafe {
-            self.lib.get(b"persisting_engine_submit\0").with_context(|| {
-                "missing engine export persisting_engine_submit; rebuild persisting-engine"
-            })?
+            self.lib
+                .get(b"persisting_engine_submit\0")
+                .with_context(|| {
+                    "missing engine export persisting_engine_submit; rebuild persisting-engine"
+                })?
         };
-        let poll: Symbol<persisting_proto::PersistingEngineJobPollFn> = unsafe {
-            self.lib.get(b"persisting_engine_job_poll\0").with_context(|| {
+        let poll: Symbol<persisting_proto::PersistingEngineJobPollFn> =
+            unsafe {
+                self.lib.get(b"persisting_engine_job_poll\0").with_context(|| {
                 "missing engine export persisting_engine_job_poll; rebuild persisting-engine"
             })?
-        };
+            };
         let take: Symbol<persisting_proto::PersistingEngineJobTakeResultFn> = unsafe {
             self.lib.get(b"persisting_engine_job_take_result\0").with_context(|| {
                 "missing engine export persisting_engine_job_take_result; rebuild persisting-engine"
             })?
         };
-        let release: Symbol<persisting_proto::PersistingEngineJobReleaseFn> = unsafe {
-            self.lib.get(b"persisting_engine_job_release\0").with_context(|| {
+        let release: Symbol<persisting_proto::PersistingEngineJobReleaseFn> =
+            unsafe {
+                self.lib.get(b"persisting_engine_job_release\0").with_context(|| {
                 "missing engine export persisting_engine_job_release; rebuild persisting-engine"
             })?
-        };
+            };
         let syms = persisting_proto::PersistingEngineJobSyms {
             submit: *submit,
             poll: *poll,
             take_result: *take,
             release: *release,
         };
-        let raw = unsafe { persisting_proto::invoke_ron_utf8_via_jobs_sync(syms, payload.as_bytes())? };
+        let raw =
+            unsafe { persisting_proto::invoke_ron_utf8_via_jobs_sync(syms, payload.as_bytes())? };
         persisting_proto::response_utf8_to_string(&raw).context("engine response UTF-8")
     }
 }
 
-fn print_engine_ron_response(raw: &str) -> Result<()> {
+fn parse_engine_ron_response(raw: &str) -> Result<RpcResponse> {
     if let Ok(w) = ron::from_str::<WireError>(raw) {
         anyhow::bail!("{}", w.error);
     }
-    let resp: RpcResponse = ron::from_str(raw).context("engine returned invalid RON RpcResponse")?;
+    let resp: RpcResponse =
+        ron::from_str(raw).context("engine returned invalid RON RpcResponse")?;
     if let ResponseBody::Error { message, .. } = &resp.body {
         anyhow::bail!("{}", message);
     }
-    println!(
-        "{}",
-        ron::ser::to_string_pretty(
-            &resp.body,
-            ron::ser::PrettyConfig::new().indentor("    ".to_string()),
-        )?
-    );
+    Ok(resp)
+}
+
+fn print_engine_ron_response(raw: &str) -> Result<()> {
+    let resp = parse_engine_ron_response(raw)?;
+    match &resp.body {
+        // trajectory 成功响应统一用 TOML stdout（与默认写入格式一致）。
+        ResponseBody::TrajectoryAppend(tr) => print_trajectory_append_as_toml(tr),
+        ResponseBody::TrajectoryStats(tr) => print_trajectory_stats_as_toml(tr),
+        ResponseBody::TrajectoryReplay(tr) => print_trajectory_replay_as_toml(tr),
+        _ => {
+            println!(
+                "{}",
+                ron::ser::to_string(&resp.body)
+                    .map_err(|e| anyhow::anyhow!("RON serialize: {e}"))?
+            );
+            Ok(())
+        }
+    }
+}
+
+/// 多行 JSONL/CSV：按批 `SearchAddBatch` 写入 Lance（每批一次 `InsertBuilder`，远快于逐行 `SearchAdd`）。
+fn search_add_batch(lazy: &mut LazyEngine<'_>, mut rows: Vec<SearchAddRequest>) -> Result<()> {
+    const CHUNK: usize = 256;
+    let total = rows.len();
+    if total == 0 {
+        anyhow::bail!("import contained no rows");
+    }
+    let dataset = rows[0].dataset.clone();
+    let mut processed = 0usize;
+    while !rows.is_empty() {
+        let n = CHUNK.min(rows.len());
+        let chunk: Vec<SearchAddRequest> = rows.drain(0..n).collect();
+        let payload = rpc_request_pretty(RequestBody::SearchAddBatch(SearchAddBatchRequest {
+            rows: chunk,
+        }))
+        .with_context(|| {
+            format!(
+                "encode SearchAddBatch RON (rows {}..={})",
+                processed + 1,
+                processed + n
+            )
+        })?;
+        let is_last = rows.is_empty();
+        if is_last {
+            lazy.invoke_engine_ron(&payload).with_context(|| {
+                format!(
+                    "SearchAddBatch final chunk (through row {}/{})",
+                    processed + n,
+                    total
+                )
+            })?;
+        } else {
+            lazy.invoke_engine_ron_silent(&payload).with_context(|| {
+                format!(
+                    "SearchAddBatch rows {}..={} of {}",
+                    processed + 1,
+                    processed + n,
+                    total
+                )
+            })?;
+        }
+        processed += n;
+        eprintln!("[persisting-cli] search create: {processed}/{total} rows -> {dataset}");
+    }
+    eprintln!("[persisting-cli] search create: done {total} rows -> {dataset}");
     Ok(())
 }
 
@@ -166,7 +254,139 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Search(SearchArgs),
+    /// Agent trajectory storage (append, replay, stats)
     Trajectory(TrajectoryArgs),
+    /// Short alias for `trajectory`
+    #[command(name = "traj")]
+    Traj(TrajectoryArgs),
+    Capture(CaptureArgs),
+}
+
+#[derive(Debug, Args)]
+struct CaptureArgs {
+    #[command(subcommand)]
+    command: CaptureCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CaptureCommand {
+    /// Merge IDE / agentgateway events into one trajectory session.
+    Import(CaptureImportArgs),
+    /// Start capture daemon (LLM proxy + trajectory append).
+    Start(CaptureStartArgs),
+    /// Stop capture daemon for this storage root.
+    Stop(CaptureStopArgs),
+    /// List recorded sessions with usage and estimated cost.
+    List(CaptureListArgs),
+    /// Query running daemon (active connections + sessions).
+    Status(CaptureStatusArgs),
+    /// Run proxy in foreground (same as `start --foreground`).
+    Serve(CaptureServeArgs),
+    /// Set proxy env vars and run a command (in-process LLM proxy, no forked daemon).
+    Run(CaptureRunArgs),
+}
+
+#[derive(Debug, Args)]
+struct CaptureRunArgs {
+    /// Trajectory output directory (default: `.persisting/capture`).
+    #[arg(
+        long,
+        short = 'o',
+        value_name = "DIR",
+        default_value = ".persisting/capture"
+    )]
+    output_dir: String,
+    /// Proxy config YAML (`listen`, `models`, …).
+    #[arg(long, short = 'c', value_name = "FILE")]
+    config: PathBuf,
+    /// Log every proxied / captured HTTP request to stderr and `{output_dir}/.capture/debug.log`.
+    #[arg(long)]
+    debug: bool,
+    /// Storage format: `md` (0001.md) or `bin` (Lance).
+    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
+    format: capture::CaptureFormat,
+    /// Command and arguments to execute (after `--`).
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct CaptureStartArgs {
+    #[arg(long, short = 'o', value_name = "DIR")]
+    output_dir: String,
+    #[arg(long, short = 'c', value_name = "FILE")]
+    config: PathBuf,
+    #[arg(long)]
+    foreground: bool,
+    #[arg(long)]
+    debug: bool,
+    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
+    format: capture::CaptureFormat,
+}
+
+#[derive(Debug, Args)]
+struct CaptureStopArgs {
+    /// Trajectory output directory (default: last `capture start` or `PERSISTING_CAPTURE_STORAGE`).
+    #[arg(long, short = 'o', value_name = "DIR")]
+    output_dir: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct CaptureListArgs {
+    #[arg(long, short = 'o', value_name = "DIR")]
+    output_dir: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct CaptureStatusArgs {
+    #[arg(long, short = 'o', value_name = "DIR")]
+    output_dir: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct CaptureServeArgs {
+    #[arg(long, short = 'o', value_name = "DIR")]
+    output_dir: String,
+    #[arg(long, short = 'c', value_name = "FILE")]
+    config: PathBuf,
+    #[arg(long)]
+    debug: bool,
+    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
+    format: capture::CaptureFormat,
+}
+
+#[derive(Debug, Args)]
+struct CaptureImportArgs {
+    /// Trajectory root or session directory (`{storage}/{agent_id}/{session_id}/`).
+    #[arg(value_name = "STORAGE")]
+    storage: String,
+    /// `ide` = Claude + Cursor JSONL; `gateway` = OTLP/envelope JSONL; `all` = both.
+    #[arg(long, value_enum, default_value_t = capture::CaptureProvider::Ide)]
+    provider: capture::CaptureProvider,
+    /// Only include files modified within the last N days.
+    #[arg(long, default_value_t = 30)]
+    since_days: u64,
+    /// Substring match on encoded project dir (default: current working directory).
+    #[arg(long)]
+    project: Option<String>,
+    /// Do not filter by project; scan all projects under `~/.claude` / `~/.cursor`.
+    #[arg(long)]
+    all_projects: bool,
+    /// Import a single session (required when multiple sessions match).
+    #[arg(long, value_name = "SEG")]
+    session_id: Option<String>,
+    /// Trajectory `agent_id` segment (default: `--project` slug or `capture`).
+    #[arg(long, value_name = "SEG")]
+    agent_id: Option<String>,
+    /// Include `subagents/*.jsonl` and merge by timestamp.
+    #[arg(long, default_value_t = true)]
+    merge_subagents: bool,
+    /// agentgateway export JSONL (`-` = stdin). Required for `gateway` / `all`.
+    #[arg(long, default_value = "-")]
+    gateway_input: String,
+    /// Print counts only; do not call the engine.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -390,59 +610,111 @@ enum TrajectoryCommand {
 
 #[derive(Debug, Args)]
 struct TrajectoryAddArgs {
-    /// Root directory for trajectory datasets (parent of per-name Lance dirs).
+    /// Root directory for trajectory datasets (parent of `agent_id/session_id/` Lance dirs).
     #[arg(value_name = "STORAGE")]
     storage: String,
-    /// Logical trajectory name (namespace under `STORAGE`).
-    #[arg(value_name = "NAME")]
-    name: String,
-    /// Input encoding: **jsonl** = one JSON object per line; **toml** = root `records` array (`[[records]]` or `records = [...]`); **ronl** = one RON value per line (passed through).
-    #[arg(long, value_enum, default_value_t = TrajectoryAddFormat::Jsonl)]
+    /// Agent identity（单层路径段；省略则自动生成并在 stderr 打印）。
+    #[arg(long, value_name = "SEG")]
+    agent_id: Option<String>,
+    /// Session / run id（单层路径段；省略则自动生成并在 stderr 打印）。
+    #[arg(long, value_name = "SEG")]
+    session_id: Option<String>,
+    /// 输入格式；`auto` 时按 `--input` 文件名推断（`0001.md` → markdown，`.jsonl` → jsonl，…）。
+    #[arg(long, value_enum, default_value_t = TrajectoryAddFormat::Auto)]
     format: TrajectoryAddFormat,
     #[arg(long, default_value = "-")]
     input: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum TrajectoryAddFormat {
-    /// One JSON object per non-empty line; converted to RON lines for the engine.
-    #[default]
-    Jsonl,
-    /// Single TOML document with a `records` array (array of tables or inline tables).
-    Toml,
-    /// One RON value per non-empty line (unchanged on the wire).
-    Ronl,
+    /// 存储后端；`auto` 时按 `--input` 文件名推断（`0001.md` → markdown，`.jsonl`/`.toml` → lance）。
+    #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
+    storage_format: TrajectoryStorageCli,
 }
 
 #[derive(Debug, Args)]
 struct TrajectoryReplayArgs {
-    /// Root directory for trajectory datasets.
+    /// Storage root or session directory (`{storage}/{agent_id}/{session_id}/`).
     #[arg(value_name = "STORAGE")]
     storage: String,
-    /// Logical trajectory name.
-    #[arg(value_name = "NAME")]
-    name: String,
-    #[arg(long)]
-    trajectory_id: Option<String>,
+    /// 须与 `trajectory add` 写入时一致（add 若自动生成，见当时 stderr）。
+    #[arg(long, value_name = "SEG")]
+    agent_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    session_id: Option<String>,
+    /// 嵌套 subagent session 时指定父 session（路径 `{root}/subagents/{session_id}/`）。
+    #[arg(long, value_name = "SEG")]
+    root_session_id: Option<String>,
     #[arg(long, default_value_t = 0)]
     offset: usize,
     #[arg(long)]
     limit: Option<usize>,
+    #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
+    storage_format: TrajectoryStorageCli,
 }
 
 #[derive(Debug, Args)]
 struct TrajectoryStatsArgs {
-    /// Root directory for trajectory datasets.
+    /// Storage root or session directory (`{storage}/{agent_id}/{session_id}/`).
     #[arg(value_name = "STORAGE")]
     storage: String,
-    /// Logical trajectory name.
-    #[arg(value_name = "NAME")]
-    name: String,
+    #[arg(long, value_name = "SEG")]
+    agent_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    session_id: Option<String>,
+    /// 嵌套 subagent session 时指定父 session（路径 `{root}/subagents/{session_id}/`）。
+    #[arg(long, value_name = "SEG")]
+    root_session_id: Option<String>,
+    #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
+    storage_format: TrajectoryStorageCli,
+    /// 逐轮一行摘要：用户/模型字符数、TTFT、TPOT（stdout 纯文本，非 TOML）。
+    #[arg(long)]
+    detail: bool,
 }
 
-fn resolve_engine_path(cli: &Cli) -> Result<PathBuf> {
-    if let Some(ref p) = cli.core_lib {
-        return Ok(p.clone());
+static TRAJ_AUTO_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// 生成单层路径段（仅小写十六进制与连字符，不含 `/` `\`）。
+fn auto_traj_segment() -> String {
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let c = TRAJ_AUTO_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("auto-{ns:x}-{c:x}")
+}
+
+fn resolve_traj_ids_for_write(
+    agent_id: Option<String>,
+    session_id: Option<String>,
+) -> Result<(String, String)> {
+    let agent = agent_id.unwrap_or_else(auto_traj_segment);
+    let session = session_id.unwrap_or_else(auto_traj_segment);
+    validate_traj_segment(&agent)?;
+    validate_traj_segment(&session)?;
+    Ok((agent, session))
+}
+
+/// 校验路径段不含分隔符，防止目录穿越。
+fn validate_traj_segment(s: &str) -> Result<()> {
+    if s.contains('/') || s.contains('\\') || s.contains("..") {
+        return Err(anyhow::anyhow!(
+            "trajectory id must not contain path separators or '..': got {s:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_traj_ids_for_read(
+    op: &str,
+    path_arg: String,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+    root_session_id: Option<String>,
+) -> Result<TrajLocation> {
+    resolve_traj_read_location(op, path_arg, agent_id, session_id, root_session_id)
+}
+
+fn resolve_engine_path(core_lib: Option<&Path>) -> Result<PathBuf> {
+    if let Some(p) = core_lib {
+        return Ok(p.to_path_buf());
     }
     let exe_dir = std::env::current_exe()
         .ok()
@@ -464,15 +736,27 @@ fn resolve_engine_path(cli: &Cli) -> Result<PathBuf> {
 fn engine_lib_names() -> [&'static str; 3] {
     #[cfg(target_os = "macos")]
     {
-        ["libpersisting_engine.dylib", "libpersisting_engine.so", "persisting_engine.dll"]
+        [
+            "libpersisting_engine.dylib",
+            "libpersisting_engine.so",
+            "persisting_engine.dll",
+        ]
     }
     #[cfg(target_os = "linux")]
     {
-        ["libpersisting_engine.so", "libpersisting_engine.dylib", "persisting_engine.dll"]
+        [
+            "libpersisting_engine.so",
+            "libpersisting_engine.dylib",
+            "persisting_engine.dll",
+        ]
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
     {
-        ["persisting_engine.dll", "libpersisting_engine.so", "libpersisting_engine.dylib"]
+        [
+            "persisting_engine.dll",
+            "libpersisting_engine.so",
+            "libpersisting_engine.dylib",
+        ]
     }
 }
 
@@ -481,9 +765,263 @@ fn main() -> Result<()> {
     let mut lazy = LazyEngine::new(&cli);
     match &cli.command {
         Command::Search(args) => run_search(&mut lazy, args)?,
-        Command::Trajectory(args) => run_trajectory(&mut lazy, args)?,
+        Command::Trajectory(args) | Command::Traj(args) => run_trajectory(&mut lazy, args)?,
+        Command::Capture(args) => run_capture(&mut lazy, args)?,
     }
     Ok(())
+}
+
+fn run_capture(lazy: &mut LazyEngine<'_>, args: &CaptureArgs) -> Result<()> {
+    match &args.command {
+        CaptureCommand::Start(args) => {
+            if args.foreground {
+                run_capture_serve(
+                    lazy,
+                    &CaptureServeArgs {
+                        output_dir: args.output_dir.clone(),
+                        config: args.config.clone(),
+                        debug: args.debug,
+                        format: args.format,
+                    },
+                )?;
+            } else {
+                capture::daemon::cmd_start(capture::daemon::StartOptions {
+                    output_dir: PathBuf::from(&args.output_dir),
+                    config: args.config.clone(),
+                    debug: args.debug,
+                    format: args.format,
+                })?;
+            }
+        }
+        CaptureCommand::Stop(args) => {
+            let storage = args.output_dir.as_deref().map(Path::new);
+            capture::daemon::cmd_stop(storage)?;
+        }
+        CaptureCommand::List(args) => {
+            let storage = args.output_dir.as_deref().map(Path::new);
+            let sessions = capture::daemon::cmd_list(storage)?;
+            capture::daemon::print_list_table(&sessions);
+        }
+        CaptureCommand::Status(args) => {
+            let storage = args.output_dir.as_deref().map(Path::new);
+            capture::daemon::cmd_status(storage)?;
+        }
+        CaptureCommand::Serve(args) => run_capture_serve(lazy, args)?,
+        CaptureCommand::Run(args) => {
+            let code = run_capture_run(lazy, args)?;
+            std::process::exit(code);
+        }
+        CaptureCommand::Import(args) => {
+            let merged = merge_traj_location(
+                args.storage.clone(),
+                args.agent_id.clone(),
+                args.session_id.clone(),
+                None,
+            );
+            let gateway_input = match args.provider {
+                capture::CaptureProvider::Ide => None,
+                capture::CaptureProvider::Gateway | capture::CaptureProvider::All => {
+                    Some(args.gateway_input.clone())
+                }
+            };
+            let opts = capture::CaptureImportOptions {
+                providers: args.provider,
+                since_days: args.since_days,
+                project_filter: args.project.clone(),
+                all_projects: args.all_projects,
+                session_id: merged.session_id,
+                agent_id: merged.agent_id,
+                merge_subagents: args.merge_subagents,
+                gateway_input,
+                dry_run: args.dry_run,
+            };
+            let summary = capture::import_to_trajectory_with_engine(
+                &merged.storage,
+                &opts,
+                |storage, agent_id, session_id, records_ronl| {
+                    eprintln!(
+                        "[persisting-cli] capture import: {record_count} records -> {storage}/{agent_id}/{session_id}",
+                        record_count = records_ronl.lines().filter(|l| !l.trim().is_empty()).count(),
+                        storage = storage,
+                        agent_id = agent_id,
+                        session_id = session_id,
+                    );
+                    let payload = rpc_request_pretty(RequestBody::TrajectoryAppend(
+                        TrajectoryAppendRequest {
+                            storage: storage.to_string(),
+                            agent_id: agent_id.to_string(),
+                            session_id: session_id.to_string(),
+                            root_session_id: None,
+                            records_ronl: records_ronl.to_string(),
+                            storage_format: TrajectoryStorageFormat::Auto,
+                        },
+                    ))
+                    .context("encode TrajectoryAppend RpcRequest RON")?;
+                    lazy.invoke_engine_ron(&payload)
+                },
+            )?;
+            print_capture_summary(&summary, args.dry_run);
+        }
+    }
+    Ok(())
+}
+
+struct TrajectoryAppendJob {
+    storage: String,
+    agent_id: String,
+    session_id: String,
+    root_session_id: Option<String>,
+    record: persisting_capture::CaptureRecord,
+}
+
+fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i32> {
+    let storage = PathBuf::from(&args.output_dir);
+    let storage = storage.canonicalize().unwrap_or(storage);
+    let config = persisting_capture::ProxyConfig::from_yaml_file(&args.config)
+        .with_context(|| format!("load proxy config {}", args.config.display()))?;
+    let (sink, worker) = build_capture_trajectory_sink(
+        lazy.cli.core_lib.clone(),
+        storage.display().to_string(),
+        config.agent_id.clone(),
+        args.format.into(),
+    )?;
+    let code = capture::cmd_run(capture::RunOptions {
+        output_dir: storage,
+        config: args.config.clone(),
+        command: args.command.clone(),
+        debug: args.debug,
+        format: args.format,
+        sink,
+    })?;
+    worker.shutdown();
+    Ok(code)
+}
+
+struct TrajectoryAppendWorker {
+    job_tx: Arc<std::sync::mpsc::SyncSender<TrajectoryAppendJob>>,
+    join: std::thread::JoinHandle<()>,
+}
+
+impl TrajectoryAppendWorker {
+    fn shutdown(self) {
+        drop(self.job_tx);
+        if let Err(e) = self.join.join() {
+            eprintln!("[persisting-cli] capture trajectory worker panicked: {e:?}");
+        }
+    }
+}
+
+fn build_capture_trajectory_sink(
+    core_lib: Option<PathBuf>,
+    storage: String,
+    agent_id: String,
+    storage_format: TrajectoryStorageFormat,
+) -> Result<(
+    std::sync::Arc<persisting_capture::CallbackSink>,
+    TrajectoryAppendWorker,
+)> {
+    let engine_path = resolve_engine_path(core_lib.as_deref())?;
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<TrajectoryAppendJob>(256);
+    let job_tx = Arc::new(job_tx);
+    let tx = Arc::clone(&job_tx);
+
+    let join = std::thread::spawn(move || {
+        let engine = match Engine::load(&engine_path) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[persisting-cli] capture trajectory engine load failed: {e:#}");
+                return;
+            }
+        };
+        while let Ok(job) = job_rx.recv() {
+            let result = (|| -> Result<(), anyhow::Error> {
+                let line = persisting_capture::record_to_engine_line(&job.record)?;
+                let payload =
+                    rpc_request_pretty(RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
+                        storage: job.storage.clone(),
+                        agent_id: job.agent_id,
+                        session_id: job.session_id,
+                        root_session_id: job.root_session_id,
+                        records_ronl: format!("{line}\n"),
+                        storage_format,
+                    }))?;
+                let raw = engine.invoke_engine_ron(&payload)?;
+                parse_engine_ron_response(&raw)?;
+                Ok(())
+            })();
+            if let Err(e) = result {
+                eprintln!("[persisting-cli] capture trajectory append failed: {e:#}");
+            }
+        }
+    });
+
+    let sink_storage = storage;
+    let sink = std::sync::Arc::new(persisting_capture::CallbackSink::new(
+        agent_id,
+        move |route, agent_id, record| {
+            tx.send(TrajectoryAppendJob {
+                storage: sink_storage.clone(),
+                agent_id: agent_id.to_string(),
+                session_id: route.storage_session_id.clone(),
+                root_session_id: route.append_root_session(),
+                record,
+            })
+            .map_err(|e| anyhow::anyhow!("engine append channel closed: {e}"))?;
+            Ok(())
+        },
+    ));
+    Ok((sink, TrajectoryAppendWorker { job_tx, join }))
+}
+
+fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Result<()> {
+    let storage_path = PathBuf::from(&args.output_dir);
+    let applied = persisting_capture::apply_daemon_env(&storage_path)
+        .with_context(|| format!("apply daemon env snapshot for {}", storage_path.display()))?;
+    if !applied.is_empty() {
+        eprintln!(
+            "[persisting-cli] capture serve: applied daemon env snapshot ({} keys: {})",
+            applied.len(),
+            applied.join(", ")
+        );
+    }
+
+    let config = persisting_capture::ProxyConfig::from_yaml_file(&args.config)
+        .with_context(|| format!("load proxy config {}", args.config.display()))?;
+
+    capture::enable_capture_debug(
+        &capture::CaptureDebugContext {
+            storage: &storage_path,
+            applied_env_keys: &applied,
+        },
+        args.debug,
+    )?;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let (sink, worker) = build_capture_trajectory_sink(
+        lazy.cli.core_lib.clone(),
+        args.output_dir.clone(),
+        config.agent_id.clone(),
+        args.format.into(),
+    )?;
+
+    let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
+    rt.block_on(persisting_capture::serve(config, &args.output_dir, sink))?;
+    worker.shutdown();
+    Ok(())
+}
+
+fn print_capture_summary(summary: &capture::CaptureImportSummary, dry_run: bool) {
+    let mode = if dry_run { "dry-run" } else { "imported" };
+    eprintln!(
+        "[persisting-cli] capture {mode}: {} records @ {} (agent_id={} session_id={})",
+        summary.record_count, summary.storage, summary.agent_id, summary.session_id
+    );
+    for (src, n) in &summary.sources {
+        eprintln!("[persisting-cli] capture   source {src}: {n}");
+    }
 }
 
 fn run_search(lazy: &mut LazyEngine<'_>, args: &SearchArgs) -> Result<()> {
@@ -508,10 +1046,19 @@ fn run_search(lazy: &mut LazyEngine<'_>, args: &SearchArgs) -> Result<()> {
                         },
                     ))
                     .context("encode SearchImportLance RpcRequest RON")?;
+                    eprintln!(
+                        "[persisting-cli] search create: Lance import from {:?} -> dataset {:?} (engine may take a while)…",
+                        args.input, args.dataset
+                    );
                     lazy.invoke_engine_ron(&payload)?;
                 }
                 ImportFormat::Jsonl | ImportFormat::Csv => {
                     let content = read_input(&args.input)?;
+                    eprintln!(
+                        "[persisting-cli] search create: read {} bytes from {:?}, parsing…",
+                        content.len(),
+                        args.input
+                    );
                     let rows = match fmt {
                         ImportFormat::Jsonl => {
                             parse_jsonl_import(&content, &args.dataset, args.embedding_dim)?
@@ -521,23 +1068,22 @@ fn run_search(lazy: &mut LazyEngine<'_>, args: &SearchArgs) -> Result<()> {
                         }
                         ImportFormat::Auto | ImportFormat::Lance => unreachable!(),
                     };
-                    for row in rows {
-                        let payload = rpc_request_pretty(RequestBody::SearchAdd(row))
-                            .context("encode SearchAdd RpcRequest RON")?;
-                        lazy.invoke_engine_ron(&payload)?;
-                    }
+                    eprintln!(
+                        "[persisting-cli] search create: parsed {} rows, sending to engine…",
+                        rows.len()
+                    );
+                    search_add_batch(lazy, rows)?;
                 }
                 ImportFormat::Auto => unreachable!(),
             }
         }
         SearchCommand::Index(idx) => match &idx.command {
             SearchIndexCommand::List(args) => {
-                let payload = rpc_request_pretty(RequestBody::SearchIndexList(
-                    SearchIndexListRequest {
+                let payload =
+                    rpc_request_pretty(RequestBody::SearchIndexList(SearchIndexListRequest {
                         dataset: args.dataset.clone(),
-                    },
-                ))
-                .context("encode SearchIndexList RpcRequest RON")?;
+                    }))
+                    .context("encode SearchIndexList RpcRequest RON")?;
                 lazy.invoke_engine_ron(&payload)?;
             }
             SearchIndexCommand::Build(args) => {
@@ -567,16 +1113,23 @@ fn run_search(lazy: &mut LazyEngine<'_>, args: &SearchArgs) -> Result<()> {
                     pq_sample_rate: args.pq_sample_rate,
                 }))
                 .context("encode SearchIndex RpcRequest RON")?;
+                eprintln!(
+                    "[persisting-cli] search index build: dataset {:?} (IVF/PQ 训练可能需数分钟，期间无 stdout 输出)…",
+                    args.dataset
+                );
                 lazy.invoke_engine_ron(&payload)?;
+                eprintln!(
+                    "[persisting-cli] search index build: finished {:?}",
+                    args.dataset
+                );
             }
             SearchIndexCommand::Delete(args) => {
-                let payload = rpc_request_pretty(RequestBody::SearchIndexDelete(
-                    SearchIndexDeleteRequest {
+                let payload =
+                    rpc_request_pretty(RequestBody::SearchIndexDelete(SearchIndexDeleteRequest {
                         dataset: args.dataset.clone(),
                         index_name: args.index_name.clone(),
-                    },
-                ))
-                .context("encode SearchIndexDelete RpcRequest RON")?;
+                    }))
+                    .context("encode SearchIndexDelete RpcRequest RON")?;
                 lazy.invoke_engine_ron(&payload)?;
             }
             SearchIndexCommand::Rebuild(args) => {
@@ -589,7 +1142,12 @@ fn run_search(lazy: &mut LazyEngine<'_>, args: &SearchArgs) -> Result<()> {
                     },
                 ))
                 .context("encode SearchIndexRebuild RpcRequest RON")?;
+                eprintln!(
+                    "[persisting-cli] search index rebuild: dataset {:?} index {:?} (可能较慢)…",
+                    args.dataset, args.index_name
+                );
                 lazy.invoke_engine_ron(&payload)?;
+                eprintln!("[persisting-cli] search index rebuild: finished");
             }
             SearchIndexCommand::Reorder(args) => {
                 let payload = rpc_request_pretty(RequestBody::SearchIndexReorder(
@@ -601,7 +1159,12 @@ fn run_search(lazy: &mut LazyEngine<'_>, args: &SearchArgs) -> Result<()> {
                     },
                 ))
                 .context("encode SearchIndexReorder RpcRequest RON")?;
+                eprintln!(
+                    "[persisting-cli] search index reorder: dataset {:?} (可能较慢)…",
+                    args.dataset
+                );
                 lazy.invoke_engine_ron(&payload)?;
+                eprintln!("[persisting-cli] search index reorder: finished");
             }
         },
         SearchCommand::Query(args) => {
@@ -619,6 +1182,10 @@ fn run_search(lazy: &mut LazyEngine<'_>, args: &SearchArgs) -> Result<()> {
                 adaptive_nprobes_margin: args.adaptive_nprobes_margin,
             }))
             .context("encode SearchQuery RpcRequest RON")?;
+            eprintln!(
+                "[persisting-cli] search query: dataset {:?} mode {:?}…",
+                args.dataset, args.mode
+            );
             lazy.invoke_engine_ron(&payload)?;
         }
     }
@@ -663,12 +1230,8 @@ fn parse_jsonl_import(
         if line.trim().is_empty() {
             continue;
         }
-        let mut value: serde_json::Value = serde_json::from_str(line).with_context(|| {
-            format!(
-                "invalid JSON on line {} of JSONL import",
-                line_no + 1
-            )
-        })?;
+        let mut value: serde_json::Value = serde_json::from_str(line)
+            .with_context(|| format!("invalid JSON on line {} of JSONL import", line_no + 1))?;
         let text = value
             .get("text")
             .and_then(|v| v.as_str())
@@ -693,6 +1256,10 @@ fn parse_jsonl_import(
             metadata,
             embedding_dim,
         });
+        let n = rows.len();
+        if n == 1 || n % 2000 == 0 {
+            eprintln!("[persisting-cli] search create: parsed {n} jsonl rows…");
+        }
     }
     if rows.is_empty() {
         anyhow::bail!("JSONL import contained no non-empty lines");
@@ -713,10 +1280,10 @@ fn parse_csv_import(
     let pos_text = headers
         .iter()
         .position(|h| h.eq_ignore_ascii_case("text"))
-        .ok_or_else(|| anyhow::anyhow!("CSV must include a column named 'text' (case-insensitive)"))?;
-    let pos_id = headers
-        .iter()
-        .position(|h| h.eq_ignore_ascii_case("id"));
+        .ok_or_else(|| {
+            anyhow::anyhow!("CSV must include a column named 'text' (case-insensitive)")
+        })?;
+    let pos_id = headers.iter().position(|h| h.eq_ignore_ascii_case("id"));
     let mut out = Vec::new();
     for (row_idx, result) in rdr.records().enumerate() {
         let rec = result.with_context(|| format!("CSV parse error at data row {}", row_idx + 1))?;
@@ -738,7 +1305,10 @@ fn parse_csv_import(
                 if val.is_empty() {
                     continue;
                 }
-                meta.insert(col_name.to_string(), serde_json::Value::String(val.to_string()));
+                meta.insert(
+                    col_name.to_string(),
+                    serde_json::Value::String(val.to_string()),
+                );
             }
         }
         let metadata = if meta.is_empty() {
@@ -753,6 +1323,10 @@ fn parse_csv_import(
             metadata,
             embedding_dim,
         });
+        let n = out.len();
+        if n == 1 || n % 2000 == 0 {
+            eprintln!("[persisting-cli] search create: parsed {n} csv rows…");
+        }
     }
     if out.is_empty() {
         anyhow::bail!("CSV contained no data rows");
@@ -760,44 +1334,170 @@ fn parse_csv_import(
     Ok(out)
 }
 
+fn invoke_trajectory_stats(
+    lazy: &mut LazyEngine<'_>,
+    req: TrajectoryStatsRequest,
+) -> Result<TrajectoryStatsResponse> {
+    let payload =
+        rpc_request_pretty(RequestBody::TrajectoryStats(req)).context("encode TrajectoryStats")?;
+    let raw = lazy.invoke_engine_ron_silent(&payload)?;
+    match parse_engine_ron_response(&raw)?.body {
+        ResponseBody::TrajectoryStats(r) => Ok(r),
+        other => anyhow::bail!("unexpected engine response: {other:?}"),
+    }
+}
+
+fn invoke_trajectory_replay(
+    lazy: &mut LazyEngine<'_>,
+    req: TrajectoryReplayRequest,
+) -> Result<TrajectoryReplayResponse> {
+    let payload = rpc_request_pretty(RequestBody::TrajectoryReplay(req))
+        .context("encode TrajectoryReplay")?;
+    let raw = lazy.invoke_engine_ron_silent(&payload)?;
+    match parse_engine_ron_response(&raw)?.body {
+        ResponseBody::TrajectoryReplay(r) => Ok(r),
+        other => anyhow::bail!("unexpected engine response: {other:?}"),
+    }
+}
+
 fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()> {
     match &args.command {
         TrajectoryCommand::Add(args) => {
+            let auto_agent = args.agent_id.is_none();
+            let auto_session = args.session_id.is_none();
+            let (agent_id, session_id) =
+                resolve_traj_ids_for_write(args.agent_id.clone(), args.session_id.clone())?;
+            if auto_agent || auto_session {
+                eprintln!(
+                    "[persisting-cli] trajectory add: auto agent_id={agent_id} session_id={session_id} (override with --agent-id / --session-id)"
+                );
+            }
             let raw = read_input(&args.input)?;
-            let records_ronl =
-                trajectory_add_input_to_ronl(args.format, &raw).context("normalize trajectory add input")?;
-            let payload = rpc_request_pretty(RequestBody::TrajectoryAppend(
-                TrajectoryAppendRequest {
+            let input_format =
+                TrajectoryFormatManager::resolve_add_format(&args.input, args.format)
+                    .context("resolve trajectory add input format")?;
+            let storage_format =
+                TrajectoryFormatManager::resolve_storage_format(&args.input, args.storage_format);
+            eprintln!(
+                "[persisting-cli] trajectory add: read {} bytes from {:?} (format={input_format:?} storage={:?}), converting…",
+                raw.len(),
+                args.input,
+                storage_format,
+            );
+            let records_ronl = TrajectoryFormatManager::prepare_append_batch(input_format, &raw)
+                .context("normalize trajectory add input")?;
+            eprintln!(
+                "[persisting-cli] trajectory add: {} bytes internal payload, building RpcRequest…",
+                records_ronl.len()
+            );
+            let payload =
+                rpc_request_pretty(RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
                     storage: args.storage.clone(),
-                    name: args.name.clone(),
+                    agent_id,
+                    session_id,
+                    root_session_id: None,
                     records_ronl,
-                },
-            ))
-            .context("encode TrajectoryAppend RpcRequest RON")?;
+                    storage_format,
+                }))
+                .context("encode TrajectoryAppend RpcRequest RON")?;
+            eprintln!(
+                "[persisting-cli] trajectory add: request {} bytes, calling engine (大轨迹可能较慢)…",
+                payload.len()
+            );
             lazy.invoke_engine_ron(&payload)?;
+            eprintln!("[persisting-cli] trajectory add: engine returned");
         }
         TrajectoryCommand::Replay(args) => {
-            let payload = rpc_request_pretty(RequestBody::TrajectoryReplay(
-                TrajectoryReplayRequest {
-                    storage: args.storage.clone(),
-                    name: args.name.clone(),
-                    trajectory_id: args.trajectory_id.clone(),
+            let loc = resolve_traj_ids_for_read(
+                "trajectory replay",
+                args.storage.clone(),
+                args.agent_id.clone(),
+                args.session_id.clone(),
+                args.root_session_id.clone(),
+            )?;
+            let payload =
+                rpc_request_pretty(RequestBody::TrajectoryReplay(TrajectoryReplayRequest {
+                    storage: loc.storage,
+                    agent_id: loc.agent_id,
+                    session_id: loc.session_id,
                     offset: args.offset,
                     limit: args.limit,
-                },
-            ))
-            .context("encode TrajectoryReplay RpcRequest RON")?;
+                    storage_format: args.storage_format.into(),
+                    root_session_id: loc.root_session_id,
+                }))
+                .context("encode TrajectoryReplay RpcRequest RON")?;
             lazy.invoke_engine_ron(&payload)?;
         }
         TrajectoryCommand::Stats(args) => {
-            let payload = rpc_request_pretty(RequestBody::TrajectoryStats(
-                TrajectoryStatsRequest {
-                    storage: args.storage.clone(),
-                    name: args.name.clone(),
-                },
-            ))
-            .context("encode TrajectoryStats RpcRequest RON")?;
-            lazy.invoke_engine_ron(&payload)?;
+            let loc = resolve_traj_ids_for_read(
+                "trajectory stats",
+                args.storage.clone(),
+                args.agent_id.clone(),
+                args.session_id.clone(),
+                args.root_session_id.clone(),
+            )?;
+            let stats_req = TrajectoryStatsRequest {
+                storage: loc.storage.clone(),
+                agent_id: loc.agent_id.clone(),
+                session_id: loc.session_id.clone(),
+                storage_format: args.storage_format.into(),
+                root_session_id: loc.root_session_id.clone(),
+            };
+            if args.detail {
+                let stats = invoke_trajectory_stats(lazy, stats_req)?;
+                if stats.status != "ok" {
+                    print_trajectory_stats_as_toml(&stats)?;
+                    return Ok(());
+                }
+                let parent_root = loc
+                    .root_session_id
+                    .clone()
+                    .unwrap_or_else(|| loc.session_id.clone());
+                let replay = invoke_trajectory_replay(
+                    lazy,
+                    TrajectoryReplayRequest {
+                        storage: loc.storage.clone(),
+                        agent_id: loc.agent_id.clone(),
+                        session_id: loc.session_id.clone(),
+                        offset: 0,
+                        limit: None,
+                        storage_format: args.storage_format.into(),
+                        root_session_id: loc.root_session_id.clone(),
+                    },
+                )?;
+                let storage = loc.storage.clone();
+                let agent_id = loc.agent_id.clone();
+                let storage_format = args.storage_format;
+                let mut load_subagent = |link: &SpawnLinkInfo| -> Result<Option<Vec<String>>> {
+                    let replay = invoke_trajectory_replay(
+                        lazy,
+                        TrajectoryReplayRequest {
+                            storage: storage.clone(),
+                            agent_id: agent_id.clone(),
+                            session_id: link.storage_session_id(),
+                            offset: 0,
+                            limit: None,
+                            storage_format: storage_format.into(),
+                            root_session_id: Some(parent_root.clone()),
+                        },
+                    );
+                    match replay {
+                        Ok(r) if r.status == "ok" && !r.records.is_empty() => Ok(Some(r.records)),
+                        Ok(_) => Ok(None),
+                        Err(_) => Ok(None),
+                    }
+                };
+                let tree = build_detail_node(
+                    format!("main ({})", stats.session_id),
+                    &replay.records,
+                    &mut load_subagent,
+                )?;
+                print_trajectory_stats_detail(&stats, &tree)?;
+            } else {
+                let payload = rpc_request_pretty(RequestBody::TrajectoryStats(stats_req))
+                    .context("encode TrajectoryStats RpcRequest RON")?;
+                lazy.invoke_engine_ron(&payload)?;
+            }
         }
     }
     Ok(())
@@ -810,49 +1510,4 @@ fn read_input(path: &str) -> Result<String> {
         return Ok(buffer);
     }
     Ok(fs::read_to_string(path)?)
-}
-
-/// CLI accepts JSONL / TOML / RONL; the engine contract remains newline-separated RON values.
-fn trajectory_add_input_to_ronl(format: TrajectoryAddFormat, raw: &str) -> Result<String> {
-    match format {
-        TrajectoryAddFormat::Ronl => Ok(raw.to_string()),
-        TrajectoryAddFormat::Jsonl => jsonl_to_ronl(raw),
-        TrajectoryAddFormat::Toml => toml_records_to_ronl(raw),
-    }
-}
-
-fn jsonl_to_ronl(src: &str) -> Result<String> {
-    let mut lines = Vec::new();
-    for (i, line) in src.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = serde_json::from_str(line)
-            .with_context(|| format!("invalid JSON on trajectory jsonl line {}", i + 1))?;
-        lines.push(
-            ron::to_string(&v).with_context(|| format!("encode trajectory jsonl line {} as RON", i + 1))?,
-        );
-    }
-    Ok(lines.join("\n"))
-}
-
-fn toml_records_to_ronl(src: &str) -> Result<String> {
-    let root: toml::Value =
-        toml::from_str(src).context("parse trajectory TOML (expect root table with `records` array)")?;
-    let records = root.get("records").ok_or_else(|| {
-        anyhow::anyhow!(
-            "trajectory TOML must define `records`: e.g. `[[records]]` per row or `records = [{{ ... }}, ...]`"
-        )
-    })?;
-    let arr = records
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("trajectory TOML `records` must be an array"))?;
-    let mut lines = Vec::with_capacity(arr.len());
-    for (i, item) in arr.iter().enumerate() {
-        lines.push(
-            ron::to_string(item).with_context(|| format!("encode trajectory TOML records[{i}] as RON"))?,
-        );
-    }
-    Ok(lines.join("\n"))
 }

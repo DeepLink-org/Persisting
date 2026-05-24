@@ -1,0 +1,9 @@
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {
+      "role": "user",
+      "content": "再次开三个subagent，帮我看看设计文档的问题"
+    }
+  ]
+}

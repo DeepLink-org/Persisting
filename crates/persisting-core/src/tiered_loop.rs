@@ -49,13 +49,12 @@ impl TieredLoop {
     /// 提交预取任务：blocks 为 [(partition_key_tuple, block_id), ...]，与 Python BlockId 一致。
     fn submit_prefetch(&self, blocks: &Bound<'_, PyAny>) -> PyResult<()> {
         let tx = self.tx.lock().unwrap();
-        let tx = tx.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("TieredLoop 未 start")
-        })?;
+        let tx = tx
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("TieredLoop 未 start"))?;
         let parsed = parse_block_list(blocks)?;
-        tx.send(parsed).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
-        })?;
+        tx.send(parsed)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         Ok(())
     }
 
@@ -97,10 +96,11 @@ fn parse_single_block(item: &Bound<'_, PyAny>) -> PyResult<BlockRef> {
         let v: i64 = if let Ok(n) = v.extract::<i64>() {
             n
         } else if let Ok(s) = v.extract::<String>() {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            s.hash(&mut h);
-            h.finish() as i64
+            // TODO: BlockRef 当前使用 Vec<i64>，无法忠实表示字符串 partition key。
+            // 改为支持 CoordValue（Int/Str/Bytes）后再启用字符串 key。
+            return Err(PyTypeError::new_err(format!(
+                "string partition keys not yet supported (got {s:?}); use integer keys"
+            )));
         } else {
             return Err(PyTypeError::new_err(
                 "partition_key elements must be int or str",

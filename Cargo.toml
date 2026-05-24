@@ -4,6 +4,7 @@ members = [
     "crates/persisting-proto",
     "crates/persisting-engine",
     "crates/persisting-core",
+    "crates/persisting-capture",
     "crates/persisting-cli",
 ]
 
@@ -13,3 +14,18 @@ edition = "2021"
 authors = ["reiase"]
 license = "Apache-2.0"
 description = "Persistent Storage for Parameters, KV Cache, and Trajectories"
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+opt-level = "z"
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
+

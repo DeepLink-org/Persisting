@@ -84,7 +84,8 @@ pub type PersistingEngineJobReleaseStatus = i32;
 pub const PERSISTING_ENGINE_RELEASE_OK: PersistingEngineJobReleaseStatus = 0;
 pub const PERSISTING_ENGINE_RELEASE_ERR_POISONED: PersistingEngineJobReleaseStatus = -1;
 
-pub type PersistingEngineJobReleaseFn = unsafe extern "C" fn(job: u64) -> PersistingEngineJobReleaseStatus;
+pub type PersistingEngineJobReleaseFn =
+    unsafe extern "C" fn(job: u64) -> PersistingEngineJobReleaseStatus;
 
 // ---------------------------------------------------------------------------
 // Labels & helpers

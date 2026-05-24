@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from persisting import _core
 
@@ -23,6 +23,23 @@ def add_document(
     embedding_dim: int = 384,
 ) -> dict[str, Any]:
     return _core.search_add(dataset, text, id=id, metadata=metadata, embedding_dim=embedding_dim)
+
+
+def add_documents_batch(
+    dataset: str,
+    documents: Iterable[dict[str, Any]],
+    *,
+    embedding_dim: int = 384,
+    chunk_size: int = 256,
+) -> dict[str, Any]:
+    """批量写入（引擎 ``SearchAddBatch``，按 ``chunk_size`` 切块）。每行 dict 须含 ``text``，可选 ``id``、``metadata``。
+
+    返回聚合结果：``added`` 为各批成功写入条数之和；``embedding_preview`` 来自首批。
+    """
+    rows = list(documents)
+    return _core.search_add_batch(
+        dataset, rows, embedding_dim=embedding_dim, chunk_size=chunk_size
+    )
 
 
 def query(
@@ -153,6 +170,7 @@ def reorder_ivf(
 __all__ = [
     "ENGINE_PROTOCOL_VERSION",
     "add_document",
+    "add_documents_batch",
     "create_index",
     "delete_index",
     "embed_text",

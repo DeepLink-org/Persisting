@@ -121,10 +121,18 @@ persisting search index build <DATASET> [OPTIONS]
 | `--metric` | `String` | 否 | `cosine` | 距离度量 |
 | `--num-partitions` | `usize` | 否 | — | IVF 分区数 |
 | `--ivf-max-iters` | `usize` | 否 | — | IVF k-means 最大迭代次数 |
+| `--ivf-balance-factor` | `f32` | 否 | — | IVF 平衡因子 |
+| `--ivf-balance-postprocess` | flag | 否 | 关 | 是否执行平衡后处理 |
+| `--ivf-postprocess-max-cluster-ratio` | `f32` | 否 | — | 平衡后处理最大簇比率 |
 | `--ivf-sample-rate` | `usize` | 否 | — | IVF 采样率 |
 | `--ivf-target-partition-size` | `usize` | 否 | — | 目标每分区行数 |
+| `--ivf-shuffle-partition-batches` | `usize` | 否 | — | shuffle 分区批次数 |
+| `--ivf-shuffle-partition-concurrency` | `usize` | 否 | — | shuffle 分区并发数 |
 | `--pq-num-sub-vectors` | `usize` | 否 | — | PQ 子向量数 |
 | `--pq-num-bits` | `u8` | 否 | — | PQ 位数 |
+| `--pq-max-iters` | `usize` | 否 | — | PQ 最大迭代次数 |
+| `--pq-kmeans-redos` | `usize` | 否 | — | PQ k-means 重试次数 |
+| `--pq-sample-rate` | `usize` | 否 | — | PQ 采样率 |
 
 #### 3.2.5 `reorder` — 物理重排
 
@@ -156,8 +164,12 @@ persisting search query <DATASET> <QUERY> [OPTIONS]
 | `--mode` | `vector` \| `fts` \| `hybrid` | 否 | `hybrid` | 检索模式 |
 | `--k` | `usize` | 否 | `10` | 返回结果数 |
 | `--embedding-dim` | `usize` | 否 | `384` | 查询向量维度 |
+| `--text-column` | `String` | 否 | `text` | 全文/混合检索的目标列 |
 | `--filter` | `String` | 否 | — | 过滤表达式（预留） |
 | `--nprobes` | `usize` | 否 | — | IVF 探测数（预留） |
+| `--minimum-nprobes` | `usize` | 否 | — | 自适应 nprobes 下限 |
+| `--maximum-nprobes` | `usize` | 否 | — | 自适应 nprobes 上限 |
+| `--adaptive-nprobes-margin` | `f32` | 否 | — | 自适应 nprobes 余量 |
 
 ---
 

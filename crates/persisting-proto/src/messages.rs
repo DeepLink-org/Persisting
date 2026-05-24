@@ -53,6 +53,22 @@ pub struct SearchAddResponse {
     pub note: String,
 }
 
+/// 多行追加：引擎一次写入一个 Arrow `RecordBatch`（避免逐行 `SearchAdd` 反复打开/提交 Lance）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchAddBatchRequest {
+    pub rows: Vec<SearchAddRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchAddBatchResponse {
+    pub dataset: String,
+    pub added: usize,
+    pub embedding_dim: usize,
+    pub embedding_preview: Vec<f32>,
+    pub status: String,
+    pub note: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQueryRequest {
     pub dataset: String,
@@ -263,18 +279,41 @@ pub struct SearchImportLanceResponse {
 // Trajectory
 // ---------------------------------------------------------------------------
 
+/// Physical storage for a session trajectory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrajectoryStorageFormat {
+    /// Read: Lance if present else markdown; append to empty session: both.
+    #[default]
+    Auto,
+    Lance,
+    /// Markdown session file (`0001.md`, …).
+    #[serde(rename = "markdown", alias = "tlv")]
+    Markdown,
+    Both,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryAppendRequest {
     pub storage: String,
-    pub name: String,
-    /// Newline-separated RON values (one object per non-empty line).
+    /// Stable agent identity (directory segment under `storage/`).
+    pub agent_id: String,
+    /// Session / run scope within the agent (directory segment under `storage/agent_id/`).
+    pub session_id: String,
+    /// When set, nested subagent sessions live under `{root_session_id}/subagents/{session_id}/`.
+    #[serde(default)]
+    pub root_session_id: Option<String>,
+    /// Newline-separated engine lines (RON) for Lance append.
     pub records_ronl: String,
+    #[serde(default)]
+    pub storage_format: TrajectoryStorageFormat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryAppendResponse {
     pub storage: String,
-    pub name: String,
+    pub agent_id: String,
+    pub session_id: String,
     pub accepted_records: usize,
     pub dataset: String,
     pub status: String,
@@ -284,18 +323,24 @@ pub struct TrajectoryAppendResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryReplayRequest {
     pub storage: String,
-    pub name: String,
-    pub trajectory_id: Option<String>,
+    pub agent_id: String,
+    pub session_id: String,
     #[serde(default)]
     pub offset: usize,
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub storage_format: TrajectoryStorageFormat,
+    /// When set, read nested session at `{root_session_id}/subagents/{session_id}/`.
+    #[serde(default)]
+    pub root_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryReplayResponse {
     pub storage: String,
-    pub name: String,
-    /// RON object lines when populated.
+    pub agent_id: String,
+    pub session_id: String,
+    /// JSON object lines (one per step) when populated.
     pub records: Vec<String>,
     pub status: String,
     pub note: String,
@@ -304,14 +349,25 @@ pub struct TrajectoryReplayResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryStatsRequest {
     pub storage: String,
-    pub name: String,
+    pub agent_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub storage_format: TrajectoryStorageFormat,
+    /// When set, read nested session at `{root_session_id}/subagents/{session_id}/`.
+    #[serde(default)]
+    pub root_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryStatsResponse {
     pub storage: String,
-    pub name: String,
+    pub agent_id: String,
+    pub session_id: String,
     pub dataset: String,
+    /// Row count in the Lance table (`0` when dataset is missing).
+    pub row_count: usize,
+    /// Lance dataset manifest version when opened (`None` when missing).
+    pub manifest_version: Option<u64>,
     pub status: String,
     pub note: String,
 }
@@ -321,7 +377,7 @@ pub struct TrajectoryStatsResponse {
 // ---------------------------------------------------------------------------
 
 /// Increment when bincode [`RpcRequest`] / [`RpcResponse`] layout or semantics change.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// RON C ABI：稳定导出为 **`persisting_engine_submit` / `job_poll` / `job_take_result` / `job_release`**（见 **`invoke_abi`**）；
 /// 当信封、job 状态布局或上述符号契约不兼容变化时递增。与 [`PROTOCOL_VERSION`] 独立。
@@ -352,6 +408,7 @@ pub enum RequestBody {
     TrajectoryReplay(TrajectoryReplayRequest),
     TrajectoryStats(TrajectoryStatsRequest),
     SearchImportLance(SearchImportLanceRequest),
+    SearchAddBatch(SearchAddBatchRequest),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,5 +430,6 @@ pub enum ResponseBody {
     TrajectoryReplay(TrajectoryReplayResponse),
     TrajectoryStats(TrajectoryStatsResponse),
     SearchImportLance(SearchImportLanceResponse),
+    SearchAddBatch(SearchAddBatchResponse),
     Error { code: u32, message: String },
 }

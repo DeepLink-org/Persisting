@@ -3,13 +3,15 @@
 use std::path::PathBuf;
 
 fn example_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/src/design/examples/trajectory_complex_markdown.toml")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/src/design/examples/trajectory_complex_markdown.toml")
 }
 
 #[test]
 fn parse_design_trajectory_complex_markdown_toml() {
     let path = example_path();
-    let s = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let s =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let v: toml::Value = toml::from_str(&s).unwrap_or_else(|e| panic!("toml parse: {e}"));
     let recs = v
         .get("records")

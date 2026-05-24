@@ -18,7 +18,7 @@ const UFFDIO_REGISTER_MODE_MISSING: u64 = 1;
 
 #[repr(C)]
 struct UffdioApi {
-    api: u64,        // 0xAA
+    api: u64, // 0xAA
     features: u64,
     ioctl_bits: u64,
 }

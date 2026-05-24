@@ -11,10 +11,10 @@ mod tiered_loop;
 mod uffd;
 
 use persisting_proto::{
-    SearchAddRequest, SearchImportLanceRequest, SearchIndexDeleteRequest, SearchIndexListRequest,
-    SearchIndexRebuildRequest, SearchIndexReorderRequest, SearchIndexRequest, SearchQueryRequest,
-    TrajectoryAppendRequest,
-    TrajectoryReplayRequest, TrajectoryStatsRequest,
+    SearchAddBatchRequest, SearchAddRequest, SearchImportLanceRequest, SearchIndexDeleteRequest,
+    SearchIndexListRequest, SearchIndexRebuildRequest, SearchIndexReorderRequest,
+    SearchIndexRequest, SearchQueryRequest, TrajectoryAppendRequest, TrajectoryReplayRequest,
+    TrajectoryStatsRequest, TrajectoryStorageFormat,
 };
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -533,6 +533,11 @@ fn constraint_to_py(c: &Constraint, py: Python<'_>) -> PyResult<PyObject> {
             Ok(p.into_py(py))
         }
         Constraint::Range { lo, hi } => {
+            if *lo >= *hi {
+                return Err(PyValueError::new_err(
+                    "constraint_to_py: invalid range lo >= hi",
+                ));
+            }
             let r = Range { lo: *lo, hi: *hi };
             Ok(r.into_py(py))
         }
@@ -658,6 +663,101 @@ fn search_add(
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
+}
+
+/// 批量写入文档（内部按 `chunk_size` 切块调用 `SearchAddBatch`，与 CLI `search create` 同引擎路径）。
+#[pyfunction]
+#[pyo3(signature = (dataset, rows, *, embedding_dim=384, chunk_size=256))]
+fn search_add_batch(
+    py: Python<'_>,
+    dataset: String,
+    rows: Bound<'_, PyList>,
+    embedding_dim: usize,
+    chunk_size: usize,
+) -> PyResult<Py<PyAny>> {
+    if chunk_size == 0 {
+        return Err(PyValueError::new_err("chunk_size must be >= 1"));
+    }
+    let n = rows.len();
+    if n == 0 {
+        return Err(PyValueError::new_err("rows must not be empty"));
+    }
+    let mut total_added = 0usize;
+    let mut first_preview: Option<Vec<f32>> = None;
+    let mut notes = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let end = (i + chunk_size).min(n);
+        let mut batch_rows = Vec::with_capacity(end - i);
+        for j in i..end {
+            let item = rows.get_item(j)?;
+            let d = item.downcast::<PyDict>().map_err(|_| {
+                PyTypeError::new_err("each row must be a dict with at least key 'text'")
+            })?;
+            let text: String = d
+                .get_item("text")?
+                .ok_or_else(|| PyKeyError::new_err("text"))?
+                .extract()?;
+            let id = match d.get_item("id")? {
+                None => None,
+                Some(v) => {
+                    if v.is_none() {
+                        None
+                    } else {
+                        Some(v.extract::<String>()?)
+                    }
+                }
+            };
+            let metadata = match d.get_item("metadata")? {
+                None => None,
+                Some(v) => {
+                    if v.is_none() {
+                        None
+                    } else {
+                        let meta = v
+                            .downcast::<PyDict>()
+                            .map_err(|_| PyTypeError::new_err("metadata must be a dict or None"))?;
+                        Some(pythonize::depythonize(meta.as_any())?)
+                    }
+                }
+            };
+            batch_rows.push(SearchAddRequest {
+                dataset: dataset.clone(),
+                id,
+                text,
+                metadata,
+                embedding_dim,
+            });
+        }
+        let req = SearchAddBatchRequest { rows: batch_rows };
+        let resp = persisting_engine::search_add_batch(req).map_err(py_runtime_error)?;
+        if resp.status != "ok" {
+            return Err(PyRuntimeError::new_err(format!(
+                "SearchAddBatch chunk {}..{}: status={} note={}",
+                i,
+                end.saturating_sub(1),
+                resp.status,
+                resp.note
+            )));
+        }
+        total_added = total_added.saturating_add(resp.added);
+        if first_preview.is_none() {
+            first_preview = Some(resp.embedding_preview.clone());
+        }
+        notes.push(resp.note);
+        i = end;
+    }
+    let out = serde_json::json!({
+        "dataset": dataset,
+        "added": total_added,
+        "embedding_dim": embedding_dim,
+        "embedding_preview": first_preview.unwrap_or_default(),
+        "status": "ok",
+        "note": notes.join(" | "),
+    });
+    pythonize::pythonize(py, &out)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        .map(|x| x.unbind())
 }
 
 #[pyfunction]
@@ -833,16 +933,20 @@ fn search_import_lance(
 }
 
 #[pyfunction]
-fn trajectory_append(py: Python<'_>, storage: String, name: String, records: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+fn trajectory_append(
+    py: Python<'_>,
+    storage: String,
+    agent_id: String,
+    session_id: String,
+    records: Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
     let records_ronl: String = if let Ok(s) = records.extract::<String>() {
         s
     } else if let Ok(list) = records.downcast::<PyList>() {
         let mut s = String::new();
         for item in list.iter() {
             let v: serde_json::Value = pythonize::depythonize(item.as_any())?;
-            s.push_str(
-                &ron::to_string(&v).map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
-            );
+            s.push_str(&ron::to_string(&v).map_err(|e| PyRuntimeError::new_err(e.to_string()))?);
             s.push('\n');
         }
         s
@@ -853,8 +957,11 @@ fn trajectory_append(py: Python<'_>, storage: String, name: String, records: Bou
     };
     let req = TrajectoryAppendRequest {
         storage,
-        name,
+        agent_id,
+        session_id,
+        root_session_id: None,
         records_ronl,
+        storage_format: TrajectoryStorageFormat::Auto,
     };
     let resp = persisting_engine::trajectory_append(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
@@ -863,21 +970,32 @@ fn trajectory_append(py: Python<'_>, storage: String, name: String, records: Bou
 }
 
 #[pyfunction]
-#[pyo3(signature = (storage, name, trajectory_id=None, offset=0, limit=None))]
+#[pyo3(signature = (storage, agent_id=None, session_id=None, offset=0, limit=None, root_session_id=None))]
 fn trajectory_replay(
     py: Python<'_>,
     storage: String,
-    name: String,
-    trajectory_id: Option<String>,
+    agent_id: Option<String>,
+    session_id: Option<String>,
     offset: usize,
     limit: Option<usize>,
+    root_session_id: Option<String>,
 ) -> PyResult<Py<PyAny>> {
-    let req = TrajectoryReplayRequest {
+    let loc = persisting_engine::trajectory::resolve_traj_read_location(
+        "trajectory replay",
         storage,
-        name,
-        trajectory_id,
+        agent_id,
+        session_id,
+        root_session_id,
+    )
+    .map_err(py_runtime_error)?;
+    let req = TrajectoryReplayRequest {
+        storage: loc.storage,
+        agent_id: loc.agent_id,
+        session_id: loc.session_id,
         offset,
         limit,
+        storage_format: TrajectoryStorageFormat::Auto,
+        root_session_id: loc.root_session_id,
     };
     let resp = persisting_engine::trajectory_replay(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
@@ -886,8 +1004,29 @@ fn trajectory_replay(
 }
 
 #[pyfunction]
-fn trajectory_stats(py: Python<'_>, storage: String, name: String) -> PyResult<Py<PyAny>> {
-    let req = TrajectoryStatsRequest { storage, name };
+#[pyo3(signature = (storage, agent_id=None, session_id=None, root_session_id=None))]
+fn trajectory_stats(
+    py: Python<'_>,
+    storage: String,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+    root_session_id: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let loc = persisting_engine::trajectory::resolve_traj_read_location(
+        "trajectory stats",
+        storage,
+        agent_id,
+        session_id,
+        root_session_id,
+    )
+    .map_err(py_runtime_error)?;
+    let req = TrajectoryStatsRequest {
+        storage: loc.storage,
+        agent_id: loc.agent_id,
+        session_id: loc.session_id,
+        storage_format: TrajectoryStorageFormat::Auto,
+        root_session_id: loc.root_session_id,
+    };
     let resp = persisting_engine::trajectory_stats(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
@@ -914,6 +1053,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(engine_dispatch, m)?)?;
     m.add_function(wrap_pyfunction!(search_embed_text, m)?)?;
     m.add_function(wrap_pyfunction!(search_add, m)?)?;
+    m.add_function(wrap_pyfunction!(search_add_batch, m)?)?;
     m.add_function(wrap_pyfunction!(search_query, m)?)?;
     m.add_function(wrap_pyfunction!(search_index, m)?)?;
     m.add_function(wrap_pyfunction!(search_index_list, m)?)?;
@@ -934,7 +1074,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(target_os = "linux")]
     m.add_function(wrap_pyfunction!(uffd::start_uffd_handler, m)?)?;
     #[cfg(target_os = "macos")]
-    m.add_function(wrap_pyfunction!(page_fault_darwin::start_uffd_handler, m)?)?;
+    m.add_function(wrap_pyfunction!(page_fault_darwin::start_mach_handler, m)?)?;
     m.add_class::<tiered_loop::TieredLoop>()?;
     Ok(())
 }

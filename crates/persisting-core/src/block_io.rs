@@ -14,7 +14,9 @@ pub fn block_read(path: &str, offset: u64, len: usize) -> PyResult<Vec<u8>> {
     f.seek(SeekFrom::Start(offset))
         .map_err(|e| PyIOError::new_err(e.to_string()))?;
     let mut buf = vec![0u8; len];
-    let n = f.read(&mut buf).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    let n = f
+        .read(&mut buf)
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
     if n != len {
         buf.truncate(n);
     }
@@ -32,7 +34,9 @@ pub fn block_write(path: &str, offset: u64, data: &[u8]) -> PyResult<()> {
         .map_err(|e| PyIOError::new_err(e.to_string()))?;
     f.seek(SeekFrom::Start(offset))
         .map_err(|e| PyIOError::new_err(e.to_string()))?;
-    f.write_all(data).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    f.sync_all().map_err(|e| PyIOError::new_err(e.to_string()))?;
+    f.write_all(data)
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+    f.sync_all()
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
     Ok(())
 }

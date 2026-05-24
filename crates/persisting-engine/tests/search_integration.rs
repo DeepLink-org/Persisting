@@ -82,12 +82,16 @@ fn search_end_to_end_write_index_query_vector_and_fts() {
     assert_eq!(list.status, "ok");
     let names: Vec<&str> = list.indices.iter().map(|e| e.name.as_str()).collect();
     assert!(
-        names.iter().any(|n| *n == persisting_engine::PERSISTING_VECTOR_INDEX_NAME),
+        names
+            .iter()
+            .any(|n| *n == persisting_engine::PERSISTING_VECTOR_INDEX_NAME),
         "expected IVF-PQ index name in {:?}",
         names
     );
     assert!(
-        names.iter().any(|n| *n == persisting_engine::PERSISTING_FTS_INDEX_NAME),
+        names
+            .iter()
+            .any(|n| *n == persisting_engine::PERSISTING_FTS_INDEX_NAME),
         "expected FTS index name in {:?}",
         names
     );
@@ -176,7 +180,9 @@ fn search_index_delete_removes_named_index() {
     .unwrap();
     let names: Vec<&str> = list.indices.iter().map(|e| e.name.as_str()).collect();
     assert!(
-        !names.iter().any(|n| *n == persisting_engine::PERSISTING_FTS_INDEX_NAME),
+        !names
+            .iter()
+            .any(|n| *n == persisting_engine::PERSISTING_FTS_INDEX_NAME),
         "FTS index should be dropped: {:?}",
         names
     );

@@ -65,7 +65,7 @@ pub unsafe extern "C" fn persisting_engine_job_poll(
     status_out: *mut PersistingJobStatus,
 ) -> i32 {
     use persisting_proto::{
-        PERSISTING_ENGINE_POLL_ERR_NULL, PERSISTING_ENGINE_POLL_ERR_NO_JOB,
+        PERSISTING_ENGINE_POLL_ERR_NO_JOB, PERSISTING_ENGINE_POLL_ERR_NULL,
         PERSISTING_ENGINE_POLL_OK,
     };
 
@@ -128,13 +128,8 @@ mod tests {
     fn submit_poll_take_smoke() {
         let ron_in = sample_request_ron();
         let mut handle: u64 = 0;
-        let st = unsafe {
-            persisting_engine_submit(
-                ron_in.as_ptr(),
-                ron_in.len() as u64,
-                &mut handle,
-            )
-        };
+        let st =
+            unsafe { persisting_engine_submit(ron_in.as_ptr(), ron_in.len() as u64, &mut handle) };
         assert_eq!(st, persisting_proto::PERSISTING_ENGINE_SUBMIT_OK);
         assert!(handle > 0);
 
@@ -156,9 +151,8 @@ mod tests {
         assert_eq!(t1, persisting_proto::PERSISTING_ENGINE_TAKE_OK);
         let mut buf = vec![0u8; need as usize];
         let mut w = need;
-        let t2 = unsafe {
-            persisting_engine_job_take_result(handle, buf.as_mut_ptr(), need, &mut w)
-        };
+        let t2 =
+            unsafe { persisting_engine_job_take_result(handle, buf.as_mut_ptr(), need, &mut w) };
         assert_eq!(t2, persisting_proto::PERSISTING_ENGINE_TAKE_OK);
         let text = std::str::from_utf8(&buf).unwrap();
         let _: RpcResponse = ron::de::from_str(text).unwrap();
@@ -170,13 +164,7 @@ mod tests {
     fn take_out_too_small_then_retry() {
         let ron_in = sample_request_ron();
         let mut handle: u64 = 0;
-        unsafe {
-            persisting_engine_submit(
-                ron_in.as_ptr(),
-                ron_in.len() as u64,
-                &mut handle,
-            )
-        };
+        unsafe { persisting_engine_submit(ron_in.as_ptr(), ron_in.len() as u64, &mut handle) };
         loop {
             let mut status = PersistingJobStatus::default();
             unsafe { persisting_engine_job_poll(handle, &mut status) };
@@ -197,7 +185,10 @@ mod tests {
                 &mut out_len,
             )
         };
-        assert_eq!(st, persisting_proto::PERSISTING_ENGINE_TAKE_ERR_OUT_TOO_SMALL);
+        assert_eq!(
+            st,
+            persisting_proto::PERSISTING_ENGINE_TAKE_ERR_OUT_TOO_SMALL
+        );
         assert_eq!(out_len, need);
         let mut buf = vec![0u8; need as usize];
         let st2 = unsafe {

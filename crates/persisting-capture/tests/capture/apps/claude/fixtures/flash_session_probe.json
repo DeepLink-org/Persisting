@@ -1,0 +1,14 @@
+{
+  "model": "deepseek-v4-flash",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "<session>\nReview design docs with subagents\n</session>"
+        }
+      ]
+    }
+  ]
+}

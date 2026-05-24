@@ -1,0 +1,9 @@
+{
+  "model": "deepseek-v4-flash",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Review the design document at docs/src/design/cli_capture_command.zh.md\n\nPlease review for clarity, consistency, and actionable gaps.\nProvide bullet points in Chinese."
+    }
+  ]
+}

@@ -1,161 +1,121 @@
-# CLI 整体架构设计
+# CLI 整体架构
 
-本文档描述 `persisting` CLI 与 `persisting-engine` 之间的交互架构：如何加载引擎、如何发起请求、wire 格式与版本约束。
+`persisting` CLI 是**薄前端**：负责解析用户意图、序列化请求、展示结果；重逻辑（Lance、检索、轨迹引擎）在**可独立发版的引擎**中运行。
 
-`search` 与 `trajectory` 子命令共用此架构，各命令的交互设计见独立文档。
+`search`、`trajectory`、`capture import` 等子命令共用此架构。
 
 ---
 
-## 1. 整体模型
+## 1. 核心思想
+
+| 原则 | 说明 |
+|------|------|
+| **瘦 CLI** | 不静态链接 Lance 或引擎；启动快、二进制小 |
+| **动态引擎** | 运行时加载引擎库；CLI 与引擎可独立升级 |
+| **版本门禁** | 加载时校验 ABI 版本，不兼容则拒绝执行 |
+| **异步任务** | 一次用户操作对应一个引擎 job，可报告进度 |
+| **文本协议** | CLI 与引擎之间用结构化文本（RON）交换请求与响应 |
 
 ```
-persisting CLI (persisting-cli)
-    │
-    │  dlopen + C ABI
+用户命令
     │
     ▼
-libpersisting_engine.{dylib,so,dll} (persisting-engine)
+CLI（解析 · 组装请求 · 展示结果）
     │
-    │  Lance / 向量 / 全文
+    │  动态加载 · 窄 ABI · 异步 job
+    ▼
+引擎（Lance · Search · 轨迹 · …）
     │
     ▼
-Lance Dataset
+持久化存储
 ```
-
-- CLI **不静态链接** Lance 或引擎核心逻辑。
-- CLI 通过动态库 (`dlopen`) 加载 `libpersisting_engine`，经极窄 C ABI 发起异步 job 调用。
-- 引擎独立发版，CLI 通过版本常量校验兼容性。
 
 ---
 
-## 2. 引擎发现与惰性加载
+## 2. 引擎发现
 
-### 2.1 路径解析
+引擎库按优先级定位：
 
-| 优先级 | 来源 | 说明 |
-|--------|------|------|
-| 1 | `--core-lib <PATH>` | 命令行显式指定 |
-| 2 | `PERSISTING_ENGINE_LIB` | 环境变量 |
-| 3 | 可执行文件同目录查找 | 按平台顺序：`dylib`（macOS）→ `so`（Linux）→ `dll`（Windows） |
+1. 命令行显式指定路径
+2. 环境变量
+3. 与 CLI 可执行文件同目录
 
-### 2.2 惰性加载
-
-引擎仅在首次需要发起调用时才 `dlopen`。在此之前 CLI 已完成参数解析和请求序列化，避免因序列化错误触发不必要的加载。
-
-加载时校验 `RON_ABI_VERSION`（见 §4），不匹配则立即报错退出。
+**惰性加载**：仅在首次需要调用引擎时才加载，避免参数错误也触发重量级初始化。
 
 ---
 
-## 3. 异步 Job ABI
-
-一次完整的 CLI → 引擎调用经过四个 C 符号：
-
-| 步骤 | C 符号 | 方向 | 说明 |
-|------|--------|------|------|
-| 1 | `persisting_engine_submit` | CLI → 引擎 | 提交 UTF-8 RON 请求，获取 job handle |
-| 2 | `persisting_engine_job_poll` | CLI → 引擎 | 轮询 job 状态与进度（0–100%） |
-| 3 | `persisting_engine_job_take_result` | CLI → 引擎 | 取走 UTF-8 RON 响应（probe + fill） |
-| 4 | `persisting_engine_job_release` | CLI → 引擎 | 释放 job 资源（幂等） |
-
-### 3.1 Job 生命周期
+## 3. 一次调用的生命周期
 
 ```
-submit ──→ PENDING ──→ RUNNING ──→ COMPLETE
-                    │                  │
-                    └── poll 轮询 ←────┘
-                                           │
-                                           ├── take_result → 取走响应
-                                           └── release     → 释放资源
+提交请求 → 排队/运行（可轮询进度）→ 取回结果 → 释放资源
 ```
 
-- `submit` 是**单向**的，不在此步返回业务结果。
-- `poll` 返回 `PersistingJobStatus { state, progress_percent }`，CLI 以 1ms 间隔轮询直到 `COMPLETE`。
-- `take_result` 使用 probe/fill 模式：先传空缓冲获取所需大小，再分配缓冲取回数据。成功后 job 从引擎表中移除。
-- `release` 用于提前终止或异常清理，对不存在的 job id 幂等。
+- **提交**与**取结果**分离：提交只拿到任务句柄，结果通过后续步骤获取。
+- **轮询**可选：长任务（大批量导入、索引构建）可反馈进度百分比。
+- **释放**幂等：异常或提前退出时可安全清理。
 
-### 3.2 Rust 封装
-
-`persisting_proto::invoke_ron_utf8_via_jobs_sync` 封装了上述四步的同步调用，CLI 直接使用该封装。
+Python API **不经过**此路径——它直接绑定引擎，适合嵌入式与交互式场景。CLI 用户只需保证引擎库版本与 CLI 匹配。
 
 ---
 
-## 4. Wire 格式
+## 4. 协议与版本
 
-### 4.1 请求与响应
+CLI 与引擎通过**带版本号的信封**交换消息：请求携带协议版本，引擎校验后 dispatch 到对应能力（Search、Trajectory 等）。
 
-CLI 与引擎之间统一使用 **RON（Rusty Object Notation）** UTF-8 文本：
+两层版本独立维护：
 
-```
-请求: RpcRequest { version, body: RequestBody::... }
-响应: RpcResponse { version, body: ResponseBody::... }
-```
+| 层次 | 何时递增 |
+|------|----------|
+| **ABI** | 动态库接口、job 状态布局、信封格式不兼容 |
+| **协议** | 请求/响应消息字段或语义变化 |
 
-- `version` 字段携带 `PROTOCOL_VERSION`，供引擎校验。
-- `body` 根据子命令使用不同变体。
-
-### 4.2 CLI 子命令 → RequestBody 映射
-
-#### search
-
-| CLI 子命令 | `RequestBody` 变体 |
-|------------|-------------------|
-| `search create`（JSONL / CSV） | `SearchAdd` |
-| `search create`（Lance） | `SearchImportLance` |
-| `search index build` | `SearchIndex` |
-| `search index list` | `SearchIndexList` |
-| `search index delete` | `SearchIndexDelete` |
-| `search index rebuild` | `SearchIndexRebuild` |
-| `search query` | `SearchQuery` |
-| `search index reorder` | —（不经引擎） |
-
-#### trajectory
-
-| CLI 子命令 | `RequestBody` 变体 |
-|------------|-------------------|
-| `trajectory add` | `TrajectoryAppend` |
-| `trajectory replay` | `TrajectoryReplay` |
-| `trajectory stats` | `TrajectoryStats` |
-
-### 4.3 输出
-
-- **成功**：CLI 解析 `RpcResponse`，若 `body` 非 `Error` 变体，pretty 打印 `body` 到 stdout，退出码 0。
-- **失败**：若请求 RON 无法解析或 `body` 为 `Error`，打印错误信息到 stderr，非零退出。
+CLI 在加载时校验 ABI；协议版本由请求携带、引擎侧校验。
 
 ---
 
-## 5. 版本常量
+## 5. 子命令与引擎能力
 
-| 常量 | 当前值 | 含义 |
-|------|--------|------|
-| `RON_ABI_VERSION` | 6 | C ABI 不兼容变化时递增（函数签名、`PersistingJobStatus` 布局、RON 信封格式） |
-| `PROTOCOL_VERSION` | 4 | `RpcRequest` / `RpcResponse` 枚举布局变化时递增 |
+概念映射（非 exhaustive）：
 
-- CLI 在 `dlopen` 后校验 `RON_ABI_VERSION`，不匹配则拒绝执行。
-- CLI **不校验** `PROTOCOL_VERSION`，但请求中携带供引擎侧校验。
+| 用户意图 | 引擎能力 |
+|----------|----------|
+| 导入文档、建索引、检索 | Search |
+| 追加 / 回放 / 统计轨迹 | Trajectory |
+| 事后导入 IDE 或网关日志 | Trajectory（经 CLI 侧归一化） |
+
+部分纯本地操作（如格式转换）可由 CLI 侧直接完成；索引文件重排等数据操作仍经过引擎。
 
 ---
 
-## 6. 数据流
+## 6. 输出约定
+
+- **成功**：结构化结果写入 stdout；轨迹类命令默认 **TOML** 便于脚本解析。
+- **失败**：错误信息写入 stderr，非零退出码。
+
+---
+
+## 7. 数据流概览
 
 ```mermaid
 flowchart LR
-  subgraph CLI [persisting-cli]
-    A[clap 解析] --> B[组装 RpcRequest]
-    B --> C[惰性 dlopen + ABI 校验]
-    C --> D[submit → poll → take_result]
-    D --> E[解析 RpcResponse]
-    E --> F[stdout / stderr]
+  subgraph CLI
+    A[解析命令] --> B[组装请求]
+    B --> C[加载引擎]
+    C --> D[提交并等待]
+    D --> E[格式化输出]
   end
-  subgraph Engine [persisting-engine]
-    D --> G[jobs 线程 → ron_api → handle_rpc_request]
-    G --> H[Lance / search / trajectory]
+  subgraph Engine
+    D --> F[分发到 Search / Trajectory / …]
+    F --> G[读写 Lance 或 Markdown]
   end
 ```
 
+轨迹存储模型见 [轨迹存储](trajectory_storage.zh.md)。
+
 ---
 
-## 7. 与 Python API 的区别
+## 8. 相关文档
 
-Python 侧通过 PyO3 的 `persisting-engine::bridge` 直接调用引擎函数，**不经过** RON 字符串序列化与 C ABI。bincode 路径（`engine_dispatch`）受 `PROTOCOL_VERSION` 约束，但 CLI 不使用此路径。
-
-此差异对 CLI 设计文档的读者透明——CLI 的用户只需知道 `--core-lib` 指向正确的动态库即可。
+- [`persisting search`](cli_search_command.zh.md)
+- [`persisting trajectory`](cli_trajectory_command.zh.md)
+- [`persisting capture`](cli_capture_command.zh.md)

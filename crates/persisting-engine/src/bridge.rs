@@ -2,12 +2,12 @@
 
 use anyhow::{anyhow, Result};
 use persisting_proto::{
-    RequestBody, ResponseBody, SearchAddRequest, SearchAddResponse, SearchImportLanceRequest,
-    SearchImportLanceResponse, SearchIndexDeleteRequest, SearchIndexDeleteResponse,
-    SearchIndexListRequest, SearchIndexListResponse, SearchIndexReorderRequest,
-    SearchIndexReorderResponse, SearchIndexRebuildRequest, SearchIndexRebuildResponse,
-    SearchIndexRequest, SearchIndexResponse, SearchQueryRequest,
-    SearchQueryResponse, TrajectoryAppendRequest, TrajectoryAppendResponse,
+    RequestBody, ResponseBody, SearchAddBatchRequest, SearchAddBatchResponse, SearchAddRequest,
+    SearchAddResponse, SearchImportLanceRequest, SearchImportLanceResponse,
+    SearchIndexDeleteRequest, SearchIndexDeleteResponse, SearchIndexListRequest,
+    SearchIndexListResponse, SearchIndexRebuildRequest, SearchIndexRebuildResponse,
+    SearchIndexReorderRequest, SearchIndexReorderResponse, SearchIndexRequest, SearchIndexResponse,
+    SearchQueryRequest, SearchQueryResponse, TrajectoryAppendRequest, TrajectoryAppendResponse,
     TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
     TrajectoryStatsResponse,
 };
@@ -29,6 +29,19 @@ pub fn search_add(req: SearchAddRequest) -> Result<SearchAddResponse> {
             None
         }
     })
+}
+
+pub fn search_add_batch(req: SearchAddBatchRequest) -> Result<SearchAddBatchResponse> {
+    map_body(
+        invoke_request_body(RequestBody::SearchAddBatch(req))?,
+        |b| {
+            if let ResponseBody::SearchAddBatch(r) = b {
+                Some(r)
+            } else {
+                None
+            }
+        },
+    )
 }
 
 pub fn search_query(req: SearchQueryRequest) -> Result<SearchQueryResponse> {
@@ -143,11 +156,14 @@ pub fn trajectory_replay(req: TrajectoryReplayRequest) -> Result<TrajectoryRepla
 }
 
 pub fn trajectory_stats(req: TrajectoryStatsRequest) -> Result<TrajectoryStatsResponse> {
-    map_body(invoke_request_body(RequestBody::TrajectoryStats(req))?, |b| {
-        if let ResponseBody::TrajectoryStats(r) = b {
-            Some(r)
-        } else {
-            None
-        }
-    })
+    map_body(
+        invoke_request_body(RequestBody::TrajectoryStats(req))?,
+        |b| {
+            if let ResponseBody::TrajectoryStats(r) = b {
+                Some(r)
+            } else {
+                None
+            }
+        },
+    )
 }

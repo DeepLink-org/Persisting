@@ -17,3 +17,6 @@
 #
 # 注意：不要在下面使用 `${HOME}/...` 形式的 `[env]`——当前 Cargo 传入子进程时可能不会展开变量，
 # PyO3 会收到含字面量 `${HOME}` 的路径而报错。
+
+[build]
+incremental = true

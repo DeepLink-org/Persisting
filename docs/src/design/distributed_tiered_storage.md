@@ -165,7 +165,7 @@ Backing 协议不需要改变。`BlockMappedBacking` 只是 Backing 的一个实
 |------|------|
 | **TensorNamespace / Handler** | 用户接口。`open() → kv[key] → h.tensor() / h.put(data)`。使用 TTAS 做下标 → Region。 |
 | **DistributedStore** | 分布式路由。使用 TTAS 的 partition_dims 做路由决策，本地请求发给本机 BlockStore，远程请求经 Pulsing 解析端点后发给远程 BlockStore。 |
-| **BlockStore**（每节点一个） | 单节点分层存储 + 对外服务。管理本机 L0/L1/L3 的 Block，跟踪每 Block 所在层级，miss 时 fetch。通过 mmap + UFFD 对上层暴露连续虚拟空间。内部设计详见 [BlockStore 内部设计](blockstore_internals.zh.md)。 |
+| **BlockStore**（每节点一个） | 单节点分层存储 + 对外服务。管理本机 L0 GPU / L1 CPU / L3 SSD 的 Block（L2 Remote 的 Block 由远程节点管理，本机仅跟踪），miss 时 fetch。通过 mmap + UFFD 对上层暴露连续虚拟空间。内部设计详见 [BlockStore 内部设计](blockstore_internals.zh.md)。 |
 
 TTAS 是贯穿各层的寻址模型，不是独立的一层。
 
@@ -234,7 +234,7 @@ TTAS 是贯穿各层的寻址模型，不是独立的一层。
 5. 虚拟地址访问（底层透明）
    → block 0 已在 L1 CPU → 直接读
    → block 3 不在本机 → 缺页 → handler RDMA 拉取 → UFFDIO_COPY → 恢复
-   → block 5 不在本机 → 缺页 → handler SSD pread → 填页 → 恢复
+   → block 5 不在内存（在本机 SSD） → 缺页 → handler SSD pread → 填页 → 恢复
 
 6. numpy ndarray 返回给用户
 ```

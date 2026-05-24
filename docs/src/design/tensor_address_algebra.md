@@ -292,7 +292,7 @@ class Backend(Protocol):
 实践上推荐：
 
 - `int`：big-endian 定长编码（保持数值顺序）
-- `str`：UTF-8 + 分隔符（需要避免歧义，建议 length-prefix）
+- `str`：length-prefix UTF-8 编码（先写 4 字节大端长度，再写 UTF-8 字节）
 - `bytes`：length-prefix
 
 > 注：这里的“可排序”不是为了“数据库”，只是为了让 `range_scan(prefix, lo, hi)` 成立。

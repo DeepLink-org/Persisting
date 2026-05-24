@@ -54,9 +54,13 @@ Lance Dataset (磁盘)
 - 读取端：获取锁，读取持久化 + 缓冲区数据；如果 `wait=True`，阻塞在条件变量上直到有新数据。
 - Flush：获取锁，交换缓冲区，释放锁，写入 Lance。
 
-## Tensor Memory（下一阶段）
+## Tensor Memory 与轨迹（演进中）
 
-队列持久化是 Persisting 数据面的一层。下一阶段将实现**Tensor Memory**——核心分布式分层内存能力：
+队列持久化是 Persisting 数据面**已可用**的一层。
+
+**轨迹存储**（捕获代理、Lance / Markdown 双视图）已独立落地，见 [轨迹存储模型](trajectory_storage.zh.md)。
+
+下一阶段 **Tensor Memory** 将补全核心分布式分层内存能力：
 
 - **TTAS 寻址**：多维 tensor 寻址（`kv["s1", 0, 2, 0:512]`），含规范化、路由和批量优化。详见 [TTAS](tensor_address_algebra.md)。
 - **分层存储**：GPU ↔ host ↔ SSD，对应用透明。数据放置由 TTAS 分区键驱动。
