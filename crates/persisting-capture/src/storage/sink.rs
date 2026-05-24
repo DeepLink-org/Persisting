@@ -6,10 +6,10 @@ use std::sync::Mutex;
 use anyhow::Result;
 use serde_json::Value;
 
+use super::record::{now_rfc3339, CaptureRecord};
+use super::session::CaptureRoute;
 use crate::capture_call::CaptureCall;
 use crate::config::CaptureLevel;
-use crate::record::{now_rfc3339, CaptureRecord};
-use crate::session_storage::CaptureRoute;
 
 pub trait CaptureSink: Send + Sync {
     fn append(&self, route: &CaptureRoute, agent_id: &str, record: CaptureRecord) -> Result<()>;

@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::service::CaptureDaemonState;
+use super::service::CaptureDaemonState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageSource {

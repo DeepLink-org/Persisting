@@ -55,32 +55,90 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
         )
         .try_init();
 
-    let server = InProcessCapture::start(run_cfg.clone(), storage.clone(), opts.sink)?;
+    let server = InProcessCapture::start(run_cfg.clone(), storage.clone(), opts.sink.clone())?;
 
     let root_session = format!("run-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S-%f"));
+    let run_started_at = chrono::Utc::now();
 
     write_run_session(&storage, &root_session)?;
     snapshot_run_proxy_config(&storage, &root_session, &opts.config)?;
+
+    persisting_capture::append_lifecycle(
+        opts.sink.as_ref(),
+        &persisting_capture::root_session_route(&root_session),
+        &run_cfg.agent_id,
+        persisting_capture::session_started_record(
+            Some(root_session.clone()),
+            Some(run_cfg.agent_id.clone()),
+            persisting_capture::CaptureMode::Run,
+            Some(&server.listen),
+            opts.command.first().map(String::as_str),
+        ),
+    )
+    .context("append session.started to trajectory")?;
+
     if opts.debug {
         log_run_debug(&storage, &root_session);
     }
 
     let proxy_env = proxy_environment(&server.listen, &root_session);
+    let (program, args) = opts
+        .command
+        .split_first()
+        .context("command program after validation")?;
+    let gateway_args = persisting_capture::client_gateway_config_args(program, &server.listen);
+    let mut child_argv = gateway_args.clone();
+    child_argv.extend_from_slice(args);
+    let child_display = if gateway_args.is_empty() {
+        opts.command.join(" ")
+    } else {
+        format!("{program} {} {}", gateway_args.join(" "), args.join(" "))
+    };
     eprintln!(
-        "[persisting-cli] capture run: dir={} format={} session={root_session} proxy=http://{} cmd={}",
+        "[persisting-cli] capture run: dir={} format={} session={root_session} proxy=http://{} cmd={child_display}",
         storage.display(),
         opts.format.as_str(),
         server.listen,
-        opts.command.join(" ")
     );
+    if !gateway_args.is_empty() {
+        eprintln!(
+            "[persisting-cli] capture run: injected client gateway config for `{program}` \
+             (see persisting-capture `client_gateway_config_args`)"
+        );
+    }
 
-    let code = run_child(&storage, &opts.command, proxy_env).context("run command")?;
+    let code = run_child(
+        storage.as_path(),
+        program,
+        &child_argv,
+        &opts.command,
+        proxy_env,
+    )
+    .context("run command")?;
 
     if opts.debug {
         eprintln!(
             "[persisting-cli] capture run finished (exit {code}); sessions: `persisting capture list`"
         );
     }
+
+    let duration_ms = (chrono::Utc::now() - run_started_at)
+        .num_milliseconds()
+        .max(0) as u64;
+    persisting_capture::append_lifecycle(
+        opts.sink.as_ref(),
+        &persisting_capture::root_session_route(&root_session),
+        &run_cfg.agent_id,
+        persisting_capture::session_ended_record(
+            Some(root_session.clone()),
+            Some(run_cfg.agent_id.clone()),
+            persisting_capture::CaptureMode::Run,
+            "child_exit",
+            Some(code),
+            Some(duration_ms),
+        ),
+    )
+    .context("append session.ended to trajectory")?;
 
     server.shutdown()?;
     Ok(code)
@@ -104,12 +162,13 @@ fn log_run_debug(storage: &Path, root_session: &str) {
 
 fn run_child(
     storage: &Path,
-    command: &[String],
+    program: &str,
+    argv: &[String],
+    logged_command: &[String],
     proxy_env: std::collections::HashMap<String, String>,
 ) -> Result<i32> {
-    let (program, args) = command.split_first().context("command program")?;
     let mut cmd = Command::new(program);
-    cmd.args(args);
+    cmd.args(argv);
     cmd.stdin(Stdio::inherit());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
@@ -122,7 +181,7 @@ fn run_child(
     }
 
     let mut child = cmd.spawn().context("spawn child process")?;
-    write_run_child_info(storage, child.id(), command)?;
+    write_run_child_info(storage, child.id(), logged_command)?;
     let status = child.wait()?;
     Ok(status.code().unwrap_or(1))
 }

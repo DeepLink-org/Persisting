@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::dialogue_extract::{
+use super::dialogue_extract::{
     extract_assistant_text_from_json, extract_assistant_turn_from_sse, is_subagent_shape_payload,
 };
-use crate::markdown_trajectory::{BlockHeader, MarkdownBlock};
-use crate::record::{engine_line_to_record, record_to_engine_line, CaptureRecord};
-use crate::subagent_link::append_subagent_refs_footer;
+use super::markdown::{BlockHeader, MarkdownBlock};
+use super::record::{engine_line_to_record, record_to_engine_line, CaptureRecord};
+use super::subagent_link::append_subagent_refs_footer;
 
 /// Omit internal Claude Code traffic and empty visible turns from session markdown (`0001.md`).
 pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
@@ -26,6 +26,7 @@ pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
         }
         "llm.response" | "llm.response.stream" => visible_assistant_text(rec).is_none(),
         "llm.spawn_link" => false,
+        k if k.starts_with("session.") => true,
         _ => false,
     }
 }
@@ -244,7 +245,7 @@ pub fn block_to_capture_record(block: &MarkdownBlock) -> Result<CaptureRecord> {
 }
 
 pub fn import_markdown_to_engine_lines(doc: &str) -> Result<String> {
-    crate::markdown_trajectory::parse_document(doc)?
+    super::markdown::parse_document(doc)?
         .iter()
         .enumerate()
         .map(|(i, b)| {
@@ -349,6 +350,71 @@ fn attach_llm_fields(fields: &mut BTreeMap<String, Value>, rec: &CaptureRecord) 
         }
         _ => {}
     }
+}
+
+/// Queryable columns extracted from a capture record (shared by Lance + markdown block headers).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CaptureRecordView {
+    pub role: Option<String>,
+    pub text: Option<String>,
+    pub model: Option<String>,
+    pub path: Option<String>,
+    pub status: Option<i32>,
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+}
+
+/// Visible dialogue text and LLM summary fields; omits text when markdown would skip the block.
+pub fn capture_record_view(rec: &CaptureRecord) -> CaptureRecordView {
+    let mut view = CaptureRecordView::default();
+    attach_llm_view(&mut view, rec);
+    if skip_markdown_block(rec) {
+        return view;
+    }
+    if let Ok((role, body)) = role_and_body(rec) {
+        view.role = Some(role);
+        if !body.is_empty() {
+            view.text = Some(body);
+        }
+    }
+    view
+}
+
+fn attach_llm_view(view: &mut CaptureRecordView, rec: &CaptureRecord) {
+    match rec.kind.as_str() {
+        "llm.request" => {
+            if let Some(model) = rec.payload.get("model").and_then(|v| v.as_str()) {
+                view.model = Some(model.to_string());
+            }
+            if let Some(path) = rec.payload.get("path").and_then(|v| v.as_str()) {
+                view.path = Some(path.to_string());
+            }
+        }
+        "llm.response" | "llm.response.stream" => {
+            if let Some(status) = rec.payload.get("status").and_then(|v| v.as_i64()) {
+                view.status = Some(status as i32);
+            }
+            if let Some(usage) = rec
+                .payload
+                .get("body")
+                .and_then(|b| b.get("usage"))
+                .or_else(|| rec.payload.get("usage"))
+            {
+                view.prompt_tokens = token_field(usage, "prompt_tokens", "input_tokens");
+                view.completion_tokens = token_field(usage, "completion_tokens", "output_tokens");
+                view.total_tokens = usage.get("total_tokens").and_then(|v| v.as_i64());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn token_field(usage: &Value, primary: &str, alias: &str) -> Option<i64> {
+    usage
+        .get(primary)
+        .or_else(|| usage.get(alias))
+        .and_then(|v| v.as_i64())
 }
 
 /// Inner LLM JSON: `payload.body` or proxy wrapper `payload.body.body`.
@@ -647,7 +713,7 @@ mod tests {
                 .fields
                 .get("subagent_trajectory")
                 .and_then(|v| v.as_str()),
-            Some("subagents/agent-abc")
+            Some("agent-abc.md")
         );
         assert!(std::str::from_utf8(&body)
             .unwrap()

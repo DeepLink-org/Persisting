@@ -64,6 +64,21 @@ pub fn read_run_session(storage: &Path) -> Option<String> {
     }
 }
 
+/// Default serve-mode run bucket: UTC calendar day (`YYYY-MM-DD`).
+pub fn daily_run_id() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
+/// Ensure `.capture/run_session` exists for long-running serve (daily bucket unless preset).
+pub fn ensure_serve_run_session(storage: &Path) -> Result<String> {
+    if let Some(run) = read_run_session(storage) {
+        return Ok(run);
+    }
+    let day = daily_run_id();
+    write_run_session(storage, &day)?;
+    Ok(day)
+}
+
 pub const RUN_CHILD_FILENAME: &str = "run_child.yaml";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -202,6 +217,31 @@ fn is_capture_proxy_env_key(key: &str) -> bool {
         .any(|p| p.eq_ignore_ascii_case(key))
 }
 
+/// OpenAI-compatible gateway base (`http://127.0.0.1:PORT/v1`) for child LLM clients.
+pub fn capture_openai_v1_base(listen: &str) -> String {
+    let base = if listen.starts_with("http://") || listen.starts_with("https://") {
+        listen.to_string()
+    } else {
+        format!("http://{listen}")
+    };
+    format!("{}/v1", base.trim_end_matches('/'))
+}
+
+/// Extra CLI flags for clients that ignore `OPENAI_BASE_URL` and need explicit config overrides.
+///
+/// Codex reads `openai_base_url` from `config.toml` (via `-c`), not from `OPENAI_BASE_URL`.
+pub fn client_gateway_config_args(program: &str, listen: &str) -> Vec<String> {
+    let openai_v1 = capture_openai_v1_base(listen);
+    let name = Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program);
+    match name {
+        "codex" => vec!["-c".to_string(), format!("openai_base_url=\"{openai_v1}\"")],
+        _ => Vec::new(),
+    }
+}
+
 /// Build env map for subprocess: HTTP(S) forward proxy + LLM SDK base URLs.
 ///
 /// Child processes that honor `HTTP_PROXY` / `HTTPS_PROXY` send **all** HTTP(S) traffic
@@ -216,12 +256,15 @@ pub fn proxy_environment(listen: &str, session_id: &str) -> HashMap<String, Stri
         format!("http://{listen}")
     };
     let base = base.trim_end_matches('/').to_string();
-    let openai_v1 = format!("{base}/v1");
+    let openai_v1 = capture_openai_v1_base(listen);
 
     let mut env = HashMap::new();
     for key in CAPTURE_PROXY_ENV_KEYS {
         env.insert(key.to_string(), base.clone());
     }
+    // Loopback gateway requests must not be CONNECT-tunneled via HTTPS_PROXY.
+    env.insert("NO_PROXY".to_string(), "127.0.0.1,localhost".to_string());
+    env.insert("no_proxy".to_string(), "127.0.0.1,localhost".to_string());
     for key in [
         "OPENAI_BASE_URL",
         "OPENAI_API_BASE",
@@ -272,7 +315,19 @@ models:
             env.get("OPENAI_BASE_URL").map(String::as_str),
             Some("http://127.0.0.1:8080/v1")
         );
+        assert_eq!(
+            env.get("NO_PROXY").map(String::as_str),
+            Some("127.0.0.1,localhost")
+        );
         assert_eq!(env.get(ENV_SESSION_ID).map(String::as_str), Some("sess-1"));
+    }
+
+    #[test]
+    fn codex_gateway_config_args() {
+        let args = client_gateway_config_args("codex", "127.0.0.1:19081");
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "-c");
+        assert_eq!(args[1], "openai_base_url=\"http://127.0.0.1:19081/v1\"");
     }
 
     #[test]

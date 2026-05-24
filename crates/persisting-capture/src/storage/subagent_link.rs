@@ -8,10 +8,10 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde_json::{json, Value};
 
-use crate::dialogue_extract::extract_user_message_from_request_body;
-use crate::record::CaptureRecord;
+use super::dialogue_extract::extract_user_message_from_request_body;
+use super::record::CaptureRecord;
+use super::session::CaptureRoute;
 use crate::session_chain::extract_claude_parent_agent_id;
-use crate::session_storage::CaptureRoute;
 
 lazy_static! {
     static ref AGENT_ID_JSON: Regex =
@@ -48,6 +48,7 @@ struct PendingMainSpawn {
 struct RunSubagents {
     agents: HashMap<String, AgentEntry>,
     pending_mains: Vec<PendingMainSpawn>,
+    main_storage_session_id: Option<String>,
 }
 
 /// Tracks subagent instances seen during one `capture run` root session.
@@ -68,10 +69,13 @@ impl SubagentRegistry {
         call_id: &str,
         request_body: Option<&Value>,
     ) {
+        let run = self.run_mut(run_key);
+        if route.subagent_id.is_none() {
+            run.main_storage_session_id = Some(route.storage_session_id.clone());
+        }
         let Some(id) = route.subagent_id.as_deref() else {
             return;
         };
-        let run = self.run_mut(run_key);
         let prompt = request_body.and_then(first_user_message_from_json);
         let doc_target = prompt.as_deref().and_then(extract_doc_target);
         run.agents
@@ -370,20 +374,24 @@ pub fn spawn_link_backfill_record(
     rec
 }
 
-pub fn main_route_for_backfill(route: &CaptureRoute) -> CaptureRoute {
+pub fn subagent_trajectory_path(storage_leaf: &str) -> String {
+    format!("{storage_leaf}.md")
+}
+
+pub fn main_route_for_backfill(route: &CaptureRoute, registry: &SubagentRegistry) -> CaptureRoute {
+    let run_key = run_registry_key(route);
+    let storage_session_id = registry
+        .runs
+        .get(&run_key)
+        .and_then(|r| r.main_storage_session_id.clone())
+        .or_else(|| route.root_session.clone())
+        .unwrap_or_else(|| route.storage_session_id.clone());
     CaptureRoute {
         root_session: route.root_session.clone(),
         session_id: route.session_id.clone(),
-        storage_session_id: route
-            .root_session
-            .clone()
-            .unwrap_or_else(|| route.storage_session_id.clone()),
+        storage_session_id,
         subagent_id: None,
     }
-}
-
-pub fn subagent_trajectory_path(storage_leaf: &str) -> String {
-    format!("subagents/{storage_leaf}")
 }
 
 pub fn run_registry_key(route: &CaptureRoute) -> String {
@@ -804,10 +812,7 @@ mod tests {
         let links = registry.match_spawns_to_agents(run_key, &hints);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].subagent_id, "a583b6c00c3d06436");
-        assert_eq!(
-            links[0].subagent_trajectory,
-            "subagents/agent-a583b6c00c3d06436"
-        );
+        assert_eq!(links[0].subagent_trajectory, "agent-a583b6c00c3d06436.md");
 
         let main_route = CaptureRoute {
             root_session: Some(run_key.into()),
@@ -991,7 +996,7 @@ mod tests {
         assert_eq!(rec.payload["refs_subagent_ids"], json!(["abc1234"]));
         assert_eq!(
             rec.payload["subagent_trajectories"],
-            json!(["subagents/agent-abc1234"])
+            json!(["agent-abc1234.md"])
         );
     }
 
@@ -1030,9 +1035,6 @@ mod tests {
         );
         assert_eq!(rec.subagent_id.as_deref(), Some("xyz"));
         assert_eq!(rec.parent_agent_id.as_deref(), Some("main01"));
-        assert_eq!(
-            rec.payload["subagent_trajectory"],
-            json!("subagents/agent-xyz")
-        );
+        assert_eq!(rec.payload["subagent_trajectory"], json!("agent-xyz.md"));
     }
 }

@@ -16,6 +16,8 @@ pub struct CompletionsStreamTranslator {
     block_open: bool,
     metrics: StreamMetrics,
     upstream_buf: String,
+    upstream_raw: String,
+    accumulated_text: String,
 }
 
 impl CompletionsStreamTranslator {
@@ -28,6 +30,8 @@ impl CompletionsStreamTranslator {
             block_open: false,
             metrics: StreamMetrics::default(),
             upstream_buf: String::new(),
+            upstream_raw: String::new(),
+            accumulated_text: String::new(),
         }
     }
 
@@ -36,12 +40,18 @@ impl CompletionsStreamTranslator {
     }
 
     pub fn upstream_snapshot(&self) -> &str {
-        &self.upstream_buf
+        &self.upstream_raw
+    }
+
+    pub fn accumulated_assistant_text(&self) -> &str {
+        &self.accumulated_text
     }
 
     /// Feed raw upstream bytes; returns Anthropic SSE wire text for the client.
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<String> {
-        self.upstream_buf.push_str(&String::from_utf8_lossy(chunk));
+        let chunk_str = String::from_utf8_lossy(chunk);
+        self.upstream_raw.push_str(&chunk_str);
+        self.upstream_buf.push_str(&chunk_str);
         let mut out = String::new();
         while let Some(line) = next_sse_data_line(&mut self.upstream_buf) {
             if line == "[DONE]" {
@@ -64,6 +74,7 @@ impl CompletionsStreamTranslator {
                 if self.metrics.ttft_ms.is_none() {
                     self.metrics.ttft_ms = Some(self.started.elapsed().as_millis() as u64);
                 }
+                self.accumulated_text.push_str(text);
                 if !self.started_events {
                     out.push_str(&format_message_start(&self.message_id, &self.client_model));
                     out.push_str("event: content_block_start\n");

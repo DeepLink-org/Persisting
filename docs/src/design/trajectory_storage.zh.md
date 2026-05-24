@@ -1,118 +1,160 @@
 # 轨迹存储模型
 
-Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、diff、审查）。两种物理形态——**Lance 列存**与会话 **Markdown**——由同一存储抽象统一管理，上层不必关心具体落盘格式。
+Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、diff、审查）。采用**两层结构**：Lance 为 canonical raw event log，TLV Markdown 为物化的人读视图。
 
 ---
 
-## 1. 设计目标
+## 1. 两层结构
+
+| 层 | 格式 | 角色 | 特点 |
+|----|------|------|------|
+| **Raw event log** | Lance v1 | **Canonical** | 全量事件，无损；列存；所有 append 的唯一落点 |
+| **Dialogue view** | TLV Markdown (`{session}.md`) | **物化视图** | 人读对话块；由 Lance materialize 派生，可过滤内部流量 |
+
+```
+Capture / trajectory add
+      │
+      ▼
+ Lance raw event log     ← canonical（seq + payload_json + 索引列）
+      │
+      │ materialize（有损，按需）
+      ▼
+ TLV Markdown            ← 人读视图
+
+ Markdown 文件 / 手工编辑
+      │
+      │ compact（重建 CaptureRecord → Lance）
+      ▼
+ Lance raw event log     ← 列存；payload 可含 _tlv 元数据
+```
+
+### 转换语义
+
+| 方向 | API | 模式 |
+|------|-----|------|
+| **Lance → Markdown** | `stream_engine_lines_to_markdown` | **流式**：每批新 events append 块（capture `-f md`） |
+| **Lance → Markdown** | `materialize_lance_to_markdown` | **全量**：扫描 Lance 重写 md（CLI `materialize`） |
+| **Markdown → Lance** | `compact_markdown_to_lance` | 重建 |
+
+**Materialize 时跳过的事件**（不进入 Markdown）：
+
+- `count_tokens` 等内部探测请求
+- 空 turn（无可见 user/assistant 正文）
+- `session.started` / `session.ended` / `session.state` 等 lifecycle
+- 主 session 上重复的 flash/haiku companion 探测（subagent 目录内保留）
+
+**Invariant**：materialize 之后 `Lance row_count ≥ Markdown block_count`。
+
+---
+
+## 2. 设计目标
 
 | 目标 | 说明 |
 |------|------|
-| **双视图** | Lance 适合顺序回放与分析；Markdown 适合人读与版本对比 |
-| **统一语义** | 无论哪种后端，一条轨迹都是带全局序号的**事件序列** |
-| **可并存** | 同一会话可同时写 Lance 与 Markdown，或按已有数据自动选择 |
-| **与捕获解耦** | 捕获层只产出逻辑记录；存储层决定如何持久化 |
+| **单一写入点** | 运行时只 append Lance；不再 capture 时并行写 Markdown |
+| **双视图** | Lance 适合 replay / Search；Markdown 适合 git diff |
+| **可互转** | materialize / compact 保持两层同步 |
+| **与捕获解耦** | 捕获层产出 `CaptureRecord`；存储层决定物化时机 |
 
 ---
 
-## 2. 分层
+## 3. 分层架构
 
 ```
 数据源（代理流量 / IDE 日志 / 历史导出）
         │
-        ▼ 归一化为逻辑轨迹事件
+        ▼ 归一化为 CaptureRecord
     捕获与对话层
         │
-        ▼ 带序号的事件批次
-    轨迹引擎（路径解析、追加、回放、统计）
+        ▼
+    轨迹引擎（append → Lance；materialize / compact）
         │
-        ▼ 存储抽象
    ┌────┴────┐
    │         │
- Lance    会话 Markdown
-（列存）   （块式文档）
+ Lance    TLV Markdown
+（canonical） （materialized）
 ```
 
-**捕获层**负责 HTTP 代理、会话路由、对话块渲染。  
-**引擎层**负责会话定位、格式选择与读写编排。  
-**存储抽象**定义追加、回放、统计、检查是否存在、格式声明与路径显示等操作，由 Lance 与 Markdown 各自实现。
+---
+
+## 4. Lance v1（Raw event log）
+
+路径：`{storage}/{agent_id}/{session_id}/`（嵌套 subagent 见 [代理文档](llm_capture_proxy.zh.md)）。
+
+每 session 一个 Lance dataset，每行一条事件：
+
+| 列 | 说明 |
+|----|------|
+| `seq` | 会话内单调序号 |
+| `timestamp`, `kind`, `source` | 事件元数据 |
+| `agent_id`, `session_id` | 路由 / 过滤 |
+| `call_id`, `trace_id`, `parent_call_id` | 调用链 |
+| `model` | 从 payload 反规范化 |
+| `payload_json` | 完整 `CaptureRecord` JSON（**canonical 载荷**） |
+
+适合：`replay`、`stats`、Search import、未来 FTS / 多模态 blob 引用。
 
 ---
 
-## 3. 会话命名空间
+## 5. TLV Markdown（Dialogue view）
 
-轨迹按 **存储根 → Agent → Session** 三级组织：
-
-| 层级 | 含义 |
-|------|------|
-| 存储根 | 用户指定的输出目录（一次 capture run 或长期 store） |
-| Agent | 项目或 agent 标识，同一 agent 下可有多个 session |
-| Session | 一次 run 或逻辑会话；subagent 可嵌套在父 session 下 |
-
-**主 session** 与 **subagent session** 分目录存放：并行 subagent 各自独立，主 session 保留 spawn 关系与汇总对话。
-
-嵌套规则、路由策略见 [内嵌 LLM 代理与 Capture](llm_capture_proxy.zh.md)。
+- 文件名：`{session_id}.md`（兼容读取 legacy `0001.md`、`trajectory.tlv.md`）
+- 每块 = `<!-- persisting:block:{speaker} {json} -->` + 裸正文
+- **不由 capture 直接 append**；由 materialize 整文件重写或首次生成
+- 详见 [轨迹 Markdown 格式](trajectory_tlv_format.zh.md)
 
 ---
 
-## 4. 两种物理形态
+## 6. 存储策略（`--storage-format` / `-f`）
 
-### 4.1 Lance（机器视图）
+| 策略 | Append 行为 | Markdown |
+|------|-------------|----------|
+| **lance** (`-f bin`) | 仅写 Lance | 不生成 |
+| **markdown** (`-f md`) | 写 Lance + **流式 append** md | 随批次增量生成 |
+| **both** | 同 markdown（legacy 别名） | 物化生成 |
+| **auto** | 空 session → Lance；已有数据按探测结果 | 不自动物化 |
 
-- 每个 session 对应一个 Lance 数据集
-- 每行一条逻辑事件，带单调递增序号
-- 适合：`replay`、`stats`、后续索引与检索
+**读取优先级**：`replay` / `stats` 默认以 Lance 为准（若存在）；纯 Markdown session 从块序列还原。
 
-### 4.2 Markdown（人读视图）
+### Capture 写入路径（`-f md` / `-f bin`）
 
-- 每个 session 一个会话文档（默认 `0001.md`）
-- 每块 = 元数据注释 + 裸对话正文（TLV 结构）
-- 适合：直接打开阅读、git diff、人工 review
+1. 代理捕获 → `CaptureRecord`
+2. 后台 worker **批量** append Lance（默认 32 条/批）
+3. **`-f md`**：每批 Lance 写入后 **流式 append** 对应对话块到 `{session}.md`（`tail -f` 可实时阅读）
+4. **`-f bin`**：仅 Lance
 
-两种形态描述**同一条时间线**，只是编码不同。详见 [轨迹 Markdown 格式](trajectory_tlv_format.zh.md)。
+`trajectory add --storage-format markdown`：Lance append 后对**同一批** lines 流式 append Markdown。
 
----
-
-## 5. 存储策略
-
-| 策略 | 行为 |
-|------|------|
-| 仅 Lance | 只写列存，适合纯分析管线 |
-| 仅 Markdown | 只写会话文档，适合以人读为主的 capture |
-| 双写 | 同时维护两种视图 |
-| 自动 | 若 session 已有数据则沿用；新 session 可按输入类型推断 |
-
-**读取优先级**：双写或自动模式下，回放与统计默认以 Lance 为准（若存在）；纯 Markdown session 则从块序列还原。
+`trajectory materialize`：全量扫描 Lance **重写** Markdown（修复/补全，非 capture 热路径）。
 
 ---
 
-## 6. 逻辑事件
+## 7. 目录示例
 
-不论后端，一条轨迹事件通常包含：
-
-| 维度 | 说明 |
-|------|------|
-| 序号 | 会话内全局单调，保证 replay 顺序 |
-| 来源 | 代理捕获、IDE 导入、网关导出等 |
-| 类型 | 用户消息、模型回复、LLM 请求/响应、spawn 关联等 |
-| 时间 | 事件发生时刻 |
-| 载荷 | 原始 JSON 或渲染后的正文 |
-
-Capture 实时写入时可直接追加 Markdown 块；批量导入或 CLI 追加则经引擎统一编排。
-
----
-
-## 7. 与其它能力的关系
-
-- **Capture**：轨迹的主要生产者；代理路径实时写入，import 路径事后合并
-- **Trajectory CLI**：追加、回放、统计的用户入口
-- **Search**（演进）：未来可在 Lance 轨迹上建索引，与 Agent Search 打通
+```
+{store}/
+  {agent_id}/
+    {session_id}/
+      data.lance/          ← Lance v1 dataset（canonical）
+      {session_id}.md      ← materialize 产出（可选）
+      subagents/
+        {sub_session_id}/
+          ...
+```
 
 ---
 
-## 8. 相关文档
+## 8. 逻辑事件
 
-- [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) — 块结构与元数据约定
-- [内嵌 LLM 代理与 Capture](llm_capture_proxy.zh.md) — 捕获、路由、subagent 拓扑
-- [`persisting capture`](cli_capture_command.zh.md) — 捕获命令与使用模式
-- [`persisting trajectory`](cli_trajectory_command.zh.md) — 回放与统计
+不论物理形态，一条轨迹事件包含：**序号、来源、类型、时间、会话/调用标识、载荷**（及未来可选 blob 引用）。
+
+常见 `kind`：`llm.request`、`llm.response`、`llm.response.stream`、`llm.spawn_link`、`session.started`、`session.ended`、…
+
+---
+
+## 9. 相关文档
+
+- [轨迹 Markdown 格式](trajectory_tlv_format.zh.md)
+- [内嵌 LLM 代理与 Capture](llm_capture_proxy.zh.md)
+- [`persisting capture`](cli_capture_command.zh.md)
+- [`persisting trajectory`](cli_trajectory_command.zh.md)

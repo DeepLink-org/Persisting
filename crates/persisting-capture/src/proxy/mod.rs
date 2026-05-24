@@ -1,5 +1,13 @@
 //! OpenAI-compatible HTTP proxy with capture on request/response.
 
+pub mod admin;
+pub mod auth;
+pub mod deepseek_reasoning;
+pub mod forward;
+pub mod http_headers;
+pub mod models_list;
+pub mod router;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -19,33 +27,34 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::admin::{admin_router, AdminState};
+use self::admin::{admin_router, AdminState};
+use self::deepseek_reasoning::ReasoningCacheHandle;
+use self::forward::{
+    handle_connect, is_forward_proxy_request, is_llm_capture_path, transparent_forward,
+};
+use self::http_headers::is_websocket_upgrade;
+use self::models_list::build_models_response;
+use self::router::{resolve_route, rewrite_model_in_body};
 use crate::capture_call::CaptureCall;
 use crate::config::{CaptureLevel, ProxyConfig};
 use crate::conversion::{
-    completions_response_to_messages, messages_request_to_completions, CompletionsStreamTranslator,
-    ProtocolBridge,
+    translate_request_for_bridge, translate_response_for_bridge, ProtocolBridge, StreamTranslator,
 };
 use crate::debug::{self, is_debug_enabled, truncate_body_bytes};
 use crate::dialogue_extract::{
     extract_assistant_text_from_json, extract_assistant_turn_from_sse,
     extract_user_message_from_request_body, push_sse_tool_snapshot, SseStreamBlockParser,
 };
-use crate::forward::{
-    handle_connect, is_forward_proxy_request, is_llm_capture_path, transparent_forward,
-};
-use crate::models_list::build_models_response;
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
-use crate::router::{resolve_route, rewrite_model_in_body};
 use crate::run_config::load_session_proxy_config;
 use crate::session_client::SessionClientRegistry;
 use crate::session_index::{SessionIndexHandle, SessionIndexStore};
 use crate::session_storage::{resolve_capture_route, route_config_key, CaptureRoute};
 use crate::sink::{llm_request_summary_record, llm_response_record_with_content, CaptureSink};
 use crate::subagent_link::{
-    enrich_record, main_route_for_backfill, spawn_link_backfill_record, EnrichOutcome,
-    SpawnLinkBackfill, SubagentRegistry,
+    enrich_record, main_route_for_backfill, spawn_link_backfill_record, SpawnLinkBackfill,
+    SubagentRegistry,
 };
 use crate::usage::{
     estimate_cost_usd, extract_usage_from_response, extract_usage_from_sse, StreamMetrics,
@@ -60,6 +69,7 @@ pub struct ProxyState {
     pub index: SessionIndexHandle,
     pub session_clients: Arc<SessionClientRegistry>,
     pub subagent_registry: Arc<std::sync::Mutex<SubagentRegistry>>,
+    pub reasoning_cache: Arc<ReasoningCacheHandle>,
     pub active_requests: Arc<AtomicUsize>,
     pub started_at: String,
 }
@@ -126,6 +136,7 @@ pub async fn serve_with_shutdown_and_ready(
         index: index.clone(),
         session_clients: Arc::new(SessionClientRegistry::default()),
         subagent_registry: Arc::new(std::sync::Mutex::new(SubagentRegistry::default())),
+        reasoning_cache: Arc::new(ReasoningCacheHandle::new()),
         active_requests: Arc::clone(&active_requests),
         started_at: started_at.clone(),
     };
@@ -295,6 +306,18 @@ async fn llm_capture(
     debug_on: bool,
 ) -> anyhow::Result<Response> {
     let (parts, body) = req.into_parts();
+
+    if is_websocket_upgrade(&parts.headers) {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_IMPLEMENTED)
+            .header("content-type", "text/plain; charset=utf-8")
+            .body(Body::from(
+                "WebSocket transport is not supported by persisting-proxy; use HTTPS",
+            ))
+            .map_err(|e| anyhow::anyhow!("websocket rejection response: {e}"))?
+            .into_response());
+    }
+
     let body_bytes = body
         .collect()
         .await
@@ -352,8 +375,13 @@ async fn llm_capture(
     if resolved.model_rewritten {
         upstream_body = rewrite_model_in_body(&body_bytes, &upstream_model)?;
     }
-    if bridge.needs_request_translation() {
-        upstream_body = messages_request_to_completions(&upstream_body, &upstream_model)?;
+    if bridge.needs_request_translation() && !body_bytes.is_empty() {
+        upstream_body = translate_request_for_bridge(
+            bridge,
+            &upstream_body,
+            &upstream_model,
+            Some(state.reasoning_cache.as_ref()),
+        )?;
     }
 
     let upstream_path = bridge.upstream_path(&path);
@@ -376,7 +404,7 @@ async fn llm_capture(
         );
     }
 
-    let (_, auth_source) = match crate::auth::resolve_upstream_api_key(route, &parts.headers) {
+    let (_, auth_source) = match self::auth::resolve_upstream_api_key(route, &parts.headers) {
         Ok(v) => v,
         Err(e) => {
             if debug_on {
@@ -399,7 +427,7 @@ async fn llm_capture(
     let mut upstream_req = state.client.request(method, upstream_url.clone());
     upstream_req = upstream_req.body(upstream_body.clone());
     upstream_req =
-        match crate::auth::apply_upstream_headers(upstream_req, &parts.headers, route, protocol) {
+        match self::auth::apply_upstream_headers(upstream_req, &parts.headers, route, protocol) {
             Ok(r) => r,
             Err(e) => {
                 if debug_on {
@@ -446,25 +474,24 @@ async fn llm_capture(
                 capture_level,
                 body_json.as_ref(),
             );
-            let outcome = if let Ok(mut reg) = state.subagent_registry.lock() {
-                enrich_record(
+            if let Ok(mut reg) = state.subagent_registry.lock() {
+                let outcome = enrich_record(
                     &mut rec,
                     &capture_route,
                     &parts.headers,
                     body_json.as_ref(),
                     None,
                     &mut reg,
-                )
-            } else {
-                EnrichOutcome::default()
-            };
-            apply_spawn_link_backfills(
-                state.sink.as_ref(),
-                &capture_route,
-                &agent_id,
-                &call,
-                &outcome.spawn_link_backfills,
-            );
+                );
+                apply_spawn_link_backfills(
+                    state.sink.as_ref(),
+                    &capture_route,
+                    &agent_id,
+                    &call,
+                    &outcome.spawn_link_backfills,
+                    &reg,
+                );
+            }
             rec
         }) {
             tracing::warn!("request capture append: {e:#}");
@@ -529,7 +556,7 @@ async fn llm_capture(
 
     let mut resp_bytes = upstream_resp.bytes().await?;
     if bridge.needs_response_translation() {
-        resp_bytes = completions_response_to_messages(&resp_bytes, &client_model)?;
+        resp_bytes = translate_response_for_bridge(bridge, &resp_bytes, &client_model)?;
     }
     finalize_llm_capture_response(
         state.sink.as_ref(),
@@ -552,6 +579,7 @@ async fn llm_capture(
         &parts.headers,
         false,
         "",
+        None,
     )
     .await?;
 
@@ -608,6 +636,7 @@ async fn streaming_llm_response(
     let upstream_model_bg = upstream_model.clone();
     let call_bg = call.clone();
     let registry = Arc::clone(&state.subagent_registry);
+    let reasoning_cache = Arc::clone(&state.reasoning_cache);
     let request_headers_bg = request_headers;
 
     tokio::spawn(async move {
@@ -616,7 +645,8 @@ async fn streaming_llm_response(
         let mut stream_partial_emitted = false;
         let mut last_partial_content = String::new();
         let mut partial_index = 0u32;
-        let mut translator = translate.then(|| CompletionsStreamTranslator::new(&client_model_bg));
+        let mut translator = StreamTranslator::new(bridge, &client_model_bg);
+        let mut last_capture_snapshot = String::new();
         let mut stream = byte_stream;
         while let Some(item) = stream.next().await {
             match item {
@@ -645,7 +675,30 @@ async fn streaming_llm_response(
                     let out = if let Some(t) = translator.as_mut() {
                         match t.push_chunk(&chunk) {
                             Ok(s) if !s.is_empty() => Bytes::from(s),
-                            Ok(_) => continue,
+                            Ok(_) => {
+                                if let Some(snapshot) = t.streaming_capture_snapshot() {
+                                    if snapshot != last_capture_snapshot {
+                                        append_stream_partial_assistant(
+                                            sink.as_ref(),
+                                            &route_bg,
+                                            &agent_id_bg,
+                                            &client_model_bg,
+                                            status.as_u16(),
+                                            &snapshot,
+                                            partial_index,
+                                            &call_bg,
+                                            capture_level,
+                                            &registry,
+                                            &request_headers_bg,
+                                        );
+                                        stream_partial_emitted = true;
+                                        last_partial_content = snapshot.clone();
+                                        last_capture_snapshot = snapshot;
+                                        partial_index += 1;
+                                    }
+                                }
+                                continue;
+                            }
                             Err(e) => {
                                 tracing::warn!("stream translate: {e:#}");
                                 chunk
@@ -654,6 +707,29 @@ async fn streaming_llm_response(
                     } else {
                         chunk
                     };
+                    if let Some(t) = translator.as_ref() {
+                        if let Some(snapshot) = t.streaming_capture_snapshot() {
+                            if snapshot != last_capture_snapshot {
+                                append_stream_partial_assistant(
+                                    sink.as_ref(),
+                                    &route_bg,
+                                    &agent_id_bg,
+                                    &client_model_bg,
+                                    status.as_u16(),
+                                    &snapshot,
+                                    partial_index,
+                                    &call_bg,
+                                    capture_level,
+                                    &registry,
+                                    &request_headers_bg,
+                                );
+                                stream_partial_emitted = true;
+                                last_partial_content = snapshot.clone();
+                                last_capture_snapshot = snapshot;
+                                partial_index += 1;
+                            }
+                        }
+                    }
                     if tx.send(Ok(out)).is_err() {
                         break;
                     }
@@ -680,16 +756,24 @@ async fn streaming_llm_response(
             if let Ok(tail) = t.finish_stream() {
                 let _ = tx.send(Ok(Bytes::from(tail)));
             }
+            let (tool_ids, reasoning) = t.drain_reasoning_snapshot();
+            if !reasoning.is_empty() {
+                reasoning_cache.remember(&tool_ids, &reasoning);
+            }
         }
         let resp_bytes = if translate {
             Bytes::from(
                 translator
+                    .as_ref()
                     .map(|t| t.upstream_snapshot().to_string())
                     .unwrap_or_default(),
             )
         } else {
             buf.freeze()
         };
+        let stream_assistant_text = translator
+            .as_ref()
+            .and_then(|t| t.streaming_capture_snapshot());
         if let Err(e) = finalize_llm_capture_response(
             sink.as_ref(),
             &index,
@@ -711,6 +795,7 @@ async fn streaming_llm_response(
             &request_headers_bg,
             stream_partial_emitted,
             &last_partial_content,
+            stream_assistant_text,
         )
         .await
         {
@@ -759,6 +844,7 @@ async fn finalize_llm_capture_response(
     headers: &HeaderMap,
     stream_partial_emitted: bool,
     last_partial_content: &str,
+    stream_assistant_text: Option<String>,
 ) -> anyhow::Result<()> {
     let resp_text = std::str::from_utf8(resp_bytes).unwrap_or("<non-utf8>");
     let usage = if streaming {
@@ -824,11 +910,13 @@ async fn finalize_llm_capture_response(
     }
 
     let assistant_content = if level.includes_assistant_text() {
-        if streaming {
-            Some(extract_assistant_turn_from_sse(resp_text))
-        } else {
-            extract_assistant_text_from_json(&resp_json)
-        }
+        stream_assistant_text.or_else(|| {
+            if streaming {
+                Some(extract_assistant_turn_from_sse(resp_text))
+            } else {
+                extract_assistant_text_from_json(&resp_json)
+            }
+        })
     } else {
         None
     };
@@ -838,7 +926,7 @@ async fn finalize_llm_capture_response(
         last_partial_content,
     );
 
-    let outcome = if let Ok(mut reg) = subagent_registry.lock() {
+    if let Ok(mut reg) = subagent_registry.lock() {
         let mut rec = llm_response_record_with_content(
             Some(route.session_id.clone()),
             Some(agent_id.to_string()),
@@ -858,7 +946,14 @@ async fn finalize_llm_capture_response(
             &mut reg,
         );
         sink.append(route, agent_id, rec)?;
-        outcome
+        apply_spawn_link_backfills(
+            sink,
+            route,
+            agent_id,
+            call,
+            &outcome.spawn_link_backfills,
+            &reg,
+        );
     } else {
         sink.append(
             route,
@@ -874,9 +969,7 @@ async fn finalize_llm_capture_response(
                 level,
             ),
         )?;
-        EnrichOutcome::default()
-    };
-    apply_spawn_link_backfills(sink, route, agent_id, call, &outcome.spawn_link_backfills);
+    }
 
     Ok(())
 }
@@ -913,11 +1006,12 @@ fn apply_spawn_link_backfills(
     agent_id: &str,
     call: &CaptureCall,
     backfills: &[SpawnLinkBackfill],
+    registry: &SubagentRegistry,
 ) {
     if backfills.is_empty() {
         return;
     }
-    let main_route = main_route_for_backfill(route);
+    let main_route = main_route_for_backfill(route, registry);
     for bf in backfills {
         let rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, call);
         if let Err(e) = sink.append(&main_route, agent_id, rec) {
@@ -949,7 +1043,7 @@ fn append_stream_partial_assistant(
         "stream_partial": true,
         "stream_partial_index": partial_index,
     });
-    let outcome = if let Ok(mut reg) = subagent_registry.lock() {
+    if let Ok(mut reg) = subagent_registry.lock() {
         let mut rec = llm_response_record_with_content(
             Some(route.session_id.clone()),
             Some(agent_id.to_string()),
@@ -971,11 +1065,15 @@ fn append_stream_partial_assistant(
         if sink.append(route, agent_id, rec).is_err() {
             return;
         }
-        outcome
-    } else {
-        return;
-    };
-    apply_spawn_link_backfills(sink, route, agent_id, call, &outcome.spawn_link_backfills);
+        apply_spawn_link_backfills(
+            sink,
+            route,
+            agent_id,
+            call,
+            &outcome.spawn_link_backfills,
+            &reg,
+        );
+    }
 }
 
 fn attach_capture_headers(

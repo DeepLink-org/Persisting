@@ -1,4 +1,4 @@
-//! Session markdown (`0001.md`): `<!-- persisting:block:{speaker} {json} -->` + body.
+//! Session markdown (`{session_id}.md`): `<!-- persisting:block:{speaker} {json} -->` + body.
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -8,11 +8,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::dialogue::{block_to_replay_json, try_capture_record_to_block};
-use crate::session_client::{resolve_client_meta_for_session_dir, SessionClientMeta};
+use super::dialogue::{block_to_replay_json, try_capture_record_to_block};
+use super::session_client::{resolve_client_meta_for_run_dir, SessionClientMeta};
 
-/// Default session dialogue file (first segment under `{agent_id}/{session_id}/`).
+/// Legacy numbered session file (pre `{session_id}.md` layout).
 pub const SESSION_MARKDOWN_FILENAME: &str = "0001.md";
+
+/// Max filename stem length for `{session_id}.md` on disk.
+const SESSION_FILENAME_MAX_LEN: usize = 128;
 
 /// Legacy filename; still recognized for read / import.
 pub const LEGACY_TRAJECTORY_MARKDOWN_FILENAME: &str = "trajectory.tlv.md";
@@ -76,8 +79,45 @@ impl MarkdownBlock {
     }
 }
 
+/// Sanitize a logical session id for use as a markdown filename stem.
+pub fn sanitize_session_filename(session_id: &str) -> String {
+    let trimmed = session_id.trim();
+    let mut out = String::with_capacity(trimmed.len().min(SESSION_FILENAME_MAX_LEN));
+    for c in trimmed.chars() {
+        if out.len() >= SESSION_FILENAME_MAX_LEN {
+            break;
+        }
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "session".to_string()
+    } else {
+        out
+    }
+}
+
+/// Markdown filename for a logical session (`{session_id}.md`).
+pub fn session_markdown_filename(session_key: &str) -> String {
+    format!("{}.md", sanitize_session_filename(session_key))
+}
+
 pub fn session_markdown_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_MARKDOWN_FILENAME)
+}
+
+/// `{run_dir}/{session_key}.md`
+pub fn session_markdown_path_for_key(run_dir: &Path, session_key: &str) -> PathBuf {
+    run_dir.join(session_markdown_filename(session_key))
+}
+
+/// Path to append markdown blocks for one session key under a run directory.
+pub fn session_markdown_write_path_for_key(run_dir: &Path, session_key: &str) -> PathBuf {
+    locate_session_markdown_for_key(run_dir, session_key)
+        .unwrap_or_else(|| session_markdown_path_for_key(run_dir, session_key))
 }
 
 /// Path to append markdown blocks: existing session file, or [`SESSION_MARKDOWN_FILENAME`] for new sessions.
@@ -85,7 +125,51 @@ pub fn session_markdown_write_path(session_dir: &Path) -> PathBuf {
     locate_session_markdown(session_dir).unwrap_or_else(|| session_markdown_path(session_dir))
 }
 
-/// Find the readable session markdown file (new `NNNN.md`, legacy `trajectory.tlv.md`, …).
+/// Whether `session_key` names a subagent markdown stem (`agent-{id}`).
+pub fn is_subagent_session_storage_key(session_key: &str) -> bool {
+    sanitize_session_filename(session_key)
+        .strip_prefix("agent-")
+        .is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+}
+
+fn is_subagent_markdown_filename(name: &str) -> bool {
+    name.strip_suffix(".md")
+        .is_some_and(|stem| is_subagent_session_storage_key(stem))
+}
+
+/// Capture-run bucket markdown: `{run_dir}/run-{id}.md` when the directory itself is `run-*`.
+pub fn locate_run_bucket_markdown(run_dir: &Path) -> Option<PathBuf> {
+    let stem = run_dir.file_name()?.to_str()?;
+    if !stem.starts_with("run-") {
+        return None;
+    }
+    let path = run_dir.join(session_markdown_filename(stem));
+    path.is_file().then_some(path)
+}
+
+/// Find markdown for one session key under a run directory (prefers `{key}.md`, then legacy `0001.md`).
+pub fn locate_session_markdown_for_key(run_dir: &Path, session_key: &str) -> Option<PathBuf> {
+    let named = session_markdown_path_for_key(run_dir, session_key);
+    if named.is_file() {
+        return Some(named);
+    }
+    // Subagent keys always map to sibling `agent-{id}.md`; never inherit the main run file.
+    if is_subagent_session_storage_key(session_key) {
+        return None;
+    }
+    // Main session in a capture run: prefer the run bucket file over subagent siblings.
+    if let Some(run_md) = locate_run_bucket_markdown(run_dir) {
+        return Some(run_md);
+    }
+    locate_session_markdown(run_dir)
+}
+
+/// Find the readable session markdown file (legacy `0001.md`, `{session_id}.md`, …).
 pub fn locate_session_markdown(session_dir: &Path) -> Option<PathBuf> {
     let preferred = session_dir.join(SESSION_MARKDOWN_FILENAME);
     if preferred.is_file() {
@@ -95,27 +179,57 @@ pub fn locate_session_markdown(session_dir: &Path) -> Option<PathBuf> {
     if legacy.is_file() {
         return Some(legacy);
     }
+    let mut session_key_files = Vec::new();
     let mut numbered = Vec::new();
     if let Ok(read_dir) = std::fs::read_dir(session_dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
-            if path.is_file() && is_numbered_session_markdown_name(path.file_name()?.to_str()?) {
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if is_numbered_session_markdown_name(name) {
                 numbered.push(path);
+            } else if is_session_key_markdown_name(name) && !is_subagent_markdown_filename(name) {
+                session_key_files.push(path);
             }
         }
+    }
+    session_key_files.sort();
+    if let Some(path) = session_key_files.into_iter().next() {
+        return Some(path);
     }
     numbered.sort();
     numbered.into_iter().next()
 }
 
-/// Whether `path` names a persisting session markdown file (`0001.md`, legacy `.tlv.md`, …).
+/// Whether `path` names a persisting session markdown file (`{session_id}.md`, `0001.md`, …).
 pub fn is_trajectory_markdown_path(path: impl AsRef<Path>) -> bool {
     let Some(name) = path.as_ref().file_name().and_then(|n| n.to_str()) else {
         return false;
     };
     is_numbered_session_markdown_name(name)
+        || is_session_key_markdown_name(name)
         || name.eq_ignore_ascii_case(LEGACY_TRAJECTORY_MARKDOWN_FILENAME)
         || name.to_ascii_lowercase().ends_with(".tlv.md")
+}
+
+fn is_session_key_markdown_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".md") else {
+        return false;
+    };
+    if stem.is_empty()
+        || is_numbered_session_markdown_name(name)
+        || name.eq_ignore_ascii_case(LEGACY_TRAJECTORY_MARKDOWN_FILENAME)
+        || name.to_ascii_lowercase().ends_with(".tlv.md")
+    {
+        return false;
+    }
+    stem.starts_with("agent-")
+        || stem.starts_with("run-")
+        || (stem.contains('-') && stem.len() >= 8)
 }
 
 fn is_numbered_session_markdown_name(name: &str) -> bool {
@@ -211,11 +325,11 @@ fn write_blocks(path: &Path, blocks: &[(BlockHeader, Vec<u8>)]) -> Result<usize>
         .open(path)
         .with_context(|| format!("open {}", path.display()))?;
     if file.metadata()?.len() == 0 {
-        let client = path.parent().and_then(|session_dir| {
-            session_dir
+        let client = path.parent().and_then(|run_dir| {
+            run_dir
                 .parent()
                 .and_then(|agent_dir| agent_dir.parent())
-                .and_then(|storage| resolve_client_meta_for_session_dir(storage, session_dir))
+                .and_then(|storage| resolve_client_meta_for_run_dir(storage, run_dir))
         });
         file.write_all(format_document_preamble(client.as_ref())?.as_bytes())?;
     }
@@ -569,6 +683,10 @@ mod tests {
         assert!(is_trajectory_markdown_path("0001.md"));
         assert!(is_trajectory_markdown_path("/a/b/0042.md"));
         assert!(is_trajectory_markdown_path("trajectory.tlv.md"));
+        assert!(is_trajectory_markdown_path("agent-abc123.md"));
+        assert!(is_trajectory_markdown_path(
+            "5e27e4a7-f42a-42a9-8448-79608bd95c53.md"
+        ));
         assert!(!is_trajectory_markdown_path("notes.md"));
     }
 
@@ -580,6 +698,55 @@ mod tests {
         assert_eq!(
             locate_session_markdown(dir.path()).unwrap(),
             dir.path().join(SESSION_MARKDOWN_FILENAME)
+        );
+    }
+
+    #[test]
+    fn subagent_key_does_not_fallback_to_main_run_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let main_md = dir.path().join("run-20260524-160709-170794000.md");
+        std::fs::write(&main_md, "main").unwrap();
+        let subagent_key = "agent-ad67e572475568b5a";
+        assert!(is_subagent_session_storage_key(subagent_key));
+        assert!(!is_subagent_session_storage_key(
+            "37343ad1-ed7d-49dc-b080-9c4afd9873c2"
+        ));
+        assert_eq!(
+            locate_session_markdown_for_key(dir.path(), subagent_key),
+            None
+        );
+        assert_eq!(
+            session_markdown_write_path_for_key(dir.path(), subagent_key),
+            dir.path().join("agent-ad67e572475568b5a.md")
+        );
+        assert_eq!(
+            locate_session_markdown_for_key(dir.path(), "37343ad1-ed7d-49dc-b080-9c4afd9873c2"),
+            Some(main_md.clone())
+        );
+    }
+
+    #[test]
+    fn main_session_prefers_run_md_over_subagent_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("run-20260524-161537-122998000");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let main_md = run_dir.join("run-20260524-161537-122998000.md");
+        std::fs::write(&main_md, "main").unwrap();
+        std::fs::write(run_dir.join("agent-a2560e716f0b8b526.md"), "sub").unwrap();
+        std::fs::write(run_dir.join("agent-a0df18417539eecd0.md"), "sub2").unwrap();
+
+        let header_session = "fb47835b-e10d-4b29-abc3-68f4594ebce3";
+        assert_eq!(
+            locate_session_markdown_for_key(&run_dir, header_session),
+            Some(main_md.clone())
+        );
+        assert_eq!(
+            session_markdown_write_path_for_key(&run_dir, header_session),
+            main_md
+        );
+        assert_eq!(
+            locate_session_markdown(&run_dir),
+            Some(run_dir.join("run-20260524-161537-122998000.md"))
         );
     }
 

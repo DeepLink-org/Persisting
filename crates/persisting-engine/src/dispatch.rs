@@ -56,6 +56,9 @@ fn dispatch_inner(body: RequestBody) -> Result<ResponseBody> {
         RequestBody::TrajectoryStats(r) => Ok(ResponseBody::TrajectoryStats(block_on(
             crate::trajectory::stats_async(r),
         )?)),
+        RequestBody::TrajectoryMaterialize(r) => Ok(ResponseBody::TrajectoryMaterialize(block_on(
+            crate::trajectory::materialize_async(r),
+        )?)),
     }
 }
 

@@ -2,8 +2,8 @@
 
 use serde_json::{json, Value};
 
+use super::router::model_matches;
 use crate::config::{ModelRoute, ProxyConfig};
-use crate::router::model_matches;
 
 /// Build model ids exposed to clients (OpenAI list format).
 pub fn build_models_response(cfg: &ProxyConfig) -> Value {

@@ -2,8 +2,8 @@
 
 use axum::http::HeaderMap;
 
-use crate::record::now_rfc3339;
 use crate::session_chain::{new_call_id, resolve_trace_id};
+use crate::storage::record::now_rfc3339;
 
 /// Identifiers for one LLM HTTP round-trip within a trajectory session.
 #[derive(Debug, Clone, PartialEq, Eq)]

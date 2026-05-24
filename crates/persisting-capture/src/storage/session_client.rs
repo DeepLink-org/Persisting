@@ -9,9 +9,9 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::session::{trajectory_session_dir, CaptureRoute};
 use crate::peer_process::resolve_peer_client;
 use crate::run_env::{read_run_child_info, read_run_session};
-use crate::session_storage::{trajectory_session_dir, CaptureRoute};
 
 /// Sidecar metadata for `capture serve` (no `run_session`). `capture run` uses `run_child.yaml` + markdown frontmatter instead.
 pub const SESSION_CLIENT_META_FILENAME: &str = "session-meta.yaml";
@@ -61,39 +61,43 @@ pub fn write_session_client_meta(path: &Path, meta: &SessionClientMeta) -> Resul
     fs::write(path, yaml).with_context(|| format!("write {}", path.display()))
 }
 
-/// Client metadata for markdown frontmatter: sidecar file, else `capture run` child snapshot.
-pub fn resolve_client_meta_for_session_dir(
+/// Client metadata for markdown frontmatter on a capture run directory.
+pub fn resolve_client_meta_for_run_dir(
     storage: &Path,
-    session_dir: &Path,
+    run_dir: &Path,
 ) -> Option<SessionClientMeta> {
-    if let Ok(Some(m)) = load_session_client_meta(&session_client_meta_path_in_dir(session_dir)) {
+    if let Ok(Some(m)) = load_session_client_meta(&session_client_meta_path_in_dir(run_dir)) {
         return Some(m);
     }
-    let session_id = session_dir.file_name()?.to_str()?;
-    read_run_session(storage)
-        .as_deref()
-        .filter(|j| *j == session_id)?;
+    let run_id = run_dir.file_name()?.to_str()?;
     client_meta_from_run_child(
         storage,
         &CaptureRoute {
-            root_session: Some(session_id.to_string()),
-            session_id: session_id.to_string(),
-            storage_session_id: session_id.to_string(),
+            root_session: Some(run_id.to_string()),
+            session_id: run_id.to_string(),
+            storage_session_id: run_id.to_string(),
             subagent_id: None,
         },
     )
 }
 
-fn is_capture_run_root(storage: &Path, route: &CaptureRoute) -> bool {
-    read_run_session(storage).as_deref() == route.root_session.as_deref()
-        && route
-            .root_session
-            .as_deref()
-            .is_some_and(|r| r == route.storage_session_id.as_str())
+/// Client metadata for markdown frontmatter: sidecar file, else `capture run` child snapshot.
+pub fn resolve_client_meta_for_session_dir(
+    storage: &Path,
+    session_dir: &Path,
+) -> Option<SessionClientMeta> {
+    resolve_client_meta_for_run_dir(storage, session_dir)
+}
+
+fn is_capture_run_active(storage: &Path, route: &CaptureRoute) -> bool {
+    read_run_session(storage)
+        .as_deref()
+        .zip(route.root_session.as_deref())
+        .is_some_and(|(a, b)| a == b)
 }
 
 fn client_meta_from_run_child(storage: &Path, route: &CaptureRoute) -> Option<SessionClientMeta> {
-    if !is_capture_run_root(storage, route) {
+    if !is_capture_run_active(storage, route) {
         return None;
     }
     let run_child = read_run_child_info(storage)?;
@@ -106,7 +110,7 @@ fn client_meta_from_run_child(storage: &Path, route: &CaptureRoute) -> Option<Se
 }
 
 fn should_persist_session_meta_file(storage: &Path, route: &CaptureRoute) -> bool {
-    !is_capture_run_root(storage, route)
+    !is_capture_run_active(storage, route)
 }
 
 /// Records client metadata once per session (best-effort; ignores lookup failures).
@@ -152,7 +156,7 @@ impl SessionClientRegistry {
             }
         }
 
-        let mut meta = if is_capture_run_root(storage, route) {
+        let mut meta = if is_capture_run_active(storage, route) {
             read_run_child_info(storage).map(|run_child| SessionClientMeta {
                 peer: peer.to_string(),
                 peer_port: peer.port(),

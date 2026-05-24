@@ -12,6 +12,8 @@ use tokio::net::TcpStream;
 
 use crate::protocol::ProtocolKind;
 
+use super::http_headers::skip_transparent_forward_header;
+
 /// `CONNECT host:443` — tunnel TCP to target (HTTPS and other TLS).
 pub async fn handle_connect(req: Request) -> Response {
     let Some(authority) = req.uri().authority().map(|a| a.to_string()) else {
@@ -52,7 +54,7 @@ pub fn is_forward_proxy_request(method: &Method, uri: &Uri) -> bool {
 pub fn is_llm_capture_path(path: &str) -> bool {
     ProtocolKind::from_path(path) != ProtocolKind::Unknown
 }
-use crate::http_headers::skip_transparent_forward_header;
+
 pub async fn transparent_forward(
     client: &reqwest::Client,
     req: Request,

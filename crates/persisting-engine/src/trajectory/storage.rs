@@ -1,6 +1,6 @@
 //! Resolve Lance vs markdown storage for a session.
 
-use persisting_capture::markdown_trajectory::SESSION_MARKDOWN_FILENAME;
+use persisting_capture::markdown_trajectory::session_markdown_filename;
 use persisting_proto::TrajectoryStorageFormat;
 
 use super::store::{LanceTrajectoryStore, MarkdownTrajectoryStore, TrajectorySession};
@@ -72,8 +72,8 @@ pub async fn resolve_for_append(
         TrajectoryStorageFormat::Auto => {
             resolve_auto(
                 &session,
-                TrajectoryStorageFormat::Both,
-                TrajectoryStorageFormat::Both,
+                TrajectoryStorageFormat::Lance,
+                TrajectoryStorageFormat::Lance,
             )
             .await
         }
@@ -85,7 +85,7 @@ pub fn format_label(fmt: TrajectoryStorageFormat) -> &'static str {
         TrajectoryStorageFormat::Auto => "auto",
         TrajectoryStorageFormat::Lance => "lance",
         TrajectoryStorageFormat::Markdown => "markdown",
-        TrajectoryStorageFormat::Both => "both",
+        TrajectoryStorageFormat::Both => "both (lance+materialize)",
     }
 }
 
@@ -105,12 +105,18 @@ pub fn dataset_display(
     let dir = trajectory_dataset_dir(storage, agent_id, session_id, root_session_id)?;
     match fmt {
         TrajectoryStorageFormat::Markdown => {
-            Ok(format!("{}/{}", dir.display(), SESSION_MARKDOWN_FILENAME))
+            let run = super::trajectory_run_dir(storage, agent_id, session_id, root_session_id)?;
+            Ok(format!(
+                "{}/{}",
+                run.display(),
+                session_markdown_filename(session_id)
+            ))
         }
         TrajectoryStorageFormat::Both => Ok(format!(
-            "{}/[lance + {}]",
+            "{}/[lance:{} + {}]",
             dir.display(),
-            SESSION_MARKDOWN_FILENAME
+            session_id,
+            session_markdown_filename(session_id)
         )),
         _ => session.session_dir().map(|p| p.display().to_string()),
     }

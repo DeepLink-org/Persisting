@@ -84,7 +84,7 @@ fn matches_spawn_hint_to_registered_subagent_by_doc_target() {
     assert_eq!(links[0]["subagent_id"], "ad20bef53147678d4");
     assert_eq!(
         links[0]["subagent_trajectory"],
-        "subagents/agent-ad20bef53147678d4"
+        "agent-ad20bef53147678d4.md"
     );
 }
 
@@ -138,7 +138,7 @@ fn spawn_link_records_are_never_skipped_in_markdown() {
         branch: None,
         parent_call_id: Some("call-parent".into()),
         payload: json!({
-            "spawn_links": [{"subagent_id": "abc1234", "subagent_trajectory": "subagents/agent-abc1234"}]
+            "spawn_links": [{"subagent_id": "abc1234", "subagent_trajectory": "agent-abc1234.md"}]
         }),
     };
     assert!(!skip_markdown_block(&rec));

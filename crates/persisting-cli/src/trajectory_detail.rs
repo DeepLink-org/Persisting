@@ -25,11 +25,12 @@ pub struct SpawnLinkInfo {
 
 impl SpawnLinkInfo {
     pub fn storage_session_id(&self) -> String {
-        self.subagent_trajectory
+        let leaf = self
+            .subagent_trajectory
             .rsplit('/')
             .next()
-            .unwrap_or(self.subagent_trajectory.as_str())
-            .to_string()
+            .unwrap_or(self.subagent_trajectory.as_str());
+        leaf.strip_suffix(".md").unwrap_or(leaf).to_string()
     }
 
     pub fn label(&self) -> String {
@@ -61,7 +62,7 @@ pub struct TurnNode {
 #[derive(Debug, Clone)]
 pub struct DetailNode {
     pub label: String,
-    /// Storage-relative path (`subagents/agent-…`); set for subagent nodes.
+    /// Storage-relative markdown path (`agent-….md`); set for subagent nodes.
     pub trajectory: Option<String>,
     pub summary: SessionDetailSummary,
     pub turns: Vec<TurnNode>,
@@ -668,7 +669,7 @@ mod tests {
     fn extracts_spawn_links() {
         let records = vec![
             r#"{"kind":"llm.request","role":"user","content":"go"}"#.into(),
-            r#"{"kind":"llm.response.stream","role":"assistant","content":"spawned","spawn_links":[{"subagent_type":"Explore","subagent_id":"abc","subagent_trajectory":"subagents/agent-abc"}]}"#.into(),
+            r#"{"kind":"llm.response.stream","role":"assistant","content":"spawned","spawn_links":[{"subagent_type":"Explore","subagent_id":"abc","subagent_trajectory":"agent-abc.md"}]}"#.into(),
         ];
         let (_, turns) = analyze_session_tree(&records).unwrap();
         assert_eq!(turns.len(), 1);
@@ -705,7 +706,7 @@ mod tests {
 
     #[test]
     fn spawn_site_ignores_backfilled_refs_on_later_turns() {
-        let link = r#"{"subagent_type":"Explore","subagent_id":"aeb","subagent_trajectory":"subagents/agent-aeb","description":"task"}"#;
+        let link = r#"{"subagent_type":"Explore","subagent_id":"aeb","subagent_trajectory":"agent-aeb.md","description":"task"}"#;
         let records = vec![
             r#"{"kind":"llm.request","content":"hi","call_id":"call-a"}"#.into(),
             r#"{"kind":"llm.response.stream","content":"go","call_id":"call-a"}"#.into(),
@@ -724,8 +725,10 @@ mod tests {
 
     #[test]
     fn merges_same_call_and_groups_multiple_spawns() {
-        let link_a = r#"{"subagent_type":"Explore","subagent_id":"a","subagent_trajectory":"subagents/agent-a"}"#;
-        let link_b = r#"{"subagent_type":"Explore","subagent_id":"b","subagent_trajectory":"subagents/agent-b"}"#;
+        let link_a =
+            r#"{"subagent_type":"Explore","subagent_id":"a","subagent_trajectory":"agent-a.md"}"#;
+        let link_b =
+            r#"{"subagent_type":"Explore","subagent_id":"b","subagent_trajectory":"agent-b.md"}"#;
         let records = vec![
             r#"{"kind":"llm.request","content":"task","call_id":"call-main"}"#.into(),
             r#"{"kind":"llm.response.stream","content":"part1","call_id":"call-main"}"#.into(),

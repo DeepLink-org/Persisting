@@ -1,0 +1,36 @@
+{
+  "model": "gpt-5.5",
+  "stream": true,
+  "tools": [
+    {
+      "type": "function",
+      "name": "shell",
+      "description": "Run a shell command",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" }
+        },
+        "required": ["command"]
+      }
+    }
+  ],
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [{ "type": "input_text", "text": "list files" }]
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_abc123",
+      "name": "shell",
+      "arguments": "{\"command\":\"ls\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_abc123",
+      "output": "Cargo.toml\nsrc"
+    }
+  ]
+}

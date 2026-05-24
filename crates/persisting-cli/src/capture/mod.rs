@@ -20,14 +20,17 @@ use persisting_proto::TrajectoryStorageFormat;
 
 pub use record::CaptureRecord;
 
-/// Capture trajectory storage format (`md` / `bin`).
+/// Capture trajectory storage format.
+///
+/// - `md`: Lance canonical + TLV Markdown materialized on flush/shutdown
+/// - `bin` / `lance`: Lance raw event log only
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CaptureFormat {
-    /// Session markdown (`0001.md`).
+    /// Human-readable view (Lance canonical + materialized `{session}.md`).
     #[value(name = "md", alias = "markdown")]
     #[default]
     Markdown,
-    /// Lance column store under `{storage}/{agent_id}/{session_id}/`.
+    /// Lance column store only.
     #[value(name = "bin", alias = "lance")]
     Lance,
 }

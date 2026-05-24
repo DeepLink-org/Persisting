@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::session_client::SessionClientMeta;
+use crate::storage::session_client::SessionClientMeta;
 
 /// Look up the client process for a proxied connection's peer address.
 pub(crate) fn resolve_peer_client(peer: SocketAddr) -> Result<Option<SessionClientMeta>> {

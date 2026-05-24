@@ -5,7 +5,7 @@ use axum::http::HeaderMap;
 use axum::http::HeaderValue;
 use bytes::Bytes;
 use persisting_capture::session_storage::{
-    resolve_capture_route, trajectory_session_dir, CaptureRoute,
+    resolve_capture_route, trajectory_markdown_path, trajectory_session_dir, CaptureRoute,
 };
 
 pub const RUN_ROOT: &str = "run-20260524-test";
@@ -57,7 +57,6 @@ pub fn main_trajectory_dir(storage: &Path, route: &CaptureRoute) -> PathBuf {
     trajectory_session_dir(storage, PROXY_AGENT, route)
 }
 
-pub fn subagent_trajectory_dir(storage: &Path, route: &CaptureRoute) -> PathBuf {
-    assert!(route.subagent_id.is_some(), "expected subagent route");
-    trajectory_session_dir(storage, PROXY_AGENT, route)
+pub fn subagent_markdown_path(storage: &Path, route: &CaptureRoute) -> PathBuf {
+    trajectory_markdown_path(storage, PROXY_AGENT, route)
 }

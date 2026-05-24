@@ -71,6 +71,9 @@ pub fn resolve_route_config<'a>(
 
 /// Replace JSON `model` field before sending upstream.
 pub fn rewrite_model_in_body(body: &Bytes, upstream_model: &str) -> Result<Bytes> {
+    if body.is_empty() {
+        return Ok(Bytes::new());
+    }
     let mut v: Value = serde_json::from_slice(body).context("parse request JSON")?;
     let Some(obj) = v.as_object_mut() else {
         bail!("request body must be a JSON object to rewrite model");
@@ -183,6 +186,12 @@ mod tests {
         let out = super::rewrite_model_in_body(&body, "deepseek-chat").unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["model"], "deepseek-chat");
+    }
+
+    #[test]
+    fn rewrite_model_empty_body_is_noop() {
+        let out = super::rewrite_model_in_body(&Bytes::new(), "deepseek-chat").unwrap();
+        assert!(out.is_empty());
     }
 
     #[test]

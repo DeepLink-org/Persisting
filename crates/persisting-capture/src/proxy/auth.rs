@@ -7,7 +7,7 @@ use crate::config::ModelRoute;
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
 
-use crate::http_headers::skip_upstream_forward_header;
+use super::http_headers::skip_upstream_forward_header;
 pub fn resolve_upstream_api_key(
     route: &ModelRoute,
     client_headers: &HeaderMap,
