@@ -2,7 +2,7 @@
 //! 设计文档：docs/src/design/distributed_tiered_storage.md
 
 use libc::{
-    c_void, mmap, mprotect, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_NORESERVE,
+    c_void, mmap, mprotect, munmap, MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE,
     PROT_NONE, PROT_READ, PROT_WRITE,
 };
 use pyo3::exceptions::PyValueError;
