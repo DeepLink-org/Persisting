@@ -14,7 +14,8 @@ struct AbiTransportError<'a> {
 
 /// RON 外壳 `(error: "...")`，与 CLI `WireError` 对齐。
 pub fn transport_error_ron(message: &str) -> String {
-    ron::to_string(&AbiTransportError { error: message }).unwrap_or_else(|_| "(error: \"ron\")".into())
+    ron::to_string(&AbiTransportError { error: message })
+        .unwrap_or_else(|_| "(error: \"ron\")".into())
 }
 
 fn ron_pretty() -> ron::ser::PrettyConfig {

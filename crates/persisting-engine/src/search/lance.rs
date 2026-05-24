@@ -7,8 +7,6 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use lance::Dataset;
-use lance::Error as LanceError;
 use lance::dataset::scanner::QueryFilter;
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::{
@@ -19,16 +17,19 @@ use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use lance::deps::datafusion::physical_plan::SendableRecordBatchStream;
 use lance::index::vector::VectorIndexParams;
 use lance::index::DatasetIndexExt;
-use lance_index::vector::ivf::IvfBuildParams;
+use lance::Dataset;
+use lance::Error as LanceError;
 use lance_index::scalar::inverted::InvertedIndexParams;
 use lance_index::scalar::FullTextSearchQuery;
+use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
 use lance_index::IndexType;
 use lance_linalg::distance::DistanceType;
 use persisting_proto::{
-    SearchAddRequest, SearchAddResponse, SearchImportLanceRequest, SearchImportLanceResponse,
-    SearchIndexReorderRequest, SearchIndexReorderResponse, SearchIndexRequest, SearchIndexResponse,
-    SearchQueryRequest, SearchQueryResponse,
+    SearchAddBatchRequest, SearchAddBatchResponse, SearchAddRequest, SearchAddResponse,
+    SearchImportLanceRequest, SearchImportLanceResponse, SearchIndexReorderRequest,
+    SearchIndexReorderResponse, SearchIndexRequest, SearchIndexResponse, SearchQueryRequest,
+    SearchQueryResponse,
 };
 
 use super::agent::embed_text;
@@ -112,11 +113,7 @@ fn min_rows_for_pq(pq: &PQBuildParams) -> usize {
     pq.sample_rate * 2_usize.pow(pq.num_bits as u32)
 }
 
-fn record_batch_for_document(
-    id: &str,
-    text: &str,
-    embedding: &[f32],
-) -> Result<RecordBatch> {
+fn record_batch_for_document(id: &str, text: &str, embedding: &[f32]) -> Result<RecordBatch> {
     let dim = embedding.len() as i32;
     let values = Float32Array::from_iter_values(embedding.iter().copied());
     let list = FixedSizeListArray::try_new(
@@ -132,10 +129,7 @@ fn record_batch_for_document(
         Field::new("text", DataType::Utf8, false),
         Field::new(
             "embedding",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                dim,
-            ),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
             false,
         ),
     ]));
@@ -148,6 +142,61 @@ fn record_batch_for_document(
         ],
     )
     .context("build RecordBatch")
+}
+
+fn record_batch_for_documents(
+    ids: &[String],
+    texts: &[String],
+    embedding_dim: usize,
+    flat_embeddings: &[f32],
+) -> Result<RecordBatch> {
+    let n = ids.len();
+    anyhow::ensure!(n > 0, "batch must contain at least one row");
+    anyhow::ensure!(
+        texts.len() == n,
+        "text count {} does not match id count {}",
+        texts.len(),
+        n
+    );
+    anyhow::ensure!(
+        flat_embeddings.len() == n * embedding_dim,
+        "flat embedding length {} expected {} * {}",
+        flat_embeddings.len(),
+        n,
+        embedding_dim
+    );
+    let dim = embedding_dim as i32;
+    let values = Float32Array::from_iter_values(flat_embeddings.iter().copied());
+    let list = FixedSizeListArray::try_new(
+        Arc::new(Field::new("item", DataType::Float32, true)),
+        dim,
+        Arc::new(values),
+        None,
+    )
+    .context("build FixedSizeListArray for batch embedding")?;
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("text", DataType::Utf8, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
+            false,
+        ),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from_iter_values(
+                ids.iter().map(|s| s.as_str()),
+            )) as ArrayRef,
+            Arc::new(StringArray::from_iter_values(
+                texts.iter().map(|s| s.as_str()),
+            )) as ArrayRef,
+            Arc::new(list) as ArrayRef,
+        ],
+    )
+    .context("build multi-row RecordBatch")
 }
 
 fn embedding_dim_for_column(ds: &Dataset, col: &str) -> Result<i32> {
@@ -173,9 +222,7 @@ pub async fn append_document(request: SearchAddRequest) -> Result<SearchAddRespo
     let id = request.id.unwrap_or_else(|| {
         format!(
             "doc-{:016x}",
-            super::agent::stable_hash(
-                format!("{}:{}", request.dataset, request.text).as_bytes(),
-            )
+            super::agent::stable_hash(format!("{}:{}", request.dataset, request.text).as_bytes(),)
         )
     });
     let batch = record_batch_for_document(&id, &request.text, &embedding)?;
@@ -219,6 +266,101 @@ pub async fn append_document(request: SearchAddRequest) -> Result<SearchAddRespo
     })
 }
 
+/// Append many document rows in one Lance write (one `RecordBatch`).
+pub async fn append_documents_batch(
+    request: SearchAddBatchRequest,
+) -> Result<SearchAddBatchResponse> {
+    let rows = request.rows;
+    if rows.is_empty() {
+        anyhow::bail!("SearchAddBatch.rows must not be empty");
+    }
+    let dataset = rows[0].dataset.clone();
+    let embedding_dim = rows[0].embedding_dim;
+    for (i, r) in rows.iter().enumerate() {
+        if r.dataset != dataset {
+            anyhow::bail!(
+                "batch row {}: dataset {:?} differs from first row {:?}",
+                i,
+                r.dataset,
+                dataset
+            );
+        }
+        if r.embedding_dim != embedding_dim {
+            anyhow::bail!(
+                "batch row {}: embedding_dim {} differs from {}",
+                i,
+                r.embedding_dim,
+                embedding_dim
+            );
+        }
+        if r.text.trim().is_empty() {
+            anyhow::bail!("batch row {}: text must not be empty", i);
+        }
+    }
+
+    let mut ids = Vec::with_capacity(rows.len());
+    let mut texts = Vec::with_capacity(rows.len());
+    let mut flat = Vec::with_capacity(rows.len().saturating_mul(embedding_dim));
+    let mut first_preview: Vec<f32> = Vec::new();
+
+    for r in rows.iter() {
+        let embedding = embed_text(&r.text, embedding_dim)?;
+        let id = r.id.clone().unwrap_or_else(|| {
+            format!(
+                "doc-{:016x}",
+                super::agent::stable_hash(format!("{}:{}", r.dataset, r.text).as_bytes()),
+            )
+        });
+        if first_preview.is_empty() {
+            first_preview = embedding.iter().copied().take(8).collect();
+        }
+        flat.extend_from_slice(&embedding);
+        ids.push(id);
+        texts.push(r.text.clone());
+    }
+
+    let batch = record_batch_for_documents(&ids, &texts, embedding_dim, &flat)?;
+    let added = rows.len();
+
+    if dataset_exists(&dataset).await? {
+        let ds = Arc::new(
+            Dataset::open(&dataset)
+                .await
+                .with_context(|| format!("open dataset {}", dataset))?,
+        );
+        let dim = embedding_dim_for_column(&ds, "embedding")?;
+        if dim as usize != embedding_dim {
+            anyhow::bail!(
+                "dataset embedding dim {} does not match request.embedding_dim {}",
+                dim,
+                embedding_dim
+            );
+        }
+        InsertBuilder::new(ds.clone())
+            .with_params(&WriteParams {
+                mode: WriteMode::Append,
+                ..Default::default()
+            })
+            .execute(vec![batch])
+            .await
+            .context("append batch to Lance dataset")?;
+    } else {
+        InsertBuilder::new(dataset.as_str())
+            .execute(vec![batch])
+            .await
+            .context("create Lance dataset with first batch")?;
+    }
+
+    Ok(SearchAddBatchResponse {
+        dataset,
+        added,
+        embedding_dim,
+        embedding_preview: first_preview,
+        status: "ok".to_string(),
+        note: format!("Wrote {added} rows in one Lance append (columns: id, text, embedding)."),
+    })
+}
+
 pub async fn build_vector_index(request: SearchIndexRequest) -> Result<SearchIndexResponse> {
     if request.dataset.trim().is_empty() {
         anyhow::bail!("dataset path must not be empty");
@@ -230,10 +372,7 @@ pub async fn build_vector_index(request: SearchIndexRequest) -> Result<SearchInd
     let _ = embedding_dim_for_column(&ds, &request.vector_column)
         .with_context(|| format!("inspect vector column '{}'", request.vector_column))?;
 
-    let row_count = ds
-        .count_rows(None)
-        .await
-        .context("count_rows")?;
+    let row_count = ds.count_rows(None).await.context("count_rows")?;
 
     let pq = build_pq_params(&request);
     let min_rows = min_rows_for_pq(&pq);
@@ -507,20 +646,14 @@ pub async fn import_lance_copy(
     if let Some(ref idcol) = request.source_id_column {
         super::agent::ensure_utf8_column(schema, idcol, "id")?;
     }
-    let total = src
-        .count_rows(None)
-        .await
-        .context("count source rows")?;
+    let total = src.count_rows(None).await.context("count source rows")?;
     let field_names: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
 
     let mut scan = src.scan();
     if let Some(lim) = request.limit {
         scan.limit(Some(lim as i64), None).context("scan limit")?;
     }
-    let stream = scan
-        .try_into_stream()
-        .await
-        .context("source scan stream")?;
+    let stream = scan.try_into_stream().await.context("source scan stream")?;
     let stream: SendableRecordBatchStream = stream.into();
 
     InsertBuilder::new(request.target_dataset.as_str())

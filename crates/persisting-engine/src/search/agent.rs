@@ -1,16 +1,17 @@
 use anyhow::{Context, Result};
-use lance::Dataset;
 use lance::datatypes::Schema as LanceSchema;
 use lance::deps::arrow_schema::DataType;
 use lance::index::DatasetIndexExt;
+use lance::Dataset;
 use lance_index::is_system_index;
 use lance_index::optimize::OptimizeOptions;
 pub use persisting_proto::{
-    SearchAddRequest, SearchAddResponse, SearchImportLanceRequest, SearchImportLanceResponse,
-    SearchIndexDeleteRequest, SearchIndexDeleteResponse, SearchIndexListEntry,
-    SearchIndexListRequest, SearchIndexListResponse, SearchIndexRebuildRequest,
-    SearchIndexRebuildResponse, SearchIndexReorderRequest, SearchIndexReorderResponse,
-    SearchIndexRequest, SearchIndexResponse, SearchQueryRequest, SearchQueryResponse,
+    SearchAddBatchRequest, SearchAddBatchResponse, SearchAddRequest, SearchAddResponse,
+    SearchImportLanceRequest, SearchImportLanceResponse, SearchIndexDeleteRequest,
+    SearchIndexDeleteResponse, SearchIndexListEntry, SearchIndexListRequest,
+    SearchIndexListResponse, SearchIndexRebuildRequest, SearchIndexRebuildResponse,
+    SearchIndexReorderRequest, SearchIndexReorderResponse, SearchIndexRequest, SearchIndexResponse,
+    SearchQueryRequest, SearchQueryResponse,
 };
 
 pub fn embed_text(text: &str, dim: usize) -> Result<Vec<f32>> {
@@ -44,6 +45,10 @@ pub async fn add_document(request: SearchAddRequest) -> Result<SearchAddResponse
     super::lance::append_document(request).await
 }
 
+pub async fn add_documents_batch(request: SearchAddBatchRequest) -> Result<SearchAddBatchResponse> {
+    super::lance::append_documents_batch(request).await
+}
+
 pub async fn query(request: SearchQueryRequest) -> Result<SearchQueryResponse> {
     validate_dataset_path(&request.dataset).await?;
     super::lance::vector_query(request).await
@@ -56,7 +61,10 @@ pub async fn list_indices(request: SearchIndexListRequest) -> Result<SearchIndex
     let ds = Dataset::open(&request.dataset)
         .await
         .with_context(|| format!("failed to open Lance dataset at {}", request.dataset))?;
-    let arc = ds.load_indices().await.context("failed to load index metadata")?;
+    let arc = ds
+        .load_indices()
+        .await
+        .context("failed to load index metadata")?;
     let schema = ds.schema();
     let mut indices: Vec<SearchIndexListEntry> = Vec::new();
     for meta in arc.iter() {
@@ -109,7 +117,9 @@ pub async fn delete_index(request: SearchIndexDeleteRequest) -> Result<SearchInd
     })
 }
 
-pub async fn rebuild_indices(request: SearchIndexRebuildRequest) -> Result<SearchIndexRebuildResponse> {
+pub async fn rebuild_indices(
+    request: SearchIndexRebuildRequest,
+) -> Result<SearchIndexRebuildResponse> {
     if request.dataset.trim().is_empty() {
         anyhow::bail!("dataset path must not be empty");
     }
@@ -153,17 +163,15 @@ pub async fn create_index(request: SearchIndexRequest) -> Result<SearchIndexResp
     super::lance::build_vector_index(request).await
 }
 
-pub async fn reorder_ivf_layout(request: SearchIndexReorderRequest) -> Result<SearchIndexReorderResponse> {
+pub async fn reorder_ivf_layout(
+    request: SearchIndexReorderRequest,
+) -> Result<SearchIndexReorderResponse> {
     super::lance::reorder_ivf(request).await
 }
 
 pub(crate) fn ensure_utf8_column(schema: &LanceSchema, name: &str, role: &str) -> Result<()> {
     let field = schema.field(name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "source Lance dataset has no column '{}' ({})",
-            name,
-            role
-        )
+        anyhow::anyhow!("source Lance dataset has no column '{}' ({})", name, role)
     })?;
     match field.data_type() {
         DataType::Utf8 | DataType::LargeUtf8 => Ok(()),
@@ -176,7 +184,9 @@ pub(crate) fn ensure_utf8_column(schema: &LanceSchema, name: &str, role: &str) -
 }
 
 /// Stream-copy an existing Lance dataset into a new target URI (schema preserved).
-pub async fn import_from_lance(request: SearchImportLanceRequest) -> Result<SearchImportLanceResponse> {
+pub async fn import_from_lance(
+    request: SearchImportLanceRequest,
+) -> Result<SearchImportLanceResponse> {
     super::lance::import_lance_copy(request).await
 }
 

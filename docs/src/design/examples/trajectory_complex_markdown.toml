@@ -1,5 +1,5 @@
-# 示例：Persisting `trajectory add --format toml` 可用的复杂 Markdown 正文
-# 说明：`records` 为数组；每段 `[[records]]` 经 CLI 转为一行 RON。大段 Markdown 放在 `'''` 字面多行串里，减少 `\"` 转义。
+# 示例：Persisting `trajectory add <STORAGE> --format toml`（可选 `--agent-id` / `--session-id`）可用的复杂 Markdown 正文
+# 说明：`records` 为数组；每段 `[[records]]` 为一条 JSON 记录。大段 Markdown 放在 `'''` 字面多行串里，减少 `\"` 转义。
 # 预览：可用任意 Markdown 预览器打开本文件中非 TOML 部分，或只看各 `body_md` 块内正文。
 
 [[records]]

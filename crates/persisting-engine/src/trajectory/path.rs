@@ -1,0 +1,398 @@
+//! Resolve trajectory storage paths from CLI / API path arguments.
+//!
+//! Accepts a storage root (`store/`), agent directory (`store/{agent_id}/`),
+//! or session directory (`store/{agent_id}/{session_id}/`, nested subagent paths).
+
+use std::path::{Component, Path};
+
+use anyhow::Result;
+use persisting_capture::locate_session_markdown;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrajLocation {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub root_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrajLocationPartial {
+    pub storage: String,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub root_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedTrajPath {
+    storage: String,
+    agent_id: String,
+    session_id: String,
+    root_session_id: Option<String>,
+}
+
+fn path_components(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn join_storage_prefix(components: &[String], end: usize) -> String {
+    components[..end].join("/")
+}
+
+fn normalized_path_arg(path_arg: &str) -> String {
+    path_arg.trim().trim_end_matches('/').to_string()
+}
+
+/// Infer `{storage, agent_id, session_id[, root_session_id]}` from path segments.
+fn infer_traj_location_from_path(path_arg: &str) -> Option<ParsedTrajPath> {
+    let trimmed = normalized_path_arg(path_arg);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let components = path_components(Path::new(&trimmed));
+    let trimmed_path = Path::new(&trimmed);
+    if let Some(i) = components.iter().position(|c| c == "subagents") {
+        if i >= 2 && i + 1 < components.len() && looks_like_session_dir(trimmed_path) {
+            return Some(ParsedTrajPath {
+                storage: join_storage_prefix(&components, i - 2),
+                agent_id: components[i - 2].clone(),
+                root_session_id: Some(components[i - 1].clone()),
+                session_id: components[i + 1].clone(),
+            });
+        }
+        return None;
+    }
+    if components.len() >= 3 && looks_like_session_dir(trimmed_path) {
+        let n = components.len();
+        return Some(ParsedTrajPath {
+            storage: join_storage_prefix(&components, n - 2),
+            agent_id: components[n - 2].clone(),
+            session_id: components[n - 1].clone(),
+            root_session_id: None,
+        });
+    }
+    None
+}
+
+fn looks_like_session_dir(dir: &Path) -> bool {
+    dir.is_dir()
+        && (locate_session_markdown(dir).is_some()
+            || dir.join("_versions").is_dir()
+            || dir.join(".capture").join("run_session").is_file())
+}
+
+fn list_session_dirs(agent_dir: &Path) -> Option<Vec<String>> {
+    let read_dir = std::fs::read_dir(agent_dir).ok()?;
+    let mut sessions = Vec::new();
+    for entry in read_dir.flatten() {
+        let ft = entry.file_type().ok()?;
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name == "subagents" {
+            continue;
+        }
+        if looks_like_session_dir(&entry.path()) {
+            sessions.push(name);
+        }
+    }
+    Some(sessions)
+}
+
+/// `{storage}/{agent_id}` with a single session subdirectory.
+fn infer_from_agent_dir(path_arg: &str) -> Option<ParsedTrajPath> {
+    let trimmed = normalized_path_arg(path_arg);
+    let path = Path::new(&trimmed);
+    let components = path_components(path);
+    if components.len() < 2 || !path.is_dir() {
+        return None;
+    }
+    let n = components.len();
+    let agent_id = components[n - 1].clone();
+    let storage = join_storage_prefix(&components, n - 1);
+    let sessions = list_session_dirs(path)?;
+    if sessions.len() == 1 {
+        return Some(ParsedTrajPath {
+            storage,
+            agent_id,
+            session_id: sessions.into_iter().next()?,
+            root_session_id: None,
+        });
+    }
+    None
+}
+
+/// Storage root with exactly one session anywhere under `{storage}/{agent_id}/`.
+fn infer_from_storage_root(path_arg: &str) -> Option<ParsedTrajPath> {
+    let trimmed = normalized_path_arg(path_arg);
+    let path = Path::new(&trimmed);
+    if !path.is_dir() {
+        return None;
+    }
+    let read_dir = std::fs::read_dir(path).ok()?;
+    let mut found = Vec::new();
+    for agent_entry in read_dir.flatten() {
+        if !agent_entry.file_type().ok()?.is_dir() {
+            continue;
+        }
+        let agent_id = agent_entry.file_name().to_string_lossy().into_owned();
+        if agent_id.starts_with('.') {
+            continue;
+        }
+        let Some(sessions) = list_session_dirs(&agent_entry.path()) else {
+            continue;
+        };
+        for session_id in sessions {
+            found.push(ParsedTrajPath {
+                storage: trimmed.clone(),
+                agent_id: agent_id.clone(),
+                session_id,
+                root_session_id: None,
+            });
+        }
+    }
+    if found.len() == 1 {
+        return found.into_iter().next();
+    }
+    None
+}
+
+fn parsed_to_location(parsed: ParsedTrajPath) -> TrajLocation {
+    TrajLocation {
+        storage: parsed.storage,
+        agent_id: parsed.agent_id,
+        session_id: parsed.session_id,
+        root_session_id: parsed.root_session_id,
+    }
+}
+
+/// Best-effort inference from a path (no CLI flags).
+pub fn try_infer_traj_location(path_arg: &str) -> Option<TrajLocation> {
+    infer_traj_location_from_path(path_arg)
+        .or_else(|| infer_from_agent_dir(path_arg))
+        .or_else(|| infer_from_storage_root(path_arg))
+        .map(parsed_to_location)
+}
+
+/// Merge path inference with explicit flags; missing ids stay unset.
+pub fn merge_traj_location(
+    path_arg: String,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+    root_session_id: Option<String>,
+) -> TrajLocationPartial {
+    let inferred = try_infer_traj_location(&path_arg);
+    TrajLocationPartial {
+        storage: inferred
+            .as_ref()
+            .map(|p| p.storage.clone())
+            .unwrap_or(path_arg),
+        agent_id: agent_id.or_else(|| inferred.as_ref().map(|p| p.agent_id.clone())),
+        session_id: session_id.or_else(|| inferred.as_ref().map(|p| p.session_id.clone())),
+        root_session_id: root_session_id
+            .or_else(|| inferred.as_ref().and_then(|p| p.root_session_id.clone())),
+    }
+}
+
+/// Read commands (`replay`, `stats`) require a resolved session.
+pub fn resolve_traj_read_location(
+    op: &str,
+    path_arg: String,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+    root_session_id: Option<String>,
+) -> Result<TrajLocation> {
+    let partial = merge_traj_location(path_arg, agent_id, session_id, root_session_id);
+    match (partial.agent_id, partial.session_id) {
+        (Some(agent_id), Some(session_id)) => Ok(TrajLocation {
+            storage: partial.storage,
+            agent_id,
+            session_id,
+            root_session_id: partial.root_session_id,
+        }),
+        _ => anyhow::bail!(
+            "{op}: 请指定 session 目录（如 `store/{{agent_id}}/{{session_id}}/`），或同时提供 --agent-id 与 --session-id"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_flat_session_path() {
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-flat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let session = base
+            .join("store")
+            .join("deepseek-proxy")
+            .join("run-20260524-015351-928492000");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+
+        let p = infer_traj_location_from_path(session.to_str().unwrap()).unwrap();
+        assert!(p.storage.ends_with("store"));
+        assert_eq!(p.agent_id, "deepseek-proxy");
+        assert_eq!(p.session_id, "run-20260524-015351-928492000");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn infer_flat_session_path_string_only() {
+        // Relative path inference still works when session markers are not checked on disk
+        // (string-only test uses path shape; real CLI paths should exist on disk).
+        let base = std::env::temp_dir().join(format!("persisting-traj-rel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let session = base.join("store").join("a").join("s");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+        assert!(infer_traj_location_from_path("store/a/s").is_none());
+        let p = infer_traj_location_from_path(session.to_str().unwrap()).unwrap();
+        assert_eq!(p.agent_id, "a");
+        assert_eq!(p.session_id, "s");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn infer_nested_subagent_path() {
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-nest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let session = base
+            .join("store")
+            .join("agent")
+            .join("root-run")
+            .join("subagents")
+            .join("sub-uuid");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+
+        let p = infer_traj_location_from_path(session.to_str().unwrap()).unwrap();
+        assert!(p.storage.ends_with("store"));
+        assert_eq!(p.agent_id, "agent");
+        assert_eq!(p.root_session_id.as_deref(), Some("root-run"));
+        assert_eq!(p.session_id, "sub-uuid");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn infer_storage_root_only_returns_none_without_scan() {
+        assert!(infer_traj_location_from_path("store").is_none());
+    }
+
+    #[test]
+    fn resolve_merges_explicit_flags_with_inferred_storage() {
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let session = base.join("store").join("deepseek-proxy").join("run-abc");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+
+        let loc = resolve_traj_read_location(
+            "trajectory stats",
+            session.to_str().unwrap().into(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(loc.storage.ends_with("store"));
+        assert_eq!(loc.agent_id, "deepseek-proxy");
+        assert_eq!(loc.session_id, "run-abc");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_explicit_ids_with_storage_root() {
+        let loc = resolve_traj_read_location(
+            "trajectory stats",
+            "store".into(),
+            Some("a".into()),
+            Some("s".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(loc.storage, "store");
+        assert_eq!(loc.agent_id, "a");
+        assert_eq!(loc.session_id, "s");
+    }
+
+    #[test]
+    fn resolve_fails_without_ids_or_deep_path() {
+        assert!(
+            resolve_traj_read_location("trajectory stats", "store".into(), None, None, None,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn infer_from_agent_dir_single_session() {
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let agent = base.join("store").join("deepseek-proxy");
+        let session = agent.join("run-only");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+
+        let p = infer_from_agent_dir(agent.to_str().unwrap()).unwrap();
+        assert!(p.storage.ends_with("store"));
+        assert_eq!(p.agent_id, "deepseek-proxy");
+        assert_eq!(p.session_id, "run-only");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn infer_from_storage_root_single_session() {
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let store = base.join("store");
+        let session = store.join("agent-a").join("run-one");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+
+        let loc = try_infer_traj_location(store.to_str().unwrap()).unwrap();
+        assert!(loc.storage.ends_with("store"));
+        assert_eq!(loc.agent_id, "agent-a");
+        assert_eq!(loc.session_id, "run-one");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn merge_partial_flags_with_inferred_path() {
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let session = base.join("store").join("a").join("s");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+
+        let loc = merge_traj_location(
+            session.to_str().unwrap().into(),
+            Some("override-agent".into()),
+            None,
+            None,
+        );
+        assert!(loc.storage.ends_with("store"));
+        assert_eq!(loc.agent_id.as_deref(), Some("override-agent"));
+        assert_eq!(loc.session_id.as_deref(), Some("s"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

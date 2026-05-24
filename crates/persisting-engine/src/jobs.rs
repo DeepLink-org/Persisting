@@ -43,10 +43,7 @@ impl Job {
     }
 
     fn finish_with_response(&self, bytes: Vec<u8>) {
-        *self
-            .response_utf8
-            .lock()
-            .expect("job mutex poisoned") = Some(bytes);
+        *self.response_utf8.lock().expect("job mutex poisoned") = Some(bytes);
         self.progress.store(100, Ordering::Release);
         self.state.store(JOB_STATE_COMPLETE, Ordering::Release);
     }
@@ -76,8 +73,9 @@ fn spawn_worker(id: u64, job: Arc<Job>, request_ron: String) -> std::io::Result<
 }
 
 pub(crate) fn submit_job(request_utf8: &[u8]) -> Result<u64, SubmitError> {
-    let request_ron =
-        std::str::from_utf8(request_utf8).map_err(|_| SubmitError::NotUtf8)?.to_owned();
+    let request_ron = std::str::from_utf8(request_utf8)
+        .map_err(|_| SubmitError::NotUtf8)?
+        .to_owned();
 
     let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
     let job = Arc::new(Job::new_pending());
@@ -106,7 +104,7 @@ pub(crate) unsafe fn take_job_result(
     response_len_out: *mut u64,
 ) -> i32 {
     use persisting_proto::{
-        PERSISTING_ENGINE_TAKE_ERR_NO_JOB, PERSISTING_ENGINE_TAKE_ERR_NOT_READY,
+        PERSISTING_ENGINE_TAKE_ERR_NOT_READY, PERSISTING_ENGINE_TAKE_ERR_NO_JOB,
         PERSISTING_ENGINE_TAKE_ERR_NULL, PERSISTING_ENGINE_TAKE_ERR_OUT_TOO_SMALL,
         PERSISTING_ENGINE_TAKE_OK,
     };

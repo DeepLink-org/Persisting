@@ -14,7 +14,8 @@ BlockStore 维护 `block_table: dict[BlockId, BlockEntry]`：
 @dataclass
 class BlockEntry:
     tier: Literal["gpu", "cpu", "remote", "ssd"]
-    state: Literal["present", "evicted", "migrating"]
+    state: Literal["present", "evicted", "migrating", "loading"]
+    # present: 数据已到位；evicted: 已被驱逐需重拉；migrating: 正在迁移到不同层级；loading: 正在从下层或远程读取
     # tier-specific location
     gpu_ptr: int | None         # L0: CUDA device pointer
     cpu_mapped: bool            # L1: 是否已 MAP_FIXED 映射

@@ -7,26 +7,26 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 
-use futures::{StreamExt, TryStreamExt, stream};
-use lance::Dataset;
-use lance::dataset::ROW_ID;
+use futures::{stream, StreamExt, TryStreamExt};
 use lance::dataset::fragment::write::FragmentCreateBuilder;
 use lance::dataset::index::DatasetIndexRemapperOptions;
 use lance::dataset::optimize::{IndexRemapperOptions, RemappedIndex};
 use lance::dataset::transaction::{Operation, RewriteGroup, RewrittenIndex, Transaction};
 use lance::dataset::write::{CommitBuilder, WriteDestination, WriteParams};
-use lance::deps::arrow_array::RecordBatch;
+use lance::dataset::ROW_ID;
 use lance::deps::arrow_array::cast::AsArray;
 use lance::deps::arrow_array::types::UInt64Type;
+use lance::deps::arrow_array::RecordBatch;
 use lance::deps::arrow_schema::Schema as ArrowSchema;
 use lance::deps::datafusion::error::DataFusionError;
-use lance::deps::datafusion::physical_plan::SendableRecordBatchStream;
 use lance::deps::datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use lance::deps::datafusion::physical_plan::SendableRecordBatchStream;
 use lance::index::DatasetIndexExt;
+use lance::Dataset;
 use lance_core::datatypes::Schema as LanceSchema;
 use lance_core::utils::address::RowAddress;
 use lance_core::{Error, Result};
@@ -128,7 +128,8 @@ pub(crate) async fn run_physical_reorder(
     )
     .map_err(|e| Error::io(e.to_string()))?;
 
-    let rewritten_indices = remap_indices(&working, &row_id_map, &old_frag_ids, &[], &mut writer).await?;
+    let rewritten_indices =
+        remap_indices(&working, &row_id_map, &old_frag_ids, &[], &mut writer).await?;
 
     let read_version = working.manifest().version;
     let txn = Transaction::new(
@@ -214,14 +215,20 @@ async fn partition_count(source: &Dataset, pivot_name: &str) -> Result<usize> {
         ))
     })?;
 
-    if let Some(n) = stats.get("num_partitions").and_then(serde_json::Value::as_u64) {
+    if let Some(n) = stats
+        .get("num_partitions")
+        .and_then(serde_json::Value::as_u64)
+    {
         return Ok(n as usize);
     }
     for group_key in ["indices", "segments"] {
         if let Some(arr) = stats.get(group_key).and_then(serde_json::Value::as_array) {
             let mut total = 0usize;
             for entry in arr {
-                if let Some(n) = entry.get("num_partitions").and_then(serde_json::Value::as_u64) {
+                if let Some(n) = entry
+                    .get("num_partitions")
+                    .and_then(serde_json::Value::as_u64)
+                {
                     total = total.saturating_add(n as usize);
                 }
             }
@@ -258,9 +265,7 @@ async fn collect_permutation_natural(
                 ))
             })?;
             let row_ids = row_ids.as_primitive_opt::<UInt64Type>().ok_or_else(|| {
-                Error::index(format!(
-                    "partition {part_id} row_id column is not UInt64",
-                ))
+                Error::index(format!("partition {part_id} row_id column is not UInt64",))
             })?;
             permutation.extend_from_slice(row_ids.values());
         }
@@ -331,11 +336,8 @@ async fn write_reordered_fragments_simple(
     let adapter = RecordBatchStreamAdapter::new(schema_for_adapter.clone(), batch_stream);
     let stream: SendableRecordBatchStream = Box::pin(adapter);
 
-    writeln!(
-        &mut writer,
-        "Streaming {total} rows to {target_uri}",
-    )
-    .map_err(|e| Error::io(e.to_string()))?;
+    writeln!(&mut writer, "Streaming {total} rows to {target_uri}",)
+        .map_err(|e| Error::io(e.to_string()))?;
 
     let source_schema = LanceSchema::try_from(arrow_schema_for_lance.as_ref())?;
     let write_params = WriteParams::default();

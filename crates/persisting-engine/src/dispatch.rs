@@ -23,6 +23,9 @@ fn dispatch_inner(body: RequestBody) -> Result<ResponseBody> {
         RequestBody::SearchAdd(r) => Ok(ResponseBody::SearchAdd(block_on(
             crate::search::agent::add_document(r),
         )?)),
+        RequestBody::SearchAddBatch(r) => Ok(ResponseBody::SearchAddBatch(block_on(
+            crate::search::agent::add_documents_batch(r),
+        )?)),
         RequestBody::SearchQuery(r) => Ok(ResponseBody::SearchQuery(block_on(
             crate::search::agent::query(r),
         )?)),

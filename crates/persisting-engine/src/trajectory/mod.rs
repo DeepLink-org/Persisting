@@ -1,58 +1,105 @@
-//! Lance-backed trajectory storage under `{storage}/{name}/` (standard Lance dataset URI).
+//! Trajectory storage: **Lance** and/or session markdown (`0001.md`).
 //!
-//! Each append writes rows with monotonic `seq` (0-based global order) and UTF-8 `record_ron`
-//! (one wire RON value per row). Replay applies `order_by(seq)`, then SQL-style `limit`/`offset`.
+//! Path: `{storage}/{agent_id}/{session_id}/`.
+//!
+//! Physical backends implement [`TrajectoryStore`] (see [`store`] module).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use lance::Dataset;
 use lance::Error as LanceError;
-use lance::dataset::scanner::ColumnOrdering;
-use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
-use lance::deps::arrow_array::{Array, Int64Array, RecordBatch, StringArray};
-use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
 pub use persisting_proto::{
     TrajectoryAppendRequest, TrajectoryAppendResponse, TrajectoryReplayRequest,
     TrajectoryReplayResponse, TrajectoryStatsRequest, TrajectoryStatsResponse,
+    TrajectoryStorageFormat,
 };
 
-/// Arrow / Lance column storing one trajectory step as RON text.
+pub mod path;
+mod storage;
+pub mod store;
+
+pub use path::{
+    merge_traj_location, resolve_traj_read_location, try_infer_traj_location, TrajLocation,
+    TrajLocationPartial,
+};
+pub use store::{
+    store_for_read, stores_for_append, LanceTrajectoryStore, MarkdownTrajectoryStore,
+    TrajectoryAppendOutcome, TrajectoryReplayOutcome, TrajectorySession, TrajectoryStatsOutcome,
+    TrajectoryStore,
+};
+
 pub const TRAJECTORY_SEQ_COL: &str = "seq";
 pub const TRAJECTORY_RECORD_COL: &str = "record_ron";
 
-const APPEND_CHUNK_ROWS: usize = 8192;
-
-fn trajectory_schema() -> Arc<ArrowSchema> {
-    Arc::new(ArrowSchema::new(vec![
-        Field::new(TRAJECTORY_SEQ_COL, DataType::Int64, false),
-        Field::new(TRAJECTORY_RECORD_COL, DataType::Utf8, false),
-    ]))
-}
-
-fn validate_namespace(storage: &str, name: &str) -> Result<()> {
+fn validate_storage(storage: &str) -> Result<()> {
     if storage.trim().is_empty() {
         anyhow::bail!("storage path must not be empty");
-    }
-    if name.trim().is_empty() {
-        anyhow::bail!("trajectory name must not be empty");
     }
     Ok(())
 }
 
-/// Directory passed to [`Dataset::open`] (`…/storage/name`, contains `data.lance/`).
-pub fn trajectory_dataset_dir(storage: &str, name: &str) -> PathBuf {
-    Path::new(storage).join(name)
+/// One path segment: non-empty after trim, no separators or `..`.
+fn validate_path_segment(s: &str, field: &str) -> Result<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        anyhow::bail!("{field} must not be empty");
+    }
+    if t.contains('/') || t.contains('\\') {
+        anyhow::bail!("{field} must not contain '/' or '\\' (single path segment only)");
+    }
+    if t == "." || t == ".." {
+        anyhow::bail!("{field} must not be '.' or '..'");
+    }
+    Ok(t.to_string())
 }
 
-pub fn dataset_uri_display(storage: &str, name: &str) -> String {
-    trajectory_dataset_dir(storage, name)
-        .to_string_lossy()
-        .into_owned()
+/// Directory for a session (`…/storage/agent_id/[root/][subagents/]session_id`).
+pub fn trajectory_dataset_dir(
+    storage: &str,
+    agent_id: &str,
+    session_id: &str,
+    root_session_id: Option<&str>,
+) -> Result<PathBuf> {
+    validate_storage(storage)?;
+    let a = validate_path_segment(agent_id, "agent_id")?;
+    let s = validate_path_segment(session_id, "session_id")?;
+    match root_session_id {
+        None => Ok(Path::new(storage).join(a).join(s)),
+        Some(root) => {
+            let r = validate_path_segment(root, "root_session_id")?;
+            if s == r {
+                Ok(Path::new(storage).join(a).join(r))
+            } else {
+                Ok(Path::new(storage).join(a).join(r).join("subagents").join(s))
+            }
+        }
+    }
 }
 
-async fn open_trajectory(uri: &str) -> Result<Option<Dataset>> {
+/// Legacy two-argument form (flat `{agent_id}/{session_id}/`).
+pub fn trajectory_dataset_dir_flat(
+    storage: &str,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<PathBuf> {
+    trajectory_dataset_dir(storage, agent_id, session_id, None)
+}
+
+pub fn dataset_uri_display(
+    storage: &str,
+    agent_id: &str,
+    session_id: &str,
+    root_session_id: Option<&str>,
+) -> Result<String> {
+    Ok(
+        trajectory_dataset_dir(storage, agent_id, session_id, root_session_id)?
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+pub(crate) async fn open_trajectory(uri: &str) -> Result<Option<Dataset>> {
     match Dataset::open(uri).await {
         Ok(ds) => Ok(Some(ds)),
         Err(e) if matches!(e, LanceError::DatasetNotFound { .. }) => Ok(None),
@@ -60,7 +107,7 @@ async fn open_trajectory(uri: &str) -> Result<Option<Dataset>> {
     }
 }
 
-fn parse_ronl_records(records_ronl: &str) -> Result<Vec<String>> {
+fn parse_engine_records(records_ronl: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for (line_number, line) in records_ronl.lines().enumerate() {
         let line = line.trim();
@@ -68,181 +115,155 @@ fn parse_ronl_records(records_ronl: &str) -> Result<Vec<String>> {
             continue;
         }
         let _: ron::value::Value = ron::from_str(line).map_err(|err| {
-            anyhow::anyhow!("invalid RON at line {}: {}", line_number + 1, err)
+            anyhow::anyhow!("invalid record at line {}: {}", line_number + 1, err)
         })?;
         out.push(line.to_string());
     }
     Ok(out)
 }
 
-fn record_batches_for_append(
-    schema: Arc<ArrowSchema>,
-    mut start_seq: i64,
-    lines: &[String],
-) -> Result<Vec<RecordBatch>> {
-    let mut batches = Vec::new();
-    for chunk in lines.chunks(APPEND_CHUNK_ROWS) {
-        let n = chunk.len();
-        let seqs: Vec<i64> = (0..n).map(|i| start_seq + i as i64).collect();
-        start_seq += n as i64;
-        let seq_arr = Int64Array::from(seqs);
-        let record_arr = StringArray::from_iter_values(chunk.iter().map(|s| s.as_str()));
-        batches.push(
-            RecordBatch::try_new(schema.clone(), vec![Arc::new(seq_arr), Arc::new(record_arr)])
-                .context("build trajectory RecordBatch")?,
-        );
-    }
-    Ok(batches)
+fn session_from_request(
+    storage: &str,
+    agent_id: &str,
+    session_id: &str,
+    root_session_id: Option<&str>,
+) -> TrajectorySession {
+    TrajectorySession::new(
+        storage,
+        agent_id,
+        session_id,
+        root_session_id.map(str::to_string),
+    )
 }
 
 pub async fn append_async(request: TrajectoryAppendRequest) -> Result<TrajectoryAppendResponse> {
-    validate_namespace(&request.storage, &request.name)?;
-    let lines = parse_ronl_records(&request.records_ronl)?;
+    let root_session_id = request.root_session_id.as_deref();
+    let session = session_from_request(
+        &request.storage,
+        &request.agent_id,
+        &request.session_id,
+        root_session_id,
+    );
+    let lines = parse_engine_records(&request.records_ronl)?;
     let accepted = lines.len();
-    let root = trajectory_dataset_dir(&request.storage, &request.name);
-    let uri = root.to_string_lossy().to_string();
 
     if accepted == 0 {
         return Ok(TrajectoryAppendResponse {
-            dataset: uri.clone(),
+            dataset: storage::dataset_display(
+                &request.storage,
+                &request.agent_id,
+                &request.session_id,
+                root_session_id,
+                request.storage_format,
+            )?,
             storage: request.storage,
-            name: request.name,
+            agent_id: request.agent_id,
+            session_id: request.session_id,
             accepted_records: 0,
             status: "ok".to_string(),
-            note: "No non-empty RON lines; dataset unchanged.".to_string(),
+            note: "No non-empty records; storage unchanged.".to_string(),
         });
     }
 
-    tokio::fs::create_dir_all(&request.storage)
-        .await
-        .with_context(|| format!("create_dir_all {}", request.storage))?;
+    let fmt = storage::resolve_for_append(
+        &request.storage,
+        &request.agent_id,
+        &request.session_id,
+        root_session_id,
+        request.storage_format,
+    )
+    .await?;
 
-    let schema = trajectory_schema();
-
-    if let Some(ds) = open_trajectory(uri.as_str()).await? {
-        let ds = Arc::new(ds);
-        let base_seq = ds
-            .count_rows(None)
-            .await
-            .context("count_rows before append")? as i64;
-        let batches = record_batches_for_append(schema, base_seq, &lines)?;
-        InsertBuilder::new(ds)
-            .with_params(&WriteParams {
-                mode: WriteMode::Append,
-                ..Default::default()
-            })
-            .execute(batches)
-            .await
-            .context("append trajectory batches")?;
-    } else {
-        let batches = record_batches_for_append(schema, 0, &lines)?;
-        InsertBuilder::new(uri.as_str())
-            .execute(batches)
-            .await
-            .context("create trajectory dataset with first batches")?;
+    let mut notes = Vec::new();
+    for backend in stores_for_append(fmt) {
+        let outcome = backend.append(&session, &lines).await?;
+        notes.push(outcome.note);
     }
 
     Ok(TrajectoryAppendResponse {
-        dataset: uri.clone(),
+        dataset: storage::dataset_display(
+            &request.storage,
+            &request.agent_id,
+            &request.session_id,
+            root_session_id,
+            fmt,
+        )?,
         storage: request.storage,
-        name: request.name,
+        agent_id: request.agent_id,
+        session_id: request.session_id,
         accepted_records: accepted,
         status: "ok".to_string(),
         note: format!(
-            "Appended {} row(s) to Lance dataset at {} (columns {}, {}).",
-            accepted, uri, TRAJECTORY_SEQ_COL, TRAJECTORY_RECORD_COL
+            "storage_format={}. {}",
+            storage::format_label(fmt),
+            notes.join("; ")
         ),
     })
 }
 
 pub async fn replay_async(request: TrajectoryReplayRequest) -> Result<TrajectoryReplayResponse> {
-    validate_namespace(&request.storage, &request.name)?;
-    let root = trajectory_dataset_dir(&request.storage, &request.name);
-    let uri = root.to_string_lossy().to_string();
+    let root_session_id = request.root_session_id.as_deref();
+    let session = session_from_request(
+        &request.storage,
+        &request.agent_id,
+        &request.session_id,
+        root_session_id,
+    );
 
-    let Some(ds) = open_trajectory(uri.as_str()).await? else {
-        anyhow::bail!("trajectory dataset does not exist at {}", uri);
-    };
-
-    let note_tid = if request.trajectory_id.is_some() {
-        " trajectory_id filter is reserved (not stored per row yet)."
-    } else {
-        ""
-    };
-
-    // Full-schema scan: `project` + `order_by` Together triggers TakeExec row-address requirements;
-    // we sort by `seq` on all columns then extract `record_ron` in-process.
-    let mut scan = ds.scan();
-    scan.order_by(Some(vec![ColumnOrdering::asc_nulls_first(
-        TRAJECTORY_SEQ_COL.to_string(),
-    )]))
-    .context("order_by seq")?;
-    scan.limit(
-        request.limit.map(|x| x as i64),
-        Some(request.offset as i64),
+    let fmt = storage::resolve_for_read_with_root(
+        &request.storage,
+        &request.agent_id,
+        &request.session_id,
+        root_session_id,
+        request.storage_format,
     )
-    .context("limit/offset")?;
+    .await?;
 
-    let batch = scan
-        .try_into_batch()
-        .await
-        .context("replay scan")?;
-
-    let col_idx = batch
-        .schema()
-        .fields()
-        .iter()
-        .position(|f| f.name() == TRAJECTORY_RECORD_COL)
-        .ok_or_else(|| anyhow::anyhow!("batch schema missing column '{}'", TRAJECTORY_RECORD_COL))?;
-
-    let mut records = Vec::with_capacity(batch.num_rows());
-    let col = batch.column(col_idx);
-    if let Some(a) = col.as_any().downcast_ref::<StringArray>() {
-        for i in 0..batch.num_rows() {
-            records.push(a.value(i).to_string());
-        }
-    } else {
-        anyhow::bail!("expected Utf8 column {}", TRAJECTORY_RECORD_COL);
-    }
+    let backend = store_for_read(fmt);
+    let outcome = backend
+        .replay(&session, request.offset, request.limit)
+        .await?;
 
     Ok(TrajectoryReplayResponse {
         storage: request.storage,
-        name: request.name,
-        records,
+        agent_id: request.agent_id,
+        session_id: request.session_id,
+        records: outcome.records,
         status: "ok".to_string(),
-        note: format!(
-            "Ordered scan on '{}' with limit/offset (offset={}, limit={:?}).{}",
-            TRAJECTORY_SEQ_COL, request.offset, request.limit, note_tid
-        ),
+        note: outcome.note,
     })
 }
 
 pub async fn stats_async(request: TrajectoryStatsRequest) -> Result<TrajectoryStatsResponse> {
-    validate_namespace(&request.storage, &request.name)?;
-    let root = trajectory_dataset_dir(&request.storage, &request.name);
-    let uri = root.to_string_lossy().to_string();
+    let root_session_id = request.root_session_id.as_deref();
+    let session = session_from_request(
+        &request.storage,
+        &request.agent_id,
+        &request.session_id,
+        root_session_id,
+    );
 
-    let Some(ds) = open_trajectory(uri.as_str()).await? else {
-        return Ok(TrajectoryStatsResponse {
-            dataset: uri,
-            storage: request.storage,
-            name: request.name,
-            status: "missing".to_string(),
-            note: "No Lance dataset at this path yet; use trajectory add first.".to_string(),
-        });
-    };
-    let rows = ds.count_rows(None).await.context("count_rows")?;
-    let ver = ds.version().version;
+    let fmt = storage::resolve_for_read_with_root(
+        &request.storage,
+        &request.agent_id,
+        &request.session_id,
+        root_session_id,
+        request.storage_format,
+    )
+    .await?;
+
+    let backend = store_for_read(fmt);
+    let outcome = backend.stats(&session).await?;
 
     Ok(TrajectoryStatsResponse {
-        dataset: uri,
+        dataset: outcome.dataset,
         storage: request.storage,
-        name: request.name,
-        status: "ok".to_string(),
-        note: format!(
-            "rows={}, manifest_version={}, columns ['{}','{}']",
-            rows, ver, TRAJECTORY_SEQ_COL, TRAJECTORY_RECORD_COL
-        ),
+        agent_id: request.agent_id,
+        session_id: request.session_id,
+        row_count: outcome.row_count,
+        manifest_version: outcome.manifest_version,
+        status: outcome.status,
+        note: outcome.note,
     })
 }
 
@@ -251,13 +272,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_ronl_counts() {
-        let v = parse_ronl_records("(a:1)\n\n(b:2)\n").unwrap();
+    fn parse_engine_records_counts() {
+        let v = parse_engine_records("(a:1)\n\n(b:2)\n").unwrap();
         assert_eq!(v.len(), 2);
     }
 
+    #[test]
+    fn rejects_bad_segments() {
+        assert!(trajectory_dataset_dir("/tmp", "a/b", "s", None).is_err());
+        assert!(trajectory_dataset_dir("/tmp", "..", "s", None).is_err());
+        let nested = trajectory_dataset_dir("/tmp", "agent", "sub-1", Some("root-1")).unwrap();
+        assert!(nested.ends_with("agent/root-1/subagents/sub-1"));
+        let root = trajectory_dataset_dir("/tmp", "agent", "root-1", Some("root-1")).unwrap();
+        assert!(root.ends_with("agent/root-1"));
+    }
+
     #[tokio::test]
-    async fn append_replay_stats_roundtrip() {
+    async fn append_replay_stats_lance_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("traj_store");
         std::fs::create_dir_all(&storage).unwrap();
@@ -265,45 +296,208 @@ mod tests {
 
         let append = append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
-            name: "run_a".into(),
+            agent_id: "agent_a".into(),
+            session_id: "sess_1".into(),
+            root_session_id: None,
             records_ronl: "(step:1)\n(step:2)\n".into(),
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
         assert_eq!(append.accepted_records, 2);
-        assert_eq!(append.status, "ok");
 
         let replay = replay_async(TrajectoryReplayRequest {
             storage: storage_s.clone(),
-            name: "run_a".into(),
-            trajectory_id: None,
+            agent_id: "agent_a".into(),
+            session_id: "sess_1".into(),
             offset: 0,
             limit: Some(10),
+            storage_format: TrajectoryStorageFormat::Lance,
+            root_session_id: None,
         })
         .await
         .unwrap();
         assert_eq!(replay.records.len(), 2);
-        assert!(replay.records[0].contains("step:1"));
-
-        let replay_page = replay_async(TrajectoryReplayRequest {
-            storage: storage_s.clone(),
-            name: "run_a".into(),
-            trajectory_id: None,
-            offset: 1,
-            limit: Some(1),
-        })
-        .await
-        .unwrap();
-        assert_eq!(replay_page.records.len(), 1);
-        assert!(replay_page.records[0].contains("step:2"));
 
         let st = stats_async(TrajectoryStatsRequest {
             storage: storage_s,
-            name: "run_a".into(),
+            agent_id: "agent_a".into(),
+            session_id: "sess_1".into(),
+            storage_format: TrajectoryStorageFormat::Lance,
+            root_session_id: None,
         })
         .await
         .unwrap();
-        assert_eq!(st.status, "ok");
-        assert!(st.note.contains("rows=2"));
+        assert_eq!(st.row_count, 2);
+    }
+
+    #[tokio::test]
+    async fn append_replay_stats_nested_lance_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("traj_store");
+        std::fs::create_dir_all(&storage).unwrap();
+        let storage_s = storage.to_string_lossy().to_string();
+
+        let append = append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "agent_a".into(),
+            session_id: "sub-1".into(),
+            root_session_id: Some("root-1".into()),
+            records_ronl: "(step:1)\n(step:2)\n(step:3)\n".into(),
+            storage_format: TrajectoryStorageFormat::Lance,
+        })
+        .await
+        .unwrap();
+        assert_eq!(append.accepted_records, 3);
+
+        let replay = replay_async(TrajectoryReplayRequest {
+            storage: storage_s.clone(),
+            agent_id: "agent_a".into(),
+            session_id: "sub-1".into(),
+            offset: 1,
+            limit: Some(1),
+            storage_format: TrajectoryStorageFormat::Lance,
+            root_session_id: Some("root-1".into()),
+        })
+        .await
+        .unwrap();
+        assert_eq!(replay.records.len(), 1);
+
+        let st = stats_async(TrajectoryStatsRequest {
+            storage: storage_s,
+            agent_id: "agent_a".into(),
+            session_id: "sub-1".into(),
+            storage_format: TrajectoryStorageFormat::Lance,
+            root_session_id: Some("root-1".into()),
+        })
+        .await
+        .unwrap();
+        assert_eq!(st.row_count, 3);
+        assert!(st.dataset.contains("root-1/subagents/sub-1"));
+    }
+
+    #[tokio::test]
+    async fn append_replay_stats_markdown_roundtrip() {
+        use persisting_capture::capture_call::CaptureCall;
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::{llm_request_record, llm_response_record};
+
+        let call = CaptureCall {
+            call_id: "c".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("traj_store");
+        std::fs::create_dir_all(&storage).unwrap();
+        let storage_s = storage.to_string_lossy().to_string();
+
+        let req = llm_request_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1/chat",
+            &serde_json::json!({"messages":[{"role":"user","content":"first"}]}),
+        );
+        let resp = llm_response_record(
+            Some("s".into()),
+            None,
+            200,
+            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"second"}}]}),
+            false,
+            &call,
+        );
+        let records_ronl = format!(
+            "{}\n{}\n",
+            record_to_engine_line(&req).unwrap(),
+            record_to_engine_line(&resp).unwrap()
+        );
+
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl,
+            storage_format: TrajectoryStorageFormat::Markdown,
+        })
+        .await
+        .unwrap();
+
+        let replay = replay_async(TrajectoryReplayRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            offset: 1,
+            limit: Some(1),
+            storage_format: TrajectoryStorageFormat::Markdown,
+            root_session_id: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(replay.records.len(), 1);
+        let row: serde_json::Value = serde_json::from_str(&replay.records[0]).unwrap();
+        assert_eq!(row["content"], "second");
+        assert_eq!(row["role"], "assistant");
+
+        let md_path = md::session_markdown_write_path(
+            &trajectory_dataset_dir(&storage_s, "a", "s", None).unwrap(),
+        );
+        let md_text = std::fs::read_to_string(&md_path).unwrap();
+        assert!(md_text.contains("<!-- persisting:block"));
+
+        let st = stats_async(TrajectoryStatsRequest {
+            storage: storage_s,
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            storage_format: TrajectoryStorageFormat::Markdown,
+            root_session_id: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(st.row_count, 2);
+    }
+
+    #[tokio::test]
+    async fn append_both_writes_lance_and_markdown() {
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::llm_request_record;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("traj_store");
+        std::fs::create_dir_all(&storage).unwrap();
+        let storage_s = storage.to_string_lossy().to_string();
+
+        let req = llm_request_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1",
+            &serde_json::json!({"messages":[{"role":"user","content":"hi"}]}),
+        );
+        let records_ronl = format!("{}\n", record_to_engine_line(&req).unwrap());
+
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl,
+            storage_format: TrajectoryStorageFormat::Both,
+        })
+        .await
+        .unwrap();
+
+        let root = trajectory_dataset_dir(&storage_s, "a", "s", None).unwrap();
+        let md_path = md::session_markdown_write_path(&root);
+        assert!(md_path.exists());
+        let md_text = std::fs::read_to_string(&md_path).unwrap();
+        assert!(md_text.contains("persisting:block"));
+        assert!(md_text.contains("hi"));
+        assert!(open_trajectory(root.to_string_lossy().as_ref())
+            .await
+            .unwrap()
+            .is_some());
     }
 }

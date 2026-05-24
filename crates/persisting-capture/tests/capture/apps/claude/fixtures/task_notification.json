@@ -1,0 +1,14 @@
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "<task-notification>\n<task-id>aeb40a1230926b4a8</task-id>\n<status>completed</status>\n<summary>Agent completed</summary>\n</task-notification>"
+        }
+      ]
+    }
+  ]
+}

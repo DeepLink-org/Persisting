@@ -5,14 +5,15 @@
 
 use mach2::exc::{__Reply__exception_raise_t, __Request__exception_raise_t};
 use mach2::exception_types::{
-    exception_behavior_t, EXC_BAD_ACCESS, EXC_MASK_BAD_ACCESS, EXCEPTION_DEFAULT, MACH_EXCEPTION_CODES,
+    exception_behavior_t, EXCEPTION_DEFAULT, EXC_BAD_ACCESS, EXC_MASK_BAD_ACCESS,
+    MACH_EXCEPTION_CODES,
 };
 use mach2::kern_return::KERN_SUCCESS;
 use mach2::mach_port::{mach_port_allocate, mach_port_insert_right};
 use mach2::message::{
-    mach_msg, mach_msg_header_t, mach_msg_size_t, MACH_MSG_TYPE_MOVE_SEND_ONCE, MACH_RCV_MSG,
-    MACH_RCV_TIMEOUT, MACH_SEND_MSG, MACH_MSG_SUCCESS, MACH_MSG_TIMEOUT_NONE, MACH_RCV_LARGE,
-    MACH_RCV_TIMED_OUT, MACH_MSGH_BITS,
+    mach_msg, mach_msg_header_t, mach_msg_size_t, MACH_MSGH_BITS, MACH_MSG_SUCCESS,
+    MACH_MSG_TIMEOUT_NONE, MACH_MSG_TYPE_MOVE_SEND_ONCE, MACH_RCV_LARGE, MACH_RCV_MSG,
+    MACH_RCV_TIMED_OUT, MACH_RCV_TIMEOUT, MACH_SEND_MSG,
 };
 use mach2::port::{MACH_PORT_NULL, MACH_PORT_RIGHT_RECEIVE};
 use mach2::task::task_set_exception_ports;
@@ -50,17 +51,14 @@ fn fill_page(page_start: usize, page_data: &[u8; PAGE_SIZE]) -> std::io::Result<
         return Err(std::io::Error::last_os_error());
     }
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            page_data.as_ptr(),
-            page_start as *mut u8,
-            PAGE_SIZE,
-        );
+        std::ptr::copy_nonoverlapping(page_data.as_ptr(), page_start as *mut u8, PAGE_SIZE);
     }
     Ok(())
 }
 
 /// 行为：EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES，对应 exception_raise 消息，fault 地址在 code[1]。
-const BEHAVIOR: exception_behavior_t = (EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES) as exception_behavior_t;
+const BEHAVIOR: exception_behavior_t =
+    (EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES) as exception_behavior_t;
 
 /// MIG 约定：reply msgh_id = request msgh_id + 100。
 const EXC_REPLY_OFFSET: i32 = 100;
@@ -97,7 +95,8 @@ pub fn run_mach_handler(
         if ret != MACH_MSG_SUCCESS {
             if ret == MACH_RCV_TIMED_OUT {
                 let mut b = [0u8; 1];
-                let n = unsafe { libc::read(shutdown_read_fd, b.as_mut_ptr() as *mut libc::c_void, 1) };
+                let n =
+                    unsafe { libc::read(shutdown_read_fd, b.as_mut_ptr() as *mut libc::c_void, 1) };
                 if n <= 0 {
                     break;
                 }
@@ -105,7 +104,8 @@ pub fn run_mach_handler(
             continue;
         }
 
-        let req: &__Request__exception_raise_t = unsafe { &*(req_buf.as_ptr() as *const __Request__exception_raise_t) };
+        let req: &__Request__exception_raise_t =
+            unsafe { &*(req_buf.as_ptr() as *const __Request__exception_raise_t) };
         if req.exception != EXC_BAD_ACCESS as i32 {
             continue;
         }
@@ -171,11 +171,13 @@ pub fn mach_register_and_spawn_handler(
     len: usize,
     block_size: usize,
     path: String,
-) -> std::io::Result<(std::os::unix::io::RawFd, std::thread::JoinHandle<std::io::Result<()>>)> {
+) -> std::io::Result<(
+    std::os::unix::io::RawFd,
+    std::thread::JoinHandle<std::io::Result<()>>,
+)> {
     let mut exc_port: mach2::port::mach_port_t = 0;
-    let kr = unsafe {
-        mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &mut exc_port)
-    };
+    let kr =
+        unsafe { mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &mut exc_port) };
     if kr != KERN_SUCCESS {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
@@ -197,13 +199,7 @@ pub fn mach_register_and_spawn_handler(
         ));
     }
     let kr = unsafe {
-        task_set_exception_ports(
-            mach_task_self(),
-            EXC_MASK_BAD_ACCESS,
-            exc_port,
-            BEHAVIOR,
-            0,
-        )
+        task_set_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, exc_port, BEHAVIOR, 0)
     };
     if kr != KERN_SUCCESS {
         return Err(std::io::Error::new(
@@ -220,9 +216,7 @@ pub fn mach_register_and_spawn_handler(
     // 子线程只持 read_fd；write_fd 返回给调用方，关闭即让 read 端收到 EOF，handler 退出。
     let handle = std::thread::Builder::new()
         .name("mach-fault-handler".into())
-        .spawn(move || {
-            run_mach_handler(exc_port, base, len, block_size, path, read_fd)
-        })?;
+        .spawn(move || run_mach_handler(exc_port, base, len, block_size, path, read_fd))?;
     Ok((write_fd, handle))
 }
 
@@ -236,7 +230,7 @@ use pyo3::prelude::*;
 /// macOS：启动 Mach 异常缺页 handler；返回 shutdown fd（关闭该 fd 可停止 handler）。
 #[cfg(target_os = "macos")]
 #[pyfunction]
-pub fn start_uffd_handler(
+pub fn start_mach_handler(
     base: usize,
     len: usize,
     block_size: usize,

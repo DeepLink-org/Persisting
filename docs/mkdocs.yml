@@ -90,6 +90,13 @@ plugins:
             Design: 设计文档
             Architecture: 架构设计
             Distributed Tiered Storage: 分布式分层存储
+            Trajectory Storage: 轨迹存储模型
+            Trajectory Markdown Format: 轨迹 Markdown 格式
+            CLI Architecture: CLI 整体架构
+            Capture Command: Capture 命令
+            LLM Capture Proxy: LLM 捕获代理
+            Trajectory Command: Trajectory 命令
+            Search Command: Search 命令
             Similar Systems Reference: 类似系统参考
             API Reference: API 参考
   - mkdocstrings:
@@ -116,6 +123,13 @@ nav:
     - design/index.md
     - Architecture: design/architecture.md
     - Distributed Tiered Storage: design/distributed_tiered_storage.md
+    - Trajectory Storage: design/trajectory_storage.zh.md
+    - Trajectory Markdown Format: design/trajectory_tlv_format.zh.md
+    - CLI Architecture: design/cli_architecture.zh.md
+    - Capture Command: design/cli_capture_command.zh.md
+    - LLM Capture Proxy: design/llm_capture_proxy.zh.md
+    - Trajectory Command: design/cli_trajectory_command.zh.md
+    - Search Command: design/cli_search_command.zh.md
     - Similar Systems Reference: design/similar_systems_reference.md
   - API Reference: api_reference.md
 

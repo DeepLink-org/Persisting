@@ -1,0 +1,17 @@
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Launching."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","name":"Agent","id":"toolu_agent_1"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"description\":\"Review capture command design\",\"subagent_type\":\"Explore\",\"prompt\":\"Review docs/src/design/cli_capture_command.zh.md\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}

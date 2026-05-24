@@ -1,99 +1,93 @@
-# `persisting trajectory` 命令设计说明
+# `persisting trajectory` 设计说明
 
-`persisting trajectory` 面向 **Agent 执行轨迹** 场景，提供轨迹记录的追加、回放、统计三类操作。
+Trajectory 命令面向 **Agent 执行轨迹** 的写入、回放与统计，底层遵循 [轨迹存储模型](trajectory_storage.zh.md)（Lance 列存 + 会话 Markdown）。
 
-轨迹的命名空间由 `STORAGE`（根目录）与 `NAME`（逻辑名）二元组定位。
-
----
-
-## 1. 命令树
-
-```
-persisting
-└── trajectory
-    ├── add     # 追加轨迹记录
-    ├── replay  # 分页回放
-    └── stats   # 统计信息
-```
+短名：**`traj`**。
 
 ---
 
-## 2. 全局选项
+## 1. 能力概览
 
-根命令 `persisting` 的 `--core-lib` 对所有子命令生效，详见 [CLI 整体架构设计](cli_architecture.zh.md)。
-
----
-
-## 3. 子命令
-
-### 3.1 `persisting trajectory add`
-
-向指定命名空间追加一批轨迹记录。
-
-```
-persisting trajectory add <STORAGE> <NAME> [OPTIONS]
-```
-
-#### 参数
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `STORAGE` | `String` | 是 | — | 轨迹根目录（位置参数） |
-| `NAME` | `String` | 是 | — | 轨迹逻辑名（位置参数） |
-| `--format` | `jsonl` \| `toml` \| `ronl` | 否 | `jsonl` | 输入格式 |
-| `--input` | `String` | 否 | `-` | 输入文件路径，`-` 表示 stdin |
-
-#### 输入格式
-
-**`jsonl`**（默认）：每行一个 JSON 值，空行跳过。适合管道与 agent 日志导出。
-
-**`toml`**：单个 TOML 文档，根表须含 `records` 键且为数组。支持 `[[records]]` 数组表和 `records = [...]` 内联数组两种写法。适合手写配置与评审场景。
-
-**`ronl`**：每行一个 RON 值，空行跳过。输入原样传递，不做格式转换。适合直接构造 wire 格式的场景。
+| 操作 | 用户意图 |
+|------|----------|
+| **add** | 向某 agent 的某 session 批量追加事件 |
+| **replay** | 按全局序号分页读取事件 |
+| **stats** | 查看 session 规模；可选逐轮树状摘要（含 subagent 分支） |
 
 ---
 
-### 3.2 `persisting trajectory replay`
+## 2. 会话定位
 
-按分页参数回放轨迹记录。
+轨迹按 **存储根 / agent / session** 组织。CLI 可：
+
+- 显式指定 agent 与 session id；或
+- 传入 session 目录，自动解析；或
+- 在 storage 根下仅有一个 session 时自动选中
+
+**Subagent** 通过「父 session + 子 session」嵌套路径访问，与 capture 目录拓扑一致。
+
+id 规则：单层路径段，不含路径分隔符，避免目录穿越。
+
+所有 trajectory 子命令的首个位置参数均为 **`<STORAGE>`**——轨迹 store 根目录路径。
 
 ```
-persisting trajectory replay <STORAGE> <NAME> [OPTIONS]
+persisting trajectory add     <STORAGE> [OPTIONS]
+persisting trajectory replay  <STORAGE> [OPTIONS]
+persisting trajectory stats   <STORAGE> [OPTIONS]
 ```
-
-#### 参数
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `STORAGE` | `String` | 是 | — | 轨迹根目录（位置参数） |
-| `NAME` | `String` | 是 | — | 轨迹逻辑名（位置参数） |
-| `--trajectory-id` | `String` | 否 | — | 会话 / run id（预留） |
-| `--offset` | `usize` | 否 | `0` | 起始偏移 |
-| `--limit` | `usize` | 否 | — | 最大返回条数；省略由引擎默认 |
 
 ---
 
-### 3.3 `persisting trajectory stats`
+## 3. 存储选择
 
-查询命名空间的统计与路径信息。
+| 选项 | 含义 |
+|------|------|
+| Lance | 仅列存 |
+| Markdown | 仅会话文档 |
+| both | 双写 |
+| auto | 按已有数据或输入类型推断 |
 
-```
-persisting trajectory stats <STORAGE> <NAME>
-```
+CLI 通过 `--storage-format` 选项选择存储后端（默认 auto）。
 
-#### 参数
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `STORAGE` | `String` | 是 | 轨迹根目录（位置参数） |
-| `NAME` | `String` | 是 | 轨迹逻辑名（位置参数） |
+Capture 通过 `-f md|bin` 直接选定格式，不走 auto 双写逻辑。
 
 ---
 
-## 4. 设计约定
+## 4. 输入格式（add）
 
-- **资源锚点前置**：与 `search` 一致，`STORAGE` + `NAME` 为前两个位置参数。
-- **CLI 负责格式归一**：jsonl / toml 在客户端转为统一格式，减少后端复杂度。
-- **ronl 为透传模式**：`--format ronl` 下输入原样传递，不做转换。
-- **默认 stdin**：`--input` 默认 `-`，支持管道。与 `search create` 不同：**stdin 时 `trajectory add` 仍可使用 `--format` 的默认值 `jsonl`**；若 stdin 实为 **ronl / toml**，须显式传 **`--format`**。
-- **输出到 stdout**：成功时 pretty 打印结果，失败时打印错误信息并返回非零退出码。
+| 格式 | 典型用途 |
+|------|----------|
+| TOML | 结构化批量记录（默认） |
+| JSONL | 管道、日志导出 |
+| Markdown | 导入整份会话文档（含 legacy `.tlv.md`） |
+
+stdin 为默认输入；格式无法从文件名推断时需显式指定。
+
+---
+
+## 5. 输出约定
+
+成功时 **stdout 为 TOML**，便于脚本解析：
+
+- **add**：返回实际使用的 agent / session id 及写入摘要
+- **replay**：`records` 为事件列表（Markdown 回放偏对话视图，Lance 回放为完整结构）
+- **stats**：行数/块数、数据集状态；`--detail` 时改为人类可读的逐轮树
+
+---
+
+## 6. 与 Capture 的分工
+
+| 组件 | 角色 |
+|------|------|
+| Capture | 生产轨迹（实时或 import） |
+| Trajectory | 消费轨迹（回放、统计、手动追加） |
+
+通常工作流：`capture run …` 产生 store → `trajectory replay` / `stats` 审查。
+
+---
+
+## 7. 相关文档
+
+- [轨迹存储模型](trajectory_storage.zh.md)
+- [轨迹 Markdown 格式](trajectory_tlv_format.zh.md)
+- [CLI 整体架构](cli_architecture.zh.md)

@@ -18,10 +18,10 @@ pub const PERSISTING_VECTOR_INDEX_NAME: &str = crate::search::lance::PERSISTING_
 pub const PERSISTING_FTS_INDEX_NAME: &str = crate::search::lance::PERSISTING_FTS_INDEX_NAME;
 
 pub use bridge::{
-    search_add, search_import_lance, search_index, search_index_delete, search_index_list,
-    search_index_rebuild, search_index_reorder, search_query, trajectory_append, trajectory_replay,
-    trajectory_stats,
+    search_add, search_add_batch, search_import_lance, search_index, search_index_delete,
+    search_index_list, search_index_rebuild, search_index_reorder, search_query, trajectory_append,
+    trajectory_replay, trajectory_stats,
 };
 pub use dispatch::{dispatch_bytes, handle_rpc_request, invoke_request_body};
-pub use ron_api::invoke_ron;
 pub use persisting_proto::PROTOCOL_VERSION;
+pub use ron_api::invoke_ron;
