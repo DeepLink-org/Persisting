@@ -899,14 +899,6 @@ struct TrajectoryBatchKey {
 const CAPTURE_TRAJECTORY_BATCH: usize = 32;
 
 fn should_flush_capture_record(record: &persisting_capture::CaptureRecord) -> bool {
-    if record
-        .payload
-        .get("stream_partial")
-        .and_then(|v| v.as_bool())
-        == Some(true)
-    {
-        return true;
-    }
     matches!(
         record.kind.as_str(),
         "llm.request"
@@ -971,7 +963,7 @@ fn build_capture_trajectory_sink(
     std::sync::Arc<persisting_capture::CallbackSink>,
     TrajectoryAppendWorker,
 )> {
-    let stream_markdown = matches!(format, capture::CaptureFormat::Markdown);
+    let _ = format.stream_markdown_in_engine();
     let engine_path = resolve_engine_path(core_lib.as_deref())?;
     let storage = std::path::PathBuf::from(&storage)
         .canonicalize()
@@ -1008,7 +1000,7 @@ fn build_capture_trajectory_sink(
                 batch.push(line);
                 if batch.len() >= CAPTURE_TRAJECTORY_BATCH || flush_now {
                     let lines = batches.remove(&key).unwrap_or_default();
-                    flush_capture_trajectory_batch(&engine, &key, &lines, stream_markdown)?;
+                    flush_capture_trajectory_batch(&engine, &key, &lines, false)?;
                 }
                 Ok(())
             })();
@@ -1018,7 +1010,7 @@ fn build_capture_trajectory_sink(
         }
 
         for (key, lines) in batches {
-            if let Err(e) = flush_capture_trajectory_batch(&engine, &key, &lines, stream_markdown) {
+            if let Err(e) = flush_capture_trajectory_batch(&engine, &key, &lines, false) {
                 eprintln!("[persisting-cli] capture trajectory flush failed: {e:#}");
             }
         }
@@ -1132,7 +1124,12 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
     )?;
 
     let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
-    rt.block_on(persisting_capture::serve(config, &args.output_dir, sink))?;
+    rt.block_on(persisting_capture::serve(
+        config,
+        &args.output_dir,
+        sink,
+        args.format.stream_markdown_in_engine(),
+    ))?;
     worker.shutdown();
     Ok(())
 }

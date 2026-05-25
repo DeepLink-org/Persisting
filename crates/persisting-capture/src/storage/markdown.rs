@@ -340,6 +340,81 @@ fn write_blocks(path: &Path, blocks: &[(BlockHeader, Vec<u8>)]) -> Result<usize>
     Ok(blocks.len())
 }
 
+/// Replace the block whose header `call_id` and `role` match, or append when missing.
+pub fn upsert_block_by_call_id(
+    path: &Path,
+    call_id: &str,
+    block: (BlockHeader, Vec<u8>),
+) -> Result<bool> {
+    if call_id.trim().is_empty() {
+        bail!("call_id must not be empty for markdown upsert");
+    }
+    let role = block
+        .0
+        .fields
+        .get("role")
+        .and_then(|v| v.as_str())
+        .context("markdown upsert block missing role field")?;
+    if !path.exists() {
+        write_blocks(path, std::slice::from_ref(&block))?;
+        return Ok(false);
+    }
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    if let Some((start, end, _header)) = find_block_by_call_id_and_role(&bytes, call_id, role)? {
+        let encoded = encode_block_with_header(block.0, &block.1)?;
+        rewrite_block_range(path, start, end, encoded.as_bytes())?;
+        Ok(true)
+    } else {
+        write_blocks(path, std::slice::from_ref(&block))?;
+        Ok(false)
+    }
+}
+
+fn find_block_by_call_id_and_role(
+    bytes: &[u8],
+    call_id: &str,
+    role: &str,
+) -> Result<Option<(usize, usize, BlockHeader)>> {
+    let mut pos = skip_preamble(bytes, 0)?;
+    while pos < bytes.len() {
+        pos = skip_preamble(bytes, pos)?;
+        if pos >= bytes.len() {
+            break;
+        }
+        let start = pos;
+        let (header, _body, end) = parse_one_block(bytes, pos)?;
+        if block_matches_upsert_key(&header, call_id, role) {
+            return Ok(Some((start, end, header)));
+        }
+        pos = end;
+    }
+    Ok(None)
+}
+
+fn block_matches_upsert_key(header: &BlockHeader, call_id: &str, role: &str) -> bool {
+    header.fields.get("call_id").and_then(|v| v.as_str()) == Some(call_id)
+        && header.fields.get("role").and_then(|v| v.as_str()) == Some(role)
+}
+
+/// Replace `[start, end)` with `new_block`, preserving bytes before `start` and after `end`.
+fn rewrite_block_range(path: &Path, start: usize, end: usize, new_block: &[u8]) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    if start > bytes.len() {
+        bail!("block start {start} past EOF ({})", bytes.len());
+    }
+    if end > bytes.len() {
+        bail!("block end {end} past EOF ({})", bytes.len());
+    }
+    if end < start {
+        bail!("block end {end} before start {start}");
+    }
+    let mut out = bytes[..start].to_vec();
+    out.extend_from_slice(new_block);
+    out.extend_from_slice(&bytes[end..]);
+    std::fs::write(path, out).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
 fn parse_one_block(bytes: &[u8], pos: usize) -> Result<(BlockHeader, Vec<u8>, usize)> {
     let line = line_at(bytes, pos).with_context(|| format!("block at offset {pos}"))?;
     if !line.trim_start().starts_with(BLOCK_MARKER) {
@@ -1109,5 +1184,125 @@ mod tests {
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].value_utf8().unwrap(), "hi");
         }
+    }
+}
+
+#[cfg(test)]
+mod upsert_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn block_with_call(call_id: &str, role: &str, body: &[u8]) -> (BlockHeader, Vec<u8>) {
+        let mut fields = BTreeMap::new();
+        fields.insert("role".into(), serde_json::json!(role));
+        fields.insert("kind".into(), serde_json::json!("llm.response.stream"));
+        fields.insert("call_id".into(), serde_json::json!(call_id));
+        (
+            BlockHeader {
+                type_name: "markdown".into(),
+                length: 0,
+                fields,
+            },
+            body.to_vec(),
+        )
+    }
+
+    #[test]
+    fn upsert_replaces_block_body_by_call_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess.md");
+        upsert_block_by_call_id(
+            &path,
+            "call-1",
+            block_with_call("call-1", "assistant", b"draft"),
+        )
+        .unwrap();
+        upsert_block_by_call_id(
+            &path,
+            "call-1",
+            block_with_call("call-1", "assistant", b"final text"),
+        )
+        .unwrap();
+        let blocks = read_blocks_from_file(&path).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].value_utf8().unwrap(), "final text");
+    }
+
+    #[test]
+    fn upsert_appends_when_call_id_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess.md");
+        upsert_block_by_call_id(
+            &path,
+            "call-1",
+            block_with_call("call-1", "assistant", b"one"),
+        )
+        .unwrap();
+        upsert_block_by_call_id(
+            &path,
+            "call-2",
+            block_with_call("call-2", "assistant", b"two"),
+        )
+        .unwrap();
+        let blocks = read_blocks_from_file(&path).unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].value_utf8().unwrap(), "one");
+        assert_eq!(blocks[1].value_utf8().unwrap(), "two");
+    }
+
+    #[test]
+    fn same_call_id_user_and_assistant_blocks_coexist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess.md");
+        upsert_block_by_call_id(&path, "call-1", block_with_call("call-1", "user", b"hello"))
+            .unwrap();
+        upsert_block_by_call_id(
+            &path,
+            "call-1",
+            block_with_call("call-1", "assistant", b"draft"),
+        )
+        .unwrap();
+        upsert_block_by_call_id(
+            &path,
+            "call-1",
+            block_with_call("call-1", "assistant", b"final answer"),
+        )
+        .unwrap();
+        let blocks = read_blocks_from_file(&path).unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].role(), Some("user"));
+        assert_eq!(blocks[0].value_utf8().unwrap(), "hello");
+        assert_eq!(blocks[1].role(), Some("assistant"));
+        assert_eq!(blocks[1].value_utf8().unwrap(), "final answer");
+    }
+
+    #[test]
+    fn upsert_assistant_rewrite_preserves_later_user_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess.md");
+        // call-A: user then streaming assistant draft (in-flight overlap setup)
+        upsert_block_by_call_id(&path, "call-a", block_with_call("call-a", "user", b"req-a"))
+            .unwrap();
+        upsert_block_by_call_id(
+            &path,
+            "call-a",
+            block_with_call("call-a", "assistant", b"draft-a"),
+        )
+        .unwrap();
+        // call-B request arrives before call-A response completes
+        upsert_block_by_call_id(&path, "call-b", block_with_call("call-b", "user", b"req-b"))
+            .unwrap();
+        // call-A response finalizes — must not truncate call-B user
+        upsert_block_by_call_id(
+            &path,
+            "call-a",
+            block_with_call("call-a", "assistant", b"final-a"),
+        )
+        .unwrap();
+        let blocks = read_blocks_from_file(&path).unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].value_utf8().unwrap(), "req-a");
+        assert_eq!(blocks[1].value_utf8().unwrap(), "final-a");
+        assert_eq!(blocks[2].value_utf8().unwrap(), "req-b");
     }
 }

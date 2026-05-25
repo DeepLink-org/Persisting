@@ -25,7 +25,7 @@ Trajectory 命令面向 **Agent 执行轨迹** 的写入、回放、统计与 **
 - 传入 session 目录，自动解析；或
 - 在 storage 根下仅有一个 session 时自动选中
 
-**Subagent** 通过「父 session + 子 session」嵌套路径访问，与 capture 目录拓扑一致。
+**Subagent** 通过 `--root-session-id` 指定 capture run 目录名，与主 session 共用 `{store}/{agent_id}/{run_id}/` 下的 sibling Lance / Markdown。详见 [轨迹存储 §7](trajectory_storage.zh.md)。
 
 id 规则：单层路径段，不含路径分隔符，避免目录穿越。
 
@@ -45,13 +45,13 @@ persisting trajectory materialize  <STORAGE> [OPTIONS]
 | 选项 | Append | Materialize |
 |------|--------|-------------|
 | **lance** | Lance only | 否 |
-| **markdown** | Lance + 流式 append md | 是（每批 append 后） |
+| **markdown** | Lance + import 批量 append md | 是（每批 append 后） |
 | **both** | 同 markdown（legacy 别名） | 是 |
 | **auto** | 空 session → Lance；不自动物化 | 否 |
 
 **读取**（replay / stats）：有 Lance 时优先 Lance；否则读 Markdown 块。
 
-Capture 使用 `-f md|bin`，不走 `--storage-format`；`-f md` 在 capture 结束时 materialize，见 [capture 文档](cli_capture_command.zh.md)。
+Capture 使用 `-f md|bin`，不走 `--storage-format`；`-f md` 时 Proxy **CaptureEngine live upsert** Markdown（import 仍走批量 append），见 [capture 文档](cli_capture_command.zh.md)。
 
 ---
 
@@ -69,15 +69,25 @@ stdin 为默认输入；格式无法从文件名推断时需显式 `--format`。
 
 ## 5. materialize（全量重写）
 
-从 Lance **全量扫描**生成/覆盖 `{session_id}.md`（非 capture 热路径；capture `-f md` 使用流式 append）：
+从 Lance **全量扫描**生成/覆盖**单个 storage_session_id** 对应的 Markdown（非 capture 热路径；日常 `-f md` 依赖 CaptureEngine live upsert，**run 结束建议 materialize 对齐**）：
 
 ```bash
-persisting trajectory materialize ./store --agent-id my-agent --session-id run-20260524
+# 主 session（capture run 下 header session id）
+persisting trajectory materialize store \
+  --agent-id deepseek-proxy \
+  --session-id fb47835b-e10d-4b29-abc3-68f4594ebce3 \
+  --root-session-id run-20260524-161537-122998000
+
+# subagent
+persisting trajectory materialize store \
+  --agent-id deepseek-proxy \
+  --session-id agent-a2560e716f0b8b526 \
+  --root-session-id run-20260524-161537-122998000
 ```
 
 输出（stdout TOML）含：`markdown_path`、`lance_rows`、`markdown_blocks`、`skipped_events`。
 
-适用：`-f bin` capture 后补做人读视图；或 Lance 更新后刷新 Markdown。
+适用：`-f bin` capture 后补做人读视图；或 live md 与 Lance 不一致时 **从 Lance 重建**（如并发 in-flight 丢块、历史版本路径错误）。
 
 ---
 
@@ -96,15 +106,20 @@ persisting trajectory materialize ./store --agent-id my-agent --session-id run-2
 
 | 组件 | 角色 |
 |------|------|
-| Capture | 生产轨迹（实时 proxy 或 import）→ **Lance**；`-f md` 结束时 materialize |
+| Capture | 生产轨迹（实时 proxy 或 import）→ **Lance**；`-f md` 时 CaptureEngine live upsert + 可选 materialize |
 | Trajectory | 消费轨迹（replay、stats）；手动 add / materialize |
 
 典型工作流：
 
 ```bash
 persisting capture run -f md -o ./store -c proxy.yaml -- claude
-persisting trajectory stats ./store --agent-id … --session-id …
-persisting trajectory replay ./store --agent-id … --session-id … --limit 20
+persisting trajectory stats store --agent-id deepseek-proxy \
+  --session-id fb47835b-e10d-4b29-abc3-68f4594ebce3 \
+  --root-session-id run-20260524-161537-122998000
+persisting trajectory replay store --agent-id deepseek-proxy \
+  --session-id agent-a2560e716f0b8b526 \
+  --root-session-id run-20260524-161537-122998000 \
+  --storage-format lance --limit 20
 ```
 
 ---

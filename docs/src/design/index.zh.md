@@ -66,7 +66,7 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 
 1. **Lance 是兜底** — 上层缓存与加速都建立在「从文件读」这一基线之上。
 2. **一种底座，多种模式** — 轨迹、Search、KV、队列不是彼此孤立的子系统。
-3. **轨迹两层视图** — Lance canonical（全量）；Markdown 由 materialize 派生（有损、人读）。
+3. **轨迹两层视图** — Lance canonical（全量）；Markdown 由 CaptureEngine live upsert / import append / materialize 派生（有损、人读）；capture run 下主/子 md 分文件存放。
 4. **Capture 自给自足** — 内嵌代理即可完整捕获 LLM 流量；IDE 日志 import 为补充。
 5. **TTAS 对内** — 对外保持简洁的数据访问模型。
 6. **性能是产品** — P99 延迟、GPU 利用率、capture 实时性是核心指标。

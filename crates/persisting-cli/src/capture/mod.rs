@@ -51,6 +51,11 @@ impl CaptureFormat {
             Self::Lance => "bin",
         }
     }
+
+    /// Live markdown is written inside [`CaptureEngine`] (Lance-only worker flush).
+    pub fn stream_markdown_in_engine(self) -> bool {
+        matches!(self, Self::Markdown)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]

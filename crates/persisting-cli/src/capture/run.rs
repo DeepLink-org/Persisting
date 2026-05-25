@@ -55,7 +55,12 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
         )
         .try_init();
 
-    let server = InProcessCapture::start(run_cfg.clone(), storage.clone(), opts.sink.clone())?;
+    let server = InProcessCapture::start(
+        run_cfg.clone(),
+        storage.clone(),
+        opts.sink.clone(),
+        opts.format.stream_markdown_in_engine(),
+    )?;
 
     let root_session = format!("run-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S-%f"));
     let run_started_at = chrono::Utc::now();

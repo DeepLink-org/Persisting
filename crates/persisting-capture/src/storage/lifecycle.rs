@@ -179,7 +179,8 @@ pub fn append_lifecycle(
     sink: &dyn super::sink::CaptureSink,
     route: &CaptureRoute,
     agent_id: &str,
-    record: CaptureRecord,
+    mut record: CaptureRecord,
 ) -> anyhow::Result<()> {
-    sink.append(route, agent_id, record)
+    sink.append(route, agent_id, &mut record)?;
+    Ok(())
 }

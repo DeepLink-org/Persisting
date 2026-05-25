@@ -8,11 +8,11 @@ Capture 将 **LLM API 流量** 与 **IDE 本地会话** 归一化为统一轨迹
 
 ```
                     ┌─────────────────────┐
-  LLM SDK / Agent ──│ 内嵌代理 (主路径)   │──► Lance event log
+  LLM SDK / Agent ──│ 内嵌代理 (主路径)   │──► Lance event log（按 storage_session_id 分 dataset）
                     └──────────┬──────────┘
-                               │ -f md 结束时 materialize
+                               │ -f md：CaptureEngine live upsert md
                                ▼
-                    TLV Markdown（可选人读视图）
+                    TLV Markdown（主 run-*.md + sibling agent-*.md）
 
   IDE JSONL / 历史 OTLP ──► import (补充路径) ──► 合并进同一 store
 ```
@@ -48,10 +48,10 @@ Capture 将 **LLM API 流量** 与 **IDE 本地会话** 归一化为统一轨迹
 
 | 值 | 运行时写入 | Markdown |
 |----|------------|----------|
-| **`md`（默认）** | Lance（批量）+ **流式 append** `{session}.md`（每批 flush 后） |
+| **`md`（默认）** | Lance（批量）+ Proxy **CaptureEngine live upsert** Markdown（主 → `run-{run_id}.md`，subagent → `agent-{id}.md`） |
 | **`bin` / `lance`** | Lance only |
 
-Capture 不在结束时全量 materialize；`-f md` 时 Markdown 随事件流增量落盘，可用 `tail -f` 跟踪。
+Capture 不在结束时自动全量 materialize；`-f md` 时 Proxy 内 **CaptureEngine** 随 LLM 事件 upsert Markdown（流式 assistant 块原地 rewrite），可用 `tail -f` 跟踪。**建议 run 结束后**执行 `trajectory materialize` 以 Lance 为准对齐 md（见 [轨迹存储 §10.2](trajectory_storage.zh.md)）。
 
 ---
 
@@ -62,7 +62,7 @@ Capture 不在结束时全量 materialize；`-f md` 时 Markdown 随事件流增
 1. 在进程内启动代理（不依赖已存在的守护进程）
 2. 分配本次 run 的 session 标识，写入 `session.started` 到 Lance
 3. 为子进程设置代理与环境（base URL、session id 等）
-4. 子进程 LLM 请求被捕获 → 批量 append Lance；**`-f md`** 时每批 **流式 append** Markdown
+4. 子进程 LLM 请求被捕获 → Worker 批量 append Lance；**`-f md`** 时 Proxy **CaptureEngine** 对 md 做 live upsert（主/子文件隔离，见 [代理文档 §4.3](llm_capture_proxy.zh.md)）
 5. 子进程退出 → 写入 `session.ended` → 代理关闭
 
 若同一目录已有存活守护进程，`run` 会拒绝，避免 store 冲突。
@@ -73,8 +73,8 @@ Capture 不在结束时全量 materialize；`-f md` 时 Markdown 随事件流增
 
 适合长期本地开发：一次 `start`，多个终端的 Agent 共用同一代理与 store。
 
-- 全程 append **Lance**
-- `-f md` 时随批次 **流式 append** Markdown（长期 daemon 可 `tail -f` 阅读）
+- 全程 append **Lance**（Worker 批量 flush）
+- `-f md` 时 Proxy **CaptureEngine live upsert** Markdown（长期 daemon 可 `tail -f` 阅读）
 
 `stop` / `list` / `status` 可省略输出目录（自动解析最近一次 start 的位置）。
 

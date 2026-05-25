@@ -12,7 +12,20 @@ use crate::capture_call::CaptureCall;
 use crate::config::CaptureLevel;
 
 pub trait CaptureSink: Send + Sync {
-    fn append(&self, route: &CaptureRoute, agent_id: &str, record: CaptureRecord) -> Result<()>;
+    /// Assign session-local `seq` on `record`, then persist. Mutates `record.seq` in place.
+    fn append(
+        &self,
+        route: &CaptureRoute,
+        agent_id: &str,
+        record: &mut CaptureRecord,
+    ) -> Result<()>;
+
+    /// Next `seq` that [`Self::append`] would assign (does not increment).
+    /// Returns `None` when the sink cannot predict seq (draft markdown preview unsupported).
+    fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
+        let _ = route;
+        None
+    }
 }
 
 /// Assigns monotonic `seq` per storage target and forwards records (RON encoding deferred to consumer).
@@ -40,7 +53,7 @@ impl CaptureSink for CallbackSink {
         &self,
         route: &CaptureRoute,
         agent_id: &str,
-        mut record: CaptureRecord,
+        record: &mut CaptureRecord,
     ) -> Result<()> {
         let mut guard = self.next_seq.lock().unwrap();
         let seq = guard.entry(route.seq_key()).or_insert(0);
@@ -54,7 +67,19 @@ impl CaptureSink for CallbackSink {
         } else {
             agent_id
         };
-        (self.callback)(route, aid, record)
+        (self.callback)(route, aid, record.clone())?;
+        Ok(())
+    }
+
+    fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
+        Some(
+            self.next_seq
+                .lock()
+                .unwrap()
+                .get(&route.seq_key())
+                .copied()
+                .unwrap_or(0),
+        )
     }
 }
 

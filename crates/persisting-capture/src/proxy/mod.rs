@@ -36,14 +36,15 @@ use self::http_headers::is_websocket_upgrade;
 use self::models_list::build_models_response;
 use self::router::{resolve_route, rewrite_model_in_body};
 use crate::capture_call::CaptureCall;
-use crate::config::{CaptureLevel, ProxyConfig};
+use crate::config::ProxyConfig;
 use crate::conversion::{
     translate_request_for_bridge, translate_response_for_bridge, ProtocolBridge, StreamTranslator,
 };
 use crate::debug::{self, is_debug_enabled, truncate_body_bytes};
-use crate::dialogue_extract::{
-    extract_assistant_text_from_json, extract_assistant_turn_from_sse,
-    extract_user_message_from_request_body, push_sse_tool_snapshot, SseStreamBlockParser,
+use crate::dialogue_extract::extract_user_message_from_request_body;
+use crate::engine::{
+    CaptureEngine, CaptureEvent, CaptureInvocation, LlmRequestCaptured, LlmResponseCompleted,
+    LlmResponseDraftUpdated,
 };
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
@@ -51,14 +52,8 @@ use crate::run_config::load_session_proxy_config;
 use crate::session_client::SessionClientRegistry;
 use crate::session_index::{SessionIndexHandle, SessionIndexStore};
 use crate::session_storage::{resolve_capture_route, route_config_key, CaptureRoute};
-use crate::sink::{llm_request_summary_record, llm_response_record_with_content, CaptureSink};
-use crate::subagent_link::{
-    enrich_record, main_route_for_backfill, spawn_link_backfill_record, SpawnLinkBackfill,
-    SubagentRegistry,
-};
-use crate::usage::{
-    estimate_cost_usd, extract_usage_from_response, extract_usage_from_sse, StreamMetrics,
-};
+use crate::sink::CaptureSink;
+use crate::subagent_link::SubagentRegistry;
 
 #[derive(Clone)]
 pub struct ProxyState {
@@ -66,6 +61,7 @@ pub struct ProxyState {
     pub storage: Arc<std::path::PathBuf>,
     pub client: reqwest::Client,
     pub sink: Arc<dyn CaptureSink>,
+    pub capture_engine: CaptureEngine,
     pub index: SessionIndexHandle,
     pub session_clients: Arc<SessionClientRegistry>,
     pub subagent_registry: Arc<std::sync::Mutex<SubagentRegistry>>,
@@ -82,8 +78,16 @@ pub async fn serve(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureSink>,
+    stream_markdown: bool,
 ) -> anyhow::Result<()> {
-    serve_with_shutdown(config, storage, sink, std::future::pending()).await
+    serve_with_shutdown(
+        config,
+        storage,
+        sink,
+        stream_markdown,
+        std::future::pending(),
+    )
+    .await
 }
 
 /// Run proxy until `shutdown` completes. Optionally signal bind readiness via `ready`.
@@ -91,15 +95,17 @@ pub async fn serve_with_shutdown(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureSink>,
+    stream_markdown: bool,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    serve_with_shutdown_and_ready(config, storage, sink, None, shutdown).await
+    serve_with_shutdown_and_ready(config, storage, sink, stream_markdown, None, shutdown).await
 }
 
 pub async fn serve_with_shutdown_and_ready(
     config: ProxyConfig,
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureSink>,
+    stream_markdown: bool,
     ready: Option<tokio::sync::oneshot::Sender<()>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
@@ -124,6 +130,13 @@ pub async fn serve_with_shutdown_and_ready(
     }
 
     let active_requests = Arc::new(AtomicUsize::new(0));
+    let subagent_registry = Arc::new(std::sync::Mutex::new(SubagentRegistry::default()));
+    let capture_engine = CaptureEngine::new(
+        Arc::clone(&sink),
+        index.clone(),
+        Arc::clone(&subagent_registry),
+        stream_markdown,
+    );
     let state = ProxyState {
         config: Arc::new(config.clone()),
         storage: Arc::new(storage),
@@ -133,9 +146,10 @@ pub async fn serve_with_shutdown_and_ready(
             .timeout(Duration::from_secs(600))
             .build()?,
         sink,
+        capture_engine,
         index: index.clone(),
         session_clients: Arc::new(SessionClientRegistry::default()),
-        subagent_registry: Arc::new(std::sync::Mutex::new(SubagentRegistry::default())),
+        subagent_registry,
         reasoning_cache: Arc::new(ReasoningCacheHandle::new()),
         active_requests: Arc::clone(&active_requests),
         started_at: started_at.clone(),
@@ -336,7 +350,6 @@ async fn llm_capture(
     let call = CaptureCall::from_headers(&parts.headers);
     let cfg = effective_config(&state, &capture_route);
     let agent_id = cfg.agent_id.clone();
-    let capture_level = cfg.capture_level;
     let session_id = capture_route.session_id.clone();
 
     if method == Method::GET && is_models_list_path(&path) {
@@ -362,14 +375,35 @@ async fn llm_capture(
     let upstream_protocol = bridge.upstream_protocol(protocol);
     let provider = route.effective_provider(upstream_protocol);
 
-    state.index.record_request(
+    let capture_inv = capture_invocation(
+        &state,
+        &capture_route,
         &agent_id,
-        &session_id,
-        provider,
-        protocol.as_str(),
+        &call,
+        &parts.headers,
         &client_model,
+        &upstream_model,
+        provider,
+        protocol,
+        debug_on,
     );
-    let _ = state.index.flush();
+
+    {
+        let user_content = extract_user_message_from_request_body(&body_bytes);
+        let body_json = serde_json::from_slice::<Value>(&body_bytes).ok();
+        if let Err(e) = state.capture_engine.apply(
+            &capture_inv,
+            CaptureEvent::LlmRequest(LlmRequestCaptured {
+                path: path.clone(),
+                body_bytes: body_bytes.len(),
+                user_content,
+                body_json,
+                model_rewritten: resolved.model_rewritten,
+            }),
+        ) {
+            tracing::warn!("capture engine request event: {e:#}");
+        }
+    }
 
     let mut upstream_body = body_bytes.clone();
     if resolved.model_rewritten {
@@ -451,53 +485,6 @@ async fn llm_capture(
         );
     }
 
-    {
-        let user_content = extract_user_message_from_request_body(&body_bytes);
-        let body_json = serde_json::from_slice::<Value>(&body_bytes).ok();
-        let forward_to = if resolved.model_rewritten {
-            Some(upstream_model.as_str())
-        } else {
-            None
-        };
-        if let Err(e) = state.sink.append(&capture_route, &agent_id, {
-            let mut rec = llm_request_summary_record(
-                Some(capture_route.session_id.clone()),
-                Some(agent_id.clone()),
-                &client_model,
-                &path,
-                body_bytes.len(),
-                protocol.as_str(),
-                provider.as_str(),
-                user_content,
-                forward_to,
-                &call,
-                capture_level,
-                body_json.as_ref(),
-            );
-            if let Ok(mut reg) = state.subagent_registry.lock() {
-                let outcome = enrich_record(
-                    &mut rec,
-                    &capture_route,
-                    &parts.headers,
-                    body_json.as_ref(),
-                    None,
-                    &mut reg,
-                );
-                apply_spawn_link_backfills(
-                    state.sink.as_ref(),
-                    &capture_route,
-                    &agent_id,
-                    &call,
-                    &outcome.spawn_link_backfills,
-                    &reg,
-                );
-            }
-            rec
-        }) {
-            tracing::warn!("request capture append: {e:#}");
-        }
-    }
-
     let upstream_resp = match upstream_req.send().await {
         Ok(r) => r,
         Err(e) => {
@@ -536,52 +523,25 @@ async fn llm_capture(
     }
 
     if should_stream_to_client(&resp_headers, &upstream_body) {
-        return streaming_llm_response(
-            upstream_resp,
-            state,
-            capture_route,
-            agent_id,
-            client_model,
-            upstream_model,
-            provider,
-            protocol,
-            bridge,
-            debug_on,
-            call,
-            capture_level,
-            parts.headers.clone(),
-        )
-        .await;
+        return streaming_llm_response(upstream_resp, state, capture_inv, bridge).await;
     }
 
     let mut resp_bytes = upstream_resp.bytes().await?;
     if bridge.needs_response_translation() {
         resp_bytes = translate_response_for_bridge(bridge, &resp_bytes, &client_model)?;
     }
-    finalize_llm_capture_response(
-        state.sink.as_ref(),
-        &state.index,
-        state.storage.as_path(),
-        &capture_route,
-        &agent_id,
-        &client_model,
-        &upstream_model,
-        provider,
-        protocol,
-        status.as_u16(),
-        &resp_bytes,
-        false,
-        None,
-        debug_on,
-        &call,
-        capture_level,
-        &state.subagent_registry,
-        &parts.headers,
-        false,
-        "",
-        None,
-    )
-    .await?;
+    if let Err(e) = state.capture_engine.apply(
+        &capture_inv,
+        CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+            status: status.as_u16(),
+            resp_bytes: resp_bytes.clone(),
+            streaming: false,
+            stream_metrics: None,
+            assistant_content: None,
+        }),
+    ) {
+        tracing::warn!("capture engine response event: {e:#}");
+    }
 
     let mut builder = Response::builder().status(status);
     for (name, value) in resp_headers.iter() {
@@ -597,22 +557,16 @@ async fn llm_capture(
 async fn streaming_llm_response(
     upstream_resp: reqwest::Response,
     state: ProxyState,
-    route: CaptureRoute,
-    agent_id: String,
-    client_model: String,
-    upstream_model: String,
-    provider: ProviderKind,
-    protocol: ProtocolKind,
+    inv: CaptureInvocation,
     bridge: ProtocolBridge,
-    debug_on: bool,
-    call: CaptureCall,
-    capture_level: CaptureLevel,
-    request_headers: HeaderMap,
 ) -> anyhow::Result<Response> {
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
     let translate = bridge.needs_response_translation();
-    let session_id = route.session_id.clone();
+    let session_id = inv.route.session_id.clone();
+    let agent_id = inv.agent_id.clone();
+    let client_model = inv.client_model.clone();
+    let debug_on = inv.debug_on;
 
     if debug_on {
         debug::log_llm_stream_start(
@@ -627,76 +581,33 @@ async fn streaming_llm_response(
     let byte_stream = upstream_resp.bytes_stream();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, String>>();
 
-    let sink = Arc::clone(&state.sink);
-    let index = state.index.clone();
+    let capture_engine = state.capture_engine.clone();
+    let inv_bg = inv.clone();
     let storage = Arc::clone(&state.storage);
-    let route_bg = route.clone();
-    let agent_id_bg = agent_id.clone();
-    let client_model_bg = client_model.clone();
-    let upstream_model_bg = upstream_model.clone();
-    let call_bg = call.clone();
-    let registry = Arc::clone(&state.subagent_registry);
     let reasoning_cache = Arc::clone(&state.reasoning_cache);
-    let request_headers_bg = request_headers;
 
     tokio::spawn(async move {
         let mut buf = BytesMut::new();
-        let mut sse_parser = SseStreamBlockParser::default();
-        let mut stream_partial_emitted = false;
-        let mut last_partial_content = String::new();
-        let mut partial_index = 0u32;
-        let mut translator = StreamTranslator::new(bridge, &client_model_bg);
-        let mut last_capture_snapshot = String::new();
+        let mut translator = StreamTranslator::new(bridge, &inv_bg.client_model);
+        let mut last_draft_at = std::time::Instant::now();
+        let mut last_draft_content = String::new();
         let mut stream = byte_stream;
         while let Some(item) = stream.next().await {
             match item {
                 Ok(chunk) => {
                     buf.extend_from_slice(&chunk);
-                    if let Ok(chunk_str) = std::str::from_utf8(&chunk) {
-                        if let Some(partial) = push_sse_tool_snapshot(&mut sse_parser, chunk_str) {
-                            append_stream_partial_assistant(
-                                sink.as_ref(),
-                                &route_bg,
-                                &agent_id_bg,
-                                &client_model_bg,
-                                status.as_u16(),
-                                &partial,
-                                partial_index,
-                                &call_bg,
-                                capture_level,
-                                &registry,
-                                &request_headers_bg,
-                            );
-                            stream_partial_emitted = true;
-                            last_partial_content = partial;
-                            partial_index += 1;
-                        }
-                    }
                     let out = if let Some(t) = translator.as_mut() {
                         match t.push_chunk(&chunk) {
                             Ok(s) if !s.is_empty() => Bytes::from(s),
                             Ok(_) => {
-                                if let Some(snapshot) = t.streaming_capture_snapshot() {
-                                    if snapshot != last_capture_snapshot {
-                                        append_stream_partial_assistant(
-                                            sink.as_ref(),
-                                            &route_bg,
-                                            &agent_id_bg,
-                                            &client_model_bg,
-                                            status.as_u16(),
-                                            &snapshot,
-                                            partial_index,
-                                            &call_bg,
-                                            capture_level,
-                                            &registry,
-                                            &request_headers_bg,
-                                        );
-                                        stream_partial_emitted = true;
-                                        last_partial_content = snapshot.clone();
-                                        last_capture_snapshot = snapshot;
-                                        partial_index += 1;
-                                    }
-                                }
+                                maybe_emit_stream_draft(
+                                    &capture_engine,
+                                    &inv_bg,
+                                    status.as_u16(),
+                                    t,
+                                    &mut last_draft_at,
+                                    &mut last_draft_content,
+                                );
                                 continue;
                             }
                             Err(e) => {
@@ -708,27 +619,14 @@ async fn streaming_llm_response(
                         chunk
                     };
                     if let Some(t) = translator.as_ref() {
-                        if let Some(snapshot) = t.streaming_capture_snapshot() {
-                            if snapshot != last_capture_snapshot {
-                                append_stream_partial_assistant(
-                                    sink.as_ref(),
-                                    &route_bg,
-                                    &agent_id_bg,
-                                    &client_model_bg,
-                                    status.as_u16(),
-                                    &snapshot,
-                                    partial_index,
-                                    &call_bg,
-                                    capture_level,
-                                    &registry,
-                                    &request_headers_bg,
-                                );
-                                stream_partial_emitted = true;
-                                last_partial_content = snapshot.clone();
-                                last_capture_snapshot = snapshot;
-                                partial_index += 1;
-                            }
-                        }
+                        maybe_emit_stream_draft(
+                            &capture_engine,
+                            &inv_bg,
+                            status.as_u16(),
+                            t,
+                            &mut last_draft_at,
+                            &mut last_draft_content,
+                        );
                     }
                     if tx.send(Ok(out)).is_err() {
                         break;
@@ -740,9 +638,9 @@ async fn streaming_llm_response(
                     if debug_on {
                         debug::log_llm_upstream_error(
                             storage.as_path(),
-                            &route_bg.session_id,
-                            &agent_id_bg,
-                            &client_model_bg,
+                            &inv_bg.route.session_id,
+                            &inv_bg.agent_id,
+                            &inv_bg.client_model,
                             "stream",
                             &msg,
                         );
@@ -774,31 +672,16 @@ async fn streaming_llm_response(
         let stream_assistant_text = translator
             .as_ref()
             .and_then(|t| t.streaming_capture_snapshot());
-        if let Err(e) = finalize_llm_capture_response(
-            sink.as_ref(),
-            &index,
-            storage.as_path(),
-            &route_bg,
-            &agent_id_bg,
-            &client_model_bg,
-            &upstream_model_bg,
-            provider,
-            protocol,
-            status.as_u16(),
-            &resp_bytes,
-            true,
-            stream_metrics.as_ref(),
-            debug_on,
-            &call_bg,
-            capture_level,
-            &registry,
-            &request_headers_bg,
-            stream_partial_emitted,
-            &last_partial_content,
-            stream_assistant_text,
-        )
-        .await
-        {
+        if let Err(e) = capture_engine.apply(
+            &inv_bg,
+            CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+                status: status.as_u16(),
+                resp_bytes,
+                streaming: true,
+                stream_metrics,
+                assistant_content: stream_assistant_text,
+            }),
+        ) {
             tracing::warn!("stream capture finalize: {e:#}");
         }
     });
@@ -816,264 +699,44 @@ async fn streaming_llm_response(
     if translate {
         builder = builder.header("content-type", "text/event-stream");
     }
-    builder = attach_capture_headers(builder, &call);
+    builder = attach_capture_headers(builder, &inv.call);
     Ok(builder
         .body(Body::from_stream(body_stream))
         .map_err(|e| anyhow::anyhow!("response body: {e}"))?
         .into_response())
 }
 
-async fn finalize_llm_capture_response(
-    sink: &dyn CaptureSink,
-    index: &SessionIndexHandle,
-    storage: &Path,
-    route: &CaptureRoute,
-    agent_id: &str,
-    client_model: &str,
-    upstream_model: &str,
-    provider: ProviderKind,
-    protocol: ProtocolKind,
+const STREAM_DRAFT_MD_INTERVAL: Duration = Duration::from_millis(150);
+
+fn maybe_emit_stream_draft(
+    engine: &CaptureEngine,
+    inv: &CaptureInvocation,
     status: u16,
-    resp_bytes: &Bytes,
-    streaming: bool,
-    stream_metrics: Option<&StreamMetrics>,
-    debug_on: bool,
-    call: &CaptureCall,
-    level: CaptureLevel,
-    subagent_registry: &Arc<std::sync::Mutex<SubagentRegistry>>,
-    headers: &HeaderMap,
-    stream_partial_emitted: bool,
-    last_partial_content: &str,
-    stream_assistant_text: Option<String>,
-) -> anyhow::Result<()> {
-    let resp_text = std::str::from_utf8(resp_bytes).unwrap_or("<non-utf8>");
-    let usage = if streaming {
-        stream_metrics
-            .map(|m| m.usage.clone())
-            .filter(|u| u.total_tokens > 0 || u.input_tokens > 0 || u.output_tokens > 0)
-            .unwrap_or_else(|| extract_usage_from_sse(resp_text))
-    } else {
-        let resp_json: Value = serde_json::from_slice(resp_bytes)
-            .unwrap_or_else(|_| Value::String(resp_text.to_string()));
-        extract_usage_from_response(&resp_json)
-    };
-    let resp_json = if streaming {
-        Value::String(resp_text.to_string())
-    } else {
-        serde_json::from_slice(resp_bytes).unwrap_or_else(|_| Value::String(resp_text.to_string()))
-    };
-
-    let cost = estimate_cost_usd(upstream_model, provider, &usage);
-    index.record_response(
-        agent_id,
-        &route.session_id,
-        provider,
-        client_model,
-        &usage,
-        cost,
-    );
-    let _ = index.flush();
-
-    if debug_on {
-        debug::log_llm_response(
-            storage,
-            &route.session_id,
-            agent_id,
-            client_model,
-            status,
-            usage.total_tokens,
-            resp_text,
-        );
-    }
-
-    let mut resp_payload = serde_json::json!({
-        "status": status,
-        "protocol": protocol.as_str(),
-        "provider": provider.as_str(),
-        "usage": usage,
-        "estimated_cost_usd": cost,
-    });
-    if upstream_model != client_model {
-        resp_payload["forward_to"] = serde_json::Value::String(upstream_model.to_string());
-    }
-    if level.includes_full_body() {
-        resp_payload["body"] = resp_json.clone();
-    }
-    if let Some(m) = stream_metrics {
-        if let Some(ttft) = m.ttft_ms {
-            resp_payload["ttft_ms"] = serde_json::Value::Number(ttft.into());
-        }
-        if m.usage.reasoning_tokens > 0 {
-            resp_payload["reasoning_tokens"] =
-                serde_json::Value::Number(m.usage.reasoning_tokens.into());
-        }
-    }
-
-    let assistant_content = if level.includes_assistant_text() {
-        stream_assistant_text.or_else(|| {
-            if streaming {
-                Some(extract_assistant_turn_from_sse(resp_text))
-            } else {
-                extract_assistant_text_from_json(&resp_json)
-            }
-        })
-    } else {
-        None
-    };
-    let assistant_content = trim_stream_partial_duplicate(
-        assistant_content,
-        stream_partial_emitted,
-        last_partial_content,
-    );
-
-    if let Ok(mut reg) = subagent_registry.lock() {
-        let mut rec = llm_response_record_with_content(
-            Some(route.session_id.clone()),
-            Some(agent_id.to_string()),
-            status,
-            &resp_payload,
-            streaming,
-            assistant_content.clone(),
-            call,
-            level,
-        );
-        let outcome = enrich_record(
-            &mut rec,
-            route,
-            headers,
-            None,
-            assistant_content.as_deref(),
-            &mut reg,
-        );
-        sink.append(route, agent_id, rec)?;
-        apply_spawn_link_backfills(
-            sink,
-            route,
-            agent_id,
-            call,
-            &outcome.spawn_link_backfills,
-            &reg,
-        );
-    } else {
-        sink.append(
-            route,
-            agent_id,
-            llm_response_record_with_content(
-                Some(route.session_id.clone()),
-                Some(agent_id.to_string()),
-                status,
-                &resp_payload,
-                streaming,
-                assistant_content,
-                call,
-                level,
-            ),
-        )?;
-    }
-
-    Ok(())
-}
-
-fn trim_stream_partial_duplicate(
-    assistant_content: Option<String>,
-    stream_partial_emitted: bool,
-    last_partial_content: &str,
-) -> Option<String> {
-    let Some(full) = assistant_content.filter(|s| !s.is_empty()) else {
-        return None;
-    };
-    if !stream_partial_emitted || last_partial_content.is_empty() {
-        return Some(full);
-    }
-    if full == last_partial_content {
-        return None;
-    }
-    if let Some(tail) = full.strip_prefix(last_partial_content) {
-        let tail = tail.trim_start();
-        if tail.is_empty() {
-            None
-        } else {
-            Some(tail.to_string())
-        }
-    } else {
-        Some(full)
-    }
-}
-
-fn apply_spawn_link_backfills(
-    sink: &dyn CaptureSink,
-    route: &CaptureRoute,
-    agent_id: &str,
-    call: &CaptureCall,
-    backfills: &[SpawnLinkBackfill],
-    registry: &SubagentRegistry,
+    translator: &StreamTranslator,
+    last_draft_at: &mut std::time::Instant,
+    last_draft_content: &mut String,
 ) {
-    if backfills.is_empty() {
+    let Some(snapshot) = translator.streaming_capture_snapshot() else {
+        return;
+    };
+    if snapshot == *last_draft_content {
         return;
     }
-    let main_route = main_route_for_backfill(route, registry);
-    for bf in backfills {
-        let rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, call);
-        if let Err(e) = sink.append(&main_route, agent_id, rec) {
-            tracing::warn!("spawn link backfill append: {e:#}");
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn append_stream_partial_assistant(
-    sink: &dyn CaptureSink,
-    route: &CaptureRoute,
-    agent_id: &str,
-    client_model: &str,
-    status: u16,
-    partial_content: &str,
-    partial_index: u32,
-    call: &CaptureCall,
-    level: CaptureLevel,
-    subagent_registry: &Arc<std::sync::Mutex<SubagentRegistry>>,
-    headers: &HeaderMap,
-) {
-    if partial_content.trim().is_empty() || !level.includes_assistant_text() {
+    if !last_draft_content.is_empty() && last_draft_at.elapsed() < STREAM_DRAFT_MD_INTERVAL {
         return;
     }
-    let resp_payload = serde_json::json!({
-        "status": status,
-        "model": client_model,
-        "stream_partial": true,
-        "stream_partial_index": partial_index,
-    });
-    if let Ok(mut reg) = subagent_registry.lock() {
-        let mut rec = llm_response_record_with_content(
-            Some(route.session_id.clone()),
-            Some(agent_id.to_string()),
+    if let Err(e) = engine.apply(
+        inv,
+        CaptureEvent::LlmResponseDraftUpdated(LlmResponseDraftUpdated {
             status,
-            &resp_payload,
-            true,
-            Some(partial_content.to_string()),
-            call,
-            level,
-        );
-        let outcome = enrich_record(
-            &mut rec,
-            route,
-            headers,
-            None,
-            Some(partial_content),
-            &mut reg,
-        );
-        if sink.append(route, agent_id, rec).is_err() {
-            return;
-        }
-        apply_spawn_link_backfills(
-            sink,
-            route,
-            agent_id,
-            call,
-            &outcome.spawn_link_backfills,
-            &reg,
-        );
+            assistant_content: snapshot.clone(),
+        }),
+    ) {
+        tracing::warn!("capture engine draft event: {e:#}");
+        return;
     }
+    *last_draft_content = snapshot;
+    *last_draft_at = std::time::Instant::now();
 }
 
 fn attach_capture_headers(
@@ -1108,6 +771,46 @@ fn should_stream_to_client(headers: &HeaderMap, request_body: &Bytes) -> bool {
         .unwrap_or(false)
 }
 
+fn effective_config(state: &ProxyState, route: &CaptureRoute) -> Arc<ProxyConfig> {
+    load_session_proxy_config(state.storage.as_path(), route_config_key(route))
+        .map(Arc::new)
+        .unwrap_or_else(|| Arc::clone(&state.config))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_invocation(
+    state: &ProxyState,
+    route: &CaptureRoute,
+    agent_id: &str,
+    call: &CaptureCall,
+    headers: &HeaderMap,
+    client_model: &str,
+    upstream_model: &str,
+    provider: ProviderKind,
+    protocol: ProtocolKind,
+    debug_on: bool,
+) -> CaptureInvocation {
+    let cfg = effective_config(state, route);
+    CaptureInvocation {
+        route: route.clone(),
+        agent_id: agent_id.to_string(),
+        call: call.clone(),
+        headers: headers.clone(),
+        level: cfg.capture_level,
+        client_model: client_model.to_string(),
+        upstream_model: upstream_model.to_string(),
+        provider,
+        protocol,
+        storage: Arc::clone(&state.storage),
+        debug_on,
+    }
+}
+
+fn extract_model(body: &Bytes) -> Option<String> {
+    let v: Value = serde_json::from_slice(body).ok()?;
+    v.get("model")?.as_str().map(str::to_string)
+}
+
 #[cfg(test)]
 mod stream_tests {
     use super::*;
@@ -1126,15 +829,4 @@ mod stream_tests {
         let body = Bytes::from_static(b"{}");
         assert!(should_stream_to_client(&h, &body));
     }
-}
-
-fn effective_config(state: &ProxyState, route: &CaptureRoute) -> Arc<ProxyConfig> {
-    load_session_proxy_config(state.storage.as_path(), route_config_key(route))
-        .map(Arc::new)
-        .unwrap_or_else(|| Arc::clone(&state.config))
-}
-
-fn extract_model(body: &Bytes) -> Option<String> {
-    let v: Value = serde_json::from_slice(body).ok()?;
-    v.get("model")?.as_str().map(str::to_string)
 }

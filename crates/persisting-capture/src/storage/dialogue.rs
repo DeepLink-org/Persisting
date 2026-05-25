@@ -24,7 +24,12 @@ pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
             }
             visible_user_text(rec).is_none()
         }
-        "llm.response" | "llm.response.stream" => visible_assistant_text(rec).is_none(),
+        "llm.response" | "llm.response.stream" => {
+            if rec.payload.get("stream_partial").and_then(|v| v.as_bool()) == Some(true) {
+                return true;
+            }
+            visible_assistant_text(rec).is_none()
+        }
         "llm.spawn_link" => false,
         k if k.starts_with("session.") => true,
         _ => false,
@@ -81,6 +86,9 @@ pub fn capture_record_to_block(rec: &CaptureRecord) -> Result<(BlockHeader, Vec<
         ("seq".into(), json!(rec.seq)),
         ("turn".into(), json!(rec.seq / 2 + 1)),
     ]);
+    if rec.payload.get("draft").and_then(|v| v.as_bool()) == Some(true) {
+        fields.insert("draft".into(), json!(true));
+    }
     if let Some(sid) = &rec.session_id {
         fields.insert("session_id".into(), json!(sid));
     }
@@ -496,6 +504,24 @@ fn content_to_string(v: &Value) -> Option<String> {
 
 fn compact_json(payload: &Value) -> String {
     serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Build a streaming draft assistant block (markdown view only; not written to Lance).
+pub fn draft_stream_assistant_block(
+    rec: &CaptureRecord,
+    assistant_content: &str,
+) -> Result<Option<(BlockHeader, Vec<u8>)>> {
+    if assistant_content.trim().is_empty() {
+        return Ok(None);
+    }
+    let mut draft = rec.clone();
+    draft.kind = "llm.response.stream".into();
+    draft.payload = json!({
+        "status": rec.payload.get("status").and_then(|v| v.as_u64()).unwrap_or(200),
+        "assistant_content": assistant_content,
+        "draft": true,
+    });
+    try_capture_record_to_block(&draft)
 }
 
 #[cfg(test)]

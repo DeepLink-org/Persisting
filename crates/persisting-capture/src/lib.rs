@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod conversion;
+pub mod engine;
 pub mod protocol;
 pub mod provider;
 pub mod proxy;
@@ -47,6 +48,10 @@ pub use debug::{
 };
 pub use dialogue::import_markdown_to_engine_lines;
 pub use discover_daemon::{StorageResolution, StorageSource};
+pub use engine::{
+    CaptureEngine, CaptureEvent, CaptureInvocation, LlmRequestCaptured, LlmResponseCompleted,
+    LlmResponseDraftUpdated,
+};
 pub use lance_row::{
     capture_record_to_event_row, engine_line_to_event_row, event_row_to_capture_record,
     event_row_to_replay_json, LanceEventRow,
@@ -61,7 +66,7 @@ pub use markdown_trajectory::{
     locate_run_bucket_markdown, locate_session_markdown, locate_session_markdown_for_key,
     sanitize_session_filename, session_markdown_filename, session_markdown_path,
     session_markdown_path_for_key, session_markdown_write_path,
-    session_markdown_write_path_for_key, BlockHeader, MarkdownBlock,
+    session_markdown_write_path_for_key, upsert_block_by_call_id, BlockHeader, MarkdownBlock,
     LEGACY_TRAJECTORY_MARKDOWN_FILENAME, SESSION_MARKDOWN_FILENAME,
 };
 pub use models_list::build_models_response;
