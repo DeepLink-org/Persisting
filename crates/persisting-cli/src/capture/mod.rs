@@ -3,6 +3,8 @@
 pub mod daemon;
 mod debug_setup;
 pub mod in_process;
+pub mod reconcile;
+pub mod replay_dead_letter;
 pub mod run;
 pub use debug_setup::{enable_if_requested as enable_capture_debug, CaptureDebugContext};
 pub use run::{cmd_run, RunOptions};

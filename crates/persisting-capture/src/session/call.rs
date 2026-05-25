@@ -6,7 +6,7 @@ use crate::session_chain::{new_call_id, resolve_trace_id};
 use crate::storage::record::now_rfc3339;
 
 /// Identifiers for one LLM HTTP round-trip within a trajectory session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CaptureCall {
     pub call_id: String,
     pub trace_id: String,

@@ -3,6 +3,7 @@
 pub mod convert;
 pub mod dialogue;
 pub mod dialogue_extract;
+pub mod frontmatter;
 pub mod lance_row;
 pub mod lifecycle;
 pub mod markdown;

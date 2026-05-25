@@ -2,7 +2,9 @@
 
 pub mod config;
 pub mod conversion;
+pub mod dead_letter;
 pub mod engine;
+pub mod reconcile;
 pub mod protocol;
 pub mod provider;
 pub mod proxy;
@@ -26,6 +28,9 @@ pub use session::peer_process;
 pub use storage::convert as trajectory_convert;
 pub use storage::dialogue;
 pub use storage::dialogue_extract;
+pub use storage::frontmatter::{
+    format_run_summary_line, refresh_run_markdown_frontmatter, SessionFrontmatterSummary,
+};
 pub use storage::lance_row;
 pub use storage::lifecycle;
 pub use storage::markdown as markdown_trajectory;
@@ -48,9 +53,13 @@ pub use debug::{
 };
 pub use dialogue::import_markdown_to_engine_lines;
 pub use discover_daemon::{StorageResolution, StorageSource};
+pub use dead_letter::{
+    append_dead_letter, dead_letter_path, read_dead_letter_entries, replay_dead_letter,
+    DeadLetterEntry, DeadLetterInvocation, DeadLetterReplaySummary, SerializableCaptureEvent,
+};
 pub use engine::{
-    CaptureEngine, CaptureEvent, CaptureInvocation, LlmRequestCaptured, LlmResponseCompleted,
-    LlmResponseDraftUpdated,
+    CaptureEngine, CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured,
+    LlmResponseCompleted, LlmResponseDraftUpdated,
 };
 pub use lance_row::{
     capture_record_to_event_row, engine_line_to_event_row, event_row_to_capture_record,
@@ -70,6 +79,10 @@ pub use markdown_trajectory::{
     LEGACY_TRAJECTORY_MARKDOWN_FILENAME, SESSION_MARKDOWN_FILENAME,
 };
 pub use models_list::build_models_response;
+pub use reconcile::{
+    build_run_report, expected_markdown_call_ids, index_markdown_path, list_run_markdown_paths,
+    reconcile_session, write_run_reconcile_report, RunReconcileReport, SessionReconcile,
+};
 pub use record::{
     engine_line_to_record, record_to_engine_line, records_to_engine_lines, CaptureRecord,
 };

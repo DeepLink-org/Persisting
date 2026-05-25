@@ -34,9 +34,10 @@ capture serve / run
 │  配置    监听地址、模型路由表        │
 │  路由    按 model 名选择 upstream   │
 │  代理    HTTP 转发与协议适配        │
-│  捕获    CaptureEngine 事件 → CaptureRecord  │
-│  落盘    Lance（canonical）                 │
-│  物化    -f md 时 live upsert + materialize  │
+│  捕获    CaptureEngine（V3 Actor）→ CaptureRecord  │
+│  调度    spawn_capture_apply（非阻塞，不挡 LLM 响应） │
+│  落盘    Lance（canonical）+ dead letter / reconcile │
+│  物化    -f md 时 live upsert + frontmatter 摘要     │
 └───────────────────────────────────┘
 ```
 
@@ -109,8 +110,9 @@ capture serve / run
 - 主 agent 对话与 `llm.spawn_link` **只** upsert 到 run bucket（或 `{header_session}.md`）
 - 主 md 通过 `spawn_links` / `<!-- persisting:subagent-refs … -->` 引用 subagent 文件，**不**内联 subagent 全文
 - assistant 流式块在 md 中 **原地 rewrite**（draft → final），不向 Lance 写 partial 事件
+- 每次 dialogue 写入后刷新 **YAML frontmatter**（turns / tokens / cost / subagents）
 
-**Run 结束后**：建议 `persisting trajectory materialize` 以 Lance 为准重建 md，修复并发 in-flight 下可能的 live 丢块。
+**Run 结束后**：Worker flush Lance → 写 `.capture/reconcile.json` 对账 md 与 Lance call_id；stderr 打印 session 摘要。若 `reconcile.json` 报告不一致，再执行 `persisting trajectory materialize` 全量重建 md。
 
 **Materialize 过滤**（有损）：主 session 上 flash/haiku companion 探测可跳过；subagent 文件保留更完整对话块。详见 [轨迹存储模型 §1](trajectory_storage.zh.md)。
 

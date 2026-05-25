@@ -13,7 +13,7 @@ use crate::session_chain::{
 };
 
 /// Where to append captures for one proxied LLM request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CaptureRoute {
     /// Run directory name under `{storage}/{agent_id}/` (capture run or daily serve bucket).
     pub root_session: Option<String>,

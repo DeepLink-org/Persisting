@@ -58,6 +58,10 @@ pub struct SubagentRegistry {
 }
 
 impl SubagentRegistry {
+    pub fn tracked_run_count(&self) -> usize {
+        self.runs.len()
+    }
+
     fn run_mut(&mut self, run_key: &str) -> &mut RunSubagents {
         self.runs.entry(run_key.to_string()).or_default()
     }
@@ -401,7 +405,7 @@ pub fn run_registry_key(route: &CaptureRoute) -> String {
         .unwrap_or_else(|| route.storage_session_id.clone())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SpawnHint {
     pub subagent_type: String,
     pub description: Option<String>,
@@ -409,7 +413,7 @@ pub struct SpawnHint {
     pub doc_target: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SpawnLinkBackfill {
     pub parent_call_id: String,
     pub links: Vec<SpawnLink>,
@@ -421,7 +425,7 @@ pub struct EnrichOutcome {
     pub spawn_link_backfills: Vec<SpawnLinkBackfill>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SpawnLink {
     pub subagent_type: String,
     pub description: Option<String>,

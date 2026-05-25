@@ -284,6 +284,8 @@ enum CaptureCommand {
     Serve(CaptureServeArgs),
     /// Set proxy env vars and run a command (in-process LLM proxy, no forked daemon).
     Run(CaptureRunArgs),
+    /// Re-apply events from `{output_dir}/.capture/dead_letter.jsonl`.
+    ReplayDeadLetter(CaptureReplayDeadLetterArgs),
 }
 
 #[derive(Debug, Args)]
@@ -308,6 +310,19 @@ struct CaptureRunArgs {
     /// Command and arguments to execute (after `--`).
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct CaptureReplayDeadLetterArgs {
+    #[arg(
+        long,
+        short = 'o',
+        value_name = "DIR",
+        default_value = ".persisting/capture"
+    )]
+    output_dir: String,
+    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
+    format: capture::CaptureFormat,
 }
 
 #[derive(Debug, Args)]
@@ -825,6 +840,9 @@ fn run_capture(lazy: &mut LazyEngine<'_>, args: &CaptureArgs) -> Result<()> {
             let code = run_capture_run(lazy, args)?;
             std::process::exit(code);
         }
+        CaptureCommand::ReplayDeadLetter(args) => {
+            run_replay_dead_letter(lazy, args)?;
+        }
         CaptureCommand::Import(args) => {
             let merged = merge_traj_location(
                 args.storage.clone(),
@@ -1045,14 +1063,15 @@ fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i
     let storage = storage.canonicalize().unwrap_or(storage);
     let config = persisting_capture::ProxyConfig::from_yaml_file(&args.config)
         .with_context(|| format!("load proxy config {}", args.config.display()))?;
+    let agent_id = config.agent_id.clone();
     let (sink, mut worker) = build_capture_trajectory_sink(
         lazy.cli.core_lib.clone(),
         storage.display().to_string(),
-        config.agent_id.clone(),
+        agent_id.clone(),
         args.format,
     )?;
     let code = capture::cmd_run(capture::RunOptions {
-        output_dir: storage,
+        output_dir: storage.clone(),
         config: args.config.clone(),
         command: args.command.clone(),
         debug: args.debug,
@@ -1060,7 +1079,43 @@ fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i
         sink,
     })?;
     worker.shutdown();
+    if args.format.stream_markdown_in_engine() {
+        if let Err(e) = capture::reconcile::reconcile_run_after_flush(
+            &storage,
+            &agent_id,
+            args.format,
+            |req| invoke_trajectory_replay(lazy, req),
+        ) {
+            eprintln!("[persisting-cli] capture reconcile failed: {e:#}");
+        }
+    }
     Ok(code)
+}
+
+fn run_replay_dead_letter(lazy: &mut LazyEngine<'_>, args: &CaptureReplayDeadLetterArgs) -> Result<()> {
+    let storage = PathBuf::from(&args.output_dir);
+    let storage = storage.canonicalize().unwrap_or(storage);
+    let config_path = storage.join("proxy.yaml");
+    let agent_id = if config_path.exists() {
+        persisting_capture::ProxyConfig::from_yaml_file(&config_path)
+            .map(|c| c.agent_id)
+            .unwrap_or_else(|_| "capture".into())
+    } else {
+        "capture".into()
+    };
+    let (sink, mut worker) = build_capture_trajectory_sink(
+        lazy.cli.core_lib.clone(),
+        storage.display().to_string(),
+        agent_id,
+        args.format,
+    )?;
+    capture::replay_dead_letter::cmd_replay_dead_letter(capture::replay_dead_letter::ReplayDeadLetterOptions {
+        output_dir: storage,
+        format: args.format,
+        sink,
+    })?;
+    worker.shutdown();
+    Ok(())
 }
 
 struct TrajectoryAppendWorker {

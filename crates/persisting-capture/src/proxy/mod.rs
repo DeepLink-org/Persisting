@@ -2,6 +2,8 @@
 
 pub mod admin;
 pub mod auth;
+pub mod cancel_stream;
+pub mod capture_dispatch;
 pub mod deepseek_reasoning;
 pub mod forward;
 pub mod http_headers;
@@ -28,6 +30,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use self::admin::{admin_router, AdminState};
+use self::capture_dispatch::spawn_capture_apply;
 use self::deepseek_reasoning::ReasoningCacheHandle;
 use self::forward::{
     handle_connect, is_forward_proxy_request, is_llm_capture_path, transparent_forward,
@@ -43,8 +46,8 @@ use crate::conversion::{
 use crate::debug::{self, is_debug_enabled, truncate_body_bytes};
 use crate::dialogue_extract::extract_user_message_from_request_body;
 use crate::engine::{
-    CaptureEngine, CaptureEvent, CaptureInvocation, LlmRequestCaptured, LlmResponseCompleted,
-    LlmResponseDraftUpdated,
+    CaptureEngine, CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured,
+    LlmResponseCompleted, LlmResponseDraftUpdated,
 };
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
@@ -53,7 +56,6 @@ use crate::session_client::SessionClientRegistry;
 use crate::session_index::{SessionIndexHandle, SessionIndexStore};
 use crate::session_storage::{resolve_capture_route, route_config_key, CaptureRoute};
 use crate::sink::CaptureSink;
-use crate::subagent_link::SubagentRegistry;
 
 #[derive(Clone)]
 pub struct ProxyState {
@@ -64,7 +66,6 @@ pub struct ProxyState {
     pub capture_engine: CaptureEngine,
     pub index: SessionIndexHandle,
     pub session_clients: Arc<SessionClientRegistry>,
-    pub subagent_registry: Arc<std::sync::Mutex<SubagentRegistry>>,
     pub reasoning_cache: Arc<ReasoningCacheHandle>,
     pub active_requests: Arc<AtomicUsize>,
     pub started_at: String,
@@ -115,31 +116,32 @@ pub async fn serve_with_shutdown_and_ready(
         let _ = stop_tx.send(());
     });
 
-    let storage = storage.as_ref().to_path_buf();
-    let index_store = SessionIndexStore::open(&storage)?;
+    let storage = Arc::new(storage.as_ref().to_path_buf());
+    let index_store = SessionIndexStore::open(storage.as_path())?;
     let index = index_store.clone_handle();
     let started_at = chrono::Utc::now().to_rfc3339();
 
-    if is_debug_enabled(&config, &storage) {
+    if is_debug_enabled(&config, storage.as_path()) {
         tracing::debug!(
             target: "persisting_capture",
             "capture debug → {}",
-            debug::debug_log_path(&storage).display()
+            debug::debug_log_path(storage.as_path()).display()
         );
         debug::log_daemon_start(storage.as_path(), &config.listen, env!("CARGO_PKG_VERSION"));
     }
 
     let active_requests = Arc::new(AtomicUsize::new(0));
-    let subagent_registry = Arc::new(std::sync::Mutex::new(SubagentRegistry::default()));
     let capture_engine = CaptureEngine::new(
         Arc::clone(&sink),
         index.clone(),
-        Arc::clone(&subagent_registry),
+        Arc::clone(&storage),
         stream_markdown,
-    );
+    )
+    .await?;
+    let capture_for_shutdown = capture_engine.clone();
     let state = ProxyState {
         config: Arc::new(config.clone()),
-        storage: Arc::new(storage),
+        storage,
         client: reqwest::Client::builder()
             .no_proxy()
             .connect_timeout(Duration::from_secs(10))
@@ -149,7 +151,6 @@ pub async fn serve_with_shutdown_and_ready(
         capture_engine,
         index: index.clone(),
         session_clients: Arc::new(SessionClientRegistry::default()),
-        subagent_registry,
         reasoning_cache: Arc::new(ReasoningCacheHandle::new()),
         active_requests: Arc::clone(&active_requests),
         started_at: started_at.clone(),
@@ -187,6 +188,7 @@ pub async fn serve_with_shutdown_and_ready(
     .with_graceful_shutdown(wait_shutdown(stop_rx))
     .await?;
     admin_handle.abort();
+    capture_for_shutdown.shutdown().await?;
     Ok(())
 }
 
@@ -391,8 +393,9 @@ async fn llm_capture(
     {
         let user_content = extract_user_message_from_request_body(&body_bytes);
         let body_json = serde_json::from_slice::<Value>(&body_bytes).ok();
-        if let Err(e) = state.capture_engine.apply(
-            &capture_inv,
+        spawn_capture_apply(
+            state.capture_engine.clone(),
+            capture_inv.clone(),
             CaptureEvent::LlmRequest(LlmRequestCaptured {
                 path: path.clone(),
                 body_bytes: body_bytes.len(),
@@ -400,9 +403,7 @@ async fn llm_capture(
                 body_json,
                 model_rewritten: resolved.model_rewritten,
             }),
-        ) {
-            tracing::warn!("capture engine request event: {e:#}");
-        }
+        );
     }
 
     let mut upstream_body = body_bytes.clone();
@@ -530,8 +531,9 @@ async fn llm_capture(
     if bridge.needs_response_translation() {
         resp_bytes = translate_response_for_bridge(bridge, &resp_bytes, &client_model)?;
     }
-    if let Err(e) = state.capture_engine.apply(
-        &capture_inv,
+    spawn_capture_apply(
+        state.capture_engine.clone(),
+        capture_inv.clone(),
         CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
             status: status.as_u16(),
             resp_bytes: resp_bytes.clone(),
@@ -539,9 +541,7 @@ async fn llm_capture(
             stream_metrics: None,
             assistant_content: None,
         }),
-    ) {
-        tracing::warn!("capture engine response event: {e:#}");
-    }
+    );
 
     let mut builder = Response::builder().status(status);
     for (name, value) in resp_headers.iter() {
@@ -591,6 +591,7 @@ async fn streaming_llm_response(
         let mut translator = StreamTranslator::new(bridge, &inv_bg.client_model);
         let mut last_draft_at = std::time::Instant::now();
         let mut last_draft_content = String::new();
+        let mut client_disconnected = false;
         let mut stream = byte_stream;
         while let Some(item) = stream.next().await {
             match item {
@@ -629,6 +630,7 @@ async fn streaming_llm_response(
                         );
                     }
                     if tx.send(Ok(out)).is_err() {
+                        client_disconnected = true;
                         break;
                     }
                 }
@@ -649,6 +651,20 @@ async fn streaming_llm_response(
                 }
             }
         }
+
+        if client_disconnected {
+            spawn_capture_apply(
+                capture_engine,
+                inv_bg,
+                CaptureEvent::LlmCallCancelled(LlmCallCancelled {
+                    status: status.as_u16(),
+                    bytes_received: buf.len(),
+                    streaming: true,
+                }),
+            );
+            return;
+        }
+
         let stream_metrics = translator.as_ref().map(|t| t.metrics().clone());
         if let Some(t) = translator.as_mut() {
             if let Ok(tail) = t.finish_stream() {
@@ -672,8 +688,9 @@ async fn streaming_llm_response(
         let stream_assistant_text = translator
             .as_ref()
             .and_then(|t| t.streaming_capture_snapshot());
-        if let Err(e) = capture_engine.apply(
-            &inv_bg,
+        spawn_capture_apply(
+            capture_engine,
+            inv_bg,
             CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
                 status: status.as_u16(),
                 resp_bytes,
@@ -681,9 +698,7 @@ async fn streaming_llm_response(
                 stream_metrics,
                 assistant_content: stream_assistant_text,
             }),
-        ) {
-            tracing::warn!("stream capture finalize: {e:#}");
-        }
+        );
     });
 
     let body_stream =
@@ -725,16 +740,14 @@ fn maybe_emit_stream_draft(
     if !last_draft_content.is_empty() && last_draft_at.elapsed() < STREAM_DRAFT_MD_INTERVAL {
         return;
     }
-    if let Err(e) = engine.apply(
-        inv,
+    spawn_capture_apply(
+        engine.clone(),
+        inv.clone(),
         CaptureEvent::LlmResponseDraftUpdated(LlmResponseDraftUpdated {
             status,
             assistant_content: snapshot.clone(),
         }),
-    ) {
-        tracing::warn!("capture engine draft event: {e:#}");
-        return;
-    }
+    );
     *last_draft_content = snapshot;
     *last_draft_at = std::time::Instant::now();
 }

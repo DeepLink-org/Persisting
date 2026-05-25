@@ -21,7 +21,7 @@ const SESSION_FILENAME_MAX_LEN: usize = 128;
 pub const LEGACY_TRAJECTORY_MARKDOWN_FILENAME: &str = "trajectory.tlv.md";
 
 const BLOCK_MARKER: &str = "<!-- persisting:block";
-const BLOCK_LAYOUT: &str = "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n";
+pub(crate) const BLOCK_LAYOUT: &str = "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n";
 
 #[derive(Serialize)]
 struct DocumentFrontmatter<'a> {
@@ -40,6 +40,28 @@ pub fn format_document_preamble(client: Option<&SessionClientMeta>) -> Result<St
     };
     let yaml = serde_yaml::to_string(&doc).context("serialize trajectory frontmatter")?;
     Ok(format!("---\n{yaml}---\n\n"))
+}
+
+/// Human-readable duration for frontmatter (`42s`, `3m12s`, `1h5m`).
+pub fn format_duration_human(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    if secs < 3600 {
+        return format!("{}m{}s", secs / 60, secs % 60);
+    }
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if mins == 0 {
+        format!("{hours}h")
+    } else {
+        format!("{hours}h{mins}m")
+    }
+}
+
+/// Byte offset in `content` where the first trajectory block begins (after YAML preamble).
+pub fn document_body_start(content: &str) -> Result<usize> {
+    skip_preamble(content.as_bytes(), 0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,7 +459,11 @@ fn parse_one_block(bytes: &[u8], pos: usize) -> Result<(BlockHeader, Vec<u8>, us
             header.length
         );
     }
-    Ok((header, bytes[body_start..body_end].to_vec(), body_end))
+    let body = bytes[body_start..body_end].to_vec();
+    // Include trailing blank lines from [`encode_block_with_header`] (`\n\n` after body).
+    // Omitting them causes upsert to leave old separators behind and accumulate empty lines.
+    let end = skip_blank_lines(bytes, body_end);
+    Ok((header, body, end))
 }
 
 fn parse_block_comment(line: &str) -> Result<BlockHeader> {
@@ -1205,6 +1231,29 @@ mod upsert_tests {
             },
             body.to_vec(),
         )
+    }
+
+    #[test]
+    fn upsert_rewrite_does_not_accumulate_trailing_blank_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess.md");
+        for i in 0..50 {
+            let body = format!("draft-{i}");
+            upsert_block_by_call_id(
+                &path,
+                "call-1",
+                block_with_call("call-1", "assistant", body.as_bytes()),
+            )
+            .unwrap();
+        }
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("\n\n\n"),
+            "upsert must not accumulate extra blank lines between blocks"
+        );
+        let blocks = read_blocks_from_file(&path).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].value_utf8().unwrap(), "draft-49");
     }
 
     #[test]

@@ -145,8 +145,46 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
     )
     .context("append session.ended to trajectory")?;
 
+    if opts.format.stream_markdown_in_engine() {
+        print_run_markdown_summary(&storage, &run_cfg.agent_id, &root_session);
+    }
+
     server.shutdown()?;
     Ok(code)
+}
+
+fn print_run_markdown_summary(storage: &Path, agent_id: &str, root_session: &str) {
+    match persisting_capture::refresh_run_markdown_frontmatter(storage, agent_id, root_session) {
+        Ok(entries) if entries.is_empty() => {}
+        Ok(entries) => {
+            let main = entries.iter().find(|(p, _)| {
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s == root_session)
+            });
+            if let Some((path, summary)) = main {
+                eprintln!(
+                    "[persisting-cli] {}",
+                    persisting_capture::format_run_summary_line(path, summary)
+                );
+            }
+            for (path, summary) in &entries {
+                if summary.subagents.is_empty() && summary.turns == 0 {
+                    continue;
+                }
+                if main.is_some_and(|(p, _)| p == path) {
+                    continue;
+                }
+                eprintln!(
+                    "[persisting-cli]   {}",
+                    persisting_capture::format_run_summary_line(path, summary)
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("[persisting-cli] capture run frontmatter refresh: {e:#}");
+        }
+    }
 }
 
 fn log_run_debug(storage: &Path, root_session: &str) {

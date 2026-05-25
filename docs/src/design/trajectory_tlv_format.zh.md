@@ -2,7 +2,7 @@
 
 会话 Markdown 是轨迹的**物化人读视图**：从 Lance raw event log **materialize** 得到，或在 capture `-f md` 时由 **CaptureEngine live upsert** 增量更新。
 
-> **Capture `-f md`**：Proxy 内 CaptureEngine 按 `call_id`+`role` **upsert** 块到对应 md（主 session → `run-{run_id}.md`，subagent → `agent-{id}.md`），流式 assistant 块原地 rewrite，可用 `tail -f` 实时阅读。Worker 仅写 Lance。`-f bin` 仅写 Lance；事后可用 `trajectory materialize` 补全 md。run 结束建议 materialize 以 Lance 为准对齐。
+> **Capture `-f md`**：Proxy 内 CaptureEngine 按 `call_id`+`role` **upsert** 块到对应 md（主 session → `run-{run_id}.md`，subagent → `agent-{id}.md`），流式 assistant 块原地 rewrite；每次 dialogue 写入后刷新 **YAML frontmatter 摘要**（turns / tokens / cost）。Worker 仅写 Lance。`-f bin` 仅写 Lance；事后可用 `trajectory materialize` 补全 md。run 结束写 `reconcile.json` 对账，不一致时再 materialize。
 
 **文件名**（由 `storage_session_id` 决定）：
 
@@ -56,18 +56,30 @@ Import 路径仍使用批量 **append**。详见 [轨迹存储 §5.3](trajectory
 
 ```markdown
 ---
-format: "persisting:1.0"
-block: "speaker json"
+format: persisting:1.0
+block: "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n"
+session: run-20260526-103000
+agent: my-project
+model: deepseek-chat
+started: 2026-05-26T10:00:00Z
+duration: 42s
+turns: 8
+total_tokens: 18234
+estimated_cost_usd: 0.073
+subagents:
+  - agent-abc123
+client:
+  command: claude
 ---
 
-<!-- persisting:block:user {"kind":"llm.request","seq":0,"turn":1} -->
+<!-- persisting:block:user {"kind":"llm.request","seq":0,"turn":1,"call_id":"call-1"} -->
 你好，请帮我查询一下昨天的销售数据
 
-<!-- persisting:block:assistant {"kind":"llm.response","seq":1,"turn":1,"model":"deepseek-chat"} -->
+<!-- persisting:block:assistant {"kind":"llm.response","seq":1,"turn":1,"model":"deepseek-chat","call_id":"call-1"} -->
 我来帮你查询昨天的销售数据。
 ```
 
-YAML frontmatter 声明 `format: "persisting:1.0"`。完整示例见 [`examples/trajectory-tlv/demo-agent/demo-run-001/0001.md`](../../examples/trajectory-tlv/demo-agent/demo-run-001/0001.md)。
+YAML frontmatter 固定 `format: persisting:1.0`，并含会话级 rollup（见 [轨迹存储 §8.1](trajectory_storage.zh.md)）。完整示例见 [`examples/trajectory-tlv/demo-agent/demo-run-001/0001.md`](../../examples/trajectory-tlv/demo-agent/demo-run-001/0001.md)。
 
 ---
 

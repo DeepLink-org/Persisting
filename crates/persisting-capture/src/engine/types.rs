@@ -1,4 +1,4 @@
-//! Capture event types — canonical inputs to [`super::CaptureEngine`].
+//! Capture event types — canonical inputs to [`super::CaptureRuntime`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,6 +39,15 @@ pub enum CaptureEvent {
     LlmResponseCompleted(LlmResponseCompleted),
     /// Streaming assistant draft — markdown view only (no Lance write).
     LlmResponseDraftUpdated(LlmResponseDraftUpdated),
+    /// Client disconnected before stream finished (Lance only, no markdown).
+    LlmCallCancelled(LlmCallCancelled),
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmCallCancelled {
+    pub status: u16,
+    pub bytes_received: usize,
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone)]

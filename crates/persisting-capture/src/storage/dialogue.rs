@@ -31,6 +31,7 @@ pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
             visible_assistant_text(rec).is_none()
         }
         "llm.spawn_link" => false,
+        "llm.call.cancelled" => true,
         k if k.starts_with("session.") => true,
         _ => false,
     }
