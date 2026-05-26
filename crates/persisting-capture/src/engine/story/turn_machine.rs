@@ -3,12 +3,12 @@
 use serde_json::json;
 
 use super::ids::{CallId, StoryId, TurnId};
-use super::model::{EventKind, Story, TextBlock, Turn, TurnCall, TurnKind};
+use super::model::{CallPhase, Story, TextBlock, Turn, TurnCall, TurnKind};
 use crate::record::CaptureRecord;
 
 /// Outcome of observing one persisted capture record.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnObserveOutcome {
+pub(crate) struct TurnObserveOutcome {
     pub turn_id: Option<TurnId>,
     pub turn_index: Option<u32>,
 }
@@ -64,10 +64,6 @@ impl TurnMachine {
         &self.turns
     }
 
-    pub fn active_turn_id(&self) -> Option<&TurnId> {
-        self.active_turn.as_ref()
-    }
-
     /// Build a read-model snapshot of the in-memory story state.
     pub fn snapshot(&self) -> Story {
         Story {
@@ -77,6 +73,21 @@ impl TurnMachine {
             parent: None,
             turns: self.turns.clone(),
         }
+    }
+
+    /// Replay persisted records into a fresh turn machine (offline egress).
+    pub fn replay_records(
+        story_id: StoryId,
+        agent_id: impl Into<String>,
+        run_id: Option<super::ids::RunId>,
+        records: &[CaptureRecord],
+    ) -> Self {
+        let mut tm = Self::with_context(story_id, agent_id, run_id);
+        for rec in records {
+            let mut r = rec.clone();
+            tm.observe_record(&mut r);
+        }
+        tm
     }
 
     /// Stamp `turn_id` / `turn_index` on the record and update in-memory story state.
@@ -112,7 +123,7 @@ impl TurnMachine {
     fn on_request(&mut self, call_id: &CallId, rec: &CaptureRecord) -> TurnObserveOutcome {
         if rec.is_internal_llm_request() {
             if self.active_turn.is_some() {
-                self.ensure_call(call_id, EventKind::Request);
+                self.ensure_call(call_id, CallPhase::Request);
             }
             return TurnObserveOutcome {
                 turn_id: self.active_turn.clone(),
@@ -143,7 +154,7 @@ impl TurnMachine {
         }
 
         if self.active_turn.is_some() {
-            self.ensure_call(call_id, EventKind::Request);
+            self.ensure_call(call_id, CallPhase::Request);
             return TurnObserveOutcome {
                 turn_id: self.active_turn.clone(),
                 turn_index: self.active_turn.as_ref().and_then(|t| self.turn_index(t)),
@@ -155,7 +166,7 @@ impl TurnMachine {
         let turn = Turn {
             turn_id: turn_id.clone(),
             index: self.next_index - 1,
-            kind: TurnKind::ToolLoop,
+            kind: TurnKind::Autonomous,
             user: None,
             assistant: None,
             calls: vec![self.call_snapshot(call_id)],
@@ -169,7 +180,7 @@ impl TurnMachine {
     }
 
     fn on_response(&mut self, call_id: &CallId, rec: &CaptureRecord) -> TurnObserveOutcome {
-        self.ensure_call(call_id, EventKind::Complete);
+        self.ensure_call(call_id, CallPhase::Complete);
         if let Some(text) = rec.visible_assistant_text() {
             if let Some(turn) = self.turns.last_mut() {
                 turn.assistant = Some(TextBlock {
@@ -185,14 +196,14 @@ impl TurnMachine {
     }
 
     fn on_cancel(&mut self, call_id: &CallId) -> TurnObserveOutcome {
-        self.ensure_call(call_id, EventKind::Cancel);
+        self.ensure_call(call_id, CallPhase::Cancel);
         TurnObserveOutcome {
             turn_id: self.active_turn.clone(),
             turn_index: self.active_turn.as_ref().and_then(|t| self.turn_index(t)),
         }
     }
 
-    fn ensure_call(&mut self, call_id: &CallId, kind: EventKind) {
+    fn ensure_call(&mut self, call_id: &CallId, kind: CallPhase) {
         if let Some(turn) = self.turns.last_mut() {
             if let Some(entry) = turn.calls.iter_mut().find(|c| c.call_id == *call_id) {
                 if !entry.events.contains(&kind) {
@@ -216,7 +227,7 @@ impl TurnMachine {
             trace_id: String::new(),
             protocol: None,
             model: None,
-            events: vec![EventKind::Request],
+            events: vec![CallPhase::Request],
         }
     }
 
@@ -231,6 +242,7 @@ impl TurnMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::model::CallPhase;
     use crate::config::CaptureLevel;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
 
@@ -377,5 +389,88 @@ mod tests {
         assert_eq!(snap.story_id, story_id);
         assert_eq!(snap.agent_id, "agent-1");
         assert_eq!(snap.turns.len(), 1);
+    }
+
+    #[test]
+    fn replay_records_matches_incremental_observe() {
+        let story_id = StoryId::new("run|main");
+        let mut live = TurnMachine::with_context(story_id.clone(), "agent-1", None);
+        let mut records = Vec::new();
+
+        for (id, text) in [("c1", "one"), ("c2", "two")] {
+            let call = sample_call(id);
+            let mut req = llm_request_summary_record(
+                Some("s".into()),
+                Some("a".into()),
+                "m",
+                "/v1/chat/completions",
+                10,
+                "chat_completions",
+                "openai",
+                Some(text.into()),
+                None,
+                &call,
+                CaptureLevel::Dialogue,
+                None,
+            );
+            live.observe_record(&mut req);
+            records.push(req);
+
+            let mut resp = llm_response_record_with_content(
+                Some("s".into()),
+                Some("a".into()),
+                200,
+                &json!({}),
+                false,
+                Some(format!("ok-{text}")),
+                &call,
+                CaptureLevel::Dialogue,
+            );
+            live.observe_record(&mut resp);
+            records.push(resp);
+        }
+
+        let replayed =
+            TurnMachine::replay_records(story_id.clone(), "agent-1", None, &records).snapshot();
+        assert_eq!(replayed, live.snapshot());
+    }
+
+    #[test]
+    fn cancel_records_call_phase() {
+        let story_id = StoryId::new("run|main");
+        let mut tm = TurnMachine::new(story_id);
+        let call = sample_call("c1");
+        let mut req = llm_request_summary_record(
+            Some("s".into()),
+            Some("a".into()),
+            "m",
+            "/v1/chat/completions",
+            10,
+            "chat_completions",
+            "openai",
+            Some("hi".into()),
+            None,
+            &call,
+            CaptureLevel::Dialogue,
+            None,
+        );
+        tm.observe_record(&mut req);
+
+        let mut cancel = llm_response_record_with_content(
+            Some("s".into()),
+            Some("a".into()),
+            499,
+            &json!({ "cancelled": true }),
+            true,
+            None,
+            &call,
+            CaptureLevel::Dialogue,
+        );
+        cancel.kind = "llm.call.cancelled".into();
+        tm.observe_record(&mut cancel);
+
+        let phases = &tm.turns()[0].calls[0].events;
+        assert!(phases.contains(&CallPhase::Request));
+        assert!(phases.contains(&CallPhase::Cancel));
     }
 }

@@ -8,8 +8,7 @@ use crate::provider::ProviderKind;
 use crate::session_storage::CaptureRoute;
 
 use super::call::Call;
-use super::ids::{CallId, RunId, StoryId};
-use super::model::StoryLink;
+use super::ids::{RunId, StoryId};
 
 /// Routing + identity for one story (one agent narrative line).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,19 +33,6 @@ impl StoryContext {
 
     pub fn story_id(&self) -> &StoryId {
         &self.story_id
-    }
-
-    pub fn story_link_from_spawn(
-        &self,
-        spawn_call_id: impl Into<CallId>,
-        spawn_turn_index: Option<u32>,
-    ) -> StoryLink {
-        StoryLink {
-            parent_story_id: self.story_id.clone(),
-            spawn_call_id: spawn_call_id.into(),
-            spawn_turn_index,
-            relation: super::model::StoryLinkRelation::Spawn,
-        }
     }
 }
 

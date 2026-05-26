@@ -11,11 +11,10 @@ use serde_json::Value;
 
 use super::dialogue::capture_record_to_block;
 use super::dialogue_extract::count_visible_user_messages;
-use super::frontmatter::refresh_document_frontmatter;
 use super::markdown::{upsert_block_by_call_id, BlockHeader};
 use super::record::CaptureRecord;
 use super::session::{trajectory_run_dir, CaptureRoute};
-use crate::engine::{should_refresh_frontmatter, should_skip_record};
+use crate::engine::should_skip_record;
 use crate::markdown_trajectory::session_markdown_write_path_for_key;
 
 /// Per-session sequential state: static filters + Claude Code history-replay dedup.
@@ -142,6 +141,10 @@ impl LiveMarkdownWriter {
         }
     }
 
+    pub fn path(&self) -> PathBuf {
+        self.target.path()
+    }
+
     pub fn write_record(&mut self, rec: &CaptureRecord) -> Result<()> {
         if !self.enabled {
             return Ok(());
@@ -153,15 +156,6 @@ impl LiveMarkdownWriter {
         let path = self.target.path();
         upsert_block_by_call_id(&path, call_id, block)
             .with_context(|| format!("markdown upsert {}", path.display()))?;
-        if should_refresh_frontmatter(rec) {
-            let _ = refresh_document_frontmatter(
-                self.target.storage.as_path(),
-                &self.target.agent_id,
-                &self.target.route,
-                &path,
-            )
-            .map_err(|e| tracing::debug!("frontmatter refresh: {e:#}"));
-        }
         Ok(())
     }
 

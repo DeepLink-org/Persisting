@@ -1,4 +1,4 @@
-//! Read model: Run → Story → Turn, with call/event detail in each turn.
+//! Read model: Story → Turn, with call/event detail in each turn.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,13 +26,6 @@ pub enum StoryLinkRelation {
     MergeBack,
 }
 
-/// Container for one capture run (not a narrative unit itself).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Run {
-    pub run_id: RunId,
-    pub story_ids: Vec<StoryId>,
-}
-
 /// One agent's full narrative line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Story {
@@ -57,8 +50,13 @@ pub struct Turn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnKind {
+    /// Visible user → assistant round.
     Dialogue,
-    ToolLoop,
+    /// Agent-initiated stretch without user text on the opening request (tool loops,
+    /// system-only continuations, autonomous work — not limited to tool-call rounds).
+    #[serde(alias = "tool_loop")]
+    Autonomous,
+    /// Reserved for internal / non-dialogue indexing (currently unused).
     Internal,
 }
 
@@ -76,14 +74,35 @@ pub struct TurnCall {
     pub trace_id: String,
     pub protocol: Option<ProtocolKind>,
     pub model: Option<String>,
-    pub events: Vec<EventKind>,
+    pub events: Vec<CallPhase>,
 }
 
+/// Phase of one call within a turn (read model; distinct from [`CaptureRecord::kind`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EventKind {
+pub enum CallPhase {
     Request,
     Draft,
     Complete,
     Cancel,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_phase_serializes_snake_case() {
+        let phase = CallPhase::Complete;
+        let json = serde_json::to_string(&phase).unwrap();
+        assert_eq!(json, "\"complete\"");
+        let back: CallPhase = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, CallPhase::Complete);
+    }
+
+    #[test]
+    fn turn_kind_deserializes_legacy_tool_loop_alias() {
+        let kind: TurnKind = serde_json::from_str("\"tool_loop\"").unwrap();
+        assert_eq!(kind, TurnKind::Autonomous);
+    }
 }

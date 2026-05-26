@@ -47,6 +47,8 @@ pub(crate) enum StoryCommand {
     Flush,
     /// Read-model snapshot (no I/O).
     Snapshot { scope: StoryScope },
+    /// Read-model snapshot without scope (shutdown / persist).
+    LocalSnapshot,
 }
 
 /// Reply from [`super::super::actors::StoryActor`].
@@ -54,6 +56,10 @@ pub(crate) enum StoryCommand {
 pub(crate) enum StoryReply {
     Ack(CaptureAck),
     Snapshot { story: Story },
+    LocalSnapshot {
+        storage_session_id: String,
+        story: Story,
+    },
 }
 
 impl StoryCommand {
@@ -85,7 +91,7 @@ impl StoryCommand {
             Self::PersistRecord { scope, .. }
             | Self::UpsertDraft { scope, .. }
             | Self::Snapshot { scope } => scope,
-            Self::Flush => panic!("Flush has no scope"),
+            Self::Flush | Self::LocalSnapshot => panic!("command has no scope"),
         }
     }
 }

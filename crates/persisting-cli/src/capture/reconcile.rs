@@ -79,8 +79,13 @@ pub fn reconcile_run_after_flush(
         for s in &report.sessions {
             if !s.ok() {
                 eprintln!(
-                    "[persisting-cli]   session {} missing={:?} extra={:?} structural={:?}",
-                    s.session_id, s.missing_in_md, s.extra_in_md, s.structural_issues
+                    "[persisting-cli]   session {} missing={:?} extra={:?} story_missing={:?} story_extra={:?} structural={:?}",
+                    s.session_id,
+                    s.missing_in_md,
+                    s.extra_in_md,
+                    s.story_missing_in_md,
+                    s.story_extra_in_md,
+                    s.structural_issues
                 );
             }
         }

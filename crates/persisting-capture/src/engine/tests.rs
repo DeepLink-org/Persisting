@@ -132,14 +132,70 @@ async fn story_snapshot_reflects_applied_turns() {
 }
 
 #[tokio::test]
+async fn shutdown_persists_story_snapshots_for_active_stories() {
+    use crate::engine::load_story_snapshots;
+
+    let sink = RecordingSink::new();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let ctx = test_context();
+    engine
+        .apply(
+            &ctx,
+            Event::Request(RequestEvent {
+                path: "/v1/chat/completions".into(),
+                body_bytes: 12,
+                user_content: Some("hello".into()),
+                body_json: None,
+                model_rewritten: false,
+            }),
+        )
+        .await
+        .unwrap();
+    flush_engine(&engine).await;
+    engine.shutdown().await.unwrap();
+
+    let snapshots = load_story_snapshots(dir.path()).unwrap();
+    assert!(snapshots.contains_key("sess-1"));
+    assert_eq!(snapshots["sess-1"].turns.len(), 1);
+}
+
+#[tokio::test]
+async fn flush_persists_dirty_session_index() {
+    let sink = RecordingSink::new();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let ctx = test_context();
+    engine
+        .apply(
+            &ctx,
+            Event::Request(RequestEvent {
+                path: "/v1/chat/completions".into(),
+                body_bytes: 12,
+                user_content: Some("ping".into()),
+                body_json: None,
+                model_rewritten: false,
+            }),
+        )
+        .await
+        .unwrap();
+    engine.flush().await.unwrap();
+
+    let index = SessionIndexStore::load(dir.path()).unwrap();
+    assert_eq!(index.sessions.len(), 1);
+    assert_eq!(index.sessions[0].session_id, "sess-1");
+    assert!(index.sessions[0].active);
+}
+
+#[tokio::test]
 async fn request_event_appends_single_llm_request() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), false).await;
-    let inv = test_context();
+    let ctx = test_context();
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
@@ -161,10 +217,10 @@ async fn response_event_appends_single_stream_record() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), false).await;
-    let inv = test_context();
+    let ctx = test_context();
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: Bytes::from("data: [DONE]\n\n"),
@@ -190,10 +246,10 @@ async fn draft_event_does_not_append_to_sink() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), true).await;
-    let inv = test_context();
+    let ctx = test_context();
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::ResponseDraft(DraftEvent {
                 status: 200,
                 assistant_content: "partial".into(),
@@ -214,11 +270,11 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let inv = test_context();
+    let ctx = test_context();
 
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
@@ -231,7 +287,7 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
         .unwrap();
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::ResponseDraft(DraftEvent {
                 status: 200,
                 assistant_content: "partial assistant".into(),
@@ -241,7 +297,7 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
         .unwrap();
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: Bytes::from("data: [DONE]\n\n"),
@@ -254,8 +310,8 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
         .unwrap();
 
     flush_engine(&engine).await;
-    let run_dir = trajectory_run_dir(storage.as_path(), inv.agent_id(), inv.route());
-    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route().storage_session_id);
+    let run_dir = trajectory_run_dir(storage.as_path(), ctx.agent_id(), ctx.route());
+    let md_path = session_markdown_write_path_for_key(&run_dir, &ctx.route().storage_session_id);
     let blocks = read_blocks_from_file(&md_path).unwrap();
     let records = sink.drain();
     assert_eq!(records.len(), 2);
@@ -285,11 +341,11 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let inv = test_context();
+    let ctx = test_context();
 
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
@@ -302,7 +358,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
         .unwrap();
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::ResponseDraft(DraftEvent {
                 status: 200,
                 assistant_content: "wip".into(),
@@ -312,8 +368,8 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
         .unwrap();
 
     flush_engine(&engine).await;
-    let run_dir = trajectory_run_dir(storage.as_path(), inv.agent_id(), inv.route());
-    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route().storage_session_id);
+    let run_dir = trajectory_run_dir(storage.as_path(), ctx.agent_id(), ctx.route());
+    let md_path = session_markdown_write_path_for_key(&run_dir, &ctx.route().storage_session_id);
     let draft_blocks = read_blocks_from_file(&md_path).unwrap();
     assert_eq!(draft_blocks.len(), 2);
     assert_eq!(
@@ -327,7 +383,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
 
     engine
         .apply(
-            &inv,
+            &ctx,
             Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: Bytes::from("data: [DONE]\n\n"),
@@ -361,8 +417,8 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let mut inv_a = test_context();
-    inv_a.call = Call {
+    let mut ctx_a = test_context();
+    ctx_a.call = Call {
         call_id: "call-a".into(),
         trace_id: "trace-a".into(),
         started_at: "2026-01-01T00:00:00Z".into(),
@@ -370,7 +426,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
 
     engine
         .apply(
-            &inv_a,
+            &ctx_a,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
@@ -383,7 +439,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
         .unwrap();
     engine
         .apply(
-            &inv_a,
+            &ctx_a,
             Event::ResponseDraft(DraftEvent {
                 status: 200,
                 assistant_content: "draft-a".into(),
@@ -392,15 +448,15 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
         .await
         .unwrap();
 
-    let mut inv_b = inv_a.clone();
-    inv_b.call = Call {
+    let mut ctx_b = ctx_a.clone();
+    ctx_b.call = Call {
         call_id: "call-b".into(),
         trace_id: "trace-b".into(),
         started_at: "2026-01-01T00:00:01Z".into(),
     };
     engine
         .apply(
-            &inv_b,
+            &ctx_b,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
@@ -414,7 +470,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
 
     engine
         .apply(
-            &inv_a,
+            &ctx_a,
             Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: Bytes::from("data: [DONE]\n\n"),
@@ -427,8 +483,8 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
         .unwrap();
 
     flush_engine(&engine).await;
-    let run_dir = trajectory_run_dir(storage.as_path(), inv_a.agent_id(), inv_a.route());
-    let md_path = session_markdown_write_path_for_key(&run_dir, &inv_a.route().storage_session_id);
+    let run_dir = trajectory_run_dir(storage.as_path(), ctx_a.agent_id(), ctx_a.route());
+    let md_path = session_markdown_write_path_for_key(&run_dir, &ctx_a.route().storage_session_id);
     let blocks = read_blocks_from_file(&md_path).unwrap();
     assert_eq!(blocks.len(), 3);
     assert_eq!(blocks[0].value_utf8().unwrap(), "req-a");
@@ -458,11 +514,11 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let inv = test_context();
+    let ctx = test_context();
 
     async fn user_turn(
         engine: &CaptureEngine,
-        inv: &CallContext,
+        ctx: &CallContext,
         call_id: &str,
         user: &str,
         prior_users: &[&str],
@@ -470,15 +526,15 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
         let mut lines: Vec<&str> = prior_users.to_vec();
         lines.push(user);
         let body = claude_messages_body(&lines);
-        let mut call_inv = inv.clone();
-        call_inv.call = Call {
+        let mut call_ctx = ctx.clone();
+        call_ctx.call = Call {
             call_id: call_id.into(),
             trace_id: call_id.into(),
             started_at: "2026-01-01T00:00:00Z".into(),
         };
         engine
             .apply(
-                &call_inv,
+                &call_ctx,
                 Event::Request(RequestEvent {
                     path: "/v1/messages".into(),
                     body_bytes: 100,
@@ -491,16 +547,16 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
             .unwrap();
     }
 
-    async fn assistant_turn(engine: &CaptureEngine, inv: &CallContext, call_id: &str, text: &str) {
-        let mut call_inv = inv.clone();
-        call_inv.call = Call {
+    async fn assistant_turn(engine: &CaptureEngine, ctx: &CallContext, call_id: &str, text: &str) {
+        let mut call_ctx = ctx.clone();
+        call_ctx.call = Call {
             call_id: call_id.into(),
             trace_id: call_id.into(),
             started_at: "2026-01-01T00:00:00Z".into(),
         };
         engine
             .apply(
-                &call_inv,
+                &call_ctx,
                 Event::ResponseComplete(CompleteEvent {
                     status: 200,
                     resp_bytes: Bytes::from("data: [DONE]\n\n"),
@@ -513,24 +569,24 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
             .unwrap();
     }
 
-    user_turn(&engine, &inv, "call-1", "hi", &[]).await;
-    assistant_turn(&engine, &inv, "call-1", "Hi! What can I help you with?").await;
-    user_turn(&engine, &inv, "call-2", "hi", &["hi"]).await;
-    assistant_turn(&engine, &inv, "call-2", "Hi! What can I help you with?").await;
-    user_turn(&engine, &inv, "call-3", "hi", &["hi"]).await;
+    user_turn(&engine, &ctx, "call-1", "hi", &[]).await;
+    assistant_turn(&engine, &ctx, "call-1", "Hi! What can I help you with?").await;
+    user_turn(&engine, &ctx, "call-2", "hi", &["hi"]).await;
+    assistant_turn(&engine, &ctx, "call-2", "Hi! What can I help you with?").await;
+    user_turn(&engine, &ctx, "call-3", "hi", &["hi"]).await;
     assistant_turn(
         &engine,
-        &inv,
+        &ctx,
         "call-3",
         "what's the status of the capture storage feature?",
     )
     .await;
-    user_turn(&engine, &inv, "call-4", "你好", &["hi", "hi"]).await;
-    assistant_turn(&engine, &inv, "call-4", "你好！有什么我可以帮你的吗？").await;
+    user_turn(&engine, &ctx, "call-4", "你好", &["hi", "hi"]).await;
+    assistant_turn(&engine, &ctx, "call-4", "你好！有什么我可以帮你的吗？").await;
 
     flush_engine(&engine).await;
-    let run_dir = trajectory_run_dir(storage.as_path(), inv.agent_id(), inv.route());
-    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route().storage_session_id);
+    let run_dir = trajectory_run_dir(storage.as_path(), ctx.agent_id(), ctx.route());
+    let md_path = session_markdown_write_path_for_key(&run_dir, &ctx.route().storage_session_id);
     let blocks = read_blocks_from_file(&md_path).unwrap();
     let bodies: Vec<_> = blocks
         .iter()
@@ -576,7 +632,7 @@ mod reliability {
         let engine = CaptureEngine::new(sink, index, storage.clone(), false)
             .await
             .unwrap();
-        let inv = test_context();
+        let ctx = test_context();
         let event = Event::Request(RequestEvent {
             path: "/v1/chat/completions".into(),
             body_bytes: 10,
@@ -584,7 +640,7 @@ mod reliability {
             body_json: None,
             model_rewritten: false,
         });
-        assert!(engine.apply(&inv, event).await.is_err());
+        assert!(engine.apply(&ctx, event).await.is_err());
         engine.flush().await.unwrap();
         let entries = read_dead_letter_entries(dir.path()).unwrap();
         assert_eq!(entries.len(), 1);

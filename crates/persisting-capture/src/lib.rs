@@ -64,9 +64,7 @@ pub use debug::{
 pub use dialogue::import_markdown_to_engine_lines;
 pub use discover_daemon::{StorageResolution, StorageSource};
 pub use engine::{
-    CallContext, CallId, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event, EventKind,
-    RequestEvent, Run, RunId, Story, StoryContext, StoryId, StoryLink, StoryLinkRelation,
-    TextBlock, Turn, TurnCall, TurnId, TurnKind, TurnMachine,
+    CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event, RequestEvent,
 };
 pub use injection::{
     capture_openai_v1_base, client_gateway_config_args, proxy_environment, CAPTURE_PROXY_ENV_KEYS,

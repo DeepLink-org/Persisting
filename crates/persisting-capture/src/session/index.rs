@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
@@ -37,6 +38,7 @@ pub struct SessionSummary {
 pub struct SessionIndexStore {
     path: PathBuf,
     inner: Arc<RwLock<SessionIndex>>,
+    dirty: Arc<AtomicBool>,
 }
 
 impl SessionIndexStore {
@@ -63,6 +65,7 @@ impl SessionIndexStore {
         Ok(Self {
             path,
             inner: Arc::new(RwLock::new(inner)),
+            dirty: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -70,6 +73,7 @@ impl SessionIndexStore {
         SessionIndexHandle {
             inner: Arc::clone(&self.inner),
             path: self.path.clone(),
+            dirty: Arc::clone(&self.dirty),
         }
     }
 
@@ -102,9 +106,14 @@ impl SessionIndexStore {
 pub struct SessionIndexHandle {
     inner: Arc<RwLock<SessionIndex>>,
     path: PathBuf,
+    dirty: Arc<AtomicBool>,
 }
 
 impl SessionIndexHandle {
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
+
     pub fn record_request(
         &self,
         agent_id: &str,
@@ -143,6 +152,7 @@ impl SessionIndexHandle {
                 active: true,
             });
         }
+        self.mark_dirty();
     }
 
     pub fn record_response(
@@ -170,6 +180,7 @@ impl SessionIndexHandle {
             }
             s.provider = provider.as_str().to_string();
         }
+        self.mark_dirty();
     }
 
     pub fn set_active(&self, agent_id: &str, session_id: &str, active: bool) {
@@ -181,6 +192,14 @@ impl SessionIndexHandle {
         {
             s.active = active;
         }
+        self.mark_dirty();
+    }
+
+    pub fn flush_if_dirty(&self) -> Result<()> {
+        if !self.dirty.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.flush()
     }
 
     pub fn flush(&self) -> Result<()> {
@@ -190,6 +209,7 @@ impl SessionIndexHandle {
             fs::create_dir_all(parent)?;
         }
         fs::write(&self.path, json).context("write sessions.json")?;
+        self.dirty.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -243,4 +263,80 @@ pub fn discover_sessions(storage: &Path) -> Result<Vec<SessionSummary>> {
     let mut out: Vec<_> = by_key.into_values().collect();
     out.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::ProviderKind;
+    use crate::usage::TokenUsage;
+
+    #[test]
+    fn flush_if_dirty_skips_when_not_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionIndexStore::open(dir.path()).unwrap();
+        let handle = store.clone_handle();
+        handle.flush_if_dirty().unwrap();
+        assert!(!dir.path().join(".capture").join("sessions.json").exists());
+    }
+
+    #[test]
+    fn flush_if_dirty_persists_after_record_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionIndexStore::open(dir.path()).unwrap();
+        let handle = store.clone_handle();
+        handle.record_request("agent", "sess", ProviderKind::OpenAi, "chat", "gpt-4");
+        handle.flush_if_dirty().unwrap();
+
+        let loaded = SessionIndexStore::load(dir.path()).unwrap();
+        assert_eq!(loaded.sessions.len(), 1);
+        assert_eq!(loaded.sessions[0].request_count, 1);
+        assert!(loaded.sessions[0].active);
+    }
+
+    #[test]
+    fn cloned_handles_share_dirty_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionIndexStore::open(dir.path()).unwrap();
+        let writer = store.clone_handle();
+        let reader = writer.clone();
+
+        writer.record_request("agent", "sess", ProviderKind::OpenAi, "chat", "m");
+        reader.flush_if_dirty().unwrap();
+
+        writer.record_response(
+            "agent",
+            "sess",
+            ProviderKind::OpenAi,
+            "m",
+            &TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            },
+            0.01,
+        );
+        writer.flush_if_dirty().unwrap();
+
+        let loaded = SessionIndexStore::load(dir.path()).unwrap();
+        assert_eq!(loaded.sessions[0].request_count, 1);
+        assert_eq!(loaded.sessions[0].usage.total_tokens, 15);
+        assert!(!loaded.sessions[0].active);
+    }
+
+    #[test]
+    fn second_flush_if_dirty_without_changes_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionIndexStore::open(dir.path()).unwrap();
+        let handle = store.clone_handle();
+        handle.record_request("agent", "sess", ProviderKind::Anthropic, "messages", "claude");
+        handle.flush_if_dirty().unwrap();
+        handle.flush_if_dirty().unwrap();
+
+        let loaded = SessionIndexStore::load(dir.path()).unwrap();
+        assert_eq!(loaded.sessions.len(), 1);
+    }
 }

@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use crate::session_chain::{new_call_id, resolve_trace_id};
 use crate::storage::record::now_rfc3339;
 
-use super::ids::CallId;
-
 /// Identifiers for one proxied LLM HTTP call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Call {
@@ -26,9 +24,5 @@ impl Call {
             trace_id,
             started_at: now_rfc3339(),
         }
-    }
-
-    pub fn id(&self) -> CallId {
-        CallId::new(&self.call_id)
     }
 }

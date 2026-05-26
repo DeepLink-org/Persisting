@@ -21,6 +21,51 @@ use crate::usage::StreamMetrics;
 const DEAD_LETTER_FILENAME: &str = "dead_letter.jsonl";
 const LANCE_DEAD_LETTER_FILENAME: &str = "lance_dead_letter.jsonl";
 
+mod serde_compat {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::protocol::ProtocolKind;
+    use crate::provider::ProviderKind;
+
+    pub mod provider {
+        use super::*;
+
+        pub fn serialize<S>(v: &ProviderKind, s: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            s.serialize_str(v.as_str())
+        }
+
+        pub fn deserialize<'de, D>(d: D) -> Result<ProviderKind, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let s = String::deserialize(d)?;
+            Ok(ProviderKind::parse(&s))
+        }
+    }
+
+    pub mod protocol {
+        use super::*;
+
+        pub fn serialize<S>(v: &ProtocolKind, s: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            s.serialize_str(v.as_str())
+        }
+
+        pub fn deserialize<'de, D>(d: D) -> Result<ProtocolKind, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let s = String::deserialize(d)?;
+            Ok(ProtocolKind::parse(&s))
+        }
+    }
+}
+
 /// Serializable call context for dead-letter replay.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeadLetterContext {
@@ -30,8 +75,10 @@ pub struct DeadLetterContext {
     pub level: CaptureLevel,
     pub client_model: String,
     pub upstream_model: String,
-    pub provider: String,
-    pub protocol: String,
+    #[serde(with = "serde_compat::provider")]
+    pub provider: ProviderKind,
+    #[serde(with = "serde_compat::protocol")]
+    pub protocol: ProtocolKind,
 }
 
 /// Serializable event (wire format for JSONL).
@@ -210,8 +257,8 @@ impl DeadLetterContext {
             level: ctx.level,
             client_model: ctx.client_model.clone(),
             upstream_model: ctx.upstream_model.clone(),
-            provider: ctx.provider.as_str().to_string(),
-            protocol: ctx.protocol.as_str().to_string(),
+            provider: ctx.provider,
+            protocol: ctx.protocol,
         }
     }
 
@@ -224,8 +271,8 @@ impl DeadLetterContext {
             self.level,
             self.client_model.clone(),
             self.upstream_model.clone(),
-            ProviderKind::parse(&self.provider),
-            ProtocolKind::parse(&self.protocol),
+            self.provider,
+            self.protocol,
             false,
         )
     }
@@ -401,6 +448,8 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].error, "mailbox full");
         assert!(matches!(entries[0].event.to_event(), Event::Request(_)));
+        assert_eq!(entries[0].context.provider, ProviderKind::OpenAi);
+        assert_eq!(entries[0].context.protocol, ProtocolKind::ChatCompletions);
     }
 
     #[test]
@@ -419,5 +468,35 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].error, "engine invoke failed");
         assert_eq!(entries[0].records_ronl, "record line\n");
+    }
+
+    #[test]
+    fn dead_letter_context_roundtrips_legacy_string_provider_protocol() {
+        let json = r#"{
+            "timestamp": "2026-01-01T00:00:00Z",
+            "context": {
+                "route": {
+                    "root_session": "run-1",
+                    "session_id": "sess",
+                    "storage_session_id": "run-1",
+                    "subagent_id": null
+                },
+                "agent_id": "agent",
+                "call": {"call_id": "c1", "trace_id": "t1", "started_at": "2026-01-01T00:00:00Z"},
+                "level": "dialogue",
+                "client_model": "m",
+                "upstream_model": "m",
+                "provider": "openai",
+                "protocol": "chat_completions"
+            },
+            "event": {"kind": "cancelled", "status": 499, "bytes_received": 0, "streaming": true},
+            "error": "test"
+        }"#;
+        let entry: DeadLetterEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.context.provider, ProviderKind::OpenAi);
+        assert_eq!(entry.context.protocol, ProtocolKind::ChatCompletions);
+        let ctx = entry.context.to_call_context();
+        assert_eq!(ctx.provider, ProviderKind::OpenAi);
+        assert_eq!(ctx.protocol, ProtocolKind::ChatCompletions);
     }
 }

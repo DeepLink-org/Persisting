@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use serde_json::Value;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::ReceiverStream;
 
 use super::common::attach_capture_headers;
 use super::state::ProxyState;
@@ -18,6 +18,8 @@ use crate::debug;
 use crate::engine::{CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event};
 
 const STREAM_DRAFT_MD_INTERVAL: Duration = Duration::from_millis(150);
+/// Bounded queue between upstream reader and client SSE writer (backpressure).
+const STREAM_CLIENT_QUEUE: usize = 256;
 
 pub(super) fn request_wants_stream(body: &Bytes) -> bool {
     serde_json::from_slice::<Value>(body)
@@ -62,7 +64,7 @@ pub(super) async fn streaming_llm_response(
     }
 
     let byte_stream = upstream_resp.bytes_stream();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, String>>();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(STREAM_CLIENT_QUEUE);
 
     let capture_engine = state.capture_engine.clone();
     let ctx_bg = ctx.clone();
@@ -112,7 +114,7 @@ pub(super) async fn streaming_llm_response(
                             &mut last_draft_content,
                         );
                     }
-                    if tx.send(Ok(out)).is_err() {
+                    if tx.send(Ok(out)).await.is_err() {
                         client_disconnected = true;
                         break;
                     }
@@ -150,7 +152,7 @@ pub(super) async fn streaming_llm_response(
         let stream_metrics = translator.as_ref().map(|t| t.metrics().clone());
         if let Some(t) = translator.as_mut() {
             if let Ok(tail) = t.finish_stream() {
-                let _ = tx.send(Ok(Bytes::from(tail)));
+                let _ = tx.send(Ok(Bytes::from(tail))).await;
             }
             let (tool_ids, reasoning) = t.drain_reasoning_snapshot();
             if !reasoning.is_empty() {
@@ -182,8 +184,7 @@ pub(super) async fn streaming_llm_response(
         );
     });
 
-    let body_stream =
-        UnboundedReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
+    let body_stream = ReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
 
     let mut builder = Response::builder().status(status);
     for (name, value) in resp_headers.iter() {

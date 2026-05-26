@@ -160,28 +160,6 @@ pub fn fixture_exists(relative: &str) -> bool {
     fixture_path(relative).is_file()
 }
 
-#[allow(dead_code)]
-pub fn list_fixtures(dir: &str, ext: &str) -> Vec<String> {
-    let path = fixtures_root().join(dir);
-    let mut names = Vec::new();
-    if let Ok(entries) = fs::read_dir(&path) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_file() {
-                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    if p.extension()
-                        .is_some_and(|e| e == ext.trim_start_matches('.'))
-                    {
-                        names.push(stem.to_string());
-                    }
-                }
-            }
-        }
-    }
-    names.sort();
-    names
-}
-
 /// Case tables aligned with agentgateway `llm/tests.rs` (Persisting-supported bridges only).
 pub const MESSAGES_TO_COMPLETIONS: &[&str] = &["basic", "tools", "reasoning"];
 

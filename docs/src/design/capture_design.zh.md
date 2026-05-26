@@ -341,7 +341,7 @@ pub struct CallContext {
 }
 ```
 
-**读模型（StoryActor 内）**：`TurnMachine` 观察已持久化的 `CaptureRecord`，投影出 `Turn` / `TurnCall` / `EventKind`；写模型仍是 `CaptureRecord`（Lance canonical）。
+**读模型（StoryActor 内）**：`TurnMachine` 观察已持久化的 `CaptureRecord`，投影出 `Turn` / `TurnCall` / `CallPhase`；写模型仍是 `CaptureRecord`（Lance canonical）。Wire 层事件仍用 `Event`（`Request` / `ResponseDraft` / `ResponseComplete` / `Cancelled`）。
 
 **Actor 拓扑**：
 
@@ -369,7 +369,7 @@ Proxy 调用链：`call_context()` → `spawn_apply(ctx, event)` → `ApplyDispa
 | 层 | 代码位置 | 使用的名词 | 职责 |
 |----|---------|-----------|------|
 | **协议区** | `conversion/`、`dialogue_extract/`、`proxy/` | `ProtocolKind`、`ProtocolBridge`、`messages` / `completions` / `responses`、SSE、`tool_call`、`content_block`、`reasoning_content` | 代理转发（A↔B 协议翻译）、从 wire 提取可见文本与 usage |
-| **Story 区** | `engine/story/`、`engine/actors/`、`engine/prepare.rs` | `Run`、`Story`、`Turn`、`Call`、`Event`、`CallContext`、`TurnCall`、`EventKind` | 叙事编排：谁（story）、第几轮（turn）、哪次 HTTP（call）、发生了什么（event） |
+| **Story 区** | `engine/story/`、`engine/actors/`、`engine/prepare.rs` | `Story`、`Turn`、`Call`、`Event`、`CallContext`、`TurnCall`、`CallPhase` | 叙事编排：谁（story）、第几轮（turn）、哪次 HTTP（call）、发生了什么（event） |
 | **存储区** | `storage/record.rs`、`storage/markdown*`、`storage/lance_row.rs` | `CaptureRecord`、`kind`、`seq`、`call_id`、`turn`、`MarkdownBlock` | canonical 事件日志 + 物化人读视图 |
 
 #### 两个边界

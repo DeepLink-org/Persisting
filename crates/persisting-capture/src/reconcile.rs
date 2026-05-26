@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown_trajectory::read_blocks_from_file;
+use crate::engine::{rebuild_session_story, story_call_ids, story_user_turn_count};
 use crate::record::CaptureRecord;
 use crate::storage::markdown_pipeline::MarkdownPipeline;
 
@@ -18,8 +19,12 @@ pub struct SessionReconcile {
     pub md_block_count: usize,
     pub md_call_ids: Vec<String>,
     pub lance_call_ids: Vec<String>,
+    pub story_call_ids: Vec<String>,
+    pub story_turn_count: u64,
     pub missing_in_md: Vec<String>,
     pub extra_in_md: Vec<String>,
+    pub story_missing_in_md: Vec<String>,
+    pub story_extra_in_md: Vec<String>,
     pub structural_issues: Vec<String>,
 }
 
@@ -27,6 +32,8 @@ impl SessionReconcile {
     pub fn ok(&self) -> bool {
         self.missing_in_md.is_empty()
             && self.extra_in_md.is_empty()
+            && self.story_missing_in_md.is_empty()
+            && self.story_extra_in_md.is_empty()
             && self.structural_issues.is_empty()
     }
 }
@@ -106,20 +113,49 @@ fn sorted_vec(set: &BTreeSet<String>) -> Vec<String> {
 /// Compare one markdown file against Lance records for the same session.
 pub fn reconcile_session(
     session_id: &str,
+    root_session: &str,
     md_path: &Path,
     lance_records: &[CaptureRecord],
 ) -> Result<SessionReconcile> {
     let (md_block_count, md_ids, structural_issues) = index_markdown_path(md_path)?;
     let lance_ids = expected_markdown_call_ids(lance_records);
     let (missing_in_md, extra_in_md) = set_diff(&lance_ids, &md_ids);
+
+    let story = if lance_records.is_empty() {
+        None
+    } else {
+        Some(rebuild_session_story(
+            session_id,
+            root_session,
+            lance_records,
+        ))
+    };
+    let (story_call_ids_vec, story_turn_count, story_missing_in_md, story_extra_in_md) =
+        if let Some(ref story) = story {
+            let ids = story_call_ids(story);
+            let (sm, se) = set_diff(&ids, &md_ids);
+            (
+                sorted_vec(&ids),
+                story_user_turn_count(story),
+                sm,
+                se,
+            )
+        } else {
+            (Vec::new(), 0, Vec::new(), Vec::new())
+        };
+
     Ok(SessionReconcile {
         session_id: session_id.to_string(),
         md_path: md_path.display().to_string(),
         md_block_count,
         md_call_ids: sorted_vec(&md_ids),
         lance_call_ids: sorted_vec(&lance_ids),
+        story_call_ids: story_call_ids_vec,
+        story_turn_count,
         missing_in_md,
         extra_in_md,
+        story_missing_in_md,
+        story_extra_in_md,
         structural_issues,
     })
 }
@@ -142,7 +178,12 @@ pub fn build_run_report(
             .get(&session_id)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        sessions.push(reconcile_session(&session_id, &md_path, records)?);
+        sessions.push(reconcile_session(
+            &session_id,
+            root_session,
+            &md_path,
+            records,
+        )?);
     }
     let ok = sessions.iter().all(SessionReconcile::ok);
     Ok(RunReconcileReport {
@@ -248,7 +289,7 @@ mod tests {
             None,
         );
 
-        let report = reconcile_session("run-test", &md, &[req, resp, orphan]).unwrap();
+        let report = reconcile_session("run-test", "run-test", &md, &[req, resp, orphan]).unwrap();
         assert!(report.extra_in_md.is_empty());
         assert_eq!(report.missing_in_md, vec!["call-b"]);
         assert!(!report.ok());
@@ -297,5 +338,160 @@ mod tests {
         assert!(ids.contains("call-a"));
         assert!(ids.contains("call-b"));
         assert!(!ids.contains("call-replay"));
+    }
+
+    #[test]
+    fn reconcile_story_projection_aligns_when_md_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("run-test.md");
+        std::fs::write(
+            &md,
+            format!(
+                "{}\n{}",
+                block("call-a", "user", "hello"),
+                block("call-a", "assistant", "hi")
+            ),
+        )
+        .unwrap();
+
+        let call = Call {
+            call_id: "call-a".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let req = llm_request_summary_record(
+            Some("run-test".into()),
+            Some("agent".into()),
+            "m",
+            "/v1/chat/completions",
+            1,
+            "chat",
+            "openai",
+            Some("hello".into()),
+            None,
+            &call,
+            CaptureLevel::Dialogue,
+            None,
+        );
+        let resp = llm_response_record_with_content(
+            Some("run-test".into()),
+            Some("agent".into()),
+            200,
+            &serde_json::json!({ "status": 200 }),
+            false,
+            Some("hi".into()),
+            &call,
+            CaptureLevel::Dialogue,
+        );
+
+        let report = reconcile_session("run-test", "run-test", &md, &[req, resp]).unwrap();
+        assert!(report.ok());
+        assert_eq!(report.story_turn_count, 1);
+        assert_eq!(report.story_call_ids, vec!["call-a"]);
+        assert!(report.story_missing_in_md.is_empty());
+        assert!(report.story_extra_in_md.is_empty());
+    }
+
+    #[test]
+    fn reconcile_story_detects_extra_md_call_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("run-test.md");
+        std::fs::write(
+            &md,
+            format!(
+                "{}\n{}\n{}",
+                block("call-a", "user", "hello"),
+                block("call-a", "assistant", "hi"),
+                block("call-ghost", "user", "phantom")
+            ),
+        )
+        .unwrap();
+
+        let call = Call {
+            call_id: "call-a".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let req = llm_request_summary_record(
+            Some("run-test".into()),
+            Some("agent".into()),
+            "m",
+            "/v1/chat/completions",
+            1,
+            "chat",
+            "openai",
+            Some("hello".into()),
+            None,
+            &call,
+            CaptureLevel::Dialogue,
+            None,
+        );
+        let resp = llm_response_record_with_content(
+            Some("run-test".into()),
+            Some("agent".into()),
+            200,
+            &serde_json::json!({}),
+            false,
+            Some("hi".into()),
+            &call,
+            CaptureLevel::Dialogue,
+        );
+
+        let report = reconcile_session("run-test", "run-test", &md, &[req, resp]).unwrap();
+        assert!(report.story_extra_in_md.contains(&"call-ghost".to_string()));
+        assert!(!report.ok());
+    }
+
+    #[test]
+    fn build_run_report_ok_when_all_sessions_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("run-test");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let md = run_dir.join("run-test.md");
+        std::fs::write(
+            &md,
+            format!(
+                "{}\n{}",
+                block("call-a", "user", "hello"),
+                block("call-a", "assistant", "hi")
+            ),
+        )
+        .unwrap();
+
+        let call = Call {
+            call_id: "call-a".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let req = llm_request_summary_record(
+            Some("run-test".into()),
+            Some("agent".into()),
+            "m",
+            "/v1/chat/completions",
+            1,
+            "chat",
+            "openai",
+            Some("hello".into()),
+            None,
+            &call,
+            CaptureLevel::Dialogue,
+            None,
+        );
+        let resp = llm_response_record_with_content(
+            Some("run-test".into()),
+            Some("agent".into()),
+            200,
+            &serde_json::json!({}),
+            false,
+            Some("hi".into()),
+            &call,
+            CaptureLevel::Dialogue,
+        );
+
+        let mut lance_by_session = Map::new();
+        lance_by_session.insert("run-test".to_string(), vec![req, resp]);
+        let report = build_run_report("run-test", "agent", &run_dir, &lance_by_session).unwrap();
+        assert!(report.ok);
+        assert_eq!(report.sessions.len(), 1);
     }
 }

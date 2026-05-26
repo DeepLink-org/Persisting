@@ -1,14 +1,16 @@
 //! `CaptureRecord` ↔ markdown trajectory blocks.
+//!
+//! Markdown role/body text comes from [`CaptureRecord::visible_user_text`] /
+//! [`CaptureRecord::visible_assistant_text`] (shared with turn indexing).
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use super::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use super::markdown::{BlockHeader, MarkdownBlock};
 use super::markdown_pipeline::MarkdownPipeline;
-use super::record::{engine_line_to_record, record_to_engine_line, CaptureRecord};
+use super::record::{content_to_string, engine_line_to_record, record_to_engine_line, CaptureRecord};
 use super::subagent_link::append_subagent_refs_footer;
 
 pub use super::markdown_pipeline::skip_markdown_block;
@@ -212,15 +214,11 @@ fn role_and_body(rec: &CaptureRecord) -> Result<(String, String)> {
     Ok(match rec.kind.as_str() {
         "llm.request" => (
             "user".into(),
-            user_message(&rec.payload)
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_default(),
+            rec.visible_user_text().unwrap_or_default(),
         ),
         "llm.response" | "llm.response.stream" => (
             "assistant".into(),
-            assistant_message(&rec.payload)
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_default(),
+            rec.visible_assistant_text().unwrap_or_default(),
         ),
         "user" | "assistant" | "system" | "tool" | "note" => (
             rec.kind.clone(),
@@ -367,83 +365,6 @@ fn token_field(usage: &Value, primary: &str, alias: &str) -> Option<i64> {
         .get(primary)
         .or_else(|| usage.get(alias))
         .and_then(|v| v.as_i64())
-}
-
-/// Inner LLM JSON: `payload.body` or proxy wrapper `payload.body.body`.
-fn llm_inner_body<'a>(payload: &'a Value) -> Option<&'a Value> {
-    let wrap = payload.get("body")?;
-    if wrap.get("messages").is_some() || wrap.get("choices").is_some() {
-        Some(wrap)
-    } else {
-        wrap.get("body")
-    }
-}
-
-fn user_message(payload: &Value) -> Option<String> {
-    if let Some(s) = payload.get("user_content").and_then(|v| v.as_str()) {
-        return Some(s.to_string());
-    }
-    let messages = llm_inner_body(payload)
-        .and_then(|b| b.get("messages"))
-        .or_else(|| payload.get("messages"))?
-        .as_array()?;
-    for msg in messages.iter().rev() {
-        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-            return msg.get("content").and_then(content_to_string);
-        }
-    }
-    None
-}
-
-fn assistant_message(payload: &Value) -> Option<String> {
-    if let Some(s) = payload.get("assistant_content").and_then(|v| v.as_str()) {
-        return Some(s.to_string());
-    }
-    if let Some(s) = payload.get("body").and_then(|b| b.as_str()) {
-        let text = extract_assistant_turn_from_sse(s);
-        if !text.is_empty() {
-            return Some(text);
-        }
-    }
-    if let Some(inner) = llm_inner_body(payload) {
-        if let Some(s) = inner.as_str() {
-            let text = extract_assistant_turn_from_sse(s);
-            if !text.is_empty() {
-                return Some(text);
-            }
-        }
-        if let Some(text) = extract_assistant_text_from_json(inner) {
-            return Some(text);
-        }
-    }
-    llm_inner_body(payload)
-        .and_then(|b| b.get("choices"))
-        .or_else(|| payload.get("body").and_then(|b| b.get("choices")))
-        .or_else(|| payload.get("choices"))
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(content_to_string)
-        .or_else(|| payload.get("content").and_then(content_to_string))
-}
-
-fn content_to_string(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Array(parts) => {
-            let out: Vec<_> = parts
-                .iter()
-                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                .collect();
-            if out.is_empty() {
-                None
-            } else {
-                Some(out.join("\n"))
-            }
-        }
-        _ => None,
-    }
 }
 
 fn compact_json(payload: &Value) -> String {

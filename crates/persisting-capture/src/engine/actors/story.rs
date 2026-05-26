@@ -9,8 +9,10 @@ use pulsing_actor::prelude::*;
 
 use super::super::story::{StoryId, TurnMachine};
 use super::super::wire::{CaptureAck, DraftPayload, StoryCommand, StoryReply, StoryScope};
+use crate::engine::should_refresh_frontmatter;
 use crate::markdown_trajectory::BlockHeader;
 use crate::sink::CaptureSink;
+use crate::storage::frontmatter::refresh_document_frontmatter;
 use crate::storage::markdown_pipeline::{LiveMarkdownWriter, MarkdownTarget};
 
 /// Injected sink + markdown flag for each story actor instance.
@@ -37,6 +39,7 @@ pub(crate) struct StoryActor {
     deps: StoryActorDeps,
     turns: TurnMachine,
     md: Option<LiveMarkdownWriter>,
+    storage_session_id: Option<String>,
 }
 
 impl StoryActor {
@@ -47,10 +50,12 @@ impl StoryActor {
             deps,
             turns,
             md: None,
+            storage_session_id: None,
         }
     }
 
     fn sync_scope(&mut self, scope: &StoryScope) {
+        self.storage_session_id = Some(scope.route().storage_session_id.clone());
         self.turns
             .set_story_meta(scope.agent_id(), scope.context.run_id.clone());
     }
@@ -72,6 +77,16 @@ impl StoryActor {
     fn handle(&mut self, cmd: StoryCommand) -> Result<StoryReply> {
         match cmd {
             StoryCommand::Flush => return Ok(StoryReply::Ack(CaptureAck::ok())),
+            StoryCommand::LocalSnapshot => {
+                let storage_session_id = self
+                    .storage_session_id
+                    .clone()
+                    .unwrap_or_else(|| self.story_id.as_str().to_string());
+                return Ok(StoryReply::LocalSnapshot {
+                    storage_session_id,
+                    story: self.turns.snapshot(),
+                });
+            }
             StoryCommand::Snapshot { scope } => {
                 self.sync_scope(&scope);
                 return Ok(StoryReply::Snapshot {
@@ -91,6 +106,18 @@ impl StoryActor {
                     .append(scope.route(), scope.agent_id(), &mut rec)
                     .context("capture append")?;
                 self.md_writer(&scope).write_record(&rec)?;
+                if should_refresh_frontmatter(&rec) {
+                    let story = self.turns.snapshot();
+                    let path = self.md_writer(&scope).path();
+                    let _ = refresh_document_frontmatter(
+                        self.deps.storage.as_path(),
+                        scope.agent_id(),
+                        scope.route(),
+                        &path,
+                        Some(&story),
+                    )
+                    .map_err(|e| tracing::debug!("frontmatter refresh: {e:#}"));
+                }
             }
             StoryCommand::UpsertDraft { draft_json, .. } => {
                 let draft: DraftPayload = serde_json::from_str(&draft_json)?;
@@ -102,7 +129,9 @@ impl StoryActor {
                 self.md_writer(&scope)
                     .write_draft(&draft.call_id, (header, draft.body))?;
             }
-            StoryCommand::Flush | StoryCommand::Snapshot { .. } => unreachable!(),
+            StoryCommand::Flush | StoryCommand::Snapshot { .. } | StoryCommand::LocalSnapshot => {
+                unreachable!()
+            }
         }
         Ok(StoryReply::Ack(CaptureAck::ok()))
     }

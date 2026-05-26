@@ -146,15 +146,17 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
     .context("append session.ended to trajectory")?;
 
     if opts.format.stream_markdown_in_engine() {
+        server.shutdown()?;
         print_run_markdown_summary(&storage, &run_cfg.agent_id, &root_session);
+    } else {
+        server.shutdown()?;
     }
 
-    server.shutdown()?;
     Ok(code)
 }
 
 fn print_run_markdown_summary(storage: &Path, agent_id: &str, root_session: &str) {
-    match persisting_capture::refresh_run_markdown_frontmatter(storage, agent_id, root_session) {
+    match persisting_capture::refresh_run_markdown_frontmatter(storage, agent_id, root_session, None) {
         Ok(entries) if entries.is_empty() => {}
         Ok(entries) => {
             let main = entries.iter().find(|(p, _)| {

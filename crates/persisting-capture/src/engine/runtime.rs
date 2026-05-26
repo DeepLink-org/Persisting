@@ -10,6 +10,7 @@ use pulsing_actor::prelude::*;
 
 use super::actors::{RunActor, StoryActor, StoryActorDeps};
 use super::apply_queue::ApplyDispatcher;
+use super::egress::persist_story_snapshots;
 use super::prepare::CapturePreparer;
 use super::story::Story;
 use super::story::{StoryContext, StoryId};
@@ -93,13 +94,17 @@ impl CaptureRuntime {
     }
 
     pub async fn shutdown(self) -> Result<()> {
+        let snapshots = self.inner.collect_local_snapshots().await?;
+        persist_story_snapshots(self.inner.story_deps.storage.as_path(), &snapshots)?;
         self.flush().await?;
         self.inner.system.shutdown().await.map_err(pulsing_err)
     }
 
     /// Wait until all story mailboxes have drained queued commands.
     pub async fn flush(&self) -> Result<()> {
-        self.inner.flush_stories().await
+        self.inner.flush_stories().await?;
+        self.inner.preparer.index.flush_if_dirty()?;
+        Ok(())
     }
 
     /// Read-model snapshot for one story (TurnMachine state inside StoryActor).
@@ -155,6 +160,25 @@ impl CaptureRuntimeInner {
         Ok(())
     }
 
+    async fn collect_local_snapshots(&self) -> Result<std::collections::HashMap<String, Story>> {
+        let mut out = std::collections::HashMap::new();
+        for entry in self.stories.iter() {
+            let actor = entry.value().clone();
+            let reply: StoryReply = actor
+                .ask(StoryCommand::LocalSnapshot)
+                .await
+                .map_err(pulsing_err)?;
+            if let StoryReply::LocalSnapshot {
+                storage_session_id,
+                story,
+            } = reply
+            {
+                out.insert(storage_session_id, story);
+            }
+        }
+        Ok(out)
+    }
+
     async fn story_snapshot(&self, context: &StoryContext) -> Result<Story> {
         let story_id = context.story_id.as_str();
         let actor = self.story_actor(story_id).await?;
@@ -167,6 +191,7 @@ impl CaptureRuntimeInner {
             .map_err(pulsing_err)?;
         match reply {
             StoryReply::Snapshot { story } => Ok(story),
+            StoryReply::LocalSnapshot { story, .. } => Ok(story),
             StoryReply::Ack(ack) => Err(anyhow::anyhow!(
                 "unexpected ack for snapshot: {}",
                 ack.error.unwrap_or_else(|| "unknown".into())
@@ -248,7 +273,9 @@ pub type CaptureEngine = CaptureRuntime;
 fn story_reply_ack(reply: StoryReply) -> Result<CaptureAck> {
     match reply {
         StoryReply::Ack(ack) => Ok(ack),
-        StoryReply::Snapshot { .. } => Err(anyhow::anyhow!("unexpected snapshot reply")),
+        StoryReply::Snapshot { .. } | StoryReply::LocalSnapshot { .. } => {
+            Err(anyhow::anyhow!("unexpected snapshot reply"))
+        }
     }
 }
 

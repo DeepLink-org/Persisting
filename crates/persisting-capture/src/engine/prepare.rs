@@ -61,7 +61,7 @@ impl CapturePreparer {
             ctx.protocol.as_str(),
             &ctx.client_model,
         );
-        let _ = self.index.flush();
+        // Session index is flushed in batch via CaptureEngine::flush / shutdown.
 
         let forward_to = event.model_rewritten.then_some(ctx.upstream_model.as_str());
         let mut rec = llm_request_summary_record(
@@ -154,7 +154,6 @@ impl CapturePreparer {
             &usage,
             cost,
         );
-        let _ = self.index.flush();
 
         if ctx.debug_on {
             debug::log_llm_response(

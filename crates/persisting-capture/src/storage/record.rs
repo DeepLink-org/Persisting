@@ -2,7 +2,9 @@
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use super::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use crate::protocol::ProtocolKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,54 +55,108 @@ impl CaptureRecord {
             .is_some_and(|path| ProtocolKind::from_path(path) == ProtocolKind::CountTokens)
     }
 
-    /// Visible user text for turn indexing and markdown (with body fallback).
+    /// Visible user text — canonical for turn indexing, markdown blocks, and filters.
+    ///
+    /// Prefers summary field `user_content`, then walks nested proxy `body` / messages.
     pub fn visible_user_text(&self) -> Option<String> {
-        self.payload
-            .get("user_content")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .or_else(|| user_message_from_payload(&self.payload))
-            .filter(|s| !s.trim().is_empty())
+        visible_user_from_payload(&self.payload)
     }
 
-    /// Visible assistant text for turn indexing and markdown (with body fallback).
+    /// Visible assistant text — canonical for turn indexing, markdown blocks, and filters.
+    ///
+    /// Prefers `assistant_content`, then SSE / JSON body parsing (including proxy wrappers).
     pub fn visible_assistant_text(&self) -> Option<String> {
-        self.payload
-            .get("assistant_content")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .or_else(|| assistant_message_from_payload(&self.payload))
-            .filter(|s| !s.trim().is_empty())
+        visible_assistant_from_payload(&self.payload)
     }
 }
 
-fn user_message_from_payload(payload: &serde_json::Value) -> Option<String> {
-    payload
-        .get("body")
-        .and_then(|b| b.get("messages"))
-        .and_then(|m| m.as_array())
-        .and_then(|msgs| {
-            msgs.iter().rev().find_map(|msg| {
-                if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
-                    return None;
-                }
-                msg.get("content")
-                    .and_then(|c| c.as_str())
-                    .map(str::to_string)
-            })
-        })
+/// Parse structured message `content` (string or Anthropic-style blocks).
+pub(crate) fn content_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(parts) => {
+            let out: Vec<_> = parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if out.is_empty() {
+                None
+            } else {
+                Some(out.join("\n"))
+            }
+        }
+        _ => None,
+    }
 }
 
-fn assistant_message_from_payload(payload: &serde_json::Value) -> Option<String> {
-    payload
-        .get("body")
+fn visible_user_from_payload(payload: &Value) -> Option<String> {
+    if let Some(s) = payload.get("user_content").and_then(|v| v.as_str()) {
+        return non_empty(s);
+    }
+    let messages = llm_inner_body(payload)
+        .and_then(|b| b.get("messages"))
+        .or_else(|| payload.get("messages"))?
+        .as_array()?;
+    for msg in messages.iter().rev() {
+        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+            if let Some(text) = msg.get("content").and_then(content_to_string) {
+                return non_empty(&text);
+            }
+        }
+    }
+    None
+}
+
+fn visible_assistant_from_payload(payload: &Value) -> Option<String> {
+    if let Some(s) = payload.get("assistant_content").and_then(|v| v.as_str()) {
+        return non_empty(s);
+    }
+    if let Some(s) = payload.get("body").and_then(|b| b.as_str()) {
+        let text = extract_assistant_turn_from_sse(s);
+        if let Some(t) = non_empty(&text) {
+            return Some(t);
+        }
+    }
+    if let Some(inner) = llm_inner_body(payload) {
+        if let Some(s) = inner.as_str() {
+            let text = extract_assistant_turn_from_sse(s);
+            if let Some(t) = non_empty(&text) {
+                return Some(t);
+            }
+        }
+        if let Some(text) = extract_assistant_text_from_json(inner) {
+            return non_empty(&text);
+        }
+    }
+    llm_inner_body(payload)
         .and_then(|b| b.get("choices"))
+        .or_else(|| payload.get("body").and_then(|b| b.get("choices")))
+        .or_else(|| payload.get("choices"))
         .and_then(|c| c.as_array())
-        .and_then(|choices| choices.first())
-        .and_then(|ch| ch.get("message"))
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("message"))
         .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(str::to_string)
+        .and_then(content_to_string)
+        .or_else(|| payload.get("content").and_then(content_to_string))
+        .and_then(|s| non_empty(&s))
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    if s.trim().is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// Inner LLM JSON: `payload.body` or proxy wrapper `payload.body.body`.
+fn llm_inner_body(payload: &Value) -> Option<&Value> {
+    let wrap = payload.get("body")?;
+    if wrap.get("messages").is_some() || wrap.get("choices").is_some() {
+        Some(wrap)
+    } else {
+        wrap.get("body")
+    }
 }
 
 /// One engine append line (RON) from a JSON value.
@@ -144,7 +200,7 @@ pub fn now_rfc3339() -> String {
 mod tests {
     use super::*;
     use crate::config::CaptureLevel;
-    use crate::sink::llm_request_summary_record;
+    use crate::sink::{llm_request_record, llm_request_summary_record, llm_response_record};
     use crate::Call;
 
     #[test]
@@ -193,5 +249,44 @@ mod tests {
             }),
         };
         assert_eq!(rec.visible_user_text().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn visible_user_reads_proxy_nested_body() {
+        let req = llm_request_record(
+            Some("sess".into()),
+            Some("agent".into()),
+            "mock-model",
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "protocol": "chat_completions",
+                "provider": "openai",
+                "body": {"messages":[{"role":"user","content":"你好"}],"model":"mock-model"},
+            }),
+        );
+        assert_eq!(req.visible_user_text().as_deref(), Some("你好"));
+    }
+
+    #[test]
+    fn visible_assistant_reads_proxy_nested_body() {
+        let resp = llm_response_record(
+            Some("sess".into()),
+            Some("agent".into()),
+            200,
+            &serde_json::json!({
+                "protocol": "chat_completions",
+                "provider": "openai",
+                "body": {
+                    "choices":[{"message":{"role":"assistant","content":"你好！"}}],
+                },
+            }),
+            false,
+            &Call {
+                call_id: "c".into(),
+                trace_id: "t".into(),
+                started_at: "2026-01-01T00:00:00Z".into(),
+            },
+        );
+        assert_eq!(resp.visible_assistant_text().as_deref(), Some("你好！"));
     }
 }
