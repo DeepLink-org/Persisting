@@ -80,7 +80,7 @@ CLI 在加载时校验 ABI；协议版本由请求携带、引擎侧校验。
 | 用户意图 | 引擎能力 |
 |----------|----------|
 | 导入文档、建索引、检索 | Search |
-| 追加 / 回放 / 统计轨迹 | Trajectory |
+| 追加 / 回放 / 统计 / 物化轨迹 | Trajectory |
 | 事后导入 IDE 或网关日志 | Trajectory（经 CLI 侧归一化） |
 
 部分纯本地操作（如格式转换）可由 CLI 侧直接完成；索引文件重排等数据操作仍经过引擎。
@@ -106,7 +106,7 @@ flowchart LR
   end
   subgraph Engine
     D --> F[分发到 Search / Trajectory / …]
-    F --> G[读写 Lance 或 Markdown]
+    F --> G[Lance append / materialize Markdown]
   end
 ```
 

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::provider::ProviderKind;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -17,7 +17,7 @@ pub struct TokenUsage {
 }
 
 /// Streaming capture metrics (TTFT + incremental usage).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StreamMetrics {
     pub usage: TokenUsage,
     pub ttft_ms: Option<u64>,

@@ -1,5 +1,6 @@
 //! `capture start` / `stop` / `list` / `status`.
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -54,10 +55,24 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     if opts.debug {
         cmd.env(persisting_capture::ENV_CAPTURE_DEBUG, "1");
     }
+    let stderr = if opts.debug {
+        let log_path = opts.output_dir.join(".capture").join("daemon.log");
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map(Stdio::from)
+            .unwrap_or(Stdio::null())
+    } else {
+        Stdio::null()
+    };
     let child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .spawn()
         .context("spawn capture serve")?;
 

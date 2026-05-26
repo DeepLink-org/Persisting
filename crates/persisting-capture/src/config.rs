@@ -42,7 +42,7 @@ fn default_session_header() -> String {
 }
 
 /// Controls how much request/response content is written to trajectory records.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureLevel {
     /// Model, path, byte counts — no message text.

@@ -16,11 +16,11 @@ admin_listen: "127.0.0.1:9876"
 agent_id: "deepseek-proxy"
 
 models:
-  - name: deepseek-chat
+  - name: deepseek-v4-flash
     provider: openai
     upstream: "https://api.deepseek.com/v1"
     upstream_anthropic: "https://api.deepseek.com/anthropic/v1"
     api_key_env: "DEEPSEEK_API_KEY"
 
   - name: "*"
-    forward: deepseek-chat
+    forward: deepseek-v4-flash

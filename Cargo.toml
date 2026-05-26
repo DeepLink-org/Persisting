@@ -29,3 +29,6 @@ lto = "thin"
 strip = "symbols"
 codegen-units = 1
 
+[workspace.dependencies]
+pulsing-actor = { version = "0.1.2", default-features = false }
+

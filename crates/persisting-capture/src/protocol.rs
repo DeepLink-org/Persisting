@@ -55,6 +55,19 @@ impl ProtocolKind {
             Self::Unknown => "unknown",
         }
     }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "chat_completions" => Self::ChatCompletions,
+            "messages" => Self::Messages,
+            "responses" => Self::Responses,
+            "embeddings" => Self::Embeddings,
+            "count_tokens" => Self::CountTokens,
+            "realtime" => Self::Realtime,
+            "detect" => Self::Detect,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ impl InProcessCapture {
         config: ProxyConfig,
         storage: PathBuf,
         sink: Arc<dyn CaptureSink>,
+        stream_markdown: bool,
     ) -> Result<Self> {
         if let Some(state) = persisting_capture::CaptureDaemonState::read(&storage)? {
             if state.is_running() {
@@ -46,6 +47,7 @@ impl InProcessCapture {
                     config,
                     storage,
                     sink,
+                    stream_markdown,
                     None,
                     async {
                         let _ = shutdown_rx.await;

@@ -1,0 +1,22 @@
+{
+  "model": "gpt-5.5",
+  "stream": true,
+  "include": ["reasoning.encrypted_content"],
+  "input": [
+    {
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<permissions instructions>\nFilesystem sandboxing example\n</permissions instructions>"
+        },
+        {
+          "type": "input_text",
+          "text": "hi"
+        }
+      ]
+    }
+  ],
+  "client_metadata": {
+    "x-codex-installation-id": "test-installation"
+  }
+}

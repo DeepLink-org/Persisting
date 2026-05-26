@@ -94,7 +94,7 @@ plugins:
             Trajectory Markdown Format: 轨迹 Markdown 格式
             CLI Architecture: CLI 整体架构
             Capture Command: Capture 命令
-            LLM Capture Proxy: LLM 捕获代理
+            Capture Architecture Design: Capture 架构设计
             Trajectory Command: Trajectory 命令
             Search Command: Search 命令
             Similar Systems Reference: 类似系统参考
@@ -114,23 +114,23 @@ nav:
   - Installation: installation.md
   - Getting Started: quickstart.md
   - Guide:
-    - guide/index.md
-    - Queue Backends: guide/backends.md
-    - Lance Backend: guide/lance.md
-    - Persisting Backend: guide/persisting.md
-    - Custom Backends: guide/custom.md
+      - guide/index.md
+      - Queue Backends: guide/backends.md
+      - Lance Backend: guide/lance.md
+      - Persisting Backend: guide/persisting.md
+      - Custom Backends: guide/custom.md
   - Design:
-    - design/index.md
-    - Architecture: design/architecture.md
-    - Distributed Tiered Storage: design/distributed_tiered_storage.md
-    - Trajectory Storage: design/trajectory_storage.zh.md
-    - Trajectory Markdown Format: design/trajectory_tlv_format.zh.md
-    - CLI Architecture: design/cli_architecture.zh.md
-    - Capture Command: design/cli_capture_command.zh.md
-    - LLM Capture Proxy: design/llm_capture_proxy.zh.md
-    - Trajectory Command: design/cli_trajectory_command.zh.md
-    - Search Command: design/cli_search_command.zh.md
-    - Similar Systems Reference: design/similar_systems_reference.md
+      - design/index.md
+      - Architecture: design/architecture.md
+      - Distributed Tiered Storage: design/distributed_tiered_storage.md
+      - Trajectory Storage: design/trajectory_storage.zh.md
+      - Trajectory Markdown Format: design/trajectory_tlv_format.zh.md
+      - CLI Architecture: design/cli_architecture.zh.md
+      - Capture Command: design/cli_capture_command.zh.md
+      - Capture Architecture Design: design/capture_design.zh.md
+      - Trajectory Command: design/cli_trajectory_command.zh.md
+      - Search Command: design/cli_search_command.zh.md
+      - Similar Systems Reference: design/similar_systems_reference.md
   - API Reference: api_reference.md
 
 extra:
@@ -143,4 +143,3 @@ extra_css:
   - assets/stylesheets/home.css
 
 copyright: © 2025 Persisting. All rights reserved.
-

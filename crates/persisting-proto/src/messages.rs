@@ -283,13 +283,15 @@ pub struct SearchImportLanceResponse {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrajectoryStorageFormat {
-    /// Read: Lance if present else markdown; append to empty session: both.
+    /// Read: Lance if present else markdown. Append: Lance canonical; empty session → Lance only.
     #[default]
     Auto,
+    /// Lance raw event log only.
     Lance,
-    /// Markdown session file (`0001.md`, …).
+    /// Lance canonical + materialize TLV Markdown after each append batch.
     #[serde(rename = "markdown", alias = "tlv")]
     Markdown,
+    /// Same as [`Markdown`](Self::Markdown): Lance + materialize (legacy alias).
     Both,
 }
 
@@ -372,12 +374,34 @@ pub struct TrajectoryStatsResponse {
     pub note: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryMaterializeRequest {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub root_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryMaterializeResponse {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub markdown_path: String,
+    pub lance_rows: usize,
+    pub markdown_blocks: usize,
+    pub skipped_events: usize,
+    pub status: String,
+    pub note: String,
+}
+
 // ---------------------------------------------------------------------------
 // RPC envelope
 // ---------------------------------------------------------------------------
 
 /// Increment when bincode [`RpcRequest`] / [`RpcResponse`] layout or semantics change.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// RON C ABI：稳定导出为 **`persisting_engine_submit` / `job_poll` / `job_take_result` / `job_release`**（见 **`invoke_abi`**）；
 /// 当信封、job 状态布局或上述符号契约不兼容变化时递增。与 [`PROTOCOL_VERSION`] 独立。
@@ -407,6 +431,7 @@ pub enum RequestBody {
     TrajectoryAppend(TrajectoryAppendRequest),
     TrajectoryReplay(TrajectoryReplayRequest),
     TrajectoryStats(TrajectoryStatsRequest),
+    TrajectoryMaterialize(TrajectoryMaterializeRequest),
     SearchImportLance(SearchImportLanceRequest),
     SearchAddBatch(SearchAddBatchRequest),
 }
@@ -429,6 +454,7 @@ pub enum ResponseBody {
     TrajectoryAppend(TrajectoryAppendResponse),
     TrajectoryReplay(TrajectoryReplayResponse),
     TrajectoryStats(TrajectoryStatsResponse),
+    TrajectoryMaterialize(TrajectoryMaterializeResponse),
     SearchImportLance(SearchImportLanceResponse),
     SearchAddBatch(SearchAddBatchResponse),
     Error { code: u32, message: String },

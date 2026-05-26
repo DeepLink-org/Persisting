@@ -3,6 +3,8 @@
 pub mod daemon;
 mod debug_setup;
 pub mod in_process;
+pub mod reconcile;
+pub mod replay_dead_letter;
 pub mod run;
 pub use debug_setup::{enable_if_requested as enable_capture_debug, CaptureDebugContext};
 pub use run::{cmd_run, RunOptions};
@@ -20,14 +22,17 @@ use persisting_proto::TrajectoryStorageFormat;
 
 pub use record::CaptureRecord;
 
-/// Capture trajectory storage format (`md` / `bin`).
+/// Capture trajectory storage format.
+///
+/// - `md`: Lance canonical + TLV Markdown materialized on flush/shutdown
+/// - `bin` / `lance`: Lance raw event log only
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CaptureFormat {
-    /// Session markdown (`0001.md`).
+    /// Human-readable view (Lance canonical + materialized `{session}.md`).
     #[value(name = "md", alias = "markdown")]
     #[default]
     Markdown,
-    /// Lance column store under `{storage}/{agent_id}/{session_id}/`.
+    /// Lance column store only.
     #[value(name = "bin", alias = "lance")]
     Lance,
 }
@@ -47,6 +52,11 @@ impl CaptureFormat {
             Self::Markdown => "md",
             Self::Lance => "bin",
         }
+    }
+
+    /// Live markdown is written inside [`CaptureEngine`] (Lance-only worker flush).
+    pub fn stream_markdown_in_engine(self) -> bool {
+        matches!(self, Self::Markdown)
     }
 }
 
