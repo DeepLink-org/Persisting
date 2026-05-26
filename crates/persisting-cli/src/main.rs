@@ -1080,19 +1080,21 @@ fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i
     })?;
     worker.shutdown();
     if args.format.stream_markdown_in_engine() {
-        if let Err(e) = capture::reconcile::reconcile_run_after_flush(
-            &storage,
-            &agent_id,
-            args.format,
-            |req| invoke_trajectory_replay(lazy, req),
-        ) {
+        if let Err(e) =
+            capture::reconcile::reconcile_run_after_flush(&storage, &agent_id, args.format, |req| {
+                invoke_trajectory_replay(lazy, req)
+            })
+        {
             eprintln!("[persisting-cli] capture reconcile failed: {e:#}");
         }
     }
     Ok(code)
 }
 
-fn run_replay_dead_letter(lazy: &mut LazyEngine<'_>, args: &CaptureReplayDeadLetterArgs) -> Result<()> {
+fn run_replay_dead_letter(
+    lazy: &mut LazyEngine<'_>,
+    args: &CaptureReplayDeadLetterArgs,
+) -> Result<()> {
     let storage = PathBuf::from(&args.output_dir);
     let storage = storage.canonicalize().unwrap_or(storage);
     let config_path = storage.join("proxy.yaml");
@@ -1109,11 +1111,13 @@ fn run_replay_dead_letter(lazy: &mut LazyEngine<'_>, args: &CaptureReplayDeadLet
         agent_id,
         args.format,
     )?;
-    capture::replay_dead_letter::cmd_replay_dead_letter(capture::replay_dead_letter::ReplayDeadLetterOptions {
-        output_dir: storage,
-        format: args.format,
-        sink,
-    })?;
+    capture::replay_dead_letter::cmd_replay_dead_letter(
+        capture::replay_dead_letter::ReplayDeadLetterOptions {
+            output_dir: storage,
+            format: args.format,
+            sink,
+        },
+    )?;
     worker.shutdown();
     Ok(())
 }

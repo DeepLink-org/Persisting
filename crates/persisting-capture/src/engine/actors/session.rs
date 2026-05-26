@@ -7,9 +7,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use pulsing_actor::prelude::*;
 
-use super::super::io::{sync_markdown_record, upsert_markdown, MarkdownScope};
-use super::super::wire::{CaptureAck, DraftPayload, SessionCommand};
+use super::super::wire::{CaptureAck, DraftPayload, SessionCommand, SessionScope};
+use crate::markdown_trajectory::BlockHeader;
 use crate::sink::CaptureSink;
+use crate::storage::markdown_pipeline::{LiveMarkdownWriter, MarkdownTarget};
 
 /// Injected sink + markdown flag for each session actor instance.
 #[derive(Clone)]
@@ -33,6 +34,7 @@ impl SessionActorDeps {
 pub(crate) struct CaptureSessionActor {
     seq_key: String,
     deps: SessionActorDeps,
+    md: Option<LiveMarkdownWriter>,
 }
 
 impl CaptureSessionActor {
@@ -40,16 +42,30 @@ impl CaptureSessionActor {
         Self {
             seq_key: seq_key.into(),
             deps,
+            md: None,
         }
     }
 
-    fn handle(&self, cmd: SessionCommand) -> Result<()> {
+    fn md_writer(&mut self, scope: &SessionScope) -> &mut LiveMarkdownWriter {
+        if self.md.is_none() {
+            self.md = Some(LiveMarkdownWriter::new(
+                MarkdownTarget::new(
+                    scope.route.clone(),
+                    scope.agent_id.clone(),
+                    self.deps.storage.as_path().to_path_buf(),
+                ),
+                self.deps.stream_markdown,
+            ));
+        }
+        self.md.as_mut().expect("md writer initialized")
+    }
+
+    fn handle(&mut self, cmd: SessionCommand) -> Result<()> {
         match cmd {
             SessionCommand::Flush => return Ok(()),
             _ => {}
         }
         let scope = cmd.scope().clone();
-        let md = MarkdownScope::from_parts(&scope, self.deps.storage.as_path());
         match cmd {
             SessionCommand::PersistRecord { record_json, .. } => {
                 let mut rec: crate::record::CaptureRecord = serde_json::from_str(&record_json)?;
@@ -57,22 +73,17 @@ impl CaptureSessionActor {
                     .sink
                     .append(&scope.route, &scope.agent_id, &mut rec)
                     .context("capture append")?;
-                sync_markdown_record(&md, self.deps.stream_markdown, &rec, "")?;
+                self.md_writer(&scope).write_record(&rec)?;
             }
             SessionCommand::UpsertDraft { draft_json, .. } => {
                 let draft: DraftPayload = serde_json::from_str(&draft_json)?;
-                use crate::markdown_trajectory::BlockHeader;
                 let header = BlockHeader {
                     type_name: draft.type_name,
                     length: draft.length,
                     fields: draft.fields,
                 };
-                upsert_markdown(
-                    &md,
-                    self.deps.stream_markdown,
-                    &draft.call_id,
-                    (header, draft.body),
-                )?;
+                self.md_writer(&scope)
+                    .write_draft(&draft.call_id, (header, draft.body))?;
             }
             SessionCommand::Flush => unreachable!("handled above"),
         }

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::dialogue::{block_to_replay_json, try_capture_record_to_block};
+use super::dialogue::{block_to_replay_json, capture_records_to_blocks};
 use super::session_client::{resolve_client_meta_for_run_dir, SessionClientMeta};
 
 /// Legacy numbered session file (pre `{session_id}.md` layout).
@@ -21,7 +21,8 @@ const SESSION_FILENAME_MAX_LEN: usize = 128;
 pub const LEGACY_TRAJECTORY_MARKDOWN_FILENAME: &str = "trajectory.tlv.md";
 
 const BLOCK_MARKER: &str = "<!-- persisting:block";
-pub(crate) const BLOCK_LAYOUT: &str = "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n";
+pub(crate) const BLOCK_LAYOUT: &str =
+    "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n";
 
 #[derive(Serialize)]
 struct DocumentFrontmatter<'a> {
@@ -299,13 +300,12 @@ pub fn append_engine_lines_to_markdown(
     if engine_lines.is_empty() {
         return Ok(0);
     }
-    let mut blocks = Vec::new();
-    for line in engine_lines {
-        let rec = crate::record::engine_line_to_record(line.as_ref())?;
-        if let Some(block) = try_capture_record_to_block(&rec)? {
-            blocks.push(block);
-        }
-    }
+    let blocks = capture_records_to_blocks(
+        &engine_lines
+            .iter()
+            .map(|line| crate::record::engine_line_to_record(line.as_ref()))
+            .collect::<Result<Vec<_>, _>>()?,
+    )?;
     write_blocks(path, &blocks)
 }
 

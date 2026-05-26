@@ -7,6 +7,7 @@ pub mod frontmatter;
 pub mod lance_row;
 pub mod lifecycle;
 pub mod markdown;
+pub mod markdown_pipeline;
 pub mod record;
 pub mod session;
 pub mod session_client;

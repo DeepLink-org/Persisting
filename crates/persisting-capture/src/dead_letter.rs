@@ -12,8 +12,10 @@ use serde_json::Value;
 
 use crate::capture_call::CaptureCall;
 use crate::config::CaptureLevel;
-use crate::engine::{CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured,
-                    LlmResponseCompleted, LlmResponseDraftUpdated};
+use crate::engine::{
+    CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured, LlmResponseCompleted,
+    LlmResponseDraftUpdated,
+};
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
 use crate::session_storage::CaptureRoute;
@@ -127,8 +129,7 @@ pub fn read_dead_letter_entries(storage: &Path) -> Result<Vec<DeadLetterEntry>> 
             continue;
         }
         out.push(
-            serde_json::from_str(trimmed)
-                .with_context(|| format!("parse dead letter line {i}"))?,
+            serde_json::from_str(trimmed).with_context(|| format!("parse dead letter line {i}"))?,
         );
     }
     Ok(out)

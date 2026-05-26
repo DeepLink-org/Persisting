@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::dialogue::skip_markdown_block;
 use crate::markdown_trajectory::read_blocks_from_file;
 use crate::record::CaptureRecord;
+use crate::storage::markdown_pipeline::MarkdownPipeline;
 
 /// Per-session reconcile outcome.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,7 +47,9 @@ pub fn list_run_markdown_paths(run_dir: &Path) -> Result<Vec<PathBuf>> {
         return Ok(Vec::new());
     }
     let mut paths = Vec::new();
-    for entry in std::fs::read_dir(run_dir).with_context(|| format!("read_dir {}", run_dir.display()))? {
+    for entry in
+        std::fs::read_dir(run_dir).with_context(|| format!("read_dir {}", run_dir.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("md") {
@@ -60,16 +62,7 @@ pub fn list_run_markdown_paths(run_dir: &Path) -> Result<Vec<PathBuf>> {
 
 /// Extract visible dialogue `call_id`s that Lance records would materialize into markdown.
 pub fn expected_markdown_call_ids(records: &[CaptureRecord]) -> BTreeSet<String> {
-    let mut ids = BTreeSet::new();
-    for rec in records {
-        if skip_markdown_block(rec) {
-            continue;
-        }
-        if let Some(id) = rec.call_id.as_deref().filter(|s| !s.is_empty()) {
-            ids.insert(id.to_string());
-        }
-    }
-    ids
+    MarkdownPipeline::call_ids_from_records(records)
 }
 
 /// Index one live markdown file: block count, call_ids, structural issues.
@@ -145,7 +138,10 @@ pub fn build_run_report(
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        let records = lance_by_session.get(&session_id).map(Vec::as_slice).unwrap_or(&[]);
+        let records = lance_by_session
+            .get(&session_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         sessions.push(reconcile_session(&session_id, &md_path, records)?);
     }
     let ok = sessions.iter().all(SessionReconcile::ok);
@@ -262,5 +258,44 @@ mod tests {
     fn structural_issue_flags_excessive_blank_lines() {
         assert!(structural_issues("a\n\n\n\nb").contains(&"excessive_blank_lines".into()));
         assert!(structural_issues("a\n\nb").is_empty());
+    }
+
+    #[test]
+    fn expected_call_ids_skips_replayed_requests() {
+        let call = CaptureCall {
+            call_id: "call-a".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let mut req1 = llm_request_summary_record(
+            Some("run".into()),
+            Some("agent".into()),
+            "m",
+            "/v1/messages",
+            1,
+            "messages",
+            "anthropic",
+            Some("hi".into()),
+            None,
+            &call,
+            CaptureLevel::Dialogue,
+            None,
+        );
+        req1.call_id = Some("call-a".into());
+        req1.payload["user_message_count"] = serde_json::json!(1);
+
+        let mut req2 = req1.clone();
+        req2.call_id = Some("call-replay".into());
+
+        let mut req3 = req1.clone();
+        req3.call_id = Some("call-b".into());
+        req3.payload["user_message_count"] = serde_json::json!(2);
+        req3.payload["user_content"] = serde_json::json!("你好");
+
+        let ids = expected_markdown_call_ids(&[req1, req2, req3]);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("call-a"));
+        assert!(ids.contains("call-b"));
+        assert!(!ids.contains("call-replay"));
     }
 }

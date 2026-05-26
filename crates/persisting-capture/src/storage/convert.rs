@@ -9,10 +9,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use super::dialogue::{block_to_capture_record, try_capture_record_to_block};
+use super::dialogue::{block_to_capture_record, capture_records_to_blocks};
 use super::markdown::{
-    append_engine_lines_to_markdown, format_document_preamble, locate_session_markdown_for_key,
-    parse_document, BlockHeader, MarkdownBlock,
+    format_document_preamble, locate_session_markdown_for_key, parse_document, BlockHeader,
+    MarkdownBlock,
 };
 use super::record::{record_to_engine_line, CaptureRecord};
 use super::session_client::{resolve_client_meta_for_run_dir, SessionClientMeta};
@@ -44,14 +44,8 @@ pub struct CompactStats {
 pub fn capture_records_to_markdown_blocks(
     records: &[CaptureRecord],
 ) -> Result<(Vec<(BlockHeader, Vec<u8>)>, MaterializeStats)> {
-    let mut blocks = Vec::new();
-    let mut skipped = 0usize;
-    for rec in records {
-        match try_capture_record_to_block(rec)? {
-            Some(block) => blocks.push(block),
-            None => skipped += 1,
-        }
-    }
+    let blocks = capture_records_to_blocks(records)?;
+    let skipped = records.len() - blocks.len();
     let markdown_blocks = blocks.len();
     Ok((
         blocks,
@@ -86,14 +80,14 @@ pub fn stream_engine_lines_to_markdown(
         });
     }
     let md_path = materialize_markdown_path(run_dir, session_key);
-    let mut skipped = 0usize;
-    for line in engine_lines {
-        let rec = crate::record::engine_line_to_record(line.as_ref())?;
-        if try_capture_record_to_block(&rec)?.is_none() {
-            skipped += 1;
-        }
-    }
-    let blocks_appended = append_engine_lines_to_markdown(&md_path, engine_lines)?;
+    let records: Vec<CaptureRecord> = engine_lines
+        .iter()
+        .map(|line| crate::record::engine_line_to_record(line.as_ref()))
+        .collect::<Result<_, _>>()?;
+    let blocks = super::dialogue::capture_records_to_blocks(&records)?;
+    let skipped = records.len() - blocks.len();
+    write_markdown_document(&md_path, &blocks)?;
+    let blocks_appended = blocks.len();
     Ok(StreamMaterializeStats {
         events_seen: engine_lines.len(),
         blocks_appended,
@@ -337,5 +331,65 @@ mod tests {
         assert!(main_text.contains("main turn"));
         let sub_text = std::fs::read_to_string(&sub_md).unwrap();
         assert_eq!(sub_text.trim(), "sub-only");
+    }
+
+    #[test]
+    fn materialize_skips_replayed_turns_in_batch() {
+        use crate::config::CaptureLevel;
+        use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
+
+        let call = test_call();
+        let mut req1 = llm_request_summary_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1/messages",
+            1,
+            "messages",
+            "anthropic",
+            Some("hi".into()),
+            None,
+            &call,
+            CaptureLevel::Dialogue,
+            None,
+        );
+        req1.payload["user_message_count"] = json!(1);
+        let resp1 = llm_response_record_with_content(
+            Some("s".into()),
+            None,
+            200,
+            &json!({"status": 200}),
+            true,
+            Some("Hello".into()),
+            &call,
+            CaptureLevel::Dialogue,
+        );
+        let mut replay = req1.clone();
+        replay.call_id = Some("call-replay".into());
+        let mut req2 = req1.clone();
+        req2.call_id = Some("call-2".into());
+        req2.payload["user_message_count"] = json!(2);
+        req2.payload["user_content"] = json!("你好");
+        let mut replay_call = call;
+        replay_call.call_id = "call-2".into();
+        let resp2 = llm_response_record_with_content(
+            Some("s".into()),
+            None,
+            200,
+            &json!({"status": 200}),
+            true,
+            Some("你好！".into()),
+            &replay_call,
+            CaptureLevel::Dialogue,
+        );
+
+        let (blocks, stats) = capture_records_to_markdown_blocks(&[
+            req1, resp1, replay, req2, resp2,
+        ])
+        .unwrap();
+        assert_eq!(stats.source_events, 5);
+        assert_eq!(stats.markdown_blocks, 4);
+        assert_eq!(stats.skipped_events, 1);
+        assert_eq!(blocks.len(), 4);
     }
 }

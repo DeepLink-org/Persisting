@@ -5,79 +5,22 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use super::dialogue_extract::{
-    extract_assistant_text_from_json, extract_assistant_turn_from_sse, is_subagent_shape_payload,
-};
+use super::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use super::markdown::{BlockHeader, MarkdownBlock};
+use super::markdown_pipeline::{self, MarkdownPipeline};
 use super::record::{engine_line_to_record, record_to_engine_line, CaptureRecord};
 use super::subagent_link::append_subagent_refs_footer;
 
-/// Omit internal Claude Code traffic and empty visible turns from session markdown (`0001.md`).
-pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
-    match rec.kind.as_str() {
-        "llm.request" => {
-            if is_internal_llm_request(&rec.payload) {
-                return true;
-            }
-            if should_skip_main_flash_companion_request(rec) {
-                return true;
-            }
-            visible_user_text(rec).is_none()
-        }
-        "llm.response" | "llm.response.stream" => {
-            if rec.payload.get("stream_partial").and_then(|v| v.as_bool()) == Some(true) {
-                return true;
-            }
-            visible_assistant_text(rec).is_none()
-        }
-        "llm.spawn_link" => false,
-        "llm.call.cancelled" => true,
-        k if k.starts_with("session.") => true,
-        _ => false,
-    }
-}
+pub use super::markdown_pipeline::skip_markdown_block;
 
-fn is_internal_llm_request(payload: &Value) -> bool {
-    payload
-        .get("path")
-        .and_then(|p| p.as_str())
-        .is_some_and(|p| p.contains("count_tokens") || p.contains("count-tokens"))
-}
-
-fn visible_user_text(rec: &CaptureRecord) -> Option<String> {
-    user_message(&rec.payload).filter(|s| !s.trim().is_empty())
-}
-
-fn visible_assistant_text(rec: &CaptureRecord) -> Option<String> {
-    assistant_message(&rec.payload).filter(|s| !s.trim().is_empty())
-}
-
-/// Claude Code sends a flash/haiku companion request before the pro turn on the main session.
-fn should_skip_main_flash_companion_request(rec: &CaptureRecord) -> bool {
-    if rec.subagent_id.is_some() {
-        return false;
-    }
-    let model = rec
-        .payload
-        .get("model")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
-    if !model.contains("flash") && !model.contains("haiku") {
-        return false;
-    }
-    if visible_user_text(rec).is_none() {
-        return false;
-    }
-    // Keep `<session>` title / subagent probes on main.
-    !is_subagent_shape_payload(&rec.payload)
-}
-
-/// Returns `None` when the record should not appear in session markdown.
+/// Returns `None` when the record should not appear in session markdown (stateless batch: no replay dedup).
 pub fn try_capture_record_to_block(rec: &CaptureRecord) -> Result<Option<(BlockHeader, Vec<u8>)>> {
-    if skip_markdown_block(rec) {
-        return Ok(None);
-    }
-    Ok(Some(capture_record_to_block(rec)?))
+    MarkdownPipeline::default().try_block(rec)
+}
+
+/// Batch convert records to markdown blocks (replay dedup applied in seq order).
+pub fn capture_records_to_blocks(records: &[CaptureRecord]) -> Result<Vec<(BlockHeader, Vec<u8>)>> {
+    MarkdownPipeline::blocks_from_records(records)
 }
 
 pub fn capture_record_to_block(rec: &CaptureRecord) -> Result<(BlockHeader, Vec<u8>)> {
@@ -269,14 +212,14 @@ fn role_and_body(rec: &CaptureRecord) -> Result<(String, String)> {
     Ok(match rec.kind.as_str() {
         "llm.request" => (
             "user".into(),
-            visible_user_text(rec)
-                .or_else(|| user_message(&rec.payload))
+            user_message(&rec.payload)
+                .filter(|s| !s.trim().is_empty())
                 .unwrap_or_default(),
         ),
         "llm.response" | "llm.response.stream" => (
             "assistant".into(),
-            visible_assistant_text(rec)
-                .or_else(|| assistant_message(&rec.payload))
+            assistant_message(&rec.payload)
+                .filter(|s| !s.trim().is_empty())
                 .unwrap_or_default(),
         ),
         "user" | "assistant" | "system" | "tool" | "note" => (
@@ -522,7 +465,10 @@ pub fn draft_stream_assistant_block(
         "assistant_content": assistant_content,
         "draft": true,
     });
-    try_capture_record_to_block(&draft)
+    if markdown_pipeline::skip_markdown_block(&draft) {
+        return Ok(None);
+    }
+    Ok(Some(capture_record_to_block(&draft)?))
 }
 
 #[cfg(test)]

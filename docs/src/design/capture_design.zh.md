@@ -434,8 +434,6 @@ Lance:               (无)           (无)                     llm.response.stre
 - upsert 匹配键为 **`call_id` + `role`**，user 块与 assistant 块互不覆盖。
 - draft 的 header `seq` 通过 `sink.peek_next_seq()` 预填，与最终 Lance 行 seq 对齐。
 
-旧版 `llm.response.stream.partial` + `trim_stream_partial_duplicate()` 已移除；replay 旧 Lance 行时 `skip_markdown_block` 仍会过滤 `stream_partial: true`。
-
 ### 6.4 CaptureEngine（V3 Actor 运行时）与 CaptureSink
 
 采集链路分为 **Proxy 调度（非阻塞）**、**编排运行时**、**prepare 计算** 与 **持久化 sink** 四层：

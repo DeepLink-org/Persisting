@@ -4,10 +4,10 @@ pub mod config;
 pub mod conversion;
 pub mod dead_letter;
 pub mod engine;
-pub mod reconcile;
 pub mod protocol;
 pub mod provider;
 pub mod proxy;
+pub mod reconcile;
 pub mod runtime;
 pub mod session;
 pub mod storage;
@@ -34,6 +34,10 @@ pub use storage::frontmatter::{
 pub use storage::lance_row;
 pub use storage::lifecycle;
 pub use storage::markdown as markdown_trajectory;
+pub use storage::markdown_pipeline;
+pub use storage::markdown_pipeline::{
+    skip_markdown_block, LiveMarkdownWriter, MarkdownPipeline, MarkdownTarget,
+};
 pub use storage::record;
 pub use storage::session as session_storage;
 pub use storage::session_client;
@@ -48,15 +52,15 @@ pub use conversion::{
     CompletionsStreamTranslator, CompletionsToResponsesStreamTranslator, ProtocolBridge,
     StreamTranslator,
 };
+pub use dead_letter::{
+    append_dead_letter, dead_letter_path, read_dead_letter_entries, replay_dead_letter,
+    DeadLetterEntry, DeadLetterInvocation, DeadLetterReplaySummary, SerializableCaptureEvent,
+};
 pub use debug::{
     debug_log_path, enable_debug, is_debug_enabled, ENV_CAPTURE_DEBUG, ENV_CAPTURE_DEBUG_STDERR,
 };
 pub use dialogue::import_markdown_to_engine_lines;
 pub use discover_daemon::{StorageResolution, StorageSource};
-pub use dead_letter::{
-    append_dead_letter, dead_letter_path, read_dead_letter_entries, replay_dead_letter,
-    DeadLetterEntry, DeadLetterInvocation, DeadLetterReplaySummary, SerializableCaptureEvent,
-};
 pub use engine::{
     CaptureEngine, CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured,
     LlmResponseCompleted, LlmResponseDraftUpdated,

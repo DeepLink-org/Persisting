@@ -47,10 +47,7 @@ mod tests {
     async fn cancel_fires_on_drop_before_eof() {
         let (tx, rx) = oneshot::channel();
         {
-            let mut s = ClientCancelStream::new(
-                stream::iter(vec![Ok::<u8, ()>(1u8), Ok(2)]),
-                tx,
-            );
+            let mut s = ClientCancelStream::new(stream::iter(vec![Ok::<u8, ()>(1u8), Ok(2)]), tx);
             assert_eq!(s.next().await, Some(Ok(1)));
             // drop without reading second item
         }

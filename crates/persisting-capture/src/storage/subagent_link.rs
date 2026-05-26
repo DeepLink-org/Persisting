@@ -863,13 +863,13 @@ mod tests {
     fn backfill_spawn_link_when_subagent_registers_after_assistant() {
         let mut registry = SubagentRegistry::default();
         let run_key = "run-backfill";
-        let doc = "docs/src/design/llm_capture_proxy.zh.md";
+        let doc = "docs/src/design/capture_design.zh.md";
         let assistant = format!(
             r#"Starting.
 
 ```tool:Agent
 {{
-  "description": "Review llm_capture_proxy",
+  "description": "Review capture_design",
   "prompt": "Review {doc}",
   "subagent_type": "general-purpose"
 }}

@@ -9,8 +9,8 @@ use serde::Serialize;
 use super::markdown::{
     format_duration_human, is_subagent_session_storage_key, read_blocks_from_file, BLOCK_LAYOUT,
 };
+use super::session::{trajectory_run_dir, CaptureRoute};
 use super::session_client::{resolve_client_meta_for_run_dir, SessionClientMeta};
-use super::session::{CaptureRoute, trajectory_run_dir};
 use crate::session_index::{SessionIndexStore, SessionSummary};
 
 /// Rollup stats embedded in trajectory markdown frontmatter.
@@ -97,10 +97,7 @@ fn count_user_turns(md_path: &Path) -> Result<u64> {
         return Ok(0);
     }
     let blocks = read_blocks_from_file(md_path)?;
-    Ok(blocks
-        .iter()
-        .filter(|b| b.role() == Some("user"))
-        .count() as u64)
+    Ok(blocks.iter().filter(|b| b.role() == Some("user")).count() as u64)
 }
 
 fn lookup_session_index(
@@ -108,14 +105,12 @@ fn lookup_session_index(
     agent_id: &str,
     session_id: &str,
 ) -> Option<SessionSummary> {
-    SessionIndexStore::load(storage)
-        .ok()
-        .and_then(|index| {
-            index
-                .sessions
-                .into_iter()
-                .find(|s| s.agent_id == agent_id && s.session_id == session_id)
-        })
+    SessionIndexStore::load(storage).ok().and_then(|index| {
+        index
+            .sessions
+            .into_iter()
+            .find(|s| s.agent_id == agent_id && s.session_id == session_id)
+    })
 }
 
 fn index_stats(
@@ -286,8 +281,7 @@ mod tests {
             storage_session_id: "run-test".into(),
             subagent_id: None,
         };
-        let summary =
-            refresh_document_frontmatter(dir.path(), "agent", &route, &md).unwrap();
+        let summary = refresh_document_frontmatter(dir.path(), "agent", &route, &md).unwrap();
         assert_eq!(summary.turns, 1);
         assert_eq!(summary.session, "run-test");
         let text = std::fs::read_to_string(&md).unwrap();

@@ -46,7 +46,7 @@ persisting trajectory materialize  <STORAGE> [OPTIONS]
 |------|--------|-------------|
 | **lance** | Lance only | 否 |
 | **markdown** | Lance + import 批量 append md | 是（每批 append 后） |
-| **both** | 同 markdown（legacy 别名） | 是 |
+| **both** | 同 markdown | 是 |
 | **auto** | 空 session → Lance；不自动物化 | 否 |
 
 **读取**（replay / stats）：有 Lance 时优先 Lance；否则读 Markdown 块。
@@ -69,7 +69,7 @@ stdin 为默认输入；格式无法从文件名推断时需显式 `--format`。
 
 ## 5. materialize（全量重写）
 
-从 Lance **全量扫描**生成/覆盖**单个 storage_session_id** 对应的 Markdown（非 capture 热路径；日常 `-f md` 依赖 CaptureEngine live upsert，**run 结束建议 materialize 对齐**）：
+从 Lance **全量扫描**生成/覆盖**单个 storage_session_id** 对应的 Markdown（非 capture 热路径；日常 `-f md` 依赖 CaptureEngine live upsert；run 结束先看 `reconcile.json`，**不一致时再 materialize**）：
 
 ```bash
 # 主 session（capture run 下 header session id）

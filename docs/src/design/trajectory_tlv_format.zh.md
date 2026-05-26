@@ -12,7 +12,7 @@
 | Subagent | `agent-{claude_agent_id}.md` |
 | 扁平 session | `{session_id}.md` |
 
-兼容读取 legacy **`0001.md`**、**`trajectory.tlv.md`**。路径解析见 [轨迹存储模型 §5](trajectory_storage.zh.md)。
+Markdown 路径解析见 [轨迹存储模型 §7.3](trajectory_storage.zh.md)。
 
 ---
 
@@ -125,6 +125,6 @@ YAML frontmatter 固定 `format: persisting:1.0`，并含会话级 rollup（见 
 ## 6. 相关文档
 
 - [轨迹存储模型](trajectory_storage.zh.md)
-- [内嵌 LLM 代理](llm_capture_proxy.zh.md)
+- [Capture 架构设计](capture_design.zh.md)
 - [`persisting capture` 命令](cli_capture_command.zh.md)
 - [`persisting trajectory` 命令](cli_trajectory_command.zh.md)

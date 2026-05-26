@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use anyhow::Result;
 use serde_json::Value;
 
+use super::markdown_pipeline::stamp_request_payload;
 use super::record::{now_rfc3339, CaptureRecord};
 use super::session::CaptureRoute;
 use crate::capture_call::CaptureCall;
@@ -117,8 +118,9 @@ pub fn llm_request_summary_record(
     if let Some(fwd) = forward_to.filter(|s| !s.is_empty() && *s != model) {
         payload["forward_to"] = serde_json::Value::String(fwd.to_string());
     }
-    if level.includes_full_body() {
-        if let Some(body) = body_json {
+    if let Some(body) = body_json {
+        stamp_request_payload(&mut payload, Some(body));
+        if level.includes_full_body() {
             payload["body"] = body.clone();
         }
     }

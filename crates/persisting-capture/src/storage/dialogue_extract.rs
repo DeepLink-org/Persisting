@@ -13,6 +13,81 @@ pub fn extract_user_message_from_request_body(body: &Bytes) -> Option<String> {
     extract_user_from_messages(&v).or_else(|| extract_user_from_responses_input(&v))
 }
 
+/// Count user-visible turns in a request body (Anthropic `messages` or Responses `input`).
+pub fn count_visible_user_messages(v: &Value) -> usize {
+    if let Some(messages) = v.get("messages").and_then(|m| m.as_array()) {
+        return messages
+            .iter()
+            .filter(|msg| user_message_has_visible_text(msg))
+            .count();
+    }
+    if let Some(input) = v.get("input") {
+        return count_responses_input_user_turns(input);
+    }
+    0
+}
+
+fn user_message_has_visible_text(msg: &Value) -> bool {
+    if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return false;
+    }
+    if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
+        let s = unwrap_session_tag(s);
+        return !is_system_injection(s) && !s.trim().is_empty();
+    }
+    if let Some(parts) = msg.get("content").and_then(|c| c.as_array()) {
+        for part in parts {
+            match part.get("type").and_then(|t| t.as_str()) {
+                Some("text") => {
+                    if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                        let t = unwrap_session_tag(t);
+                        if !is_system_injection(t) && !t.trim().is_empty() {
+                            return true;
+                        }
+                    }
+                }
+                Some("tool_result") => {
+                    if format_tool_result_block(part).is_some() {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn count_responses_input_user_turns(input: &Value) -> usize {
+    match input {
+        Value::String(s) => {
+            let s = unwrap_session_tag(s);
+            if is_codex_context_injection(s) || s.trim().is_empty() {
+                0
+            } else {
+                1
+            }
+        }
+        Value::Array(items) => items
+            .iter()
+            .filter(|item| responses_input_item_is_user_turn(item))
+            .count(),
+        _ => 0,
+    }
+}
+
+fn responses_input_item_is_user_turn(item: &Value) -> bool {
+    let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match item_type {
+        "function_call" | "function_call_output" => false,
+        "message" => {
+            item.get("role").and_then(|r| r.as_str()) == Some("user")
+                && last_non_injection_text_from_content(item.get("content")).is_some()
+        }
+        _ => last_non_injection_text_from_content(item.get("content")).is_some(),
+    }
+}
+
 /// Incremental OpenAI Completions SSE parser for tool-call partial capture (Codex upstream).
 #[derive(Default)]
 pub struct CompletionsSseToolParser {
@@ -960,6 +1035,24 @@ pub fn is_subagent_request_payload(payload: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn count_visible_user_messages_increments_with_new_user_turns() {
+        let one = json!({"messages":[{"role":"user","content":"hi"}]});
+        assert_eq!(count_visible_user_messages(&one), 1);
+        let two = json!({"messages":[
+            {"role":"user","content":"hi"},
+            {"role":"assistant","content":"hello"},
+            {"role":"user","content":"hi again"}
+        ]});
+        assert_eq!(count_visible_user_messages(&two), 2);
+        let replay = json!({"messages":[
+            {"role":"user","content":"hi"},
+            {"role":"assistant","content":"hello"},
+            {"role":"user","content":"hi again"}
+        ]});
+        assert_eq!(count_visible_user_messages(&replay), 2);
+    }
 
     #[test]
     fn anthropic_request_skips_system_reminder() {

@@ -8,7 +8,6 @@
 //! wire       Serializable actor commands (bincode + JSON payloads)
 //! actors     Mailbox handlers (registry + per-session I/O)
 //! runtime    Orchestrator — prepare → dispatch
-//! io         Session-local markdown helpers (actors only)
 //! ```
 //!
 //! ## Actor topology
@@ -20,7 +19,6 @@
 //! ```
 
 mod actors;
-mod io;
 mod prepare;
 mod runtime;
 mod types;
