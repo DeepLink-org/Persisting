@@ -1,6 +1,6 @@
 # LLM Capture 代理 — 完整架构设计
 
-> **版本**：v0.3.0 &emsp;|&emsp; **最后更新**：2026-05-25
+> **版本**：v0.4.0 &emsp;|&emsp; **最后更新**：2026-05-24
 
 ---
 
@@ -42,7 +42,7 @@ Agent 进程                        上游 LLM
 |------|------|
 | **agentgateway** | 借鉴了配置语义与路由模型，但不依赖其运行时 |
 | **Persisting Engine** | Capture 产出的 `CaptureRecord` 最终进入 Engine 的 Lance 管线 |
-| **Pulsing Actor** | V3 采集运行时：`CaptureEngine` 基于 [pulsing-actor](https://crates.io/crates/pulsing-actor)（crates.io）编排 registry + per-session I/O |
+| **Pulsing Actor** | V3 采集运行时：`CaptureEngine` 基于 [pulsing-actor](https://crates.io/crates/pulsing-actor) 编排 **RunActor** + 每 story 一个 **StoryActor** |
 | **Claude Code** | 主要支持的一等客户端，深度适配其 subagent / session 协议 |
 
 ---
@@ -82,12 +82,12 @@ graph TD
     end
 
     subgraph "采集运行时 (engine/)"
-        A10q["engine/apply_queue.rs<br/>per-seq_key 有序 apply"]:::accent3
-        A10a["engine/event.rs + invocation.rs<br/>CaptureEvent / CaptureInvocation"]:::accent3
+        A10q["engine/apply_queue.rs<br/>per-story_id 有序 apply"]:::accent3
+        A10a["engine/story/<br/>Call + Event + CallContext"]:::accent3
         A10p["engine/markdown_policy.rs<br/>markdown 过滤规则"]:::accent3
-        A10b["engine/prepare.rs<br/>建 record + registry enrich"]:::accent3
+        A10b["engine/prepare.rs<br/>建 record + RunActor enrich"]:::accent3
         A10c["engine/runtime.rs<br/>CaptureRuntime 编排"]:::accent3
-        A10d["engine/actors/<br/>registry + session actor"]:::accent3
+        A10d["engine/actors/<br/>RunActor + StoryActor"]:::accent3
     end
 
     subgraph "采集 & 存储 (storage/)"
@@ -104,7 +104,7 @@ graph TD
     end
 
     subgraph "会话 & 生命周期"
-        A16["session/call.rs<br/>CaptureCall"]:::accent4
+        A16["engine/story/call.rs<br/>Call (call_id / trace_id)"]:::accent4
         A17["session/chain.rs<br/>Header → session_id"]:::accent4
         A18["session/index.rs<br/>SessionIndex"]:::accent4
         A19["storage/lifecycle.rs<br/>session.started/ended"]:::accent4
@@ -176,21 +176,21 @@ graph TD
 | `proxy/dispatch.rs` | HTTP 入口路由（CONNECT / forward / capture） | `build_router()`, `dispatch()` |
 | `proxy/llm_capture.rs` | LLM 请求编排 + 非流式响应 | `llm_capture()` |
 | `proxy/streaming.rs` | SSE 流式翻译 + draft/final 采集 | `streaming_llm_response()` |
-| `proxy/common.rs` | capture 共享 helper | `capture_invocation()`, `effective_config()` |
-| `engine/event.rs` / `engine/invocation.rs` | 采集事件与调用上下文 | `CaptureEvent`, `CaptureInvocation` |
+| `proxy/common.rs` | capture 共享 helper | `call_context()`, `effective_config()` |
+| `engine/story/` | **核心叙事模型** + wire 类型 | `Run`, `Story`, `Turn`, `Call`, `Event`, `CallContext` |
 | `engine/markdown_policy.rs` | markdown 无状态过滤规则 | `should_skip_record`, `should_refresh_frontmatter` |
 | `proxy/router.rs` | 模型名匹配、forward 链 | `ResolvedRoute`, `resolve_route()` |
 | `proxy/upstream.rs` | 上游 body 编排（model 改写 + ProtocolBridge） | `prepare_upstream_body()` |
 | `proxy/auth.rs` | 上游 API Key / Header | `apply_upstream_headers()` |
 | `proxy/reasoning.rs` | DeepSeek tool-call reasoning 回放 | `ReasoningCacheHandle` |
-| `engine/apply_queue.rs` | **per-`seq_key` 有序 apply 队列** | `ApplyDispatcher` |
-| `engine/` | V3 采集运行时 | `CaptureEngine`, `CapturePreparer`, session/registry actors |
+| `engine/apply_queue.rs` | **per-`story_id` 有序 apply 队列** | `ApplyDispatcher` |
+| `engine/` | V3 采集运行时 | `CaptureEngine`, `CapturePreparer`, RunActor / StoryActor |
 | `storage/markdown_pipeline.rs` | **Markdown 过滤 + live/batch/reconcile 唯一入口** | `MarkdownPipeline`, `LiveMarkdownWriter` |
 | `dead_letter.rs` / `reconcile.rs` | capture / Lance 失败重放、run 结束对账 | `dead_letter.jsonl`, `lance_dead_letter.jsonl`, `reconcile.json` |
 | `storage/sink.rs` | Record 构造 + `user_message_count` stamp | `llm_request_summary_record()` |
 | `storage/markdown.rs` | TLV block 读写 | `upsert_block_by_call_id()` |
 | `session/index.rs` | 内存 + JSON 文件索引 | `SessionIndex` |
-| `storage/subagent_link.rs` | 子代理 spawn link | `SubagentRegistryActor` |
+| `storage/subagent_link.rs` | 子代理 spawn link | `RunActor` enrich + backfill |
 
 ### 2.3 三条主路径（边界说明）
 
@@ -199,12 +199,16 @@ graph TD
 │  injection/     │   │  proxy/ + conversion/ │   │  engine/ + storage/     │
 │  Agent 侧       │   │  LLM HTTP 网关        │   │  轨迹采集与存储          │
 ├─────────────────┤   ├──────────────────────┤   ├─────────────────────────┤
-│ env: 子进程环境  │   │ router → upstream    │   │ apply_queue → prepare   │
-│ peer: 谁连进来   │   │ auth → 上游转发        │   │ session actor → sink/md │
+│ env: 子进程环境  │   │ router → upstream    │   │ Story → prepare → sink  │
+│ peer: 谁连进来   │   │ auth → 协议翻译       │   │ StoryActor → md/Lance   │
 └─────────────────┘   └──────────────────────┘   └─────────────────────────┘
+         │                        │                          │
+         └──────── 协议区 ────────┴──── Story 区 ────────────┴── 存储区 ──
 ```
 
 **不属于 `injection/`**：上游 API Key（`proxy/auth`）、model 改写（`proxy/model`）、协议桥（`conversion/`）、Markdown 过滤（`storage/markdown_pipeline`）。
+
+**词汇表分层**（详见 [§3.4](#34-三层词汇表与转换边界)）：协议区内使用各协议自有名词（`messages` / `tool_call` / SSE chunk 等）；跨过 Story 边界后统一使用 Run/Story/Turn/Call/Event；持久化层使用 `CaptureRecord` / `MarkdownBlock` 名词。
 
 ---
 
@@ -232,8 +236,8 @@ sequenceDiagram
 
     rect rgb(227, 242, 253)
         Note over Proxy: 阶段 2: Request Capture（非阻塞 + 有序）
-        Proxy->>Proxy: spawn_apply(LlmRequest)
-        Note over Engine: ApplyDispatcher 按 seq_key 串行
+        Proxy->>Proxy: spawn_apply(Request)
+        Note over Engine: ApplyDispatcher 按 story_id 串行
         Engine->>Sink: append llm.request
         Engine->>Storage: upsert md user block (-f md)
     end
@@ -253,7 +257,7 @@ sequenceDiagram
         Note over Proxy: 阶段 5: Stream Translate + Live Markdown
         loop each SSE chunk (150ms 节流)
             Proxy->>Proxy: translate chunk
-            Proxy->>Proxy: spawn_apply(DraftUpdated)
+            Proxy->>Proxy: spawn_apply(ResponseDraft)
             Engine->>Storage: upsert md assistant draft
             Proxy->>Agent: proxied SSE
         end
@@ -262,10 +266,10 @@ sequenceDiagram
     rect rgb(243, 229, 245)
         Note over Proxy: 阶段 6: Finalize（非阻塞）
         alt 客户端提前断开
-            Proxy->>Proxy: spawn_apply(LlmCallCancelled)
+            Proxy->>Proxy: spawn_apply(Cancelled)
             Engine->>Sink: append llm.call.cancelled（仅 Lance）
         else 正常结束
-            Proxy->>Proxy: spawn_apply(LlmResponseCompleted)
+            Proxy->>Proxy: spawn_apply(ResponseComplete)
             Engine->>Engine: usage + cost
             Engine->>Sink: append llm.response.stream
             Engine->>Storage: upsert md assistant (final)
@@ -291,6 +295,146 @@ graph TD
     G -->|"是"| H["llm_capture()"]
     G -->|"否"| I["transparent_forward()"]
     F -->|"否 (relative path)"| H
+```
+
+### 3.3 核心叙事模型（Run → Story → Turn → Call + Event）
+
+采集运行时只保留 **五类核心概念**，wire 层与读模型分层清晰：
+
+```text
+Run（容器，≈ root_session / capture run 目录）
+ └── Story（一条 agent 故事线，≈ 原 seq_key / 一个 .md 文件）
+      └── Turn（一轮 user → assistant 对话）
+           └── TurnCall（call 上的 event 时间线）
+                └── Event（Request / ResponseDraft / ResponseComplete / Cancelled）
+```
+
+| 概念 | 类型 | 职责 |
+|------|------|------|
+| **Run** | `RunId` | 一次 `capture run` 的工作区；子代理注册、spawn link 回填 |
+| **Story** | `StoryId` | 一条独立轨迹线（主 session 或 `agent-{id}`）；对应 Lance dataset + Markdown 文件 |
+| **Turn** | `TurnId` | Story 内语义轮次；由 `TurnMachine` 在 StoryActor 内维护 |
+| **Call** | `Call` | 单次 LLM HTTP 往返（`call_id` / `trace_id` / `started_at`） |
+| **Event** | `Event` | Call 上发生的采集事件，驱动 prepare → persist |
+| **CallContext** | `CallContext` | Proxy → Engine 的完整上下文（`StoryContext` + `Call` + 路由/模型元数据） |
+
+**Wire 层（Proxy 侧）**：
+
+```rust
+pub struct Call {
+    pub call_id: String,
+    pub trace_id: String,
+    pub started_at: String,
+}
+
+pub enum Event {
+    Request(RequestEvent),
+    ResponseDraft(DraftEvent),       // 仅 live Markdown
+    ResponseComplete(CompleteEvent), // Lance + Markdown finalize
+    Cancelled(CancelEvent),          // 仅 Lance
+}
+
+pub struct CallContext {
+    pub story: StoryContext,  // run_id + story_id + CaptureRoute + agent_id
+    pub call: Call,
+    // level, models, provider, protocol, headers, debug_on ...
+}
+```
+
+**读模型（StoryActor 内）**：`TurnMachine` 观察已持久化的 `CaptureRecord`，投影出 `Turn` / `TurnCall` / `EventKind`；写模型仍是 `CaptureRecord`（Lance canonical）。
+
+**Actor 拓扑**：
+
+```text
+CaptureRuntime (= CaptureEngine)
+├── capture/run              RunActor     （spawn link、main route、record enrich）
+└── capture/story/{story_id} StoryActor   （TurnMachine + sink + live markdown）
+```
+
+Proxy 调用链：`call_context()` → `spawn_apply(ctx, event)` → `ApplyDispatcher`（按 `story_id` 串行）→ `prepare` → `RunActor` enrich → `StoryActor` persist。
+
+### 3.4 三层词汇表与转换边界
+
+采集与存储的总体转换逻辑：
+
+```text
+任意协议 ──(ingress 适配)──→ Story ──(prepare)──→ 存储
+存储 / Story ──(egress 适配)──→ 任意协议     （读路径：replay / materialize / conversion 测试）
+```
+
+**原则**：在协议区内各说各话；**一旦进入 Story，只使用 Story 名词**；存储层使用 record/block 名词，不再引入协议结构。
+
+#### 三层词汇表
+
+| 层 | 代码位置 | 使用的名词 | 职责 |
+|----|---------|-----------|------|
+| **协议区** | `conversion/`、`dialogue_extract/`、`proxy/` | `ProtocolKind`、`ProtocolBridge`、`messages` / `completions` / `responses`、SSE、`tool_call`、`content_block`、`reasoning_content` | 代理转发（A↔B 协议翻译）、从 wire 提取可见文本与 usage |
+| **Story 区** | `engine/story/`、`engine/actors/`、`engine/prepare.rs` | `Run`、`Story`、`Turn`、`Call`、`Event`、`CallContext`、`TurnCall`、`EventKind` | 叙事编排：谁（story）、第几轮（turn）、哪次 HTTP（call）、发生了什么（event） |
+| **存储区** | `storage/record.rs`、`storage/markdown*`、`storage/lance_row.rs` | `CaptureRecord`、`kind`、`seq`、`call_id`、`turn`、`MarkdownBlock` | canonical 事件日志 + 物化人读视图 |
+
+#### 两个边界
+
+**Ingress（协议 → Story）**——发生在 `call_context()` + `spawn_apply` 之前/之时：
+
+```text
+HTTP wire (任意协议 JSON/SSE)
+  │  proxy: ProtocolBridge 翻译 upstream body（仍属协议区）
+  │  dialogue_extract: 按 protocol 解析 → user_content / assistant_content
+  ▼
+CallContext + Event          ← Story 边界：此后禁止出现 messages/completions 结构
+  │  Event::Request { user_content, body_json?, ... }
+  │  Event::ResponseComplete { assistant_content?, resp_bytes, ... }
+  ▼
+prepare → CaptureRecord → StoryActor
+```
+
+- `TurnMachine` **不感知** `ProtocolKind`；它只观察已 persist 的 `CaptureRecord`。
+- `CallContext` 仍携带 `protocol` / `provider` 元数据（索引、debug、record 标注），但 **Story 状态机不解析协议 payload**。
+- `dialogue_extract/` 是 ingress 适配器：把协议差异消化在 Story 边界之外。
+
+**Egress（Story / 存储 → 任意协议）**——读路径，与 capture 主路径分离：
+
+```text
+CaptureRecord / MarkdownBlock
+  │  storage/convert、trajectory replay
+  │  conversion/: completions ↔ messages ↔ responses（测试 fixture、materialize 辅助）
+  ▼
+目标协议 wire（如 AG snap 对比、CLI export）
+```
+
+- AG fixture 测试（`tests/ag_fixture_tests.rs`）走此路径：fixture JSON → conversion → 与 snap 比对。
+- **Story API 不参与 egress**；出向翻译仍在 `conversion/`，输入是 record 或已提取的 plain text。
+
+#### 与 §5 协议转换的关系
+
+| 能力 | 所在层 | 说明 |
+|------|--------|------|
+| Messages ↔ Completions 请求/响应翻译 | 协议区 | 仅影响 proxy 与 upstream 之间的 wire |
+| SSE 流式翻译 + draft snapshot | 协议区 → Story 边界 | 翻译器产出 `assistant_content` 字符串后，以 `Event::ResponseDraft` 进入 Story |
+| Turn 索引 / spawn link | Story 区 | `TurnMachine`、`RunActor` |
+| Lance / Markdown 写入 | 存储区 | `CaptureRecord.kind` 与协议无关 |
+
+```mermaid
+flowchart LR
+    subgraph P["协议区"]
+        P1["ProtocolBridge"]
+        P2["dialogue_extract"]
+    end
+    subgraph S["Story 区"]
+        S1["CallContext + Event"]
+        S2["TurnMachine"]
+    end
+    subgraph ST["存储区"]
+        ST1["CaptureRecord"]
+        ST2["MarkdownBlock"]
+    end
+
+    P1 --> P2
+    P2 -->|"ingress"| S1
+    S1 --> S2
+    S1 --> ST1
+    ST1 --> ST2
+    ST1 -.->|"egress"| P1
 ```
 
 ---
@@ -346,6 +490,8 @@ Forward 解析为 `ResolvedRoute`，其中：
 ---
 
 ## 5. 协议转换
+
+> **范围说明**：本章全部属于 [§3.4](#34-三层词汇表与转换边界) 的**协议区**。此处名词（Messages、Completions、Responses、SSE、`tool_call` 等）**不得**渗入 `engine/story/` 或 `TurnMachine`。Story 边界之后只接收已提取的 `user_content` / `assistant_content` 与 `Event` 变体。
 
 ### 5.1 ProtocolBridge 决策矩阵
 
@@ -462,7 +608,7 @@ pub struct CaptureRecord {
 
 ### 6.3 流式 Markdown：draft upsert + finalize rewrite
 
-流式响应不再向 Lance 写入 partial 事件。Proxy 在 SSE 翻译过程中节流（**150ms**）发送 `LlmResponseDraftUpdated`，由 `CaptureEngine` **仅更新 Markdown**：
+流式响应不再向 Lance 写入 partial 事件。Proxy 在 SSE 翻译过程中节流（**150ms**）发送 `Event::ResponseDraft`，由 `CaptureEngine` **仅更新 Markdown**：
 
 ```
 translator snapshot:  "你好"     →  "你好，我来帮"     →  "你好，我来帮你review代码"
@@ -485,21 +631,21 @@ Lance:               (无)           (无)                     llm.response.stre
 ```text
 Proxy (spawn_apply → ApplyDispatcher)
   └── CaptureEngine (= CaptureRuntime)
-        ├── engine/apply_queue.rs   per-seq_key 有序消费 apply
-        ├── prepare（runtime 线程：index + 建 record + registry ask）
-        ├── capture/subagent-registry   RegistryCommand → RegistryReply
-        └── capture/session/{seq_key}   SessionCommand  → CaptureAck
-              └── sink.append + LiveMarkdownWriter（markdown_pipeline）
-                    （session 侧 ask，失败 → dead letter）
+        ├── engine/apply_queue.rs   per-story_id 有序消费 apply
+        ├── prepare（runtime 线程：index + 建 record + RunActor ask）
+        ├── capture/run             RunCommand → RunReply（enrich / main route）
+        └── capture/story/{story_id} StoryCommand → StoryReply
+              └── TurnMachine + sink.append + LiveMarkdownWriter
+                    （StoryActor 侧 ask，失败 → dead letter）
 ```
 
 ```rust
-/// 所有采集副作用的统一入口（proxy 侧 fire-and-forget 调用）
-pub enum CaptureEvent {
-    LlmRequest(LlmRequestCaptured),
-    LlmResponseCompleted(LlmResponseCompleted),
-    LlmResponseDraftUpdated(LlmResponseDraftUpdated), // 仅 md，不写 Lance
-    LlmCallCancelled(LlmCallCancelled),               // 仅 Lance，不写 md
+/// Proxy 侧 fire-and-forget 采集入口
+pub enum Event {
+    Request(RequestEvent),
+    ResponseComplete(CompleteEvent),
+    ResponseDraft(DraftEvent),   // 仅 md，不写 Lance
+    Cancelled(CancelEvent),      // 仅 Lance，不写 md
 }
 
 pub type CaptureEngine = CaptureRuntime;
@@ -516,9 +662,9 @@ pub trait CaptureSink: Send + Sync {
 | 机制 | 行为 |
 |------|------|
 | `spawn_apply` | Proxy **不 await** `apply`；upstream 响应优先返回 |
-| `ApplyDispatcher` | 同一 `seq_key` 内 Request / Draft / Complete **有序** apply |
-| session `ask` | 生产环境等待 session actor 处理结果；失败写 dead letter（含 `prepared_record_json`） |
-| `dead_letter.jsonl` | prepare / session 失败 → 可 `capture replay-dead-letter` 重放 |
+| `ApplyDispatcher` | 同一 `story_id` 内 Request / Draft / Complete **有序** apply |
+| StoryActor `ask` | 生产环境等待 story actor 处理结果；失败写 dead letter（含 `prepared_record_json`） |
+| `dead_letter.jsonl` | prepare / story 失败 → 可 `capture replay-dead-letter` 重放 |
 | `lance_dead_letter.jsonl` | CLI worker Lance flush 失败 → 保留 RONL batch |
 | 采集错误 | **不上抛** 到 HTTP handler；仅 warn + dead letter |
 
@@ -526,15 +672,15 @@ pub trait CaptureSink: Send + Sync {
 
 | 组件 | 职责 |
 |------|------|
-| `CapturePreparer` | 处理 `CaptureEvent`；request/completed 时 index + registry enrich；draft 仅 peek seq + 建 md 块 |
-| `SubagentRegistryActor` | 单例 mailbox 串行 spawn-link 状态 |
-| `CaptureSessionActor` | 每 `seq_key` 一个 actor；`PersistRecord` / `UpsertDraft` / `Flush` |
+| `CapturePreparer` | 处理 `Event`；request/complete 时 index + RunActor enrich；draft 仅 peek seq + 建 md 块 |
+| `RunActor` | 单例 mailbox：spawn-link 状态、main route、record enrich |
+| `StoryActor` | 每 `story_id` 一个 actor；`TurnMachine` + `PersistRecord` / `UpsertDraft` / `Flush` |
 | `storage/markdown_pipeline.rs` | 过滤（含 history replay dedup）+ `LiveMarkdownWriter` + batch/reconcile 共用 |
 | `storage/frontmatter.rs` | live upsert 后刷新 YAML 摘要（turns / tokens / cost / subagents） |
-| `CallbackSink` | 按 `seq_key` 分配单调 seq，委托 CLI worker 批量写 Lance |
+| `CallbackSink` | 按 `story_id`（seq_key）分配单调 seq，委托 CLI worker 批量写 Lance |
 | `TrajectoryAppendWorker` | 缓冲 RON lines → Lance flush（**不写** live md；失败 → `lance_dead_letter.jsonl`） |
 
-Proxy 在 `serve_with_shutdown_and_ready(..., stream_markdown)` 中 `CaptureEngine::new(...).await`；`capture run -f md` 传 `stream_markdown=true`。`storage` 在 runtime 启动时注入 session actor，不随每条 wire 消息重复传递。
+Proxy 在 `serve_with_shutdown_and_ready(..., stream_markdown)` 中 `CaptureEngine::new(...).await`；`capture run -f md` 传 `stream_markdown=true`。`storage` 在 runtime 启动时注入 StoryActor，不随每条 wire 消息重复传递。
 
 ---
 
@@ -553,7 +699,7 @@ CaptureRecord
      │
      ├──→ TLV Markdown         ← materialized view: 人类可读对话块 + YAML 会话摘要
      │
-     ├──→ .capture/dead_letter.jsonl        ← CaptureEvent apply 失败（可 replay）
+     ├──→ .capture/dead_letter.jsonl        ← Event apply 失败（可 replay）
      ├──→ .capture/lance_dead_letter.jsonl  ← Lance worker flush 失败
      └──→ .capture/reconcile.json           ← capture run 结束 md↔Lance 轻量对账
 ```
@@ -564,7 +710,7 @@ CaptureRecord
 {storage_root}/
 ├── .capture/
 │   ├── sessions.json           ← 全局会话索引
-│   ├── dead_letter.jsonl       ← CaptureEvent apply 失败（可 replay）
+│   ├── dead_letter.jsonl       ← Event apply 失败（可 replay）
 │   ├── lance_dead_letter.jsonl ← Lance worker flush 失败
 │   ├── reconcile.json          ← run 结束 md vs Lance 对账报告
 │   ├── debug.log               ← 可选调试日志
@@ -691,26 +837,26 @@ session "e96634a3-fa28-4083-b354-55542e2dca01"
 - 主 agent 的对话与 `llm.spawn_link`**仅**写入 `run-*.md` 或 `{session_id}.md`
 - 主文件通过 `llm.spawn_link` 引用子 agent 文件，**不内联**子 agent 全文
 
-### 8.3 子代理关联追踪（SubagentRegistryActor）
+### 8.3 子代理关联追踪（RunActor）
 
-`SubagentRegistryActor`（pulsing-actor 单例 mailbox）负责建立主 agent 的 spawn 调用与子 agent 轨迹之间的链接：
+`RunActor`（pulsing-actor 单例，路径 `capture/run`）负责建立主 agent 的 spawn 调用与子 agent 轨迹之间的链接：
 
 ```mermaid
 sequenceDiagram
     participant Main as 主 Agent
-    participant Registry as SubagentRegistryActor
+    participant Run as RunActor
     participant Sub as 子 Agent
 
-    Main->>Registry: assistant response 中包含 spawn hint<br/>(tool call: "Task" / "Bash")
-    Registry->>Registry: 缓存为 PendingMainSpawn<br/>(parent_call_id + spawn_hints)
+    Main->>Run: assistant response 中包含 spawn hint<br/>(tool call: "Task" / "Bash")
+    Run->>Run: 缓存为 PendingMainSpawn<br/>(parent_call_id + spawn_hints)
     
-    Sub->>Registry: 子 agent 首次请求到达<br/>(x-claude-code-agent-id: a5aa661)
-    Registry->>Registry: 注册 subagent<br/>+ 匹配 pending spawn hints
+    Sub->>Run: 子 agent 首次请求到达<br/>(x-claude-code-agent-id: a5aa661)
+    Run->>Run: 注册 subagent<br/>+ 匹配 pending spawn hints
     
-    Registry->>Main: 回填 llm.spawn_link record<br/>(在主 session 中写入关联信息)
+    Run->>Main: 回填 llm.spawn_link record<br/>(写入主 story 的 StoryActor)
 ```
 
-**延迟回填**：子 agent 注册可能晚于主 agent 的 assistant response；子 agent 到达时由 runtime 层 `registry_enrich` + `dispatch_backfills` 补写 `llm.spawn_link` record 到主 session actor。
+**延迟回填**：子 agent 注册可能晚于主 agent 的 assistant response；子 agent 到达时由 runtime 层 `run_enrich` + `dispatch_backfills` 补写 `llm.spawn_link` record 到主 StoryActor。
 
 ---
 
@@ -779,12 +925,12 @@ streaming 路径:
 | 状态 | 并发原语 | 说明 |
 |------|---------|------|
 | `SessionIndex` | `RwLock<SessionIndex>` | 每次 request/response 后 flush（待优化为批量） |
-| `SubagentRegistryActor` | 单 actor mailbox | spawn-link 串行；runtime 层 `ask` |
-| `ApplyDispatcher` | 每 `seq_key` 一个 tokio consumer | 跨 spawn 事件有序 apply |
-| `CaptureSessionActor` | 每 `seq_key` 一个 mailbox | md + sink 串行；**`ask`** + 失败 dead letter |
+| `RunActor` | 单 actor mailbox | spawn-link 串行；runtime 层 `ask` |
+| `ApplyDispatcher` | 每 `story_id` 一个 tokio consumer | 跨 spawn 事件有序 apply |
+| `StoryActor` | 每 `story_id` 一个 mailbox | TurnMachine + md + sink 串行；**`ask`** + 失败 dead letter |
 | `ReasoningCache` | `Mutex` | 流结束时写入 |
 | `active_requests` | `AtomicUsize` | 无竞争 |
-| `sink.next_seq` | `Mutex<HashMap>` | 按 seq_key 分散 |
+| `sink.next_seq` | `Mutex<HashMap>` | 按 story_id（seq_key）分散 |
 
 ### 10.3 Run 结束保障
 
@@ -939,10 +1085,12 @@ curl http://127.0.0.1:9876/admin/sessions
 | 优先级 | 主题 | 状态 / 计划 |
 |--------|------|------------|
 | ✅ 已做 | Proxy 非阻塞采集 + dead letter | `spawn_apply` + `dead_letter.jsonl` |
-| ✅ 已做 | per-seq_key 有序 apply | `engine/apply_queue.rs` |
-| ✅ 已做 | session `ask` + 失败 dead letter | 生产与测试一致的可观测路径 |
+| ✅ 已做 | per-story_id 有序 apply | `engine/apply_queue.rs` |
+| ✅ 已做 | StoryActor `ask` + 失败 dead letter | 生产与测试一致的可观测路径 |
 | ✅ 已做 | Lance worker dead letter | `lance_dead_letter.jsonl` |
-| ✅ 已做 | V3 Actor 运行时 | registry + per-session actor |
+| ✅ 已做 | V3 Actor 运行时 | RunActor + per-story StoryActor |
+| ✅ 已做 | Run/Story/Turn/Call/Event 概念收敛 | `engine/story/`；移除 beats/Invocation 旧术语 |
+| ✅ 已做 | 三层词汇表与 ingress/egress 边界 | §3.4；协议区 / Story 区 / 存储区分离 |
 | ✅ 已做 | `markdown_pipeline` 统一过滤 | live / materialize / reconcile |
 | ✅ 已做 | live md upsert 丢块（truncate-to-EOF） | `rewrite_block_range` 按字节区间替换 |
 | ✅ 已做 | run 结束 reconcile + frontmatter | `reconcile.json` + YAML 会话摘要 |

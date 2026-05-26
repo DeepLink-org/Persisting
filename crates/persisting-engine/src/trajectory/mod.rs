@@ -539,11 +539,11 @@ mod tests {
 
     #[tokio::test]
     async fn append_replay_stats_markdown_roundtrip() {
-        use persisting_capture::capture_call::CaptureCall;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
+        use persisting_capture::Call;
 
-        let call = CaptureCall {
+        let call = Call {
             call_id: "c".into(),
             trace_id: "t".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
@@ -668,11 +668,11 @@ mod tests {
 
     #[tokio::test]
     async fn append_replay_structured_lance_llm_columns() {
-        use persisting_capture::capture_call::CaptureCall;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
+        use persisting_capture::Call;
 
-        let call = CaptureCall {
+        let call = Call {
             call_id: "call-1".into(),
             trace_id: "trace-1".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
@@ -752,11 +752,11 @@ mod tests {
 
     #[tokio::test]
     async fn materialize_and_compact_two_layer_roundtrip() {
-        use persisting_capture::capture_call::CaptureCall;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
+        use persisting_capture::Call;
 
-        let call = CaptureCall {
+        let call = Call {
             call_id: "call-1".into(),
             trace_id: "trace-1".into(),
             started_at: "2026-01-01T00:00:00Z".into(),

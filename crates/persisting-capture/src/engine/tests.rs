@@ -3,12 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
-use crate::capture_call::CaptureCall;
 use crate::config::CaptureLevel;
-use crate::engine::{
-    CaptureEngine, CaptureEvent, CaptureInvocation, LlmRequestCaptured, LlmResponseCompleted,
-    LlmResponseDraftUpdated,
-};
+use crate::engine::{CallContext, CaptureEngine, CompleteEvent, DraftEvent, Event, RequestEvent};
 use crate::markdown_trajectory::session_markdown_write_path_for_key;
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
@@ -16,6 +12,7 @@ use crate::record::CaptureRecord;
 use crate::session_index::SessionIndexStore;
 use crate::session_storage::CaptureRoute;
 use crate::sink::CaptureSink;
+use crate::Call;
 
 struct RecordingSink {
     records: Mutex<Vec<CaptureRecord>>,
@@ -63,28 +60,28 @@ impl CaptureSink for RecordingSink {
     }
 }
 
-fn test_invocation() -> CaptureInvocation {
-    CaptureInvocation {
-        route: CaptureRoute {
+fn test_context() -> CallContext {
+    CallContext::new(
+        CaptureRoute {
             root_session: Some("run-test".into()),
             session_id: "sess-1".into(),
             storage_session_id: "sess-1".into(),
             subagent_id: None,
         },
-        agent_id: "agent-1".into(),
-        call: CaptureCall {
+        "agent-1",
+        Call {
             call_id: "call-1".into(),
             trace_id: "trace-1".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
         },
-        request_headers: Vec::new(),
-        level: CaptureLevel::Dialogue,
-        client_model: "deepseek-chat".into(),
-        upstream_model: "deepseek-chat".into(),
-        provider: ProviderKind::OpenAi,
-        protocol: ProtocolKind::ChatCompletions,
-        debug_on: false,
-    }
+        Vec::new(),
+        CaptureLevel::Dialogue,
+        "deepseek-chat",
+        "deepseek-chat",
+        ProviderKind::OpenAi,
+        ProtocolKind::ChatCompletions,
+        false,
+    )
 }
 
 async fn test_engine(
@@ -108,15 +105,42 @@ async fn flush_engine(engine: &CaptureEngine) {
 }
 
 #[tokio::test]
+async fn story_snapshot_reflects_applied_turns() {
+    let sink = RecordingSink::new();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let ctx = test_context();
+    engine
+        .apply(
+            &ctx,
+            Event::Request(RequestEvent {
+                path: "/v1/chat/completions".into(),
+                body_bytes: 12,
+                user_content: Some("hello".into()),
+                body_json: None,
+                model_rewritten: false,
+            }),
+        )
+        .await
+        .unwrap();
+    flush_engine(&engine).await;
+
+    let snap = engine.story_snapshot(&ctx.story).await.unwrap();
+    assert_eq!(snap.story_id.as_str(), ctx.story_id().as_str());
+    assert_eq!(snap.turns.len(), 1);
+    assert_eq!(snap.turns[0].user.as_ref().unwrap().text, "hello");
+}
+
+#[tokio::test]
 async fn request_event_appends_single_llm_request() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), false).await;
-    let inv = test_invocation();
+    let inv = test_context();
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmRequest(LlmRequestCaptured {
+            Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
                 user_content: Some("hi".into()),
@@ -137,11 +161,11 @@ async fn response_event_appends_single_stream_record() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), false).await;
-    let inv = test_invocation();
+    let inv = test_context();
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+            Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: Bytes::from("data: [DONE]\n\n"),
                 streaming: true,
@@ -166,11 +190,11 @@ async fn draft_event_does_not_append_to_sink() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), true).await;
-    let inv = test_invocation();
+    let inv = test_context();
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmResponseDraftUpdated(LlmResponseDraftUpdated {
+            Event::ResponseDraft(DraftEvent {
                 status: 200,
                 assistant_content: "partial".into(),
             }),
@@ -190,12 +214,12 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let inv = test_invocation();
+    let inv = test_context();
 
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmRequest(LlmRequestCaptured {
+            Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
                 user_content: Some("hello user".into()),
@@ -208,7 +232,7 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmResponseDraftUpdated(LlmResponseDraftUpdated {
+            Event::ResponseDraft(DraftEvent {
                 status: 200,
                 assistant_content: "partial assistant".into(),
             }),
@@ -218,7 +242,7 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+            Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: Bytes::from("data: [DONE]\n\n"),
                 streaming: true,
@@ -230,8 +254,8 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
         .unwrap();
 
     flush_engine(&engine).await;
-    let run_dir = trajectory_run_dir(storage.as_path(), &inv.agent_id, &inv.route);
-    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route.storage_session_id);
+    let run_dir = trajectory_run_dir(storage.as_path(), inv.agent_id(), inv.route());
+    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route().storage_session_id);
     let blocks = read_blocks_from_file(&md_path).unwrap();
     let records = sink.drain();
     assert_eq!(records.len(), 2);
@@ -261,12 +285,12 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let inv = test_invocation();
+    let inv = test_context();
 
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmRequest(LlmRequestCaptured {
+            Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
                 user_content: Some("hi".into()),
@@ -279,7 +303,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmResponseDraftUpdated(LlmResponseDraftUpdated {
+            Event::ResponseDraft(DraftEvent {
                 status: 200,
                 assistant_content: "wip".into(),
             }),
@@ -288,8 +312,8 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
         .unwrap();
 
     flush_engine(&engine).await;
-    let run_dir = trajectory_run_dir(storage.as_path(), &inv.agent_id, &inv.route);
-    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route.storage_session_id);
+    let run_dir = trajectory_run_dir(storage.as_path(), inv.agent_id(), inv.route());
+    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route().storage_session_id);
     let draft_blocks = read_blocks_from_file(&md_path).unwrap();
     assert_eq!(draft_blocks.len(), 2);
     assert_eq!(
@@ -304,7 +328,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
     engine
         .apply(
             &inv,
-            CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+            Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: Bytes::from("data: [DONE]\n\n"),
                 streaming: true,
@@ -337,8 +361,8 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let mut inv_a = test_invocation();
-    inv_a.call = CaptureCall {
+    let mut inv_a = test_context();
+    inv_a.call = Call {
         call_id: "call-a".into(),
         trace_id: "trace-a".into(),
         started_at: "2026-01-01T00:00:00Z".into(),
@@ -347,7 +371,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     engine
         .apply(
             &inv_a,
-            CaptureEvent::LlmRequest(LlmRequestCaptured {
+            Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
                 user_content: Some("req-a".into()),
@@ -360,7 +384,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     engine
         .apply(
             &inv_a,
-            CaptureEvent::LlmResponseDraftUpdated(LlmResponseDraftUpdated {
+            Event::ResponseDraft(DraftEvent {
                 status: 200,
                 assistant_content: "draft-a".into(),
             }),
@@ -369,7 +393,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
         .unwrap();
 
     let mut inv_b = inv_a.clone();
-    inv_b.call = CaptureCall {
+    inv_b.call = Call {
         call_id: "call-b".into(),
         trace_id: "trace-b".into(),
         started_at: "2026-01-01T00:00:01Z".into(),
@@ -377,7 +401,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     engine
         .apply(
             &inv_b,
-            CaptureEvent::LlmRequest(LlmRequestCaptured {
+            Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 12,
                 user_content: Some("req-b".into()),
@@ -391,7 +415,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     engine
         .apply(
             &inv_a,
-            CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+            Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: Bytes::from("data: [DONE]\n\n"),
                 streaming: true,
@@ -403,8 +427,8 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
         .unwrap();
 
     flush_engine(&engine).await;
-    let run_dir = trajectory_run_dir(storage.as_path(), &inv_a.agent_id, &inv_a.route);
-    let md_path = session_markdown_write_path_for_key(&run_dir, &inv_a.route.storage_session_id);
+    let run_dir = trajectory_run_dir(storage.as_path(), inv_a.agent_id(), inv_a.route());
+    let md_path = session_markdown_write_path_for_key(&run_dir, &inv_a.route().storage_session_id);
     let blocks = read_blocks_from_file(&md_path).unwrap();
     assert_eq!(blocks.len(), 3);
     assert_eq!(blocks[0].value_utf8().unwrap(), "req-a");
@@ -434,11 +458,11 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let inv = test_invocation();
+    let inv = test_context();
 
     async fn user_turn(
         engine: &CaptureEngine,
-        inv: &CaptureInvocation,
+        inv: &CallContext,
         call_id: &str,
         user: &str,
         prior_users: &[&str],
@@ -447,7 +471,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
         lines.push(user);
         let body = claude_messages_body(&lines);
         let mut call_inv = inv.clone();
-        call_inv.call = CaptureCall {
+        call_inv.call = Call {
             call_id: call_id.into(),
             trace_id: call_id.into(),
             started_at: "2026-01-01T00:00:00Z".into(),
@@ -455,7 +479,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
         engine
             .apply(
                 &call_inv,
-                CaptureEvent::LlmRequest(LlmRequestCaptured {
+                Event::Request(RequestEvent {
                     path: "/v1/messages".into(),
                     body_bytes: 100,
                     user_content: Some(user.into()),
@@ -467,14 +491,9 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
             .unwrap();
     }
 
-    async fn assistant_turn(
-        engine: &CaptureEngine,
-        inv: &CaptureInvocation,
-        call_id: &str,
-        text: &str,
-    ) {
+    async fn assistant_turn(engine: &CaptureEngine, inv: &CallContext, call_id: &str, text: &str) {
         let mut call_inv = inv.clone();
-        call_inv.call = CaptureCall {
+        call_inv.call = Call {
             call_id: call_id.into(),
             trace_id: call_id.into(),
             started_at: "2026-01-01T00:00:00Z".into(),
@@ -482,7 +501,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
         engine
             .apply(
                 &call_inv,
-                CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+                Event::ResponseComplete(CompleteEvent {
                     status: 200,
                     resp_bytes: Bytes::from("data: [DONE]\n\n"),
                     streaming: true,
@@ -510,8 +529,8 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
     assistant_turn(&engine, &inv, "call-4", "你好！有什么我可以帮你的吗？").await;
 
     flush_engine(&engine).await;
-    let run_dir = trajectory_run_dir(storage.as_path(), &inv.agent_id, &inv.route);
-    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route.storage_session_id);
+    let run_dir = trajectory_run_dir(storage.as_path(), inv.agent_id(), inv.route());
+    let md_path = session_markdown_write_path_for_key(&run_dir, &inv.route().storage_session_id);
     let blocks = read_blocks_from_file(&md_path).unwrap();
     let bodies: Vec<_> = blocks
         .iter()
@@ -533,7 +552,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
 mod reliability {
     use super::*;
     use crate::dead_letter::read_dead_letter_entries;
-    use crate::engine::CaptureEvent;
+    use crate::engine::Event;
 
     struct FailingSink;
 
@@ -557,8 +576,8 @@ mod reliability {
         let engine = CaptureEngine::new(sink, index, storage.clone(), false)
             .await
             .unwrap();
-        let inv = test_invocation();
-        let event = CaptureEvent::LlmRequest(LlmRequestCaptured {
+        let inv = test_context();
+        let event = Event::Request(RequestEvent {
             path: "/v1/chat/completions".into(),
             body_bytes: 10,
             user_content: Some("hi".into()),

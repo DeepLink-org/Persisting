@@ -15,10 +15,7 @@ use super::common::attach_capture_headers;
 use super::state::ProxyState;
 use crate::conversion::{ProtocolBridge, StreamTranslator};
 use crate::debug;
-use crate::engine::{
-    CaptureEngine, CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmResponseCompleted,
-    LlmResponseDraftUpdated,
-};
+use crate::engine::{CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event};
 
 const STREAM_DRAFT_MD_INTERVAL: Duration = Duration::from_millis(150);
 
@@ -43,16 +40,16 @@ pub(super) fn should_stream_to_client(headers: &HeaderMap, request_body: &Bytes)
 pub(super) async fn streaming_llm_response(
     upstream_resp: reqwest::Response,
     state: ProxyState,
-    inv: CaptureInvocation,
+    ctx: CallContext,
     bridge: ProtocolBridge,
 ) -> anyhow::Result<Response> {
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
     let translate = bridge.needs_response_translation();
-    let session_id = inv.route.session_id.clone();
-    let agent_id = inv.agent_id.clone();
-    let client_model = inv.client_model.clone();
-    let debug_on = inv.debug_on;
+    let session_id = ctx.route().session_id.clone();
+    let agent_id = ctx.agent_id().to_string();
+    let client_model = ctx.client_model.clone();
+    let debug_on = ctx.debug_on;
 
     if debug_on {
         debug::log_llm_stream_start(
@@ -68,13 +65,13 @@ pub(super) async fn streaming_llm_response(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, String>>();
 
     let capture_engine = state.capture_engine.clone();
-    let inv_bg = inv.clone();
+    let ctx_bg = ctx.clone();
     let storage = Arc::clone(&state.storage);
     let reasoning_cache = Arc::clone(&state.reasoning_cache);
 
     tokio::spawn(async move {
         let mut buf = BytesMut::new();
-        let mut translator = StreamTranslator::new(bridge, &inv_bg.client_model);
+        let mut translator = StreamTranslator::new(bridge, &ctx_bg.client_model);
         let mut last_draft_at = std::time::Instant::now();
         let mut last_draft_content = String::new();
         let mut client_disconnected = false;
@@ -89,7 +86,7 @@ pub(super) async fn streaming_llm_response(
                             Ok(_) => {
                                 maybe_emit_stream_draft(
                                     &capture_engine,
-                                    &inv_bg,
+                                    &ctx_bg,
                                     status.as_u16(),
                                     t,
                                     &mut last_draft_at,
@@ -108,7 +105,7 @@ pub(super) async fn streaming_llm_response(
                     if let Some(t) = translator.as_ref() {
                         maybe_emit_stream_draft(
                             &capture_engine,
-                            &inv_bg,
+                            &ctx_bg,
                             status.as_u16(),
                             t,
                             &mut last_draft_at,
@@ -126,9 +123,9 @@ pub(super) async fn streaming_llm_response(
                     if debug_on {
                         debug::log_llm_upstream_error(
                             storage.as_path(),
-                            &inv_bg.route.session_id,
-                            &inv_bg.agent_id,
-                            &inv_bg.client_model,
+                            &ctx_bg.route().session_id,
+                            &ctx_bg.agent_id(),
+                            &ctx_bg.client_model,
                             "stream",
                             &msg,
                         );
@@ -140,8 +137,8 @@ pub(super) async fn streaming_llm_response(
 
         if client_disconnected {
             capture_engine.spawn_apply(
-                inv_bg,
-                CaptureEvent::LlmCallCancelled(LlmCallCancelled {
+                ctx_bg,
+                Event::Cancelled(CancelEvent {
                     status: status.as_u16(),
                     bytes_received: buf.len(),
                     streaming: true,
@@ -174,8 +171,8 @@ pub(super) async fn streaming_llm_response(
             .as_ref()
             .and_then(|t| t.streaming_capture_snapshot());
         capture_engine.spawn_apply(
-            inv_bg,
-            CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+            ctx_bg,
+            Event::ResponseComplete(CompleteEvent {
                 status: status.as_u16(),
                 resp_bytes,
                 streaming: true,
@@ -198,7 +195,7 @@ pub(super) async fn streaming_llm_response(
     if translate {
         builder = builder.header("content-type", "text/event-stream");
     }
-    builder = attach_capture_headers(builder, &inv.call);
+    builder = attach_capture_headers(builder, &ctx.call);
     Ok(builder
         .body(Body::from_stream(body_stream))
         .map_err(|e| anyhow::anyhow!("response body: {e}"))?
@@ -207,7 +204,7 @@ pub(super) async fn streaming_llm_response(
 
 fn maybe_emit_stream_draft(
     engine: &CaptureEngine,
-    inv: &CaptureInvocation,
+    ctx: &CallContext,
     status: u16,
     translator: &StreamTranslator,
     last_draft_at: &mut std::time::Instant,
@@ -223,8 +220,8 @@ fn maybe_emit_stream_draft(
         return;
     }
     engine.spawn_apply(
-        inv.clone(),
-        CaptureEvent::LlmResponseDraftUpdated(LlmResponseDraftUpdated {
+        ctx.clone(),
+        Event::ResponseDraft(DraftEvent {
             status,
             assistant_content: snapshot.clone(),
         }),

@@ -346,7 +346,7 @@ fn apply_spawn_links(rec: &mut CaptureRecord, links: &[SpawnLink]) {
 pub fn spawn_link_backfill_record(
     parent_call_id: &str,
     links: &[SpawnLink],
-    call: &crate::capture_call::CaptureCall,
+    call: &crate::Call,
 ) -> CaptureRecord {
     let mut payload = serde_json::json!({
         "parent_call_id": parent_call_id,

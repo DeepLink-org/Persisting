@@ -16,11 +16,11 @@ use persisting_capture::dialogue_extract::{
 use persisting_capture::usage::extract_usage_from_response;
 use serde_json::Value;
 use support::ag_fixtures::{
-    ag_snap_response, assert_json_eq, assert_messages_response_eq, client_model_from_completions_fixture,
-    completions_messages_snap, fixture_exists, messages_completions_snap,
-    parse_ag_sse_snap, read_fixture, read_fixture_bytes, sse_event_names,
-    translate_openai_sse_fixture, upstream_model_from_messages_fixture, COMPLETIONS_TO_MESSAGES,
-    MESSAGES_TO_COMPLETIONS, RESPONSES_TO_COMPLETIONS,
+    ag_snap_response, assert_json_eq, assert_messages_response_eq,
+    client_model_from_completions_fixture, completions_messages_snap, fixture_exists,
+    messages_completions_snap, parse_ag_sse_snap, read_fixture, read_fixture_bytes,
+    sse_event_names, translate_openai_sse_fixture, upstream_model_from_messages_fixture,
+    COMPLETIONS_TO_MESSAGES, MESSAGES_TO_COMPLETIONS, RESPONSES_TO_COMPLETIONS,
 };
 
 // --- messages → completions (request translation) ---
@@ -72,7 +72,10 @@ fn ag_responses_request_to_completions() {
         let out = responses_request_to_completions(&body, "upstream-model", None).unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["model"], "upstream-model");
-        assert!(v.get("messages").and_then(|m| m.as_array()).is_some_and(|a| !a.is_empty()));
+        assert!(v
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .is_some_and(|a| !a.is_empty()));
     }
 }
 
@@ -155,11 +158,9 @@ fn ag_capture_assistant_from_completions_response() {
 #[test]
 fn ag_capture_assistant_from_stream_fixture() {
     let raw = read_fixture("local/response/completions/stream_head.txt");
-    let text = extract_assistant_turn_from_sse(&translate_completions_sse_to_messages(
-        &raw,
-        "claude-test",
-    )
-    .unwrap());
+    let text = extract_assistant_turn_from_sse(
+        &translate_completions_sse_to_messages(&raw, "claude-test").unwrap(),
+    );
     assert!(text.contains("Hi"));
 }
 

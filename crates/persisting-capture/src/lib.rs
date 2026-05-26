@@ -14,6 +14,7 @@ pub mod session;
 pub mod storage;
 pub mod usage;
 
+pub use engine::Call;
 pub use proxy::models_list;
 pub use proxy::{serve, serve_with_shutdown_and_ready};
 pub use runtime::debug;
@@ -21,7 +22,6 @@ pub use runtime::discover as discover_daemon;
 pub use runtime::run_config;
 pub use runtime::run_env;
 pub use runtime::service;
-pub use session::call as capture_call;
 pub use session::chain as session_chain;
 pub use session::index as session_index;
 
@@ -54,8 +54,9 @@ pub use conversion::{
 };
 pub use dead_letter::{
     append_dead_letter, append_lance_dead_letter, dead_letter_path, lance_dead_letter_path,
-    read_dead_letter_entries, read_lance_dead_letter_entries, replay_dead_letter, DeadLetterEntry,
-    DeadLetterInvocation, DeadLetterReplaySummary, LanceDeadLetterEntry, SerializableCaptureEvent,
+    read_dead_letter_entries, read_lance_dead_letter_entries, replay_dead_letter,
+    DeadLetterContext, DeadLetterEntry, DeadLetterReplaySummary, LanceDeadLetterEntry,
+    SerializableEvent,
 };
 pub use debug::{
     debug_log_path, enable_debug, is_debug_enabled, ENV_CAPTURE_DEBUG, ENV_CAPTURE_DEBUG_STDERR,
@@ -63,8 +64,9 @@ pub use debug::{
 pub use dialogue::import_markdown_to_engine_lines;
 pub use discover_daemon::{StorageResolution, StorageSource};
 pub use engine::{
-    CaptureEngine, CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured,
-    LlmResponseCompleted, LlmResponseDraftUpdated,
+    CallContext, CallId, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event, EventKind,
+    RequestEvent, Run, RunId, Story, StoryContext, StoryId, StoryLink, StoryLinkRelation,
+    TextBlock, Turn, TurnCall, TurnId, TurnKind, TurnMachine,
 };
 pub use injection::{
     capture_openai_v1_base, client_gateway_config_args, proxy_environment, CAPTURE_PROXY_ENV_KEYS,

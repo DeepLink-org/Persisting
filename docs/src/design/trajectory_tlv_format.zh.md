@@ -42,11 +42,11 @@ Markdown 路径解析见 [轨迹存储模型 §7.3](trajectory_storage.zh.md)。
 
 Proxy 路径下 Markdown 按 **`call_id` + `role`** upsert，而非仅末尾 append：
 
-| 事件 | md 行为 |
-|------|---------|
-| `LlmRequest` | user 块 append（或同 call 替换） |
-| `LlmResponseDraftUpdated` | assistant 块 upsert，`draft: true` |
-| `LlmResponseCompleted` | assistant 块 upsert，移除 draft |
+| Event 变体 | md 行为 |
+|------------|---------|
+| `Event::Request` | user 块 append（或同 call 替换） |
+| `Event::ResponseDraft` | assistant 块 upsert，`draft: true` |
+| `Event::ResponseComplete` | assistant 块 upsert，移除 draft |
 
 Import 路径仍使用批量 **append**。详见 [轨迹存储 §5.3](trajectory_storage.zh.md)。
 

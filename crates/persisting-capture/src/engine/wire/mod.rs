@@ -1,16 +1,14 @@
 //! Actor wire protocol — all cross-actor messages live here.
 
 mod headers;
-mod registry;
-mod session;
+mod run;
+mod story;
 
 pub(crate) use headers::{headers_to_header_map, headers_to_vec};
-pub(crate) use registry::{
-    registry_enrich, registry_main_route, RegistryCommand, RegistryReply, REGISTRY_ACTOR_NAME,
-};
-pub(crate) use session::{DraftPayload, SessionCommand, SessionScope};
+pub(crate) use run::{run_enrich, run_main_route, RunCommand, RunReply, RUN_ACTOR_NAME};
+pub(crate) use story::{DraftPayload, StoryCommand, StoryReply, StoryScope};
 
-/// Unified ask/tell acknowledgement for session actors.
+/// Unified ask/tell acknowledgement for story actors.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CaptureAck {
     pub ok: bool,

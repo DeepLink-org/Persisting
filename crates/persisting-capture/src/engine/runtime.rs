@@ -1,4 +1,4 @@
-//! [`CaptureRuntime`] — orchestrates prepare → registry → session actors.
+//! [`CaptureRuntime`] — prepare → run actor → story actors.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,34 +8,36 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use pulsing_actor::prelude::*;
 
-use super::actors::{CaptureSessionActor, SessionActorDeps, SubagentRegistryActor};
+use super::actors::{RunActor, StoryActor, StoryActorDeps};
 use super::apply_queue::ApplyDispatcher;
 use super::prepare::CapturePreparer;
+use super::story::Story;
+use super::story::{StoryContext, StoryId};
 use super::wire::{
-    registry_main_route, CaptureAck, SessionCommand, SessionScope, REGISTRY_ACTOR_NAME,
+    run_main_route, CaptureAck, StoryCommand, StoryReply, StoryScope, RUN_ACTOR_NAME,
 };
-use super::{CaptureEvent, CaptureInvocation};
+use super::{CallContext, Event};
 use crate::dead_letter;
 use crate::session_index::SessionIndexHandle;
 use crate::sink::CaptureSink;
 use crate::subagent_link::{spawn_link_backfill_record, SpawnLinkBackfill};
 
-const SESSION_MAILBOX: usize = 256;
+const STORY_MAILBOX: usize = 256;
 
 pub(crate) struct CaptureRuntimeInner {
     system: Arc<ActorSystem>,
     preparer: Arc<CapturePreparer>,
-    registry: ActorRef,
-    pub(crate) session_deps: SessionActorDeps,
-    sessions: Arc<DashMap<String, ActorRef>>,
+    run: ActorRef,
+    pub(crate) story_deps: StoryActorDeps,
+    stories: Arc<DashMap<String, ActorRef>>,
 }
 
 /// Actor topology (one ActorSystem per proxy):
 ///
 /// ```text
 /// CaptureRuntime
-///   ├── capture/subagent-registry   RegistryCommand → RegistryReply
-///   └── capture/session/{seq_key}   SessionCommand  → CaptureAck
+///   ├── capture/run              RunActor (subagent registry + run story index)
+///   └── capture/story/{story_id} StoryActor (TurnMachine + sink/md I/O)
 /// ```
 #[derive(Clone)]
 pub struct CaptureRuntime {
@@ -51,13 +53,13 @@ impl CaptureRuntime {
         stream_markdown: bool,
     ) -> Result<Self> {
         let system = ActorSystem::builder()
-            .mailbox_capacity(SESSION_MAILBOX)
+            .mailbox_capacity(STORY_MAILBOX)
             .build()
             .await
             .context("capture actor system")?;
 
-        let registry = system
-            .spawn_named(REGISTRY_ACTOR_NAME, SubagentRegistryActor::new())
+        let run = system
+            .spawn_named(RUN_ACTOR_NAME, RunActor::new())
             .await
             .map_err(pulsing_err)?;
 
@@ -70,9 +72,9 @@ impl CaptureRuntime {
                 storage: Arc::clone(&storage),
                 stream_markdown,
             }),
-            registry,
-            session_deps: SessionActorDeps::new(sink, Arc::clone(&storage), stream_markdown),
-            sessions: Arc::new(DashMap::new()),
+            run,
+            story_deps: StoryActorDeps::new(sink, Arc::clone(&storage), stream_markdown),
+            stories: Arc::new(DashMap::new()),
         });
         let apply_dispatcher = ApplyDispatcher::new(Arc::clone(&inner));
         Ok(Self {
@@ -81,13 +83,13 @@ impl CaptureRuntime {
         })
     }
 
-    /// Enqueue a capture event on the per-session ordered apply queue (non-blocking for callers).
-    pub fn spawn_apply(&self, inv: CaptureInvocation, event: CaptureEvent) {
-        self.apply_dispatcher.enqueue(inv, event);
+    /// Enqueue a capture event on the per-story ordered apply queue (non-blocking for callers).
+    pub fn spawn_apply(&self, ctx: CallContext, event: Event) {
+        self.apply_dispatcher.enqueue(ctx, event);
     }
 
-    pub async fn apply(&self, inv: &CaptureInvocation, event: CaptureEvent) -> Result<()> {
-        self.inner.apply(inv, event).await
+    pub async fn apply(&self, ctx: &CallContext, event: Event) -> Result<()> {
+        self.inner.apply(ctx, event).await
     }
 
     pub async fn shutdown(self) -> Result<()> {
@@ -95,42 +97,44 @@ impl CaptureRuntime {
         self.inner.system.shutdown().await.map_err(pulsing_err)
     }
 
-    /// Wait until all session mailboxes have drained queued commands (for tests and graceful shutdown).
+    /// Wait until all story mailboxes have drained queued commands.
     pub async fn flush(&self) -> Result<()> {
-        self.inner.flush_sessions().await
+        self.inner.flush_stories().await
+    }
+
+    /// Read-model snapshot for one story (TurnMachine state inside StoryActor).
+    pub async fn story_snapshot(&self, context: &StoryContext) -> Result<Story> {
+        self.inner.story_snapshot(context).await
     }
 }
 
 impl CaptureRuntimeInner {
-    pub(crate) async fn apply(&self, inv: &CaptureInvocation, event: CaptureEvent) -> Result<()> {
-        self.apply_inner(inv, &event).await
+    pub(crate) async fn apply(&self, ctx: &CallContext, event: Event) -> Result<()> {
+        self.apply_inner(ctx, &event).await
     }
 
-    async fn apply_inner(&self, inv: &CaptureInvocation, event: &CaptureEvent) -> Result<()> {
-        let mut prepared = match self
-            .preparer
-            .prepare(&self.registry, inv, event.clone())
-            .await
-        {
+    async fn apply_inner(&self, ctx: &CallContext, event: &Event) -> Result<()> {
+        let mut prepared = match self.preparer.prepare(&self.run, ctx, event.clone()).await {
             Ok(p) => p,
             Err(e) => {
-                record_dead_letter(self.session_deps.storage.as_path(), inv, event, &e, None);
+                record_dead_letter(self.story_deps.storage.as_path(), ctx, event, &e, None);
                 return Err(e);
             }
         };
 
         if !prepared.backfills.is_empty() {
-            let main = registry_main_route(&self.registry, &prepared.inv.route).await?;
-            self.dispatch_backfills(&prepared.inv, &main, &prepared.backfills)
+            let main = run_main_route(&self.run, prepared.ctx.route()).await?;
+            self.dispatch_backfills(&prepared.ctx, &main, &prepared.backfills)
                 .await?;
         }
 
-        if let Some(cmd) = prepared.take_session_command() {
+        if let Some(cmd) = prepared.take_story_command() {
             let record_json = persist_record_json(&cmd);
-            if let Err(e) = self.dispatch_session(&inv.route.seq_key(), cmd).await {
+            let story_id = ctx.story_id().as_str().to_string();
+            if let Err(e) = self.dispatch_story(&story_id, cmd).await {
                 record_dead_letter(
-                    self.session_deps.storage.as_path(),
-                    inv,
+                    self.story_deps.storage.as_path(),
+                    ctx,
                     event,
                     &e,
                     record_json,
@@ -142,71 +146,93 @@ impl CaptureRuntimeInner {
         Ok(())
     }
 
-    async fn flush_sessions(&self) -> Result<()> {
-        for entry in self.sessions.iter() {
+    async fn flush_stories(&self) -> Result<()> {
+        for entry in self.stories.iter() {
             let actor = entry.value().clone();
-            let ack: CaptureAck = actor
-                .ask(SessionCommand::Flush)
-                .await
-                .map_err(pulsing_err)?;
-            ack.into_result()?;
+            let reply: StoryReply = actor.ask(StoryCommand::Flush).await.map_err(pulsing_err)?;
+            story_reply_ack(reply)?.into_result()?;
         }
         Ok(())
     }
 
-    async fn dispatch_session(&self, seq_key: &str, cmd: SessionCommand) -> Result<()> {
-        let actor = self.session_actor(seq_key).await?;
-        let ack: CaptureAck = actor.ask(cmd).await.map_err(pulsing_err)?;
-        ack.into_result()
+    async fn story_snapshot(&self, context: &StoryContext) -> Result<Story> {
+        let story_id = context.story_id.as_str();
+        let actor = self.story_actor(story_id).await?;
+        let scope = StoryScope {
+            context: context.clone(),
+        };
+        let reply: StoryReply = actor
+            .ask(StoryCommand::Snapshot { scope })
+            .await
+            .map_err(pulsing_err)?;
+        match reply {
+            StoryReply::Snapshot { story } => Ok(story),
+            StoryReply::Ack(ack) => Err(anyhow::anyhow!(
+                "unexpected ack for snapshot: {}",
+                ack.error.unwrap_or_else(|| "unknown".into())
+            )),
+        }
+    }
+
+    async fn dispatch_story(&self, story_id: &str, cmd: StoryCommand) -> Result<()> {
+        let actor = self.story_actor(story_id).await?;
+        let reply: StoryReply = actor.ask(cmd).await.map_err(pulsing_err)?;
+        story_reply_ack(reply)?.into_result()
     }
 
     async fn dispatch_backfills(
         &self,
-        inv: &CaptureInvocation,
+        ctx: &CallContext,
         main_route: &crate::session_storage::CaptureRoute,
         backfills: &[SpawnLinkBackfill],
     ) -> Result<()> {
-        let scope = SessionScope {
-            route: main_route.clone(),
-            agent_id: inv.agent_id.clone(),
+        let scope = StoryScope {
+            context: StoryContext::from_route(main_route.clone(), ctx.agent_id().to_string()),
         };
-        let actor = self.session_actor(&main_route.seq_key()).await?;
+        let actor = self
+            .story_actor(
+                StoryContext::from_route(main_route.clone(), ctx.agent_id())
+                    .story_id()
+                    .as_str(),
+            )
+            .await?;
         for bf in backfills {
-            let rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, &inv.call);
+            let rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, &ctx.call);
             let record_json = serde_json::to_string(&rec)?;
-            let cmd = SessionCommand::persist_record(scope.clone(), record_json);
-            let ack: CaptureAck = actor.ask(cmd).await.map_err(pulsing_err)?;
-            if let Err(e) = ack.into_result() {
+            let cmd = StoryCommand::persist_record(scope.clone(), record_json);
+            let reply: StoryReply = actor.ask(cmd).await.map_err(pulsing_err)?;
+            if let Err(e) = story_reply_ack(reply)?.into_result() {
                 tracing::warn!("spawn link backfill failed: {e:#}");
             }
         }
         Ok(())
     }
 
-    async fn session_actor(&self, seq_key: &str) -> Result<ActorRef> {
-        if let Some(existing) = self.sessions.get(seq_key) {
+    async fn story_actor(&self, story_id: &str) -> Result<ActorRef> {
+        if let Some(existing) = self.stories.get(story_id) {
             return Ok(existing.clone());
         }
 
-        let name = session_actor_name(seq_key);
+        let name = story_actor_name(story_id);
         if let Ok(actor) = self.system.resolve(name.as_str()).await {
-            self.sessions
-                .entry(seq_key.to_string())
+            self.stories
+                .entry(story_id.to_string())
                 .or_insert(actor.clone());
             return Ok(actor);
         }
 
+        let id = StoryId::new(story_id);
         let actor = self
             .system
             .spawning()
             .name(&name)
             .supervision(SupervisionSpec::on_failure().with_max_restarts(3))
-            .mailbox_capacity(SESSION_MAILBOX)
-            .spawn(CaptureSessionActor::new(seq_key, self.session_deps.clone()))
+            .mailbox_capacity(STORY_MAILBOX)
+            .spawn(StoryActor::new(id, self.story_deps.clone()))
             .await
             .map_err(pulsing_err)?;
 
-        match self.sessions.entry(seq_key.to_string()) {
+        match self.stories.entry(story_id.to_string()) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
                 entry.insert(actor.clone());
@@ -219,23 +245,30 @@ impl CaptureRuntimeInner {
 /// Public entry type (actor-backed capture runtime).
 pub type CaptureEngine = CaptureRuntime;
 
-fn persist_record_json(cmd: &SessionCommand) -> Option<String> {
+fn story_reply_ack(reply: StoryReply) -> Result<CaptureAck> {
+    match reply {
+        StoryReply::Ack(ack) => Ok(ack),
+        StoryReply::Snapshot { .. } => Err(anyhow::anyhow!("unexpected snapshot reply")),
+    }
+}
+
+fn persist_record_json(cmd: &StoryCommand) -> Option<String> {
     match cmd {
-        SessionCommand::PersistRecord { record_json, .. } => Some(record_json.clone()),
+        StoryCommand::PersistRecord { record_json, .. } => Some(record_json.clone()),
         _ => None,
     }
 }
 
 fn record_dead_letter(
     storage: &Path,
-    inv: &CaptureInvocation,
-    event: &CaptureEvent,
+    ctx: &CallContext,
+    event: &Event,
     error: &anyhow::Error,
     prepared_record_json: Option<String>,
 ) {
     if let Err(dl) = dead_letter::append_dead_letter(
         storage,
-        inv,
+        ctx,
         event,
         &format!("{error:#}"),
         prepared_record_json,
@@ -244,9 +277,9 @@ fn record_dead_letter(
     }
 }
 
-fn session_actor_name(seq_key: &str) -> String {
-    let sanitized = seq_key.replace('|', "/");
-    format!("capture/session/{sanitized}")
+fn story_actor_name(story_id: &str) -> String {
+    let sanitized = story_id.replace('|', "/");
+    format!("capture/story/{sanitized}")
 }
 
 fn pulsing_err(e: pulsing_actor::error::PulsingError) -> anyhow::Error {

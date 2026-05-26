@@ -1,16 +1,16 @@
 //! Markdown trajectory filters for Claude Code traffic patterns.
 
-use persisting_capture::capture_call::CaptureCall;
 use persisting_capture::config::CaptureLevel;
 use persisting_capture::dialogue::skip_markdown_block;
 use persisting_capture::record::CaptureRecord;
 use persisting_capture::sink::llm_request_summary_record;
+use persisting_capture::Call;
 use serde_json::json;
 
 use super::support::fixture_body;
 
-fn test_call() -> CaptureCall {
-    CaptureCall {
+fn test_call() -> Call {
+    Call {
         call_id: "call-test".into(),
         trace_id: "trace-test".into(),
         started_at: "2026-05-24T00:00:00Z".into(),

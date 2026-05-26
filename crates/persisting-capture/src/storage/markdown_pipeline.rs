@@ -191,17 +191,17 @@ pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture_call::CaptureCall;
     use crate::config::CaptureLevel;
     use crate::markdown_trajectory::read_blocks_from_file;
     use crate::session_storage::CaptureRoute;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
+    use crate::Call;
     use serde_json::json;
 
     const LEVEL: CaptureLevel = CaptureLevel::Dialogue;
 
-    fn test_call(id: &str) -> CaptureCall {
-        CaptureCall {
+    fn test_call(id: &str) -> Call {
+        Call {
             call_id: id.into(),
             trace_id: id.into(),
             started_at: "2026-01-01T00:00:00Z".into(),

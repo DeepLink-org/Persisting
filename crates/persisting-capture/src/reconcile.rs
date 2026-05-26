@@ -167,10 +167,10 @@ pub fn write_run_reconcile_report(storage: &Path, report: &RunReconcileReport) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture_call::CaptureCall;
     use crate::config::CaptureLevel;
     use crate::markdown_trajectory::{encode_block_with_header, BlockHeader};
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
+    use crate::Call;
     use std::collections::BTreeMap as Map;
 
     fn block(call_id: &str, role: &str, body: &str) -> String {
@@ -202,7 +202,7 @@ mod tests {
         )
         .unwrap();
 
-        let call = CaptureCall {
+        let call = Call {
             call_id: "call-a".into(),
             trace_id: "t".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn expected_call_ids_skips_replayed_requests() {
-        let call = CaptureCall {
+        let call = Call {
             call_id: "call-a".into(),
             trace_id: "t".into(),
             started_at: "2026-01-01T00:00:00Z".into(),

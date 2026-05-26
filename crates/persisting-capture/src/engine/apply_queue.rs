@@ -1,4 +1,4 @@
-//! Per-`seq_key` ordered capture apply queue — preserves event order within a session.
+//! Per-`story_id` ordered capture apply queue — preserves event order within a story.
 
 use std::sync::Arc;
 
@@ -6,17 +6,17 @@ use dashmap::DashMap;
 use tokio::sync::mpsc;
 
 use super::runtime::CaptureRuntimeInner;
-use super::{CaptureEvent, CaptureInvocation};
+use super::{CallContext, Event};
 use crate::dead_letter;
 
 const APPLY_QUEUE_CAPACITY: usize = 256;
 
 struct ApplyJob {
-    inv: CaptureInvocation,
-    event: CaptureEvent,
+    ctx: CallContext,
+    event: Event,
 }
 
-/// Serializes `apply` calls per session `seq_key` while keeping the proxy non-blocking.
+/// Serializes `apply` calls per story while keeping the proxy non-blocking.
 #[derive(Clone)]
 pub(crate) struct ApplyDispatcher {
     inner: Arc<CaptureRuntimeInner>,
@@ -31,25 +31,25 @@ impl ApplyDispatcher {
         }
     }
 
-    pub(crate) fn enqueue(&self, inv: CaptureInvocation, event: CaptureEvent) {
-        let seq_key = inv.route.seq_key();
+    pub(crate) fn enqueue(&self, ctx: CallContext, event: Event) {
+        let story_id = ctx.story_id().as_str().to_string();
         let tx = self
             .queues
-            .entry(seq_key)
+            .entry(story_id)
             .or_insert_with(|| self.spawn_consumer())
             .clone();
 
-        let job = ApplyJob { inv, event };
+        let job = ApplyJob { ctx, event };
         if let Err(e) = tx.try_send(job) {
-            let (inv, event) = match e {
+            let (ctx, event) = match e {
                 mpsc::error::TrySendError::Full(j) | mpsc::error::TrySendError::Closed(j) => {
-                    (j.inv, j.event)
+                    (j.ctx, j.event)
                 }
             };
-            let storage = self.inner.session_deps.storage.as_path();
+            let storage = self.inner.story_deps.storage.as_path();
             if let Err(dl) = dead_letter::append_dead_letter(
                 storage,
-                &inv,
+                &ctx,
                 &event,
                 "apply queue full or closed",
                 None,
@@ -58,7 +58,7 @@ impl ApplyDispatcher {
             }
             tracing::warn!(
                 target: "persisting_capture",
-                seq_key = %inv.route.seq_key(),
+                story_id = %ctx.story_id().as_str(),
                 "capture apply queue rejected job"
             );
         }
@@ -69,7 +69,7 @@ impl ApplyDispatcher {
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
-                if let Err(e) = inner.apply(&job.inv, job.event).await {
+                if let Err(e) = inner.apply(&job.ctx, job.event).await {
                     tracing::warn!(
                         target: "persisting_capture",
                         "capture apply: {e:#}"
@@ -87,16 +87,16 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::capture_call::CaptureCall;
     use crate::config::CaptureLevel;
     use crate::engine::CaptureEngine;
-    use crate::engine::{CaptureEvent, LlmRequestCaptured, LlmResponseCompleted};
+    use crate::engine::{CompleteEvent, Event, RequestEvent};
     use crate::protocol::ProtocolKind;
     use crate::provider::ProviderKind;
     use crate::record::CaptureRecord;
     use crate::session_index::SessionIndexStore;
     use crate::session_storage::CaptureRoute;
     use crate::sink::CaptureSink;
+    use crate::Call;
 
     struct OrderRecordingSink {
         order: Mutex<Vec<String>>,
@@ -148,28 +148,28 @@ mod tests {
         }
     }
 
-    fn sample_inv(call_id: &str) -> CaptureInvocation {
-        CaptureInvocation {
-            route: CaptureRoute {
+    fn sample_ctx(call_id: &str) -> CallContext {
+        CallContext::new(
+            CaptureRoute {
                 root_session: Some("run-1".into()),
                 session_id: "sess".into(),
                 storage_session_id: "run-1".into(),
                 subagent_id: None,
             },
-            agent_id: "agent".into(),
-            call: CaptureCall {
+            "agent",
+            Call {
                 call_id: call_id.into(),
                 trace_id: "t1".into(),
                 started_at: "2026-01-01T00:00:00Z".into(),
             },
-            request_headers: Vec::new(),
-            level: CaptureLevel::Dialogue,
-            client_model: "m".into(),
-            upstream_model: "m".into(),
-            provider: ProviderKind::OpenAi,
-            protocol: ProtocolKind::ChatCompletions,
-            debug_on: false,
-        }
+            Vec::new(),
+            CaptureLevel::Dialogue,
+            "m",
+            "m",
+            ProviderKind::OpenAi,
+            ProtocolKind::ChatCompletions,
+            false,
+        )
     }
 
     #[tokio::test]
@@ -182,11 +182,11 @@ mod tests {
             .await
             .unwrap();
 
-        let inv_req = sample_inv("call-a");
-        let inv_resp = sample_inv("call-a");
+        let ctx_req = sample_ctx("call-a");
+        let ctx_resp = sample_ctx("call-a");
         engine.spawn_apply(
-            inv_req,
-            CaptureEvent::LlmRequest(LlmRequestCaptured {
+            ctx_req,
+            Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
                 body_bytes: 10,
                 user_content: Some("hi".into()),
@@ -195,8 +195,8 @@ mod tests {
             }),
         );
         engine.spawn_apply(
-            inv_resp,
-            CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+            ctx_resp,
+            Event::ResponseComplete(CompleteEvent {
                 status: 200,
                 resp_bytes: bytes::Bytes::from_static(
                     br#"{"choices":[{"message":{"content":"ok"}}]}"#,

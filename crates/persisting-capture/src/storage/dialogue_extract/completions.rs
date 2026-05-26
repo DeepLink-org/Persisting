@@ -207,7 +207,8 @@ mod tests {
 
     #[test]
     fn completions_sse_tool_parser_emits_tool_snapshot() {
-        let raw = include_str!("../../../tests/fixtures/local/response/completions/stream_tool_call.txt");
+        let raw =
+            include_str!("../../../tests/fixtures/local/response/completions/stream_tool_call.txt");
         let mut parser = CompletionsSseToolParser::default();
         let snap = parser.push_chunk(raw).expect("tool snapshot");
         assert!(snap.contains("```tool:shell"));
@@ -216,7 +217,8 @@ mod tests {
 
     #[test]
     fn completions_sse_extracts_tool_calls_without_trailing_newline() {
-        let raw = include_str!("../../../tests/fixtures/local/response/completions/stream_tool_call.txt");
+        let raw =
+            include_str!("../../../tests/fixtures/local/response/completions/stream_tool_call.txt");
         let trimmed = raw.trim_end();
         let out = completions_sse_turn(trimmed);
         assert!(out.contains("```tool:shell"));
@@ -243,7 +245,8 @@ data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
 
     #[test]
     fn openai_completions_sse_extracts_assistant_text() {
-        let raw = include_str!("../../../tests/fixtures/local/response/completions/stream_head.txt");
+        let raw =
+            include_str!("../../../tests/fixtures/local/response/completions/stream_head.txt");
         let out = completions_sse_turn(raw);
         assert!(out.contains("Hi"));
         assert!(out.contains("help"));
@@ -251,7 +254,8 @@ data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
 
     #[test]
     fn openai_completions_sse_extracts_tool_calls() {
-        let raw = include_str!("../../../tests/fixtures/local/response/completions/stream_tool_call.txt");
+        let raw =
+            include_str!("../../../tests/fixtures/local/response/completions/stream_tool_call.txt");
         let out = completions_sse_turn(raw);
         assert!(out.contains("```tool:shell"));
         assert!(out.contains("ls"));

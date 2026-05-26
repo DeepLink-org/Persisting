@@ -10,8 +10,7 @@ use serde_json::Value;
 
 use super::auth::{apply_upstream_headers, resolve_upstream_api_key};
 use super::common::{
-    attach_capture_headers, capture_invocation, effective_config, extract_model,
-    is_models_list_path,
+    attach_capture_headers, call_context, effective_config, extract_model, is_models_list_path,
 };
 use super::http_headers::is_websocket_upgrade;
 use super::models_list::build_models_response;
@@ -19,13 +18,13 @@ use super::router::resolve_route;
 use super::state::ProxyState;
 use super::streaming::{should_stream_to_client, streaming_llm_response};
 use super::upstream::prepare_upstream_body;
-use crate::capture_call::CaptureCall;
 use crate::conversion::{translate_response_for_bridge, ProtocolBridge};
 use crate::debug::{self, truncate_body_bytes};
 use crate::dialogue_extract::extract_user_message_from_request_body;
-use crate::engine::{CaptureEvent, LlmRequestCaptured, LlmResponseCompleted};
+use crate::engine::{CompleteEvent, Event, RequestEvent};
 use crate::protocol::ProtocolKind;
 use crate::session_storage::resolve_capture_route;
+use crate::Call;
 
 pub(super) async fn llm_capture(
     state: ProxyState,
@@ -61,7 +60,7 @@ pub(super) async fn llm_capture(
         &state.config.session_header,
         state.storage.as_path(),
     );
-    let call = CaptureCall::from_headers(&parts.headers);
+    let call = Call::from_headers(&parts.headers);
     let cfg = effective_config(&state, &capture_route);
     let agent_id = cfg.agent_id.clone();
     let session_id = capture_route.session_id.clone();
@@ -89,7 +88,7 @@ pub(super) async fn llm_capture(
     let upstream_protocol = bridge.upstream_protocol(protocol);
     let provider = route.effective_provider(upstream_protocol);
 
-    let capture_inv = capture_invocation(
+    let call_ctx = call_context(
         &state,
         &capture_route,
         &agent_id,
@@ -106,8 +105,8 @@ pub(super) async fn llm_capture(
         let user_content = extract_user_message_from_request_body(&body_bytes);
         let body_json = serde_json::from_slice::<Value>(&body_bytes).ok();
         state.capture_engine.spawn_apply(
-            capture_inv.clone(),
-            CaptureEvent::LlmRequest(LlmRequestCaptured {
+            call_ctx.clone(),
+            Event::Request(RequestEvent {
                 path: path.clone(),
                 body_bytes: body_bytes.len(),
                 user_content,
@@ -229,7 +228,7 @@ pub(super) async fn llm_capture(
     }
 
     if should_stream_to_client(&resp_headers, &upstream_body) {
-        return streaming_llm_response(upstream_resp, state, capture_inv, bridge).await;
+        return streaming_llm_response(upstream_resp, state, call_ctx, bridge).await;
     }
 
     let mut resp_bytes = upstream_resp.bytes().await?;
@@ -237,8 +236,8 @@ pub(super) async fn llm_capture(
         resp_bytes = translate_response_for_bridge(bridge, &resp_bytes, &client_model)?;
     }
     state.capture_engine.spawn_apply(
-        capture_inv.clone(),
-        CaptureEvent::LlmResponseCompleted(LlmResponseCompleted {
+        call_ctx.clone(),
+        Event::ResponseComplete(CompleteEvent {
             status: status.as_u16(),
             resp_bytes: resp_bytes.clone(),
             streaming: false,

@@ -1,5 +1,5 @@
-mod registry;
-mod session;
+mod run;
+mod story;
 
-pub(crate) use registry::SubagentRegistryActor;
-pub(crate) use session::{CaptureSessionActor, SessionActorDeps};
+pub(crate) use run::RunActor;
+pub(crate) use story::{StoryActor, StoryActorDeps};

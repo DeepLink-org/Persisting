@@ -1,31 +1,34 @@
+//! Capture events on a call: request → draft* → complete | cancel.
+
 use bytes::Bytes;
 use serde_json::Value;
 
 use crate::usage::StreamMetrics;
 
+/// Something that happened on one LLM call during capture.
 #[derive(Debug, Clone)]
-pub enum CaptureEvent {
-    LlmRequest(LlmRequestCaptured),
-    LlmResponseCompleted(LlmResponseCompleted),
-    LlmResponseDraftUpdated(LlmResponseDraftUpdated),
-    LlmCallCancelled(LlmCallCancelled),
+pub enum Event {
+    Request(RequestEvent),
+    ResponseDraft(DraftEvent),
+    ResponseComplete(CompleteEvent),
+    Cancelled(CancelEvent),
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmCallCancelled {
+pub struct CancelEvent {
     pub status: u16,
     pub bytes_received: usize,
     pub streaming: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmResponseDraftUpdated {
+pub struct DraftEvent {
     pub status: u16,
     pub assistant_content: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmRequestCaptured {
+pub struct RequestEvent {
     pub path: String,
     pub body_bytes: usize,
     pub user_content: Option<String>,
@@ -34,7 +37,7 @@ pub struct LlmRequestCaptured {
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmResponseCompleted {
+pub struct CompleteEvent {
     pub status: u16,
     pub resp_bytes: Bytes,
     pub streaming: bool,

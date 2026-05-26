@@ -169,7 +169,9 @@ pub fn list_fixtures(dir: &str, ext: &str) -> Vec<String> {
             let p = entry.path();
             if p.is_file() {
                 if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    if p.extension().is_some_and(|e| e == ext.trim_start_matches('.')) {
+                    if p.extension()
+                        .is_some_and(|e| e == ext.trim_start_matches('.'))
+                    {
                         names.push(stem.to_string());
                     }
                 }
@@ -205,8 +207,9 @@ pub fn upstream_model_from_messages_fixture(case: &str) -> String {
 }
 
 pub fn client_model_from_completions_fixture(case: &str) -> String {
-    let v: Value = serde_json::from_str(&read_fixture(&format!("response/completions/{case}.json")))
-        .expect("parse completions fixture");
+    let v: Value =
+        serde_json::from_str(&read_fixture(&format!("response/completions/{case}.json")))
+            .expect("parse completions fixture");
     v.get("model")
         .and_then(|m| m.as_str())
         .unwrap_or("client-model")

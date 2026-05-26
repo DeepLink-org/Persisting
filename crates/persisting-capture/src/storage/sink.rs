@@ -9,8 +9,8 @@ use serde_json::Value;
 use super::markdown_pipeline::stamp_request_payload;
 use super::record::{now_rfc3339, CaptureRecord};
 use super::session::CaptureRoute;
-use crate::capture_call::CaptureCall;
 use crate::config::CaptureLevel;
+use crate::Call;
 
 pub trait CaptureSink: Send + Sync {
     /// Assign session-local `seq` on `record`, then persist. Mutates `record.seq` in place.
@@ -84,7 +84,7 @@ impl CaptureSink for CallbackSink {
     }
 }
 
-fn attach_call_context(rec: &mut CaptureRecord, call: &CaptureCall) {
+fn attach_call_context(rec: &mut CaptureRecord, call: &Call) {
     rec.trace_id = Some(call.trace_id.clone());
     rec.call_id = Some(call.call_id.clone());
 }
@@ -99,7 +99,7 @@ pub fn llm_request_summary_record(
     provider: &str,
     user_content: Option<String>,
     forward_to: Option<&str>,
-    call: &CaptureCall,
+    call: &Call,
     level: CaptureLevel,
     body_json: Option<&Value>,
 ) -> CaptureRecord {
@@ -181,7 +181,7 @@ pub fn llm_response_record(
     status: u16,
     body: &serde_json::Value,
     streaming: bool,
-    call: &CaptureCall,
+    call: &Call,
 ) -> CaptureRecord {
     let mut rec = CaptureRecord {
         seq: 0,
@@ -217,7 +217,7 @@ pub fn llm_response_record_with_content(
     payload: &serde_json::Value,
     streaming: bool,
     assistant_content: Option<String>,
-    call: &CaptureCall,
+    call: &Call,
     level: CaptureLevel,
 ) -> CaptureRecord {
     let mut payload = payload.clone();

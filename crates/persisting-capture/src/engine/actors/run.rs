@@ -1,37 +1,60 @@
-//! Subagent registry actor — serializes spawn-link state for one proxy run.
+//! Run-scoped actor — subagent registry and cross-story links (one per capture runtime).
 
 use std::collections::HashMap;
 
 use pulsing_actor::prelude::*;
 
+use crate::engine::story::{RunId, StoryId};
 use crate::record::CaptureRecord;
 use crate::subagent_link::{enrich_record, main_route_for_backfill, SubagentRegistry};
 
-use super::super::wire::{headers_to_header_map, RegistryCommand, RegistryReply};
+use super::super::wire::{headers_to_header_map, RunCommand, RunReply};
 
-/// Subagent registry actor — serializes spawn-link state for one proxy run.
-pub(crate) struct SubagentRegistryActor {
-    inner: SubagentRegistry,
+/// Run-level actor: subagent spawn links + active story index for one proxy instance.
+pub(crate) struct RunActor {
+    registry: SubagentRegistry,
+    stories_by_run: HashMap<String, Vec<String>>,
 }
 
-impl SubagentRegistryActor {
+impl RunActor {
     pub fn new() -> Self {
         Self {
-            inner: SubagentRegistry::default(),
+            registry: SubagentRegistry::default(),
+            stories_by_run: HashMap::new(),
+        }
+    }
+
+    fn track_story(&mut self, run_id: Option<&RunId>, story_id: &StoryId) {
+        let Some(run_id) = run_id else {
+            return;
+        };
+        let entry = self
+            .stories_by_run
+            .entry(run_id.as_str().to_string())
+            .or_default();
+        let sid = story_id.as_str().to_string();
+        if !entry.contains(&sid) {
+            entry.push(sid);
         }
     }
 }
 
-impl Default for SubagentRegistryActor {
+impl Default for RunActor {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Actor for SubagentRegistryActor {
+impl Actor for RunActor {
     fn metadata(&self) -> HashMap<String, String> {
-        HashMap::from([("runs".into(), self.inner.tracked_run_count().to_string())])
+        HashMap::from([
+            ("runs".into(), self.stories_by_run.len().to_string()),
+            (
+                "tracked_runs".into(),
+                self.registry.tracked_run_count().to_string(),
+            ),
+        ])
     }
 
     async fn receive(
@@ -39,15 +62,20 @@ impl Actor for SubagentRegistryActor {
         msg: Message,
         _ctx: &mut ActorContext,
     ) -> pulsing_actor::error::Result<Message> {
-        let cmd: RegistryCommand = msg.unpack()?;
+        let cmd: RunCommand = msg.unpack()?;
         let reply = match cmd {
-            RegistryCommand::Enrich {
+            RunCommand::Enrich {
                 record_json,
                 route,
                 headers,
                 body_json,
                 assistant_text,
+                story_id,
+                run_id,
             } => {
+                if let Some(ref sid) = story_id {
+                    self.track_story(run_id.as_ref(), sid);
+                }
                 let mut record: CaptureRecord =
                     serde_json::from_str(&record_json).map_err(|e| {
                         pulsing_actor::error::PulsingError::from(
@@ -74,9 +102,9 @@ impl Actor for SubagentRegistryActor {
                     &header_map,
                     body_val.as_ref(),
                     assistant_text.as_deref(),
-                    &mut self.inner,
+                    &mut self.registry,
                 );
-                RegistryReply::Enrich {
+                RunReply::Enrich {
                     record_json: serde_json::to_string(&record).map_err(|e| {
                         pulsing_actor::error::PulsingError::from(
                             pulsing_actor::error::RuntimeError::Serialization(e.to_string()),
@@ -85,8 +113,8 @@ impl Actor for SubagentRegistryActor {
                     backfills: outcome.spawn_link_backfills,
                 }
             }
-            RegistryCommand::MainRoute { route } => {
-                RegistryReply::MainRoute(main_route_for_backfill(&route, &self.inner))
+            RunCommand::MainRoute { route } => {
+                RunReply::MainRoute(main_route_for_backfill(&route, &self.registry))
             }
         };
         Message::pack(&reply)

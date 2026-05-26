@@ -630,7 +630,8 @@ mod tests {
 
     #[test]
     fn stream_translator_emits_function_call_events() {
-        let raw = include_str!("../../tests/fixtures/local/response/completions/stream_tool_call.txt");
+        let raw =
+            include_str!("../../tests/fixtures/local/response/completions/stream_tool_call.txt");
         let out = translate_completions_sse_to_responses(raw, "gpt-5.5").unwrap();
         assert!(out.contains("response.output_item.added"));
         assert!(out.contains("response.function_call_arguments.delta"));

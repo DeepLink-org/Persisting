@@ -1,6 +1,6 @@
 # 轨迹存储模型 — 完整架构设计
 
-> **版本**：v0.3.0 &emsp;|&emsp; **最后更新**：2026-05-25
+> **版本**：v0.4.0 &emsp;|&emsp; **最后更新**：2026-05-24
 
 ---
 
@@ -8,7 +8,7 @@
 
 | 你想了解… | 见 |
 |-----------|-----|
-| Capture 代理的整体架构（路由 / 协议转换 / 采集管线） | [Capture 架构设计](capture_design.zh.md) |
+| Capture 代理的整体架构（路由 / 协议转换 / Story 边界 / 采集管线） | [Capture 架构设计](capture_design.zh.md) §3.3–§3.4 |
 | TLV Markdown 的块格式规范 | [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) |
 | `persisting capture` 命令用法 | [Capture 命令](cli_capture_command.zh.md) |
 | `persisting trajectory` 命令用法 | [Trajectory 命令](cli_trajectory_command.zh.md) |
@@ -18,6 +18,8 @@
 ## 1. 概述
 
 Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、git diff、code review）。为此采用**两层存储**：Lance 为 canonical raw event log，TLV Markdown 为按需物化的人读视图。
+
+**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ CaptureRecord → Lance/Markdown`。协议差异在 Story 边界前由 `conversion/` + `dialogue_extract/` 消化；`CaptureRecord` 是存储层的统一中间表示，不再携带 messages/completions 结构。详见 [Capture §3.4 三层词汇表](capture_design.zh.md#34-三层词汇表与转换边界)。
 
 ```mermaid
 graph TD
@@ -32,7 +34,7 @@ graph TD
 
     subgraph "引擎层"
         CE["CaptureEngine<br/>(事件驱动采集核心)"]:::accent0
-        AQ["ApplyDispatcher<br/>(per-seq_key 有序 apply)"]:::accent0
+        AQ["ApplyDispatcher<br/>(per-story_id 有序 apply)"]:::accent0
         MP["MarkdownPipeline<br/>(过滤 + live/batch/reconcile)"]:::accent3
         E1["Lance Append<br/>(canonical)"]:::accent2
         E2["Materialize<br/>(全量 Lance → Markdown)"]:::accent3
@@ -112,26 +114,26 @@ sequenceDiagram
 
     Agent->>Proxy: POST /v1/messages
 
-    Proxy->>Queue: spawn_apply LlmRequest（不阻塞 upstream）
-    Queue->>Engine: 按 seq_key 有序 apply
-    Engine->>Engine: prepare + session ask
+    Proxy->>Queue: spawn_apply Event::Request（不阻塞 upstream）
+    Queue->>Engine: 按 story_id 有序 apply
+    Engine->>Engine: prepare + StoryActor ask
     Engine->>Sink: append llm.request
     Sink->>Lance: batch flush
     Engine->>MD: upsert user block + refresh frontmatter
 
     loop SSE stream (150ms 节流)
-        Proxy->>Queue: spawn_apply LlmResponseDraftUpdated
+        Proxy->>Queue: spawn_apply Event::ResponseDraft
         Queue->>Engine: 有序 apply
         Note over Engine,Lance: draft 仅写 md
         Engine->>MD: upsert assistant block (draft: true)
     end
 
     alt 客户端断开
-        Proxy->>Queue: spawn_apply LlmCallCancelled
+        Proxy->>Queue: spawn_apply Event::Cancelled
         Queue->>Engine: 有序 apply
         Engine->>Sink: append llm.call.cancelled（仅 Lance）
     else 正常结束
-        Proxy->>Queue: spawn_apply LlmResponseCompleted
+        Proxy->>Queue: spawn_apply Event::ResponseComplete
         Queue->>Engine: 有序 apply
         Engine->>Sink: append llm.response.stream
         Sink->>Lance: flush
@@ -141,10 +143,10 @@ sequenceDiagram
 
 关键设计决策：
 
-1. **Lance 仍是 canonical**。`LlmResponseDraftUpdated` 只更新 Markdown，不产生 Lance 行。
+1. **Lance 仍是 canonical**。`Event::ResponseDraft` 只更新 Markdown，不产生 Lance 行。
 2. **Live Markdown 用 upsert**。`upsert_block_by_call_id` 按 **`call_id` + `role`** 匹配；块区间替换使用 `rewrite_block_range`（**不再** truncate-to-EOF）。
-3. **ApplyDispatcher 保证有序**。同一 `seq_key` 内 Request / Draft / Complete 按序 apply，避免跨 spawn 乱序。
-4. **session `ask`**。生产环境等待 session actor 处理结果；失败写入 `dead_letter.jsonl`（含 `prepared_record_json`）。
+3. **ApplyDispatcher 保证有序**。同一 `story_id` 内 Request / Draft / Complete 按序 apply，避免跨 spawn 乱序。
+4. **StoryActor `ask`**。生产环境等待 story actor 处理结果；失败写入 `dead_letter.jsonl`（含 `prepared_record_json`）。
 5. **CLI worker 只写 Lance**。`-f md` 时 Proxy 内 `CaptureEngine(stream_markdown=true)` 负责 live md；worker `stream_markdown=false`；flush 失败 → `lance_dead_letter.jsonl`。
 6. **Run 结束对账**。`worker.shutdown()` 后写 `.capture/reconcile.json`（md call_id vs Lance replay）；不一致时可 `trajectory materialize` 全量重建。
 7. **Frontmatter 摘要**。每次 dialogue 写入后刷新 YAML（turns / tokens / cost / subagents）；`capture run` 结束打印 stderr 一行汇总。
@@ -292,17 +294,17 @@ TLV Markdown 文件 (全量重写)
 Proxy 流式场景下，Markdown 通过 `upsert_block_by_call_id()` 增量更新，而非每批 append：
 
 ```
-CaptureEvent::LlmRequest
+Event::Request
     │  MarkdownPipeline::try_block() → user block
     ▼
 upsert_block_by_call_id(call_id, role=user)   ← 不存在则 append
 
-CaptureEvent::LlmResponseDraftUpdated (≤150ms)
+Event::ResponseDraft (≤150ms)
     │  draft_stream_assistant_block() → header.draft=true
     ▼
 upsert_block_by_call_id(call_id, role=assistant)   ← 流式原地更新
 
-CaptureEvent::LlmResponseCompleted
+Event::ResponseComplete
     │  enrich + append Lance llm.response.stream
     │  MarkdownPipeline::try_block() → final assistant
     ▼
@@ -413,7 +415,7 @@ impl MarkdownPipeline {
 {store}/
 ├── .capture/
 │   ├── sessions.json                   ← 全局会话索引
-│   ├── dead_letter.jsonl               ← CaptureEvent apply 失败（可 replay）
+│   ├── dead_letter.jsonl               ← Event apply 失败（可 replay）
 │   ├── lance_dead_letter.jsonl         ← Lance worker flush 失败
 │   ├── reconcile.json                  ← run 结束 md↔Lance 对账
 │   ├── run_session                     ← 当前 run_id（纯文本一行）
@@ -543,27 +545,29 @@ graph LR
 
 ### 10.1 CaptureEngine 事件模型
 
-Proxy 通过 `CaptureEngine::spawn_apply`（`llm_capture` / `streaming` 直接调用）→ `ApplyDispatcher` → `CaptureEngine::apply(inv, event)` 处理采集；prepare / session 失败写入 `.capture/dead_letter.jsonl`；Lance worker flush 失败写入 `.capture/lance_dead_letter.jsonl`。
+Proxy 通过 `CaptureEngine::spawn_apply(ctx, event)`（`llm_capture` / `streaming` 直接调用）→ `ApplyDispatcher` → `CaptureEngine::apply` 处理采集；prepare / StoryActor 失败写入 `.capture/dead_letter.jsonl`；Lance worker flush 失败写入 `.capture/lance_dead_letter.jsonl`。
 
-| 事件 | Lance | Markdown | Proxy 调度 | 说明 |
-|------|-------|----------|------------|------|
-| `LlmRequest` | ✅ `llm.request` | ✅ user upsert + frontmatter | spawn_apply（非阻塞） | 转发 upstream 前触发 |
-| `LlmResponseDraftUpdated` | ❌ | ✅ assistant upsert (`draft: true`) | spawn_apply | SSE 150ms 节流 |
-| `LlmResponseCompleted` | ✅ `llm.response` / `.stream` | ✅ assistant upsert (final) + frontmatter | spawn_apply | 流结束或非流式 |
-| `LlmCallCancelled` | ✅ `llm.call.cancelled` | ❌ | spawn_apply | 客户端提前断开 SSE |
+事件命名属于 **Story 区**（`engine/story/event.rs`），与 wire 协议无关：
+
+| Event 变体 | Lance | Markdown | Proxy 调度 | 说明 |
+|------------|-------|----------|------------|------|
+| `Event::Request` | ✅ `llm.request` | ✅ user upsert + frontmatter | spawn_apply（非阻塞） | 转发 upstream 前触发 |
+| `Event::ResponseDraft` | ❌ | ✅ assistant upsert (`draft: true`) | spawn_apply | SSE 150ms 节流 |
+| `Event::ResponseComplete` | ✅ `llm.response` / `.stream` | ✅ assistant upsert (final) + frontmatter | spawn_apply | 流结束或非流式 |
+| `Event::Cancelled` | ✅ `llm.call.cancelled` | ❌ | spawn_apply | 客户端提前断开 SSE |
 
 ```
 Proxy (spawn_apply)           ApplyDispatcher              CaptureEngine
   │                                │                                │
-  ├─ LlmRequest                    ├─ 按 seq_key 有序 ─────────────→ prepare + session ask
+  ├─ Event::Request                ├─ 按 story_id 有序 ───────────→ prepare + StoryActor ask
   │                                │                                ├─ md upsert (MarkdownPipeline)
-  ├─ LlmResponseDraft…             ├─ 有序 apply ─────────────────→ md only
-  ├─ LlmResponseCompleted          ├─ 有序 apply ─────────────────→ ask → append Lance
+  ├─ Event::ResponseDraft          ├─ 有序 apply ─────────────────→ md only
+  ├─ Event::ResponseComplete       ├─ 有序 apply ─────────────────→ ask → append Lance
   │                                │                                ├─ md final + frontmatter
-  └─ LlmCallCancelled              └─ 有序 apply ─────────────────→ ask → append (cancelled)
+  └─ Event::Cancelled              └─ 有序 apply ─────────────────→ ask → append (cancelled)
 ```
 
-Session actor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`shutdown` 前对各 session 发送 `Flush` drain mailbox。`CallbackSink` → `TrajectoryAppendWorker` 负责 Lance 批量 flush。
+StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`shutdown` 前对各 story 发送 `Flush` drain mailbox。`CallbackSink` → `TrajectoryAppendWorker` 负责 Lance 批量 flush。
 
 ### 10.2 已知限制
 

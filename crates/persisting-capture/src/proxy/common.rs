@@ -7,14 +7,14 @@ use bytes::Bytes;
 use serde_json::Value;
 
 use super::state::ProxyState;
-use crate::capture_call::CaptureCall;
 use crate::config::ProxyConfig;
 use crate::engine::headers_to_vec;
-use crate::engine::CaptureInvocation;
+use crate::engine::CallContext;
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
 use crate::run_config::load_session_proxy_config;
 use crate::session_storage::{route_config_key, CaptureRoute};
+use crate::Call;
 
 pub(crate) fn effective_config(state: &ProxyState, route: &CaptureRoute) -> Arc<ProxyConfig> {
     load_session_proxy_config(state.storage.as_path(), route_config_key(route))
@@ -23,31 +23,31 @@ pub(crate) fn effective_config(state: &ProxyState, route: &CaptureRoute) -> Arc<
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn capture_invocation(
+pub(crate) fn call_context(
     state: &ProxyState,
     route: &CaptureRoute,
     agent_id: &str,
-    call: &CaptureCall,
+    call: &Call,
     headers: &HeaderMap,
     client_model: &str,
     upstream_model: &str,
     provider: ProviderKind,
     protocol: ProtocolKind,
     debug_on: bool,
-) -> CaptureInvocation {
+) -> CallContext {
     let cfg = effective_config(state, route);
-    CaptureInvocation {
-        route: route.clone(),
-        agent_id: agent_id.to_string(),
-        call: call.clone(),
-        request_headers: headers_to_vec(headers),
-        level: cfg.capture_level,
-        client_model: client_model.to_string(),
-        upstream_model: upstream_model.to_string(),
+    CallContext::new(
+        route.clone(),
+        agent_id,
+        call.clone(),
+        headers_to_vec(headers),
+        cfg.capture_level,
+        client_model,
+        upstream_model,
         provider,
         protocol,
         debug_on,
-    }
+    )
 }
 
 pub(crate) fn extract_model(body: &Bytes) -> Option<String> {
@@ -57,7 +57,7 @@ pub(crate) fn extract_model(body: &Bytes) -> Option<String> {
 
 pub(crate) fn attach_capture_headers(
     builder: axum::http::response::Builder,
-    call: &CaptureCall,
+    call: &Call,
 ) -> axum::http::response::Builder {
     builder
         .header("x-persisting-call-id", call.call_id.as_str())

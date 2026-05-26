@@ -1,54 +1,68 @@
-//! Per-session actor commands — one variant per I/O effect.
+//! Per-story actor commands — one variant per I/O effect.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use super::super::story::{Story, StoryContext};
+use super::CaptureAck;
 use crate::markdown_trajectory::BlockHeader;
-use crate::session_storage::CaptureRoute;
 
-use super::super::CaptureInvocation;
-
-/// Routing identity shared by every session command (`storage` lives on [`SessionActorDeps`]).
+/// Routing identity for every story command.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct SessionScope {
-    pub route: CaptureRoute,
-    pub agent_id: String,
+pub(crate) struct StoryScope {
+    pub context: StoryContext,
 }
 
-impl SessionScope {
-    pub fn from_invocation(inv: &CaptureInvocation) -> Self {
+impl StoryScope {
+    pub fn from_context(ctx: &super::super::CallContext) -> Self {
         Self {
-            route: inv.route.clone(),
-            agent_id: inv.agent_id.clone(),
+            context: ctx.story.clone(),
         }
+    }
+
+    pub fn route(&self) -> &crate::session_storage::CaptureRoute {
+        &self.context.route
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.context.agent_id
     }
 }
 
-/// Commands handled by [`super::super::actors::session::CaptureSessionActor`].
+/// Commands handled by [`super::super::actors::StoryActor`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum SessionCommand {
+pub(crate) enum StoryCommand {
     /// Append one record to Lance/sink and sync live markdown.
     PersistRecord {
-        scope: SessionScope,
+        scope: StoryScope,
         /// JSON-encoded [`crate::record::CaptureRecord`].
         record_json: String,
     },
     /// Upsert streaming assistant draft in live markdown only (no sink append).
     UpsertDraft {
-        scope: SessionScope,
+        scope: StoryScope,
         draft_json: String,
     },
     /// Drain mailbox before shutdown (no I/O).
     Flush,
+    /// Read-model snapshot (no I/O).
+    Snapshot { scope: StoryScope },
 }
 
-impl SessionCommand {
-    pub fn persist_record(scope: SessionScope, record_json: String) -> Self {
+/// Reply from [`super::super::actors::StoryActor`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) enum StoryReply {
+    Ack(CaptureAck),
+    Snapshot { story: Story },
+}
+
+impl StoryCommand {
+    pub fn persist_record(scope: StoryScope, record_json: String) -> Self {
         Self::PersistRecord { scope, record_json }
     }
 
     pub fn upsert_draft(
-        scope: SessionScope,
+        scope: StoryScope,
         call_id: impl Into<String>,
         header: BlockHeader,
         body: Vec<u8>,
@@ -66,9 +80,11 @@ impl SessionCommand {
         })
     }
 
-    pub fn scope(&self) -> &SessionScope {
+    pub fn scope(&self) -> &StoryScope {
         match self {
-            Self::PersistRecord { scope, .. } | Self::UpsertDraft { scope, .. } => scope,
+            Self::PersistRecord { scope, .. }
+            | Self::UpsertDraft { scope, .. }
+            | Self::Snapshot { scope } => scope,
             Self::Flush => panic!("Flush has no scope"),
         }
     }
@@ -87,22 +103,25 @@ pub(crate) struct DraftPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture_call::CaptureCall;
     use crate::config::CaptureLevel;
+    use crate::session_storage::CaptureRoute;
     use crate::sink::llm_request_summary_record;
+    use crate::Call;
 
     #[test]
-    fn session_command_bincode_roundtrip() {
-        let scope = SessionScope {
-            route: CaptureRoute {
-                root_session: Some("run".into()),
-                session_id: "s".into(),
-                storage_session_id: "s".into(),
-                subagent_id: None,
-            },
-            agent_id: "agent".into(),
+    fn story_command_bincode_roundtrip() {
+        let scope = StoryScope {
+            context: StoryContext::from_route(
+                CaptureRoute {
+                    root_session: Some("run".into()),
+                    session_id: "s".into(),
+                    storage_session_id: "s".into(),
+                    subagent_id: None,
+                },
+                "agent",
+            ),
         };
-        let call = CaptureCall {
+        let call = Call {
             call_id: "c".into(),
             trace_id: "t".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
@@ -121,9 +140,9 @@ mod tests {
             CaptureLevel::Dialogue,
             None,
         );
-        let cmd = SessionCommand::persist_record(scope, serde_json::to_string(&rec).unwrap());
+        let cmd = StoryCommand::persist_record(scope, serde_json::to_string(&rec).unwrap());
         let packed = pulsing_actor::Message::pack(&cmd).expect("pack");
-        let back: SessionCommand = packed.unpack().expect("unpack");
-        assert!(matches!(back, SessionCommand::PersistRecord { .. }));
+        let back: StoryCommand = packed.unpack().expect("unpack");
+        assert!(matches!(back, StoryCommand::PersistRecord { .. }));
     }
 }
