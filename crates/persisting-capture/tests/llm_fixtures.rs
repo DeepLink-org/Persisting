@@ -1,4 +1,6 @@
 //! Regression tests using agentgateway LLM JSON fixtures (copied under `tests/fixtures/`).
+//!
+//! Source and license: `tests/fixtures/README.md`.
 
 use bytes::Bytes;
 use persisting_capture::conversion::{

@@ -1,4 +1,6 @@
 //! Conversion + capture regression tests driven by agentgateway LLM fixtures.
+//!
+//! Source and license: `tests/fixtures/README.md`.
 
 mod support;
 

@@ -1,4 +1,6 @@
 //! Helpers for agentgateway LLM fixtures under `tests/fixtures/`.
+//!
+//! Fixture provenance and Apache-2.0 attribution: see `tests/fixtures/README.md`.
 
 use std::fs;
 use std::path::PathBuf;
