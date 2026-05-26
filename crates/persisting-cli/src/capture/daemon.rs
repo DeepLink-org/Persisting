@@ -27,7 +27,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     }
 
     let exe = std::env::current_exe().context("current_exe")?;
-    let config = ProxyConfig::from_yaml_file(&opts.config)
+    let config = ProxyConfig::from_file(&opts.config)
         .with_context(|| format!("load proxy config {}", opts.config.display()))?;
     let env_snap = persisting_capture::snapshot_daemon_env(&opts.output_dir, &config)
         .with_context(|| format!("snapshot daemon env for {}", opts.output_dir.display()))?;

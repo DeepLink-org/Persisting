@@ -1,6 +1,6 @@
 //! [`CaptureRuntime`] — orchestrates prepare → registry → session actors.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -9,17 +9,26 @@ use dashmap::DashMap;
 use pulsing_actor::prelude::*;
 
 use super::actors::{CaptureSessionActor, SessionActorDeps, SubagentRegistryActor};
+use super::apply_queue::ApplyDispatcher;
 use super::prepare::CapturePreparer;
-use super::types::{CaptureEvent, CaptureInvocation};
 use super::wire::{
     registry_main_route, CaptureAck, SessionCommand, SessionScope, REGISTRY_ACTOR_NAME,
 };
+use super::{CaptureEvent, CaptureInvocation};
 use crate::dead_letter;
 use crate::session_index::SessionIndexHandle;
 use crate::sink::CaptureSink;
 use crate::subagent_link::{spawn_link_backfill_record, SpawnLinkBackfill};
 
 const SESSION_MAILBOX: usize = 256;
+
+pub(crate) struct CaptureRuntimeInner {
+    system: Arc<ActorSystem>,
+    preparer: Arc<CapturePreparer>,
+    registry: ActorRef,
+    pub(crate) session_deps: SessionActorDeps,
+    sessions: Arc<DashMap<String, ActorRef>>,
+}
 
 /// Actor topology (one ActorSystem per proxy):
 ///
@@ -30,11 +39,8 @@ const SESSION_MAILBOX: usize = 256;
 /// ```
 #[derive(Clone)]
 pub struct CaptureRuntime {
-    system: Arc<ActorSystem>,
-    preparer: Arc<CapturePreparer>,
-    registry: ActorRef,
-    session_deps: SessionActorDeps,
-    sessions: Arc<DashMap<String, ActorRef>>,
+    inner: Arc<CaptureRuntimeInner>,
+    apply_dispatcher: ApplyDispatcher,
 }
 
 impl CaptureRuntime {
@@ -55,35 +61,63 @@ impl CaptureRuntime {
             .await
             .map_err(pulsing_err)?;
 
-        Ok(Self {
+        let sink = Arc::clone(&sink);
+        let inner = Arc::new(CaptureRuntimeInner {
             system,
             preparer: Arc::new(CapturePreparer {
                 sink: Arc::clone(&sink),
                 index,
+                storage: Arc::clone(&storage),
                 stream_markdown,
             }),
             registry,
-            session_deps: SessionActorDeps::new(sink, storage, stream_markdown),
+            session_deps: SessionActorDeps::new(sink, Arc::clone(&storage), stream_markdown),
             sessions: Arc::new(DashMap::new()),
+        });
+        let apply_dispatcher = ApplyDispatcher::new(Arc::clone(&inner));
+        Ok(Self {
+            inner,
+            apply_dispatcher,
         })
     }
 
+    /// Enqueue a capture event on the per-session ordered apply queue (non-blocking for callers).
+    pub fn spawn_apply(&self, inv: CaptureInvocation, event: CaptureEvent) {
+        self.apply_dispatcher.enqueue(inv, event);
+    }
+
     pub async fn apply(&self, inv: &CaptureInvocation, event: CaptureEvent) -> Result<()> {
-        let storage = self.session_deps.storage.as_path();
-        match self.apply_inner(inv, &event).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                record_dead_letter(storage, inv, &event, &e, None);
-                Err(e)
-            }
-        }
+        self.inner.apply(inv, event).await
+    }
+
+    pub async fn shutdown(self) -> Result<()> {
+        self.flush().await?;
+        self.inner.system.shutdown().await.map_err(pulsing_err)
+    }
+
+    /// Wait until all session mailboxes have drained queued commands (for tests and graceful shutdown).
+    pub async fn flush(&self) -> Result<()> {
+        self.inner.flush_sessions().await
+    }
+}
+
+impl CaptureRuntimeInner {
+    pub(crate) async fn apply(&self, inv: &CaptureInvocation, event: CaptureEvent) -> Result<()> {
+        self.apply_inner(inv, &event).await
     }
 
     async fn apply_inner(&self, inv: &CaptureInvocation, event: &CaptureEvent) -> Result<()> {
-        let mut prepared = self
+        let mut prepared = match self
             .preparer
             .prepare(&self.registry, inv, event.clone())
-            .await?;
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                record_dead_letter(self.session_deps.storage.as_path(), inv, event, &e, None);
+                return Err(e);
+            }
+        };
 
         if !prepared.backfills.is_empty() {
             let main = registry_main_route(&self.registry, &prepared.inv.route).await?;
@@ -93,7 +127,7 @@ impl CaptureRuntime {
 
         if let Some(cmd) = prepared.take_session_command() {
             let record_json = persist_record_json(&cmd);
-            if let Err(e) = self.dispatch_session_tell(&inv.route.seq_key(), cmd).await {
+            if let Err(e) = self.dispatch_session(&inv.route.seq_key(), cmd).await {
                 record_dead_letter(
                     self.session_deps.storage.as_path(),
                     inv,
@@ -108,16 +142,6 @@ impl CaptureRuntime {
         Ok(())
     }
 
-    pub async fn shutdown(self) -> Result<()> {
-        self.flush_sessions().await?;
-        self.system.shutdown().await.map_err(pulsing_err)
-    }
-
-    /// Wait until all session mailboxes have drained queued commands (for tests and graceful shutdown).
-    pub async fn flush(&self) -> Result<()> {
-        self.flush_sessions().await
-    }
-
     async fn flush_sessions(&self) -> Result<()> {
         for entry in self.sessions.iter() {
             let actor = entry.value().clone();
@@ -130,14 +154,10 @@ impl CaptureRuntime {
         Ok(())
     }
 
-    async fn dispatch_session_tell(&self, seq_key: &str, cmd: SessionCommand) -> Result<()> {
+    async fn dispatch_session(&self, seq_key: &str, cmd: SessionCommand) -> Result<()> {
         let actor = self.session_actor(seq_key).await?;
-        if cfg!(test) {
-            let ack: CaptureAck = actor.ask(cmd).await.map_err(pulsing_err)?;
-            ack.into_result()
-        } else {
-            actor.tell(cmd).await.map_err(pulsing_err)
-        }
+        let ack: CaptureAck = actor.ask(cmd).await.map_err(pulsing_err)?;
+        ack.into_result()
     }
 
     async fn dispatch_backfills(
@@ -154,9 +174,10 @@ impl CaptureRuntime {
         for bf in backfills {
             let rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, &inv.call);
             let record_json = serde_json::to_string(&rec)?;
-            let cmd = SessionCommand::persist_record(scope.clone(), record_json.clone());
-            if let Err(e) = actor.tell(cmd).await.map_err(pulsing_err) {
-                tracing::warn!("spawn link backfill tell: {e:#}");
+            let cmd = SessionCommand::persist_record(scope.clone(), record_json);
+            let ack: CaptureAck = actor.ask(cmd).await.map_err(pulsing_err)?;
+            if let Err(e) = ack.into_result() {
+                tracing::warn!("spawn link backfill failed: {e:#}");
             }
         }
         Ok(())
@@ -206,7 +227,7 @@ fn persist_record_json(cmd: &SessionCommand) -> Option<String> {
 }
 
 fn record_dead_letter(
-    storage: &std::path::Path,
+    storage: &Path,
     inv: &CaptureInvocation,
     event: &CaptureEvent,
     error: &anyhow::Error,

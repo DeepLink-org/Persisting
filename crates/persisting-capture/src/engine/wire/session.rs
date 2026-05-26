@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::markdown_trajectory::BlockHeader;
 use crate::session_storage::CaptureRoute;
 
-use super::super::types::CaptureInvocation;
+use super::super::CaptureInvocation;
 
 /// Routing identity shared by every session command (`storage` lives on [`SessionActorDeps`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,34 +1,21 @@
-//! Event-driven capture on pulsing-actor.
-//!
-//! ## Layers
-//!
-//! ```text
-//! types      Domain — CaptureInvocation + CaptureEvent (proxy boundary)
-//! prepare    Compute records + backfills (runtime thread, may ask registry)
-//! wire       Serializable actor commands (bincode + JSON payloads)
-//! actors     Mailbox handlers (registry + per-session I/O)
-//! runtime    Orchestrator — prepare → dispatch
-//! ```
-//!
-//! ## Actor topology
-//!
-//! ```text
-//! CaptureRuntime
-//!   ├── capture/subagent-registry   RegistryCommand → RegistryReply
-//!   └── capture/session/{seq_key}   SessionCommand  → CaptureAck
-//! ```
-
 mod actors;
+mod apply_queue;
+mod event;
+mod invocation;
+mod markdown_policy;
 mod prepare;
 mod runtime;
-mod types;
 mod wire;
 
-pub use runtime::CaptureEngine;
-pub use types::{
-    CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured, LlmResponseCompleted,
+pub(crate) use wire::headers_to_vec;
+
+pub use event::{
+    CaptureEvent, LlmCallCancelled, LlmRequestCaptured, LlmResponseCompleted,
     LlmResponseDraftUpdated,
 };
+pub use invocation::CaptureInvocation;
+pub use markdown_policy::{should_refresh_frontmatter, should_skip_record};
+pub use runtime::CaptureEngine;
 
 #[cfg(test)]
 mod tests;

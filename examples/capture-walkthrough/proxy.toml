@@ -1,0 +1,11 @@
+# capture-walkthrough 代理：19081 → 本地 Mock LLM 19080
+# 配合 agent.py 使用，见 README.md
+
+listen = "127.0.0.1:19081"
+admin_listen = "127.0.0.1:19082"
+agent_id = "demo-agent"
+session_header = "x-persisting-session-id"
+
+[[models]]
+name = "*"
+upstream = "http://127.0.0.1:19080/v1"

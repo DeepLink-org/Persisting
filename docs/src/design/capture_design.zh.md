@@ -1,6 +1,6 @@
 # LLM Capture 代理 — 完整架构设计
 
-> **版本**：v0.2.0 &emsp;|&emsp; **最后更新**：2026-05-24
+> **版本**：v0.3.0 &emsp;|&emsp; **最后更新**：2026-05-25
 
 ---
 
@@ -54,91 +54,108 @@ Agent 进程                        上游 LLM
 ```mermaid
 graph TD
     subgraph "入口层"
-        A1["proxy/mod.rs<br/>HTTP Handler"]:::accent0
+        A1["proxy/dispatch.rs<br/>HTTP 入口"]:::accent0
     end
 
-    subgraph "路由 & 鉴权"
+    subgraph "Agent 侧注入 (injection/)"
+        A0a["injection/env.rs<br/>子进程 env / SDK base URL"]:::accent6
+        A0b["injection/peer.rs<br/>lsof 对端进程探测"]:::accent6
+    end
+
+    subgraph "LLM 网关 (proxy/)"
         A2["proxy/router.rs<br/>模型名匹配 & forward"]:::accent1
-        A3["proxy/auth.rs<br/>API Key 注入"]:::accent1
+        A3["proxy/auth.rs<br/>上游 API Key"]:::accent1
+        A3b["proxy/upstream.rs<br/>上游 body 编排"]:::accent1
+        A3c["proxy/model.rs<br/>forward model 改写"]:::accent1
+        A3d["proxy/reasoning.rs<br/>DeepSeek reasoning 回放"]:::accent1
         A4["proxy/http_headers.rs<br/>Hop-by-hop 过滤"]:::accent1
+        A4c["proxy/llm_capture.rs<br/>LLM handler + spawn_apply"]:::accent1
+        A4d["proxy/streaming.rs<br/>SSE 流式"]:::accent1
     end
 
-    subgraph "协议转换"
+    subgraph "协议转换 (conversion/)"
         A5["conversion/mod.rs<br/>ProtocolBridge 决策"]:::accent2
-        A6["conversion/messages_completions.rs<br/>Anthropic ↔ OpenAI 互转"]:::accent2
-        A7["conversion/responses_completions.rs<br/>Responses ↔ Completions 互转"]:::accent2
-        A8["conversion/stream.rs<br/>SSE 流式翻译 (→ Messages)"]:::accent2
-        A9["conversion/responses_stream.rs<br/>SSE 流式翻译 (→ Responses)"]:::accent2
+        A6["conversion/messages_completions.rs"]:::accent2
+        A7["conversion/responses_completions.rs"]:::accent2
+        A8["conversion/stream.rs<br/>SSE → Messages"]:::accent2
+        A9["conversion/responses_stream.rs<br/>SSE → Responses"]:::accent2
     end
 
     subgraph "采集运行时 (engine/)"
-        A10a["engine/types.rs<br/>CaptureEvent 边界"]:::accent3
+        A10q["engine/apply_queue.rs<br/>per-seq_key 有序 apply"]:::accent3
+        A10a["engine/event.rs + invocation.rs<br/>CaptureEvent / CaptureInvocation"]:::accent3
+        A10p["engine/markdown_policy.rs<br/>markdown 过滤规则"]:::accent3
         A10b["engine/prepare.rs<br/>建 record + registry enrich"]:::accent3
         A10c["engine/runtime.rs<br/>CaptureRuntime 编排"]:::accent3
         A10d["engine/actors/<br/>registry + session actor"]:::accent3
-        A10e["engine/io/markdown.rs<br/>live md upsert + frontmatter"]:::accent3
     end
 
-    subgraph "采集 & 存储"
+    subgraph "采集 & 存储 (storage/)"
         A10["storage/sink.rs<br/>CaptureSink + Record 构造"]:::accent3
         A11["storage/record.rs<br/>CaptureRecord ↔ RON"]:::accent3
-        A12["storage/markdown.rs<br/>TLV Markdown 解析/写入"]:::accent3
+        A12["storage/markdown.rs<br/>TLV 解析/upsert"]:::accent3
+        A12p["storage/markdown_pipeline.rs<br/>过滤 + live/batch/reconcile"]:::accent3
         A12b["storage/frontmatter.rs<br/>会话 YAML 摘要"]:::accent3
-        A13["storage/lance_row.rs<br/>LanceEventRow 列存"]:::accent3
-        A14["storage/convert.rs<br/>Lance ↔ Markdown 双向物化"]:::accent3
-        A15["storage/dialogue.rs<br/>Record ↔ Block 转换 + 过滤"]:::accent3
-        A15b["dead_letter.rs<br/>失败事件 JSONL"]:::accent3
+        A13["storage/lance_row.rs<br/>LanceEventRow"]:::accent3
+        A14["storage/convert.rs<br/>Lance ↔ Markdown 物化"]:::accent3
+        A15["storage/dialogue.rs<br/>Record ↔ Block codec"]:::accent3
+        A15b["dead_letter.rs<br/>capture + Lance 失败 JSONL"]:::accent3
         A15c["reconcile.rs<br/>run 结束 md↔Lance 对账"]:::accent3
     end
 
     subgraph "会话 & 生命周期"
-        A16["session/call.rs<br/>CaptureCall 标识"]:::accent4
+        A16["session/call.rs<br/>CaptureCall"]:::accent4
         A17["session/chain.rs<br/>Header → session_id"]:::accent4
-        A18["session/index.rs<br/>SessionIndex 聚合"]:::accent4
+        A18["session/index.rs<br/>SessionIndex"]:::accent4
         A19["storage/lifecycle.rs<br/>session.started/ended"]:::accent4
-        A20["storage/session.rs<br/>CaptureRoute 路由"]:::accent4
+        A20["storage/session.rs<br/>CaptureRoute"]:::accent4
+        A20b["storage/session_client.rs<br/>client meta 持久化"]:::accent4
     end
 
     subgraph "周边能力"
-        A21["storage/subagent_link.rs<br/>子代理注册 & 链接回填"]:::accent5
-        A22["session/peer_process.rs<br/>lsof 客户端检测"]:::accent5
-        A23["usage.rs<br/>Token 提取 & 成本估算"]:::accent5
-        A24["proxy/deepseek_reasoning.rs<br/>推理内容缓存"]:::accent5
+        A21["storage/subagent_link.rs<br/>子代理 spawn link"]:::accent5
+        A23["usage.rs<br/>Token & 成本"]:::accent5
         A25["runtime/debug.rs<br/>调试日志"]:::accent5
-        A26["runtime/run_env.rs<br/>运行环境注入"]:::accent5
+        A26["runtime/run_env.rs<br/>daemon.env 快照"]:::accent5
     end
 
     A1 --> A2
     A1 --> A3
+    A1 --> A3b
+    A3b --> A3c
+    A3b --> A5
+    A3b --> A3d
     A1 --> A5
     A5 --> A6
     A5 --> A7
     A5 --> A8
     A5 --> A9
-    A1 --> A10a
+    A1 --> A4c
+    A4c --> A4d
+    A4c --> A4b
+    A4d --> A4b
+    A4b --> A10q
+    A10q --> A10a
     A10a --> A10b
     A10b --> A10c
     A10c --> A10d
-    A10d --> A10e
     A10d --> A10
-    A10 --> A11
-    A10 --> A12
+    A10d --> A12p
+    A12p --> A12
     A12 --> A12b
+    A10 --> A11
     A10 --> A13
-    A14 --> A11
-    A14 --> A12
-    A14 --> A13
-    A10 --> A15
+    A14 --> A12p
+    A15 --> A12p
     A10c --> A15b
     A1 --> A16
     A1 --> A17
+    A1 --> A0b
+    A0b --> A20b
+    A0a -.->|"capture run 子进程"| A1
     A1 --> A18
-    A1 --> A19
-    A1 --> A20
     A1 --> A21
-    A1 --> A22
     A1 --> A23
-    A9 --> A24
 
     classDef accent0 fill:#e1bee7,stroke:#7b1fa2,color:#000
     classDef accent1 fill:#bbdefb,stroke:#1565c0,color:#000
@@ -146,22 +163,48 @@ graph TD
     classDef accent3 fill:#fff9c4,stroke:#f9a825,color:#000
     classDef accent4 fill:#ffccbc,stroke:#d84315,color:#000
     classDef accent5 fill:#d7ccc8,stroke:#4e342e,color:#000
+    classDef accent6 fill:#e0f2f1,stroke:#00695c,color:#000
 ```
 
 ### 2.2 模块职责矩阵
 
 | 模块 | 核心职责 | 关键结构 |
 |------|---------|---------|
-| `proxy/mod.rs` | HTTP 调度、主 handler、流式处理 | `ProxyState`, `llm_capture()`, `spawn_capture_apply()` |
-| `proxy/capture_dispatch.rs` | 采集 fire-and-forget | `spawn_capture_apply()` |
-| `proxy/router.rs` | 模型名匹配、forward 链、body 改写 | `ResolvedRoute`, `resolve_route()` |
+| `injection/env.rs` | **`capture run` 子进程 env 注入**（HTTP_PROXY、OPENAI_BASE_URL 等） | `proxy_environment()`, `client_gateway_config_args()` |
+| `injection/peer.rs` | **TCP peer → PID / command line 探测**（lsof/ps） | `resolve_peer_client()` |
+| `proxy/state.rs` | `ProxyState`、serve 生命周期 | `serve_with_shutdown_and_ready()` |
+| `proxy/dispatch.rs` | HTTP 入口路由（CONNECT / forward / capture） | `build_router()`, `dispatch()` |
+| `proxy/llm_capture.rs` | LLM 请求编排 + 非流式响应 | `llm_capture()` |
+| `proxy/streaming.rs` | SSE 流式翻译 + draft/final 采集 | `streaming_llm_response()` |
+| `proxy/common.rs` | capture 共享 helper | `capture_invocation()`, `effective_config()` |
+| `engine/event.rs` / `engine/invocation.rs` | 采集事件与调用上下文 | `CaptureEvent`, `CaptureInvocation` |
+| `engine/markdown_policy.rs` | markdown 无状态过滤规则 | `should_skip_record`, `should_refresh_frontmatter` |
+| `proxy/router.rs` | 模型名匹配、forward 链 | `ResolvedRoute`, `resolve_route()` |
+| `proxy/upstream.rs` | 上游 body 编排（model 改写 + ProtocolBridge） | `prepare_upstream_body()` |
+| `proxy/auth.rs` | 上游 API Key / Header | `apply_upstream_headers()` |
+| `proxy/reasoning.rs` | DeepSeek tool-call reasoning 回放 | `ReasoningCacheHandle` |
+| `engine/apply_queue.rs` | **per-`seq_key` 有序 apply 队列** | `ApplyDispatcher` |
 | `engine/` | V3 采集运行时 | `CaptureEngine`, `CapturePreparer`, session/registry actors |
-| `dead_letter.rs` / `reconcile.rs` | 失败重放 / run 结束对账 | JSONL dead letter, `reconcile.json` |
-| `storage/frontmatter.rs` | Markdown YAML 会话摘要 | `SessionFrontmatterSummary` |
-| `storage/sink.rs` | Record 构造工厂 | `llm_request_summary_record()` |
-| `storage/markdown.rs` | TLV block Markdown 读写 | `MarkdownBlock`, `upsert_block_by_call_id()` |
+| `storage/markdown_pipeline.rs` | **Markdown 过滤 + live/batch/reconcile 唯一入口** | `MarkdownPipeline`, `LiveMarkdownWriter` |
+| `dead_letter.rs` / `reconcile.rs` | capture / Lance 失败重放、run 结束对账 | `dead_letter.jsonl`, `lance_dead_letter.jsonl`, `reconcile.json` |
+| `storage/sink.rs` | Record 构造 + `user_message_count` stamp | `llm_request_summary_record()` |
+| `storage/markdown.rs` | TLV block 读写 | `upsert_block_by_call_id()` |
 | `session/index.rs` | 内存 + JSON 文件索引 | `SessionIndex` |
-| `storage/subagent_link.rs` | 子代理 spawn link 追踪 | `SubagentRegistryActor` |
+| `storage/subagent_link.rs` | 子代理 spawn link | `SubagentRegistryActor` |
+
+### 2.3 三条主路径（边界说明）
+
+```text
+┌─────────────────┐   ┌──────────────────────┐   ┌─────────────────────────┐
+│  injection/     │   │  proxy/ + conversion/ │   │  engine/ + storage/     │
+│  Agent 侧       │   │  LLM HTTP 网关        │   │  轨迹采集与存储          │
+├─────────────────┤   ├──────────────────────┤   ├─────────────────────────┤
+│ env: 子进程环境  │   │ router → upstream    │   │ apply_queue → prepare   │
+│ peer: 谁连进来   │   │ auth → 上游转发        │   │ session actor → sink/md │
+└─────────────────┘   └──────────────────────┘   └─────────────────────────┘
+```
+
+**不属于 `injection/`**：上游 API Key（`proxy/auth`）、model 改写（`proxy/model`）、协议桥（`conversion/`）、Markdown 过滤（`storage/markdown_pipeline`）。
 
 ---
 
@@ -188,15 +231,16 @@ sequenceDiagram
     end
 
     rect rgb(227, 242, 253)
-        Note over Proxy: 阶段 2: Request Capture（非阻塞）
-        Proxy->>Proxy: spawn_capture_apply(LlmRequest)
-        Engine->>Sink: append llm.request（后台）
+        Note over Proxy: 阶段 2: Request Capture（非阻塞 + 有序）
+        Proxy->>Proxy: spawn_apply(LlmRequest)
+        Note over Engine: ApplyDispatcher 按 seq_key 串行
+        Engine->>Sink: append llm.request
         Engine->>Storage: upsert md user block (-f md)
     end
 
     rect rgb(232, 245, 233)
-        Note over Proxy: 阶段 3: Protocol Bridge
-        Proxy->>Proxy: Messages → Completions / rewrite model
+        Note over Proxy: 阶段 3: Upstream Body Prep
+        Proxy->>Proxy: prepare_upstream_body(model + bridge)
     end
 
     rect rgb(255, 243, 224)
@@ -209,7 +253,7 @@ sequenceDiagram
         Note over Proxy: 阶段 5: Stream Translate + Live Markdown
         loop each SSE chunk (150ms 节流)
             Proxy->>Proxy: translate chunk
-            Proxy->>Proxy: spawn_capture_apply(DraftUpdated)
+            Proxy->>Proxy: spawn_apply(DraftUpdated)
             Engine->>Storage: upsert md assistant draft
             Proxy->>Agent: proxied SSE
         end
@@ -218,10 +262,10 @@ sequenceDiagram
     rect rgb(243, 229, 245)
         Note over Proxy: 阶段 6: Finalize（非阻塞）
         alt 客户端提前断开
-            Proxy->>Proxy: spawn_capture_apply(LlmCallCancelled)
+            Proxy->>Proxy: spawn_apply(LlmCallCancelled)
             Engine->>Sink: append llm.call.cancelled（仅 Lance）
         else 正常结束
-            Proxy->>Proxy: spawn_capture_apply(LlmResponseCompleted)
+            Proxy->>Proxy: spawn_apply(LlmResponseCompleted)
             Engine->>Engine: usage + cost
             Engine->>Sink: append llm.response.stream
             Engine->>Storage: upsert md assistant (final)
@@ -439,13 +483,14 @@ Lance:               (无)           (无)                     llm.response.stre
 采集链路分为 **Proxy 调度（非阻塞）**、**编排运行时**、**prepare 计算** 与 **持久化 sink** 四层：
 
 ```text
-Proxy (spawn_capture_apply)
+Proxy (spawn_apply → ApplyDispatcher)
   └── CaptureEngine (= CaptureRuntime)
+        ├── engine/apply_queue.rs   per-seq_key 有序消费 apply
         ├── prepare（runtime 线程：index + 建 record + registry ask）
         ├── capture/subagent-registry   RegistryCommand → RegistryReply
         └── capture/session/{seq_key}   SessionCommand  → CaptureAck
-              └── sink.append + live md upsert + frontmatter refresh
-                    （按 seq_key 邮箱串行；生产环境 session 侧 tell，不阻塞 proxy）
+              └── sink.append + LiveMarkdownWriter（markdown_pipeline）
+                    （session 侧 ask，失败 → dead letter）
 ```
 
 ```rust
@@ -470,9 +515,11 @@ pub trait CaptureSink: Send + Sync {
 
 | 机制 | 行为 |
 |------|------|
-| `spawn_capture_apply` | Proxy **不 await** 完整 `apply`；upstream 响应优先返回 |
-| session `tell` | 生产环境 session I/O  fire-and-forget；`shutdown` 前 `Flush` drain mailbox |
-| dead letter | `apply` 失败 → `.capture/dead_letter.jsonl`；`capture replay-dead-letter` 重放 |
+| `spawn_apply` | Proxy **不 await** `apply`；upstream 响应优先返回 |
+| `ApplyDispatcher` | 同一 `seq_key` 内 Request / Draft / Complete **有序** apply |
+| session `ask` | 生产环境等待 session actor 处理结果；失败写 dead letter（含 `prepared_record_json`） |
+| `dead_letter.jsonl` | prepare / session 失败 → 可 `capture replay-dead-letter` 重放 |
+| `lance_dead_letter.jsonl` | CLI worker Lance flush 失败 → 保留 RONL batch |
 | 采集错误 | **不上抛** 到 HTTP handler；仅 warn + dead letter |
 
 **职责划分**：
@@ -482,9 +529,10 @@ pub trait CaptureSink: Send + Sync {
 | `CapturePreparer` | 处理 `CaptureEvent`；request/completed 时 index + registry enrich；draft 仅 peek seq + 建 md 块 |
 | `SubagentRegistryActor` | 单例 mailbox 串行 spawn-link 状态 |
 | `CaptureSessionActor` | 每 `seq_key` 一个 actor；`PersistRecord` / `UpsertDraft` / `Flush` |
-| `engine/io/markdown.rs` | live upsert 后刷新 YAML frontmatter 摘要（turns / tokens / cost / subagents） |
+| `storage/markdown_pipeline.rs` | 过滤（含 history replay dedup）+ `LiveMarkdownWriter` + batch/reconcile 共用 |
+| `storage/frontmatter.rs` | live upsert 后刷新 YAML 摘要（turns / tokens / cost / subagents） |
 | `CallbackSink` | 按 `seq_key` 分配单调 seq，委托 CLI worker 批量写 Lance |
-| `TrajectoryAppendWorker` | 缓冲 RON lines → Lance flush（**不写** live md；`stream_markdown=false`） |
+| `TrajectoryAppendWorker` | 缓冲 RON lines → Lance flush（**不写** live md；失败 → `lance_dead_letter.jsonl`） |
 
 Proxy 在 `serve_with_shutdown_and_ready(..., stream_markdown)` 中 `CaptureEngine::new(...).await`；`capture run -f md` 传 `stream_markdown=true`。`storage` 在 runtime 启动时注入 session actor，不随每条 wire 消息重复传递。
 
@@ -505,8 +553,9 @@ CaptureRecord
      │
      ├──→ TLV Markdown         ← materialized view: 人类可读对话块 + YAML 会话摘要
      │
-     ├──→ .capture/dead_letter.jsonl   ← 采集失败事件（可 replay）
-     └──→ .capture/reconcile.json      ← capture run 结束 md↔Lance 轻量对账
+     ├──→ .capture/dead_letter.jsonl        ← CaptureEvent apply 失败（可 replay）
+     ├──→ .capture/lance_dead_letter.jsonl  ← Lance worker flush 失败
+     └──→ .capture/reconcile.json           ← capture run 结束 md↔Lance 轻量对账
 ```
 
 ### 7.2 目录布局
@@ -515,7 +564,8 @@ CaptureRecord
 {storage_root}/
 ├── .capture/
 │   ├── sessions.json           ← 全局会话索引
-│   ├── dead_letter.jsonl       ← 采集失败事件（JSONL，可 replay）
+│   ├── dead_letter.jsonl       ← CaptureEvent apply 失败（可 replay）
+│   ├── lance_dead_letter.jsonl ← Lance worker flush 失败
 │   ├── reconcile.json          ← run 结束 md vs Lance 对账报告
 │   ├── debug.log               ← 可选调试日志
 │   ├── run_session             ← capture run 的 run_id
@@ -534,17 +584,20 @@ CaptureRecord
 │       └── session-meta.yaml
 ```
 
-### 7.3 Materialize 过滤规则
+### 7.3 Markdown 过滤规则
 
-从 Lance materialize 到 Markdown 时，`storage/dialogue.rs` 的 `skip_markdown_block()` 会跳过以下内容：
+live / materialize / reconcile **统一**经 `storage/markdown_pipeline.rs` 的 `MarkdownPipeline`（`should_skip` 含 history replay dedup；`skip_markdown_block()` 仅为静态过滤别名，供测试/CLI 使用）。
 
 | 跳过项 | 原因 |
 |--------|------|
 | `count_tokens` 探测请求 | 内部流量，非对话内容 |
+| history replay（`user_message_count` 未增） | Claude Code 重发全量 history，无新 user turn |
 | 无可见文本的空白 turn | 无信息量 |
 | `session.started/ended/state` | 生命周期事件，不在对话中展示 |
-| 主 session 的 flash/haiku 影子请求 | Claude Code 在 pro 之前发的预热探测，与 pro 内容重复 |
+| `llm.call.cancelled` | 仅 Lance；不进 Markdown |
+| 主 session 的 flash/haiku 影子请求 | Claude Code 预热探测，与 pro 内容重复 |
 | 内部 suggestion 请求 | Claude Code 的内部优化流量 |
+| `llm.spawn_link` | **不跳过**，始终保留 |
 
 ### 7.4 TLV Markdown 格式与 Frontmatter 摘要
 
@@ -713,10 +766,10 @@ streaming 路径:
      tokio::spawn bg task
           ├── upstream 消费 (reqwest stream)
           ├── SSE 翻译 (translator)
-          ├── spawn_capture_apply(DraftUpdated)   ← 非阻塞
+          ├── spawn_apply(DraftUpdated)   ← 非阻塞，ApplyDispatcher 有序
           ├── 客户端转发 (unbounded_channel → Body::from_stream)
           │     └── tx.send 失败 → LlmCallCancelled（不 finalize）
-          └── spawn_capture_apply(Completed)      ← 非阻塞
+          └── spawn_apply(Completed)      ← 非阻塞
 ```
 
 **原则**：LLM 调用是 Agent 核心路径；采集是观测路径。采集失败 **不得** 导致 proxy 返回 502。
@@ -727,7 +780,8 @@ streaming 路径:
 |------|---------|------|
 | `SessionIndex` | `RwLock<SessionIndex>` | 每次 request/response 后 flush（待优化为批量） |
 | `SubagentRegistryActor` | 单 actor mailbox | spawn-link 串行；runtime 层 `ask` |
-| `CaptureSessionActor` | 每 `seq_key` 一个 mailbox | md upsert + sink append 串行；生产 `tell` + shutdown `Flush` |
+| `ApplyDispatcher` | 每 `seq_key` 一个 tokio consumer | 跨 spawn 事件有序 apply |
+| `CaptureSessionActor` | 每 `seq_key` 一个 mailbox | md + sink 串行；**`ask`** + 失败 dead letter |
 | `ReasoningCache` | `Mutex` | 流结束时写入 |
 | `active_requests` | `AtomicUsize` | 无竞争 |
 | `sink.next_seq` | `Mutex<HashMap>` | 按 seq_key 分散 |
@@ -746,12 +800,12 @@ streaming 路径:
 
 | 现象 | 状态 | 缓解 |
 |------|------|------|
-| 采集 mailbox 满 | 仍可能丢事件 | dead letter + 增大 mailbox；长期 WAL |
+| apply 队列满 | 写入 dead letter | 256 深度；长期 bounded + 背压 |
 | `SessionIndex` 每次请求 flush | 高并发 I/O | 定时批量 flush |
 | 流式 `unbounded_channel` | 客户端断开可能积压 | 改 bounded + 背压 |
 | Lance per-session dataset 爆炸 | 团队规模 blocker | 按日分桶（规划中） |
 | 成本价目表硬编码 | 维护负担 | 外部 pricing JSON（规划中） |
-| 无 event WAL | crash 可能丢 in-flight tell | JSONL WAL（规划中） |
+| 无 event WAL | crash 可能丢 in-flight 事件 | JSONL WAL（规划中） |
 
 ---
 
@@ -759,43 +813,42 @@ streaming 路径:
 
 ### 11.1 完整配置模板
 
-```yaml
-# proxy.yaml
-listen: "127.0.0.1:19080"          # LLM 代理监听地址
-admin_listen: "127.0.0.1:9876"     # Admin API 监听地址
-agent_id: "my-team"                # Agent 标识（租户隔离 key）
-session_header: "x-persisting-session-id"  # 会话标识请求头
-capture_level: dialogue            # summary | dialogue | full
-debug: false                       # 开启调试日志
+```toml
+# proxy.toml
+listen = "127.0.0.1:19080"
+admin_listen = "127.0.0.1:9876"
+agent_id = "my-team"
+session_header = "x-persisting-session-id"
+capture_level = "dialogue"
+debug = false
 
-models:
-  # 精确匹配：DeepSeek
-  - name: deepseek-chat
-    upstream: "https://api.deepseek.com/v1"
-    api_key_env: DEEPSEEK_API_KEY
-    provider: openai
+[[models]]
+name = "deepseek-chat"
+upstream = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+provider = "openai"
 
-  # 精确匹配：DeepSeek v4 Pro 推理模型
-  - name: deepseek-v4-pro
-    upstream: "https://api.deepseek.com/v1"
-    api_key_env: DEEPSEEK_API_KEY
+[[models]]
+name = "deepseek-v4-pro"
+upstream = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
 
-  # Anthropic 风格请求走 DeepSeek 的 Anthropic 兼容端点
-  - name: "claude-*"
-    upstream: "https://api.deepseek.com/v1"
-    upstream_anthropic: "https://api.deepseek.com/anthropic/v1"
-    api_key_env: DEEPSEEK_API_KEY
-    provider: anthropic
+[[models]]
+name = "claude-*"
+upstream = "https://api.deepseek.com/v1"
+upstream_anthropic = "https://api.deepseek.com/anthropic/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+provider = "anthropic"
 
-  # Gemini（不常用，示例）
-  - name: gemini-2.0-flash
-    upstream: "https://generativelanguage.googleapis.com/v1beta"
-    api_key_env: GEMINI_API_KEY
-    provider: gemini
+[[models]]
+name = "gemini-2.0-flash"
+upstream = "https://generativelanguage.googleapis.com/v1beta"
+api_key_env = "GEMINI_API_KEY"
+provider = "gemini"
 
-  # 兜底：全部未识别模型转发到 DeepSeek
-  - name: "*"
-    forward: deepseek-chat
+[[models]]
+name = "*"
+forward = "deepseek-chat"
 ```
 
 ### 11.2 环境变量注入
@@ -817,7 +870,7 @@ models:
 |------|------|---------|---------|
 | **capture run** | `persisting capture run -o ./store -- claude` | 代理随子进程启停；结束打印 session 摘要 | 一次性 agent 任务 |
 | **replay dead letter** | `persisting capture replay-dead-letter -o ./store` | 重放失败采集事件 | dead letter 非空时 |
-| **capture serve** | `persisting capture serve -o ./store --config proxy.yaml` | 长期 daemon | 本地开发，多终端共享 |
+| **capture serve** | `persisting capture serve -o ./store --config proxy.toml` | 长期 daemon | 本地开发，多终端共享 |
 | **capture start** | `persisting capture start -o ./store` | 后台 daemon | CI / 无人值守环境 |
 
 ---
@@ -859,16 +912,25 @@ curl http://127.0.0.1:9876/admin/sessions
 
 | 模块 | 行数 | 职责 |
 |------|------|------|
-| `proxy/mod.rs` | ~1215 | HTTP 调度、主 handler、流式处理 |
-| `storage/dialogue_extract.rs` | ~1180 | SSE/JSON 内容提取与解析 |
-| `storage/markdown.rs` | ~1113 | TLV Markdown 解析/写入/roundtrip |
+| `proxy/dispatch.rs` | ~140 | HTTP 入口路由 |
+| `proxy/llm_capture.rs` | ~260 | LLM 请求编排 |
+| `proxy/streaming.rs` | ~250 | SSE 流式采集 |
+| `proxy/state.rs` | ~150 | ProxyState + serve |
+| `proxy/common.rs` | ~70 | capture 共享 helper |
+| `storage/dialogue_extract/` | ~1270 | 按协议拆分的 SSE/JSON 提取 |
+| `storage/dialogue_extract/messages.rs` | ~380 | Anthropic Messages |
+| `storage/dialogue_extract/responses.rs` | ~340 | OpenAI Responses |
+| `storage/dialogue_extract/completions.rs` | ~260 | Chat Completions SSE |
+| `storage/markdown.rs` | ~1360 | TLV Markdown 解析/写入/roundtrip |
 | `storage/subagent_link.rs` | ~1040 | 子代理注册与 spawn link 回填 |
-| `storage/dialogue.rs` | ~743 | Record ↔ Block 双向转换 |
-| `config.rs` | ~280 | YAML 配置解析与验证 |
-| `session/index.rs` | ~260 | 会话索引与发现 |
-| `proxy/router.rs` | ~230 | 模型路由匹配 |
-| `proxy/auth.rs` | ~200 | API Key 解析与注入 |
-| 其余 | ~2000+ | conversion, usage, runtime, lifecycle 等 |
+| `storage/markdown_pipeline.rs` | ~620 | 过滤 + live/batch/reconcile |
+| `storage/dialogue.rs` | ~720 | Record ↔ Block codec |
+| `config.rs` | ~450 | TOML 配置解析与验证 |
+| `session/index.rs` | ~250 | 会话索引与发现 |
+| `proxy/router.rs` | ~200 | 模型路由匹配 |
+| `proxy/auth.rs` | ~200 | 上游 API Key |
+| `injection/` | ~350 | 子进程 env + peer 探测 |
+| 其余 | ~2000+ | engine, conversion, usage, runtime 等 |
 
 ---
 
@@ -876,18 +938,23 @@ curl http://127.0.0.1:9876/admin/sessions
 
 | 优先级 | 主题 | 状态 / 计划 |
 |--------|------|------------|
-| ✅ 已做 | Proxy 非阻塞采集 + dead letter | `spawn_capture_apply` + `.capture/dead_letter.jsonl` |
-| ✅ 已做 | V3 Actor 运行时 | registry + per-session actor + `tell` |
+| ✅ 已做 | Proxy 非阻塞采集 + dead letter | `spawn_apply` + `dead_letter.jsonl` |
+| ✅ 已做 | per-seq_key 有序 apply | `engine/apply_queue.rs` |
+| ✅ 已做 | session `ask` + 失败 dead letter | 生产与测试一致的可观测路径 |
+| ✅ 已做 | Lance worker dead letter | `lance_dead_letter.jsonl` |
+| ✅ 已做 | V3 Actor 运行时 | registry + per-session actor |
+| ✅ 已做 | `markdown_pipeline` 统一过滤 | live / materialize / reconcile |
 | ✅ 已做 | live md upsert 丢块（truncate-to-EOF） | `rewrite_block_range` 按字节区间替换 |
 | ✅ 已做 | run 结束 reconcile + frontmatter | `reconcile.json` + YAML 会话摘要 |
 | ✅ 已做 | 流式客户端断开 | `llm.call.cancelled`（Lance only） |
+| ✅ 已做 | `injection/` 模块 | env 子进程注入 + peer 探测 |
 | 🔴 P0 | Event WAL | JSONL append-before-side-effect；crash replay |
 | 🔴 P0 | Lance 按日分桶 | 替代 per-session dataset，防目录爆炸 |
 | 🟠 P1 | `SessionIndex` 批量 flush | 降低 sessions.json I/O |
 | 🟠 P1 | 流式 bounded channel | 背压 + 内存上限 |
 | 🟠 P1 | 外部定价文件 | 替代硬编码 `default_pricing_table` |
-| 🟡 P2 | `proxy/mod.rs` 拆分 | `streaming.rs` + `capture_dispatch.rs`（部分已拆） |
-| 🟡 P2 | Responses 协议转换 deprecate | 收缩维护面（评估用户量后） |
+| 🟡 P2 | `conversion/` 协议面收缩 | Responses 协议 deprecate（评估用户量后） |
+| ✅ 已做 | `proxy/` 拆分 | `dispatch` / `llm_capture` / `streaming` / `state` / `common` |
 | 🟢 P3 | 上游限流 / WebSocket Realtime | 长期 |
 
 ---

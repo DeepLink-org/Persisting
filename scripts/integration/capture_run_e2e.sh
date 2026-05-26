@@ -80,20 +80,21 @@ while [[ "$PROXY_PORT" == "$MOCK_PORT" || "$ADMIN_PORT" == "$MOCK_PORT" || "$ADM
 done
 
 SESSION_ID="capture-run-e2e-$$"
-CONFIG="$WORKDIR/proxy.yaml"
+CONFIG="$WORKDIR/proxy.toml"
 MOCK_LOG="$WORKDIR/mock_requests.jsonl"
 MANIFEST="$WORKDIR/agent_manifest.json"
 REPLAY_TOML="$WORKDIR/replay.toml"
 : >"$MOCK_LOG"
 
 cat >"$CONFIG" <<EOF
-listen: "127.0.0.1:${PROXY_PORT}"
-admin_listen: "127.0.0.1:${ADMIN_PORT}"
-agent_id: "${AGENT_ID}"
-session_header: "x-persisting-session-id"
-models:
-  - name: "*"
-    upstream: "http://127.0.0.1:${MOCK_PORT}/v1"
+listen = "127.0.0.1:${PROXY_PORT}"
+admin_listen = "127.0.0.1:${ADMIN_PORT}"
+agent_id = "${AGENT_ID}"
+session_header = "x-persisting-session-id"
+
+[[models]]
+name = "*"
+upstream = "http://127.0.0.1:${MOCK_PORT}/v1"
 EOF
 
 cleanup() {

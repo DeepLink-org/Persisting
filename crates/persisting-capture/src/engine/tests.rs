@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use axum::http::HeaderMap;
 use bytes::Bytes;
 
 use crate::capture_call::CaptureCall;
@@ -78,13 +77,12 @@ fn test_invocation() -> CaptureInvocation {
             trace_id: "trace-1".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
         },
-        headers: HeaderMap::new(),
+        request_headers: Vec::new(),
         level: CaptureLevel::Dialogue,
         client_model: "deepseek-chat".into(),
         upstream_model: "deepseek-chat".into(),
         provider: ProviderKind::OpenAi,
         protocol: ProtocolKind::ChatCompletions,
-        storage: Arc::new(std::path::PathBuf::from("/tmp")),
         debug_on: false,
     }
 }
@@ -168,8 +166,7 @@ async fn draft_event_does_not_append_to_sink() {
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
     let engine = test_engine(sink.clone(), dir.path(), true).await;
-    let mut inv = test_invocation();
-    inv.storage = Arc::new(dir.path().to_path_buf());
+    let inv = test_invocation();
     engine
         .apply(
             &inv,
@@ -193,8 +190,7 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let mut inv = test_invocation();
-    inv.storage = Arc::new(storage.clone());
+    let inv = test_invocation();
 
     engine
         .apply(
@@ -265,8 +261,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let mut inv = test_invocation();
-    inv.storage = Arc::new(storage.clone());
+    let inv = test_invocation();
 
     engine
         .apply(
@@ -343,7 +338,6 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
     let mut inv_a = test_invocation();
-    inv_a.storage = Arc::new(storage.clone());
     inv_a.call = CaptureCall {
         call_id: "call-a".into(),
         trace_id: "trace-a".into(),
@@ -440,8 +434,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().to_path_buf();
     let engine = test_engine(sink.clone(), &storage, true).await;
-    let mut inv = test_invocation();
-    inv.storage = Arc::new(storage.clone());
+    let inv = test_invocation();
 
     async fn user_turn(
         engine: &CaptureEngine,
@@ -474,7 +467,12 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
             .unwrap();
     }
 
-    async fn assistant_turn(engine: &CaptureEngine, inv: &CaptureInvocation, call_id: &str, text: &str) {
+    async fn assistant_turn(
+        engine: &CaptureEngine,
+        inv: &CaptureInvocation,
+        call_id: &str,
+        text: &str,
+    ) {
         let mut call_inv = inv.clone();
         call_inv.call = CaptureCall {
             call_id: call_id.into(),
@@ -530,4 +528,48 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
             "你好！有什么我可以帮你的吗？".to_string(),
         ]
     );
+}
+
+mod reliability {
+    use super::*;
+    use crate::dead_letter::read_dead_letter_entries;
+    use crate::engine::CaptureEvent;
+
+    struct FailingSink;
+
+    impl CaptureSink for FailingSink {
+        fn append(
+            &self,
+            _route: &CaptureRoute,
+            _agent_id: &str,
+            _record: &mut CaptureRecord,
+        ) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("sink unavailable"))
+        }
+    }
+
+    #[tokio::test]
+    async fn session_sink_failure_writes_dead_letter_with_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(dir.path().to_path_buf());
+        let sink = Arc::new(FailingSink);
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let engine = CaptureEngine::new(sink, index, storage.clone(), false)
+            .await
+            .unwrap();
+        let inv = test_invocation();
+        let event = CaptureEvent::LlmRequest(LlmRequestCaptured {
+            path: "/v1/chat/completions".into(),
+            body_bytes: 10,
+            user_content: Some("hi".into()),
+            body_json: None,
+            model_rewritten: false,
+        });
+        assert!(engine.apply(&inv, event).await.is_err());
+        engine.flush().await.unwrap();
+        let entries = read_dead_letter_entries(dir.path()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].error.contains("sink unavailable"));
+        assert!(entries[0].prepared_record_json.is_some());
+    }
 }

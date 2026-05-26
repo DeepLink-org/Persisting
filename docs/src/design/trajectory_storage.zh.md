@@ -1,6 +1,6 @@
 # 轨迹存储模型 — 完整架构设计
 
-> **版本**：v0.2.0 &emsp;|&emsp; **最后更新**：2026-05-24
+> **版本**：v0.3.0 &emsp;|&emsp; **最后更新**：2026-05-25
 
 ---
 
@@ -32,6 +32,8 @@ graph TD
 
     subgraph "引擎层"
         CE["CaptureEngine<br/>(事件驱动采集核心)"]:::accent0
+        AQ["ApplyDispatcher<br/>(per-seq_key 有序 apply)"]:::accent0
+        MP["MarkdownPipeline<br/>(过滤 + live/batch/reconcile)"]:::accent3
         E1["Lance Append<br/>(canonical)"]:::accent2
         E2["Materialize<br/>(全量 Lance → Markdown)"]:::accent3
         E3["Live Upsert<br/>(call_id+role 流式 md)"]:::accent3
@@ -49,9 +51,11 @@ graph TD
     S1 --> CE
     S2 --> N
     N --> E1
-    CE --> N
-    CE --> E1
+    CE --> AQ
+    AQ --> N
     CE --> E3
+    E3 --> MP
+    MP --> E3
     E1 --> L1
     E3 --> L2
     E3 --> E3b
@@ -59,7 +63,8 @@ graph TD
     E1 --> E4
     E4 --> L2
     L1 --> E2
-    E2 --> L2
+    E2 --> MP
+    MP --> L2
     L2 --> E5
     E5 --> L1
     CE --> L3
@@ -93,12 +98,13 @@ graph TD
 
 ### 3.1 Capture Proxy（`-f md`）— 事件驱动 + 非阻塞采集
 
-Proxy 侧采集经 [`CaptureEngine`](../../crates/persisting-capture/src/engine/mod.rs) 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_capture_apply`），Lance/Markdown 写入在后台完成。不再向 Lance 写入 `llm.response.stream.partial`。
+Proxy 侧采集经 [`CaptureEngine`](../../crates/persisting-capture/src/engine/mod.rs) 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_apply` → `ApplyDispatcher`），Lance/Markdown 写入在后台完成。不再向 Lance 写入 `llm.response.stream.partial`。
 
 ```mermaid
 sequenceDiagram
     participant Agent
     participant Proxy as Capture Proxy
+    participant Queue as ApplyDispatcher
     participant Engine as CaptureEngine
     participant Sink as CallbackSink / Worker
     participant Lance as Lance Dataset
@@ -106,23 +112,27 @@ sequenceDiagram
 
     Agent->>Proxy: POST /v1/messages
 
-    Proxy->>Proxy: spawn LlmRequest（不阻塞 upstream）
-    Engine->>Engine: prepare + session tell
+    Proxy->>Queue: spawn_apply LlmRequest（不阻塞 upstream）
+    Queue->>Engine: 按 seq_key 有序 apply
+    Engine->>Engine: prepare + session ask
     Engine->>Sink: append llm.request
     Sink->>Lance: batch flush
     Engine->>MD: upsert user block + refresh frontmatter
 
     loop SSE stream (150ms 节流)
-        Proxy->>Proxy: spawn LlmResponseDraftUpdated
+        Proxy->>Queue: spawn_apply LlmResponseDraftUpdated
+        Queue->>Engine: 有序 apply
         Note over Engine,Lance: draft 仅写 md
         Engine->>MD: upsert assistant block (draft: true)
     end
 
     alt 客户端断开
-        Proxy->>Proxy: spawn LlmCallCancelled
+        Proxy->>Queue: spawn_apply LlmCallCancelled
+        Queue->>Engine: 有序 apply
         Engine->>Sink: append llm.call.cancelled（仅 Lance）
     else 正常结束
-        Proxy->>Proxy: spawn LlmResponseCompleted
+        Proxy->>Queue: spawn_apply LlmResponseCompleted
+        Queue->>Engine: 有序 apply
         Engine->>Sink: append llm.response.stream
         Sink->>Lance: flush
         Engine->>MD: upsert assistant (final) + refresh frontmatter
@@ -133,9 +143,11 @@ sequenceDiagram
 
 1. **Lance 仍是 canonical**。`LlmResponseDraftUpdated` 只更新 Markdown，不产生 Lance 行。
 2. **Live Markdown 用 upsert**。`upsert_block_by_call_id` 按 **`call_id` + `role`** 匹配；块区间替换使用 `rewrite_block_range`（**不再** truncate-to-EOF）。
-3. **CLI worker 只写 Lance**。`-f md` 时 Proxy 内 `CaptureEngine(stream_markdown=true)` 负责 live md；worker `stream_markdown=false`。
-4. **Run 结束对账**。`worker.shutdown()` 后写 `.capture/reconcile.json`（md call_id vs Lance replay）；不一致时可 `trajectory materialize` 全量重建。
-5. **Frontmatter 摘要**。每次 dialogue 写入后刷新 YAML（turns / tokens / cost / subagents）；`capture run` 结束打印 stderr 一行汇总。
+3. **ApplyDispatcher 保证有序**。同一 `seq_key` 内 Request / Draft / Complete 按序 apply，避免跨 spawn 乱序。
+4. **session `ask`**。生产环境等待 session actor 处理结果；失败写入 `dead_letter.jsonl`（含 `prepared_record_json`）。
+5. **CLI worker 只写 Lance**。`-f md` 时 Proxy 内 `CaptureEngine(stream_markdown=true)` 负责 live md；worker `stream_markdown=false`；flush 失败 → `lance_dead_letter.jsonl`。
+6. **Run 结束对账**。`worker.shutdown()` 后写 `.capture/reconcile.json`（md call_id vs Lance replay）；不一致时可 `trajectory materialize` 全量重建。
+7. **Frontmatter 摘要**。每次 dialogue 写入后刷新 YAML（turns / tokens / cost / subagents）；`capture run` 结束打印 stderr 一行汇总。
 
 ### 3.2 CLI Import — 批量 Lance + 可选 append Markdown
 
@@ -267,7 +279,7 @@ Lance dataset (全量扫描)
     │  event_row_to_capture_record()
     ▼
 CaptureRecord[]
-    │  try_capture_record_to_block()  ← 应用对话过滤
+    │  MarkdownPipeline::blocks_from_records()  ← 静态过滤 + history replay dedup
     ▼
 (BlockHeader, Vec<u8>)[]
     │  format_document_preamble() + encode_block_with_header()
@@ -281,7 +293,7 @@ Proxy 流式场景下，Markdown 通过 `upsert_block_by_call_id()` 增量更新
 
 ```
 CaptureEvent::LlmRequest
-    │  try_capture_record_to_block() → user block
+    │  MarkdownPipeline::try_block() → user block
     ▼
 upsert_block_by_call_id(call_id, role=user)   ← 不存在则 append
 
@@ -292,7 +304,7 @@ upsert_block_by_call_id(call_id, role=assistant)   ← 流式原地更新
 
 CaptureEvent::LlmResponseCompleted
     │  enrich + append Lance llm.response.stream
-    │  try_capture_record_to_block() → final assistant
+    │  MarkdownPipeline::try_block() → final assistant
     ▼
 upsert_block_by_call_id(call_id, role=assistant)   ← 覆盖 draft，移除 draft 标记
 ```
@@ -315,7 +327,7 @@ pub struct StreamMaterializeStats {
 
 ```
 新批次的 engine lines (RON)
-    │  engine_line_to_record() + try_capture_record_to_block()
+    │  engine_line_to_record() + MarkdownPipeline::try_block()
     ▼
 筛选后的 (BlockHeader, Vec<u8>)[]
     │  append_engine_lines_to_markdown()
@@ -353,13 +365,21 @@ Lance Dataset
 
 ## 6. 对话过滤规则
 
-`storage/dialogue.rs` 的 `skip_markdown_block()` 负责决定哪些 `CaptureRecord` 不应出现在 Markdown 中：
+live / materialize / reconcile **统一**经 `storage/markdown_pipeline.rs` 的 [`MarkdownPipeline`](../../crates/persisting-capture/src/storage/markdown_pipeline.rs)：
+
+| API | 用途 |
+|-----|------|
+| `MarkdownPipeline::should_skip()` | 有状态过滤（含 **history replay dedup**：`user_message_count` 未增则跳过） |
+| `MarkdownPipeline::static_skip()` / `skip_markdown_block()` | 无状态静态过滤（`dialogue.rs` re-export 后者供测试/CLI） |
+| `MarkdownPipeline::try_block()` | 过滤 + `capture_record_to_block()` |
 
 | 跳过项 | 检测条件 | 原因 |
 |--------|---------|------|
+| history replay | `user_message_count` 未增 | Claude Code 重发全量 history，无新 user turn |
 | 内部探测请求 | `path` 含 `count_tokens` 或 `count-tokens` | 非对话流量 |
 | 无可见文本的空白请求 | `visible_user_text()` 为 None | 无信息量 |
 | 无可见文本的空白响应 | `visible_assistant_text()` 为 None | 无信息量 |
+| 流式 partial（仅 md） | payload `stream_partial: true` | 不落 Markdown |
 | 流式 draft（仅 md） | header `draft: true` | 不落 Lance；finalize 后 draft 被覆盖 |
 | 生命周期事件 | `kind` 以 `session.` 开头 | 不在对话中展示 |
 | 客户端取消 | `llm.call.cancelled` | 仅 Lance；不进 Markdown |
@@ -367,18 +387,16 @@ Lance Dataset
 | `llm.spawn_link` | **不跳过**，始终保留 | 主/子代理关联是重要轨迹信息 |
 
 ```rust
+// 静态过滤（无 history dedup）
 pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
-    match rec.kind.as_str() {
-        "llm.request" => {
-            if is_internal_llm_request(&rec.payload) { return true; }        // count_tokens
-            if should_skip_main_flash_companion_request(rec) { return true; } // flash/haiku 影子
-            visible_user_text(rec).is_none()                                  // 空 turn
-        }
-        "llm.response" | "llm.response.stream" => visible_assistant_text(rec).is_none(),
-        "llm.spawn_link" => false,
-        "llm.call.cancelled" => true,
-        k if k.starts_with("session.") => true,
-        _ => false,
+    MarkdownPipeline::static_skip(rec)
+}
+
+// live 路径：有状态 dedup
+impl MarkdownPipeline {
+    pub fn should_skip(&mut self, rec: &CaptureRecord) -> bool {
+        if self.skip_history_replay(rec) { return true; }
+        Self::static_skip(rec)
     }
 }
 ```
@@ -395,7 +413,8 @@ pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
 {store}/
 ├── .capture/
 │   ├── sessions.json                   ← 全局会话索引
-│   ├── dead_letter.jsonl               ← 采集失败事件
+│   ├── dead_letter.jsonl               ← CaptureEvent apply 失败（可 replay）
+│   ├── lance_dead_letter.jsonl         ← Lance worker flush 失败
 │   ├── reconcile.json                  ← run 结束 md↔Lance 对账
 │   ├── run_session                     ← 当前 run_id（纯文本一行）
 │   ├── run_child.yaml                  ← 子进程信息 (PID + 命令行)
@@ -524,35 +543,36 @@ graph LR
 
 ### 10.1 CaptureEngine 事件模型
 
-Proxy 通过 `spawn_capture_apply` → `CaptureEngine::apply(inv, event)` 处理采集；失败写入 `.capture/dead_letter.jsonl`。
+Proxy 通过 `CaptureEngine::spawn_apply`（`llm_capture` / `streaming` 直接调用）→ `ApplyDispatcher` → `CaptureEngine::apply(inv, event)` 处理采集；prepare / session 失败写入 `.capture/dead_letter.jsonl`；Lance worker flush 失败写入 `.capture/lance_dead_letter.jsonl`。
 
 | 事件 | Lance | Markdown | Proxy 调度 | 说明 |
 |------|-------|----------|------------|------|
-| `LlmRequest` | ✅ `llm.request` | ✅ user upsert + frontmatter | spawn（非阻塞） | 转发 upstream 前触发 |
-| `LlmResponseDraftUpdated` | ❌ | ✅ assistant upsert (`draft: true`) | spawn | SSE 150ms 节流 |
-| `LlmResponseCompleted` | ✅ `llm.response` / `.stream` | ✅ assistant upsert (final) + frontmatter | spawn | 流结束或非流式 |
-| `LlmCallCancelled` | ✅ `llm.call.cancelled` | ❌ | spawn | 客户端提前断开 SSE |
+| `LlmRequest` | ✅ `llm.request` | ✅ user upsert + frontmatter | spawn_apply（非阻塞） | 转发 upstream 前触发 |
+| `LlmResponseDraftUpdated` | ❌ | ✅ assistant upsert (`draft: true`) | spawn_apply | SSE 150ms 节流 |
+| `LlmResponseCompleted` | ✅ `llm.response` / `.stream` | ✅ assistant upsert (final) + frontmatter | spawn_apply | 流结束或非流式 |
+| `LlmCallCancelled` | ✅ `llm.call.cancelled` | ❌ | spawn_apply | 客户端提前断开 SSE |
 
 ```
-Proxy (spawn)                 CaptureEngine                    Worker / Lance
+Proxy (spawn_apply)           ApplyDispatcher              CaptureEngine
   │                                │                                │
-  ├─ LlmRequest                    ├─ prepare + session tell ───────→ Lance
-  │                                ├─ md upsert + frontmatter       │
-  ├─ LlmResponseDraft…             ├─ md only                       │
-  ├─ LlmResponseCompleted          ├─ tell → append ───────────────→ Lance
-  │                                ├─ md final + frontmatter        │
-  └─ LlmCallCancelled              └─ tell → append (cancelled) ───→ Lance
+  ├─ LlmRequest                    ├─ 按 seq_key 有序 ─────────────→ prepare + session ask
+  │                                │                                ├─ md upsert (MarkdownPipeline)
+  ├─ LlmResponseDraft…             ├─ 有序 apply ─────────────────→ md only
+  ├─ LlmResponseCompleted          ├─ 有序 apply ─────────────────→ ask → append Lance
+  │                                │                                ├─ md final + frontmatter
+  └─ LlmCallCancelled              └─ 有序 apply ─────────────────→ ask → append (cancelled)
 ```
 
-Session actor 生产环境使用 **`tell`**（fire-and-forget）；`shutdown` 前对各 session 发送 `Flush` drain mailbox。`CallbackSink` → `TrajectoryAppendWorker` 负责 Lance 批量 flush。
+Session actor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`shutdown` 前对各 session 发送 `Flush` drain mailbox。`CallbackSink` → `TrajectoryAppendWorker` 负责 Lance 批量 flush。
 
 ### 10.2 已知限制
 
 | 现象 | 原因 | 缓解 |
 |------|------|------|
-| md 与 Lance 短暂不一致 | 后台 tell 尚未 drain | shutdown `Flush` + `reconcile.json` |
+| md 与 Lance 短暂不一致 | 后台 apply 尚未 drain | shutdown `Flush` + `reconcile.json` |
 | turn 编号跨 call 重复 | `turn = seq/2+1` 非 per-call | 消费方用 `call_id` 分组 |
-| mailbox 满 / 采集失败 | actor 背压 | dead letter + `replay-dead-letter` |
+| apply 队列满 / 采集失败 | 背压 | dead letter + `replay-dead-letter` |
+| Lance worker flush 失败 | 磁盘 / Lance 异常 | `lance_dead_letter.jsonl` 保留 RON batch |
 | Lance per-session dataset 过多 | 当前按 session 分 dataset | 按日分桶（规划中） |
 
 详见 [Capture 架构设计 §10](capture_design.zh.md)。

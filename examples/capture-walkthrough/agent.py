@@ -32,7 +32,7 @@ def main() -> int:
     if not base:
         print(
             "请通过 capture run 运行，例如：\n"
-            "  persisting capture run -o ./store -c proxy.yaml -- python3 agent.py",
+            "  persisting capture run -o ./store -c proxy.toml -- python3 agent.py",
             file=sys.stderr,
         )
         return 2

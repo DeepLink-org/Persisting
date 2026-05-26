@@ -17,7 +17,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$DIR/../.." && pwd)"
 
 STORAGE="$DIR/store"
-PROXY="$DIR/proxy.yaml"
+PROXY="$DIR/proxy.toml"
 AGENT="$DIR/agent.py"
 SESSION="${SESSION:-walkthrough-001}"
 AGENT_ID="demo-agent"

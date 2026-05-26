@@ -4,6 +4,7 @@ pub mod config;
 pub mod conversion;
 pub mod dead_letter;
 pub mod engine;
+pub mod injection;
 pub mod protocol;
 pub mod provider;
 pub mod proxy;
@@ -23,7 +24,6 @@ pub use runtime::service;
 pub use session::call as capture_call;
 pub use session::chain as session_chain;
 pub use session::index as session_index;
-pub use session::peer_process;
 
 pub use storage::convert as trajectory_convert;
 pub use storage::dialogue;
@@ -53,8 +53,9 @@ pub use conversion::{
     StreamTranslator,
 };
 pub use dead_letter::{
-    append_dead_letter, dead_letter_path, read_dead_letter_entries, replay_dead_letter,
-    DeadLetterEntry, DeadLetterInvocation, DeadLetterReplaySummary, SerializableCaptureEvent,
+    append_dead_letter, append_lance_dead_letter, dead_letter_path, lance_dead_letter_path,
+    read_dead_letter_entries, read_lance_dead_letter_entries, replay_dead_letter, DeadLetterEntry,
+    DeadLetterInvocation, DeadLetterReplaySummary, LanceDeadLetterEntry, SerializableCaptureEvent,
 };
 pub use debug::{
     debug_log_path, enable_debug, is_debug_enabled, ENV_CAPTURE_DEBUG, ENV_CAPTURE_DEBUG_STDERR,
@@ -64,6 +65,9 @@ pub use discover_daemon::{StorageResolution, StorageSource};
 pub use engine::{
     CaptureEngine, CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured,
     LlmResponseCompleted, LlmResponseDraftUpdated,
+};
+pub use injection::{
+    capture_openai_v1_base, client_gateway_config_args, proxy_environment, CAPTURE_PROXY_ENV_KEYS,
 };
 pub use lance_row::{
     capture_record_to_event_row, engine_line_to_event_row, event_row_to_capture_record,
@@ -83,6 +87,10 @@ pub use markdown_trajectory::{
     LEGACY_TRAJECTORY_MARKDOWN_FILENAME, SESSION_MARKDOWN_FILENAME,
 };
 pub use models_list::build_models_response;
+pub use proxy::{
+    apply_upstream_headers, prepare_upstream_body, resolve_upstream_api_key, rewrite_model_in_body,
+    ReasoningCacheHandle,
+};
 pub use reconcile::{
     build_run_report, expected_markdown_call_ids, index_markdown_path, list_run_markdown_paths,
     reconcile_session, write_run_reconcile_report, RunReconcileReport, SessionReconcile,
@@ -96,9 +104,8 @@ pub use run_config::{
     SESSION_PROXY_FILENAME,
 };
 pub use run_env::{
-    apply_daemon_env, capture_openai_v1_base, client_gateway_config_args, daily_run_id,
-    ensure_serve_run_session, load_daemon_env_snapshot, proxy_environment, snapshot_daemon_env,
-    write_run_child_info, write_run_session, CAPTURE_PROXY_ENV_KEYS, DAEMON_ENV_FILENAME,
+    apply_daemon_env, daily_run_id, ensure_serve_run_session, load_daemon_env_snapshot,
+    snapshot_daemon_env, write_run_child_info, write_run_session, DAEMON_ENV_FILENAME,
     ENV_SESSION_ID, STANDARD_DAEMON_ENV_KEYS,
 };
 pub use service::{resolve_storage_detailed, stop_daemon, write_current, CaptureDaemonState};

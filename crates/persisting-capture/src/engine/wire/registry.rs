@@ -9,8 +9,7 @@ use crate::record::CaptureRecord;
 use crate::session_storage::CaptureRoute;
 use crate::subagent_link::SpawnLinkBackfill;
 
-use super::super::types::CaptureInvocation;
-use super::headers::headers_to_vec;
+use super::super::CaptureInvocation;
 
 /// Global registry actor path (one per capture runtime / ActorSystem).
 pub(crate) const REGISTRY_ACTOR_NAME: &str = "capture/subagent-registry";
@@ -51,7 +50,7 @@ pub(crate) async fn registry_enrich(
         .ask(RegistryCommand::Enrich {
             record_json: serde_json::to_string(rec)?,
             route: inv.route.clone(),
-            headers: headers_to_vec(&inv.headers),
+            headers: inv.request_headers.clone(),
             body_json: body_json.map(serde_json::to_string).transpose()?,
             assistant_text: assistant_text.map(str::to_string),
         })

@@ -6,11 +6,11 @@ use anyhow::{Context, Result};
 use pulsing_actor::ActorRef;
 use serde_json::Value;
 
-use super::types::{
+use super::wire::{registry_enrich, SessionCommand, SessionScope};
+use super::{
     CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured, LlmResponseCompleted,
     LlmResponseDraftUpdated,
 };
-use super::wire::{registry_enrich, SessionCommand, SessionScope};
 use crate::debug;
 use crate::dialogue::draft_stream_assistant_block;
 use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
@@ -25,6 +25,7 @@ use crate::usage::{
 pub(crate) struct CapturePreparer {
     pub sink: std::sync::Arc<dyn CaptureSink>,
     pub index: crate::session_index::SessionIndexHandle,
+    pub storage: std::sync::Arc<std::path::PathBuf>,
     pub stream_markdown: bool,
 }
 
@@ -166,7 +167,7 @@ impl CapturePreparer {
 
         if inv.debug_on {
             debug::log_llm_response(
-                inv.storage.as_path(),
+                self.storage.as_path(),
                 &inv.route.session_id,
                 &inv.agent_id,
                 &inv.client_model,

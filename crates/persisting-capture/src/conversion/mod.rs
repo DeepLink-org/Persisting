@@ -87,7 +87,7 @@ pub fn translate_request_for_bridge(
     bridge: ProtocolBridge,
     body: &Bytes,
     upstream_model: &str,
-    reasoning_cache: Option<&crate::proxy::deepseek_reasoning::ReasoningCacheHandle>,
+    reasoning_cache: Option<&crate::proxy::reasoning::ReasoningCacheHandle>,
 ) -> anyhow::Result<Bytes> {
     match bridge {
         ProtocolBridge::Passthrough => Ok(body.clone()),
@@ -201,12 +201,13 @@ mod tests {
     use crate::config::ProxyConfig;
 
     fn deepseek_route() -> ModelRoute {
-        ProxyConfig::from_yaml_str(
+        ProxyConfig::from_toml_str(
             r#"
-listen: "127.0.0.1:1"
-models:
-  - name: deepseek-chat
-    upstream: "https://api.deepseek.com/v1"
+listen = "127.0.0.1:1"
+
+[[models]]
+name = "deepseek-chat"
+upstream = "https://api.deepseek.com/v1"
 "#,
         )
         .unwrap()
@@ -231,12 +232,13 @@ models:
 
     #[test]
     fn responses_passthrough_for_openai_upstream() {
-        let route = ProxyConfig::from_yaml_str(
+        let route = ProxyConfig::from_toml_str(
             r#"
-listen: "127.0.0.1:1"
-models:
-  - name: gpt-5
-    upstream: "https://api.openai.com/v1"
+listen = "127.0.0.1:1"
+
+[[models]]
+name = "gpt-5"
+upstream = "https://api.openai.com/v1"
 "#,
         )
         .unwrap()

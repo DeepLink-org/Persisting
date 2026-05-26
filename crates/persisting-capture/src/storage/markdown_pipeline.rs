@@ -10,11 +10,12 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use super::dialogue::capture_record_to_block;
-use super::dialogue_extract::{count_visible_user_messages, is_subagent_shape_payload};
+use super::dialogue_extract::count_visible_user_messages;
 use super::frontmatter::refresh_document_frontmatter;
 use super::markdown::{upsert_block_by_call_id, BlockHeader};
 use super::record::CaptureRecord;
 use super::session::{trajectory_run_dir, CaptureRoute};
+use crate::engine::{should_refresh_frontmatter, should_skip_record};
 use crate::markdown_trajectory::session_markdown_write_path_for_key;
 
 /// Per-session sequential state: static filters + Claude Code history-replay dedup.
@@ -26,27 +27,7 @@ pub struct MarkdownPipeline {
 
 impl MarkdownPipeline {
     pub fn static_skip(rec: &CaptureRecord) -> bool {
-        match rec.kind.as_str() {
-            "llm.request" => {
-                if is_internal_llm_request(&rec.payload) {
-                    return true;
-                }
-                if should_skip_main_flash_companion_request(rec) {
-                    return true;
-                }
-                visible_user_text(rec).is_none()
-            }
-            "llm.response" | "llm.response.stream" => {
-                if rec.payload.get("stream_partial").and_then(|v| v.as_bool()) == Some(true) {
-                    return true;
-                }
-                visible_assistant_text(rec).is_none()
-            }
-            "llm.spawn_link" => false,
-            "llm.call.cancelled" => true,
-            k if k.starts_with("session.") => true,
-            _ => false,
-        }
+        should_skip_record(rec)
     }
 
     pub fn should_skip(&mut self, rec: &CaptureRecord) -> bool {
@@ -204,92 +185,7 @@ pub fn stamp_request_payload(payload: &mut Value, body_json: Option<&Value>) {
 
 /// Alias kept for tests and CLI view helpers.
 pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
-    MarkdownPipeline::static_skip(rec)
-}
-
-fn is_internal_llm_request(payload: &Value) -> bool {
-    payload
-        .get("path")
-        .and_then(|p| p.as_str())
-        .is_some_and(|p| p.contains("count_tokens") || p.contains("count-tokens"))
-}
-
-fn visible_user_text(rec: &CaptureRecord) -> Option<String> {
-    rec.payload
-        .get("user_content")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .or_else(|| user_message_from_payload(&rec.payload))
-        .filter(|s| !s.trim().is_empty())
-}
-
-fn visible_assistant_text(rec: &CaptureRecord) -> Option<String> {
-    rec.payload
-        .get("assistant_content")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .or_else(|| assistant_message_from_payload(&rec.payload))
-        .filter(|s| !s.trim().is_empty())
-}
-
-fn user_message_from_payload(payload: &Value) -> Option<String> {
-    if let Some(s) = payload.get("user_content").and_then(|v| v.as_str()) {
-        return Some(s.to_string());
-    }
-    payload
-        .get("body")
-        .and_then(|b| b.get("messages"))
-        .and_then(|m| m.as_array())
-        .and_then(|msgs| {
-            msgs.iter().rev().find_map(|msg| {
-                if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
-                    return None;
-                }
-                msg.get("content")
-                    .and_then(|c| c.as_str())
-                    .map(str::to_string)
-            })
-        })
-}
-
-fn assistant_message_from_payload(payload: &Value) -> Option<String> {
-    if let Some(s) = payload.get("assistant_content").and_then(|v| v.as_str()) {
-        return Some(s.to_string());
-    }
-    payload
-        .get("body")
-        .and_then(|b| b.get("choices"))
-        .and_then(|c| c.as_array())
-        .and_then(|choices| choices.first())
-        .and_then(|ch| ch.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(str::to_string)
-}
-
-fn should_skip_main_flash_companion_request(rec: &CaptureRecord) -> bool {
-    if rec.subagent_id.is_some() {
-        return false;
-    }
-    let model = rec
-        .payload
-        .get("model")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
-    if !model.contains("flash") && !model.contains("haiku") {
-        return false;
-    }
-    if visible_user_text(rec).is_none() {
-        return false;
-    }
-    !is_subagent_shape_payload(&rec.payload)
-}
-
-fn should_refresh_frontmatter(rec: &CaptureRecord) -> bool {
-    matches!(
-        rec.kind.as_str(),
-        "llm.request" | "llm.response" | "llm.response.stream"
-    )
+    should_skip_record(rec)
 }
 
 #[cfg(test)]
@@ -454,16 +350,25 @@ mod tests {
     #[test]
     fn intentional_duplicate_user_text_with_increasing_count_both_kept() {
         let mut p = MarkdownPipeline::default();
-        assert!(p.try_block(&request("c1", "hi", 1, None)).unwrap().is_some());
+        assert!(p
+            .try_block(&request("c1", "hi", 1, None))
+            .unwrap()
+            .is_some());
         assert!(p.try_block(&response("c1", "Hello")).unwrap().is_some());
-        assert!(p.try_block(&request("c2", "hi", 2, None)).unwrap().is_some());
+        assert!(p
+            .try_block(&request("c2", "hi", 2, None))
+            .unwrap()
+            .is_some());
         assert!(p.try_block(&response("c2", "Hi again")).unwrap().is_some());
     }
 
     #[test]
     fn skips_history_replay_without_new_user_turn() {
         let mut p = MarkdownPipeline::default();
-        assert!(p.try_block(&request("c1", "hi", 1, None)).unwrap().is_some());
+        assert!(p
+            .try_block(&request("c1", "hi", 1, None))
+            .unwrap()
+            .is_some());
         assert!(p.try_block(&response("c1", "Hello")).unwrap().is_some());
 
         let replay = request("c3", "hi", 1, None);
@@ -562,9 +467,7 @@ mod tests {
         writer.write_record(&response("c1", "Hello")).unwrap();
         writer.write_record(&request("c2", "hi", 2, None)).unwrap();
         writer.write_record(&response("c2", "Hi again")).unwrap();
-        writer
-            .write_record(&request("c3", "hi", 2, None))
-            .unwrap();
+        writer.write_record(&request("c3", "hi", 2, None)).unwrap();
         writer
             .write_record(&response(
                 "c3",
@@ -574,9 +477,7 @@ mod tests {
         writer
             .write_record(&request("c4", "你好", 3, None))
             .unwrap();
-        writer
-            .write_record(&response("c4", "你好！"))
-            .unwrap();
+        writer.write_record(&response("c4", "你好！")).unwrap();
 
         let blocks = read_blocks_from_file(&path).unwrap();
         assert_eq!(blocks.len(), 6);

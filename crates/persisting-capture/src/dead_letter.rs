@@ -22,6 +22,7 @@ use crate::session_storage::CaptureRoute;
 use crate::usage::StreamMetrics;
 
 const DEAD_LETTER_FILENAME: &str = "dead_letter.jsonl";
+const LANCE_DEAD_LETTER_FILENAME: &str = "lance_dead_letter.jsonl";
 
 /// Serializable invocation snapshot for dead-letter replay.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +88,75 @@ pub fn dead_letter_path(storage: &Path) -> PathBuf {
     storage.join(".capture").join(DEAD_LETTER_FILENAME)
 }
 
+pub fn lance_dead_letter_path(storage: &Path) -> PathBuf {
+    storage.join(".capture").join(LANCE_DEAD_LETTER_FILENAME)
+}
+
+/// Failed Lance trajectory append batch — `{storage}/.capture/lance_dead_letter.jsonl`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LanceDeadLetterEntry {
+    pub timestamp: String,
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
+    pub records_ronl: String,
+    pub error: String,
+}
+
+pub fn append_lance_dead_letter(
+    storage: &Path,
+    agent_id: &str,
+    session_id: &str,
+    root_session_id: Option<&str>,
+    records_ronl: &str,
+    error: &str,
+) -> Result<()> {
+    let entry = LanceDeadLetterEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        storage: storage.display().to_string(),
+        agent_id: agent_id.to_string(),
+        session_id: session_id.to_string(),
+        root_session_id: root_session_id.map(str::to_string),
+        records_ronl: records_ronl.to_string(),
+        error: error.to_string(),
+    };
+    let path = lance_dead_letter_path(storage);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("create .capture for lance dead letter")?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("open lance dead letter {}", path.display()))?;
+    let line = serde_json::to_string(&entry).context("serialize lance dead letter entry")?;
+    writeln!(file, "{line}").context("append lance dead letter")?;
+    Ok(())
+}
+
+pub fn read_lance_dead_letter_entries(storage: &Path) -> Result<Vec<LanceDeadLetterEntry>> {
+    let path = lance_dead_letter_path(storage);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
+    let mut out = Vec::new();
+    for (i, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("read lance dead letter line {i}"))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        out.push(
+            serde_json::from_str(trimmed)
+                .with_context(|| format!("parse lance dead letter line {i}"))?,
+        );
+    }
+    Ok(out)
+}
+
 pub fn append_dead_letter(
     storage: &Path,
     inv: &CaptureInvocation,
@@ -149,18 +219,17 @@ impl DeadLetterInvocation {
         }
     }
 
-    pub fn to_invocation(&self, storage: Arc<std::path::PathBuf>) -> CaptureInvocation {
+    pub fn to_invocation(&self, _storage: Arc<std::path::PathBuf>) -> CaptureInvocation {
         CaptureInvocation {
             route: self.route.clone(),
             agent_id: self.agent_id.clone(),
             call: self.call.clone(),
-            headers: axum::http::HeaderMap::new(),
+            request_headers: Vec::new(),
             level: self.level,
             client_model: self.client_model.clone(),
             upstream_model: self.upstream_model.clone(),
             provider: ProviderKind::parse(&self.provider),
             protocol: ProtocolKind::parse(&self.protocol),
-            storage,
             debug_on: false,
         }
     }
@@ -296,7 +365,7 @@ mod tests {
     use super::*;
     use crate::capture_call::CaptureCall;
 
-    fn sample_inv(dir: &Path) -> CaptureInvocation {
+    fn sample_inv(_dir: &Path) -> CaptureInvocation {
         CaptureInvocation {
             route: CaptureRoute {
                 root_session: Some("run-1".into()),
@@ -310,13 +379,12 @@ mod tests {
                 trace_id: "t1".into(),
                 started_at: "2026-01-01T00:00:00Z".into(),
             },
-            headers: axum::http::HeaderMap::new(),
+            request_headers: Vec::new(),
             level: CaptureLevel::Dialogue,
             client_model: "m".into(),
             upstream_model: "m".into(),
             provider: ProviderKind::OpenAi,
             protocol: ProtocolKind::ChatCompletions,
-            storage: Arc::new(dir.to_path_buf()),
             debug_on: false,
         }
     }
@@ -338,5 +406,23 @@ mod tests {
         assert_eq!(entries[0].error, "mailbox full");
         let restored = entries[0].event.to_event();
         assert!(matches!(restored, CaptureEvent::LlmRequest(_)));
+    }
+
+    #[test]
+    fn lance_dead_letter_roundtrip_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        append_lance_dead_letter(
+            dir.path(),
+            "agent",
+            "sess",
+            Some("run-1"),
+            "record line\n",
+            "engine invoke failed",
+        )
+        .unwrap();
+        let entries = read_lance_dead_letter_entries(dir.path()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].error, "engine invoke failed");
+        assert_eq!(entries[0].records_ronl, "record line\n");
     }
 }

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use super::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use super::markdown::{BlockHeader, MarkdownBlock};
-use super::markdown_pipeline::{self, MarkdownPipeline};
+use super::markdown_pipeline::MarkdownPipeline;
 use super::record::{engine_line_to_record, record_to_engine_line, CaptureRecord};
 use super::subagent_link::append_subagent_refs_footer;
 
@@ -465,7 +465,7 @@ pub fn draft_stream_assistant_block(
         "assistant_content": assistant_content,
         "draft": true,
     });
-    if markdown_pipeline::skip_markdown_block(&draft) {
+    if skip_markdown_block(&draft) {
         return Ok(None);
     }
     Ok(Some(capture_record_to_block(&draft)?))

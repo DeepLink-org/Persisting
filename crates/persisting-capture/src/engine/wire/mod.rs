@@ -1,13 +1,10 @@
 //! Actor wire protocol — all cross-actor messages live here.
-//!
-//! Domain types ([`super::types`]) never cross the mailbox; only wire commands do.
-//! JSON-in-bincode for payloads that contain [`serde_json::Value`].
 
 mod headers;
 mod registry;
 mod session;
 
-pub(crate) use headers::headers_to_header_map;
+pub(crate) use headers::{headers_to_header_map, headers_to_vec};
 pub(crate) use registry::{
     registry_enrich, registry_main_route, RegistryCommand, RegistryReply, REGISTRY_ACTOR_NAME,
 };

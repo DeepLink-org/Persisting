@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::session::{trajectory_session_dir, CaptureRoute};
-use crate::peer_process::resolve_peer_client;
+use crate::injection::peer::resolve_peer_client;
 use crate::run_env::{read_run_child_info, read_run_session};
 
 /// Sidecar metadata for `capture serve` (no `run_session`). `capture run` uses `run_child.yaml` + markdown frontmatter instead.

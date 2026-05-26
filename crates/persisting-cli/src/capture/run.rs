@@ -26,13 +26,13 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
     if opts.command.is_empty() {
         anyhow::bail!(
             "capture run requires a command after `--`, e.g. \
-             `persisting capture run -c proxy.yaml -o ./store -- curl …`"
+             `persisting capture run -c proxy.toml -o ./store -- curl …`"
         );
     }
 
     let storage = opts.output_dir.canonicalize().unwrap_or(opts.output_dir);
 
-    let run_cfg = ProxyConfig::from_yaml_file(&opts.config)
+    let run_cfg = ProxyConfig::from_file(&opts.config)
         .with_context(|| format!("load proxy config {}", opts.config.display()))?;
 
     strip_capture_proxy_env();
