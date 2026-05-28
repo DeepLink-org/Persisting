@@ -1,5 +1,7 @@
 //! In-memory turn index updated as capture records flow through a story actor.
 
+use std::collections::HashMap;
+
 use serde_json::json;
 
 use super::ids::{CallId, StoryId, TurnId};
@@ -21,6 +23,7 @@ pub struct TurnMachine {
     run_id: Option<super::ids::RunId>,
     turns: Vec<Turn>,
     active_turn: Option<TurnId>,
+    call_turns: HashMap<CallId, TurnId>,
     next_index: u32,
 }
 
@@ -32,6 +35,7 @@ impl TurnMachine {
             run_id: None,
             turns: Vec::new(),
             active_turn: None,
+            call_turns: HashMap::new(),
             next_index: 0,
         }
     }
@@ -47,6 +51,7 @@ impl TurnMachine {
             run_id,
             turns: Vec::new(),
             active_turn: None,
+            call_turns: HashMap::new(),
             next_index: 0,
         }
     }
@@ -122,12 +127,10 @@ impl TurnMachine {
 
     fn on_request(&mut self, call_id: &CallId, rec: &CaptureRecord) -> TurnObserveOutcome {
         if rec.is_internal_llm_request() {
-            if self.active_turn.is_some() {
-                self.ensure_call(call_id, CallPhase::Request);
-            }
+            let turn_id = self.ensure_call_on_active_turn(call_id, CallPhase::Request);
             return TurnObserveOutcome {
-                turn_id: self.active_turn.clone(),
-                turn_index: self.active_turn.as_ref().and_then(|t| self.turn_index(t)),
+                turn_index: turn_id.as_ref().and_then(|t| self.turn_index(t)),
+                turn_id,
             };
         }
 
@@ -146,6 +149,7 @@ impl TurnMachine {
                 calls: vec![self.call_snapshot(call_id)],
             };
             self.turns.push(turn);
+            self.call_turns.insert(call_id.clone(), turn_id.clone());
             self.active_turn = Some(turn_id.clone());
             return TurnObserveOutcome {
                 turn_id: Some(turn_id),
@@ -154,10 +158,10 @@ impl TurnMachine {
         }
 
         if self.active_turn.is_some() {
-            self.ensure_call(call_id, CallPhase::Request);
+            let turn_id = self.ensure_call_on_active_turn(call_id, CallPhase::Request);
             return TurnObserveOutcome {
-                turn_id: self.active_turn.clone(),
-                turn_index: self.active_turn.as_ref().and_then(|t| self.turn_index(t)),
+                turn_index: turn_id.as_ref().and_then(|t| self.turn_index(t)),
+                turn_id,
             };
         }
 
@@ -172,6 +176,7 @@ impl TurnMachine {
             calls: vec![self.call_snapshot(call_id)],
         };
         self.turns.push(turn);
+        self.call_turns.insert(call_id.clone(), turn_id.clone());
         self.active_turn = Some(turn_id.clone());
         TurnObserveOutcome {
             turn_id: Some(turn_id),
@@ -180,9 +185,9 @@ impl TurnMachine {
     }
 
     fn on_response(&mut self, call_id: &CallId, rec: &CaptureRecord) -> TurnObserveOutcome {
-        self.ensure_call(call_id, CallPhase::Complete);
+        let turn_id = self.ensure_call_for_call(call_id, CallPhase::Complete);
         if let Some(text) = rec.visible_assistant_text() {
-            if let Some(turn) = self.turns.last_mut() {
+            if let Some(turn) = turn_id.as_ref().and_then(|id| self.turn_mut(id)) {
                 turn.assistant = Some(TextBlock {
                     text,
                     call_id: Some(call_id.clone()),
@@ -190,25 +195,42 @@ impl TurnMachine {
             }
         }
         TurnObserveOutcome {
-            turn_id: self.active_turn.clone(),
-            turn_index: self.active_turn.as_ref().and_then(|t| self.turn_index(t)),
+            turn_index: turn_id.as_ref().and_then(|t| self.turn_index(t)),
+            turn_id,
         }
     }
 
     fn on_cancel(&mut self, call_id: &CallId) -> TurnObserveOutcome {
-        self.ensure_call(call_id, CallPhase::Cancel);
+        let turn_id = self.ensure_call_for_call(call_id, CallPhase::Cancel);
         TurnObserveOutcome {
-            turn_id: self.active_turn.clone(),
-            turn_index: self.active_turn.as_ref().and_then(|t| self.turn_index(t)),
+            turn_index: turn_id.as_ref().and_then(|t| self.turn_index(t)),
+            turn_id,
         }
     }
 
-    fn ensure_call(&mut self, call_id: &CallId, kind: CallPhase) {
-        if let Some(turn) = self.turns.last_mut() {
+    fn ensure_call_on_active_turn(&mut self, call_id: &CallId, kind: CallPhase) -> Option<TurnId> {
+        let turn_id = self.active_turn.clone()?;
+        self.ensure_call_in_turn(&turn_id, call_id, kind);
+        Some(turn_id)
+    }
+
+    fn ensure_call_for_call(&mut self, call_id: &CallId, kind: CallPhase) -> Option<TurnId> {
+        let turn_id = self
+            .call_turns
+            .get(call_id)
+            .cloned()
+            .or_else(|| self.active_turn.clone())?;
+        self.ensure_call_in_turn(&turn_id, call_id, kind);
+        Some(turn_id)
+    }
+
+    fn ensure_call_in_turn(&mut self, turn_id: &TurnId, call_id: &CallId, kind: CallPhase) {
+        if let Some(turn) = self.turn_mut(turn_id) {
             if let Some(entry) = turn.calls.iter_mut().find(|c| c.call_id == *call_id) {
                 if !entry.events.contains(&kind) {
                     entry.events.push(kind);
                 }
+                self.call_turns.insert(call_id.clone(), turn_id.clone());
                 return;
             }
             turn.calls.push(TurnCall {
@@ -218,6 +240,7 @@ impl TurnMachine {
                 model: None,
                 events: vec![kind],
             });
+            self.call_turns.insert(call_id.clone(), turn_id.clone());
         }
     }
 
@@ -237,12 +260,16 @@ impl TurnMachine {
             .find(|t| t.turn_id == *turn_id)
             .map(|t| t.index)
     }
+
+    fn turn_mut(&mut self, turn_id: &TurnId) -> Option<&mut Turn> {
+        self.turns.iter_mut().find(|t| t.turn_id == *turn_id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::model::CallPhase;
+    use super::*;
     use crate::config::CaptureLevel;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
 
@@ -472,5 +499,64 @@ mod tests {
         let phases = &tm.turns()[0].calls[0].events;
         assert!(phases.contains(&CallPhase::Request));
         assert!(phases.contains(&CallPhase::Cancel));
+    }
+
+    #[test]
+    fn response_for_overlapping_call_attaches_to_original_turn() {
+        let story_id = StoryId::new("run|main");
+        let mut tm = TurnMachine::new(story_id);
+        let call_a = sample_call("call-a");
+        let call_b = sample_call("call-b");
+
+        let mut req_a = llm_request_summary_record(
+            Some("s".into()),
+            Some("a".into()),
+            "m",
+            "/v1/chat/completions",
+            10,
+            "chat_completions",
+            "openai",
+            Some("first".into()),
+            None,
+            &call_a,
+            CaptureLevel::Dialogue,
+            None,
+        );
+        tm.observe_record(&mut req_a);
+
+        let mut req_b = llm_request_summary_record(
+            Some("s".into()),
+            Some("a".into()),
+            "m",
+            "/v1/chat/completions",
+            10,
+            "chat_completions",
+            "openai",
+            Some("second".into()),
+            None,
+            &call_b,
+            CaptureLevel::Dialogue,
+            None,
+        );
+        tm.observe_record(&mut req_b);
+
+        let mut resp_a = llm_response_record_with_content(
+            Some("s".into()),
+            Some("a".into()),
+            200,
+            &json!({}),
+            false,
+            Some("reply to first".into()),
+            &call_a,
+            CaptureLevel::Dialogue,
+        );
+        let out = tm.observe_record(&mut resp_a);
+
+        assert_eq!(out.turn_index, Some(0));
+        assert_eq!(
+            tm.turns()[0].assistant.as_ref().map(|b| b.text.as_str()),
+            Some("reply to first")
+        );
+        assert!(tm.turns()[1].assistant.is_none());
     }
 }

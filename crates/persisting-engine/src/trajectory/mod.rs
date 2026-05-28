@@ -396,7 +396,7 @@ mod tests {
         std::fs::create_dir_all(&storage).unwrap();
         let storage_s = storage.to_string_lossy().to_string();
 
-        let line1 = record_to_engine_line(&persisting_capture::CaptureRecord {
+        let line1 = record_to_engine_line(&persisting_capture::record::CaptureRecord {
             seq: 0,
             source: "test".into(),
             kind: "note".into(),
@@ -413,7 +413,7 @@ mod tests {
             payload: serde_json::json!({"content":"step 1"}),
         })
         .unwrap();
-        let line2 = record_to_engine_line(&persisting_capture::CaptureRecord {
+        let line2 = record_to_engine_line(&persisting_capture::record::CaptureRecord {
             seq: 1,
             source: "test".into(),
             kind: "note".into(),
@@ -480,7 +480,7 @@ mod tests {
         let storage_s = storage.to_string_lossy().to_string();
 
         let mk = |content: &str| {
-            record_to_engine_line(&persisting_capture::CaptureRecord {
+            record_to_engine_line(&persisting_capture::record::CaptureRecord {
                 seq: 0,
                 source: "test".into(),
                 kind: "note".into(),
@@ -539,9 +539,9 @@ mod tests {
 
     #[tokio::test]
     async fn append_replay_stats_markdown_roundtrip() {
+        use persisting_capture::engine::Call;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
-        use persisting_capture::Call;
 
         let call = Call {
             call_id: "c".into(),
@@ -668,9 +668,9 @@ mod tests {
 
     #[tokio::test]
     async fn append_replay_structured_lance_llm_columns() {
+        use persisting_capture::engine::Call;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
-        use persisting_capture::Call;
 
         let call = Call {
             call_id: "call-1".into(),
@@ -752,9 +752,9 @@ mod tests {
 
     #[tokio::test]
     async fn materialize_and_compact_two_layer_roundtrip() {
+        use persisting_capture::engine::Call;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
-        use persisting_capture::Call;
 
         let call = Call {
             call_id: "call-1".into(),

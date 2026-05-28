@@ -11,7 +11,7 @@ use super::markdown::{
 };
 use super::session::{trajectory_run_dir, CaptureRoute};
 use super::session_client::{resolve_client_meta_for_run_dir, SessionClientMeta};
-use crate::engine::Story;
+use super::story_snapshots::load_snapshot_turn_counts;
 use crate::session_index::{SessionIndexStore, SessionSummary};
 
 /// Rollup stats embedded in trajectory markdown frontmatter.
@@ -64,18 +64,21 @@ pub fn format_session_frontmatter(summary: &SessionFrontmatterSummary) -> Result
 
 /// Build rollup from markdown blocks + `sessions.json` + run directory siblings.
 ///
-/// When `story` is present, turn count comes from the story read model instead of markdown blocks.
+/// When `story_user_turn_count` is set, it overrides markdown block counting.
 pub fn build_session_frontmatter_summary(
     storage: &Path,
     agent_id: &str,
     route: &CaptureRoute,
     md_path: &Path,
-    story: Option<&Story>,
+    story_user_turn_count: Option<u64>,
 ) -> Result<SessionFrontmatterSummary> {
     let run_dir = trajectory_run_dir(storage, agent_id, route);
     let client = resolve_client_meta_for_run_dir(storage, &run_dir);
 
-    let turns = turns_from_story_or_markdown(story, md_path)?;
+    let turns = match story_user_turn_count {
+        Some(n) => n,
+        None => count_user_turns(md_path)?,
+    };
     let index_row = lookup_session_index(storage, agent_id, &route.session_id);
 
     let (model, provider, started, duration, total_tokens, cost) =
@@ -94,13 +97,6 @@ pub fn build_session_frontmatter_summary(
         subagents: list_subagent_stems(&run_dir, &route.storage_session_id),
         client,
     })
-}
-
-fn turns_from_story_or_markdown(story: Option<&Story>, md_path: &Path) -> Result<u64> {
-    if let Some(story) = story {
-        return Ok(crate::engine::story_user_turn_count(story));
-    }
-    count_user_turns(md_path)
 }
 
 fn count_user_turns(md_path: &Path) -> Result<u64> {
@@ -178,12 +174,18 @@ pub fn refresh_document_frontmatter(
     agent_id: &str,
     route: &CaptureRoute,
     md_path: &Path,
-    story: Option<&Story>,
+    story_user_turn_count: Option<u64>,
 ) -> Result<SessionFrontmatterSummary> {
     if !md_path.is_file() {
         anyhow::bail!("markdown file missing: {}", md_path.display());
     }
-    let summary = build_session_frontmatter_summary(storage, agent_id, route, md_path, story)?;
+    let summary = build_session_frontmatter_summary(
+        storage,
+        agent_id,
+        route,
+        md_path,
+        story_user_turn_count,
+    )?;
     let content =
         std::fs::read_to_string(md_path).with_context(|| format!("read {}", md_path.display()))?;
     let body_start = super::markdown::document_body_start(&content)?;
@@ -195,19 +197,19 @@ pub fn refresh_document_frontmatter(
 
 /// Refresh frontmatter for every `{run_dir}/*.md` file.
 ///
-/// Loads `.capture/story_snapshots.json` when `stories` is not provided.
+/// Uses `.capture/story_snapshots.json` turn counts when `turn_counts` is not provided.
 pub fn refresh_run_markdown_frontmatter(
     storage: &Path,
     agent_id: &str,
     root_session: &str,
-    stories: Option<&std::collections::HashMap<String, Story>>,
+    turn_counts: Option<&std::collections::HashMap<String, u64>>,
 ) -> Result<Vec<(PathBuf, SessionFrontmatterSummary)>> {
     let run_dir = storage.join(agent_id).join(root_session);
     if !run_dir.is_dir() {
         return Ok(Vec::new());
     }
-    let loaded = crate::engine::load_story_snapshots(storage).unwrap_or_default();
-    let stories = stories.unwrap_or(&loaded);
+    let loaded = load_snapshot_turn_counts(storage).unwrap_or_default();
+    let turn_counts = turn_counts.unwrap_or(&loaded);
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&run_dir)? {
         let entry = entry?;
@@ -219,9 +221,8 @@ pub fn refresh_run_markdown_frontmatter(
             continue;
         };
         let route = CaptureRoute::for_run_markdown_stem(root_session, stem);
-        let story = stories.get(stem);
-        let summary =
-            refresh_document_frontmatter(storage, agent_id, &route, &path, story)?;
+        let turns = turn_counts.get(stem).copied();
+        let summary = refresh_document_frontmatter(storage, agent_id, &route, &path, turns)?;
         out.push((path, summary));
     }
     out.sort_by(|a, b| a.0.file_name().cmp(&b.0.file_name()));
@@ -338,15 +339,14 @@ mod tests {
                 None,
             ));
         }
-        let story = crate::engine::rebuild_session_story("run-test", "run-test", &records);
+        let _story = crate::engine::rebuild_session_story("run-test", "run-test", &records);
 
         let from_md =
             build_session_frontmatter_summary(dir.path(), "agent", &route, &md, None).unwrap();
         assert_eq!(from_md.turns, 1);
 
         let from_story =
-            build_session_frontmatter_summary(dir.path(), "agent", &route, &md, Some(&story))
-                .unwrap();
+            build_session_frontmatter_summary(dir.path(), "agent", &route, &md, Some(2)).unwrap();
         assert_eq!(from_story.turns, 2);
     }
 
@@ -398,8 +398,7 @@ mod tests {
         snapshots.insert(root.to_string(), story);
         crate::engine::persist_story_snapshots(dir.path(), &snapshots).unwrap();
 
-        let entries =
-            refresh_run_markdown_frontmatter(dir.path(), agent, root, None).unwrap();
+        let entries = refresh_run_markdown_frontmatter(dir.path(), agent, root, None).unwrap();
         let summary = entries
             .iter()
             .find(|(p, _)| p == &md)

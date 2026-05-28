@@ -8,7 +8,7 @@
 
 | 你想了解… | 见 |
 |-----------|-----|
-| Capture 代理的整体架构（路由 / 协议转换 / Story 边界 / 采集管线） | [Capture 架构设计](capture_design.zh.md) §3.3–§3.4 |
+| Capture 代理的整体架构（路由 / 协议转换 / Story 边界 / 采集管线） | [Capture 架构设计](capture_design.zh.md) §2.1–§2.2 |
 | TLV Markdown 的块格式规范 | [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) |
 | `persisting capture` 命令用法 | [Capture 命令](cli_capture_command.zh.md) |
 | `persisting trajectory` 命令用法 | [Trajectory 命令](cli_trajectory_command.zh.md) |
@@ -19,7 +19,7 @@
 
 Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、git diff、code review）。为此采用**两层存储**：Lance 为 canonical raw event log，TLV Markdown 为按需物化的人读视图。
 
-**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ CaptureRecord → Lance/Markdown`。协议差异在 Story 边界前由 `conversion/` + `dialogue_extract/` 消化；`CaptureRecord` 是存储层的统一中间表示，不再携带 messages/completions 结构。详见 [Capture §3.4 三层词汇表](capture_design.zh.md#34-三层词汇表与转换边界)。
+**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ CaptureRecord → Lance/Markdown`。协议差异在 Story 边界前由 `conversion/` + `dialogue_extract/` 消化；`CaptureRecord` 是存储层的统一中间表示，不再携带 messages/completions 结构。详见 [Capture §2.2 三层词汇表](capture_design.zh.md#22-三层词汇表与转换边界)。
 
 ```mermaid
 graph TD
@@ -100,7 +100,7 @@ graph TD
 
 ### 3.1 Capture Proxy（`-f md`）— 事件驱动 + 非阻塞采集
 
-Proxy 侧采集经 [`CaptureEngine`](../../crates/persisting-capture/src/engine/mod.rs) 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_apply` → `ApplyDispatcher`），Lance/Markdown 写入在后台完成。不再向 Lance 写入 `llm.response.stream.partial`。
+Proxy 侧采集经 [`CaptureEngine`](../../crates/persisting-capture/src/engine/mod.rs) 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_apply` → Event WAL → `ApplyDispatcher`），Lance/Markdown 写入在后台完成。不再向 Lance 写入 `llm.response.stream.partial`。
 
 ```mermaid
 sequenceDiagram
@@ -114,7 +114,7 @@ sequenceDiagram
 
     Agent->>Proxy: POST /v1/messages
 
-    Proxy->>Queue: spawn_apply Event::Request（不阻塞 upstream）
+    Proxy->>Queue: spawn_apply Event::Request（先写 Event WAL，不阻塞 upstream）
     Queue->>Engine: 按 story_id 有序 apply
     Engine->>Engine: prepare + StoryActor ask
     Engine->>Sink: append llm.request
@@ -567,7 +567,7 @@ Proxy (spawn_apply)           ApplyDispatcher              CaptureEngine
   └─ Event::Cancelled              └─ 有序 apply ─────────────────→ ask → append (cancelled)
 ```
 
-StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`shutdown` 前对各 story 发送 `Flush` drain mailbox。`CallbackSink` → `TrajectoryAppendWorker` 负责 Lance 批量 flush。
+StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`shutdown` 前先通过 `ApplyDispatcher` barrier drain 已接收事件，再对各 story 发送 `Flush` drain mailbox。`spawn_apply` 在入队前写 `.capture/events.wal.jsonl`，clean shutdown 后 truncate；非 clean shutdown 下次启动 replay 未 ack event。`CallbackSink` → `TrajectoryAppendWorker` 负责 Lance 批量 flush。
 
 ### 10.2 已知限制
 
@@ -576,10 +576,11 @@ StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`s
 | md 与 Lance 短暂不一致 | 后台 apply 尚未 drain | shutdown `Flush` + `reconcile.json` |
 | turn 编号跨 call 重复 | `turn = seq/2+1` 非 per-call | 消费方用 `call_id` 分组 |
 | apply 队列满 / 采集失败 | 背压 | dead letter + `replay-dead-letter` |
+| Event WAL 多轮 crash | replay entry 暂未 ack 原 seq；`next_seq` 未从旧 WAL 恢复 | 补 `PendingEntry.seq` + open 扫描 max(seq)+1 |
 | Lance worker flush 失败 | 磁盘 / Lance 异常 | `lance_dead_letter.jsonl` 保留 RON batch |
 | Lance per-session dataset 过多 | 当前按 session 分 dataset | 按日分桶（规划中） |
 
-详见 [Capture 架构设计 §10](capture_design.zh.md)。
+详见 [Capture 架构设计 §9](capture_design.zh.md)。
 
 ---
 

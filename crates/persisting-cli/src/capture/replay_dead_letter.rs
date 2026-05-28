@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use persisting_capture::dead_letter::replay_dead_letter;
+use persisting_capture::engine::CaptureEngine;
 use persisting_capture::session_index::SessionIndexStore;
-use persisting_capture::{replay_dead_letter, CaptureEngine, CaptureSink};
+use persisting_capture::sink::CaptureSink;
 
 use super::CaptureFormat;
 

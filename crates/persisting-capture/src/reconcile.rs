@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::markdown_trajectory::read_blocks_from_file;
 use crate::engine::{rebuild_session_story, story_call_ids, story_user_turn_count};
+use crate::markdown_trajectory::read_blocks_from_file;
 use crate::record::CaptureRecord;
 use crate::storage::markdown_pipeline::MarkdownPipeline;
 
@@ -134,12 +134,7 @@ pub fn reconcile_session(
         if let Some(ref story) = story {
             let ids = story_call_ids(story);
             let (sm, se) = set_diff(&ids, &md_ids);
-            (
-                sorted_vec(&ids),
-                story_user_turn_count(story),
-                sm,
-                se,
-            )
+            (sorted_vec(&ids), story_user_turn_count(story), sm, se)
         } else {
             (Vec::new(), 0, Vec::new(), Vec::new())
         };

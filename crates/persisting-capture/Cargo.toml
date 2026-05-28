@@ -50,3 +50,7 @@ path = "tests/ag_fixture_tests.rs"
 [[test]]
 name = "capture_apps_claude"
 path = "tests/capture_apps_claude.rs"
+
+[[test]]
+name = "tlv_golden"
+path = "tests/tlv_golden.rs"

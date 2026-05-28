@@ -40,8 +40,12 @@ impl CaptureRoute {
 
     /// Route for offline replay / reconcile (main session omits `root_session` wrapper).
     pub fn for_replay_stem(root_session: &str, session_id: &str) -> Self {
-        let subagent_id = is_subagent_session_storage_key(session_id)
-            .then(|| session_id.strip_prefix("agent-").unwrap_or(session_id).to_string());
+        let subagent_id = is_subagent_session_storage_key(session_id).then(|| {
+            session_id
+                .strip_prefix("agent-")
+                .unwrap_or(session_id)
+                .to_string()
+        });
         Self {
             root_session: if session_id == root_session {
                 None

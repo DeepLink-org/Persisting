@@ -1,17 +1,16 @@
 //! Prepare phase — pure capture logic before story-local I/O.
 //!
-//! Runs on the runtime thread; may `ask` the run actor but never touches sink/md directly.
+//! Runs on the runtime thread; may `ask` the run actor. Lance/markdown I/O only via [`StoryCommand`].
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use pulsing_actor::ActorRef;
 use serde_json::Value;
 
 use super::wire::{run_enrich, StoryCommand, StoryScope};
 use super::{CallContext, CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent};
 use crate::debug;
-use crate::dialogue::draft_stream_assistant_block;
 use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
-use crate::sink::{llm_request_summary_record, llm_response_record_with_content, CaptureSink};
+use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
 use crate::subagent_link::SpawnLinkBackfill;
 use crate::usage::{
     estimate_cost_usd, extract_usage_from_response, extract_usage_from_sse, StreamMetrics,
@@ -20,7 +19,6 @@ use crate::usage::{
 
 /// Index + config for the prepare phase (run actor accessed via wire client, not held here).
 pub(crate) struct CapturePreparer {
-    pub sink: std::sync::Arc<dyn CaptureSink>,
     pub index: crate::session_index::SessionIndexHandle,
     pub storage: std::sync::Arc<std::path::PathBuf>,
     pub stream_markdown: bool,
@@ -82,7 +80,7 @@ impl CapturePreparer {
         let scope = StoryScope::from_context(ctx);
         let story_cmd = Some(StoryCommand::persist_record(
             scope,
-            serde_json::to_string(&rec)?,
+            serde_json::to_vec(&rec)?,
         ));
         Ok(PreparedCapture {
             ctx: ctx.clone(),
@@ -99,7 +97,14 @@ impl CapturePreparer {
                 story_cmd: None,
             });
         }
-        let mut rec = llm_response_record_with_content(
+        if event.assistant_content.trim().is_empty() {
+            return Ok(PreparedCapture {
+                ctx: ctx.clone(),
+                backfills: vec![],
+                story_cmd: None,
+            });
+        }
+        let rec = llm_response_record_with_content(
             Some(ctx.route().session_id.clone()),
             Some(ctx.agent_id().to_string()),
             event.status,
@@ -109,19 +114,11 @@ impl CapturePreparer {
             &ctx.call,
             ctx.level,
         );
-        rec.seq = self
-            .sink
-            .peek_next_seq(ctx.route())
-            .context("draft markdown requires sink peek_next_seq")?;
-        let story_cmd = match draft_stream_assistant_block(&rec, &event.assistant_content)? {
-            Some((header, body)) => Some(StoryCommand::upsert_draft(
-                StoryScope::from_context(ctx),
-                &ctx.call.call_id,
-                header,
-                body,
-            )?),
-            None => None,
-        };
+        let story_cmd = Some(StoryCommand::upsert_draft(
+            StoryScope::from_context(ctx),
+            serde_json::to_vec(&rec)?,
+            event.assistant_content,
+        )?);
         Ok(PreparedCapture {
             ctx: ctx.clone(),
             backfills: vec![],
@@ -215,7 +212,7 @@ impl CapturePreparer {
         let scope = StoryScope::from_context(ctx);
         let story_cmd = Some(StoryCommand::persist_record(
             scope,
-            serde_json::to_string(&rec)?,
+            serde_json::to_vec(&rec)?,
         ));
         Ok(PreparedCapture {
             ctx: ctx.clone(),
@@ -251,7 +248,7 @@ impl CapturePreparer {
         };
         let story_cmd = Some(StoryCommand::persist_record(
             StoryScope::from_context(ctx),
-            serde_json::to_string(&rec)?,
+            serde_json::to_vec(&rec)?,
         ));
         Ok(PreparedCapture {
             ctx: ctx.clone(),

@@ -32,7 +32,7 @@ pub struct CompactOutcome {
 
 async fn load_all_capture_records(
     session: &TrajectorySession,
-) -> Result<Vec<persisting_capture::CaptureRecord>> {
+) -> Result<Vec<persisting_capture::record::CaptureRecord>> {
     let lance = LanceTrajectoryStore;
     let outcome = lance
         .replay(session, 0, None)
@@ -43,7 +43,7 @@ async fn load_all_capture_records(
         .iter()
         .enumerate()
         .map(|(i, json)| {
-            serde_json::from_str::<persisting_capture::CaptureRecord>(json)
+            serde_json::from_str::<persisting_capture::record::CaptureRecord>(json)
                 .with_context(|| format!("decode replay record[{i}]"))
         })
         .collect()

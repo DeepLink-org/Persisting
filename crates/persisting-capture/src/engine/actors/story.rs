@@ -1,4 +1,4 @@
-//! Per-story I/O actor — one mailbox per `story_id`, owns turn state.
+//! Per-story I/O actor — one mailbox per `story_id`, owns turn state and [`CaptureSink`] writes.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,11 +9,11 @@ use pulsing_actor::prelude::*;
 
 use super::super::story::{StoryId, TurnMachine};
 use super::super::wire::{CaptureAck, DraftPayload, StoryCommand, StoryReply, StoryScope};
-use crate::engine::should_refresh_frontmatter;
-use crate::markdown_trajectory::BlockHeader;
+use crate::dialogue::draft_stream_assistant_block;
 use crate::sink::CaptureSink;
 use crate::storage::frontmatter::refresh_document_frontmatter;
 use crate::storage::markdown_pipeline::{LiveMarkdownWriter, MarkdownTarget};
+use crate::storage::markdown_policy::should_refresh_frontmatter;
 
 /// Injected sink + markdown flag for each story actor instance.
 #[derive(Clone)]
@@ -33,6 +33,10 @@ impl StoryActorDeps {
     }
 }
 
+/// Refresh frontmatter every Nth record so a single turn (request + response)
+/// only triggers one rewrite instead of two. `Flush` always rewrites pending changes.
+const FRONTMATTER_REFRESH_EVERY_N_RECORDS: u32 = 4;
+
 /// Per-story actor — serializes I/O and maintains [`TurnMachine`] for the narrative index.
 pub(crate) struct StoryActor {
     story_id: StoryId,
@@ -40,6 +44,10 @@ pub(crate) struct StoryActor {
     turns: TurnMachine,
     md: Option<LiveMarkdownWriter>,
     storage_session_id: Option<String>,
+    /// Counter of records since last frontmatter rewrite — drives [`FRONTMATTER_REFRESH_EVERY_N_RECORDS`].
+    frontmatter_pending: u32,
+    /// Last scope seen — `Flush` doesn't carry one but still needs to refresh frontmatter.
+    last_scope: Option<StoryScope>,
 }
 
 impl StoryActor {
@@ -51,6 +59,8 @@ impl StoryActor {
             turns,
             md: None,
             storage_session_id: None,
+            frontmatter_pending: 0,
+            last_scope: None,
         }
     }
 
@@ -58,6 +68,7 @@ impl StoryActor {
         self.storage_session_id = Some(scope.route().storage_session_id.clone());
         self.turns
             .set_story_meta(scope.agent_id(), scope.context.run_id.clone());
+        self.last_scope = Some(scope.clone());
     }
 
     fn md_writer(&mut self, scope: &StoryScope) -> &mut LiveMarkdownWriter {
@@ -74,9 +85,41 @@ impl StoryActor {
         self.md.as_mut().expect("md writer initialized")
     }
 
+    /// Rewrite the markdown frontmatter for the current story, swallowing errors
+    /// (frontmatter is a derived projection — failure is non-fatal).
+    fn refresh_frontmatter(&mut self, scope: &StoryScope) {
+        let story = self.turns.snapshot();
+        let user_turns = crate::engine::story_user_turn_count(&story);
+        let path = self.md_writer(scope).path();
+        let _ = refresh_document_frontmatter(
+            self.deps.storage.as_path(),
+            scope.agent_id(),
+            scope.route(),
+            &path,
+            Some(user_turns),
+        )
+        .map_err(|e| tracing::debug!("frontmatter refresh: {e:#}"));
+        self.frontmatter_pending = 0;
+    }
+
+    fn flush_pending_frontmatter(&mut self, scope: &StoryScope) {
+        if self.frontmatter_pending > 0 {
+            self.refresh_frontmatter(scope);
+        }
+    }
+
     fn handle(&mut self, cmd: StoryCommand) -> Result<StoryReply> {
         match cmd {
-            StoryCommand::Flush => return Ok(StoryReply::Ack(CaptureAck::ok())),
+            StoryCommand::Flush => {
+                // Drain any pending frontmatter writes so external observers see a
+                // consistent markdown file after `flush()` returns.
+                if self.frontmatter_pending > 0 {
+                    if let Some(scope) = self.last_scope.clone() {
+                        self.refresh_frontmatter(&scope);
+                    }
+                }
+                return Ok(StoryReply::Ack(CaptureAck::ok()));
+            }
             StoryCommand::LocalSnapshot => {
                 let storage_session_id = self
                     .storage_session_id
@@ -89,6 +132,7 @@ impl StoryActor {
             }
             StoryCommand::Snapshot { scope } => {
                 self.sync_scope(&scope);
+                self.flush_pending_frontmatter(&scope);
                 return Ok(StoryReply::Snapshot {
                     story: self.turns.snapshot(),
                 });
@@ -98,8 +142,8 @@ impl StoryActor {
         let scope = cmd.scope().clone();
         self.sync_scope(&scope);
         match cmd {
-            StoryCommand::PersistRecord { record_json, .. } => {
-                let mut rec: crate::record::CaptureRecord = serde_json::from_str(&record_json)?;
+            StoryCommand::PersistRecord { record_bytes, .. } => {
+                let mut rec: crate::record::CaptureRecord = serde_json::from_slice(&record_bytes)?;
                 self.turns.observe_record(&mut rec);
                 self.deps
                     .sink
@@ -107,27 +151,27 @@ impl StoryActor {
                     .context("capture append")?;
                 self.md_writer(&scope).write_record(&rec)?;
                 if should_refresh_frontmatter(&rec) {
-                    let story = self.turns.snapshot();
-                    let path = self.md_writer(&scope).path();
-                    let _ = refresh_document_frontmatter(
-                        self.deps.storage.as_path(),
-                        scope.agent_id(),
-                        scope.route(),
-                        &path,
-                        Some(&story),
-                    )
-                    .map_err(|e| tracing::debug!("frontmatter refresh: {e:#}"));
+                    self.frontmatter_pending = self.frontmatter_pending.saturating_add(1);
+                    if self.frontmatter_pending >= FRONTMATTER_REFRESH_EVERY_N_RECORDS {
+                        self.refresh_frontmatter(&scope);
+                    }
                 }
             }
-            StoryCommand::UpsertDraft { draft_json, .. } => {
-                let draft: DraftPayload = serde_json::from_str(&draft_json)?;
-                let header = BlockHeader {
-                    type_name: draft.type_name,
-                    length: draft.length,
-                    fields: draft.fields,
-                };
-                self.md_writer(&scope)
-                    .write_draft(&draft.call_id, (header, draft.body))?;
+            StoryCommand::UpsertDraft { draft_bytes, .. } => {
+                let draft: DraftPayload = serde_json::from_slice(&draft_bytes)?;
+                let mut rec: crate::record::CaptureRecord =
+                    serde_json::from_slice(&draft.record_bytes)?;
+                rec.seq = self
+                    .deps
+                    .sink
+                    .peek_next_seq(scope.route())
+                    .context("draft markdown requires sink peek_next_seq")?;
+                if let Some((header, body)) =
+                    draft_stream_assistant_block(&rec, &draft.assistant_content)?
+                {
+                    self.md_writer(&scope)
+                        .write_draft(rec.call_id.as_deref().unwrap_or(""), (header, body))?;
+                }
             }
             StoryCommand::Flush | StoryCommand::Snapshot { .. } | StoryCommand::LocalSnapshot => {
                 unreachable!()

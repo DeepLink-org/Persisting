@@ -15,6 +15,9 @@ use crate::session_storage::CaptureRoute;
 pub(crate) struct StorySnapshotsFile {
     pub updated_at: String,
     pub stories: HashMap<String, Story>,
+    /// Denormalized for storage/frontmatter without importing [`Story`].
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub turn_counts: HashMap<String, u64>,
 }
 
 /// Rebuild in-memory story state by replaying persisted records (offline egress).
@@ -84,9 +87,14 @@ pub fn persist_story_snapshots(storage: &Path, stories: &HashMap<String, Story>)
     let dir = storage.join(".capture");
     std::fs::create_dir_all(&dir).context("create .capture")?;
     let path = story_snapshots_path(storage);
+    let turn_counts = stories
+        .iter()
+        .map(|(stem, story)| (stem.clone(), story_user_turn_count(story)))
+        .collect();
     let file = StorySnapshotsFile {
         updated_at: chrono::Utc::now().to_rfc3339(),
         stories: stories.clone(),
+        turn_counts,
     };
     let json = serde_json::to_string_pretty(&file).context("serialize story snapshots")?;
     std::fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
@@ -98,8 +106,7 @@ pub fn load_story_snapshots(storage: &Path) -> Result<HashMap<String, Story>> {
     if !path.is_file() {
         return Ok(HashMap::new());
     }
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let raw = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let file: StorySnapshotsFile =
         serde_json::from_str(&raw).context("parse story_snapshots.json")?;
     Ok(file.stories)
@@ -260,10 +267,7 @@ mod tests {
 
         let loaded = load_story_snapshots(dir.path()).unwrap();
         assert_eq!(loaded.get("sess").unwrap().turns.len(), story.turns.len());
-        assert_eq!(
-            loaded.get("sess").unwrap().agent_id,
-            story.agent_id
-        );
+        assert_eq!(loaded.get("sess").unwrap().agent_id, story.agent_id);
     }
 
     #[test]

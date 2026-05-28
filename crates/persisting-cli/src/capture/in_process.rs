@@ -6,7 +6,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use persisting_capture::{serve_with_shutdown_and_ready, CaptureSink, ProxyConfig};
+use persisting_capture::config::ProxyConfig;
+use persisting_capture::proxy::serve_with_shutdown_and_ready;
+use persisting_capture::runtime::service::CaptureDaemonState;
+use persisting_capture::sink::CaptureSink;
 use tokio::sync::oneshot;
 
 pub struct InProcessCapture {
@@ -22,7 +25,7 @@ impl InProcessCapture {
         sink: Arc<dyn CaptureSink>,
         stream_markdown: bool,
     ) -> Result<Self> {
-        if let Some(state) = persisting_capture::CaptureDaemonState::read(&storage)? {
+        if let Some(state) = CaptureDaemonState::read(&storage)? {
             if state.is_running() {
                 anyhow::bail!(
                     "capture daemon already running (pid {}) for {}; \

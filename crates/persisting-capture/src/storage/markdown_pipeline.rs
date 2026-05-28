@@ -12,9 +12,9 @@ use serde_json::Value;
 use super::dialogue::capture_record_to_block;
 use super::dialogue_extract::count_visible_user_messages;
 use super::markdown::{upsert_block_by_call_id, BlockHeader};
+use super::markdown_policy::should_skip_record;
 use super::record::CaptureRecord;
 use super::session::{trajectory_run_dir, CaptureRoute};
-use crate::engine::should_skip_record;
 use crate::markdown_trajectory::session_markdown_write_path_for_key;
 
 /// Per-session sequential state: static filters + Claude Code history-replay dedup.

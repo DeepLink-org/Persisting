@@ -1,5 +1,7 @@
 //! LLM request/response capture handler (non-streaming path + upstream orchestration).
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use axum::body::Body;
 use axum::extract::Request;
@@ -12,7 +14,7 @@ use super::auth::{apply_upstream_headers, resolve_upstream_api_key};
 use super::common::{
     attach_capture_headers, call_context, effective_config, extract_model, is_models_list_path,
 };
-use super::http_headers::is_websocket_upgrade;
+use super::http_headers::{is_websocket_upgrade, skip_response_header_when_body_changed};
 use super::models_list::build_models_response;
 use super::router::resolve_route;
 use super::state::ProxyState;
@@ -88,7 +90,9 @@ pub(super) async fn llm_capture(
     let upstream_protocol = bridge.upstream_protocol(protocol);
     let provider = route.effective_provider(upstream_protocol);
 
-    let call_ctx = call_context(
+    // Wrap once in Arc so the request, response (or stream draft), and final events
+    // all share a single allocation; clones become refcount bumps.
+    let call_ctx: Arc<_> = Arc::new(call_context(
         &state,
         &capture_route,
         &agent_id,
@@ -99,13 +103,13 @@ pub(super) async fn llm_capture(
         provider,
         protocol,
         debug_on,
-    );
+    ));
 
     {
         let user_content = extract_user_message_from_request_body(&body_bytes);
         let body_json = serde_json::from_slice::<Value>(&body_bytes).ok();
         state.capture_engine.spawn_apply(
-            call_ctx.clone(),
+            Arc::clone(&call_ctx),
             Event::Request(RequestEvent {
                 path: path.clone(),
                 body_bytes: body_bytes.len(),
@@ -228,15 +232,19 @@ pub(super) async fn llm_capture(
     }
 
     if should_stream_to_client(&resp_headers, &upstream_body) {
-        return streaming_llm_response(upstream_resp, state, call_ctx, bridge).await;
+        // streaming_llm_response takes an owned CallContext so unwrap the Arc when
+        // we know we're the only owner (we are — request emit was the only earlier clone).
+        let owned_ctx = Arc::try_unwrap(call_ctx).unwrap_or_else(|arc| (*arc).clone());
+        return streaming_llm_response(upstream_resp, state, owned_ctx, bridge).await;
     }
 
     let mut resp_bytes = upstream_resp.bytes().await?;
-    if bridge.needs_response_translation() {
+    let body_was_rewritten = bridge.needs_response_translation();
+    if body_was_rewritten {
         resp_bytes = translate_response_for_bridge(bridge, &resp_bytes, &client_model)?;
     }
     state.capture_engine.spawn_apply(
-        call_ctx.clone(),
+        Arc::clone(&call_ctx),
         Event::ResponseComplete(CompleteEvent {
             status: status.as_u16(),
             resp_bytes: resp_bytes.clone(),
@@ -247,8 +255,17 @@ pub(super) async fn llm_capture(
     );
 
     let mut builder = Response::builder().status(status);
+    // When we rewrote the body the upstream's `content-length` / `content-encoding` /
+    // `content-type` no longer apply — drop them and let axum recompute, then re-set
+    // a fresh `content-type` matching the new body.
     for (name, value) in resp_headers.iter() {
+        if body_was_rewritten && skip_response_header_when_body_changed(name.as_str()) {
+            continue;
+        }
         builder = builder.header(name, value);
+    }
+    if body_was_rewritten {
+        builder = builder.header("content-type", "application/json");
     }
     builder = attach_capture_headers(builder, &call);
     Ok(builder

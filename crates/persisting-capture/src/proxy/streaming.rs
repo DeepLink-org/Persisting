@@ -12,6 +12,7 @@ use serde_json::Value;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::common::attach_capture_headers;
+use super::http_headers::skip_response_header_when_body_changed;
 use super::state::ProxyState;
 use crate::conversion::{ProtocolBridge, StreamTranslator};
 use crate::debug;
@@ -67,7 +68,11 @@ pub(super) async fn streaming_llm_response(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(STREAM_CLIENT_QUEUE);
 
     let capture_engine = state.capture_engine.clone();
-    let ctx_bg = ctx.clone();
+    // Share a single Arc<CallContext> across the streaming task and every emitted
+    // draft / final / cancel event, so the per-chunk `spawn_apply` only does an
+    // `Arc::clone` (refcount bump) instead of a deep `CallContext::clone` (Vec<(String,String)>
+    // headers + several String fields).
+    let ctx_bg: Arc<CallContext> = Arc::new(ctx.clone());
     let storage = Arc::clone(&state.storage);
     let reasoning_cache = Arc::clone(&state.reasoning_cache);
 
@@ -126,7 +131,7 @@ pub(super) async fn streaming_llm_response(
                         debug::log_llm_upstream_error(
                             storage.as_path(),
                             &ctx_bg.route().session_id,
-                            &ctx_bg.agent_id(),
+                            ctx_bg.agent_id(),
                             &ctx_bg.client_model,
                             "stream",
                             &msg,
@@ -139,7 +144,7 @@ pub(super) async fn streaming_llm_response(
 
         if client_disconnected {
             capture_engine.spawn_apply(
-                ctx_bg,
+                Arc::clone(&ctx_bg),
                 Event::Cancelled(CancelEvent {
                     status: status.as_u16(),
                     bytes_received: buf.len(),
@@ -187,8 +192,13 @@ pub(super) async fn streaming_llm_response(
     let body_stream = ReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
 
     let mut builder = Response::builder().status(status);
+    // SSE streams already strip body-sensitive headers (`content-length` /
+    // `transfer-encoding` always apply per-chunk, not per-body) but bridges that
+    // rewrite the body still need a fresh `content-type` and must not forward stale
+    // `content-encoding`. The shared filter handles both cases consistently with
+    // the non-streaming path.
     for (name, value) in resp_headers.iter() {
-        if translate && name.as_str().eq_ignore_ascii_case("content-type") {
+        if translate && skip_response_header_when_body_changed(name.as_str()) {
             continue;
         }
         builder = builder.header(name, value);
@@ -205,7 +215,7 @@ pub(super) async fn streaming_llm_response(
 
 fn maybe_emit_stream_draft(
     engine: &CaptureEngine,
-    ctx: &CallContext,
+    ctx: &Arc<CallContext>,
     status: u16,
     translator: &StreamTranslator,
     last_draft_at: &mut std::time::Instant,
@@ -220,8 +230,9 @@ fn maybe_emit_stream_draft(
     if !last_draft_content.is_empty() && last_draft_at.elapsed() < STREAM_DRAFT_MD_INTERVAL {
         return;
     }
+    // `Arc::clone` only bumps the refcount — no deep clone of headers/strings.
     engine.spawn_apply(
-        ctx.clone(),
+        Arc::clone(ctx),
         Event::ResponseDraft(DraftEvent {
             status,
             assistant_content: snapshot.clone(),

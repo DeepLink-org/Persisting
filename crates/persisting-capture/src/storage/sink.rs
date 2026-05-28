@@ -1,4 +1,9 @@
 //! Capture sink: append trajectory records per session.
+//!
+//! **Proxy capture path:** [`crate::engine::actors::StoryActor`] is the sole writer — it calls
+//! [`CaptureSink::append`] on `PersistRecord` (and uses [`CaptureSink::peek_next_seq`] for streaming drafts).
+//! [`crate::engine::prepare::CapturePreparer`] only builds records and [`StoryCommand`]s.
+//! Session lifecycle records may still append via [`super::lifecycle`].
 
 use std::collections::HashMap;
 use std::sync::Mutex;

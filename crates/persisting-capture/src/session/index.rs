@@ -332,7 +332,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionIndexStore::open(dir.path()).unwrap();
         let handle = store.clone_handle();
-        handle.record_request("agent", "sess", ProviderKind::Anthropic, "messages", "claude");
+        handle.record_request(
+            "agent",
+            "sess",
+            ProviderKind::Anthropic,
+            "messages",
+            "claude",
+        );
         handle.flush_if_dirty().unwrap();
         handle.flush_if_dirty().unwrap();
 

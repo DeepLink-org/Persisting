@@ -16,13 +16,16 @@ use super::super::CallContext;
 pub(crate) const RUN_ACTOR_NAME: &str = "capture/run";
 
 /// Commands handled by [`super::super::actors::run::RunActor`].
+///
+/// `record_bytes` / `body_bytes` are JSON-encoded payloads carried as
+/// raw bytes — see [`super::story::StoryCommand`] for rationale.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum RunCommand {
     Enrich {
-        record_json: String,
+        record_bytes: Vec<u8>,
         route: CaptureRoute,
         headers: Vec<(String, String)>,
-        body_json: Option<String>,
+        body_bytes: Option<Vec<u8>>,
         assistant_text: Option<String>,
         story_id: Option<StoryId>,
         run_id: Option<RunId>,
@@ -35,7 +38,7 @@ pub(crate) enum RunCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum RunReply {
     Enrich {
-        record_json: String,
+        record_bytes: Vec<u8>,
         backfills: Vec<SpawnLinkBackfill>,
     },
     MainRoute(CaptureRoute),
@@ -51,10 +54,10 @@ pub(crate) async fn run_enrich(
     let story = ctx.story.clone();
     let reply: RunReply = run
         .ask(RunCommand::Enrich {
-            record_json: serde_json::to_string(rec)?,
+            record_bytes: serde_json::to_vec(rec)?,
             route: ctx.route().clone(),
             headers: ctx.request_headers.clone(),
-            body_json: body_json.map(serde_json::to_string).transpose()?,
+            body_bytes: body_json.map(serde_json::to_vec).transpose()?,
             assistant_text: assistant_text.map(str::to_string),
             story_id: Some(story.story_id.clone()),
             run_id: story.run_id.clone(),
@@ -63,10 +66,10 @@ pub(crate) async fn run_enrich(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     match reply {
         RunReply::Enrich {
-            record_json,
+            record_bytes,
             backfills,
         } => {
-            *rec = serde_json::from_str(&record_json)?;
+            *rec = serde_json::from_slice(&record_bytes)?;
             Ok(backfills)
         }
         _ => Err(anyhow::anyhow!("unexpected run reply")),

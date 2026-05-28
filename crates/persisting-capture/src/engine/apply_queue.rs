@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::runtime::CaptureRuntimeInner;
 use super::{CallContext, Event};
@@ -11,9 +11,16 @@ use crate::dead_letter;
 
 const APPLY_QUEUE_CAPACITY: usize = 256;
 
-struct ApplyJob {
-    ctx: CallContext,
-    event: Event,
+enum ApplyJob {
+    Capture {
+        ctx: Arc<CallContext>,
+        event: Event,
+        /// WAL sequence to ack once apply completes (success or dead-lettered).
+        wal_seq: Option<u64>,
+    },
+    Barrier {
+        ack: oneshot::Sender<()>,
+    },
 }
 
 /// Serializes `apply` calls per story while keeping the proxy non-blocking.
@@ -31,7 +38,7 @@ impl ApplyDispatcher {
         }
     }
 
-    pub(crate) fn enqueue(&self, ctx: CallContext, event: Event) {
+    pub(crate) fn enqueue(&self, ctx: Arc<CallContext>, event: Event, wal_seq: Option<u64>) {
         let story_id = ctx.story_id().as_str().to_string();
         let tx = self
             .queues
@@ -39,29 +46,32 @@ impl ApplyDispatcher {
             .or_insert_with(|| self.spawn_consumer())
             .clone();
 
-        let job = ApplyJob { ctx, event };
+        let job = ApplyJob::Capture {
+            ctx,
+            event,
+            wal_seq,
+        };
         if let Err(e) = tx.try_send(job) {
-            let (ctx, event) = match e {
-                mpsc::error::TrySendError::Full(j) | mpsc::error::TrySendError::Closed(j) => {
-                    (j.ctx, j.event)
-                }
-            };
-            let storage = self.inner.story_deps.storage.as_path();
-            if let Err(dl) = dead_letter::append_dead_letter(
-                storage,
-                &ctx,
-                &event,
-                "apply queue full or closed",
-                None,
-            ) {
-                tracing::error!("dead letter write failed: {dl:#}");
-            }
-            tracing::warn!(
-                target: "persisting_capture",
-                story_id = %ctx.story_id().as_str(),
-                "capture apply queue rejected job"
-            );
+            self.record_rejected_job(e.into_inner());
         }
+    }
+
+    /// Wait for all jobs already accepted by every per-story queue to finish.
+    pub(crate) async fn flush(&self) -> anyhow::Result<()> {
+        let queues: Vec<_> = self
+            .queues
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        for tx in queues {
+            let (ack, done) = oneshot::channel();
+            tx.send(ApplyJob::Barrier { ack })
+                .await
+                .map_err(|_| anyhow::anyhow!("apply queue closed while flushing"))?;
+            done.await
+                .map_err(|_| anyhow::anyhow!("apply queue barrier dropped"))?;
+        }
+        Ok(())
     }
 
     fn spawn_consumer(&self) -> mpsc::Sender<ApplyJob> {
@@ -69,15 +79,61 @@ impl ApplyDispatcher {
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
-                if let Err(e) = inner.apply(&job.ctx, job.event).await {
-                    tracing::warn!(
-                        target: "persisting_capture",
-                        "capture apply: {e:#}"
-                    );
+                match job {
+                    ApplyJob::Capture {
+                        ctx,
+                        event,
+                        wal_seq,
+                    } => {
+                        if let Err(e) = inner.apply(&ctx, event).await {
+                            tracing::warn!(
+                                target: "persisting_capture",
+                                "capture apply: {e:#}"
+                            );
+                        }
+                        // Ack regardless of apply success: a failed apply has already
+                        // been routed to dead_letter.jsonl and replaying the WAL would
+                        // double-write that dead letter on restart.
+                        if let Some(seq) = wal_seq {
+                            inner.wal.ack(seq);
+                        }
+                    }
+                    ApplyJob::Barrier { ack } => {
+                        let _ = ack.send(());
+                    }
                 }
             }
         });
         tx
+    }
+
+    fn record_rejected_job(&self, job: ApplyJob) {
+        let ApplyJob::Capture {
+            ctx,
+            event,
+            wal_seq,
+        } = job
+        else {
+            return;
+        };
+        let storage = self.inner.story_deps.storage.as_path();
+        if let Err(dl) = dead_letter::append_dead_letter(
+            storage,
+            &ctx,
+            &event,
+            "apply queue full or closed",
+            None,
+        ) {
+            tracing::error!("dead letter write failed: {dl:#}");
+        }
+        if let Some(seq) = wal_seq {
+            self.inner.wal.ack(seq);
+        }
+        tracing::warn!(
+            target: "persisting_capture",
+            story_id = %ctx.story_id().as_str(),
+            "capture apply queue rejected job"
+        );
     }
 }
 
@@ -207,8 +263,6 @@ mod tests {
             }),
         );
 
-        engine.flush().await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         engine.flush().await.unwrap();
 
         let order = sink.drain_order();

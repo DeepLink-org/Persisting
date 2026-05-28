@@ -3,6 +3,7 @@
 //! Source and license: `tests/fixtures/README.md`.
 
 use bytes::Bytes;
+use persisting_capture::config::ProxyConfig;
 use persisting_capture::conversion::{
     completions_response_to_messages, messages_request_to_completions,
     translate_completions_sse_to_messages, ProtocolBridge,
@@ -10,7 +11,6 @@ use persisting_capture::conversion::{
 use persisting_capture::models_list::build_models_response;
 use persisting_capture::protocol::ProtocolKind;
 use persisting_capture::usage::extract_usage_from_response;
-use persisting_capture::ProxyConfig;
 use serde_json::Value;
 
 const COMPLETIONS_BASIC_REQ: &str = include_str!("fixtures/requests/completions/basic.json");

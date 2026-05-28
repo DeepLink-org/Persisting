@@ -14,6 +14,7 @@ use super::egress::persist_story_snapshots;
 use super::prepare::CapturePreparer;
 use super::story::Story;
 use super::story::{StoryContext, StoryId};
+use super::wal::{replay_pending, EventWal};
 use super::wire::{
     run_main_route, CaptureAck, StoryCommand, StoryReply, StoryScope, RUN_ACTOR_NAME,
 };
@@ -31,6 +32,7 @@ pub(crate) struct CaptureRuntimeInner {
     run: ActorRef,
     pub(crate) story_deps: StoryActorDeps,
     stories: Arc<DashMap<String, ActorRef>>,
+    pub(crate) wal: Arc<EventWal>,
 }
 
 /// Actor topology (one ActorSystem per proxy):
@@ -65,10 +67,10 @@ impl CaptureRuntime {
             .map_err(pulsing_err)?;
 
         let sink = Arc::clone(&sink);
+        let wal = Arc::new(EventWal::open(storage.as_path()));
         let inner = Arc::new(CaptureRuntimeInner {
             system,
             preparer: Arc::new(CapturePreparer {
-                sink: Arc::clone(&sink),
                 index,
                 storage: Arc::clone(&storage),
                 stream_markdown,
@@ -76,17 +78,52 @@ impl CaptureRuntime {
             run,
             story_deps: StoryActorDeps::new(sink, Arc::clone(&storage), stream_markdown),
             stories: Arc::new(DashMap::new()),
+            wal,
         });
         let apply_dispatcher = ApplyDispatcher::new(Arc::clone(&inner));
-        Ok(Self {
+        let runtime = Self {
             inner,
             apply_dispatcher,
-        })
+        };
+
+        runtime.replay_wal(storage.as_path()).await;
+
+        Ok(runtime)
+    }
+
+    /// Replay events that were appended to the WAL but never acked
+    /// (process crash between [`Self::spawn_apply`] and apply completion).
+    async fn replay_wal(&self, storage: &Path) {
+        let pending = replay_pending(storage);
+        if pending.is_empty() {
+            return;
+        }
+        tracing::info!(
+            target: "persisting_capture",
+            replayed = pending.len(),
+            "wal replay starting"
+        );
+        for entry in pending {
+            let ctx = Arc::new(entry.context.to_call_context());
+            let event = entry.event.to_event();
+            // Replay through the same dispatcher the original call used so that
+            // ordering, dead-letter, and ack semantics all stay consistent.
+            self.apply_dispatcher.enqueue(ctx, event, None);
+        }
     }
 
     /// Enqueue a capture event on the per-story ordered apply queue (non-blocking for callers).
-    pub fn spawn_apply(&self, ctx: CallContext, event: Event) {
-        self.apply_dispatcher.enqueue(ctx, event);
+    ///
+    /// Accepts both `CallContext` (owned) and `Arc<CallContext>` so callers in the
+    /// streaming hot-path can share an `Arc` and avoid per-event clones, while
+    /// non-streaming callers can keep passing owned values.
+    ///
+    /// Synchronously appends to the WAL before queuing so that an OOM/panic between this call
+    /// and `apply_inner` completion is recoverable on next startup.
+    pub fn spawn_apply(&self, ctx: impl Into<Arc<CallContext>>, event: Event) {
+        let ctx = ctx.into();
+        let wal_seq = self.inner.wal.append_event(&ctx, &event);
+        self.apply_dispatcher.enqueue(ctx, event, wal_seq);
     }
 
     pub async fn apply(&self, ctx: &CallContext, event: Event) -> Result<()> {
@@ -94,14 +131,20 @@ impl CaptureRuntime {
     }
 
     pub async fn shutdown(self) -> Result<()> {
+        self.flush().await?;
         let snapshots = self.inner.collect_local_snapshots().await?;
         persist_story_snapshots(self.inner.story_deps.storage.as_path(), &snapshots)?;
-        self.flush().await?;
+        // Once snapshots and per-story dispatcher queues are drained, every WAL entry
+        // has either been applied or dead-lettered — safe to truncate.
+        if let Err(e) = self.inner.wal.truncate() {
+            tracing::warn!(target: "persisting_capture", "wal truncate on shutdown: {e:#}");
+        }
         self.inner.system.shutdown().await.map_err(pulsing_err)
     }
 
-    /// Wait until all story mailboxes have drained queued commands.
+    /// Wait until accepted async apply jobs and story mailboxes have drained.
     pub async fn flush(&self) -> Result<()> {
+        self.apply_dispatcher.flush().await?;
         self.inner.flush_stories().await?;
         self.inner.preparer.index.flush_if_dirty()?;
         Ok(())
@@ -223,8 +266,8 @@ impl CaptureRuntimeInner {
             .await?;
         for bf in backfills {
             let rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, &ctx.call);
-            let record_json = serde_json::to_string(&rec)?;
-            let cmd = StoryCommand::persist_record(scope.clone(), record_json);
+            let record_bytes = serde_json::to_vec(&rec)?;
+            let cmd = StoryCommand::persist_record(scope.clone(), record_bytes);
             let reply: StoryReply = actor.ask(cmd).await.map_err(pulsing_err)?;
             if let Err(e) = story_reply_ack(reply)?.into_result() {
                 tracing::warn!("spawn link backfill failed: {e:#}");
@@ -279,9 +322,15 @@ fn story_reply_ack(reply: StoryReply) -> Result<CaptureAck> {
     }
 }
 
+/// Decode a `PersistRecord` command's JSON-encoded payload back to a `String` for
+/// the dead-letter file (which carries `prepared_record_json` as a textual JSON).
+/// Invalid UTF-8 should never happen — `serde_json::to_vec` always produces valid
+/// UTF-8 — but if it ever does we drop the prepared JSON rather than panic.
 fn persist_record_json(cmd: &StoryCommand) -> Option<String> {
     match cmd {
-        StoryCommand::PersistRecord { record_json, .. } => Some(record_json.clone()),
+        StoryCommand::PersistRecord { record_bytes, .. } => {
+            String::from_utf8(record_bytes.clone()).ok()
+        }
         _ => None,
     }
 }

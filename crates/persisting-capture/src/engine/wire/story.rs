@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::super::story::{Story, StoryContext};
 use super::CaptureAck;
-use crate::markdown_trajectory::BlockHeader;
 
 /// Routing identity for every story command.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,18 +29,26 @@ impl StoryScope {
 }
 
 /// Commands handled by [`super::super::actors::StoryActor`].
+///
+/// Inner payloads are sent as raw JSON bytes (`Vec<u8>`) rather than `String`:
+/// - `bincode` (the actor wire format) length-prefixes both, but `String`
+///   forces a UTF-8 validation pass on every serialize/deserialize, while
+///   `Vec<u8>` is a memcpy. We're already JSON-encoding (and thus producing
+///   valid UTF-8) at the producer, so the second validation is wasted work.
+/// - The receiver does `serde_json::from_slice(&bytes)` directly without
+///   first reconstructing a `String`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum StoryCommand {
     /// Append one record to Lance/sink and sync live markdown.
     PersistRecord {
         scope: StoryScope,
         /// JSON-encoded [`crate::record::CaptureRecord`].
-        record_json: String,
+        record_bytes: Vec<u8>,
     },
     /// Upsert streaming assistant draft in live markdown only (no sink append).
     UpsertDraft {
         scope: StoryScope,
-        draft_json: String,
+        draft_bytes: Vec<u8>,
     },
     /// Drain mailbox before shutdown (no I/O).
     Flush,
@@ -55,7 +62,9 @@ pub(crate) enum StoryCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum StoryReply {
     Ack(CaptureAck),
-    Snapshot { story: Story },
+    Snapshot {
+        story: Story,
+    },
     LocalSnapshot {
         storage_session_id: String,
         story: Story,
@@ -63,26 +72,25 @@ pub(crate) enum StoryReply {
 }
 
 impl StoryCommand {
-    pub fn persist_record(scope: StoryScope, record_json: String) -> Self {
-        Self::PersistRecord { scope, record_json }
+    pub fn persist_record(scope: StoryScope, record_bytes: Vec<u8>) -> Self {
+        Self::PersistRecord {
+            scope,
+            record_bytes,
+        }
     }
 
     pub fn upsert_draft(
         scope: StoryScope,
-        call_id: impl Into<String>,
-        header: BlockHeader,
-        body: Vec<u8>,
+        record_bytes: Vec<u8>,
+        assistant_content: String,
     ) -> Result<Self> {
         let draft = DraftPayload {
-            call_id: call_id.into(),
-            type_name: header.type_name,
-            length: header.length,
-            fields: header.fields,
-            body,
+            record_bytes,
+            assistant_content,
         };
         Ok(Self::UpsertDraft {
             scope,
-            draft_json: serde_json::to_string(&draft)?,
+            draft_bytes: serde_json::to_vec(&draft)?,
         })
     }
 
@@ -96,14 +104,11 @@ impl StoryCommand {
     }
 }
 
-/// JSON payload for draft upsert (avoids bincode + nested `serde_json::Value`).
-#[derive(Serialize, Deserialize)]
+/// JSON payload for draft upsert: record template (seq assigned in StoryActor) + stream text.
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct DraftPayload {
-    pub call_id: String,
-    pub type_name: String,
-    pub length: usize,
-    pub fields: std::collections::BTreeMap<String, serde_json::Value>,
-    pub body: Vec<u8>,
+    pub record_bytes: Vec<u8>,
+    pub assistant_content: String,
 }
 
 #[cfg(test)]
@@ -146,7 +151,7 @@ mod tests {
             CaptureLevel::Dialogue,
             None,
         );
-        let cmd = StoryCommand::persist_record(scope, serde_json::to_string(&rec).unwrap());
+        let cmd = StoryCommand::persist_record(scope, serde_json::to_vec(&rec).unwrap());
         let packed = pulsing_actor::Message::pack(&cmd).expect("pack");
         let back: StoryCommand = packed.unpack().expect("unpack");
         assert!(matches!(back, StoryCommand::PersistRecord { .. }));

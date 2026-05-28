@@ -1,5 +1,7 @@
-use crate::dialogue_extract::is_subagent_shape_payload;
-use crate::record::CaptureRecord;
+//! Markdown / Lance eligibility rules for [`CaptureRecord`] (storage layer only).
+
+use super::dialogue_extract::is_subagent_shape_payload;
+use super::record::CaptureRecord;
 
 pub fn should_skip_record(rec: &CaptureRecord) -> bool {
     match rec.kind.as_str() {

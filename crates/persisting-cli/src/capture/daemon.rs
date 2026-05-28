@@ -5,7 +5,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
-use persisting_capture::{discover_sessions, CaptureDaemonState, ProxyConfig, SessionSummary};
+use persisting_capture::config::ProxyConfig;
+use persisting_capture::runtime::discover::{StorageResolution, StorageSource};
+use persisting_capture::runtime::run_env::{load_daemon_env_snapshot, snapshot_daemon_env};
+use persisting_capture::runtime::service::{
+    resolve_storage_detailed, stop_daemon, write_current, CaptureDaemonState,
+};
+use persisting_capture::session_index::{discover_sessions, SessionSummary};
 
 pub struct StartOptions {
     pub output_dir: PathBuf,
@@ -29,12 +35,12 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     let exe = std::env::current_exe().context("current_exe")?;
     let config = ProxyConfig::from_file(&opts.config)
         .with_context(|| format!("load proxy config {}", opts.config.display()))?;
-    let env_snap = persisting_capture::snapshot_daemon_env(&opts.output_dir, &config)
+    let env_snap = snapshot_daemon_env(&opts.output_dir, &config)
         .with_context(|| format!("snapshot daemon env for {}", opts.output_dir.display()))?;
     eprintln!(
         "[persisting-cli] capture daemon env snapshot: {} ({} keys)",
         env_snap.display(),
-        persisting_capture::load_daemon_env_snapshot(&opts.output_dir)
+        load_daemon_env_snapshot(&opts.output_dir)
             .ok()
             .flatten()
             .map(|s| s.vars.len())
@@ -53,7 +59,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
         opts.format.as_str(),
     ]);
     if opts.debug {
-        cmd.env(persisting_capture::ENV_CAPTURE_DEBUG, "1");
+        cmd.env(persisting_capture::debug::ENV_CAPTURE_DEBUG, "1");
     }
     let stderr = if opts.debug {
         let log_path = opts.output_dir.join(".capture").join("daemon.log");
@@ -85,11 +91,11 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
         started_at: chrono::Utc::now().to_rfc3339(),
     };
     state.write(&opts.output_dir)?;
-    persisting_capture::write_current(&state)?;
+    write_current(&state)?;
     if opts.debug {
         eprintln!(
             "[persisting-cli] capture debug enabled (daemon env {}=1)",
-            persisting_capture::ENV_CAPTURE_DEBUG
+            persisting_capture::debug::ENV_CAPTURE_DEBUG
         );
     }
     eprintln!(
@@ -103,14 +109,14 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn log_storage_resolution(res: &persisting_capture::StorageResolution) {
+pub(super) fn log_storage_resolution(res: &StorageResolution) {
     eprintln!(
         "[persisting-cli] capture target: {} (via {}, pid {} running)",
         res.storage.display(),
         res.source.as_str(),
         res.running.len()
     );
-    if res.running.len() > 1 && res.source == persisting_capture::StorageSource::ProcessList {
+    if res.running.len() > 1 && res.source == StorageSource::ProcessList {
         eprintln!(
             "[persisting-cli] capture: multiple instances; using pid {} — specify -o <DIR> to override",
             res.running[0].pid
@@ -125,9 +131,9 @@ pub(super) fn log_storage_resolution(res: &persisting_capture::StorageResolution
 }
 
 pub fn cmd_stop(storage: Option<&Path>) -> Result<()> {
-    let res = persisting_capture::resolve_storage_detailed(storage)?;
+    let res = resolve_storage_detailed(storage)?;
     log_storage_resolution(&res);
-    persisting_capture::stop_daemon(&res.storage)?;
+    stop_daemon(&res.storage)?;
     eprintln!(
         "[persisting-cli] capture stopped ({})",
         res.storage.display()
@@ -136,13 +142,13 @@ pub fn cmd_stop(storage: Option<&Path>) -> Result<()> {
 }
 
 pub fn cmd_list(storage: Option<&Path>) -> Result<Vec<SessionSummary>> {
-    let res = persisting_capture::resolve_storage_detailed(storage)?;
+    let res = resolve_storage_detailed(storage)?;
     log_storage_resolution(&res);
     discover_sessions(&res.storage).context("discover sessions")
 }
 
 pub fn cmd_status(storage: Option<&Path>) -> Result<()> {
-    let res = persisting_capture::resolve_storage_detailed(storage)?;
+    let res = resolve_storage_detailed(storage)?;
     log_storage_resolution(&res);
     let storage = &res.storage;
     let state = CaptureDaemonState::read(storage)?

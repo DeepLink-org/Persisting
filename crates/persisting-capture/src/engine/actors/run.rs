@@ -65,10 +65,10 @@ impl Actor for RunActor {
         let cmd: RunCommand = msg.unpack()?;
         let reply = match cmd {
             RunCommand::Enrich {
-                record_json,
+                record_bytes,
                 route,
                 headers,
-                body_json,
+                body_bytes,
                 assistant_text,
                 story_id,
                 run_id,
@@ -77,7 +77,7 @@ impl Actor for RunActor {
                     self.track_story(run_id.as_ref(), sid);
                 }
                 let mut record: CaptureRecord =
-                    serde_json::from_str(&record_json).map_err(|e| {
+                    serde_json::from_slice(&record_bytes).map_err(|e| {
                         pulsing_actor::error::PulsingError::from(
                             pulsing_actor::error::RuntimeError::Serialization(e.to_string()),
                         )
@@ -87,9 +87,9 @@ impl Actor for RunActor {
                         pulsing_actor::error::RuntimeError::Other(e.to_string()),
                     )
                 })?;
-                let body_val = body_json
-                    .as_ref()
-                    .map(|s| serde_json::from_str(s))
+                let body_val = body_bytes
+                    .as_deref()
+                    .map(serde_json::from_slice)
                     .transpose()
                     .map_err(|e| {
                         pulsing_actor::error::PulsingError::from(
@@ -105,7 +105,7 @@ impl Actor for RunActor {
                     &mut self.registry,
                 );
                 RunReply::Enrich {
-                    record_json: serde_json::to_string(&record).map_err(|e| {
+                    record_bytes: serde_json::to_vec(&record).map_err(|e| {
                         pulsing_actor::error::PulsingError::from(
                             pulsing_actor::error::RuntimeError::Serialization(e.to_string()),
                         )

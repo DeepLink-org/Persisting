@@ -2,9 +2,9 @@
 
 use persisting_capture::config::CaptureLevel;
 use persisting_capture::dialogue::skip_markdown_block;
+use persisting_capture::engine::Call;
 use persisting_capture::record::CaptureRecord;
 use persisting_capture::sink::llm_request_summary_record;
-use persisting_capture::Call;
 use serde_json::json;
 
 use super::support::fixture_body;
