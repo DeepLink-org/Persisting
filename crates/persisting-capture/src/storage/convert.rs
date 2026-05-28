@@ -180,13 +180,13 @@ pub fn compact_stats_note(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture_call::CaptureCall;
     use crate::lifecycle::{session_started_record, CaptureMode};
     use crate::record::record_to_engine_line;
     use crate::sink::{llm_request_record, llm_response_record};
+    use crate::Call;
 
-    fn test_call() -> CaptureCall {
-        CaptureCall {
+    fn test_call() -> Call {
+        Call {
             call_id: "call-1".into(),
             trace_id: "trace-1".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
@@ -383,10 +383,8 @@ mod tests {
             CaptureLevel::Dialogue,
         );
 
-        let (blocks, stats) = capture_records_to_markdown_blocks(&[
-            req1, resp1, replay, req2, resp2,
-        ])
-        .unwrap();
+        let (blocks, stats) =
+            capture_records_to_markdown_blocks(&[req1, resp1, replay, req2, resp2]).unwrap();
         assert_eq!(stats.source_events, 5);
         assert_eq!(stats.markdown_blocks, 4);
         assert_eq!(stats.skipped_events, 1);

@@ -6,7 +6,7 @@
 use std::path::{Component, Path};
 
 use anyhow::Result;
-use persisting_capture::locate_session_markdown;
+use persisting_capture::markdown_trajectory::locate_session_markdown;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrajLocation {

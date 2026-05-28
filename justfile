@@ -8,7 +8,6 @@
 repo := justfile_directory()
 docs_dir := repo / "docs"
 gen_py := repo / "scripts" / "generate_benchmark_data.py"
-sync_ag := repo / "scripts" / "sync-ag-llm-fixtures.sh"
 
 engine_filename := if os() == "macos" {
     "libpersisting_engine.dylib"
@@ -90,7 +89,7 @@ test-capture-claude:
     cargo test -p persisting-capture --test capture_apps_claude
 
 test-capture-fixtures:
-    cargo test -p persisting-capture --test llm_fixtures
+    cargo test -p persisting-capture --test llm_fixtures --test ag_fixture_tests
 
 test-engine-integration:
     cargo test -p persisting-engine --test search_integration
@@ -138,15 +137,6 @@ generate-benchmark search_rows="100" traj_rows="50" seed="42" search_out="" traj
     [[ -n "{{ search_out }}" ]] && args+=(--search-out "{{ search_out }}")
     [[ -n "{{ traj_out }}" ]] && args+=(--traj-out "{{ traj_out }}")
     python3 "$gen_py" "${args[@]}"
-
-sync-ag-fixtures ag_src="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ -n "{{ ag_src }}" ]]; then
-      AG_SRC="{{ ag_src }}" bash "{{ sync_ag }}"
-    else
-      bash "{{ sync_ag }}"
-    fi
 
 # ── Search + Trajectory CLI 集成 ─────────────────────────────────────────────
 

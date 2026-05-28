@@ -45,15 +45,16 @@ while [[ "$PROXY_PORT" == "$MOCK_PORT" || "$ADMIN_PORT" == "$MOCK_PORT" || "$ADM
   ADMIN_PORT="$(pick_port)"
 done
 
-CONFIG="$WORKDIR/proxy.yaml"
+CONFIG="$WORKDIR/proxy.toml"
 cat >"$CONFIG" <<EOF
-listen: "127.0.0.1:${PROXY_PORT}"
-admin_listen: "127.0.0.1:${ADMIN_PORT}"
-agent_id: "${AGENT_ID}"
-session_header: "x-persisting-session-id"
-models:
-  - name: "*"
-    upstream: "http://127.0.0.1:${MOCK_PORT}/v1"
+listen = "127.0.0.1:${PROXY_PORT}"
+admin_listen = "127.0.0.1:${ADMIN_PORT}"
+agent_id = "${AGENT_ID}"
+session_header = "x-persisting-session-id"
+
+[[models]]
+name = "*"
+upstream = "http://127.0.0.1:${MOCK_PORT}/v1"
 EOF
 
 cleanup() {

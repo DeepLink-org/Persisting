@@ -63,12 +63,12 @@ pub fn event_row_to_replay_json(row: &LanceEventRow) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture_call::CaptureCall;
     use crate::lifecycle::{session_ended_record, session_started_record, CaptureMode};
     use crate::sink::{llm_request_record, llm_response_record};
+    use crate::Call;
 
-    fn test_call() -> CaptureCall {
-        CaptureCall {
+    fn test_call() -> Call {
+        Call {
             call_id: "call-a".into(),
             trace_id: "trace-a".into(),
             started_at: "2026-01-01T00:00:00Z".into(),

@@ -1,147 +1,136 @@
-//! Prepare phase — pure capture logic before session-local I/O.
+//! Prepare phase — pure capture logic before story-local I/O.
 //!
-//! Runs on the runtime thread; may `ask` the registry actor but never touches sink/md directly.
+//! Runs on the runtime thread; may `ask` the run actor. Lance/markdown I/O only via [`StoryCommand`].
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use pulsing_actor::ActorRef;
 use serde_json::Value;
 
-use super::types::{
-    CaptureEvent, CaptureInvocation, LlmCallCancelled, LlmRequestCaptured, LlmResponseCompleted,
-    LlmResponseDraftUpdated,
-};
-use super::wire::{registry_enrich, SessionCommand, SessionScope};
+use super::wire::{run_enrich, StoryCommand, StoryScope};
+use super::{CallContext, CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent};
 use crate::debug;
-use crate::dialogue::draft_stream_assistant_block;
 use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
-use crate::sink::{llm_request_summary_record, llm_response_record_with_content, CaptureSink};
+use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
 use crate::subagent_link::SpawnLinkBackfill;
 use crate::usage::{
     estimate_cost_usd, extract_usage_from_response, extract_usage_from_sse, StreamMetrics,
     TokenUsage,
 };
 
-/// Index + config for the prepare phase (registry accessed via wire client, not held here).
+/// Index + config for the prepare phase (run actor accessed via wire client, not held here).
 pub(crate) struct CapturePreparer {
-    pub sink: std::sync::Arc<dyn CaptureSink>,
     pub index: crate::session_index::SessionIndexHandle,
+    pub storage: std::sync::Arc<std::path::PathBuf>,
     pub stream_markdown: bool,
 }
 
-/// Outcome of prepare — at most one session command to dispatch.
+/// Outcome of prepare — at most one story command to dispatch.
 pub(crate) struct PreparedCapture {
-    pub inv: CaptureInvocation,
+    pub ctx: CallContext,
     pub backfills: Vec<SpawnLinkBackfill>,
-    session_cmd: Option<SessionCommand>,
+    story_cmd: Option<StoryCommand>,
 }
 
 impl CapturePreparer {
     pub async fn prepare(
         &self,
-        registry: &ActorRef,
-        inv: &CaptureInvocation,
-        event: CaptureEvent,
+        run: &ActorRef,
+        ctx: &CallContext,
+        event: Event,
     ) -> Result<PreparedCapture> {
         match event {
-            CaptureEvent::LlmRequest(e) => self.prepare_request(registry, inv, e).await,
-            CaptureEvent::LlmResponseDraftUpdated(e) => self.prepare_draft(inv, e).await,
-            CaptureEvent::LlmResponseCompleted(e) => self.prepare_completed(registry, inv, e).await,
-            CaptureEvent::LlmCallCancelled(e) => self.prepare_cancelled(inv, e).await,
+            Event::Request(e) => self.prepare_request(run, ctx, e).await,
+            Event::ResponseDraft(e) => self.prepare_draft(ctx, e).await,
+            Event::ResponseComplete(e) => self.prepare_completed(run, ctx, e).await,
+            Event::Cancelled(e) => self.prepare_cancelled(ctx, e).await,
         }
     }
 
     async fn prepare_request(
         &self,
-        registry: &ActorRef,
-        inv: &CaptureInvocation,
-        event: LlmRequestCaptured,
+        run: &ActorRef,
+        ctx: &CallContext,
+        event: RequestEvent,
     ) -> Result<PreparedCapture> {
         self.index.record_request(
-            &inv.agent_id,
-            &inv.route.session_id,
-            inv.provider,
-            inv.protocol.as_str(),
-            &inv.client_model,
+            ctx.agent_id(),
+            &ctx.route().session_id,
+            ctx.provider,
+            ctx.protocol.as_str(),
+            &ctx.client_model,
         );
-        let _ = self.index.flush();
+        // Session index is flushed in batch via CaptureEngine::flush / shutdown.
 
-        let forward_to = event.model_rewritten.then_some(inv.upstream_model.as_str());
+        let forward_to = event.model_rewritten.then_some(ctx.upstream_model.as_str());
         let mut rec = llm_request_summary_record(
-            Some(inv.route.session_id.clone()),
-            Some(inv.agent_id.clone()),
-            &inv.client_model,
+            Some(ctx.route().session_id.clone()),
+            Some(ctx.agent_id().to_string()),
+            &ctx.client_model,
             &event.path,
             event.body_bytes,
-            inv.protocol.as_str(),
-            inv.provider.as_str(),
+            ctx.protocol.as_str(),
+            ctx.provider.as_str(),
             event.user_content,
             forward_to,
-            &inv.call,
-            inv.level,
+            &ctx.call,
+            ctx.level,
             event.body_json.as_ref(),
         );
-        let backfills =
-            registry_enrich(registry, &mut rec, inv, event.body_json.as_ref(), None).await?;
-        let scope = SessionScope::from_invocation(inv);
-        let session_cmd = Some(SessionCommand::persist_record(
+        let backfills = run_enrich(run, &mut rec, ctx, event.body_json.as_ref(), None).await?;
+        let scope = StoryScope::from_context(ctx);
+        let story_cmd = Some(StoryCommand::persist_record(
             scope,
-            serde_json::to_string(&rec)?,
+            serde_json::to_vec(&rec)?,
         ));
         Ok(PreparedCapture {
-            inv: inv.clone(),
+            ctx: ctx.clone(),
             backfills,
-            session_cmd,
+            story_cmd,
         })
     }
 
-    async fn prepare_draft(
-        &self,
-        inv: &CaptureInvocation,
-        event: LlmResponseDraftUpdated,
-    ) -> Result<PreparedCapture> {
-        if !self.stream_markdown || !inv.level.includes_assistant_text() {
+    async fn prepare_draft(&self, ctx: &CallContext, event: DraftEvent) -> Result<PreparedCapture> {
+        if !self.stream_markdown || !ctx.level.includes_assistant_text() {
             return Ok(PreparedCapture {
-                inv: inv.clone(),
+                ctx: ctx.clone(),
                 backfills: vec![],
-                session_cmd: None,
+                story_cmd: None,
             });
         }
-        let mut rec = llm_response_record_with_content(
-            Some(inv.route.session_id.clone()),
-            Some(inv.agent_id.clone()),
+        if event.assistant_content.trim().is_empty() {
+            return Ok(PreparedCapture {
+                ctx: ctx.clone(),
+                backfills: vec![],
+                story_cmd: None,
+            });
+        }
+        let rec = llm_response_record_with_content(
+            Some(ctx.route().session_id.clone()),
+            Some(ctx.agent_id().to_string()),
             event.status,
             &serde_json::json!({ "status": event.status, "draft": true }),
             true,
             Some(event.assistant_content.clone()),
-            &inv.call,
-            inv.level,
+            &ctx.call,
+            ctx.level,
         );
-        // Draft is ephemeral markdown only — no registry enrich or spawn-link side effects.
-        rec.seq = self
-            .sink
-            .peek_next_seq(&inv.route)
-            .context("draft markdown requires sink peek_next_seq")?;
-        let session_cmd = match draft_stream_assistant_block(&rec, &event.assistant_content)? {
-            Some((header, body)) => Some(SessionCommand::upsert_draft(
-                SessionScope::from_invocation(inv),
-                &inv.call.call_id,
-                header,
-                body,
-            )?),
-            None => None,
-        };
+        let story_cmd = Some(StoryCommand::upsert_draft(
+            StoryScope::from_context(ctx),
+            serde_json::to_vec(&rec)?,
+            event.assistant_content,
+        )?);
         Ok(PreparedCapture {
-            inv: inv.clone(),
+            ctx: ctx.clone(),
             backfills: vec![],
-            session_cmd,
+            story_cmd,
         })
     }
 
     async fn prepare_completed(
         &self,
-        registry: &ActorRef,
-        inv: &CaptureInvocation,
-        event: LlmResponseCompleted,
+        run: &ActorRef,
+        ctx: &CallContext,
+        event: CompleteEvent,
     ) -> Result<PreparedCapture> {
         let resp_text = std::str::from_utf8(&event.resp_bytes).unwrap_or("<non-utf8>");
         let usage =
@@ -153,23 +142,22 @@ impl CapturePreparer {
                 .unwrap_or_else(|_| Value::String(resp_text.to_string()))
         };
 
-        let cost = estimate_cost_usd(&inv.upstream_model, inv.provider, &usage);
+        let cost = estimate_cost_usd(&ctx.upstream_model, ctx.provider, &usage);
         self.index.record_response(
-            &inv.agent_id,
-            &inv.route.session_id,
-            inv.provider,
-            &inv.client_model,
+            ctx.agent_id(),
+            &ctx.route().session_id,
+            ctx.provider,
+            &ctx.client_model,
             &usage,
             cost,
         );
-        let _ = self.index.flush();
 
-        if inv.debug_on {
+        if ctx.debug_on {
             debug::log_llm_response(
-                inv.storage.as_path(),
-                &inv.route.session_id,
-                &inv.agent_id,
-                &inv.client_model,
+                self.storage.as_path(),
+                &ctx.route().session_id,
+                ctx.agent_id(),
+                &ctx.client_model,
                 event.status,
                 usage.total_tokens,
                 resp_text,
@@ -178,15 +166,15 @@ impl CapturePreparer {
 
         let mut resp_payload = serde_json::json!({
             "status": event.status,
-            "protocol": inv.protocol.as_str(),
-            "provider": inv.provider.as_str(),
+            "protocol": ctx.protocol.as_str(),
+            "provider": ctx.provider.as_str(),
             "usage": usage,
             "estimated_cost_usd": cost,
         });
-        if inv.upstream_model != inv.client_model {
-            resp_payload["forward_to"] = Value::String(inv.upstream_model.clone());
+        if ctx.upstream_model != ctx.client_model {
+            resp_payload["forward_to"] = Value::String(ctx.upstream_model.clone());
         }
-        if inv.level.includes_full_body() {
+        if ctx.level.includes_full_body() {
             resp_payload["body"] = resp_json.clone();
         }
         if let Some(m) = event.stream_metrics.as_ref() {
@@ -198,7 +186,7 @@ impl CapturePreparer {
             }
         }
 
-        let assistant_content = if inv.level.includes_assistant_text() {
+        let assistant_content = if ctx.level.includes_assistant_text() {
             event.assistant_content.or_else(|| {
                 if event.streaming {
                     Some(extract_assistant_turn_from_sse(resp_text))
@@ -211,45 +199,44 @@ impl CapturePreparer {
         };
 
         let mut rec = llm_response_record_with_content(
-            Some(inv.route.session_id.clone()),
-            Some(inv.agent_id.clone()),
+            Some(ctx.route().session_id.clone()),
+            Some(ctx.agent_id().to_string()),
             event.status,
             &resp_payload,
             event.streaming,
             assistant_content.clone(),
-            &inv.call,
-            inv.level,
+            &ctx.call,
+            ctx.level,
         );
-        let backfills =
-            registry_enrich(registry, &mut rec, inv, None, assistant_content.as_deref()).await?;
-        let scope = SessionScope::from_invocation(inv);
-        let session_cmd = Some(SessionCommand::persist_record(
+        let backfills = run_enrich(run, &mut rec, ctx, None, assistant_content.as_deref()).await?;
+        let scope = StoryScope::from_context(ctx);
+        let story_cmd = Some(StoryCommand::persist_record(
             scope,
-            serde_json::to_string(&rec)?,
+            serde_json::to_vec(&rec)?,
         ));
         Ok(PreparedCapture {
-            inv: inv.clone(),
+            ctx: ctx.clone(),
             backfills,
-            session_cmd,
+            story_cmd,
         })
     }
 
     async fn prepare_cancelled(
         &self,
-        inv: &CaptureInvocation,
-        event: LlmCallCancelled,
+        ctx: &CallContext,
+        event: CancelEvent,
     ) -> Result<PreparedCapture> {
         let rec = crate::record::CaptureRecord {
             seq: 0,
             source: "capture".into(),
             kind: "llm.call.cancelled".into(),
             timestamp: Some(crate::record::now_rfc3339()),
-            session_id: Some(inv.route.session_id.clone()),
-            agent_id: Some(inv.agent_id.clone()),
+            session_id: Some(ctx.route().session_id.clone()),
+            agent_id: Some(ctx.agent_id().to_string()),
             parent_uuid: None,
-            trace_id: Some(inv.call.trace_id.clone()),
-            call_id: Some(inv.call.call_id.clone()),
-            subagent_id: inv.route.subagent_id.clone(),
+            trace_id: Some(ctx.call.trace_id.clone()),
+            call_id: Some(ctx.call.call_id.clone()),
+            subagent_id: ctx.route().subagent_id.clone(),
             parent_agent_id: None,
             branch: None,
             parent_call_id: None,
@@ -259,21 +246,21 @@ impl CapturePreparer {
                 "bytes_received": event.bytes_received,
             }),
         };
-        let session_cmd = Some(SessionCommand::persist_record(
-            SessionScope::from_invocation(inv),
-            serde_json::to_string(&rec)?,
+        let story_cmd = Some(StoryCommand::persist_record(
+            StoryScope::from_context(ctx),
+            serde_json::to_vec(&rec)?,
         ));
         Ok(PreparedCapture {
-            inv: inv.clone(),
+            ctx: ctx.clone(),
             backfills: vec![],
-            session_cmd,
+            story_cmd,
         })
     }
 }
 
 impl PreparedCapture {
-    pub fn take_session_command(&mut self) -> Option<SessionCommand> {
-        self.session_cmd.take()
+    pub fn take_story_command(&mut self) -> Option<StoryCommand> {
+        self.story_cmd.take()
     }
 }
 

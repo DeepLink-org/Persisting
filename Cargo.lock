@@ -5099,6 +5099,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "toml",
  "tower",
  "tracing",
  "url",

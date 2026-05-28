@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use persisting_capture::{
-    build_run_report, run_env::read_run_session, write_run_reconcile_report, CaptureRecord,
-    RunReconcileReport,
+use persisting_capture::reconcile::{
+    build_run_report, list_run_markdown_paths, write_run_reconcile_report, RunReconcileReport,
 };
+use persisting_capture::record::CaptureRecord;
+use persisting_capture::runtime::run_env::read_run_session;
 use persisting_proto::{
     TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStorageFormat,
 };
@@ -27,7 +28,7 @@ pub fn reconcile_run_after_flush(
     let root_session = read_run_session(storage)
         .with_context(|| format!("read run_session under {}", storage.display()))?;
     let run_dir = storage.join(agent_id).join(&root_session);
-    let md_paths = persisting_capture::list_run_markdown_paths(&run_dir)?;
+    let md_paths = list_run_markdown_paths(&run_dir)?;
     if md_paths.is_empty() {
         anyhow::bail!(
             "no markdown files under {}; nothing to reconcile",
@@ -79,8 +80,13 @@ pub fn reconcile_run_after_flush(
         for s in &report.sessions {
             if !s.ok() {
                 eprintln!(
-                    "[persisting-cli]   session {} missing={:?} extra={:?} structural={:?}",
-                    s.session_id, s.missing_in_md, s.extra_in_md, s.structural_issues
+                    "[persisting-cli]   session {} missing={:?} extra={:?} story_missing={:?} story_extra={:?} structural={:?}",
+                    s.session_id,
+                    s.missing_in_md,
+                    s.extra_in_md,
+                    s.story_missing_in_md,
+                    s.story_extra_in_md,
+                    s.structural_issues
                 );
             }
         }

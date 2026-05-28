@@ -147,7 +147,7 @@ pub fn resolve_storage_detailed(
     }
 
     anyhow::bail!(
-        "no capture instance found: start one with `persisting capture start -o <DIR> -c <config.yaml>`, \
+        "no capture instance found: start one with `persisting capture start -o <DIR> -c <config.toml>`, \
          or pass `-o <DIR>`, or set PERSISTING_CAPTURE_STORAGE"
     )
 }

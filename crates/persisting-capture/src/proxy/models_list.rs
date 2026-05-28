@@ -78,14 +78,17 @@ mod tests {
 
     #[test]
     fn models_list_from_config() {
-        let cfg = ProxyConfig::from_yaml_str(
+        let cfg = ProxyConfig::from_toml_str(
             r#"
-listen: "127.0.0.1:1"
-models:
-  - name: deepseek-chat
-    upstream: "http://x/v1"
-  - name: "*"
-    forward: deepseek-chat
+listen = "127.0.0.1:1"
+
+[[models]]
+name = "deepseek-chat"
+upstream = "http://x/v1"
+
+[[models]]
+name = "*"
+forward = "deepseek-chat"
 "#,
         )
         .unwrap();

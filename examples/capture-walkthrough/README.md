@@ -19,7 +19,7 @@ cd examples/capture-walkthrough
 ./run.sh mock
 
 # 终端 B（需已 cargo build persisting-cli）
-persisting capture run -o ./store -c proxy.yaml -f md -- python3 agent.py
+persisting capture run -o ./store -c proxy.toml -f md -- python3 agent.py
 ./run.sh check
 ```
 
@@ -34,14 +34,14 @@ persisting capture run -o ./store -c proxy.yaml -f md -- python3 agent.py
 | **mock_llm.py** | 本地假 LLM（`run.sh` 或 `./run.sh mock` 启动） |
 | **dialogue_fixture.py** | 固定两轮对话；agent / mock / check 共用 |
 | **check.py** | 校验 frontmatter 与块内容 |
-| **proxy.yaml** | 代理 19081 → Mock 19080 |
+| **proxy.toml** | 代理 19081 → Mock 19080 |
 
 ## 真实 LLM
 
-用 [llm-proxy/deepseek.yaml](../llm-proxy/deepseek.yaml)，仍执行：
+用 [llm-proxy/deepseek.toml](../llm-proxy/deepseek.toml)，仍执行：
 
 ```bash
-persisting capture run -o ./store -c your.yaml -f md -- python3 your_agent.py
+persisting capture run -o ./store -c your.toml -f md -- python3 your_agent.py
 ```
 
 文档：[cli_capture_command.zh.md](../../docs/src/design/cli_capture_command.zh.md)

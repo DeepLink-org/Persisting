@@ -1,16 +1,17 @@
-//! Proxy configuration: `models[]` entries + optional `forward` to another model name.
+//! Proxy configuration (TOML): `models[]` entries + optional `forward` to another model name.
 
 use std::collections::HashSet;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
 
 /// Top-level config for capture proxy / daemon.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyConfig {
     pub listen: String,
     /// Admin API for `capture status` (default `127.0.0.1:9876`).
@@ -68,7 +69,8 @@ impl CaptureLevel {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRoute {
     /// Match pattern (exact, `prefix*`, `*suffix`, `*`) or target model id.
     pub name: String,
@@ -94,6 +96,31 @@ pub struct ModelRoute {
 }
 
 impl ProxyConfig {
+    pub fn from_toml_str(s: &str) -> anyhow::Result<Self> {
+        let cfg: Self = toml::from_str(s)?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    pub fn from_toml_file(path: &Path) -> anyhow::Result<Self> {
+        let s = std::fs::read_to_string(path)?;
+        Self::from_toml_str(&s)
+    }
+
+    /// Load by file extension: `.toml` (preferred), `.yaml` / `.yml` (legacy).
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("yaml") | Some("yml") => Self::from_yaml_file(path),
+            Some("toml") | None => Self::from_toml_file(path),
+            Some(ext) => anyhow::bail!("unsupported proxy config extension `.{ext}` (use .toml)"),
+        }
+    }
+
     pub fn from_yaml_str(s: &str) -> anyhow::Result<Self> {
         let cfg: Self = serde_yaml::from_str(s)?;
         cfg.validate()?;
@@ -103,6 +130,10 @@ impl ProxyConfig {
     pub fn from_yaml_file(path: &Path) -> anyhow::Result<Self> {
         let s = std::fs::read_to_string(path)?;
         Self::from_yaml_str(&s)
+    }
+
+    pub fn to_toml_string(&self) -> anyhow::Result<String> {
+        Ok(toml::to_string_pretty(self)?)
     }
 
     /// Validate model entries, `forward` references, and duplicate names.
@@ -448,5 +479,49 @@ mod tests {
             r.effective_provider(ProtocolKind::ChatCompletions),
             ProviderKind::OpenAi
         );
+    }
+
+    #[test]
+    fn toml_roundtrip_and_deny_unknown_field() {
+        let src = r#"
+listen = "127.0.0.1:1"
+
+[[models]]
+name = "*"
+upstream = "http://example.com/v1"
+unknown_field = true
+"#;
+        assert!(ProxyConfig::from_toml_str(src).is_err());
+
+        let cfg = ProxyConfig::from_toml_str(
+            r#"
+listen = "127.0.0.1:1"
+
+[[models]]
+name = "*"
+upstream = "http://example.com/v1"
+"#,
+        )
+        .unwrap();
+        let again = ProxyConfig::from_toml_str(&cfg.to_toml_string().unwrap()).unwrap();
+        assert_eq!(cfg.listen, again.listen);
+    }
+
+    #[test]
+    fn legacy_yaml_still_loads_via_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.yaml");
+        std::fs::write(
+            &path,
+            r#"
+listen: "127.0.0.1:9"
+models:
+  - name: "*"
+    upstream: "http://example.com/v1"
+"#,
+        )
+        .unwrap();
+        let cfg = ProxyConfig::from_file(&path).unwrap();
+        assert_eq!(cfg.listen, "127.0.0.1:9");
     }
 }

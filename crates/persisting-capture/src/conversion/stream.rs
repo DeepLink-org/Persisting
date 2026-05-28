@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn stream_translator_emits_anthropic_events() {
-        let raw = include_str!("../../tests/fixtures/response/completions/stream_head.txt");
+        let raw = include_str!("../../tests/fixtures/local/response/completions/stream_head.txt");
         let out = translate_completions_sse_to_messages(raw, "claude-test").unwrap();
         assert!(out.contains("event: message_start"));
         assert!(out.contains("content_block_delta"));

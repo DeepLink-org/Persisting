@@ -13,7 +13,7 @@ use super::tool_call::{
 pub fn responses_request_to_completions(
     body: &Bytes,
     upstream_model: &str,
-    reasoning_cache: Option<&crate::proxy::deepseek_reasoning::ReasoningCacheHandle>,
+    reasoning_cache: Option<&crate::proxy::reasoning::ReasoningCacheHandle>,
 ) -> Result<Bytes> {
     let mut v: Value = serde_json::from_slice(body).context("parse responses request")?;
     let obj = v
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn codex_like_request_to_completions() {
         let body = Bytes::from_static(include_bytes!(
-            "../../tests/fixtures/requests/responses/codex_basic.json"
+            "../../tests/fixtures/local/requests/responses/codex_basic.json"
         ));
         let out = responses_request_to_completions(&body, "deepseek-chat", None).unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn tool_roundtrip_request_to_completions() {
         let body = Bytes::from_static(include_bytes!(
-            "../../tests/fixtures/requests/responses/codex_tool_roundtrip.json"
+            "../../tests/fixtures/local/requests/responses/codex_tool_roundtrip.json"
         ));
         let out = responses_request_to_completions(&body, "deepseek-chat", None).unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn completions_tool_call_to_responses_output() {
         let body = Bytes::from_static(include_bytes!(
-            "../../tests/fixtures/response/completions/tool_call.json"
+            "../../tests/fixtures/local/response/completions/tool_call.json"
         ));
         let out = completions_response_to_responses(&body, "gpt-5.5").unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();

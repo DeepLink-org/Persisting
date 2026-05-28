@@ -6,7 +6,7 @@ use axum::http::HeaderMap;
 use bytes::Bytes;
 
 use super::dialogue_extract::{is_main_agent_continuation, is_subagent_shape_payload};
-use super::markdown::session_markdown_write_path_for_key;
+use super::markdown::{is_subagent_session_storage_key, session_markdown_write_path_for_key};
 use crate::run_env::read_run_session;
 use crate::session_chain::{
     ephemeral_session_id, extract_claude_agent_id, extract_session_from_headers,
@@ -36,6 +36,38 @@ impl CaptureRoute {
     /// Run id for nested append (always set when [`Self::root_session`] is present).
     pub fn append_root_session(&self) -> Option<String> {
         self.root_session.clone()
+    }
+
+    /// Route for offline replay / reconcile (main session omits `root_session` wrapper).
+    pub fn for_replay_stem(root_session: &str, session_id: &str) -> Self {
+        let subagent_id = is_subagent_session_storage_key(session_id).then(|| {
+            session_id
+                .strip_prefix("agent-")
+                .unwrap_or(session_id)
+                .to_string()
+        });
+        Self {
+            root_session: if session_id == root_session {
+                None
+            } else {
+                Some(root_session.to_string())
+            },
+            session_id: session_id.to_string(),
+            storage_session_id: session_id.to_string(),
+            subagent_id,
+        }
+    }
+
+    /// Route for live run markdown frontmatter refresh (`root_session` always set).
+    pub fn for_run_markdown_stem(root_session: &str, stem: &str) -> Self {
+        let subagent_id = is_subagent_session_storage_key(stem)
+            .then(|| stem.strip_prefix("agent-").unwrap_or(stem).to_string());
+        Self {
+            root_session: Some(root_session.to_string()),
+            session_id: stem.to_string(),
+            storage_session_id: stem.to_string(),
+            subagent_id,
+        }
     }
 }
 

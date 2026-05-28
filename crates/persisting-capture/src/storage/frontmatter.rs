@@ -11,6 +11,7 @@ use super::markdown::{
 };
 use super::session::{trajectory_run_dir, CaptureRoute};
 use super::session_client::{resolve_client_meta_for_run_dir, SessionClientMeta};
+use super::story_snapshots::load_snapshot_turn_counts;
 use crate::session_index::{SessionIndexStore, SessionSummary};
 
 /// Rollup stats embedded in trajectory markdown frontmatter.
@@ -62,16 +63,22 @@ pub fn format_session_frontmatter(summary: &SessionFrontmatterSummary) -> Result
 }
 
 /// Build rollup from markdown blocks + `sessions.json` + run directory siblings.
+///
+/// When `story_user_turn_count` is set, it overrides markdown block counting.
 pub fn build_session_frontmatter_summary(
     storage: &Path,
     agent_id: &str,
     route: &CaptureRoute,
     md_path: &Path,
+    story_user_turn_count: Option<u64>,
 ) -> Result<SessionFrontmatterSummary> {
     let run_dir = trajectory_run_dir(storage, agent_id, route);
     let client = resolve_client_meta_for_run_dir(storage, &run_dir);
 
-    let turns = count_user_turns(md_path)?;
+    let turns = match story_user_turn_count {
+        Some(n) => n,
+        None => count_user_turns(md_path)?,
+    };
     let index_row = lookup_session_index(storage, agent_id, &route.session_id);
 
     let (model, provider, started, duration, total_tokens, cost) =
@@ -167,11 +174,18 @@ pub fn refresh_document_frontmatter(
     agent_id: &str,
     route: &CaptureRoute,
     md_path: &Path,
+    story_user_turn_count: Option<u64>,
 ) -> Result<SessionFrontmatterSummary> {
     if !md_path.is_file() {
         anyhow::bail!("markdown file missing: {}", md_path.display());
     }
-    let summary = build_session_frontmatter_summary(storage, agent_id, route, md_path)?;
+    let summary = build_session_frontmatter_summary(
+        storage,
+        agent_id,
+        route,
+        md_path,
+        story_user_turn_count,
+    )?;
     let content =
         std::fs::read_to_string(md_path).with_context(|| format!("read {}", md_path.display()))?;
     let body_start = super::markdown::document_body_start(&content)?;
@@ -182,15 +196,20 @@ pub fn refresh_document_frontmatter(
 }
 
 /// Refresh frontmatter for every `{run_dir}/*.md` file.
+///
+/// Uses `.capture/story_snapshots.json` turn counts when `turn_counts` is not provided.
 pub fn refresh_run_markdown_frontmatter(
     storage: &Path,
     agent_id: &str,
     root_session: &str,
+    turn_counts: Option<&std::collections::HashMap<String, u64>>,
 ) -> Result<Vec<(PathBuf, SessionFrontmatterSummary)>> {
     let run_dir = storage.join(agent_id).join(root_session);
     if !run_dir.is_dir() {
         return Ok(Vec::new());
     }
+    let loaded = load_snapshot_turn_counts(storage).unwrap_or_default();
+    let turn_counts = turn_counts.unwrap_or(&loaded);
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&run_dir)? {
         let entry = entry?;
@@ -201,23 +220,13 @@ pub fn refresh_run_markdown_frontmatter(
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let route = route_for_markdown_stem(root_session, stem);
-        let summary = refresh_document_frontmatter(storage, agent_id, &route, &path)?;
+        let route = CaptureRoute::for_run_markdown_stem(root_session, stem);
+        let turns = turn_counts.get(stem).copied();
+        let summary = refresh_document_frontmatter(storage, agent_id, &route, &path, turns)?;
         out.push((path, summary));
     }
     out.sort_by(|a, b| a.0.file_name().cmp(&b.0.file_name()));
     Ok(out)
-}
-
-fn route_for_markdown_stem(root_session: &str, stem: &str) -> CaptureRoute {
-    let subagent_id = is_subagent_session_storage_key(stem)
-        .then(|| stem.strip_prefix("agent-").unwrap_or(stem).to_string());
-    CaptureRoute {
-        root_session: Some(root_session.to_string()),
-        session_id: stem.to_string(),
-        storage_session_id: stem.to_string(),
-        subagent_id,
-    }
 }
 
 /// One-line human summary for stderr (run end).
@@ -281,11 +290,120 @@ mod tests {
             storage_session_id: "run-test".into(),
             subagent_id: None,
         };
-        let summary = refresh_document_frontmatter(dir.path(), "agent", &route, &md).unwrap();
+        let summary = refresh_document_frontmatter(dir.path(), "agent", &route, &md, None).unwrap();
         assert_eq!(summary.turns, 1);
         assert_eq!(summary.session, "run-test");
         let text = std::fs::read_to_string(&md).unwrap();
         assert!(text.contains("turns: 1"));
         assert!(text.contains("hello"));
+    }
+
+    #[test]
+    fn frontmatter_prefers_story_turn_count_over_markdown_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = dir.path().join("run-test.md");
+        std::fs::write(
+            &md,
+            format!(
+                "---\nformat: persisting:1.0\n---\n\n{}",
+                user_block("only one block in md")
+            ),
+        )
+        .unwrap();
+        let route = CaptureRoute {
+            root_session: Some("run-test".into()),
+            session_id: "run-test".into(),
+            storage_session_id: "run-test".into(),
+            subagent_id: None,
+        };
+
+        let call = crate::Call {
+            call_id: "c1".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let mut records = Vec::new();
+        for text in ["first", "second"] {
+            records.push(crate::sink::llm_request_summary_record(
+                Some("run-test".into()),
+                Some("agent".into()),
+                "m",
+                "/v1/chat/completions",
+                10,
+                "chat",
+                "openai",
+                Some(text.into()),
+                None,
+                &call,
+                crate::config::CaptureLevel::Dialogue,
+                None,
+            ));
+        }
+        let _story = crate::engine::rebuild_session_story("run-test", "run-test", &records);
+
+        let from_md =
+            build_session_frontmatter_summary(dir.path(), "agent", &route, &md, None).unwrap();
+        assert_eq!(from_md.turns, 1);
+
+        let from_story =
+            build_session_frontmatter_summary(dir.path(), "agent", &route, &md, Some(2)).unwrap();
+        assert_eq!(from_story.turns, 2);
+    }
+
+    #[test]
+    fn refresh_run_uses_persisted_story_snapshots() {
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = "agent-1";
+        let root = "run-test";
+        let run_dir = dir.path().join(agent).join(root);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let md = run_dir.join(format!("{root}.md"));
+        std::fs::write(
+            &md,
+            format!(
+                "---\nformat: persisting:1.0\n---\n\n{}",
+                user_block("hello")
+            ),
+        )
+        .unwrap();
+
+        let call = crate::Call {
+            call_id: "c1".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let req = crate::sink::llm_request_summary_record(
+            Some(root.into()),
+            Some(agent.into()),
+            "m",
+            "/v1/chat/completions",
+            10,
+            "chat",
+            "openai",
+            Some("hello".into()),
+            None,
+            &call,
+            crate::config::CaptureLevel::Dialogue,
+            None,
+        );
+        let mut req2 = req.clone();
+        req2.call_id = Some("c2".into());
+        req2.payload["user_content"] = serde_json::json!("second turn");
+        let story = crate::engine::rebuild_session_story(root, root, &[req, req2]);
+        assert_eq!(crate::engine::story_user_turn_count(&story), 2);
+
+        let mut snapshots = HashMap::new();
+        snapshots.insert(root.to_string(), story);
+        crate::engine::persist_story_snapshots(dir.path(), &snapshots).unwrap();
+
+        let entries = refresh_run_markdown_frontmatter(dir.path(), agent, root, None).unwrap();
+        let summary = entries
+            .iter()
+            .find(|(p, _)| p == &md)
+            .map(|(_, s)| s)
+            .expect("main session summary");
+        assert_eq!(summary.turns, 2);
     }
 }

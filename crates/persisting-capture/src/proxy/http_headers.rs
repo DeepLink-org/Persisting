@@ -32,6 +32,23 @@ pub fn skip_upstream_forward_header(name: &str) -> bool {
     ) || is_hop_by_hop(name)
 }
 
+/// Headers to omit when forwarding an upstream response back to the client whose body
+/// has been rewritten (protocol translation, JSON re-encoding, etc.).
+///
+/// Body-sensitive headers (`content-length`, `content-encoding`) become incorrect
+/// because the rewritten body has a different size and is no longer compressed;
+/// `content-type` may also be different (translation flips JSON vs SSE). Hop-by-hop
+/// headers (`transfer-encoding`, `connection`, …) are likewise unsafe to forward
+/// blindly. Callers should re-set `content-type` from the rewrite and let the HTTP
+/// stack recompute `content-length` from the body.
+pub fn skip_response_header_when_body_changed(name: &str) -> bool {
+    is_hop_by_hop(name)
+        || matches!(
+            name.to_ascii_lowercase().as_str(),
+            "content-length" | "content-encoding" | "content-type"
+        )
+}
+
 /// Client requested HTTP → WebSocket upgrade (e.g. Codex `/v1/responses` probe).
 pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     headers
@@ -49,5 +66,32 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("upgrade", "websocket".parse().unwrap());
         assert!(is_websocket_upgrade(&h));
+    }
+
+    #[test]
+    fn body_change_filter_drops_size_encoding_and_type_headers() {
+        for h in [
+            "content-length",
+            "Content-Length",
+            "content-encoding",
+            "content-type",
+            "transfer-encoding",
+            "connection",
+        ] {
+            assert!(
+                skip_response_header_when_body_changed(h),
+                "expected `{h}` to be filtered when body is rewritten"
+            );
+        }
+    }
+
+    #[test]
+    fn body_change_filter_keeps_other_headers() {
+        for h in ["x-request-id", "anthropic-version", "x-ratelimit-remaining"] {
+            assert!(
+                !skip_response_header_when_body_changed(h),
+                "expected `{h}` to be forwarded"
+            );
+        }
     }
 }

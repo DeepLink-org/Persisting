@@ -1,4 +1,4 @@
-//! Upstream API key injection (OpenAI Bearer vs Anthropic x-api-key).
+//! Upstream API key resolution (OpenAI Bearer vs Anthropic x-api-key).
 
 use axum::http::HeaderMap;
 use reqwest::RequestBuilder;
@@ -6,8 +6,8 @@ use reqwest::RequestBuilder;
 use crate::config::ModelRoute;
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
+use crate::proxy::http_headers::skip_upstream_forward_header;
 
-use super::http_headers::skip_upstream_forward_header;
 pub fn resolve_upstream_api_key(
     route: &ModelRoute,
     client_headers: &HeaderMap,
@@ -17,7 +17,7 @@ pub fn resolve_upstream_api_key(
             .api_key_env
             .as_deref()
             .map(|_| "daemon_env")
-            .unwrap_or("yaml_api_key");
+            .unwrap_or("inline_api_key");
         return Ok((Some(k), source));
     }
     if let Some(k) = client_auth_token(client_headers) {
@@ -27,13 +27,13 @@ pub fn resolve_upstream_api_key(
         anyhow::bail!(
             "api key not available for model route `{}` (set {} or pass client auth header)",
             route.name,
-            route.api_key_env.as_deref().unwrap_or("api_key in yaml")
+            route.api_key_env.as_deref().unwrap_or("api_key in config")
         );
     }
     Ok((None, "none"))
 }
 
-/// Forward client headers and inject route API key with the correct scheme.
+/// Forward client headers and attach route API key with the correct scheme.
 pub fn apply_upstream_headers(
     mut req: RequestBuilder,
     client_headers: &HeaderMap,
@@ -62,7 +62,7 @@ pub fn apply_upstream_headers(
         anyhow::bail!(
             "api key not available for model route `{}` (set {} or pass client auth header)",
             route.name,
-            route.api_key_env.as_deref().unwrap_or("api_key in yaml")
+            route.api_key_env.as_deref().unwrap_or("api_key in config")
         );
     }
 

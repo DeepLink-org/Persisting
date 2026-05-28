@@ -298,7 +298,7 @@ struct CaptureRunArgs {
         default_value = ".persisting/capture"
     )]
     output_dir: String,
-    /// Proxy config YAML (`listen`, `models`, …).
+    /// Proxy config TOML (`listen`, `models`, …).
     #[arg(long, short = 'c', value_name = "FILE")]
     config: PathBuf,
     /// Log every proxied / captured HTTP request to stderr and `{output_dir}/.capture/debug.log`.
@@ -903,7 +903,7 @@ struct TrajectoryAppendJob {
     agent_id: String,
     session_id: String,
     root_session_id: Option<String>,
-    record: persisting_capture::CaptureRecord,
+    record: persisting_capture::record::CaptureRecord,
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -916,7 +916,7 @@ struct TrajectoryBatchKey {
 
 const CAPTURE_TRAJECTORY_BATCH: usize = 32;
 
-fn should_flush_capture_record(record: &persisting_capture::CaptureRecord) -> bool {
+fn should_flush_capture_record(record: &persisting_capture::record::CaptureRecord) -> bool {
     matches!(
         record.kind.as_str(),
         "llm.request"
@@ -928,6 +928,44 @@ fn should_flush_capture_record(record: &persisting_capture::CaptureRecord) -> bo
     )
 }
 
+fn records_ronl_from_lines(lines: &[String]) -> String {
+    if lines.len() == 1 {
+        format!("{}\n", lines[0])
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
+}
+
+fn write_lance_dead_letter(key: &TrajectoryBatchKey, lines: &[String], error: &str) {
+    let storage_path = std::path::Path::new(&key.storage);
+    let records_ronl = records_ronl_from_lines(lines);
+    if let Err(dl) = persisting_capture::dead_letter::append_lance_dead_letter(
+        storage_path,
+        &key.agent_id,
+        &key.session_id,
+        key.root_session_id.as_deref(),
+        &records_ronl,
+        error,
+    ) {
+        eprintln!("[persisting-cli] lance dead letter write failed: {dl:#}");
+    }
+}
+
+fn flush_capture_trajectory_batch_or_dead_letter(
+    engine: &Engine,
+    key: &TrajectoryBatchKey,
+    lines: &[String],
+    stream_markdown: bool,
+) {
+    if lines.is_empty() {
+        return;
+    }
+    if let Err(e) = flush_capture_trajectory_batch(engine, key, lines, stream_markdown) {
+        write_lance_dead_letter(key, lines, &format!("{e:#}"));
+        eprintln!("[persisting-cli] capture trajectory append failed: {e:#}");
+    }
+}
+
 fn flush_capture_trajectory_batch(
     engine: &Engine,
     key: &TrajectoryBatchKey,
@@ -937,11 +975,7 @@ fn flush_capture_trajectory_batch(
     if lines.is_empty() {
         return Ok(());
     }
-    let records_ronl = if lines.len() == 1 {
-        format!("{}\n", lines[0])
-    } else {
-        format!("{}\n", lines.join("\n"))
-    };
+    let records_ronl = records_ronl_from_lines(lines);
     let payload = rpc_request_pretty(RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
         storage: key.storage.clone(),
         agent_id: key.agent_id.clone(),
@@ -959,15 +993,21 @@ fn flush_capture_trajectory_batch(
             &key.session_id,
             key.root_session_id.as_deref(),
         )?;
-        let _ =
-            persisting_capture::stream_engine_lines_to_markdown(&run_dir, &key.session_id, lines)
-                .with_context(|| {
-                format!(
-                    "stream markdown to {}",
-                    persisting_capture::materialize_markdown_path(&run_dir, &key.session_id)
-                        .display()
+        let _ = persisting_capture::trajectory_convert::stream_engine_lines_to_markdown(
+            &run_dir,
+            &key.session_id,
+            lines,
+        )
+        .with_context(|| {
+            format!(
+                "stream markdown to {}",
+                persisting_capture::trajectory_convert::materialize_markdown_path(
+                    &run_dir,
+                    &key.session_id
                 )
-            })?;
+                .display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -978,7 +1018,7 @@ fn build_capture_trajectory_sink(
     agent_id: String,
     format: capture::CaptureFormat,
 ) -> Result<(
-    std::sync::Arc<persisting_capture::CallbackSink>,
+    std::sync::Arc<persisting_capture::sink::CallbackSink>,
     TrajectoryAppendWorker,
 )> {
     let _ = format.stream_markdown_in_engine();
@@ -1012,13 +1052,13 @@ fn build_capture_trajectory_sink(
                     session_id: job.session_id,
                     root_session_id: job.root_session_id,
                 };
-                let line = persisting_capture::record_to_engine_line(&job.record)?;
+                let line = persisting_capture::record::record_to_engine_line(&job.record)?;
                 let flush_now = should_flush_capture_record(&job.record);
                 let batch = batches.entry(key.clone()).or_default();
                 batch.push(line);
                 if batch.len() >= CAPTURE_TRAJECTORY_BATCH || flush_now {
                     let lines = batches.remove(&key).unwrap_or_default();
-                    flush_capture_trajectory_batch(&engine, &key, &lines, false)?;
+                    flush_capture_trajectory_batch_or_dead_letter(&engine, &key, &lines, false);
                 }
                 Ok(())
             })();
@@ -1028,14 +1068,12 @@ fn build_capture_trajectory_sink(
         }
 
         for (key, lines) in batches {
-            if let Err(e) = flush_capture_trajectory_batch(&engine, &key, &lines, false) {
-                eprintln!("[persisting-cli] capture trajectory flush failed: {e:#}");
-            }
+            flush_capture_trajectory_batch_or_dead_letter(&engine, &key, &lines, false);
         }
     });
 
     let sink_storage = storage;
-    let sink = std::sync::Arc::new(persisting_capture::CallbackSink::new(
+    let sink = std::sync::Arc::new(persisting_capture::sink::CallbackSink::new(
         agent_id,
         move |route, agent_id, record| {
             tx.send(TrajectoryAppendJob {
@@ -1061,7 +1099,7 @@ fn build_capture_trajectory_sink(
 fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i32> {
     let storage = PathBuf::from(&args.output_dir);
     let storage = storage.canonicalize().unwrap_or(storage);
-    let config = persisting_capture::ProxyConfig::from_yaml_file(&args.config)
+    let config = persisting_capture::config::ProxyConfig::from_file(&args.config)
         .with_context(|| format!("load proxy config {}", args.config.display()))?;
     let agent_id = config.agent_id.clone();
     let (sink, mut worker) = build_capture_trajectory_sink(
@@ -1091,20 +1129,33 @@ fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i
     Ok(code)
 }
 
+fn load_storage_agent_id(storage: &Path) -> String {
+    for name in ["proxy.toml", "proxy.yaml"] {
+        let path = storage.join(name);
+        if path.is_file() {
+            if let Ok(cfg) = persisting_capture::config::ProxyConfig::from_file(&path) {
+                return cfg.agent_id;
+            }
+        }
+    }
+    if let Ok(Some(state)) = persisting_capture::runtime::service::CaptureDaemonState::read(storage)
+    {
+        if let Ok(cfg) =
+            persisting_capture::config::ProxyConfig::from_file(Path::new(&state.config_path))
+        {
+            return cfg.agent_id;
+        }
+    }
+    "capture".into()
+}
+
 fn run_replay_dead_letter(
     lazy: &mut LazyEngine<'_>,
     args: &CaptureReplayDeadLetterArgs,
 ) -> Result<()> {
     let storage = PathBuf::from(&args.output_dir);
     let storage = storage.canonicalize().unwrap_or(storage);
-    let config_path = storage.join("proxy.yaml");
-    let agent_id = if config_path.exists() {
-        persisting_capture::ProxyConfig::from_yaml_file(&config_path)
-            .map(|c| c.agent_id)
-            .unwrap_or_else(|_| "capture".into())
-    } else {
-        "capture".into()
-    };
+    let agent_id = load_storage_agent_id(&storage);
     let (sink, mut worker) = build_capture_trajectory_sink(
         lazy.cli.core_lib.clone(),
         storage.display().to_string(),
@@ -1148,9 +1199,10 @@ impl Drop for TrajectoryAppendWorker {
 
 fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Result<()> {
     let storage_path = PathBuf::from(&args.output_dir);
-    let _run_session = persisting_capture::ensure_serve_run_session(&storage_path)
-        .with_context(|| format!("ensure serve run_session for {}", storage_path.display()))?;
-    let applied = persisting_capture::apply_daemon_env(&storage_path)
+    let _run_session =
+        persisting_capture::runtime::run_env::ensure_serve_run_session(&storage_path)
+            .with_context(|| format!("ensure serve run_session for {}", storage_path.display()))?;
+    let applied = persisting_capture::runtime::run_env::apply_daemon_env(&storage_path)
         .with_context(|| format!("apply daemon env snapshot for {}", storage_path.display()))?;
     if !applied.is_empty() {
         eprintln!(
@@ -1160,7 +1212,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
         );
     }
 
-    let config = persisting_capture::ProxyConfig::from_yaml_file(&args.config)
+    let config = persisting_capture::config::ProxyConfig::from_file(&args.config)
         .with_context(|| format!("load proxy config {}", args.config.display()))?;
 
     capture::enable_capture_debug(
@@ -1183,7 +1235,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
     )?;
 
     let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
-    rt.block_on(persisting_capture::serve(
+    rt.block_on(persisting_capture::proxy::serve(
         config,
         &args.output_dir,
         sink,

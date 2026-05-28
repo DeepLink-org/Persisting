@@ -112,7 +112,7 @@ persisting trajectory materialize store \
 典型工作流：
 
 ```bash
-persisting capture run -f md -o ./store -c proxy.yaml -- claude
+persisting capture run -f md -o ./store -c proxy.toml -- claude
 persisting trajectory stats store --agent-id deepseek-proxy \
   --session-id fb47835b-e10d-4b29-abc3-68f4594ebce3 \
   --root-session-id run-20260524-161537-122998000
