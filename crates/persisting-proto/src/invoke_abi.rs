@@ -131,6 +131,12 @@ pub struct PersistingEngineJobSyms {
 }
 
 /// `job_take_result` 的 probe + fill（与旧 `invoke` 缓冲语义一致）。
+///
+/// # Safety
+///
+/// `take` must be a valid `persisting_engine_job_take_result` from the same loaded engine ABI,
+/// and must remain valid for the duration of both calls. `job` must be a job id returned by
+/// `submit` that is still poll-complete and not yet released.
 pub unsafe fn job_take_result_utf8_with_buffer(
     take: PersistingEngineJobTakeResultFn,
     job: u64,

@@ -8,7 +8,7 @@
 
 | 你想了解… | 见 |
 |-----------|-----|
-| Capture 代理的整体架构（路由 / 协议转换 / Story 边界 / 采集管线） | [Capture 架构设计](capture_design.zh.md) §2.1–§2.2 |
+| Capture 代理的整体架构（概念、Story 边界、采集管线） | [Capture 架构设计](capture_design.zh.md) §4–§6 |
 | TLV Markdown 的块格式规范 | [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) |
 | `persisting capture` 命令用法 | [Capture 命令](cli_capture_command.zh.md) |
 | `persisting trajectory` 命令用法 | [Trajectory 命令](cli_trajectory_command.zh.md) |
@@ -19,7 +19,7 @@
 
 Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、git diff、code review）。为此采用**两层存储**：Lance 为 canonical raw event log，TLV Markdown 为按需物化的人读视图。
 
-**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ CaptureRecord → Lance/Markdown`。协议差异在 Story 边界前由 `conversion/` + `dialogue_extract/` 消化；`CaptureRecord` 是存储层的统一中间表示，不再携带 messages/completions 结构。详见 [Capture §2.2 三层词汇表](capture_design.zh.md#22-三层词汇表与转换边界)。
+**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ 事件记录 → Lance/Markdown`。协议差异在 Story 边界前消化；事件记录是存储层统一中间表示。详见 [Capture §4.2 三层词汇表](capture_design.zh.md#42-三层词汇表)。
 
 ```mermaid
 graph TD
@@ -476,14 +476,24 @@ serve 模式下无 `run_session`，每个逻辑 session 独立一个目录。`se
 
 ## 8. 存储策略
 
-| 策略 | `--storage-format` / `-f` | 行为 |
-|------|--------------------------|------|
+### Capture（`-f`）
+
+| 策略 | `-f` | 行为 |
+|------|------|------|
 | **Lance only** | `bin` | 仅 append Lance，不生成 Markdown |
 | **Lance + Markdown** | `md` | Lance 批量写入 + Proxy **CaptureEngine live upsert**（import 走 append） |
-| **Both** | `both` | 同 `md` |
-| **Auto** | `auto` | 空 session → Lance；已有数据按探测结果；不自动物化 |
 
-**读取优先级**：`replay` / `stats` 默认以 Lance 为准；纯 Markdown session 从块序列还原。`-f md` run 结束后优先查看 `reconcile.json`；不一致时执行 `trajectory materialize` 全量对齐。
+### Trajectory CLI（`--storage-format`）
+
+两种物理层：**Lance**（canonical）、**Markdown**（物化视图）。`trajectory add` **每次只写一层**（由 `--storage-format` 决定）；`materialize` 为 Lance → Markdown 全量导出（不随 add 自动触发）。
+
+| 值 | 行为 |
+|----|------|
+| **auto** | **写**：无层→Lance，仅 md→Markdown，仅 Lance→Lance，两层都有→Lance；**读** replay：有 Lance 读 Lance，否则 Markdown；stats：两层都有时同时摘要 |
+| **lance** / **markdown** | 强制读/写/统计指定层 |
+| **both** | 遗留别名（append→Lance only；read/stats 同 auto），不推荐 |
+
+**读取优先级**：`replay` 在两层并存时默认 Lance；纯 Markdown session 从块序列还原。`-f md` run 结束后优先查看 `reconcile.json`；不一致时执行 `trajectory materialize` 全量对齐。
 
 ---
 
@@ -580,7 +590,7 @@ StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`s
 | Lance worker flush 失败 | 磁盘 / Lance 异常 | `lance_dead_letter.jsonl` 保留 RON batch |
 | Lance per-session dataset 过多 | 当前按 session 分 dataset | 按日分桶（规划中） |
 
-详见 [Capture 架构设计 §9](capture_design.zh.md)。
+详见 [Capture 架构设计 §10](capture_design.zh.md#10-可靠性与运行形态)。
 
 ---
 

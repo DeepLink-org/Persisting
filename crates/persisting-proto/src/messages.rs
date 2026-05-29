@@ -279,19 +279,21 @@ pub struct SearchImportLanceResponse {
 // Trajectory
 // ---------------------------------------------------------------------------
 
-/// Physical storage for a session trajectory.
+/// Physical storage layer for a session trajectory (Lance canonical + TLV Markdown view).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrajectoryStorageFormat {
-    /// Read: Lance if present else markdown. Append: Lance canonical; empty session → Lance only.
+    /// Read: Lance if both layers exist else the available layer. Append: always Lance.
+    /// Stats: summarize both layers when present.
     #[default]
     Auto,
-    /// Lance raw event log only.
+    /// Lance raw event log (canonical).
     Lance,
-    /// Lance canonical + materialize TLV Markdown after each append batch.
+    /// TLV Markdown session file (materialized / human-readable view).
     #[serde(rename = "markdown", alias = "tlv")]
     Markdown,
-    /// Same as [`Markdown`](Self::Markdown): Lance + materialize (legacy alias).
+    /// Legacy alias: append writes [`Lance`](Self::Lance) only; read/stats like [`Auto`](Self::Auto).
+    #[serde(alias = "both")]
     Both,
 }
 
@@ -396,12 +398,58 @@ pub struct TrajectoryMaterializeResponse {
     pub note: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryTruncateRequest {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub root_session_id: Option<String>,
+    /// Keep the first N Lance rows (ordered by `seq`).
+    pub keep_rows: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryTruncateResponse {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub kept_rows: usize,
+    pub removed_rows: usize,
+    pub status: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryExtractRequest {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub root_session_id: Option<String>,
+    pub out_dir: String,
+    /// When set on a capture run root story, copy the full run including `subagents/`.
+    #[serde(default)]
+    pub include_subagents: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryExtractResponse {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub out_dir: String,
+    pub files_copied: usize,
+    pub status: String,
+    pub note: String,
+}
+
 // ---------------------------------------------------------------------------
 // RPC envelope
 // ---------------------------------------------------------------------------
 
 /// Increment when bincode [`RpcRequest`] / [`RpcResponse`] layout or semantics change.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// RON C ABI：稳定导出为 **`persisting_engine_submit` / `job_poll` / `job_take_result` / `job_release`**（见 **`invoke_abi`**）；
 /// 当信封、job 状态布局或上述符号契约不兼容变化时递增。与 [`PROTOCOL_VERSION`] 独立。
@@ -432,6 +480,8 @@ pub enum RequestBody {
     TrajectoryReplay(TrajectoryReplayRequest),
     TrajectoryStats(TrajectoryStatsRequest),
     TrajectoryMaterialize(TrajectoryMaterializeRequest),
+    TrajectoryTruncate(TrajectoryTruncateRequest),
+    TrajectoryExtract(TrajectoryExtractRequest),
     SearchImportLance(SearchImportLanceRequest),
     SearchAddBatch(SearchAddBatchRequest),
 }
@@ -455,6 +505,8 @@ pub enum ResponseBody {
     TrajectoryReplay(TrajectoryReplayResponse),
     TrajectoryStats(TrajectoryStatsResponse),
     TrajectoryMaterialize(TrajectoryMaterializeResponse),
+    TrajectoryTruncate(TrajectoryTruncateResponse),
+    TrajectoryExtract(TrajectoryExtractResponse),
     SearchImportLance(SearchImportLanceResponse),
     SearchAddBatch(SearchAddBatchResponse),
     Error { code: u32, message: String },

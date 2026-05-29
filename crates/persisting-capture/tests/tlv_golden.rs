@@ -80,8 +80,8 @@ fn demo_run_001_matches_golden_fixture() {
             .join("../../examples/trajectory-tlv/demo-agent/demo-run-001/0001.md");
         std::fs::write(example, &built).unwrap();
     }
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/tlv/demo-run-001.md");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tlv/demo-run-001.md");
     let golden = std::fs::read_to_string(&fixture)
         .unwrap_or_else(|e| panic!("read {}: {e}", fixture.display()));
     assert_eq!(
@@ -106,9 +106,7 @@ fn demo_blocks_carry_v_field_and_strip_subagent_footer_on_import() {
     let mut block = blocks[1].clone();
     block.body = body;
     let rec = block_to_capture_record(&block).unwrap();
-    let content = rec
-        .visible_assistant_text()
-        .unwrap_or_default();
+    let content = rec.visible_assistant_text().unwrap_or_default();
     assert!(!content.contains("persisting:subagent"));
     assert!(content.contains("你好"));
 }

@@ -1,697 +1,455 @@
-# LLM Capture 代理 — 架构设计
+# Persisting Capture — 架构与设计
 
-> **版本**：v0.6.0 &emsp;|&emsp; **最后更新**：2026-05-28
+> **读者**：需要在 Agent 与 LLM 之间落地**可观测、可回放、可审计**轨迹的平台工程师、架构师与集成方。  
+> **版本**：1.0（对外） &emsp;|&emsp; **最后更新**：2026-05-28
+
+本文描述 **Persisting Capture** 的产品定位、核心概念与架构取舍。实现细节（块格式字段表、CLI 参数、目录布局）见文末延伸阅读；文中尽量避免绑定具体源码路径。
 
 ---
 
 ## 目录
 
-1. [概述](#1-概述)
-2. [核心概念模型](#2-核心概念模型)
-3. [系统架构](#3-系统架构)
-4. [写路径：Ingress 与采集](#4-写路径ingress-与采集)
-5. [读路径：Egress 与物化](#5-读路径egress-与物化)
-6. [存储与一致性](#6-存储与一致性)
-7. [LLM 网关](#7-llm-网关)
-8. [子代理与会话路由](#8-子代理与会话路由)
-9. [并发与可靠性](#9-并发与可靠性)
-10. [运维](#10-运维)
-11. [代码地图与技术债](#11-代码地图与技术债)
-12. [相关文档](#12-相关文档)
+1. [摘要](#1-摘要)
+2. [问题与价值](#2-问题与价值)
+3. [设计原则](#3-设计原则)
+4. [核心概念](#4-核心概念)
+5. [系统全景](#5-系统全景)
+6. [数据流：从 HTTP 到轨迹](#6-数据流从-http-到轨迹)
+7. [存储与一致性](#7-存储与一致性)
+8. [网关与协议](#8-网关与协议)
+9. [多 Agent 与会话](#9-多-agent-与会话)
+10. [可靠性与运行形态](#10-可靠性与运行形态)
+11. [演进方向](#11-演进方向)
+12. [延伸阅读](#12-延伸阅读)
 
 ---
 
-## 1. 概述
+## 1. 摘要
 
-### 1.1 定位
+**Persisting Capture 是 coding agents 的轨迹层**：让 **Claude Code** 或 **OpenAI Codex** 通过本地代理运行，即可得到持久化事件日志、人类可读的 Markdown 轨迹，以及运行结束时的 consistency report。
 
-Persisting Capture 是一个**嵌入式 LLM 反向代理 + 轨迹采集引擎**。它在 Agent（Claude Code / Cursor / 自研 Agent）与上游 LLM 提供商之间透明转发 HTTP 流量，同时将全部对话与工具调用上下文**实时捕获**为可读、可检索、可回放的轨迹。
+它是一个可嵌入的 **LLM 反向代理 + 轨迹采集引擎**。在已支持的客户端上，只需通过 `capture run` 注入代理或显式将 API 指到 Capture，即可在**不修改业务代码**的前提下：
 
-```
-Agent 进程                        上游 LLM
-(Claude Code, etc)              (DeepSeek / OpenAI / Anthropic / ...)
-      │                                    │
-      │  POST /v1/messages                 │
-      │  {"model":"claude-4",...}          │
-      │                                    │
-      ▼                                    │
-┌──────────────────────────────────────────┐
-│         Capture Proxy                    │
-│  路由 · 协议转换 · 鉴权                   │
-│         │                                │
-│         ▼                                │
-│  写路径: Event → StoryActor → 存储        │
-│  读路径: Record/Story → egress → 导出     │
-└──────────────────────────────────────────┘
-```
+- 透明转发对话流量到上游模型；
+- 将对话与调用上下文沉淀为**机器可读**的事件日志与**人类可读**的 Markdown 轨迹；
+- 在运行结束或运维流程中，对「事件日志 / 对话视图 / 叙事模型」做**三轨对账**，发现物化偏差。
 
-**核心价值**：Agent 只需将 `base_url` 指向 proxy，无需任何代码改动，即可获得完整的调用轨迹。
-
-### 1.2 设计原则
-
-| 原则 | 说明 |
-|------|------|
-| **观测不阻断** | LLM 响应优先；采集失败写 dead letter，不上抛到 HTTP handler |
-| **Story 边界** | 协议差异在 ingress 消化；Story 区只用 Run/Story/Turn/Call/Event |
-| **Lance canonical** | 全量事件以 `CaptureRecord` 写入 Lance；Markdown 为物化视图 |
-| **写读对称** | 在线 `TurnMachine` 与离线 `replay_records` 投影同一 `Story` 读模型 |
-| **单一提取源** | 可见文本统一经 `CaptureRecord::visible_user_text()` / `visible_assistant_text()` |
-
-### 1.3 与其他组件的关系
-
-| 组件 | 关系 |
-|------|------|
-| **agentgateway** | 借鉴配置语义与路由模型；conversion 子集 + AG fixture 测试；**不依赖**其运行时 |
-| **Persisting Engine** | Capture 产出的 `CaptureRecord` 进入 Engine 的 Lance 管线 |
-| **Pulsing Actor** | V3 采集运行时：`CaptureEngine` 编排 **RunActor** + 每 story 一个 **StoryActor** |
-| **Claude Code** | 主要一等客户端；深度适配 subagent / session / history replay |
-
-### 1.4 公开 API 边界
-
-`lib.rs` 以**模块路径**对外（避免 crate 根扁平化），主要暴露：
-
-- `proxy` — HTTP 入口与服务（`proxy::serve`）。
-- `engine` — `CaptureEngine` 与 `Event` / `Call` / `CallContext` 等 wire 类型。
-- `record` / `session_storage` / `markdown_trajectory` / `markdown_pipeline` / `subagent_link` — 存储与轨迹工具。
-- `runtime::{discover, run_config, run_env, service, debug}` — 子进程注入与发现支撑。
-- `reconcile` / `dead_letter` — CLI 工具支撑。
-
-Story 读模型（`Story`、`Turn`、`TurnMachine`、`egress`）保持 crate 内部，运行时只通过 `CaptureEngine::story_snapshot()` 与 shutdown 时落盘的 `story_snapshots.json` 对外暴露状态。
+Capture 不是通用 API 网关的替代品，而是围绕 **Agent 轨迹（trajectory）** 设计的观测与存储子系统；路由与协议转换能力服务于「采得全、看得懂、对得上」。
 
 ---
 
-## 2. 核心概念模型
+## 2. 问题与价值
 
-### 2.1 叙事层级：RunId → Story → Turn → Call + Event
+### 2.1 典型痛点
 
-采集运行时保留 **五类核心概念**，容器与读模型分层清晰：
+| 痛点 | Capture 的回应 |
+|------|----------------|
+| Agent 对话散落在各厂商 API 形态中，难以统一分析 | 归一为统一事件记录，再物化为对话视图 |
+| 只要日志不要改代码 | 反向代理 + 环境注入（`capture run`） |
+| 需要给人 review 的会话稿 | TLV Markdown：正文可读，元数据在注释中 |
+| 流式输出想「边生成边看见」 | Live Markdown upsert（草稿块 → 定稿块） |
+| 子 Agent、多 session 易混 | 按故事线分文件 + spawn 关联，不内联全文 |
+| 采集不能拖慢 LLM 首 token | **观测不阻断**：采集异步化，失败进 dead letter |
+
+### 2.2 客户端支持（实时采集）
+
+| 客户端 | `capture run` 实时采集 | 说明 |
+|--------|:----------------------:|------|
+| **Claude Code** | ✅ | 主适配目标：Anthropic Messages、subagent 分轨、history replay 去重 |
+| **OpenAI Codex** | ✅ | Responses API 路径；通过 `-c openai_base_url=…` 等注入网关 |
+| **Cursor** | ❌ | **当前版本不支持**（无官方注入与流量适配） |
+| **自研 / 通用 OpenAI SDK** | ⚠️ | 若客户端走 `HTTP_PROXY` 或 `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`，可尝试接入，无专项保证 |
+
+事后从 IDE 本地 JSONL **import** 的路径以 CLI 文档为准；Cursor 本地日志导入亦在规划中，与上表「实时采集」无关。
+
+### 2.3 能力边界
+
+**擅长**
+
+- 单次或长期 `capture run` / `capture serve` 下，对 **Claude Code / Codex** 的对话采集；
+- Claude Code 场景的 history replay 去重、subagent 分轨；
+- Codex 场景的 Responses ↔ Completions 桥接与上下文注入过滤；
+- Lance 全量事件 + Markdown 物化视图的双层存储；
+- 轻量模型路由、协议桥接（Messages / Completions / Responses 等）。
+
+**不替代**
+
+- 多租户计费、复杂 RBAC、MCP/A2A 联邦等企业网关（可参考 [agentgateway](https://github.com/agentgateway/agentgateway) 类方案）；
+- 100+ 厂商的一站式 SDK（可参考 LiteLLM 类方案）；
+- 终端命令输出的 token 压缩（与 [RTK](https://github.com/rtk-ai/rtk) 等工具互补）。
+
+### 2.4 在 Persisting 生态中的位置
 
 ```text
-RunId（容器，≈ root_session / capture run 目录）
- └── Story（一条 agent 故事线，≈ 一个 .md 文件 + Lance dataset）
-      └── Turn（一轮 user → assistant 语义轮次）
-           └── TurnCall（单次 HTTP call 上的 phase 时间线）
-                └── CallPhase（Request / Draft / Complete / Cancel）
+Agent 客户端
+      │
+      ▼
+┌─────────────────────────────────────┐
+│  Persisting Capture（本文）          │  ← 代理 + 采集 + 物化
+│  · 事件日志（Lance）                 │
+│  · 人读轨迹（Markdown）              │
+└──────────────┬──────────────────────┘
+               │ CaptureRecord / 轨迹文件
+               ▼
+┌─────────────────────────────────────┐
+│  Persisting Engine / 分析 / 检索     │  ← 消费 canonical 数据
+└─────────────────────────────────────┘
+
+运行时编排可依托 Pulsing Actor（每故事线串行处理），与分布式 Actor 集群解耦部署。
 ```
 
-| 概念 | 类型 | 职责 |
-|------|------|------|
-| **RunId** | newtype | 一次 `capture run` 的工作区标识；spawn link 注册域 |
-| **Story** / **StoryId** | 读模型 + ID | 一条独立轨迹线（主 session 或 `agent-{id}`） |
-| **Turn** / **TurnId** | 读模型 + ID | Story 内语义轮次；由 `TurnMachine` 维护 |
-| **Call** | wire 类型 | 单次 LLM HTTP 往返（`call_id` / `trace_id` / `started_at`） |
-| **Event** | wire 类型 | Call 上发生的采集事件，驱动 prepare → persist |
-| **CallContext** | wire 类型 | Proxy → Engine 上下文（`StoryContext` + `Call` + 路由/模型元数据） |
+---
 
-**TurnKind**（读模型轮次分类）：
+## 3. 设计原则
 
-| 变体 | 含义 |
+| 原则 | 含义 |
 |------|------|
-| `Dialogue` | 可见 user → assistant 轮 |
-| `Autonomous` | 无 opening user 文本的 agent 自主段（tool loop、system-only 续写等）；JSON 兼容别名 `tool_loop` |
-| `Internal` | 保留；当前未使用 |
+| **观测不阻断** | 用户请求的延迟与成功率优先；采集失败写入 dead letter，**不**因写盘失败而中断 HTTP 响应。 |
+| **Story 边界** | 协议差异在「进入故事模型」之前消化；故事层只谈谁、第几轮、哪次调用、发生了什么。 |
+| **Lance 为事实源** | 全量事件以结构化记录 append；Markdown 是**物化视图**，允许有损过滤。 |
+| **写读对称** | 在线维护的「轮次 / 调用」读模型，与离线从事件日志重放的结果一致（通过对账与测试保证）。 |
+| **单一可见文本语义** | 用户/助手可见正文只有一套提取规则，供轮次索引、Markdown 正文、过滤策略共用。 |
+| **单一写入门** | 每条进入 Lance 的会话事件，经统一的故事线 Actor 路径落盘，避免双写竞态。 |
 
-**CallPhase**（读模型；区别于 `CaptureRecord.kind`）：
+---
 
-```rust
-pub enum CallPhase { Request, Draft, Complete, Cancel }
-```
+## 4. 核心概念
 
-**Wire 层 Event**（写路径入口）：
+### 4.1 叙事层级
 
-```rust
-pub enum Event {
-    Request(RequestEvent),
-    ResponseDraft(DraftEvent),       // 仅 live Markdown
-    ResponseComplete(CompleteEvent), // Lance + Markdown finalize
-    Cancelled(CancelEvent),          // 仅 Lance
-}
-```
-
-> **术语说明**：早期文档中的 `Run` 结构体已移除；**Run 仅作为 `RunId` 容器标识** 出现在 `Story.run_id` 与目录布局中。
-
-### 2.2 三层词汇表与转换边界
+Capture 用一套与具体 HTTP API **无关**的故事词汇描述 Agent 行为：
 
 ```text
-任意协议 ──(ingress)──→ Story 边界 ──(prepare)──→ 存储
-存储 / Story ──(egress)──→ 物化 / 导出 / 协议测试
+Run（一次采集工作区 / 根会话）
+ └── Story（一条独立故事线 ≈ 一个会话文件 + 一份事件数据集）
+      └── Turn（语义轮次：用户意图 → 助手回应）
+           └── Call（单次 LLM HTTP 往返）
+                └── Phase（请求 / 流式草稿 / 完成 / 取消）
 ```
 
-| 层 | 代码位置 | 名词 | 职责 |
-|----|---------|------|------|
-| **协议区** | `conversion/`、`dialogue_extract/`、`proxy/` | `ProtocolKind`、`messages`/`completions`/`responses`、SSE、`tool_call` | 代理转发、从 wire 提取可见文本与 usage |
-| **Story 区** | `engine/story/`、`engine/actors/`、`engine/prepare.rs`、`engine/wire/` | `Story`、`Turn`、`Call`、`Event`、`CallContext`、`CallPhase` | 叙事编排：谁、第几轮、哪次 HTTP、发生了什么 |
-| **存储区** | `storage/record.rs`、`storage/markdown*`、`storage/lance_row.rs` | `CaptureRecord`、`kind`、`seq`、`MarkdownBlock` | canonical 事件日志 + 人读视图 |
+| 概念 | 说明 |
+|------|------|
+| **Run** | 一次 `capture run` 或逻辑上的根工作区；子 Agent 注册与对账的边界。 |
+| **Story** | 主 Agent 或某个 subagent 的独立轨迹线（例如 `run-*.md` 与 `agent-*.md`）。 |
+| **Turn** | Story 内的语义轮；区分「对话轮」与「无 opening user 的自主段」（工具循环等）。 |
+| **Call** | 一次模型调用，由 `call_id` 等标识关联请求与响应。 |
+| **Event** | 写路径上的采集单元：请求到达、流式草稿、响应完成、客户端取消等。 |
 
-#### Ingress（协议 → Story）
+早期设计中的「Beat / Invocation」等概念已收敛为上述层级，避免与存储记录类型混淆。
+
+### 4.2 三层词汇表
+
+为避免「协议字段」污染「故事语义」和「存储行格式」，系统刻意划分三层：
 
 ```text
-HTTP wire
-  │  proxy: ProtocolBridge 翻译 upstream body
-  │  dialogue_extract: → user_content / assistant_content
-  ▼
-CallContext + Event          ← Story 边界
-  │  prepare → CaptureRecord
-  ▼
-StoryActor (TurnMachine + sink + md)
+┌─────────────────────────────────────────────────────────────┐
+│  协议层：HTTP、SSE、OpenAI/Anthropic/Responses 形态          │
+│  职责：转发、翻译、提取可见正文与 usage                        │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ Ingress
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  故事层：Run / Story / Turn / Call / Event                   │
+│  职责：编排「发生了什么」、维护轮次与调用关系                  │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ 持久化
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  存储层：CaptureRecord（事件） + MarkdownBlock（物化块）     │
+│  职责：append-only 事实日志 + 人读视图                        │
+└─────────────────────────────────────────────────────────────┘
+                            │ Egress
+                            ▼
+              快照、materialize、对账、导出、下游检索
 ```
 
-- `TurnMachine` **不感知** `ProtocolKind`；只观察已 persist 的 `CaptureRecord`。
-- 可见文本提取的**唯一权威**是 `CaptureRecord::visible_user_text()` / `visible_assistant_text()`（turn 索引、markdown codec、过滤规则共用）。
-
-#### Egress（存储 / Story → 读模型 / 导出）
-
-```text
-CaptureRecord[]
-  │  TurnMachine::replay_records → Story
-  │  storage/convert → MarkdownBlock
-  │  conversion/ → AG fixture 对比
-  ▼
-story_snapshots.json / materialize / reconcile / CLI export
-```
-
-- **`engine/egress.rs`** 是读路径核心：`rebuild_session_story`、`story_call_ids`、`story_user_turn_count`。
-- AG fixture 测试走 conversion egress；与 capture 主路径分离。
+**Ingress**：协议层输出「故事层事件 + 上下文」，不再向下游泄漏 `messages`/`completions` 原生结构。  
+**Egress**：从事件日志重放故事、生成 Markdown、或导出给外部系统；协议回归测试与采集主路径分离。
 
 ```mermaid
 flowchart LR
-    subgraph P["协议区"]
-        P1["ProtocolBridge"]
-        P2["dialogue_extract"]
+    subgraph Protocol["协议层"]
+        P1["路由与鉴权"]
+        P2["协议桥与流式翻译"]
     end
-    subgraph S["Story 区"]
-        S1["CallContext + Event"]
-        S2["TurnMachine"]
+    subgraph Story["故事层"]
+        S1["Event 与 Call 上下文"]
+        S2["轮次状态机"]
         S3["Story 读模型"]
     end
-    subgraph ST["存储区"]
-        ST1["CaptureRecord"]
-        ST2["MarkdownBlock"]
+    subgraph Storage["存储层"]
+        ST1["事件日志"]
+        ST2["Markdown 物化"]
     end
 
     P1 --> P2
-    P2 -->|"ingress"| S1
+    P2 --> S1
     S1 --> S2
     S1 --> ST1
     ST1 --> S2
     S2 --> S3
     ST1 --> ST2
-    ST1 -.->|"egress replay"| S3
-    ST1 -.->|"egress convert"| ST2
 ```
 
-### 2.3 写模型 vs 读模型
+### 4.3 写模型与读模型
 
 | | 写模型 | 读模型 |
 |---|--------|--------|
-| **载体** | `CaptureRecord`（Lance canonical） | `Story` / `Turn` / `TurnCall` |
-| **维护者** | `CapturePreparer` + `StoryActor` | `TurnMachine`（在线 observe / 离线 replay） |
-| **一致性** | seq 单调、call_id 关联 | `replay_records` 测试保证与在线 snapshot 一致 |
-| **API** | `Event` → `apply` | `story_snapshot()`、`load_story_snapshots()` |
+| **是什么** | 追加式**事件记录**（canonical） | **Story**：轮次、调用阶段、关联关系 |
+| **谁维护** | 采集引擎在 apply 路径写入 | 轮次状态机在线观察 + 离线重放 |
+| **用途** | 审计、replay、检索、对账 | 摘要、frontmatter、运维快照 |
+| **对外暴露** | 文件与 Engine 消费 | 运行时查询快照；进程退出时写入故事快照文件 |
 
-**Story 预留字段**（schema 已有，接线未完成）：`Story.parent: Option<StoryLink>`；`TurnCall.trace_id` / `protocol` / `model` 常为空。
+读模型中的父子 Story 链接、调用元数据（模型名、协议类型）等字段在 schema 上已预留，部分仍在与 spawn 链路对齐中完善。
 
 ---
 
-## 3. 系统架构
+## 5. 系统全景
 
-### 3.1 分层架构
-
-```mermaid
-graph TD
-    subgraph "入口层"
-        A1["proxy/dispatch.rs"]:::accent0
-    end
-
-    subgraph "Agent 侧 injection/"
-        A0a["injection/env.rs"]:::accent6
-        A0b["injection/peer.rs"]:::accent6
-    end
-
-    subgraph "LLM 网关 proxy/ + conversion/"
-        A2["proxy/router.rs"]:::accent1
-        A3["proxy/auth.rs · upstream.rs · model.rs"]:::accent1
-        A4c["proxy/llm_capture.rs · streaming.rs"]:::accent1
-        A5["conversion/"]:::accent2
-    end
-
-    subgraph "采集运行时 engine/"
-        A10q["apply_queue.rs · wal.rs"]:::accent3
-        A10w["wire/ · prepare.rs · runtime.rs"]:::accent3
-        A10s["story/ · actors/"]:::accent3
-        A10e["egress.rs"]:::accent3
-    end
-
-    subgraph "存储 storage/"
-        A11["record.rs · sink.rs · lance_row.rs"]:::accent3
-        A12["markdown* · frontmatter.rs"]:::accent3
-        A15c["reconcile.rs · dead_letter.rs"]:::accent3
-    end
-
-    subgraph "会话 session/"
-        A17["chain.rs · index.rs"]:::accent4
-        A20["session.rs · lifecycle.rs"]:::accent4
-    end
-
-    A1 --> A2
-    A1 --> A4c
-    A4c --> A5
-    A4c --> A10q
-    A10q --> A10w
-    A10w --> A10s
-    A10s --> A11
-    A10s --> A12
-    A10e -.->|"读路径"| A11
-    A1 --> A17
-
-    classDef accent0 fill:#e1bee7,stroke:#7b1fa2,color:#000
-    classDef accent1 fill:#bbdefb,stroke:#1565c0,color:#000
-    classDef accent2 fill:#c8e6c9,stroke:#2e7d32,color:#000
-    classDef accent3 fill:#fff9c4,stroke:#f9a825,color:#000
-    classDef accent4 fill:#ffccbc,stroke:#d84315,color:#000
-    classDef accent6 fill:#e0f2f1,stroke:#00695c,color:#000
-```
-
-### 3.2 模块职责矩阵
-
-| 模块 | 核心职责 | 关键类型 |
-|------|---------|---------|
-| `injection/` | `capture run` 子进程 env 注入；TCP peer 探测 | `proxy_environment()`, `resolve_peer_client()` |
-| `proxy/` | HTTP 入口、路由、鉴权、LLM 编排、SSE 流式 | `llm_capture()`, `streaming_llm_response()` |
-| `conversion/` | 协议桥 + 流式翻译器 | `ProtocolBridge`, `StreamTranslator` |
-| `engine/story/` | 叙事模型 + `TurnMachine` | `Story`, `Turn`, `Call`, `Event`, `CallPhase` |
-| `engine/wire/` | Actor 命令/回复、Run 级路由 | `StoryCommand`, `CaptureAck` |
-| `engine/actors/` | RunActor + StoryActor | spawn link、TurnMachine、sink/md I/O |
-| `engine/prepare.rs` | `Event` → `CaptureRecord` + index 更新 | `CapturePreparer` |
-| `engine/runtime.rs` | `CaptureRuntime` 编排、shutdown、snapshot、WAL replay | `CaptureEngine` |
-| `engine/egress.rs` | 离线 Story 重建、snapshot 文件 | `rebuild_session_story`, `story_snapshots.json` |
-| `engine/apply_queue.rs` | per-`story_id` 有序 apply（容量 256，barrier flush） | `ApplyDispatcher` |
-| `engine/wal.rs` | Event WAL：`spawn_apply` 前 append；apply 后 ack；启动 replay | `EventWal`, `replay_pending` |
-| `storage/record.rs` | `CaptureRecord` + **可见文本 accessor** | `visible_user_text()`, `visible_assistant_text()` |
-| `storage/markdown_pipeline.rs` | 过滤 + live/batch/reconcile 唯一入口 | `MarkdownPipeline`, `LiveMarkdownWriter` |
-| `storage/frontmatter.rs` | YAML 会话摘要；**优先 Story turn 数** | `SessionFrontmatterSummary` |
-| `reconcile.rs` | run 结束 **三轨对账**（md / Lance / Story） | `RunReconcileReport` |
-| `dead_letter.rs` | apply / Lance 失败 JSONL | `DeadLetterContext`（`ProviderKind`/`ProtocolKind`） |
-| `session/index.rs` | `sessions.json`；**dirty 标记 + 批量 flush** | `SessionIndexHandle` |
-
-### 3.3 写路径 vs 读路径
+### 5.1 逻辑组件
 
 ```text
-┌──────────────────┐     ┌─────────────────────┐     ┌─────────────────────────┐
-│ injection/       │     │ proxy/ + conversion/ │     │ engine/ + storage/      │
-│ Agent 侧         │     │ LLM HTTP 网关        │     │ 写路径：采集与持久化     │
-├──────────────────┤     ├─────────────────────┤     ├─────────────────────────┤
-│ env · peer       │     │ router → upstream    │     │ Event → StoryActor → 存储│
-└──────────────────┘     └─────────────────────┘     └─────────────────────────┘
-                                                              │
-                                                              ▼
-                                                    ┌─────────────────────────┐
-                                                    │ engine/egress + convert  │
-                                                    │ 读路径：Story 重建/物化   │
-                                                    └─────────────────────────┘
+                    ┌──────────────┐
+                    │ Agent 进程    │
+                    └──────┬───────┘
+                           │ HTTP(S)
+                           ▼
+              ┌────────────────────────┐
+              │   Capture Proxy        │
+              │   · 路由 / 鉴权        │
+              │   · 协议桥 / 流式转发   │
+              │   · 触发采集事件        │
+              └───────────┬────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+   ┌────────────┐  ┌────────────┐  ┌────────────┐
+   │ 采集引擎    │  │ 上游 LLM    │  │ 会话索引    │
+   │ WAL·队列   │  │            │  │ (列表/用量) │
+   │ 故事 Actor │  └────────────┘  └────────────┘
+   └──────┬─────┘
+          │
+    ┌─────┴─────┐
+    ▼           ▼
+ Lance       Markdown
+ (事件日志)   (物化视图)
 ```
+
+| 组件 | 职责 |
+|------|------|
+| **Proxy** | 唯一 HTTP 入口；在转发前后发射采集事件；流式场景下节流草稿事件。 |
+| **采集引擎** | 将事件转为记录；按故事线串行 apply；协调 Lance 与 Markdown 写入。 |
+| **Run 协调** | 跨故事线的 spawn 关联、主从路由、记录 enrichment。 |
+| **故事线处理** | 每 Story 一个串行执行体：轮次状态、Lance 序号、Live Markdown、摘要刷新。 |
+| **会话索引** | 轻量 `sessions.json`：列表、token、费用估算、状态；批量刷盘。 |
+| **对账与 dead letter** | 运行结束三轨校验；失败事件可重放。 |
+
+### 5.2 集成方式（概念）
+
+- **库嵌入**：Rust 工程可挂载 Proxy 与 `CaptureEngine`，自行提供存储 sink（默认对接 Lance 管线）。
+- **CLI**：`persisting capture run` 包装子进程；`persisting capture serve` 长期监听。
+- **配置**：TOML 声明监听地址、模型路由、采集级别、存储根目录；无需改 Agent 源码。
+
+公开 API 以**模块边界**发布（代理、引擎、记录、轨迹、会话），避免扁平导出 hundreds 个符号；故事读模型主要通过快照与对账产物对外可见。
+
+### 5.3 与 agentgateway 的关系
+
+Capture 在**配置语义与路由模型**上借鉴 agentgateway 子集，并可用其 fixture 做协议回归；**运行时互不依赖**。定位差异：agentgateway 面向集群级多协议网关；Capture 面向**单点嵌入的轨迹事实源**。
 
 ---
 
-## 4. 写路径：Ingress 与采集
+## 6. 数据流：从 HTTP 到轨迹
 
-### 4.1 请求完整生命周期
+### 6.1 一次对话请求（概念时序）
 
 ```mermaid
 sequenceDiagram
     participant Agent
     participant Proxy as Capture Proxy
-    participant Engine as CaptureEngine
-    participant Upstream
-    participant Storage as Lance + Markdown
+    participant Engine as 采集引擎
+    participant Upstream as 上游模型
+    participant Lance as 事件日志
+    participant MD as Markdown 视图
 
-    Agent->>Proxy: POST /v1/messages
+    Agent->>Proxy: 对话请求
+    Proxy->>Engine: 请求事件（异步，不阻塞）
+    Engine->>Lance: 记录 user 侧事件
+    Engine->>MD: 追加/更新 user 块
 
-    rect rgb(232, 234, 246)
-        Note over Proxy: 1. Dispatch — route / auth / CaptureRoute
+    Proxy->>Upstream: 转发（可能协议转换）
+    Upstream-->>Proxy: 流式响应
+
+    loop 流式生成
+        Proxy->>Engine: 草稿事件
+        Engine->>MD: upsert assistant 草稿块
+        Proxy->>Agent: 转发 SSE
     end
 
-    rect rgb(227, 242, 253)
-        Note over Proxy: 2. Request Capture（非阻塞 + 有序）
-        Proxy->>Engine: spawn_apply(Request)
-        Engine->>Storage: llm.request + md user block
-    end
-
-    rect rgb(232, 245, 233)
-        Note over Proxy: 3. Upstream Body Prep
-    end
-
-    rect rgb(255, 243, 224)
-        Note over Proxy: 4. Upstream POST
-        Upstream-->>Proxy: SSE stream
-    end
-
-    rect rgb(252, 228, 236)
-        Note over Proxy: 5. Stream + Draft（150ms 节流）
-        loop each chunk
-            Proxy->>Engine: spawn_apply(ResponseDraft)
-            Engine->>Storage: md assistant draft upsert
-            Proxy->>Agent: proxied SSE
-        end
-    end
-
-    rect rgb(243, 229, 245)
-        Note over Proxy: 6. Finalize
-        alt 客户端断开
-            Proxy->>Engine: spawn_apply(Cancelled)
-            Engine->>Storage: llm.call.cancelled（仅 Lance）
-        else 正常结束
-            Proxy->>Engine: spawn_apply(ResponseComplete)
-            Engine->>Storage: llm.response.stream + md final
-        end
+    alt 客户端断开
+        Proxy->>Engine: 取消事件
+        Engine->>Lance: 仅记录取消（不进 Markdown）
+    else 正常结束
+        Proxy->>Engine: 完成事件
+        Engine->>Lance: 记录完整响应事件
+        Engine->>MD: 定稿 assistant 块
     end
 ```
 
-**调度决策**（简）：
+要点：
+
+1. **Proxy 不等待**整段采集完成再响应；事件先入 WAL，再进入 per-story 有序队列。
+2. **草稿只更新 Markdown**；完整响应以**一条**事件进入 Lance，避免 partial 行污染事实源。
+3. 慢客户端通过有界队列对上游施加背压，避免无限缓冲。
+
+### 6.2 采集事件与记录类型
+
+写路径用少量**事件种类**驱动一切持久化：
+
+| 事件 | 典型效果（Dialogue 级别） |
+|------|---------------------------|
+| 请求到达 | Lance：请求记录；Markdown：user 块 |
+| 流式草稿 | 仅 Markdown：assistant 草稿（可原地覆盖） |
+| 响应完成 | Lance：流式/完整响应记录；Markdown：定稿 assistant |
+| 调用取消 | 仅 Lance：取消记录 |
+| Spawn 关联 | Lance + Markdown：关联元数据（不当作可跳过噪音） |
+
+**采集级别**（Summary / Dialogue / Full）控制记录粒度；生产默认 Dialogue：保留可见对话，省略无关探测流量。
+
+存储记录类型（`llm.request`、`llm.response.stream`、`llm.spawn_link`、`session.*` 等）属于**存储层词汇**，由故事层事件推导，不必与 HTTP 一一对应。
+
+### 6.3 流式与人读视图
 
 ```text
-CONNECT → 隧道 | GET /v1/models → 模型列表 | forward URI → 透明转发或 llm_capture
+助手输出:  "你" → "你好" → "你好，我来帮你…"
+Markdown:   [草稿] → [覆盖草稿] → [定稿]
+Lance:      —      —              一条最终响应事件
 ```
 
-### 4.2 捕获分级与 Record 类型
+- 草稿块带明确标记；定稿时按 **call + 角色** 覆盖同一块，避免重复段落。
+- 块头 schema 带版本号（`v: 1`），便于将来演进线格式而不改文件后缀。
 
-```rust
-pub enum CaptureLevel { Summary, Dialogue, Full }
-```
+详见 [轨迹 Markdown 格式](trajectory_tlv_format.zh.md)。
 
-| kind | 触发 | Markdown | Lance |
-|------|------|----------|-------|
-| `llm.request` | 请求到达 | user 块 | ✓ |
-| `llm.response` / `llm.response.stream` | 响应完成 | assistant final | ✓ |
-| `llm.call.cancelled` | SSE 客户端断开 | ✗ | ✓ |
-| `llm.spawn_link` | 子代理关联 | spawn 块（不跳过） | ✓ |
-| `session.started/ended/state` | 生命周期 | ✗ | ✓ |
+---
 
-`CaptureRecord` 字段详见 `storage/record.rs`；payload 内 `user_content` / `assistant_content` 由 prepare 填充，读取时优先经 accessor 解析。
+## 7. 存储与一致性
 
-### 4.3 CaptureEngine 与 Actor 拓扑
+> 双层存储、目录约定、materialize/import 路径见 [轨迹存储模型](trajectory_storage.zh.md)。
+
+### 7.1 双层存储
+
+| | Lance（事实源） | Markdown（物化视图） |
+|---|----------------|----------------------|
+| **读者** | 程序、检索、replay | 人、git、review |
+| **完整性** | 无损（在采集级别内） | 有损：过滤内部与重复 history |
+| **写入** | append | live upsert 或批量 append / 全量 materialize |
+| **关系** | 行数 ≥ 块数（物化只减不增） | 从 Lance 重建可修复漂移 |
+
+### 7.2 物化过滤（统一策略）
+
+无论实时写入还是事后 materialize，**同一套规则**决定某条事件是否出现在 Markdown 中，例如：
+
+- 内部 `count_tokens`、影子模型预热；
+- Claude Code 式 **history replay**（用户消息计数未增加的重发）；
+- 无可见正文的空记录；
+- 纯生命周期、仅-cancel 类记录（保留在 Lance）。
+
+Spawn 关联等「对人仍有意义」的事件**不会**被误杀。
+
+### 7.3 会话摘要（Frontmatter）
+
+每个 Markdown 会话文件可带 YAML 摘要：`turns`、token、估算费用、子 Agent 列表、客户端信息等。  
+**轮次数以故事读模型为准**，块内 `turn` 字段仅作展示启发式，不作为权威计数。
+
+### 7.4 三轨对账（Reconcile）
+
+一次 Run 正常结束时，对每个 session 比对：
+
+| 轨道 | 含义 |
+|------|------|
+| **Markdown** | 物化块中的 call 集合 |
+| **Lance** | 事件日志中应对话出现的 call 集合 |
+| **Story** | 从事件重放得到的 call 集合 |
+
+三者一致且结构检查通过，才认为「人读视图与事实源对齐」。不一致时应用 materialize 或排查 dead letter，而非直接信任 Markdown。
+
+### 7.5 辅助产物
+
+| 产物 | 作用 |
+|------|------|
+| 事件 WAL | 进程崩溃后重放未确认的采集事件 |
+| dead letter | 应用失败或 Lance 刷盘失败的留存与重放 |
+| 故事快照 | 退出时固化各 Story 的轮次读模型，供摘要与恢复 |
+
+---
+
+## 8. 网关与协议
+
+Capture 内置**轻量 LLM 网关**，服务于「本地或团队固定上游 + 采集」，而非替代云厂商控制台。
+
+| 能力 | 说明 |
+|------|------|
+| **模型路由** | 按配置顺序匹配模型名；支持前缀/通配与单跳 forward。 |
+| **协议桥** | 例如 Anthropic Messages ↔ OpenAI Completions；Responses API 在非 OpenAI 上游时降级转换。 |
+| **流式翻译** | 统一 SSE 形态；支持 TTFT 观测、推理字段缓存回放。 |
+| **鉴权** | 配置文件、环境变量或客户端 Header 注入 API Key；按提供商约定选择 Header 名。 |
+
+网关逻辑严格停留在**协议层**，不进入故事层状态机，避免「路由规则」与「轮次语义」耦合。
+
+---
+
+## 9. 多 Agent 与会话
+
+### 9.1 路由与存储键
+
+每个 HTTP 请求绑定一条**采集路由**：逻辑 session、磁盘上的 storage 键（决定 `.md` 文件名与 Lance 数据集）、可选 subagent 标识。  
+Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-{id}.md` 或扁平 session 名。
+
+### 9.2 文件隔离不变式
+
+- 子 Agent 正文只出现在 **agent-*** 文件；
+- 主 Agent 的 spawn 引用与链接出现在 **run-*** 文件，**不内联**子 Agent 全文；
+- 块头 JSON 承载机器可读关联；正文脚注仅辅助人读（解析 roundtrip 时会剥离脚注行）。
+
+### 9.3 Spawn 关联
+
+主 Agent 助手消息中的 spawn 提示与子 Agent 首包注册可能**时间错开**。系统用 Run 级注册表做延迟匹配与回填，使主会话在事后仍能看到「调用了哪个子 Agent、轨迹文件在哪」。
+
+---
+
+## 10. 可靠性与运行形态
+
+### 10.1 可靠性模型
 
 ```text
-Proxy: spawn_apply(Arc<CallContext>, Event)
-  ├── EventWal::append_event   ─ 同步 append events.wal.jsonl（Mutex<File>）
-  └── ApplyDispatcher::enqueue ─ per story_id mpsc(256)
-        └── CaptureRuntime (= CaptureEngine)
-              ├── CapturePreparer — Event → CaptureRecord + SessionIndex.mark_dirty
-              ├── capture/run        RunActor   — spawn link、main route、record enrich
-              └── capture/story/{id} StoryActor — TurnMachine + sink + LiveMarkdownWriter
+请求线程 ──► 发事件（写 WAL + 入队）──► 立即继续转发
+                    │
+                    └──► 后台：有序 apply ──► Lance / Markdown
+                              │
+                              ├─ 成功 → 确认 WAL
+                              └─ 失败 → dead letter（不影响 HTTP）
 ```
 
-| Actor | 路径 | mailbox |
-|-------|------|---------|
-| `RunActor` | `capture/run` | 256 |
-| `StoryActor` | `capture/story/{story_id}` | 256 |
-
-**可靠性**：
-
-| 机制 | 行为 |
+| 机制 | 目的 |
 |------|------|
-| `spawn_apply` | Proxy **不 await apply**；先同步 `EventWal::append_event`，再入队；接 `impl Into<Arc<CallContext>>` 避免热路径 clone |
-| `EventWal` | append-before-dispatch；apply 成功 / 入 dead-letter 后写 `Ack { seq }`；clean shutdown 后 truncate；启动时 `replay_pending` 扫未 ack 行重投 |
-| `ApplyDispatcher` | per `story_id` mpsc(256) 有序消费；`flush()` 用 `Barrier` 等所有已入队 job 完成；队列满 → dead letter + WAL ack |
-| Actor wire | `StoryCommand` / `RunCommand` 用 `Vec<u8>` 承载 JSON payload，避免 bincode 二次 UTF-8 校验 |
-| StoryActor `ask` | 失败写 `dead_letter.jsonl`（含 `prepared_record_json`） |
-| `lance_dead_letter.jsonl` | Lance worker flush 失败 |
-| 采集错误 | warn + dead letter；**不上抛** HTTP |
-
-| 组件 | 职责 |
-|------|------|
-| `CapturePreparer` | `Event` → `CaptureRecord`；request/complete 时更新 `SessionIndex`、触发 RunActor enrich |
-| `RunActor` | spawn-link 状态、main route、record enrich、backfill |
-| `StoryActor` | `TurnMachine` 维护 + `PersistRecord` / `UpsertDraft` 串行化 I/O；frontmatter 节流刷新 |
-| `CallbackSink` | 按 story 分配 seq → CLI worker 批量写 Lance |
-| `MarkdownPipeline` | 过滤（history replay dedup）+ live/batch/reconcile 共用 |
-
-### 4.4 流式 Markdown：draft upsert + finalize
-
-```
-translator:  "你好"  →  "你好，我来帮"  →  "你好，我来帮你review代码"
-md assistant: upsert → upsert (rewrite)  → upsert (final)
-Lance:         (无)  →  (无)             → llm.response.stream ×1
-```
-
-- draft header 带 `"draft": true`；finalize 后移除。
-- upsert 键：**`call_id` + `role`**。
-- draft 的 header `seq` 经 `sink.peek_next_seq()` 预填。
-
----
-
-## 5. 读路径：Egress 与物化
-
-### 5.1 `engine/egress.rs`
-
-| 函数 | 用途 |
-|------|------|
-| `rebuild_session_story()` | 从 Lance records 离线 replay 出 `Story` |
-| `story_call_ids()` | Story 读模型中的 call_id 集合 |
-| `story_user_turn_count()` | `Dialogue` 且含 user 的轮次数 |
-| `persist_story_snapshots()` / `load_story_snapshots()` | run 级 Story 快照文件 |
-
-离线 replay 与在线 `TurnMachine::observe_record` 共用同一状态机逻辑（测试覆盖）。
-
-### 5.2 在线快照与 `story_snapshots.json`
-
-| 时机 | 行为 |
-|------|------|
-| 运行时 | `CaptureEngine::story_snapshot(&StoryContext)` → 向 StoryActor ask |
-| `shutdown()` | 收集各 active story 的 local snapshot → 写入 `.capture/story_snapshots.json` |
-| frontmatter refresh | 优先从 snapshot 取 `turns`；无 snapshot 时回退数 md user 块 |
-
-```json
-{
-  "updated_at": "2026-05-28T12:00:00Z",
-  "stories": {
-    "run-20260528-120000": { "story_id": "...", "turns": [...] },
-    "agent-abc123": { ... }
-  }
-}
-```
-
-### 5.3 Materialize 与 conversion 测试
-
-| 路径 | 模块 | 说明 |
-|------|------|------|
-| Record → Markdown | `storage/convert.rs`, `markdown_pipeline` | `materialize` CLI、`trajectory convert` |
-| Record → Engine lines | `storage/record.rs` | RONL wire |
-| 协议 roundtrip | `conversion/` + AG fixtures | egress 测试；**非** capture 热路径 |
-
----
-
-## 6. 存储与一致性
-
-> 细节见 [轨迹存储模型](trajectory_storage.zh.md)。
-
-### 6.1 存储拓扑
-
-```text
-CaptureRecord
-  ├── sessions.json                       SessionIndex（list / status）
-  ├── Lance Event Log                     canonical，按 session dataset
-  ├── TLV Markdown                        物化人读视图
-  ├── .capture/events.wal.jsonl           Event WAL（append-before-dispatch；非 clean shutdown 启动时 replay）
-  ├── .capture/story_snapshots.json       Story 读模型快照（shutdown）
-  ├── .capture/dead_letter.jsonl          apply 失败
-  ├── .capture/lance_dead_letter.jsonl    Lance worker flush 失败
-  └── .capture/reconcile.json             run 结束三轨对账
-```
-
-### 6.2 目录布局
-
-```text
-{storage_root}/
-├── .capture/
-│   ├── sessions.json
-│   ├── events.wal.jsonl        ← spawn_apply 时 append；clean shutdown 后 truncate
-│   ├── story_snapshots.json    ← shutdown 写入
-│   ├── dead_letter.jsonl
-│   ├── lance_dead_letter.jsonl
-│   ├── reconcile.json
-│   ├── run_session
-│   ├── run_child.yaml
-│   └── daemon.env.json
-├── {agent_id}/
-│   └── run-{timestamp}-{nanos}/
-│       ├── run-*.md
-│       ├── agent-{id}.md
-│       └── .lance/
-```
-
-### 6.3 Markdown 过滤
-
-live / materialize / reconcile **统一**经 `MarkdownPipeline`：
-
-| 跳过 | 原因 |
-|------|------|
-| `count_tokens` | 内部探测 |
-| history replay（`user_message_count` 未增） | Claude Code 重发全量 history |
-| 无可见文本 | `visible_*()` 均为空 |
-| `session.*` / `llm.call.cancelled` | 非对话 / Lance-only |
-| flash/haiku 影子请求 | 预热探测 |
-| 内部 suggestion | Claude 优化流量 |
-| `llm.spawn_link` | **不跳过** |
-
-Block 格式见 [轨迹 Markdown 格式](trajectory_tlv_format.zh.md)。
-
-### 6.4 Frontmatter 摘要
-
-| 字段 | 来源 |
-|------|------|
-| `turns` | **优先** `story_user_turn_count(Story)`；否则 md user 块计数 |
-| `total_tokens` / `cost` / `model` / `duration` | `sessions.json` |
-| `subagents` | run 目录 `agent-*.md` stem |
-| `client` | `run_child.yaml` / `session-meta.yaml` |
-
-刷新时机：StoryActor `frontmatter_pending` 计数器，每 `FRONTMATTER_REFRESH_EVERY_N_RECORDS=4` 条 dialogue / `Flush` / `LocalSnapshot` 前补刷一次（避免每条记录触发同步 I/O）；`capture run` 结束统一全量 refresh + stderr 摘要行。
-
-### 6.5 Reconcile 三轨对账
-
-run 结束（worker shutdown 之后）生成 `reconcile.json`，每个 session 对比：
-
-| 轨道 | 来源 |
-|------|------|
-| **md** | live markdown 块 `call_id` |
-| **lance** | `expected_markdown_call_ids(records)` |
-| **story** | `story_call_ids(rebuild_session_story(...))` |
-
-`SessionReconcile.ok()` 要求三轨均无 missing/extra，且无 structural_issues。
-
----
-
-## 7. LLM 网关
-
-> 本章属于**协议区**；名词不得渗入 Story / TurnMachine。
-
-### 7.1 路由
-
-模型名按配置数组**顺序**匹配（精确 > 前缀/后缀通配 > `*`）。Forward **仅 1 跳**。
-
-```yaml
-models:
-  - name: deepseek-chat
-    upstream: "https://api.deepseek.com/v1"
-    api_key_env: DEEPSEEK_API_KEY
-  - name: "claude-*"
-    forward: deepseek-chat
-```
-
-`resolve_upstream_url()` 处理 `/v1`、`upstream_anthropic`、`v1beta` 等前缀布局（详见原实现）。
-
-### 7.2 协议转换
-
-**ProtocolBridge 决策**（简）：
-
-| 客户端 | 条件 | 策略 |
-|--------|------|------|
-| Messages | 无 `upstream_anthropic` | MessagesToCompletions |
-| Messages | 有 `upstream_anthropic` | Passthrough |
-| Completions | — | Passthrough |
-| Responses | 上游非 OpenAI | ResponsesToCompletions |
-
-**流式翻译器**：双缓存（逐行 buf + 完整 raw SSE）、TTFT、`streaming_capture_snapshot()`、DeepSeek `reasoning_content` 缓存回放。
-
-客户端 SSE 转发使用 **bounded channel（256）**；慢客户端对 upstream reader 施加背压。
-
-### 7.3 鉴权
-
-API Key 优先级：YAML 明文 → `api_key_env` → 客户端 Header → 报错。
-
-Anthropic/Messages 用 `x-api-key`；OpenAI 用 `Authorization: Bearer`。
-
-部分 key 环境变量互认（如 `DEEPSEEK_API_KEY` ↔ `ANTHROPIC_API_KEY`）。
-
----
-
-## 8. 子代理与会话路由
-
-### 8.1 CaptureRoute
-
-```rust
-pub struct CaptureRoute {
-    pub root_session: Option<String>,
-    pub session_id: String,
-    pub storage_session_id: String,   // md stem / Lance dataset
-    pub subagent_id: Option<String>,
-}
-```
-
-`storage_session_id` 决议：capture run + `agent_id` → `agent-{id}`（task notification 除外回主 session）；serve 模式用 header / run_id。
-
-工厂方法：`CaptureRoute::for_replay_stem()`、`for_run_markdown_stem()`（统一 replay / frontmatter 路由）。
-
-### 8.2 文件隔离 invariant
-
-- 子 agent 块 → **仅** `agent-*.md`
-- 主 agent + `llm.spawn_link` → **仅** `run-*.md` / `{session_id}.md`
-- 主文件引用子 agent，**不内联**全文
-
-### 8.3 RunActor spawn link
-
-主 agent assistant 中的 spawn hint → `PendingMainSpawn`；子 agent 首请求到达 → 注册 + 匹配 → 回填 `llm.spawn_link` 到主 StoryActor（可延迟）。
-
----
-
-## 9. 并发与可靠性
-
-### 9.1 请求处理
-
-```text
-TcpListener → proxy_handler → llm_capture（call_ctx 一次 Arc::new；不 await 采集）
-  └── spawn_apply(Arc::clone, event)
-        ├── EventWal::append_event   ── append events.wal.jsonl
-        └── ApplyDispatcher::enqueue ── per-story mpsc(256)
-
-streaming: tokio::spawn
-  ├── upstream 消费 + SSE 翻译（StreamTranslator）
-  ├── maybe_emit_stream_draft(&Arc<CallContext>) → spawn_apply(Draft)
-  ├── bounded_channel(256) → 客户端
-  └── spawn_apply(Complete | Cancelled)
-```
-
-### 9.2 共享状态
-
-| 状态 | 原语 | 说明 |
-|------|------|------|
-| `EventWal` | `Mutex<File>` + `AtomicU64` | `spawn_apply` 前同步 append；apply 后写 `Ack { seq }`；启动 replay 未 ack entry |
-| `SessionIndex` | `RwLock` + `dirty` 原子标记 | 变更 mark_dirty；**flush 时** `flush_if_dirty()` |
-| `ApplyDispatcher` | per-story mpsc(256) | 有序 apply；`Barrier` flush；满 → dead letter + WAL ack |
-| `StoryActor` | pulsing mailbox(256) | `TurnMachine` + I/O 串行；frontmatter 计数器节流 |
-| `CallContext` | `Arc<CallContext>` | 入口处一次 `Arc::new`，`spawn_apply` / draft 路径仅 `Arc::clone` |
-| `ReasoningCache` | `Mutex` | 流结束写入 |
-| `sink.next_seq` | `Mutex<HashMap>` | 按 story 分散 |
-
-### 9.3 Run 结束保障
-
-| 步骤 | 时机 |
-|------|------|
-| `story_snapshots.json` | `CaptureEngine.shutdown()` |
-| `CaptureEngine.flush()` | apply queue barrier drain + story mailbox drain + index flush |
-| `events.wal.jsonl` | clean shutdown truncate；非 clean shutdown 下次启动 replay 未 ack events |
-| `TrajectoryAppendWorker.shutdown()` | Lance 批量 flush |
-| `reconcile.json` | worker shutdown **之后** |
-| frontmatter refresh | StoryActor 计数器，每 `FRONTMATTER_REFRESH_EVERY_N_RECORDS=4` 条触发；`Flush` / `LocalSnapshot` 前若 pending > 0 补刷 |
-
-### 9.4 已知限制
-
-| 现象 | 缓解 / 计划 |
-|------|------------|
-| WAL replay 后再次 crash 可能重复 replay | replay entry 目前不携带原 seq ack；**P1** 让 `PendingEntry` 复用原 seq 并在 apply 后 ack |
-| WAL `next_seq` 重启归零 | 多轮 crash 未 truncate 时可能 seq 碰撞；**P1** open 时扫 max(seq)+1 |
-| WAL replay 缺 request headers | `DeadLetterContext` 不保存 headers；spawn link 恢复可能降级；**P2** 扩展 WAL context |
-| apply 队列满 | 已写 dead letter + WAL ack；仍需运维 replay-dead-letter / 指标告警 |
-| Lance per-session dataset | 目录膨胀 → **P0** 按日分桶 |
-| `Story.parent` / `TurnCall` 元数据空 | **P2** 读模型接线 |
-| Lance 两列 blob | **P2** 列存检索未发挥 |
-| 定价硬编码 | **P1** 外部 pricing JSON |
-
----
-
-## 10. 运维
-
-### 10.1 配置模板
+| **异步 apply** | 采集不占用上游连接线程 |
+| **Per-story 有序队列** | 同一故事线内事件顺序可复现 |
+| **事件 WAL** | 崩溃后至少一次投递到 apply |
+| **Barrier flush** | 优雅退出前排空队列与 Actor 邮箱 |
+| **Dead letter** | 可运维重放，而非静默丢数 |
+
+已知限制（实现仍在加强）：极端崩溃场景下 WAL 序号与重复投递策略、超长会话 Markdown 全文件 upsert 的 IO 成本等——见 [§11 演进方向](#11-演进方向)。
+
+### 10.2 运行形态
+
+| 形态 | 适用场景 |
+|------|----------|
+| **`capture run`** | 包装一次 Agent 命令（如 `claude`、`codex`）；注入代理环境变量；结束打印会话摘要 |
+| **`capture serve`** | 长期 daemon；已支持客户端指向固定 `listen` |
+| **仅 Lance / 补 Markdown** | `-f bin` 先落盘，事后 `trajectory materialize` |
+| **Dead letter 重放** | 修复存储或配置后补写失败事件 |
+
+配置示例（节选）：
 
 ```toml
 listen = "127.0.0.1:19080"
@@ -703,109 +461,45 @@ capture_level = "dialogue"
 name = "deepseek-chat"
 upstream = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
-
-[[models]]
-name = "claude-*"
-upstream = "https://api.deepseek.com/v1"
-upstream_anthropic = "https://api.deepseek.com/anthropic/v1"
-api_key_env = "DEEPSEEK_API_KEY"
-provider = "anthropic"
-
-[[models]]
-name = "*"
-forward = "deepseek-chat"
 ```
 
-### 10.2 运行模式
-
-| 模式 | 命令 | 场景 |
-|------|------|------|
-| **capture run** | `persisting capture run -o ./store -- claude` | 一次性任务；结束打印摘要 |
-| **capture serve** | `persisting capture serve --config proxy.toml` | 长期 daemon |
-| **replay dead letter** | `persisting capture replay-dead-letter` | 重放失败事件 |
-
-`capture run` 注入 `HTTP_PROXY` / `HTTPS_PROXY` / `PERSISTING_CAPTURE_SESSION_ID` 及 daemon env 快照中的 API keys。
-
-### 10.3 Admin API
-
-```bash
-curl http://127.0.0.1:9876/admin/status
-curl http://127.0.0.1:9876/admin/sessions
-```
-
-返回 listen 地址、active_requests、`SessionSummary` 列表（usage / cost / model）。
+管理端口提供健康与会话列表查询（用量、模型、活跃请求数），便于 sidecar 监控。
 
 ---
 
-## 11. 代码地图与技术债
+## 11. 演进方向
 
-### 11.1 代码量分布（粗估）
+下列为产品级方向，**非**承诺排期：
 
-| 模块 | 行数 | 职责 |
-|------|------|------|
-| `proxy/` + `conversion/` | ~3950 | HTTP 网关、SSE 翻译、协议桥 |
-| `storage/dialogue_extract/` | ~1240 | 按协议 SSE/JSON 提取 |
-| `storage/markdown/` | ~1410 | TLV 解析/写入（`io.rs` / `parse.rs` / `paths.rs` / `types.rs`） |
-| `engine/story/` + `actors/` | ~1270 | 叙事模型 + RunActor + StoryActor + `TurnMachine` |
-| `storage/subagent_link/` | ~1110 | spawn link 提取 / 注册 / 匹配 |
-| `storage/dialogue/` | ~680 | `CaptureRecord` ↔ `MarkdownBlock`（共用 accessor） |
-| `storage/markdown_pipeline.rs` | ~510 | 过滤 + live/batch/reconcile |
-| `engine/wal.rs` + `apply_queue.rs` | ~580 | Event WAL + per-story 有序 apply |
-| `engine/egress.rs` | ~280 | 离线 Story 重建 |
-| 其余 | ~2000+ | config / session / runtime / reconcile / injection / dead_letter |
-
-**测试**：crate 内 **237** 单元测试 + 3 个集成测试二进制（`ag_fixture_tests` 14、`capture_apps_claude` 24、`llm_fixtures` 8 ≈ 46），共 **283** test case（`cargo test -p persisting-capture`）。
-
-### 11.2 技术债与演进
-
-#### 已完成（v0.6.0 截至 2026-05-28）
-
-| 主题 | 说明 |
+| 方向 | 动机 |
 |------|------|
-| Proxy 非阻塞 + dead letter | `spawn_apply` + JSONL replay |
-| **Event WAL** | `engine/wal.rs`：`events.wal.jsonl` append-before-dispatch；apply 后 `Ack { seq }`；启动 `replay_pending` 重投；clean shutdown truncate |
-| per-story 有序 apply | `apply_queue.rs`，mpsc 深度 256 |
-| **ApplyDispatcher barrier flush** | `flush()` 通过 `Barrier` job 等所有已入队 apply 完成 |
-| **Actor wire 序列化优化** | `StoryCommand` / `RunCommand` 用 `Vec<u8>` 承载 JSON，免去 bincode 二次 UTF-8 校验 |
-| **`Arc<CallContext>` 热路径** | 入口一次 `Arc::new`，`spawn_apply` / 流式 draft 仅 `Arc::clone` |
-| **frontmatter 节流** | StoryActor `frontmatter_pending` 计数器，每 4 条 / `Flush` / `LocalSnapshot` 前刷新一次 |
-| **响应头过滤** | body rewrite 时统一通过 `proxy/http_headers::skip_response_header_when_body_changed` 丢弃 hop-by-hop / `content-length` / `content-encoding` / `content-type` |
-| **overlapping call 归属** | `TurnMachine` 维护 `call_id → turn_id`，迟到 response 挂回原 turn |
-| StoryActor ask + dead letter | 生产可观测 |
-| V3 Actor 运行时 | RunActor + StoryActor（pulsing mailbox 256） |
-| Run/Story/Turn/Call/Event 收敛 | 移除 beats/Invocation；`Run` 结构体 → `RunId` |
-| 三层词汇表 + ingress/egress | §2.2；`engine/egress.rs` |
-| `markdown_pipeline` 统一过滤 | live / materialize / reconcile |
-| run 结束 reconcile + frontmatter | 三轨对账 + Story 优先 turns |
-| `story_snapshots.json` | shutdown 持久化 |
-| 流式 cancelled | `llm.call.cancelled`（Lance only） |
-| `injection/` | env + peer |
-| `proxy/` 拆分 | dispatch / llm_capture / streaming / state / http_headers |
-| `SessionIndex` 批量 flush | `mark_dirty` + `flush_if_dirty()`（shutdown/flush） |
-| 流式 bounded channel | `STREAM_CLIENT_QUEUE = 256` |
-| 可见文本 accessor 统一 | `record.rs` → turn / md / filter 共用 |
-| `TurnKind::Autonomous` | 替代 `ToolLoop`；serde 别名 `tool_loop` |
-| `CallPhase` 命名 | 替代 `EventKind` |
-| DeadLetter 强类型 | `ProviderKind` / `ProtocolKind`（JSONL 兼容字符串） |
+| **Cursor 实时采集与 import** | 与 Claude Code 对等的注入与 JSONL 导入 |
+| Lance 按时间/规模分桶 | 控制 per-session 数据集膨胀 |
+| WAL 与序号恢复增强 | 降低 crash 后重复 apply 与 seq 冲突风险 |
+| Markdown 追加日志 + 周期性 compact | 长会话 live upsert 的 IO 与 git diff 友好性 |
+| 外部定价表 | 摘要费用估算可配置 |
+| 故事读模型 enrich | 父子 Story、调用元数据与 spawn 完全闭环 |
+| Lance 列布局优化 | 更好利用列存检索，而非大 blob |
+| 协议面收敛 | 随行业 API 稳定，收缩长期维护的转换矩阵 |
 
-#### 待办
-
-| 优先级 | 主题 | 说明 |
-|--------|------|------|
-| 🔴 P0 | Lance 按日分桶 | 替代 per-session dataset |
-| 🟠 P1 | WAL replay ack / seq 恢复 | replay 后再次 crash 不应重复 apply；open 时扫 `max(seq)+1` |
-| 🟠 P1 | 外部定价文件 | 替代硬编码 `default_pricing_table` |
-| 🟡 P2 | `Story.parent` 接线 | spawn 读模型闭环 |
-| 🟡 P2 | `TurnCall` 元数据 | trace_id / protocol / model 填充 |
-| 🟡 P2 | Lance 列存优化 | 减少 blob 列、提升检索 |
-| 🟡 P2 | `conversion/` 收缩 | Responses 面 deprecate 评估 |
-| 🟢 P3 | 上游限流 / WebSocket Realtime | 长期 |
+块格式已通过 `v: 1` 预留兼容；详见 [轨迹 Markdown 格式 §2.6](trajectory_tlv_format.zh.md#26-大文件-upsert演进格式不变)。
 
 ---
 
-## 12. 相关文档
+## 12. 延伸阅读
 
-- [轨迹存储模型](trajectory_storage.zh.md) — Lance ↔ Markdown 双层存储
-- [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) — TLV block 规范
-- [Capture 命令](cli_capture_command.zh.md) — CLI 用法
-- [CLI 整体架构](cli_architecture.zh.md) — 命令行工具设计
+| 文档 | 内容 |
+|------|------|
+| [轨迹存储模型](trajectory_storage.zh.md) | Lance ↔ Markdown 数据流、materialize、import |
+| [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) | 块结构、字段规范、subagent 脚注、golden 示例 |
+| [Capture 命令](cli_capture_command.zh.md) | `capture run` / `serve` 参数与操作 |
+| [Trajectory / `traj` 命令](cli_trajectory_command.zh.md) | Capture 离线 Egress：add、truncate、stats、replay、extract、materialize |
+| [CLI 整体架构](cli_architecture.zh.md) | Persisting 命令行体系 |
+
+**示例轨迹文件**（由编码器生成的 golden，可供格式对照）：
+
+- [`examples/trajectory-tlv/demo-agent/demo-run-001/0001.md`](../../examples/trajectory-tlv/demo-agent/demo-run-001/0001.md)
+
+---
+
+*本文随 Capture 发布版本更新；若行为与文档不一致，以仓库内测试与 golden fixture 为准。*

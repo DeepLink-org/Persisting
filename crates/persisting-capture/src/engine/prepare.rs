@@ -187,9 +187,15 @@ impl CapturePreparer {
         }
 
         let assistant_content = if ctx.level.includes_assistant_text() {
-            event.assistant_content.or_else(|| {
+            let from_stream = event.assistant_content.filter(|s| !s.trim().is_empty());
+            from_stream.or_else(|| {
                 if event.streaming {
-                    Some(extract_assistant_turn_from_sse(resp_text))
+                    let extracted = extract_assistant_turn_from_sse(resp_text);
+                    if extracted.trim().is_empty() {
+                        None
+                    } else {
+                        Some(extracted)
+                    }
                 } else {
                     extract_assistant_text_from_json(&resp_json)
                 }

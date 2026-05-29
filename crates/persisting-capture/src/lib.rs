@@ -43,15 +43,18 @@ pub use session::index as session_index;
 pub use storage::convert as trajectory_convert;
 pub use storage::dialogue;
 pub use storage::dialogue_extract;
+pub use storage::egress;
 pub use storage::frontmatter;
 pub use storage::lance_row;
 pub use storage::lifecycle;
 pub use storage::markdown as markdown_trajectory;
 pub use storage::markdown_pipeline;
+pub use storage::path_layout;
 pub use storage::record;
 pub use storage::session as session_storage;
 pub use storage::session_client;
 pub use storage::sink;
+pub use storage::story_coords::{self, StoryCoords};
 pub use storage::subagent_link;
 
 pub use proxy::models_list;

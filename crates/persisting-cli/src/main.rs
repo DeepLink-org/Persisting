@@ -19,9 +19,10 @@ use persisting_proto::{
     RequestBody, ResponseBody, RpcRequest, RpcResponse, SearchAddBatchRequest, SearchAddRequest,
     SearchImportLanceRequest, SearchIndexDeleteRequest, SearchIndexListRequest,
     SearchIndexRebuildRequest, SearchIndexReorderRequest, SearchIndexRequest, SearchQueryRequest,
-    TrajectoryAppendRequest, TrajectoryMaterializeRequest, TrajectoryReplayRequest,
-    TrajectoryReplayResponse, TrajectoryStatsRequest, TrajectoryStatsResponse,
-    TrajectoryStorageFormat, PROTOCOL_VERSION, RON_ABI_VERSION,
+    TrajectoryAppendRequest, TrajectoryExtractRequest, TrajectoryMaterializeRequest,
+    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
+    TrajectoryStatsResponse, TrajectoryStorageFormat, TrajectoryTruncateRequest, PROTOCOL_VERSION,
+    RON_ABI_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,8 +32,9 @@ use persisting_engine::trajectory::{
 use trajectory_detail::{build_detail_node, print_trajectory_stats_detail, SpawnLinkInfo};
 use trajectory_format::{TrajectoryAddFormat, TrajectoryFormatManager, TrajectoryStorageCli};
 use trajectory_stdout_toml::{
-    print_trajectory_append_as_toml, print_trajectory_replay_as_toml,
-    print_trajectory_stats_as_toml,
+    print_trajectory_append_as_toml, print_trajectory_extract_as_toml,
+    print_trajectory_materialize_as_toml, print_trajectory_replay_as_toml,
+    print_trajectory_stats_as_toml, print_trajectory_truncate_as_toml,
 };
 
 type RonAbiVersionFn = unsafe extern "C" fn() -> u32;
@@ -170,6 +172,9 @@ fn print_engine_ron_response(raw: &str) -> Result<()> {
         ResponseBody::TrajectoryAppend(tr) => print_trajectory_append_as_toml(tr),
         ResponseBody::TrajectoryStats(tr) => print_trajectory_stats_as_toml(tr),
         ResponseBody::TrajectoryReplay(tr) => print_trajectory_replay_as_toml(tr),
+        ResponseBody::TrajectoryMaterialize(tr) => print_trajectory_materialize_as_toml(tr),
+        ResponseBody::TrajectoryTruncate(tr) => print_trajectory_truncate_as_toml(tr),
+        ResponseBody::TrajectoryExtract(tr) => print_trajectory_extract_as_toml(tr),
         _ => {
             println!(
                 "{}",
@@ -618,10 +623,17 @@ struct TrajectoryArgs {
 
 #[derive(Debug, Subcommand)]
 enum TrajectoryCommand {
+    /// 批量追加 CaptureRecord 事件（写 Lance canonical）。
     Add(TrajectoryAddArgs),
-    Replay(TrajectoryReplayArgs),
+    /// 截断 Lance（保留前 N 行）；默认在存在 Markdown 层时同步重建 md。
+    Truncate(TrajectoryTruncateArgs),
+    /// 统计规模；`auto` 时报告 Lance + Markdown 两层。
     Stats(TrajectoryStatsArgs),
-    /// Lance raw log → TLV Markdown (lossy materialized view).
+    /// 按 seq 回放事件（默认读 Lance）。
+    Replay(TrajectoryReplayArgs),
+    /// 导出 Story / Run 目录树到目标路径。
+    Extract(TrajectoryExtractArgs),
+    /// Lance → TLV Markdown（有损物化，维护用）。
     Materialize(TrajectoryMaterializeArgs),
 }
 
@@ -641,9 +653,41 @@ struct TrajectoryAddArgs {
     format: TrajectoryAddFormat,
     #[arg(long, default_value = "-")]
     input: String,
-    /// 存储后端；`auto` 时按 `--input` 文件名推断（`0001.md` → markdown，`.jsonl`/`.toml` → lance）。
+    /// 写入层：`lance` / `markdown` / `auto`（`auto` 按已有层探测，默认新建 Lance）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
+}
+
+#[derive(Debug, Args)]
+struct TrajectoryTruncateArgs {
+    #[arg(value_name = "STORAGE")]
+    storage: String,
+    #[arg(long, value_name = "SEG")]
+    agent_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    session_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    root_session_id: Option<String>,
+    /// 保留按 `seq` 排序的前 N 条 Lance 行（仅 Lance 层；需更新 md 请单独 `materialize`）。
+    #[arg(long)]
+    keep_rows: usize,
+}
+
+#[derive(Debug, Args)]
+struct TrajectoryExtractArgs {
+    #[arg(value_name = "STORAGE")]
+    storage: String,
+    #[arg(value_name = "OUT_DIR")]
+    out_dir: String,
+    #[arg(long, value_name = "SEG")]
+    agent_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    session_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    root_session_id: Option<String>,
+    /// 主 Run story 时一并导出 `subagents/` 子树。
+    #[arg(long)]
+    include_subagents: bool,
 }
 
 #[derive(Debug, Args)]
@@ -663,6 +707,7 @@ struct TrajectoryReplayArgs {
     offset: usize,
     #[arg(long)]
     limit: Option<usize>,
+    /// 读取层覆盖（`auto`：有 Lance 读 Lance，否则 Markdown；两层并存时默认 Lance）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
 }
@@ -679,6 +724,7 @@ struct TrajectoryStatsArgs {
     /// 嵌套 subagent session 时指定父 session（路径 `{root}/subagents/{session_id}/`）。
     #[arg(long, value_name = "SEG")]
     root_session_id: Option<String>,
+    /// 统计层覆盖（`auto`：两层并存时同时报告 Lance 行数与 Markdown 块数）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
     /// 逐轮一行摘要：用户/模型字符数、TTFT、TPOT（stdout 纯文本，非 TOML）。
@@ -1611,10 +1657,9 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             let storage_format =
                 TrajectoryFormatManager::resolve_storage_format(&args.input, args.storage_format);
             eprintln!(
-                "[persisting-cli] trajectory add: read {} bytes from {:?} (format={input_format:?} storage={:?}), converting…",
+                "[persisting-cli] trajectory add: read {} bytes from {:?} (format={input_format:?} storage={storage_format:?}), converting…",
                 raw.len(),
                 args.input,
-                storage_format,
             );
             let records_ronl = TrajectoryFormatManager::prepare_append_batch(input_format, &raw)
                 .context("normalize trajectory add input")?;
@@ -1638,6 +1683,45 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             );
             lazy.invoke_engine_ron(&payload)?;
             eprintln!("[persisting-cli] trajectory add: engine returned");
+        }
+        TrajectoryCommand::Truncate(args) => {
+            let loc = resolve_traj_ids_for_read(
+                "trajectory truncate",
+                args.storage.clone(),
+                args.agent_id.clone(),
+                args.session_id.clone(),
+                args.root_session_id.clone(),
+            )?;
+            let payload =
+                rpc_request_pretty(RequestBody::TrajectoryTruncate(TrajectoryTruncateRequest {
+                    storage: loc.storage,
+                    agent_id: loc.agent_id,
+                    session_id: loc.session_id,
+                    root_session_id: loc.root_session_id,
+                    keep_rows: args.keep_rows,
+                }))
+                .context("encode TrajectoryTruncate RpcRequest RON")?;
+            lazy.invoke_engine_ron(&payload)?;
+        }
+        TrajectoryCommand::Extract(args) => {
+            let loc = resolve_traj_ids_for_read(
+                "trajectory extract",
+                args.storage.clone(),
+                args.agent_id.clone(),
+                args.session_id.clone(),
+                args.root_session_id.clone(),
+            )?;
+            let payload =
+                rpc_request_pretty(RequestBody::TrajectoryExtract(TrajectoryExtractRequest {
+                    storage: loc.storage,
+                    agent_id: loc.agent_id,
+                    session_id: loc.session_id,
+                    root_session_id: loc.root_session_id,
+                    out_dir: args.out_dir.clone(),
+                    include_subagents: args.include_subagents,
+                }))
+                .context("encode TrajectoryExtract RpcRequest RON")?;
+            lazy.invoke_engine_ron(&payload)?;
         }
         TrajectoryCommand::Replay(args) => {
             let loc = resolve_traj_ids_for_read(
@@ -1676,6 +1760,11 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                 root_session_id: loc.root_session_id.clone(),
             };
             if args.detail {
+                // Dialogue metrics (chars, tokens, models) are derived from TLV markdown blocks.
+                let replay_format = match args.storage_format {
+                    TrajectoryStorageCli::Auto => TrajectoryStorageFormat::Markdown,
+                    other => other.into(),
+                };
                 let stats = invoke_trajectory_stats(lazy, stats_req)?;
                 if stats.status != "ok" {
                     print_trajectory_stats_as_toml(&stats)?;
@@ -1693,7 +1782,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                         session_id: loc.session_id.clone(),
                         offset: 0,
                         limit: None,
-                        storage_format: args.storage_format.into(),
+                        storage_format: replay_format,
                         root_session_id: loc.root_session_id.clone(),
                     },
                 )?;

@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::session::{trajectory_session_dir, CaptureRoute};
+use crate::injection::host_identity::machine_fingerprint_for_client;
 use crate::injection::peer::resolve_peer_client;
 use crate::run_env::{read_run_child_info, read_run_session};
 
@@ -22,6 +23,23 @@ pub struct SessionClientMeta {
     pub peer_port: u16,
     pub pid: u32,
     pub command: String,
+    /// One-way machine fingerprint (hostname + username + identity IP [+ Linux machine-id]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_fp: Option<String>,
+}
+
+fn finalize_client_meta(mut meta: SessionClientMeta, peer: SocketAddr) -> SessionClientMeta {
+    if meta.machine_fp.is_none() {
+        let pid = (meta.pid > 0).then_some(meta.pid);
+        meta.machine_fp = Some(machine_fingerprint_for_client(peer, pid));
+    }
+    meta
+}
+
+fn peer_for_finalize(meta: &SessionClientMeta) -> SocketAddr {
+    meta.peer
+        .parse()
+        .unwrap_or_else(|_| "127.0.0.1:0".parse().expect("loopback"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,18 +85,20 @@ pub fn resolve_client_meta_for_run_dir(
     run_dir: &Path,
 ) -> Option<SessionClientMeta> {
     if let Ok(Some(m)) = load_session_client_meta(&session_client_meta_path_in_dir(run_dir)) {
-        return Some(m);
+        let peer = peer_for_finalize(&m);
+        return Some(finalize_client_meta(m, peer));
     }
     let run_id = run_dir.file_name()?.to_str()?;
-    client_meta_from_run_child(
-        storage,
-        &CaptureRoute {
-            root_session: Some(run_id.to_string()),
-            session_id: run_id.to_string(),
-            storage_session_id: run_id.to_string(),
-            subagent_id: None,
-        },
-    )
+    let route = CaptureRoute {
+        root_session: Some(run_id.to_string()),
+        session_id: run_id.to_string(),
+        storage_session_id: run_id.to_string(),
+        subagent_id: None,
+    };
+    client_meta_from_run_child(storage, &route).map(|m| {
+        let peer: SocketAddr = "127.0.0.1:0".parse().expect("loopback");
+        finalize_client_meta(m, peer)
+    })
 }
 
 /// Client metadata for markdown frontmatter: sidecar file, else `capture run` child snapshot.
@@ -106,6 +126,7 @@ fn client_meta_from_run_child(storage: &Path, route: &CaptureRoute) -> Option<Se
         peer_port: 0,
         pid: run_child.pid,
         command: run_child.command,
+        machine_fp: None,
     })
 }
 
@@ -131,14 +152,17 @@ impl SessionClientRegistry {
         let path = session_client_meta_path_in_dir(&session_dir);
         if should_persist_session_meta_file(storage, route) {
             if let Ok(Some(existing)) = load_session_client_meta(&path) {
-                return Some(existing);
+                return Some(finalize_client_meta(existing, peer));
             }
         } else if let Some(m) = client_meta_from_run_child(storage, route) {
-            return Some(SessionClientMeta {
-                peer: peer.to_string(),
-                peer_port: peer.port(),
-                ..m
-            });
+            return Some(finalize_client_meta(
+                SessionClientMeta {
+                    peer: peer.to_string(),
+                    peer_port: peer.port(),
+                    ..m
+                },
+                peer,
+            ));
         }
 
         let key = format!("{}|{agent_id}|{}", storage.display(), route.seq_key());
@@ -146,12 +170,20 @@ impl SessionClientRegistry {
             let guard = self.recorded.lock().unwrap();
             if guard.contains(&key) {
                 if should_persist_session_meta_file(storage, route) {
-                    return load_session_client_meta(&path).ok().flatten();
+                    return load_session_client_meta(&path)
+                        .ok()
+                        .flatten()
+                        .map(|m| finalize_client_meta(m, peer));
                 }
-                return client_meta_from_run_child(storage, route).map(|m| SessionClientMeta {
-                    peer: peer.to_string(),
-                    peer_port: peer.port(),
-                    ..m
+                return client_meta_from_run_child(storage, route).map(|m| {
+                    finalize_client_meta(
+                        SessionClientMeta {
+                            peer: peer.to_string(),
+                            peer_port: peer.port(),
+                            ..m
+                        },
+                        peer,
+                    )
                 });
             }
         }
@@ -162,6 +194,7 @@ impl SessionClientRegistry {
                 peer_port: peer.port(),
                 pid: run_child.pid,
                 command: run_child.command,
+                machine_fp: None,
             })
         } else {
             None
@@ -196,6 +229,8 @@ impl SessionClientRegistry {
             return None;
         };
 
+        let meta = finalize_client_meta(meta, peer);
+
         if should_persist_session_meta_file(storage, route) {
             if write_session_client_meta(&path, &meta).is_err() {
                 return None;
@@ -228,6 +263,7 @@ mod tests {
             peer_port: 54321,
             pid: 4242,
             command: "python3 agent.py --verbose".into(),
+            machine_fp: Some("abc123".into()),
         };
         write_session_client_meta(&path, &meta).unwrap();
         let loaded = load_session_client_meta(&path).unwrap().unwrap();
@@ -257,6 +293,7 @@ mod tests {
         assert_eq!(meta.command, "claude --model");
         assert_eq!(meta.pid, 4242);
         assert_eq!(meta.peer_port, 55522);
+        assert!(meta.machine_fp.as_ref().is_some_and(|fp| fp.len() == 32));
         assert!(
             !session_client_meta_path_in_dir(&storage.join("agent/sess-a")).exists(),
             "capture run should not write session-meta.yaml"

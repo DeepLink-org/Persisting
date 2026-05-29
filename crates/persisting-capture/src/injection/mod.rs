@@ -4,8 +4,10 @@
 //! |--------|------|
 //! | [`env`] | `HTTP_PROXY`, SDK base URLs, session id for `capture run` children |
 //! | [`peer`] | lsof/ps lookup of the TCP peer behind proxied connections |
+//! | [`host_identity`] | one-way `machine_fp` from hostname + identity IP |
 
 pub mod env;
+pub mod host_identity;
 pub mod peer;
 
 pub use env::{

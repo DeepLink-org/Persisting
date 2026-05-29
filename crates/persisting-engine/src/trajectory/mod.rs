@@ -1,18 +1,21 @@
-//! Trajectory storage: **Lance raw event log** (canonical) + **TLV Markdown** (materialized view).
+//! Trajectory storage: **Lance** (canonical event log) + **TLV Markdown** (optional materialized view).
+//! Append/truncate write **one** layer per `--storage-format`; `materialize` is Lance → Markdown only.
 //!
 //! Path: `{storage}/{agent_id}/{run_id}/` with `{session_id}.md` per logical session.
 //!
 //! Physical backends implement [`TrajectoryStore`] (see [`store`] module).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use lance::Dataset;
 use lance::Error as LanceError;
 pub use persisting_proto::{
-    TrajectoryAppendRequest, TrajectoryAppendResponse, TrajectoryMaterializeRequest,
-    TrajectoryMaterializeResponse, TrajectoryReplayRequest, TrajectoryReplayResponse,
-    TrajectoryStatsRequest, TrajectoryStatsResponse, TrajectoryStorageFormat,
+    TrajectoryAppendRequest, TrajectoryAppendResponse, TrajectoryExtractRequest,
+    TrajectoryExtractResponse, TrajectoryMaterializeRequest, TrajectoryMaterializeResponse,
+    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
+    TrajectoryStatsResponse, TrajectoryStorageFormat, TrajectoryTruncateRequest,
+    TrajectoryTruncateResponse,
 };
 
 mod convert;
@@ -20,16 +23,32 @@ pub mod path;
 mod storage;
 pub mod store;
 
+pub use storage::{detect_story_primary_layer, story_stats_note};
+
 pub use convert::{
-    compact_markdown_to_lance, layer_stats, materialize_lance_to_markdown,
-    stream_lines_to_markdown, CompactOutcome, LayerStats, MaterializeOutcome,
+    compact_markdown_to_lance, layer_stats, materialize_lance_to_markdown, CompactOutcome,
+    LayerStats, MaterializeOutcome,
 };
 pub use path::{
-    merge_traj_location, resolve_traj_read_location, try_infer_traj_location, TrajLocation,
-    TrajLocationPartial,
+    merge_story_location, merge_traj_location, resolve_story_read_location,
+    resolve_traj_read_location, try_infer_story_location, try_infer_traj_location, StoryCoords,
+    StoryCoords as TrajLocation, StoryLocationPartial, StoryLocationPartial as TrajLocationPartial,
 };
+pub use persisting_capture::egress::{export_story_bundle, parse_engine_records, ExportOutcome};
+pub use persisting_capture::story_coords::{
+    story_lance_dataset_dir as trajectory_dataset_dir, story_run_dir as trajectory_run_dir,
+};
+
+/// Flat layout `{storage}/{agent_id}/{session_id}/` (no nested run).
+pub fn trajectory_dataset_dir_flat(
+    storage: &str,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<PathBuf> {
+    trajectory_dataset_dir(storage, agent_id, session_id, None)
+}
 pub use store::{
-    store_for_read, stores_for_append, LanceTrajectoryStore, MarkdownTrajectoryStore,
+    store_for_append, store_for_read, LanceTrajectoryStore, MarkdownTrajectoryStore,
     TrajectoryAppendOutcome, TrajectoryReplayOutcome, TrajectorySession, TrajectoryStatsOutcome,
     TrajectoryStore,
 };
@@ -61,77 +80,6 @@ pub const TRAJECTORY_V1_COLS: &[&str] = &[
     TRAJECTORY_PAYLOAD_JSON_COL,
 ];
 
-use persisting_capture::trajectory_convert::materialize_markdown_path;
-
-fn validate_storage(storage: &str) -> Result<()> {
-    if storage.trim().is_empty() {
-        anyhow::bail!("storage path must not be empty");
-    }
-    Ok(())
-}
-
-/// One path segment: non-empty after trim, no separators or `..`.
-fn validate_path_segment(s: &str, field: &str) -> Result<String> {
-    let t = s.trim();
-    if t.is_empty() {
-        anyhow::bail!("{field} must not be empty");
-    }
-    if t.contains('/') || t.contains('\\') {
-        anyhow::bail!("{field} must not contain '/' or '\\' (single path segment only)");
-    }
-    if t == "." || t == ".." {
-        anyhow::bail!("{field} must not be '.' or '..'");
-    }
-    Ok(t.to_string())
-}
-
-/// Run directory under `{storage}/{agent_id}/`.
-pub fn trajectory_run_dir(
-    storage: &str,
-    agent_id: &str,
-    session_id: &str,
-    root_session_id: Option<&str>,
-) -> Result<PathBuf> {
-    validate_storage(storage)?;
-    let a = validate_path_segment(agent_id, "agent_id")?;
-    match root_session_id {
-        Some(root) => {
-            let r = validate_path_segment(root, "root_session_id")?;
-            Ok(Path::new(storage).join(a).join(r))
-        }
-        None => {
-            let s = validate_path_segment(session_id, "session_id")?;
-            Ok(Path::new(storage).join(a).join(s))
-        }
-    }
-}
-
-/// Lance dataset directory (`.lance/{session_key}/` under run dir when nested).
-pub fn trajectory_dataset_dir(
-    storage: &str,
-    agent_id: &str,
-    session_id: &str,
-    root_session_id: Option<&str>,
-) -> Result<PathBuf> {
-    let run = trajectory_run_dir(storage, agent_id, session_id, root_session_id)?;
-    match root_session_id {
-        Some(_) => {
-            let key = validate_path_segment(session_id, "session_id")?;
-            Ok(run.join(".lance").join(key))
-        }
-        None => Ok(run),
-    }
-}
-
-/// Legacy two-argument form (flat `{agent_id}/{session_id}/`).
-pub fn trajectory_dataset_dir_flat(
-    storage: &str,
-    agent_id: &str,
-    session_id: &str,
-) -> Result<PathBuf> {
-    trajectory_dataset_dir(storage, agent_id, session_id, None)
-}
-
 pub fn dataset_uri_display(
     storage: &str,
     agent_id: &str,
@@ -148,24 +96,9 @@ pub fn dataset_uri_display(
 pub(crate) async fn open_trajectory(uri: &str) -> Result<Option<Dataset>> {
     match Dataset::open(uri).await {
         Ok(ds) => Ok(Some(ds)),
-        Err(e) if matches!(e, LanceError::DatasetNotFound { .. }) => Ok(None),
+        Err(LanceError::DatasetNotFound { .. }) => Ok(None),
         Err(e) => Err(anyhow::anyhow!("{:#}", e)),
     }
-}
-
-fn parse_engine_records(records_ronl: &str) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for (line_number, line) in records_ronl.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let _: ron::value::Value = ron::from_str(line).map_err(|err| {
-            anyhow::anyhow!("invalid record at line {}: {}", line_number + 1, err)
-        })?;
-        out.push(line.to_string());
-    }
-    Ok(out)
 }
 
 fn session_from_request(
@@ -173,19 +106,12 @@ fn session_from_request(
     agent_id: &str,
     session_id: &str,
     root_session_id: Option<&str>,
-) -> TrajectorySession {
-    TrajectorySession::new(
+) -> StoryCoords {
+    StoryCoords::new(
         storage,
         agent_id,
         session_id,
         root_session_id.map(str::to_string),
-    )
-}
-
-fn materializes_markdown_view(fmt: TrajectoryStorageFormat) -> bool {
-    matches!(
-        fmt,
-        TrajectoryStorageFormat::Markdown | TrajectoryStorageFormat::Both
     )
 }
 
@@ -251,33 +177,8 @@ pub async fn append_async(request: TrajectoryAppendRequest) -> Result<Trajectory
     )
     .await?;
 
-    let lance = LanceTrajectoryStore;
-    let outcome = lance.append(&session, &lines).await?;
-    let mut notes = vec![outcome.note];
-
-    if materializes_markdown_view(fmt) {
-        match stream_lines_to_markdown(&session, &lines) {
-            Ok(stats) => {
-                let md = materialize_markdown_path(
-                    &trajectory_run_dir(
-                        &request.storage,
-                        &request.agent_id,
-                        &request.session_id,
-                        root_session_id,
-                    )?,
-                    &request.session_id,
-                );
-                notes.push(format!(
-                    "streamed markdown: {} block(s) from {} event(s), skipped {} at {}",
-                    stats.blocks_appended,
-                    stats.events_seen,
-                    stats.skipped_events,
-                    md.display()
-                ));
-            }
-            Err(e) => notes.push(format!("markdown stream skipped: {e:#}")),
-        }
-    }
+    let store = store_for_append(fmt);
+    let outcome = store.append(&session, &lines).await?;
 
     Ok(TrajectoryAppendResponse {
         dataset: storage::dataset_display(
@@ -295,7 +196,7 @@ pub async fn append_async(request: TrajectoryAppendRequest) -> Result<Trajectory
         note: format!(
             "storage_format={}. {}",
             storage::format_label(fmt),
-            notes.join("; ")
+            outcome.note
         ),
     })
 }
@@ -342,27 +243,130 @@ pub async fn stats_async(request: TrajectoryStatsRequest) -> Result<TrajectorySt
         root_session_id,
     );
 
-    let fmt = storage::resolve_for_read_with_root(
+    match request.storage_format {
+        TrajectoryStorageFormat::Auto | TrajectoryStorageFormat::Both => {
+            stats_dual_layer(&session, &request).await
+        }
+        fmt => {
+            let resolved = storage::resolve_for_read_with_root(
+                &request.storage,
+                &request.agent_id,
+                &request.session_id,
+                root_session_id,
+                fmt,
+            )
+            .await?;
+            let backend = store_for_read(resolved);
+            let outcome = backend.stats(&session).await?;
+            Ok(TrajectoryStatsResponse {
+                dataset: outcome.dataset,
+                storage: request.storage,
+                agent_id: request.agent_id,
+                session_id: request.session_id,
+                row_count: outcome.row_count,
+                manifest_version: outcome.manifest_version,
+                status: outcome.status,
+                note: outcome.note,
+            })
+        }
+    }
+}
+
+pub async fn truncate_async(
+    request: TrajectoryTruncateRequest,
+) -> Result<TrajectoryTruncateResponse> {
+    let root_session_id = request.root_session_id.as_deref();
+    let session = session_from_request(
         &request.storage,
         &request.agent_id,
         &request.session_id,
         root_session_id,
-        request.storage_format,
-    )
-    .await?;
+    );
 
-    let backend = store_for_read(fmt);
-    let outcome = backend.stats(&session).await?;
+    let lance = LanceTrajectoryStore;
+    let uri = lance.display_path(&session)?;
+    let outcome = lance.replay(&session, 0, None).await?;
+    let total = outcome.records.len();
+    let keep = request.keep_rows.min(total);
+    let kept: Vec<String> = outcome.records.into_iter().take(keep).collect();
 
-    Ok(TrajectoryStatsResponse {
-        dataset: outcome.dataset,
+    let persisted = if kept.is_empty() {
+        0
+    } else {
+        store::overwrite_lines(uri.as_str(), &kept).await?
+    };
+
+    let note = format!("truncated Lance: kept {persisted}/{total} row(s) at {uri}");
+
+    Ok(TrajectoryTruncateResponse {
         storage: request.storage,
         agent_id: request.agent_id,
         session_id: request.session_id,
-        row_count: outcome.row_count,
-        manifest_version: outcome.manifest_version,
-        status: outcome.status,
+        kept_rows: persisted,
+        removed_rows: total.saturating_sub(persisted),
+        status: "ok".to_string(),
+        note,
+    })
+}
+
+pub async fn extract_async(request: TrajectoryExtractRequest) -> Result<TrajectoryExtractResponse> {
+    let root_session_id = request.root_session_id.as_deref();
+    let session = session_from_request(
+        &request.storage,
+        &request.agent_id,
+        &request.session_id,
+        root_session_id,
+    );
+    let out = std::path::Path::new(&request.out_dir);
+    let outcome = export_story_bundle(&session, out, request.include_subagents)?;
+
+    Ok(TrajectoryExtractResponse {
+        storage: request.storage,
+        agent_id: request.agent_id,
+        session_id: request.session_id,
+        out_dir: outcome.out_dir,
+        files_copied: outcome.files_copied,
+        status: "ok".to_string(),
         note: outcome.note,
+    })
+}
+
+async fn stats_dual_layer(
+    session: &StoryCoords,
+    request: &TrajectoryStatsRequest,
+) -> Result<TrajectoryStatsResponse> {
+    let layers = layer_stats(session).await?;
+    let primary = storage::detect_story_primary_layer(&layers, session);
+    let row_count = match primary {
+        TrajectoryStorageFormat::Markdown => layers.markdown_blocks,
+        _ => layers.lance_rows,
+    };
+    let manifest_version = if layers.lance_rows > 0 {
+        LanceTrajectoryStore
+            .stats(session)
+            .await
+            .ok()
+            .and_then(|o| o.manifest_version)
+    } else {
+        None
+    };
+    let status = if row_count > 0 { "ok" } else { "empty" };
+    let dataset = match primary {
+        TrajectoryStorageFormat::Markdown => layers
+            .markdown_path
+            .clone()
+            .unwrap_or_else(|| layers.lance_uri.clone()),
+        _ => layers.lance_uri.clone(),
+    };
+    Ok(TrajectoryStatsResponse {
+        storage: request.storage.clone(),
+        agent_id: request.agent_id.clone(),
+        session_id: request.session_id.clone(),
+        dataset,
+        row_count,
+        manifest_version,
+        status: status.to_string(),
+        note: storage::story_stats_note(&layers, primary),
     })
 }
 
@@ -580,11 +584,14 @@ mod tests {
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl,
-            storage_format: TrajectoryStorageFormat::Markdown,
+            records_ronl: records_ronl.clone(),
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
+
+        let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
+        materialize_lance_to_markdown(&session).await.unwrap();
 
         let replay = replay_async(TrajectoryReplayRequest {
             storage: storage_s.clone(),
@@ -622,7 +629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_markdown_writes_lance_and_materializes_md() {
+    async fn append_both_storage_format_writes_lance_only() {
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::llm_request_record;
 
@@ -652,18 +659,189 @@ mod tests {
         .unwrap();
 
         let lance_dir = trajectory_dataset_dir(&storage_s, "a", "s", None).unwrap();
-        let md_path = md::session_markdown_write_path_for_key(
-            &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
-            "s",
-        );
-        assert!(md_path.exists());
-        let md_text = std::fs::read_to_string(&md_path).unwrap();
-        assert!(md_text.contains("persisting:block"));
-        assert!(md_text.contains("hi"));
         assert!(open_trajectory(lance_dir.to_string_lossy().as_ref())
             .await
             .unwrap()
             .is_some());
+        let md_path = md::session_markdown_write_path_for_key(
+            &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
+            "s",
+        );
+        assert!(!md_path.exists());
+    }
+
+    #[tokio::test]
+    async fn append_auto_writes_markdown_when_only_md_layer_exists() {
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::llm_request_record;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(&storage_s).unwrap();
+        let run = trajectory_run_dir(&storage_s, "a", "s", None).unwrap();
+        let md_path = md::session_markdown_write_path_for_key(&run, "s");
+        if let Some(parent) = md_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&md_path, "# existing\n").unwrap();
+
+        let req = llm_request_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1",
+            &serde_json::json!({"messages":[{"role":"user","content":"new"}]}),
+        );
+        let records_ronl = format!("{}\n", record_to_engine_line(&req).unwrap());
+
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl,
+            storage_format: TrajectoryStorageFormat::Auto,
+        })
+        .await
+        .unwrap();
+
+        let md_text = std::fs::read_to_string(&md_path).unwrap();
+        assert!(md_text.contains("new"));
+        let lance_dir = trajectory_dataset_dir(&storage_s, "a", "s", None).unwrap();
+        assert!(open_trajectory(lance_dir.to_string_lossy().as_ref())
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn replay_auto_prefers_lance_when_both_layers_exist() {
+        use persisting_capture::engine::Call;
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::{llm_request_record, llm_response_record};
+
+        let call = Call {
+            call_id: "c".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(&storage_s).unwrap();
+
+        let req = llm_request_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1",
+            &serde_json::json!({"messages":[{"role":"user","content":"lance-wins"}]}),
+        );
+        let resp = llm_response_record(
+            Some("s".into()),
+            None,
+            200,
+            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"from-lance"}}]}),
+            false,
+            &call,
+        );
+        let records_ronl = format!(
+            "{}\n{}\n",
+            record_to_engine_line(&req).unwrap(),
+            record_to_engine_line(&resp).unwrap()
+        );
+
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl,
+            storage_format: TrajectoryStorageFormat::Lance,
+        })
+        .await
+        .unwrap();
+
+        let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
+        materialize_lance_to_markdown(&session).await.unwrap();
+
+        let replay = replay_async(TrajectoryReplayRequest {
+            storage: storage_s,
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            offset: 0,
+            limit: None,
+            storage_format: TrajectoryStorageFormat::Auto,
+            root_session_id: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(replay.records.len(), 2);
+        let row0: serde_json::Value = serde_json::from_str(&replay.records[0]).unwrap();
+        assert_eq!(row0["kind"], "llm.request");
+    }
+
+    #[tokio::test]
+    async fn stats_auto_reports_both_layers() {
+        use persisting_capture::engine::Call;
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::{llm_request_record, llm_response_record};
+
+        let call = Call {
+            call_id: "c".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(&storage_s).unwrap();
+
+        let req = llm_request_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1",
+            &serde_json::json!({"messages":[{"role":"user","content":"hi"}]}),
+        );
+        let resp = llm_response_record(
+            Some("s".into()),
+            None,
+            200,
+            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"hello"}}]}),
+            false,
+            &call,
+        );
+        let records_ronl = format!(
+            "{}\n{}\n",
+            record_to_engine_line(&req).unwrap(),
+            record_to_engine_line(&resp).unwrap()
+        );
+
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl,
+            storage_format: TrajectoryStorageFormat::Lance,
+        })
+        .await
+        .unwrap();
+
+        let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
+        materialize_lance_to_markdown(&session).await.unwrap();
+
+        let st = stats_async(TrajectoryStatsRequest {
+            storage: storage_s,
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            storage_format: TrajectoryStorageFormat::Auto,
+            root_session_id: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(st.row_count, 2);
+        assert!(st.note.contains("Story stats via lance"));
+        assert!(st.note.contains("Markdown 2"));
     }
 
     #[tokio::test]
@@ -799,7 +977,7 @@ mod tests {
         .await
         .unwrap();
 
-        let session = TrajectorySession::new(storage_s.clone(), "a", "s", None);
+        let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
         let mat = materialize_lance_to_markdown(&session).await.unwrap();
         assert_eq!(mat.stats.source_events, 2);
         assert_eq!(mat.stats.markdown_blocks, 2);
@@ -812,5 +990,328 @@ mod tests {
         let compact = compact_markdown_to_lance(&session, true).await.unwrap();
         assert_eq!(compact.stats.source_blocks, 2);
         assert_eq!(compact.stats.lance_rows, 2);
+    }
+
+    fn note_lines(n: usize) -> String {
+        use persisting_capture::record::record_to_engine_line;
+        (0..n)
+            .map(|i| {
+                record_to_engine_line(&persisting_capture::record::CaptureRecord {
+                    seq: 0,
+                    source: "test".into(),
+                    kind: "note".into(),
+                    timestamp: None,
+                    session_id: None,
+                    agent_id: None,
+                    parent_uuid: None,
+                    trace_id: None,
+                    call_id: None,
+                    subagent_id: None,
+                    parent_agent_id: None,
+                    branch: None,
+                    parent_call_id: None,
+                    payload: serde_json::json!({ "content": format!("line-{i}") }),
+                })
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    #[tokio::test]
+    async fn truncate_keeps_first_n_lance_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().join("store").to_string_lossy().to_string();
+        std::fs::create_dir_all(&storage_s).unwrap();
+
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl: note_lines(3),
+            storage_format: TrajectoryStorageFormat::Lance,
+        })
+        .await
+        .unwrap();
+
+        let tr = truncate_async(TrajectoryTruncateRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            keep_rows: 1,
+        })
+        .await
+        .unwrap();
+        assert_eq!(tr.kept_rows, 1);
+        assert_eq!(tr.removed_rows, 2);
+        assert_eq!(tr.status, "ok");
+
+        let replay = replay_async(TrajectoryReplayRequest {
+            storage: storage_s,
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            offset: 0,
+            limit: None,
+            storage_format: TrajectoryStorageFormat::Lance,
+            root_session_id: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(replay.records.len(), 1);
+        let row: serde_json::Value = serde_json::from_str(&replay.records[0]).unwrap();
+        assert_eq!(row["kind"], "note");
+        assert_eq!(row["payload"]["content"], "line-0");
+    }
+
+    #[tokio::test]
+    async fn truncate_does_not_modify_markdown_layer() {
+        use persisting_capture::engine::Call;
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::{llm_request_record, llm_response_record};
+
+        let call = Call {
+            call_id: "c".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(&storage_s).unwrap();
+
+        let req = llm_request_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1",
+            &serde_json::json!({"messages":[{"role":"user","content":"u"}]}),
+        );
+        let resp = llm_response_record(
+            Some("s".into()),
+            None,
+            200,
+            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"a"}}]}),
+            false,
+            &call,
+        );
+        let records_ronl = format!(
+            "{}\n{}\n",
+            record_to_engine_line(&req).unwrap(),
+            record_to_engine_line(&resp).unwrap()
+        );
+
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl,
+            storage_format: TrajectoryStorageFormat::Lance,
+        })
+        .await
+        .unwrap();
+
+        let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
+        materialize_lance_to_markdown(&session).await.unwrap();
+        let md_path = md::session_markdown_write_path_for_key(
+            &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
+            "s",
+        );
+        let blocks_before = md::block_count(&md_path).unwrap();
+
+        truncate_async(TrajectoryTruncateRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            keep_rows: 1,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(md::block_count(&md_path).unwrap(), blocks_before);
+        let replay = replay_async(TrajectoryReplayRequest {
+            storage: storage_s,
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            offset: 0,
+            limit: None,
+            storage_format: TrajectoryStorageFormat::Lance,
+            root_session_id: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(replay.records.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn extract_async_copies_flat_session_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().join("store").to_string_lossy().to_string();
+        std::fs::create_dir_all(&storage_s).unwrap();
+        let run = trajectory_run_dir(&storage_s, "agent-x", "sess-1", None).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("sess-1.md"), "# exported\n").unwrap();
+
+        let out = dir.path().join("export");
+        let resp = extract_async(TrajectoryExtractRequest {
+            storage: storage_s,
+            agent_id: "agent-x".into(),
+            session_id: "sess-1".into(),
+            root_session_id: None,
+            out_dir: out.to_string_lossy().into_owned(),
+            include_subagents: false,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(resp.status, "ok");
+        assert!(resp.files_copied >= 1);
+        let copied = out.join("agent-x").join("sess-1").join("sess-1.md");
+        assert!(copied.exists(), "expected {}", copied.display());
+        assert!(std::fs::read_to_string(&copied)
+            .unwrap()
+            .contains("exported"));
+    }
+
+    #[tokio::test]
+    async fn extract_async_include_subagents_copies_subtree() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().join("store").to_string_lossy().to_string();
+        let run = trajectory_run_dir(&storage_s, "a", "root-1", None).unwrap();
+        let sub = run.join("subagents").join("sub-1");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("sub-1.md"), "# sub\n").unwrap();
+
+        let out = dir.path().join("export");
+        let resp = extract_async(TrajectoryExtractRequest {
+            storage: storage_s,
+            agent_id: "a".into(),
+            session_id: "root-1".into(),
+            root_session_id: Some("root-1".into()),
+            out_dir: out.to_string_lossy().into_owned(),
+            include_subagents: true,
+        })
+        .await
+        .unwrap();
+
+        assert!(resp.files_copied >= 1);
+        let copied = out
+            .join("a")
+            .join("root-1")
+            .join("subagents")
+            .join("sub-1")
+            .join("sub-1.md");
+        assert!(copied.exists(), "expected {}", copied.display());
+    }
+
+    #[tokio::test]
+    async fn append_storage_format_markdown_without_lance() {
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::llm_request_record;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(&storage_s).unwrap();
+
+        let req = llm_request_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1",
+            &serde_json::json!({"messages":[{"role":"user","content":"md-only"}]}),
+        );
+        let records_ronl = format!("{}\n", record_to_engine_line(&req).unwrap());
+
+        let append = append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl,
+            storage_format: TrajectoryStorageFormat::Markdown,
+        })
+        .await
+        .unwrap();
+        assert_eq!(append.accepted_records, 1);
+        assert!(append.note.contains("markdown"));
+
+        let lance_dir = trajectory_dataset_dir(&storage_s, "a", "s", None).unwrap();
+        assert!(open_trajectory(lance_dir.to_string_lossy().as_ref())
+            .await
+            .unwrap()
+            .is_none());
+
+        let md_path = md::session_markdown_write_path_for_key(
+            &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
+            "s",
+        );
+        assert!(md_path.exists());
+        assert!(std::fs::read_to_string(&md_path)
+            .unwrap()
+            .contains("md-only"));
+    }
+
+    #[tokio::test]
+    async fn materialize_async_rpc_wrapper() {
+        use persisting_capture::engine::Call;
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::{llm_request_record, llm_response_record};
+
+        let call = Call {
+            call_id: "c".into(),
+            trace_id: "t".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(&storage_s).unwrap();
+
+        let req = llm_request_record(
+            Some("s".into()),
+            None,
+            "m",
+            "/v1",
+            &serde_json::json!({"messages":[{"role":"user","content":"hi"}]}),
+        );
+        let resp = llm_response_record(
+            Some("s".into()),
+            None,
+            200,
+            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"yo"}}]}),
+            false,
+            &call,
+        );
+        let records_ronl = format!(
+            "{}\n{}\n",
+            record_to_engine_line(&req).unwrap(),
+            record_to_engine_line(&resp).unwrap()
+        );
+
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+            records_ronl,
+            storage_format: TrajectoryStorageFormat::Lance,
+        })
+        .await
+        .unwrap();
+
+        let resp = materialize_async(TrajectoryMaterializeRequest {
+            storage: storage_s,
+            agent_id: "a".into(),
+            session_id: "s".into(),
+            root_session_id: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(resp.status, "ok");
+        assert_eq!(resp.lance_rows, 2);
+        assert!(resp.markdown_blocks >= 1);
+        assert!(std::path::Path::new(&resp.markdown_path).exists());
     }
 }

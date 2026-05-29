@@ -20,7 +20,7 @@ Capture 将 **LLM API 流量** 与 **IDE 本地会话** 归一化为统一轨迹
 | 路径 | 何时用 |
 |------|--------|
 | **代理捕获** | 开发/运行 Agent 时，让流量经过 Persisting 代理 |
-| **事后导入** | 补录 Claude/Cursor 本地日志，或合并旧版网关导出 |
+| **事后导入** | 补录 Claude Code 本地 JSONL，或合并旧版网关导出（Cursor 暂不支持） |
 
 主路径**不依赖**外部 agentgateway。详见 [Capture 架构设计](capture_design.zh.md)。
 
@@ -32,7 +32,7 @@ Capture 将 **LLM API 流量** 与 **IDE 本地会话** 归一化为统一轨迹
 |----|------|
 | **start / stop** | 后台守护进程生命周期 |
 | **serve** | 前台代理，便于调试 |
-| **run** | 代理 + 执行一条子命令（典型：`claude`、训练脚本） |
+| **run** | 代理 + 执行一条子命令（典型：`claude`、`codex`、训练脚本） |
 | **list / status** | 查看会话、用量、成本估算 |
 | **import** | 从 IDE 或网关日志批量导入 |
 | **replay-dead-letter** | 重放 `.capture/dead_letter.jsonl` 中失败的采集事件 |
@@ -63,7 +63,7 @@ Capture 不在结束时自动全量 materialize；`-f md` 时 Proxy 内 **Captur
 1. 在进程内启动代理（不依赖已存在的守护进程）
 2. 分配本次 run 的 session 标识，写入 `session.started` 到 Lance
 3. 为子进程设置代理与环境（base URL、session id 等）
-4. 子进程 LLM 请求被捕获 → Worker 批量 append Lance；**`-f md`** 时 Proxy **CaptureEngine** 对 md 做 live upsert（主/子文件隔离，见 [Capture 架构 §8](capture_design.zh.md)）
+4. 子进程 LLM 请求被捕获 → Worker 批量 append Lance；**`-f md`** 时 Proxy **CaptureEngine** 对 md 做 live upsert（主/子文件隔离，见 [Capture 架构 §9](capture_design.zh.md#9-多-agent-与会话)）
 5. 子进程退出 → 写入 `session.ended` → 代理关闭
 
 若同一目录已有存活守护进程，`run` 会拒绝，避免 store 冲突。
@@ -85,8 +85,9 @@ Capture 不在结束时自动全量 materialize；`-f md` 时 Proxy 内 **Captur
 
 | 来源 | 说明 |
 |------|------|
-| Claude Code | 项目目录下的 JSONL 会话文件 |
-| Cursor | agent-transcripts 下的 JSONL |
+| Claude Code | ✅ 项目目录下的 JSONL 会话文件（`~/.claude/projects/`） |
+| OpenAI Codex | ✅ 经 **实时代理** 采集（`capture run -- codex …`）；非 import 主路径 |
+| Cursor | ❌ **暂不支持**（实时采集与 JSONL import 均未对外承诺） |
 | 网关 OTLP | 可选；历史 agentgateway 导出的 JSONL |
 
 import 支持按项目、时间范围过滤，可选合并 subagent 文件，dry-run 仅统计不写盘。写入经 trajectory 引擎 append（Lance）。

@@ -41,7 +41,7 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 |------|------|------|
 | 轨迹存储模型 | [trajectory_storage.zh.md](trajectory_storage.zh.md) | 已实现 |
 | 轨迹 Markdown 格式 | [trajectory_tlv_format.zh.md](trajectory_tlv_format.zh.md) | 已实现 |
-| Capture 架构设计 | [capture_design.zh.md](capture_design.zh.md) | 已实现 |
+| Capture 架构设计（对外） | [capture_design.zh.md](capture_design.zh.md) | 已实现 |
 | 队列持久化架构 | [architecture.zh.md](architecture.zh.md) | 已实现 |
 | TTAS 寻址模型 | [tensor_address_algebra.md](tensor_address_algebra.md) | 设计 |
 | 分布式分层存储 | [distributed_tiered_storage.md](distributed_tiered_storage.md) | 规划 |

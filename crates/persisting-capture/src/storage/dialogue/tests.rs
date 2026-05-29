@@ -2,12 +2,12 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::config::CaptureLevel;
-use crate::storage::markdown::MarkdownBlock;
 use crate::markdown_trajectory::{encode_block_with_header, parse_document};
 use crate::sink::{
     llm_request_record, llm_request_summary_record, llm_response_record,
     llm_response_record_with_content,
 };
+use crate::storage::markdown::MarkdownBlock;
 use crate::Call;
 fn test_call() -> Call {
     Call {
@@ -220,10 +220,7 @@ fn subagent_link_fields_in_markdown_block() {
         .unwrap()
         .contains("persisting:subagent-self"));
 
-    let block = MarkdownBlock {
-        header,
-        body,
-    };
+    let block = MarkdownBlock { header, body };
     let imported = block_to_capture_record(&block).unwrap();
     let visible = imported.visible_assistant_text().unwrap_or_default();
     assert_eq!(visible, "done");

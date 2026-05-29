@@ -2,7 +2,8 @@
 
 use anyhow::{Context, Result};
 use persisting_proto::{
-    TrajectoryAppendResponse, TrajectoryReplayResponse, TrajectoryStatsResponse,
+    TrajectoryAppendResponse, TrajectoryExtractResponse, TrajectoryMaterializeResponse,
+    TrajectoryReplayResponse, TrajectoryStatsResponse, TrajectoryTruncateResponse,
 };
 use serde_json::Value as Json;
 
@@ -52,6 +53,83 @@ pub fn print_trajectory_stats_as_toml(resp: &TrajectoryStatsResponse) -> Result<
     root.insert("status".into(), toml::Value::String(resp.status.clone()));
     root.insert("note".into(), toml::Value::String(resp.note.clone()));
     emit_root(&root, "stats")
+}
+
+pub fn print_trajectory_truncate_as_toml(resp: &TrajectoryTruncateResponse) -> Result<()> {
+    let mut root = toml::map::Map::new();
+    root.insert("storage".into(), toml::Value::String(resp.storage.clone()));
+    root.insert(
+        "agent_id".into(),
+        toml::Value::String(resp.agent_id.clone()),
+    );
+    root.insert(
+        "session_id".into(),
+        toml::Value::String(resp.session_id.clone()),
+    );
+    root.insert(
+        "kept_rows".into(),
+        toml::Value::Integer(i64::try_from(resp.kept_rows).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "removed_rows".into(),
+        toml::Value::Integer(i64::try_from(resp.removed_rows).unwrap_or(i64::MAX)),
+    );
+    root.insert("status".into(), toml::Value::String(resp.status.clone()));
+    root.insert("note".into(), toml::Value::String(resp.note.clone()));
+    emit_root(&root, "truncate")
+}
+
+pub fn print_trajectory_extract_as_toml(resp: &TrajectoryExtractResponse) -> Result<()> {
+    let mut root = toml::map::Map::new();
+    root.insert("storage".into(), toml::Value::String(resp.storage.clone()));
+    root.insert(
+        "agent_id".into(),
+        toml::Value::String(resp.agent_id.clone()),
+    );
+    root.insert(
+        "session_id".into(),
+        toml::Value::String(resp.session_id.clone()),
+    );
+    root.insert("out_dir".into(), toml::Value::String(resp.out_dir.clone()));
+    root.insert(
+        "files_copied".into(),
+        toml::Value::Integer(i64::try_from(resp.files_copied).unwrap_or(i64::MAX)),
+    );
+    root.insert("status".into(), toml::Value::String(resp.status.clone()));
+    root.insert("note".into(), toml::Value::String(resp.note.clone()));
+    emit_root(&root, "extract")
+}
+
+pub fn print_trajectory_materialize_as_toml(resp: &TrajectoryMaterializeResponse) -> Result<()> {
+    let mut root = toml::map::Map::new();
+    root.insert("storage".into(), toml::Value::String(resp.storage.clone()));
+    root.insert(
+        "agent_id".into(),
+        toml::Value::String(resp.agent_id.clone()),
+    );
+    root.insert(
+        "session_id".into(),
+        toml::Value::String(resp.session_id.clone()),
+    );
+    root.insert(
+        "markdown_path".into(),
+        toml::Value::String(resp.markdown_path.clone()),
+    );
+    root.insert(
+        "lance_rows".into(),
+        toml::Value::Integer(i64::try_from(resp.lance_rows).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "markdown_blocks".into(),
+        toml::Value::Integer(i64::try_from(resp.markdown_blocks).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "skipped_events".into(),
+        toml::Value::Integer(i64::try_from(resp.skipped_events).unwrap_or(i64::MAX)),
+    );
+    root.insert("status".into(), toml::Value::String(resp.status.clone()));
+    root.insert("note".into(), toml::Value::String(resp.note.clone()));
+    emit_root(&root, "materialize")
 }
 
 pub fn print_trajectory_replay_as_toml(resp: &TrajectoryReplayResponse) -> Result<()> {

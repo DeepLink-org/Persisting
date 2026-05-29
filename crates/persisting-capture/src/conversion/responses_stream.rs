@@ -94,11 +94,26 @@ impl CompletionsToResponsesStreamTranslator {
         &self.accumulated_text
     }
 
-    /// Text + in-flight tool calls for incremental trajectory capture (Codex / Responses path).
+    /// Visible assistant narrative for live markdown / `assistant_content` (no tool fences).
+    ///
+    /// Tool calls remain in Lance via full SSE `body`. Some Codex / reasoning models stream the
+    /// user-visible answer in `reasoning_content` while `content` stays empty during tool turns.
+    pub fn narrative_for_capture(&self) -> String {
+        if !self.accumulated_text.trim().is_empty() {
+            return self.accumulated_text.clone();
+        }
+        if !self.accumulated_reasoning.trim().is_empty() {
+            return self.accumulated_reasoning.clone();
+        }
+        String::new()
+    }
+
+    /// Text + in-flight tool calls (debug / spawn-link enrichment when tools appear in content).
     pub fn capture_snapshot(&self) -> String {
         let mut parts = Vec::new();
-        if !self.accumulated_text.is_empty() {
-            parts.push(self.accumulated_text.clone());
+        let narrative = self.narrative_for_capture();
+        if !narrative.is_empty() {
+            parts.push(narrative);
         }
         let mut tool_entries: Vec<_> = self.tool_calls.values().collect();
         tool_entries.sort_by_key(|e| e.output_index);
@@ -626,6 +641,32 @@ mod tests {
         assert!(out.contains("response.output_text.delta"));
         assert!(out.contains("response.completed"));
         assert!(out.contains("Hi"));
+    }
+
+    #[test]
+    fn narrative_for_capture_prefers_content_then_reasoning() {
+        let mut t = CompletionsToResponsesStreamTranslator::new("gpt-5.5");
+        t.accumulated_text.push_str("visible answer");
+        t.accumulated_reasoning.push_str("hidden chain");
+        assert_eq!(t.narrative_for_capture(), "visible answer");
+
+        let mut t2 = CompletionsToResponsesStreamTranslator::new("gpt-5.5");
+        t2.accumulated_reasoning.push_str("reasoning-only narrative");
+        t2.tool_calls.insert(
+            0,
+            ToolCallState {
+                sse_item_id: "fc_0".into(),
+                call_id: "call_x".into(),
+                name: "exec_command".into(),
+                arguments: r#"{"cmd":"ls"}"#.into(),
+                output_index: 1,
+                sent_item_added: true,
+                finalized: false,
+            },
+        );
+        assert_eq!(t2.narrative_for_capture(), "reasoning-only narrative");
+        assert!(t2.capture_snapshot().contains("```tool:exec_command"));
+        assert!(!t2.narrative_for_capture().contains("```tool:"));
     }
 
     #[test]
