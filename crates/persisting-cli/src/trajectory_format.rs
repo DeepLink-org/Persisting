@@ -1,4 +1,4 @@
-//! `trajectory add` input → engine append lines; storage backend from input filename.
+//! `trajectory add` input → engine append lines; storage target inferred separately from input format.
 
 use std::path::Path;
 
@@ -11,10 +11,15 @@ use persisting_proto::TrajectoryStorageFormat;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum TrajectoryStorageCli {
+    /// Read/stats: detect layer; append: detect target layer (`auto` → Lance if empty, else existing layer).
     #[default]
     Auto,
+    /// Lance raw event log (canonical).
     Lance,
+    /// TLV Markdown session file (read/materialize view).
     Markdown,
+    /// Legacy: append → Lance only; read/stats → same as `auto`. Hidden from help.
+    #[value(hide = true)]
     Both,
 }
 
@@ -76,13 +81,13 @@ impl TrajectoryFormatManager {
     }
 }
 
-/// Numbered session markdown (`0001.md`) or legacy `.tlv.md` → markdown storage; …
+/// Numbered session markdown (`0001.md`) or legacy `.tlv.md` → default append target Lance (parse TLV, write event log).
 pub fn infer_storage_format_from_path(input_path: &str) -> Option<TrajectoryStorageFormat> {
     if input_path == "-" {
         return None;
     }
     if is_trajectory_markdown_path(Path::new(input_path)) {
-        return Some(TrajectoryStorageFormat::Markdown);
+        return Some(TrajectoryStorageFormat::Lance);
     }
     let lower = input_path.to_ascii_lowercase();
     if lower.ends_with(".jsonl")
@@ -147,11 +152,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_md_uses_markdown_storage_and_parser() {
+    fn session_md_uses_lance_storage_and_markdown_parser() {
         let p = "examples/foo/0001.md";
         assert_eq!(
             infer_storage_format_from_path(p),
-            Some(TrajectoryStorageFormat::Markdown)
+            Some(TrajectoryStorageFormat::Lance)
         );
         assert_eq!(
             TrajectoryFormatManager::resolve_add_format(p, TrajectoryAddFormat::Auto).unwrap(),
@@ -160,11 +165,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tlv_md_still_markdown() {
+    fn legacy_tlv_md_input_still_lance_storage() {
         let p = "examples/foo/trajectory.tlv.md";
         assert_eq!(
             infer_storage_format_from_path(p),
-            Some(TrajectoryStorageFormat::Markdown)
+            Some(TrajectoryStorageFormat::Lance)
         );
     }
 
@@ -187,5 +192,41 @@ mod tests {
             TrajectoryFormatManager::resolve_storage_format("0001.md", TrajectoryStorageCli::Lance),
             TrajectoryStorageFormat::Lance
         );
+        assert_eq!(
+            TrajectoryFormatManager::resolve_storage_format(
+                "0001.md",
+                TrajectoryStorageCli::Markdown
+            ),
+            TrajectoryStorageFormat::Markdown
+        );
+    }
+
+    #[test]
+    fn stdin_auto_storage_stays_auto() {
+        assert_eq!(
+            TrajectoryFormatManager::resolve_storage_format("-", TrajectoryStorageCli::Auto),
+            TrajectoryStorageFormat::Auto
+        );
+    }
+
+    #[test]
+    fn prepare_append_batch_jsonl() {
+        let raw = r#"{"kind":"note","payload":{"content":"x"}}"#;
+        let out =
+            TrajectoryFormatManager::prepare_append_batch(TrajectoryAddFormat::Jsonl, raw).unwrap();
+        assert!(out.contains("kind"));
+        assert!(out.lines().count() >= 1);
+    }
+
+    #[test]
+    fn storage_cli_converts_to_proto() {
+        assert!(matches!(
+            TrajectoryStorageFormat::from(TrajectoryStorageCli::Lance),
+            TrajectoryStorageFormat::Lance
+        ));
+        assert!(matches!(
+            TrajectoryStorageFormat::from(TrajectoryStorageCli::Both),
+            TrajectoryStorageFormat::Both
+        ));
     }
 }

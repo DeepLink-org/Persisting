@@ -171,7 +171,8 @@ impl StreamTranslator {
     pub fn streaming_capture_snapshot(&self) -> Option<String> {
         let text = match self {
             Self::ToMessages(t) => t.accumulated_assistant_text().to_string(),
-            Self::ToResponses(t) => t.capture_snapshot(),
+            // Markdown + turn indexing: narrative only; tools stay in Lance payload.
+            Self::ToResponses(t) => t.narrative_for_capture(),
         };
         if text.trim().is_empty() {
             None

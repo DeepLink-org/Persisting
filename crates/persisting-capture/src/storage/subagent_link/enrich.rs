@@ -10,7 +10,7 @@ use super::extract::{
 use super::match_::{
     apply_spawn_links, merge_string_array_payload, spawn_hint_to_json, spawn_link_to_json,
 };
-use super::types::{EnrichOutcome, SpawnLink, SpawnLinkBackfill, SubagentRegistry};
+use super::types::{EnrichOutcome, SpawnLink, SubagentRegistry};
 use crate::record::CaptureRecord;
 use crate::session_chain::extract_claude_parent_agent_id;
 use crate::session_storage::CaptureRoute;

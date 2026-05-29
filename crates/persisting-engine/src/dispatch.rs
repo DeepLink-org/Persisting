@@ -59,6 +59,12 @@ fn dispatch_inner(body: RequestBody) -> Result<ResponseBody> {
         RequestBody::TrajectoryMaterialize(r) => Ok(ResponseBody::TrajectoryMaterialize(block_on(
             crate::trajectory::materialize_async(r),
         )?)),
+        RequestBody::TrajectoryTruncate(r) => Ok(ResponseBody::TrajectoryTruncate(block_on(
+            crate::trajectory::truncate_async(r),
+        )?)),
+        RequestBody::TrajectoryExtract(r) => Ok(ResponseBody::TrajectoryExtract(block_on(
+            crate::trajectory::extract_async(r),
+        )?)),
     }
 }
 

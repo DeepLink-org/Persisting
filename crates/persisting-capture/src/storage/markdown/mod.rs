@@ -14,9 +14,7 @@ mod tests;
 #[path = "tests_upsert.rs"]
 mod upsert_tests;
 
-pub use body::{
-    strip_subagent_footer_from_body, BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION,
-};
+pub use body::{strip_subagent_footer_from_body, BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION};
 pub use io::{
     append_engine_lines_to_markdown, encode_block_with_header, replay_json_lines,
     upsert_block_by_call_id,

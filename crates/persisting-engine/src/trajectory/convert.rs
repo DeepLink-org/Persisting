@@ -3,16 +3,15 @@
 use anyhow::{Context, Result};
 use persisting_capture::trajectory_convert::{
     compact_stats_note, markdown_document_to_engine_lines, materialize_markdown_path,
-    materialize_records_to_markdown, stream_engine_lines_to_markdown, CompactStats,
-    MaterializeStats, StreamMaterializeStats,
+    materialize_records_to_markdown, CompactStats, MaterializeStats,
 };
 
 use super::store::{
     overwrite_lines, LanceTrajectoryStore, MarkdownTrajectoryStore, TrajectorySession,
     TrajectoryStore,
 };
-use super::trajectory_run_dir;
 use crate::trajectory::open_trajectory;
+use persisting_capture::story_coords::story_run_dir;
 
 /// Result of materializing Lance raw log → TLV Markdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,20 +48,6 @@ async fn load_all_capture_records(
         .collect()
 }
 
-/// **Lance → Markdown** (streaming): append dialogue blocks for new engine lines only.
-pub fn stream_lines_to_markdown(
-    session: &TrajectorySession,
-    lines: &[String],
-) -> Result<StreamMaterializeStats> {
-    let run_dir = trajectory_run_dir(
-        &session.storage,
-        &session.agent_id,
-        &session.session_id,
-        session.root_session_id.as_deref(),
-    )?;
-    stream_engine_lines_to_markdown(&run_dir, &session.session_id, lines)
-}
-
 /// **Lance → Markdown** (lossy): scan raw event log, write dialogue TLV blocks.
 pub async fn materialize_lance_to_markdown(
     session: &TrajectorySession,
@@ -76,7 +61,7 @@ pub async fn materialize_lance_to_markdown(
     }
 
     let records = load_all_capture_records(session).await?;
-    let run_dir = trajectory_run_dir(
+    let run_dir = story_run_dir(
         &session.storage,
         &session.agent_id,
         &session.session_id,
@@ -111,7 +96,7 @@ pub async fn compact_markdown_to_lance(
         );
     }
 
-    let run_dir = trajectory_run_dir(
+    let run_dir = story_run_dir(
         &session.storage,
         &session.agent_id,
         &session.session_id,
@@ -183,7 +168,7 @@ pub async fn layer_stats(session: &TrajectorySession) -> Result<LayerStats> {
     };
 
     let (markdown_blocks, markdown_path) = if markdown.exists(session).await? {
-        let run_dir = trajectory_run_dir(
+        let run_dir = story_run_dir(
             &session.storage,
             &session.agent_id,
             &session.session_id,

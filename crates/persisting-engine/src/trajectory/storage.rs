@@ -3,12 +3,13 @@
 use persisting_capture::markdown_trajectory::session_markdown_filename;
 use persisting_proto::TrajectoryStorageFormat;
 
-use super::store::{LanceTrajectoryStore, MarkdownTrajectoryStore, TrajectorySession};
+use super::store::{session_lance_dir, LanceTrajectoryStore, MarkdownTrajectoryStore};
 use super::trajectory_dataset_dir;
 use super::TrajectoryStore;
+use persisting_capture::StoryCoords;
 
 async fn resolve_auto(
-    session: &TrajectorySession,
+    session: &StoryCoords,
     when_empty: TrajectoryStorageFormat,
     when_both: TrajectoryStorageFormat,
 ) -> anyhow::Result<TrajectoryStorageFormat> {
@@ -31,7 +32,7 @@ pub async fn resolve_for_read_with_root(
     root_session_id: Option<&str>,
     requested: TrajectoryStorageFormat,
 ) -> anyhow::Result<TrajectoryStorageFormat> {
-    let session = TrajectorySession::new(
+    let session = StoryCoords::new(
         storage,
         agent_id,
         session_id,
@@ -59,16 +60,17 @@ pub async fn resolve_for_append(
     root_session_id: Option<&str>,
     requested: TrajectoryStorageFormat,
 ) -> anyhow::Result<TrajectoryStorageFormat> {
-    let session = TrajectorySession::new(
+    let session = StoryCoords::new(
         storage,
         agent_id,
         session_id,
         root_session_id.map(str::to_string),
     );
     match requested {
-        TrajectoryStorageFormat::Lance
-        | TrajectoryStorageFormat::Markdown
-        | TrajectoryStorageFormat::Both => Ok(requested),
+        TrajectoryStorageFormat::Lance => Ok(TrajectoryStorageFormat::Lance),
+        TrajectoryStorageFormat::Markdown => Ok(TrajectoryStorageFormat::Markdown),
+        // Legacy alias: append targets Lance only (same as Lance).
+        TrajectoryStorageFormat::Both => Ok(TrajectoryStorageFormat::Lance),
         TrajectoryStorageFormat::Auto => {
             resolve_auto(
                 &session,
@@ -85,7 +87,7 @@ pub fn format_label(fmt: TrajectoryStorageFormat) -> &'static str {
         TrajectoryStorageFormat::Auto => "auto",
         TrajectoryStorageFormat::Lance => "lance",
         TrajectoryStorageFormat::Markdown => "markdown",
-        TrajectoryStorageFormat::Both => "both (lance+materialize)",
+        TrajectoryStorageFormat::Both => "both (legacy)",
     }
 }
 
@@ -96,7 +98,7 @@ pub fn dataset_display(
     root_session_id: Option<&str>,
     fmt: TrajectoryStorageFormat,
 ) -> anyhow::Result<String> {
-    let session = TrajectorySession::new(
+    let session = StoryCoords::new(
         storage,
         agent_id,
         session_id,
@@ -112,12 +114,69 @@ pub fn dataset_display(
                 session_markdown_filename(session_id)
             ))
         }
-        TrajectoryStorageFormat::Both => Ok(format!(
-            "{}/[lance:{} + {}]",
-            dir.display(),
-            session_id,
-            session_markdown_filename(session_id)
-        )),
-        _ => session.session_dir().map(|p| p.display().to_string()),
+        TrajectoryStorageFormat::Both => Ok(dir.display().to_string()),
+        _ => session_lance_dir(&session).map(|p| p.display().to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use persisting_proto::TrajectoryStorageFormat;
+
+    #[tokio::test]
+    async fn resolve_append_auto_on_empty_session_defaults_lance() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().to_string_lossy().to_string();
+        let fmt = resolve_for_append(&storage, "a", "s", None, TrajectoryStorageFormat::Auto)
+            .await
+            .unwrap();
+        assert_eq!(fmt, TrajectoryStorageFormat::Lance);
+    }
+
+    #[tokio::test]
+    async fn resolve_append_auto_when_only_markdown_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().to_string_lossy().to_string();
+        let run = super::super::trajectory_run_dir(&storage, "a", "s", None).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        let md = run.join("s.md");
+        std::fs::write(&md, "# seed\n").unwrap();
+
+        let fmt = resolve_for_append(&storage, "a", "s", None, TrajectoryStorageFormat::Auto)
+            .await
+            .unwrap();
+        assert_eq!(fmt, TrajectoryStorageFormat::Markdown);
+    }
+
+    #[tokio::test]
+    async fn resolve_append_explicit_markdown_and_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().to_string_lossy().to_string();
+
+        let md = resolve_for_append(&storage, "a", "s", None, TrajectoryStorageFormat::Markdown)
+            .await
+            .unwrap();
+        assert_eq!(md, TrajectoryStorageFormat::Markdown);
+
+        let both = resolve_for_append(&storage, "a", "s", None, TrajectoryStorageFormat::Both)
+            .await
+            .unwrap();
+        assert_eq!(both, TrajectoryStorageFormat::Lance);
+    }
+
+    #[tokio::test]
+    async fn resolve_read_auto_when_only_markdown_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().to_string_lossy().to_string();
+        let run = super::super::trajectory_run_dir(&storage, "a", "s", None).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("s.md"), "# md\n").unwrap();
+
+        let fmt =
+            resolve_for_read_with_root(&storage, "a", "s", None, TrajectoryStorageFormat::Auto)
+                .await
+                .unwrap();
+        assert_eq!(fmt, TrajectoryStorageFormat::Markdown);
     }
 }

@@ -75,6 +75,11 @@ impl MarkdownPipeline {
     fn skip_history_replay(&mut self, rec: &CaptureRecord) -> bool {
         match rec.kind.as_str() {
             "llm.request" => {
+                // Codex / Responses tool rounds resend the full `input` array; visible user
+                // turn count stays flat while `user_content` is a new tool_result block.
+                if is_tool_result_continuation(rec) {
+                    return false;
+                }
                 let Some(count) = rec
                     .payload
                     .get("user_message_count")
@@ -99,6 +104,12 @@ impl MarkdownPipeline {
             _ => false,
         }
     }
+}
+
+/// Responses / Codex tool-output follow-up (not Claude history replay).
+fn is_tool_result_continuation(rec: &CaptureRecord) -> bool {
+    rec.visible_user_text()
+        .is_some_and(|t| t.contains("```tool_result:"))
 }
 
 /// Where live markdown for one session is written.
@@ -369,6 +380,34 @@ mod tests {
         assert!(p.try_block(&replay).unwrap().is_none());
         assert!(p.skips_draft("c3"));
         assert!(p.try_block(&response("c3", "internal")).unwrap().is_none());
+    }
+
+    #[test]
+    fn codex_tool_result_round_keeps_assistant_when_user_turn_count_flat() {
+        let mut tool_req = request("c-tool", "x", 2, None);
+        tool_req.payload["user_content"] =
+            json!("```tool_result:call_x\nchunk output\n```");
+
+        let mut p = MarkdownPipeline::default();
+        assert!(p
+            .try_block(&request("c1", "hi", 1, None))
+            .unwrap()
+            .is_some());
+        assert!(p.try_block(&response("c1", "Hello")).unwrap().is_some());
+        assert!(p
+            .try_block(&request("c2", "review", 2, None))
+            .unwrap()
+            .is_some());
+        assert!(p.try_block(&response("c2", "running tools")).unwrap().is_some());
+        assert!(p.try_block(&tool_req).unwrap().is_some());
+        assert!(p
+            .try_block(&response("c-tool", "Let me dig in."))
+            .unwrap()
+            .is_some());
+        assert!(p
+            .try_block(&response("c-final", "Full design review."))
+            .unwrap()
+            .is_some());
     }
 
     #[test]
