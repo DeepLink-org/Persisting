@@ -18,6 +18,7 @@ pub(crate) fn resolve_peer_client(peer: SocketAddr) -> Result<Option<SessionClie
                     peer_port: peer.port(),
                     pid,
                     command,
+                    machine_fp: None,
                 }));
             }
         }

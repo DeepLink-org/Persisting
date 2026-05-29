@@ -1760,6 +1760,11 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                 root_session_id: loc.root_session_id.clone(),
             };
             if args.detail {
+                // Dialogue metrics (chars, tokens, models) are derived from TLV markdown blocks.
+                let replay_format = match args.storage_format {
+                    TrajectoryStorageCli::Auto => TrajectoryStorageFormat::Markdown,
+                    other => other.into(),
+                };
                 let stats = invoke_trajectory_stats(lazy, stats_req)?;
                 if stats.status != "ok" {
                     print_trajectory_stats_as_toml(&stats)?;
@@ -1777,7 +1782,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                         session_id: loc.session_id.clone(),
                         offset: 0,
                         limit: None,
-                        storage_format: args.storage_format.into(),
+                        storage_format: replay_format,
                         root_session_id: loc.root_session_id.clone(),
                     },
                 )?;

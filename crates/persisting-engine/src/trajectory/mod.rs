@@ -23,6 +23,8 @@ pub mod path;
 mod storage;
 pub mod store;
 
+pub use storage::{detect_story_primary_layer, story_stats_note};
+
 pub use convert::{
     compact_markdown_to_lance, layer_stats, materialize_lance_to_markdown, CompactOutcome,
     LayerStats, MaterializeOutcome,
@@ -334,6 +336,11 @@ async fn stats_dual_layer(
     request: &TrajectoryStatsRequest,
 ) -> Result<TrajectoryStatsResponse> {
     let layers = layer_stats(session).await?;
+    let primary = storage::detect_story_primary_layer(&layers, session);
+    let row_count = match primary {
+        TrajectoryStorageFormat::Markdown => layers.markdown_blocks,
+        _ => layers.lance_rows,
+    };
     let manifest_version = if layers.lance_rows > 0 {
         LanceTrajectoryStore
             .stats(session)
@@ -343,17 +350,12 @@ async fn stats_dual_layer(
     } else {
         None
     };
-    let row_count = if layers.lance_rows > 0 {
-        layers.lance_rows
-    } else {
-        layers.markdown_blocks
-    };
     let status = if row_count > 0 { "ok" } else { "empty" };
-    let dataset = match &layers.markdown_path {
-        Some(md) if layers.lance_rows > 0 && layers.markdown_blocks > 0 => {
-            format!("{} | {}", layers.lance_uri, md)
-        }
-        Some(md) if layers.lance_rows == 0 => md.clone(),
+    let dataset = match primary {
+        TrajectoryStorageFormat::Markdown => layers
+            .markdown_path
+            .clone()
+            .unwrap_or_else(|| layers.lance_uri.clone()),
         _ => layers.lance_uri.clone(),
     };
     Ok(TrajectoryStatsResponse {
@@ -364,7 +366,7 @@ async fn stats_dual_layer(
         row_count,
         manifest_version,
         status: status.to_string(),
-        note: layers.note,
+        note: storage::story_stats_note(&layers, primary),
     })
 }
 
@@ -838,7 +840,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(st.row_count, 2);
-        assert!(st.note.contains("Two-layer"));
+        assert!(st.note.contains("Story stats via lance"));
         assert!(st.note.contains("Markdown 2"));
     }
 

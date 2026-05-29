@@ -3015,6 +3015,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if 1.0.4",
+ "libc",
+ "windows-link",
+]
+
+[[package]]
 name = "http"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5077,13 +5088,14 @@ name = "persisting-capture"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "axum",
+ "blake3",
  "bytes",
  "chrono",
  "dashmap",
  "dirs",
  "futures-util",
+ "hostname",
  "http 1.4.0",
  "http-body-util",
  "hyper",

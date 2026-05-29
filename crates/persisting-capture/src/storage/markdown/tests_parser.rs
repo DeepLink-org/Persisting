@@ -513,6 +513,7 @@ mod parser_v1 {
                 peer_port: 54321,
                 pid: 999,
                 command: "claude --model deepseek".into(),
+                machine_fp: None,
             },
         )
         .unwrap();
@@ -544,6 +545,7 @@ mod parser_v1 {
             peer_port: 40000,
             pid: 42,
             command: "python3 agent.py".into(),
+            machine_fp: None,
         }))
         .unwrap();
         let doc = format!(

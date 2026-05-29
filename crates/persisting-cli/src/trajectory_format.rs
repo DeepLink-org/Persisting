@@ -229,4 +229,20 @@ mod tests {
             TrajectoryStorageFormat::Both
         ));
     }
+
+    #[test]
+    fn resolve_capture_run_dir_to_header_session_stem() {
+        use persisting_engine::trajectory::resolve_traj_read_location;
+
+        let path = "store/deepseek-proxy/run-20260529-020451-705391000";
+        if !std::path::Path::new(path).is_dir() {
+            return;
+        }
+        let loc = resolve_traj_read_location("test", path.into(), None, None, None).unwrap();
+        assert_eq!(
+            loc.session_id, "5e0dfcdb-56ee-49d1-8921-4aeefeea3b17",
+            "got session_id={}",
+            loc.session_id
+        );
+    }
 }

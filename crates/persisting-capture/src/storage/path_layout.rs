@@ -5,7 +5,7 @@
 
 use std::path::{Component, Path};
 
-use super::markdown::locate_session_markdown;
+use super::markdown::{locate_session_markdown, session_markdown_path_for_key};
 use super::story_coords::StoryCoords;
 use anyhow::Result;
 
@@ -222,6 +222,36 @@ pub fn merge_story_location(
     }
 }
 
+/// When a capture run uses a header session id (UUID) for Lance/md but the run folder is `run-*`,
+/// remap the story storage key from the primary markdown stem under the run directory.
+fn remap_capture_run_story_session_id(
+    storage: &str,
+    agent_id: &str,
+    session_id: &str,
+    root_session_id: Option<&str>,
+) -> String {
+    let Some(root) = root_session_id else {
+        return session_id.to_string();
+    };
+    if session_id != root {
+        return session_id.to_string();
+    }
+    let run_dir = Path::new(storage).join(agent_id).join(root);
+    primary_story_storage_key(&run_dir, root).unwrap_or_else(|| session_id.to_string())
+}
+
+fn primary_story_storage_key(run_dir: &Path, run_id: &str) -> Option<String> {
+    if session_markdown_path_for_key(run_dir, run_id).is_file() {
+        return None;
+    }
+    let md = locate_session_markdown(run_dir)?;
+    let stem = md.file_stem()?.to_str()?;
+    if stem == run_id {
+        return None;
+    }
+    Some(stem.to_string())
+}
+
 /// Read commands (`replay`, `stats`) require a resolved session.
 pub fn resolve_story_read_location(
     op: &str,
@@ -242,6 +272,12 @@ pub fn resolve_story_read_location(
                     &session_id,
                 )
             });
+            let session_id = remap_capture_run_story_session_id(
+                &partial.storage,
+                &agent_id,
+                &session_id,
+                root_session_id.as_deref(),
+            );
             Ok(StoryCoords {
                 storage: partial.storage,
                 agent_id,
@@ -384,6 +420,54 @@ mod tests {
         assert_eq!(loc.root_session_id.as_deref(), Some("run-1"));
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_capture_run_remaps_to_primary_story_stem() {
+        let base = std::env::temp_dir().join(format!(
+            "persisting-traj-story-stem-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let session = base.join("store").join("agent").join("run-1");
+        std::fs::create_dir_all(session.join(".lance").join("run-1")).unwrap();
+        std::fs::create_dir_all(session.join(".lance").join("uuid-story")).unwrap();
+        std::fs::write(session.join("uuid-story.md"), "# test\n").unwrap();
+
+        let loc = resolve_traj_read_location(
+            "trajectory stats",
+            session.to_str().unwrap().into(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(loc.session_id, "uuid-story");
+        assert_eq!(loc.root_session_id.as_deref(), Some("run-1"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_real_capture_run_store_if_present() {
+        let session = Path::new("store/deepseek-proxy/run-20260529-020451-705391000");
+        if !session.is_dir() {
+            return;
+        }
+        let loc = resolve_traj_read_location(
+            "trajectory stats",
+            session.to_str().unwrap().into(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            loc.session_id,
+            "5e0dfcdb-56ee-49d1-8921-4aeefeea3b17",
+            "expected header-session stem, got {}",
+            loc.session_id
+        );
     }
 
     #[test]
