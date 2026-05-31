@@ -34,6 +34,51 @@ pub trait CaptureSink: Send + Sync {
     }
 }
 
+/// Assigns monotonic `seq` per storage target without persisting (`-f md` capture path).
+pub struct SeqOnlySink {
+    next_seq: Mutex<HashMap<String, u64>>,
+}
+
+impl SeqOnlySink {
+    pub fn new() -> Self {
+        Self {
+            next_seq: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn assign_seq(&self, route: &CaptureRoute, record: &mut CaptureRecord) {
+        let mut guard = self.next_seq.lock().unwrap();
+        let seq = guard.entry(route.seq_key()).or_insert(0);
+        record.seq = *seq;
+        *seq += 1;
+        record.session_id = Some(route.session_id.clone());
+        record.subagent_id = route.subagent_id.clone();
+    }
+}
+
+impl CaptureSink for SeqOnlySink {
+    fn append(
+        &self,
+        route: &CaptureRoute,
+        _agent_id: &str,
+        record: &mut CaptureRecord,
+    ) -> Result<()> {
+        self.assign_seq(route, record);
+        Ok(())
+    }
+
+    fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
+        Some(
+            self.next_seq
+                .lock()
+                .unwrap()
+                .get(&route.seq_key())
+                .copied()
+                .unwrap_or(0),
+        )
+    }
+}
+
 /// Assigns monotonic `seq` per storage target and forwards records (RON encoding deferred to consumer).
 pub struct CallbackSink {
     agent_id: String,

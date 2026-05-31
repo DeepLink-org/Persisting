@@ -6,6 +6,7 @@ pub mod in_process;
 pub mod reconcile;
 pub mod replay_dead_letter;
 pub mod run;
+pub mod usage;
 pub use debug_setup::{enable_if_requested as enable_capture_debug, CaptureDebugContext};
 pub use run::{cmd_run, RunOptions};
 mod merge;
@@ -22,26 +23,26 @@ use persisting_proto::TrajectoryStorageFormat;
 
 pub use record::CaptureRecord;
 
-/// Capture trajectory storage format.
+/// Capture trajectory storage format (single physical layer per run — no dual-write).
 ///
-/// - `md`: Lance canonical + TLV Markdown materialized on flush/shutdown
-/// - `bin` / `lance`: Lance raw event log only
+/// - `md`: TLV Markdown only (`{session}.md` live upsert)
+/// - `vortex` (alias `bin`): Vortex event log only (use `traj materialize` for human-readable md)
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CaptureFormat {
-    /// Human-readable view (Lance canonical + materialized `{session}.md`).
+    /// Human-readable TLV Markdown only.
     #[value(name = "md", alias = "markdown")]
     #[default]
     Markdown,
-    /// Lance column store only.
-    #[value(name = "bin", alias = "lance")]
-    Lance,
+    /// Vortex columnar event log only.
+    #[value(name = "vortex", alias = "bin")]
+    Vortex,
 }
 
 impl From<CaptureFormat> for TrajectoryStorageFormat {
     fn from(v: CaptureFormat) -> Self {
         match v {
             CaptureFormat::Markdown => TrajectoryStorageFormat::Markdown,
-            CaptureFormat::Lance => TrajectoryStorageFormat::Lance,
+            CaptureFormat::Vortex => TrajectoryStorageFormat::Vortex,
         }
     }
 }
@@ -50,13 +51,36 @@ impl CaptureFormat {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Markdown => "md",
-            Self::Lance => "bin",
+            Self::Vortex => "vortex",
         }
     }
 
-    /// Live markdown is written inside [`CaptureEngine`] (Lance-only worker flush).
-    pub fn stream_markdown_in_engine(self) -> bool {
+    pub fn writes_markdown(self) -> bool {
         matches!(self, Self::Markdown)
+    }
+
+    pub fn writes_vortex(self) -> bool {
+        matches!(self, Self::Vortex)
+    }
+
+    /// Live markdown upsert inside [`CaptureEngine`] (`-f md` only).
+    pub fn stream_markdown_in_engine(self) -> bool {
+        self.writes_markdown()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::ValueEnum;
+
+    #[test]
+    fn capture_format_bin_alias_maps_to_vortex() {
+        assert_eq!(
+            CaptureFormat::from_str("bin", false).unwrap(),
+            CaptureFormat::Vortex
+        );
+        assert!(CaptureFormat::Vortex.writes_vortex());
     }
 }
 

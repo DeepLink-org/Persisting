@@ -93,9 +93,10 @@ plugins:
             Trajectory Storage: 轨迹存储模型
             Trajectory Markdown Format: 轨迹 Markdown 格式
             CLI Architecture: CLI 整体架构
-            Capture Command: Capture 命令
+            Traj Command: Traj 命令
+            Traj Capture Subcommands: Traj Capture 子命令
+            Capture Quick Start: Capture 快速上手
             Capture Architecture Design: Capture 架构设计
-            Trajectory Command: Trajectory 命令
             Search Command: Search 命令
             Similar Systems Reference: 类似系统参考
             API Reference: API 参考
@@ -115,6 +116,7 @@ nav:
   - Getting Started: quickstart.md
   - Guide:
       - guide/index.md
+      - Capture Quick Start: guide/capture_quickstart.md
       - Queue Backends: guide/backends.md
       - Lance Backend: guide/lance.md
       - Persisting Backend: guide/persisting.md
@@ -126,9 +128,9 @@ nav:
       - Trajectory Storage: design/trajectory_storage.zh.md
       - Trajectory Markdown Format: design/trajectory_tlv_format.zh.md
       - CLI Architecture: design/cli_architecture.zh.md
-      - Capture Command: design/cli_capture_command.zh.md
+      - Traj Capture Subcommands: design/cli_capture_command.zh.md
       - Capture Architecture Design: design/capture_design.zh.md
-      - Trajectory Command: design/cli_trajectory_command.zh.md
+      - Traj Command: design/cli_trajectory_command.zh.md
       - Search Command: design/cli_search_command.zh.md
       - Similar Systems Reference: design/similar_systems_reference.md
   - API Reference: api_reference.md

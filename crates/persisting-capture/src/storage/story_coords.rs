@@ -1,7 +1,7 @@
 //! Run / Story coordinates for offline trajectory egress (aligned with [`CaptureRoute`]).
 //!
 //! - **Run** → `root_session_id` → `{storage}/{agent_id}/{run_id}/`
-//! - **Story** → `session_id` → Lance key + `{session_id}.md` under the run directory
+//! - **Story** → `session_id` → `{session_id}.md` under the run directory; Vortex rows are filtered by session_id
 
 use std::path::{Path, PathBuf};
 
@@ -51,17 +51,13 @@ impl StoryCoords {
         )
     }
 
-    pub fn lance_dataset_dir(&self) -> Result<PathBuf> {
-        story_lance_dataset_dir(
+    pub fn vortex_event_path(&self) -> Result<PathBuf> {
+        story_vortex_event_path(
             &self.storage,
             &self.agent_id,
             &self.session_id,
             self.root_session_id.as_deref(),
         )
-    }
-
-    pub fn lance_uri_display(&self) -> Result<String> {
-        Ok(self.lance_dataset_dir()?.to_string_lossy().into_owned())
     }
 }
 
@@ -107,19 +103,41 @@ pub fn story_run_dir(
     }
 }
 
-/// Lance dataset directory (`.lance/{session_key}/` under run dir when nested).
-pub fn story_lance_dataset_dir(
+/// Vortex event log file at `{run}/events.vortex`.
+pub fn story_vortex_event_path(
     storage: &str,
     agent_id: &str,
     session_id: &str,
     root_session_id: Option<&str>,
 ) -> Result<PathBuf> {
     let run = story_run_dir(storage, agent_id, session_id, root_session_id)?;
-    match root_session_id {
-        Some(_) => {
-            let key = validate_path_segment(session_id, "session_id")?;
-            Ok(run.join(".lance").join(key))
-        }
-        None => Ok(run),
+    Ok(run.join("events.vortex"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_sessions_share_run_level_vortex_path() {
+        let root = story_vortex_event_path("/store", "agent", "run-001", Some("run-001")).unwrap();
+        let sub = story_vortex_event_path("/store", "agent", "agent-sub", Some("run-001")).unwrap();
+        assert_eq!(root, sub);
+        assert!(root.ends_with("agent/run-001/events.vortex"));
+    }
+
+    #[test]
+    fn flat_session_vortex_path_is_session_scoped() {
+        let path = story_vortex_event_path("/store", "agent", "sess-flat", None).unwrap();
+        assert!(path.ends_with("agent/sess-flat/events.vortex"));
+    }
+
+    #[test]
+    fn story_coords_vortex_event_path_matches_helper() {
+        let coords = StoryCoords::new("/store", "agent", "run-x", Some("run-x".into()));
+        assert_eq!(
+            coords.vortex_event_path().unwrap(),
+            story_vortex_event_path("/store", "agent", "run-x", Some("run-x")).unwrap()
+        );
     }
 }

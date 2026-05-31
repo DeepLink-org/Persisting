@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 Agent — 由 `persisting capture run … -- python3 agent.py` 执行。"""
+"""示例 Agent — 由 `persisting traj capture … -- python3 agent.py` 执行。"""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def main() -> int:
     session = os.environ.get("PERSISTING_CAPTURE_SESSION_ID", "")
     if not base:
         print(
-            "请通过 capture run 运行，例如：\n"
-            "  persisting capture run -o ./store -c proxy.toml -- python3 agent.py",
+            "请通过 traj capture 运行，例如：\n"
+            "  persisting traj capture -o ./store -c proxy.toml -- python3 agent.py",
             file=sys.stderr,
         )
         return 2

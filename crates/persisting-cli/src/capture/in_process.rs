@@ -1,4 +1,4 @@
-//! In-process capture proxy for `capture run` (no forked daemon).
+//! In-process capture proxy for `traj capture` (no forked daemon).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,9 +28,9 @@ impl InProcessCapture {
         if let Some(state) = CaptureDaemonState::read(&storage)? {
             if state.is_running() {
                 anyhow::bail!(
-                    "capture daemon already running (pid {}) for {}; \
-                     run `persisting capture stop {}` first — \
-                     `capture run` serves in-process and does not fork a daemon",
+                    "traj proxy already running (pid {}) for {}; \
+                     run `persisting traj proxy stop {}` first — \
+                     `traj capture` serves in-process and does not fork a daemon",
                     state.pid,
                     storage.display(),
                     storage.display()

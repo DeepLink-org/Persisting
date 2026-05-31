@@ -43,8 +43,6 @@ pub const PERSISTING_FTS_INDEX_NAME: &str = "persisting_fts";
 /// Query path uses fixed column `embedding` (matches `SearchAdd` / CLI defaults).
 const QUERY_VECTOR_COLUMN: &str = "embedding";
 
-const DEFAULT_IVF_POSTPROCESS_MAX_CLUSTER_RATIO: f32 = 2.5;
-
 async fn dataset_exists(uri: &str) -> Result<bool> {
     match Dataset::open(uri).await {
         Ok(_) => Ok(true),
@@ -79,21 +77,13 @@ fn build_ivf_params(req: &SearchIndexRequest, row_count: usize) -> IvfBuildParam
         })
         .unwrap_or_else(|| default_ivf_partitions(row_count));
 
-    let mut ivf = IvfBuildParams::new(num_partitions)
-        .with_balance_factor(req.ivf_balance_factor.unwrap_or(0.0));
-    if req.ivf_balance_postprocess.unwrap_or(false) {
-        ivf = ivf.with_postprocess_max_cluster_ratio(
-            req.ivf_postprocess_max_cluster_ratio
-                .unwrap_or(DEFAULT_IVF_POSTPROCESS_MAX_CLUSTER_RATIO),
-        );
-    }
     IvfBuildParams {
         max_iters: req.ivf_max_iters.unwrap_or(50),
         sample_rate: req.ivf_sample_rate.unwrap_or(256),
         target_partition_size: req.ivf_target_partition_size,
         shuffle_partition_batches: req.ivf_shuffle_partition_batches.unwrap_or(1024 * 10),
         shuffle_partition_concurrency: req.ivf_shuffle_partition_concurrency.unwrap_or(2),
-        ..ivf
+        ..IvfBuildParams::new(num_partitions)
     }
 }
 
@@ -502,9 +492,6 @@ fn apply_nprobes(scan: &mut lance::dataset::scanner::Scanner, request: &SearchQu
     }
     if let Some(n) = request.maximum_nprobes {
         scan.maximum_nprobes(n);
-    }
-    if let Some(m) = request.adaptive_nprobes_margin {
-        scan.adaptive_nprobes(m, None);
     }
 }
 

@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use persisting_capture::record::CaptureRecord;
 use persisting_proto::TrajectoryStatsResponse;
 use std::collections::HashSet;
 
@@ -445,6 +446,9 @@ fn compute_tpot_ms(
 fn parse_record_line(line: &str) -> Result<ParsedRecord> {
     let line = line.trim();
     let v: serde_json::Value = serde_json::from_str(line).context("parse replay JSON")?;
+    if let Ok(rec) = serde_json::from_value::<CaptureRecord>(v.clone()) {
+        return parsed_from_capture_record(&rec);
+    }
     let obj = v.as_object().context("replay record must be JSON object")?;
     let kind = json_str(obj, "kind").unwrap_or_else(|| "markdown".into());
     let content = json_str(obj, "content").unwrap_or_default();
@@ -478,6 +482,67 @@ fn parse_record_line(line: &str) -> Result<ParsedRecord> {
         call_id,
         spawn_links,
     })
+}
+
+fn parsed_from_capture_record(rec: &CaptureRecord) -> Result<ParsedRecord> {
+    let content = match rec.kind.as_str() {
+        "llm.request" => rec.visible_user_text().unwrap_or_default(),
+        "llm.response" | "llm.response.stream" => rec.visible_assistant_text().unwrap_or_default(),
+        _ => rec
+            .payload
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| rec.payload.to_string()),
+    };
+    let usage = rec
+        .payload
+        .get("usage")
+        .or_else(|| rec.payload.get("body").and_then(|b| b.get("usage")));
+    let prompt_tokens = usage
+        .and_then(|u| token_field(u, "prompt_tokens").or_else(|| token_field(u, "input_tokens")));
+    let completion_tokens = usage.and_then(|u| {
+        token_field(u, "completion_tokens").or_else(|| token_field(u, "output_tokens"))
+    });
+    let model = rec
+        .payload
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let spawn_links = rec
+        .payload
+        .get("spawn_links")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(parse_spawn_link).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok(ParsedRecord {
+        kind: rec.kind.clone(),
+        content,
+        model,
+        prompt_tokens,
+        completion_tokens,
+        timestamp: rec.timestamp.clone(),
+        ttft_ms: rec.payload.get("ttft_ms").and_then(json_u64_value),
+        stream_partial: rec
+            .payload
+            .get("stream_partial")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        call_id: rec.call_id.clone(),
+        spawn_links,
+    })
+}
+
+fn token_field(usage: &serde_json::Value, key: &str) -> Option<u64> {
+    usage.get(key).and_then(json_u64_value)
+}
+
+fn json_u64_value(v: &serde_json::Value) -> Option<u64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
 }
 
 fn extract_spawn_links(obj: &serde_json::Map<String, serde_json::Value>) -> Vec<SpawnLinkInfo> {
@@ -721,6 +786,43 @@ mod tests {
         assert_eq!(turns[0].spawn_links.len(), 1);
         assert_eq!(turns[0].turn.assistant_chars, 6);
         assert!(turns[1].spawn_links.is_empty());
+    }
+
+    #[test]
+    fn parses_vortex_capture_record_replay_json() {
+        let records = vec![
+            serde_json::json!({
+                "seq": 0,
+                "source": "capture",
+                "kind": "llm.request",
+                "call_id": "c1",
+                "payload": {
+                    "model": "gpt-test",
+                    "body": {"messages": [{"role": "user", "content": "hi"}]}
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "seq": 1,
+                "source": "capture",
+                "kind": "llm.response",
+                "call_id": "c1",
+                "payload": {
+                    "body": {
+                        "choices": [{"message": {"role": "assistant", "content": "hello"}}],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 5}
+                    },
+                    "ttft_ms": 120
+                }
+            })
+            .to_string(),
+        ];
+        let (_, turns) = analyze_session_tree(&records).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].turn.user_chars, 2);
+        assert_eq!(turns[0].turn.assistant_chars, 5);
+        assert_eq!(turns[0].turn.completion_tokens, Some(5));
+        assert_eq!(turns[0].turn.ttft_ms, Some(120));
     }
 
     #[test]

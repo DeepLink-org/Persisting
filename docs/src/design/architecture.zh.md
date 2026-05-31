@@ -58,7 +58,7 @@ Lance Dataset (磁盘)
 
 队列持久化是 Persisting 数据面**已可用**的一层。
 
-**轨迹存储**（捕获代理、Lance / Markdown 双视图）已独立落地，见 [轨迹存储模型](trajectory_storage.zh.md)。
+**轨迹存储**（捕获代理、Vortex / Markdown 双视图）已独立落地，见 [轨迹存储模型](trajectory_storage.zh.md)。
 
 下一阶段 **Tensor Memory** 将补全核心分布式分层内存能力：
 

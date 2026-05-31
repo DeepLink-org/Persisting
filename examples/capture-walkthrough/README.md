@@ -8,7 +8,7 @@ cd examples/capture-walkthrough
 ./run.sh --help
 ```
 
-**`run.sh` 从上到下 5 步**：构建 → Mock LLM → capture run → 等 markdown → 打印/replay/check。
+**`run.sh` 从上到下 5 步**：构建 → Mock LLM → traj capture → 等 markdown → 打印/replay/check。
 
 产物：`store/demo-agent/walkthrough-001/0001.md`（YAML frontmatter + `<!-- persisting:block:{speaker} … -->` 块）
 
@@ -19,11 +19,11 @@ cd examples/capture-walkthrough
 ./run.sh mock
 
 # 终端 B（需已 cargo build persisting-cli）
-persisting capture run -o ./store -c proxy.toml -f md -- python3 agent.py
+persisting traj capture -o ./store -c proxy.toml -f md -- python3 agent.py
 ./run.sh check
 ```
 
-`capture run` 为进程内代理，退出后无需 `capture stop`。
+`traj capture` 为进程内代理，退出后无需 `traj proxy stop`。
 
 ## 文件
 
@@ -41,7 +41,7 @@ persisting capture run -o ./store -c proxy.toml -f md -- python3 agent.py
 用 [llm-proxy/deepseek.toml](../llm-proxy/deepseek.toml)，仍执行：
 
 ```bash
-persisting capture run -o ./store -c your.toml -f md -- python3 your_agent.py
+persisting traj capture -o ./store -c your.toml -f md -- python3 your_agent.py
 ```
 
-文档：[cli_capture_command.zh.md](../../docs/src/design/cli_capture_command.zh.md)
+文档：[Capture 快速上手](../../docs/src/guide/capture_quickstart.zh.md) · [Traj 命令](../../docs/src/design/cli_trajectory_command.zh.md)

@@ -8,7 +8,7 @@
 # 流程（run）：
 #   1. cargo build persisting CLI
 #   2. 后台启动 mock_llm.py  :19080
-#   3. persisting capture run → 执行 agent.py（两轮对话）
+#   3. persisting traj capture → 执行 agent.py（两轮对话）
 #   4. 打印 store/.../0001.md → replay → check
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -71,8 +71,8 @@ MOCK_PID=$!
 sleep 0.3
 kill -0 "$MOCK_PID" || die "Mock LLM 启动失败"
 
-echo "==> [3/5] capture run  session=$SESSION"
-"$CLI" capture run -o "$STORAGE" -c "$PROXY" -f md -- python3 "$AGENT"
+echo "==> [3/5] traj capture  session=$SESSION"
+"$CLI" traj capture -o "$STORAGE" -c "$PROXY" -f md -- python3 "$AGENT"
 
 echo "==> [4/5] 等待 0001.md（4 块）"
 for _ in $(seq 1 30); do

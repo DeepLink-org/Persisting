@@ -385,8 +385,7 @@ mod tests {
     #[test]
     fn codex_tool_result_round_keeps_assistant_when_user_turn_count_flat() {
         let mut tool_req = request("c-tool", "x", 2, None);
-        tool_req.payload["user_content"] =
-            json!("```tool_result:call_x\nchunk output\n```");
+        tool_req.payload["user_content"] = json!("```tool_result:call_x\nchunk output\n```");
 
         let mut p = MarkdownPipeline::default();
         assert!(p
@@ -398,7 +397,10 @@ mod tests {
             .try_block(&request("c2", "review", 2, None))
             .unwrap()
             .is_some());
-        assert!(p.try_block(&response("c2", "running tools")).unwrap().is_some());
+        assert!(p
+            .try_block(&response("c2", "running tools"))
+            .unwrap()
+            .is_some());
         assert!(p.try_block(&tool_req).unwrap().is_some());
         assert!(p
             .try_block(&response("c-tool", "Let me dig in."))

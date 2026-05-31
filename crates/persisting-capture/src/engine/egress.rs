@@ -30,7 +30,7 @@ fn rebuild_story_from_records(
     TurnMachine::replay_records(story_id, agent_id, run_id, records).snapshot()
 }
 
-/// Rebuild story for one session markdown stem from Lance records.
+/// Rebuild story for one session markdown stem from Vortex records.
 pub fn rebuild_session_story(
     session_id: &str,
     root_session: &str,

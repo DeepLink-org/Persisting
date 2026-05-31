@@ -1,6 +1,6 @@
 //! Prepare phase — pure capture logic before story-local I/O.
 //!
-//! Runs on the runtime thread; may `ask` the run actor. Lance/markdown I/O only via [`StoryCommand`].
+//! Runs on the runtime thread; may `ask` the run actor. Vortex/markdown I/O only via [`StoryCommand`].
 
 use anyhow::Result;
 use pulsing_actor::ActorRef;

@@ -35,9 +35,17 @@ kv = persisting.open("kvcache/v1", dims=(...), order_dim=TIME)
 arr = kv["s1", 0, 2, 0:512].tensor()
 ```
 
+### Capture 轨迹采集（已可用）
+
+用 **`persisting traj`** 代理并采集 LLM 流量，写入 Vortex（`-f vortex`）与/或 Markdown 轨迹：
+
+- **[Capture 快速上手](capture_quickstart.md)** — `traj capture`、`traj proxy`、查看轨迹、排错
+- [Traj 命令](../design/cli_trajectory_command.zh.md) — 完整子命令
+- [Capture 架构设计](../design/capture_design.zh.md) — 概念与数据流
+
 ### 流式追加（已可用）
 
-Lance 存储引擎上的 append-only 访问模式——用于轨迹收集和事件流。这是当前已可用的生产能力。
+流式追加与队列持久化基于 Lance 存储引擎——与轨迹 Vortex 层独立。这是当前已可用的生产能力。
 
 - [队列后端](backends.md) — 存储后端概述
 - [Lance 后端](lance.md) — 使用 Lance 进行持久化

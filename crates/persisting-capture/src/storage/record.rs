@@ -1,4 +1,4 @@
-//! `CaptureRecord` and Lance append wire encoding (RON lines between engine components).
+//! `CaptureRecord` and Vortex append wire encoding (RON lines between engine components).
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};

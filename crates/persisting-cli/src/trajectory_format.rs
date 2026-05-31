@@ -11,14 +11,15 @@ use persisting_proto::TrajectoryStorageFormat;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum TrajectoryStorageCli {
-    /// Read/stats: detect layer; append: detect target layer (`auto` → Lance if empty, else existing layer).
+    /// Read/stats: detect layer; append: detect target layer (`auto` → Vortex if empty, else existing layer).
     #[default]
     Auto,
-    /// Lance raw event log (canonical).
-    Lance,
+    /// Vortex raw event log (canonical). Legacy alias: `bin`.
+    #[value(name = "vortex", alias = "bin")]
+    Vortex,
     /// TLV Markdown session file (read/materialize view).
     Markdown,
-    /// Legacy: append → Lance only; read/stats → same as `auto`. Hidden from help.
+    /// Legacy: append → Vortex only; read/stats → same as `auto`. Hidden from help.
     #[value(hide = true)]
     Both,
 }
@@ -27,7 +28,7 @@ impl From<TrajectoryStorageCli> for TrajectoryStorageFormat {
     fn from(v: TrajectoryStorageCli) -> Self {
         match v {
             TrajectoryStorageCli::Auto => TrajectoryStorageFormat::Auto,
-            TrajectoryStorageCli::Lance => TrajectoryStorageFormat::Lance,
+            TrajectoryStorageCli::Vortex => TrajectoryStorageFormat::Vortex,
             TrajectoryStorageCli::Markdown => TrajectoryStorageFormat::Markdown,
             TrajectoryStorageCli::Both => TrajectoryStorageFormat::Both,
         }
@@ -81,13 +82,13 @@ impl TrajectoryFormatManager {
     }
 }
 
-/// Numbered session markdown (`0001.md`) or legacy `.tlv.md` → default append target Lance (parse TLV, write event log).
+/// Numbered session markdown (`0001.md`) or legacy `.tlv.md` → default append target Vortex (parse TLV, write event log).
 pub fn infer_storage_format_from_path(input_path: &str) -> Option<TrajectoryStorageFormat> {
     if input_path == "-" {
         return None;
     }
     if is_trajectory_markdown_path(Path::new(input_path)) {
-        return Some(TrajectoryStorageFormat::Lance);
+        return Some(TrajectoryStorageFormat::Vortex);
     }
     let lower = input_path.to_ascii_lowercase();
     if lower.ends_with(".jsonl")
@@ -95,7 +96,7 @@ pub fn infer_storage_format_from_path(input_path: &str) -> Option<TrajectoryStor
         || lower.ends_with(".toml")
         || lower.ends_with(".ron")
     {
-        return Some(TrajectoryStorageFormat::Lance);
+        return Some(TrajectoryStorageFormat::Vortex);
     }
     None
 }
@@ -152,11 +153,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_md_uses_lance_storage_and_markdown_parser() {
+    fn session_md_uses_vortex_storage_and_markdown_parser() {
         let p = "examples/foo/0001.md";
         assert_eq!(
             infer_storage_format_from_path(p),
-            Some(TrajectoryStorageFormat::Lance)
+            Some(TrajectoryStorageFormat::Vortex)
         );
         assert_eq!(
             TrajectoryFormatManager::resolve_add_format(p, TrajectoryAddFormat::Auto).unwrap(),
@@ -165,20 +166,20 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tlv_md_input_still_lance_storage() {
+    fn legacy_tlv_md_input_still_vortex_storage() {
         let p = "examples/foo/trajectory.tlv.md";
         assert_eq!(
             infer_storage_format_from_path(p),
-            Some(TrajectoryStorageFormat::Lance)
+            Some(TrajectoryStorageFormat::Vortex)
         );
     }
 
     #[test]
-    fn jsonl_uses_lance_storage() {
+    fn jsonl_uses_vortex_storage() {
         let p = "batch.jsonl";
         assert_eq!(
             infer_storage_format_from_path(p),
-            Some(TrajectoryStorageFormat::Lance)
+            Some(TrajectoryStorageFormat::Vortex)
         );
         assert_eq!(
             TrajectoryFormatManager::resolve_add_format(p, TrajectoryAddFormat::Auto).unwrap(),
@@ -189,8 +190,11 @@ mod tests {
     #[test]
     fn explicit_storage_overrides_filename() {
         assert_eq!(
-            TrajectoryFormatManager::resolve_storage_format("0001.md", TrajectoryStorageCli::Lance),
-            TrajectoryStorageFormat::Lance
+            TrajectoryFormatManager::resolve_storage_format(
+                "0001.md",
+                TrajectoryStorageCli::Vortex
+            ),
+            TrajectoryStorageFormat::Vortex
         );
         assert_eq!(
             TrajectoryFormatManager::resolve_storage_format(
@@ -221,8 +225,8 @@ mod tests {
     #[test]
     fn storage_cli_converts_to_proto() {
         assert!(matches!(
-            TrajectoryStorageFormat::from(TrajectoryStorageCli::Lance),
-            TrajectoryStorageFormat::Lance
+            TrajectoryStorageFormat::from(TrajectoryStorageCli::Vortex),
+            TrajectoryStorageFormat::Vortex
         ));
         assert!(matches!(
             TrajectoryStorageFormat::from(TrajectoryStorageCli::Both),

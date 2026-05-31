@@ -165,3 +165,64 @@ fn is_numbered_session_markdown_name(name: &str) -> bool {
     };
     stem.len() == 4 && stem.chars().all(|c| c.is_ascii_digit())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn touch(path: std::path::PathBuf) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, "# test\n").unwrap();
+    }
+
+    #[test]
+    fn locate_run_bucket_resolves_run_stem_markdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("run-20260101-abc");
+        touch(run_dir.join("run-20260101-abc.md"));
+
+        assert_eq!(
+            locate_run_bucket_markdown(&run_dir)
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+            Some("run-20260101-abc.md".to_string())
+        );
+    }
+
+    #[test]
+    fn locate_run_bucket_returns_none_for_non_run_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("flat-session");
+        touch(run_dir.join("flat-session.md"));
+        assert!(locate_run_bucket_markdown(&run_dir).is_none());
+    }
+
+    #[test]
+    fn subagent_session_key_does_not_inherit_run_bucket() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("run-capture-001");
+        touch(run_dir.join("run-capture-001.md"));
+        touch(run_dir.join("agent-worker.md"));
+
+        assert_eq!(
+            locate_session_markdown_for_key(&run_dir, "agent-worker")
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+            Some("agent-worker.md".to_string())
+        );
+    }
+
+    #[test]
+    fn main_session_prefers_run_bucket_over_numbered_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("run-main-bucket");
+        touch(run_dir.join("run-main-bucket.md"));
+        touch(run_dir.join("0001.md"));
+
+        let resolved = locate_session_markdown_for_key(&run_dir, "header-session-uuid");
+        assert_eq!(
+            resolved.and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+            Some("run-main-bucket.md".to_string())
+        );
+    }
+}

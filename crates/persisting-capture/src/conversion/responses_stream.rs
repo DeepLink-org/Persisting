@@ -96,7 +96,7 @@ impl CompletionsToResponsesStreamTranslator {
 
     /// Visible assistant narrative for live markdown / `assistant_content` (no tool fences).
     ///
-    /// Tool calls remain in Lance via full SSE `body`. Some Codex / reasoning models stream the
+    /// Tool calls remain in Vortex via full SSE `body`. Some Codex / reasoning models stream the
     /// user-visible answer in `reasoning_content` while `content` stays empty during tool turns.
     pub fn narrative_for_capture(&self) -> String {
         if !self.accumulated_text.trim().is_empty() {
@@ -651,7 +651,8 @@ mod tests {
         assert_eq!(t.narrative_for_capture(), "visible answer");
 
         let mut t2 = CompletionsToResponsesStreamTranslator::new("gpt-5.5");
-        t2.accumulated_reasoning.push_str("reasoning-only narrative");
+        t2.accumulated_reasoning
+            .push_str("reasoning-only narrative");
         t2.tool_calls.insert(
             0,
             ToolCallState {

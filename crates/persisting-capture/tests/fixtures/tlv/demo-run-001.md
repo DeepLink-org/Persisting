@@ -17,5 +17,5 @@ block: |+
 
 <!-- persisting:block:note {"type":"markdown","length":89,"kind":"note","role":"note","seq":2,"session_id":"demo-run-001","source":"markdown","timestamp":"2026-01-01T00:00:00Z","turn":2,"v":1} -->
 
-本次会话由 `persisting capture run` 代理记录；元数据在块注释 JSON 中。
+本次会话由 `persisting traj capture` 代理记录；元数据在块注释 JSON 中。
 

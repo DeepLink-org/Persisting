@@ -65,7 +65,7 @@ impl CaptureDaemonState {
     }
 }
 
-/// `~/.persisting/capture/current.json` — last successful `capture start`.
+/// `~/.persisting/capture/current.json` — last successful `traj proxy start`.
 pub fn global_registry_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("home directory")?;
     Ok(home
@@ -147,7 +147,7 @@ pub fn resolve_storage_detailed(
     }
 
     anyhow::bail!(
-        "no capture instance found: start one with `persisting capture start -o <DIR> -c <config.toml>`, \
+        "no capture instance found: start one with `persisting traj proxy start -o <DIR> -c <config.toml>`, \
          or pass `-o <DIR>`, or set PERSISTING_CAPTURE_STORAGE"
     )
 }

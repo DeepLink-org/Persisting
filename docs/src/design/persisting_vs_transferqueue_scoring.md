@@ -45,7 +45,7 @@
 
 | 项目 | 分数 | 点评 |
 |------|------|------|
-| **Persisting** | 5 | 默认即 Lance 列存落盘，本地与分布式均用同一 LanceBackend，轨迹/事件流天然持久化，适合复现、审计与故障恢复。 |
+| **Persisting** | 5 | 队列默认 Lance 列存落盘；Agent 轨迹 canonical 为 Vortex（`events.vortex`），队列与 capture 均天然持久化，适合复现、审计与故障恢复。 |
 | **TransferQueue** | 3 | 默认 SimpleStorage 为内存；持久化依赖可选后端（Yuanrong、Mooncake 等）。能力有，但非默认开箱即用，需选型与配置。 |
 
 ---

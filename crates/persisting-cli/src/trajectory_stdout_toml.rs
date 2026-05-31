@@ -116,8 +116,8 @@ pub fn print_trajectory_materialize_as_toml(resp: &TrajectoryMaterializeResponse
         toml::Value::String(resp.markdown_path.clone()),
     );
     root.insert(
-        "lance_rows".into(),
-        toml::Value::Integer(i64::try_from(resp.lance_rows).unwrap_or(i64::MAX)),
+        "event_rows".into(),
+        toml::Value::Integer(i64::try_from(resp.event_rows).unwrap_or(i64::MAX)),
     );
     root.insert(
         "markdown_blocks".into(),

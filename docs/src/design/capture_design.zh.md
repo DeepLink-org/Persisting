@@ -28,7 +28,7 @@
 
 **Persisting Capture 是 coding agents 的轨迹层**：让 **Claude Code** 或 **OpenAI Codex** 通过本地代理运行，即可得到持久化事件日志、人类可读的 Markdown 轨迹，以及运行结束时的 consistency report。
 
-它是一个可嵌入的 **LLM 反向代理 + 轨迹采集引擎**。在已支持的客户端上，只需通过 `capture run` 注入代理或显式将 API 指到 Capture，即可在**不修改业务代码**的前提下：
+它是一个可嵌入的 **LLM 反向代理 + 轨迹采集引擎**。在已支持的客户端上，只需通过 `traj capture` 注入代理或显式将 API 指到 Capture，即可在**不修改业务代码**的前提下：
 
 - 透明转发对话流量到上游模型；
 - 将对话与调用上下文沉淀为**机器可读**的事件日志与**人类可读**的 Markdown 轨迹；
@@ -45,7 +45,7 @@ Capture 不是通用 API 网关的替代品，而是围绕 **Agent 轨迹（traj
 | 痛点 | Capture 的回应 |
 |------|----------------|
 | Agent 对话散落在各厂商 API 形态中，难以统一分析 | 归一为统一事件记录，再物化为对话视图 |
-| 只要日志不要改代码 | 反向代理 + 环境注入（`capture run`） |
+| 只要日志不要改代码 | 反向代理 + 环境注入（`traj capture`） |
 | 需要给人 review 的会话稿 | TLV Markdown：正文可读，元数据在注释中 |
 | 流式输出想「边生成边看见」 | Live Markdown upsert（草稿块 → 定稿块） |
 | 子 Agent、多 session 易混 | 按故事线分文件 + spawn 关联，不内联全文 |
@@ -53,7 +53,7 @@ Capture 不是通用 API 网关的替代品，而是围绕 **Agent 轨迹（traj
 
 ### 2.2 客户端支持（实时采集）
 
-| 客户端 | `capture run` 实时采集 | 说明 |
+| 客户端 | `traj capture` 实时采集 | 说明 |
 |--------|:----------------------:|------|
 | **Claude Code** | ✅ | 主适配目标：Anthropic Messages、subagent 分轨、history replay 去重 |
 | **OpenAI Codex** | ✅ | Responses API 路径；通过 `-c openai_base_url=…` 等注入网关 |
@@ -66,10 +66,10 @@ Capture 不是通用 API 网关的替代品，而是围绕 **Agent 轨迹（traj
 
 **擅长**
 
-- 单次或长期 `capture run` / `capture serve` 下，对 **Claude Code / Codex** 的对话采集；
+- 单次或长期 `traj capture` / `traj proxy` 下，对 **Claude Code / Codex** 的对话采集；
 - Claude Code 场景的 history replay 去重、subagent 分轨；
 - Codex 场景的 Responses ↔ Completions 桥接与上下文注入过滤；
-- Lance 全量事件 + Markdown 物化视图的双层存储；
+- Vortex 全量事件 + Markdown 物化视图的双层存储；
 - 轻量模型路由、协议桥接（Messages / Completions / Responses 等）。
 
 **不替代**
@@ -86,7 +86,7 @@ Agent 客户端
       ▼
 ┌─────────────────────────────────────┐
 │  Persisting Capture（本文）          │  ← 代理 + 采集 + 物化
-│  · 事件日志（Lance）                 │
+│  · 事件日志（Vortex）                 │
 │  · 人读轨迹（Markdown）              │
 └──────────────┬──────────────────────┘
                │ CaptureRecord / 轨迹文件
@@ -106,10 +106,10 @@ Agent 客户端
 |------|------|
 | **观测不阻断** | 用户请求的延迟与成功率优先；采集失败写入 dead letter，**不**因写盘失败而中断 HTTP 响应。 |
 | **Story 边界** | 协议差异在「进入故事模型」之前消化；故事层只谈谁、第几轮、哪次调用、发生了什么。 |
-| **Lance 为事实源** | 全量事件以结构化记录 append；Markdown 是**物化视图**，允许有损过滤。 |
+| **Vortex 为事实源** | 全量事件以结构化记录 append 到 `events.vortex`；Markdown 是**物化视图**，允许有损过滤。 |
 | **写读对称** | 在线维护的「轮次 / 调用」读模型，与离线从事件日志重放的结果一致（通过对账与测试保证）。 |
 | **单一可见文本语义** | 用户/助手可见正文只有一套提取规则，供轮次索引、Markdown 正文、过滤策略共用。 |
-| **单一写入门** | 每条进入 Lance 的会话事件，经统一的故事线 Actor 路径落盘，避免双写竞态。 |
+| **单一写入门** | 每条进入 Vortex 的会话事件，经统一的故事线 Actor 路径落盘，避免双写竞态。 |
 
 ---
 
@@ -129,7 +129,7 @@ Run（一次采集工作区 / 根会话）
 
 | 概念 | 说明 |
 |------|------|
-| **Run** | 一次 `capture run` 或逻辑上的根工作区；子 Agent 注册与对账的边界。 |
+| **Run** | 一次 `traj capture` 或逻辑上的根工作区；子 Agent 注册与对账的边界。 |
 | **Story** | 主 Agent 或某个 subagent 的独立轨迹线（例如 `run-*.md` 与 `agent-*.md`）。 |
 | **Turn** | Story 内的语义轮；区分「对话轮」与「无 opening user 的自主段」（工具循环等）。 |
 | **Call** | 一次模型调用，由 `call_id` 等标识关联请求与响应。 |
@@ -231,23 +231,23 @@ flowchart LR
           │
     ┌─────┴─────┐
     ▼           ▼
- Lance       Markdown
- (事件日志)   (物化视图)
+ Vortex       Markdown
+ (events.vortex)   (物化视图)
 ```
 
 | 组件 | 职责 |
 |------|------|
 | **Proxy** | 唯一 HTTP 入口；在转发前后发射采集事件；流式场景下节流草稿事件。 |
-| **采集引擎** | 将事件转为记录；按故事线串行 apply；协调 Lance 与 Markdown 写入。 |
+| **采集引擎** | 将事件转为记录；按故事线串行 apply；协调 Vortex 与 Markdown 写入。 |
 | **Run 协调** | 跨故事线的 spawn 关联、主从路由、记录 enrichment。 |
-| **故事线处理** | 每 Story 一个串行执行体：轮次状态、Lance 序号、Live Markdown、摘要刷新。 |
+| **故事线处理** | 每 Story 一个串行执行体：轮次状态、Vortex 序号、Live Markdown、摘要刷新。 |
 | **会话索引** | 轻量 `sessions.json`：列表、token、费用估算、状态；批量刷盘。 |
 | **对账与 dead letter** | 运行结束三轨校验；失败事件可重放。 |
 
 ### 5.2 集成方式（概念）
 
-- **库嵌入**：Rust 工程可挂载 Proxy 与 `CaptureEngine`，自行提供存储 sink（默认对接 Lance 管线）。
-- **CLI**：`persisting capture run` 包装子进程；`persisting capture serve` 长期监听。
+- **库嵌入**：Rust 工程可挂载 Proxy 与 `CaptureEngine`，自行提供存储 sink（默认对接 Vortex 管线）。
+- **CLI**：`persisting traj capture` 包装子进程；`persisting traj proxy` 长期监听。
 - **配置**：TOML 声明监听地址、模型路由、采集级别、存储根目录；无需改 Agent 源码。
 
 公开 API 以**模块边界**发布（代理、引擎、记录、轨迹、会话），避免扁平导出 hundreds 个符号；故事读模型主要通过快照与对账产物对外可见。
@@ -268,12 +268,12 @@ sequenceDiagram
     participant Proxy as Capture Proxy
     participant Engine as 采集引擎
     participant Upstream as 上游模型
-    participant Lance as 事件日志
+    participant Vortex as events.vortex
     participant MD as Markdown 视图
 
     Agent->>Proxy: 对话请求
     Proxy->>Engine: 请求事件（异步，不阻塞）
-    Engine->>Lance: 记录 user 侧事件
+    Engine->>Vortex: 记录 user 侧事件
     Engine->>MD: 追加/更新 user 块
 
     Proxy->>Upstream: 转发（可能协议转换）
@@ -287,10 +287,10 @@ sequenceDiagram
 
     alt 客户端断开
         Proxy->>Engine: 取消事件
-        Engine->>Lance: 仅记录取消（不进 Markdown）
+        Engine->>Vortex: 仅记录取消（不进 Markdown）
     else 正常结束
         Proxy->>Engine: 完成事件
-        Engine->>Lance: 记录完整响应事件
+        Engine->>Vortex: 记录完整响应事件
         Engine->>MD: 定稿 assistant 块
     end
 ```
@@ -298,7 +298,7 @@ sequenceDiagram
 要点：
 
 1. **Proxy 不等待**整段采集完成再响应；事件先入 WAL，再进入 per-story 有序队列。
-2. **草稿只更新 Markdown**；完整响应以**一条**事件进入 Lance，避免 partial 行污染事实源。
+2. **草稿只更新 Markdown**；完整响应以**一条**事件进入 Vortex，避免 partial 行污染事实源。
 3. 慢客户端通过有界队列对上游施加背压，避免无限缓冲。
 
 ### 6.2 采集事件与记录类型
@@ -307,11 +307,11 @@ sequenceDiagram
 
 | 事件 | 典型效果（Dialogue 级别） |
 |------|---------------------------|
-| 请求到达 | Lance：请求记录；Markdown：user 块 |
+| 请求到达 | Vortex：请求记录；Markdown：user 块 |
 | 流式草稿 | 仅 Markdown：assistant 草稿（可原地覆盖） |
-| 响应完成 | Lance：流式/完整响应记录；Markdown：定稿 assistant |
-| 调用取消 | 仅 Lance：取消记录 |
-| Spawn 关联 | Lance + Markdown：关联元数据（不当作可跳过噪音） |
+| 响应完成 | Vortex：流式/完整响应记录；Markdown：定稿 assistant |
+| 调用取消 | 仅 Vortex：取消记录 |
+| Spawn 关联 | Vortex + Markdown：关联元数据（不当作可跳过噪音） |
 
 **采集级别**（Summary / Dialogue / Full）控制记录粒度；生产默认 Dialogue：保留可见对话，省略无关探测流量。
 
@@ -322,7 +322,7 @@ sequenceDiagram
 ```text
 助手输出:  "你" → "你好" → "你好，我来帮你…"
 Markdown:   [草稿] → [覆盖草稿] → [定稿]
-Lance:      —      —              一条最终响应事件
+Vortex:      —      —              一条最终响应事件
 ```
 
 - 草稿块带明确标记；定稿时按 **call + 角色** 覆盖同一块，避免重复段落。
@@ -338,12 +338,12 @@ Lance:      —      —              一条最终响应事件
 
 ### 7.1 双层存储
 
-| | Lance（事实源） | Markdown（物化视图） |
+| | Vortex（事实源） | Markdown（物化视图） |
 |---|----------------|----------------------|
 | **读者** | 程序、检索、replay | 人、git、review |
 | **完整性** | 无损（在采集级别内） | 有损：过滤内部与重复 history |
-| **写入** | append | live upsert 或批量 append / 全量 materialize |
-| **关系** | 行数 ≥ 块数（物化只减不增） | 从 Lance 重建可修复漂移 |
+| **写入** | append 到 `events.vortex` | live upsert 或批量 append / 全量 materialize |
+| **关系** | 行数 ≥ 块数（物化只减不增） | 从 Vortex 重建可修复漂移 |
 
 ### 7.2 物化过滤（统一策略）
 
@@ -352,7 +352,7 @@ Lance:      —      —              一条最终响应事件
 - 内部 `count_tokens`、影子模型预热；
 - Claude Code 式 **history replay**（用户消息计数未增加的重发）；
 - 无可见正文的空记录；
-- 纯生命周期、仅-cancel 类记录（保留在 Lance）。
+- 纯生命周期、仅-cancel 类记录（保留在 Vortex）。
 
 Spawn 关联等「对人仍有意义」的事件**不会**被误杀。
 
@@ -368,7 +368,7 @@ Spawn 关联等「对人仍有意义」的事件**不会**被误杀。
 | 轨道 | 含义 |
 |------|------|
 | **Markdown** | 物化块中的 call 集合 |
-| **Lance** | 事件日志中应对话出现的 call 集合 |
+| **Vortex** | 事件日志中应对话出现的 call 集合 |
 | **Story** | 从事件重放得到的 call 集合 |
 
 三者一致且结构检查通过，才认为「人读视图与事实源对齐」。不一致时应用 materialize 或排查 dead letter，而非直接信任 Markdown。
@@ -378,7 +378,7 @@ Spawn 关联等「对人仍有意义」的事件**不会**被误杀。
 | 产物 | 作用 |
 |------|------|
 | 事件 WAL | 进程崩溃后重放未确认的采集事件 |
-| dead letter | 应用失败或 Lance 刷盘失败的留存与重放 |
+| dead letter | 应用失败或 Vortex 刷盘失败的留存与重放 |
 | 故事快照 | 退出时固化各 Story 的轮次读模型，供摘要与恢复 |
 
 ---
@@ -402,7 +402,7 @@ Capture 内置**轻量 LLM 网关**，服务于「本地或团队固定上游 + 
 
 ### 9.1 路由与存储键
 
-每个 HTTP 请求绑定一条**采集路由**：逻辑 session、磁盘上的 storage 键（决定 `.md` 文件名与 Lance 数据集）、可选 subagent 标识。  
+每个 HTTP 请求绑定一条**采集路由**：逻辑 session、磁盘上的 storage 键（决定 `.md` 文件名与 Vortex 事件日志路径）、可选 subagent 标识。  
 Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-{id}.md` 或扁平 session 名。
 
 ### 9.2 文件隔离不变式
@@ -424,7 +424,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 ```text
 请求线程 ──► 发事件（写 WAL + 入队）──► 立即继续转发
                     │
-                    └──► 后台：有序 apply ──► Lance / Markdown
+                    └──► 后台：有序 apply ──► Vortex / Markdown
                               │
                               ├─ 成功 → 确认 WAL
                               └─ 失败 → dead letter（不影响 HTTP）
@@ -444,10 +444,11 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 
 | 形态 | 适用场景 |
 |------|----------|
-| **`capture run`** | 包装一次 Agent 命令（如 `claude`、`codex`）；注入代理环境变量；结束打印会话摘要 |
-| **`capture serve`** | 长期 daemon；已支持客户端指向固定 `listen` |
-| **仅 Lance / 补 Markdown** | `-f bin` 先落盘，事后 `trajectory materialize` |
-| **Dead letter 重放** | 修复存储或配置后补写失败事件 |
+| **`traj capture`** | 包装一次 Agent 命令（如 `claude`、`codex`）；注入代理环境变量；结束打印会话摘要 |
+| **`traj proxy`** | 前台长期代理；多终端共用 |
+| **`traj proxy start`** | 后台守护进程（spawn `traj proxy`） |
+| **仅 Vortex / 补 Markdown** | `-f vortex` 先落盘到 `events.vortex`，事后 `traj materialize` |
+| **Dead letter 重放** | `traj replay-dead-letter` |
 
 配置示例（节选）：
 
@@ -474,12 +475,12 @@ api_key_env = "DEEPSEEK_API_KEY"
 | 方向 | 动机 |
 |------|------|
 | **Cursor 实时采集与 import** | 与 Claude Code 对等的注入与 JSONL 导入 |
-| Lance 按时间/规模分桶 | 控制 per-session 数据集膨胀 |
+| Vortex 文件拆分与 compaction | 长 run 下单文件 `events.vortex` 过大时的拆分策略 |
 | WAL 与序号恢复增强 | 降低 crash 后重复 apply 与 seq 冲突风险 |
 | Markdown 追加日志 + 周期性 compact | 长会话 live upsert 的 IO 与 git diff 友好性 |
 | 外部定价表 | 摘要费用估算可配置 |
 | 故事读模型 enrich | 父子 Story、调用元数据与 spawn 完全闭环 |
-| Lance 列布局优化 | 更好利用列存检索，而非大 blob |
+| Vortex 列布局优化 | 更好利用列存检索，而非大 blob |
 | 协议面收敛 | 随行业 API 稳定，收缩长期维护的转换矩阵 |
 
 块格式已通过 `v: 1` 预留兼容；详见 [轨迹 Markdown 格式 §2.6](trajectory_tlv_format.zh.md#26-大文件-upsert演进格式不变)。
@@ -490,9 +491,10 @@ api_key_env = "DEEPSEEK_API_KEY"
 
 | 文档 | 内容 |
 |------|------|
-| [轨迹存储模型](trajectory_storage.zh.md) | Lance ↔ Markdown 数据流、materialize、import |
+| [Capture 快速上手](../guide/capture_quickstart.md) | **上手**：构建 CLI、`traj capture`、查看轨迹、排错 |
+| [轨迹存储模型](trajectory_storage.zh.md) | Vortex ↔ Markdown 数据流、materialize、import |
 | [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) | 块结构、字段规范、subagent 脚注、golden 示例 |
-| [Capture 命令](cli_capture_command.zh.md) | `capture run` / `serve` 参数与操作 |
+| [Traj Capture 子命令](cli_capture_command.zh.md) | `traj capture` / `traj proxy` 参数与操作 |
 | [Trajectory / `traj` 命令](cli_trajectory_command.zh.md) | Capture 离线 Egress：add、truncate、stats、replay、extract、materialize |
 | [CLI 整体架构](cli_architecture.zh.md) | Persisting 命令行体系 |
 

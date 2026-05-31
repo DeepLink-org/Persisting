@@ -4,7 +4,7 @@
 
 ## 你将获得什么
 
-Persisting 为参数、KV Cache 和轨迹提供持久化存储——以 Lance 为存储引擎，GPU/host/SSD 分层。当前已可用：**流式追加**（append-only 队列）。即将推出：**Tensor Memory API**（多维寻址访问）。
+Persisting 为参数、KV Cache 和轨迹提供持久化存储——队列与 Search 以 Lance 为底座；Agent 轨迹 canonical 为 Vortex（`events.vortex`）。当前已可用：**流式追加**（append-only 队列）。即将推出：**Tensor Memory API**（多维寻址访问）。
 
 ## 步骤 1：安装
 
@@ -33,7 +33,7 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 
 ## 步骤 3：流式追加（已可用）
 
-Lance 存储引擎上的 append-only 队列——用于轨迹收集和事件流：
+Lance 存储引擎上的 append-only 队列——用于事件流与队列持久化（与轨迹 Vortex 层独立）：
 
 ```python
 import asyncio
@@ -64,6 +64,7 @@ print(stats["metrics"])
 
 ## 下一步
 
+- [Capture 快速上手](guide/capture_quickstart.md) — Agent 轨迹采集（`traj capture`）
 - [用户指南](guide/index.md) — 详细指南
 - [设计文档](design/index.md) — 架构和 TTAS 规范
 - [API 参考](api_reference.md) — 完整 API 文档

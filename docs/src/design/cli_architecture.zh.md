@@ -1,8 +1,8 @@
 # CLI 整体架构
 
-`persisting` CLI 是**薄前端**：负责解析用户意图、序列化请求、展示结果；重逻辑（Lance、检索、轨迹引擎）在**可独立发版的引擎**中运行。
+`persisting` CLI 是**薄前端**：负责解析用户意图、序列化请求、展示结果；重逻辑（Search 用 Lance、轨迹用 Vortex、检索索引）在**可独立发版的引擎**中运行。
 
-`search`、`trajectory`、`capture import` 等子命令共用此架构。
+`search`、`traj`（`trajectory`）等子命令共用此架构。
 
 ---
 
@@ -24,7 +24,7 @@ CLI（解析 · 组装请求 · 展示结果）
     │
     │  动态加载 · 窄 ABI · 异步 job
     ▼
-引擎（Lance · Search · 轨迹 · …）
+引擎（Search · Vortex 轨迹 · …）
     │
     ▼
 持久化存储
@@ -77,11 +77,12 @@ CLI 在加载时校验 ABI；协议版本由请求携带、引擎侧校验。
 
 概念映射（非 exhaustive）：
 
-| 用户意图 | 引擎能力 |
-|----------|----------|
-| 导入文档、建索引、检索 | Search |
-| 追加 / 回放 / 统计 / 物化轨迹 | Trajectory |
-| 事后导入 IDE 或网关日志 | Trajectory（经 CLI 侧归一化） |
+| 用户意图 | CLI | 引擎能力 |
+|----------|-----|----------|
+| 导入文档、建索引、检索 | `search` | Search |
+| 实时采集 LLM 流量 | `traj capture` / `traj proxy` | Trajectory（经 capture 运行时） |
+| 追加 / 回放 / 统计 / 物化轨迹 | `traj add` / `stats` / `replay` / `materialize` / … | Trajectory |
+| 事后导入 IDE 或网关日志 | `traj import` | Trajectory（CLI 侧归一化） |
 
 部分纯本地操作（如格式转换）可由 CLI 侧直接完成；索引文件重排等数据操作仍经过引擎。
 
@@ -106,7 +107,7 @@ flowchart LR
   end
   subgraph Engine
     D --> F[分发到 Search / Trajectory / …]
-    F --> G[Lance append / materialize Markdown]
+    F --> G[Vortex append / materialize Markdown]
   end
 ```
 
@@ -117,5 +118,5 @@ flowchart LR
 ## 8. 相关文档
 
 - [`persisting search`](cli_search_command.zh.md)
-- [`persisting trajectory`](cli_trajectory_command.zh.md)
-- [`persisting capture`](cli_capture_command.zh.md)
+- [`persisting traj`](cli_trajectory_command.zh.md) — 轨迹统一入口（含 capture / proxy）
+- [Capture 子命令](cli_capture_command.zh.md) — `traj capture` / `traj proxy` / `traj import`

@@ -1,4 +1,4 @@
-//! `persisting capture run` — in-process proxy + execute command.
+//! `persisting traj capture` — in-process proxy + execute command.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -34,8 +34,8 @@ pub struct RunOptions {
 pub fn cmd_run(opts: RunOptions) -> Result<i32> {
     if opts.command.is_empty() {
         anyhow::bail!(
-            "capture run requires a command after `--`, e.g. \
-             `persisting capture run -c proxy.toml -o ./store -- curl …`"
+            "traj capture requires a command after `--`, e.g. \
+             `persisting traj capture -c proxy.toml -o ./store -- curl …`"
         );
     }
 
@@ -109,14 +109,14 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
         format!("{program} {} {}", gateway_args.join(" "), args.join(" "))
     };
     eprintln!(
-        "[persisting-cli] capture run: dir={} format={} session={root_session} proxy=http://{} cmd={child_display}",
+        "[persisting-cli] traj capture: dir={} format={} session={root_session} proxy=http://{} cmd={child_display}",
         storage.display(),
         opts.format.as_str(),
         server.listen,
     );
     if !gateway_args.is_empty() {
         eprintln!(
-            "[persisting-cli] capture run: injected client gateway config for `{program}` \
+            "[persisting-cli] traj capture: injected client gateway config for `{program}` \
              (see persisting-capture `client_gateway_config_args`)"
         );
     }
@@ -132,7 +132,7 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
 
     if opts.debug {
         eprintln!(
-            "[persisting-cli] capture run finished (exit {code}); sessions: `persisting capture list`"
+            "[persisting-cli] traj capture finished (exit {code}); sessions: `persisting traj proxy list`"
         );
     }
 
@@ -160,6 +160,13 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
     } else {
         server.shutdown()?;
     }
+
+    eprintln!(
+        "[persisting-cli] traj capture done (exit {code}) — inspect: \
+         `persisting traj stats {} --detail` · sessions: `persisting traj proxy list -o {}`",
+        storage.display(),
+        storage.display(),
+    );
 
     Ok(code)
 }
@@ -193,7 +200,7 @@ fn print_run_markdown_summary(storage: &Path, agent_id: &str, root_session: &str
             }
         }
         Err(e) => {
-            eprintln!("[persisting-cli] capture run frontmatter refresh: {e:#}");
+            eprintln!("[persisting-cli] traj capture frontmatter refresh: {e:#}");
         }
     }
 }
@@ -201,13 +208,13 @@ fn print_run_markdown_summary(storage: &Path, agent_id: &str, root_session: &str
 fn log_run_debug(storage: &Path, root_session: &str) {
     if let Ok(Some(snap)) = load_daemon_env_snapshot(storage) {
         eprintln!(
-            "[persisting-cli] capture run daemon.env: {} ({} keys)",
+            "[persisting-cli] traj capture daemon.env: {} ({} keys)",
             storage.join(DAEMON_ENV_FILENAME).display(),
             snap.vars.len()
         );
     }
     eprintln!(
-        "[persisting-cli] capture run config snapshot: {}",
+        "[persisting-cli] traj capture config snapshot: {}",
         session_proxy_config_path(storage, root_session).display()
     );
 }

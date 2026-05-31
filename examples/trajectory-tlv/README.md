@@ -1,6 +1,6 @@
 # Session markdown 示例
 
-[`0001.md`](demo-agent/demo-run-001/0001.md)：每块为 `<!-- persisting:block:{speaker} {json} -->` + **裸 Markdown 正文**（预览即对话；`CaptureRecord` 走 Lance）。
+[`0001.md`](demo-agent/demo-run-001/0001.md)：每块为 `<!-- persisting:block:{speaker} {json} -->` + **裸 Markdown 正文**（预览即对话；compact 可还原为 `CaptureRecord` 并写入 Vortex）。
 
 ```bash
 ./target/debug/persisting trajectory replay \

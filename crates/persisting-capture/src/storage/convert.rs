@@ -1,8 +1,8 @@
-//! Bidirectional conversion between Lance raw event log and TLV Markdown.
+//! Bidirectional conversion between Vortex raw event log and TLV Markdown.
 //!
-//! - **Lance → Markdown** (`materialize`): full scan, overwrite document.
-//! - **Lance → Markdown** (`stream`): incremental append per batch (capture `-f md`).
-//! - **Markdown → Lance** (`compact`): reconstructs [`CaptureRecord`] rows.
+//! - **Vortex → Markdown** (`materialize`): full scan, overwrite document.
+//! - **Vortex → Markdown** (`stream`): incremental append per batch (capture `-f md`).
+//! - **Markdown → Vortex** (`compact`): reconstructs [`CaptureRecord`] rows.
 
 use std::path::Path;
 
@@ -17,7 +17,7 @@ use super::markdown::{
 use super::record::{record_to_engine_line, CaptureRecord};
 use super::session_client::{resolve_client_meta_for_run_dir, SessionClientMeta};
 
-/// Outcome of Lance → Markdown materialization.
+/// Outcome of Vortex → Markdown materialization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializeStats {
     pub source_events: usize,
@@ -25,7 +25,7 @@ pub struct MaterializeStats {
     pub skipped_events: usize,
 }
 
-/// Outcome of streaming Lance → Markdown (incremental block append).
+/// Outcome of streaming Vortex → Markdown (incremental block append).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamMaterializeStats {
     pub events_seen: usize,
@@ -33,11 +33,11 @@ pub struct StreamMaterializeStats {
     pub skipped_events: usize,
 }
 
-/// Outcome of Markdown → Lance compaction.
+/// Outcome of Markdown → Vortex compaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactStats {
     pub source_blocks: usize,
-    pub lance_rows: usize,
+    pub event_rows: usize,
 }
 
 /// Convert raw events to TLV blocks (applies dialogue filter; may skip rows).
@@ -131,7 +131,7 @@ fn enrich_record_from_block(mut rec: CaptureRecord, block: &MarkdownBlock) -> Ca
     rec
 }
 
-/// Parse a TLV Markdown document into capture records (for Lance compaction).
+/// Parse a TLV Markdown document into capture records (for Vortex compaction).
 pub fn markdown_document_to_capture_records(doc: &str) -> Result<Vec<CaptureRecord>> {
     parse_document(doc)?
         .iter()
@@ -164,16 +164,16 @@ pub fn materialize_markdown_path(run_dir: &Path, session_key: &str) -> std::path
 pub fn compact_stats_note(
     stats: &CompactStats,
     md_path: &Path,
-    lance_uri: &str,
+    event_log_path: &str,
     overwrite: bool,
 ) -> String {
     format!(
-        "Compacted Markdown→Lance: {} block(s) → {} row(s) ({}) at {} → {}",
+        "Compacted Markdown→Vortex: {} block(s) → {} row(s) ({}) at {} → {}",
         stats.source_blocks,
-        stats.lance_rows,
+        stats.event_rows,
         if overwrite { "overwrite" } else { "append" },
         md_path.display(),
-        lance_uri
+        event_log_path
     )
 }
 

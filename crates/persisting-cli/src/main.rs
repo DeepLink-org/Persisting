@@ -27,7 +27,7 @@ use persisting_proto::{
 use serde::{Deserialize, Serialize};
 
 use persisting_engine::trajectory::{
-    merge_traj_location, resolve_traj_read_location, trajectory_run_dir, TrajLocation,
+    merge_traj_location, resolve_traj_read_location, TrajLocation,
 };
 use trajectory_detail::{build_detail_node, print_trajectory_stats_detail, SpawnLinkInfo};
 use trajectory_format::{TrajectoryAddFormat, TrajectoryFormatManager, TrajectoryStorageCli};
@@ -36,6 +36,29 @@ use trajectory_stdout_toml::{
     print_trajectory_materialize_as_toml, print_trajectory_replay_as_toml,
     print_trajectory_stats_as_toml, print_trajectory_truncate_as_toml,
 };
+
+const TRAJ_LONG_ABOUT: &str = "\
+Agent trajectory store: capture LLM traffic, inspect sessions, repair views.\n\n\
+Ingress (write):\n  \
+capture      one-shot proxy + child command\n  \
+proxy        long-running proxy (foreground)\n  \
+proxy start  background daemon\n  \
+import       post-hoc IDE / gateway JSONL\n  \
+replay-dead-letter  retry failed capture events (not `traj replay`)\n\n\
+Egress (read/write store):\n  \
+stats · replay · materialize · add · truncate · extract\n\n\
+Omit <STORAGE> on stats/replay/materialize/truncate when \
+PERSISTING_CAPTURE_STORAGE or last `traj proxy start` is set.";
+
+const CAPTURE_AFTER_HELP: &str = "\
+\nLong-running / multi-terminal: `persisting traj proxy` or `traj proxy start` \
+(injects env only for `traj capture`).\n\
+After capture: `traj stats <store> --detail`, `traj proxy list -o <store>`.";
+
+const PROXY_AFTER_HELP: &str = "\
+\nForeground: `traj proxy -o <DIR> -c <proxy.toml>` (no subcommand).\n\
+Background: `traj proxy start -o <DIR> -c <proxy.toml>`.\n\
+One-shot with auto env: `traj capture -o <DIR> -c <proxy.toml> -- claude`.";
 
 type RonAbiVersionFn = unsafe extern "C" fn() -> u32;
 
@@ -259,47 +282,23 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Search(SearchArgs),
-    /// Agent trajectory storage (append, replay, stats)
+    /// Agent trajectory: capture, proxy, inspect, repair
+    #[command(long_about = TRAJ_LONG_ABOUT)]
     Trajectory(TrajectoryArgs),
     /// Short alias for `trajectory`
-    #[command(name = "traj")]
+    #[command(name = "traj", long_about = TRAJ_LONG_ABOUT)]
     Traj(TrajectoryArgs),
-    Capture(CaptureArgs),
 }
 
 #[derive(Debug, Args)]
-struct CaptureArgs {
-    #[command(subcommand)]
-    command: CaptureCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum CaptureCommand {
-    /// Merge IDE / agentgateway events into one trajectory session.
-    Import(CaptureImportArgs),
-    /// Start capture daemon (LLM proxy + trajectory append).
-    Start(CaptureStartArgs),
-    /// Stop capture daemon for this storage root.
-    Stop(CaptureStopArgs),
-    /// List recorded sessions with usage and estimated cost.
-    List(CaptureListArgs),
-    /// Query running daemon (active connections + sessions).
-    Status(CaptureStatusArgs),
-    /// Run proxy in foreground (same as `start --foreground`).
-    Serve(CaptureServeArgs),
-    /// Set proxy env vars and run a command (in-process LLM proxy, no forked daemon).
-    Run(CaptureRunArgs),
-    /// Re-apply events from `{output_dir}/.capture/dead_letter.jsonl`.
-    ReplayDeadLetter(CaptureReplayDeadLetterArgs),
-}
-
-#[derive(Debug, Args)]
+#[command(after_long_help = CAPTURE_AFTER_HELP)]
 struct CaptureRunArgs {
     /// Trajectory output directory (default: `.persisting/capture`).
     #[arg(
         long,
         short = 'o',
         value_name = "DIR",
+        env = "PERSISTING_CAPTURE_STORAGE",
         default_value = ".persisting/capture"
     )]
     output_dir: String,
@@ -309,7 +308,7 @@ struct CaptureRunArgs {
     /// Log every proxied / captured HTTP request to stderr and `{output_dir}/.capture/debug.log`.
     #[arg(long)]
     debug: bool,
-    /// Storage format: `md` (0001.md) or `bin` (Lance).
+    /// Storage: `md` (TLV Markdown only) or `vortex` / `bin` (Vortex event log; `traj materialize` for md).
     #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
     format: capture::CaptureFormat,
     /// Command and arguments to execute (after `--`).
@@ -323,44 +322,12 @@ struct CaptureReplayDeadLetterArgs {
         long,
         short = 'o',
         value_name = "DIR",
+        env = "PERSISTING_CAPTURE_STORAGE",
         default_value = ".persisting/capture"
     )]
     output_dir: String,
     #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
     format: capture::CaptureFormat,
-}
-
-#[derive(Debug, Args)]
-struct CaptureStartArgs {
-    #[arg(long, short = 'o', value_name = "DIR")]
-    output_dir: String,
-    #[arg(long, short = 'c', value_name = "FILE")]
-    config: PathBuf,
-    #[arg(long)]
-    foreground: bool,
-    #[arg(long)]
-    debug: bool,
-    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
-    format: capture::CaptureFormat,
-}
-
-#[derive(Debug, Args)]
-struct CaptureStopArgs {
-    /// Trajectory output directory (default: last `capture start` or `PERSISTING_CAPTURE_STORAGE`).
-    #[arg(long, short = 'o', value_name = "DIR")]
-    output_dir: Option<String>,
-}
-
-#[derive(Debug, Args)]
-struct CaptureListArgs {
-    #[arg(long, short = 'o', value_name = "DIR")]
-    output_dir: Option<String>,
-}
-
-#[derive(Debug, Args)]
-struct CaptureStatusArgs {
-    #[arg(long, short = 'o', value_name = "DIR")]
-    output_dir: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -623,23 +590,101 @@ struct TrajectoryArgs {
 
 #[derive(Debug, Subcommand)]
 enum TrajectoryCommand {
-    /// 批量追加 CaptureRecord 事件（写 Lance canonical）。
+    /// One-shot: in-process LLM proxy + run a child command (`claude`, `codex`, …).
+    Capture(CaptureRunArgs),
+    /// Long-running LLM proxy (`traj proxy`) or daemon control (`traj proxy start|stop|…`).
+    Proxy(ProxyArgs),
+    /// Merge IDE / agentgateway events into one trajectory session.
+    Import(CaptureImportArgs),
+    /// Re-apply failed capture events from dead letter (not `traj replay`).
+    #[command(
+        name = "replay-dead-letter",
+        after_long_help = "Differs from `traj replay`, which reads stored events from a session."
+    )]
+    ReplayDeadLetter(CaptureReplayDeadLetterArgs),
+    /// 批量追加 CaptureRecord 事件（写 Vortex canonical）。
     Add(TrajectoryAddArgs),
-    /// 截断 Lance（保留前 N 行）；默认在存在 Markdown 层时同步重建 md。
+    /// 截断 Vortex 事件日志（保留前 N 行）；默认在存在 Markdown 层时同步重建 md。
     Truncate(TrajectoryTruncateArgs),
-    /// 统计规模；`auto` 时报告 Lance + Markdown 两层。
+    /// 统计规模；`auto` 时报告 Vortex + Markdown 两层。
     Stats(TrajectoryStatsArgs),
-    /// 按 seq 回放事件（默认读 Lance）。
+    /// 按 seq 回放事件（默认读 Vortex）。
     Replay(TrajectoryReplayArgs),
     /// 导出 Story / Run 目录树到目标路径。
     Extract(TrajectoryExtractArgs),
-    /// Lance → TLV Markdown（有损物化，维护用）。
+    /// Vortex → TLV Markdown（有损物化，维护用）。
     Materialize(TrajectoryMaterializeArgs),
+}
+
+/// `traj proxy` (foreground) or `traj proxy start|stop|list|status`.
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true, after_long_help = PROXY_AFTER_HELP)]
+struct ProxyArgs {
+    #[command(subcommand)]
+    action: Option<ProxyAction>,
+    /// Foreground proxy only: trajectory store root (`-o` with `traj proxy start` too).
+    #[arg(
+        long,
+        short = 'o',
+        value_name = "DIR",
+        env = "PERSISTING_CAPTURE_STORAGE"
+    )]
+    output_dir: Option<String>,
+    /// Foreground proxy only: proxy TOML (`listen`, `models`, …).
+    #[arg(long, short = 'c', value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Foreground proxy only: log proxied HTTP to stderr / `.capture/debug.log`.
+    #[arg(long)]
+    debug: bool,
+    /// Foreground proxy only: `md` (Markdown only) or `vortex` / `bin` (Vortex only).
+    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
+    format: capture::CaptureFormat,
+}
+
+#[derive(Debug, Subcommand)]
+enum ProxyAction {
+    /// Start background proxy daemon.
+    Start(ProxyDaemonArgs),
+    /// Stop background proxy for this storage root.
+    Stop(ProxyManageArgs),
+    /// List recorded sessions with usage and estimated cost.
+    List(ProxyManageArgs),
+    /// Query running daemon (active connections + sessions).
+    Status(ProxyManageArgs),
+}
+
+#[derive(Debug, Args)]
+struct ProxyDaemonArgs {
+    #[arg(
+        long,
+        short = 'o',
+        value_name = "DIR",
+        env = "PERSISTING_CAPTURE_STORAGE"
+    )]
+    output_dir: String,
+    #[arg(long, short = 'c', value_name = "FILE")]
+    config: PathBuf,
+    #[arg(long)]
+    debug: bool,
+    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
+    format: capture::CaptureFormat,
+}
+
+#[derive(Debug, Args)]
+struct ProxyManageArgs {
+    /// Trajectory store (default: last `traj proxy start` or `PERSISTING_CAPTURE_STORAGE`).
+    #[arg(
+        long,
+        short = 'o',
+        value_name = "DIR",
+        env = "PERSISTING_CAPTURE_STORAGE"
+    )]
+    output_dir: Option<String>,
 }
 
 #[derive(Debug, Args)]
 struct TrajectoryAddArgs {
-    /// Root directory for trajectory datasets (parent of `agent_id/session_id/` Lance dirs).
+    /// Root directory for trajectory datasets (parent of `agent_id/session_id/` run dirs).
     #[arg(value_name = "STORAGE")]
     storage: String,
     /// Agent identity（单层路径段；省略则自动生成并在 stderr 打印）。
@@ -653,22 +698,23 @@ struct TrajectoryAddArgs {
     format: TrajectoryAddFormat,
     #[arg(long, default_value = "-")]
     input: String,
-    /// 写入层：`lance` / `markdown` / `auto`（`auto` 按已有层探测，默认新建 Lance）。
+    /// 写入层：`vortex` / `markdown` / `auto`（`auto` 按已有层探测，默认新建 Vortex）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
 }
 
 #[derive(Debug, Args)]
 struct TrajectoryTruncateArgs {
+    /// Storage root or session directory; omit to use `PERSISTING_CAPTURE_STORAGE` / last proxy start.
     #[arg(value_name = "STORAGE")]
-    storage: String,
+    storage: Option<String>,
     #[arg(long, value_name = "SEG")]
     agent_id: Option<String>,
     #[arg(long, value_name = "SEG")]
     session_id: Option<String>,
     #[arg(long, value_name = "SEG")]
     root_session_id: Option<String>,
-    /// 保留按 `seq` 排序的前 N 条 Lance 行（仅 Lance 层；需更新 md 请单独 `materialize`）。
+    /// 保留按 `seq` 排序的前 N 条 Vortex 行（仅 Vortex 层；需更新 md 请单独 `materialize`）。
     #[arg(long)]
     keep_rows: usize,
 }
@@ -692,9 +738,9 @@ struct TrajectoryExtractArgs {
 
 #[derive(Debug, Args)]
 struct TrajectoryReplayArgs {
-    /// Storage root or session directory (`{storage}/{agent_id}/{session_id}/`).
+    /// Storage root or session directory; omit to use `PERSISTING_CAPTURE_STORAGE` / last proxy start.
     #[arg(value_name = "STORAGE")]
-    storage: String,
+    storage: Option<String>,
     /// 须与 `trajectory add` 写入时一致（add 若自动生成，见当时 stderr）。
     #[arg(long, value_name = "SEG")]
     agent_id: Option<String>,
@@ -707,16 +753,16 @@ struct TrajectoryReplayArgs {
     offset: usize,
     #[arg(long)]
     limit: Option<usize>,
-    /// 读取层覆盖（`auto`：有 Lance 读 Lance，否则 Markdown；两层并存时默认 Lance）。
+    /// 读取层覆盖（`auto`：有 Vortex 读 Vortex，否则 Markdown；两层并存时默认 Vortex）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
 }
 
 #[derive(Debug, Args)]
 struct TrajectoryStatsArgs {
-    /// Storage root or session directory (`{storage}/{agent_id}/{session_id}/`).
+    /// Storage root or session directory; omit to use `PERSISTING_CAPTURE_STORAGE` / last proxy start.
     #[arg(value_name = "STORAGE")]
-    storage: String,
+    storage: Option<String>,
     #[arg(long, value_name = "SEG")]
     agent_id: Option<String>,
     #[arg(long, value_name = "SEG")]
@@ -724,7 +770,7 @@ struct TrajectoryStatsArgs {
     /// 嵌套 subagent session 时指定父 session（路径 `{root}/subagents/{session_id}/`）。
     #[arg(long, value_name = "SEG")]
     root_session_id: Option<String>,
-    /// 统计层覆盖（`auto`：两层并存时同时报告 Lance 行数与 Markdown 块数）。
+    /// 统计层覆盖（`auto`：两层并存时同时报告 Vortex 行数与 Markdown 块数）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
     /// 逐轮一行摘要：用户/模型字符数、TTFT、TPOT（stdout 纯文本，非 TOML）。
@@ -734,8 +780,9 @@ struct TrajectoryStatsArgs {
 
 #[derive(Debug, Args)]
 struct TrajectoryMaterializeArgs {
+    /// Storage root or session directory; omit to use `PERSISTING_CAPTURE_STORAGE` / last proxy start.
     #[arg(value_name = "STORAGE")]
-    storage: String,
+    storage: Option<String>,
     #[arg(long, value_name = "SEG")]
     agent_id: Option<String>,
     #[arg(long, value_name = "SEG")]
@@ -777,13 +824,22 @@ fn validate_traj_segment(s: &str) -> Result<()> {
     Ok(())
 }
 
+fn resolve_traj_storage_arg(storage: Option<String>) -> Result<String> {
+    if let Some(s) = storage {
+        return Ok(s);
+    }
+    let res = persisting_capture::runtime::service::resolve_storage_detailed(None)?;
+    Ok(res.storage.to_string_lossy().into_owned())
+}
+
 fn resolve_traj_ids_for_read(
     op: &str,
-    path_arg: String,
+    storage: Option<String>,
     agent_id: Option<String>,
     session_id: Option<String>,
     root_session_id: Option<String>,
 ) -> Result<TrajLocation> {
+    let path_arg = resolve_traj_storage_arg(storage)?;
     resolve_traj_read_location(op, path_arg, agent_id, session_id, root_session_id)
 }
 
@@ -841,107 +897,103 @@ fn main() -> Result<()> {
     match &cli.command {
         Command::Search(args) => run_search(&mut lazy, args)?,
         Command::Trajectory(args) | Command::Traj(args) => run_trajectory(&mut lazy, args)?,
-        Command::Capture(args) => run_capture(&mut lazy, args)?,
     }
     Ok(())
 }
 
-fn run_capture(lazy: &mut LazyEngine<'_>, args: &CaptureArgs) -> Result<()> {
-    match &args.command {
-        CaptureCommand::Start(args) => {
-            if args.foreground {
-                run_capture_serve(
-                    lazy,
-                    &CaptureServeArgs {
-                        output_dir: args.output_dir.clone(),
-                        config: args.config.clone(),
-                        debug: args.debug,
-                        format: args.format,
-                    },
-                )?;
-            } else {
-                capture::daemon::cmd_start(capture::daemon::StartOptions {
-                    output_dir: PathBuf::from(&args.output_dir),
-                    config: args.config.clone(),
+fn run_traj_import(lazy: &mut LazyEngine<'_>, args: &CaptureImportArgs) -> Result<()> {
+    let merged = merge_traj_location(
+        args.storage.clone(),
+        args.agent_id.clone(),
+        args.session_id.clone(),
+        None,
+    );
+    let gateway_input = match args.provider {
+        capture::CaptureProvider::Ide => None,
+        capture::CaptureProvider::Gateway | capture::CaptureProvider::All => {
+            Some(args.gateway_input.clone())
+        }
+    };
+    let opts = capture::CaptureImportOptions {
+        providers: args.provider,
+        since_days: args.since_days,
+        project_filter: args.project.clone(),
+        all_projects: args.all_projects,
+        session_id: merged.session_id,
+        agent_id: merged.agent_id,
+        merge_subagents: args.merge_subagents,
+        gateway_input,
+        dry_run: args.dry_run,
+    };
+    let summary = capture::import_to_trajectory_with_engine(
+        &merged.storage,
+        &opts,
+        |storage, agent_id, session_id, records_ronl| {
+            eprintln!(
+                "[persisting-cli] traj import: {record_count} records -> {storage}/{agent_id}/{session_id}",
+                record_count = records_ronl.lines().filter(|l| !l.trim().is_empty()).count(),
+                storage = storage,
+                agent_id = agent_id,
+                session_id = session_id,
+            );
+            let payload =
+                rpc_request_pretty(RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
+                    storage: storage.to_string(),
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                    root_session_id: None,
+                    records_ronl: records_ronl.to_string(),
+                    storage_format: TrajectoryStorageFormat::Auto,
+                }))
+                .context("encode TrajectoryAppend RpcRequest RON")?;
+            lazy.invoke_engine_ron(&payload)
+        },
+    )?;
+    print_capture_summary(&summary, args.dry_run);
+    Ok(())
+}
+
+fn run_traj_proxy(lazy: &mut LazyEngine<'_>, args: &ProxyArgs) -> Result<()> {
+    match &args.action {
+        None => {
+            let output_dir = args
+                .output_dir
+                .as_deref()
+                .context("traj proxy requires -o <DIR>")?;
+            let config = args
+                .config
+                .as_deref()
+                .context("traj proxy requires -c <proxy.toml>")?;
+            run_capture_serve(
+                lazy,
+                &CaptureServeArgs {
+                    output_dir: output_dir.to_string(),
+                    config: config.to_path_buf(),
                     debug: args.debug,
                     format: args.format,
-                })?;
-            }
-        }
-        CaptureCommand::Stop(args) => {
-            let storage = args.output_dir.as_deref().map(Path::new);
-            capture::daemon::cmd_stop(storage)?;
-        }
-        CaptureCommand::List(args) => {
-            let storage = args.output_dir.as_deref().map(Path::new);
-            let sessions = capture::daemon::cmd_list(storage)?;
-            capture::daemon::print_list_table(&sessions);
-        }
-        CaptureCommand::Status(args) => {
-            let storage = args.output_dir.as_deref().map(Path::new);
-            capture::daemon::cmd_status(storage)?;
-        }
-        CaptureCommand::Serve(args) => run_capture_serve(lazy, args)?,
-        CaptureCommand::Run(args) => {
-            let code = run_capture_run(lazy, args)?;
-            std::process::exit(code);
-        }
-        CaptureCommand::ReplayDeadLetter(args) => {
-            run_replay_dead_letter(lazy, args)?;
-        }
-        CaptureCommand::Import(args) => {
-            let merged = merge_traj_location(
-                args.storage.clone(),
-                args.agent_id.clone(),
-                args.session_id.clone(),
-                None,
-            );
-            let gateway_input = match args.provider {
-                capture::CaptureProvider::Ide => None,
-                capture::CaptureProvider::Gateway | capture::CaptureProvider::All => {
-                    Some(args.gateway_input.clone())
-                }
-            };
-            let opts = capture::CaptureImportOptions {
-                providers: args.provider,
-                since_days: args.since_days,
-                project_filter: args.project.clone(),
-                all_projects: args.all_projects,
-                session_id: merged.session_id,
-                agent_id: merged.agent_id,
-                merge_subagents: args.merge_subagents,
-                gateway_input,
-                dry_run: args.dry_run,
-            };
-            let summary = capture::import_to_trajectory_with_engine(
-                &merged.storage,
-                &opts,
-                |storage, agent_id, session_id, records_ronl| {
-                    eprintln!(
-                        "[persisting-cli] capture import: {record_count} records -> {storage}/{agent_id}/{session_id}",
-                        record_count = records_ronl.lines().filter(|l| !l.trim().is_empty()).count(),
-                        storage = storage,
-                        agent_id = agent_id,
-                        session_id = session_id,
-                    );
-                    let payload = rpc_request_pretty(RequestBody::TrajectoryAppend(
-                        TrajectoryAppendRequest {
-                            storage: storage.to_string(),
-                            agent_id: agent_id.to_string(),
-                            session_id: session_id.to_string(),
-                            root_session_id: None,
-                            records_ronl: records_ronl.to_string(),
-                            storage_format: TrajectoryStorageFormat::Auto,
-                        },
-                    ))
-                    .context("encode TrajectoryAppend RpcRequest RON")?;
-                    lazy.invoke_engine_ron(&payload)
                 },
-            )?;
-            print_capture_summary(&summary, args.dry_run);
+            )
+        }
+        Some(ProxyAction::Start(daemon)) => {
+            capture::daemon::cmd_start(capture::daemon::StartOptions {
+                output_dir: PathBuf::from(&daemon.output_dir),
+                config: daemon.config.clone(),
+                debug: daemon.debug,
+                format: daemon.format,
+            })
+        }
+        Some(ProxyAction::Stop(manage)) => {
+            capture::daemon::cmd_stop(manage.output_dir.as_deref().map(Path::new))
+        }
+        Some(ProxyAction::List(manage)) => {
+            let sessions = capture::daemon::cmd_list(manage.output_dir.as_deref().map(Path::new))?;
+            capture::daemon::print_list_table(&sessions);
+            Ok(())
+        }
+        Some(ProxyAction::Status(manage)) => {
+            capture::daemon::cmd_status(manage.output_dir.as_deref().map(Path::new))
         }
     }
-    Ok(())
 }
 
 struct TrajectoryAppendJob {
@@ -965,12 +1017,7 @@ const CAPTURE_TRAJECTORY_BATCH: usize = 32;
 fn should_flush_capture_record(record: &persisting_capture::record::CaptureRecord) -> bool {
     matches!(
         record.kind.as_str(),
-        "llm.request"
-            | "llm.response"
-            | "llm.response.stream"
-            | "llm.spawn_link"
-            | "session.started"
-            | "session.ended"
+        "llm.request" | "llm.response" | "llm.spawn_link" | "session.started" | "session.ended"
     )
 }
 
@@ -982,10 +1029,10 @@ fn records_ronl_from_lines(lines: &[String]) -> String {
     }
 }
 
-fn write_lance_dead_letter(key: &TrajectoryBatchKey, lines: &[String], error: &str) {
+fn write_trajectory_dead_letter(key: &TrajectoryBatchKey, lines: &[String], error: &str) {
     let storage_path = std::path::Path::new(&key.storage);
     let records_ronl = records_ronl_from_lines(lines);
-    if let Err(dl) = persisting_capture::dead_letter::append_lance_dead_letter(
+    if let Err(dl) = persisting_capture::dead_letter::append_trajectory_dead_letter(
         storage_path,
         &key.agent_id,
         &key.session_id,
@@ -993,7 +1040,7 @@ fn write_lance_dead_letter(key: &TrajectoryBatchKey, lines: &[String], error: &s
         &records_ronl,
         error,
     ) {
-        eprintln!("[persisting-cli] lance dead letter write failed: {dl:#}");
+        eprintln!("[persisting-cli] trajectory dead letter write failed: {dl:#}");
     }
 }
 
@@ -1001,13 +1048,12 @@ fn flush_capture_trajectory_batch_or_dead_letter(
     engine: &Engine,
     key: &TrajectoryBatchKey,
     lines: &[String],
-    stream_markdown: bool,
 ) {
     if lines.is_empty() {
         return;
     }
-    if let Err(e) = flush_capture_trajectory_batch(engine, key, lines, stream_markdown) {
-        write_lance_dead_letter(key, lines, &format!("{e:#}"));
+    if let Err(e) = flush_capture_trajectory_batch(engine, key, lines) {
+        write_trajectory_dead_letter(key, lines, &format!("{e:#}"));
         eprintln!("[persisting-cli] capture trajectory append failed: {e:#}");
     }
 }
@@ -1016,7 +1062,6 @@ fn flush_capture_trajectory_batch(
     engine: &Engine,
     key: &TrajectoryBatchKey,
     lines: &[String],
-    stream_markdown: bool,
 ) -> Result<()> {
     if lines.is_empty() {
         return Ok(());
@@ -1028,33 +1073,10 @@ fn flush_capture_trajectory_batch(
         session_id: key.session_id.clone(),
         root_session_id: key.root_session_id.clone(),
         records_ronl,
-        storage_format: TrajectoryStorageFormat::Lance,
+        storage_format: TrajectoryStorageFormat::Vortex,
     }))?;
     let raw = engine.invoke_engine_ron(&payload)?;
     parse_engine_ron_response(&raw)?;
-    if stream_markdown {
-        let run_dir = trajectory_run_dir(
-            &key.storage,
-            &key.agent_id,
-            &key.session_id,
-            key.root_session_id.as_deref(),
-        )?;
-        let _ = persisting_capture::trajectory_convert::stream_engine_lines_to_markdown(
-            &run_dir,
-            &key.session_id,
-            lines,
-        )
-        .with_context(|| {
-            format!(
-                "stream markdown to {}",
-                persisting_capture::trajectory_convert::materialize_markdown_path(
-                    &run_dir,
-                    &key.session_id
-                )
-                .display()
-            )
-        })?;
-    }
     Ok(())
 }
 
@@ -1064,10 +1086,13 @@ fn build_capture_trajectory_sink(
     agent_id: String,
     format: capture::CaptureFormat,
 ) -> Result<(
-    std::sync::Arc<persisting_capture::sink::CallbackSink>,
+    std::sync::Arc<dyn persisting_capture::sink::CaptureSink>,
     TrajectoryAppendWorker,
 )> {
-    let _ = format.stream_markdown_in_engine();
+    if !format.writes_vortex() {
+        let sink = std::sync::Arc::new(persisting_capture::sink::SeqOnlySink::new());
+        return Ok((sink, TrajectoryAppendWorker::noop()));
+    }
     let engine_path = resolve_engine_path(core_lib.as_deref())?;
     let storage = std::path::PathBuf::from(&storage)
         .canonicalize()
@@ -1104,7 +1129,7 @@ fn build_capture_trajectory_sink(
                 batch.push(line);
                 if batch.len() >= CAPTURE_TRAJECTORY_BATCH || flush_now {
                     let lines = batches.remove(&key).unwrap_or_default();
-                    flush_capture_trajectory_batch_or_dead_letter(&engine, &key, &lines, false);
+                    flush_capture_trajectory_batch_or_dead_letter(&engine, &key, &lines);
                 }
                 Ok(())
             })();
@@ -1114,12 +1139,12 @@ fn build_capture_trajectory_sink(
         }
 
         for (key, lines) in batches {
-            flush_capture_trajectory_batch_or_dead_letter(&engine, &key, &lines, false);
+            flush_capture_trajectory_batch_or_dead_letter(&engine, &key, &lines);
         }
     });
 
     let sink_storage = storage;
-    let sink = std::sync::Arc::new(persisting_capture::sink::CallbackSink::new(
+    let callback_sink = std::sync::Arc::new(persisting_capture::sink::CallbackSink::new(
         agent_id,
         move |route, agent_id, record| {
             tx.send(TrajectoryAppendJob {
@@ -1133,6 +1158,7 @@ fn build_capture_trajectory_sink(
             Ok(())
         },
     ));
+    let sink: std::sync::Arc<dyn persisting_capture::sink::CaptureSink> = callback_sink;
     Ok((
         sink,
         TrajectoryAppendWorker {
@@ -1163,15 +1189,6 @@ fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i
         sink,
     })?;
     worker.shutdown();
-    if args.format.stream_markdown_in_engine() {
-        if let Err(e) =
-            capture::reconcile::reconcile_run_after_flush(&storage, &agent_id, args.format, |req| {
-                invoke_trajectory_replay(lazy, req)
-            })
-        {
-            eprintln!("[persisting-cli] capture reconcile failed: {e:#}");
-        }
-    }
     Ok(code)
 }
 
@@ -1225,6 +1242,13 @@ struct TrajectoryAppendWorker {
 }
 
 impl TrajectoryAppendWorker {
+    fn noop() -> Self {
+        Self {
+            job_tx: None,
+            join: None,
+        }
+    }
+
     fn shutdown(&mut self) {
         if let Some(tx) = self.job_tx.take() {
             drop(tx);
@@ -1252,7 +1276,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
         .with_context(|| format!("apply daemon env snapshot for {}", storage_path.display()))?;
     if !applied.is_empty() {
         eprintln!(
-            "[persisting-cli] capture serve: applied daemon env snapshot ({} keys: {})",
+            "[persisting-cli] traj proxy: applied daemon env snapshot ({} keys: {})",
             applied.len(),
             applied.join(", ")
         );
@@ -1268,6 +1292,16 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
         },
         args.debug,
     )?;
+
+    capture::usage::eprint_serve_banner(&capture::usage::ServeBanner {
+        listen: &config.listen,
+        admin_listen: &config.admin_listen,
+        output_dir: &storage_path,
+        agent_id: &config.agent_id,
+        format: args.format,
+        background: false,
+        pid: None,
+    });
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1294,7 +1328,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
 fn print_capture_summary(summary: &capture::CaptureImportSummary, dry_run: bool) {
     let mode = if dry_run { "dry-run" } else { "imported" };
     eprintln!(
-        "[persisting-cli] capture {mode}: {} records @ {} (agent_id={} session_id={})",
+        "[persisting-cli] traj import {mode}: {} records @ {} (agent_id={} session_id={})",
         summary.record_count, summary.storage, summary.agent_id, summary.session_id
     );
     for (src, n) in &summary.sources {
@@ -1640,6 +1674,13 @@ fn invoke_trajectory_replay(
 
 fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()> {
     match &args.command {
+        TrajectoryCommand::Capture(args) => {
+            let code = run_capture_run(lazy, args)?;
+            std::process::exit(code);
+        }
+        TrajectoryCommand::Proxy(args) => run_traj_proxy(lazy, args)?,
+        TrajectoryCommand::Import(args) => run_traj_import(lazy, args)?,
+        TrajectoryCommand::ReplayDeadLetter(args) => run_replay_dead_letter(lazy, args)?,
         TrajectoryCommand::Add(args) => {
             let auto_agent = args.agent_id.is_none();
             let auto_session = args.session_id.is_none();
@@ -1706,7 +1747,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
         TrajectoryCommand::Extract(args) => {
             let loc = resolve_traj_ids_for_read(
                 "trajectory extract",
-                args.storage.clone(),
+                Some(args.storage.clone()),
                 args.agent_id.clone(),
                 args.session_id.clone(),
                 args.root_session_id.clone(),
@@ -1760,16 +1801,12 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                 root_session_id: loc.root_session_id.clone(),
             };
             if args.detail {
-                // Dialogue metrics (chars, tokens, models) are derived from TLV markdown blocks.
-                let replay_format = match args.storage_format {
-                    TrajectoryStorageCli::Auto => TrajectoryStorageFormat::Markdown,
-                    other => other.into(),
-                };
                 let stats = invoke_trajectory_stats(lazy, stats_req)?;
                 if stats.status != "ok" {
                     print_trajectory_stats_as_toml(&stats)?;
                     return Ok(());
                 }
+                let replay_format = args.storage_format.into();
                 let parent_root = loc
                     .root_session_id
                     .clone()
@@ -1821,11 +1858,12 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             }
         }
         TrajectoryCommand::Materialize(args) => {
+            let storage = resolve_traj_storage_arg(args.storage.clone())?;
             let (agent_id, session_id) =
                 resolve_traj_ids_for_write(args.agent_id.clone(), args.session_id.clone())?;
             let payload = rpc_request_pretty(RequestBody::TrajectoryMaterialize(
                 TrajectoryMaterializeRequest {
-                    storage: args.storage.clone(),
+                    storage,
                     agent_id,
                     session_id,
                     root_session_id: args.root_session_id.clone(),
@@ -1845,4 +1883,50 @@ fn read_input(path: &str) -> Result<String> {
         return Ok(buffer);
     }
     Ok(fs::read_to_string(path)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capture_record(kind: &str) -> persisting_capture::record::CaptureRecord {
+        persisting_capture::record::CaptureRecord {
+            seq: 0,
+            source: "test".to_string(),
+            kind: kind.to_string(),
+            timestamp: None,
+            session_id: None,
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: serde_json::json!({}),
+        }
+    }
+
+    fn add_args_from_cli(argv: &[&str]) -> TrajectoryAddArgs {
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let Command::Traj(TrajectoryArgs {
+            command: TrajectoryCommand::Add(args),
+        }) = cli.command
+        else {
+            panic!("expected traj add");
+        };
+        args
+    }
+
+    #[test]
+    fn capture_stream_records_use_batch_flush() {
+        assert!(!should_flush_capture_record(&capture_record(
+            "llm.response.stream"
+        )));
+        assert!(should_flush_capture_record(&capture_record("llm.response")));
+        assert!(should_flush_capture_record(&capture_record(
+            "session.ended"
+        )));
+    }
 }

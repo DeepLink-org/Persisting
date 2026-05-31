@@ -1,12 +1,12 @@
-//! Lance v1 event row ↔ [`CaptureRecord`].
+//! Vortex event row ↔ [`CaptureRecord`].
 
 use anyhow::{Context, Result};
 
 use super::record::{engine_line_to_record, CaptureRecord};
 
-/// One row in the raw Lance event log (canonical trajectory store).
+/// One row in the Vortex event log (canonical trajectory store).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LanceEventRow {
+pub struct EventRow {
     pub seq: i64,
     pub timestamp: Option<String>,
     pub kind: String,
@@ -28,8 +28,8 @@ fn index_model(rec: &CaptureRecord) -> Option<String> {
         .map(str::to_string)
 }
 
-pub fn capture_record_to_event_row(rec: &CaptureRecord, seq: i64) -> Result<LanceEventRow> {
-    Ok(LanceEventRow {
+pub fn capture_record_to_event_row(rec: &CaptureRecord, seq: i64) -> Result<EventRow> {
+    Ok(EventRow {
         seq,
         timestamp: rec.timestamp.clone(),
         kind: rec.kind.clone(),
@@ -44,18 +44,18 @@ pub fn capture_record_to_event_row(rec: &CaptureRecord, seq: i64) -> Result<Lanc
     })
 }
 
-pub fn engine_line_to_event_row(line: &str, seq: i64) -> Result<LanceEventRow> {
+pub fn engine_line_to_event_row(line: &str, seq: i64) -> Result<EventRow> {
     capture_record_to_event_row(&engine_line_to_record(line)?, seq)
 }
 
-pub fn event_row_to_capture_record(row: &LanceEventRow) -> Result<CaptureRecord> {
+pub fn event_row_to_capture_record(row: &EventRow) -> Result<CaptureRecord> {
     let mut rec: CaptureRecord =
         serde_json::from_str(&row.payload_json).context("decode CaptureRecord JSON")?;
     rec.seq = u64::try_from(row.seq).context("seq out of range for CaptureRecord")?;
     Ok(rec)
 }
 
-pub fn event_row_to_replay_json(row: &LanceEventRow) -> Result<String> {
+pub fn event_row_to_replay_json(row: &EventRow) -> Result<String> {
     let rec = event_row_to_capture_record(row)?;
     serde_json::to_string(&rec).context("encode replay JSON")
 }

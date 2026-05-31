@@ -1,4 +1,4 @@
-//! `capture start` / `stop` / `list` / `status`.
+//! `traj proxy start` / `stop` / `list` / `status`.
 
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,8 @@ use persisting_capture::runtime::service::{
 };
 use persisting_capture::session_index::{discover_sessions, SessionSummary};
 
+use super::usage;
+
 pub struct StartOptions {
     pub output_dir: PathBuf,
     pub config: PathBuf,
@@ -24,7 +26,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     if let Some(state) = CaptureDaemonState::read(&opts.output_dir)? {
         if state.is_running() {
             anyhow::bail!(
-                "capture already running (pid {}) for {}",
+                "traj proxy already running (pid {}) for {}",
                 state.pid,
                 opts.output_dir.display()
             );
@@ -38,7 +40,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     let env_snap = snapshot_daemon_env(&opts.output_dir, &config)
         .with_context(|| format!("snapshot daemon env for {}", opts.output_dir.display()))?;
     eprintln!(
-        "[persisting-cli] capture daemon env snapshot: {} ({} keys)",
+        "[persisting-cli] traj proxy daemon env snapshot: {} ({} keys)",
         env_snap.display(),
         load_daemon_env_snapshot(&opts.output_dir)
             .ok()
@@ -48,16 +50,17 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     );
 
     let mut cmd = Command::new(&exe);
-    cmd.args([
-        "capture",
-        "serve",
-        "-o",
-        opts.output_dir.to_string_lossy().as_ref(),
-        "-c",
-        opts.config.to_string_lossy().as_ref(),
-        "-f",
-        opts.format.as_str(),
-    ]);
+    let args = vec![
+        "traj".to_string(),
+        "proxy".to_string(),
+        "-o".to_string(),
+        opts.output_dir.to_string_lossy().to_string(),
+        "-c".to_string(),
+        opts.config.to_string_lossy().to_string(),
+        "-f".to_string(),
+        opts.format.as_str().to_string(),
+    ];
+    cmd.args(args);
     if opts.debug {
         cmd.env(persisting_capture::debug::ENV_CAPTURE_DEBUG, "1");
     }
@@ -80,7 +83,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(stderr)
         .spawn()
-        .context("spawn capture serve")?;
+        .context("spawn traj proxy")?;
 
     let state = CaptureDaemonState {
         pid: child.id(),
@@ -94,18 +97,19 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     write_current(&state)?;
     if opts.debug {
         eprintln!(
-            "[persisting-cli] capture debug enabled (daemon env {}=1)",
+            "[persisting-cli] traj proxy debug enabled (daemon env {}=1)",
             persisting_capture::debug::ENV_CAPTURE_DEBUG
         );
     }
-    eprintln!(
-        "[persisting-cli] capture started pid={} dir={} format={} proxy=http://{} admin=http://{}",
-        state.pid,
-        opts.output_dir.display(),
-        opts.format.as_str(),
-        state.listen,
-        state.admin_listen
-    );
+    usage::eprint_serve_banner(&usage::ServeBanner {
+        listen: &state.listen,
+        admin_listen: &state.admin_listen,
+        output_dir: &opts.output_dir,
+        agent_id: &config.agent_id,
+        format: opts.format,
+        background: true,
+        pid: Some(state.pid),
+    });
     Ok(())
 }
 
@@ -135,7 +139,7 @@ pub fn cmd_stop(storage: Option<&Path>) -> Result<()> {
     log_storage_resolution(&res);
     stop_daemon(&res.storage)?;
     eprintln!(
-        "[persisting-cli] capture stopped ({})",
+        "[persisting-cli] traj proxy stopped ({})",
         res.storage.display()
     );
     Ok(())

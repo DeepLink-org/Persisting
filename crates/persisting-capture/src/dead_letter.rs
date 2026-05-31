@@ -19,7 +19,7 @@ use crate::session_storage::CaptureRoute;
 use crate::usage::StreamMetrics;
 
 const DEAD_LETTER_FILENAME: &str = "dead_letter.jsonl";
-const LANCE_DEAD_LETTER_FILENAME: &str = "lance_dead_letter.jsonl";
+const TRAJECTORY_DEAD_LETTER_FILENAME: &str = "trajectory_dead_letter.jsonl";
 
 mod serde_compat {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -132,12 +132,14 @@ pub fn dead_letter_path(storage: &Path) -> PathBuf {
     storage.join(".capture").join(DEAD_LETTER_FILENAME)
 }
 
-pub fn lance_dead_letter_path(storage: &Path) -> PathBuf {
-    storage.join(".capture").join(LANCE_DEAD_LETTER_FILENAME)
+pub fn trajectory_dead_letter_path(storage: &Path) -> PathBuf {
+    storage
+        .join(".capture")
+        .join(TRAJECTORY_DEAD_LETTER_FILENAME)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LanceDeadLetterEntry {
+pub struct TrajectoryDeadLetterEntry {
     pub timestamp: String,
     pub storage: String,
     pub agent_id: String,
@@ -148,7 +150,7 @@ pub struct LanceDeadLetterEntry {
     pub error: String,
 }
 
-pub fn append_lance_dead_letter(
+pub fn append_trajectory_dead_letter(
     storage: &Path,
     agent_id: &str,
     session_id: &str,
@@ -156,7 +158,7 @@ pub fn append_lance_dead_letter(
     records_ronl: &str,
     error: &str,
 ) -> Result<()> {
-    let entry = LanceDeadLetterEntry {
+    let entry = TrajectoryDeadLetterEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         storage: storage.display().to_string(),
         agent_id: agent_id.to_string(),
@@ -165,36 +167,38 @@ pub fn append_lance_dead_letter(
         records_ronl: records_ronl.to_string(),
         error: error.to_string(),
     };
-    let path = lance_dead_letter_path(storage);
+    let path = trajectory_dead_letter_path(storage);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create .capture for lance dead letter")?;
+        std::fs::create_dir_all(parent).context("create .capture for trajectory dead letter")?;
     }
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .with_context(|| format!("open lance dead letter {}", path.display()))?;
-    let line = serde_json::to_string(&entry).context("serialize lance dead letter")?;
-    writeln!(file, "{line}").context("append lance dead letter")?;
+        .with_context(|| format!("open trajectory dead letter {}", path.display()))?;
+    let line = serde_json::to_string(&entry).context("serialize trajectory dead letter")?;
+    writeln!(file, "{line}").context("append trajectory dead letter")?;
     Ok(())
 }
 
-pub fn read_lance_dead_letter_entries(storage: &Path) -> Result<Vec<LanceDeadLetterEntry>> {
-    let path = lance_dead_letter_path(storage);
+pub fn read_trajectory_dead_letter_entries(
+    storage: &Path,
+) -> Result<Vec<TrajectoryDeadLetterEntry>> {
+    let path = trajectory_dead_letter_path(storage);
     if !path.exists() {
         return Ok(Vec::new());
     }
     let file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
     let mut out = Vec::new();
     for (i, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.with_context(|| format!("read lance dead letter line {i}"))?;
+        let line = line.with_context(|| format!("read trajectory dead letter line {i}"))?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
         out.push(
             serde_json::from_str(trimmed)
-                .with_context(|| format!("parse lance dead letter line {i}"))?,
+                .with_context(|| format!("parse trajectory dead letter line {i}"))?,
         );
     }
     Ok(out)
@@ -453,9 +457,9 @@ mod tests {
     }
 
     #[test]
-    fn lance_dead_letter_roundtrip_jsonl() {
+    fn trajectory_dead_letter_roundtrip_jsonl() {
         let dir = tempfile::tempdir().unwrap();
-        append_lance_dead_letter(
+        append_trajectory_dead_letter(
             dir.path(),
             "agent",
             "sess",
@@ -464,7 +468,7 @@ mod tests {
             "engine invoke failed",
         )
         .unwrap();
-        let entries = read_lance_dead_letter_entries(dir.path()).unwrap();
+        let entries = read_trajectory_dead_letter_entries(dir.path()).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].error, "engine invoke failed");
         assert_eq!(entries[0].records_ronl, "record line\n");

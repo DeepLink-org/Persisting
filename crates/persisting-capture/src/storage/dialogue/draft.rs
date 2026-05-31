@@ -6,7 +6,7 @@ use super::skip_markdown_block;
 use crate::record::CaptureRecord;
 use crate::storage::markdown::BlockHeader;
 
-/// Build a streaming draft assistant block (markdown view only; not written to Lance).
+/// Build a streaming draft assistant block (markdown view only; not written to Vortex).
 pub fn draft_stream_assistant_block(
     rec: &CaptureRecord,
     assistant_content: &str,

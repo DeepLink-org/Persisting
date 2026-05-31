@@ -279,20 +279,20 @@ pub struct SearchImportLanceResponse {
 // Trajectory
 // ---------------------------------------------------------------------------
 
-/// Physical storage layer for a session trajectory (Lance canonical + TLV Markdown view).
+/// Physical storage layer for a session trajectory (Vortex canonical + TLV Markdown view).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrajectoryStorageFormat {
-    /// Read: Lance if both layers exist else the available layer. Append: always Lance.
+    /// Read: Vortex if both layers exist else the available layer. Append: always Vortex.
     /// Stats: summarize both layers when present.
     #[default]
     Auto,
-    /// Lance raw event log (canonical).
-    Lance,
+    /// Vortex raw event log (canonical).
+    Vortex,
     /// TLV Markdown session file (materialized / human-readable view).
     #[serde(rename = "markdown", alias = "tlv")]
     Markdown,
-    /// Legacy alias: append writes [`Lance`](Self::Lance) only; read/stats like [`Auto`](Self::Auto).
+    /// Legacy alias: append writes [`Vortex`](Self::Vortex) only; read/stats like [`Auto`](Self::Auto).
     #[serde(alias = "both")]
     Both,
 }
@@ -307,7 +307,7 @@ pub struct TrajectoryAppendRequest {
     /// When set, nested subagent sessions live under `{root_session_id}/subagents/{session_id}/`.
     #[serde(default)]
     pub root_session_id: Option<String>,
-    /// Newline-separated engine lines (RON) for Lance append.
+    /// Newline-separated engine lines (RON) for event log append.
     pub records_ronl: String,
     #[serde(default)]
     pub storage_format: TrajectoryStorageFormat,
@@ -368,9 +368,9 @@ pub struct TrajectoryStatsResponse {
     pub agent_id: String,
     pub session_id: String,
     pub dataset: String,
-    /// Row count in the Lance table (`0` when dataset is missing).
+    /// Row count in the event log (`0` when file is missing).
     pub row_count: usize,
-    /// Lance dataset manifest version when opened (`None` when missing).
+    /// Reserved for future versioning metadata (`None` for Vortex).
     pub manifest_version: Option<u64>,
     pub status: String,
     pub note: String,
@@ -391,7 +391,7 @@ pub struct TrajectoryMaterializeResponse {
     pub agent_id: String,
     pub session_id: String,
     pub markdown_path: String,
-    pub lance_rows: usize,
+    pub event_rows: usize,
     pub markdown_blocks: usize,
     pub skipped_events: usize,
     pub status: String,
@@ -405,7 +405,7 @@ pub struct TrajectoryTruncateRequest {
     pub session_id: String,
     #[serde(default)]
     pub root_session_id: Option<String>,
-    /// Keep the first N Lance rows (ordered by `seq`).
+    /// Keep the first N event log rows (ordered by `seq`).
     pub keep_rows: usize,
 }
 

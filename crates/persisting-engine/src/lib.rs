@@ -1,4 +1,4 @@
-//! Persisting engine: Lance-backed search and trajectory, plus a stable C ABI for `dlopen`.
+//! Persisting engine: Lance-backed search, Vortex trajectory, and a stable C ABI for `dlopen`.
 
 pub mod abi;
 pub mod bridge;

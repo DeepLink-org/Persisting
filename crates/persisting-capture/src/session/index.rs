@@ -1,4 +1,4 @@
-//! Session index on disk for `capture list` without full Lance replay.
+//! Session index on disk for `capture list` without full Vortex replay.
 
 use std::collections::HashMap;
 use std::fs;
@@ -218,7 +218,7 @@ impl SessionIndexHandle {
     }
 }
 
-/// Scan Lance layout dirs and merge with index file.
+/// Scan session layout dirs and merge with index file.
 pub fn discover_sessions(storage: &Path) -> Result<Vec<SessionSummary>> {
     let mut by_key: HashMap<(String, String), SessionSummary> = HashMap::new();
     if let Ok(index) = SessionIndexStore::load(storage) {

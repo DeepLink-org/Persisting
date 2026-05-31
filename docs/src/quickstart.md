@@ -4,7 +4,7 @@ Get started with Persisting in 5 minutes.
 
 ## What You're Getting
 
-Persisting provides persistent storage for parameters, KV Cache, and trajectories — with Lance as the storage engine and GPU/host/SSD tiering. Currently available: **streaming append** (append-only queue). Coming soon: **tensor memory API** for multi-dimensional access.
+Persisting provides persistent storage for parameters, KV Cache, and trajectories — queues and Search use Lance; agent trajectory canonical storage is Vortex (`events.vortex`). Currently available: **streaming append** (append-only queue). Coming soon: **tensor memory API** for multi-dimensional access.
 
 ## Step 1: Install
 
@@ -33,7 +33,7 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 
 ## Step 3: Streaming Append (available now)
 
-Append-only queue on Lance storage engine — for trajectory collection and event streaming:
+Append-only queue on Lance storage engine — for event streaming and durable queues (trajectory capture uses Vortex separately; see Capture quick start).
 
 ```python
 import asyncio
@@ -64,6 +64,7 @@ print(stats["metrics"])
 
 ## Next Steps
 
+- [Capture Quick Start](guide/capture_quickstart.md) — Agent trajectory capture (`traj capture`)
 - [User Guide](guide/index.md) — Detailed guides
 - [Design Docs](design/index.md) — Architecture and TTAS specification
 - [API Reference](api_reference.md) — Full API documentation

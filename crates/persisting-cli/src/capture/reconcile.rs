@@ -1,4 +1,4 @@
-//! Post-run reconcile: replay Lance via engine, compare with live markdown.
+//! Post-run reconcile: compare Vortex replay with markdown (legacy dual-write stores).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -16,6 +16,7 @@ use persisting_proto::{
 use super::CaptureFormat;
 
 /// Replay all sessions under a capture run and write `.capture/reconcile.json`.
+#[allow(dead_code)]
 pub fn reconcile_run_after_flush(
     storage: &Path,
     agent_id: &str,
@@ -37,7 +38,7 @@ pub fn reconcile_run_after_flush(
     }
 
     let storage_fmt: TrajectoryStorageFormat = format.into();
-    let mut lance_by_session = BTreeMap::new();
+    let mut events_by_session = BTreeMap::new();
     for md_path in &md_paths {
         let session_id = md_path
             .file_stem()
@@ -58,12 +59,12 @@ pub fn reconcile_run_after_flush(
             storage_format: storage_fmt,
             root_session_id: root,
         })
-        .with_context(|| format!("replay Lance session {session_id}"))?;
+        .with_context(|| format!("replay Vortex session {session_id}"))?;
         let records = decode_replay_records(&resp.records)?;
-        lance_by_session.insert(session_id, records);
+        events_by_session.insert(session_id, records);
     }
 
-    let report = build_run_report(&root_session, agent_id, &run_dir, &lance_by_session)?;
+    let report = build_run_report(&root_session, agent_id, &run_dir, &events_by_session)?;
     let path = write_run_reconcile_report(storage, &report)?;
     if report.ok {
         eprintln!(

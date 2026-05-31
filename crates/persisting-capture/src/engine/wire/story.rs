@@ -39,7 +39,7 @@ impl StoryScope {
 ///   first reconstructing a `String`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum StoryCommand {
-    /// Append one record to Lance/sink and sync live markdown.
+    /// Append one record to Vortex/sink and sync live markdown.
     PersistRecord {
         scope: StoryScope,
         /// JSON-encoded [`crate::record::CaptureRecord`].

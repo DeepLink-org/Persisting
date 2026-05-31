@@ -1,4 +1,4 @@
-//! Lightweight post-run reconcile: compare live markdown call_ids vs Lance dialogue records.
+//! Lightweight post-run reconcile: compare live markdown call_ids vs Vortex dialogue records.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ pub struct SessionReconcile {
     pub md_path: String,
     pub md_block_count: usize,
     pub md_call_ids: Vec<String>,
-    pub lance_call_ids: Vec<String>,
+    pub event_call_ids: Vec<String>,
     pub story_call_ids: Vec<String>,
     pub story_turn_count: u64,
     pub missing_in_md: Vec<String>,
@@ -67,7 +67,7 @@ pub fn list_run_markdown_paths(run_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Extract visible dialogue `call_id`s that Lance records would materialize into markdown.
+/// Extract visible dialogue `call_id`s that event records would materialize into markdown.
 pub fn expected_markdown_call_ids(records: &[CaptureRecord]) -> BTreeSet<String> {
     MarkdownPipeline::call_ids_from_records(records)
 }
@@ -110,24 +110,24 @@ fn sorted_vec(set: &BTreeSet<String>) -> Vec<String> {
     set.iter().cloned().collect()
 }
 
-/// Compare one markdown file against Lance records for the same session.
+/// Compare one markdown file against event records for the same session.
 pub fn reconcile_session(
     session_id: &str,
     root_session: &str,
     md_path: &Path,
-    lance_records: &[CaptureRecord],
+    event_records: &[CaptureRecord],
 ) -> Result<SessionReconcile> {
     let (md_block_count, md_ids, structural_issues) = index_markdown_path(md_path)?;
-    let lance_ids = expected_markdown_call_ids(lance_records);
-    let (missing_in_md, extra_in_md) = set_diff(&lance_ids, &md_ids);
+    let event_ids = expected_markdown_call_ids(event_records);
+    let (missing_in_md, extra_in_md) = set_diff(&event_ids, &md_ids);
 
-    let story = if lance_records.is_empty() {
+    let story = if event_records.is_empty() {
         None
     } else {
         Some(rebuild_session_story(
             session_id,
             root_session,
-            lance_records,
+            event_records,
         ))
     };
     let (story_call_ids_vec, story_turn_count, story_missing_in_md, story_extra_in_md) =
@@ -144,7 +144,7 @@ pub fn reconcile_session(
         md_path: md_path.display().to_string(),
         md_block_count,
         md_call_ids: sorted_vec(&md_ids),
-        lance_call_ids: sorted_vec(&lance_ids),
+        event_call_ids: sorted_vec(&event_ids),
         story_call_ids: story_call_ids_vec,
         story_turn_count,
         missing_in_md,
@@ -155,12 +155,12 @@ pub fn reconcile_session(
     })
 }
 
-/// Build a run-level report from per-session Lance record batches keyed by storage session id.
+/// Build a run-level report from per-session event record batches keyed by storage session id.
 pub fn build_run_report(
     root_session: &str,
     agent_id: &str,
     run_dir: &Path,
-    lance_by_session: &BTreeMap<String, Vec<CaptureRecord>>,
+    events_by_session: &BTreeMap<String, Vec<CaptureRecord>>,
 ) -> Result<RunReconcileReport> {
     let mut sessions = Vec::new();
     for md_path in list_run_markdown_paths(run_dir)? {
@@ -169,7 +169,7 @@ pub fn build_run_report(
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        let records = lance_by_session
+        let records = events_by_session
             .get(&session_id)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
@@ -483,9 +483,9 @@ mod tests {
             CaptureLevel::Dialogue,
         );
 
-        let mut lance_by_session = Map::new();
-        lance_by_session.insert("run-test".to_string(), vec![req, resp]);
-        let report = build_run_report("run-test", "agent", &run_dir, &lance_by_session).unwrap();
+        let mut events_by_session = Map::new();
+        events_by_session.insert("run-test".to_string(), vec![req, resp]);
+        let report = build_run_report("run-test", "agent", &run_dir, &events_by_session).unwrap();
         assert!(report.ok);
         assert_eq!(report.sessions.len(), 1);
     }

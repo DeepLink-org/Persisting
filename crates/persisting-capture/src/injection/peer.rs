@@ -123,9 +123,10 @@ fn format_socket_addr(addr: SocketAddr) -> String {
 
 #[cfg(unix)]
 fn is_capture_proxy_command(cmd: &str) -> bool {
-    cmd.contains("persisting capture run")
-        || cmd.contains("persisting capture serve")
-        || cmd.contains("persisting capture start")
+    cmd.contains("persisting traj capture")
+        || cmd.contains("persisting traj proxy")
+        || cmd.contains("persisting trajectory capture")
+        || cmd.contains("persisting trajectory proxy")
 }
 
 #[cfg(unix)]
@@ -215,7 +216,7 @@ n127.0.0.1:55522->127.0.0.1:8080
     #[test]
     fn skips_capture_proxy_command() {
         assert!(is_capture_proxy_command(
-            "./target/debug/persisting capture run -o ./store -- claude"
+            "./target/debug/persisting traj capture -o ./store -- claude"
         ));
         assert!(!is_capture_proxy_command("claude --model deepseek"));
     }

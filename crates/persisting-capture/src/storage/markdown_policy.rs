@@ -1,4 +1,4 @@
-//! Markdown / Lance eligibility rules for [`CaptureRecord`] (storage layer only).
+//! Markdown / Vortex eligibility rules for [`CaptureRecord`] (storage layer only).
 
 use super::dialogue_extract::is_subagent_shape_payload;
 use super::record::CaptureRecord;

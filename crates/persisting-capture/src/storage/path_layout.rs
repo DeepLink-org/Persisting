@@ -86,16 +86,17 @@ fn infer_traj_location_from_path(path_arg: &str) -> Option<ParsedTrajPath> {
 fn looks_like_session_dir(dir: &Path) -> bool {
     dir.is_dir()
         && (locate_session_markdown(dir).is_some()
+            || dir.join("events.vortex").is_file()
             || dir.join("_versions").is_dir()
-            || dir.join(".lance").is_dir()
             || dir.join(".capture").join("run_session").is_file())
 }
 
-/// Capture run layout: `{storage}/{agent}/{run_id}/.lance/{run_id}/`.
-/// Flat layout: Lance dataset lives directly under `{storage}/{agent}/{session_id}/`.
+/// Capture run layout: `{storage}/{agent}/{run_id}/events.vortex`.
+/// Flat layout: `{storage}/{agent}/{session_id}/events.vortex`.
 fn infer_root_session_id(session_dir: &Path, session_id: &str) -> Option<String> {
-    if session_dir.join(".lance").join(session_id).is_dir()
-        || session_dir.join("_versions").is_dir()
+    let is_run_dir = session_id.starts_with("run-");
+    if session_dir.join("events.vortex").is_file()
+        || (is_run_dir && session_dir.join("_versions").is_dir())
     {
         Some(session_id.to_string())
     } else {
@@ -222,7 +223,7 @@ pub fn merge_story_location(
     }
 }
 
-/// When a capture run uses a header session id (UUID) for Lance/md but the run folder is `run-*`,
+/// When a capture run uses a header session id (UUID) for Vortex/md but the run folder is `run-*`,
 /// remap the story storage key from the primary markdown stem under the run directory.
 fn remap_capture_run_story_session_id(
     storage: &str,
@@ -392,8 +393,8 @@ mod tests {
             std::env::temp_dir().join(format!("persisting-traj-run-layout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let session = base.join("store").join("agent").join("run-1");
-        let lance = session.join(".lance").join("run-1");
-        std::fs::create_dir_all(&lance).unwrap();
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("events.vortex"), b"vortex").unwrap();
         std::fs::write(session.join("run-1.md"), "# test\n").unwrap();
 
         let loc = resolve_traj_read_location(
@@ -424,14 +425,12 @@ mod tests {
 
     #[test]
     fn resolve_capture_run_remaps_to_primary_story_stem() {
-        let base = std::env::temp_dir().join(format!(
-            "persisting-traj-story-stem-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-story-stem-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let session = base.join("store").join("agent").join("run-1");
-        std::fs::create_dir_all(session.join(".lance").join("run-1")).unwrap();
-        std::fs::create_dir_all(session.join(".lance").join("uuid-story")).unwrap();
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("events.vortex"), b"vortex").unwrap();
         std::fs::write(session.join("uuid-story.md"), "# test\n").unwrap();
 
         let loc = resolve_traj_read_location(
@@ -463,8 +462,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            loc.session_id,
-            "5e0dfcdb-56ee-49d1-8921-4aeefeea3b17",
+            loc.session_id, "5e0dfcdb-56ee-49d1-8921-4aeefeea3b17",
             "expected header-session stem, got {}",
             loc.session_id
         );

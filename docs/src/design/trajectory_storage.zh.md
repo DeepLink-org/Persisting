@@ -1,6 +1,6 @@
 # 轨迹存储模型 — 完整架构设计
 
-> **版本**：v0.4.0 &emsp;|&emsp; **最后更新**：2026-05-24
+> **版本**：v0.5.0 &emsp;|&emsp; **最后更新**：2026-05-30
 
 ---
 
@@ -10,16 +10,15 @@
 |-----------|-----|
 | Capture 代理的整体架构（概念、Story 边界、采集管线） | [Capture 架构设计](capture_design.zh.md) §4–§6 |
 | TLV Markdown 的块格式规范 | [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) |
-| `persisting capture` 命令用法 | [Capture 命令](cli_capture_command.zh.md) |
-| `persisting trajectory` 命令用法 | [Trajectory 命令](cli_trajectory_command.zh.md) |
+| `persisting traj` 命令用法 | [Traj 命令](cli_trajectory_command.zh.md) · [Capture 子命令](cli_capture_command.zh.md) |
 
 ---
 
 ## 1. 概述
 
-Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、git diff、code review）。为此采用**两层存储**：Lance 为 canonical raw event log，TLV Markdown 为按需物化的人读视图。
+Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、git diff、code review）。为此采用**两层存储**：Vortex 为 canonical raw event log，TLV Markdown 为按需物化的人读视图。
 
-**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ 事件记录 → Lance/Markdown`。协议差异在 Story 边界前消化；事件记录是存储层统一中间表示。详见 [Capture §4.2 三层词汇表](capture_design.zh.md#42-三层词汇表)。
+**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ 事件记录 → Vortex/Markdown`。协议差异在 Story 边界前消化；事件记录是存储层统一中间表示。详见 [Capture §4.2 三层词汇表](capture_design.zh.md#42-三层词汇表)。
 
 ```mermaid
 graph TD
@@ -36,16 +35,16 @@ graph TD
         CE["CaptureEngine<br/>(事件驱动采集核心)"]:::accent0
         AQ["ApplyDispatcher<br/>(per-story_id 有序 apply)"]:::accent0
         MP["MarkdownPipeline<br/>(过滤 + live/batch/reconcile)"]:::accent3
-        E1["Lance Append<br/>(canonical)"]:::accent2
-        E2["Materialize<br/>(全量 Lance → Markdown)"]:::accent3
+        E1["Vortex Append<br/>(canonical)"]:::accent2
+        E2["Materialize<br/>(全量 Vortex → Markdown)"]:::accent3
         E3["Live Upsert<br/>(call_id+role 流式 md)"]:::accent3
         E3b["Frontmatter Refresh<br/>(会话 YAML 摘要)"]:::accent3
         E4["Stream Append<br/>(import 批量 append md)"]:::accent3
-        E5["Compact<br/>(Markdown → Lance)"]:::accent3
+        E5["Compact<br/>(Markdown → Vortex)"]:::accent3
     end
 
     subgraph "存储层"
-        L1["Lance Dataset<br/>列存 · 无损 · 按 session 分片"]:::accent4
+        L1["Vortex Event Log<br/>列存 · 无损 · {run}/events.vortex"]:::accent4
         L2["TLV Markdown<br/>人读 · 对话块 · 可选物化"]:::accent5
         L3["sessions.json<br/>内存索引 · 快速 list"]:::accent5
     end
@@ -79,20 +78,20 @@ graph TD
     classDef accent5 fill:#d7ccc8,stroke:#4e342e,color:#000
 ```
 
-**核心 invariant**：`Lance row_count ≥ Markdown block_count`（materialize 是有损的）。
+**核心 invariant**：`Vortex row_count ≥ Markdown block_count`（materialize 是有损的）。
 
 ---
 
 ## 2. 两层结构对比
 
-| 维度 | Lance (canonical) | TLV Markdown (materialized view) |
+| 维度 | Vortex (canonical) | TLV Markdown (materialized view) |
 |------|-------------------|----------------------------------|
 | **角色** | 全量 event log，系统的 single source of truth | 人类可读对话视图 |
 | **完整性** | 无损，所有事件全部保留 | 有损，过滤内部流量与 lifecycle |
-| **格式** | 列存（`LanceEventRow`），按 session 分 dataset | TLV 块序列（`MarkdownBlock`），纯文本文件 |
+| **格式** | 列存（`EventRow`），capture run 使用 run 级 `events.vortex` | TLV 块序列（`MarkdownBlock`），纯文本文件 |
 | **写入方式** | 每次 LLM 事件 append；import / CLI worker 批量 append | Proxy `-f md` 时 **CaptureEngine live upsert**；import 走批量 append；均可 `materialize` 全量重建 |
 | **典型操作** | `replay`、`stats`、Search import、FTS | 直接打开、`git diff`、code review |
-| **按 session 分片** | ✅ `.lance/{storage_session_id}/` | ✅ `{run_dir}/{storage_session_id}.md` |
+| **按 session 分片** | ✅ `events.vortex` 内按 `session_id` 列过滤 | ✅ `{run_dir}/{storage_session_id}.md` |
 
 ---
 
@@ -100,7 +99,7 @@ graph TD
 
 ### 3.1 Capture Proxy（`-f md`）— 事件驱动 + 非阻塞采集
 
-Proxy 侧采集经 [`CaptureEngine`](../../crates/persisting-capture/src/engine/mod.rs) 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_apply` → Event WAL → `ApplyDispatcher`），Lance/Markdown 写入在后台完成。不再向 Lance 写入 `llm.response.stream.partial`。
+Proxy 侧采集经 [`CaptureEngine`](../../crates/persisting-capture/src/engine/mod.rs) 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_apply` → Event WAL → `ApplyDispatcher`），Vortex/Markdown 写入在后台完成。不再向 Vortex 写入 `llm.response.stream.partial`。
 
 ```mermaid
 sequenceDiagram
@@ -109,7 +108,7 @@ sequenceDiagram
     participant Queue as ApplyDispatcher
     participant Engine as CaptureEngine
     participant Sink as CallbackSink / Worker
-    participant Lance as Lance Dataset
+    participant Vortex as events.vortex
     participant MD as TLV Markdown
 
     Agent->>Proxy: POST /v1/messages
@@ -118,53 +117,53 @@ sequenceDiagram
     Queue->>Engine: 按 story_id 有序 apply
     Engine->>Engine: prepare + StoryActor ask
     Engine->>Sink: append llm.request
-    Sink->>Lance: batch flush
+    Sink->>Vortex: batch flush
     Engine->>MD: upsert user block + refresh frontmatter
 
     loop SSE stream (150ms 节流)
         Proxy->>Queue: spawn_apply Event::ResponseDraft
         Queue->>Engine: 有序 apply
-        Note over Engine,Lance: draft 仅写 md
+        Note over Engine,Vortex: draft 仅写 md
         Engine->>MD: upsert assistant block (draft: true)
     end
 
     alt 客户端断开
         Proxy->>Queue: spawn_apply Event::Cancelled
         Queue->>Engine: 有序 apply
-        Engine->>Sink: append llm.call.cancelled（仅 Lance）
+        Engine->>Sink: append llm.call.cancelled（仅 Vortex）
     else 正常结束
         Proxy->>Queue: spawn_apply Event::ResponseComplete
         Queue->>Engine: 有序 apply
         Engine->>Sink: append llm.response.stream
-        Sink->>Lance: flush
+        Sink->>Vortex: flush
         Engine->>MD: upsert assistant (final) + refresh frontmatter
     end
 ```
 
 关键设计决策：
 
-1. **Lance 仍是 canonical**。`Event::ResponseDraft` 只更新 Markdown，不产生 Lance 行。
+1. **Vortex 仍是 canonical**。`Event::ResponseDraft` 只更新 Markdown，不产生 Vortex 行。
 2. **Live Markdown 用 upsert**。`upsert_block_by_call_id` 按 **`call_id` + `role`** 匹配；块区间替换使用 `rewrite_block_range`（**不再** truncate-to-EOF）。
 3. **ApplyDispatcher 保证有序**。同一 `story_id` 内 Request / Draft / Complete 按序 apply，避免跨 spawn 乱序。
 4. **StoryActor `ask`**。生产环境等待 story actor 处理结果；失败写入 `dead_letter.jsonl`（含 `prepared_record_json`）。
-5. **CLI worker 只写 Lance**。`-f md` 时 Proxy 内 `CaptureEngine(stream_markdown=true)` 负责 live md；worker `stream_markdown=false`；flush 失败 → `lance_dead_letter.jsonl`。
-6. **Run 结束对账**。`worker.shutdown()` 后写 `.capture/reconcile.json`（md call_id vs Lance replay）；不一致时可 `trajectory materialize` 全量重建。
-7. **Frontmatter 摘要**。每次 dialogue 写入后刷新 YAML（turns / tokens / cost / subagents）；`capture run` 结束打印 stderr 一行汇总。
+5. **CLI worker 只写 Vortex**。`-f md` 时 Proxy 内 `CaptureEngine(stream_markdown=true)` 负责 live md；worker `stream_markdown=false`；flush 失败 → `trajectory_dead_letter.jsonl`。
+6. **Run 结束对账**。`worker.shutdown()` 后写 `.capture/reconcile.json`（md call_id vs Vortex replay）；不一致时可 `traj materialize` 全量重建。
+7. **Frontmatter 摘要**。每次 dialogue 写入后刷新 YAML（turns / tokens / cost / subagents）；`traj capture` 结束打印 stderr 一行汇总。
 
-### 3.2 CLI Import — 批量 Lance + 可选 append Markdown
+### 3.2 CLI Import — 批量 Vortex + 可选 append Markdown
 
-IDE 日志 / gateway 导入不经 Proxy，仍走 `CaptureRecord` → 批量 Lance append；`-f md` 时对同批 engine lines 调用 `stream_engine_lines_to_markdown()` **末尾追加**（无 upsert，因无流式 draft）。
+IDE 日志 / gateway 导入不经 Proxy，仍走 `CaptureRecord` → 批量 Vortex append；`-f md` 时对同批 engine lines 调用 `stream_engine_lines_to_markdown()` **末尾追加**（无 upsert，因无流式 draft）。
 
 ```mermaid
 sequenceDiagram
-    participant Import as capture import
+    participant Import as traj import
     participant Worker as TrajectoryAppendWorker
-    participant Lance as Lance Dataset
+    participant Vortex as events.vortex
     participant MD as TLV Markdown
 
     Import->>Worker: CaptureRecord (RON line)
     Worker->>Worker: buffer (≤32 或关键事件 flush)
-    Worker->>Lance: TrajectoryAppend (Lance only)
+    Worker->>Vortex: TrajectoryAppend (Vortex only)
     opt -f md
         Worker->>MD: stream_engine_lines_to_markdown (append)
     end
@@ -193,12 +192,12 @@ pub struct CaptureRecord {
 }
 ```
 
-`CaptureRecord` 是系统中**唯一的内部数据交换格式**。数据源（proxy / CLI import）产出 `CaptureRecord`，引擎（Lance / Markdown / Index）消费它。
+`CaptureRecord` 是系统中**唯一的内部数据交换格式**。数据源（proxy / CLI import）产出 `CaptureRecord`，引擎（Vortex / Markdown / Index）消费它。
 
-### 4.2 LanceEventRow（列存行）
+### 4.2 EventRow（列存行）
 
 ```rust
-pub struct LanceEventRow {
+pub struct EventRow {
     pub seq: i64,                     // 会话内序号
     pub timestamp: Option<String>,
     pub kind: String,                 // 索引列
@@ -243,8 +242,8 @@ graph LR
     A["CaptureRecord[]"] -->|"1. capture_records_to_markdown_blocks"| B["(BlockHeader, Vec&lt;u8&gt;)[]"]
     B -->|"2. write_markdown_document"| C["TLV Markdown 文件"]
 
-    A -->|"3. capture_record_to_event_row"| D["LanceEventRow"]
-    D -->|"4. Lance append"| E["Lance Dataset"]
+    A -->|"3. capture_record_to_event_row"| D["EventRow"]
+    D -->|"4. Vortex append"| E["events.vortex"]
 
     C -->|"5. markdown_document_to_capture_records"| A
     E -->|"6. event_row_to_capture_record"| A
@@ -256,19 +255,19 @@ graph LR
 
 | 方向 | API | 模式 | 触发场景 |
 |------|-----|------|---------|
-| **CaptureRecord → Markdown** | `capture_records_to_markdown_blocks()` | 过滤 + 转换 | `trajectory materialize` |
+| **CaptureRecord → Markdown** | `capture_records_to_markdown_blocks()` | 过滤 + 转换 | `traj materialize` |
 | **Block → .md 文件** | `write_markdown_document()` | 全量重写 | materialize 全量 |
 | **Block → .md 文件（增量 append）** | `stream_engine_lines_to_markdown()` | 末尾追加 | **import** `-f md`（非 Proxy live 路径） |
 | **Block → .md 文件（live upsert）** | `upsert_block_by_call_id()` | 按 call_id+role 替换或 append | Proxy `-f md` 流式采集 |
 | **.md 文件 → CaptureRecord** | `markdown_document_to_capture_records()` | 解析 + 重建 | compact 导入 |
-| **CaptureRecord → Lance** | `capture_record_to_event_row()` | 一行一条 | Lance append |
-| **Lance → CaptureRecord** | `event_row_to_capture_record()` | 反序列化 | replay / stats |
+| **CaptureRecord → Vortex** | `capture_record_to_event_row()` | 一行一条 | Vortex append |
+| **Vortex → CaptureRecord** | `event_row_to_capture_record()` | 反序列化 | replay / stats |
 
-### 5.2 Materialize（Lance → Markdown 全量）
+### 5.2 Materialize（Vortex → Markdown 全量）
 
 ```rust
 pub struct MaterializeStats {
-    pub source_events: usize,    // Lance 行数
+    pub source_events: usize,    // Vortex 行数
     pub markdown_blocks: usize,  // Markdown 块数
     pub skipped_events: usize,   // 被过滤的事件数
 }
@@ -277,7 +276,7 @@ pub struct MaterializeStats {
 流程：
 
 ```
-Lance dataset (全量扫描)
+Vortex event log (全量扫描)
     │  event_row_to_capture_record()
     ▼
 CaptureRecord[]
@@ -305,7 +304,7 @@ Event::ResponseDraft (≤150ms)
 upsert_block_by_call_id(call_id, role=assistant)   ← 流式原地更新
 
 Event::ResponseComplete
-    │  enrich + append Lance llm.response.stream
+    │  enrich + append Vortex llm.response.stream
     │  MarkdownPipeline::try_block() → final assistant
     ▼
 upsert_block_by_call_id(call_id, role=assistant)   ← 覆盖 draft，移除 draft 标记
@@ -313,7 +312,7 @@ upsert_block_by_call_id(call_id, role=assistant)   ← 覆盖 draft，移除 dra
 
 **匹配键**：`call_id` + `role`（user / assistant 各一块，互不覆盖）。同一 call 的 user 与 assistant 可并存。
 
-**seq 预览**：draft 块通过 `sink.peek_next_seq()` 写入 header，与实际 Lance append 序号对齐；finalize 后以 stamped record 的 seq 覆盖。
+**seq 预览**：draft 块通过 `sink.peek_next_seq()` 写入 header，与实际 Vortex append 序号对齐；finalize 后以 stamped record 的 seq 覆盖。
 
 ### 5.4 Stream Append（Import `-f md` 增量）
 
@@ -337,12 +336,12 @@ pub struct StreamMaterializeStats {
 已有 .md 文件 (末尾追加)
 ```
 
-### 5.5 Compact（Markdown → Lance）
+### 5.5 Compact（Markdown → Vortex）
 
 ```rust
 pub struct CompactStats {
     pub source_blocks: usize,   // Markdown 块数
-    pub lance_rows: usize,      // 生成的 Lance 行数
+    pub event_rows: usize,      // 生成的 Vortex 行数
 }
 ```
 
@@ -358,7 +357,7 @@ MarkdownBlock[]
 CaptureRecord[]
     │  capture_record_to_event_row()
     ▼
-Lance Dataset
+Vortex event log (`events.vortex`)
 ```
 
 **`_tlv` 字段**：compact 时为每个 `CaptureRecord` 注入 `payload._tlv`，包含 `role` 和原始 `block_fields`。这保留了 TLV 元数据，使 compact 操作是信息增量的 —— 但 materialize 时丢弃的内部事件（如 lifecycle）无法通过 compact 恢复。
@@ -382,9 +381,9 @@ live / materialize / reconcile **统一**经 `storage/markdown_pipeline.rs` 的 
 | 无可见文本的空白请求 | `visible_user_text()` 为 None | 无信息量 |
 | 无可见文本的空白响应 | `visible_assistant_text()` 为 None | 无信息量 |
 | 流式 partial（仅 md） | payload `stream_partial: true` | 不落 Markdown |
-| 流式 draft（仅 md） | header `draft: true` | 不落 Lance；finalize 后 draft 被覆盖 |
+| 流式 draft（仅 md） | header `draft: true` | 不落 Vortex；finalize 后 draft 被覆盖 |
 | 生命周期事件 | `kind` 以 `session.` 开头 | 不在对话中展示 |
-| 客户端取消 | `llm.call.cancelled` | 仅 Lance；不进 Markdown |
+| 客户端取消 | `llm.call.cancelled` | 仅 Vortex；不进 Markdown |
 | 主 session flash/haiku 影子请求 | 无 subagent_id + model 含 `flash`/`haiku` + 非 subagent shape payload | Claude Code 的预热探测，与 pro 内容重复 |
 | `llm.spawn_link` | **不跳过**，始终保留 | 主/子代理关联是重要轨迹信息 |
 
@@ -403,7 +402,7 @@ impl MarkdownPipeline {
 }
 ```
 
-**invariant**：materialize 之后 `Lance row_count ≥ Markdown block_count`。
+**invariant**：materialize 之后 `Vortex row_count ≥ Markdown block_count`。
 
 **turn 字段**：`turn = seq / 2 + 1` 为全局 seq 的派生编号，**不**保证同一 call 的 user/assistant 共享语义轮次；并发 in-flight 时相邻块可能属于不同 call 却共享 turn 值。分析对话轮次时应以 `call_id` 为准。
 
@@ -416,21 +415,18 @@ impl MarkdownPipeline {
 ├── .capture/
 │   ├── sessions.json                   ← 全局会话索引
 │   ├── dead_letter.jsonl               ← Event apply 失败（可 replay）
-│   ├── lance_dead_letter.jsonl         ← Lance worker flush 失败
-│   ├── reconcile.json                  ← run 结束 md↔Lance 对账
+│   ├── trajectory_dead_letter.jsonl    ← Vortex worker flush 失败
+│   ├── reconcile.json                  ← run 结束 md↔Vortex 对账
 │   ├── run_session                     ← 当前 run_id（纯文本一行）
 │   ├── run_child.yaml                  ← 子进程信息 (PID + 命令行)
 │   └── daemon.env.json                 ← daemon 环境快照 (API keys)
 │
 ├── {agent_id}/
-│   └── run-{timestamp}-{nanos}/        ← 一次 capture run 的根目录
+│   └── run-{timestamp}-{nanos}/        ← 一次 traj capture 的根目录
 │       ├── run-{timestamp}-{nanos}.md   ← 主 agent Markdown (run bucket)
 │       ├── agent-{claude_agent_id}.md   ← 子 agent Markdown (sibling)
 │       ├── agent-{...}.md               ← 更多子 agent
-│       └── .lance/
-│           ├── run-{timestamp}-{nanos}/  ← lifecycle events
-│           ├── {header_session_id}/      ← 主 session Lance
-│           └── agent-{id}/               ← 各子 agent Lance
+│       └── events.vortex                 ← run 级 Vortex 事件日志
 ```
 
 **关键隔离 invariant**：
@@ -438,7 +434,7 @@ impl MarkdownPipeline {
 - 子 agent 的 user/assistant/tool 块**仅**写入对应的 `agent-{id}.md`
 - 主 agent 对话与 `llm.spawn_link`**仅**写入 `run-{run_id}.md` 或 `{header_session_id}.md`
 - 主 md **不内联**子 agent 的完整轨迹，而是通过 `llm.spawn_link` 块引用 sibling 文件
-- capture run 模式下**不写** `session-meta.yaml`；客户端元信息进入 Markdown YAML frontmatter 的 `client:` 段
+- traj capture 模式下**不写** `session-meta.yaml`；客户端元信息进入 Markdown YAML frontmatter 的 `client:` 段
 
 ### 7.2 扁平 session 布局（serve 模式）
 
@@ -448,8 +444,7 @@ impl MarkdownPipeline {
 │   └── {session_id}/
 │       ├── {session_id}.md             ← Markdown（可选）
 │       ├── session-meta.yaml           ← 客户端进程元信息（serve 模式）
-│       └── .lance/
-│           └── {session_id}/           ← Lance v1
+│       └── events.vortex             ← Vortex 事件日志（可选）
 ```
 
 serve 模式下无 `run_session`，每个逻辑 session 独立一个目录。`session-meta.yaml` 记录发起连接的客户端进程信息（peer addr / PID / 命令行）。
@@ -470,7 +465,7 @@ serve 模式下无 `run_session`，每个逻辑 session 独立一个目录。`se
     （subagent 则为 agent-{id}.md）
 ```
 
-该算法同时服务于 capture CLI worker 和 `trajectory materialize`。
+该算法同时服务于 capture CLI worker 和 `traj materialize`。
 
 ---
 
@@ -480,24 +475,24 @@ serve 模式下无 `run_session`，每个逻辑 session 独立一个目录。`se
 
 | 策略 | `-f` | 行为 |
 |------|------|------|
-| **Lance only** | `bin` | 仅 append Lance，不生成 Markdown |
-| **Lance + Markdown** | `md` | Lance 批量写入 + Proxy **CaptureEngine live upsert**（import 走 append） |
+| **Markdown only** | `md` | CaptureEngine live upsert 到 `{session}.md`（**不写 Vortex**） |
+| **Vortex only** | `vortex` | 仅 append `events.vortex`；人读视图用 `traj materialize` 按需生成 |
 
 ### Trajectory CLI（`--storage-format`）
 
-两种物理层：**Lance**（canonical）、**Markdown**（物化视图）。`trajectory add` **每次只写一层**（由 `--storage-format` 决定）；`materialize` 为 Lance → Markdown 全量导出（不随 add 自动触发）。
+两种物理层：**Vortex**（canonical）、**Markdown**（物化视图）。`traj add` **每次只写一层**（由 `--storage-format` 决定）；`materialize` 为 Vortex → Markdown 全量导出（不随 add 自动触发）。
 
 | 值 | 行为 |
 |----|------|
-| **auto** | **写**：无层→Lance，仅 md→Markdown，仅 Lance→Lance，两层都有→Lance；**读** replay：有 Lance 读 Lance，否则 Markdown；stats：两层都有时同时摘要 |
-| **lance** / **markdown** | 强制读/写/统计指定层 |
-| **both** | 遗留别名（append→Lance only；read/stats 同 auto），不推荐 |
+| **auto** | **写**：无层→Vortex，仅 md→Markdown，仅 Vortex→Vortex，两层都有→Vortex；**读** replay：有 Vortex 读 Vortex，否则 Markdown；stats：两层都有时同时摘要 |
+| **vortex** / **markdown** | 强制读/写/统计指定层 |
+| **both** | 遗留别名（append→Vortex only；read/stats 同 auto），不推荐 |
 
-**读取优先级**：`replay` 在两层并存时默认 Lance；纯 Markdown session 从块序列还原。`-f md` run 结束后优先查看 `reconcile.json`；不一致时执行 `trajectory materialize` 全量对齐。
+**读取优先级**：`replay` 在两层并存时默认 Vortex；纯 Markdown session 从块序列还原。`-f md` run 结束后优先查看 `reconcile.json`；不一致且存在 Vortex 层时执行 `traj materialize` 全量对齐。
 
 ---
 
-## 8.1 Markdown Frontmatter 摘要
+## 8.2 Markdown Frontmatter 摘要
 
 每个 live md 文件头部 YAML 含会话 rollup（实现：`storage/frontmatter.rs`）：
 
@@ -513,20 +508,20 @@ serve 模式下无 `run_session`，每个逻辑 session 独立一个目录。`se
 | `subagents` | 同 run 下 `agent-*.md` stem 列表 |
 | `client` | 子进程 / peer 元信息 |
 
-刷新：dialogue 块写入后自动更新；`capture run` 结束全量 refresh + stderr 摘要行。
+刷新：dialogue 块写入后自动更新；`traj capture` 结束全量 refresh + stderr 摘要行。
 
 ---
 
-## 8.2 Run 结束 Reconcile
+## 8.3 Run 结束 Reconcile
 
-`capture run -f md` 在 `TrajectoryAppendWorker.shutdown()` **之后**：
+`traj capture -f md` 在 `TrajectoryAppendWorker.shutdown()` **之后**：
 
 1. 扫描 run 目录下所有 `*.md`
-2. Engine `replay` 各 session 的 Lance 记录
-3. 比较 md 与 Lance 的 **call_id 集合**（及结构性问题如 excessive blank lines）
+2. Engine `replay` 各 session 的 Vortex 记录
+3. 比较 md 与 Vortex 的 **call_id 集合**（及结构性问题如 excessive blank lines）
 4. 写入 `{storage}/.capture/reconcile.json`
 
-失败时 stderr 提示；不阻断子进程 exit code。完整重建仍用 `trajectory materialize`。
+失败时 stderr 提示；不阻断子进程 exit code。完整重建仍用 `traj materialize`。
 
 ---
 
@@ -534,20 +529,20 @@ serve 模式下无 `run_session`，每个逻辑 session 独立一个目录。`se
 
 ```mermaid
 graph LR
-    L["Lance<br/>(无损全量)"] -->|"materialize<br/>(有损: 过滤内部事件)"| M["Markdown<br/>(人读视图)"]
-    M -->|"compact<br/>(信息增量: + _tlv)"| L2["Lance<br/>(含 _tlv)"]
+    V["Vortex<br/>(无损全量)"] -->|"materialize<br/>(有损: 过滤内部事件)"| M["Markdown<br/>(人读视图)"]
+    M -->|"compact<br/>(信息增量: + _tlv)"| V2["Vortex<br/>(含 _tlv)"]
 
-    style L fill:#ffccbc,stroke:#d84315,color:#000
+    style V fill:#ffccbc,stroke:#d84315,color:#000
     style M fill:#c8e6c9,stroke:#2e7d32,color:#000
-    style L2 fill:#ffccbc,stroke:#d84315,color:#000
+    style V2 fill:#ffccbc,stroke:#d84315,color:#000
 ```
 
 | 操作 | 方向 | 信息变化 |
 |------|------|---------|
-| **materialize** | Lance → Markdown | **有损**：丢弃 count_tokens / lifecycle / flash影子请求 / 空 turn |
-| **compact** | Markdown → Lance | **信息增量**：注入 `payload._tlv`（TLV 元数据）；但无法恢复已丢弃的内部事件 |
+| **materialize** | Vortex → Markdown | **有损**：丢弃 count_tokens / lifecycle / flash影子请求 / 空 turn |
+| **compact** | Markdown → Vortex | **信息增量**：注入 `payload._tlv`（TLV 元数据）；但无法恢复已丢弃的内部事件 |
 
-**结论**：Lance 是 canonical。Markdown 可以从 Lance 重建，但反过来不能。永远不要把 Markdown 当作唯一存储。
+**结论**：Vortex 是 canonical。Markdown 可以从 Vortex 重建，但反过来不能。永远不要把 Markdown 当作唯一存储。
 
 ---
 
@@ -555,11 +550,11 @@ graph LR
 
 ### 10.1 CaptureEngine 事件模型
 
-Proxy 通过 `CaptureEngine::spawn_apply(ctx, event)`（`llm_capture` / `streaming` 直接调用）→ `ApplyDispatcher` → `CaptureEngine::apply` 处理采集；prepare / StoryActor 失败写入 `.capture/dead_letter.jsonl`；Lance worker flush 失败写入 `.capture/lance_dead_letter.jsonl`。
+Proxy 通过 `CaptureEngine::spawn_apply(ctx, event)`（`llm_capture` / `streaming` 直接调用）→ `ApplyDispatcher` → `CaptureEngine::apply` 处理采集；prepare / StoryActor 失败写入 `.capture/dead_letter.jsonl`；Vortex worker flush 失败写入 `.capture/trajectory_dead_letter.jsonl`。
 
 事件命名属于 **Story 区**（`engine/story/event.rs`），与 wire 协议无关：
 
-| Event 变体 | Lance | Markdown | Proxy 调度 | 说明 |
+| Event 变体 | Vortex | Markdown | Proxy 调度 | 说明 |
 |------------|-------|----------|------------|------|
 | `Event::Request` | ✅ `llm.request` | ✅ user upsert + frontmatter | spawn_apply（非阻塞） | 转发 upstream 前触发 |
 | `Event::ResponseDraft` | ❌ | ✅ assistant upsert (`draft: true`) | spawn_apply | SSE 150ms 节流 |
@@ -572,23 +567,23 @@ Proxy (spawn_apply)           ApplyDispatcher              CaptureEngine
   ├─ Event::Request                ├─ 按 story_id 有序 ───────────→ prepare + StoryActor ask
   │                                │                                ├─ md upsert (MarkdownPipeline)
   ├─ Event::ResponseDraft          ├─ 有序 apply ─────────────────→ md only
-  ├─ Event::ResponseComplete       ├─ 有序 apply ─────────────────→ ask → append Lance
+  ├─ Event::ResponseComplete       ├─ 有序 apply ─────────────────→ ask → append Vortex
   │                                │                                ├─ md final + frontmatter
   └─ Event::Cancelled              └─ 有序 apply ─────────────────→ ask → append (cancelled)
 ```
 
-StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`shutdown` 前先通过 `ApplyDispatcher` barrier drain 已接收事件，再对各 story 发送 `Flush` drain mailbox。`spawn_apply` 在入队前写 `.capture/events.wal.jsonl`，clean shutdown 后 truncate；非 clean shutdown 下次启动 replay 未 ack event。`CallbackSink` → `TrajectoryAppendWorker` 负责 Lance 批量 flush。
+StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`shutdown` 前先通过 `ApplyDispatcher` barrier drain 已接收事件，再对各 story 发送 `Flush` drain mailbox。`spawn_apply` 在入队前写 `.capture/events.wal.jsonl`，clean shutdown 后 truncate；非 clean shutdown 下次启动 replay 未 ack event。`CallbackSink` → `TrajectoryAppendWorker` 负责 Vortex 批量 flush。
 
 ### 10.2 已知限制
 
 | 现象 | 原因 | 缓解 |
 |------|------|------|
-| md 与 Lance 短暂不一致 | 后台 apply 尚未 drain | shutdown `Flush` + `reconcile.json` |
+| md 与 Vortex 短暂不一致 | 后台 apply 尚未 drain | shutdown `Flush` + `reconcile.json` |
 | turn 编号跨 call 重复 | `turn = seq/2+1` 非 per-call | 消费方用 `call_id` 分组 |
 | apply 队列满 / 采集失败 | 背压 | dead letter + `replay-dead-letter` |
 | Event WAL 多轮 crash | replay entry 暂未 ack 原 seq；`next_seq` 未从旧 WAL 恢复 | 补 `PendingEntry.seq` + open 扫描 max(seq)+1 |
-| Lance worker flush 失败 | 磁盘 / Lance 异常 | `lance_dead_letter.jsonl` 保留 RON batch |
-| Lance per-session dataset 过多 | 当前按 session 分 dataset | 按日分桶（规划中） |
+| Vortex worker flush 失败 | 磁盘 / IO 异常 | `trajectory_dead_letter.jsonl` 保留 RON batch |
+| Vortex 单文件过大 | 长 run / 高频事件 | 按 run 或 agent 拆分（规划中） |
 
 详见 [Capture 架构设计 §10](capture_design.zh.md#10-可靠性与运行形态)。
 
@@ -599,5 +594,5 @@ StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`s
 - [Capture 架构设计](capture_design.zh.md) — 代理路由、协议转换、采集管线
 - [轨迹 Markdown 格式](trajectory_tlv_format.zh.md) — TLV block 完整规范
 - [Capture 架构设计](capture_design.zh.md) — 代理路由、协议转换、子代理隔离
-- [`persisting capture` 命令](cli_capture_command.zh.md)
-- [`persisting trajectory` 命令](cli_trajectory_command.zh.md)
+- [Traj 命令](cli_trajectory_command.zh.md)
+- [Traj Capture 子命令](cli_capture_command.zh.md)

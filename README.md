@@ -101,36 +101,41 @@ ps = persisting.open("params/llama-70b", dims=(PARAM_ID, SHARD), ...)
 weights = ps["embed.weight", 0].tensor()
 ```
 
-### Trajectory Storage
+### Trajectory Storage (available now)
 
-RL trajectory collection with sequential scan.
+Agent LLM traffic capture via **`persisting traj`**: Vortex canonical event log (`events.vortex`) plus Markdown materialization for human review.
 
-```python
-traj = persisting.open("trajectories/run1", dims=(RUN_ID, TIME), order_dim=TIME)
+```bash
+# One-shot: proxy + your agent; default writes Markdown only (-f md)
+persisting traj capture -o ./store -c proxy.toml -f md -- python3 agent.py
 
-batch = traj["run_001", 0:1000].tensor()
+# Machine-readable canonical log (replay / materialize to .md later)
+persisting traj capture -o ./store -c proxy.toml -f vortex -- python3 agent.py
 ```
+
+See [Capture Quick Start](docs/src/guide/capture_quickstart.md) and [trajectory storage design](docs/src/design/trajectory_storage.zh.md) (中文).
+
+**Planned (TTAS):** tensor-style trajectory namespaces for RL batch scan — same tiered-memory model as KV Cache.
 
 ## Storage Engine & Access Patterns
 
-Lance 列式格式是 Persisting 的存储引擎——SSD 层的基础，也是最差情况的兜底（从文件重新读取）。上层所有优化（GPU 缓存、host 内存池、跨节点共享）都是对"从文件读"这个 baseline 的加速。
-
-在同一个存储引擎之上，Persisting 提供不同的访问模式：
+**Lance** 列式格式是队列、Search 与 SSD 持久化的共同底座——也是最差情况的兜底（从文件重新读取）。**Agent 轨迹 canonical** 使用 **Vortex**（`{run}/events.vortex`），Markdown 为物化人读视图；二者与 Lance 队列层独立。上层所有优化（GPU 缓存、host 内存池、跨节点共享）都是对「从文件读」这一 baseline 的加速。
 
 | Access Pattern | Scenario | Status |
 |----------------|----------|--------|
-| **Streaming append** | 轨迹收集、事件流（append-only + sequential scan） | Available |
+| **Agent capture** | LLM proxy + Vortex log + Markdown (`traj capture`) | Available |
+| **Streaming append** | 事件流、队列持久化（append-only + sequential scan，Lance） | Available |
 | **Multi-dim lookup** | KV Cache（point query + range scan + prefetch） | In progress |
 | **Batch point query** | Parameter serving（shard-aware batch get） | Planned |
 
 ### Streaming Append（已可用）
 
-流式追加是轨迹/事件流场景的自然形态——Lance 存储引擎上的 append-only 队列：
+流式追加适用于**队列与事件流**——Lance 存储引擎上的 append-only `Queue`（与轨迹 Vortex 层无关）：
 
 ```python
 from persisting import Queue
 
-queue = Queue("trajectories", storage_path="./data")
+queue = Queue("events", storage_path="./data")
 await queue.put({"step": 1, "reward": 0.5, "action": "left"})
 await queue.put({"step": 2, "reward": 1.0, "action": "right"})
 await queue.flush()
@@ -144,10 +149,10 @@ records = await queue.get(limit=100)
 |------|---------|----------|
 | GPU memory | ~μs | Small (hot cache) |
 | Host memory | ~μs–ms | Medium (warm buffer) |
-| SSD / NVMe | ~ms | Large (Lance storage engine) |
+| SSD / NVMe | ~ms | Large (Lance / Vortex on disk) |
 | Remote node | ~ms | Cluster-wide (via Pulsing) |
 
-SSD 层（Lance）提供持久化兜底。上层 tier 是对它的逐级加速——数据放置和晋升/淘汰由 TTAS 地址结构（分区键、有序维度）驱动。
+SSD 层（Lance 队列、Vortex 轨迹等）提供持久化兜底。上层 tier 是对它的逐级加速——数据放置和晋升/淘汰由 TTAS 地址结构（分区键、有序维度）驱动。
 
 ## Installation
 
@@ -160,9 +165,10 @@ pip install persisting
 | Phase | Goal | Status |
 |-------|------|--------|
 | P0 | Lance 存储引擎 + TTAS 寻址 + key encoding | In progress |
+| P0.5 | Agent trajectory capture（Vortex + Markdown，`traj` CLI） | **Shipped** |
 | P1 | KV Cache offloading (single node, GPU ↔ host ↔ SSD) | Next |
 | P2 | Cross-node KV Cache sharing (via Pulsing) | Planned |
-| P3 | Parameter serving + trajectory storage | Planned |
+| P3 | Parameter serving + TTAS trajectory namespaces | Planned |
 
 ## License
 

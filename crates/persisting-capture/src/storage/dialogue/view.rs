@@ -4,7 +4,7 @@ use super::fields::role_and_body;
 use super::skip_markdown_block;
 use crate::record::CaptureRecord;
 
-/// Queryable columns extracted from a capture record (shared by Lance + markdown block headers).
+/// Queryable columns extracted from a capture record (shared by Vortex + markdown block headers).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CaptureRecordView {
     pub role: Option<String>,

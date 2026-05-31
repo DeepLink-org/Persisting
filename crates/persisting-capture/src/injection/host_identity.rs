@@ -22,7 +22,12 @@ pub struct HostIdentityInput {
 pub fn fingerprint_host(input: &HostIdentityInput) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"persisting-machine-fp/v1\n");
-    if let Some(id) = input.machine_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(id) = input
+        .machine_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         hasher.update(b"machine_id=");
         hasher.update(id.as_bytes());
         hasher.update(b"\n");

@@ -19,8 +19,8 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 ├─────────────────────────────────────────────────────────────────┤
 │  Persisting 核心 / 引擎                                         │
 │  ┌────────────┐  ┌────────────┐  ┌──────────────────────────┐  │
-│  │    TTAS    │  │   分层     │  │ 轨迹：Lance canonical + MD 物化 │  │
-│  │ (规划)     │  │  GPU/Host  │  │ Lance 列存 │ 会话 Markdown│  │
+│  │    TTAS    │  │   分层     │  │ 轨迹：Vortex canonical + MD 物化 │  │
+│  │ (规划)     │  │  GPU/Host  │  │ Vortex 列存 │ 会话 Markdown│  │
 │  │            │  │  /SSD      │  │                           │  │
 │  └────────────┘  └────────────┘  └──────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
@@ -28,8 +28,8 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- **Lance**：SSD 持久化基线；轨迹列存、Search 索引、队列落盘均建立在此之上。
-- **轨迹（已实现）**：内嵌 LLM 代理捕获 → Lance raw event log；TLV Markdown 为物化人读视图。
+- **Lance**：SSD 持久化基线；**Search 索引**、**队列**落盘建立在此之上。
+- **轨迹（已实现）**：内嵌 LLM 代理捕获 → Vortex raw event log（`events.vortex`）；TLV Markdown 为物化人读视图。
 - **TTAS 与分层内存（演进中）**：多维寻址、GPU ↔ host ↔ SSD 放置。
 - **一种底座，多种访问模式**：流式追加、检索、点查、队列共享 Lance 生态。
 
@@ -51,8 +51,8 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 | 命令族 | 文档 | 职责 |
 |--------|------|------|
 | 整体架构 | [cli_architecture.zh.md](cli_architecture.zh.md) | 瘦 CLI + 动态引擎、异步任务、版本化协议 |
-| Capture | [cli_capture_command.zh.md](cli_capture_command.zh.md) | 代理捕获、守护进程、事后导入 |
-| Trajectory | [cli_trajectory_command.zh.md](cli_trajectory_command.zh.md) | 追加、回放、统计、materialize |
+| **`traj`（轨迹）** | [cli_trajectory_command.zh.md](cli_trajectory_command.zh.md) | 统一入口：capture / proxy / import / stats / replay / materialize / … |
+| Capture 子命令 | [cli_capture_command.zh.md](cli_capture_command.zh.md) | `traj capture`、`traj proxy`、`traj import` 设计说明 |
 | Search | [cli_search_command.zh.md](cli_search_command.zh.md) | 导入、索引、检索 |
 
 ## 参考与分析
@@ -66,7 +66,7 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 
 1. **Lance 是兜底** — 上层缓存与加速都建立在「从文件读」这一基线之上。
 2. **一种底座，多种模式** — 轨迹、Search、KV、队列不是彼此孤立的子系统。
-3. **轨迹两层视图** — Lance canonical（全量）；Markdown 由 CaptureEngine live upsert / import append / materialize 派生（有损、人读）；capture run 下主/子 md 分文件存放。
+3. **轨迹两层视图** — Vortex canonical（全量，`events.vortex`）；Markdown 由 CaptureEngine live upsert / `traj import` / `traj materialize` 派生；`traj capture` 下主/子 md 分文件存放。
 4. **Capture 自给自足** — 内嵌代理即可完整捕获 LLM 流量；IDE 日志 import 为补充。
 5. **TTAS 对内** — 对外保持简洁的数据访问模型。
 6. **性能是产品** — P99 延迟、GPU 利用率、capture 实时性是核心指标。

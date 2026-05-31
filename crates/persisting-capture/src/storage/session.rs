@@ -19,7 +19,7 @@ pub struct CaptureRoute {
     pub root_session: Option<String>,
     /// Logical session from request headers (stored on [`CaptureRecord`]).
     pub session_id: String,
-    /// Markdown filename stem and Lance key (`{storage_session_id}.md`).
+    /// Markdown filename stem and event-log key (`{storage_session_id}.md`).
     pub storage_session_id: String,
     /// Claude Code subagent instance id (`x-claude-code-agent-id`), when present.
     pub subagent_id: Option<String>,

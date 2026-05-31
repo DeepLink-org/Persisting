@@ -1,4 +1,4 @@
-//! Lance ↔ TLV Markdown conversion at the trajectory storage layer.
+//! Vortex ↔ TLV Markdown conversion at the trajectory storage layer.
 
 use anyhow::{Context, Result};
 use persisting_capture::trajectory_convert::{
@@ -7,13 +7,12 @@ use persisting_capture::trajectory_convert::{
 };
 
 use super::store::{
-    overwrite_lines, LanceTrajectoryStore, MarkdownTrajectoryStore, TrajectorySession,
-    TrajectoryStore,
+    overwrite_session_lines, MarkdownTrajectoryStore, TrajectorySession, TrajectoryStore,
+    VortexTrajectoryStore,
 };
-use crate::trajectory::open_trajectory;
 use persisting_capture::story_coords::story_run_dir;
 
-/// Result of materializing Lance raw log → TLV Markdown.
+/// Result of materializing Vortex raw log → TLV Markdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializeOutcome {
     pub markdown_path: String,
@@ -21,10 +20,10 @@ pub struct MaterializeOutcome {
     pub note: String,
 }
 
-/// Result of compacting TLV Markdown → Lance raw log.
+/// Result of compacting TLV Markdown → Vortex raw log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactOutcome {
-    pub lance_uri: String,
+    pub event_log_path: String,
     pub stats: CompactStats,
     pub note: String,
 }
@@ -32,11 +31,11 @@ pub struct CompactOutcome {
 async fn load_all_capture_records(
     session: &TrajectorySession,
 ) -> Result<Vec<persisting_capture::record::CaptureRecord>> {
-    let lance = LanceTrajectoryStore;
-    let outcome = lance
+    let vortex = VortexTrajectoryStore;
+    let outcome = vortex
         .replay(session, 0, None)
         .await
-        .context("replay Lance for conversion")?;
+        .context("replay Vortex for conversion")?;
     outcome
         .records
         .iter()
@@ -48,15 +47,15 @@ async fn load_all_capture_records(
         .collect()
 }
 
-/// **Lance → Markdown** (lossy): scan raw event log, write dialogue TLV blocks.
-pub async fn materialize_lance_to_markdown(
+/// **Vortex → Markdown** (lossy): scan raw event log, write dialogue TLV blocks.
+pub async fn materialize_vortex_to_markdown(
     session: &TrajectorySession,
 ) -> Result<MaterializeOutcome> {
-    let lance = LanceTrajectoryStore;
-    if !lance.exists(session).await? {
+    let vortex = VortexTrajectoryStore;
+    if !vortex.exists(session).await? {
         anyhow::bail!(
-            "Lance dataset missing at {}; materialize requires raw event log",
-            lance.display_path(session)?
+            "Vortex event log missing at {}; materialize requires raw event log",
+            vortex.display_path(session)?
         );
     }
 
@@ -73,7 +72,7 @@ pub async fn materialize_lance_to_markdown(
     Ok(MaterializeOutcome {
         markdown_path: md_path.display().to_string(),
         note: format!(
-            "Materialized Lance→Markdown (lossy): {} event(s) → {} block(s), skipped {} internal/non-dialogue event(s) at {}",
+            "Materialized Vortex→Markdown (lossy): {} event(s) → {} block(s), skipped {} internal/non-dialogue event(s) at {}",
             stats.source_events,
             stats.markdown_blocks,
             stats.skipped_events,
@@ -83,8 +82,8 @@ pub async fn materialize_lance_to_markdown(
     })
 }
 
-/// **Markdown → Lance** (compact): parse TLV blocks into Lance rows.
-pub async fn compact_markdown_to_lance(
+/// **Markdown → Vortex** (compact): parse TLV blocks into event log rows.
+pub async fn compact_markdown_to_vortex(
     session: &TrajectorySession,
     overwrite: bool,
 ) -> Result<CompactOutcome> {
@@ -119,13 +118,13 @@ pub async fn compact_markdown_to_lance(
         .collect();
     let source_blocks = line_vec.len();
 
-    let lance = LanceTrajectoryStore;
-    let lance_uri = lance.display_path(session)?;
+    let vortex = VortexTrajectoryStore;
+    let event_log_path = vortex.display_path(session)?;
 
-    let lance_rows = if overwrite {
-        overwrite_lines(lance_uri.as_str(), &line_vec).await?
+    let event_rows = if overwrite {
+        overwrite_session_lines(session, &line_vec).await?
     } else {
-        LanceTrajectoryStore
+        VortexTrajectoryStore
             .append(session, &line_vec)
             .await?
             .persisted_units
@@ -133,36 +132,32 @@ pub async fn compact_markdown_to_lance(
 
     let stats = CompactStats {
         source_blocks,
-        lance_rows,
+        event_rows,
     };
-    let note = compact_stats_note(&stats, &md_path, &lance_uri, overwrite);
+    let note = compact_stats_note(&stats, &md_path, &event_log_path, overwrite);
     Ok(CompactOutcome {
-        lance_uri,
+        event_log_path,
         note,
         stats,
     })
 }
 
-/// Session-level stats comparing Lance row count vs Markdown block count.
+/// Session-level stats comparing Vortex row count vs Markdown block count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayerStats {
-    pub lance_rows: usize,
+    pub event_rows: usize,
     pub markdown_blocks: usize,
-    pub lance_uri: String,
+    pub event_log_path: String,
     pub markdown_path: Option<String>,
     pub note: String,
 }
 
 pub async fn layer_stats(session: &TrajectorySession) -> Result<LayerStats> {
-    let lance = LanceTrajectoryStore;
+    let vortex = VortexTrajectoryStore;
     let markdown = MarkdownTrajectoryStore;
 
-    let lance_rows = if lance.exists(session).await? {
-        if let Some(ds) = open_trajectory(lance.display_path(session)?.as_str()).await? {
-            ds.count_rows(None).await.unwrap_or(0)
-        } else {
-            0
-        }
+    let event_rows = if vortex.exists(session).await? {
+        vortex.stats(session).await?.row_count
     } else {
         0
     };
@@ -187,12 +182,12 @@ pub async fn layer_stats(session: &TrajectorySession) -> Result<LayerStats> {
         (0, None)
     };
 
-    let note = if lance_rows > 0 && markdown_blocks > 0 {
+    let note = if event_rows > 0 && markdown_blocks > 0 {
         format!(
-            "Two-layer storage: Lance {lance_rows} raw event(s) ≥ Markdown {markdown_blocks} dialogue block(s)"
+            "Two-layer storage: Vortex {event_rows} raw event(s) ≥ Markdown {markdown_blocks} dialogue block(s)"
         )
-    } else if lance_rows > 0 {
-        format!("Lance only: {lance_rows} raw event(s)")
+    } else if event_rows > 0 {
+        format!("Vortex only: {event_rows} raw event(s)")
     } else if markdown_blocks > 0 {
         format!("Markdown only: {markdown_blocks} block(s)")
     } else {
@@ -200,9 +195,9 @@ pub async fn layer_stats(session: &TrajectorySession) -> Result<LayerStats> {
     };
 
     Ok(LayerStats {
-        lance_rows,
+        event_rows,
         markdown_blocks,
-        lance_uri: lance.display_path(session)?,
+        event_log_path: vortex.display_path(session)?,
         markdown_path,
         note,
     })

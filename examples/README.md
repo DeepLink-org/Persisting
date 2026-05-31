@@ -28,7 +28,7 @@ python -m examples.06_tiered_lazy_prefetch_eviction
 
 | 目录 | 用途 |
 |------|------|
-| [**capture-walkthrough/**](capture-walkthrough/) | `./run.sh` — Mock LLM + capture run + 校验 |
+| [**capture-walkthrough/**](capture-walkthrough/) | `./run.sh` — Mock LLM + `traj capture` + 校验 |
 | [**trajectory-tlv/**](trajectory-tlv/) | 静态 `trajectory.tlv.md`（裸对话正文），供 replay 与设计对照 |
 | [**llm-proxy/**](llm-proxy/) | 真实 LLM 代理配置（DeepSeek、多厂商） |
 

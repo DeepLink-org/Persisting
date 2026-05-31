@@ -1,4 +1,4 @@
-//! Discover running `persisting capture serve` processes.
+//! Discover running `persisting traj proxy` processes.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -57,30 +57,30 @@ pub(crate) fn discover_running_captures() -> Result<Vec<CaptureDaemonState>> {
     Ok(running)
 }
 
-/// Parse storage from `capture serve -o <DIR> …` or legacy `capture serve <DIR> …`.
-pub fn storage_from_serve_cmdline(cmdline: &str) -> Option<PathBuf> {
+/// Parse storage from `traj proxy -o <DIR> …` (foreground proxy).
+pub fn storage_from_proxy_cmdline(cmdline: &str) -> Option<PathBuf> {
     let parts: Vec<&str> = cmdline.split_whitespace().collect();
-    for (i, &tok) in parts.iter().enumerate() {
-        if tok != "serve" {
+    let proxy_idx = parts.iter().position(|&t| t == "proxy")?;
+    // `traj proxy start` is the short-lived wrapper; the child is `traj proxy -o …`.
+    if parts.get(proxy_idx + 1).is_some_and(|&t| t == "start") {
+        return None;
+    }
+    let tail = &parts[proxy_idx + 1..];
+    for (j, &next) in tail.iter().enumerate() {
+        if matches!(next, "-o" | "--output-dir" | "--output_dir") {
+            if let Some(&path) = tail.get(j + 1) {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+    for &next in tail {
+        if next.starts_with('-') {
             continue;
         }
-        let tail = &parts[i + 1..];
-        for (j, &next) in tail.iter().enumerate() {
-            if matches!(next, "-o" | "--output-dir" | "--output_dir") {
-                if let Some(&path) = tail.get(j + 1) {
-                    return Some(PathBuf::from(path));
-                }
-            }
+        if next == "traj" || next == "trajectory" || next.ends_with("persisting") {
+            continue;
         }
-        for &next in tail {
-            if next.starts_with('-') {
-                continue;
-            }
-            if next == "capture" || next.ends_with("persisting") {
-                continue;
-            }
-            return Some(PathBuf::from(next));
-        }
+        return Some(PathBuf::from(next));
     }
     None
 }
@@ -100,14 +100,13 @@ fn discover_storage_paths_from_processes() -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for line in text.lines() {
         let line = line.trim();
-        if !line.contains("capture") || !line.contains("serve") {
+        if !line.contains("persisting") || !line.contains("proxy") {
             continue;
         }
-        // Ignore the short-lived `capture start` wrapper if it appears in ps.
-        if line.contains("capture start") && !line.contains("capture serve") {
+        if line.contains("proxy start") {
             continue;
         }
-        if let Some(p) = storage_from_serve_cmdline(line) {
+        if let Some(p) = storage_from_proxy_cmdline(line) {
             paths.push(p);
         }
     }
@@ -124,28 +123,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_serve_storage_with_output_flag() {
-        let p = storage_from_serve_cmdline(
-            "/usr/bin/persisting capture serve -o ./trajectory-store -c /tmp/c.yaml -f md",
+    fn parse_proxy_storage_with_output_flag() {
+        let p = storage_from_proxy_cmdline(
+            "/usr/bin/persisting traj proxy -o ./trajectory-store -c /tmp/c.yaml -f md",
         )
         .unwrap();
         assert_eq!(p, PathBuf::from("./trajectory-store"));
     }
 
     #[test]
-    fn parse_serve_storage_legacy_positional() {
-        let p = storage_from_serve_cmdline(
-            "/usr/bin/persisting capture serve ./trajectory-store --config /tmp/c.yaml",
-        )
-        .unwrap();
-        assert_eq!(p, PathBuf::from("./trajectory-store"));
+    fn parse_proxy_skips_start_wrapper() {
+        assert!(
+            storage_from_proxy_cmdline("persisting traj proxy start -o ./store -c cfg.toml")
+                .is_none()
+        );
     }
 
     #[test]
-    fn parse_serve_skips_flags() {
-        let p =
-            storage_from_serve_cmdline("persisting capture serve /data/store --config cfg.yaml")
-                .unwrap();
-        assert_eq!(p, PathBuf::from("/data/store"));
+    fn parse_proxy_storage_positional() {
+        let p = storage_from_proxy_cmdline(
+            "persisting trajectory proxy ./data/store --config cfg.yaml",
+        )
+        .unwrap();
+        assert_eq!(p, PathBuf::from("./data/store"));
     }
 }
