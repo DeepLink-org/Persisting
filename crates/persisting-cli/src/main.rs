@@ -27,14 +27,16 @@ use persisting_proto::{
 use serde::{Deserialize, Serialize};
 
 use persisting_engine::trajectory::{
-    merge_traj_location, resolve_traj_read_location, TrajLocation,
+    expand_story_locations_blocking, list_traj_read_locations, merge_traj_location,
+    resolve_traj_read_location, TrajLocation,
 };
 use trajectory_detail::{build_detail_node, print_trajectory_stats_detail, SpawnLinkInfo};
 use trajectory_format::{TrajectoryAddFormat, TrajectoryFormatManager, TrajectoryStorageCli};
 use trajectory_stdout_toml::{
     print_trajectory_append_as_toml, print_trajectory_extract_as_toml,
     print_trajectory_materialize_as_toml, print_trajectory_replay_as_toml,
-    print_trajectory_stats_as_toml, print_trajectory_truncate_as_toml,
+    print_trajectory_stats_as_toml, print_trajectory_stats_list_as_toml,
+    print_trajectory_truncate_as_toml,
 };
 
 const TRAJ_LONG_ABOUT: &str = "\
@@ -1672,6 +1674,80 @@ fn invoke_trajectory_replay(
     }
 }
 
+fn run_trajectory_stats_detail(
+    lazy: &mut LazyEngine<'_>,
+    loc: &TrajLocation,
+    storage_format: TrajectoryStorageCli,
+) -> Result<()> {
+    let stats = invoke_trajectory_stats(
+        lazy,
+        TrajectoryStatsRequest {
+            storage: loc.storage.clone(),
+            agent_id: loc.agent_id.clone(),
+            session_id: loc.session_id.clone(),
+            storage_format: storage_format.into(),
+            root_session_id: loc.root_session_id.clone(),
+        },
+    )?;
+    if stats.status != "ok" {
+        print_trajectory_stats_as_toml(&stats)?;
+        return Ok(());
+    }
+    let replay_format = storage_format.into();
+    let parent_root = loc
+        .root_session_id
+        .clone()
+        .unwrap_or_else(|| loc.session_id.clone());
+    let replay = invoke_trajectory_replay(
+        lazy,
+        TrajectoryReplayRequest {
+            storage: loc.storage.clone(),
+            agent_id: loc.agent_id.clone(),
+            session_id: loc.session_id.clone(),
+            offset: 0,
+            limit: None,
+            storage_format: replay_format,
+            root_session_id: loc.root_session_id.clone(),
+        },
+    )?;
+    let storage = loc.storage.clone();
+    let agent_id = loc.agent_id.clone();
+    let mut load_subagent = |link: &SpawnLinkInfo| -> Result<Option<Vec<String>>> {
+        let replay = invoke_trajectory_replay(
+            lazy,
+            TrajectoryReplayRequest {
+                storage: storage.clone(),
+                agent_id: agent_id.clone(),
+                session_id: link.storage_session_id(),
+                offset: 0,
+                limit: None,
+                storage_format: storage_format.into(),
+                root_session_id: Some(parent_root.clone()),
+            },
+        );
+        match replay {
+            Ok(r) if r.status == "ok" && !r.records.is_empty() => Ok(Some(r.records)),
+            Ok(_) => Ok(None),
+            Err(_) => Ok(None),
+        }
+    };
+    let tree = build_detail_node(
+        format!("main ({})", stats.session_id),
+        &replay.records,
+        &mut load_subagent,
+    )?;
+    print_trajectory_stats_detail(&stats, &tree, Some(&loc.agent_id))
+}
+
+fn stats_detail_section_label(loc: &TrajLocation) -> String {
+    match loc.root_session_id.as_deref() {
+        Some(root) if root != loc.session_id => {
+            format!("{} / {} / {}", loc.agent_id, root, loc.session_id)
+        }
+        _ => format!("{} / {}", loc.agent_id, loc.session_id),
+    }
+}
+
 fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()> {
     match &args.command {
         TrajectoryCommand::Capture(args) => {
@@ -1786,75 +1862,57 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             lazy.invoke_engine_ron(&payload)?;
         }
         TrajectoryCommand::Stats(args) => {
-            let loc = resolve_traj_ids_for_read(
-                "trajectory stats",
-                args.storage.clone(),
+            let path_arg = resolve_traj_storage_arg(args.storage.clone())?;
+            let mut locations = list_traj_read_locations(
+                path_arg.clone(),
                 args.agent_id.clone(),
                 args.session_id.clone(),
                 args.root_session_id.clone(),
             )?;
-            let stats_req = TrajectoryStatsRequest {
-                storage: loc.storage.clone(),
-                agent_id: loc.agent_id.clone(),
-                session_id: loc.session_id.clone(),
-                storage_format: args.storage_format.into(),
-                root_session_id: loc.root_session_id.clone(),
-            };
+            if args.session_id.is_none() {
+                locations = expand_story_locations_blocking(locations)?;
+            }
+            if locations.is_empty() {
+                anyhow::bail!("trajectory stats: no sessions found under {path_arg}");
+            }
             if args.detail {
-                let stats = invoke_trajectory_stats(lazy, stats_req)?;
-                if stats.status != "ok" {
-                    print_trajectory_stats_as_toml(&stats)?;
-                    return Ok(());
-                }
-                let replay_format = args.storage_format.into();
-                let parent_root = loc
-                    .root_session_id
-                    .clone()
-                    .unwrap_or_else(|| loc.session_id.clone());
-                let replay = invoke_trajectory_replay(
-                    lazy,
-                    TrajectoryReplayRequest {
-                        storage: loc.storage.clone(),
-                        agent_id: loc.agent_id.clone(),
-                        session_id: loc.session_id.clone(),
-                        offset: 0,
-                        limit: None,
-                        storage_format: replay_format,
-                        root_session_id: loc.root_session_id.clone(),
-                    },
-                )?;
-                let storage = loc.storage.clone();
-                let agent_id = loc.agent_id.clone();
-                let storage_format = args.storage_format;
-                let mut load_subagent = |link: &SpawnLinkInfo| -> Result<Option<Vec<String>>> {
-                    let replay = invoke_trajectory_replay(
-                        lazy,
-                        TrajectoryReplayRequest {
-                            storage: storage.clone(),
-                            agent_id: agent_id.clone(),
-                            session_id: link.storage_session_id(),
-                            offset: 0,
-                            limit: None,
-                            storage_format: storage_format.into(),
-                            root_session_id: Some(parent_root.clone()),
-                        },
-                    );
-                    match replay {
-                        Ok(r) if r.status == "ok" && !r.records.is_empty() => Ok(Some(r.records)),
-                        Ok(_) => Ok(None),
-                        Err(_) => Ok(None),
+                for (i, loc) in locations.iter().enumerate() {
+                    if i > 0 {
+                        println!();
                     }
+                    if locations.len() > 1 {
+                        println!("--- {} ---", stats_detail_section_label(loc));
+                    }
+                    run_trajectory_stats_detail(lazy, loc, args.storage_format)?;
+                }
+            } else if locations.len() == 1 {
+                let loc = &locations[0];
+                let stats_req = TrajectoryStatsRequest {
+                    storage: loc.storage.clone(),
+                    agent_id: loc.agent_id.clone(),
+                    session_id: loc.session_id.clone(),
+                    storage_format: args.storage_format.into(),
+                    root_session_id: loc.root_session_id.clone(),
                 };
-                let tree = build_detail_node(
-                    format!("main ({})", stats.session_id),
-                    &replay.records,
-                    &mut load_subagent,
-                )?;
-                print_trajectory_stats_detail(&stats, &tree)?;
-            } else {
                 let payload = rpc_request_pretty(RequestBody::TrajectoryStats(stats_req))
                     .context("encode TrajectoryStats RpcRequest RON")?;
                 lazy.invoke_engine_ron(&payload)?;
+            } else {
+                let storage_format = args.storage_format.into();
+                let mut rows = Vec::with_capacity(locations.len());
+                for loc in &locations {
+                    rows.push(invoke_trajectory_stats(
+                        lazy,
+                        TrajectoryStatsRequest {
+                            storage: loc.storage.clone(),
+                            agent_id: loc.agent_id.clone(),
+                            session_id: loc.session_id.clone(),
+                            storage_format,
+                            root_session_id: loc.root_session_id.clone(),
+                        },
+                    )?);
+                }
+                print_trajectory_stats_list_as_toml(&locations[0].storage, &rows)?;
             }
         }
         TrajectoryCommand::Materialize(args) => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simulated agent: multi-turn chat via OPENAI_BASE_URL (set by ``capture run``)."""
+"""Simulated agent: multi-turn chat via OPENAI_BASE_URL (set by ``traj capture``)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import urllib.request
 def main() -> int:
     base = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")
     if not base:
-        print("OPENAI_BASE_URL not set — run under `persisting capture run`", file=sys.stderr)
+        print("OPENAI_BASE_URL not set — run under `persisting traj capture`", file=sys.stderr)
         return 2
 
     turns = int(os.environ.get("CAPTURE_AGENT_TURNS", "3"))

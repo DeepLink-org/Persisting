@@ -685,6 +685,7 @@ fn collect_subagent_trajectories(node: &DetailNode, seen: &mut HashSet<String>) 
 pub fn print_trajectory_stats_detail(
     stats: &TrajectoryStatsResponse,
     root: &DetailNode,
+    agent_id: Option<&str>,
 ) -> Result<()> {
     if stats.status != "ok" {
         println!(
@@ -706,9 +707,13 @@ pub fn print_trajectory_stats_detail(
     } else {
         format!("{} turns", agg.turn_count)
     };
+    let session_label = match agent_id {
+        Some(agent) if agent != stats.session_id => format!("{} / {}", agent, stats.session_id),
+        _ => stats.session_id.clone(),
+    };
     println!(
         "session {} | {} | {} blocks | prompt {} tok | completion {} tok | models: {}",
-        stats.session_id,
+        session_label,
         turn_line,
         agg.block_count,
         agg.total_prompt_tokens,

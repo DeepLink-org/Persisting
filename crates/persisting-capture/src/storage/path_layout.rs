@@ -7,7 +7,7 @@ use std::path::{Component, Path};
 
 use super::markdown::{locate_session_markdown, session_markdown_path_for_key};
 use super::story_coords::StoryCoords;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 pub type TrajLocation = StoryCoords;
 
@@ -87,8 +87,7 @@ fn looks_like_session_dir(dir: &Path) -> bool {
     dir.is_dir()
         && (locate_session_markdown(dir).is_some()
             || dir.join("events.vortex").is_file()
-            || dir.join("_versions").is_dir()
-            || dir.join(".capture").join("run_session").is_file())
+            || dir.join("_versions").is_dir())
 }
 
 /// Capture run layout: `{storage}/{agent}/{run_id}/events.vortex`.
@@ -253,6 +252,175 @@ fn primary_story_storage_key(run_dir: &Path, run_id: &str) -> Option<String> {
     Some(stem.to_string())
 }
 
+fn story_coords_from_run_bucket(storage: &str, agent_id: &str, run_id: &str) -> StoryCoords {
+    StoryCoords {
+        storage: storage.to_string(),
+        agent_id: agent_id.to_string(),
+        session_id: run_id.to_string(),
+        root_session_id: Some(run_id.to_string()),
+    }
+}
+
+fn story_coords_from_parts(
+    storage: &str,
+    agent_id: &str,
+    session_id: &str,
+    root_session_id: Option<String>,
+) -> StoryCoords {
+    let root_session_id = root_session_id.or_else(|| {
+        infer_root_session_id(
+            Path::new(storage).join(agent_id).join(session_id).as_path(),
+            session_id,
+        )
+    });
+    let session_id = remap_capture_run_story_session_id(
+        storage,
+        agent_id,
+        session_id,
+        root_session_id.as_deref(),
+    );
+    StoryCoords {
+        storage: storage.to_string(),
+        agent_id: agent_id.to_string(),
+        session_id,
+        root_session_id,
+    }
+}
+
+/// Agent directory `{storage}/{agent_id}/` (has ≥1 session subdir, not itself a session dir).
+fn parse_agent_dir(path_arg: &str) -> Option<(String, String)> {
+    let trimmed = normalized_path_arg(path_arg);
+    let path = Path::new(&trimmed);
+    if !path.is_dir() || looks_like_session_dir(path) {
+        return None;
+    }
+    let sessions = list_session_dirs(path)?;
+    if sessions.is_empty() {
+        return None;
+    }
+    let agent_id = path.file_name()?.to_string_lossy().into_owned();
+    let storage = path.parent()?.to_string_lossy().into_owned();
+    Some((storage, agent_id))
+}
+
+fn list_sessions_under_agent(storage: &str, agent_id: &str) -> Result<Vec<StoryCoords>> {
+    let agent_path = Path::new(storage).join(agent_id);
+    if !agent_path.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut sessions = list_session_dirs(&agent_path).unwrap_or_default();
+    sessions.sort();
+    Ok(sessions
+        .into_iter()
+        .map(|run_id| story_coords_from_run_bucket(storage, agent_id, &run_id))
+        .collect())
+}
+
+fn list_all_sessions(storage: &str) -> Result<Vec<StoryCoords>> {
+    let path = Path::new(storage);
+    if !path.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for agent_entry in std::fs::read_dir(path).with_context(|| format!("read_dir {storage}"))? {
+        let agent_entry = agent_entry?;
+        if !agent_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let agent_id = agent_entry.file_name().to_string_lossy().into_owned();
+        if agent_id.starts_with('.') {
+            continue;
+        }
+        out.extend(list_sessions_under_agent(storage, &agent_id)?);
+    }
+    out.sort_by(|a, b| (&a.agent_id, &a.session_id).cmp(&(&b.agent_id, &b.session_id)));
+    Ok(out)
+}
+
+/// List trajectory sessions to read under `path_arg` (storage root, agent dir, or single session).
+/// When `--session-id` is set, returns exactly one resolved session (same as [`resolve_story_read_location`]).
+pub fn list_story_read_locations(
+    path_arg: String,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+    root_session_id: Option<String>,
+) -> Result<Vec<StoryCoords>> {
+    if session_id.is_some() {
+        return Ok(vec![resolve_story_read_location(
+            "trajectory stats",
+            path_arg,
+            agent_id,
+            session_id,
+            root_session_id,
+        )?]);
+    }
+
+    if let Some(parsed) = infer_traj_location_from_path(&path_arg) {
+        if let Some(ref want) = agent_id {
+            if want != &parsed.agent_id {
+                anyhow::bail!(
+                    "trajectory stats: --agent-id {want} does not match path agent_id {}",
+                    parsed.agent_id
+                );
+            }
+        }
+        let run_dir = Path::new(&parsed.storage)
+            .join(&parsed.agent_id)
+            .join(&parsed.session_id);
+        let root = parsed.root_session_id.or_else(|| {
+            infer_root_session_id(run_dir.as_path(), &parsed.session_id)
+        });
+        if root.as_deref() == Some(parsed.session_id.as_str()) {
+            return Ok(vec![story_coords_from_run_bucket(
+                &parsed.storage,
+                &parsed.agent_id,
+                &parsed.session_id,
+            )]);
+        }
+        return Ok(vec![story_coords_from_parts(
+            &parsed.storage,
+            &parsed.agent_id,
+            &parsed.session_id,
+            root.or(root_session_id),
+        )]);
+    }
+
+    let partial = merge_story_location(path_arg.clone(), agent_id, None, root_session_id.clone());
+    let storage = partial.storage;
+
+    if let Some(agent) = partial.agent_id {
+        let sessions = list_sessions_under_agent(&storage, &agent)?;
+        if sessions.is_empty() {
+            anyhow::bail!(
+                "trajectory stats: no sessions under {storage}/{agent}/ (expected run dirs with events.vortex or markdown)"
+            );
+        }
+        return Ok(sessions);
+    }
+
+    if let Some((stor, agent)) = parse_agent_dir(&path_arg) {
+        let sessions = list_sessions_under_agent(&stor, &agent)?;
+        if sessions.is_empty() {
+            anyhow::bail!(
+                "trajectory stats: no sessions under {stor}/{agent}/ (expected run dirs with events.vortex or markdown)"
+            );
+        }
+        return Ok(sessions);
+    }
+
+    if Path::new(&storage).is_dir() {
+        let sessions = list_all_sessions(&storage)?;
+        if sessions.is_empty() {
+            anyhow::bail!(
+                "trajectory stats: no trajectory sessions under {storage}/ (expected {{agent_id}}/{{session_id}}/ layout)"
+            );
+        }
+        return Ok(sessions);
+    }
+
+    anyhow::bail!("trajectory stats: path not found or not a trajectory store: {path_arg}")
+}
+
 /// Read commands (`replay`, `stats`) require a resolved session.
 pub fn resolve_story_read_location(
     op: &str,
@@ -263,35 +431,19 @@ pub fn resolve_story_read_location(
 ) -> Result<StoryCoords> {
     let partial = merge_story_location(path_arg, agent_id, session_id, root_session_id);
     match (partial.agent_id, partial.session_id) {
-        (Some(agent_id), Some(session_id)) => {
-            let root_session_id = partial.root_session_id.or_else(|| {
-                infer_root_session_id(
-                    Path::new(&partial.storage)
-                        .join(&agent_id)
-                        .join(&session_id)
-                        .as_path(),
-                    &session_id,
-                )
-            });
-            let session_id = remap_capture_run_story_session_id(
-                &partial.storage,
-                &agent_id,
-                &session_id,
-                root_session_id.as_deref(),
-            );
-            Ok(StoryCoords {
-                storage: partial.storage,
-                agent_id,
-                session_id,
-                root_session_id,
-            })
-        }
+        (Some(agent_id), Some(session_id)) => Ok(story_coords_from_parts(
+            &partial.storage,
+            &agent_id,
+            &session_id,
+            partial.root_session_id,
+        )),
         _ => anyhow::bail!(
             "{op}: 请指定 session 目录（如 `store/{{agent_id}}/{{session_id}}/`），或同时提供 --agent-id 与 --session-id"
         ),
     }
 }
 
+pub use list_story_read_locations as list_traj_read_locations;
 /// Legacy aliases for engine / CLI compatibility.
 pub use merge_story_location as merge_traj_location;
 pub use resolve_story_read_location as resolve_traj_read_location;
@@ -481,6 +633,107 @@ mod tests {
         assert_eq!(loc.storage, "store");
         assert_eq!(loc.agent_id, "a");
         assert_eq!(loc.session_id, "s");
+    }
+
+    #[test]
+    fn storage_root_with_run_session_is_not_session_dir() {
+        let base = std::env::temp_dir().join(format!(
+            "persisting-traj-capture-root-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let store = base.join("store");
+        std::fs::create_dir_all(store.join(".capture")).unwrap();
+        std::fs::write(store.join(".capture/run_session"), "run-20260101-000000").unwrap();
+        let session = store.join("agent-a").join("run-20260101-000000");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("events.vortex"), b"v").unwrap();
+
+        let loc = resolve_traj_read_location(
+            "trajectory stats",
+            store.to_str().unwrap().into(),
+            Some("agent-a".into()),
+            Some("run-20260101-000000".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(loc.storage, store.to_str().unwrap());
+        assert_eq!(loc.agent_id, "agent-a");
+        assert_eq!(loc.session_id, "run-20260101-000000");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn list_agent_dir_returns_all_sessions() {
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-list-agent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let agent = base.join("store").join("deepseek-proxy");
+        for run in ["run-001", "run-002"] {
+            let session = agent.join(run);
+            std::fs::create_dir_all(&session).unwrap();
+            std::fs::write(session.join("events.vortex"), b"v").unwrap();
+        }
+
+        let locs =
+            list_story_read_locations(agent.to_str().unwrap().into(), None, None, None).unwrap();
+        assert_eq!(locs.len(), 2);
+        assert!(locs.iter().all(|l| l.agent_id == "deepseek-proxy"));
+        assert_eq!(
+            locs.iter()
+                .map(|l| l.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-001", "run-002"]
+        );
+        assert!(locs
+            .iter()
+            .all(|l| l.root_session_id.as_deref() == Some(l.session_id.as_str())));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn list_agent_dir_does_not_remap_to_markdown_stem_before_vortex_scan() {
+        let base = std::env::temp_dir().join(format!(
+            "persisting-traj-list-no-remap-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let agent = base.join("store").join("deepseek-proxy");
+        let run = agent.join("run-with-md");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("events.vortex"), b"v").unwrap();
+        std::fs::write(run.join("header-session-uuid.md"), "# story\n").unwrap();
+
+        let locs =
+            list_story_read_locations(agent.to_str().unwrap().into(), None, None, None).unwrap();
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].session_id, "run-with-md");
+        assert_eq!(locs[0].root_session_id.as_deref(), Some("run-with-md"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn list_storage_root_returns_all_agents() {
+        let base =
+            std::env::temp_dir().join(format!("persisting-traj-list-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let store = base.join("store");
+        for (agent, run) in [("a1", "run-1"), ("a2", "run-2")] {
+            let session = store.join(agent).join(run);
+            std::fs::create_dir_all(&session).unwrap();
+            std::fs::write(session.join("0001.md"), "# t\n").unwrap();
+        }
+
+        let locs =
+            list_story_read_locations(store.to_str().unwrap().into(), None, None, None).unwrap();
+        assert_eq!(locs.len(), 2);
+        assert_eq!(locs[0].agent_id, "a1");
+        assert_eq!(locs[1].agent_id, "a2");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

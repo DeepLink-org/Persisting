@@ -17,6 +17,7 @@ pub use persisting_proto::{
 };
 
 mod convert;
+mod expand;
 pub mod path;
 mod storage;
 pub mod store;
@@ -27,10 +28,12 @@ pub use convert::{
     compact_markdown_to_vortex, layer_stats, materialize_vortex_to_markdown, CompactOutcome,
     LayerStats, MaterializeOutcome,
 };
+pub use expand::{expand_story_locations, expand_story_locations_blocking};
 pub use path::{
-    merge_story_location, merge_traj_location, resolve_story_read_location,
-    resolve_traj_read_location, try_infer_story_location, try_infer_traj_location, StoryCoords,
-    StoryCoords as TrajLocation, StoryLocationPartial, StoryLocationPartial as TrajLocationPartial,
+    list_story_read_locations, list_traj_read_locations, merge_story_location,
+    merge_traj_location, resolve_story_read_location, resolve_traj_read_location,
+    try_infer_story_location, try_infer_traj_location, StoryCoords, StoryCoords as TrajLocation,
+    StoryLocationPartial, StoryLocationPartial as TrajLocationPartial,
 };
 pub use persisting_capture::egress::{export_story_bundle, parse_engine_records, ExportOutcome};
 pub use persisting_capture::story_coords::{

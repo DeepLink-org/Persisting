@@ -26,6 +26,13 @@ capture_parse_toml_row_count() {
   python3 -c "import re,sys; t=open(sys.argv[1]).read(); m=re.search(r'row_count\s*=\s*(\d+)', t); print(m.group(1) if m else '0')" "$1"
 }
 
+capture_read_run_session() {
+  local storage="$1"
+  local f="$storage/.capture/run_session"
+  [[ -f "$f" ]] || capture_die "missing run_session: $f"
+  tr -d '[:space:]' <"$f"
+}
+
 # Sets CLI and optionally PERSISTING_ENGINE_LIB. Args: skip_build need_engine
 capture_resolve_binaries() {
   local skip_build="${1:-0}"
@@ -72,18 +79,18 @@ capture_wait_http() {
   return 1
 }
 
-# Poll trajectory stats until row_count >= expected or plateau.
-capture_drain_lance_rows() {
+# Poll traj stats (Vortex layer) until row_count >= expected or plateau.
+capture_drain_event_rows() {
   local storage="$1" agent_id="$2" session_id="$3" expected="$4" drain_sec="$5"
   local stats_toml="$6"
   local best=0 prev=-1 stable=0
   local i max=$((drain_sec * 2))
 
   for ((i = 0; i < max; i++)); do
-    if "$CLI" trajectory stats "$storage" \
+    if "$CLI" traj stats "$storage" \
       --agent-id "$agent_id" \
       --session-id "$session_id" \
-      --storage-format lance >"$stats_toml" 2>/dev/null; then
+      --storage-format vortex >"$stats_toml" 2>/dev/null; then
       best="$(capture_parse_toml_row_count "$stats_toml")"
       if [[ "$best" -ge "$expected" ]]; then
         echo "$best"

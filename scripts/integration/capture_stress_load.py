@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP load against persisting capture proxy (mock upstream behind proxy)."""
+"""HTTP load against persisting traj proxy (mock upstream behind proxy)."""
 
 from __future__ import annotations
 

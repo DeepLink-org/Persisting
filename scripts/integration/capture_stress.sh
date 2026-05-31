@@ -59,7 +59,7 @@ EOF
 
 cleanup() {
   set +e
-  [[ -n "${STORAGE:-}" ]] && "$CLI" capture stop -o "$STORAGE" >/dev/null 2>&1
+  [[ -n "${STORAGE:-}" ]] && "$CLI" traj proxy stop -o "$STORAGE" >/dev/null 2>&1
   [[ -n "${MOCK_PID:-}" ]] && kill "$MOCK_PID" 2>/dev/null
   wait "${MOCK_PID:-}" 2>/dev/null || true
   kill "${SERVE_PID:-}" 2>/dev/null || true
@@ -68,7 +68,7 @@ trap cleanup EXIT
 
 echo "==> capture stress"
 echo "    CLI=$CLI"
-echo "    requests=$REQUESTS concurrency=$CONCURRENCY expected_lance_rows=$EXPECTED_ROWS"
+echo "    requests=$REQUESTS concurrency=$CONCURRENCY expected_event_rows=$EXPECTED_ROWS"
 
 export MOCK_UPSTREAM_PORT="$MOCK_PORT"
 python3 "$MOCK_PY" &
@@ -76,10 +76,11 @@ MOCK_PID=$!
 sleep 0.2
 kill -0 "$MOCK_PID" || die "mock upstream failed"
 
-"$CLI" capture serve -o "$STORAGE" -c "$CONFIG" >>"$SERVE_LOG" 2>&1 &
+# Optional: `-f bin` is a legacy alias for `-f vortex`.
+"$CLI" traj proxy -o "$STORAGE" -c "$CONFIG" -f vortex >>"$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 sleep 0.3
-kill -0 "$SERVE_PID" || { tail -20 "$SERVE_LOG"; die "capture serve exited early"; }
+kill -0 "$SERVE_PID" || { tail -20 "$SERVE_LOG"; die "traj proxy exited early"; }
 wait_http "http://127.0.0.1:${ADMIN_PORT}/admin/status" || die "admin not ready"
 
 echo "==> load"
@@ -104,12 +105,12 @@ if p99 > float("$MAX_P99_MS"):
 PY
 
 echo "==> drain trajectory (up to ${DRAIN_SEC}s)"
-best="$(capture_drain_lance_rows "$STORAGE" "$AGENT_ID" "$SESSION_ID" "$EXPECTED_ROWS" "$DRAIN_SEC" "$STATS_TOML" || true)"
+best="$(capture_drain_event_rows "$STORAGE" "$AGENT_ID" "$SESSION_ID" "$EXPECTED_ROWS" "$DRAIN_SEC" "$STATS_TOML" || true)"
 APPEND_FAILS="$(grep -c 'trajectory append failed' "$SERVE_LOG" 2>/dev/null || true)"
 APPEND_FAILS="${APPEND_FAILS:-0}"
 
 echo "==> reliability: rows=$best/$EXPECTED_ROWS append_failures=$APPEND_FAILS"
-[[ "${best:-0}" -ge 1 ]] || { tail -30 "$SERVE_LOG"; die "no Lance rows"; }
+[[ "${best:-0}" -ge 1 ]] || { tail -30 "$SERVE_LOG"; die "no Vortex event rows"; }
 
 python3 <<PY
 expected = int("$EXPECTED_ROWS")

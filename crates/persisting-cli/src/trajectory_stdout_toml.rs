@@ -29,6 +29,10 @@ pub fn print_trajectory_append_as_toml(resp: &TrajectoryAppendResponse) -> Resul
 }
 
 pub fn print_trajectory_stats_as_toml(resp: &TrajectoryStatsResponse) -> Result<()> {
+    emit_root(&stats_response_to_map(resp), "stats")
+}
+
+fn stats_response_to_map(resp: &TrajectoryStatsResponse) -> toml::map::Map<String, toml::Value> {
     let mut root = toml::map::Map::new();
     root.insert("storage".into(), toml::Value::String(resp.storage.clone()));
     root.insert(
@@ -52,7 +56,29 @@ pub fn print_trajectory_stats_as_toml(resp: &TrajectoryStatsResponse) -> Result<
     }
     root.insert("status".into(), toml::Value::String(resp.status.clone()));
     root.insert("note".into(), toml::Value::String(resp.note.clone()));
-    emit_root(&root, "stats")
+    root
+}
+
+pub fn print_trajectory_stats_list_as_toml(
+    storage: &str,
+    sessions: &[TrajectoryStatsResponse],
+) -> Result<()> {
+    let mut root = toml::map::Map::new();
+    root.insert("storage".into(), toml::Value::String(storage.to_string()));
+    root.insert(
+        "session_count".into(),
+        toml::Value::Integer(i64::try_from(sessions.len()).unwrap_or(i64::MAX)),
+    );
+    let tables = sessions
+        .iter()
+        .map(|s| {
+            let mut m = stats_response_to_map(s);
+            m.remove("storage");
+            toml::Value::Table(m)
+        })
+        .collect();
+    root.insert("sessions".into(), toml::Value::Array(tables));
+    emit_root(&root, "stats list")
 }
 
 pub fn print_trajectory_truncate_as_toml(resp: &TrajectoryTruncateResponse) -> Result<()> {
