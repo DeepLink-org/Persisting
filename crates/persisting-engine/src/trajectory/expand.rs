@@ -120,4 +120,91 @@ mod tests {
         assert!(expanded.iter().any(|l| l.session_id == root));
         assert!(expanded.iter().any(|l| l.session_id == "story-uuid"));
     }
+
+    /// Regression: capture.run writes `session.started` under run-* while Claude/header
+    /// traffic uses a UUID `session_id` in the same `events.vortex`.
+    #[tokio::test]
+    async fn claude_run_header_session_stats_regression() {
+        use persisting_capture::engine::Call;
+        use persisting_capture::lifecycle::{session_started_record, CaptureMode};
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::{llm_request_record, llm_response_record};
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage_s = dir.path().join("store").to_string_lossy().to_string();
+        let agent = "deepseek-proxy";
+        let run = "run-20260531-030243";
+        let header_session = "58867536-af08-41c7-bc72-669e509697b5";
+        let run_coords = StoryCoords::new(&storage_s, agent, run, Some(run.into()));
+
+        let started = session_started_record(
+            Some(run.into()),
+            Some(agent.into()),
+            CaptureMode::Run,
+            Some("127.0.0.1:19081"),
+            Some("claude"),
+        );
+        let call = Call {
+            call_id: "call-1".into(),
+            trace_id: "trace-1".into(),
+            started_at: "2026-05-31T03:02:43Z".into(),
+        };
+        let mut lines = vec![record_to_engine_line(&started).unwrap()];
+        vortex::append(&run_coords, &lines).await.unwrap();
+        lines.clear();
+        let header_coords = StoryCoords::new(&storage_s, agent, header_session, Some(run.into()));
+        for i in 1..=3 {
+            let user = format!("turn-{i}");
+            let reply = format!("reply-{i}");
+            let req = llm_request_record(
+                Some(header_session.into()),
+                Some(agent.into()),
+                "deepseek-v4-pro",
+                "/v1/chat/completions",
+                &serde_json::json!({
+                    "messages": [{"role": "user", "content": user}]
+                }),
+            );
+            let resp = llm_response_record(
+                Some(header_session.into()),
+                Some(agent.into()),
+                200,
+                &serde_json::json!({
+                    "choices": [{"message": {"role": "assistant", "content": reply}}]
+                }),
+                false,
+                &call,
+            );
+            lines.push(record_to_engine_line(&req).unwrap());
+            lines.push(record_to_engine_line(&resp).unwrap());
+        }
+        vortex::append(&header_coords, &lines).await.unwrap();
+
+        let run_stats = vortex::stats(&run_coords).await.unwrap();
+        assert_eq!(
+            run_stats.row_count, 1,
+            "run id partition should only see session.started"
+        );
+
+        let header_coords = StoryCoords::new(&storage_s, agent, header_session, Some(run.into()));
+        let header_stats = vortex::stats(&header_coords).await.unwrap();
+        assert_eq!(
+            header_stats.row_count, 6,
+            "header UUID partition should see all LLM events"
+        );
+
+        let bucket = vec![StoryCoords::new(&storage_s, agent, run, Some(run.into()))];
+        let expanded = expand_story_locations(bucket).await.unwrap();
+        assert_eq!(expanded.len(), 2);
+
+        let mut row_counts = std::collections::HashMap::new();
+        for loc in expanded {
+            row_counts.insert(
+                loc.session_id.clone(),
+                vortex::stats(&loc).await.unwrap().row_count,
+            );
+        }
+        assert_eq!(row_counts.get(run), Some(&1));
+        assert_eq!(row_counts.get(header_session), Some(&6));
+    }
 }

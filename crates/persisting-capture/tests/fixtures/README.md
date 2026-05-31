@@ -40,7 +40,7 @@ fixtures/
 
 | 测试 | 说明 |
 |------|------|
-| `tests/ag_fixture_tests.rs` | 对照 AG snap 做 messages/responses ↔ completions 转换与 capture 抽取 |
+| `tests/ag_fixture_tests.rs` | 对照 AG snap 做 messages/responses ↔ completions 转换；capture 用户/助手/usage 矩阵（见 `tests/support/ag_capture_cases.rs`） |
 | `tests/llm_fixtures.rs` | 基础 smoke 回归 |
 | `src/conversion/*`、`src/storage/dialogue_extract/*` | 部分单元测试通过 `include_str!` 引用本目录 |
 

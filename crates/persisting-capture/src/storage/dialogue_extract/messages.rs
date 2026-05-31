@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::common::{
-    format_tool_result_block, is_system_injection, normalize_json, unwrap_session_tag,
+    format_visible_content_from_parts, is_system_injection, normalize_json, unwrap_session_tag,
+    user_content_part_is_visible,
 };
 
 pub(crate) fn extract_user_from_messages(v: &Value) -> Option<String> {
@@ -22,28 +23,7 @@ pub(crate) fn extract_user_from_messages(v: &Value) -> Option<String> {
             continue;
         }
         if let Some(parts) = msg.get("content").and_then(|c| c.as_array()) {
-            let mut out = Vec::new();
-            for part in parts {
-                match part.get("type").and_then(|t| t.as_str()) {
-                    Some("text") => {
-                        if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
-                            let t = unwrap_session_tag(t);
-                            if !is_system_injection(t) {
-                                out.push(t.to_string());
-                            }
-                        }
-                    }
-                    Some("tool_result") => {
-                        if let Some(formatted) = format_tool_result_block(part) {
-                            out.push(formatted);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if !out.is_empty() {
-                return Some(out.join("\n\n"));
-            }
+            return format_visible_content_from_parts(parts);
         }
     }
     None
@@ -58,24 +38,7 @@ pub(crate) fn user_message_has_visible_text(msg: &Value) -> bool {
         return !is_system_injection(s) && !s.trim().is_empty();
     }
     if let Some(parts) = msg.get("content").and_then(|c| c.as_array()) {
-        for part in parts {
-            match part.get("type").and_then(|t| t.as_str()) {
-                Some("text") => {
-                    if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
-                        let t = unwrap_session_tag(t);
-                        if !is_system_injection(t) && !t.trim().is_empty() {
-                            return true;
-                        }
-                    }
-                }
-                Some("tool_result") => {
-                    if format_tool_result_block(part).is_some() {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
-        }
+        return parts.iter().any(user_content_part_is_visible);
     }
     false
 }
@@ -324,6 +287,11 @@ fn format_content_blocks_from_json_parts(parts: &[Value]) -> String {
                     input_json: input,
                 });
             }
+            Some("image") => {
+                if let Some(formatted) = super::common::format_anthropic_image_placeholder(part) {
+                    blocks.push(ContentBlock::Text(formatted));
+                }
+            }
             _ => {}
         }
     }
@@ -415,5 +383,22 @@ event: message_stop
 data: {"type":"message_stop"}
 "#;
         assert!(anthropic_sse_turn(sse).is_empty());
+    }
+
+    #[test]
+    fn anthropic_user_image_base64_placeholder() {
+        let body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type":"text","text":"screenshot"},
+                    {"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}
+                ]
+            }]
+        });
+        let out = extract_user_from_messages(&body).unwrap();
+        assert!(out.contains("screenshot"));
+        assert!(out.contains("[image: base64:"));
+        assert!(out.contains("image/png"));
     }
 }

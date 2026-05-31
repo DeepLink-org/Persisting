@@ -30,10 +30,10 @@ pub use convert::{
 };
 pub use expand::{expand_story_locations, expand_story_locations_blocking};
 pub use path::{
-    list_story_read_locations, list_traj_read_locations, merge_story_location,
-    merge_traj_location, resolve_story_read_location, resolve_traj_read_location,
-    try_infer_story_location, try_infer_traj_location, StoryCoords, StoryCoords as TrajLocation,
-    StoryLocationPartial, StoryLocationPartial as TrajLocationPartial,
+    list_story_read_locations, list_traj_read_locations, merge_story_location, merge_traj_location,
+    resolve_story_read_location, resolve_traj_read_location, try_infer_story_location,
+    try_infer_traj_location, StoryCoords, StoryCoords as TrajLocation, StoryLocationPartial,
+    StoryLocationPartial as TrajLocationPartial,
 };
 pub use persisting_capture::egress::{export_story_bundle, parse_engine_records, ExportOutcome};
 pub use persisting_capture::story_coords::{
@@ -1307,5 +1307,116 @@ mod tests {
         assert_eq!(resp.event_rows, 2);
         assert!(resp.markdown_blocks >= 1);
         assert!(std::path::Path::new(&resp.markdown_path).exists());
+    }
+
+    /// End-to-end regression for `traj stats store/{agent}/` scan:
+    /// list run buckets → expand vortex partitions → stats each session_id.
+    #[tokio::test]
+    async fn stats_agent_scan_expands_vortex_session_partitions() {
+        use crate::trajectory::expand_story_locations;
+        use persisting_capture::engine::Call;
+        use persisting_capture::lifecycle::{session_started_record, CaptureMode};
+        use persisting_capture::path_layout::list_story_read_locations;
+        use persisting_capture::record::record_to_engine_line;
+        use persisting_capture::sink::{llm_request_record, llm_response_record};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(store.join(".capture")).unwrap();
+        std::fs::write(store.join(".capture/run_session"), "run-capture").unwrap();
+        let agent = "deepseek-proxy";
+        let run = "run-capture";
+        let header_session = "header-uuid-session";
+        let run_dir = store.join(agent).join(run);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let storage_s = store.to_string_lossy().to_string();
+
+        let started = session_started_record(
+            Some(run.into()),
+            Some(agent.into()),
+            CaptureMode::Run,
+            None,
+            Some("claude"),
+        );
+        let call = Call {
+            call_id: "c".into(),
+            trace_id: "t".into(),
+            started_at: "2026-05-31T00:00:00Z".into(),
+        };
+        let req = llm_request_record(
+            Some(header_session.into()),
+            Some(agent.into()),
+            "m",
+            "/v1/chat/completions",
+            &serde_json::json!({"messages":[{"role":"user","content":"hi"}]}),
+        );
+        let resp = llm_response_record(
+            Some(header_session.into()),
+            Some(agent.into()),
+            200,
+            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"hello"}}]}),
+            false,
+            &call,
+        );
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: agent.into(),
+            session_id: run.into(),
+            root_session_id: Some(run.into()),
+            records_ronl: format!("{}\n", record_to_engine_line(&started).unwrap()),
+            storage_format: TrajectoryStorageFormat::Vortex,
+        })
+        .await
+        .unwrap();
+        append_async(TrajectoryAppendRequest {
+            storage: storage_s.clone(),
+            agent_id: agent.into(),
+            session_id: header_session.into(),
+            root_session_id: Some(run.into()),
+            records_ronl: format!(
+                "{}\n{}\n",
+                record_to_engine_line(&req).unwrap(),
+                record_to_engine_line(&resp).unwrap(),
+            ),
+            storage_format: TrajectoryStorageFormat::Vortex,
+        })
+        .await
+        .unwrap();
+
+        let agent_path = store.join(agent);
+        let buckets =
+            list_story_read_locations(agent_path.to_str().unwrap().into(), None, None, None)
+                .unwrap();
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].session_id, run);
+
+        let expanded = expand_story_locations(buckets).await.unwrap();
+        assert_eq!(expanded.len(), 2);
+
+        let mut counts = std::collections::HashMap::new();
+        for loc in expanded {
+            let st = stats_async(TrajectoryStatsRequest {
+                storage: loc.storage.clone(),
+                agent_id: loc.agent_id.clone(),
+                session_id: loc.session_id.clone(),
+                storage_format: TrajectoryStorageFormat::Vortex,
+                root_session_id: loc.root_session_id.clone(),
+            })
+            .await
+            .unwrap();
+            counts.insert(loc.session_id.clone(), st.row_count);
+        }
+        assert_eq!(counts.get(run), Some(&1));
+        assert_eq!(counts.get(header_session), Some(&2));
+
+        let loc = resolve_traj_read_location(
+            "trajectory stats",
+            store.to_str().unwrap().into(),
+            Some(agent.into()),
+            Some(run.into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(loc.storage, store.to_str().unwrap());
     }
 }

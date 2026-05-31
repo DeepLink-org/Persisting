@@ -92,6 +92,18 @@ pub fn normalize_messages_response(v: &mut Value) {
     if let Some(id) = v.get_mut("id") {
         *id = json!("[id]");
     }
+    if let Some(content) = v.get_mut("content").and_then(|c| c.as_array_mut()) {
+        // Persisting bridge emits an empty text block when upstream choice has no content.
+        if content.len() == 1
+            && content[0].get("type").and_then(|t| t.as_str()) == Some("text")
+            && content[0]
+                .get("text")
+                .and_then(|t| t.as_str())
+                .is_some_and(str::is_empty)
+        {
+            content.clear();
+        }
+    }
     if let Some(model) = v.get("model").and_then(|m| m.as_str()) {
         // AG snaps keep upstream model from completions response; client_model may differ.
         let _ = model;
@@ -163,9 +175,84 @@ pub fn fixture_exists(relative: &str) -> bool {
 /// Case tables aligned with agentgateway `llm/tests.rs` (Persisting-supported bridges only).
 pub const MESSAGES_TO_COMPLETIONS: &[&str] = &["basic", "tools", "reasoning"];
 
-pub const COMPLETIONS_TO_MESSAGES: &[&str] = &["basic"];
+pub const COMPLETIONS_TO_MESSAGES: &[&str] = &[
+    "basic",
+    "gemini_with_completion_tokens",
+    "gemini_zero_completion_tokens",
+    "openrouter_reasoning",
+    "audio",
+];
 
-pub const RESPONSES_TO_COMPLETIONS: &[&str] = &["basic", "instructions", "input-list"];
+pub const RESPONSES_TO_COMPLETIONS: &[&str] = &[
+    "basic",
+    "instructions",
+    "input-list",
+    "assistant-history",
+    "parallel-tool-call",
+];
+
+/// Tracks how many fixture cases actually ran (guards against silent `continue` on missing files).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CaseReport {
+    pub ran: usize,
+    pub skipped: usize,
+}
+
+impl CaseReport {
+    pub fn record_ran(&mut self) {
+        self.ran += 1;
+    }
+
+    pub fn record_skipped(&mut self) {
+        self.skipped += 1;
+    }
+
+    pub fn assert_min_ran(&self, min: usize, label: &str) {
+        assert!(
+            self.ran >= min,
+            "{label}: expected >= {min} cases, ran {} skipped {}",
+            self.ran,
+            self.skipped
+        );
+    }
+}
+
+pub fn load_json_fixture(relative: &str) -> Value {
+    serde_json::from_slice(&read_fixture_bytes(relative))
+        .unwrap_or_else(|e| panic!("parse JSON fixture {relative}: {e}"))
+}
+
+pub fn for_each_existing(relative_paths: &[&str], mut f: impl FnMut(&str)) -> CaseReport {
+    let mut report = CaseReport::default();
+    for path in relative_paths {
+        if fixture_exists(path) {
+            f(path);
+            report.record_ran();
+        } else {
+            report.record_skipped();
+        }
+    }
+    report
+}
+
+pub fn for_each_existing_case(
+    cases: &[&str],
+    prefix: &str,
+    suffix: &str,
+    mut f: impl FnMut(&str),
+) -> CaseReport {
+    let mut report = CaseReport::default();
+    for case in cases {
+        let path = format!("{prefix}{case}{suffix}");
+        if fixture_exists(&path) {
+            f(case);
+            report.record_ran();
+        } else {
+            report.record_skipped();
+        }
+    }
+    report
+}
 
 pub fn messages_completions_snap(case: &str) -> String {
     format!("requests/messages/{case}.completions.snap")

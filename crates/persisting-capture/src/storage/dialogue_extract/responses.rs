@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::common::{
-    format_tool_result_block, is_codex_context_injection, join_assistant_parts, unwrap_session_tag,
+    format_image_generation_placeholder, format_visible_content_from_parts,
+    is_codex_context_injection, join_assistant_parts, unwrap_session_tag,
+    user_content_part_is_visible,
 };
 
 pub(crate) fn extract_user_from_responses_input(v: &Value) -> Option<String> {
@@ -48,9 +50,23 @@ fn responses_input_item_is_user_turn(item: &Value) -> bool {
         "function_call" | "function_call_output" => false,
         "message" => {
             item.get("role").and_then(|r| r.as_str()) == Some("user")
-                && last_non_injection_text_from_content(item.get("content")).is_some()
+                && responses_user_content_is_visible(item.get("content"))
         }
-        _ => last_non_injection_text_from_content(item.get("content")).is_some(),
+        _ => responses_user_content_is_visible(item.get("content")),
+    }
+}
+
+fn responses_user_content_is_visible(content: Option<&Value>) -> bool {
+    let Some(content) = content else {
+        return false;
+    };
+    match content {
+        Value::String(s) => {
+            let s = unwrap_session_tag(s);
+            !is_codex_context_injection(s) && !s.trim().is_empty()
+        }
+        Value::Array(parts) => parts.iter().any(user_content_part_is_visible),
+        _ => false,
     }
 }
 
@@ -125,13 +141,13 @@ fn last_user_text_from_input_item(item: &Value) -> Option<String> {
             if role != "user" {
                 return None;
             }
-            last_non_injection_text_from_content(item.get("content"))
+            format_responses_user_content(item.get("content"))
         }
-        _ => last_non_injection_text_from_content(item.get("content")),
+        _ => format_responses_user_content(item.get("content")),
     }
 }
 
-fn last_non_injection_text_from_content(content: Option<&Value>) -> Option<String> {
+fn format_responses_user_content(content: Option<&Value>) -> Option<String> {
     let content = content?;
     match content {
         Value::String(s) => {
@@ -142,28 +158,7 @@ fn last_non_injection_text_from_content(content: Option<&Value>) -> Option<Strin
                 Some(s.to_string())
             }
         }
-        Value::Array(parts) => {
-            for part in parts.iter().rev() {
-                let t = part.get("type").and_then(|x| x.as_str()).unwrap_or("");
-                match t {
-                    "input_text" | "text" => {
-                        if let Some(text) = part.get("text").and_then(|x| x.as_str()) {
-                            let text = unwrap_session_tag(text);
-                            if !is_codex_context_injection(text) && !text.trim().is_empty() {
-                                return Some(text.to_string());
-                            }
-                        }
-                    }
-                    "tool_result" | "function_call_output" => {
-                        if let Some(formatted) = format_tool_result_block(part) {
-                            return Some(formatted);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            None
-        }
+        Value::Array(parts) => format_visible_content_from_parts(parts),
         _ => None,
     }
 }
@@ -177,6 +172,7 @@ pub(crate) fn responses_sse_turn(raw: &str) -> String {
 
     let mut text = String::new();
     let mut tool_calls: BTreeMap<u32, ToolAccum> = BTreeMap::new();
+    let mut image_generations: BTreeMap<String, String> = BTreeMap::new();
     let mut next_tool_index = 0u32;
 
     for line in raw.lines() {
@@ -205,24 +201,26 @@ pub(crate) fn responses_sse_turn(raw: &str) -> String {
                     }
                 }
             }
-            "response.output_item.added" => {
-                if v.get("item")
-                    .and_then(|i| i.get("type"))
-                    .and_then(|t| t.as_str())
-                    == Some("function_call")
-                {
-                    let item = v.get("item").unwrap();
-                    let name = item
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("tool")
-                        .to_string();
-                    let output_index =
-                        v.get("output_index")
+            "response.output_item.added" | "response.output_item.done" => {
+                if let Some(item) = v.get("item") {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                        let name = item
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("tool")
+                            .to_string();
+                        let output_index = v
+                            .get("output_index")
                             .and_then(|i| i.as_u64())
-                            .unwrap_or(next_tool_index as u64) as u32;
-                    next_tool_index = next_tool_index.max(output_index + 1);
-                    tool_calls.entry(output_index).or_default().name = name;
+                            .unwrap_or(next_tool_index as u64)
+                            as u32;
+                        next_tool_index = next_tool_index.max(output_index + 1);
+                        tool_calls.entry(output_index).or_default().name = name;
+                    } else if item.get("type").and_then(|t| t.as_str())
+                        == Some("image_generation_call")
+                    {
+                        upsert_image_generation(&mut image_generations, item);
+                    }
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -254,16 +252,47 @@ pub(crate) fn responses_sse_turn(raw: &str) -> String {
                     entry.arguments = args;
                 }
             }
+            "response.completed" => {
+                if let Some(output) = v
+                    .get("response")
+                    .and_then(|r| r.get("output"))
+                    .and_then(|o| o.as_array())
+                {
+                    for item in output {
+                        if item.get("type").and_then(|t| t.as_str())
+                            == Some("image_generation_call")
+                        {
+                            upsert_image_generation(&mut image_generations, item);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    join_assistant_parts(
+    let mut parts = Vec::new();
+    let tool_text = join_assistant_parts(
         &text,
         tool_calls
             .values()
             .map(|t| (t.name.clone(), t.arguments.clone())),
-    )
+    );
+    if !tool_text.is_empty() {
+        parts.push(tool_text);
+    }
+    parts.extend(image_generations.into_values());
+    parts.join("\n\n")
+}
+
+fn upsert_image_generation(out: &mut BTreeMap<String, String>, item: &Value) {
+    let id = item
+        .get("id")
+        .or_else(|| item.get("item_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("ig")
+        .to_string();
+    out.insert(id, format_image_generation_placeholder(item));
 }
 
 pub(crate) fn responses_assistant_from_json(body: &Value) -> Option<String> {
@@ -289,6 +318,9 @@ pub(crate) fn responses_assistant_from_json(body: &Value) -> Option<String> {
                     .and_then(|a| a.as_str())
                     .unwrap_or("{}");
                 texts.push(format!("```tool:{name}\n{args}\n```"));
+            }
+            Some("image_generation_call") => {
+                texts.push(format_image_generation_placeholder(item));
             }
             _ => {}
         }
@@ -341,5 +373,45 @@ event: response.output_text.delta
 data: {"type":"response.output_text.delta","delta":" world"}
 "#;
         assert_eq!(responses_sse_turn(sse), "Hello world");
+    }
+
+    #[test]
+    fn responses_sse_extracts_image_generation_call() {
+        let sse = r#"event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"ig_1","type":"image_generation_call","output_format":"png","size":"1024x1024","result":"iVBORw0KGgo=","revised_prompt":"a cute cat"}}
+
+"#;
+        let out = responses_sse_turn(sse);
+        assert!(out.contains("[image_generated: ig_1, png, 1024x1024"));
+        assert!(out.contains("prompt: a cute cat"));
+    }
+
+    #[test]
+    fn responses_json_extracts_image_generation_call() {
+        let body = json!({
+            "output": [{
+                "type": "image_generation_call",
+                "id": "ig_2",
+                "output_format": "png",
+                "size": "512x512",
+                "result": "abc",
+                "revised_prompt": "draw a dog"
+            }]
+        });
+        let out = responses_assistant_from_json(&body).unwrap();
+        assert!(out.contains("[image_generated: ig_2, png, 512x512"));
+        assert!(out.contains("draw a dog"));
+    }
+
+    #[test]
+    fn codex_responses_image_only_input_counts_as_user_turn() {
+        let body = json!({
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type":"input_image","image_url":"https://example.com/x.png"}]
+            }]
+        });
+        assert_eq!(count_responses_input_user_turns(&body["input"]), 1);
     }
 }

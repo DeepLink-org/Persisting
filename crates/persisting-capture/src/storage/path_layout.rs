@@ -367,9 +367,9 @@ pub fn list_story_read_locations(
         let run_dir = Path::new(&parsed.storage)
             .join(&parsed.agent_id)
             .join(&parsed.session_id);
-        let root = parsed.root_session_id.or_else(|| {
-            infer_root_session_id(run_dir.as_path(), &parsed.session_id)
-        });
+        let root = parsed
+            .root_session_id
+            .or_else(|| infer_root_session_id(run_dir.as_path(), &parsed.session_id));
         if root.as_deref() == Some(parsed.session_id.as_str()) {
             return Ok(vec![story_coords_from_run_bucket(
                 &parsed.storage,
@@ -388,21 +388,21 @@ pub fn list_story_read_locations(
     let partial = merge_story_location(path_arg.clone(), agent_id, None, root_session_id.clone());
     let storage = partial.storage;
 
-    if let Some(agent) = partial.agent_id {
-        let sessions = list_sessions_under_agent(&storage, &agent)?;
-        if sessions.is_empty() {
-            anyhow::bail!(
-                "trajectory stats: no sessions under {storage}/{agent}/ (expected run dirs with events.vortex or markdown)"
-            );
-        }
-        return Ok(sessions);
-    }
-
     if let Some((stor, agent)) = parse_agent_dir(&path_arg) {
         let sessions = list_sessions_under_agent(&stor, &agent)?;
         if sessions.is_empty() {
             anyhow::bail!(
                 "trajectory stats: no sessions under {stor}/{agent}/ (expected run dirs with events.vortex or markdown)"
+            );
+        }
+        return Ok(sessions);
+    }
+
+    if let Some(agent) = partial.agent_id {
+        let sessions = list_sessions_under_agent(&storage, &agent)?;
+        if sessions.is_empty() {
+            anyhow::bail!(
+                "trajectory stats: no sessions under {storage}/{agent}/ (expected run dirs with events.vortex or markdown)"
             );
         }
         return Ok(sessions);
@@ -694,23 +694,51 @@ mod tests {
     }
 
     #[test]
-    fn list_agent_dir_does_not_remap_to_markdown_stem_before_vortex_scan() {
+    fn resolve_run_path_remaps_primary_markdown_stem_for_single_session() {
         let base = std::env::temp_dir().join(format!(
-            "persisting-traj-list-no-remap-{}",
+            "persisting-traj-resolve-stem-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&base);
-        let agent = base.join("store").join("deepseek-proxy");
-        let run = agent.join("run-with-md");
+        let run = base
+            .join("store")
+            .join("deepseek-proxy")
+            .join("run-with-md");
         std::fs::create_dir_all(&run).unwrap();
         std::fs::write(run.join("events.vortex"), b"v").unwrap();
         std::fs::write(run.join("header-session-uuid.md"), "# story\n").unwrap();
 
+        let resolved = resolve_traj_read_location(
+            "trajectory stats",
+            run.to_str().unwrap().into(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(resolved.session_id, "header-session-uuid");
+        assert_eq!(resolved.root_session_id.as_deref(), Some("run-with-md"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn list_agent_dir_with_single_run_bucket() {
+        let base = std::env::temp_dir().join(format!(
+            "persisting-traj-list-single-run-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let agent = base.join("store").join("deepseek-proxy");
+        let run = agent.join("run-only");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("events.vortex"), b"v").unwrap();
+
         let locs =
             list_story_read_locations(agent.to_str().unwrap().into(), None, None, None).unwrap();
         assert_eq!(locs.len(), 1);
-        assert_eq!(locs[0].session_id, "run-with-md");
-        assert_eq!(locs[0].root_session_id.as_deref(), Some("run-with-md"));
+        assert_eq!(locs[0].session_id, "run-only");
+        assert_eq!(locs[0].root_session_id.as_deref(), Some("run-only"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

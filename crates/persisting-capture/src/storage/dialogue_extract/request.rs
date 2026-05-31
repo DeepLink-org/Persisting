@@ -87,4 +87,62 @@ mod tests {
         assert!(out.contains("```tool_result:toolu_1"));
         assert!(out.contains("file1.rs"));
     }
+
+    #[test]
+    fn anthropic_user_message_with_image_url_placeholder() {
+        let body = br#"{"messages":[{"role":"user","content":[
+            {"type":"text","text":"What's in this image?"},
+            {"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}
+        ]}]}"#;
+        let out = extract_user_message_from_request_body(&Bytes::from_static(body)).unwrap();
+        assert!(out.contains("What's in this image?"));
+        assert!(out.contains("[image: url:https://example.com/a.png]"));
+    }
+
+    #[test]
+    fn openai_completions_user_message_with_image_url() {
+        let body = br#"{"messages":[{"role":"user","content":[
+            {"type":"text","text":"describe"},
+            {"type":"image_url","image_url":{"url":"https://example.com/b.png"}}
+        ]}]}"#;
+        let v: Value = serde_json::from_slice(body).unwrap();
+        assert_eq!(count_visible_user_messages(&v), 1);
+        let out = extract_user_message_from_request_body(&Bytes::from_static(body)).unwrap();
+        assert!(out.contains("[image: url:https://example.com/b.png]"));
+    }
+
+    #[test]
+    fn image_only_user_message_counts_as_visible_turn() {
+        let body = json!({"messages":[{"role":"user","content":[
+            {"type":"image","source":{"type":"url","url":"https://example.com/only.png"}}
+        ]}]});
+        assert_eq!(count_visible_user_messages(&body), 1);
+        let out = extract_user_message_from_request_body(&Bytes::copy_from_slice(
+            &serde_json::to_vec(&body).unwrap(),
+        ))
+        .unwrap();
+        assert!(out.contains("[image: url:"));
+    }
+
+    #[test]
+    fn codex_responses_input_image_counts_and_extracts() {
+        let body = json!({
+            "model": "gpt-5",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type":"input_text","text":"look"},
+                    {"type":"input_image","image_url":"https://example.com/c.png"}
+                ]
+            }]
+        });
+        assert_eq!(count_visible_user_messages(&body), 1);
+        let out = extract_user_message_from_request_body(&Bytes::from(
+            serde_json::to_vec(&body).unwrap(),
+        ))
+        .unwrap();
+        assert!(out.contains("look"));
+        assert!(out.contains("[image: url:https://example.com/c.png]"));
+    }
 }
