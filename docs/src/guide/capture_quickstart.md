@@ -162,10 +162,13 @@ tail -f store/deepseek-proxy/run-*/run-*.md
 If you ran `traj proxy start` or set `PERSISTING_CAPTURE_STORAGE`, you can omit `<STORAGE>` on `stats`, `replay`, `materialize`, and `truncate`.
 
 ```bash
-persisting traj stats ./store/deepseek-proxy/run-*/ --detail
+# Omit --session-id to scan all runs under agent/ and expand Vortex session_id partitions
+persisting traj stats ./store/deepseek-proxy/ --detail
 persisting traj replay ./store --agent-id deepseek-proxy --session-id run-...
 persisting traj materialize ./store --agent-id ... --root-session-id ... --session-id ...
 ```
+
+**Multimodal (screenshots / image generation):** with default `capture_level = dialogue`, images appear as **`[image: …]` / `[image_generated: …]` placeholders** in Markdown and stats—not embedded pixels. Set `capture_level = "full"` in TOML for raw JSON in Vortex. See [trajectory TLV §2.7 (zh)](../design/trajectory_tlv_format.zh.md#27-多模态对话正文phase-0).
 
 ---
 
@@ -201,7 +204,7 @@ persisting traj import ./store --provider ide --since-days 7 --project "$(pwd)"
 | md vs Vortex mismatch | `traj materialize` after checking `.capture/reconcile.json` |
 | Failed capture events | `traj replay-dead-letter -o ./store` |
 | `traj capture` conflicts with daemon | `traj proxy stop` or use another `-o` |
-| `stats` shows 0 turns | Pass the **run directory** or `run-*.md`, not only `store/{agent_id}/` |
+| `stats` shows 0 turns | Scan **`./store/{agent_id}/`** without `--session-id` so CLI expands all Vortex `session_id` partitions; or pass the specific header UUID with `--session-id` |
 
 ---
 

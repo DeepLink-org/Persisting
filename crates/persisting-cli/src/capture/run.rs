@@ -154,13 +154,10 @@ pub fn cmd_run(opts: RunOptions) -> Result<i32> {
     )
     .context("append session.ended to trajectory")?;
 
+    server.shutdown()?;
     if opts.format.stream_markdown_in_engine() {
-        server.shutdown()?;
         print_run_markdown_summary(&storage, &run_cfg.agent_id, &root_session);
-    } else {
-        server.shutdown()?;
     }
-
     eprintln!(
         "[persisting-cli] traj capture done (exit {code}) — inspect: \
          `persisting traj stats {} --detail` · sessions: `persisting traj proxy list -o {}`",

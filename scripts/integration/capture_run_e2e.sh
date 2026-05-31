@@ -125,13 +125,23 @@ VORTEX_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/events.vortex"
 [[ -f "$VORTEX_PATH" ]] || die "missing Vortex log: $VORTEX_PATH"
 pass "events.vortex present"
 
+section "live markdown + reconcile (same UX as -f md)"
+MD_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/${ROOT_SESSION}.md"
+[[ -f "$MD_PATH" ]] || die "missing live markdown: $MD_PATH"
+pass "live markdown present during capture"
+
+RECONCILE_JSON="$STORAGE/.capture/reconcile.json"
+[[ -f "$RECONCILE_JSON" ]] || die "missing reconcile report: $RECONCILE_JSON"
+python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r.get('ok') is True, r" "$RECONCILE_JSON"
+pass "reconcile.json ok"
+
 section "wait for Vortex drain (up to ${DRAIN_SEC}s)"
 EXPECTED_ROWS=$((TURNS * 2 + 2))
 best="$(capture_drain_event_rows "$STORAGE" "$AGENT_ID" "$ROOT_SESSION" "$EXPECTED_ROWS" "$DRAIN_SEC" "$STATS_TOML" || true)"
 [[ "${best:-0}" -ge "$EXPECTED_ROWS" ]] || die "Vortex rows ${best:-0} < expected $EXPECTED_ROWS"
 pass "Vortex row_count=$best (expected >= $EXPECTED_ROWS)"
 
-section "materialize Vortex → Markdown"
+section "traj materialize (idempotent rebuild)"
 MAT_OUT="$("$CLI" traj materialize "$STORAGE" \
   --agent-id "$AGENT_ID" \
   --session-id "$ROOT_SESSION" 2>&1)"
@@ -168,10 +178,27 @@ print(f"verified {turns} user/assistant pairs in vortex replay")
 PY
 pass "vortex replay content matches agent manifest"
 
-section "materialized markdown exists"
+section "live markdown content"
 MD_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/${ROOT_SESSION}.md"
-[[ -f "$MD_PATH" ]] || die "missing materialized markdown: $MD_PATH"
-pass "markdown file present at ${ROOT_SESSION}.md"
+[[ -f "$MD_PATH" ]] || die "missing markdown: $MD_PATH"
+python3 <<PY
+import json, sys, re
+
+turns = int("$TURNS")
+md = open("$MD_PATH").read()
+json.load(open("$MANIFEST"))
+
+for i in range(1, turns + 1):
+    user = f"turn-{i}"
+    reply = f"mock-reply-to-{user}"
+    if user not in md:
+        sys.exit(f"markdown missing user message {user!r}")
+    if reply not in md:
+        sys.exit(f"markdown missing assistant reply {reply!r}")
+
+print(f"verified {turns} user/assistant pairs in live markdown")
+PY
+pass "live markdown content matches agent manifest"
 
 section "traj proxy list shows session"
 LIST_OUT="$("$CLI" traj proxy list -o "$STORAGE" 2>&1)"

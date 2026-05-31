@@ -91,7 +91,7 @@ graph TD
 | **格式** | 列存（`EventRow`），capture run 使用 run 级 `events.vortex` | TLV 块序列（`MarkdownBlock`），纯文本文件 |
 | **写入方式** | 每次 LLM 事件 append；import / CLI worker 批量 append | Proxy `-f md` 时 **CaptureEngine live upsert**；import 走批量 append；均可 `materialize` 全量重建 |
 | **典型操作** | `replay`、`stats`、Search import、FTS | 直接打开、`git diff`、code review |
-| **按 session 分片** | ✅ `events.vortex` 内按 `session_id` 列过滤 | ✅ `{run_dir}/{storage_session_id}.md` |
+| **按 session 分片** | ✅ `events.vortex` 内按 `session_id` 列过滤；同一 run 文件可含**多个** distinct `session_id`（见 [§7.1.1](#711-run-bucket-内多-session_id-分区)） | ✅ `{run_dir}/{storage_session_id}.md` |
 
 ---
 
@@ -436,6 +436,25 @@ impl MarkdownPipeline {
 - 主 md **不内联**子 agent 的完整轨迹，而是通过 `llm.spawn_link` 块引用 sibling 文件
 - traj capture 模式下**不写** `session-meta.yaml`；客户端元信息进入 Markdown YAML frontmatter 的 `client:` 段
 
+#### 7.1.1 Run bucket 内多 `session_id` 分区
+
+Claude Code 等客户端会在 HTTP header 注入 **header session UUID**，与 capture run 目录名 `run-*` 不同。同一 `events.vortex` 内因此常见：
+
+```text
+session_id = run-20260530-120000-123   ← session.started / 部分元数据
+session_id = 58867536-…                ← 实际 LLM 对话行
+```
+
+**读取规则**：
+
+| 操作 | 行为 |
+|------|------|
+| `traj stats <agent_dir>`（未指定 `--session-id`） | 列出 run bucket → **展开** Vortex 内 distinct `session_id` → 逐分区统计 |
+| `traj stats --session-id <uuid>` | 只过滤该 `session_id` 的行 |
+| `traj replay` / materialize | 按 Story 坐标中的 `session_id` 过滤 |
+
+实现：`expand_story_locations`（`persisting-engine`）。**不要**假设「一个 run 目录 = 一个 session_id」。
+
 ### 7.2 扁平 session 布局（serve 模式）
 
 ```
@@ -539,8 +558,8 @@ graph LR
 
 | 操作 | 方向 | 信息变化 |
 |------|------|---------|
-| **materialize** | Vortex → Markdown | **有损**：丢弃 count_tokens / lifecycle / flash影子请求 / 空 turn |
-| **compact** | Markdown → Vortex | **信息增量**：注入 `payload._tlv`（TLV 元数据）；但无法恢复已丢弃的内部事件 |
+| **materialize** | Vortex → Markdown | **有损**：丢弃 count_tokens / lifecycle / flash影子请求 / 空 turn；**图像仅保留 dialogue 占位符**，不嵌 `<img>` |
+| **compact** | Markdown → Vortex | **信息增量**：注入 `payload._tlv`（TLV 元数据）；但无法恢复已丢弃的内部事件与 sidecar 未写入的像素 |
 
 **结论**：Vortex 是 canonical。Markdown 可以从 Vortex 重建，但反过来不能。永远不要把 Markdown 当作唯一存储。
 

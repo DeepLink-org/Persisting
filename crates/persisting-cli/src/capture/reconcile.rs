@@ -1,4 +1,4 @@
-//! Post-run reconcile: compare Vortex replay with markdown (legacy dual-write stores).
+//! Post-run reconcile: compare live Markdown call_ids vs replayed event records.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -10,7 +10,7 @@ use persisting_capture::reconcile::{
 use persisting_capture::record::CaptureRecord;
 use persisting_capture::runtime::run_env::read_run_session;
 use persisting_proto::{
-    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStorageFormat,
+    TrajectoryReplayRequest, TrajectoryReplayResponse,
 };
 
 use super::CaptureFormat;
@@ -24,7 +24,7 @@ pub fn reconcile_run_after_flush(
     mut replay: impl FnMut(TrajectoryReplayRequest) -> Result<TrajectoryReplayResponse>,
 ) -> Result<RunReconcileReport> {
     if !format.stream_markdown_in_engine() {
-        anyhow::bail!("reconcile requires markdown capture format");
+        anyhow::bail!("reconcile requires a capture format with live Markdown");
     }
     let root_session = read_run_session(storage)
         .with_context(|| format!("read run_session under {}", storage.display()))?;
@@ -37,7 +37,7 @@ pub fn reconcile_run_after_flush(
         );
     }
 
-    let storage_fmt: TrajectoryStorageFormat = format.into();
+    let storage_fmt = format.reconcile_replay_format();
     let mut events_by_session = BTreeMap::new();
     for md_path in &md_paths {
         let session_id = md_path
@@ -59,7 +59,7 @@ pub fn reconcile_run_after_flush(
             storage_format: storage_fmt,
             root_session_id: root,
         })
-        .with_context(|| format!("replay Vortex session {session_id}"))?;
+        .with_context(|| format!("replay {storage_fmt:?} session {session_id}"))?;
         let records = decode_replay_records(&resp.records)?;
         events_by_session.insert(session_id, records);
     }

@@ -100,7 +100,43 @@ Import 路径仍使用批量 **append**。详见 [轨迹存储 §5.3](trajectory
 
 块头 `v` / `format_block` 即为该演进预留兼容位。
 
-### 2.7 完整示例
+### 2.7 多模态对话正文（Phase 0）
+
+当请求或响应含图像时，**Markdown 块正文与 Vortex 摘要字段**使用占位符，不内联 base64 像素（避免 git diff 与 frontmatter 膨胀）。
+
+| 类型 | 占位符格式 | 说明 |
+|------|------------|------|
+| 用户 URL 图 | `[image: url:{url}]` | OpenAI `image_url`、Anthropic `image.source.url`、Responses `input_image` |
+| 用户 base64 图 | `[image: base64:{size} {media_type} hash={blake3}]` | data URL 或 Anthropic `source.base64`；hash 为内容指纹前 12 hex |
+| 助手生成图 | `[image_generated: {id}, {format}, {size}, ~{bytes}]` | Responses `image_generation_call`；可附 `prompt: {revised_prompt}` |
+
+示例（user 块正文）：
+
+```markdown
+What's in this screenshot?
+
+[image: url:https://example.com/screen.png]
+```
+
+示例（assistant 块正文，Codex 出图）：
+
+```markdown
+[image_generated: ig_062bc…, png, 1024x1536, ~1MB]
+prompt: A gray tabby cat hugging an otter…
+```
+
+**计数**：含占位符的用户 turn 计入 frontmatter `turns` 与 `traj stats`（纯图无文字也算 1 轮）。
+
+**与 `capture_level` 的关系**：
+
+| 级别 | dialogue 占位符 | 原始图像 bytes |
+|------|-----------------|----------------|
+| `dialogue` | ✅ | ❌ |
+| `full` | ✅ | 在 `payload.body` 中保留完整 JSON（含 base64），仍不进 Markdown 正文 |
+
+**物化限制**：`traj materialize` 当前**不会**把占位符展开为 `<img>`；完整像素仅在 `full` 级 Vortex `payload.body` 或后续 sidecar Phase 1 中可恢复。详见 [Capture 架构 §6.4](capture_design.zh.md#64-可见对话提取含多模态)。
+
+### 2.8 完整示例
 
 ```markdown
 ---

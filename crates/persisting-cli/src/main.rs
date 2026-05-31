@@ -310,7 +310,7 @@ struct CaptureRunArgs {
     /// Log every proxied / captured HTTP request to stderr and `{output_dir}/.capture/debug.log`.
     #[arg(long)]
     debug: bool,
-    /// Storage: `md` (TLV Markdown only) or `vortex` / `bin` (Vortex event log; `traj materialize` for md).
+    /// Storage: `md` (Markdown only) or `vortex` / `bin` (Vortex canonical + live Markdown).
     #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
     format: capture::CaptureFormat,
     /// Command and arguments to execute (after `--`).
@@ -638,7 +638,7 @@ struct ProxyArgs {
     /// Foreground proxy only: log proxied HTTP to stderr / `.capture/debug.log`.
     #[arg(long)]
     debug: bool,
-    /// Foreground proxy only: `md` (Markdown only) or `vortex` / `bin` (Vortex only).
+    /// Foreground proxy only: `md` (Markdown only) or `vortex` / `bin` (Vortex + live Markdown).
     #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
     format: capture::CaptureFormat,
 }
@@ -1191,6 +1191,15 @@ fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i
         sink,
     })?;
     worker.shutdown();
+    if args.format.stream_markdown_in_engine() {
+        if let Err(e) =
+            capture::reconcile::reconcile_run_after_flush(&storage, &agent_id, args.format, |req| {
+                invoke_trajectory_replay(lazy, req)
+            })
+        {
+            eprintln!("[persisting-cli] capture reconcile skipped: {e:#}");
+        }
+    }
     Ok(code)
 }
 

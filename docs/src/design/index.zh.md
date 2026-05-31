@@ -29,7 +29,7 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 ```
 
 - **Lance**：SSD 持久化基线；**Search 索引**、**队列**落盘建立在此之上。
-- **轨迹（已实现）**：内嵌 LLM 代理捕获 → Vortex raw event log（`events.vortex`）；TLV Markdown 为物化人读视图。
+| **轨迹（已实现）**：内嵌 LLM 代理捕获 → Vortex raw event log（`events.vortex`）；TLV Markdown 为物化人读视图；多模态 Phase 0 以 dialogue 占位符记录图像（见 [轨迹 Markdown §2.7](trajectory_tlv_format.zh.md#27-多模态对话正文phase-0)）。
 - **TTAS 与分层内存（演进中）**：多维寻址、GPU ↔ host ↔ SSD 放置。
 - **一种底座，多种访问模式**：流式追加、检索、点查、队列共享 Lance 生态。
 

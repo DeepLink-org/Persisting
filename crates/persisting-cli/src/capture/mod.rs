@@ -23,17 +23,18 @@ use persisting_proto::TrajectoryStorageFormat;
 
 pub use record::CaptureRecord;
 
-/// Capture trajectory storage format (single physical layer per run — no dual-write).
+/// Capture trajectory storage format.
 ///
-/// - `md`: TLV Markdown only (`{session}.md` live upsert)
-/// - `vortex` (alias `bin`): Vortex event log only (use `traj materialize` for human-readable md)
+/// - `md`: TLV Markdown only (`{session}.md` live upsert); reconcile replays from Markdown.
+/// - `vortex` (alias `bin`): Vortex canonical (`events.vortex`) **plus** the same live Markdown
+///   UX as `-f md` (upsert, frontmatter, run summary, reconcile vs Vortex replay).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CaptureFormat {
     /// Human-readable TLV Markdown only.
     #[value(name = "md", alias = "markdown")]
     #[default]
     Markdown,
-    /// Vortex columnar event log only.
+    /// Vortex event log (canonical) with live Markdown sidecar (same UX as `-f md`).
     #[value(name = "vortex", alias = "bin")]
     Vortex,
 }
@@ -63,9 +64,17 @@ impl CaptureFormat {
         matches!(self, Self::Vortex)
     }
 
-    /// Live markdown upsert inside [`CaptureEngine`] (`-f md` only).
+    /// Live markdown upsert inside [`CaptureEngine`] (both capture formats).
     pub fn stream_markdown_in_engine(self) -> bool {
-        self.writes_markdown()
+        matches!(self, Self::Markdown | Self::Vortex)
+    }
+
+    /// Storage layer to replay when comparing live Markdown after a capture run.
+    pub fn reconcile_replay_format(self) -> TrajectoryStorageFormat {
+        match self {
+            Self::Vortex => TrajectoryStorageFormat::Vortex,
+            Self::Markdown => TrajectoryStorageFormat::Markdown,
+        }
     }
 }
 
@@ -81,6 +90,25 @@ mod tests {
             CaptureFormat::Vortex
         );
         assert!(CaptureFormat::Vortex.writes_vortex());
+    }
+
+    #[test]
+    fn vortex_streams_live_markdown_and_reconciles_against_vortex() {
+        assert!(CaptureFormat::Vortex.stream_markdown_in_engine());
+        assert!(!CaptureFormat::Vortex.writes_markdown());
+        assert_eq!(
+            CaptureFormat::Vortex.reconcile_replay_format(),
+            TrajectoryStorageFormat::Vortex
+        );
+    }
+
+    #[test]
+    fn markdown_reconciles_against_markdown_layer() {
+        assert!(CaptureFormat::Markdown.stream_markdown_in_engine());
+        assert_eq!(
+            CaptureFormat::Markdown.reconcile_replay_format(),
+            TrajectoryStorageFormat::Markdown
+        );
     }
 }
 

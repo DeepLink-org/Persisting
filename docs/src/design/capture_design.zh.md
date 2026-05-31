@@ -14,7 +14,7 @@
 3. [设计原则](#3-设计原则)
 4. [核心概念](#4-核心概念)
 5. [系统全景](#5-系统全景)
-6. [数据流：从 HTTP 到轨迹](#6-数据流从-http-到轨迹)
+6. [数据流：从 HTTP 到轨迹](#6-数据流从-http-到轨迹)（含 [§6.4 多模态](#64-可见对话提取含多模态)）
 7. [存储与一致性](#7-存储与一致性)
 8. [网关与协议](#8-网关与协议)
 9. [多 Agent 与会话](#9-多-agent-与会话)
@@ -313,7 +313,15 @@ sequenceDiagram
 | 调用取消 | 仅 Vortex：取消记录 |
 | Spawn 关联 | Vortex + Markdown：关联元数据（不当作可跳过噪音） |
 
-**采集级别**（Summary / Dialogue / Full）控制记录粒度；生产默认 Dialogue：保留可见对话，省略无关探测流量。
+**采集级别**（Summary / Dialogue / Full）控制记录粒度；生产默认 **Dialogue**：
+
+| 级别 | Vortex / Markdown 摘要字段 | `payload.body` |
+|------|---------------------------|----------------|
+| `summary` | 仅 model、path、字节数 | ❌ |
+| `dialogue`（默认） | `user_content` / `assistant_content` 可见对话文本 | ❌ |
+| `full` | 同上 + 完整解析后的请求/响应 JSON | ✅ |
+
+省略无关探测流量（如 `count_tokens`、history replay）的规则与采集级别无关，由物化过滤统一处理。详见 [§6.4](#64-可见对话提取含多模态)。
 
 存储记录类型（`llm.request`、`llm.response.stream`、`llm.spawn_link`、`session.*` 等）属于**存储层词汇**，由故事层事件推导，不必与 HTTP 一一对应。
 
@@ -329,6 +337,33 @@ Vortex:      —      —              一条最终响应事件
 - 块头 schema 带版本号（`v: 1`），便于将来演进线格式而不改文件后缀。
 
 详见 [轨迹 Markdown 格式](trajectory_tlv_format.zh.md)。
+
+### 6.4 可见对话提取（含多模态）
+
+Capture 在 **Dialogue** 级别下，从客户端原始 HTTP body（而非 upstream 转换后形态）提取「人读可见」正文，写入 `payload.user_content` / `payload.assistant_content`，并驱动 Markdown 块正文、frontmatter `turns` 与 `traj stats`。
+
+**统一入口**：`dialogue_extract` 模块；按 wire 协议分支：
+
+| 客户端 / API | 典型路径 | 用户输入 | 助手输出 |
+|--------------|----------|----------|----------|
+| Claude Code | `/v1/messages` | `content[]`：`text` / `image` / `tool_result` | SSE / JSON：`text` / `tool_use` |
+| Codex | `/v1/responses` | `input[]`：`input_text` / `input_image` / tool 往返 | SSE / JSON：`output_text` / `function_call` / `image_generation_call` |
+| OpenAI SDK | `/v1/chat/completions` | `messages[]`：`text` / `image_url` | `choices[].message` / 流式 delta |
+
+**多模态 Phase 0（当前）**：图像**不写入 blob**，仅在 dialogue 字符串中留占位符，保证 `turns` 计数与 review 时「知道有图」：
+
+| 方向 | 占位符示例 |
+|------|------------|
+| 用户输入（URL） | `[image: url:https://…]` |
+| 用户输入（base64 / data URL） | `[image: base64:128KB image/png hash=abc…]` |
+| 助手出图（Codex Responses） | `[image_generated: ig_xxx, png, 1024x1024, ~1MB]` + 可选 `prompt: …` |
+
+纯图无文字的用户 turn **仍计为 1 轮**（修复「有图无文 → stats 0 turns」）。  
+`capture_level = full` 时完整 JSON 仍在 `payload.body`，但 Markdown 物化**仍只展示占位符**，不嵌入像素数据。
+
+**后续（规划）**：sidecar 资产目录 `{run}/assets/{call_id}/…` + payload 引用；`traj materialize` 可输出 `![…](assets/…)`。见 [演进 §11](#11-演进方向)。
+
+协议回归：`crates/persisting-capture/tests/ag_fixture_tests.rs` + `tests/support/ag_capture_cases.rs`（agentgateway fixture 矩阵）。
 
 ---
 
@@ -415,6 +450,17 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 
 主 Agent 助手消息中的 spawn 提示与子 Agent 首包注册可能**时间错开**。系统用 Run 级注册表做延迟匹配与回填，使主会话在事后仍能看到「调用了哪个子 Agent、轨迹文件在哪」。
 
+### 9.4 单文件多 `session_id`（Claude run bucket）
+
+一次 `traj capture` 的 run 目录通常只有一个 `events.vortex`，但行内 `session_id` **可能混存多个值**：
+
+| 典型来源 | `session_id` 取值 |
+|----------|-------------------|
+| Capture 生命周期 / run 头 | `run-{timestamp}-…`（与目录名一致） |
+| Claude Code 对话 HTTP | header 注入的 UUID（与 run id 不同） |
+
+因此 **`traj stats` 扫描 agent 目录时**，对 run bucket（`session_id == root_session_id`）会先读 Vortex 中 distinct `session_id`，再**逐分区统计**，避免「第二个 session 显示 0 turns」。实现：`persisting-engine::trajectory::expand_story_locations`。详见 [轨迹存储 §7.1.1](trajectory_storage.zh.md#711-run-bucket-内多-session_id-分区)。
+
 ---
 
 ## 10. 可靠性与运行形态
@@ -474,6 +520,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 
 | 方向 | 动机 |
 |------|------|
+| **多模态 sidecar（Phase 1）** | 将 base64 / 生成图落盘到 `{run}/assets/`，Vortex 只存引用；支持 materialize 嵌图与可控 replay |
 | **Cursor 实时采集与 import** | 与 Claude Code 对等的注入与 JSONL 导入 |
 | Vortex 文件拆分与 compaction | 长 run 下单文件 `events.vortex` 过大时的拆分策略 |
 | WAL 与序号恢复增强 | 降低 crash 后重复 apply 与 seq 冲突风险 |
