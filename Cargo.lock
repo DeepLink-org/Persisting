@@ -2905,7 +2905,9 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcd0ce0249ac12fd44fcde62d435c36d881952c2f0df4d1de24b45e1dbba5ddb"
 dependencies = [
  "arrow-array",
  "rand 0.9.4",
@@ -3693,21 +3695,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "icu_locale"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5a396343c7208121dc86e35623d3dfe19814a7613cfd14964994cdc9c9a2e26"
-dependencies = [
- "icu_collections",
- "icu_locale_core",
- "icu_locale_data",
- "icu_provider",
- "potential_utf",
- "tinystr",
- "zerovec",
-]
-
-[[package]]
 name = "icu_locale_core"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3715,17 +3702,10 @@ checksum = "92219b62b3e2b4d88ac5119f8904c10f8f61bf7e95b640d25ba3075e6cac2c29"
 dependencies = [
  "displaydoc",
  "litemap",
- "serde",
  "tinystr",
  "writeable",
  "zerovec",
 ]
-
-[[package]]
-name = "icu_locale_data"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fdcc9ac77c6d74ff5cf6e65ef3181d6af32003b16fce3a77fb451d2f695993"
 
 [[package]]
 name = "icu_normalizer"
@@ -3775,35 +3755,12 @@ checksum = "139c4cf31c8b5f33d7e199446eff9c1e02decfc2f0eec2c8d71f65befa45b421"
 dependencies = [
  "displaydoc",
  "icu_locale_core",
- "serde",
- "stable_deref_trait",
  "writeable",
  "yoke",
  "zerofrom",
  "zerotrie",
  "zerovec",
 ]
-
-[[package]]
-name = "icu_segmenter"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c0794db0b1a86193ac9c48768d0e6c52c54448e0870ad87907d456ee0dac964"
-dependencies = [
- "icu_collections",
- "icu_locale",
- "icu_provider",
- "icu_segmenter_data",
- "potential_utf",
- "utf8_iter",
- "zerovec",
-]
-
-[[package]]
-name = "icu_segmenter_data"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4a2c462a4d927d512f5f882a033ddd62f33a05bb9f230d98f736ac3dc85938f"
 
 [[package]]
 name = "id-arena"
@@ -4136,7 +4093,9 @@ checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 
 [[package]]
 name = "lance"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3944aca86f4c78f4da04af1c2bf33e664a2826b7af72972ad200d6b9de59019f"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4180,7 +4139,6 @@ dependencies = [
  "lance-io",
  "lance-linalg",
  "lance-namespace",
- "lance-select",
  "lance-table",
  "lance-tokenizer",
  "log",
@@ -4208,7 +4166,9 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "253f4a0a70580c985b91e65e9ca6cad644825a4078de28d8efbacf3ffbd7ecdc"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4227,30 +4187,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "lance-arrow-scalar"
-version = "58.0.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-data",
- "arrow-row",
- "arrow-schema",
- "half",
-]
-
-[[package]]
-name = "lance-arrow-stats"
-version = "58.0.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "lance-arrow-scalar",
-]
-
-[[package]]
 name = "lance-bitpacking"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80c4d12521b1945041dd515a56aa0854973138e7ac12111c92572e33e4ecb593"
 dependencies = [
  "arrayref",
  "paste",
@@ -4259,7 +4199,9 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13f84020da5a484e2f07dd1796e09785ed7cd889857ebc4cb77e32ef214ee594"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4294,7 +4236,9 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7460597a66534a75987993d4dac5bc330586d99c5b79ae73367dbcbd4e29e576"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4325,7 +4269,9 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "046f5506ed2271cd941a050de7bf535dd3aedc291aadec836a63fa56c5926e3b"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4343,7 +4289,9 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7af54edf43dcf9d6a56cc636eb35d457e68373c6448dca3f0891b3325b4a24e6"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4378,7 +4326,9 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0772ae2d6207995dc1eb28aff9507f78e90b3362b58f311da001e9dc25f3d736"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4409,7 +4359,9 @@ dependencies = [
 
 [[package]]
 name = "lance-geo"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5466cc6524104de7f07d70d4af57fb6912b0eb484f4ac939501c01dbfae572df"
 dependencies = [
  "datafusion",
  "geo-traits",
@@ -4423,7 +4375,9 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e71fbfb51096a903cb524fe0da716f5f15fbc4a6b6f84cd6dec21abf319c5e84"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4455,7 +4409,6 @@ dependencies = [
  "itertools 0.13.0",
  "jsonb",
  "lance-arrow",
- "lance-arrow-stats",
  "lance-core",
  "lance-datafusion",
  "lance-datagen",
@@ -4464,7 +4417,6 @@ dependencies = [
  "lance-geo",
  "lance-io",
  "lance-linalg",
- "lance-select",
  "lance-table",
  "lance-tokenizer",
  "libm",
@@ -4492,7 +4444,9 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bab8c98ef1b870b20541d27f3ca4efdf7c9f5c25214233be07d231ba88900219"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4534,7 +4488,9 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b4c51cad0ac780b02dc4da48528479e7693c03e8d05390510bbc69ca2a9a1f1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4550,7 +4506,9 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "014e8332ca0615506342e0d3af608639864b68396973be14239f09c9f21f1fc2"
 dependencies = [
  "arrow",
  "async-trait",
@@ -4575,22 +4533,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "lance-select"
-version = "7.2.0-beta.1"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "byteorder",
- "bytes",
- "deepsize",
- "itertools 0.13.0",
- "lance-core",
- "roaring",
-]
-
-[[package]]
 name = "lance-table"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b16f1355904aea4ebb04ffc70c58c97901e10bde44452b4b021de4a1f329250d"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4607,7 +4553,6 @@ dependencies = [
  "lance-core",
  "lance-file",
  "lance-io",
- "lance-select",
  "log",
  "object_store",
  "prost",
@@ -4628,9 +4573,10 @@ dependencies = [
 
 [[package]]
 name = "lance-tokenizer"
-version = "7.2.0-beta.1"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b39b7f5ed9d0c0b716bf599b559d888267ed1dfe4c4e29d3648b51d2a28940cf"
 dependencies = [
- "icu_segmenter",
  "rust-stemmers",
  "serde",
  "unicode-normalization",
@@ -6062,8 +6008,6 @@ version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
 dependencies = [
- "serde_core",
- "writeable",
  "zerovec",
 ]
 
@@ -7884,7 +7828,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d"
 dependencies = [
  "displaydoc",
- "serde_core",
  "zerovec",
 ]
 
@@ -8371,6 +8314,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vortex"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "vortex-alp",
  "vortex-array",
@@ -8404,6 +8348,7 @@ dependencies = [
 [[package]]
 name = "vortex-alp"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "itertools 0.14.0",
  "num-traits",
@@ -8421,6 +8366,7 @@ dependencies = [
 [[package]]
 name = "vortex-array"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "arc-swap",
  "arcref",
@@ -8472,6 +8418,7 @@ dependencies = [
 [[package]]
 name = "vortex-array-macros"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8481,6 +8428,7 @@ dependencies = [
 [[package]]
 name = "vortex-btrblocks"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "itertools 0.14.0",
  "num-traits",
@@ -8510,6 +8458,7 @@ dependencies = [
 [[package]]
 name = "vortex-buffer"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "arrow-buffer",
  "bitvec",
@@ -8522,6 +8471,7 @@ dependencies = [
 [[package]]
 name = "vortex-bytebool"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "num-traits",
  "vortex-array",
@@ -8534,6 +8484,7 @@ dependencies = [
 [[package]]
 name = "vortex-compressor"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "itertools 0.14.0",
  "num-traits",
@@ -8551,6 +8502,7 @@ dependencies = [
 [[package]]
 name = "vortex-datetime-parts"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "num-traits",
  "prost",
@@ -8564,6 +8516,7 @@ dependencies = [
 [[package]]
 name = "vortex-decimal-byte-parts"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "num-traits",
  "prost",
@@ -8577,6 +8530,7 @@ dependencies = [
 [[package]]
 name = "vortex-error"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "arrow-schema",
  "flatbuffers",
@@ -8588,6 +8542,7 @@ dependencies = [
 [[package]]
 name = "vortex-fastlanes"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "fastlanes",
  "itertools 0.14.0",
@@ -8604,6 +8559,7 @@ dependencies = [
 [[package]]
 name = "vortex-file"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "async-trait",
  "bytes",
@@ -8646,6 +8602,7 @@ dependencies = [
 [[package]]
 name = "vortex-flatbuffers"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "flatbuffers",
  "vortex-buffer",
@@ -8655,6 +8612,7 @@ dependencies = [
 [[package]]
 name = "vortex-fsst"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "fsst-rs",
  "prost",
@@ -8668,6 +8626,7 @@ dependencies = [
 [[package]]
 name = "vortex-io"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "async-fs",
  "async-stream",
@@ -8695,6 +8654,7 @@ dependencies = [
 [[package]]
 name = "vortex-ipc"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "bytes",
  "flatbuffers",
@@ -8711,6 +8671,7 @@ dependencies = [
 [[package]]
 name = "vortex-layout"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "arcref",
  "arrow-array",
@@ -8754,6 +8715,7 @@ dependencies = [
 [[package]]
 name = "vortex-mask"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "itertools 0.14.0",
  "vortex-buffer",
@@ -8763,6 +8725,7 @@ dependencies = [
 [[package]]
 name = "vortex-metrics"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "parking_lot",
  "sketches-ddsketch",
@@ -8771,6 +8734,7 @@ dependencies = [
 [[package]]
 name = "vortex-pco"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "pco",
  "prost",
@@ -8784,6 +8748,7 @@ dependencies = [
 [[package]]
 name = "vortex-proto"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "prost",
  "prost-types",
@@ -8792,6 +8757,7 @@ dependencies = [
 [[package]]
 name = "vortex-runend"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "arrow-array",
  "itertools 0.14.0",
@@ -8807,6 +8773,7 @@ dependencies = [
 [[package]]
 name = "vortex-scan"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "async-trait",
  "futures",
@@ -8822,6 +8789,7 @@ dependencies = [
 [[package]]
 name = "vortex-sequence"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "num-traits",
  "prost",
@@ -8837,6 +8805,7 @@ dependencies = [
 [[package]]
 name = "vortex-session"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "dashmap",
  "lasso",
@@ -8848,6 +8817,7 @@ dependencies = [
 [[package]]
 name = "vortex-sparse"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "itertools 0.14.0",
  "num-traits",
@@ -8862,6 +8832,7 @@ dependencies = [
 [[package]]
 name = "vortex-utils"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "dashmap",
  "hashbrown 0.17.0",
@@ -8871,6 +8842,7 @@ dependencies = [
 [[package]]
 name = "vortex-zigzag"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "vortex-array",
  "vortex-buffer",
@@ -8883,6 +8855,7 @@ dependencies = [
 [[package]]
 name = "vortex-zstd"
 version = "0.1.0"
+source = "git+https://github.com/reiase/vortex?branch=feature%2Flayout#1d54301c6fc3692a06993485141e09b83cc29d5a"
 dependencies = [
  "itertools 0.14.0",
  "prost",
@@ -9839,7 +9812,6 @@ dependencies = [
  "displaydoc",
  "yoke",
  "zerofrom",
- "zerovec",
 ]
 
 [[package]]
@@ -9848,7 +9820,6 @@ version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90f911cbc359ab6af17377d242225f4d75119aec87ea711a880987b18cd7b239"
 dependencies = [
- "serde",
  "yoke",
  "zerofrom",
  "zerovec-derive",

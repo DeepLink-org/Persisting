@@ -12,11 +12,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1"
-lance = { path = "/Users/reiase/workspace/lance/rust/lance", features = ["aws", "azure", "gcp"] }
-lance-core = { path = "/Users/reiase/workspace/lance/rust/lance-core" }
-lance-index = { path = "/Users/reiase/workspace/lance/rust/lance-index" }
-lance-linalg = { path = "/Users/reiase/workspace/lance/rust/lance-linalg" }
-lance-table = { path = "/Users/reiase/workspace/lance/rust/lance-table" }
+lance = { version = "7.0.0", features = ["aws", "azure", "gcp"] }
+lance-core = "7.0.0"
+lance-index = "7.0.0"
+lance-linalg = "7.0.0"
+lance-table = "7.0.0"
 futures = "0.3"
 uuid = "1"
 persisting-capture = { path = "../persisting-capture" }
@@ -27,7 +27,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-vortex = { path = "/Users/reiase/workspace/vortex/vortex", default-features = true, features = ["tokio"] }
+vortex = { git = "https://github.com/reiase/vortex", branch = "feature/layout", default-features = true, features = ["tokio"] }
 arrow-array = "58.3.0"
 arrow-schema = "58.3.0"
 
