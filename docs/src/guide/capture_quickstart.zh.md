@@ -11,9 +11,9 @@
 运行 `traj capture` 后，Persisting 会：
 
 1. 在本地启动 **LLM 反向代理**（透明转发到上游模型）；
-2. 把每次请求/响应写入 **Vortex 事件日志**（`-f vortex` 时；机器可读、可回放）；
-3. 默认同时 **live 更新 Markdown**（`-f md`，人类可读，可 `tail -f`）；
-4. 子进程退出后打印摘要，并写入对账文件 `.capture/reconcile.json`。
+2. 把每次请求/响应写入 **Vortex 事件日志**（`-f vortex`，canonical）或 **仅 Markdown**（`-f md`）；
+3. **两种格式都会 live 更新 Markdown**（人类可读，可 `tail -f`）；`-f vortex` 额外落盘 `events.vortex`；
+4. 子进程退出后打印摘要，并写入对账文件 `.capture/reconcile.json`（`-f vortex` 时对比 live md 与 Vortex replay）。
 
 支持的实时采集客户端：**Claude Code**、**OpenAI Codex**（经代理）。Cursor 当前不支持。
 
@@ -128,7 +128,7 @@ persisting traj capture -o ./store -c your.toml -f md -- python3 your_agent.py
 | `-o DIR` | 轨迹 store 根目录（默认 `.persisting/capture`） |
 | `-c FILE` | 代理 TOML（`listen`、`models`、upstream） |
 | `-f md` | **仅 Markdown**（默认，live upsert 到 `{session}.md`） |
-| `-f vortex` | **仅 Vortex**（`events.vortex`）；需要人读视图时事后 `traj materialize` |
+| `-f vortex` | **Vortex canonical**（`events.vortex`）+ **同样 live Markdown**；对账 md ↔ Vortex |
 | `capture_level` | TOML 中 `summary` / `dialogue`（默认）/ `full`；见 [Capture 架构 §6.4](../design/capture_design.zh.md#64-可见对话提取含多模态) |
 | `--debug` | 将代理请求打到 stderr 与 `.capture/debug.log` |
 | `--` 之后 | 要执行的子命令 |

@@ -362,6 +362,24 @@ pub struct TrajectoryStatsRequest {
     pub root_session_id: Option<String>,
 }
 
+/// Judge sidecar summary for one trajectory session (nested in [`TrajectoryStatsResponse`]).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionJudgeStats {
+    pub judgment_count: usize,
+    pub turn_judgments: usize,
+    pub story_judgments: usize,
+    pub rubric_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_score: Option<f64>,
+    pub verdict_pass: usize,
+    pub verdict_partial: usize,
+    pub verdict_fail: usize,
+    pub manual_count: usize,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub layers_path: String,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryStatsResponse {
     pub storage: String,
@@ -372,6 +390,8 @@ pub struct TrajectoryStatsResponse {
     pub row_count: usize,
     /// Reserved for future versioning metadata (`None` for Vortex).
     pub manifest_version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<SessionJudgeStats>,
     pub status: String,
     pub note: String,
 }
@@ -420,6 +440,181 @@ pub struct TrajectoryTruncateResponse {
     pub note: String,
 }
 
+/// What to score: whole story once, or each dialogue turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeScope {
+    #[default]
+    Turn,
+    Story,
+}
+
+/// LLM-as-judge or human-entered scores (CLI interactive → [`JudgeScoreInput`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeMethod {
+    #[default]
+    Llm,
+    Manual,
+}
+
+/// How to pick sessions when `--sample` is set (CLI-side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeSampleMode {
+    #[default]
+    Sequential,
+    Random,
+}
+
+/// One score dimension entry (manual submit or few-shot export).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgeScoreInput {
+    /// Turn scope: dialogue `call_id`. Story scope: omit (engine uses `__story__`).
+    #[serde(default)]
+    pub call_id: Option<String>,
+    pub rubric_id: String,
+    pub score: i64,
+    pub verdict: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryJudgeRequest {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub root_session_id: Option<String>,
+    /// Primary rubric when [`Self::rubric_ids`] is empty.
+    #[serde(default = "default_judge_rubric")]
+    pub rubric_id: String,
+    /// Multiple score dimensions (e.g. `helpful,correct,safe`).
+    #[serde(default)]
+    pub rubric_ids: Vec<String>,
+    #[serde(default)]
+    pub scope: JudgeScope,
+    #[serde(default)]
+    pub method: JudgeMethod,
+    /// OpenAI-compatible chat model; falls back to `PERSISTING_JUDGE_MODEL` or `gpt-4o-mini`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Skip LLM; write deterministic pass rows (for tests / dry runs).
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Re-judge units that already have a row for this rubric.
+    #[serde(default)]
+    pub force: bool,
+    /// Manual method: scores collected interactively by CLI.
+    #[serde(default)]
+    pub manual_scores: Vec<JudgeScoreInput>,
+    /// LLM method: include up to N prior `[manual]` rows as few-shot examples per rubric.
+    #[serde(default)]
+    pub few_shot_limit: usize,
+}
+
+fn default_judge_rubric() -> String {
+    "default".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryJudgeResponse {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub rubric_id: String,
+    pub rubric_ids: Vec<String>,
+    pub scope: JudgeScope,
+    pub method: JudgeMethod,
+    pub layer_name: String,
+    pub sidecar_path: String,
+    /// Units scored this run (turns or one story).
+    pub judged_calls: usize,
+    pub skipped_calls: usize,
+    pub status: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryJudgeStatsRequest {
+    pub storage: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub root_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgeStatsSession {
+    pub storage: String,
+    pub agent_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub root_session_id: Option<String>,
+    pub judgment_count: usize,
+    pub turn_judgments: usize,
+    pub story_judgments: usize,
+    pub rubric_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_score: Option<f64>,
+    pub verdict_pass: usize,
+    pub verdict_partial: usize,
+    pub verdict_fail: usize,
+    pub manual_count: usize,
+    pub layers_path: String,
+    pub status: String,
+}
+
+impl From<&JudgeStatsSession> for SessionJudgeStats {
+    fn from(s: &JudgeStatsSession) -> Self {
+        Self {
+            judgment_count: s.judgment_count,
+            turn_judgments: s.turn_judgments,
+            story_judgments: s.story_judgments,
+            rubric_ids: s.rubric_ids.clone(),
+            avg_score: s.avg_score,
+            verdict_pass: s.verdict_pass,
+            verdict_partial: s.verdict_partial,
+            verdict_fail: s.verdict_fail,
+            manual_count: s.manual_count,
+            layers_path: s.layers_path.clone(),
+            status: s.status.clone(),
+        }
+    }
+}
+
+impl From<JudgeStatsSession> for SessionJudgeStats {
+    fn from(s: JudgeStatsSession) -> Self {
+        SessionJudgeStats::from(&s)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgeRubricSummary {
+    pub rubric_id: String,
+    pub judgment_count: usize,
+    pub avg_score: f64,
+    pub verdict_pass: usize,
+    pub verdict_partial: usize,
+    pub verdict_fail: usize,
+    pub manual_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryJudgeStatsResponse {
+    pub storage: String,
+    pub session_count: usize,
+    pub judged_session_count: usize,
+    pub judgment_count: usize,
+    pub rubric_count: usize,
+    pub sessions: Vec<JudgeStatsSession>,
+    pub rubrics: Vec<JudgeRubricSummary>,
+    pub status: String,
+    pub note: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryExtractRequest {
     pub storage: String,
@@ -449,7 +644,7 @@ pub struct TrajectoryExtractResponse {
 // ---------------------------------------------------------------------------
 
 /// Increment when bincode [`RpcRequest`] / [`RpcResponse`] layout or semantics change.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// RON C ABI：稳定导出为 **`persisting_engine_submit` / `job_poll` / `job_take_result` / `job_release`**（见 **`invoke_abi`**）；
 /// 当信封、job 状态布局或上述符号契约不兼容变化时递增。与 [`PROTOCOL_VERSION`] 独立。
@@ -482,6 +677,8 @@ pub enum RequestBody {
     TrajectoryMaterialize(TrajectoryMaterializeRequest),
     TrajectoryTruncate(TrajectoryTruncateRequest),
     TrajectoryExtract(TrajectoryExtractRequest),
+    TrajectoryJudge(TrajectoryJudgeRequest),
+    TrajectoryJudgeStats(TrajectoryJudgeStatsRequest),
     SearchImportLance(SearchImportLanceRequest),
     SearchAddBatch(SearchAddBatchRequest),
 }
@@ -507,6 +704,8 @@ pub enum ResponseBody {
     TrajectoryMaterialize(TrajectoryMaterializeResponse),
     TrajectoryTruncate(TrajectoryTruncateResponse),
     TrajectoryExtract(TrajectoryExtractResponse),
+    TrajectoryJudge(TrajectoryJudgeResponse),
+    TrajectoryJudgeStats(TrajectoryJudgeStatsResponse),
     SearchImportLance(SearchImportLanceResponse),
     SearchAddBatch(SearchAddBatchResponse),
     Error { code: u32, message: String },

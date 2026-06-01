@@ -2,7 +2,7 @@
 
 会话 Markdown 是轨迹的**物化人读视图**：从 Vortex raw event log **materialize** 得到，或在 capture `-f md` 时由 **CaptureEngine live upsert** 增量更新。
 
-> **Capture `-f md`**：Proxy 内 CaptureEngine 按 `call_id`+`role` **upsert** 块到对应 md（主 session → `run-{run_id}.md`，subagent → `agent-{id}.md`），流式 assistant 块原地 rewrite；每次 dialogue 写入后刷新 **YAML frontmatter 摘要**（turns / tokens / cost）。`-f vortex` 仅写 `{run}/events.vortex`；事后可用 `traj materialize` 补全 md。run 结束写 `reconcile.json` 对账，不一致时再 materialize。
+> **Capture `-f md` / `-f vortex`**：Proxy 内 CaptureEngine 按 `call_id`+`role` **upsert** 块到对应 md（主 session → `run-{run_id}.md`，subagent → `agent-{id}.md`），流式 assistant 块原地 rewrite；每次 dialogue 写入后刷新 **YAML frontmatter 摘要**（turns / tokens / cost）。**两种格式均 live 写 md**；`-f vortex` 额外 append `events.vortex`（canonical）。run 结束写 `reconcile.json`（vortex 模式对比 live md 与 Vortex replay），不一致时可 `traj materialize` 全量重建。
 
 **文件名**（由 `storage_session_id` 决定）：
 

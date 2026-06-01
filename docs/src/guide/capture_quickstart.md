@@ -11,9 +11,9 @@ Get **`persisting traj`** running in **5–10 minutes**: use `traj capture` or `
 `traj capture`:
 
 1. Starts a local **LLM reverse proxy** (forwards to your upstream model).
-2. Appends every request/response to a **Vortex event log** when using `-f vortex` (machine-readable, replayable).
-3. By default **live-updates Markdown** (`-f md`, human-readable, `tail -f` friendly).
-4. Prints a summary when the child exits and writes `.capture/reconcile.json`.
+2. Writes a **Vortex event log** with `-f vortex` (canonical) or **Markdown only** with `-f md`.
+3. **Both formats live-update Markdown** (`tail -f` friendly); `-f vortex` also appends `events.vortex`.
+4. Prints a summary when the child exits and writes `.capture/reconcile.json` (`-f vortex` compares live md vs Vortex replay).
 
 Supported live clients: **Claude Code**, **OpenAI Codex** (via proxy). Cursor is not supported yet.
 
@@ -69,7 +69,7 @@ Codex: replace `claude` with `codex`. Custom agent: `... -- python3 your_agent.p
 | `-o DIR` | Store root (default `.persisting/capture`) |
 | `-c FILE` | Proxy TOML (`listen`, `models`, upstream) |
 | `-f md` | Markdown only (default) |
-| `-f vortex` | Vortex only (`events.vortex`); run `traj materialize` when you need `.md` |
+| `-f vortex` | Vortex canonical + same live Markdown; reconcile md ↔ Vortex |
 | `--debug` | Log proxied requests to stderr + `.capture/debug.log` |
 
 `traj capture` is **in-process** — no `traj proxy stop` needed when the child exits.

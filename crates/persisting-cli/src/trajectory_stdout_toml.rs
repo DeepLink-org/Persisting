@@ -2,8 +2,10 @@
 
 use anyhow::{Context, Result};
 use persisting_proto::{
-    TrajectoryAppendResponse, TrajectoryExtractResponse, TrajectoryMaterializeResponse,
-    TrajectoryReplayResponse, TrajectoryStatsResponse, TrajectoryTruncateResponse,
+    JudgeMethod, JudgeScope, SessionJudgeStats, TrajectoryAppendResponse,
+    TrajectoryExtractResponse, TrajectoryJudgeResponse, TrajectoryJudgeStatsResponse,
+    TrajectoryMaterializeResponse, TrajectoryReplayResponse, TrajectoryStatsResponse,
+    TrajectoryTruncateResponse,
 };
 use serde_json::Value as Json;
 
@@ -54,14 +56,151 @@ fn stats_response_to_map(resp: &TrajectoryStatsResponse) -> toml::map::Map<Strin
             toml::Value::Integer(i64::try_from(v).unwrap_or(i64::MAX)),
         );
     }
+    if let Some(j) = &resp.judge {
+        if j.judgment_count > 0 {
+            insert_session_judge_fields(&mut root, j);
+        }
+    }
     root.insert("status".into(), toml::Value::String(resp.status.clone()));
     root.insert("note".into(), toml::Value::String(resp.note.clone()));
     root
 }
 
+fn insert_session_judge_fields(m: &mut toml::map::Map<String, toml::Value>, j: &SessionJudgeStats) {
+    m.insert(
+        "judgment_count".into(),
+        toml::Value::Integer(i64::try_from(j.judgment_count).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "turn_judgments".into(),
+        toml::Value::Integer(i64::try_from(j.turn_judgments).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "story_judgments".into(),
+        toml::Value::Integer(i64::try_from(j.story_judgments).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "rubric_ids".into(),
+        toml::Value::Array(
+            j.rubric_ids
+                .iter()
+                .map(|r| toml::Value::String(r.clone()))
+                .collect(),
+        ),
+    );
+    if let Some(avg) = j.avg_score {
+        m.insert("avg_score".into(), toml::Value::Float(avg));
+    }
+    m.insert(
+        "verdict_pass".into(),
+        toml::Value::Integer(i64::try_from(j.verdict_pass).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "verdict_partial".into(),
+        toml::Value::Integer(i64::try_from(j.verdict_partial).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "verdict_fail".into(),
+        toml::Value::Integer(i64::try_from(j.verdict_fail).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "manual_count".into(),
+        toml::Value::Integer(i64::try_from(j.manual_count).unwrap_or(i64::MAX)),
+    );
+    if !j.layers_path.is_empty() {
+        m.insert(
+            "layers_path".into(),
+            toml::Value::String(j.layers_path.clone()),
+        );
+    }
+    m.insert("judge_status".into(), toml::Value::String(j.status.clone()));
+}
+
+pub fn print_trajectory_stats_as_json(resp: &TrajectoryStatsResponse) -> Result<()> {
+    let body = serde_json::to_string_pretty(resp).context("encode stats JSON")?;
+    println!("{body}");
+    Ok(())
+}
+
+pub fn print_trajectory_stats_list_as_json(
+    storage: &str,
+    sessions: &[TrajectoryStatsResponse],
+    judge: Option<&TrajectoryJudgeStatsResponse>,
+) -> Result<()> {
+    let mut root = serde_json::Map::new();
+    root.insert("storage".into(), storage.into());
+    root.insert(
+        "session_count".into(),
+        serde_json::Value::Number(sessions.len().into()),
+    );
+    if let Some(j) = judge {
+        insert_judge_aggregate_json(&mut root, j);
+        if !j.rubrics.is_empty() {
+            root.insert(
+                "rubrics".into(),
+                serde_json::to_value(&j.rubrics).context("encode rubrics JSON")?,
+            );
+        }
+    }
+    let slim: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|s| {
+            let mut m = stats_response_to_map(s);
+            m.remove("storage");
+            serde_json::Value::Object(
+                m.into_iter()
+                    .map(|(k, v)| (k, toml_value_to_json(v)))
+                    .collect(),
+            )
+        })
+        .collect();
+    root.insert("sessions".into(), serde_json::Value::Array(slim));
+    let body = serde_json::to_string_pretty(&serde_json::Value::Object(root))
+        .context("encode stats list JSON")?;
+    println!("{body}");
+    Ok(())
+}
+
+fn insert_judge_aggregate_json(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    j: &TrajectoryJudgeStatsResponse,
+) {
+    if j.judgment_count == 0 {
+        return;
+    }
+    root.insert(
+        "judged_session_count".into(),
+        serde_json::json!(j.judged_session_count),
+    );
+    root.insert("judgment_count".into(), serde_json::json!(j.judgment_count));
+    root.insert("rubric_count".into(), serde_json::json!(j.rubric_count));
+    root.insert("judge_status".into(), serde_json::json!(j.status));
+}
+
+fn toml_value_to_json(v: toml::Value) -> serde_json::Value {
+    match v {
+        toml::Value::String(s) => s.into(),
+        toml::Value::Integer(n) => n.into(),
+        toml::Value::Float(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        toml::Value::Boolean(b) => b.into(),
+        toml::Value::Array(a) => {
+            serde_json::Value::Array(a.into_iter().map(toml_value_to_json).collect())
+        }
+        toml::Value::Table(t) => serde_json::Value::Object(
+            t.into_iter()
+                .map(|(k, v)| (k, toml_value_to_json(v)))
+                .collect(),
+        ),
+        toml::Value::Datetime(d) => d.to_string().into(),
+    }
+}
+
 pub fn print_trajectory_stats_list_as_toml(
     storage: &str,
     sessions: &[TrajectoryStatsResponse],
+    judge: Option<&TrajectoryJudgeStatsResponse>,
 ) -> Result<()> {
     let mut root = toml::map::Map::new();
     root.insert("storage".into(), toml::Value::String(storage.to_string()));
@@ -69,6 +208,16 @@ pub fn print_trajectory_stats_list_as_toml(
         "session_count".into(),
         toml::Value::Integer(i64::try_from(sessions.len()).unwrap_or(i64::MAX)),
     );
+    if let Some(j) = judge {
+        insert_judge_aggregate_fields(&mut root, j);
+        if j.judgment_count > 0 {
+            let rubrics: Vec<toml::Value> =
+                j.rubrics.iter().map(judge_rubric_summary_to_toml).collect();
+            root.insert("rubrics".into(), toml::Value::Array(rubrics));
+        }
+    } else {
+        insert_judge_aggregate_from_sessions(&mut root, sessions);
+    }
     let tables = sessions
         .iter()
         .map(|s| {
@@ -79,6 +228,64 @@ pub fn print_trajectory_stats_list_as_toml(
         .collect();
     root.insert("sessions".into(), toml::Value::Array(tables));
     emit_root(&root, "stats list")
+}
+
+fn insert_judge_aggregate_fields(
+    root: &mut toml::map::Map<String, toml::Value>,
+    j: &TrajectoryJudgeStatsResponse,
+) {
+    if j.judgment_count == 0 {
+        return;
+    }
+    root.insert(
+        "judged_session_count".into(),
+        toml::Value::Integer(i64::try_from(j.judged_session_count).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "judgment_count".into(),
+        toml::Value::Integer(i64::try_from(j.judgment_count).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "rubric_count".into(),
+        toml::Value::Integer(i64::try_from(j.rubric_count).unwrap_or(i64::MAX)),
+    );
+    if j.judgment_count > 0 {
+        root.insert("judge_status".into(), toml::Value::String(j.status.clone()));
+    }
+}
+
+fn insert_judge_aggregate_from_sessions(
+    root: &mut toml::map::Map<String, toml::Value>,
+    sessions: &[TrajectoryStatsResponse],
+) {
+    let mut judged_session_count = 0usize;
+    let mut judgment_count = 0usize;
+    let mut rubric_ids = std::collections::BTreeSet::new();
+    for s in sessions {
+        if let Some(j) = &s.judge {
+            if j.judgment_count > 0 {
+                judged_session_count += 1;
+            }
+            judgment_count += j.judgment_count;
+            rubric_ids.extend(j.rubric_ids.iter().cloned());
+        }
+    }
+    if judgment_count == 0 {
+        return;
+    }
+    root.insert(
+        "judged_session_count".into(),
+        toml::Value::Integer(i64::try_from(judged_session_count).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "judgment_count".into(),
+        toml::Value::Integer(i64::try_from(judgment_count).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "rubric_count".into(),
+        toml::Value::Integer(i64::try_from(rubric_ids.len()).unwrap_or(i64::MAX)),
+    );
+    root.insert("judge_status".into(), toml::Value::String("ok".into()));
 }
 
 pub fn print_trajectory_truncate_as_toml(resp: &TrajectoryTruncateResponse) -> Result<()> {
@@ -156,6 +363,196 @@ pub fn print_trajectory_materialize_as_toml(resp: &TrajectoryMaterializeResponse
     root.insert("status".into(), toml::Value::String(resp.status.clone()));
     root.insert("note".into(), toml::Value::String(resp.note.clone()));
     emit_root(&root, "materialize")
+}
+
+pub fn print_trajectory_judge_as_toml(resp: &TrajectoryJudgeResponse) -> Result<()> {
+    let mut root = toml::map::Map::new();
+    root.insert("storage".into(), toml::Value::String(resp.storage.clone()));
+    root.insert(
+        "agent_id".into(),
+        toml::Value::String(resp.agent_id.clone()),
+    );
+    root.insert(
+        "session_id".into(),
+        toml::Value::String(resp.session_id.clone()),
+    );
+    root.insert(
+        "rubric_id".into(),
+        toml::Value::String(resp.rubric_id.clone()),
+    );
+    root.insert(
+        "rubric_ids".into(),
+        toml::Value::Array(
+            resp.rubric_ids
+                .iter()
+                .map(|r| toml::Value::String(r.clone()))
+                .collect(),
+        ),
+    );
+    root.insert(
+        "scope".into(),
+        toml::Value::String(
+            match resp.scope {
+                JudgeScope::Turn => "turn",
+                JudgeScope::Story => "story",
+            }
+            .into(),
+        ),
+    );
+    root.insert(
+        "method".into(),
+        toml::Value::String(
+            match resp.method {
+                JudgeMethod::Llm => "llm",
+                JudgeMethod::Manual => "manual",
+            }
+            .into(),
+        ),
+    );
+    root.insert(
+        "layer_name".into(),
+        toml::Value::String(resp.layer_name.clone()),
+    );
+    root.insert(
+        "sidecar_path".into(),
+        toml::Value::String(resp.sidecar_path.clone()),
+    );
+    root.insert(
+        "judged_calls".into(),
+        toml::Value::Integer(i64::try_from(resp.judged_calls).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "skipped_calls".into(),
+        toml::Value::Integer(i64::try_from(resp.skipped_calls).unwrap_or(i64::MAX)),
+    );
+    root.insert("status".into(), toml::Value::String(resp.status.clone()));
+    root.insert("note".into(), toml::Value::String(resp.note.clone()));
+    emit_root(&root, "judge")
+}
+
+pub fn print_trajectory_judge_stats_as_toml(resp: &TrajectoryJudgeStatsResponse) -> Result<()> {
+    let mut root = toml::map::Map::new();
+    root.insert("storage".into(), toml::Value::String(resp.storage.clone()));
+    root.insert(
+        "session_count".into(),
+        toml::Value::Integer(i64::try_from(resp.session_count).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "judged_session_count".into(),
+        toml::Value::Integer(i64::try_from(resp.judged_session_count).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "judgment_count".into(),
+        toml::Value::Integer(i64::try_from(resp.judgment_count).unwrap_or(i64::MAX)),
+    );
+    root.insert(
+        "rubric_count".into(),
+        toml::Value::Integer(i64::try_from(resp.rubric_count).unwrap_or(i64::MAX)),
+    );
+    root.insert("status".into(), toml::Value::String(resp.status.clone()));
+    root.insert("note".into(), toml::Value::String(resp.note.clone()));
+
+    let sessions: Vec<toml::Value> = resp
+        .sessions
+        .iter()
+        .map(judge_stats_session_to_toml)
+        .collect();
+    root.insert("sessions".into(), toml::Value::Array(sessions));
+
+    let rubrics: Vec<toml::Value> = resp
+        .rubrics
+        .iter()
+        .map(judge_rubric_summary_to_toml)
+        .collect();
+    root.insert("rubrics".into(), toml::Value::Array(rubrics));
+
+    emit_root(&root, "judge stats")
+}
+
+fn judge_stats_session_to_toml(s: &persisting_proto::JudgeStatsSession) -> toml::Value {
+    let mut m = toml::map::Map::new();
+    m.insert("storage".into(), toml::Value::String(s.storage.clone()));
+    m.insert("agent_id".into(), toml::Value::String(s.agent_id.clone()));
+    m.insert(
+        "session_id".into(),
+        toml::Value::String(s.session_id.clone()),
+    );
+    if let Some(root) = &s.root_session_id {
+        m.insert("root_session_id".into(), toml::Value::String(root.clone()));
+    }
+    m.insert(
+        "judgment_count".into(),
+        toml::Value::Integer(i64::try_from(s.judgment_count).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "turn_judgments".into(),
+        toml::Value::Integer(i64::try_from(s.turn_judgments).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "story_judgments".into(),
+        toml::Value::Integer(i64::try_from(s.story_judgments).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "rubric_ids".into(),
+        toml::Value::Array(
+            s.rubric_ids
+                .iter()
+                .map(|r| toml::Value::String(r.clone()))
+                .collect(),
+        ),
+    );
+    if let Some(avg) = s.avg_score {
+        m.insert("avg_score".into(), toml::Value::Float(avg));
+    }
+    m.insert(
+        "verdict_pass".into(),
+        toml::Value::Integer(i64::try_from(s.verdict_pass).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "verdict_partial".into(),
+        toml::Value::Integer(i64::try_from(s.verdict_partial).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "verdict_fail".into(),
+        toml::Value::Integer(i64::try_from(s.verdict_fail).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "manual_count".into(),
+        toml::Value::Integer(i64::try_from(s.manual_count).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "layers_path".into(),
+        toml::Value::String(s.layers_path.clone()),
+    );
+    m.insert("status".into(), toml::Value::String(s.status.clone()));
+    toml::Value::Table(m)
+}
+
+fn judge_rubric_summary_to_toml(r: &persisting_proto::JudgeRubricSummary) -> toml::Value {
+    let mut m = toml::map::Map::new();
+    m.insert("rubric_id".into(), toml::Value::String(r.rubric_id.clone()));
+    m.insert(
+        "judgment_count".into(),
+        toml::Value::Integer(i64::try_from(r.judgment_count).unwrap_or(i64::MAX)),
+    );
+    m.insert("avg_score".into(), toml::Value::Float(r.avg_score));
+    m.insert(
+        "verdict_pass".into(),
+        toml::Value::Integer(i64::try_from(r.verdict_pass).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "verdict_partial".into(),
+        toml::Value::Integer(i64::try_from(r.verdict_partial).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "verdict_fail".into(),
+        toml::Value::Integer(i64::try_from(r.verdict_fail).unwrap_or(i64::MAX)),
+    );
+    m.insert(
+        "manual_count".into(),
+        toml::Value::Integer(i64::try_from(r.manual_count).unwrap_or(i64::MAX)),
+    );
+    toml::Value::Table(m)
 }
 
 pub fn print_trajectory_replay_as_toml(resp: &TrajectoryReplayResponse) -> Result<()> {
@@ -326,6 +723,7 @@ mod tests {
             dataset: "/p".into(),
             row_count: 10,
             manifest_version: Some(7),
+            judge: None,
             status: "ok".into(),
             note: "n".into(),
         };

@@ -9,9 +9,7 @@ use persisting_capture::reconcile::{
 };
 use persisting_capture::record::CaptureRecord;
 use persisting_capture::runtime::run_env::read_run_session;
-use persisting_proto::{
-    TrajectoryReplayRequest, TrajectoryReplayResponse,
-};
+use persisting_proto::{TrajectoryReplayRequest, TrajectoryReplayResponse};
 
 use super::CaptureFormat;
 

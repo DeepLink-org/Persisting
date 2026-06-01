@@ -125,15 +125,12 @@ VORTEX_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/events.vortex"
 [[ -f "$VORTEX_PATH" ]] || die "missing Vortex log: $VORTEX_PATH"
 pass "events.vortex present"
 
-section "live markdown + reconcile (same UX as -f md)"
+section "vortex-only capture (no live markdown)"
 MD_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/${ROOT_SESSION}.md"
-[[ -f "$MD_PATH" ]] || die "missing live markdown: $MD_PATH"
-pass "live markdown present during capture"
-
-RECONCILE_JSON="$STORAGE/.capture/reconcile.json"
-[[ -f "$RECONCILE_JSON" ]] || die "missing reconcile report: $RECONCILE_JSON"
-python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r.get('ok') is True, r" "$RECONCILE_JSON"
-pass "reconcile.json ok"
+if [[ -f "$MD_PATH" ]]; then
+  die "vortex/bin must not write .md during capture (found $MD_PATH); use \`traj materialize\` for md"
+fi
+pass "no live markdown during vortex capture"
 
 section "wait for Vortex drain (up to ${DRAIN_SEC}s)"
 EXPECTED_ROWS=$((TURNS * 2 + 2))
@@ -178,7 +175,7 @@ print(f"verified {turns} user/assistant pairs in vortex replay")
 PY
 pass "vortex replay content matches agent manifest"
 
-section "live markdown content"
+section "materialized markdown content"
 MD_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/${ROOT_SESSION}.md"
 [[ -f "$MD_PATH" ]] || die "missing markdown: $MD_PATH"
 python3 <<PY
@@ -196,9 +193,9 @@ for i in range(1, turns + 1):
     if reply not in md:
         sys.exit(f"markdown missing assistant reply {reply!r}")
 
-print(f"verified {turns} user/assistant pairs in live markdown")
+print(f"verified {turns} user/assistant pairs in materialized markdown")
 PY
-pass "live markdown content matches agent manifest"
+pass "materialized markdown content matches agent manifest"
 
 section "traj proxy list shows session"
 LIST_OUT="$("$CLI" traj proxy list -o "$STORAGE" 2>&1)"

@@ -26,15 +26,14 @@ pub use record::CaptureRecord;
 /// Capture trajectory storage format.
 ///
 /// - `md`: TLV Markdown only (`{session}.md` live upsert); reconcile replays from Markdown.
-/// - `vortex` (alias `bin`): Vortex canonical (`events.vortex`) **plus** the same live Markdown
-///   UX as `-f md` (upsert, frontmatter, run summary, reconcile vs Vortex replay).
+/// - `vortex` (alias `bin`): Vortex canonical (`events.vortex`) only; use `traj materialize` for md.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CaptureFormat {
     /// Human-readable TLV Markdown only.
     #[value(name = "md", alias = "markdown")]
     #[default]
     Markdown,
-    /// Vortex event log (canonical) with live Markdown sidecar (same UX as `-f md`).
+    /// Vortex event log (canonical); no live Markdown sidecar during capture.
     #[value(name = "vortex", alias = "bin")]
     Vortex,
 }
@@ -64,9 +63,9 @@ impl CaptureFormat {
         matches!(self, Self::Vortex)
     }
 
-    /// Live markdown upsert inside [`CaptureEngine`] (both capture formats).
+    /// Live markdown upsert inside [`CaptureEngine`] (`-f md` only).
     pub fn stream_markdown_in_engine(self) -> bool {
-        matches!(self, Self::Markdown | Self::Vortex)
+        matches!(self, Self::Markdown)
     }
 
     /// Storage layer to replay when comparing live Markdown after a capture run.
@@ -93,8 +92,8 @@ mod tests {
     }
 
     #[test]
-    fn vortex_streams_live_markdown_and_reconciles_against_vortex() {
-        assert!(CaptureFormat::Vortex.stream_markdown_in_engine());
+    fn vortex_does_not_stream_live_markdown() {
+        assert!(!CaptureFormat::Vortex.stream_markdown_in_engine());
         assert!(!CaptureFormat::Vortex.writes_markdown());
         assert_eq!(
             CaptureFormat::Vortex.reconcile_replay_format(),

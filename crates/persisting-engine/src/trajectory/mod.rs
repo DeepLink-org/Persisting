@@ -10,14 +10,18 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 pub use persisting_proto::{
     TrajectoryAppendRequest, TrajectoryAppendResponse, TrajectoryExtractRequest,
-    TrajectoryExtractResponse, TrajectoryMaterializeRequest, TrajectoryMaterializeResponse,
-    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
-    TrajectoryStatsResponse, TrajectoryStorageFormat, TrajectoryTruncateRequest,
-    TrajectoryTruncateResponse,
+    TrajectoryExtractResponse, TrajectoryJudgeRequest, TrajectoryJudgeResponse,
+    TrajectoryJudgeStatsRequest, TrajectoryJudgeStatsResponse, TrajectoryMaterializeRequest,
+    TrajectoryMaterializeResponse, TrajectoryReplayRequest, TrajectoryReplayResponse,
+    TrajectoryStatsRequest, TrajectoryStatsResponse, TrajectoryStorageFormat,
+    TrajectoryTruncateRequest, TrajectoryTruncateResponse,
 };
 
 mod convert;
 mod expand;
+mod judge;
+mod judge_stats;
+pub mod layers;
 pub mod path;
 mod storage;
 pub mod store;
@@ -28,7 +32,9 @@ pub use convert::{
     compact_markdown_to_vortex, layer_stats, materialize_vortex_to_markdown, CompactOutcome,
     LayerStats, MaterializeOutcome,
 };
-pub use expand::{expand_story_locations, expand_story_locations_blocking};
+pub use expand::{
+    drop_lifecycle_run_partitions, expand_story_locations, expand_story_locations_blocking,
+};
 pub use path::{
     list_story_read_locations, list_traj_read_locations, merge_story_location, merge_traj_location,
     resolve_story_read_location, resolve_traj_read_location, try_infer_story_location,
@@ -251,18 +257,31 @@ pub async fn stats_async(request: TrajectoryStatsRequest) -> Result<TrajectorySt
             .await?;
             let backend = store_for_read(resolved);
             let outcome = backend.stats(&session).await?;
-            Ok(TrajectoryStatsResponse {
-                dataset: outcome.dataset,
-                storage: request.storage,
-                agent_id: request.agent_id,
-                session_id: request.session_id,
-                row_count: outcome.row_count,
-                manifest_version: outcome.manifest_version,
-                status: outcome.status,
-                note: outcome.note,
-            })
+            Ok(stats_response_with_judge(
+                TrajectoryStatsResponse {
+                    dataset: outcome.dataset,
+                    storage: request.storage,
+                    agent_id: request.agent_id,
+                    session_id: request.session_id,
+                    row_count: outcome.row_count,
+                    manifest_version: outcome.manifest_version,
+                    judge: None,
+                    status: outcome.status,
+                    note: outcome.note,
+                },
+                &session,
+            )
+            .await)
         }
     }
+}
+
+async fn stats_response_with_judge(
+    mut response: TrajectoryStatsResponse,
+    session: &StoryCoords,
+) -> TrajectoryStatsResponse {
+    response.judge = Some(judge_stats::session_judge_stats(session).await);
+    response
 }
 
 pub async fn truncate_async(
@@ -307,6 +326,16 @@ pub async fn truncate_async(
     })
 }
 
+pub async fn judge_async(request: TrajectoryJudgeRequest) -> Result<TrajectoryJudgeResponse> {
+    judge::judge_async(request).await
+}
+
+pub async fn judge_stats_async(
+    request: TrajectoryJudgeStatsRequest,
+) -> Result<TrajectoryJudgeStatsResponse> {
+    judge_stats::judge_stats_async(request).await
+}
+
 pub async fn extract_async(request: TrajectoryExtractRequest) -> Result<TrajectoryExtractResponse> {
     let root_session_id = request.root_session_id.as_deref();
     let session = session_from_request(
@@ -348,16 +377,21 @@ async fn stats_dual_layer(
             .unwrap_or_else(|| layers.event_log_path.clone()),
         _ => layers.event_log_path.clone(),
     };
-    Ok(TrajectoryStatsResponse {
-        storage: request.storage.clone(),
-        agent_id: request.agent_id.clone(),
-        session_id: request.session_id.clone(),
-        dataset,
-        row_count,
-        manifest_version,
-        status: status.to_string(),
-        note: storage::story_stats_note(&layers, primary),
-    })
+    Ok(stats_response_with_judge(
+        TrajectoryStatsResponse {
+            storage: request.storage.clone(),
+            agent_id: request.agent_id.clone(),
+            session_id: request.session_id.clone(),
+            dataset,
+            row_count,
+            manifest_version,
+            judge: None,
+            status: status.to_string(),
+            note: storage::story_stats_note(&layers, primary),
+        },
+        session,
+    )
+    .await)
 }
 
 #[cfg(test)]

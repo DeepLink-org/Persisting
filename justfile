@@ -1,13 +1,14 @@
 # Persisting — 仓库主任务入口
 # 安装：brew install just / cargo install just
 #
-# 日常：just dev          # fmt + clippy + 引擎单测 + 冒烟集成
-# 提交前：just gate       # fmt + clippy + 全 workspace Rust 测试
-# 全量：just ci           # gate + capture 回归 + Claude 轨迹测试
+# 测试选单：just test-suite          # 交互选择测试 / 回归套件
+#           just test-suite list     # 列出全部套件
+#           just test-suite gate     # 直接运行指定套件
 
 repo := justfile_directory()
 docs_dir := repo / "docs"
 gen_py := repo / "scripts" / "generate_benchmark_data.py"
+test_suite_sh := repo / "scripts" / "test_suite.sh"
 
 engine_filename := if os() == "macos" {
     "libpersisting_engine.dylib"
@@ -23,11 +24,35 @@ default:
     @just --list --unsorted
     @echo ""
     @echo "常用："
+    @echo "  just test-suite          # 测试 / 回归选单（推荐入口）"
+    @echo "  just test-suite list     # 列出全部套件"
     @echo "  just dev                 # 日常开发（fmt + clippy + check-quick）"
     @echo "  just gate                # 提交前（fmt + clippy + test-rust）"
     @echo "  just ci                  # CI 近似全量"
     @echo "  just capture-all         # 全部 capture 集成"
     @echo "  just docs-serve          # 本地文档"
+
+# ── 测试 / 回归统一入口 ───────────────────────────────────────────────────────
+
+# 交互选单或直接运行：just test-suite [dev|gate|traj-e2e|all-regression|…]
+# 环境变量：PERSISTING_BUILD_PROFILE=debug  SKIP_REBUILD=1
+test-suite name="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PERSISTING_BUILD_PROFILE="${PERSISTING_BUILD_PROFILE:-debug}"
+    export SKIP_REBUILD="${SKIP_REBUILD:-0}"
+    bash "{{ test_suite_sh }}" {{ if name != "" { name } else { "menu" } }}
+
+# 列出全部测试套件（非交互）
+test-list:
+    bash "{{ test_suite_sh }}" list
+
+# 别名
+test-menu:
+    just test-suite
+
+regression:
+    SKIP_REBUILD="${SKIP_REBUILD:-0}" just test-suite all-regression
 
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 
@@ -64,13 +89,13 @@ dev:
 ci:
     just gate
     just build
-    just capture-integration skip_rebuild=1
+    SKIP_BUILD=1 just capture-integration
     just test-capture-claude
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
 # 单 crate：engine | proto | core | capture | cli
-test crate:
+test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
@@ -337,62 +362,75 @@ check-quick profile="debug":
 
 # ── Capture 集成（scripts/integration/*.sh，build 由 _common.sh 处理）────────
 
-capture-integration profile="debug" cli_bin="" engine_override="" skip_rebuild="0":
+# traj 子命令：import → stats → judge --score → stats / judge-stats
+# 跳过 rebuild：SKIP_BUILD=1 或 SKIP_REBUILD=1
+traj-e2e profile="debug" cli_bin="" engine_override="":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
-    [[ "{{ skip_rebuild }}" == "1" ]] && export SKIP_BUILD=1
+    [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
+    [[ -n "{{ cli_bin }}" ]] && export PERSISTING_CLI="{{ cli_bin }}"
+    [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
+    echo "==> traj-e2e (profile={{ profile }})"
+    bash "{{ repo }}/scripts/integration/traj_e2e.sh"
+
+capture-integration profile="debug" cli_bin="" engine_override="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PERSISTING_BUILD_PROFILE="{{ profile }}"
+    [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
     [[ -n "{{ cli_bin }}" ]] && export PERSISTING_CLI="{{ cli_bin }}"
     [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
     echo "==> capture-integration (profile={{ profile }})"
     bash "{{ repo }}/scripts/integration/capture_integration.sh"
 
-capture-stress profile="debug" cli_bin="" engine_override="" skip_rebuild="0" requests="80" concurrency="8":
+capture-stress profile="debug" cli_bin="" engine_override="" requests="80" concurrency="8":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
     export REQUESTS="{{ requests }}"
     export CONCURRENCY="{{ concurrency }}"
-    [[ "{{ skip_rebuild }}" == "1" ]] && export SKIP_BUILD=1
+    [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
     [[ -n "{{ cli_bin }}" ]] && export PERSISTING_CLI="{{ cli_bin }}"
     [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
     echo "==> capture-stress requests={{ requests }} concurrency={{ concurrency }}"
     bash "{{ repo }}/scripts/integration/capture_stress.sh"
 
-capture-run-e2e profile="debug" cli_bin="" engine_override="" skip_rebuild="0" turns="3":
+capture-run-e2e profile="debug" cli_bin="" engine_override="" turns="3":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
     export TURNS="{{ turns }}"
-    [[ "{{ skip_rebuild }}" == "1" ]] && export SKIP_BUILD=1
+    [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
     [[ -n "{{ cli_bin }}" ]] && export PERSISTING_CLI="{{ cli_bin }}"
     [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
     echo "==> capture-run-e2e turns={{ turns }}"
     bash "{{ repo }}/scripts/integration/capture_run_e2e.sh"
 
-capture-walkthrough profile="debug" skip_rebuild="0":
+capture-walkthrough profile="debug":
     #!/usr/bin/env bash
     set -euo pipefail
     td="{{ repo }}/target/{{ profile }}"
-    [[ "{{ skip_rebuild }}" == "1" ]] && export SKIP_BUILD=1
+    [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
     export PERSISTING_CLI="$td/persisting"
     if [[ -f "$td/{{ engine_filename }}" ]]; then
       export PERSISTING_ENGINE_LIB="$td/{{ engine_filename }}"
     fi
-    if [[ "{{ skip_rebuild }}" != "1" ]]; then
+    if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
       just build profile="{{ profile }}"
     fi
     bash "{{ repo }}/examples/capture-walkthrough/run.sh"
 
 # 依次跑全部 capture 集成（不含 walkthrough demo）
-capture-all profile="debug" skip_rebuild="0":
-    just capture-integration profile="{{ profile }}" skip_rebuild="{{ skip_rebuild }}"
-    just capture-stress profile="{{ profile }}" skip_rebuild="{{ skip_rebuild }}"
-    just capture-run-e2e profile="{{ profile }}" skip_rebuild="{{ skip_rebuild }}"
+capture-all profile="debug":
+    just traj-e2e profile="{{ profile }}"
+    just capture-integration profile="{{ profile }}"
+    just capture-stress profile="{{ profile }}"
+    just capture-run-e2e profile="{{ profile }}"
 
 # capture 相关 Rust 测试
 capture-test:
-    just test capture
+    just test-crate capture
     just test-capture-fixtures
     just test-capture-claude
 

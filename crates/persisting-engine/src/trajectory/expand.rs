@@ -57,6 +57,48 @@ pub async fn expand_story_locations(locations: Vec<StoryCoords>) -> Result<Vec<S
     Ok(expanded)
 }
 
+/// After [`expand_story_locations`], drop run-id partitions that only carry lifecycle
+/// events when the same Vortex file also has other `session_id` partitions (Claude/header UUID).
+pub fn drop_lifecycle_run_partitions(locations: Vec<StoryCoords>) -> Vec<StoryCoords> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut groups: HashMap<(String, String, Option<String>), Vec<usize>> = HashMap::new();
+    for (i, loc) in locations.iter().enumerate() {
+        groups
+            .entry((
+                loc.storage.clone(),
+                loc.agent_id.clone(),
+                loc.root_session_id.clone(),
+            ))
+            .or_default()
+            .push(i);
+    }
+
+    let mut drop = HashSet::new();
+    for indices in groups.values() {
+        if indices.len() <= 1 {
+            continue;
+        }
+        for &i in indices {
+            let loc = &locations[i];
+            if loc
+                .root_session_id
+                .as_deref()
+                .is_some_and(|root| root == loc.session_id.as_str())
+            {
+                drop.insert(i);
+            }
+        }
+    }
+
+    locations
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !drop.contains(i))
+        .map(|(_, loc)| loc)
+        .collect()
+}
+
 pub fn expand_story_locations_blocking(locations: Vec<StoryCoords>) -> Result<Vec<StoryCoords>> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -206,5 +248,20 @@ mod tests {
         }
         assert_eq!(row_counts.get(run), Some(&1));
         assert_eq!(row_counts.get(header_session), Some(&6));
+    }
+
+    #[test]
+    fn drop_lifecycle_run_partition_when_header_exists() {
+        let storage = "/tmp/store".to_string();
+        let agent = "deepseek-proxy";
+        let run = "run-1";
+        let header = "uuid-header";
+        let locs = vec![
+            StoryCoords::new(&storage, agent, run, Some(run.into())),
+            StoryCoords::new(&storage, agent, header, Some(run.into())),
+        ];
+        let kept = drop_lifecycle_run_partitions(locs);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].session_id, header);
     }
 }

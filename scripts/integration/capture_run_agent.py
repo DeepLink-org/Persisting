@@ -26,11 +26,13 @@ def main() -> int:
     print(f"[capture-run-agent] session={session} base={base} turns={turns}", flush=True)
 
     manifest: list[dict] = []
+    messages: list[dict] = []
     for i in range(1, turns + 1):
         user_msg = f"turn-{i}"
+        messages.append({"role": "user", "content": user_msg})
         payload = {
             "model": "mock-model",
-            "messages": [{"role": "user", "content": user_msg}],
+            "messages": list(messages),
         }
         req = urllib.request.Request(
             f"{base}/chat/completions",
@@ -59,6 +61,7 @@ def main() -> int:
                 "session_id": session,
             }
         )
+        messages.append({"role": "assistant", "content": assistant})
         print(f"[capture-run-agent] turn {i} ok: {user_msg} -> {assistant}", flush=True)
 
     with open(manifest_path, "w", encoding="utf-8") as f:

@@ -65,6 +65,12 @@ fn dispatch_inner(body: RequestBody) -> Result<ResponseBody> {
         RequestBody::TrajectoryExtract(r) => Ok(ResponseBody::TrajectoryExtract(block_on(
             crate::trajectory::extract_async(r),
         )?)),
+        RequestBody::TrajectoryJudge(r) => Ok(ResponseBody::TrajectoryJudge(block_on(
+            crate::trajectory::judge_async(r),
+        )?)),
+        RequestBody::TrajectoryJudgeStats(r) => Ok(ResponseBody::TrajectoryJudgeStats(block_on(
+            crate::trajectory::judge_stats_async(r),
+        )?)),
     }
 }
 

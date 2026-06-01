@@ -2,6 +2,9 @@
 //! **`job_take_result`**（异步 job + 进度；见 `persisting_proto::invoke_abi`）。
 
 mod capture;
+mod judge_manual;
+mod stats_output;
+mod terminal_markdown;
 mod trajectory_detail;
 mod trajectory_format;
 mod trajectory_stdout_toml;
@@ -16,27 +19,34 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use libloading::{Library, Symbol};
 use persisting_proto::{
-    RequestBody, ResponseBody, RpcRequest, RpcResponse, SearchAddBatchRequest, SearchAddRequest,
-    SearchImportLanceRequest, SearchIndexDeleteRequest, SearchIndexListRequest,
-    SearchIndexRebuildRequest, SearchIndexReorderRequest, SearchIndexRequest, SearchQueryRequest,
-    TrajectoryAppendRequest, TrajectoryExtractRequest, TrajectoryMaterializeRequest,
-    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
-    TrajectoryStatsResponse, TrajectoryStorageFormat, TrajectoryTruncateRequest, PROTOCOL_VERSION,
-    RON_ABI_VERSION,
+    JudgeMethod, JudgeSampleMode, JudgeScope, RequestBody, ResponseBody, RpcRequest, RpcResponse,
+    SearchAddBatchRequest, SearchAddRequest, SearchImportLanceRequest, SearchIndexDeleteRequest,
+    SearchIndexListRequest, SearchIndexRebuildRequest, SearchIndexReorderRequest,
+    SearchIndexRequest, SearchQueryRequest, TrajectoryAppendRequest, TrajectoryExtractRequest,
+    TrajectoryJudgeRequest, TrajectoryJudgeResponse, TrajectoryJudgeStatsRequest,
+    TrajectoryJudgeStatsResponse, TrajectoryMaterializeRequest, TrajectoryReplayRequest,
+    TrajectoryReplayResponse, TrajectoryStatsRequest, TrajectoryStatsResponse,
+    TrajectoryStorageFormat, TrajectoryTruncateRequest, PROTOCOL_VERSION, RON_ABI_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
+use persisting_capture::engine::TurnKind;
 use persisting_engine::trajectory::{
-    expand_story_locations_blocking, list_traj_read_locations, merge_traj_location,
-    resolve_traj_read_location, TrajLocation,
+    drop_lifecycle_run_partitions, expand_story_locations_blocking, list_traj_read_locations,
+    merge_traj_location, resolve_traj_read_location, TrajLocation,
 };
-use trajectory_detail::{build_detail_node, print_trajectory_stats_detail, SpawnLinkInfo};
+use stats_output::{
+    print_stats_section_divider, print_trajectory_stats_detail, print_trajectory_stats_list,
+    print_trajectory_stats_summary, supports_detail_tree, ResolvedStatsOutputBackend,
+    StatsOutputBackend,
+};
+use trajectory_detail::{build_detail_node, SpawnLinkInfo};
 use trajectory_format::{TrajectoryAddFormat, TrajectoryFormatManager, TrajectoryStorageCli};
 use trajectory_stdout_toml::{
     print_trajectory_append_as_toml, print_trajectory_extract_as_toml,
+    print_trajectory_judge_as_toml, print_trajectory_judge_stats_as_toml,
     print_trajectory_materialize_as_toml, print_trajectory_replay_as_toml,
-    print_trajectory_stats_as_toml, print_trajectory_stats_list_as_toml,
-    print_trajectory_truncate_as_toml,
+    print_trajectory_stats_as_toml, print_trajectory_truncate_as_toml,
 };
 
 const TRAJ_LONG_ABOUT: &str = "\
@@ -48,7 +58,7 @@ proxy start  background daemon\n  \
 import       post-hoc IDE / gateway JSONL\n  \
 replay-dead-letter  retry failed capture events (not `traj replay`)\n\n\
 Egress (read/write store):\n  \
-stats · replay · materialize · add · truncate · extract\n\n\
+stats · replay · materialize · add · truncate · extract · judge · judge-stats\n\n\
 Omit <STORAGE> on stats/replay/materialize/truncate when \
 PERSISTING_CAPTURE_STORAGE or last `traj proxy start` is set.";
 
@@ -200,6 +210,8 @@ fn print_engine_ron_response(raw: &str) -> Result<()> {
         ResponseBody::TrajectoryMaterialize(tr) => print_trajectory_materialize_as_toml(tr),
         ResponseBody::TrajectoryTruncate(tr) => print_trajectory_truncate_as_toml(tr),
         ResponseBody::TrajectoryExtract(tr) => print_trajectory_extract_as_toml(tr),
+        ResponseBody::TrajectoryJudge(tr) => print_trajectory_judge_as_toml(tr),
+        ResponseBody::TrajectoryJudgeStats(tr) => print_trajectory_judge_stats_as_toml(tr),
         _ => {
             println!(
                 "{}",
@@ -616,6 +628,11 @@ enum TrajectoryCommand {
     Extract(TrajectoryExtractArgs),
     /// Vortex → TLV Markdown（有损物化，维护用）。
     Materialize(TrajectoryMaterializeArgs),
+    /// LLM-as-judge：读 canonical Vortex，写 `{run}/layers/judge_*.vortex` sidecar。
+    Judge(TrajectoryJudgeArgs),
+    /// 汇总 judge sidecar 分数（按 session + rubric）。
+    #[command(name = "judge-stats")]
+    JudgeStats(TrajectoryJudgeStatsArgs),
 }
 
 /// `traj proxy` (foreground) or `traj proxy start|stop|list|status`.
@@ -775,9 +792,12 @@ struct TrajectoryStatsArgs {
     /// 统计层覆盖（`auto`：两层并存时同时报告 Vortex 行数与 Markdown 块数）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
-    /// 逐轮一行摘要：用户/模型字符数、TTFT、TPOT（stdout 纯文本，非 TOML）。
+    /// 逐轮一行摘要：用户/模型字符数、TTFT、TPOT。
     #[arg(long)]
     detail: bool,
+    /// 输出后端：`plain`（稳妥纯文本）· `md`（易读 markdown）· `toml`/`json`（程序交互）· `auto`（TTY→md，管道→toml）。
+    #[arg(long, value_enum, default_value_t = StatsOutputBackend::Auto)]
+    output: StatsOutputBackend,
 }
 
 #[derive(Debug, Args)]
@@ -791,6 +811,122 @@ struct TrajectoryMaterializeArgs {
     session_id: Option<String>,
     #[arg(long, value_name = "SEG")]
     root_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum JudgeScopeCli {
+    #[default]
+    Turn,
+    Story,
+}
+
+impl From<JudgeScopeCli> for JudgeScope {
+    fn from(v: JudgeScopeCli) -> Self {
+        match v {
+            JudgeScopeCli::Turn => JudgeScope::Turn,
+            JudgeScopeCli::Story => JudgeScope::Story,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum JudgeMethodCli {
+    #[default]
+    Llm,
+    Manual,
+}
+
+impl From<JudgeMethodCli> for JudgeMethod {
+    fn from(v: JudgeMethodCli) -> Self {
+        match v {
+            JudgeMethodCli::Llm => JudgeMethod::Llm,
+            JudgeMethodCli::Manual => JudgeMethod::Manual,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum JudgeSampleModeCli {
+    #[default]
+    Sequential,
+    Random,
+}
+
+impl From<JudgeSampleModeCli> for JudgeSampleMode {
+    fn from(v: JudgeSampleModeCli) -> Self {
+        match v {
+            JudgeSampleModeCli::Sequential => JudgeSampleMode::Sequential,
+            JudgeSampleModeCli::Random => JudgeSampleMode::Random,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+struct TrajectoryJudgeStatsArgs {
+    /// Storage root or session directory; omit to use `PERSISTING_CAPTURE_STORAGE` / last proxy start.
+    #[arg(value_name = "STORAGE", env = "PERSISTING_CAPTURE_STORAGE")]
+    storage: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    agent_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    session_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    root_session_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct TrajectoryJudgeArgs {
+    /// Storage root or session directory; omit to use `PERSISTING_CAPTURE_STORAGE` / last proxy start.
+    #[arg(value_name = "STORAGE", env = "PERSISTING_CAPTURE_STORAGE")]
+    storage: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    agent_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    session_id: Option<String>,
+    #[arg(long, value_name = "SEG")]
+    root_session_id: Option<String>,
+    /// Primary rubric when `--rubrics` is empty.
+    #[arg(long, default_value = "default")]
+    rubric_id: String,
+    /// Comma-separated score dimensions (e.g. `helpful,correct,safe`).
+    #[arg(long, value_delimiter = ',')]
+    rubrics: Vec<String>,
+    /// `turn`: score each dialogue turn; `story`: score the full trajectory once.
+    #[arg(long, value_enum, default_value_t = JudgeScopeCli::Turn)]
+    scope: JudgeScopeCli,
+    /// `llm`: model judge; `manual`: render markdown / turns and prompt for scores.
+    #[arg(long, value_enum, default_value_t = JudgeMethodCli::Llm)]
+    method: JudgeMethodCli,
+    /// OpenAI-compatible chat model (`PERSISTING_JUDGE_MODEL` / `gpt-4o-mini` fallback).
+    #[arg(long)]
+    model: Option<String>,
+    /// Skip LLM; write deterministic pass rows.
+    #[arg(long)]
+    dry_run: bool,
+    /// Re-judge units that already have a row for this rubric.
+    #[arg(long)]
+    force: bool,
+    /// Manual batch: pick sessions sequentially or at random (default: random when scanning storage).
+    #[arg(long, value_enum)]
+    sample: Option<JudgeSampleModeCli>,
+    /// Manual batch: max sessions to score (default 1). Ignored with `--all`.
+    #[arg(long, default_value_t = 1, conflicts_with = "all")]
+    sample_limit: usize,
+    /// Manual batch: score every session under storage (no `--session-id` / `--agent-id` required).
+    #[arg(long)]
+    all: bool,
+    /// LLM: include up to N prior manual scores as few-shot examples per rubric.
+    #[arg(long, default_value_t = 0)]
+    few_shot: usize,
+    /// Manual non-interactive: apply this score (0–100) to every rubric / turn (implies `--method manual`).
+    #[arg(long, value_name = "N", env = "PERSISTING_JUDGE_SCORE")]
+    score: Option<i64>,
+    /// Manual non-interactive: verdict override (`pass` / `partial` / `fail`); default from score.
+    #[arg(long, value_name = "VERDICT")]
+    verdict: Option<String>,
+    /// Manual non-interactive: rationale text (optional).
+    #[arg(long, value_name = "TEXT")]
+    rationale: Option<String>,
 }
 
 static TRAJ_AUTO_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -894,13 +1030,30 @@ fn engine_lib_names() -> [&'static str; 3] {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(normalize_cli_args(std::env::args().collect()));
     let mut lazy = LazyEngine::new(&cli);
     match &cli.command {
         Command::Search(args) => run_search(&mut lazy, args)?,
         Command::Trajectory(args) | Command::Traj(args) => run_trajectory(&mut lazy, args)?,
     }
     Ok(())
+}
+
+/// `traj judge stats …` → `traj judge-stats …`（clap 无法在同一层同时挂 positional 与 `stats` 子命令）。
+fn normalize_cli_args(mut args: Vec<String>) -> Vec<String> {
+    let mut i = 0;
+    while i + 2 < args.len() {
+        if (args[i] == "traj" || args[i] == "trajectory")
+            && args[i + 1] == "judge"
+            && args[i + 2] == "stats"
+        {
+            args.remove(i + 2);
+            args[i + 1] = "judge-stats".into();
+            break;
+        }
+        i += 1;
+    }
+    args
 }
 
 fn run_traj_import(lazy: &mut LazyEngine<'_>, args: &CaptureImportArgs) -> Result<()> {
@@ -1670,6 +1823,32 @@ fn invoke_trajectory_stats(
     }
 }
 
+fn invoke_trajectory_judge(
+    lazy: &mut LazyEngine<'_>,
+    req: TrajectoryJudgeRequest,
+) -> Result<TrajectoryJudgeResponse> {
+    let payload =
+        rpc_request_pretty(RequestBody::TrajectoryJudge(req)).context("encode TrajectoryJudge")?;
+    let raw = lazy.invoke_engine_ron_silent(&payload)?;
+    match parse_engine_ron_response(&raw)?.body {
+        ResponseBody::TrajectoryJudge(r) => Ok(r),
+        other => anyhow::bail!("unexpected engine response: {other:?}"),
+    }
+}
+
+fn invoke_trajectory_judge_stats(
+    lazy: &mut LazyEngine<'_>,
+    req: TrajectoryJudgeStatsRequest,
+) -> Result<TrajectoryJudgeStatsResponse> {
+    let payload = rpc_request_pretty(RequestBody::TrajectoryJudgeStats(req))
+        .context("encode TrajectoryJudgeStats")?;
+    let raw = lazy.invoke_engine_ron_silent(&payload)?;
+    match parse_engine_ron_response(&raw)?.body {
+        ResponseBody::TrajectoryJudgeStats(r) => Ok(r),
+        other => anyhow::bail!("unexpected engine response: {other:?}"),
+    }
+}
+
 fn invoke_trajectory_replay(
     lazy: &mut LazyEngine<'_>,
     req: TrajectoryReplayRequest,
@@ -1687,6 +1866,7 @@ fn run_trajectory_stats_detail(
     lazy: &mut LazyEngine<'_>,
     loc: &TrajLocation,
     storage_format: TrajectoryStorageCli,
+    backend: ResolvedStatsOutputBackend,
 ) -> Result<()> {
     let stats = invoke_trajectory_stats(
         lazy,
@@ -1699,8 +1879,7 @@ fn run_trajectory_stats_detail(
         },
     )?;
     if stats.status != "ok" {
-        print_trajectory_stats_as_toml(&stats)?;
-        return Ok(());
+        return print_trajectory_stats_summary(&stats, backend);
     }
     let replay_format = storage_format.into();
     let parent_root = loc
@@ -1745,7 +1924,7 @@ fn run_trajectory_stats_detail(
         &replay.records,
         &mut load_subagent,
     )?;
-    print_trajectory_stats_detail(&stats, &tree, Some(&loc.agent_id))
+    print_trajectory_stats_detail(&stats, &tree, Some(&loc.agent_id), backend)
 }
 
 fn stats_detail_section_label(loc: &TrajLocation) -> String {
@@ -1872,6 +2051,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
         }
         TrajectoryCommand::Stats(args) => {
             let path_arg = resolve_traj_storage_arg(args.storage.clone())?;
+            let backend = args.output.resolve();
             let mut locations = list_traj_read_locations(
                 path_arg.clone(),
                 args.agent_id.clone(),
@@ -1880,9 +2060,15 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             )?;
             if args.session_id.is_none() {
                 locations = expand_story_locations_blocking(locations)?;
+                locations = drop_lifecycle_run_partitions(locations);
             }
             if locations.is_empty() {
                 anyhow::bail!("trajectory stats: no sessions found under {path_arg}");
+            }
+            if args.detail && !supports_detail_tree(backend) {
+                anyhow::bail!(
+                    "--detail requires --output plain or md (toml/json are summary-only)"
+                );
             }
             if args.detail {
                 for (i, loc) in locations.iter().enumerate() {
@@ -1890,22 +2076,23 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                         println!();
                     }
                     if locations.len() > 1 {
-                        println!("--- {} ---", stats_detail_section_label(loc));
+                        print_stats_section_divider(&stats_detail_section_label(loc), backend);
                     }
-                    run_trajectory_stats_detail(lazy, loc, args.storage_format)?;
+                    run_trajectory_stats_detail(lazy, loc, args.storage_format, backend)?;
                 }
             } else if locations.len() == 1 {
                 let loc = &locations[0];
-                let stats_req = TrajectoryStatsRequest {
-                    storage: loc.storage.clone(),
-                    agent_id: loc.agent_id.clone(),
-                    session_id: loc.session_id.clone(),
-                    storage_format: args.storage_format.into(),
-                    root_session_id: loc.root_session_id.clone(),
-                };
-                let payload = rpc_request_pretty(RequestBody::TrajectoryStats(stats_req))
-                    .context("encode TrajectoryStats RpcRequest RON")?;
-                lazy.invoke_engine_ron(&payload)?;
+                let stats = invoke_trajectory_stats(
+                    lazy,
+                    TrajectoryStatsRequest {
+                        storage: loc.storage.clone(),
+                        agent_id: loc.agent_id.clone(),
+                        session_id: loc.session_id.clone(),
+                        storage_format: args.storage_format.into(),
+                        root_session_id: loc.root_session_id.clone(),
+                    },
+                )?;
+                print_trajectory_stats_summary(&stats, backend)?;
             } else {
                 let storage_format = args.storage_format.into();
                 let mut rows = Vec::with_capacity(locations.len());
@@ -1921,7 +2108,22 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                         },
                     )?);
                 }
-                print_trajectory_stats_list_as_toml(&locations[0].storage, &rows)?;
+                let judge_agg = invoke_trajectory_judge_stats(
+                    lazy,
+                    TrajectoryJudgeStatsRequest {
+                        storage: path_arg.clone(),
+                        agent_id: args.agent_id.clone(),
+                        session_id: args.session_id.clone(),
+                        root_session_id: args.root_session_id.clone(),
+                    },
+                )
+                .ok();
+                print_trajectory_stats_list(
+                    &locations[0].storage,
+                    &rows,
+                    judge_agg.as_ref(),
+                    backend,
+                )?;
             }
         }
         TrajectoryCommand::Materialize(args) => {
@@ -1939,8 +2141,282 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             .context("encode TrajectoryMaterialize RpcRequest RON")?;
             lazy.invoke_engine_ron(&payload)?;
         }
+        TrajectoryCommand::Judge(args) => run_traj_judge(lazy, args)?,
+        TrajectoryCommand::JudgeStats(args) => run_traj_judge_stats(lazy, args)?,
     }
     Ok(())
+}
+
+fn run_traj_judge_stats(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeStatsArgs) -> Result<()> {
+    let storage = resolve_traj_storage_arg(args.storage.clone())?;
+    let req = TrajectoryJudgeStatsRequest {
+        storage,
+        agent_id: args.agent_id.clone(),
+        session_id: args.session_id.clone(),
+        root_session_id: args.root_session_id.clone(),
+    };
+    let payload = rpc_request_pretty(RequestBody::TrajectoryJudgeStats(req))
+        .context("encode TrajectoryJudgeStats RpcRequest RON")?;
+    lazy.invoke_engine_ron(&payload)?;
+    Ok(())
+}
+
+fn resolve_judge_rubrics(args: &TrajectoryJudgeArgs) -> Vec<String> {
+    if !args.rubrics.is_empty() {
+        return args.rubrics.clone();
+    }
+    vec![args.rubric_id.clone()]
+}
+
+fn resolve_judge_locations(
+    args: &TrajectoryJudgeArgs,
+    method: JudgeMethod,
+) -> Result<Vec<TrajLocation>> {
+    if args.session_id.is_some() {
+        return Ok(vec![resolve_traj_ids_for_read(
+            "trajectory judge",
+            args.storage.clone(),
+            args.agent_id.clone(),
+            args.session_id.clone(),
+            args.root_session_id.clone(),
+        )?]);
+    }
+
+    if method != JudgeMethod::Manual {
+        anyhow::bail!(
+            "LLM judge requires --session-id; use --method manual to score storage without session ids"
+        );
+    }
+
+    let path = resolve_traj_storage_arg(args.storage.clone())?;
+    let mut locs = list_traj_read_locations(
+        path,
+        args.agent_id.clone(),
+        None,
+        args.root_session_id.clone(),
+    )?;
+    if locs.is_empty() {
+        anyhow::bail!("no trajectory sessions found for manual judge");
+    }
+    locs = expand_story_locations_blocking(locs)?;
+    locs = drop_lifecycle_run_partitions(locs);
+    if locs.is_empty() {
+        anyhow::bail!("no scorable sessions after expanding Vortex partitions");
+    }
+
+    if args.all {
+        let mode = args
+            .sample
+            .map(JudgeSampleMode::from)
+            .unwrap_or(JudgeSampleMode::Sequential);
+        return Ok(judge_manual::sample_locations(locs, mode, 0));
+    }
+
+    let mode = args
+        .sample
+        .map(JudgeSampleMode::from)
+        .unwrap_or(JudgeSampleMode::Random);
+    let limit = args.sample_limit.max(1);
+    Ok(judge_manual::sample_locations(locs, mode, limit))
+}
+
+fn run_traj_judge(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeArgs) -> Result<()> {
+    let rubric_ids = resolve_judge_rubrics(&args);
+    let scope: JudgeScope = args.scope.into();
+    let method: JudgeMethod = if args.score.is_some() {
+        JudgeMethod::Manual
+    } else {
+        args.method.into()
+    };
+    if args.score.is_some() && args.dry_run {
+        anyhow::bail!("--score cannot be combined with --dry-run");
+    }
+
+    let locations = resolve_judge_locations(args, method)?;
+
+    if locations.is_empty() {
+        anyhow::bail!("no sessions matched for judge");
+    }
+
+    let total = locations.len();
+    let mode_label = if args.score.is_some() {
+        "fixed-score"
+    } else if method == JudgeMethod::Manual {
+        "manual"
+    } else {
+        "LLM"
+    };
+    eprintln!(
+        "{mode_label} judge: {total} session(s) to score ({}{})",
+        if args.all {
+            "all in storage"
+        } else {
+            "sampled"
+        },
+        if args.agent_id.is_some() {
+            format!(", agent={}", args.agent_id.as_deref().unwrap())
+        } else {
+            String::new()
+        }
+    );
+    if let Some(score) = args.score {
+        eprintln!("  fixed score={score} scope={scope:?} rubrics={}", rubric_ids.join(","));
+    }
+
+    let mut ok = 0usize;
+    let mut skipped = 0usize;
+    for (idx, loc) in locations.iter().enumerate() {
+        eprintln!(
+            "\n>>> [{}/{}] judge {} / {} ({:?}/{:?})",
+            idx + 1,
+            total,
+            loc.agent_id,
+            loc.session_id,
+            method,
+            scope
+        );
+
+        match run_traj_judge_one(lazy, loc, args, &rubric_ids, scope, method, total == 1) {
+            Ok(out) if out.judged_calls > 0 => ok += 1,
+            Ok(out) => {
+                eprintln!(
+                    "  skip {} / {}: already judged ({} unit(s); use --force to re-score)",
+                    loc.agent_id, loc.session_id, out.skipped_calls
+                );
+                skipped += 1;
+            }
+            Err(e) => {
+                eprintln!("  skip {} / {}: {e:#}", loc.agent_id, loc.session_id);
+                skipped += 1;
+                if total == 1 && args.session_id.is_some() {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    if ok == 0 {
+        anyhow::bail!(
+            "no sessions scored ({skipped} skipped); try --scope story or check capture has dialogue turns"
+        );
+    }
+    if total > 1 || skipped > 0 {
+        eprintln!("\nDone: {ok} scored, {skipped} skipped (of {total} sessions).");
+    }
+    Ok(())
+}
+
+fn dialogue_turn_count(story: &persisting_capture::engine::Story) -> usize {
+    story
+        .turns
+        .iter()
+        .filter(|t| t.kind == TurnKind::Dialogue)
+        .filter(|t| {
+            t.user.as_ref().is_some_and(|u| u.call_id.is_some())
+                || t.assistant.as_ref().is_some_and(|a| a.call_id.is_some())
+        })
+        .count()
+}
+
+fn manual_judge_incomplete(
+    lazy: &mut LazyEngine<'_>,
+    loc: &TrajLocation,
+    scope: JudgeScope,
+    rubrics: &[String],
+    story: &persisting_capture::engine::Story,
+) -> Result<bool> {
+    let js = invoke_trajectory_judge_stats(
+        lazy,
+        TrajectoryJudgeStatsRequest {
+            storage: loc.storage.clone(),
+            agent_id: Some(loc.agent_id.clone()),
+            session_id: Some(loc.session_id.clone()),
+            root_session_id: loc.root_session_id.clone(),
+        },
+    )?;
+    let session = js
+        .sessions
+        .iter()
+        .find(|s| s.session_id == loc.session_id)
+        .or_else(|| js.sessions.first());
+    let Some(session) = session else {
+        return Ok(true);
+    };
+    Ok(match scope {
+        JudgeScope::Story => session.story_judgments < rubrics.len(),
+        JudgeScope::Turn => {
+            let turns = dialogue_turn_count(story);
+            session.turn_judgments < turns.saturating_mul(rubrics.len())
+        }
+    })
+}
+
+fn run_traj_judge_one(
+    lazy: &mut LazyEngine<'_>,
+    loc: &TrajLocation,
+    args: &TrajectoryJudgeArgs,
+    rubric_ids: &[String],
+    scope: JudgeScope,
+    method: JudgeMethod,
+    print_response: bool,
+) -> Result<TrajectoryJudgeResponse> {
+    let manual_scores = if method == JudgeMethod::Manual {
+        let replay = invoke_trajectory_replay(
+            lazy,
+            TrajectoryReplayRequest {
+                storage: loc.storage.clone(),
+                agent_id: loc.agent_id.clone(),
+                session_id: loc.session_id.clone(),
+                offset: 0,
+                limit: None,
+                storage_format: TrajectoryStorageFormat::Vortex,
+                root_session_id: loc.root_session_id.clone(),
+            },
+        )?;
+        let root = loc
+            .root_session_id
+            .as_deref()
+            .unwrap_or(loc.session_id.as_str());
+        let story = judge_manual::story_from_replay_json(&replay.records, &loc.session_id, root)?;
+        if !args.force && !manual_judge_incomplete(lazy, loc, scope, rubric_ids, &story)? {
+            eprintln!("  already judged, skipping prompts (use --force to re-score)");
+            Vec::new()
+        } else if let Some(score) = args.score {
+            judge_manual::fixed_manual_scores(
+                &story,
+                scope,
+                rubric_ids,
+                score,
+                args.verdict.as_deref(),
+                args.rationale.as_deref(),
+            )?
+        } else {
+            judge_manual::collect_manual_scores(&story, scope, rubric_ids)?
+        }
+    } else {
+        Vec::new()
+    };
+
+    let req = TrajectoryJudgeRequest {
+        storage: loc.storage.clone(),
+        agent_id: loc.agent_id.clone(),
+        session_id: loc.session_id.clone(),
+        root_session_id: loc.root_session_id.clone(),
+        rubric_id: args.rubric_id.clone(),
+        rubric_ids: rubric_ids.to_vec(),
+        scope,
+        method,
+        model: args.model.clone(),
+        dry_run: args.dry_run,
+        force: args.force,
+        manual_scores,
+        few_shot_limit: args.few_shot,
+    };
+    let out = invoke_trajectory_judge(lazy, req)?;
+    if print_response {
+        print_trajectory_judge_as_toml(&out)?;
+    }
+    Ok(out)
 }
 
 fn read_input(path: &str) -> Result<String> {

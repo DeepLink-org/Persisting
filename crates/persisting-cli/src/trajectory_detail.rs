@@ -682,7 +682,24 @@ fn collect_subagent_trajectories(node: &DetailNode, seen: &mut HashSet<String>) 
     }
 }
 
-pub fn print_trajectory_stats_detail(
+pub fn aggregate_summary_for_display(node: &DetailNode) -> SessionDetailSummary {
+    aggregate_summary(node)
+}
+
+pub fn count_unique_subagents_for_display(node: &DetailNode) -> usize {
+    count_unique_subagents(node)
+}
+
+pub fn fmt_ms_display(ms: Option<u64>) -> String {
+    fmt_ms(ms)
+}
+
+pub fn fmt_tpot_display(ms: Option<u64>) -> String {
+    fmt_tpot(ms)
+}
+
+/// Plain-text turn tree (`--output plain`).
+pub fn print_trajectory_stats_detail_plain(
     stats: &TrajectoryStatsResponse,
     root: &DetailNode,
     agent_id: Option<&str>,

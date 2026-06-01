@@ -17,7 +17,7 @@ pub use egress::{
 pub use runtime::CaptureEngine;
 pub use story::{
     Call, CallContext, CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent, Story,
-    StoryContext,
+    StoryContext, TurnKind,
 };
 
 #[cfg(test)]
