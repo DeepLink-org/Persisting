@@ -1,0 +1,2241 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Persistent Storage for Parameters, KV Cache, and Trajectories">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/DeepLink-org/Persisting/zh/design/lmcache_kvcache_reference/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="/DeepLink-org/Persisting/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="zh">
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>LMCache 分析：Persisting KV Cache 实现参考 - Persisting 文档</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/home.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#lmcache-persisting-kv-cache" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../../" title="Persisting 文档" class="md-header__button md-logo" aria-label="Persisting 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Persisting 文档
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              LMCache 分析：Persisting KV Cache 实现参考
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="/DeepLink-org/Persisting/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="分享" aria-label="分享" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DeepLink-org/Persisting" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="标签" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../" class="md-tabs__link">
+        
+  
+  
+    
+  
+  首页
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../installation/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  安装指南
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../quickstart/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  入门指南
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../guide/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  用户指南
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  设计文档
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../api_reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API 参考
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../" title="Persisting 文档" class="md-nav__button md-logo" aria-label="Persisting 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Persisting 文档
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DeepLink-org/Persisting" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    入门指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guide/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    用户指南
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    用户指南
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/capture_quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capture 快速上手
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    队列后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/lance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lance 后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/persisting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    增强后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/custom/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    自定义后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    设计文档
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    设计文档
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed_tiered_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    分布式分层存储
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trajectory_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    轨迹存储模型
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trajectory_tlv_format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    轨迹 Markdown 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli_architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI 整体架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli_capture_command/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Traj Capture 子命令
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../capture_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capture 架构设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli_trajectory_command/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Traj 命令
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli_search_command/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Search 命令
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../similar_systems_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    类似系统参考
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API 参考
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-lmcache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. LMCache 核心定位
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 关键抽象概览
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 关键抽象概览">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-cacheenginekey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 键：CacheEngineKey
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-memoryobj-memoryformat" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 值：MemoryObj 与 MemoryFormat
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-tokendatabase-token-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 TokenDatabase：从 Token 到 Key
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-storagebackendinterface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 存储后端接口（StorageBackendInterface）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 存储后端接口（StorageBackendInterface）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 读写与存在性
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 生命周期与策略
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-allocatorbackendinterface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 AllocatorBackendInterface（扩展）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-storagemanager" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. StorageManager：多后端路由与调度
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 具体后端实现要点
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. 具体后端实现要点">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-localcpubackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 LocalCPUBackend（内存）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-localdiskbackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 LocalDiskBackend（本地磁盘）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-rustrawblockbackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 RustRawBlockBackend（块设备 / 高性能）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-remotebackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 RemoteBackend（远端服务）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-p2p-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 P2P Backend
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-config-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 配置与分层（Config / Tiers）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 序列化与压缩
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-persisting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. 对 Persisting 的实现建议（简要）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-persisting-lmcache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. 建议：Persisting 先作为 LMCache 后端构建能力
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. 建议：Persisting 先作为 LMCache 后端构建能力">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-lmcache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 为什么先做 LMCache 后端
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-lmcache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 LMCache 插件接入方式
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#93-persisting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 Persisting 侧需实现的最小集合
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#94" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.4 实现顺序建议
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-lance-kv-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Lance 队列后端与 KV Cache 存储的互动
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="10. Lance 队列后端与 KV Cache 存储的互动">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#101" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10.1 语义对比
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#102" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10.2 可以怎样「互动」
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#103" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10.3 建议实现方式
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-lmcache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. LMCache 当前支持的后端一览
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="11. LMCache 当前支持的后端一览">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#111" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.1 内置存储后端（按配置创建）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#112-url-connectorremotebackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.2 远端 URL 与 Connector（RemoteBackend 使用）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#113-storage-plugin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.3 可插拔插件（Storage Plugin）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#114" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.4 包装层
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-lmcache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. 参考文件清单（LMCache 仓库）
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="lmcache-persisting-kv-cache">LMCache 分析：Persisting KV Cache 实现参考<a class="headerlink" href="#lmcache-persisting-kv-cache" title="Permanent link">&para;</a></h1>
+<p>本文档分析 <a href="https://github.com/LMCache/LMCache">LMCache</a> 的架构与接口，作为 Persisting 实现 KV Cache 存储的参考。LMCache 面向 LLM 推理的 KV Cache 复用（降低 TTFT、提升吞吐），与 vLLM/SGLang 等集成，支持 CPU/磁盘/NIXL/P2P 等多级存储。</p>
+<hr />
+<h2 id="1-lmcache">1. LMCache 核心定位<a class="headerlink" href="#1-lmcache" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>目标</strong>：在数据中心内复用任意可复用文本的 KV Cache（不限于前缀），减少 GPU 计算与首 token 延迟。</li>
+<li><strong>集成</strong>：vLLM、SGLang、Production Stack 等；存储侧有 Redis、Weka、PliOps、GDS、NIXL 等。</li>
+<li><strong>能力</strong>：CPU offload、P2P 共享、Disaggregated prefill、多级存储（GPU → CPU → Disk → 远端）。</li>
+</ul>
+<p>与 Persisting 的契合点：Persisting 的 Roadmap 包含「Tensor 级存储、基于前缀的 KV Cache 查找、多级缓存」，可借鉴 LMCache 的 Key 设计、存储后端抽象、内存对象与序列化。</p>
+<hr />
+<h2 id="2">2. 关键抽象概览<a class="headerlink" href="#2" title="Permanent link">&para;</a></h2>
+<h3 id="21-cacheenginekey">2.1 键：CacheEngineKey<a class="headerlink" href="#21-cacheenginekey" title="Permanent link">&para;</a></h3>
+<p><strong>位置</strong>：<code>lmcache/utils.py</code>（<code>CacheEngineKey</code> dataclass）</p>
+<p>KV 条目的唯一标识，用于「按内容（token 序列）可复现」的缓存查找：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_name</code></td>
+<td>模型名，隔离不同模型 cache</td>
+</tr>
+<tr>
+<td><code>world_size</code></td>
+<td>分布式时 TP 规模（可置 1 做 world-size 无关）</td>
+</tr>
+<tr>
+<td><code>worker_id</code></td>
+<td>当前 worker id</td>
+</tr>
+<tr>
+<td><code>chunk_hash</code></td>
+<td><strong>内容哈希</strong>：由 token 序列（按 chunk）经 <code>TokenDatabase</code> 计算得到</td>
+</tr>
+<tr>
+<td><code>dtype</code></td>
+<td>KV 张量 dtype（如 float16）</td>
+</tr>
+<tr>
+<td><code>request_configs</code></td>
+<td>可选请求级配置（含 <code>lmcache.tag.*</code> 等）</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>序列化</strong>：<code>to_string()</code> / <code>from_string()</code>，格式为 <code>model_name@world_size@worker_id@chunk_hash(hex)@dtype_str[@tag%value...]</code>，便于网络/磁盘索引。</li>
+<li><strong>前缀语义</strong>：lookup 时按 chunk 顺序查 key；<code>batched_contains</code> 在第一个 miss 处停止，用于「最长前缀命中」。</li>
+<li><strong>扩展</strong>：<code>LayerCacheEngineKey</code> 增加 <code>layer_id</code>，用于按层存储/加载。</li>
+</ul>
+<p><strong>对 Persisting 的启示</strong>：KV Cache 的 key 需要包含「模型 + 内容哈希 + 可选 layer/chunk 信息」，并支持可序列化字符串，便于跨进程/节点与存储后端索引。</p>
+<h3 id="22-memoryobj-memoryformat">2.2 值：MemoryObj 与 MemoryFormat<a class="headerlink" href="#22-memoryobj-memoryformat" title="Permanent link">&para;</a></h3>
+<p><strong>位置</strong>：<code>lmcache/v1/memory_management.py</code></p>
+<ul>
+<li><strong>MemoryObj</strong>：对「一块 KV 数据」的抽象，持有 <code>MemoryObjMetadata</code>（shape、dtype、address、phy_size、ref_count、pin_count、fmt 等），子类提供具体存储（如 GPU/CPU tensor、buffer）。</li>
+<li><strong>MemoryFormat</strong>：物理布局枚举，如 <code>KV_2LTD</code>（<code>[2, num_layers, num_tokens, hidden_dim]</code>）、<code>KV_T2D</code>、<code>BINARY</code>（压缩）、<code>KV_MLA_FMT</code> 等，用于分配与序列化时一致解释。</li>
+</ul>
+<p><strong>对 Persisting 的启示</strong>：Persisting 若做 KV 存储，需要定义「逻辑 key → 物理块」的映射，以及块格式（shape/dtype/format）；可先支持 1–2 种常用格式（如 2LTD），再扩展。</p>
+<h3 id="23-tokendatabase-token-key">2.3 TokenDatabase：从 Token 到 Key<a class="headerlink" href="#23-tokendatabase-token-key" title="Permanent link">&para;</a></h3>
+<p><strong>位置</strong>：<code>lmcache/v1/token_database.py</code></p>
+<ul>
+<li>将输入 <strong>token 序列</strong> 分 chunk，对每个 chunk 计算 <strong>chunk_hash</strong>（可带前缀哈希链），再组装为 <code>CacheEngineKey</code>。</li>
+<li><code>process_tokens()</code> 返回 <code>(start, end, key)</code> 的迭代，供上层按 chunk 做 lookup/put。</li>
+<li>支持 <code>chunk_size</code>、<code>save_unfull_chunk</code>、<code>save_only_first_rank</code>（MLA 时 world_size 置 1）等策略。</li>
+</ul>
+<p><strong>对 Persisting 的启示</strong>：若 Persisting 只做「存储层」，key 的生成可由调用方（或 Pulsing 侧适配层）完成；Persisting 只需约定 key 的字符串/二进制格式及「前缀可比较」的约定（若要做前缀匹配）。</p>
+<hr />
+<h2 id="3-storagebackendinterface">3. 存储后端接口（StorageBackendInterface）<a class="headerlink" href="#3-storagebackendinterface" title="Permanent link">&para;</a></h2>
+<p><strong>位置</strong>：<code>lmcache/v1/storage_backend/abstract_backend.py</code></p>
+<p>所有存储后端的统一抽象（CPU、Disk、Remote、P2P、NIXL、GDS 等）都实现该接口，核心方法如下。</p>
+<h3 id="31">3.1 读写与存在性<a class="headerlink" href="#31" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>contains(key, pin=False)</code></td>
+<td>是否存在该 key；可选 pin 防驱逐</td>
+</tr>
+<tr>
+<td><code>exists_in_put_tasks(key)</code></td>
+<td>是否在「正在写入」集合中（避免读到未完成写）</td>
+</tr>
+<tr>
+<td><code>batched_submit_put_task(keys, objs, ...)</code></td>
+<td>批量异步写入 MemoryObj；可选 <code>on_complete_callback</code> 按 key 回调</td>
+</tr>
+<tr>
+<td><code>get_blocking(key)</code></td>
+<td>同步取回 <code>MemoryObj \| None</code></td>
+</tr>
+<tr>
+<td><code>get_non_blocking(key)</code></td>
+<td>异步取回 <code>Future</code></td>
+</tr>
+<tr>
+<td><code>batched_get_blocking(keys)</code></td>
+<td>批量同步 get（默认逐 key 调用）</td>
+</tr>
+<tr>
+<td><code>batched_async_contains(lookup_id, keys, pin)</code></td>
+<td>批量 contains，返回命中数量</td>
+</tr>
+<tr>
+<td><code>batched_get_non_blocking(lookup_id, keys)</code></td>
+<td>批量异步 get，用于 prefetch 路径</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32">3.2 生命周期与策略<a class="headerlink" href="#32" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pin(key)</code> / <code>unpin(key)</code></td>
+<td>钉住/放开，避免被驱逐</td>
+</tr>
+<tr>
+<td><code>remove(key, force)</code></td>
+<td>删除条目</td>
+</tr>
+<tr>
+<td><code>batched_remove(keys)</code></td>
+<td>批量删除</td>
+</tr>
+<tr>
+<td><code>get_allocator_backend()</code></td>
+<td>返回本后端用于 get 时分配目标缓冲的 AllocatorBackend</td>
+</tr>
+</tbody>
+</table>
+<h3 id="33-allocatorbackendinterface">3.3 AllocatorBackendInterface（扩展）<a class="headerlink" href="#33-allocatorbackendinterface" title="Permanent link">&para;</a></h3>
+<p>在 StorageBackend 基础上增加「在本后端分配内存」的能力，用于 CPU/本地缓存层：</p>
+<ul>
+<li><code>allocate(shapes, dtypes, fmt, eviction, busy_loop)</code> / <code>batched_allocate(...)</code></li>
+<li><code>initialize_allocator(config, metadata)</code> / <code>get_memory_allocator()</code></li>
+<li><code>calculate_chunk_budget()</code>：可分配块数/容量预算</li>
+</ul>
+<p><strong>对 Persisting 的启示</strong>：Persisting 的 KV 后端可先实现「纯存储」版（只做 put/get/contains/remove），不实现 Allocator；接口上可对齐 <code>contains</code>、<code>get</code>、<code>put</code>（或 batched）、<code>remove</code>、可选 <code>pin/unpin</code>，便于后续与 LMCache 或 vLLM 侧逻辑对接。</p>
+<hr />
+<h2 id="4-storagemanager">4. StorageManager：多后端路由与调度<a class="headerlink" href="#4-storagemanager" title="Permanent link">&para;</a></h2>
+<p><strong>位置</strong>：<code>lmcache/v1/storage_backend/storage_manager.py</code></p>
+<ul>
+<li>持有多个 <strong>StorageBackend</strong> 实例（如 LocalCPUBackend、LocalDiskBackend、RemoteBackend），按配置或 <code>search_range</code> 选择后端。</li>
+<li><strong>put</strong>：可写多副本（如先写 CPU 再异步写 Disk/Remote）；通过 <code>allocate_and_copy_objects</code> 在目标后端分配并拷贝。</li>
+<li><strong>get</strong>：按后端优先级 lookup，命中则从该后端 <code>get_blocking</code>/<code>get_non_blocking</code>；支持 <strong>async_lookup_and_prefetch</strong>（按 key 列表批量 prefetch，并上报 scheduler）。</li>
+<li><strong>前缀语义</strong>：<code>batched_contains</code> 按 key 顺序在多个后端查，在第一个 miss 处停止，得到「最长前缀命中」；<code>get_block_mapping</code> 按 prefix 将 chunk 映射到不同后端。</li>
+</ul>
+<p><strong>对 Persisting 的启示</strong>：Persisting 若支持多级（如「内存 + Lance/磁盘」），可引入一层「KV 存储管理器」，负责后端选择、批量 put/get 和简单的前缀命中逻辑；与现有 Queue 的 StorageManager 可分离，仅共享「后端注册/发现」思路。</p>
+<hr />
+<h2 id="5">5. 具体后端实现要点<a class="headerlink" href="#5" title="Permanent link">&para;</a></h2>
+<h3 id="51-localcpubackend">5.1 LocalCPUBackend（内存）<a class="headerlink" href="#51-localcpubackend" title="Permanent link">&para;</a></h3>
+<ul>
+<li>使用 <code>AllocatorBackendInterface</code>，在 CPU 上分配并保存 <code>MemoryObj</code>，dict 存 <code>key -&gt; MemoryObj</code>。</li>
+<li>支持 eviction、pin、LRU 等策略的底层。</li>
+</ul>
+<h3 id="52-localdiskbackend">5.2 LocalDiskBackend（本地磁盘）<a class="headerlink" href="#52-localdiskbackend" title="Permanent link">&para;</a></h3>
+<ul>
+<li>使用 <strong>cache_policy</strong>（如 LRU）维护内存中的「key → 磁盘路径/元数据」映射；实际张量落盘。</li>
+<li>序列化：通过 naive_serde / cachegen 等将 MemoryObj 编码后写入文件或块设备。</li>
+<li>与 Persisting 最相关：Persisting 的 KV 持久化可参考「key 索引 + 块/文件存储」的模式，底层可用 Lance 列存或自定义块格式。</li>
+</ul>
+<h3 id="53-rustrawblockbackend">5.3 RustRawBlockBackend（块设备 / 高性能）<a class="headerlink" href="#53-rustrawblockbackend" title="Permanent link">&para;</a></h3>
+<ul>
+<li>固定 slot、固定大小块，通过 header（magic + chunk_hash + payload_len）定位；支持 LRU、pin、异步写。</li>
+<li><strong>Header 格式</strong>：<code>magic(8) + chunk_hash(8) + payload_len(8) + padding</code>，便于 Persisting 做「小元数据 + 大 payload」的块存储。</li>
+</ul>
+<h3 id="54-remotebackend">5.4 RemoteBackend（远端服务）<a class="headerlink" href="#54-remotebackend" title="Permanent link">&para;</a></h3>
+<ul>
+<li>通过 RPC/连接将 put/get 转发到远端；<code>get</code> 时在本地用 <code>local_cpu_backend</code> 分配缓冲区再拉数据。</li>
+<li>Persisting 若做「远端 KV 服务」，可只实现类似 Remote 的客户端，服务端由 Persisting 或 Pulsing 提供。</li>
+</ul>
+<h3 id="55-p2p-backend">5.5 P2P Backend<a class="headerlink" href="#55-p2p-backend" title="Permanent link">&para;</a></h3>
+<ul>
+<li>只读：<code>contains</code> 通过 controller 查 peer，<code>get</code> 从 peer 拉数据；不实现 put。</li>
+<li>说明「存储层」与「发现/路由层」可分离：Persisting 可只做存储，发现与路由由 Pulsing 或上层做。</li>
+</ul>
+<hr />
+<h2 id="6-config-tiers">6. 配置与分层（Config / Tiers）<a class="headerlink" href="#6-config-tiers" title="Permanent link">&para;</a></h2>
+<p><strong>位置</strong>：<code>lmcache/v1/config.py</code></p>
+<ul>
+<li><strong>local_cpu</strong> / <strong>max_local_cpu_size</strong>：本地 CPU 缓存开关与容量。</li>
+<li><strong>local_disk</strong> / <strong>max_local_disk_size</strong>：本地磁盘路径与容量。</li>
+<li><strong>remote_url</strong> / <strong>remote_serde</strong>：远端存储 URL 与序列化方式。</li>
+<li><strong>chunk_size</strong>：与 TokenDatabase 一致，影响 key 粒度。</li>
+<li><strong>cache_policy</strong>：本地磁盘的驱逐策略（如 LRU）。</li>
+</ul>
+<p>Persisting 的 KV 配置可类似：每层（内存/磁盘/远端）的开关、容量、路径、序列化格式；与现有 <code>backend_options</code> 风格统一。</p>
+<hr />
+<h2 id="7">7. 序列化与压缩<a class="headerlink" href="#7" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>naive_serde</strong>：简单张量序列化，用于远程或磁盘。</li>
+<li><strong>cachegen_encoder/decoder</strong>：带量化（按层 bins）的 KV 压缩，减少带宽与存储。</li>
+<li><strong>RustRawBlockBackend</strong>：固定块 + header，无压缩或可插压缩。</li>
+</ul>
+<p>Persisting 若先做「无损」KV 存储，可只做类似 naive 的 tensor 序列化；后续再加可选压缩（如按层量化），接口上可与 LMCache 的 serde 名字或格式兼容以便对接。</p>
+<hr />
+<h2 id="8-persisting">8. 对 Persisting 的实现建议（简要）<a class="headerlink" href="#8-persisting" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Key 设计</strong>  </li>
+<li>定义 KV key 的字段（model、content_hash、layer/chunk、dtype 等）及字符串/二进制格式，支持 <code>from_string</code>/<code>to_string</code>，便于跨进程与存储索引。  </li>
+<li>
+<p>若需「前缀匹配」，约定 key 的排序或前缀规则（如按 chunk 顺序、字典序）。</p>
+</li>
+<li>
+<p><strong>存储后端协议</strong>  </p>
+</li>
+<li>定义最小 KV 后端接口：<code>contains(key)</code>、<code>get(key)</code>、<code>put(key, value)</code>、<code>remove(key)</code>，value 为「tensor 或 buffer + 元数据」。  </li>
+<li>
+<p>可选：<code>pin</code>/<code>unpin</code>、<code>batched_get</code>/<code>batched_put</code>，与 LMCache 接口对齐便于适配。</p>
+</li>
+<li>
+<p><strong>值类型</strong>  </p>
+</li>
+<li>
+<p>先支持「单块」KV（一个 key 对应一块连续 tensor），元数据含 shape、dtype、format；后续再考虑多块或分层（layer-wise）与 LMCache LayerCacheEngineKey 对齐。</p>
+</li>
+<li>
+<p><strong>持久化格式</strong>  </p>
+</li>
+<li>参考 LocalDiskBackend + RustRawBlock：索引（key → 文件/块偏移）+ 块存储（header + payload）；或用 Lance 存「key 列 + 二进制 payload 列」做列式存储。  </li>
+<li>
+<p>若用 Lance：key 用字符串列，value 用 binary/large_binary，便于按 key 过滤与扫描。</p>
+</li>
+<li>
+<p><strong>多级与路由</strong>  </p>
+</li>
+<li>
+<p>先实现单后端（如「内存 + Lance」一体或纯 Lance）；再引入 KVStorageManager 做多后端路由、容量与驱逐策略，与现有 Queue StorageManager 解耦。</p>
+</li>
+<li>
+<p><strong>与 Pulsing 的集成</strong>  </p>
+</li>
+<li>
+<p>KV 读写可封装为 Pulsing Actor（如 KVCacheStorageActor），内部使用 Persisting 的 KV 后端；key 生成与 token 逻辑可放在调用方或单独服务，Persisting 只认「最终 key + value」。</p>
+</li>
+<li>
+<p><strong>测试与兼容</strong>  </p>
+</li>
+<li>若有 vLLM/LMCache 集成需求，可写一层薄适配：将 LMCache 的 <code>CacheEngineKey</code>/<code>MemoryObj</code> 映射为 Persisting 的 key/value，调用 Persisting 的 get/put，便于对比测试与逐步迁移。</li>
+</ol>
+<hr />
+<h2 id="9-persisting-lmcache">9. 建议：Persisting 先作为 LMCache 后端构建能力<a class="headerlink" href="#9-persisting-lmcache" title="Permanent link">&para;</a></h2>
+<p><strong>结论：是。</strong> 先把 Persisting 实现为 LMCache 的一个 <strong>Storage Plugin 后端</strong>，再在 Pulsing 生态里提供独立 KV 能力，是更稳妥的路径。</p>
+<h3 id="91-lmcache">9.1 为什么先做 LMCache 后端<a class="headerlink" href="#91-lmcache" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>接口即规范</strong>：直接实现 <code>StorageBackendInterface</code> / <code>StoragePluginInterface</code>，key（CacheEngineKey）、value（MemoryObj）、contains/put/get/remove 等语义一次性对齐业界用法，避免自己发明一套再改。</li>
+<li><strong>真实场景验证</strong>：接入 LMCache 后可在 vLLM/SGLang 真实推理链路里跑，持久化、序列化、多级路由、前缀语义都能被真实负载检验。</li>
+<li><strong>生态复用</strong>：用户若已在用 LMCache，只需在配置里加 Persisting 插件即可试用；Persisting 的 Lance/磁盘实现也能被 LMCache 社区看到和反馈。</li>
+<li><strong>能力沉淀</strong>：在实现 LMCache 后端时沉淀的「key 索引 + 块/列存、MemoryObj 序列化、与 local_cpu_backend 协作」等，可直接复用到 Persisting 独立 KV API 或 Pulsing 侧 KVCacheStorageActor。</li>
+</ol>
+<h3 id="92-lmcache">9.2 LMCache 插件接入方式<a class="headerlink" href="#92-lmcache" title="Permanent link">&para;</a></h3>
+<p>LMCache 通过配置动态加载插件，无需改 LMCache 主仓：</p>
+<ul>
+<li>在 <code>config.storage_plugins</code> 里加入插件名（如 <code>PersistingBackend</code>）。</li>
+<li>在 <code>config.extra_config</code> 里为该插件指定：</li>
+<li><code>storage_plugin.PersistingBackend.module_path</code>：例如 <code>persisting.lmcache_backend</code></li>
+<li><code>storage_plugin.PersistingBackend.class_name</code>：例如 <code>PersistingKVBackend</code></li>
+<li>插件类需实现 <strong>StoragePluginInterface</strong>，构造函数签名为：
+  <code>(config, dst_device, metadata, local_cpu_backend, loop)</code>，由 LMCache 在启动时注入。</li>
+</ul>
+<p>这样用户只需安装 <code>persisting[lmcache]</code>（或可选依赖 lmcache），在 vLLM/LMCache 的 YAML 里加上上述配置即可启用 Persisting 作为一层存储。</p>
+<h3 id="93-persisting">9.3 Persisting 侧需实现的最小集合<a class="headerlink" href="#93-persisting" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>类</strong></td>
+<td>实现 <code>StoragePluginInterface</code>（或仅 <code>StorageBackendInterface</code>），建议类名如 <code>PersistingKVBackend</code>，放在 <code>persisting.lmcache_backend</code> 模块。</td>
+</tr>
+<tr>
+<td><strong>contains(key, pin)</strong></td>
+<td>查本地索引（如 Lance 表或内存 dict）是否存在该 key；pin 可先 no-op 或简单标记。</td>
+</tr>
+<tr>
+<td><strong>exists_in_put_tasks(key)</strong></td>
+<td>维护「正在写入」集合，put 未完成前返回 True。</td>
+</tr>
+<tr>
+<td><strong>batched_submit_put_task(keys, objs, on_complete_callback)</strong></td>
+<td>将 MemoryObj 序列化后写入 Persisting 存储（如 Lance 或块文件），写完后按 key 调用 on_complete_callback。</td>
+</tr>
+<tr>
+<td><strong>get_blocking(key)</strong></td>
+<td>用 <code>local_cpu_backend.get_allocator_backend().allocate(...)</code> 分配目标 MemoryObj，从 Persisting 读出并反序列化到该对象，返回；若不存在返回 None。</td>
+</tr>
+<tr>
+<td><strong>get_allocator_backend()</strong></td>
+<td>返回 LMCache 注入的 <code>local_cpu_backend</code>，供 StorageManager 在 get 时分配目标缓冲。</td>
+</tr>
+<tr>
+<td><strong>pin / unpin</strong></td>
+<td>可先 no-op 或简单集合标记，不做驱逐时忽略。</td>
+</tr>
+<tr>
+<td><strong>remove(key)</strong></td>
+<td>从索引与存储中删除该 key。</td>
+</tr>
+<tr>
+<td><strong>batched_contains / batched_get_non_blocking</strong></td>
+<td>按接口实现，可先基于单 key 循环，再优化为批量。</td>
+</tr>
+<tr>
+<td><strong>close()</strong></td>
+<td>释放资源、关闭存储连接。</td>
+</tr>
+</tbody>
+</table>
+<p>序列化：MemoryObj 的 shape/dtype/format 与 LMCache 的 naive_serde 或现有格式对齐即可；Persisting 只需「key 的字符串 + 二进制 payload」落盘（如 Lance 一列 key、一列 bytes）。</p>
+<h3 id="94">9.4 实现顺序建议<a class="headerlink" href="#94" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Phase 1</strong>：在 Persisting 仓库内新增 <code>persisting/lmcache_backend.py</code>，实现上述最小接口，存储层用现有 Lance 或单文件块存储（key → 文件偏移 + 长度），MemoryObj 用 LMCache 已有 serde 或简单 tensor 序列化。</li>
+<li><strong>Phase 2</strong>：在 LMCache 配置中启用该插件，与 local_cpu / local_disk 等一起跑 vLLM 用例，验证正确性与性能。</li>
+<li><strong>Phase 3</strong>：根据需求加能力（pin/unpin、batched 优化、压缩、多级），并把这些能力同步到「Persisting 独立 KV API」或 Pulsing 的 KVCacheStorageActor，形成「一套实现、两种入口（LMCache 插件 + Pulsing/Persisting 原生）」。</li>
+</ol>
+<p>这样 Persisting 先作为 LMCache 的一个后端，用 LMCache 的接口和生态把 KV 存储的基础能力做实，再在此基础上扩展独立 API 和 Pulsing 集成，会更稳、也更易被现有 LMCache/vLLM 用户接受。</p>
+<hr />
+<h2 id="10-lance-kv-cache">10. Lance 队列后端与 KV Cache 存储的互动<a class="headerlink" href="#10-lance-kv-cache" title="Permanent link">&para;</a></h2>
+<p>当前 Persisting 的 <strong>Lance 存储后端</strong> 是为 <strong>队列</strong> 设计的：<code>record = dict</code>、按 offset 追加、按 offset/indices 读取。<strong>KV Cache 存储</strong> 则是按 key 查找、value 为张量/二进制块。二者语义不同，但可以在同一套 Lance 基础设施下共存并互动。</p>
+<h3 id="101">10.1 语义对比<a class="headerlink" href="#101" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>队列 LanceBackend（现有）</th>
+<th>KV Cache 存储（规划）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>数据模型</strong></td>
+<td>记录流：<code>dict</code>，按写入顺序追加</td>
+<td>键值：CacheEngineKey（或字符串）→ MemoryObj / 二进制块</td>
+</tr>
+<tr>
+<td><strong>写入</strong></td>
+<td><code>put(record)</code> → 缓冲 → flush 合并进一张表</td>
+<td><code>put(key, value)</code> → 按 key 写入/覆盖</td>
+</tr>
+<tr>
+<td><strong>读取</strong></td>
+<td><code>get(offset, limit)</code> 或 <code>get_by_indices(indices)</code></td>
+<td><code>get(key)</code>、<code>contains(key)</code></td>
+</tr>
+<tr>
+<td><strong>Lance 形态</strong></td>
+<td>单表按 chunk 追加，列 = record 字段（推断类型）</td>
+<td>键值表：至少两列 <code>key</code>（string）+ <code>payload</code>（binary），或按 key 分文件/块</td>
+</tr>
+<tr>
+<td><strong>典型路径</strong></td>
+<td><code>storage_path</code> = 每 topic/bucket 一个目录，内建 <code>data.lance</code></td>
+<td>同一根目录下子空间，如 <code>storage_path/kv/&lt;model&gt;/</code> 或单独 <code>data_kv.lance</code></td>
+</tr>
+</tbody>
+</table>
+<p>因此：<strong>队列后端</strong> 和 <strong>KV 后端</strong> 是两套 API、两种 schema，但可以共用「Lance 作为底层存储引擎」和「同一存储根路径」。</p>
+<h3 id="102">10.2 可以怎样「互动」<a class="headerlink" href="#102" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>共用存储根路径与 Lance 运行时</strong><br />
+   使用同一 <code>storage_path</code>（或同一「Persisting 存储实例」），用子目录或不同 dataset 区分：</li>
+<li>队列：<code>storage_path/queue/&lt;topic&gt;/bucket_&lt;id&gt;/data.lance</code>（与现有一致）</li>
+<li>
+<p>KV Cache：<code>storage_path/kv/&lt;model&gt;/data.lance</code> 或按 key 哈希分片到多个 Lance 表<br />
+   这样同一进程、同一配置下，既写队列又写 KV cache，数据都落在同一块盘/命名空间下，便于备份、配额和监控。</p>
+</li>
+<li>
+<p><strong>共用 Lance 能力，不共用表结构</strong>  </p>
+</li>
+<li>队列表：列 = 业务字段（id, value, name…），行 = 记录。  </li>
+<li>
+<p>KV 表：列 = <code>key</code>（string）、<code>payload</code>（binary）、可选 <code>meta</code>（json），行 = 一条 cache 条目。<br />
+   两者都调用 <code>lance.write_dataset</code> / <code>lance.dataset().to_table()</code> 等，可抽象出一层 <strong>LanceStore</strong> 工具（打开 dataset、按需 schema 读写），队列后端和 KV 后端分别用不同 schema 调用，实现<strong>代码级复用</strong>而不混用同一张表。</p>
+</li>
+<li>
+<p><strong>数据流上的互动（可选）</strong>  </p>
+</li>
+<li>例如：队列里写入「待预热 / 待淘汰」的 cache key 或 prompt hash，另一个消费者从队列取 key，再对 KV 后端做 prefetch 或 remove。  </li>
+<li>
+<p>此时队列和 KV 在「逻辑」上互动（通过 key 或事件），存储上仍可共用同一 <code>storage_path</code> 下的不同 Lance 数据集，无需把队列和 KV 塞进同一张表。</p>
+</li>
+<li>
+<p><strong>统一配置与未来统一入口</strong>  </p>
+</li>
+<li>配置里一个 <code>storage_path</code>，Queue 的 <code>storage_path</code> 和 KV 的 <code>storage_path</code> 可指向同一根（如 <code>./data</code>），队列用 <code>./data/queue/...</code>，KV 用 <code>./data/kv/...</code>。  </li>
+<li>后续若做「Persisting 存储管理器」，可在一个进程内同时挂载队列后端和 KV 后端，共享该根路径与 Lance 依赖，甚至共享统计/健康检查。</li>
+</ol>
+<h3 id="103">10.3 建议实现方式<a class="headerlink" href="#103" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>保持两个后端类</strong>：<code>LanceBackend</code>（队列）与 KV 用的后端（如 <code>PersistingKVBackend</code> / LMCache 插件）<strong>不合并</strong>，各自实现自己的协议（Pulsing StorageBackend vs LMCache StorageBackendInterface），避免语义混在一起。</li>
+<li><strong>约定路径布局</strong>：在文档和实现中约定，若使用同一根路径，则：</li>
+<li>队列：<code>&lt;storage_path&gt;/queue/&lt;topic&gt;/...</code> 或保持现有 <code>&lt;storage_path&gt;/data.lance</code>（按 topic 传不同 path）；</li>
+<li>KV：<code>&lt;storage_path&gt;/kv/&lt;model_or_ns&gt;/...</code> 或单独 dataset 名。</li>
+<li><strong>可选共享层</strong>：抽一层「Lance 读写工具」或「LanceStore」（按 path + schema 打开/创建 dataset、读/写/删），队列后端和 KV 后端都通过该层访问 Lance，减少重复 I/O 与格式逻辑；两者仍使用不同 schema 和不同 API。</li>
+</ul>
+<p>这样，<strong>Persisting 的 Lance 存储后端</strong> 与 <strong>KV Cache 存储</strong> 可以：共用同一存储根路径与 Lance 技术栈、在代码上复用 Lance 读写能力、在数据流上通过 key/事件互动，而<strong>不必</strong>共用同一张表或同一套读写 API，既清晰又可扩展。</p>
+<hr />
+<h2 id="11-lmcache">11. LMCache 当前支持的后端一览<a class="headerlink" href="#11-lmcache" title="Permanent link">&para;</a></h2>
+<p>根据 <code>lmcache/v1/storage_backend/__init__.py</code> 的 <code>CreateStorageBackends</code> 与 <code>connector/__init__.py</code> 的 <code>CreateConnector</code> 整理。</p>
+<h3 id="111">11.1 内置存储后端（按配置创建）<a class="headerlink" href="#111" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>后端</th>
+<th>配置条件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>LocalCPUBackend</strong></td>
+<td><code>config.local_cpu</code> 且 <code>max_local_cpu_size &gt; 0</code></td>
+<td>本地 CPU 内存缓存；其他后端常依赖其做 get 时的目标缓冲</td>
+</tr>
+<tr>
+<td><strong>PDBackend</strong></td>
+<td><code>config.enable_pd</code></td>
+<td>P/D  disaggregation（预填与解码分离）专用</td>
+</tr>
+<tr>
+<td><strong>P2PBackend</strong></td>
+<td><code>config.enable_p2p</code></td>
+<td>P2P KV 共享，只读（从 peer 拉取），不写</td>
+</tr>
+<tr>
+<td><strong>NixlStorageBackend</strong></td>
+<td><code>extra_config.enable_nixl_storage</code></td>
+<td><a href="https://github.com/ai-dynamo/nixl">NIXL</a> 存储</td>
+</tr>
+<tr>
+<td><strong>LocalDiskBackend</strong></td>
+<td><code>config.local_disk</code> 且 <code>max_local_disk_size &gt; 0</code></td>
+<td>本地磁盘，配合 cache_policy（如 LRU）</td>
+</tr>
+<tr>
+<td><strong>GdsBackend</strong></td>
+<td><code>config.gds_path</code> 非空</td>
+<td>NVIDIA GPUDirect Storage</td>
+</tr>
+<tr>
+<td><strong>RemoteBackend</strong></td>
+<td><code>config.remote_url</code> 非空</td>
+<td>远端存储，根据 URL scheme 选 Connector（见下表）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="112-url-connectorremotebackend">11.2 远端 URL 与 Connector（RemoteBackend 使用）<a class="headerlink" href="#112-url-connectorremotebackend" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>URL 方案</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>redis://</code>, <code>rediss://</code>, <code>redis-sentinel://</code></td>
+<td>Redis / Valkey</td>
+</tr>
+<tr>
+<td><code>lm://host:port</code></td>
+<td>LMCache 自有服务端</td>
+</tr>
+<tr>
+<td><code>infinistore://host:port[?device=...]</code></td>
+<td>InfiniStore</td>
+</tr>
+<tr>
+<td><code>mooncakestore://host:port[?device=...]</code></td>
+<td>MooncakeStore</td>
+</tr>
+<tr>
+<td><code>fs://[host:port]/path</code></td>
+<td>文件系统</td>
+</tr>
+<tr>
+<td><code>s3://...</code></td>
+<td>AWS S3 / S3 Express</td>
+</tr>
+<tr>
+<td><code>audit://host:port[?verify=...]</code></td>
+<td>审计服务</td>
+</tr>
+<tr>
+<td><code>blackhole://</code></td>
+<td>黑洞（测试用）</td>
+</tr>
+<tr>
+<td><code>mock://[capacity]/?...</code></td>
+<td>模拟（延迟/吞吐可配）</td>
+</tr>
+<tr>
+<td><code>external://...</code></td>
+<td>外部 connector 插件</td>
+</tr>
+</tbody>
+</table>
+<h3 id="113-storage-plugin">11.3 可插拔插件（Storage Plugin）<a class="headerlink" href="#113-storage-plugin" title="Permanent link">&para;</a></h3>
+<p>通过配置动态加载，无需改 LMCache 主仓：</p>
+<ul>
+<li><strong>config</strong>：<code>storage_plugins = ["MyBackend"]</code>，且 <code>extra_config.storage_plugin.MyBackend.module_path</code> / <code>class_name</code> 指定模块与类名。</li>
+<li><strong>接口</strong>：插件类实现 <code>StoragePluginInterface</code>，构造 <code>(config, dst_device, metadata, local_cpu_backend, loop)</code>。</li>
+<li><strong>仓库内示例</strong>：<code>RustRawBlockBackend</code>（块设备、固定 slot、LRU）。</li>
+</ul>
+<p><strong>Persisting</strong> 若实现为 LMCache 后端，即以此方式接入：<code>storage_plugins = ["PersistingBackend"]</code>，并配置 <code>persisting.lmcache_backend</code> / <code>PersistingKVBackend</code>。</p>
+<h3 id="114">11.4 包装层<a class="headerlink" href="#114" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>AuditBackend</strong>：当 <code>extra_config.audit_backend_enabled</code> 为真时，为除 LocalCPUBackend 外的所有后端包一层审计（日志与性能统计）。</li>
+</ul>
+<hr />
+<h2 id="12-lmcache">12. 参考文件清单（LMCache 仓库）<a class="headerlink" href="#12-lmcache" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>用途</th>
+<th>路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Key 定义与序列化</td>
+<td><code>lmcache/utils.py</code>（CacheEngineKey, to_string, from_string）</td>
+</tr>
+<tr>
+<td>存储后端抽象</td>
+<td><code>lmcache/v1/storage_backend/abstract_backend.py</code></td>
+</tr>
+<tr>
+<td>多后端管理</td>
+<td><code>lmcache/v1/storage_backend/storage_manager.py</code></td>
+</tr>
+<tr>
+<td>Token → Key</td>
+<td><code>lmcache/v1/token_database.py</code></td>
+</tr>
+<tr>
+<td>内存对象与格式</td>
+<td><code>lmcache/v1/memory_management.py</code>（MemoryObj, MemoryFormat）</td>
+</tr>
+<tr>
+<td>元数据</td>
+<td><code>lmcache/v1/metadata.py</code>（LMCacheMetadata）</td>
+</tr>
+<tr>
+<td>配置</td>
+<td><code>lmcache/v1/config.py</code></td>
+</tr>
+<tr>
+<td>本地磁盘后端</td>
+<td><code>lmcache/v1/storage_backend/local_disk_backend.py</code></td>
+</tr>
+<tr>
+<td>块设备后端</td>
+<td><code>lmcache/v1/storage_backend/plugins/rust_raw_block_backend.py</code></td>
+</tr>
+<tr>
+<td>远程后端</td>
+<td><code>lmcache/v1/storage_backend/remote_backend.py</code></td>
+</tr>
+</tbody>
+</table>
+<p>以上内容可作为 Persisting 实现 KV Cache 存储时的设计与接口参考；<strong>LMCache 当前支持的后端</strong>见第 11 节；<strong>优先以「Persisting 作为 LMCache 后端」落地</strong>（第 9 节）；<strong>Lance 队列与 KV 存储可共用路径与 Lance 能力</strong>（第 10 节）。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025 Persisting. All rights reserved.
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/reiase/Persisting" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2049 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Persistent Storage for Parameters, KV Cache, and Trajectories">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/DeepLink-org/Persisting/zh/design/tensor_address_algebra/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="../../../design/tensor_address_algebra/" hreflang="en">
+        
+          <link rel="alternate" href="./" hreflang="zh">
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>分层张量地址空间（TTAS）—— Persisting 分布式分层内存的寻址模型 - Persisting 文档</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/home.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#ttas-persisting" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../../" title="Persisting 文档" class="md-header__button md-logo" aria-label="Persisting 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Persisting 文档
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              分层张量地址空间（TTAS）—— Persisting 分布式分层内存的寻址模型
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="../../../design/tensor_address_algebra/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="./" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="分享" aria-label="分享" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DeepLink-org/Persisting" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="标签" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../" class="md-tabs__link">
+        
+  
+  
+    
+  
+  首页
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../installation/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  安装指南
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../quickstart/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  入门指南
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../guide/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  用户指南
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  设计文档
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../api_reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API 参考
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../" title="Persisting 文档" class="md-nav__button md-logo" aria-label="Persisting 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Persisting 文档
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DeepLink-org/Persisting" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DeepLink-org/Persisting
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    入门指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../guide/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    用户指南
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    用户指南
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/capture_quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capture 快速上手
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    队列后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/lance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lance 后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/persisting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    增强后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/custom/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    自定义后端
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    设计文档
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    设计文档
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed_tiered_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    分布式分层存储
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trajectory_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    轨迹存储模型
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trajectory_tlv_format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    轨迹 Markdown 格式
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli_architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI 整体架构
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli_capture_command/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Traj Capture 子命令
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../capture_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capture 架构设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli_trajectory_command/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Traj 命令
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli_search_command/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Search 命令
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../similar_systems_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    类似系统参考
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API 参考
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#0-ttas-persisting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0. TTAS 在 Persisting 中的位置
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0. TTAS 在 Persisting 中的位置">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#01-pulsing-persisting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.1 Pulsing + Persisting 的分工
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#02-pgas-ttas-pgas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.2 与 PGAS 的对比：TTAS 与 PGAS 对标
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#03-ttas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.3 TTAS 解决什么
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#04-ttas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0.4 TTAS 不做什么
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-key-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 关键约束：可实现的 Key Schema 假设
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-address-constraint-region" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 数据模型：Address / Constraint / Region（收敛到可证明子语言）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 数据模型：Address / Constraint / Region（收敛到可证明子语言）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-dimension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Dimension（维度）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-address" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Address（点地址）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-constraint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 Constraint（单维约束）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-region" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 Region（合取约束区域）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 核心操作：只保留能产生确定性优化的那部分
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 核心操作：只保留能产生确定性优化的那部分">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-projection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Projection（投影）——只用于路由/分组
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Selection（切片）——唯一的“查询构造”操作
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-offsetorder_dim-range" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Offset（偏移）——限定为“order_dim 上的 range 平移”（用于预取）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 规范化与重写：确定性、可证明、可收敛
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 规范化与重写：确定性、可证明、可收敛">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-constraint-meet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 约束交（Constraint meet）——必须实现但范围很小
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-canonicalization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 规范化（Canonicalization）流程
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-lowering-normal-formnf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 可 lowering 的 Normal Form（NF）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-lowering-region" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Lowering：从 Region 到后端原语（固定模式匹配）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Lowering：从 Region 到后端原语（固定模式匹配）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 后端原语（最小集合）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Key 编码（必须可排序、可前缀）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-lowering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 模式匹配 lowering
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 路由与一致性：最小、明确、可实现
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. 路由与一致性：最小、明确、可实现">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 分区键与路由
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 批量合并（系统级优化，不是查询优化器）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 写入语义（必须写清楚，否则一切都不严谨）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-prefetch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 预取（Prefetch）：只做确定性生成，不做在线自适应
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. 正确性声明与测试（只对“受限子语言”负责）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. 正确性声明与测试（只对“受限子语言”负责）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 我们承诺证明/测试的内容
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-property-based" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 建议的 property-based 测试清单
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. 实现路线图（现实版本）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. 设计要点回顾（防止再次过度设计）
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="ttas-persisting">分层张量地址空间（TTAS）—— Persisting 分布式分层内存的寻址模型<a class="headerlink" href="#ttas-persisting" title="Permanent link">&para;</a></h1>
+<p><strong>版本</strong>：2.0（重写）<br />
+<strong>状态</strong>：设计冻结前审阅版<br />
+<strong>目标</strong>：为 Persisting 的分布式分层内存（GPU ↔ host ↔ SSD，跨节点）提供寻址模型——多维地址、约束代数、规范化与 lowering。</p>
+<p>为与 <strong>PGAS</strong>（Partitioned Global Address Space）对标的说法，我们将 Persisting 的寻址模型称为 <strong>分层张量地址空间（Tiered Tensor Address Space，TTAS）</strong>。</p>
+<hr />
+<h2 id="0-ttas-persisting">0. TTAS 在 Persisting 中的位置<a class="headerlink" href="#0-ttas-persisting" title="Permanent link">&para;</a></h2>
+<h3 id="01-pulsing-persisting">0.1 Pulsing + Persisting 的分工<a class="headerlink" href="#01-pulsing-persisting" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Pulsing</strong>：分布式 actor 运行时（控制面）——actor 发现、消息传递、生命周期、集群管理。</li>
+<li><strong>Persisting</strong>：为 Pulsing 扩展<strong>内存语义</strong>（数据面）——多维地址空间 + GPU/host/SSD 分层 + 基于 Pulsing 的跨节点分布。</li>
+</ul>
+<p>TTAS 是 Persisting 数据面的<strong>寻址模型</strong>：定义"数据在多维地址空间中如何定位"，驱动分层 placement、跨节点路由和批量优化。</p>
+<h3 id="02-pgas-ttas-pgas">0.2 与 PGAS 的对比：TTAS 与 PGAS 对标<a class="headerlink" href="#02-pgas-ttas-pgas" title="Permanent link">&para;</a></h3>
+<p>PGAS（UPC、Chapel）为 HPC 提供了<strong>按 rank 分区的全局地址空间</strong>，但受限于：单一扩展维（rank）、线性地址、shmem API、无分层。AI workload 需要不同的地址空间形态：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>PGAS</th>
+<th>TTAS（Persisting）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>全称</strong></td>
+<td>Partitioned Global <strong>Address Space</strong></td>
+<td><strong>T</strong>iered <strong>T</strong>ensor <strong>A</strong>ddress <strong>S</strong>pace</td>
+</tr>
+<tr>
+<td><strong>扩展维度</strong></td>
+<td>1 个（rank）</td>
+<td>任意多个（session, layer, head, time, shard, ...）</td>
+</tr>
+<tr>
+<td><strong>地址形态</strong></td>
+<td>线性（rank 内一维偏移）</td>
+<td>多维（各维独立，可点/范围/集合）</td>
+</tr>
+<tr>
+<td><strong>访问方式</strong></td>
+<td>shmem put/get</td>
+<td>tensor 下标：<code>kv["s1", 0, 2, 0:512]</code></td>
+</tr>
+<tr>
+<td><strong>分层</strong></td>
+<td>无（扁平内存）</td>
+<td>GPU ↔ host ↔ SSD，策略驱动</td>
+</tr>
+<tr>
+<td><strong>分布式</strong></td>
+<td>语言运行时</td>
+<td>Pulsing actor 运行时</td>
+</tr>
+<tr>
+<td><strong>放置</strong></td>
+<td>rank → 进程</td>
+<td>ρ(π_D(a)) → 节点/设备/层，由投影+分区键显式给出</td>
+</tr>
+</tbody>
+</table>
+<p>PGAS 在 HPC 失败的教训：仅靠"更好的地址模型"不能推动帕累托曲线。Persisting 从中吸取的经验：<strong>TTAS 是内部寻址基础设施，对外不卖"地址空间"概念——价值用 KV Cache P99、GPU 利用率、内存效率来衡量。</strong></p>
+<h3 id="03-ttas">0.3 TTAS 解决什么<a class="headerlink" href="#03-ttas" title="Permanent link">&para;</a></h3>
+<p>TTAS 为 Persisting 的三类内存场景提供统一寻址：</p>
+<ul>
+<li><strong>KV Cache</strong>：<code>(session, layer, head, time)</code> — 点查 / 单维范围 / 滑窗预取</li>
+<li><strong>PS / Optimizer state</strong>：<code>(param_id, shard)</code> — 批量点查</li>
+<li><strong>轨迹</strong>：<code>(run_id, time)</code> — 单维范围扫描</li>
+</ul>
+<p>并通过<strong>确定性规范化</strong>优化数据面操作：</p>
+<ul>
+<li><strong>分区裁剪</strong>：从请求中提取 partition key，路由到正确的节点/层</li>
+<li><strong>批量合并</strong>：同 shard 的点查合并为 <code>mget</code>；同前缀的范围合并</li>
+<li><strong>预取生成</strong>：对有序维度的滑窗访问生成预取序列</li>
+</ul>
+<h3 id="04-ttas">0.4 TTAS 不做什么<a class="headerlink" href="#04-ttas" title="Permanent link">&para;</a></h3>
+<ul>
+<li>通用查询优化器 / 执行引擎 / Region 集合运算闭包</li>
+<li>物理连续字节偏移假设</li>
+<li>分层 placement policy 的在线决策（由 Persisting 的 tiering 层负责，TTAS 只提供地址信息）</li>
+</ul>
+<p>用户看到的是 <code>kv["s1", 0, 2, 0:512].tensor()</code>。TTAS 在底层驱动寻址和路由，用户不需要直接操作。</p>
+<hr />
+<h2 id="1-key-schema">1. 关键约束：可实现的 Key Schema 假设<a class="headerlink" href="#1-key-schema" title="Permanent link">&para;</a></h2>
+<p>本设计不依赖物理连续布局，但依赖 <strong>key 的字典序（lexicographic order）</strong>，以支持范围扫描。</p>
+<p>对每一种数据集合（可理解为一个“表/命名空间”，例如 <code>kvcache/v1</code>），必须显式声明：</p>
+<ul>
+<li><strong>维度全集</strong>：<code>Dims = (d0, d1, ..., dn)</code></li>
+<li><strong>排序维度</strong>：<code>order_dim ∈ Dims</code>（可选；没有则不支持 range_scan）</li>
+<li><strong>key 排序顺序</strong>：<code>KeyOrder = (prefix_dims..., order_dim)</code>，其中 <code>prefix_dims = Dims \ {order_dim}</code></li>
+</ul>
+<p><strong>硬性要求</strong>：</p>
+<ul>
+<li>若声明了 <code>order_dim</code>，则它必须位于 <code>KeyOrder</code> 的最后一位。<br />
+  否则“固定前缀 + order_dim 范围”无法保证落在一个连续的 key 区间。</li>
+</ul>
+<p><strong>直观解释</strong>：</p>
+<ul>
+<li>你可以把 key 看成复合 tuple。只要 <code>order_dim</code> 是最后一列，那么对“其余列全等 + 最后一列范围”就能用一次 range_scan 表达。</li>
+</ul>
+<hr />
+<h2 id="2-address-constraint-region">2. 数据模型：Address / Constraint / Region（收敛到可证明子语言）<a class="headerlink" href="#2-address-constraint-region" title="Permanent link">&para;</a></h2>
+<h3 id="21-dimension">2.1 Dimension（维度）<a class="headerlink" href="#21-dimension" title="Permanent link">&para;</a></h3>
+<p>维度只承担两件事：<strong>命名</strong>与<strong>类型/值域约束</strong>。不要引入单例缓存、动态扩展域等隐性复杂度。</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">Dimension</span><span class="p">:</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="c1"># 仅用于校验与编码；不把 Domain 做成可变/动态扩展机制</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">kind</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;int&quot;</span><span class="p">,</span> <span class="s2">&quot;str&quot;</span><span class="p">,</span> <span class="s2">&quot;bytes&quot;</span><span class="p">]</span>
+</span></code></pre></div>
+<p>约束：</p>
+<ul>
+<li><code>name</code> 在一个集合内唯一</li>
+<li><code>kind</code> 决定编码方式（以及是否能做 Range）</li>
+</ul>
+<h3 id="22-address">2.2 Address（点地址）<a class="headerlink" href="#22-address" title="Permanent link">&para;</a></h3>
+<p><strong>Address 是一个“完全指定的点”</strong>。它必须对集合声明的所有维度都给出值（不允许 ⊥ / wildcard）。</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">Address</span><span class="p">:</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">values</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="n">Dimension</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>  <span class="c1"># 必须覆盖 Dims 全集</span>
+</span></code></pre></div>
+<p>约束：</p>
+<ul>
+<li><code>Address.values</code> 的 key 必须覆盖该集合的 <code>Dims</code></li>
+<li>每个维度恰好一个值</li>
+</ul>
+<h3 id="23-constraint">2.3 Constraint（单维约束）<a class="headerlink" href="#23-constraint" title="Permanent link">&para;</a></h3>
+<p>只支持三种（足够覆盖我们目标 workload）：</p>
+<ul>
+<li><strong>Point</strong>：<code>d = v</code></li>
+<li><strong>Range</strong>：<code>lo ≤ d &lt; hi</code>（仅 <code>int</code> 维度支持）</li>
+<li><strong>Set</strong>：<code>d ∈ {v1, v2, ...}</code>（用于小集合；不承诺可无限扩展）</li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">Point</span><span class="p">:</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">value</span><span class="p">:</span> <span class="n">Any</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="k">class</span><span class="w"> </span><span class="nc">Range</span><span class="p">:</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">lo</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="n">hi</span><span class="p">:</span> <span class="nb">int</span>  <span class="c1"># half-open [lo, hi)</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="k">class</span><span class="w"> </span><span class="nc">SetC</span><span class="p">:</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="n">values</span><span class="p">:</span> <span class="nb">frozenset</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span>
+</span></code></pre></div>
+<h3 id="24-region">2.4 Region（合取约束区域）<a class="headerlink" href="#24-region" title="Permanent link">&para;</a></h3>
+<p>Region 是 <strong>“一组维度约束的合取（AND）”</strong>，没有表达式树，没有 union/intersection。</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">Region</span><span class="p">:</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">constraints</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="n">Dimension</span><span class="p">,</span> <span class="n">Point</span> <span class="o">|</span> <span class="n">Range</span> <span class="o">|</span> <span class="n">SetC</span><span class="p">]</span>
+</span></code></pre></div>
+<p>语义（集合论）：</p>
+<p>[
+\llbracket R \rrbracket \;=\;{ a \in Address \mid \forall d \in Dims,\; a(d) \text{ 满足 } R.constraints[d]}
+]</p>
+<p><strong>注意</strong>：</p>
+<ul>
+<li>Region 允许“缺维度约束”，表示该维度不受限（但 lowering 会因此拒绝某些模式；见第 4 章）</li>
+<li>Region 不保证可枚举。只有当所有约束都可有限展开且维度数很小、且调用方明确需要时才允许 enumerate（否则禁用）</li>
+</ul>
+<hr />
+<h2 id="3">3. 核心操作：只保留能产生确定性优化的那部分<a class="headerlink" href="#3" title="Permanent link">&para;</a></h2>
+<h3 id="31-projection">3.1 Projection（投影）——只用于路由/分组<a class="headerlink" href="#31-projection" title="Permanent link">&para;</a></h3>
+<p>投影不是“查询算子”，它的用途是从请求中抽取 partition key 进行分组/路由。</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">project_prefix</span><span class="p">(</span><span class="n">addr_or_region</span><span class="p">:</span> <span class="n">Address</span> <span class="o">|</span> <span class="n">Region</span><span class="p">,</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>                   <span class="n">dims</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Dimension</span><span class="p">,</span> <span class="o">...</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="sd">    返回按 dims 顺序的值/约束摘要（用于分组/路由）。</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="sd">    若是 Region，则 dims 中必须都是 Point 约束，否则无法形成确定的路由键。</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span></code></pre></div>
+<p>关键限制：</p>
+<ul>
+<li>对 Region 做 <code>project_prefix</code> 时，只接受被投影维度都为 <code>Point</code> 的情况（否则无法路由到确定 shard）</li>
+</ul>
+<h3 id="32-selection">3.2 Selection（切片）——唯一的“查询构造”操作<a class="headerlink" href="#32-selection" title="Permanent link">&para;</a></h3>
+<p>Selection 的工程意义是：构造/更新某维的约束，并在构造时做“同维合并/判空”。</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">select</span><span class="p">(</span><span class="n">r</span><span class="p">:</span> <span class="n">Region</span><span class="p">,</span> <span class="n">d</span><span class="p">:</span> <span class="n">Dimension</span><span class="p">,</span> <span class="n">c</span><span class="p">:</span> <span class="n">Point</span> <span class="o">|</span> <span class="n">Range</span> <span class="o">|</span> <span class="n">SetC</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Region</span><span class="p">:</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="sd">    r ∧ (d 满足 c)</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span></code></pre></div>
+<h3 id="33-offsetorder_dim-range">3.3 Offset（偏移）——限定为“order_dim 上的 range 平移”（用于预取）<a class="headerlink" href="#33-offsetorder_dim-range" title="Permanent link">&para;</a></h3>
+<p>Offset 不作为通用代数闭包运算。它只服务一个用途：生成预取窗口。</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">shift_range</span><span class="p">(</span><span class="n">r</span><span class="p">:</span> <span class="n">Region</span><span class="p">,</span> <span class="n">order_dim</span><span class="p">:</span> <span class="n">Dimension</span><span class="p">,</span> <span class="n">delta</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Region</span><span class="p">:</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="sd">    仅当 r 在 order_dim 上是 Range 时，执行 [lo,hi) -&gt; [lo+delta, hi+delta)</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="sd">    其余约束保持不变。若越界则判空或裁剪（由集合配置决定）。</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span></code></pre></div>
+<hr />
+<h2 id="4">4. 规范化与重写：确定性、可证明、可收敛<a class="headerlink" href="#4" title="Permanent link">&para;</a></h2>
+<p>本设计的“优化”不做计划搜索，只做 <strong>规范化（canonicalization）</strong>：</p>
+<ul>
+<li>目标：把 Region 规范化成少数“可 lowering 的 Normal Form”</li>
+<li>结果：缓存命中更稳定、批处理合并更容易、lowering 更简单</li>
+</ul>
+<h3 id="41-constraint-meet">4.1 约束交（Constraint meet）——必须实现但范围很小<a class="headerlink" href="#41-constraint-meet" title="Permanent link">&para;</a></h3>
+<p>定义 <code>meet(c1, c2)</code> 返回“同时满足”的最强约束，或 <code>Empty</code> 表示矛盾。</p>
+<p>规则（只列必要的）：</p>
+<ul>
+<li><code>meet(Point(v), Point(v)) = Point(v)</code>；<code>meet(Point(v), Point(u)) = Empty</code>（v≠u）</li>
+<li><code>meet(Point(v), Range(lo,hi)) = Point(v)</code> 若 lo≤v&lt;hi，否则 Empty</li>
+<li><code>meet(Range(a,b), Range(c,d)) = Range(max(a,c), min(b,d))</code> 若非空，否则 Empty</li>
+<li><code>meet(Set(S), Set(T)) = Set(S∩T)</code>；空集则 Empty</li>
+<li><code>meet(Set(S), Point(v))</code> 同理；<code>meet(Set(S), Range)</code> 可选（实现为过滤出落在 range 内的元素；若集合过大则拒绝）</li>
+</ul>
+<h3 id="42-canonicalization">4.2 规范化（Canonicalization）流程<a class="headerlink" href="#42-canonicalization" title="Permanent link">&para;</a></h3>
+<p>规范化是一个<strong>确定性</strong>过程，不做搜索、不做代价模型。输入 <code>Region</code>，输出：</p>
+<ul>
+<li><code>Empty</code>：无解</li>
+<li>或一个“规范 Region”（约束合并完成、表示稳定）</li>
+</ul>
+<p>规范化步骤：</p>
+<ol>
+<li><strong>同维合并</strong>：对同一维度的多次约束（来自多次 <code>select</code>）用 <code>meet</code> 合并；若为 <code>Empty</code> 则整体判空。</li>
+<li><strong>约束简化</strong>：</li>
+<li><code>SetC({v})</code> 归一化为 <code>Point(v)</code></li>
+<li><code>Range(lo, hi)</code> 若 <code>lo &gt;= hi</code> 判空</li>
+<li><strong>确定性排序</strong>：把 <code>constraints</code> 按维度名排序，作为 canonical 表示的一部分（用于缓存 key、去重、哈希）。</li>
+</ol>
+<p>设计约束（避免爆炸）：</p>
+<ul>
+<li><code>SetC</code> 只用于<strong>小集合</strong>，并应由上层传入明确的上限（例如 <code>max_set_cardinality &lt;= 64</code>）。超过上限应直接拒绝进入 lowering，而不是尝试“聪明”处理。</li>
+</ul>
+<h3 id="43-lowering-normal-formnf">4.3 可 lowering 的 Normal Form（NF）<a class="headerlink" href="#43-lowering-normal-formnf" title="Permanent link">&para;</a></h3>
+<p>为保证 lowering 简单且可证明，我们只承认两种可执行形态：</p>
+<ul>
+<li><strong>NF-PointQuery</strong>：所有维度都是 <code>Point</code></li>
+<li><strong>NF-RangeQuery</strong>：存在 <code>order_dim</code>，且：</li>
+<li><code>order_dim</code> 是 <code>Range(lo,hi)</code></li>
+<li>其余所有维度都是 <code>Point</code></li>
+</ul>
+<p>非 NF 的 Region 仍然有数学语义，但 v1 <strong>不保证可执行</strong>；必须在上层拆解/限制后再提交。</p>
+<hr />
+<h2 id="5-lowering-region">5. Lowering：从 Region 到后端原语（固定模式匹配）<a class="headerlink" href="#5-lowering-region" title="Permanent link">&para;</a></h2>
+<p>Lowering 的目标：把 NF 转成少量后端调用，不引入“查询引擎”。</p>
+<h3 id="51">5.1 后端原语（最小集合）<a class="headerlink" href="#51" title="Permanent link">&para;</a></h3>
+<p>每个数据集合（namespace）必须实现：</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">Backend</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">mget</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">keys</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">bytes</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">bytes</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]:</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;批量点查；缺失返回 None。&quot;&quot;&quot;</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">put_batch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">items</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">bytes</span><span class="p">,</span> <span class="nb">bytes</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;批量写入（幂等性/覆盖语义见 6.3）。&quot;&quot;&quot;</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">delete_batch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">keys</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">bytes</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;批量删除。&quot;&quot;&quot;</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">range_scan</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">prefix</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">,</span> <span class="n">lo</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">hi</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">bytes</span><span class="p">,</span> <span class="nb">bytes</span><span class="p">]]:</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="sd">        单维范围扫描：只对 key 的最后一个分量（order_dim）做 [lo,hi) 范围。</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="sd">        返回 (key,value) 流，调用方负责 decode 与过滤（通常不需要额外过滤）。</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="sd">        &quot;&quot;&quot;</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">prefetch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">keys</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">bytes</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;可选：异步预取提示。未实现可作为 no-op。&quot;&quot;&quot;</span>
+</span></code></pre></div>
+<h3 id="52-key">5.2 Key 编码（必须可排序、可前缀）<a class="headerlink" href="#52-key" title="Permanent link">&para;</a></h3>
+<p>要求 <code>encode_key(Address)</code> 满足：</p>
+<ul>
+<li>按 <code>KeyOrder = (prefix_dims..., order_dim)</code> 编码</li>
+<li>字节序的排序与 tuple 的字典序一致（至少在同 namespace 内一致）</li>
+</ul>
+<p>实践上推荐：</p>
+<ul>
+<li><code>int</code>：big-endian 定长编码（保持数值顺序）</li>
+<li><code>str</code>：length-prefix UTF-8 编码（先写 4 字节大端长度，再写 UTF-8 字节）</li>
+<li><code>bytes</code>：length-prefix</li>
+</ul>
+<blockquote>
+<p>注：这里的“可排序”不是为了“数据库”，只是为了让 <code>range_scan(prefix, lo, hi)</code> 成立。</p>
+</blockquote>
+<h3 id="53-lowering">5.3 模式匹配 lowering<a class="headerlink" href="#53-lowering" title="Permanent link">&para;</a></h3>
+<p>给定集合 schema（含 <code>Dims/KeyOrder/order_dim</code>）与一个已规范化的 <code>Region</code>：</p>
+<ul>
+<li><strong>NF-PointQuery → mget</strong></li>
+<li>构造唯一 <code>Address</code>（所有维度均为 Point）</li>
+<li><code>key = encode_key(address)</code></li>
+<li>
+<p>emit：<code>mget([key])</code>（批量由上层聚合）</p>
+</li>
+<li>
+<p><strong>NF-RangeQuery → range_scan</strong></p>
+</li>
+<li><code>prefix_addr</code> 取除 <code>order_dim</code> 外的所有点值，按 <code>prefix_dims</code> 编码为 <code>prefix</code></li>
+<li>取 <code>Range(lo,hi)</code> 的 <code>lo,hi</code></li>
+<li>emit：<code>range_scan(prefix, lo, hi)</code></li>
+</ul>
+<p>否则：<code>UnsupportedPattern</code>（明确返回，不尝试“自动变通”）。</p>
+<hr />
+<h2 id="6">6. 路由与一致性：最小、明确、可实现<a class="headerlink" href="#6" title="Permanent link">&para;</a></h2>
+<h3 id="61">6.1 分区键与路由<a class="headerlink" href="#61" title="Permanent link">&para;</a></h3>
+<p>每个集合必须声明 <code>partition_dims ⊆ prefix_dims</code>。路由键由这些维度的点值构成：</p>
+<ul>
+<li><code>partition_key = project_prefix(region, partition_dims)</code></li>
+<li><code>shard = route(namespace, partition_key)</code>（hash/range 均可）</li>
+</ul>
+<p>硬性要求：</p>
+<ul>
+<li>lowering 前必须能得到确定的 <code>partition_key</code>（即 <code>partition_dims</code> 都是 Point）。否则拒绝执行。</li>
+</ul>
+<h3 id="62">6.2 批量合并（系统级优化，不是查询优化器）<a class="headerlink" href="#62" title="Permanent link">&para;</a></h3>
+<p>对一批请求（多个 NF query），系统做三件事：</p>
+<ul>
+<li><strong>按 shard 分组</strong>：减少网络往返</li>
+<li><strong>点查合并</strong>：同 shard 的 PointQuery 合并成一次 <code>mget(keys)</code></li>
+<li><strong>范围合并</strong>：同 shard 且同 <code>prefix</code> 的 RangeQuery，若范围重叠/相邻则合并</li>
+</ul>
+<p>范围合并的确定性规则：</p>
+<ul>
+<li>对相同 <code>prefix</code> 的区间集合按 <code>lo</code> 排序，线性合并重叠/相邻区间（<code>next.lo &lt;= cur.hi</code>）。</li>
+</ul>
+<h3 id="63">6.3 写入语义（必须写清楚，否则一切都不严谨）<a class="headerlink" href="#63" title="Permanent link">&para;</a></h3>
+<p>v1 建议固定为最简单的“覆盖写”语义：</p>
+<ul>
+<li><code>put_batch</code>：同 key 多次写入，以最后一次为准（last-write-wins，在单机内）</li>
+<li>不提供事务/多 key 原子性</li>
+<li>如果需要版本/TTL，请在 namespace 层声明并体现在 value 编码中（不要把版本当成“隐式维度”塞进代数系统）</li>
+</ul>
+<hr />
+<h2 id="7-prefetch">7. 预取（Prefetch）：只做确定性生成，不做在线自适应<a class="headerlink" href="#7-prefetch" title="Permanent link">&para;</a></h2>
+<p>预取只基于“有序维度 range + 固定步长/窗口”，不做学习、不做自适应。</p>
+<p>给定一个 RangeQuery：</p>
+<ul>
+<li>当前读取：<code>[lo, hi)</code></li>
+<li>预取 N 个窗口：<code>[lo+Δ, hi+Δ)</code>, <code>[lo+2Δ, hi+2Δ)</code>, ...</li>
+</ul>
+<p>其中 <code>Δ</code> 通常等于 block_size（例如 KV cache 的 token block）。</p>
+<p>预取的输出是额外的 <code>range_scan</code> 或 <code>mget</code>（取决于你是否将 block 抽象为点 key）。v1 建议：</p>
+<ul>
+<li>若存储按 token block 对齐，把每个 block 作为 PointQuery（更易控 IO）</li>
+<li>若后端支持连续 token 的 range_scan，则用 range 形式预取</li>
+</ul>
+<hr />
+<h2 id="8">8. 正确性声明与测试（只对“受限子语言”负责）<a class="headerlink" href="#8" title="Permanent link">&para;</a></h2>
+<h3 id="81">8.1 我们承诺证明/测试的内容<a class="headerlink" href="#81" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>meet</code> 正确：(\llbracket meet(c1,c2)\rrbracket = \llbracket c1\rrbracket \cap \llbracket c2\rrbracket)</li>
+<li>规范化幂等：<code>canon(canon(R)) == canon(R)</code></li>
+<li>规范化保持语义：(\llbracket canon(R)\rrbracket = \llbracket R\rrbracket)</li>
+<li>lowering 对 NF 保持语义：执行计划返回的键集合（或键-值流）与 (\llbracket R\rrbracket) 一致（在后端契约成立的前提下）</li>
+</ul>
+<h3 id="82-property-based">8.2 建议的 property-based 测试清单<a class="headerlink" href="#82-property-based" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Constraint meet</strong>：随机生成 <code>Point/Range/Set</code>，用枚举（小域）对比 <code>meet</code> 结果集合</li>
+<li><strong>Canonicalization</strong>：随机多次 <code>select</code> 组合，验证幂等性与交换/同维合并一致性</li>
+<li><strong>Lowering</strong>：对 NF-PointQuery/NF-RangeQuery，比较：</li>
+<li><code>encode_key</code>/<code>range_scan</code> 返回的 key 集合</li>
+<li>与直接枚举 (\llbracket R\rrbracket)（仅在小域）的一致性</li>
+</ul>
+<hr />
+<h2 id="9">9. 实现路线图（现实版本）<a class="headerlink" href="#9" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>目标</th>
+<th>验收标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0</td>
+<td>Schema/KeyOrder 定义 + key 编码 + <code>meet/canon/lowering</code></td>
+<td>property-based 测试通过；NF lowering 全覆盖</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>单机后端（内存 + 可选 RocksDB）支持 <code>mget/range_scan</code></td>
+<td>在目标 workload 上减少 IO 次数/减少 RPC 次数（可量化）</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>批量合并 + 预取（固定规则）</td>
+<td>P99 延迟下降；CPU 开销下降（profiling 可见）</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>分布式路由（按 partition_dims）</td>
+<td>跨 shard 路由正确；失败/重试语义明确</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10">10. 设计要点回顾（防止再次过度设计）<a class="headerlink" href="#10" title="Permanent link">&para;</a></h2>
+<ul>
+<li>代数的价值来自：<strong>稳定表示 + 可规范化 + 可 lowering</strong></li>
+<li>我们只对“Point + 单维 Range”负责，不承诺通用 Region 计算</li>
+<li>我们不做优化器/执行引擎；批量合并与范围合并是系统级确定性规则</li>
+<li>依赖的是 <strong>key 排序假设</strong>，不是"物理连续字节布局"</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2025 Persisting. All rights reserved.
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/reiase/Persisting" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "navigation.tracking", "navigation.top", "search.highlight", "search.share", "content.code.copy", "content.code.annotate"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
