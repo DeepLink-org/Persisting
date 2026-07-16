@@ -43,9 +43,24 @@ jobs:
         run: ./scripts/package-dlcapt.sh --incremental
       - name: verify archive
         run: |
-          archive="$(ls target/dlcapt/dlcapt-*.tar.gz | head -1)"
+          shopt -s nullglob
+          archives=(target/dlcapt/dlcapt-*.tar.gz)
+          if [[ "${#archives[@]}" -ne 1 ]]; then
+            printf 'Expected exactly one dlcapt archive, found %s\n' "${#archives[@]}" >&2
+            exit 1
+          fi
+          archive="${archives[0]}"
           (
             cd "$(dirname "${archive}")"
             sha256sum -c "$(basename "${archive}.sha256")"
           )
           bash crates/persisting-dlcapt/tests/release_archive.sh "${archive}"
+          printf 'DLCAPT_ARCHIVE=%s\n' "${archive}" >> "${GITHUB_ENV}"
+      - name: upload verified dlcapt archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlcapt-release-archive
+          path: |
+            ${{ env.DLCAPT_ARCHIVE }}
+            ${{ env.DLCAPT_ARCHIVE }}.sha256
+          if-no-files-found: error
