@@ -35,7 +35,8 @@ EOF
 clean_archive="${tmp}/clean.tar.gz"
 make_archive "${clean_archive}" \
   config/empty.json '{"api_key":""}' \
-  config/empty.yaml '"api_key": ""'
+  config/empty.yaml '"api_key": ""' \
+  config/online-example/proxy.toml 'api_key = ""'
 "${validator}" "${clean_archive}"
 
 unsafe_content_archive="${tmp}/unsafe-content.tar.gz"
@@ -75,6 +76,22 @@ make_archive "${unsafe_nested_name_archive}" \
   config/nested/proxy-online.toml 'api_key = ""'
 if "${validator}" "${unsafe_nested_name_archive}"; then
   echo "FAIL: archive with nested private online config name passed validation" >&2
+  exit 1
+fi
+
+unsafe_online_component_archive="${tmp}/unsafe-online-component.tar.gz"
+make_archive "${unsafe_online_component_archive}" \
+  config/online/proxy.toml 'api_key = ""'
+if "${validator}" "${unsafe_online_component_archive}"; then
+  echo "FAIL: archive with online directory component passed validation" >&2
+  exit 1
+fi
+
+unsafe_beta_component_archive="${tmp}/unsafe-beta-component.tar.gz"
+make_archive "${unsafe_beta_component_archive}" \
+  config/beta/nested/proxy.toml 'api_key = ""'
+if "${validator}" "${unsafe_beta_component_archive}"; then
+  echo "FAIL: archive with beta directory component passed validation" >&2
   exit 1
 fi
 

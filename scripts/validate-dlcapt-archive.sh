@@ -29,6 +29,7 @@ forbidden_literals = (
     "pjh-service",
 )
 private_config_name = re.compile(r"(?i)(?:^|[-_.])(?:online|beta)(?:[-_.]|$)")
+private_path_components = frozenset(("online", "beta"))
 private_config_reference = re.compile(
     r"(?im)\b[A-Za-z0-9_.-]*(?:online|beta)[A-Za-z0-9_.-]*\.toml\b"
 )
@@ -68,7 +69,13 @@ def is_empty_value(value: str) -> bool:
 
 violations: list[str] = []
 for path in sorted(deploy.rglob("*")):
-    relative = path.relative_to(deploy).as_posix()
+    relative_path = path.relative_to(deploy)
+    relative = relative_path.as_posix()
+    if any(
+        component.casefold() in private_path_components
+        for component in relative_path.parts
+    ):
+        violations.append(f"{relative}: private online/beta path component")
     if path.is_symlink():
         violations.append(f"{relative}: symlinks are not allowed in release archives")
         continue
