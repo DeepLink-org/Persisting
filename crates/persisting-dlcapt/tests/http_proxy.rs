@@ -143,10 +143,8 @@ async fn closed_loopback_upstream() -> String {
 #[tokio::test]
 async fn health_ready_models_admin_sessions_contract() {
     let dir = tempdir().unwrap();
-    let state = AppState::new(base_config(
-        dir.path().to_str().unwrap(),
-        "http://127.0.0.1:9/v1",
-    ));
+    let upstream = closed_loopback_upstream().await;
+    let state = AppState::new(base_config(dir.path().to_str().unwrap(), &upstream));
     let public = build_public_router(state.clone());
     let admin = build_admin_router(state);
 
@@ -271,6 +269,14 @@ async fn session_url_overrides_header_and_body_session() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    {
+        let captured_req = captured.lock().unwrap();
+        assert_eq!(captured_req[0].0, "/v1/chat/completions");
+        assert_eq!(captured_req[0].1["model"], "kimi-k2.5");
+        assert_eq!(captured_req[0].1["messages"][0]["role"], "user");
+        assert_eq!(captured_req[0].1["messages"][0]["content"], "ping");
+        assert_eq!(captured_req[0].1["stream"], false);
+    }
     wait_for_file(&dir.path().join("session-a/trajectory.md")).await;
     wait_for_file(&dir.path().join("session-a/session_steps.json")).await;
     let _ = shutdown.send(());
@@ -340,7 +346,22 @@ async fn streaming_chat_returns_sse_and_writes_capture() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(ct.contains("text/event-stream"), "content-type={ct}");
-    let _ = body_bytes(response).await;
+    let body = String::from_utf8(body_bytes(response).await.to_vec()).unwrap();
+    assert!(
+        body.contains(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}"
+        ),
+        "SSE delta was not relayed: {body}"
+    );
+    assert!(
+        body.contains("data: [DONE]"),
+        "SSE completion was not relayed: {body}"
+    );
+    {
+        let captured_req = captured.lock().unwrap();
+        assert_eq!(captured_req[0].0, "/v1/chat/completions");
+        assert_eq!(captured_req[0].1["stream"], true);
+    }
     wait_for_file(&dir.path().join("session-stream/trajectory.md")).await;
     wait_for_file(&dir.path().join("session-stream/session_steps.json")).await;
     let _ = shutdown.send(());
