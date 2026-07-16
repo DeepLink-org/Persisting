@@ -5792,6 +5792,7 @@ dependencies = [
  "dirs",
  "libloading",
  "persisting-capture",
+ "persisting-dlcapt",
  "persisting-engine",
  "persisting-proto",
  "reqwest 0.12.28",
