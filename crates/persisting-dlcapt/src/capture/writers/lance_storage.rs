@@ -124,7 +124,7 @@ mod tests {
             db_uri: "s3://bucket/prefix".to_string(),
             s3: Some(LanceS3Config {
                 region: "cn-north-1".to_string(),
-                endpoint: Some("http://ssd1.h.pjlab.org.cn:8060".to_string()),
+                endpoint: Some("http://s3.example.invalid:8060".to_string()),
                 allow_http: Some(true),
             }),
             ..LanceStorageConfig::default()
