@@ -29,8 +29,8 @@ Build the optional backend first:
 ```
 
 This is foreground-only. `store_dir`, storage sinks, model routes, and public/admin
-listen addresses come from the dlcapt TOML; `-o`, `-f`, and daemon actions remain
-capture-backend options.
+listen addresses come from the dlcapt TOML; `-o`, `-f`, `--debug`, and daemon
+actions remain capture-backend options.
 
 ## Run (release archive)
 

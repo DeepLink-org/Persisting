@@ -243,7 +243,8 @@ persisting traj proxy start \
 
 dlcapt 从自己的 TOML 读取 `store_dir`、存储 sinks、模型路由和 public/admin 监听地址。相对
 `store_dir` 按当前进程 cwd 解析，而不是按 TOML 文件目录解析。`traj stats`、`traj replay` 和
-`traj capture` 都不能读取或管理 dlcapt 的存储；这些命令仍属于 capture backend 工作流。
+`traj capture` 都不能读取或管理 dlcapt 的存储；这些命令仍属于 capture backend 工作流。仅属于
+capture backend 的 `-o`、`-f`、`--debug` 和 daemon actions 都不受 dlcapt 支持。
 
 ---
 

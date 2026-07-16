@@ -151,7 +151,8 @@ dlcapt reads its `store_dir`, storage sinks, model routes, and public/admin
 addresses from its TOML. A relative `store_dir` is resolved against the current
 process cwd, not the TOML's directory. Its storage is not managed or readable by
 `traj stats`, `traj replay`, or `traj capture`; those commands remain capture
-backend workflows.
+backend workflows. The capture-only `-o`, `-f`, `--debug`, and daemon actions
+are not supported by dlcapt.
 
 ---
 
