@@ -14,6 +14,14 @@ CLI is positional only: `dlcapt <config-path>`. There is no `serve -c`.
 
 ## Run (release archive)
 
+Build the precompiled archive from the workspace root:
+
+```bash
+./scripts/package-dlcapt.sh --incremental
+```
+
+After extracting `target/dlcapt/dlcapt-<version>-<target>.tar.gz`, run:
+
 ```bash
 ./bin/dlcapt config/proxy.lance-s3.deploy.toml
 ```
