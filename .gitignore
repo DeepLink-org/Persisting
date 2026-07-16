@@ -14,5 +14,3 @@ crates/persisting-dlcapt/.capture/
 crates/persisting-dlcapt/tmp/
 .build-tmp/
 target/dlcapt/
-*.tar.gz
-*.sha256

@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "crates/persisting-dlcapt/**"
+      - "crates/persisting-cli/**"
       - "scripts/package-dlcapt.sh"
       - "scripts/validate-dlcapt-archive.sh"
       - "scripts/cargo-with-protoc.sh"
@@ -15,6 +16,7 @@ on:
   pull_request:
     paths:
       - "crates/persisting-dlcapt/**"
+      - "crates/persisting-cli/**"
       - "scripts/package-dlcapt.sh"
       - "scripts/validate-dlcapt-archive.sh"
       - "scripts/cargo-with-protoc.sh"
@@ -45,6 +47,14 @@ jobs:
         run: ./scripts/cargo-with-protoc.sh clippy -p persisting-dlcapt --all-targets --all-features --locked -- -D warnings
       - name: doc
         run: RUSTDOCFLAGS="-D warnings" ./scripts/cargo-with-protoc.sh doc -p persisting-dlcapt --all-features --no-deps --locked
+      - name: build standalone dlcapt
+        run: ./scripts/cargo-with-protoc.sh build -p persisting-dlcapt --locked
+      - name: test persisting-cli dlcapt feature
+        run: |
+          metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
+          target_directory="$(jq -r '.target_directory' <<<"${metadata}")"
+          DLCAPT_BIN="${target_directory}/debug/dlcapt" \
+            ./scripts/cargo-with-protoc.sh test -p persisting-cli --features dlcapt --locked
       - name: package archive
         run: ./scripts/package-dlcapt.sh --incremental
       - name: verify archive
