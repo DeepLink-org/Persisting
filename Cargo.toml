@@ -6,6 +6,7 @@ members = [
     "crates/persisting-core",
     "crates/persisting-capture",
     "crates/persisting-cli",
+    "crates/persisting-dlcapt",
 ]
 
 [workspace.package]
