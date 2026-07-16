@@ -1,0 +1,51 @@
+name: dlcapt
+
+on:
+  push:
+    paths:
+      - "crates/persisting-dlcapt/**"
+      - "scripts/package-dlcapt.sh"
+      - "scripts/cargo-with-protoc.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/dlcapt.yml"
+  pull_request:
+    paths:
+      - "crates/persisting-dlcapt/**"
+      - "scripts/package-dlcapt.sh"
+      - "scripts/cargo-with-protoc.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/dlcapt.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check
+      - name: check
+        run: ./scripts/cargo-with-protoc.sh check -p persisting-dlcapt --all-targets --all-features --locked
+      - name: test
+        run: ./scripts/cargo-with-protoc.sh test -p persisting-dlcapt --all-targets --all-features --locked
+      - name: clippy
+        run: ./scripts/cargo-with-protoc.sh clippy -p persisting-dlcapt --all-targets --all-features --locked -- -D warnings
+      - name: doc
+        run: RUSTDOCFLAGS="-D warnings" ./scripts/cargo-with-protoc.sh doc -p persisting-dlcapt --all-features --no-deps --locked
+      - name: package archive
+        run: ./scripts/package-dlcapt.sh --incremental
+      - name: verify archive
+        run: |
+          archive="$(ls target/dlcapt/dlcapt-*.tar.gz | head -1)"
+          (
+            cd "$(dirname "${archive}")"
+            sha256sum -c "$(basename "${archive}.sha256")"
+          )
+          bash crates/persisting-dlcapt/tests/release_archive.sh "${archive}"

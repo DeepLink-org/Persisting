@@ -3,6 +3,13 @@
 `persisting-dlcapt` 是 Persisting workspace 内独立运行的 OpenAI 兼容代理与轨迹采集服务。
 第一阶段不依赖 `persisting-capture` 或 `persisting-engine`，以保持现有 dlcapt HTTP、session 和存储契约。
 
+## Source and license
+
+The maintained runtime source is this `crates/persisting-dlcapt` package. It was
+migrated from Capture `external/dlcapt`; that path describes the source
+provenance, not the current runtime location. The package follows the
+workspace's Apache-2.0 license policy; see the repository `NOTICE`.
+
 ## Run (development)
 
 ```bash

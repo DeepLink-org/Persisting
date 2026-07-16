@@ -42,6 +42,7 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 - **[Capture 快速上手](capture_quickstart.md)** — `traj capture`、`traj proxy`、查看轨迹、排错
 - [Traj 命令](../design/cli_trajectory_command.zh.md) — 完整子命令
 - [Capture 架构设计](../design/capture_design.zh.md) — 概念与数据流
+- **独立 dlcapt（`persisting-dlcapt`）** — 自 Capture `external/dlcapt` 迁入的独立 OpenAI 兼容代理；见 `crates/persisting-dlcapt/README.md`。第一阶段不替代 `persisting-capture`。
 
 ### 流式追加（已可用）
 
