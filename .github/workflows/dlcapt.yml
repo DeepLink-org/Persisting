@@ -5,6 +5,7 @@ on:
     paths:
       - "crates/persisting-dlcapt/**"
       - "scripts/package-dlcapt.sh"
+      - "scripts/validate-dlcapt-archive.sh"
       - "scripts/cargo-with-protoc.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -13,6 +14,7 @@ on:
     paths:
       - "crates/persisting-dlcapt/**"
       - "scripts/package-dlcapt.sh"
+      - "scripts/validate-dlcapt-archive.sh"
       - "scripts/cargo-with-protoc.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -54,6 +56,7 @@ jobs:
             cd "$(dirname "${archive}")"
             sha256sum -c "$(basename "${archive}.sha256")"
           )
+          bash crates/persisting-dlcapt/tests/archive_sanitization.sh
           bash crates/persisting-dlcapt/tests/release_archive.sh "${archive}"
           printf 'DLCAPT_ARCHIVE=%s\n' "${archive}" >> "${GITHUB_ENV}"
       - name: upload verified dlcapt archive
