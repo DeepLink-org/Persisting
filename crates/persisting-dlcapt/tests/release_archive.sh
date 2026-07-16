@@ -2,6 +2,7 @@
 set -euo pipefail
 
 archive="${1:?usage: release_archive.sh <archive.tar.gz>}"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 tmp="$(mktemp -d)"
 cleanup() {
   local pid
@@ -24,6 +25,7 @@ test -f "${checksum}"
   cd "${checksum_dir}"
   sha256sum -c "${checksum_file}"
 )
+"${ROOT}/scripts/validate-dlcapt-archive.sh" "${archive}"
 recorded_name="$(awk 'NR == 1 { sub(/^\*/, "", $2); print $2 }' "${checksum}")"
 [[ "${recorded_name}" == "${archive_file}" ]] \
   || { echo "FAIL: checksum must record archive basename" >&2; exit 1; }
@@ -32,6 +34,10 @@ tar -xzf "${archive}" -C "${tmp}"
 test -x "${tmp}/dlcapt-deploy/bin/dlcapt"
 test -f "${tmp}/dlcapt-deploy/config/proxy.lance-s3.deploy.toml"
 test -f "${tmp}/dlcapt-deploy/config/proxy.example.toml"
+test -r "${tmp}/dlcapt-deploy/LICENSE"
+test -r "${tmp}/dlcapt-deploy/NOTICE"
+cmp -s "${tmp}/dlcapt-deploy/LICENSE" "${ROOT}/LICENSE"
+cmp -s "${tmp}/dlcapt-deploy/NOTICE" "${ROOT}/NOTICE"
 test ! -f "${tmp}/dlcapt-deploy/config/proxy.lance-s3-online.toml"
 if compgen -G "${tmp}/dlcapt-deploy/config/*online*" >/dev/null \
   || compgen -G "${tmp}/dlcapt-deploy/config/*beta*" >/dev/null; then

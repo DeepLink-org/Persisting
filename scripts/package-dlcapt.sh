@@ -95,6 +95,8 @@ cp "${CRATE_DIR}"/config/*.example.toml "${stage}/config/"
 cp "${CRATE_DIR}/config/proxy.lance-s3.deploy.example.toml" \
   "${stage}/config/proxy.lance-s3.deploy.toml"
 cp "${CRATE_DIR}/README.md" "${stage}/README.md"
+cp "${ROOT}/LICENSE" "${stage}/LICENSE"
+cp "${ROOT}/NOTICE" "${stage}/NOTICE"
 
 # Refuse private online/beta configs if someone drops them into config/
 if compgen -G "${stage}/config/*online*" >/dev/null \
@@ -104,6 +106,7 @@ if compgen -G "${stage}/config/*online*" >/dev/null \
 fi
 
 tar -czf "${archive}" -C "${OUT_DIR}" dlcapt-deploy
+"${SCRIPT_DIR}/validate-dlcapt-archive.sh" "${archive}"
 (
   cd "${OUT_DIR}"
   sha256sum "${archive_file}" > "${archive_file}.sha256"

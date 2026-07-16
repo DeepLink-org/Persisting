@@ -51,6 +51,6 @@ See `config/*.example.toml` for `json_file`, local Lance, and S3 Lance (`fail_op
 
 ## Safety
 
-- Examples bind `127.0.0.1` only. Binding `0.0.0.0` is for private deploys with firewall / reverse-proxy ACL; admin must not be exposed to untrusted networks.
+- Examples bind `127.0.0.1` only. Binding a wildcard all-interface address is for private deploys with firewall / reverse-proxy ACL; admin must not be exposed to untrusted networks.
 - Trajectories may contain prompts, responses, and header-derived metadata — never commit `var/` or `.capture/`.
 - Do not publish online/beta configs with real upstreams, buckets, or credentials.
