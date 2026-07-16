@@ -37,7 +37,7 @@ fn public_example_configs_parse() {
         .collect();
     assert_eq!(files, expected, "public example config contract changed");
     for example in &files {
-        ProxyConfig::load(&example)
+        ProxyConfig::load(example)
             .unwrap_or_else(|error| panic!("{}: {error:#}", example.display()));
     }
 }
