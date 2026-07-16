@@ -143,8 +143,8 @@ Prefer **`traj capture`** for one session; **`traj proxy`** for multi-terminal d
 must be enabled at build time and runs in the foreground only:
 
 ```bash
-./scripts/cargo-with-protoc.sh run -p persisting-cli --features dlcapt -- \
-  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.example.toml
+cargo run -p persisting-cli --features dlcapt -- \
+  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml
 ```
 
 dlcapt reads its `store_dir`, storage sinks, model routes, and public/admin
@@ -152,7 +152,8 @@ addresses from its TOML. A relative `store_dir` is resolved against the current
 process cwd, not the TOML's directory. Its storage is not managed or readable by
 `traj stats`, `traj replay`, or `traj capture`; those commands remain capture
 backend workflows. The capture-only `-o`, `-f`, `--debug`, and daemon actions
-are not supported by dlcapt.
+are not supported by dlcapt. Copy the template and replace `__STORE_DIR__` and
+`__UPSTREAM_BASE_URL__` before using it.
 
 ---
 

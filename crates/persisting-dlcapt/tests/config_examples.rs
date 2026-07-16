@@ -1,65 +1,50 @@
-use persisting_dlcapt::config::ProxyConfig;
 use std::path::{Path, PathBuf};
 
-const PUBLIC_EXAMPLES: [&str; 4] = [
-    "proxy.example.toml",
-    "proxy.lance-local.example.toml",
-    "proxy.lance-s3.deploy.example.toml",
-    "proxy.lance-s3.example.toml",
-];
 const OPENCLAW_TEMPLATE: &str = "proxy.openclaw-test.example.toml";
+const ALLOWED_PLACEHOLDERS: [&str; 2] = ["__STORE_DIR__", "__UPSTREAM_BASE_URL__"];
 
 fn config_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("config")
 }
 
-fn example_files() -> Vec<PathBuf> {
+fn config_files() -> Vec<PathBuf> {
     let root = config_root();
     let mut files: Vec<PathBuf> = std::fs::read_dir(&root)
         .unwrap_or_else(|_| panic!("missing config dir: {}", root.display()))
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(".example.toml") && !n.contains("openclaw-test"))
-        })
+        .filter(|p| p.is_file())
         .collect();
     files.sort();
     files
 }
 
 #[test]
-fn public_example_configs_parse() {
-    let files = example_files();
-    let expected: Vec<PathBuf> = PUBLIC_EXAMPLES
-        .iter()
-        .map(|name| config_root().join(name))
-        .collect();
-    assert_eq!(files, expected, "public example config contract changed");
-    for example in &files {
-        ProxyConfig::load(example)
-            .unwrap_or_else(|error| panic!("{}: {error:#}", example.display()));
-    }
+fn config_directory_contains_only_the_openclaw_template() {
+    assert_eq!(
+        config_files(),
+        vec![config_root().join(OPENCLAW_TEMPLATE)],
+        "the OpenClaw template is the only supported config example"
+    );
 }
 
 #[test]
-fn openclaw_template_exists_and_exclusively_uses_placeholders() {
+fn openclaw_template_uses_only_safe_placeholders() {
     let path = config_root().join(OPENCLAW_TEMPLATE);
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
-    assert!(raw.contains("__STORE_DIR__"));
-    assert!(raw.contains("__UPSTREAM_BASE_URL__"));
-    assert!(raw.contains("kimi-k2.5"));
-    assert!(raw.contains("127.0.0.1:19081"));
-    assert!(!raw.contains("ailab-pj"));
-    assert!(!raw.contains("0.0.0.0"));
-
-    for example in example_files() {
-        let contents = std::fs::read_to_string(&example).unwrap_or_else(|e| panic!("{e}"));
+    for placeholder in ALLOWED_PLACEHOLDERS {
+        assert!(raw.contains(placeholder), "missing {placeholder}");
+    }
+    for token in raw.split_whitespace().filter(|token| token.contains("__")) {
         assert!(
-            !contents.contains("__"),
-            "placeholders are reserved for {}: {}",
-            OPENCLAW_TEMPLATE,
-            example.display()
+            ALLOWED_PLACEHOLDERS
+                .iter()
+                .any(|placeholder| token.contains(placeholder)),
+            "unexpected placeholder token: {token}"
         );
     }
+    assert!(raw.contains("kimi-k2.5"));
+    assert!(raw.contains("127.0.0.1:19081"));
+    assert!(raw.contains("api_key = \"\""));
+    assert!(!raw.contains("ailab-pj"));
+    assert!(!raw.contains("0.0.0.0"));
 }

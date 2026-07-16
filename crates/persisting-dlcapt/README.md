@@ -14,42 +14,25 @@ workspace's Apache-2.0 license policy; see the repository `NOTICE`.
 
 ```bash
 cd /path/to/Persisting
-cargo run -p persisting-dlcapt -- crates/persisting-dlcapt/config/proxy.example.toml
+cargo run -p persisting-dlcapt -- crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml
 ```
 
 CLI is positional only: `dlcapt <config-path>`. There is no `serve -c`.
+Before use, copy the OpenClaw template and replace `__STORE_DIR__` and
+`__UPSTREAM_BASE_URL__` with local values.
 
 ## Run through persisting-cli
 
 Build the optional backend first:
 
 ```bash
-./scripts/cargo-with-protoc.sh run -p persisting-cli --features dlcapt -- \
-  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.example.toml
+cargo run -p persisting-cli --features dlcapt -- \
+  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml
 ```
 
 This is foreground-only. `store_dir`, storage sinks, model routes, and public/admin
 listen addresses come from the dlcapt TOML; `-o`, `-f`, `--debug`, and daemon
 actions remain capture-backend options.
-
-## Run (release archive)
-
-Build the precompiled archive from the workspace root:
-
-```bash
-./scripts/package-dlcapt.sh --incremental
-```
-
-Only publishers need Rust, Cargo, and `protoc` to build this archive. End users
-who download and extract a release archive need none of those build tools.
-
-After extracting `target/dlcapt/dlcapt-<version>-<target>.tar.gz`, run:
-
-```bash
-./bin/dlcapt config/proxy.lance-s3.deploy.toml
-```
-
-`store_dir` is resolved relative to the process **cwd**, not the config file path.
 
 ## Public / admin
 
@@ -60,7 +43,7 @@ Session priority: URL `{id}` > Header > body `metadata.session_id` > `default_se
 
 ## Storage
 
-See `config/*.example.toml` for `json_file`, local Lance, and S3 Lance (`fail_open` dead letter at `.capture/lance_dead_letter.jsonl`).
+Use `config/proxy.openclaw-test.example.toml` as the supported safe template.
 
 ## Safety
 
