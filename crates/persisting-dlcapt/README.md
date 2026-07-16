@@ -20,6 +20,9 @@ Build the precompiled archive from the workspace root:
 ./scripts/package-dlcapt.sh --incremental
 ```
 
+Only publishers need Rust, Cargo, and `protoc` to build this archive. End users
+who download and extract a release archive need none of those build tools.
+
 After extracting `target/dlcapt/dlcapt-<version>-<target>.tar.gz`, run:
 
 ```bash

@@ -59,10 +59,11 @@ mkdir -p "${OUT_DIR}"
 
 host_target="$(rustc -vV | awk '/^host:/{print $2}')"
 build_target="${TARGET:-${host_target}}"
-metadata="$(cargo metadata --no-deps --format-version 1)"
+metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
 version="$(jq -r '.packages[] | select(.name=="persisting-dlcapt") | .version' <<<"${metadata}")"
 cargo_target_dir="$(jq -r '.target_directory' <<<"${metadata}")"
 archive="${OUT_DIR}/dlcapt-${version}-${build_target}.tar.gz"
+archive_file="$(basename "${archive}")"
 stage="${OUT_DIR}/dlcapt-deploy"
 
 if [[ "${NO_BUILD}" -eq 0 ]]; then
@@ -103,7 +104,10 @@ if compgen -G "${stage}/config/*online*" >/dev/null \
 fi
 
 tar -czf "${archive}" -C "${OUT_DIR}" dlcapt-deploy
-sha256sum "${archive}" > "${archive}.sha256"
+(
+  cd "${OUT_DIR}"
+  sha256sum "${archive_file}" > "${archive_file}.sha256"
+)
 
 echo "OK archive:  ${archive}"
 echo "OK checksum: ${archive}.sha256"
