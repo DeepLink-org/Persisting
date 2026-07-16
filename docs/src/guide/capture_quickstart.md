@@ -143,8 +143,18 @@ Prefer **`traj capture`** for one session; **`traj proxy`** for multi-terminal d
 must be enabled at build time and runs in the foreground only:
 
 ```bash
+export DLCAPT_CONFIG="$HOME/.config/persisting/dlcapt-openclaw.toml"
+export DLCAPT_STORE_DIR="$HOME/.local/share/persisting/dlcapt"
+export DLCAPT_UPSTREAM_BASE_URL="https://your-upstream.example/v1"
+mkdir -p "$(dirname "$DLCAPT_CONFIG")"
+cp crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml "$DLCAPT_CONFIG"
+sed -i \
+  -e "s|__STORE_DIR__|$DLCAPT_STORE_DIR|g" \
+  -e "s|__UPSTREAM_BASE_URL__|$DLCAPT_UPSTREAM_BASE_URL|g" \
+  "$DLCAPT_CONFIG"
+
 cargo run -p persisting-cli --features dlcapt -- \
-  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml
+  traj proxy --backend dlcapt -c "$DLCAPT_CONFIG"
 ```
 
 dlcapt reads its `store_dir`, storage sinks, model routes, and public/admin
@@ -152,8 +162,8 @@ addresses from its TOML. A relative `store_dir` is resolved against the current
 process cwd, not the TOML's directory. Its storage is not managed or readable by
 `traj stats`, `traj replay`, or `traj capture`; those commands remain capture
 backend workflows. The capture-only `-o`, `-f`, `--debug`, and daemon actions
-are not supported by dlcapt. Copy the template and replace `__STORE_DIR__` and
-`__UPSTREAM_BASE_URL__` before using it.
+are not supported by dlcapt. The copied configuration is outside the repository,
+so it cannot be accidentally committed.
 
 ---
 

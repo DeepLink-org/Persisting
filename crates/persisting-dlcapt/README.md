@@ -10,16 +10,28 @@ migrated from Capture `external/dlcapt`; that path describes the source
 provenance, not the current runtime location. The package follows the
 workspace's Apache-2.0 license policy; see the repository `NOTICE`.
 
-## Run (development)
+## Prepare a local configuration
 
 ```bash
 cd /path/to/Persisting
-cargo run -p persisting-dlcapt -- crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml
+export DLCAPT_CONFIG="$HOME/.config/persisting/dlcapt-openclaw.toml"
+export DLCAPT_STORE_DIR="$HOME/.local/share/persisting/dlcapt"
+export DLCAPT_UPSTREAM_BASE_URL="https://your-upstream.example/v1"
+mkdir -p "$(dirname "$DLCAPT_CONFIG")"
+cp crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml "$DLCAPT_CONFIG"
+sed -i \
+  -e "s|__STORE_DIR__|$DLCAPT_STORE_DIR|g" \
+  -e "s|__UPSTREAM_BASE_URL__|$DLCAPT_UPSTREAM_BASE_URL|g" \
+  "$DLCAPT_CONFIG"
 ```
 
 CLI is positional only: `dlcapt <config-path>`. There is no `serve -c`.
-Before use, copy the OpenClaw template and replace `__STORE_DIR__` and
-`__UPSTREAM_BASE_URL__` with local values.
+
+## Run (development)
+
+```bash
+cargo run -p persisting-dlcapt -- "$DLCAPT_CONFIG"
+```
 
 ## Run through persisting-cli
 
@@ -27,7 +39,7 @@ Build the optional backend first:
 
 ```bash
 cargo run -p persisting-cli --features dlcapt -- \
-  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml
+  traj proxy --backend dlcapt -c "$DLCAPT_CONFIG"
 ```
 
 This is foreground-only. `store_dir`, storage sinks, model routes, and public/admin
