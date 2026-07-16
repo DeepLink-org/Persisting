@@ -232,6 +232,19 @@ persisting traj proxy start \
 
 若只想跑一轮对话，仍推荐 **`traj capture`**；长期多终端开发用 **`traj proxy`** 或 **`traj proxy start`**。
 
+### 3.5 可选 dlcapt 后端
+
+`traj proxy` 默认仍使用 capture backend。独立的 dlcapt 后端必须在构建时启用，且只支持前台运行：
+
+```bash
+./scripts/cargo-with-protoc.sh run -p persisting-cli --features dlcapt -- \
+  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.example.toml
+```
+
+dlcapt 从自己的 TOML 读取 `store_dir`、存储 sinks、模型路由和 public/admin 监听地址。相对
+`store_dir` 按当前进程 cwd 解析，而不是按 TOML 文件目录解析。`traj stats`、`traj replay` 和
+`traj capture` 都不能读取或管理 dlcapt 的存储；这些命令仍属于 capture backend 工作流。
+
 ---
 
 ## 4. 输出目录长什么样

@@ -19,6 +19,19 @@ cargo run -p persisting-dlcapt -- crates/persisting-dlcapt/config/proxy.example.
 
 CLI is positional only: `dlcapt <config-path>`. There is no `serve -c`.
 
+## Run through persisting-cli
+
+Build the optional backend first:
+
+```bash
+./scripts/cargo-with-protoc.sh run -p persisting-cli --features dlcapt -- \
+  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.example.toml
+```
+
+This is foreground-only. `store_dir`, storage sinks, model routes, and public/admin
+listen addresses come from the dlcapt TOML; `-o`, `-f`, and daemon actions remain
+capture-backend options.
+
 ## Run (release archive)
 
 Build the precompiled archive from the workspace root:

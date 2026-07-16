@@ -137,6 +137,22 @@ Omit `-o` on `list` / `status` / `stop` when using the last `start` dir or `PERS
 
 Prefer **`traj capture`** for one session; **`traj proxy`** for multi-terminal dev.
 
+### 3.5 Optional dlcapt backend
+
+`traj proxy` uses the capture backend by default. The independent dlcapt backend
+must be enabled at build time and runs in the foreground only:
+
+```bash
+./scripts/cargo-with-protoc.sh run -p persisting-cli --features dlcapt -- \
+  traj proxy --backend dlcapt -c crates/persisting-dlcapt/config/proxy.example.toml
+```
+
+dlcapt reads its `store_dir`, storage sinks, model routes, and public/admin
+addresses from its TOML. A relative `store_dir` is resolved against the current
+process cwd, not the TOML's directory. Its storage is not managed or readable by
+`traj stats`, `traj replay`, or `traj capture`; those commands remain capture
+backend workflows.
+
 ---
 
 ## 4. Output layout
