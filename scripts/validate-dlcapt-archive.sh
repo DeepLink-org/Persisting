@@ -33,13 +33,15 @@ private_config_reference = re.compile(
     r"(?im)\b[A-Za-z0-9_.-]*(?:online|beta)[A-Za-z0-9_.-]*\.toml\b"
 )
 credential_assignment = re.compile(
-    r"""(?im)^\s*(?:export\s+)?(?P<name>
+    r"""(?im)(?:^\s*(?:export\s+)?|[\{\[,]\s*)
+    (?P<quote>["']?)(?P<name>
         api[_-]?key|
         (?:access[_-]?)?token|
         password|
         secret(?:[_-]?[A-Za-z0-9_-]+)?|
         aws[_-]?(?:access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key)
-    )\s*(?:=|:)\s*(?P<value>.*?)\s*(?:\#.*)?$""",
+    )(?P=quote)\s*(?:=|:)\s*(?P<value>[^,\r\n}\#]*)
+    (?=\s*(?:,|}|\#|$))""",
     re.VERBOSE,
 )
 private_key = re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----")
@@ -72,7 +74,7 @@ for path in sorted(deploy.rglob("*")):
         continue
     if not path.is_file():
         continue
-    if path.parent == deploy / "config" and private_config_name.search(path.name):
+    if private_config_name.search(path.name):
         violations.append(f"{relative}: private online/beta config name")
 
     data = path.read_bytes()

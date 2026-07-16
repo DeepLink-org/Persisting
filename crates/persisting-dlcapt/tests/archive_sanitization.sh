@@ -33,7 +33,9 @@ EOF
 }
 
 clean_archive="${tmp}/clean.tar.gz"
-make_archive "${clean_archive}"
+make_archive "${clean_archive}" \
+  config/empty.json '{"api_key":""}' \
+  config/empty.yaml '"api_key": ""'
 "${validator}" "${clean_archive}"
 
 unsafe_content_archive="${tmp}/unsafe-content.tar.gz"
@@ -49,6 +51,30 @@ make_archive "${unsafe_name_archive}" \
   config/proxy-online.toml 'api_key = ""'
 if "${validator}" "${unsafe_name_archive}"; then
   echo "FAIL: archive with private online config name passed validation" >&2
+  exit 1
+fi
+
+unsafe_json_credential_archive="${tmp}/unsafe-json-credential.tar.gz"
+make_archive "${unsafe_json_credential_archive}" \
+  config/proxy.json '{"api_key":"leaked-secret"}'
+if "${validator}" "${unsafe_json_credential_archive}"; then
+  echo "FAIL: archive with JSON credential passed validation" >&2
+  exit 1
+fi
+
+unsafe_yaml_credential_archive="${tmp}/unsafe-yaml-credential.tar.gz"
+make_archive "${unsafe_yaml_credential_archive}" \
+  config/proxy.yaml '"token": "leaked-secret"'
+if "${validator}" "${unsafe_yaml_credential_archive}"; then
+  echo "FAIL: archive with YAML credential passed validation" >&2
+  exit 1
+fi
+
+unsafe_nested_name_archive="${tmp}/unsafe-nested-name.tar.gz"
+make_archive "${unsafe_nested_name_archive}" \
+  config/nested/proxy-online.toml 'api_key = ""'
+if "${validator}" "${unsafe_nested_name_archive}"; then
+  echo "FAIL: archive with nested private online config name passed validation" >&2
   exit 1
 fi
 

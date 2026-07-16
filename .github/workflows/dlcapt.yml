@@ -9,6 +9,8 @@ on:
       - "scripts/cargo-with-protoc.sh"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "LICENSE"
+      - "NOTICE"
       - ".github/workflows/dlcapt.yml"
   pull_request:
     paths:
@@ -18,6 +20,8 @@ on:
       - "scripts/cargo-with-protoc.sh"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "LICENSE"
+      - "NOTICE"
       - ".github/workflows/dlcapt.yml"
 
 jobs:
