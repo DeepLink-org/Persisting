@@ -7,3 +7,12 @@ __pycache__/
 .venv/
 *.abi3.so
 crates/persisting-engine/ds/
+
+# persisting-dlcapt runtime / release artifacts
+crates/persisting-dlcapt/var/
+crates/persisting-dlcapt/.capture/
+crates/persisting-dlcapt/tmp/
+.build-tmp/
+target/dlcapt/
+*.tar.gz
+*.sha256
