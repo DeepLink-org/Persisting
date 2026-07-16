@@ -106,10 +106,10 @@ impl LanceS3Config {
         if !self.region.is_empty() {
             opts.insert("aws_region".to_string(), self.region.clone());
         }
-        if let Some(endpoint) = &self.endpoint {
-            if !endpoint.is_empty() {
-                opts.insert("aws_endpoint".to_string(), endpoint.clone());
-            }
+        if let Some(endpoint) = &self.endpoint
+            && !endpoint.is_empty()
+        {
+            opts.insert("aws_endpoint".to_string(), endpoint.clone());
         }
         if self.allow_http_enabled() {
             opts.insert("allow_http".to_string(), "true".to_string());
@@ -287,10 +287,9 @@ impl ProxyConfig {
             toml::from_str(&raw).with_context(|| "failed parsing proxy.toml".to_string())?;
         if let Ok(uri) =
             std::env::var("DLCAPT_LANCE_DB_URI").or_else(|_| std::env::var("CAPTURE_LANCE_URI"))
+            && !uri.trim().is_empty()
         {
-            if !uri.trim().is_empty() {
-                parsed.storage.lance.db_uri = uri;
-            }
+            parsed.storage.lance.db_uri = uri;
         }
         parsed.validate()?;
         Ok(parsed)

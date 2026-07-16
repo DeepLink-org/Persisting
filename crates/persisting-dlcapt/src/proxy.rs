@@ -593,6 +593,9 @@ fn headers_to_map(headers: &HeaderMap) -> BTreeMap<String, String> {
     out
 }
 
+// The capture event is assembled from both request and response paths; grouping
+// its inputs would be a behavior-changing refactor during this mechanical migration.
+#[allow(clippy::too_many_arguments)]
 async fn persist_inference(
     state: &AppState,
     call: &InferenceCall,
@@ -676,17 +679,16 @@ fn parse_chat_sse_response(raw: &str) -> (Option<String>, Option<String>, Option
             content.push_str(delta_text);
         }
 
-        if content.is_empty() {
-            if let Some(message_text) = chunk
+        if content.is_empty()
+            && let Some(message_text) = chunk
                 .get("choices")
                 .and_then(Value::as_array)
                 .and_then(|choices| choices.first())
                 .and_then(|choice| choice.get("message"))
                 .and_then(|message| message.get("content"))
                 .and_then(Value::as_str)
-            {
-                content.push_str(message_text);
-            }
+        {
+            content.push_str(message_text);
         }
 
         if finish_reason.is_none() {

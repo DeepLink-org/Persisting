@@ -15,10 +15,10 @@ fn extract_tail_user_text(items: &[Value]) -> Option<String> {
         if item_type == "function_call_output" {
             continue;
         }
-        if item.get("role").and_then(Value::as_str) == Some("user") {
-            if let Some(text) = content_to_text(item.get("content")) {
-                return Some(text);
-            }
+        if item.get("role").and_then(Value::as_str) == Some("user")
+            && let Some(text) = content_to_text(item.get("content"))
+        {
+            return Some(text);
         }
         if let Some(text) = content_to_text(Some(item)) {
             return Some(text);
@@ -38,12 +38,11 @@ fn content_to_text(content: Option<&Value>) -> Option<String> {
                     if !text.trim().is_empty() {
                         texts.push(text.to_string());
                     }
-                } else if part.get("type").and_then(Value::as_str) == Some("input_text") {
-                    if let Some(text) = part.get("text").and_then(Value::as_str) {
-                        if !text.trim().is_empty() {
-                            texts.push(text.to_string());
-                        }
-                    }
+                } else if part.get("type").and_then(Value::as_str) == Some("input_text")
+                    && let Some(text) = part.get("text").and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    texts.push(text.to_string());
                 }
             }
             if texts.is_empty() {
@@ -59,10 +58,10 @@ fn content_to_text(content: Option<&Value>) -> Option<String> {
 
 pub fn summarize_responses_json_response(value: &Value) -> (Option<String>, Option<Value>) {
     let usage = value.get("usage").cloned();
-    if let Some(text) = value.get("output_text").and_then(Value::as_str) {
-        if !text.is_empty() {
-            return (Some(text.to_string()), usage);
-        }
+    if let Some(text) = value.get("output_text").and_then(Value::as_str)
+        && !text.is_empty()
+    {
+        return (Some(text.to_string()), usage);
     }
 
     let mut texts = Vec::new();
@@ -72,10 +71,10 @@ pub fn summarize_responses_json_response(value: &Value) -> (Option<String>, Opti
                 Some("message") => {
                     if let Some(parts) = item.get("content").and_then(Value::as_array) {
                         for part in parts {
-                            if part.get("type").and_then(Value::as_str) == Some("output_text") {
-                                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                                    texts.push(text.to_string());
-                                }
+                            if part.get("type").and_then(Value::as_str) == Some("output_text")
+                                && let Some(text) = part.get("text").and_then(Value::as_str)
+                            {
+                                texts.push(text.to_string());
                             }
                         }
                     }
@@ -123,10 +122,10 @@ pub fn summarize_responses_sse_response(raw: &str) -> (Option<String>, Option<Va
                 }
             }
             Some("response.output_text.done") => {
-                if content.is_empty() {
-                    if let Some(text) = chunk.get("text").and_then(Value::as_str) {
-                        content.push_str(text);
-                    }
+                if content.is_empty()
+                    && let Some(text) = chunk.get("text").and_then(Value::as_str)
+                {
+                    content.push_str(text);
                 }
             }
             _ => {}

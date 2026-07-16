@@ -50,10 +50,10 @@ pub fn resolve_session_with_source(
     default: &str,
 ) -> (String, SessionSource) {
     let mut headers = axum::http::HeaderMap::new();
-    if let Some(value) = header_session_id.filter(|value| !value.trim().is_empty()) {
-        if let Ok(header_value) = value.parse() {
-            headers.insert("x-session-id", header_value);
-        }
+    if let Some(value) = header_session_id.filter(|value| !value.trim().is_empty())
+        && let Ok(header_value) = value.parse()
+    {
+        headers.insert("x-session-id", header_value);
     }
 
     let settings = SessionIdSettings {

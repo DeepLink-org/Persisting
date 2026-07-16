@@ -35,10 +35,10 @@ pub fn resolve_session_layout_with_bucket(
     existing_run_bucket: Option<&str>,
 ) -> SessionLayout {
     let mut layout = resolve_session_layout(storage_session_id, default_session_id, now);
-    if storage_session_id != default_session_id {
-        if let Some(bucket) = existing_run_bucket.filter(|b| !b.is_empty()) {
-            layout.run_bucket = bucket.to_string();
-        }
+    if storage_session_id != default_session_id
+        && let Some(bucket) = existing_run_bucket.filter(|b| !b.is_empty())
+    {
+        layout.run_bucket = bucket.to_string();
     }
     layout
 }

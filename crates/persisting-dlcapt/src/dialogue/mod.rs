@@ -23,10 +23,10 @@ pub fn extract_last_user_message(body: &Value) -> Option<String> {
         if let Some(parts) = msg.get("content").and_then(Value::as_array) {
             let mut texts = Vec::new();
             for part in parts {
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                    if !text.trim().is_empty() {
-                        texts.push(text.to_string());
-                    }
+                if let Some(text) = part.get("text").and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    texts.push(text.to_string());
                 }
             }
             if !texts.is_empty() {

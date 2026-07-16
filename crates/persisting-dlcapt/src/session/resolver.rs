@@ -63,21 +63,20 @@ fn resolve_session_scoped(
         ctx.headers,
         &settings.session_header,
         &settings.session_header_aliases,
-    ) {
-        if header != raw_path {
-            conflicts.push(SessionConflict {
-                source: SessionSource::Header,
-                value: header,
-            });
-        }
+    ) && header != raw_path
+    {
+        conflicts.push(SessionConflict {
+            source: SessionSource::Header,
+            value: header,
+        });
     }
-    if let Some(body) = extract_body_metadata_session(ctx.body) {
-        if body != raw_path {
-            conflicts.push(SessionConflict {
-                source: SessionSource::BodyMetadata,
-                value: body,
-            });
-        }
+    if let Some(body) = extract_body_metadata_session(ctx.body)
+        && body != raw_path
+    {
+        conflicts.push(SessionConflict {
+            source: SessionSource::BodyMetadata,
+            value: body,
+        });
     }
 
     if !conflicts.is_empty() {
@@ -123,21 +122,21 @@ fn resolve_session_flat(
             .ok_or(SessionResolveError::InvalidSessionId)?;
 
     let mut conflicts = Vec::new();
-    if source != SessionSource::Header {
-        if let Some(value) = header {
-            conflicts.push(SessionConflict {
-                source: SessionSource::Header,
-                value,
-            });
-        }
+    if source != SessionSource::Header
+        && let Some(value) = header
+    {
+        conflicts.push(SessionConflict {
+            source: SessionSource::Header,
+            value,
+        });
     }
-    if source != SessionSource::BodyMetadata {
-        if let Some(value) = body {
-            conflicts.push(SessionConflict {
-                source: SessionSource::BodyMetadata,
-                value,
-            });
-        }
+    if source != SessionSource::BodyMetadata
+        && let Some(value) = body
+    {
+        conflicts.push(SessionConflict {
+            source: SessionSource::BodyMetadata,
+            value,
+        });
     }
 
     Ok(ResolvedSession {
