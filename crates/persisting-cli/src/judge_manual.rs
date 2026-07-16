@@ -332,7 +332,9 @@ mod tests {
     fn fixed_manual_scores_story_scope() {
         use persisting_capture::config::CaptureLevel;
         use persisting_capture::engine::Call;
-        use persisting_capture::sink::{llm_request_summary_record, llm_response_record_with_content};
+        use persisting_capture::sink::{
+            llm_request_summary_record, llm_response_record_with_content,
+        };
 
         let call = Call {
             call_id: "c1".into(),
@@ -368,9 +370,15 @@ mod tests {
             serde_json::to_string(&resp).unwrap(),
         ];
         let story = story_from_replay_json(&records, "s", "s").unwrap();
-        let scores =
-            fixed_manual_scores(&story, JudgeScope::Story, &["default".into()], 100, None, None)
-                .unwrap();
+        let scores = fixed_manual_scores(
+            &story,
+            JudgeScope::Story,
+            &["default".into()],
+            100,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(scores.len(), 1);
         assert_eq!(scores[0].score, 100);
         assert_eq!(scores[0].verdict, "pass");
@@ -381,7 +389,9 @@ mod tests {
     fn fixed_manual_scores_rejects_out_of_range() {
         use persisting_capture::config::CaptureLevel;
         use persisting_capture::engine::Call;
-        use persisting_capture::sink::{llm_request_summary_record, llm_response_record_with_content};
+        use persisting_capture::sink::{
+            llm_request_summary_record, llm_response_record_with_content,
+        };
 
         let call = Call {
             call_id: "c1".into(),
@@ -417,6 +427,14 @@ mod tests {
             serde_json::to_string(&resp).unwrap(),
         ];
         let story = story_from_replay_json(&records, "s", "s").unwrap();
-        assert!(fixed_manual_scores(&story, JudgeScope::Story, &["default".into()], 101, None, None).is_err());
+        assert!(fixed_manual_scores(
+            &story,
+            JudgeScope::Story,
+            &["default".into()],
+            101,
+            None,
+            None
+        )
+        .is_err());
     }
 }

@@ -2260,7 +2260,10 @@ fn run_traj_judge(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeArgs) -> Resu
         }
     );
     if let Some(score) = args.score {
-        eprintln!("  fixed score={score} scope={scope:?} rubrics={}", rubric_ids.join(","));
+        eprintln!(
+            "  fixed score={score} scope={scope:?} rubrics={}",
+            rubric_ids.join(",")
+        );
     }
 
     let mut ok = 0usize;
