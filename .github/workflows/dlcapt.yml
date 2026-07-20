@@ -1,0 +1,47 @@
+name: dlcapt
+
+on:
+  push:
+    paths:
+      - "crates/persisting-dlcapt/**"
+      - "crates/persisting-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/dlcapt.yml"
+  pull_request:
+    paths:
+      - "crates/persisting-dlcapt/**"
+      - "crates/persisting-cli/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/dlcapt.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check
+      - name: check
+        run: cargo check -p persisting-dlcapt --all-targets --all-features --locked
+      - name: test
+        run: cargo test -p persisting-dlcapt --all-targets --all-features --locked
+      - name: clippy
+        run: cargo clippy -p persisting-dlcapt --all-targets --all-features --locked -- -D warnings
+      - name: doc
+        run: RUSTDOCFLAGS="-D warnings" cargo doc -p persisting-dlcapt --all-features --no-deps --locked
+      - name: build standalone dlcapt
+        run: cargo build -p persisting-dlcapt --locked
+      - name: test persisting-cli dlcapt feature
+        run: |
+          metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
+          target_directory="$(jq -r '.target_directory' <<<"${metadata}")"
+          DLCAPT_BIN="${target_directory}/debug/dlcapt" \
+            cargo test -p persisting-cli --features dlcapt --locked

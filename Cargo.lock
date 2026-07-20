@@ -4149,6 +4149,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
+ "protobuf-src",
  "rand 0.9.4",
  "rayon",
  "roaring",
@@ -4316,6 +4317,7 @@ dependencies = [
  "num-traits",
  "prost",
  "prost-build",
+ "protobuf-src",
  "rand 0.9.4",
  "strum",
  "tokio",
@@ -4353,6 +4355,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
+ "protobuf-src",
  "tokio",
  "tracing",
 ]
@@ -4427,6 +4430,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
+ "protobuf-src",
  "rand 0.9.4",
  "rand_distr",
  "rangemap",
@@ -4558,6 +4562,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
+ "protobuf-src",
  "rand 0.9.4",
  "rangemap",
  "roaring",
@@ -5787,12 +5792,14 @@ dependencies = [
  "dirs",
  "libloading",
  "persisting-capture",
+ "persisting-dlcapt",
  "persisting-engine",
  "persisting-proto",
  "reqwest 0.12.28",
  "ron",
  "serde",
  "serde_json",
+ "tempfile",
  "termimad",
  "tokio",
  "toml",
@@ -5812,6 +5819,30 @@ dependencies = [
  "pythonize",
  "ron",
  "serde_json",
+]
+
+[[package]]
+name = "persisting-dlcapt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "chrono",
+ "http-body-util",
+ "lance",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6114,6 +6145,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
 dependencies = [
  "prost",
+]
+
+[[package]]
+name = "protobuf-src"
+version = "2.1.1+27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6217c3504da19b85a3a4b2e9a5183d635822d83507ba0986624b5c05b83bfc40"
+dependencies = [
+ "cmake",
 ]
 
 [[package]]

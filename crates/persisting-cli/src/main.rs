@@ -635,19 +635,23 @@ enum TrajectoryCommand {
     JudgeStats(TrajectoryJudgeStatsArgs),
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum ProxyBackend {
+    #[default]
+    Capture,
+    Dlcapt,
+}
+
 /// `traj proxy` (foreground) or `traj proxy start|stop|list|status`.
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true, after_long_help = PROXY_AFTER_HELP)]
 struct ProxyArgs {
     #[command(subcommand)]
     action: Option<ProxyAction>,
+    #[arg(long, value_enum, default_value_t = ProxyBackend::Capture)]
+    backend: ProxyBackend,
     /// Foreground proxy only: trajectory store root (`-o` with `traj proxy start` too).
-    #[arg(
-        long,
-        short = 'o',
-        value_name = "DIR",
-        env = "PERSISTING_CAPTURE_STORAGE"
-    )]
+    #[arg(long, short = 'o', value_name = "DIR")]
     output_dir: Option<String>,
     /// Foreground proxy only: proxy TOML (`listen`, `models`, …).
     #[arg(long, short = 'c', value_name = "FILE")]
@@ -656,8 +660,8 @@ struct ProxyArgs {
     #[arg(long)]
     debug: bool,
     /// Foreground proxy only: `md` (Markdown only) or `vortex` / `bin` (Vortex + live Markdown).
-    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
-    format: capture::CaptureFormat,
+    #[arg(long, short = 'f', value_enum)]
+    format: Option<capture::CaptureFormat>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1109,10 +1113,24 @@ fn run_traj_import(lazy: &mut LazyEngine<'_>, args: &CaptureImportArgs) -> Resul
 }
 
 fn run_traj_proxy(lazy: &mut LazyEngine<'_>, args: &ProxyArgs) -> Result<()> {
+    match args.backend {
+        ProxyBackend::Capture => run_capture_proxy(lazy, args),
+        ProxyBackend::Dlcapt => run_dlcapt_proxy(args),
+    }
+}
+
+fn capture_output_dir(args: &ProxyArgs) -> Option<String> {
+    args.output_dir
+        .clone()
+        .or_else(|| std::env::var("PERSISTING_CAPTURE_STORAGE").ok())
+}
+
+fn run_capture_proxy(lazy: &mut LazyEngine<'_>, args: &ProxyArgs) -> Result<()> {
+    let format = args.format.unwrap_or(capture::CaptureFormat::Markdown);
     match &args.action {
         None => {
-            let output_dir = args
-                .output_dir
+            let capture_output_dir = capture_output_dir(args);
+            let output_dir = capture_output_dir
                 .as_deref()
                 .context("traj proxy requires -o <DIR>")?;
             let config = args
@@ -1125,7 +1143,7 @@ fn run_traj_proxy(lazy: &mut LazyEngine<'_>, args: &ProxyArgs) -> Result<()> {
                     output_dir: output_dir.to_string(),
                     config: config.to_path_buf(),
                     debug: args.debug,
-                    format: args.format,
+                    format,
                 },
             )
         }
@@ -1149,6 +1167,57 @@ fn run_traj_proxy(lazy: &mut LazyEngine<'_>, args: &ProxyArgs) -> Result<()> {
             capture::daemon::cmd_status(manage.output_dir.as_deref().map(Path::new))
         }
     }
+}
+
+#[cfg(feature = "dlcapt")]
+fn reject_dlcapt_capture_options(args: &ProxyArgs) -> Result<()> {
+    if args.output_dir.is_some() {
+        anyhow::bail!(
+            "-o is only supported by the capture backend; configure store_dir in the dlcapt TOML"
+        );
+    }
+    if args.format.is_some() {
+        anyhow::bail!("-f is only supported by the capture backend");
+    }
+    if args.debug {
+        anyhow::bail!("--debug is only supported by the capture backend");
+    }
+    if args.action.is_some() {
+        anyhow::bail!("start, stop, list, and status are only supported by the capture backend");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "dlcapt"))]
+fn run_dlcapt_proxy(_args: &ProxyArgs) -> Result<()> {
+    anyhow::bail!(
+        "dlcapt backend is not included in this build; rebuild persisting-cli with --features dlcapt"
+    )
+}
+
+#[cfg(feature = "dlcapt")]
+fn init_dlcapt_cli_tracing_once() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "dlcapt=info,tower_http=info".into()),
+        )
+        .try_init();
+}
+
+#[cfg(feature = "dlcapt")]
+fn run_dlcapt_proxy(args: &ProxyArgs) -> Result<()> {
+    reject_dlcapt_capture_options(args)?;
+    let config_path = args
+        .config
+        .as_deref()
+        .context("traj proxy --backend dlcapt requires -c <dlcapt.toml>")?;
+    let config = persisting_dlcapt::config::ProxyConfig::load(config_path)
+        .with_context(|| format!("load dlcapt config {}", config_path.display()))?;
+    init_dlcapt_cli_tracing_once();
+    tokio::runtime::Runtime::new()
+        .context("tokio runtime")?
+        .block_on(persisting_dlcapt::serve(config))
 }
 
 struct TrajectoryAppendJob {
@@ -2260,7 +2329,10 @@ fn run_traj_judge(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeArgs) -> Resu
         }
     );
     if let Some(score) = args.score {
-        eprintln!("  fixed score={score} scope={scope:?} rubrics={}", rubric_ids.join(","));
+        eprintln!(
+            "  fixed score={score} scope={scope:?} rubrics={}",
+            rubric_ids.join(",")
+        );
     }
 
     let mut ok = 0usize;

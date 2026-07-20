@@ -42,6 +42,7 @@ Proxy and record LLM traffic under **`persisting traj`**:
 - **[Capture Quick Start](capture_quickstart.md)** — `traj capture`, `traj proxy`, inspect trajectories
 - [Traj command](../design/cli_trajectory_command.zh.md)
 - [Capture architecture](../design/capture_design.zh.md) (中文)
+- **Standalone dlcapt (`persisting-dlcapt`)** — independent OpenAI-compatible proxy migrated from Capture `external/dlcapt`; see `crates/persisting-dlcapt/README.md`. Phase-1 does not replace `persisting-capture`.
 
 ### Streaming Append (available now)
 

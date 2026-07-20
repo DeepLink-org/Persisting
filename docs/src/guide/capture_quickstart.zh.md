@@ -232,6 +232,31 @@ persisting traj proxy start \
 
 若只想跑一轮对话，仍推荐 **`traj capture`**；长期多终端开发用 **`traj proxy`** 或 **`traj proxy start`**。
 
+### 3.5 可选 dlcapt 后端
+
+`traj proxy` 默认仍使用 capture backend。独立的 dlcapt 后端必须在构建时启用，且只支持前台运行：
+
+```bash
+export DLCAPT_CONFIG="$HOME/.config/persisting/dlcapt-openclaw.toml"
+export DLCAPT_STORE_DIR="$HOME/.local/share/persisting/dlcapt"
+export DLCAPT_UPSTREAM_BASE_URL="https://your-upstream.example/v1"
+mkdir -p "$(dirname "$DLCAPT_CONFIG")"
+cp crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml "$DLCAPT_CONFIG"
+sed -i \
+  -e "s|__STORE_DIR__|$DLCAPT_STORE_DIR|g" \
+  -e "s|__UPSTREAM_BASE_URL__|$DLCAPT_UPSTREAM_BASE_URL|g" \
+  "$DLCAPT_CONFIG"
+
+cargo run -p persisting-cli --features dlcapt -- \
+  traj proxy --backend dlcapt -c "$DLCAPT_CONFIG"
+```
+
+dlcapt 从自己的 TOML 读取 `store_dir`、存储 sinks、模型路由和 public/admin 监听地址。相对
+`store_dir` 按当前进程 cwd 解析，而不是按 TOML 文件目录解析。`traj stats`、`traj replay` 和
+`traj capture` 都不能读取或管理 dlcapt 的存储；这些命令仍属于 capture backend 工作流。仅属于
+capture backend 的 `-o`、`-f`、`--debug` 和 daemon actions 都不受 dlcapt 支持。复制后的配置位于仓库外，
+不会被意外提交。
+
 ---
 
 ## 4. 输出目录长什么样

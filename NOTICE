@@ -1,0 +1,13 @@
+persisting-dlcapt
+=================
+
+This workspace includes `persisting-dlcapt`, migrated from
+`capture/external/dlcapt` (source tree copy of first-party Rust sources).
+
+Target package: persisting-dlcapt
+License: Apache-2.0 (workspace policy)
+Third-party source files copied verbatim outside Cargo crates.io
+dependencies: none identified at migration time.
+
+If additional vendored sources or incompatible licenses are discovered,
+stop publication and obtain explicit clearance before release.

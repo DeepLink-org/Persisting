@@ -1,0 +1,34 @@
+# Rendered by Capture openclaw helper: replace __STORE_DIR__ and __UPSTREAM_BASE_URL__.
+listen = "127.0.0.1:19081"
+admin_listen = "127.0.0.1:19082"
+store_dir = "__STORE_DIR__"
+agent_id = "openclaw"
+session_header = "x-persisting-session-id"
+default_session_id = "default"
+preserve_raw = false
+base_session_path = "/v1/sessions"
+
+[storage]
+authoritative = "json_file"
+also = ["md"]
+
+[export.defaults]
+env_name = "openclaw"
+job_id = "dlcapt"
+
+[export.session_metadata]
+source = "dlcapt-proxy"
+
+[[models]]
+name = "kimi-k2.5"
+display_name = "Kimi K2.5"
+provider = "openai"
+upstream_base_url = "__UPSTREAM_BASE_URL__"
+api_key = ""
+
+[[models]]
+name = "*"
+display_name = "Fallback"
+provider = "openai"
+upstream_base_url = "__UPSTREAM_BASE_URL__"
+api_key = ""
