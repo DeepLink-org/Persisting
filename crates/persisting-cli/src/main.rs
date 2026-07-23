@@ -296,12 +296,11 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Search(SearchArgs),
-    /// Agent trajectory: capture, proxy, inspect, repair
-    #[command(long_about = TRAJ_LONG_ABOUT)]
+    /// Agent trajectory: capture, proxy, inspect, repair（短名 `traj`）
+    #[command(visible_alias = "traj", long_about = TRAJ_LONG_ABOUT)]
     Trajectory(TrajectoryArgs),
-    /// Short alias for `trajectory`
-    #[command(name = "traj", long_about = TRAJ_LONG_ABOUT)]
-    Traj(TrajectoryArgs),
+    /// Run a compute plan (default). Use `--check` to validate locally first.
+    Compute(persisting_compute::ComputeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1035,10 +1034,25 @@ fn engine_lib_names() -> [&'static str; 3] {
 
 fn main() -> Result<()> {
     let cli = Cli::parse_from(normalize_cli_args(std::env::args().collect()));
-    let mut lazy = LazyEngine::new(&cli);
     match &cli.command {
-        Command::Search(args) => run_search(&mut lazy, args)?,
-        Command::Trajectory(args) | Command::Traj(args) => run_trajectory(&mut lazy, args)?,
+        Command::Compute(args) => {
+            persisting_compute::cli::init_tracing_with_verbose(args.verbose);
+            let args = args.clone();
+            let code = tokio::runtime::Runtime::new()
+                .context("tokio runtime")?
+                .block_on(persisting_compute::run_compute(args))?;
+            if code != std::process::ExitCode::SUCCESS {
+                std::process::exit(1);
+            }
+        }
+        Command::Search(args) => {
+            let mut lazy = LazyEngine::new(&cli);
+            run_search(&mut lazy, args)?;
+        }
+        Command::Trajectory(args) => {
+            let mut lazy = LazyEngine::new(&cli);
+            run_trajectory(&mut lazy, args)?;
+        }
     }
     Ok(())
 }
@@ -2525,11 +2539,11 @@ mod tests {
 
     fn add_args_from_cli(argv: &[&str]) -> TrajectoryAddArgs {
         let cli = Cli::try_parse_from(argv).unwrap();
-        let Command::Traj(TrajectoryArgs {
+        let Command::Trajectory(TrajectoryArgs {
             command: TrajectoryCommand::Add(args),
         }) = cli.command
         else {
-            panic!("expected traj add");
+            panic!("expected traj/trajectory add");
         };
         args
     }

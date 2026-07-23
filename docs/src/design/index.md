@@ -30,6 +30,7 @@ See [index.zh.md](index.zh.md) for the full Chinese index with document links an
 | Trajectory storage model | [trajectory_storage.zh.md](trajectory_storage.zh.md) (中文) |
 | Trajectory Markdown format | [trajectory_tlv_format.zh.md](trajectory_tlv_format.zh.md) |
 | Capture architecture | [capture_design.zh.md](capture_design.zh.md) (中文) |
+| Compute control plane (Phase-1) | [compute_control_plane.zh.md](compute_control_plane.zh.md) (中文) |
 | CLI architecture | [cli_architecture.zh.md](cli_architecture.zh.md) |
 | Queue persistence | [architecture.md](architecture.md) |
 | TTAS addressing | [tensor_address_algebra.md](tensor_address_algebra.md) |
