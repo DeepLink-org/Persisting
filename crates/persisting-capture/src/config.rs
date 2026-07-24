@@ -27,7 +27,35 @@ pub struct ProxyConfig {
     /// Log every proxied / captured HTTP request to stderr and `{storage}/.capture/debug.log`.
     #[serde(default)]
     pub debug: bool,
+    /// Harbor-aligned egress policy for forward-proxy traffic (`CONNECT` + absolute-URI).
+    #[serde(default)]
+    pub network: NetworkConfig,
     pub models: Vec<ModelRoute>,
+}
+
+/// Egress control for the capture forward proxy (Harbor-style modes).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkConfig {
+    /// `public` (default) | `no-network` | `allowlist`.
+    #[serde(default)]
+    pub mode: NetworkMode,
+    /// Allowlist entries when `mode = "allowlist"` (exact host, `*.suffix`, IP, CIDR).
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+/// Network egress mode (Harbor: `public` / `no-network` / `allowlist`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkMode {
+    /// Full forward-proxy access (default; backward compatible).
+    #[default]
+    Public,
+    /// Deny all non-loopback forward-proxy egress.
+    NoNetwork,
+    /// Only hosts in `allowed_hosts` (plus configured model upstream hosts); empty list denies all.
+    Allowlist,
 }
 
 fn default_admin_listen() -> String {
@@ -136,8 +164,9 @@ impl ProxyConfig {
         Ok(toml::to_string_pretty(self)?)
     }
 
-    /// Validate model entries, `forward` references, and duplicate names.
+    /// Validate model entries, `forward` references, network policy, and duplicate names.
     pub fn validate(&self) -> anyhow::Result<()> {
+        crate::proxy::network_policy::validate_network_config(&self.network)?;
         let mut seen = HashSet::new();
         for route in &self.models {
             if !seen.insert(route.name.clone()) {

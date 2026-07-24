@@ -87,11 +87,44 @@ persisting traj capture -o ./store -c proxy.toml -f md -- python3 agent.py
 export DEEPSEEK_API_KEY=sk-...
 ```
 
-配置见 [`examples/llm-proxy/deepseek.toml`](../../examples/llm-proxy/deepseek.toml)：
+配置见 [`examples/llm-proxy/`](../../examples/llm-proxy/)：
+
+| 文件 | 用途 |
+|------|------|
+| [`deepseek.toml`](../../examples/llm-proxy/deepseek.toml) | DeepSeek 双协议（默认 `public`） |
+| [`multi-provider.toml`](../../examples/llm-proxy/multi-provider.toml) | 多厂商按 model 前缀路由 |
+| [`allowlist.toml`](../../examples/llm-proxy/allowlist.toml) | Harbor 风格 `allowlist` 出口控制 |
 
 - `listen`：Capture 代理监听地址（默认 `127.0.0.1:19081`）
 - `agent_id`：轨迹目录名（如 `deepseek-proxy`）
 - `[[models]]`：上游路由（OpenAI / Anthropic 双协议）
+- `[network]`（可选）：Harbor 风格出口控制，见下方
+
+#### 网络出口策略（可选）
+
+`[network]` 对齐 [Harbor Network Policy](https://www.harborframework.com/docs/tasks/network-policy) 的三种模式，但强制手段不同：Capture 在显式 `HTTP_PROXY` 的 `CONNECT` / 绝对 URI 转发入口拦截，不做 nft/gost 透明劫持。仍依赖子进程遵守代理环境变量。
+
+| `mode` | 行为 |
+|--------|------|
+| `public`（默认） | 转发代理全放行（与旧行为一致） |
+| `no-network` | 拒绝非本机出站 |
+| `allowlist` | 仅允许 `allowed_hosts`；列表为空则全拒。配置的 `[[models]].upstream` / `upstream_anthropic` host 会自动并入白名单 |
+
+`allowed_hosts` 条目：精确 hostname、`*.example.com`（不含 apex）、IPv4/IPv6 literal、CIDR；不要写 URL、端口或路径。`example.com` 不含 `www.example.com`；需要两者时同时写 `example.com` 与 `*.example.com`。打到 `listen` 的相对路径 LLM 网关不受名单约束；`localhost` / `127.0.0.1` / `::1` 始终旁路。
+
+完整示例：[allowlist.toml](../../examples/llm-proxy/allowlist.toml)。片段：
+
+```toml
+[network]
+mode = "allowlist"
+allowed_hosts = [
+    "pypi.org",
+    "files.pythonhosted.org",
+    "github.com",
+    "api.github.com",
+    "registry.npmjs.org",
+]
+```
 
 ### 2.2 用 `traj capture` 包装 Agent
 

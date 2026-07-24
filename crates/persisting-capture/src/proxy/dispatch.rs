@@ -16,6 +16,9 @@ use super::forward::{
     handle_connect, is_forward_proxy_request, is_llm_capture_path, transparent_forward,
 };
 use super::llm_capture::llm_capture;
+use super::network_policy::{
+    assert_egress_allowed, forbidden_response, host_from_authority, NetworkPolicy,
+};
 use super::state::ProxyState;
 use crate::debug::{self, is_debug_enabled};
 use crate::session_storage::resolve_capture_route;
@@ -49,6 +52,27 @@ async fn dispatch(
     result
 }
 
+fn deny_egress(
+    state: &ProxyState,
+    policy: &NetworkPolicy,
+    host: &str,
+    reason: &super::network_policy::DenyReason,
+    session_id: &str,
+    debug_on: bool,
+) -> Response {
+    if debug_on {
+        debug::log_network_denied(
+            state.storage.as_path(),
+            host,
+            policy.mode_str(),
+            reason.as_str(),
+            session_id,
+        );
+    }
+    let (status, msg) = forbidden_response(host, reason);
+    (status, msg).into_response()
+}
+
 async fn dispatch_impl(
     state: ProxyState,
     req: Request,
@@ -65,21 +89,44 @@ async fn dispatch_impl(
     let session_id = log_route.session_id.clone();
     let cfg = effective_config(&state, &log_route);
     let debug_on = is_debug_enabled(&cfg, state.storage.as_path());
+    let policy = NetworkPolicy::from_config(&cfg)?;
 
     if *req.method() == Method::CONNECT {
-        if debug_on {
-            let target = req
-                .uri()
-                .authority()
-                .map(|a| a.to_string())
-                .unwrap_or_else(|| uri.clone());
-            debug::log_connect(state.storage.as_path(), &target, &session_id);
+        let authority = req
+            .uri()
+            .authority()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| uri.clone());
+        let host = host_from_authority(&authority);
+        if let Err(reason) = assert_egress_allowed(&policy, &host) {
+            return Ok(deny_egress(
+                &state,
+                &policy,
+                &host,
+                &reason,
+                &session_id,
+                debug_on,
+            ));
         }
-        return Ok(handle_connect(req).await);
+        if debug_on {
+            debug::log_connect(state.storage.as_path(), &authority, &session_id);
+        }
+        return Ok(handle_connect(req, &policy).await);
     }
 
     let path = req.uri().path().to_string();
     if is_forward_proxy_request(req.method(), req.uri()) {
+        let host = req.uri().host().map(str::to_string).unwrap_or_default();
+        if let Err(reason) = assert_egress_allowed(&policy, &host) {
+            return Ok(deny_egress(
+                &state,
+                &policy,
+                &host,
+                &reason,
+                &session_id,
+                debug_on,
+            ));
+        }
         if is_llm_capture_path(&path) {
             if debug_on {
                 debug::log_dispatch(
@@ -101,7 +148,7 @@ async fn dispatch_impl(
                 "forward",
             );
         }
-        let resp = transparent_forward(&state.client, req).await?;
+        let resp = transparent_forward(&state.client, req, &policy).await?;
         if debug_on {
             let status = resp.status();
             let headers = resp.headers().clone();
@@ -140,5 +187,6 @@ async fn dispatch_impl(
             "llm_gateway",
         );
     }
+    // Relative-path LLM gateway on `listen` — not subject to egress allowlist.
     llm_capture(state, req, peer, debug_on).await
 }

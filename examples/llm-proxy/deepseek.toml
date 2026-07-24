@@ -10,10 +10,19 @@
 # 任意客户端 model 通过 forward 改写为 deepseek-chat 再转发。
 #
 # capture_level = "dialogue"   # summary | dialogue (default) | full
+#
+# 出口控制默认 public（全放行）。白名单示例见 allowlist.toml。
 
 listen = "127.0.0.1:19081"
 admin_listen = "127.0.0.1:9876"
 agent_id = "deepseek-proxy"
+
+# [network]
+# mode = "public"          # public | no-network | allowlist
+# allowed_hosts = [
+#     "pypi.org",
+#     "files.pythonhosted.org",
+# ]
 
 [[models]]
 name = "deepseek-v4-flash"

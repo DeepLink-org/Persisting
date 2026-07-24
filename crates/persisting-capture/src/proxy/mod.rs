@@ -9,6 +9,7 @@ pub mod http_headers;
 pub mod llm_capture;
 pub mod model;
 pub mod models_list;
+pub mod network_policy;
 pub mod reasoning;
 pub mod router;
 pub mod state;

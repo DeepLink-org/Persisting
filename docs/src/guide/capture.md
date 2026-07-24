@@ -67,10 +67,26 @@ Codex: replace `claude` with `codex`. Custom agent: `... -- python3 your_agent.p
 | Flag | Meaning |
 |------|---------|
 | `-o DIR` | Store root (default `.persisting/capture`) |
-| `-c FILE` | Proxy TOML (`listen`, `models`, upstream) |
+| `-c FILE` | Proxy TOML (`listen`, `models`, upstream; optional `[network]`) |
 | `-f md` | Markdown only (default) |
 | `-f vortex` | Vortex canonical + same live Markdown; reconcile md ↔ Vortex |
 | `--debug` | Log proxied requests to stderr + `.capture/debug.log` |
+
+Optional Harbor-aligned egress control — see [`examples/llm-proxy/allowlist.toml`](../../examples/llm-proxy/allowlist.toml):
+
+```toml
+[network]
+mode = "allowlist"   # public | no-network | allowlist
+allowed_hosts = [
+    "pypi.org",
+    "files.pythonhosted.org",
+    "github.com",
+    "api.github.com",
+    "registry.npmjs.org",
+]
+```
+
+Applies to forward-proxy traffic (`CONNECT` + absolute-URI HTTP). Default `public` preserves prior behavior. Relative-path LLM gateway on `listen` is not filtered; configured `[[models]]` upstream hosts are auto-merged into the allowlist. See the [Chinese guide](capture.zh.md) for full semantics.
 
 `traj capture` is **in-process** — no `traj proxy stop` needed when the child exits.
 
