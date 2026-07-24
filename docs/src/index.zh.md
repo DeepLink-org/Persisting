@@ -1,63 +1,153 @@
 ---
 template: home.html
-title: Persisting - 参数、KV Cache 与轨迹的持久化存储
-description: AI 分布式分层内存——为 Pulsing 扩展多维寻址、GPU/host/SSD 分层、基于 actor 运行时的分布式数据面。
+title: Persisting — 轨迹、参数与 KV Cache 的统一持久化存储
+description: AI 工作负载的统一分层存储。Agent 轨迹、模型参数和 KV Cache 共享同一套多维寻址、Lance 列式引擎和 Pulsing 分布式能力。
 hide: toc
 ---
 
-<!-- 此内容被 home.html 模板隐藏，但会被搜索引擎索引 -->
-
 # Persisting
 
-**参数、KV Cache 与轨迹的持久化存储。**
+**轨迹、参数与 KV Cache 的统一持久化存储。**
 
-为 [Pulsing](https://github.com/DeepLink-org/pulsing)（分布式 actor 运行时）扩展分布式分层内存：GPU ↔ host ↔ SSD + 多维 tensor 寻址 + 基于 Pulsing 的分布式能力。
+Agent 轨迹、模型参数和 KV Cache 共享同一套分层存储 —— **一套寻址模型、一个存储引擎、一个分布式运行时**。数据跨 GPU、host 内存和 SSD 分布，以张量下标寻址，按需物化。
 
-## 核心思路
+---
 
-- **Pulsing** = 控制面（actor 发现、消息传递、生命周期）
-- **Persisting** = 数据面（多维地址、分层内存、放置策略）
+## 一套存储，三类数据
 
-二者组合：actor 间通过 Pulsing 通信，通过 Persisting 共享 tensor 数据——数据在多层存储上分布，以 tensor 下标寻址，按需物化。
+<div class="grid cards" markdown>
 
-## 核心特性
+-   **📝 Agent 轨迹**
 
-- **分层张量地址空间（TTAS / Tiered Tensor Address Space）** — 面向 AI 数据（KV Cache、参数、轨迹）的多维、分层地址空间；与 PGAS 对标的说法。
-- **分层内存** — GPU ↔ host ↔ SSD，对应用透明。
-- **Pulsing 分布式** — 通过 Pulsing 的 actor 运行时实现跨节点数据访问。
-- **Tensor 式 API** — `kv["s1", 0, 2, 0:512].tensor()` — 下标切片，按需物化。
+    ---
 
-## 快速开始
+    记录每一次 LLM 调用。以 `(agent_id, run_id, time)` 张量存储，附带 canonical Vortex 事件日志和人读 Markdown。
+
+    ```bash
+    persisting traj capture -o ./store -c proxy.toml -- claude
+    ```
+
+    → [Capture 指南](guide/capture.md)
+
+-   **⚖️ 模型参数**
+
+    ---
+
+    按名称和分片寻址权重。Host 内存与 SSD 分层存储。Write-through 到 Lance 基线。
+
+    ```python
+    ps = persisting.open("params/llama-70b",
+        dims=(PARAM_ID, SHARD), shape=(100, 8),
+        backend="tiered")
+    weights = ps["embed.weight", 0].tensor()
+    ```
+
+    → [Tensor Memory 指南](guide/tensor-memory.md)
+
+-   **🧠 KV Cache**
+
+    ---
+
+    跨会话、多层的 KV Cache。Block 粒度分层，支持预取。与轨迹相同的 `(session, layer, head, time)` 寻址。
+
+    ```python
+    kv = persisting.open("kvcache/v1",
+        dims=(SESSION, LAYER, HEAD, TIME),
+        order_dim=TIME, backend="tiered",
+        shape=(100, 32, 8, 4096))
+    arr = kv["s1", 0, 2, 0:512].tensor()
+    ```
+
+    → [Tensor Memory 指南](guide/tensor-memory.md)
+
+</div>
+
+---
+
+## 同一底座上的工具
+
+<div class="grid cards" markdown>
+
+-   **📬 流式队列**
+
+    ---
+
+    追加/消费事件流。Lance 持久化，兼容 TransferQueue 的 KV API、Sampler。
+
+    ```python
+    q = Queue("events", storage_path="./data")
+    await q.put({"step": 1, "reward": 0.5})
+    ```
+
+    → [Queue 指南](guide/queue.md)
+
+-   **🔍 Agent 检索**
+
+    ---
+
+    导入文档，构建 IVF-PQ 索引，向量/混合检索。同样的 Lance 引擎。
+
+    ```python
+    from persisting.search import add_document, query
+    results = query("docs", "如何配置代理")
+    ```
+
+    → [Search 指南](guide/search.md)
+
+-   **⚡ 计算编排**
+
+    ---
+
+    Map 式任务编排。`plan()` + `execute()`，本地并行或 torchrun。
+
+    ```bash
+    persisting compute task.py -w 4 -- --n 1000
+    ```
+
+    → [Compute 指南](guide/compute.md)
+
+</div>
+
+---
+
+## 架构
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  轨迹                  参数                  KV Cache        │
+│  (run_id, time)        (param_id, shard)    (sess, layer, …)│
+├──────────────────────────────────────────────────────────────┤
+│                      TTAS                                    │
+│              分层张量地址空间                                  │
+│         一套寻址模型，覆盖所有 AI 数据                          │
+├──────────────────────────────────────────────────────────────┤
+│   分层:  GPU (L0)  ↔  Host (L1)  ↔  SSD (L3)               │
+│   路由:  Pulsing actor 运行时                                  │
+├──────────────────────────────────────────────────────────────┤
+│              Lance 列式存储                                    │
+│              所有数据共享的 SSD 基线                            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 状态
+
+| 组件 | 状态 |
+|------|------|
+| 轨迹采集 (`traj`) | ✅ 稳定 |
+| 流式队列 | ✅ 稳定 |
+| 计算编排 | ✅ 稳定 |
+| Agent 检索 | ✅ 稳定 |
+| 张量内存 (TTAS) | 🧪 实验性 |
+| GPU 分层 / 跨节点 | 📋 规划中 |
+
+---
+
+## 快速安装
 
 ```bash
-pip install persisting
+pip install persisting[lance]
 ```
 
-```python
-import persisting
-from persisting.core import Dimension
-
-SESSION = Dimension("session", "str")
-LAYER   = Dimension("layer", "int")
-HEAD    = Dimension("head", "int")
-TIME    = Dimension("time", "int")
-
-kv = persisting.open("kvcache/v1",
-    dims=(SESSION, LAYER, HEAD, TIME), order_dim=TIME)
-
-arr = kv["s1", 0, 2, 0:512].tensor()
-```
-
-## 应用场景
-
-| 场景 | 维度 | 主要访问模式 |
-|-----|------|------------|
-| **KV Cache Offloading** | (session, layer, head, time) | 点查 + 范围扫描 + 预取 |
-| **参数服务** | (param_id, shard) | 批量点查 |
-| **轨迹存储** | (run_id, time) | 顺序范围扫描 |
-
-## 社区
-
-- [GitHub 仓库](https://github.com/DeepLink-org/Persisting)
-- [问题追踪](https://github.com/DeepLink-org/Persisting/issues)
-- [讨论区](https://github.com/DeepLink-org/Persisting/discussions)
+→ [安装指南](installation.md) · [快速开始](quickstart.md)

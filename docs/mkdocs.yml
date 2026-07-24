@@ -81,27 +81,29 @@ plugins:
           nav_translations:
             Home: 首页
             Installation: 安装指南
-            Getting Started: 入门指南
-            Guide: 用户指南
-            Queue Backends: 队列后端
-            Lance Backend: Lance 后端
-            Persisting Backend: 增强后端
+            Quick Start: 快速开始
+            User Guide: 用户指南
+            Capture: 轨迹采集
+            Queue: 队列
+            Tensor Memory: 张量内存
+            Search: 检索
+            Compute: 计算编排
             Custom Backends: 自定义后端
+            API Reference: API 参考
             Design: 设计文档
             Architecture: 架构设计
             Distributed Tiered Storage: 分布式分层存储
             Trajectory Storage: 轨迹存储模型
-            Trajectory Markdown Format: 轨迹 Markdown 格式
+            Trajectory Format: 轨迹 Markdown 格式
             CLI Architecture: CLI 整体架构
-            Traj Command: Traj 命令
-            Traj Capture Subcommands: Traj Capture 子命令
-            Capture Quick Start: Capture 快速上手
-            Capture Architecture Design: Capture 架构设计
-            Compute Quick Start: Compute 快速上手
+            Traj CLI: Traj 命令
+            Capture CLI: Capture 子命令
+            Search CLI: Search 命令
             Compute Architecture: Compute 架构
-            Search Command: Search 命令
-            Similar Systems Reference: 类似系统参考
-            API Reference: API 参考
+            References: 参考
+            Similar Systems: 类似系统
+            TransferQueue Comparison: TransferQueue 对比
+            LMCache: LMCache 参考
   - mkdocstrings:
       handlers:
         python:
@@ -115,35 +117,48 @@ plugins:
 nav:
   - Home: index.md
   - Installation: installation.md
-  - Getting Started: quickstart.md
-  - Guide:
+  - Quick Start: quickstart.md
+  - User Guide:
       - guide/index.md
-      - Capture Quick Start: guide/capture_quickstart.md
-      - Compute Quick Start: guide/compute_quickstart.zh.md
-      - Queue Backends: guide/backends.md
-      - Lance Backend: guide/lance.md
-      - Persisting Backend: guide/persisting.md
-      - Custom Backends: guide/custom.md
+      - Capture: guide/capture.md
+      - Queue: guide/queue.md
+      - Tensor Memory: guide/tensor-memory.md
+      - Search: guide/search.md
+      - Compute: guide/compute.md
+      - Custom Backends: guide/custom-backends.md
+  - API Reference:
+      - api/index.md
+      - Tensor Memory: api/tensor-memory.md
+      - Queue: api/queue.md
+      - Search: api/search.md
+      - Tensor Address Space: api/tensor-address-space.md
   - Design:
       - design/index.md
       - Architecture: design/architecture.md
-      - Distributed Tiered Storage: design/distributed_tiered_storage.md
-      - Trajectory Storage: design/trajectory_storage.zh.md
-      - Trajectory Markdown Format: design/trajectory_tlv_format.zh.md
-      - CLI Architecture: design/cli_architecture.zh.md
-      - Traj Capture Subcommands: design/cli_capture_command.zh.md
-      - Capture Architecture Design: design/capture_design.zh.md
-      - Compute Architecture: design/compute_control_plane.zh.md
-      - Traj Command: design/cli_trajectory_command.zh.md
-      - Search Command: design/cli_search_command.zh.md
-      - Similar Systems Reference: design/similar_systems_reference.md
-  - API Reference: api_reference.md
+      - Tiered Storage:
+          - Tensor Address Space: design/tensor-address-space.md
+          - Distributed Tiered Storage: design/distributed-tiered-storage.md
+          - Block Store Internals: design/block-store.md
+      - Capture & Trajectory:
+          - Capture Architecture: design/capture.md
+          - Trajectory Storage: design/trajectory.md
+          - Trajectory Format: design/trajectory-format.md
+          - Traj CLI: design/cli-traj.md
+          - Capture CLI: design/cli-capture.md
+      - CLI Architecture: design/cli.md
+      - Compute Architecture: design/compute.md
+      - Search CLI: design/cli-search.md
+      - References:
+          - Similar Systems: design/references/similar-systems.md
+          - TransferQueue Comparison: design/references/transfer-queue-comparison.md
+          - TransferQueue Interface: design/references/transfer-queue-interface.md
+          - LMCache: design/references/lmcache.md
 
 extra:
   generator: false
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/reiase/Persisting
+      link: https://github.com/DeepLink-org/Persisting
 
 extra_css:
   - assets/stylesheets/home.css

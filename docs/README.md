@@ -9,21 +9,19 @@ This folder contains the documentation for Persisting.
 
 ## Quick Start
 
-**注意**：请在 **`docs/` 目录下**执行 `make`，否则 `make serve` 监听的路径不对，改文件后页面不会自动刷新。
-
 ```bash
 cd docs
 
-# 本地预览（改 src/ 下文件后应自动刷新）
+# Local preview (auto-reload on src/ changes)
 make serve
 
-# 若未自动刷新：试 make serve-dirty，或浏览器强制刷新 (Ctrl+Shift+R / Cmd+Shift+R)
+# Force rebuild if auto-reload isn't working
 make serve-dirty
 
-# 构建静态站
+# Build static site
 make build
 
-# 检查死链
+# Check dead links
 make check-links
 ```
 
@@ -31,33 +29,51 @@ make check-links
 
 ```
 docs/
-├── mkdocs.yml          # MkDocs configuration
-├── pyproject.toml      # Python dependencies
-├── Makefile            # Build commands
-├── overrides/          # Theme customizations
-│   └── home.html       # Custom homepage template
-└── src/                # Documentation source files
-    ├── index.md        # Homepage content
-    ├── installation.md # Installation guide
-    ├── quickstart.md   # Quick start guide
-    ├── guide/          # User guide
-    ├── design/         # Design documents
-    ├── dev/            # Implementation tracking
-    ├── api_reference.md # API reference
-    └── assets/         # Static assets
-        └── stylesheets/
-            └── home.css
+├── mkdocs.yml              # MkDocs configuration
+├── pyproject.toml          # Python dependencies
+├── Makefile                # Build commands
+├── overrides/              # Theme customizations
+│   └── home.html           # Custom homepage template
+└── src/                    # Documentation source files
+    ├── index.md            # Homepage
+    ├── installation.md     # Installation guide
+    ├── quickstart.md       # Quick start (5 paths)
+    ├── guide/              # User guides
+    │   ├── capture.md      # Trajectory capture
+    │   ├── queue.md        # Streaming queue
+    │   ├── tensor-memory.md # TTAS tensor memory
+    │   ├── search.md       # Agent search
+    │   ├── compute.md      # Task orchestration
+    │   └── custom-backends.md # Custom storage backends
+    ├── api/                # API reference
+    │   ├── tensor-memory.md
+    │   ├── queue.md
+    │   ├── search.md
+    │   └── ttas.md
+    ├── design/             # Design documents
+    │   ├── architecture.md
+    │   ├── ttas.md
+    │   ├── distributed-tiered-storage.md
+    │   ├── capture.md
+    │   ├── trajectory.md
+    │   ├── compute.md
+    │   ├── cli.md
+    │   └── references/
+    └── dev/                # Implementation tracking
+        └── tiered-storage-steps.md
 ```
-
-## Contributing
-
-1. `cd docs` 后执行 `make serve` 启动本地预览
-2. 修改 `src/` 下的文件，浏览器应自动刷新；若不刷新可试 `make serve-dirty` 或强制刷新页面
-3. 提交 PR
 
 ## Translation
 
 Documentation supports English and Chinese. For each `.md` file:
-- `file.md` - English version
-- `file.zh.md` - Chinese version
 
+- `file.md` — English version
+- `file.zh.md` — Chinese version
+
+Not all files have both language versions. The i18n plugin falls back to English when a Chinese version is missing.
+
+## Contributing
+
+1. `cd docs` and run `make serve` for local preview
+2. Edit files under `src/` — browser should auto-reload
+3. Submit a PR
