@@ -153,13 +153,19 @@ class Queue:
     ) -> BatchMeta | None:
         del fields
         if self._distributed:
-            if isinstance(data, dict) or (isinstance(data, list) and data and isinstance(data[0], dict)):
+            if isinstance(data, dict) or (
+                isinstance(data, list) and data and isinstance(data[0], dict)
+            ):
                 writer = await self._ensure_writer()
                 await writer.put(data)
                 return None
             bucket = await self._resolve_partition_bucket(partition_id)
             result = await bucket.put_tensor(data, partition_id=partition_id)
-            return BatchMeta.from_dict(result) if isinstance(result, dict) and "samples" in result else None
+            return (
+                BatchMeta.from_dict(result)
+                if isinstance(result, dict) and "samples" in result
+                else None
+            )
 
         if isinstance(data, dict):
             await self._backend.put(data)
@@ -255,7 +261,9 @@ class Queue:
             return []
         return await self.get_data(meta, partition_id=partition_id)
 
-    async def mark_consumed(self, task_name: str, global_indexes: list[int], partition_id: str = "default") -> None:
+    async def mark_consumed(
+        self, task_name: str, global_indexes: list[int], partition_id: str = "default"
+    ) -> None:
         if self._distributed:
             bucket = await self._resolve_partition_bucket(partition_id)
             await bucket.mark_consumed(task_name, global_indexes)
@@ -289,7 +297,9 @@ class Queue:
             if records:
                 yield records
             return
-        async for batch in self._backend.get_stream(limit=limit, offset=offset, wait=wait, timeout=timeout):
+        async for batch in self._backend.get_stream(
+            limit=limit, offset=offset, wait=wait, timeout=timeout
+        ):
             yield batch
 
     async def stats(self) -> dict[str, Any]:

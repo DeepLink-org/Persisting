@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from persisting.sampler.base import BaseSampler
 from persisting.queue.metadata import BatchMeta
+from persisting.sampler.base import BaseSampler
 
 
 @runtime_checkable

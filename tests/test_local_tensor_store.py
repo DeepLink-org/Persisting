@@ -8,13 +8,13 @@ try:
     import persisting
     from persisting.core import Dimension, TensorView
     from persisting.store import (
-    Handler,
-    LocalTensorStore,
-    MmapBacking,
-    SafetensorsBacking,
-    TensorNamespace,
-    region_to_index,
-)
+        Handler,
+        LocalTensorStore,
+        MmapBacking,
+        SafetensorsBacking,
+        TensorNamespace,
+        region_to_index,
+    )
 except ImportError as e:
     pytest.skip(f"persisting._core 或 store 不可用: {e}", allow_module_level=True)
 
@@ -208,6 +208,7 @@ class TestSafetensorsBacking:
         """未安装 safetensors 时构造应给出明确 ImportError。"""
         try:
             import safetensors  # noqa: F401
+
             pytest.skip("safetensors 已安装，跳过")
         except ImportError:
             pass

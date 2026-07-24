@@ -6,12 +6,16 @@ def test_batch_meta_basic_properties():
         SampleMeta(
             partition_id="p0",
             global_index=0,
-            fields={"x": FieldMeta(name="x", dtype="float32", shape=(2,), production_status="ready")},
+            fields={
+                "x": FieldMeta(name="x", dtype="float32", shape=(2,), production_status="ready")
+            },
         ),
         SampleMeta(
             partition_id="p0",
             global_index=1,
-            fields={"x": FieldMeta(name="x", dtype="float32", shape=(2,), production_status="ready")},
+            fields={
+                "x": FieldMeta(name="x", dtype="float32", shape=(2,), production_status="ready")
+            },
         ),
     ]
     meta = BatchMeta(samples=samples, custom_meta={0: {"k": "v"}})
@@ -27,7 +31,9 @@ def test_batch_meta_roundtrip():
             SampleMeta(
                 partition_id="p1",
                 global_index=3,
-                fields={"y": FieldMeta(name="y", dtype="int64", shape=(1,), production_status="ready")},
+                fields={
+                    "y": FieldMeta(name="y", dtype="int64", shape=(1,), production_status="ready")
+                },
             )
         ]
     )

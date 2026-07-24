@@ -38,7 +38,9 @@ async def test_queue_put_get_tensordict(tmp_path):
     assert meta is not None
     assert meta.size == 3
 
-    sampled_meta = await queue.get_meta(fields=["x", "y"], batch_size=2, task_name="t1", partition_id="p0")
+    sampled_meta = await queue.get_meta(
+        fields=["x", "y"], batch_size=2, task_name="t1", partition_id="p0"
+    )
     assert sampled_meta.size == 2
     data = await queue.get_data(sampled_meta, partition_id="p0")
     assert len(data) == 2 or data.batch_size[0] == 2

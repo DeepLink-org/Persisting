@@ -10,14 +10,6 @@ API 与 llms.binding.md 一致：open → kv[key] → h.tensor() / h.put(data)�
 
 __version__ = "0.1.0"
 
-from persisting.store import (
-    BlockId,
-    BlockStore,
-    Handler,
-    LocalTensorStore,
-    TensorNamespace,
-    region_to_index,
-)
 from persisting.queue import (
     BatchMeta,
     KVInterface,
@@ -33,6 +25,14 @@ from persisting.sampler import (
     RankAwareSampler,
     SequentialSampler,
     get_sampled_batch,
+)
+from persisting.store import (
+    BlockId,
+    BlockStore,
+    Handler,
+    LocalTensorStore,
+    TensorNamespace,
+    region_to_index,
 )
 
 __all__ = [
@@ -86,6 +86,7 @@ def open(
     """
     if dtype is None:
         import numpy as np
+
         dtype = np.float32
     if shape is None:
         raise ValueError("open() 须提供 shape")

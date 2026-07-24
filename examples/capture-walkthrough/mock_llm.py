@@ -100,8 +100,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(
-        f"Mock LLM: http://{HOST}:{PORT}"
-        f"  (/v1/chat/completions, /v1/messages)  Ctrl+C 停止"
-    )
+    print(f"Mock LLM: http://{HOST}:{PORT}  (/v1/chat/completions, /v1/messages)  Ctrl+C 停止")
     HTTPServer((HOST, PORT), Handler).serve_forever()

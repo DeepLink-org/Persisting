@@ -37,9 +37,7 @@ def add_documents_batch(
     返回聚合结果：``added`` 为各批成功写入条数之和；``embedding_preview`` 来自首批。
     """
     rows = list(documents)
-    return _core.search_add_batch(
-        dataset, rows, embedding_dim=embedding_dim, chunk_size=chunk_size
-    )
+    return _core.search_add_batch(dataset, rows, embedding_dim=embedding_dim, chunk_size=chunk_size)
 
 
 def query(
@@ -88,9 +86,7 @@ def rebuild_indices(
     merge_num_indices: int | None = None,
 ) -> dict[str, Any]:
     """Call Lance `optimize_indices` (`SearchIndexRebuildRequest`)."""
-    return _core.search_index_rebuild(
-        dataset, index_name, retrain, merge_num_indices
-    )
+    return _core.search_index_rebuild(dataset, index_name, retrain, merge_num_indices)
 
 
 def create_index(

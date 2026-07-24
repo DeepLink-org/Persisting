@@ -5,19 +5,18 @@ Re-exports from the native module ``persisting._core`` (built with maturin).
 """
 
 from persisting._core import (
+    Address,
     Dimension,
     Point,
     Range,
-    SetC,
-    Address,
     Region,
-    canonicalize,
-    project_prefix,
-    is_point_query,
-    is_range_query,
+    SetC,
     block_read,
     block_write,
-    TieredLoop,
+    canonicalize,
+    is_point_query,
+    is_range_query,
+    project_prefix,
 )
 
 try:

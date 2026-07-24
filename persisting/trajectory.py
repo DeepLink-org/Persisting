@@ -54,9 +54,7 @@ def replay(
     root_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Page through one session (``seq`` order for Lance; block order for markdown)."""
-    return _core.trajectory_replay(
-        storage, agent_id, session_id, offset, limit, root_session_id
-    )
+    return _core.trajectory_replay(storage, agent_id, session_id, offset, limit, root_session_id)
 
 
 def stats(

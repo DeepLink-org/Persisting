@@ -561,6 +561,6 @@ upstream = "http://127.0.0.1:9/v1"
         assert_eq!(cfg.network.allowed_hosts.len(), 3);
         let p = NetworkPolicy::from_config(&cfg).unwrap();
         assert!(assert_egress_allowed(&p, "a.example.com").is_ok());
-        assert!(!assert_egress_allowed(&p, "example.com").is_ok());
+        assert!(assert_egress_allowed(&p, "example.com").is_err());
     }
 }

@@ -82,6 +82,7 @@ class TestMmapRegion:
 
     def test_mmap_reserve_zero_length_raises(self):
         import persisting._core as _core
+
         with pytest.raises(ValueError, match="length must be > 0"):
             _core.MmapRegion(0)
 

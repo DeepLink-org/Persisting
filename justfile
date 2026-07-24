@@ -10,6 +10,11 @@ docs_dir := repo / "docs"
 gen_py := repo / "scripts" / "generate_benchmark_data.py"
 test_suite_sh := repo / "scripts" / "test_suite.sh"
 
+# Python 路径（ruff format）
+ruff_paths := "persisting tests examples"
+# lint 默认只扫包代码（与 CI 一致）；全量用 lint-py-all
+ruff_lint_paths := "persisting"
+
 engine_filename := if os() == "macos" {
     "libpersisting_engine.dylib"
 } else if os() == "windows" {
@@ -24,11 +29,17 @@ default:
     @just --list --unsorted
     @echo ""
     @echo "常用："
+    @echo "  just fmt                 # 格式化 Rust + Python"
+    @echo "  just lint                # clippy + ruff check"
+    @echo "  just fix                 # 自动 format + ruff --fix"
     @echo "  just test-suite          # 测试 / 回归选单（推荐入口）"
     @echo "  just test-suite list     # 列出全部套件"
     @echo "  just dev                 # 日常开发（fmt + clippy + check-quick）"
-    @echo "  just gate                # 提交前（fmt + clippy + test-rust）"
+    @echo "  just gate                # 提交前（fmt + lint + test-rust）"
+    @echo "  just ci-lint             # CI lint（只检查、不改写）"
     @echo "  just ci                  # CI 近似全量"
+    @echo "  just py-dev              # maturin develop（Python 扩展）"
+    @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just capture-all         # 全部 capture 集成"
     @echo "  just docs-serve          # 本地文档"
 
@@ -62,27 +73,95 @@ build profile="debug":
 build-release:
     just build profile=release
 
+# maturin release wheel（当前平台）→ dist/
+build-wheel:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p dist
+    uvx maturin build --release -o dist
+    ls -la dist/*.whl
+
+# 开发调试 wheel（不 strip）
+build-wheel-debug:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p dist
+    uvx maturin build -o dist
+    ls -la dist/*.whl
+
 clean:
     cargo clean
+    rm -rf dist target/wheels .venv htmlcov .coverage coverage.xml
 
-# ── Rust 质量 ────────────────────────────────────────────────────────────────
+# ── 格式化 / Lint ─────────────────────────────────────────────────────────────
 
-fmt:
+# 格式化 Rust + Python（会改写文件）
+fmt: fmt-rust fmt-py
+
+fmt-rust:
     cargo fmt --all
 
-clippy:
-    cargo clippy --workspace --all-targets
+fmt-py:
+    uvx ruff format {{ ruff_paths }}
 
-# fmt + clippy + 全 workspace cargo test
+# 只检查格式，不改写（CI / pre-commit）
+fmt-check: fmt-check-rust fmt-check-py
+
+fmt-check-rust:
+    cargo fmt --all -- --check
+
+fmt-check-py:
+    uvx ruff format --check {{ ruff_paths }}
+
+# clippy + ruff（不改写）
+lint: lint-rust lint-py
+
+lint-rust:
+    cargo clippy --workspace --all-targets --locked
+
+lint-py:
+    uvx ruff check {{ ruff_lint_paths }}
+
+# 含 tests/examples（较严，可能有存量告警）
+lint-py-all:
+    uvx ruff check {{ ruff_paths }}
+
+# 与 Pulsing 同级的严格 clippy（workspace 未清干净前慎用）
+clippy-deny:
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+
+# 兼容旧名
+clippy:
+    just lint-rust
+
+# 自动修：format + ruff --fix
+fix: fmt
+    uvx ruff check {{ ruff_paths }} --fix
+
+# 仅修 Python
+fix-py: fmt-py
+    uvx ruff check {{ ruff_paths }} --fix
+
+# 格式 + lint 快检（不跑测试；对应 Pulsing 的 check-quick 语义）
+style: fmt-check lint
+    @echo "✅ format + lint OK"
+
+# fmt + lint + Rust 测试（提交前）
 gate:
     just fmt
-    just clippy
+    just lint
     just test-rust
+
+# 与 GitHub Actions `ci.yml` lint 对齐（只检查、不改写）
+ci-lint:
+    just fmt-check-rust
+    just lint-rust
+    uvx ruff check persisting/
 
 # 日常开发快捷路径
 dev:
     just fmt
-    just clippy
+    just lint-rust
     just check-quick
 
 # CI 近似：gate + 构建 + capture 集成 + Claude 回归
@@ -94,7 +173,7 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# 单 crate：engine | proto | core | capture | cli
+# 单 crate：engine | proto | core | capture | cli | compute | dlcapt
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -104,7 +183,9 @@ test-crate crate:
       core) cargo test -p persisting-core ;;
       capture) cargo test -p persisting-capture ;;
       cli) cargo test -p persisting-cli ;;
-      *) echo "unknown crate: {{ crate }} (engine|proto|core|capture|cli)" >&2; exit 2 ;;
+      compute) cargo test -p persisting-compute ;;
+      dlcapt) cargo test -p persisting-dlcapt ;;
+      *) echo "unknown crate: {{ crate }} (engine|proto|core|capture|cli|compute|dlcapt)" >&2; exit 2 ;;
     esac
 
 test-rust:
@@ -116,22 +197,41 @@ test-capture-claude:
 test-capture-fixtures:
     cargo test -p persisting-capture --test llm_fixtures --test ag_fixture_tests
 
+test-capture-network:
+    cargo test -p persisting-capture --lib network_policy
+    cargo test -p persisting-capture --test network_policy_http
+
 test-engine-integration:
     cargo test -p persisting-engine --test search_integration
 
 _test-engine:
     cargo test -p persisting-engine --lib
 
+# Rust + Python
+test: test-rust test-py
+
 # ── Python ───────────────────────────────────────────────────────────────────
 
 py-sync:
     uv sync --all-extras
 
+# 调试迭代（更快）
 py-dev:
+    uv run maturin develop
+
+# 接近发布形态
+py-dev-release:
     uv run maturin develop --release
 
 test-py:
     uv run pytest tests/ -q
+
+test-py-v:
+    uv run pytest tests/ -v
+
+# 安装本地 nightly 脚本自检（需已有 GitHub nightly release）
+install-nightly:
+    bash "{{ repo }}/scripts/install-nightly.sh"
 
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 

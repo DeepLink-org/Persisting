@@ -29,6 +29,7 @@ DIMS_SER = [(d.name, d.kind) for d in DIMS]
 def _pulsing_available():
     try:
         import pulsing.core
+
         return True
     except ImportError:
         return False
@@ -39,6 +40,7 @@ def _pulsing_available():
 async def test_block_store_actor_put_then_get():
     """spawn BlockStoreActor，put_region 后 get_region 返回相同数据。"""
     import pulsing.core
+
     await pulsing.core.init()
     try:
         BlockStoreActor = get_block_store_actor_class()
@@ -51,6 +53,7 @@ async def test_block_store_actor_put_then_get():
         )
         try:
             import numpy as np
+
             view = TensorView(DIMS)
             r = view["s0", 0, 0, 0:64]
             region_ser = region_serialize(r, DIMS)
@@ -70,6 +73,7 @@ async def test_block_store_actor_put_then_get():
 async def test_actor_store_get_async_put_async():
     """ActorStore(proxy, dims) 的 get_async/put_async 与直接调 actor 一致。"""
     import pulsing.core
+
     await pulsing.core.init()
     try:
         BlockStoreActor = get_block_store_actor_class()
@@ -84,6 +88,7 @@ async def test_actor_store_get_async_put_async():
         view = TensorView(DIMS)
         r = view["s0", 0, 0, 0:64]
         import numpy as np
+
         data = np.ones(64, dtype=np.float32) * 7
         await store.put_async(r, data)
         out = await store.get_async(r)
@@ -101,6 +106,7 @@ def test_region_serialize_deserialize_roundtrip():
     r2 = region_deserialize(ser, DIMS)
     # 用 BlockStore 验证：同一 region 应得到同一 block 列表
     from persisting.store import region_to_blocks
+
     blocks = region_to_blocks(r, DIMS, TIME, BLOCK_TOKENS, SHAPE)
     blocks2 = region_to_blocks(r2, DIMS, TIME, BLOCK_TOKENS, SHAPE)
     assert blocks == blocks2

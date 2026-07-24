@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "true"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Rust clippy
+        # Match local `just clippy` for now; tighten to `-D warnings` once the
+        # workspace is clean (same bar as Pulsing).
+        run: cargo clippy --workspace --all-targets --locked
+
+      - name: Python lint (ruff)
+        run: uvx ruff check persisting/
+
+  rust-test:
+    name: Rust Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "true"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+  python-test:
+    name: Python Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          python-version: "3.12"
+          install-protoc: "true"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Sync Python deps
+        run: uv sync --extra all --extra dev
+
+      - name: Build extension (maturin develop)
+        run: uv run maturin develop
+
+      - name: Pytest
+        run: uv run pytest tests/ -q
