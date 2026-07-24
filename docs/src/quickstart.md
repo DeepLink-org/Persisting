@@ -2,69 +2,140 @@
 
 Get started with Persisting in 5 minutes.
 
-## What You're Getting
-
-Persisting provides persistent storage for parameters, KV Cache, and trajectories — queues and Search use Lance; agent trajectory canonical storage is Vortex (`events.vortex`). Currently available: **streaming append** (append-only queue). Coming soon: **tensor memory API** for multi-dimensional access.
-
-## Step 1: Install
+## Installation
 
 ```bash
 pip install persisting[lance]
 ```
 
-## Step 2: Tensor Memory (coming soon)
+For CLI tools (`persisting traj`, `persisting compute`, `persisting search`), [build from source](installation.md#from-source).
 
-The primary API — tensor-style subscript access to tiered memory:
+---
+
+## Core: Unified Tensor Storage
+
+Persisting stores trajectories, parameters, and KV cache through the same `persisting.open()` interface. All three use TTAS (Tiered Tensor Address Space) — the same addressing, same Lance engine, same tiering.
 
 ```python
 import persisting
 from persisting.core import Dimension
+```
 
+### Parameters
+
+Address model weights by name and shard:
+
+```python
+PARAM_ID = Dimension("param_id", "str")
+SHARD    = Dimension("shard", "int")
+
+ps = persisting.open("params/llama-70b",
+    dims=(PARAM_ID, SHARD),
+    backend="tiered",
+    shape=(100, 8),
+)
+
+weights = ps["embed.weight", 0].tensor()
+ps["lm_head.weight", 0].put(updated_tensor)
+```
+
+### KV Cache
+
+Cross-session, multi-layer KV cache with block-tiered storage:
+
+```python
 SESSION = Dimension("session", "str")
 LAYER   = Dimension("layer", "int")
 HEAD    = Dimension("head", "int")
 TIME    = Dimension("time", "int")
 
 kv = persisting.open("kvcache/v1",
-    dims=(SESSION, LAYER, HEAD, TIME), order_dim=TIME)
+    dims=(SESSION, LAYER, HEAD, TIME),
+    order_dim=TIME,
+    backend="tiered",
+    shape=(100, 32, 8, 4096),
+    block_tokens=64,
+)
 
-arr = kv["s1", 0, 2, 0:512].tensor()
+h = kv["s1", 0, 2, 0:512]    # slice (zero copy)
+arr = h.tensor()               # materialize from fastest tier
+h.put(other_data)              # write back
+kv.prefetch(("s1", 0, 0:1024))  # async pull blocks to host memory
 ```
 
-## Step 3: Streaming Append (available now)
+### Trajectories (via Queue)
 
-Append-only queue on Lance storage engine — for event streaming and durable queues (trajectory capture uses Vortex separately; see Capture quick start).
+Trajectory events are stored through the Queue API, backed by the same Lance engine:
 
 ```python
-import asyncio
 from persisting import Queue
 
-async def main():
-    queue = Queue("my_topic", storage_path="./data")
-
-    for i in range(10):
-        await queue.put({"id": str(i), "value": i * 10})
-    await queue.flush()
-
-    records = await queue.get(limit=100)
-    print(f"Read {len(records)} records")
-
-asyncio.run(main())
+q = Queue("trajectories", storage_path="./data")
+await q.put({"run_id": "r1", "step": 1, "reward": 0.5})
+await q.flush()
+records = await q.get(limit=100)
 ```
 
-With metrics:
+→ [Tensor Memory Guide](guide/tensor-memory.md) for full details on backends, dimensions, and block storage.
+
+---
+
+## Tools on the Same Foundation
+
+### Agent Capture
+
+Record every LLM call — Claude Code, Codex, or custom scripts:
+
+```bash
+persisting traj capture -o ./store -c proxy.toml -f md -- claude
+```
+
+→ [Capture Guide](guide/capture.md)
+
+### Queues & KV API
+
+Append/consume events with TransferQueue-compatible APIs:
 
 ```python
-queue = Queue("my_topic", storage_path="./data", enable_metrics=True)
-await queue.put({"id": "1", "value": 42})
-await queue.flush()
-stats = await queue.stats()
-print(stats["metrics"])
+from persisting import Queue, SequentialSampler
+
+q = Queue("training_data", storage_path="./data")
+reader = q.reader()
+
+meta = await reader.get_meta(
+    fields=["input_ids"], batch_size=32, task_name="train",
+    partition_id="p0", sampler=SequentialSampler())
+batch = await reader.get_data(meta, partition_id="p0")
 ```
+
+→ [Queue Guide](guide/queue.md)
+
+### Search
+
+```python
+from persisting.search import add_document, query
+
+add_document("docs", "text to index...")
+results = query("docs", "search query", mode="hybrid", k=10)
+```
+
+→ [Search Guide](guide/search.md)
+
+### Compute
+
+Map-style tasks with checkpoint/resume:
+
+```bash
+persisting compute task.py -w 4 --check       # validate
+persisting compute task.py -w 4 -- --n 1000   # run
+```
+
+→ [Compute Guide](guide/compute.md)
+
+---
 
 ## Next Steps
 
-- [Capture Quick Start](guide/capture_quickstart.md) — Agent trajectory capture (`traj capture`)
-- [User Guide](guide/index.md) — Detailed guides
-- [Design Docs](design/index.md) — Architecture and TTAS specification
-- [API Reference](api_reference.md) — Full API documentation
+- [User Guide](guide/index.md) — in-depth guides
+- [API Reference](api/index.md) — complete API docs
+- [Design Docs](design/index.md) — architecture, TTAS, tiered storage

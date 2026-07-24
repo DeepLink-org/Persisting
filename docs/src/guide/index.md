@@ -1,66 +1,51 @@
 # User Guide
 
-Welcome to the Persisting User Guide.
+Persisting provides **unified tiered storage** for AI workloads. Trajectories, parameters, and KV cache share the same addressing model (TTAS), storage engine (Lance), and distribution runtime (Pulsing).
 
-## What is Persisting?
+## Core: Unified Storage
 
-Persisting provides persistent storage for parameters, KV Cache, and trajectories. Queues and Search use Lance; agent trajectory canonical storage is Vortex (`events.vortex`). Data lives across GPU, host memory, and SSD — addressed by tensor-style subscript, materialized on demand.
+| Guide | Workload | Dimensions | Status |
+|-------|----------|-----------|--------|
+| [Tensor Memory](tensor-memory.md) | Parameters, KV Cache, Trajectories | `(param_id, shard)`, `(session, layer, head, time)`, `(run_id, time)` | 🧪 Experimental |
+
+All three workloads use `persisting.open()` with the same TTAS addressing. Block-tiered across host memory and SSD (GPU planned).
+
+## Tools on the Same Foundation
+
+| Guide | Description | Status |
+|-------|-------------|--------|
+| [Capture](capture.md) | Proxy and record LLM traffic — `persisting traj` | ✅ Stable |
+| [Queue](queue.md) | Append/consume event streams, KV API, samplers | ✅ Stable |
+| [Search](search.md) | Document indexing and vector/hybrid search | ✅ Stable |
+| [Compute](compute.md) | Map-style task orchestration — `plan()` + `execute()` | ✅ Stable |
+| [Custom Backends](custom-backends.md) | Implement your own storage backend | 📖 Reference |
+
+---
 
 ## Architecture
 
 ```
 ┌───────────────────────────────────────────────────────┐
-│  Application                                          │
-│  kv["s1", 0, 2, 0:512].tensor()                      │
+│  Trajectories      Parameters        KV Cache        │
+│  (run_id, time)    (param_id, shard) (sess, layer, …)│
 ├───────────────────────────────────────────────────────┤
-│  Access Patterns                                      │
-│  multi-dim lookup · streaming append · batch get      │
+│                    TTAS                                │
+│            Tiered Tensor Address Space                 │
 ├───────────────────────────────────────────────────────┤
-│  Persisting Core                                      │
-│  TTAS (addressing) · Tiering (GPU/Host/SSD) · Route    │
+│   Tiering:  GPU (L0)  ↔  Host (L1)  ↔  SSD (L3)     │
+│   Route:    Pulsing actor runtime                      │
 ├───────────────────────────────────────────────────────┤
-│  Storage Engine: Lance                                │
-│  columnar format · SSD persist · baseline read path   │
+│            Lance Columnar Storage                       │
 └───────────────────────────────────────────────────────┘
 ```
 
-## Guides
+## Choosing Your Entry Point
 
-### Tensor Memory (coming soon)
-
-The primary API — tensor-style subscript access to tiered memory:
-
-```python
-kv = persisting.open("kvcache/v1", dims=(...), order_dim=TIME)
-arr = kv["s1", 0, 2, 0:512].tensor()
-```
-
-### Capture (`traj`)
-
-Proxy and record LLM traffic under **`persisting traj`**:
-
-- **[Capture Quick Start](capture_quickstart.md)** — `traj capture`, `traj proxy`, inspect trajectories
-- [Traj command](../design/cli_trajectory_command.zh.md)
-- [Capture architecture](../design/capture_design.zh.md) (中文)
-- **Standalone dlcapt (`persisting-dlcapt`)** — independent OpenAI-compatible proxy migrated from Capture `external/dlcapt`; see `crates/persisting-dlcapt/README.md`. Phase-1 does not replace `persisting-capture`.
-
-### Compute (available)
-
-Run independent tasks with **`persisting compute`**: one Python file (`plan` + `execute`), local parallelism or `torchrun`.
-
-- **[Compute Quick Start](compute_quickstart.zh.md)** (中文) — script, parallelism, sink / resume
-- [Compute architecture](../design/compute_control_plane.zh.md) (中文)
-
-### Streaming Append (available now)
-
-Lance storage engine's append-only access pattern — for event streaming and durable queues (trajectory capture uses Vortex separately; see Capture quick start).
-
-- [Queue Backends](backends.md) — Overview of storage backends
-- [Lance Backend](lance.md) — Using Lance for persistence
-- [Persisting Backend](persisting.md) — Enhanced backend with metrics
-- [Custom Backends](custom.md) — Implementing custom backends
-
-## Next Steps
-
-- For the tensor memory API, see the [design docs](../design/index.md) and the [TTAS specification](../design/tensor_address_algebra.md).
-- For streaming append, continue with the [Queue Backends](backends.md) overview.
+| You want to… | Start with |
+|--------------|------------|
+| Store/retrieve parameters or KV cache by tensor subscript | [Tensor Memory](tensor-memory.md) |
+| Record agent LLM calls | [Capture](capture.md) |
+| Stream events with persistence | [Queue](queue.md) |
+| Index and search documents | [Search](search.md) |
+| Run batch jobs with checkpoint/resume | [Compute](compute.md) |
+| Plug in custom storage | [Custom Backends](custom-backends.md) |

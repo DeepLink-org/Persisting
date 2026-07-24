@@ -2,69 +2,140 @@
 
 5 分钟上手 Persisting。
 
-## 你将获得什么
-
-Persisting 为参数、KV Cache 和轨迹提供持久化存储——队列与 Search 以 Lance 为底座；Agent 轨迹 canonical 为 Vortex（`events.vortex`）。当前已可用：**流式追加**（append-only 队列）。即将推出：**Tensor Memory API**（多维寻址访问）。
-
-## 步骤 1：安装
+## 安装
 
 ```bash
 pip install persisting[lance]
 ```
 
-## 步骤 2：Tensor Memory（即将推出）
+CLI 工具（`persisting traj`、`persisting compute`、`persisting search`）需[从源码构建](installation.md#from-source)。
 
-主要 API——tensor 下标式访问分层内存：
+---
+
+## 核心：统一张量存储
+
+Persisting 通过同一个 `persisting.open()` 接口存储轨迹、参数和 KV Cache。三者共用 TTAS（分层张量地址空间）——同一套寻址、同一个 Lance 引擎、同一种分层。
 
 ```python
 import persisting
 from persisting.core import Dimension
+```
 
+### 参数
+
+按名称和分片寻址模型权重：
+
+```python
+PARAM_ID = Dimension("param_id", "str")
+SHARD    = Dimension("shard", "int")
+
+ps = persisting.open("params/llama-70b",
+    dims=(PARAM_ID, SHARD),
+    backend="tiered",
+    shape=(100, 8),
+)
+
+weights = ps["embed.weight", 0].tensor()
+ps["lm_head.weight", 0].put(updated_tensor)
+```
+
+### KV Cache
+
+跨会话、多层 KV Cache，Block 粒度分层：
+
+```python
 SESSION = Dimension("session", "str")
 LAYER   = Dimension("layer", "int")
 HEAD    = Dimension("head", "int")
 TIME    = Dimension("time", "int")
 
 kv = persisting.open("kvcache/v1",
-    dims=(SESSION, LAYER, HEAD, TIME), order_dim=TIME)
+    dims=(SESSION, LAYER, HEAD, TIME),
+    order_dim=TIME,
+    backend="tiered",
+    shape=(100, 32, 8, 4096),
+    block_tokens=64,
+)
 
-arr = kv["s1", 0, 2, 0:512].tensor()
+h = kv["s1", 0, 2, 0:512]      # 切片（零拷贝）
+arr = h.tensor()                 # 从最快层物化
+h.put(other_data)                # 写回
+kv.prefetch(("s1", 0, 0:1024))  # 异步拉 block 到 host 内存
 ```
 
-## 步骤 3：流式追加（已可用）
+### 轨迹（通过 Queue）
 
-Lance 存储引擎上的 append-only 队列——用于事件流与队列持久化（与轨迹 Vortex 层独立）：
+轨迹事件通过 Queue API 存储，底层同一套 Lance 引擎：
 
 ```python
-import asyncio
 from persisting import Queue
 
-async def main():
-    queue = Queue("my_topic", storage_path="./data")
-
-    for i in range(10):
-        await queue.put({"id": str(i), "value": i * 10})
-    await queue.flush()
-
-    records = await queue.get(limit=100)
-    print(f"读取了 {len(records)} 条记录")
-
-asyncio.run(main())
+q = Queue("trajectories", storage_path="./data")
+await q.put({"run_id": "r1", "step": 1, "reward": 0.5})
+await q.flush()
+records = await q.get(limit=100)
 ```
 
-带指标：
+→ [Tensor Memory 指南](guide/tensor-memory.md) 了解后端、维度和 Block 存储详情。
+
+---
+
+## 同一底座上的工具
+
+### Agent 采集
+
+记录每一次 LLM 调用——Claude Code、Codex 或自定义脚本：
+
+```bash
+persisting traj capture -o ./store -c proxy.toml -f md -- claude
+```
+
+→ [Capture 指南](guide/capture.md)
+
+### 队列与 KV API
+
+兼容 TransferQueue 的追加/消费 API：
 
 ```python
-queue = Queue("my_topic", storage_path="./data", enable_metrics=True)
-await queue.put({"id": "1", "value": 42})
-await queue.flush()
-stats = await queue.stats()
-print(stats["metrics"])
+from persisting import Queue, SequentialSampler
+
+q = Queue("training_data", storage_path="./data")
+reader = q.reader()
+
+meta = await reader.get_meta(
+    fields=["input_ids"], batch_size=32, task_name="train",
+    partition_id="p0", sampler=SequentialSampler())
+batch = await reader.get_data(meta, partition_id="p0")
 ```
+
+→ [Queue 指南](guide/queue.md)
+
+### 检索
+
+```python
+from persisting.search import add_document, query
+
+add_document("docs", "要索引的文本...")
+results = query("docs", "搜索查询", mode="hybrid", k=10)
+```
+
+→ [Search 指南](guide/search.md)
+
+### 计算编排
+
+Map 式任务，支持断点续跑：
+
+```bash
+persisting compute task.py -w 4 --check       # 验证
+persisting compute task.py -w 4 -- --n 1000   # 运行
+```
+
+→ [Compute 指南](guide/compute.md)
+
+---
 
 ## 下一步
 
-- [Capture 快速上手](guide/capture_quickstart.md) — Agent 轨迹采集（`traj capture`）
-- [用户指南](guide/index.md) — 详细指南
-- [设计文档](design/index.md) — 架构和 TTAS 规范
-- [API 参考](api_reference.md) — 完整 API 文档
+- [用户指南](guide/index.md) — 深入指南
+- [API 参考](api/index.md) — 完整 API 文档
+- [设计文档](design/index.md) — 架构、TTAS、分层存储

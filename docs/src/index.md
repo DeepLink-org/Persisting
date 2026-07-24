@@ -1,63 +1,153 @@
 ---
 template: home.html
-title: Persisting - Persistent Storage for Parameters, KV Cache, and Trajectories
-description: Distributed tiered memory for AI — extends Pulsing with multi-dimensional addressing, GPU/host/SSD tiering, and distribution via actor runtime.
+title: Persisting — Persistent Storage for Trajectories, Parameters, and KV Cache
+description: Unified tiered storage for AI workloads. Agent trajectories, model parameters, and KV cache share the same multi-dimensional addressing, Lance columnar engine, and Pulsing-powered distribution.
 hide: toc
 ---
 
-<!-- This content is hidden by the home.html template but indexed for search -->
-
 # Persisting
 
-**Persistent Storage for Parameters, KV Cache, and Trajectories.**
+**Persistent Storage for Trajectories, Parameters, and KV Cache.**
 
-Extends [Pulsing](https://github.com/DeepLink-org/pulsing) (distributed actor runtime) with distributed tiered memory: GPU ↔ host ↔ SSD, multi-dimensional tensor addressing, Pulsing-powered distribution.
+Agent trajectories, model parameters, and KV cache share the same tiered storage — **one addressing model, one storage engine, one distribution runtime**. Data lives across GPU, host memory, and SSD, addressed by tensor subscript, materialized on demand.
 
-## Core Idea
+---
 
-- **Pulsing** = control plane (actor discovery, messaging, lifecycle)
-- **Persisting** = data plane (multi-dimensional addresses, tiered memory, placement)
+## One Storage, Three Workloads
 
-Together: a runtime where actors communicate via Pulsing and share tensor data via Persisting — data lives across memory tiers, addressed by tensor-style subscript, materialized on demand.
+<div class="grid cards" markdown>
 
-## Features
+-   **📝 Agent Trajectories**
 
-- **Tiered Tensor Address Space (TTAS)** — Multi-dimensional, tiered address space for AI data (KV Cache, parameters, trajectories); the counterpart to PGAS.
-- **Tiered Memory** — GPU ↔ host ↔ SSD, transparent to application code.
-- **Pulsing Distribution** — Cross-node data access via Pulsing's actor runtime.
-- **Tensor-style API** — `kv["s1", 0, 2, 0:512].tensor()` — slice by subscript, materialize on demand.
+    ---
 
-## Quick Start
+    Record every LLM call. Stored as `(agent_id, run_id, time)` tensors alongside canonical Vortex event logs and human-readable Markdown.
+
+    ```bash
+    persisting traj capture -o ./store -c proxy.toml -- claude
+    ```
+
+    → [Capture Guide](guide/capture.md)
+
+-   **⚖️ Model Parameters**
+
+    ---
+
+    Address weights by name and shard. Tiered across host memory and SSD. Write-through to Lance baseline.
+
+    ```python
+    ps = persisting.open("params/llama-70b",
+        dims=(PARAM_ID, SHARD), shape=(100, 8),
+        backend="tiered")
+    weights = ps["embed.weight", 0].tensor()
+    ```
+
+    → [Tensor Memory Guide](guide/tensor-memory.md)
+
+-   **🧠 KV Cache**
+
+    ---
+
+    Cross-session, multi-layer KV cache. Block-tiered with prefetch. Same `(session, layer, head, time)` addressing as trajectories.
+
+    ```python
+    kv = persisting.open("kvcache/v1",
+        dims=(SESSION, LAYER, HEAD, TIME),
+        order_dim=TIME, backend="tiered",
+        shape=(100, 32, 8, 4096))
+    arr = kv["s1", 0, 2, 0:512].tensor()
+    ```
+
+    → [Tensor Memory Guide](guide/tensor-memory.md)
+
+</div>
+
+---
+
+## Built on the Same Foundation
+
+<div class="grid cards" markdown>
+
+-   **📬 Streaming Queue**
+
+    ---
+
+    Append/consume event streams. Lance-backed, TransferQueue-compatible KV API, samplers.
+
+    ```python
+    q = Queue("events", storage_path="./data")
+    await q.put({"step": 1, "reward": 0.5})
+    ```
+
+    → [Queue Guide](guide/queue.md)
+
+-   **🔍 Agent Search**
+
+    ---
+
+    Import documents, build IVF-PQ indexes, vector/hybrid search. Same Lance engine as everything else.
+
+    ```python
+    from persisting.search import add_document, query
+    results = query("docs", "how to configure proxy")
+    ```
+
+    → [Search Guide](guide/search.md)
+
+-   **⚡ Compute Orchestration**
+
+    ---
+
+    Map-style task orchestration. `plan()` + `execute()`, local parallelism or torchrun.
+
+    ```bash
+    persisting compute task.py -w 4 -- --n 1000
+    ```
+
+    → [Compute Guide](guide/compute.md)
+
+</div>
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Trajectories        Parameters          KV Cache           │
+│  (run_id, time)      (param_id, shard)   (sess, layer, …)  │
+├──────────────────────────────────────────────────────────────┤
+│                      TTAS                                    │
+│              Tiered Tensor Address Space                     │
+│         One addressing model for all AI data                 │
+├──────────────────────────────────────────────────────────────┤
+│   Tiering:  GPU (L0)  ↔  Host (L1)  ↔  SSD (L3)            │
+│   Route:    Pulsing actor runtime                             │
+├──────────────────────────────────────────────────────────────┤
+│              Lance Columnar Storage                           │
+│              SSD baseline for all workloads                   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Status
+
+| Component | Status |
+|-----------|--------|
+| Trajectory Capture (`traj`) | ✅ Stable |
+| Streaming Queue | ✅ Stable |
+| Compute Orchestration | ✅ Stable |
+| Agent Search | ✅ Stable |
+| Tensor Memory (TTAS) | 🧪 Experimental |
+| GPU Tiering / Cross-node | 📋 Planned |
+
+---
+
+## Quick Install
 
 ```bash
-pip install persisting
+pip install persisting[lance]
 ```
 
-```python
-import persisting
-from persisting.core import Dimension
-
-SESSION = Dimension("session", "str")
-LAYER   = Dimension("layer", "int")
-HEAD    = Dimension("head", "int")
-TIME    = Dimension("time", "int")
-
-kv = persisting.open("kvcache/v1",
-    dims=(SESSION, LAYER, HEAD, TIME), order_dim=TIME)
-
-arr = kv["s1", 0, 2, 0:512].tensor()
-```
-
-## Use Cases
-
-| Use Case | Dimensions | Primary Access Pattern |
-|----------|-----------|----------------------|
-| **KV Cache Offloading** | (session, layer, head, time) | Point query + range scan + prefetch |
-| **Parameter Serving** | (param_id, shard) | Batch point query |
-| **Trajectory Storage** | (run_id, time) | Sequential range scan |
-
-## Community
-
-- [GitHub Repository](https://github.com/DeepLink-org/Persisting)
-- [Issue Tracker](https://github.com/DeepLink-org/Persisting/issues)
-- [Discussions](https://github.com/DeepLink-org/Persisting/discussions)
+→ [Installation Guide](installation.md) · [Quick Start](quickstart.md)
