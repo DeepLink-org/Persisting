@@ -109,6 +109,13 @@ pub fn log_connect(storage: &Path, target: &str, session_id: &str) {
     );
 }
 
+pub fn log_network_denied(storage: &Path, host: &str, mode: &str, reason: &str, session_id: &str) {
+    emit(
+        storage,
+        &format!("network.denied host={host} mode={mode} reason={reason} session={session_id}"),
+    );
+}
+
 pub fn log_forward(
     storage: &Path,
     method: &str,
