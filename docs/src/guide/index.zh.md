@@ -44,6 +44,13 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 - [Capture 架构设计](../design/capture_design.zh.md) — 概念与数据流
 - **独立 dlcapt（`persisting-dlcapt`）** — 自 Capture `external/dlcapt` 迁入的独立 OpenAI 兼容代理；见 `crates/persisting-dlcapt/README.md`。第一阶段不替代 `persisting-capture`。
 
+### Compute 任务编排（已可用）
+
+用 **`persisting compute`** 跑一批独立任务：一个 Python 文件里的 `plan()` + `execute`，本地并行或 `torchrun` 扩规模。
+
+- **[Compute 快速上手](compute_quickstart.zh.md)** — 写脚本、并行、落盘与续跑
+- [Compute 架构](../design/compute_control_plane.zh.md) — Driver / Worker / sink / sticky
+
 ### 流式追加（已可用）
 
 流式追加与队列持久化基于 Lance 存储引擎——与轨迹 Vortex 层独立。这是当前已可用的生产能力。
