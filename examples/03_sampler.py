@@ -41,7 +41,9 @@ class ReverseSampler(BaseSampler):
         *args: Any,
         **kwargs: Any,
     ) -> tuple[list[int], list[int]]:
-        taken = ready_indexes[-batch_size:] if len(ready_indexes) >= batch_size else ready_indexes[:]
+        taken = (
+            ready_indexes[-batch_size:] if len(ready_indexes) >= batch_size else ready_indexes[:]
+        )
         taken = list(reversed(taken))
         return taken, taken
 
@@ -64,7 +66,9 @@ async def demo_sequential_sampler() -> None:
 
     print(f"\n  Reading in batches of {batch_size} with SequentialSampler:")
     for step in range(3):
-        records, offset = await queue.get_batch(sampler, batch_size=batch_size, consumed_offset=offset)
+        records, offset = await queue.get_batch(
+            sampler, batch_size=batch_size, consumed_offset=offset
+        )
         if not records:
             break
         print(f"    Step {step + 1}: got {len(records)} records, new offset = {offset}")
@@ -91,7 +95,9 @@ async def demo_custom_reverse_sampler() -> None:
 
     print("\n  Reading in batches of 2 with ReverseSampler (last indices first):")
     for step in range(3):
-        records, offset = await queue.get_batch(sampler, batch_size=batch_size, consumed_offset=offset)
+        records, offset = await queue.get_batch(
+            sampler, batch_size=batch_size, consumed_offset=offset
+        )
         if not records:
             break
         print(f"    Step {step + 1}: got {len(records)} records")

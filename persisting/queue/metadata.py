@@ -84,7 +84,9 @@ class BatchMeta:
     def select_fields(self, names: list[str]) -> "BatchMeta":
         return BatchMeta(
             samples=[sample.select_fields(names) for sample in self.samples],
-            custom_meta={idx: meta for idx, meta in self.custom_meta.items() if idx in self.global_indexes},
+            custom_meta={
+                idx: meta for idx, meta in self.custom_meta.items() if idx in self.global_indexes
+            },
             extra_info=dict(self.extra_info),
         )
 

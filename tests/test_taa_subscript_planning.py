@@ -41,6 +41,7 @@ tensor = TensorView(DIMS)
 # 轻量访问：tensor[{SESSION: xx}, :, 0:100]
 # ---------------------------------------------------------------------------
 
+
 class TestTensorViewAccess:
     """tensor[..., :, 0:100] 式访问，得到 Region。"""
 
@@ -88,6 +89,7 @@ class TestTensorViewAccess:
 # ---------------------------------------------------------------------------
 # Planning：canonicalize / project_prefix / is_point_query / is_range_query
 # ---------------------------------------------------------------------------
+
 
 class TestTaaPlanning:
     """用 tensor 下标得到 Region 后做 planning。"""

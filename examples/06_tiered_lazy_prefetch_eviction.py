@@ -56,6 +56,7 @@ kv = persisting.open(
 
 # ── Prefill ────────────────────────────────────────────────
 
+
 def prefill(sid: str, seq_len: int):
     for layer in range(NUM_LAYERS):
         for head in range(NUM_HEADS):
@@ -67,6 +68,7 @@ def prefill(sid: str, seq_len: int):
 #
 # prefetch 需要空间 → 按选取策略挑 unpinned block 驱逐
 # pin 保护 → unpin 后回到候选池
+
 
 def decode_step(sid: str, pos: int, stream):
     for layer in range(NUM_LAYERS):
@@ -86,6 +88,7 @@ def decode_step(sid: str, pos: int, stream):
 # 这比被动 LRU 更快腾出空间（LRU 可能选错——刚被抢占的 session
 # 在 LRU 里还是"热"的，但调度器知道它不会再用了）。
 
+
 def serve_batch(batch: list[tuple[str, int]], preempted: list[str], stream):
     for sid in preempted:
         kv[sid, :, :, :].evict()
@@ -101,6 +104,7 @@ def serve_batch(batch: list[tuple[str, int]], preempted: list[str], stream):
 
 
 # ── Main ──────────────────────────────────────────────────
+
 
 def main():
     stream = cuda.Stream()

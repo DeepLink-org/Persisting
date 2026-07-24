@@ -1,0 +1,58 @@
+name: "Setup Build Environment"
+description: "Python, Rust, uv, and optional protoc for Persisting CI"
+inputs:
+  python-version:
+    description: "Python version"
+    required: false
+    default: "3.12"
+  rust-toolchain:
+    description: "Rust toolchain"
+    required: false
+    default: "stable"
+  install-protoc:
+    description: "Install protobuf compiler (needed by persisting-dlcapt)"
+    required: false
+    default: "true"
+  components:
+    description: "Rust components (comma-separated)"
+    required: false
+    default: "rustfmt, clippy"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.rust-toolchain }}
+        components: ${{ inputs.components }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+
+    - name: Install protoc
+      if: inputs.install-protoc == 'true' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends protobuf-compiler
+        protoc --version
+
+    - name: Install protoc
+      if: inputs.install-protoc == 'true' && runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install protobuf
+        protoc --version
+
+    - name: Point PyO3 at CI Python
+      shell: bash
+      run: |
+        echo "PYO3_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"

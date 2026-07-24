@@ -128,6 +128,7 @@ class TestBlockToRegion:
 class TestBlockStore:
     def test_get_triggers_fetch_from_l3(self):
         import numpy as np
+
         l3 = NumpyBacking(SHAPE, dtype=np.float32)
         idx = (0, 0, 0, slice(0, 64))
         l3.write(idx, np.ones(64, dtype=np.float32) * 42)
@@ -147,6 +148,7 @@ class TestBlockStore:
 
     def test_put_then_get(self):
         import numpy as np
+
         store = BlockStore(
             DIMS,
             SHAPE,
@@ -164,6 +166,7 @@ class TestBlockStore:
 
     def test_prefetch_and_wait(self):
         import numpy as np
+
         l3 = NumpyBacking(SHAPE, dtype=np.float32)
         l3.write((0, 0, 0, slice(0, 128)), np.ones(128, dtype=np.float32))
         store = BlockStore(
@@ -185,6 +188,7 @@ class TestBlockStore:
         """put 写回 L3 后，另一 BlockStore 共享同一 L3 时能读到相同数据。"""
         import numpy as np
         import tempfile
+
         with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
             path = f.name
         try:
@@ -213,6 +217,7 @@ class TestBlockStore:
             np.testing.assert_array_almost_equal(out, data)
         finally:
             import os
+
             try:
                 os.unlink(path)
             except OSError:
@@ -228,6 +233,7 @@ class TestBlockMappedBacking:
 
     def test_degraded_read_write_same_as_numpy(self):
         import numpy as np
+
         backing = BlockMappedBacking((2, 2, 64), dtype=np.float32, block_tokens=64)
         idx = (0, 0, slice(0, 64))
         data = np.ones(64, dtype=np.float32) * 7
@@ -239,9 +245,8 @@ class TestBlockMappedBacking:
     def test_use_mmap_read_write_same_as_numpy(self):
         """use_mmap=True 时 read/write 与降级实现结果一致。"""
         import numpy as np
-        backing = BlockMappedBacking(
-            (2, 2, 64), dtype=np.float32, block_tokens=64, use_mmap=True
-        )
+
+        backing = BlockMappedBacking((2, 2, 64), dtype=np.float32, block_tokens=64, use_mmap=True)
         idx = (0, 0, slice(0, 64))
         data = np.ones(64, dtype=np.float32) * 7
         backing.write(idx, data)
@@ -254,6 +259,7 @@ class TestBlockStoreWithBlockMappedBacking:
 
     def test_get_triggers_fetch_from_l3(self):
         import numpy as np
+
         l3 = NumpyBacking(SHAPE, dtype=np.float32)
         l3.write((0, 0, 0, slice(0, 64)), np.ones(64, dtype=np.float32) * 42)
         l1 = BlockMappedBacking(SHAPE, dtype=np.float32, block_tokens=BLOCK_TOKENS)
@@ -274,6 +280,7 @@ class TestBlockStoreWithBlockMappedBacking:
 
     def test_put_then_get(self):
         import numpy as np
+
         l1 = BlockMappedBacking(SHAPE, dtype=np.float32, block_tokens=BLOCK_TOKENS)
         store = BlockStore(
             DIMS,
@@ -295,6 +302,7 @@ class TestBlockStoreWithBlockMappedBacking:
         import numpy as np
         import os
         import tempfile
+
         with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
             path = f.name
         try:
@@ -333,9 +341,8 @@ class TestBlockStoreWithBlockMappedBacking:
     def test_store_with_mmap_l1_put_then_get(self):
         """L1=BlockMappedBacking(use_mmap=True) 时 put 再 get 与 NumpyBacking 一致。"""
         import numpy as np
-        l1 = BlockMappedBacking(
-            SHAPE, dtype=np.float32, block_tokens=BLOCK_TOKENS, use_mmap=True
-        )
+
+        l1 = BlockMappedBacking(SHAPE, dtype=np.float32, block_tokens=BLOCK_TOKENS, use_mmap=True)
         store = BlockStore(
             DIMS,
             SHAPE,
@@ -359,6 +366,7 @@ class TestPrefetchAsync:
     def test_wait_waits_for_background_prefetch(self):
         """prefetch(region) 后 wait(region) 阻塞直到后台预取完成，再 get 得到 L3 数据。"""
         import numpy as np
+
         l3 = NumpyBacking(SHAPE, dtype=np.float32)
         l3.write((0, 0, 0, slice(0, 128)), np.ones(128, dtype=np.float32) * 99)
         store = BlockStore(
@@ -380,6 +388,7 @@ class TestPrefetchAsync:
     def test_get_without_prefetch_sync_fetches(self):
         """不调用 prefetch，直接 get(region) 仍能同步从 L3 拉取并返回正确数据。"""
         import numpy as np
+
         l3 = NumpyBacking(SHAPE, dtype=np.float32)
         l3.write((0, 0, 0, slice(0, 64)), np.arange(64, dtype=np.float32))
         store = BlockStore(
@@ -426,6 +435,7 @@ class TestBlockStoreWithRemoteBacking:
     def test_get_triggers_fetch_from_remote_stub(self):
         """L3 为 RemoteBacking(stub) 时，get 从 stub 拉块到 L1。"""
         import numpy as np
+
         stub = {}
         idx_key = (0, 0, 0, (0, 64))
         stub[idx_key] = np.ones(64, dtype=np.float32) * 42
@@ -452,6 +462,7 @@ class TestBlockStoreWithRemoteBacking:
     def test_put_writes_through_to_remote_stub(self):
         """put 写回 RemoteBacking(stub)，另一 BlockStore 共享同一 stub 时能读到。"""
         import numpy as np
+
         stub = {}
         l3 = RemoteBacking(
             SHAPE,
@@ -488,6 +499,7 @@ class TestOpenTiered:
         import numpy as np
         import persisting
         from persisting.core import Dimension
+
         S = Dimension("session", "int")
         L = Dimension("layer", "int")
         T = Dimension("time", "int")

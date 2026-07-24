@@ -23,6 +23,14 @@ cd Persisting
 pip install -e ".[lance]"
 ```
 
+### Nightly (pre-release wheels)
+
+Daily / `main` pushes refresh the rolling GitHub Release tag [`nightly`](https://github.com/DeepLink-org/Persisting/releases/tag/nightly):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
+```
+
 ## Verify
 
 ```python

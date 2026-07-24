@@ -28,7 +28,9 @@ class StatusTracker:
         shapes = shapes or {}
         for idx in global_indexes:
             self.production_status[idx] = {field: "ready" for field in fields}
-            self.field_meta[idx] = {field: (dtypes.get(field), shapes.get(field)) for field in fields}
+            self.field_meta[idx] = {
+                field: (dtypes.get(field), shapes.get(field)) for field in fields
+            }
 
     def scan_ready(self, fields: list[str], task_name: str) -> list[int]:
         consumed = self.consumption_status.setdefault(task_name, set())

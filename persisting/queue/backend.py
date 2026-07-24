@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import pickle
 import shutil
 import time
-import pickle
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -64,7 +64,10 @@ def _infer_arrow_table(records: list[dict[str, Any]]) -> "pa.Table":
             )
         else:
             arrays[name] = pa.array(
-                [pickle.dumps(v, protocol=pickle.HIGHEST_PROTOCOL) if v is not None else None for v in values],
+                [
+                    pickle.dumps(v, protocol=pickle.HIGHEST_PROTOCOL) if v is not None else None
+                    for v in values
+                ],
                 type=pa.binary(),
             )
     return pa.table(arrays)
@@ -240,7 +243,9 @@ class LanceBackend:
         rows = await self.get_by_indices(batch_meta.global_indexes)
         for row in rows:
             for value in row.values():
-                if isinstance(value, (bytes, bytearray)) and bytes(value).startswith(ZEROCOPY_PREFIX):
+                if isinstance(value, (bytes, bytearray)) and bytes(value).startswith(
+                    ZEROCOPY_PREFIX
+                ):
                     self._zerocopy_stats["read_envelopes"] += 1
         return decode_rows(rows, fields=fields or batch_meta.field_names)
 
