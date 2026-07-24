@@ -2,7 +2,7 @@
 
 本页帮你在 **5–10 分钟内**跑通 `persisting traj`：用 `traj capture` / `traj proxy` 采集 Agent 对话，用 `traj stats` 等查看 Markdown 轨迹。
 
-> 架构与概念见 [Capture 架构设计](../design/capture_design.zh.md)；命令参数见 [Traj 命令](../design/cli_trajectory_command.zh.md) 与 [Capture 子命令](../design/cli_capture_command.zh.md)。
+> 架构与概念见 [Capture 架构设计](../design/capture.md)；命令参数见 [Traj 命令](../design/cli-traj.md) 与 [Capture 子命令](../design/cli-capture.md)。
 
 ---
 
@@ -11,9 +11,9 @@
 运行 `traj capture` 后，Persisting 会：
 
 1. 在本地启动 **LLM 反向代理**（透明转发到上游模型）；
-2. 把每次请求/响应写入 **Vortex 事件日志**（`-f vortex`，canonical）或 **仅 Markdown**（`-f md`）；
-3. **两种格式都会 live 更新 Markdown**（人类可读，可 `tail -f`）；`-f vortex` 额外落盘 `events.vortex`；
-4. 子进程退出后打印摘要，并写入对账文件 `.capture/reconcile.json`（`-f vortex` 时对比 live md 与 Vortex replay）。
+2. 按 `-f` **只写一层**：默认 **仅 Markdown**（`-f md`），或 **Lance canonical**（`-f lance` → `{run}/events.lance/` 数据集目录）；
+3. `-f md` 时 live upsert 对话 Markdown（可 `tail -f`），退出时写 `.capture/reconcile.json`；
+4. `-f lance` 时只 append 结构化事件行；需要人读视图时再跑 `traj materialize`。
 
 支持的实时采集客户端：**Claude Code**、**OpenAI Codex**（经代理）。Cursor 当前不支持。
 
@@ -160,9 +160,9 @@ persisting traj capture -o ./store -c your.toml -f md -- python3 your_agent.py
 |------|------|
 | `-o DIR` | 轨迹 store 根目录（默认 `.persisting/capture`） |
 | `-c FILE` | 代理 TOML（`listen`、`models`、upstream） |
-| `-f md` | **仅 Markdown**（默认，live upsert 到 `{session}.md`） |
-| `-f vortex` | **Vortex canonical**（`events.vortex`）+ **同样 live Markdown**；对账 md ↔ Vortex |
-| `capture_level` | TOML 中 `summary` / `dialogue`（默认）/ `full`；见 [Capture 架构 §6.4](../design/capture_design.zh.md#64-可见对话提取含多模态) |
+| `-f md` | **仅 Markdown**（默认，live upsert 到 `{session}.md`，并写 reconcile） |
+| `-f lance` | **仅 Lance**（`events.lance/` 目录）；md 用 `traj materialize` 生成 |
+| `capture_level` | TOML 中 `summary` / `dialogue`（默认）/ `full`；见 [Capture 架构 §6.4](../design/capture.md#64-可见对话提取含多模态) |
 | `--debug` | 将代理请求打到 stderr 与 `.capture/debug.log` |
 | `--` 之后 | 要执行的子命令 |
 
@@ -300,17 +300,17 @@ capture backend 的 `-o`、`-f`、`--debug` 和 daemon actions 都不受 dlcapt 
 store/
 ├── .capture/
 │   ├── sessions.json          # 会话索引
-│   ├── reconcile.json         # run 结束 md ↔ Vortex 对账
+│   ├── reconcile.json         # `-f md` run 结束对账（纯 `-f lance` 通常无）
 │   ├── dead_letter.jsonl      # 采集失败事件（可 replay）
 │   └── events.wal.jsonl       # 未 ack 事件 WAL（异常退出时）
 └── {agent_id}/
     └── run-20260528-120000-123456789/
-        ├── run-20260528-120000-123456789.md   # 主 Agent 对话
+        ├── run-20260528-120000-123456789.md   # 主 Agent 对话（`-f md` 或 materialize 后）
         ├── agent-{subagent-id}.md             # 子 Agent（若有）
-        └── events.vortex                        # Vortex 事件日志
+        └── events.lance/                      # Lance dataset（仅 `-f lance`）
 ```
 
-**阅读轨迹**：直接打开 `*.md`，或实时跟踪：
+**阅读轨迹**：打开 `*.md`，或实时跟踪（需已有 Markdown 层）：
 
 ```bash
 tail -f store/deepseek-proxy/run-*/run-*.md
@@ -325,14 +325,14 @@ Capture **生产**数据；`persisting traj`（别名 `trajectory`）用于 **�
 若已 `traj proxy start` 或设置了 `PERSISTING_CAPTURE_STORAGE`，`stats` / `replay` / `materialize` / `truncate` 可 **省略** `<STORAGE>` 参数。
 
 ```bash
-# 统计（`-f md` 直接读 Markdown；`-f vortex` 可先 materialize）
-# 省略 --session-id 时扫描 agent 下全部 run，并展开 Vortex 内多个 session_id 分区
+# 统计（`-f md` 直接读 Markdown；`-f lance` 可先 materialize）
+# 省略 --session-id 时扫描 agent 下全部 run，并展开 Lance 内多个 session_id 分区
 persisting traj stats ./store/deepseek-proxy/ --detail
 
 # 重放为 JSON 行
 persisting traj replay ./store --agent-id deepseek-proxy --session-id run-20260528-120000-123456789
 
-# 从 Vortex 全量重建 Markdown（对账不一致或 md 损坏时）
+# 从 Lance 全量重建 Markdown（对账不一致或 md 损坏时）
 persisting traj materialize ./store \
   --agent-id deepseek-proxy \
   --root-session-id run-20260528-120000-123456789 \
@@ -341,7 +341,7 @@ persisting traj materialize ./store \
 
 也可直接传 **run 目录** 或 `*.md` 路径，`traj` 会自动推断 `agent_id` / `session_id`。
 
-**多模态（截图 / 出图）**：默认 `capture_level = dialogue` 下，Markdown 与 stats 中图像以 **`[image: …]` / `[image_generated: …]` 占位符** 出现，不含像素；需完整 JSON 时在 TOML 设 `capture_level = "full"`。详见 [轨迹 Markdown §2.7](../design/trajectory_tlv_format.zh.md#27-多模态对话正文phase-0)。
+**多模态（截图 / 出图）**：默认 `capture_level = dialogue` 下，Markdown 与 stats 中图像以 **`[image: …]` / `[image_generated: …]` 占位符** 出现，不含像素；需完整 JSON 时在 TOML 设 `capture_level = "full"`。详见 [轨迹 Markdown §2.7](../design/trajectory-format.md#27-多模态对话正文phase-0)。
 
 ---
 
@@ -356,7 +356,7 @@ persisting traj import ./store \
   --project "$(pwd)"
 ```
 
-`--dry-run` 仅统计；多会话匹配时用 `--session-id` 指定。详见 [Traj import 说明](../design/cli_capture_command.zh.md#5-traj-import)。
+`--dry-run` 仅统计；多会话匹配时用 `--session-id` 指定。详见 [Traj import 说明](../design/cli-capture.md#5-traj-import)。
 
 ---
 
@@ -364,11 +364,13 @@ persisting traj import ./store \
 
 ### 对账不一致
 
-run 结束后查看 `.capture/reconcile.json`。若 md 与 Vortex 不一致：
+`.capture/reconcile.json` 主要出现在 **`-f md`** 采集后。若同时存在 Lance 层且与 md 不一致（例如事后又写了 Lance，或旧数据）：
 
 ```bash
 persisting traj materialize ./store --agent-id <id> --root-session-id <run-id> --session-id <story-id>
 ```
+
+纯 `-f lance` 采集没有 live Markdown，需要人读视图时直接 `traj materialize`。
 
 ### 采集失败事件
 
@@ -413,13 +415,13 @@ persisting traj capture -o ./store -c your.toml -f md --debug -- claude
 | `traj replay-dead-letter` | 重放失败采集事件 |
 | `traj stats` | 统计 / `--detail` 逐轮 |
 | `traj replay` | 事件 JSON 重放 |
-| `traj materialize` | Vortex → Markdown 全量重建 |
+| `traj materialize` | Lance → Markdown 全量重建 |
 
 ---
 
 ## 下一步
 
-- [Capture 架构设计](../design/capture_design.zh.md) — 产品定位、数据流、设计原则
-- [轨迹 Markdown 格式](../design/trajectory_tlv_format.zh.md) — TLV 块与 frontmatter
-- [Trajectory 命令](../design/cli_trajectory_command.zh.md) — `traj` 完整参数
+- [Capture 架构设计](../design/capture.md) — 产品定位、数据流、设计原则
+- [轨迹 Markdown 格式](../design/trajectory-format.md) — TLV 块与 frontmatter
+- [Trajectory 命令](../design/cli-traj.md) — `traj` 完整参数
 - [分步示例代码](../../examples/capture-walkthrough/README.md) — Mock LLM 与校验脚本

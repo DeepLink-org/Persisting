@@ -18,7 +18,7 @@ L2 Compute        流式领取 · 有界并发 · sticky 派发 · 取消 / 重�
      ↓
 L3 执行缝         每槽一个长驻 Python host，只调用户 execute
      ↓
-唯一 sink         控制面 append 结果（JSONL 账本；可选 Tee Vortex）
+唯一 sink         控制面 append 结果（JSONL 账本；可选 Tee Lance）
 ```
 
 | 是 | 不是 |
@@ -29,7 +29,7 @@ L3 执行缝         每槽一个长驻 Python host，只调用户 execute
 | Rust Pulsing 做发现与投递 | Python 侧 Actor 编程模型 |
 | spawn 外部 `--python` | PyO3 内嵌用户环境 |
 
-与 `search` / `traj` 不同：`compute` **静态链接**进 CLI，直接 async 跑，不经 engine RON ABI。落盘若走 Vortex，再经 sink adapter 写轨迹；编排本身仍在本 crate。
+与 `search` / `traj` 不同：`compute` **静态链接**进 CLI，直接 async 跑，不经 engine RON ABI。落盘若走 Lance，再经 sink adapter 写轨迹；编排本身仍在本 crate。
 
 ---
 
@@ -156,7 +156,7 @@ Worker **不**解释业务；Driver **不**碰 Python。失败 traceback 编进 
 |------|------|
 | `--sink DIR` | `ready.ndjson` + `failures.ndjson` + `checkpoint.json` |
 | 无 `--sink` | 默认仅 stdout NDJSON（开发视图，非耐久） |
-| `--traj` | Tee 到 Vortex；**JSONL 仍是 resume 真相** |
+| `--traj` | Tee 到 Lance；**JSONL 仍是 resume 真相** |
 
 `JsonlFileSink`：打开时从已有文件 **seed** `task_id`；先 reserve 再写盘，失败则 **rollback seen**（seen ⊆ durable）。  
 异步 `sink_writer`：`join` 汇总 persist 失败并 fail job；失败时 `SkipSet::remove`，便于后续 `--resume` 发现未落盘 id。损坏 / 无 `task_id` 的 JSONL 行：**skip + warn**，不拖垮整本账本。
@@ -231,6 +231,6 @@ Worker **不**解释业务；Driver **不**碰 Python。失败 traceback 编进 
 ## 9. 相关文档
 
 - [Compute 快速上手](../guide/compute_quickstart.zh.md)
-- [CLI 整体架构](cli_architecture.zh.md)（`compute` 为例外静态路径）
-- [轨迹存储](trajectory_storage.zh.md)（`--traj` / L1）
+- [CLI 整体架构](cli.md)（`compute` 为例外静态路径）
+- [轨迹存储](trajectory.md)（`--traj` / L1）
 - 示例：[`examples/compute/`](../../../examples/compute/)

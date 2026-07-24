@@ -59,13 +59,13 @@ pub struct ComputeArgs {
     #[arg(long)]
     pub resume: bool,
 
-    /// Also append terminal results to a Vortex trajectory (requires `--sink`).
+    /// Also append terminal results to a Lance trajectory (requires `--sink`).
     /// Writes `compute.result` / `compute.failure` events under traj storage.
     #[cfg(feature = "traj-sink")]
     #[arg(long)]
     pub traj: bool,
 
-    /// Vortex storage root (default: `{sink}/traj`).
+    /// Lance storage root (default: `{sink}/traj`).
     #[cfg(feature = "traj-sink")]
     #[arg(long, value_name = "DIR")]
     pub traj_storage: Option<PathBuf>,
@@ -201,21 +201,21 @@ pub async fn run_compute(args: ComputeArgs) -> Result<ExitCode> {
                     .unwrap_or("run")
                     .to_string()
             });
-            let vortex = crate::sink_traj::VortexResultSink::new(
+            let lance = crate::sink_traj::LanceResultSink::new(
                 traj_storage.display().to_string(),
                 args.traj_agent.clone(),
                 session.clone(),
             );
             if let Ok(ledger) = CheckpointLedger::load(dir).await {
-                vortex.seed_seen(ledger.skip_ids());
+                lance.seed_seen(ledger.skip_ids());
             }
             eprintln!(
-                "[traj] vortex append → {}/{}/{}",
+                "[traj] lance append → {}/{}/{}",
                 traj_storage.display(),
                 args.traj_agent,
                 session
             );
-            sinks.push(Box::new(vortex));
+            sinks.push(Box::new(lance));
         }
         Some(Arc::new(TeeSink::new(sinks)))
     } else {

@@ -24,7 +24,7 @@ Persisting's architecture, addressing model, and storage design.
 | Document | Description |
 |----------|-------------|
 | [Capture Architecture](capture.md) | LLM proxy, event model, dual storage (中文) |
-| [Trajectory Storage](trajectory.md) | Vortex canonical + Markdown materialization (中文) |
+| [Trajectory Storage](trajectory.md) | Lance canonical + Markdown materialization (中文) |
 | [Trajectory Markdown Format](trajectory-format.md) | TLV block model, frontmatter, live upsert (中文) |
 | [Traj CLI](cli-traj.md) | `persisting traj` command reference (中文) |
 | [Capture CLI](cli-capture.md) | `traj capture` / `traj proxy` subcommands (中文) |
@@ -66,7 +66,7 @@ Persisting's architecture, addressing model, and storage design.
 
 1. **Lance is the baseline** — All caches and accelerations are built on top of "reads from file."
 2. **One foundation, multiple patterns** — Trajectory, Search, KV, Queue share the Lance ecosystem.
-3. **Trajectory dual-view** — Vortex (canonical) + Markdown (materialized); live upsert from capture.
+3. **Trajectory dual-view** — Lance (canonical dataset) + Markdown (materialized); `-f md` live upserts Markdown, `-f lance` writes Lance only (materialize for md).
 4. **Capture is self-contained** — Embedded proxy captures LLM traffic; IDE import is supplementary.
 5. **TTAS is internal** — Users see `kv[key].tensor()`, not raw address algebra.
 6. **Performance is product** — P99 latency, GPU utilization, capture real-time fidelity.

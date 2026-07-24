@@ -17,8 +17,9 @@ lazy_static! {
         Regex::new(r"(?m)(?:^|\n)\s*agentId:\s*([a-zA-Z0-9_-]{4,})").expect("agentId tool result");
     static ref TOOL_AGENT_BLOCK: Regex =
         Regex::new(r"```tool:(?:Agent|Task)\s*\n([\s\S]*?)```").expect("tool agent block");
+    /// Design-doc paths in prompts (`*.md` or legacy `*.zh.md` under docs/src/design/).
     static ref DOC_TARGET: Regex =
-        Regex::new(r"docs/src/design/[^\s\)\]]+\.zh\.md").expect("doc target path");
+        Regex::new(r"docs/src/design/[^\s\)\]]+\.md").expect("doc target path");
     static ref TASK_ID_XML: Regex =
         Regex::new(r"(?i)<task-id>\s*([a-zA-Z0-9_-]{4,})\s*</task-id>").expect("task-id xml");
 }

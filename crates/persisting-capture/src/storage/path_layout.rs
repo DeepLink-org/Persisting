@@ -86,15 +86,15 @@ fn infer_traj_location_from_path(path_arg: &str) -> Option<ParsedTrajPath> {
 fn looks_like_session_dir(dir: &Path) -> bool {
     dir.is_dir()
         && (locate_session_markdown(dir).is_some()
-            || dir.join("events.vortex").is_file()
+            || dir.join("events.lance").is_dir()
             || dir.join("_versions").is_dir())
 }
 
-/// Capture run layout: `{storage}/{agent}/{run_id}/events.vortex`.
-/// Flat layout: `{storage}/{agent}/{session_id}/events.vortex`.
+/// Capture run layout: `{storage}/{agent}/{run_id}/events.lance/` (dataset directory).
+/// Flat layout: `{storage}/{agent}/{session_id}/events.lance/`.
 fn infer_root_session_id(session_dir: &Path, session_id: &str) -> Option<String> {
     let is_run_dir = session_id.starts_with("run-");
-    if session_dir.join("events.vortex").is_file()
+    if session_dir.join("events.lance").is_dir()
         || (is_run_dir && session_dir.join("_versions").is_dir())
     {
         Some(session_id.to_string())
@@ -222,7 +222,7 @@ pub fn merge_story_location(
     }
 }
 
-/// When a capture run uses a header session id (UUID) for Vortex/md but the run folder is `run-*`,
+/// When a capture run uses a header session id (UUID) for Lance/md but the run folder is `run-*`,
 /// remap the story storage key from the primary markdown stem under the run directory.
 fn remap_capture_run_story_session_id(
     storage: &str,
@@ -392,7 +392,7 @@ pub fn list_story_read_locations(
         let sessions = list_sessions_under_agent(&stor, &agent)?;
         if sessions.is_empty() {
             anyhow::bail!(
-                "trajectory stats: no sessions under {stor}/{agent}/ (expected run dirs with events.vortex or markdown)"
+                "trajectory stats: no sessions under {stor}/{agent}/ (expected run dirs with events.lance or markdown)"
             );
         }
         return Ok(sessions);
@@ -402,7 +402,7 @@ pub fn list_story_read_locations(
         let sessions = list_sessions_under_agent(&storage, &agent)?;
         if sessions.is_empty() {
             anyhow::bail!(
-                "trajectory stats: no sessions under {storage}/{agent}/ (expected run dirs with events.vortex or markdown)"
+                "trajectory stats: no sessions under {storage}/{agent}/ (expected run dirs with events.lance or markdown)"
             );
         }
         return Ok(sessions);
@@ -546,7 +546,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let session = base.join("store").join("agent").join("run-1");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("events.vortex"), b"vortex").unwrap();
+        std::fs::create_dir_all(session.join("events.lance")).unwrap();
         std::fs::write(session.join("run-1.md"), "# test\n").unwrap();
 
         let loc = resolve_traj_read_location(
@@ -582,7 +582,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let session = base.join("store").join("agent").join("run-1");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("events.vortex"), b"vortex").unwrap();
+        std::fs::create_dir_all(session.join("events.lance")).unwrap();
         std::fs::write(session.join("uuid-story.md"), "# test\n").unwrap();
 
         let loc = resolve_traj_read_location(
@@ -647,7 +647,7 @@ mod tests {
         std::fs::write(store.join(".capture/run_session"), "run-20260101-000000").unwrap();
         let session = store.join("agent-a").join("run-20260101-000000");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("events.vortex"), b"v").unwrap();
+        std::fs::create_dir_all(session.join("events.lance")).unwrap();
 
         let loc = resolve_traj_read_location(
             "trajectory stats",
@@ -673,7 +673,7 @@ mod tests {
         for run in ["run-001", "run-002"] {
             let session = agent.join(run);
             std::fs::create_dir_all(&session).unwrap();
-            std::fs::write(session.join("events.vortex"), b"v").unwrap();
+            std::fs::create_dir_all(session.join("events.lance")).unwrap();
         }
 
         let locs =
@@ -705,7 +705,7 @@ mod tests {
             .join("deepseek-proxy")
             .join("run-with-md");
         std::fs::create_dir_all(&run).unwrap();
-        std::fs::write(run.join("events.vortex"), b"v").unwrap();
+        std::fs::create_dir_all(run.join("events.lance")).unwrap();
         std::fs::write(run.join("header-session-uuid.md"), "# story\n").unwrap();
 
         let resolved = resolve_traj_read_location(
@@ -732,7 +732,7 @@ mod tests {
         let agent = base.join("store").join("deepseek-proxy");
         let run = agent.join("run-only");
         std::fs::create_dir_all(&run).unwrap();
-        std::fs::write(run.join("events.vortex"), b"v").unwrap();
+        std::fs::create_dir_all(run.join("events.lance")).unwrap();
 
         let locs =
             list_story_read_locations(agent.to_str().unwrap().into(), None, None, None).unwrap();

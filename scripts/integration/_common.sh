@@ -79,7 +79,7 @@ capture_wait_http() {
   return 1
 }
 
-# Poll traj stats (Vortex layer) until row_count >= expected or plateau.
+# Poll traj stats (Lance layer) until row_count >= expected or plateau.
 capture_drain_event_rows() {
   local storage="$1" agent_id="$2" session_id="$3" expected="$4" drain_sec="$5"
   local stats_toml="$6"
@@ -90,7 +90,7 @@ capture_drain_event_rows() {
     if "$CLI" traj stats "$storage" \
       --agent-id "$agent_id" \
       --session-id "$session_id" \
-      --storage-format vortex >"$stats_toml" 2>/dev/null; then
+      --storage-format lance >"$stats_toml" 2>/dev/null; then
       best="$(capture_parse_toml_row_count "$stats_toml")"
       if [[ "$best" -ge "$expected" ]]; then
         echo "$best"

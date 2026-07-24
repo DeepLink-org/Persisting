@@ -1,10 +1,10 @@
-//! Resolve Vortex vs markdown storage for a session.
+//! Resolve Lance vs markdown storage for a session.
 
 use persisting_proto::TrajectoryStorageFormat;
 
 use super::convert::LayerStats;
 use super::store::{
-    session_vortex_path, MarkdownTrajectoryStore, TrajectoryStore, VortexTrajectoryStore,
+    session_lance_path, LanceTrajectoryStore, MarkdownTrajectoryStore, TrajectoryStore,
 };
 use persisting_capture::story_coords::StoryCoords;
 
@@ -12,22 +12,22 @@ pub fn detect_story_primary_layer(
     layers: &LayerStats,
     session: &StoryCoords,
 ) -> TrajectoryStorageFormat {
-    let has_vortex = layers.event_rows > 0;
+    let has_lance = layers.event_rows > 0;
     let has_md = layers.markdown_blocks > 0;
-    match (has_vortex, has_md) {
+    match (has_lance, has_md) {
         (false, true) => TrajectoryStorageFormat::Markdown,
-        (true, false) => TrajectoryStorageFormat::Vortex,
+        (true, false) => TrajectoryStorageFormat::Lance,
         (false, false) => TrajectoryStorageFormat::Markdown,
         (true, true) => {
-            // Capture run: live TLV markdown is the dialogue story; Vortex is the raw event log.
+            // Capture run: live TLV markdown is the dialogue story; Lance is the raw event log.
             if session.root_session_id.is_some() {
                 return TrajectoryStorageFormat::Markdown;
             }
-            // Flat layout: materialized / lossy markdown has fewer blocks than raw Vortex.
+            // Flat layout: materialized / lossy markdown has fewer blocks than raw Lance.
             if layers.markdown_blocks < layers.event_rows {
                 return TrajectoryStorageFormat::Markdown;
             }
-            TrajectoryStorageFormat::Vortex
+            TrajectoryStorageFormat::Lance
         }
     }
 }
@@ -39,11 +39,11 @@ pub fn story_stats_note(layers: &LayerStats, primary: TrajectoryStorageFormat) -
     };
     match (layers.event_rows > 0, layers.markdown_blocks > 0) {
         (true, true) => format!(
-            "Story stats via {via} ({primary_count}); Vortex {} raw event(s), Markdown {} dialogue block(s)",
+            "Story stats via {via} ({primary_count}); Lance {} raw event(s), Markdown {} dialogue block(s)",
             layers.event_rows, layers.markdown_blocks,
             via = format_label(primary)
         ),
-        (true, false) => format!("Story stats via vortex ({primary_count} raw event(s))"),
+        (true, false) => format!("Story stats via lance ({primary_count} raw event(s))"),
         (false, true) => format!("Story stats via markdown ({primary_count} dialogue block(s))"),
         (false, false) => "Story stats: no trajectory data".to_string(),
     }
@@ -52,8 +52,8 @@ pub fn story_stats_note(layers: &LayerStats, primary: TrajectoryStorageFormat) -
 async fn resolve_auto_read(session: &StoryCoords) -> anyhow::Result<TrajectoryStorageFormat> {
     resolve_auto_read_with(
         session,
-        TrajectoryStorageFormat::Vortex,
-        TrajectoryStorageFormat::Vortex,
+        TrajectoryStorageFormat::Lance,
+        TrajectoryStorageFormat::Lance,
     )
     .await
 }
@@ -63,12 +63,12 @@ async fn resolve_auto_read_with(
     when_empty: TrajectoryStorageFormat,
     when_both: TrajectoryStorageFormat,
 ) -> anyhow::Result<TrajectoryStorageFormat> {
-    let vortex = VortexTrajectoryStore;
+    let lance = LanceTrajectoryStore;
     let md = MarkdownTrajectoryStore;
-    let has_vortex = vortex.exists(session).await?;
+    let has_lance = lance.exists(session).await?;
     let has_md = md.exists(session).await?;
-    Ok(match (has_vortex, has_md) {
-        (true, false) => TrajectoryStorageFormat::Vortex,
+    Ok(match (has_lance, has_md) {
+        (true, false) => TrajectoryStorageFormat::Lance,
         (false, true) => TrajectoryStorageFormat::Markdown,
         (false, false) => when_empty,
         (true, true) => when_both,
@@ -89,7 +89,7 @@ pub async fn resolve_for_read_with_root(
         root_session_id.map(str::to_string),
     );
     match requested {
-        TrajectoryStorageFormat::Vortex
+        TrajectoryStorageFormat::Lance
         | TrajectoryStorageFormat::Markdown
         | TrajectoryStorageFormat::Both => Ok(requested),
         TrajectoryStorageFormat::Auto => resolve_auto_read(&session).await,
@@ -110,15 +110,15 @@ pub async fn resolve_for_append(
         root_session_id.map(str::to_string),
     );
     match requested {
-        TrajectoryStorageFormat::Vortex => Ok(TrajectoryStorageFormat::Vortex),
+        TrajectoryStorageFormat::Lance => Ok(TrajectoryStorageFormat::Lance),
         TrajectoryStorageFormat::Markdown => Ok(TrajectoryStorageFormat::Markdown),
-        // Legacy alias: append targets Vortex only (same as Vortex).
-        TrajectoryStorageFormat::Both => Ok(TrajectoryStorageFormat::Vortex),
+        // Legacy alias: append targets Lance only (same as Lance).
+        TrajectoryStorageFormat::Both => Ok(TrajectoryStorageFormat::Lance),
         TrajectoryStorageFormat::Auto => {
             resolve_auto_read_with(
                 &session,
-                TrajectoryStorageFormat::Vortex,
-                TrajectoryStorageFormat::Vortex,
+                TrajectoryStorageFormat::Lance,
+                TrajectoryStorageFormat::Lance,
             )
             .await
         }
@@ -128,7 +128,7 @@ pub async fn resolve_for_append(
 pub fn format_label(fmt: TrajectoryStorageFormat) -> &'static str {
     match fmt {
         TrajectoryStorageFormat::Auto => "auto",
-        TrajectoryStorageFormat::Vortex => "vortex",
+        TrajectoryStorageFormat::Lance => "lance",
         TrajectoryStorageFormat::Markdown => "markdown",
         TrajectoryStorageFormat::Both => "both (legacy)",
     }
@@ -158,7 +158,7 @@ pub fn dataset_display(
                 .unwrap_or_else(|| dir.display().to_string()))
         }
         TrajectoryStorageFormat::Both => Ok(dir.display().to_string()),
-        _ => session_vortex_path(&session).map(|p| p.display().to_string()),
+        _ => session_lance_path(&session).map(|p| p.display().to_string()),
     }
 }
 
@@ -172,7 +172,7 @@ mod tests {
         let layers = LayerStats {
             event_rows: 30,
             markdown_blocks: 30,
-            event_log_path: "store/a/run/events.vortex".into(),
+            event_log_path: "store/a/run/events.lance".into(),
             markdown_path: Some("store/a/run/0001.md".into()),
             note: String::new(),
         };
@@ -184,18 +184,18 @@ mod tests {
     }
 
     #[test]
-    fn detect_primary_flat_vortex_canonical_when_counts_match() {
+    fn detect_primary_flat_lance_canonical_when_counts_match() {
         let layers = LayerStats {
             event_rows: 2,
             markdown_blocks: 2,
-            event_log_path: "store/a/s/events.vortex".into(),
+            event_log_path: "store/a/s/events.lance".into(),
             markdown_path: Some("store/a/s/s.md".into()),
             note: String::new(),
         };
         let session = StoryCoords::new("store", "a", "s", None);
         assert_eq!(
             detect_story_primary_layer(&layers, &session),
-            TrajectoryStorageFormat::Vortex
+            TrajectoryStorageFormat::Lance
         );
     }
 
@@ -204,7 +204,7 @@ mod tests {
         let layers = LayerStats {
             event_rows: 10,
             markdown_blocks: 3,
-            event_log_path: "store/a/s/events.vortex".into(),
+            event_log_path: "store/a/s/events.lance".into(),
             markdown_path: Some("store/a/s/s.md".into()),
             note: String::new(),
         };
@@ -216,13 +216,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_append_auto_on_empty_session_defaults_vortex() {
+    async fn resolve_append_auto_on_empty_session_defaults_lance() {
         let storage = tempfile::tempdir().unwrap();
         let storage = storage.path().to_string_lossy().into_owned();
         let fmt = resolve_for_append(&storage, "a", "s", None, TrajectoryStorageFormat::Auto)
             .await
             .unwrap();
-        assert_eq!(fmt, TrajectoryStorageFormat::Vortex);
+        assert_eq!(fmt, TrajectoryStorageFormat::Lance);
     }
 
     #[tokio::test]
@@ -250,7 +250,7 @@ mod tests {
         let both = resolve_for_append(&storage, "a", "s", None, TrajectoryStorageFormat::Both)
             .await
             .unwrap();
-        assert_eq!(both, TrajectoryStorageFormat::Vortex);
+        assert_eq!(both, TrajectoryStorageFormat::Lance);
     }
 
     #[tokio::test]

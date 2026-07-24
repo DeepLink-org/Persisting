@@ -26,23 +26,23 @@ pub use record::CaptureRecord;
 /// Capture trajectory storage format.
 ///
 /// - `md`: TLV Markdown only (`{session}.md` live upsert); reconcile replays from Markdown.
-/// - `vortex` (alias `bin`): Vortex canonical (`events.vortex`) only; use `traj materialize` for md.
+/// - `lance` (alias `bin`): Lance canonical (`events.lance`) only; use `traj materialize` for md.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CaptureFormat {
     /// Human-readable TLV Markdown only.
     #[value(name = "md", alias = "markdown")]
     #[default]
     Markdown,
-    /// Vortex event log (canonical); no live Markdown sidecar during capture.
-    #[value(name = "vortex", alias = "bin")]
-    Vortex,
+    /// Lance event log (canonical); no live Markdown sidecar during capture.
+    #[value(name = "lance", alias = "bin")]
+    Lance,
 }
 
 impl From<CaptureFormat> for TrajectoryStorageFormat {
     fn from(v: CaptureFormat) -> Self {
         match v {
             CaptureFormat::Markdown => TrajectoryStorageFormat::Markdown,
-            CaptureFormat::Vortex => TrajectoryStorageFormat::Vortex,
+            CaptureFormat::Lance => TrajectoryStorageFormat::Lance,
         }
     }
 }
@@ -51,7 +51,7 @@ impl CaptureFormat {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Markdown => "md",
-            Self::Vortex => "vortex",
+            Self::Lance => "lance",
         }
     }
 
@@ -59,8 +59,8 @@ impl CaptureFormat {
         matches!(self, Self::Markdown)
     }
 
-    pub fn writes_vortex(self) -> bool {
-        matches!(self, Self::Vortex)
+    pub fn writes_lance(self) -> bool {
+        matches!(self, Self::Lance)
     }
 
     /// Live markdown upsert inside [`CaptureEngine`] (`-f md` only).
@@ -71,7 +71,7 @@ impl CaptureFormat {
     /// Storage layer to replay when comparing live Markdown after a capture run.
     pub fn reconcile_replay_format(self) -> TrajectoryStorageFormat {
         match self {
-            Self::Vortex => TrajectoryStorageFormat::Vortex,
+            Self::Lance => TrajectoryStorageFormat::Lance,
             Self::Markdown => TrajectoryStorageFormat::Markdown,
         }
     }
@@ -83,21 +83,21 @@ mod tests {
     use clap::ValueEnum;
 
     #[test]
-    fn capture_format_bin_alias_maps_to_vortex() {
+    fn capture_format_bin_alias_maps_to_lance() {
         assert_eq!(
             CaptureFormat::from_str("bin", false).unwrap(),
-            CaptureFormat::Vortex
+            CaptureFormat::Lance
         );
-        assert!(CaptureFormat::Vortex.writes_vortex());
+        assert!(CaptureFormat::Lance.writes_lance());
     }
 
     #[test]
-    fn vortex_does_not_stream_live_markdown() {
-        assert!(!CaptureFormat::Vortex.stream_markdown_in_engine());
-        assert!(!CaptureFormat::Vortex.writes_markdown());
+    fn lance_does_not_stream_live_markdown() {
+        assert!(!CaptureFormat::Lance.stream_markdown_in_engine());
+        assert!(!CaptureFormat::Lance.writes_markdown());
         assert_eq!(
-            CaptureFormat::Vortex.reconcile_replay_format(),
-            TrajectoryStorageFormat::Vortex
+            CaptureFormat::Lance.reconcile_replay_format(),
+            TrajectoryStorageFormat::Lance
         );
     }
 

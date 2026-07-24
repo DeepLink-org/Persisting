@@ -1,10 +1,10 @@
-//! Vortex event row ↔ [`CaptureRecord`].
+//! Lance event row ↔ [`CaptureRecord`].
 
 use anyhow::{Context, Result};
 
 use super::record::{engine_line_to_record, CaptureRecord};
 
-/// One row in the Vortex event log (canonical trajectory store).
+/// One row in the Lance event log (canonical trajectory store).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
     pub seq: i64,

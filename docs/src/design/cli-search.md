@@ -27,7 +27,7 @@ persisting
 |------|----------|------|
 | `--core-lib <PATH>` | `PERSISTING_ENGINE_LIB` | 引擎动态库路径 |
 
-`--core-lib` 的路径解析与加载策略见 [CLI 整体架构设计](cli_architecture.zh.md)。`search` 层本身无额外选项。
+`--core-lib` 的路径解析与加载策略见 [CLI 整体架构设计](cli.md)。`search` 层本身无额外选项。
 
 ---
 

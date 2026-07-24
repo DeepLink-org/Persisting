@@ -53,6 +53,7 @@ def _dims_from_ser(dims_ser: list[tuple[str, str]]) -> tuple[Dimension, ...]:
 def _ensure_pulsing():
     try:
         import pulsing.core
+
         if not pulsing.core.is_initialized():
             raise RuntimeError("Pulsing 未初始化，请先 await pulsing.core.init()")
     except ImportError as e:
@@ -111,6 +112,7 @@ def _make_block_store_actor_class():
 # 延迟绑定，避免 import 时未 init pulsing
 BlockStoreActor = None
 
+
 def get_block_store_actor_class():
     global BlockStoreActor
     if BlockStoreActor is None:
@@ -141,20 +143,26 @@ class ActorStore:
     def get(self, region: Region) -> np.ndarray:
         """同步 get；无运行中 event loop 时可用。"""
         import asyncio
+
         region_ser = region_serialize(region, self._dims)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(self._proxy.get_region(region_ser))
-        raise RuntimeError("ActorStore.get 不能在已运行的 event loop 内调用，请使用 await store.get_async(region)")
+        raise RuntimeError(
+            "ActorStore.get 不能在已运行的 event loop 内调用，请使用 await store.get_async(region)"
+        )
 
     def put(self, region: Region, value: np.ndarray) -> None:
         """同步 put；无运行中 event loop 时可用。"""
         import asyncio
+
         region_ser = region_serialize(region, self._dims)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(self._proxy.put_region(region_ser, value))
             return
-        raise RuntimeError("ActorStore.put 不能在已运行的 event loop 内调用，请使用 await store.put_async(region, value)")
+        raise RuntimeError(
+            "ActorStore.put 不能在已运行的 event loop 内调用，请使用 await store.put_async(region, value)"
+        )

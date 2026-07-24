@@ -70,7 +70,11 @@ def _constraint_to_index(
         return slice(None)
 
     # Point
-    if hasattr(constraint, "value") and not hasattr(constraint, "lo") and not hasattr(constraint, "values"):
+    if (
+        hasattr(constraint, "value")
+        and not hasattr(constraint, "lo")
+        and not hasattr(constraint, "values")
+    ):
         v = constraint.value
         if dim.kind == "int":
             i = int(v)
@@ -196,6 +200,7 @@ class Backing(Protocol):
 
     @property
     def shape(self) -> tuple[int, ...]: ...
+
     """逻辑 shape，与 TensorLayout.shape 一致。"""
 
     @property
@@ -331,6 +336,7 @@ class BlockMappedBacking:
         if use_mmap:
             try:
                 from persisting.core import mmap_reserve
+
                 if mmap_reserve is not None:
                     self._region = mmap_reserve(total_bytes)
                     self._inner = None
@@ -366,9 +372,7 @@ class BlockMappedBacking:
         if self._inner is not None:
             self._inner.write(indices, data)
             return
-        start_byte, nbytes, _ = _indices_to_contiguous_byte_range(
-            self._shape, self._dtype, indices
-        )
+        start_byte, nbytes, _ = _indices_to_contiguous_byte_range(self._shape, self._dtype, indices)
         if start_byte is None:
             raise NotImplementedError("BlockMappedBacking(mmap) 暂仅支持连续索引")
         self._region.copy_in(start_byte, np.asarray(data, dtype=self._dtype).tobytes())
@@ -437,7 +441,9 @@ class SafetensorsBacking:
         try:
             from safetensors import safe_open
         except ImportError as err:
-            raise ImportError("SafetensorsBacking 需要安装 safetensors: pip install safetensors") from err
+            raise ImportError(
+                "SafetensorsBacking 需要安装 safetensors: pip install safetensors"
+            ) from err
 
         path = Path(path)
         self._path = path
@@ -531,7 +537,9 @@ class LocalTensorStore:
         """仅当 backing 为 NumpyBacking 时可用；否则 AttributeError。"""
         if isinstance(self._backing, NumpyBacking):
             return self._backing.numpy
-        raise AttributeError("numpy 仅适用于 NumpyBacking，当前 backing 为 %s" % type(self._backing).__name__)
+        raise AttributeError(
+            "numpy 仅适用于 NumpyBacking，当前 backing 为 %s" % type(self._backing).__name__
+        )
 
     def get(self, region: Region) -> np.ndarray:
         """按 TTAS Region 读出，返回拷贝。"""

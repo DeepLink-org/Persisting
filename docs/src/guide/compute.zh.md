@@ -140,7 +140,7 @@ plan()  ──流式产生──►  Driver  ──派发──►  Workers (Pyt
 | `--sink DIR` | 持久化结果 |
 | `--resume` | 跳过已完成任务 id |
 | `--observe` | 显示进度 |
-| `--traj` | 同时写入 Vortex 轨迹 |
+| `--traj` | 同时写入 Lance 轨迹 |
 
 ---
 

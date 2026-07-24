@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_vortex_capture_record_replay_json() {
+    fn parses_lance_capture_record_replay_json() {
         let records = vec![
             serde_json::json!({
                 "seq": 0,

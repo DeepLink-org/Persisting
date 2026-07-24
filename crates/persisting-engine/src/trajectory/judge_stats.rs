@@ -139,7 +139,7 @@ async fn load_judge_rows_for_run(key: &RunKey) -> Result<Vec<JudgeRow>> {
         for entry in std::fs::read_dir(&layers)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("judge_") && name.ends_with(".vortex") {
+            if name.starts_with("judge_") && name.ends_with(".lance") {
                 rows.extend(read_judge_rows(&entry.path()).await?);
             }
         }
@@ -317,7 +317,7 @@ mod tests {
             session_id: "story-a".into(),
             root_session_id: Some("run-1".into()),
             records_ronl: lines.join("\n") + "\n",
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();

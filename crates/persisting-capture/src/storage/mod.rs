@@ -1,4 +1,4 @@
-//! Trajectory storage: Vortex event log, TLV Markdown, session routing, capture sink.
+//! Trajectory storage: Lance event log, TLV Markdown, session routing, capture sink.
 
 pub mod convert;
 pub mod dialogue;

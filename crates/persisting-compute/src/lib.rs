@@ -61,5 +61,5 @@ pub use worker::{WorkerActor, WorkerCommand, WorkerReply};
 // Sink types used by CLI orchestration (re-exported so `cli` stays thin).
 pub use sink::{JsonlFileSink, ResultSink, TeeSink};
 #[cfg(feature = "traj-sink")]
-pub use sink_traj::VortexResultSink;
+pub use sink_traj::LanceResultSink;
 pub use sink_writer::{spawn_sink_writer, SinkSubmitter, SinkWriterHandle};

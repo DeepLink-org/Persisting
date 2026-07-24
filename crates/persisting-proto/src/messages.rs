@@ -279,20 +279,20 @@ pub struct SearchImportLanceResponse {
 // Trajectory
 // ---------------------------------------------------------------------------
 
-/// Physical storage layer for a session trajectory (Vortex canonical + TLV Markdown view).
+/// Physical storage layer for a session trajectory (Lance canonical + TLV Markdown view).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrajectoryStorageFormat {
-    /// Read: Vortex if both layers exist else the available layer. Append: always Vortex.
+    /// Read: Lance if both layers exist else the available layer. Append: always Lance.
     /// Stats: summarize both layers when present.
     #[default]
     Auto,
-    /// Vortex raw event log (canonical).
-    Vortex,
+    /// Lance raw event log (canonical).
+    Lance,
     /// TLV Markdown session file (materialized / human-readable view).
     #[serde(rename = "markdown", alias = "tlv")]
     Markdown,
-    /// Legacy alias: append writes [`Vortex`](Self::Vortex) only; read/stats like [`Auto`](Self::Auto).
+    /// Legacy alias: append writes [`Lance`](Self::Lance) only; read/stats like [`Auto`](Self::Auto).
     #[serde(alias = "both")]
     Both,
 }
@@ -388,7 +388,7 @@ pub struct TrajectoryStatsResponse {
     pub dataset: String,
     /// Row count in the event log (`0` when file is missing).
     pub row_count: usize,
-    /// Reserved for future versioning metadata (`None` for Vortex).
+    /// Reserved for future versioning metadata (`None` for Lance).
     pub manifest_version: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<SessionJudgeStats>,

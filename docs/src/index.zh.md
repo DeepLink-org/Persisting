@@ -21,7 +21,7 @@ Agent 轨迹、模型参数和 KV Cache 共享同一套分层存储 —— **一
 
     ---
 
-    记录每一次 LLM 调用。以 `(agent_id, run_id, time)` 张量存储，附带 canonical Vortex 事件日志和人读 Markdown。
+    记录每一次 LLM 调用。以 `(agent_id, run_id, time)` 张量存储，附带 canonical Lance 事件日志和人读 Markdown。
 
     ```bash
     persisting traj capture -o ./store -c proxy.toml -- claude

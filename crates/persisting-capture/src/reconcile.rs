@@ -1,4 +1,4 @@
-//! Lightweight post-run reconcile: compare live markdown call_ids vs Vortex dialogue records.
+//! Lightweight post-run reconcile: compare live markdown call_ids vs Lance dialogue records.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

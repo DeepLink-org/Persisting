@@ -1,114 +1,88 @@
-//! Vortex event log backend (canonical trajectory store, schema v1).
+//! Lance event log backend (canonical trajectory store, schema v1).
 //!
-//! Capture runs use one run-level table at `{run}/events.vortex`; `session_id`
+//! Capture runs use one run-level dataset at `{run}/events.lance`; `session_id`
 //! filters rows when replaying one story view.
 
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use arrow_array::cast::AsArray;
-use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+use futures::TryStreamExt;
+use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
+use lance::deps::arrow_array::RecordBatch;
+use lance::Dataset;
+use lance::Error as LanceError;
 use persisting_capture::event_row::EventRow;
-use vortex::array::arrow::{ArrowSessionExt, FromArrowArray};
-use vortex::array::stream::ArrayStreamExt;
-use vortex::array::VortexSessionExecute;
-use vortex::file::OpenOptionsSessionExt;
-use vortex::file::WriteOptionsSessionExt;
-use vortex::session::VortexSession;
-use vortex::VortexSessionDefault;
 
 use super::rows::{
     reassign_global_seq, record_batch_from_rows, replay_records_from_batch, rows_for_lines,
     rows_from_batch, schema_columns_note, trajectory_schema,
 };
 use super::{
-    session_vortex_path, TrajectoryAppendOutcome, TrajectoryReplayOutcome, TrajectorySession,
+    session_lance_path, TrajectoryAppendOutcome, TrajectoryReplayOutcome, TrajectorySession,
     TrajectoryStatsOutcome,
 };
 
-fn vortex_session() -> &'static VortexSession {
-    static SESSION: OnceLock<VortexSession> = OnceLock::new();
-    SESSION.get_or_init(VortexSession::default)
+async fn dataset_exists(uri: &str) -> Result<bool> {
+    match Dataset::open(uri).await {
+        Ok(_) => Ok(true),
+        Err(e) if matches!(e, LanceError::DatasetNotFound { .. }) => Ok(false),
+        Err(e) => Err(anyhow::anyhow!("{:#}", e)),
+    }
 }
 
-fn vortex_err(e: vortex::error::VortexError) -> anyhow::Error {
-    anyhow::anyhow!("{e}")
-}
-
-fn vortex_to_record_batch(
-    array: vortex::array::ArrayRef,
-    schema: &ArrowSchema,
-) -> Result<RecordBatch> {
-    let mut ctx = vortex_session().create_execution_ctx();
-    let target = Field::new(
-        "",
-        DataType::Struct(schema.fields.clone()),
-        array.dtype().is_nullable(),
-    );
-    let arrow = vortex_session()
-        .arrow()
-        .execute_arrow(array, Some(&target), &mut ctx)
-        .map_err(vortex_err)?;
-    Ok(RecordBatch::from(arrow.as_struct()))
-}
-
-async fn read_all_rows(path: &Path) -> Result<Vec<EventRow>> {
-    if !path.is_file() {
+async fn read_all_rows(uri: &str) -> Result<Vec<EventRow>> {
+    if !dataset_exists(uri).await? {
         return Ok(Vec::new());
     }
-    let file = vortex_session()
-        .open_options()
-        .open_path(path)
+    let ds = Dataset::open(uri)
         .await
-        .map_err(vortex_err)?;
-    let array = file
+        .with_context(|| format!("open trajectory Lance dataset {uri}"))?;
+    let stream = ds
         .scan()
-        .map_err(vortex_err)?
-        .into_array_stream()
-        .map_err(vortex_err)?
-        .read_all()
+        .try_into_stream()
         .await
-        .map_err(vortex_err)?;
-    if array.len() == 0 {
-        return Ok(Vec::new());
+        .with_context(|| format!("scan trajectory Lance dataset {uri}"))?;
+    let batches: Vec<RecordBatch> = stream
+        .try_collect()
+        .await
+        .with_context(|| format!("collect trajectory Lance batches {uri}"))?;
+    let mut rows = Vec::new();
+    for batch in &batches {
+        rows.extend(rows_from_batch(batch)?);
     }
-    let schema = trajectory_schema();
-    let batch = vortex_to_record_batch(array, schema.as_ref())?;
-    rows_from_batch(&batch)
+    Ok(rows)
 }
 
-async fn write_all_rows(path: &PathBuf, rows: &[EventRow]) -> Result<()> {
+async fn write_all_rows(uri: &str, rows: &[EventRow]) -> Result<()> {
     if rows.is_empty() {
-        if path.is_file() {
-            tokio::fs::remove_file(path)
+        if Path::new(uri).exists() {
+            tokio::fs::remove_dir_all(uri)
                 .await
-                .with_context(|| format!("remove empty vortex file {}", path.display()))?;
+                .with_context(|| format!("remove empty Lance dataset {uri}"))?;
         }
         return Ok(());
     }
     let schema = trajectory_schema();
     let batch = record_batch_from_rows(schema, rows)?;
-    let array = vortex::array::ArrayRef::from_arrow(batch, false).map_err(vortex_err)?;
-    let stream = array.to_array_stream();
-    let tmp = path.with_extension("vortex.tmp");
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = Path::new(uri).parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .with_context(|| format!("create_dir_all {}", parent.display()))?;
     }
-    let mut file = tokio::fs::File::create(&tmp)
+    let mode = if dataset_exists(uri).await? {
+        WriteMode::Overwrite
+    } else {
+        WriteMode::Create
+    };
+    InsertBuilder::new(uri)
+        .with_params(&WriteParams {
+            mode,
+            ..Default::default()
+        })
+        .execute(vec![batch])
         .await
-        .with_context(|| format!("create {}", tmp.display()))?;
-    vortex_session()
-        .write_options()
-        .write(&mut file, stream)
-        .await
-        .map_err(vortex_err)?;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        .with_context(|| format!("write trajectory Lance dataset {uri}"))?;
     Ok(())
 }
 
@@ -122,15 +96,16 @@ fn filter_session_rows(rows: Vec<EventRow>, session: &TrajectorySession) -> Vec<
 }
 
 pub fn display_path(session: &TrajectorySession) -> Result<String> {
-    Ok(session_vortex_path(session)?.to_string_lossy().into_owned())
+    Ok(session_lance_path(session)?.to_string_lossy().into_owned())
 }
 
 pub async fn distinct_session_ids_in_run(run: &TrajectorySession) -> Result<Vec<String>> {
-    let path = session_vortex_path(run)?;
-    if !path.is_file() {
+    let path = session_lance_path(run)?;
+    let uri = path.to_string_lossy().into_owned();
+    if !dataset_exists(&uri).await? {
         return Ok(Vec::new());
     }
-    let rows = read_all_rows(&path).await?;
+    let rows = read_all_rows(&uri).await?;
     let mut ids: Vec<String> = rows.into_iter().filter_map(|row| row.session_id).collect();
     ids.sort();
     ids.dedup();
@@ -138,21 +113,23 @@ pub async fn distinct_session_ids_in_run(run: &TrajectorySession) -> Result<Vec<
 }
 
 pub async fn exists(session: &TrajectorySession) -> Result<bool> {
-    let path = session_vortex_path(session)?;
-    if !path.is_file() {
+    let path = session_lance_path(session)?;
+    let uri = path.to_string_lossy().into_owned();
+    if !dataset_exists(&uri).await? {
         return Ok(false);
     }
-    Ok(!filter_session_rows(read_all_rows(&path).await?, session).is_empty())
+    Ok(!filter_session_rows(read_all_rows(&uri).await?, session).is_empty())
 }
 
 pub async fn overwrite_session_lines(
     session: &TrajectorySession,
     lines: &[String],
 ) -> Result<usize> {
-    let path = session_vortex_path(session)?;
+    let path = session_lance_path(session)?;
+    let uri = path.to_string_lossy().into_owned();
     let replacement_rows = rows_for_lines(&session.session_id, 0, lines)?;
     let mut merged = Vec::new();
-    let existing = read_all_rows(&path).await?;
+    let existing = read_all_rows(&uri).await?;
     if !existing.is_empty() {
         let mut inserted_replacement = false;
         for row in existing {
@@ -172,7 +149,7 @@ pub async fn overwrite_session_lines(
         merged = replacement_rows;
     }
     reassign_global_seq(&mut merged);
-    write_all_rows(&path, &merged).await?;
+    write_all_rows(&uri, &merged).await?;
     Ok(lines.len())
 }
 
@@ -180,19 +157,63 @@ pub async fn append(
     session: &TrajectorySession,
     lines: &[String],
 ) -> Result<TrajectoryAppendOutcome> {
-    let path = session_vortex_path(session)?;
+    let path = session_lance_path(session)?;
+    let uri = path.to_string_lossy().into_owned();
     let accepted = lines.len();
-    let mut rows = read_all_rows(&path).await?;
-    let base_seq = rows.len() as i64;
-    rows.extend(rows_for_lines(&session.session_id, base_seq, lines)?);
-    write_all_rows(&path, &rows).await?;
+    let base_seq = if dataset_exists(&uri).await? {
+        Dataset::open(&uri)
+            .await
+            .with_context(|| format!("open trajectory Lance dataset {uri}"))?
+            .count_rows(None)
+            .await
+            .context("count trajectory Lance rows")? as i64
+    } else {
+        0
+    };
+    let new_rows = rows_for_lines(&session.session_id, base_seq, lines)?;
+    if new_rows.is_empty() {
+        return Ok(TrajectoryAppendOutcome {
+            accepted_lines: 0,
+            persisted_units: 0,
+            note: format!(
+                "Lance v1: 0 row(s) at {uri} (columns: {})",
+                schema_columns_note()
+            ),
+        });
+    }
+    let batch = record_batch_from_rows(trajectory_schema(), &new_rows)?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create_dir_all {}", parent.display()))?;
+    }
+    if dataset_exists(&uri).await? {
+        let ds = Arc::new(
+            Dataset::open(&uri)
+                .await
+                .with_context(|| format!("open trajectory Lance dataset {uri}"))?,
+        );
+        InsertBuilder::new(ds)
+            .with_params(&WriteParams {
+                mode: WriteMode::Append,
+                ..Default::default()
+            })
+            .execute(vec![batch])
+            .await
+            .with_context(|| format!("append trajectory Lance dataset {uri}"))?;
+    } else {
+        InsertBuilder::new(uri.as_str())
+            .execute(vec![batch])
+            .await
+            .with_context(|| format!("create trajectory Lance dataset {uri}"))?;
+    }
     Ok(TrajectoryAppendOutcome {
         accepted_lines: accepted,
         persisted_units: accepted,
         note: format!(
-            "Vortex v1: {} row(s) at {} (columns: {})",
+            "Lance v1: {} row(s) at {} (columns: {})",
             accepted,
-            path.display(),
+            uri,
             schema_columns_note()
         ),
     })
@@ -203,14 +224,12 @@ pub async fn replay(
     offset: usize,
     limit: Option<usize>,
 ) -> Result<TrajectoryReplayOutcome> {
-    let path = session_vortex_path(session)?;
-    if !path.is_file() {
-        anyhow::bail!(
-            "trajectory Vortex file does not exist at {}",
-            path.display()
-        );
+    let path = session_lance_path(session)?;
+    let uri = path.to_string_lossy().into_owned();
+    if !dataset_exists(&uri).await? {
+        anyhow::bail!("trajectory Lance dataset does not exist at {uri}");
     }
-    let mut rows = filter_session_rows(read_all_rows(&path).await?, session);
+    let mut rows = filter_session_rows(read_all_rows(&uri).await?, session);
     if offset > 0 {
         rows = rows.into_iter().skip(offset).collect();
     }
@@ -223,35 +242,32 @@ pub async fn replay(
     Ok(TrajectoryReplayOutcome {
         records,
         note: format!(
-            "Replay Vortex v1 at {}: session_id={}, ordered by 'seq', offset={}, limit={:?}.",
-            path.display(),
+            "Replay Lance v1 at {uri}: session_id={}, ordered by 'seq', offset={offset}, limit={limit:?}.",
             session.session_id,
-            offset,
-            limit
         ),
     })
 }
 
 pub async fn stats(session: &TrajectorySession) -> Result<TrajectoryStatsOutcome> {
-    let path = session_vortex_path(session)?;
+    let path = session_lance_path(session)?;
     let display = path.to_string_lossy().into_owned();
-    if !path.is_file() {
+    if !dataset_exists(&display).await? {
         return Ok(TrajectoryStatsOutcome {
             dataset: display,
             row_count: 0,
             manifest_version: None,
             status: "missing".to_string(),
-            note: "No Vortex event log at this path yet; use trajectory add first.".to_string(),
+            note: "No Lance event log at this path yet; use trajectory add first.".to_string(),
         });
     }
-    let rows = filter_session_rows(read_all_rows(&path).await?, session);
+    let rows = filter_session_rows(read_all_rows(&display).await?, session);
     Ok(TrajectoryStatsOutcome {
         dataset: display.clone(),
         row_count: rows.len(),
         manifest_version: None,
         status: "ok".to_string(),
         note: format!(
-            "Vortex v1 [{}]; session_id={}; file={}",
+            "Lance v1 [{}]; session_id={}; dataset={}",
             schema_columns_note(),
             session.session_id,
             display
@@ -301,7 +317,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn staged_commit_leaves_no_tmp_after_successful_write() {
+    async fn append_creates_lance_dataset() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("store");
         std::fs::create_dir_all(&storage).unwrap();
@@ -310,31 +326,24 @@ mod tests {
 
         append(&session, &[note_line("one")]).await.unwrap();
 
-        let path = session_vortex_path(&session).unwrap();
-        let tmp = path.with_extension("vortex.tmp");
-        assert!(path.is_file(), "committed vortex file should exist");
+        let path = session_lance_path(&session).unwrap();
         assert!(
-            !tmp.exists(),
-            "staged tmp must be renamed away after commit"
+            dataset_exists(&path.to_string_lossy()).await.unwrap(),
+            "committed Lance dataset should exist"
         );
     }
 
     #[tokio::test]
-    async fn staged_commit_replaces_stale_tmp_on_next_append() {
+    async fn append_then_append_preserves_rows() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("store");
         std::fs::create_dir_all(&storage).unwrap();
         let storage_s = storage.to_string_lossy().to_string();
         let session = flat_session(&storage_s, "agent", "sess");
-        let path = session_vortex_path(&session).unwrap();
-        let tmp = path.with_extension("vortex.tmp");
 
         append(&session, &[note_line("first")]).await.unwrap();
-        std::fs::write(&tmp, b"stale partial write").unwrap();
-
         append(&session, &[note_line("second")]).await.unwrap();
 
-        assert!(!tmp.exists());
         let replay = replay(&session, 0, None).await.unwrap();
         assert_eq!(replay.records.len(), 2);
         assert_eq!(payload_content(&replay.records[0]), "first");
@@ -342,7 +351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_partition_replay_isolates_stories_in_shared_run_file() {
+    async fn session_partition_replay_isolates_stories_in_shared_run_dataset() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("store");
         std::fs::create_dir_all(&storage).unwrap();
@@ -361,11 +370,11 @@ mod tests {
             .await
             .unwrap();
 
-        let vortex_path = session_vortex_path(&main).unwrap();
+        let lance_path = session_lance_path(&main).unwrap();
         assert_eq!(
-            session_vortex_path(&sub_a).unwrap(),
-            vortex_path,
-            "run-level sessions share one events.vortex"
+            session_lance_path(&sub_a).unwrap(),
+            lance_path,
+            "run-level sessions share one events.lance"
         );
 
         let main_replay = replay(&main, 0, None).await.unwrap();
@@ -459,7 +468,7 @@ mod tests {
             .await
             .unwrap();
 
-        let all_rows = read_all_rows(&session_vortex_path(&main).unwrap())
+        let all_rows = read_all_rows(&session_lance_path(&main).unwrap().to_string_lossy())
             .await
             .unwrap();
         assert_eq!(all_rows.len(), 3);
@@ -473,7 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_uses_file_wide_seq_base_across_partitions() {
+    async fn append_uses_dataset_wide_seq_base_across_partitions() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("store");
         std::fs::create_dir_all(&storage).unwrap();
@@ -488,7 +497,7 @@ mod tests {
             .unwrap();
         append(&sub, &[note_line("s1")]).await.unwrap();
 
-        let rows = read_all_rows(&session_vortex_path(&main).unwrap())
+        let rows = read_all_rows(&session_lance_path(&main).unwrap().to_string_lossy())
             .await
             .unwrap();
         assert_eq!(rows.len(), 3);
@@ -499,7 +508,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn large_append_produces_valid_vortex_with_multiple_internal_partitions() {
+    async fn large_append_produces_valid_lance_dataset() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("store");
         std::fs::create_dir_all(&storage).unwrap();

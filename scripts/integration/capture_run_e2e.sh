@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E2E: `traj capture -f vortex` + mock LLM API — Vortex drain, materialize, vortex replay.
+# E2E: `traj capture -f lance` + mock LLM API — Lance drain, materialize, lance replay.
 #
 # Flow:
 #   mock LLM API (upstream) ← capture proxy ← agent (OPENAI_BASE_URL via traj capture)
@@ -11,7 +11,7 @@
 # Env:
 #   TURNS           default 3
 #   DRAIN_SEC       default 60
-#   CAPTURE_FORMAT  vortex | bin (default vortex)
+#   CAPTURE_FORMAT  lance | bin (default lance)
 #   SKIP_BUILD      default 0
 
 set -euo pipefail
@@ -25,7 +25,7 @@ AGENT_PY="$REPO_ROOT/scripts/integration/capture_run_agent.py"
 
 TURNS="${TURNS:-3}"
 DRAIN_SEC="${DRAIN_SEC:-60}"
-CAPTURE_FORMAT="${CAPTURE_FORMAT:-vortex}"
+CAPTURE_FORMAT="${CAPTURE_FORMAT:-lance}"
 AGENT_ID="capture-run-e2e"
 
 pass() { echo "  ok: $*"; }
@@ -37,8 +37,8 @@ capture_resolve_binaries "${SKIP_BUILD:-0}" 1
 command -v python3 >/dev/null || die "need python3"
 [[ -f "$MOCK_API" && -f "$AGENT_PY" ]] || die "missing scripts"
 case "$CAPTURE_FORMAT" in
-  vortex|bin) ;;
-  *) die "CAPTURE_FORMAT must be vortex or bin (got $CAPTURE_FORMAT)" ;;
+  lance|bin) ;;
+  *) die "CAPTURE_FORMAT must be lance or bin (got $CAPTURE_FORMAT)" ;;
 esac
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-capture-run-e2e.XXXXXX")"
@@ -121,22 +121,22 @@ MOCK_COUNT="$(wc -l <"$MOCK_LOG" | tr -d ' ')"
 [[ "$MOCK_COUNT" -eq "$TURNS" ]] || die "mock API saw $MOCK_COUNT requests, expected $TURNS"
 pass "mock API received $TURNS HTTP requests"
 
-VORTEX_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/events.vortex"
-[[ -f "$VORTEX_PATH" ]] || die "missing Vortex log: $VORTEX_PATH"
-pass "events.vortex present"
+LANCE_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/events.lance"
+[[ -d "$LANCE_PATH" ]] || die "missing Lance log: $LANCE_PATH"
+pass "events.lance present"
 
-section "vortex-only capture (no live markdown)"
+section "lance-only capture (no live markdown)"
 MD_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/${ROOT_SESSION}.md"
 if [[ -f "$MD_PATH" ]]; then
-  die "vortex/bin must not write .md during capture (found $MD_PATH); use \`traj materialize\` for md"
+  die "lance/bin must not write .md during capture (found $MD_PATH); use \`traj materialize\` for md"
 fi
-pass "no live markdown during vortex capture"
+pass "no live markdown during lance capture"
 
-section "wait for Vortex drain (up to ${DRAIN_SEC}s)"
+section "wait for Lance drain (up to ${DRAIN_SEC}s)"
 EXPECTED_ROWS=$((TURNS * 2 + 2))
 best="$(capture_drain_event_rows "$STORAGE" "$AGENT_ID" "$ROOT_SESSION" "$EXPECTED_ROWS" "$DRAIN_SEC" "$STATS_TOML" || true)"
-[[ "${best:-0}" -ge "$EXPECTED_ROWS" ]] || die "Vortex rows ${best:-0} < expected $EXPECTED_ROWS"
-pass "Vortex row_count=$best (expected >= $EXPECTED_ROWS)"
+[[ "${best:-0}" -ge "$EXPECTED_ROWS" ]] || die "Lance rows ${best:-0} < expected $EXPECTED_ROWS"
+pass "Lance row_count=$best (expected >= $EXPECTED_ROWS)"
 
 section "traj materialize (idempotent rebuild)"
 MAT_OUT="$("$CLI" traj materialize "$STORAGE" \
@@ -146,11 +146,11 @@ echo "$MAT_OUT"
 grep -q 'status = "ok"' <<<"$MAT_OUT" || die "traj materialize failed"
 pass "traj materialize"
 
-section "trajectory replay (vortex) contains all turns"
+section "trajectory replay (lance) contains all turns"
 "$CLI" traj replay "$STORAGE" \
   --agent-id "$AGENT_ID" \
   --session-id "$ROOT_SESSION" \
-  --storage-format vortex >"$REPLAY_TOML"
+  --storage-format lance >"$REPLAY_TOML"
 
 python3 <<PY
 import json, sys, re
@@ -171,9 +171,9 @@ llm_rows = len(re.findall(r'^kind = "llm\\.(request|response)"', replay, re.M))
 if llm_rows < turns * 2:
     sys.exit(f"expected >= {turns * 2} llm events, got {llm_rows}")
 
-print(f"verified {turns} user/assistant pairs in vortex replay")
+print(f"verified {turns} user/assistant pairs in lance replay")
 PY
-pass "vortex replay content matches agent manifest"
+pass "lance replay content matches agent manifest"
 
 section "materialized markdown content"
 MD_PATH="$STORAGE/$AGENT_ID/$ROOT_SESSION/${ROOT_SESSION}.md"

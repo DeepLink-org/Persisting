@@ -25,7 +25,7 @@ Persisting 的架构、寻址模型与存储设计。
 | 文档 | 描述 |
 |------|------|
 | [Capture 架构设计](capture.md) | LLM 代理、事件模型、双层存储 |
-| [轨迹存储模型](trajectory.md) | Vortex canonical + Markdown 物化 |
+| [轨迹存储模型](trajectory.md) | Lance canonical + Markdown 物化 |
 | [轨迹 Markdown 格式](trajectory-format.md) | TLV 块模型、frontmatter、live upsert |
 | [Traj CLI](cli-traj.md) | `persisting traj` 命令参考 |
 | [Capture CLI](cli-capture.md) | `traj capture` / `traj proxy` 子命令 |
@@ -67,7 +67,7 @@ Persisting 的架构、寻址模型与存储设计。
 
 1. **Lance 是兜底** — 上层缓存与加速都建立在「从文件读」这一基线之上。
 2. **一种底座，多种模式** — 轨迹、Search、KV、队列共享 Lance 生态。
-3. **轨迹两层视图** — Vortex canonical + Markdown 物化；live upsert。
+3. **轨迹两层视图** — Lance canonical（`events.lance/`）+ Markdown 物化；`-f md` live upsert，`-f lance` 只写 Lance（md 经 materialize）。
 4. **Capture 自给自足** — 内嵌代理即可完整捕获 LLM 流量。
 5. **TTAS 对内** — 用户看到 `kv[key].tensor()`，而非原始代数。
 6. **性能是产品** — P99 延迟、GPU 利用率、capture 实时性是核心指标。

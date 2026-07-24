@@ -20,7 +20,7 @@ fn parses_agent_tool_blocks_into_spawn_hints() {
 {
   "description": "Review capture command design",
   "subagent_type": "Explore",
-  "prompt": "Review docs/src/design/cli_capture_command.zh.md"
+  "prompt": "Review docs/src/design/cli-capture.md"
 }
 ```"#;
     let hints = extract_spawn_hints_from_assistant(text);
@@ -28,7 +28,7 @@ fn parses_agent_tool_blocks_into_spawn_hints() {
     assert_eq!(hints[0].subagent_type, "Explore");
     assert_eq!(
         hints[0].doc_target.as_deref(),
-        Some("docs/src/design/cli_capture_command.zh.md")
+        Some("docs/src/design/cli-capture.md")
     );
 }
 
@@ -52,7 +52,7 @@ fn matches_spawn_hint_to_registered_subagent_by_doc_target() {
         serde_json::from_slice(&fixture_body("subagent_explore_flash.json")).unwrap();
     registry.register_route(&run_key, &sub_route, "call-sub-first", Some(&body));
     let assistant = r#"```tool:Agent
-{"description":"Review capture command design","subagent_type":"Explore","prompt":"Review docs/src/design/cli_capture_command.zh.md"}
+{"description":"Review capture command design","subagent_type":"Explore","prompt":"Review docs/src/design/cli-capture.md"}
 ```"#;
     let mut rec = CaptureRecord {
         seq: 0,

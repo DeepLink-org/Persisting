@@ -3,7 +3,7 @@
 //! **Primitive:** [`ResultSink`] · [`persist_terminal`] · [`JsonlFileSink`] (task_id dedup).
 //!
 //! - Phase-1 ledger: append-only JSONL under `--sink` (`task_id` for `--resume`).
-//! - Optional L1: feature `traj-sink` → [`crate::sink_traj::VortexResultSink`] via Tee.
+//! - Optional L1: feature `traj-sink` → [`crate::sink_traj::LanceResultSink`] via Tee.
 
 use crate::checkpoint::CheckpointLedger;
 use crate::task::TaskResult;

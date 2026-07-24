@@ -321,7 +321,7 @@ struct CaptureRunArgs {
     /// Log every proxied / captured HTTP request to stderr and `{output_dir}/.capture/debug.log`.
     #[arg(long)]
     debug: bool,
-    /// Storage: `md` (Markdown only) or `vortex` / `bin` (Vortex canonical + live Markdown).
+    /// Storage: `md` (Markdown only) or `lance` / `bin` (Lance canonical only; no live Markdown).
     #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
     format: capture::CaptureFormat,
     /// Command and arguments to execute (after `--`).
@@ -615,19 +615,19 @@ enum TrajectoryCommand {
         after_long_help = "Differs from `traj replay`, which reads stored events from a session."
     )]
     ReplayDeadLetter(CaptureReplayDeadLetterArgs),
-    /// 批量追加 CaptureRecord 事件（写 Vortex canonical）。
+    /// 批量追加 CaptureRecord 事件（写 Lance canonical）。
     Add(TrajectoryAddArgs),
-    /// 截断 Vortex 事件日志（保留前 N 行）；默认在存在 Markdown 层时同步重建 md。
+    /// 截断 Lance 事件日志（保留前 N 行）；默认在存在 Markdown 层时同步重建 md。
     Truncate(TrajectoryTruncateArgs),
-    /// 统计规模；`auto` 时报告 Vortex + Markdown 两层。
+    /// 统计规模；`auto` 时报告 Lance + Markdown 两层。
     Stats(TrajectoryStatsArgs),
-    /// 按 seq 回放事件（默认读 Vortex）。
+    /// 按 seq 回放事件（默认读 Lance）。
     Replay(TrajectoryReplayArgs),
     /// 导出 Story / Run 目录树到目标路径。
     Extract(TrajectoryExtractArgs),
-    /// Vortex → TLV Markdown（有损物化，维护用）。
+    /// Lance → TLV Markdown（有损物化，维护用）。
     Materialize(TrajectoryMaterializeArgs),
-    /// LLM-as-judge：读 canonical Vortex，写 `{run}/layers/judge_*.vortex` sidecar。
+    /// LLM-as-judge：读 canonical Lance，写 `{run}/layers/judge_*.lance` sidecar。
     Judge(TrajectoryJudgeArgs),
     /// 汇总 judge sidecar 分数（按 session + rubric）。
     #[command(name = "judge-stats")]
@@ -658,7 +658,7 @@ struct ProxyArgs {
     /// Foreground proxy only: log proxied HTTP to stderr / `.capture/debug.log`.
     #[arg(long)]
     debug: bool,
-    /// Foreground proxy only: `md` (Markdown only) or `vortex` / `bin` (Vortex + live Markdown).
+    /// Foreground proxy only: `md` (Markdown only) or `lance` / `bin` (Lance only; no live Markdown).
     #[arg(long, short = 'f', value_enum)]
     format: Option<capture::CaptureFormat>,
 }
@@ -720,7 +720,7 @@ struct TrajectoryAddArgs {
     format: TrajectoryAddFormat,
     #[arg(long, default_value = "-")]
     input: String,
-    /// 写入层：`vortex` / `markdown` / `auto`（`auto` 按已有层探测，默认新建 Vortex）。
+    /// 写入层：`lance` / `markdown` / `auto`（`auto` 按已有层探测，默认新建 Lance）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
 }
@@ -736,7 +736,7 @@ struct TrajectoryTruncateArgs {
     session_id: Option<String>,
     #[arg(long, value_name = "SEG")]
     root_session_id: Option<String>,
-    /// 保留按 `seq` 排序的前 N 条 Vortex 行（仅 Vortex 层；需更新 md 请单独 `materialize`）。
+    /// 保留按 `seq` 排序的前 N 条 Lance 行（仅 Lance 层；需更新 md 请单独 `materialize`）。
     #[arg(long)]
     keep_rows: usize,
 }
@@ -775,7 +775,7 @@ struct TrajectoryReplayArgs {
     offset: usize,
     #[arg(long)]
     limit: Option<usize>,
-    /// 读取层覆盖（`auto`：有 Vortex 读 Vortex，否则 Markdown；两层并存时默认 Vortex）。
+    /// 读取层覆盖（`auto`：有 Lance 读 Lance，否则 Markdown；两层并存时默认 Lance）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
 }
@@ -792,7 +792,7 @@ struct TrajectoryStatsArgs {
     /// 嵌套 subagent session 时指定父 session（路径 `{root}/subagents/{session_id}/`）。
     #[arg(long, value_name = "SEG")]
     root_session_id: Option<String>,
-    /// 统计层覆盖（`auto`：两层并存时同时报告 Vortex 行数与 Markdown 块数）。
+    /// 统计层覆盖（`auto`：两层并存时同时报告 Lance 行数与 Markdown 块数）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
     /// 逐轮一行摘要：用户/模型字符数、TTFT、TPOT。
@@ -1311,7 +1311,7 @@ fn flush_capture_trajectory_batch(
         session_id: key.session_id.clone(),
         root_session_id: key.root_session_id.clone(),
         records_ronl,
-        storage_format: TrajectoryStorageFormat::Vortex,
+        storage_format: TrajectoryStorageFormat::Lance,
     }))?;
     let raw = engine.invoke_engine_ron(&payload)?;
     parse_engine_ron_response(&raw)?;
@@ -1327,7 +1327,7 @@ fn build_capture_trajectory_sink(
     std::sync::Arc<dyn persisting_capture::sink::CaptureSink>,
     TrajectoryAppendWorker,
 )> {
-    if !format.writes_vortex() {
+    if !format.writes_lance() {
         let sink = std::sync::Arc::new(persisting_capture::sink::SeqOnlySink::new());
         return Ok((sink, TrajectoryAppendWorker::noop()));
     }
@@ -2284,7 +2284,7 @@ fn resolve_judge_locations(
     locs = expand_story_locations_blocking(locs)?;
     locs = drop_lifecycle_run_partitions(locs);
     if locs.is_empty() {
-        anyhow::bail!("no scorable sessions after expanding Vortex partitions");
+        anyhow::bail!("no scorable sessions after expanding Lance partitions");
     }
 
     if args.all {
@@ -2455,7 +2455,7 @@ fn run_traj_judge_one(
                 session_id: loc.session_id.clone(),
                 offset: 0,
                 limit: None,
-                storage_format: TrajectoryStorageFormat::Vortex,
+                storage_format: TrajectoryStorageFormat::Lance,
                 root_session_id: loc.root_session_id.clone(),
             },
         )?;

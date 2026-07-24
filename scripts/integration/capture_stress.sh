@@ -76,8 +76,8 @@ MOCK_PID=$!
 sleep 0.2
 kill -0 "$MOCK_PID" || die "mock upstream failed"
 
-# Optional: `-f bin` is a legacy alias for `-f vortex`.
-"$CLI" traj proxy -o "$STORAGE" -c "$CONFIG" -f vortex >>"$SERVE_LOG" 2>&1 &
+# Optional: `-f bin` is a legacy alias for `-f lance`.
+"$CLI" traj proxy -o "$STORAGE" -c "$CONFIG" -f lance >>"$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 sleep 0.3
 kill -0 "$SERVE_PID" || { tail -20 "$SERVE_LOG"; die "traj proxy exited early"; }
@@ -110,7 +110,7 @@ APPEND_FAILS="$(grep -c 'trajectory append failed' "$SERVE_LOG" 2>/dev/null || t
 APPEND_FAILS="${APPEND_FAILS:-0}"
 
 echo "==> reliability: rows=$best/$EXPECTED_ROWS append_failures=$APPEND_FAILS"
-[[ "${best:-0}" -ge 1 ]] || { tail -30 "$SERVE_LOG"; die "no Vortex event rows"; }
+[[ "${best:-0}" -ge 1 ]] || { tail -30 "$SERVE_LOG"; die "no Lance event rows"; }
 
 python3 <<PY
 expected = int("$EXPECTED_ROWS")

@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+use lance::deps::arrow_array::{Array, Int64Array, RecordBatch, StringArray};
+use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use persisting_capture::event_row::{engine_line_to_event_row, event_row_to_replay_json, EventRow};
 
 use crate::trajectory::{

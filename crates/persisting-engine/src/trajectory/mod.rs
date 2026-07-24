@@ -1,5 +1,5 @@
-//! Trajectory storage: **Vortex** (canonical event log) + **TLV Markdown** (optional materialized view).
-//! Append/truncate write **one** layer per `--storage-format`; `materialize` is Vortex → Markdown only.
+//! Trajectory storage: **Lance** (canonical event log) + **TLV Markdown** (optional materialized view).
+//! Append/truncate write **one** layer per `--storage-format`; `materialize` is Lance → Markdown only.
 //!
 //! Path: `{storage}/{agent_id}/{run_id}/` with `{session_id}.md` per logical session.
 //!
@@ -29,7 +29,7 @@ pub mod store;
 pub use storage::{detect_story_primary_layer, story_stats_note};
 
 pub use convert::{
-    compact_markdown_to_vortex, layer_stats, materialize_vortex_to_markdown, CompactOutcome,
+    compact_markdown_to_lance, layer_stats, materialize_lance_to_markdown, CompactOutcome,
     LayerStats, MaterializeOutcome,
 };
 pub use expand::{
@@ -43,7 +43,7 @@ pub use path::{
 };
 pub use persisting_capture::egress::{export_story_bundle, parse_engine_records, ExportOutcome};
 pub use persisting_capture::story_coords::{
-    story_run_dir as trajectory_run_dir, story_vortex_event_path as trajectory_event_log_path,
+    story_lance_event_path as trajectory_event_log_path, story_run_dir as trajectory_run_dir,
 };
 
 /// Flat layout `{storage}/{agent_id}/{session_id}/` (no nested run).
@@ -55,9 +55,9 @@ pub fn trajectory_event_log_path_flat(
     trajectory_event_log_path(storage, agent_id, session_id, None)
 }
 pub use store::{
-    store_for_append, store_for_read, MarkdownTrajectoryStore, TrajectoryAppendOutcome,
-    TrajectoryReplayOutcome, TrajectorySession, TrajectoryStatsOutcome, TrajectoryStore,
-    VortexTrajectoryStore,
+    store_for_append, store_for_read, LanceTrajectoryStore, MarkdownTrajectoryStore,
+    TrajectoryAppendOutcome, TrajectoryReplayOutcome, TrajectorySession, TrajectoryStatsOutcome,
+    TrajectoryStore,
 };
 
 pub const TRAJECTORY_SEQ_COL: &str = "seq";
@@ -72,7 +72,7 @@ pub const TRAJECTORY_MODEL_COL: &str = "model";
 pub const TRAJECTORY_TRACE_ID_COL: &str = "trace_id";
 pub const TRAJECTORY_PAYLOAD_JSON_COL: &str = "payload_json";
 
-/// Vortex trajectory schema v1 columns.
+/// Lance trajectory schema v1 columns.
 pub const TRAJECTORY_V1_COLS: &[&str] = &[
     TRAJECTORY_SEQ_COL,
     TRAJECTORY_TIMESTAMP_COL,
@@ -124,7 +124,7 @@ pub async fn materialize_async(
         &request.session_id,
         root_session_id,
     );
-    let outcome = materialize_vortex_to_markdown(&session).await?;
+    let outcome = materialize_lance_to_markdown(&session).await?;
     Ok(TrajectoryMaterializeResponse {
         storage: request.storage,
         agent_id: request.agent_id,
@@ -295,9 +295,9 @@ pub async fn truncate_async(
         root_session_id,
     );
 
-    let vortex = VortexTrajectoryStore;
-    let uri = vortex.display_path(&session)?;
-    let outcome = vortex.replay(&session, 0, None).await?;
+    let lance = LanceTrajectoryStore;
+    let uri = lance.display_path(&session)?;
+    let outcome = lance.replay(&session, 0, None).await?;
     let total = outcome.records.len();
     let keep = request.keep_rows.min(total);
     let kept: Vec<String> = outcome.records.into_iter().take(keep).collect();
@@ -313,7 +313,7 @@ pub async fn truncate_async(
         .collect::<Result<Vec<_>>>()?;
     let persisted = store::overwrite_session_lines(&session, &kept_lines).await?;
 
-    let note = format!("truncated Vortex: kept {persisted}/{total} row(s) at {uri}");
+    let note = format!("truncated Lance: kept {persisted}/{total} row(s) at {uri}");
 
     Ok(TrajectoryTruncateResponse {
         storage: request.storage,
@@ -410,13 +410,13 @@ mod tests {
         assert!(trajectory_event_log_path("/tmp", "a/b", "s", None).is_err());
         assert!(trajectory_event_log_path("/tmp", "..", "s", None).is_err());
         let nested = trajectory_event_log_path("/tmp", "agent", "sub-1", Some("root-1")).unwrap();
-        assert!(nested.ends_with("agent/root-1/events.vortex"));
+        assert!(nested.ends_with("agent/root-1/events.lance"));
         let root = trajectory_event_log_path("/tmp", "agent", "root-1", Some("root-1")).unwrap();
-        assert!(root.ends_with("agent/root-1/events.vortex"));
+        assert!(root.ends_with("agent/root-1/events.lance"));
     }
 
     #[tokio::test]
-    async fn append_replay_stats_vortex_roundtrip() {
+    async fn append_replay_stats_lance_roundtrip() {
         use persisting_capture::record::record_to_engine_line;
 
         let dir = tempfile::tempdir().unwrap();
@@ -465,14 +465,14 @@ mod tests {
             session_id: "sess_1".into(),
             root_session_id: None,
             records_ronl: format!("{line1}\n{line2}\n"),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
         assert_eq!(append.accepted_records, 2);
-        assert!(append.note.contains("Vortex v1"));
-        let vortex_path = trajectory_event_log_path(&storage_s, "agent_a", "sess_1", None).unwrap();
-        assert!(vortex_path.is_file(), "expected {}", vortex_path.display());
+        assert!(append.note.contains("Lance v1"));
+        let lance_path = trajectory_event_log_path(&storage_s, "agent_a", "sess_1", None).unwrap();
+        assert!(lance_path.is_dir(), "expected {}", lance_path.display());
 
         let replay = replay_async(TrajectoryReplayRequest {
             storage: storage_s.clone(),
@@ -480,7 +480,7 @@ mod tests {
             session_id: "sess_1".into(),
             offset: 0,
             limit: Some(10),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
             root_session_id: None,
         })
         .await
@@ -491,17 +491,17 @@ mod tests {
             storage: storage_s.clone(),
             agent_id: "agent_a".into(),
             session_id: "sess_1".into(),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
             root_session_id: None,
         })
         .await
         .unwrap();
         assert_eq!(st.row_count, 2);
-        assert!(st.note.contains("Vortex v1"));
+        assert!(st.note.contains("Lance v1"));
     }
 
     #[tokio::test]
-    async fn append_replay_stats_nested_vortex_roundtrip() {
+    async fn append_replay_stats_nested_lance_roundtrip() {
         use persisting_capture::record::record_to_engine_line;
 
         let dir = tempfile::tempdir().unwrap();
@@ -535,7 +535,7 @@ mod tests {
             session_id: "sub-1".into(),
             root_session_id: Some("root-1".into()),
             records_ronl: format!("{}\n{}\n{}\n", mk("a"), mk("b"), mk("c")),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -547,7 +547,7 @@ mod tests {
             session_id: "sub-2".into(),
             root_session_id: Some("root-1".into()),
             records_ronl: format!("{}\n{}\n", mk("x"), mk("y")),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -558,7 +558,7 @@ mod tests {
             session_id: "sub-1".into(),
             offset: 1,
             limit: Some(1),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
             root_session_id: Some("root-1".into()),
         })
         .await
@@ -569,13 +569,13 @@ mod tests {
             storage: storage_s.clone(),
             agent_id: "agent_a".into(),
             session_id: "sub-1".into(),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
             root_session_id: Some("root-1".into()),
         })
         .await
         .unwrap();
         assert_eq!(st.row_count, 3);
-        assert!(st.dataset.contains("events.vortex"));
+        assert!(st.dataset.contains("events.lance"));
 
         let other = replay_async(TrajectoryReplayRequest {
             storage: storage_s,
@@ -583,7 +583,7 @@ mod tests {
             session_id: "sub-2".into(),
             offset: 0,
             limit: None,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
             root_session_id: Some("root-1".into()),
         })
         .await
@@ -635,13 +635,13 @@ mod tests {
             session_id: "s".into(),
             root_session_id: None,
             records_ronl: records_ronl.clone(),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
 
         let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
-        materialize_vortex_to_markdown(&session).await.unwrap();
+        materialize_lance_to_markdown(&session).await.unwrap();
 
         let replay = replay_async(TrajectoryReplayRequest {
             storage: storage_s.clone(),
@@ -679,7 +679,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_both_storage_format_writes_vortex_only() {
+    async fn append_both_storage_format_writes_lance_only() {
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::llm_request_record;
 
@@ -708,8 +708,8 @@ mod tests {
         .await
         .unwrap();
 
-        let vortex_path = trajectory_event_log_path(&storage_s, "a", "s", None).unwrap();
-        assert!(vortex_path.is_file());
+        let lance_path = trajectory_event_log_path(&storage_s, "a", "s", None).unwrap();
+        assert!(lance_path.is_dir());
         let md_path = md::session_markdown_write_path_for_key(
             &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
             "s",
@@ -754,12 +754,12 @@ mod tests {
 
         let md_text = std::fs::read_to_string(&md_path).unwrap();
         assert!(md_text.contains("new"));
-        let vortex_path = trajectory_event_log_path(&storage_s, "a", "s", None).unwrap();
-        assert!(!vortex_path.is_file());
+        let lance_path = trajectory_event_log_path(&storage_s, "a", "s", None).unwrap();
+        assert!(!lance_path.exists());
     }
 
     #[tokio::test]
-    async fn replay_auto_reads_vortex_when_both_layers_exist() {
+    async fn replay_auto_reads_lance_when_both_layers_exist() {
         use persisting_capture::engine::Call;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
@@ -778,13 +778,13 @@ mod tests {
             None,
             "m",
             "/v1",
-            &serde_json::json!({"messages":[{"role":"user","content":"vortex-wins"}]}),
+            &serde_json::json!({"messages":[{"role":"user","content":"lance-wins"}]}),
         );
         let resp = llm_response_record(
             Some("s".into()),
             None,
             200,
-            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"from-vortex"}}]}),
+            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"from-lance"}}]}),
             false,
             &call,
         );
@@ -800,13 +800,13 @@ mod tests {
             session_id: "s".into(),
             root_session_id: None,
             records_ronl,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
 
         let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
-        materialize_vortex_to_markdown(&session).await.unwrap();
+        materialize_lance_to_markdown(&session).await.unwrap();
 
         let replay = replay_async(TrajectoryReplayRequest {
             storage: storage_s,
@@ -866,13 +866,13 @@ mod tests {
             session_id: "s".into(),
             root_session_id: None,
             records_ronl,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
 
         let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
-        materialize_vortex_to_markdown(&session).await.unwrap();
+        materialize_lance_to_markdown(&session).await.unwrap();
 
         let st = stats_async(TrajectoryStatsRequest {
             storage: storage_s,
@@ -884,12 +884,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(st.row_count, 2);
-        assert!(st.note.contains("Story stats via vortex"));
+        assert!(st.note.contains("Story stats via lance"));
         assert!(st.note.contains("Markdown 2"));
     }
 
     #[tokio::test]
-    async fn append_replay_structured_vortex_llm_columns() {
+    async fn append_replay_structured_lance_llm_columns() {
         use persisting_capture::engine::Call;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
@@ -935,7 +935,7 @@ mod tests {
             session_id: "s".into(),
             root_session_id: None,
             records_ronl,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -946,7 +946,7 @@ mod tests {
             session_id: "s".into(),
             offset: 0,
             limit: Some(10),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
             root_session_id: None,
         })
         .await
@@ -1003,13 +1003,13 @@ mod tests {
             session_id: "s".into(),
             root_session_id: None,
             records_ronl,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
 
         let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
-        let mat = materialize_vortex_to_markdown(&session).await.unwrap();
+        let mat = materialize_lance_to_markdown(&session).await.unwrap();
         assert_eq!(mat.stats.source_events, 2);
         assert_eq!(mat.stats.markdown_blocks, 2);
         assert!(std::path::Path::new(&mat.markdown_path).exists());
@@ -1018,7 +1018,7 @@ mod tests {
         assert_eq!(layers.event_rows, 2);
         assert_eq!(layers.markdown_blocks, 2);
 
-        let compact = compact_markdown_to_vortex(&session, true).await.unwrap();
+        let compact = compact_markdown_to_lance(&session, true).await.unwrap();
         assert_eq!(compact.stats.source_blocks, 2);
         assert_eq!(compact.stats.event_rows, 2);
     }
@@ -1062,7 +1062,7 @@ mod tests {
             session_id: "s".into(),
             root_session_id: None,
             records_ronl: note_lines(3),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -1086,7 +1086,7 @@ mod tests {
             session_id: "s".into(),
             offset: 0,
             limit: None,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
             root_session_id: None,
         })
         .await
@@ -1139,13 +1139,13 @@ mod tests {
             session_id: "s".into(),
             root_session_id: None,
             records_ronl,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
 
         let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
-        materialize_vortex_to_markdown(&session).await.unwrap();
+        materialize_lance_to_markdown(&session).await.unwrap();
         let md_path = md::session_markdown_write_path_for_key(
             &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
             "s",
@@ -1169,7 +1169,7 @@ mod tests {
             session_id: "s".into(),
             offset: 0,
             limit: None,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
             root_session_id: None,
         })
         .await
@@ -1239,7 +1239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_storage_format_markdown_without_vortex() {
+    async fn append_storage_format_markdown_without_lance() {
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::llm_request_record;
 
@@ -1269,8 +1269,8 @@ mod tests {
         assert_eq!(append.accepted_records, 1);
         assert!(append.note.contains("markdown"));
 
-        let vortex_path = trajectory_event_log_path(&storage_s, "a", "s", None).unwrap();
-        assert!(!vortex_path.is_file());
+        let lance_path = trajectory_event_log_path(&storage_s, "a", "s", None).unwrap();
+        assert!(!lance_path.exists());
 
         let md_path = md::session_markdown_write_path_for_key(
             &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
@@ -1324,7 +1324,7 @@ mod tests {
             session_id: "s".into(),
             root_session_id: None,
             records_ronl,
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -1344,9 +1344,9 @@ mod tests {
     }
 
     /// End-to-end regression for `traj stats store/{agent}/` scan:
-    /// list run buckets → expand vortex partitions → stats each session_id.
+    /// list run buckets → expand lance partitions → stats each session_id.
     #[tokio::test]
-    async fn stats_agent_scan_expands_vortex_session_partitions() {
+    async fn stats_agent_scan_expands_lance_session_partitions() {
         use crate::trajectory::expand_story_locations;
         use persisting_capture::engine::Call;
         use persisting_capture::lifecycle::{session_started_record, CaptureMode};
@@ -1398,7 +1398,7 @@ mod tests {
             session_id: run.into(),
             root_session_id: Some(run.into()),
             records_ronl: format!("{}\n", record_to_engine_line(&started).unwrap()),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -1412,7 +1412,7 @@ mod tests {
                 record_to_engine_line(&req).unwrap(),
                 record_to_engine_line(&resp).unwrap(),
             ),
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -1433,7 +1433,7 @@ mod tests {
                 storage: loc.storage.clone(),
                 agent_id: loc.agent_id.clone(),
                 session_id: loc.session_id.clone(),
-                storage_format: TrajectoryStorageFormat::Vortex,
+                storage_format: TrajectoryStorageFormat::Lance,
                 root_session_id: loc.root_session_id.clone(),
             })
             .await

@@ -62,7 +62,9 @@ class BlockStore:
             raise ValueError("L1/L3 backing.shape 须与 shape 一致")
         self._blocks_in_l1: set[BlockId] = set()
         self._lock = threading.Lock()
-        self._prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="blockstore-prefetch")
+        self._prefetch_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="blockstore-prefetch"
+        )
         self._prefetch_pending: dict[int, tuple[frozenset[BlockId], threading.Event]] = {}
         self._prefetch_counter = 0
 
