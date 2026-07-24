@@ -4,6 +4,8 @@
 
 `search`、`traj`（`trajectory`）等子命令共用此架构。
 
+`compute` 例外：编排逻辑在 `persisting-compute` 内由 CLI 直接调用（不经 engine RON ABI）；见 [Compute 架构](compute_control_plane.zh.md) · [快速上手](../guide/compute_quickstart.zh.md)。
+
 ---
 
 ## 1. 核心思想

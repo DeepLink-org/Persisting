@@ -5792,6 +5792,7 @@ dependencies = [
  "dirs",
  "libloading",
  "persisting-capture",
+ "persisting-compute",
  "persisting-dlcapt",
  "persisting-engine",
  "persisting-proto",
@@ -5805,6 +5806,30 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "persisting-compute"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "futures",
+ "persisting-capture",
+ "persisting-engine",
+ "persisting-proto",
+ "pulsing-actor",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

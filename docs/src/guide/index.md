@@ -44,6 +44,13 @@ Proxy and record LLM traffic under **`persisting traj`**:
 - [Capture architecture](../design/capture_design.zh.md) (中文)
 - **Standalone dlcapt (`persisting-dlcapt`)** — independent OpenAI-compatible proxy migrated from Capture `external/dlcapt`; see `crates/persisting-dlcapt/README.md`. Phase-1 does not replace `persisting-capture`.
 
+### Compute (available)
+
+Run independent tasks with **`persisting compute`**: one Python file (`plan` + `execute`), local parallelism or `torchrun`.
+
+- **[Compute Quick Start](compute_quickstart.zh.md)** (中文) — script, parallelism, sink / resume
+- [Compute architecture](../design/compute_control_plane.zh.md) (中文)
+
 ### Streaming Append (available now)
 
 Lance storage engine's append-only access pattern — for event streaming and durable queues (trajectory capture uses Vortex separately; see Capture quick start).

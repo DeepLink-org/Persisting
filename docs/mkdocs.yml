@@ -97,6 +97,8 @@ plugins:
             Traj Capture Subcommands: Traj Capture 子命令
             Capture Quick Start: Capture 快速上手
             Capture Architecture Design: Capture 架构设计
+            Compute Quick Start: Compute 快速上手
+            Compute Architecture: Compute 架构
             Search Command: Search 命令
             Similar Systems Reference: 类似系统参考
             API Reference: API 参考
@@ -117,6 +119,7 @@ nav:
   - Guide:
       - guide/index.md
       - Capture Quick Start: guide/capture_quickstart.md
+      - Compute Quick Start: guide/compute_quickstart.zh.md
       - Queue Backends: guide/backends.md
       - Lance Backend: guide/lance.md
       - Persisting Backend: guide/persisting.md
@@ -130,6 +133,7 @@ nav:
       - CLI Architecture: design/cli_architecture.zh.md
       - Traj Capture Subcommands: design/cli_capture_command.zh.md
       - Capture Architecture Design: design/capture_design.zh.md
+      - Compute Architecture: design/compute_control_plane.zh.md
       - Traj Command: design/cli_trajectory_command.zh.md
       - Search Command: design/cli_search_command.zh.md
       - Similar Systems Reference: design/similar_systems_reference.md

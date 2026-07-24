@@ -42,6 +42,7 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 | 轨迹存储模型 | [trajectory_storage.zh.md](trajectory_storage.zh.md) | 已实现 |
 | 轨迹 Markdown 格式 | [trajectory_tlv_format.zh.md](trajectory_tlv_format.zh.md) | 已实现 |
 | Capture 架构设计（对外） | [capture_design.zh.md](capture_design.zh.md) | 已实现 |
+| Compute 架构 | [compute_control_plane.zh.md](compute_control_plane.zh.md) | Phase-1 已落地 |
 | 队列持久化架构 | [architecture.zh.md](architecture.zh.md) | 已实现 |
 | TTAS 寻址模型 | [tensor_address_algebra.md](tensor_address_algebra.md) | 设计 |
 | 分布式分层存储 | [distributed_tiered_storage.md](distributed_tiered_storage.md) | 规划 |
@@ -53,6 +54,7 @@ Persisting 的设计文档：寻址与分层存储（演进中）、队列持久
 | 整体架构 | [cli_architecture.zh.md](cli_architecture.zh.md) | 瘦 CLI + 动态引擎、异步任务、版本化协议 |
 | **`traj`（轨迹）** | [cli_trajectory_command.zh.md](cli_trajectory_command.zh.md) | 统一入口：capture / proxy / import / stats / replay / materialize / … |
 | Capture 子命令 | [cli_capture_command.zh.md](cli_capture_command.zh.md) | `traj capture`、`traj proxy`、`traj import` 设计说明 |
+| **`compute`** | [compute_control_plane.zh.md](compute_control_plane.zh.md) · [快速上手](../guide/compute_quickstart.zh.md) | `plan()` + `execute` 薄编排 / torchrun（Phase-1） |
 | Search | [cli_search_command.zh.md](cli_search_command.zh.md) | 导入、索引、检索 |
 
 ## 参考与分析
