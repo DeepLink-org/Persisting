@@ -35,7 +35,7 @@ Persisting provides a **unified tiered storage** for AI workloads — agent traj
 ├─────────────────────────────────────────────────────────────────┤
 │                     Storage Engine                               │
 │                                                                  │
-│   Lance (columnar)  ·  Vortex (trajectory)  ·  Numpy (memory)  │
+│   Lance (columnar)  ·  Lance (trajectory)  ·  Numpy (memory)  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -53,6 +53,7 @@ Record every LLM call your agent makes:
 
 ```bash
 persisting traj capture -o ./store -c proxy.toml -f md -- claude
+# or: -f lance  →  only events.lance/ dataset; then traj materialize for Markdown
 ```
 
 Trajectories are stored as `(agent_id, run_id, time)` — the same TTAS model used for KV cache and parameters.
@@ -109,7 +110,7 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 
 | Capability | Status | Description |
 |------------|--------|-------------|
-| **Agent Trajectory Capture** | ✅ Stable | Proxy + record LLM traffic as Vortex + Markdown |
+| **Agent Trajectory Capture** | ✅ Stable | Proxy + record LLM traffic as Lance + Markdown |
 | **Streaming Queue** | ✅ Stable | Lance-backed append/consume, KV API, samplers |
 | **Compute Orchestration** | ✅ Stable | `plan()` + `execute()`, local/torchrun |
 | **Agent Search** | ✅ Stable | Document indexing, IVF-PQ, hybrid search |

@@ -1,4 +1,4 @@
-//! Judge egress: read canonical Vortex, write `{run}/layers/judge_*.vortex` sidecars.
+//! Judge egress: read canonical Lance, write `{run}/layers/judge_*.lance` sidecars.
 //!
 //! Modes (scope × method):
 //! - **story + llm**: one LLM call scores the full trajectory per rubric dimension
@@ -19,7 +19,7 @@ use super::layers::{
     read_judge_rows, register_layer, save_manifest, sidecar_path, write_judge_rows, JudgeRow,
     MANUAL_RATIONALE_PREFIX, STORY_CALL_ID,
 };
-use super::store::{TrajectoryStore, VortexTrajectoryStore};
+use super::store::{LanceTrajectoryStore, TrajectoryStore};
 use super::TrajectorySession;
 
 #[derive(Debug, Deserialize)]
@@ -57,15 +57,15 @@ pub async fn judge_async(request: TrajectoryJudgeRequest) -> Result<TrajectoryJu
         .cloned()
         .unwrap_or_else(|| "default".into());
 
-    let vortex = VortexTrajectoryStore;
-    if !vortex.exists(&session).await? {
+    let lance = LanceTrajectoryStore;
+    if !lance.exists(&session).await? {
         anyhow::bail!(
-            "Vortex event log missing for session {}; judge requires events.vortex",
+            "Lance event log missing for session {}; judge requires events.lance",
             session.session_id
         );
     }
 
-    let replay = vortex.replay(&session, 0, None).await?;
+    let replay = lance.replay(&session, 0, None).await?;
     let records: Vec<CaptureRecord> = replay
         .records
         .iter()
@@ -561,7 +561,7 @@ mod tests {
             session_id: "run".into(),
             root_session_id: None,
             records_ronl: lines.join("\n") + "\n",
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -585,7 +585,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.judged_calls, 1);
-        assert!(std::path::Path::new(&out.sidecar_path).is_file());
+        assert!(std::path::Path::new(&out.sidecar_path).is_dir());
     }
 
     #[tokio::test]
@@ -627,7 +627,7 @@ mod tests {
             session_id: "run".into(),
             root_session_id: None,
             records_ronl: lines.join("\n") + "\n",
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -703,7 +703,7 @@ mod tests {
             session_id: "run".into(),
             root_session_id: None,
             records_ronl: lines.join("\n") + "\n",
-            storage_format: TrajectoryStorageFormat::Vortex,
+            storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
@@ -733,7 +733,7 @@ mod tests {
         .unwrap();
         assert_eq!(first.judged_calls, 1);
         let sidecar = first.sidecar_path.clone();
-        assert!(std::path::Path::new(&sidecar).is_file());
+        assert!(std::path::Path::new(&sidecar).is_dir());
 
         let second = judge_async(TrajectoryJudgeRequest {
             storage,
@@ -760,7 +760,7 @@ mod tests {
         .unwrap();
         assert_eq!(second.judged_calls, 0);
         assert_eq!(second.skipped_calls, 1);
-        assert!(std::path::Path::new(&sidecar).is_file());
+        assert!(std::path::Path::new(&sidecar).is_dir());
         let rows = read_judge_rows(std::path::Path::new(&sidecar))
             .await
             .unwrap();

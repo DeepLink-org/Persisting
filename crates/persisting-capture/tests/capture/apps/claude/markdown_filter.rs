@@ -77,7 +77,7 @@ fn keeps_subagent_flash_explore_prompt() {
         serde_json::from_slice(&fixture_body("subagent_explore_flash.json")).unwrap();
     let rec = request_record(
         "deepseek-v4-flash",
-        "Review docs/src/design/cli_capture_command.zh.md",
+        "Review docs/src/design/cli-capture.md",
         Some("ad20bef53147678d4"),
         Some(&body),
     );

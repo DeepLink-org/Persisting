@@ -27,7 +27,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []
-# Append compute results to Vortex via TrajectoryAppend (Tee with JsonlFileSink).
+# Append compute results to Lance via TrajectoryAppend (Tee with JsonlFileSink).
 traj-sink = ["dep:chrono", "dep:persisting-capture", "dep:persisting-engine", "dep:persisting-proto"]
 
 [dev-dependencies]

@@ -49,7 +49,7 @@ fn sse_incremental_parser_emits_tool_agent_on_content_block_stop() {
     let mut parser = SseStreamBlockParser::default();
     let snap = push_sse_tool_snapshot(&mut parser, sse).expect("partial snapshot");
     assert!(snap.contains("```tool:Agent"));
-    assert!(snap.contains("cli_capture_command.zh.md"));
+    assert!(snap.contains("cli-capture.md"));
 }
 
 #[test]

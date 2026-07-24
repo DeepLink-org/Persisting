@@ -140,7 +140,7 @@ plan()  ──streams──►  Driver  ──dispatches──►  Workers (Pyth
 | `--sink DIR` | Persist results |
 | `--resume` | Skip completed task IDs |
 | `--observe` | Show progress |
-| `--traj` | Also write results as Vortex trajectory |
+| `--traj` | Also write results as Lance trajectory |
 
 ---
 

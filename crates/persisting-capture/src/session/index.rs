@@ -1,4 +1,4 @@
-//! Session index on disk for `capture list` without full Vortex replay.
+//! Session index on disk for `capture list` without full Lance replay.
 
 use std::collections::HashMap;
 use std::fs;

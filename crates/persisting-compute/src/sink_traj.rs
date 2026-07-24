@@ -1,4 +1,4 @@
-//! Vortex trajectory sink: TaskResult → CaptureRecord → TrajectoryAppend.
+//! Lance trajectory sink: TaskResult → CaptureRecord → TrajectoryAppend.
 //!
 //! Enabled with feature `traj-sink`. Always Tee with [`JsonlFileSink`] so
 //! `--resume` keeps using the JSONL task_id ledger.
@@ -13,14 +13,14 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 /// Append terminal compute results as `compute.result` / `compute.failure` events.
-pub struct VortexResultSink {
+pub struct LanceResultSink {
     storage: String,
     agent_id: String,
     session_id: String,
     seen: Mutex<HashSet<String>>,
 }
 
-impl VortexResultSink {
+impl LanceResultSink {
     pub fn new(
         storage: impl Into<String>,
         agent_id: impl Into<String>,
@@ -83,7 +83,7 @@ impl VortexResultSink {
             let mut seen = self
                 .seen
                 .lock()
-                .map_err(|_| anyhow::anyhow!("vortex sink lock poisoned"))?;
+                .map_err(|_| anyhow::anyhow!("lance sink lock poisoned"))?;
             if !seen.insert(result.task_id.clone()) {
                 return Ok(());
             }
@@ -97,7 +97,7 @@ impl VortexResultSink {
                 session_id: self.session_id.clone(),
                 root_session_id: None,
                 records_ronl: line,
-                storage_format: TrajectoryStorageFormat::Vortex,
+                storage_format: TrajectoryStorageFormat::Lance,
             };
             // bridge is sync (blocks on runtime inside engine); ok from async via spawn_blocking.
             let resp =
@@ -109,7 +109,7 @@ impl VortexResultSink {
                 task_id = %result.task_id,
                 accepted = resp.accepted_records,
                 dataset = %resp.dataset,
-                "compute result appended to vortex"
+                "compute result appended to lance"
             );
             Ok(())
         };
@@ -127,7 +127,7 @@ impl VortexResultSink {
 }
 
 #[async_trait]
-impl ResultSink for VortexResultSink {
+impl ResultSink for LanceResultSink {
     async fn append_ready(&self, result: &TaskResult) -> Result<()> {
         self.append_record(result).await
     }

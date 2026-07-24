@@ -107,10 +107,7 @@ def region_to_blocks(
     else:
         return []
 
-    return [
-        BlockId(partition_key, k)
-        for k in range(block_lo, block_hi)
-    ]
+    return [BlockId(partition_key, k) for k in range(block_lo, block_hi)]
 
 
 def block_to_region(

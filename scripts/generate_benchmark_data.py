@@ -73,17 +73,23 @@ def main() -> None:
     n_t = args.traj_rows
     with args.traj_out.open("w", encoding="utf-8", buffering=1024 * 1024) as f:
         if args.traj_format == "toml":
-            f.write("# benchmark trajectory (generated; root `records` via [[records]] tables)\n\n")
+            f.write("# benchmark trajectory (CaptureRecord-shaped [[records]] for traj add)\n\n")
             for i in range(n_t):
                 tok = rng.randrange(2**31)
                 f.write("[[records]]\n")
-                f.write(f"step = {i}\n")
-                f.write('kind = "tool"\n')
-                f.write(f"detail = \"mock step {i} rnd={tok}\"\n\n")
+                f.write(f"seq = {i}\n")
+                f.write('source = "bench"\n')
+                f.write('kind = "note"\n')
+                f.write(f'payload = {{ content = "mock step {i} rnd={tok}" }}\n\n')
         else:
             for i in range(n_t):
                 tok = rng.randrange(2**31)
-                rec = {"step": i, "kind": "tool", "detail": f"mock step {i} rnd={tok}"}
+                rec = {
+                    "seq": i,
+                    "source": "bench",
+                    "kind": "note",
+                    "payload": {"content": f"mock step {i} rnd={tok}"},
+                }
                 f.write(json.dumps(rec) + "\n")
 
     print(

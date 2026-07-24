@@ -1,18 +1,15 @@
-//! Call-level judge rows persisted as `{run}/layers/judge_{rubric}.vortex`.
+//! Call-level judge rows persisted as `{run}/layers/judge_{rubric}.lance`.
 
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use arrow_array::cast::AsArray;
-use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema as ArrowSchema};
-use vortex::array::arrow::{ArrowSessionExt, FromArrowArray};
-use vortex::array::stream::ArrayStreamExt;
-use vortex::array::VortexSessionExecute;
-use vortex::file::{OpenOptionsSessionExt, WriteOptionsSessionExt};
-use vortex::session::VortexSession;
-use vortex::VortexSessionDefault;
+use futures::TryStreamExt;
+use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
+use lance::deps::arrow_array::{Array, Int64Array, RecordBatch, StringArray};
+use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
+use lance::Dataset;
+use lance::Error as LanceError;
 
 pub const JUDGE_SESSION_ID_COL: &str = "session_id";
 pub const JUDGE_CALL_ID_COL: &str = "call_id";
@@ -29,15 +26,6 @@ pub struct JudgeRow {
     pub score: i64,
     pub verdict: String,
     pub rationale: String,
-}
-
-fn vortex_session() -> &'static VortexSession {
-    static SESSION: OnceLock<VortexSession> = OnceLock::new();
-    SESSION.get_or_init(VortexSession::default)
-}
-
-fn vortex_err(e: vortex::error::VortexError) -> anyhow::Error {
-    anyhow::anyhow!("{e}")
 }
 
 pub fn judge_schema() -> Arc<ArrowSchema> {
@@ -97,13 +85,6 @@ fn rows_from_batch(batch: &RecordBatch) -> Result<Vec<JudgeRow>> {
             .as_any()
             .downcast_ref::<StringArray>()
             .ok_or_else(|| anyhow::anyhow!("expected Utf8 column {name}"))
-            .map(|_| {
-                batch
-                    .column(idx)
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .unwrap()
-            })
     };
     let session = col(JUDGE_SESSION_ID_COL)?;
     let call = col(JUDGE_CALL_ID_COL)?;
@@ -138,39 +119,36 @@ fn rows_from_batch(batch: &RecordBatch) -> Result<Vec<JudgeRow>> {
     Ok(rows)
 }
 
+async fn dataset_exists(uri: &str) -> Result<bool> {
+    match Dataset::open(uri).await {
+        Ok(_) => Ok(true),
+        Err(e) if matches!(e, LanceError::DatasetNotFound { .. }) => Ok(false),
+        Err(e) => Err(anyhow::anyhow!("{:#}", e)),
+    }
+}
+
 async fn read_all_rows(path: &Path) -> Result<Vec<JudgeRow>> {
-    if !path.is_file() {
+    let uri = path.to_string_lossy();
+    if !dataset_exists(&uri).await? {
         return Ok(Vec::new());
     }
-    let file = vortex_session()
-        .open_options()
-        .open_path(path)
+    let ds = Dataset::open(uri.as_ref())
         .await
-        .map_err(vortex_err)?;
-    let array = file
+        .with_context(|| format!("open judge Lance dataset {}", path.display()))?;
+    let stream = ds
         .scan()
-        .map_err(vortex_err)?
-        .into_array_stream()
-        .map_err(vortex_err)?
-        .read_all()
+        .try_into_stream()
         .await
-        .map_err(vortex_err)?;
-    if array.len() == 0 {
-        return Ok(Vec::new());
+        .with_context(|| format!("scan judge Lance dataset {}", path.display()))?;
+    let batches: Vec<RecordBatch> = stream
+        .try_collect()
+        .await
+        .with_context(|| format!("collect judge Lance batches {}", path.display()))?;
+    let mut rows = Vec::new();
+    for batch in &batches {
+        rows.extend(rows_from_batch(batch)?);
     }
-    let schema = judge_schema();
-    let mut ctx = vortex_session().create_execution_ctx();
-    let target = Field::new(
-        "",
-        DataType::Struct(schema.fields.clone()),
-        array.dtype().is_nullable(),
-    );
-    let arrow = vortex_session()
-        .arrow()
-        .execute_arrow(array, Some(&target), &mut ctx)
-        .map_err(vortex_err)?;
-    let batch = RecordBatch::from(arrow.as_struct());
-    rows_from_batch(&batch)
+    Ok(rows)
 }
 
 pub async fn read_judge_rows(path: &Path) -> Result<Vec<JudgeRow>> {
@@ -178,34 +156,34 @@ pub async fn read_judge_rows(path: &Path) -> Result<Vec<JudgeRow>> {
 }
 
 pub async fn write_judge_rows(path: &Path, rows: &[JudgeRow]) -> Result<()> {
+    let uri = path.to_string_lossy().into_owned();
     if rows.is_empty() {
-        if path.is_file() {
-            tokio::fs::remove_file(path)
+        if path.exists() {
+            tokio::fs::remove_dir_all(path)
                 .await
                 .with_context(|| format!("remove empty judge sidecar {}", path.display()))?;
         }
         return Ok(());
     }
     let batch = record_batch_from_judge_rows(rows)?;
-    let array = vortex::array::ArrayRef::from_arrow(batch, false).map_err(vortex_err)?;
-    let stream = array.to_array_stream();
-    let tmp = path.with_extension("vortex.tmp");
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .with_context(|| format!("create_dir_all {}", parent.display()))?;
     }
-    let mut file = tokio::fs::File::create(&tmp)
+    let mode = if dataset_exists(&uri).await? {
+        WriteMode::Overwrite
+    } else {
+        WriteMode::Create
+    };
+    InsertBuilder::new(uri.as_str())
+        .with_params(&WriteParams {
+            mode,
+            ..Default::default()
+        })
+        .execute(vec![batch])
         .await
-        .with_context(|| format!("create {}", tmp.display()))?;
-    vortex_session()
-        .write_options()
-        .write(&mut file, stream)
-        .await
-        .map_err(vortex_err)?;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        .with_context(|| format!("write judge Lance dataset {}", path.display()))?;
     Ok(())
 }
 

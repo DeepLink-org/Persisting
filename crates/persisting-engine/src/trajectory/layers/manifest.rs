@@ -1,10 +1,41 @@
-//! `layers/manifest.json` — sidecar registry for logical Vortex joins.
+//! `layers/manifest.json` — local JSON registry of sidecar datasets for logical joins.
+//!
+//! Join semantics are application-defined (keys listed in each entry); this is not
+//! an external columnar layout API.
 
 use anyhow::{Context, Result};
-use vortex::layout::scan::logical::{LayerManifest, LayerManifestEntry};
+use serde::{Deserialize, Serialize};
 
 use super::{join_on_session_call_id, layer_field_name, layer_file_name, manifest_path};
 use crate::trajectory::TrajectorySession;
+
+/// One sidecar layer joined onto the primary event log.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LayerManifestEntry {
+    /// Top-level logical field name exposed after the join (e.g. `judge_default`).
+    pub name: String,
+    /// Path to the layer dataset, relative to the manifest directory.
+    pub path: String,
+    /// Column names present in both primary and layer used for the left join.
+    pub join_on: Vec<String>,
+}
+
+/// Manifest listing all sidecar layers for a logical dataset.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LayerManifest {
+    /// Sidecar layers in stable order.
+    pub layers: Vec<LayerManifestEntry>,
+}
+
+impl LayerManifest {
+    pub fn from_json(json: &str) -> Result<Self> {
+        serde_json::from_str(json).context("parse layers/manifest.json")
+    }
+
+    pub fn to_json(&self) -> Result<String> {
+        serde_json::to_string_pretty(self).context("serialize layers/manifest.json")
+    }
+}
 
 pub fn load_manifest(session: &TrajectorySession) -> Result<LayerManifest> {
     let path = manifest_path(session)?;
@@ -13,7 +44,7 @@ pub fn load_manifest(session: &TrajectorySession) -> Result<LayerManifest> {
     }
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("read manifest {}", path.display()))?;
-    LayerManifest::from_json(&raw).context("parse layers/manifest.json")
+    LayerManifest::from_json(&raw)
 }
 
 pub fn save_manifest(session: &TrajectorySession, manifest: &LayerManifest) -> Result<()> {
@@ -56,5 +87,6 @@ mod tests {
         assert_eq!(n1, n2);
         assert_eq!(m.layers.len(), 1);
         assert_eq!(m.layers[0].join_on, join_on_session_call_id());
+        assert!(m.layers[0].path.ends_with(".lance"));
     }
 }

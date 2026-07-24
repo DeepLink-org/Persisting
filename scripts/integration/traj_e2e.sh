@@ -67,7 +67,7 @@ echo "==> traj E2E integration"
 echo "    CLI=$CLI"
 echo "    WORKDIR=$WORKDIR"
 
-# --- 1. import (gateway JSONL → Vortex) ------------------------------------
+# --- 1. import (gateway JSONL → Lance) ------------------------------------
 section "traj import (gateway JSONL)"
 
 IMPORT_OUT="$(run_cli traj import "$STORAGE" \
@@ -79,9 +79,9 @@ grep -qE 'traj-it-agent|traj-it-session|import' <<<"$IMPORT_OUT" \
   || { echo "$IMPORT_OUT"; die "import output unexpected"; }
 pass "traj import wrote session"
 
-[[ -f "$STORAGE/$AGENT_ID/$SESSION_ID/events.vortex" ]] \
-  || die "missing events.vortex after import"
-pass "events.vortex exists"
+[[ -d "$STORAGE/$AGENT_ID/$SESSION_ID/events.lance" ]] \
+  || die "missing events.lance after import"
+pass "events.lance exists"
 
 # --- 2. stats (pre-judge) ---------------------------------------------------
 section "traj stats (before judge)"
@@ -89,7 +89,7 @@ section "traj stats (before judge)"
 run_cli traj stats "$STORAGE" \
   --agent-id "$AGENT_ID" \
   --session-id "$SESSION_ID" \
-  --storage-format vortex >"$STATS_TOML"
+  --storage-format lance >"$STATS_TOML"
 ROW_COUNT="$(parse_toml_field "$STATS_TOML" row_count)"
 [[ -n "$ROW_COUNT" && "$ROW_COUNT" -gt 0 ]] || die "expected row_count > 0, got '$ROW_COUNT'"
 pass "stats row_count=$ROW_COUNT"
@@ -116,8 +116,8 @@ grep -qE 'judged_calls\s*=\s*[1-9]|judged_calls: [1-9]' <<<"$JUDGE_OUT" \
   || { echo "$JUDGE_OUT"; die "judge did not score any units"; }
 pass "traj judge wrote sidecar"
 
-[[ -f "$STORAGE/$AGENT_ID/$SESSION_ID/layers/judge_default.vortex" ]] \
-  || die "missing judge_default.vortex"
+[[ -f "$STORAGE/$AGENT_ID/$SESSION_ID/layers/judge_default.lance" ]] \
+  || die "missing judge_default.lance"
 pass "judge sidecar file exists"
 
 # --- 4. stats + judge-stats (post-judge) ------------------------------------
@@ -126,7 +126,7 @@ section "traj stats (after judge)"
 run_cli traj stats "$STORAGE" \
   --agent-id "$AGENT_ID" \
   --session-id "$SESSION_ID" \
-  --storage-format vortex >"$STATS_TOML"
+  --storage-format lance >"$STATS_TOML"
 grep -qE 'judgment_count\s*=\s*[1-9]|judgment_count: [1-9]' "$STATS_TOML" \
   || die "stats missing judgment_count after judge"
 pass "stats shows judgment_count after judge"

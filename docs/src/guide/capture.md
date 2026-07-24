@@ -2,7 +2,7 @@
 
 Get **`persisting traj`** running in **5–10 minutes**: use `traj capture` or `traj proxy` to record agent sessions, then `traj stats` / `traj replay` to inspect Markdown trajectories.
 
-> Architecture: [Capture Architecture](../design/capture_design.zh.md) (中文). CLI reference: [Traj command](../design/cli_trajectory_command.zh.md) and [Capture subcommands](../design/cli_capture_command.zh.md).
+> Architecture: [Capture Architecture](../design/capture.md) (中文). CLI reference: [Traj command](../design/cli-traj.md) and [Capture subcommands](../design/cli-capture.md).
 
 ---
 
@@ -11,9 +11,9 @@ Get **`persisting traj`** running in **5–10 minutes**: use `traj capture` or `
 `traj capture`:
 
 1. Starts a local **LLM reverse proxy** (forwards to your upstream model).
-2. Writes a **Vortex event log** with `-f vortex` (canonical) or **Markdown only** with `-f md`.
-3. **Both formats live-update Markdown** (`tail -f` friendly); `-f vortex` also appends `events.vortex`.
-4. Prints a summary when the child exits and writes `.capture/reconcile.json` (`-f vortex` compares live md vs Vortex replay).
+2. Writes **one** storage layer: **Markdown only** (`-f md`, default) or **Lance canonical** (`-f lance` → `{run}/events.lance/` dataset directory).
+3. With `-f md`, live-upserts dialogue Markdown (`tail -f` friendly) and writes `.capture/reconcile.json` on exit.
+4. With `-f lance`, appends structured rows only; generate Markdown later with `traj materialize`.
 
 Supported live clients: **Claude Code**, **OpenAI Codex** (via proxy). Cursor is not supported yet.
 
@@ -68,8 +68,8 @@ Codex: replace `claude` with `codex`. Custom agent: `... -- python3 your_agent.p
 |------|---------|
 | `-o DIR` | Store root (default `.persisting/capture`) |
 | `-c FILE` | Proxy TOML (`listen`, `models`, upstream; optional `[network]`) |
-| `-f md` | Markdown only (default) |
-| `-f vortex` | Vortex canonical + same live Markdown; reconcile md ↔ Vortex |
+| `-f md` | Markdown only (default); live upsert + reconcile |
+| `-f lance` | Lance only (`events.lance/` directory); use `traj materialize` for md |
 | `--debug` | Log proxied requests to stderr + `.capture/debug.log` |
 
 Optional Harbor-aligned egress control — see [`examples/llm-proxy/allowlist.toml`](../../examples/llm-proxy/allowlist.toml):
@@ -192,10 +192,11 @@ store/
     └── run-{timestamp}-{nanos}/
         ├── run-*.md           # main agent dialogue
         ├── agent-*.md         # subagents (if any)
-        └── events.vortex        # Vortex event log
+        └── events.lance/       # Lance dataset (only with `-f lance`)
 ```
 
 ```bash
+# After `-f md` (or after `traj materialize`):
 tail -f store/deepseek-proxy/run-*/run-*.md
 ```
 
@@ -206,13 +207,13 @@ tail -f store/deepseek-proxy/run-*/run-*.md
 If you ran `traj proxy start` or set `PERSISTING_CAPTURE_STORAGE`, you can omit `<STORAGE>` on `stats`, `replay`, `materialize`, and `truncate`.
 
 ```bash
-# Omit --session-id to scan all runs under agent/ and expand Vortex session_id partitions
+# Omit --session-id to scan all runs under agent/ and expand Lance session_id partitions
 persisting traj stats ./store/deepseek-proxy/ --detail
 persisting traj replay ./store --agent-id deepseek-proxy --session-id run-...
 persisting traj materialize ./store --agent-id ... --root-session-id ... --session-id ...
 ```
 
-**Multimodal (screenshots / image generation):** with default `capture_level = dialogue`, images appear as **`[image: …]` / `[image_generated: …]` placeholders** in Markdown and stats—not embedded pixels. Set `capture_level = "full"` in TOML for raw JSON in Vortex. See [trajectory TLV §2.7 (zh)](../design/trajectory_tlv_format.zh.md#27-多模态对话正文phase-0).
+**Multimodal (screenshots / image generation):** with default `capture_level = dialogue`, images appear as **`[image: …]` / `[image_generated: …]` placeholders** in Markdown and stats—not embedded pixels. Set `capture_level = "full"` in TOML for raw JSON in Lance. See [trajectory Markdown format §2.7](../design/trajectory-format.md#27-多模态对话正文phase-0).
 
 ---
 
@@ -236,7 +237,7 @@ persisting traj import ./store --provider ide --since-days 7 --project "$(pwd)"
 | `traj replay-dead-letter` | Replay failed capture events |
 | `traj stats` | Stats; `--detail` per-turn tree |
 | `traj replay` | Event JSON replay |
-| `traj materialize` | Vortex → Markdown rebuild |
+| `traj materialize` | Lance → Markdown rebuild |
 
 ---
 
@@ -245,16 +246,16 @@ persisting traj import ./store --provider ide --since-days 7 --project "$(pwd)"
 | Issue | Action |
 |-------|--------|
 | Agent cannot reach proxy | `export` env vars from startup banner in a **new** terminal; Codex needs `-c openai_base_url=…` |
-| md vs Vortex mismatch | `traj materialize` after checking `.capture/reconcile.json` |
+| md vs Lance mismatch | Only when both layers exist: check `.capture/reconcile.json`, then `traj materialize` from Lance |
 | Failed capture events | `traj replay-dead-letter -o ./store` |
 | `traj capture` conflicts with daemon | `traj proxy stop` or use another `-o` |
-| `stats` shows 0 turns | Scan **`./store/{agent_id}/`** without `--session-id` so CLI expands all Vortex `session_id` partitions; or pass the specific header UUID with `--session-id` |
+| `stats` shows 0 turns | Scan **`./store/{agent_id}/`** without `--session-id` so CLI expands all Lance `session_id` partitions; or pass the specific header UUID with `--session-id` |
 
 ---
 
 ## Next steps
 
-- [Capture architecture](../design/capture_design.zh.md)
-- [Trajectory Markdown format](../design/trajectory_tlv_format.zh.md)
-- [Traj CLI](../design/cli_trajectory_command.zh.md)
+- [Capture architecture](../design/capture.md)
+- [Trajectory Markdown format](../design/trajectory-format.md)
+- [Traj CLI](../design/cli-traj.md)
 - [Walkthrough example](../../examples/capture-walkthrough/README.md)

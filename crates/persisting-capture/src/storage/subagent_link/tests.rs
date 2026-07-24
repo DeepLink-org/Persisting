@@ -98,7 +98,7 @@ fn extracts_spawn_hints_from_agent_tool_block() {
 fn match_spawns_by_doc_target_when_subagents_registered_first() {
     let mut registry = SubagentRegistry::default();
     let run_key = "run-20260524-021032";
-    let doc = "docs/src/design/cli_capture_command.zh.md";
+    let doc = "docs/src/design/cli-capture.md";
     let sub_body = json!({
         "messages": [{
             "role": "user",
@@ -118,7 +118,7 @@ fn match_spawns_by_doc_target_when_subagents_registered_first() {
 
 ```tool:Agent
 {{
-  "description": "Review cli_capture_command design doc",
+  "description": "Review cli-capture design doc",
   "prompt": "Review the Chinese design document at /Users/reiase/workspace/Persisting/{doc}",
   "subagent_type": "general-purpose"
 }}
@@ -178,13 +178,13 @@ fn match_spawns_by_doc_target_when_subagents_registered_first() {
 fn backfill_spawn_link_when_subagent_registers_after_assistant() {
     let mut registry = SubagentRegistry::default();
     let run_key = "run-backfill";
-    let doc = "docs/src/design/capture_design.zh.md";
+    let doc = "docs/src/design/capture.md";
     let assistant = format!(
         r#"Starting.
 
 ```tool:Agent
 {{
-  "description": "Review capture_design",
+  "description": "Review capture design",
   "prompt": "Review {doc}",
   "subagent_type": "general-purpose"
 }}

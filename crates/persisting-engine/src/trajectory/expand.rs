@@ -1,22 +1,22 @@
-//! Expand run-bucket locations into per-`session_id` story views (shared Vortex file).
+//! Expand run-bucket locations into per-`session_id` story views (shared Lance file).
 
 use anyhow::Result;
 use persisting_capture::StoryCoords;
 
-use super::store::vortex;
+use super::store::lance;
 
-fn is_shared_vortex_run_bucket(loc: &StoryCoords) -> bool {
+fn is_shared_lance_run_bucket(loc: &StoryCoords) -> bool {
     loc.root_session_id
         .as_deref()
         .is_some_and(|root| root == loc.session_id.as_str())
 }
 
 /// When a location points at a capture run bucket (`session_id == root_session_id`),
-/// read `events.vortex` and emit one coordinate per distinct `session_id` partition.
+/// read `events.lance` and emit one coordinate per distinct `session_id` partition.
 pub async fn expand_story_locations(locations: Vec<StoryCoords>) -> Result<Vec<StoryCoords>> {
     let mut expanded = Vec::new();
     for loc in locations {
-        if !is_shared_vortex_run_bucket(&loc) {
+        if !is_shared_lance_run_bucket(&loc) {
             expanded.push(loc);
             continue;
         }
@@ -26,7 +26,7 @@ pub async fn expand_story_locations(locations: Vec<StoryCoords>) -> Result<Vec<S
             loc.session_id.clone(),
             loc.root_session_id.clone(),
         );
-        let session_ids = vortex::distinct_session_ids_in_run(&run).await?;
+        let session_ids = lance::distinct_session_ids_in_run(&run).await?;
         if session_ids.is_empty() {
             expanded.push(loc);
             continue;
@@ -58,7 +58,7 @@ pub async fn expand_story_locations(locations: Vec<StoryCoords>) -> Result<Vec<S
 }
 
 /// After [`expand_story_locations`], drop run-id partitions that only carry lifecycle
-/// events when the same Vortex file also has other `session_id` partitions (Claude/header UUID).
+/// events when the same Lance file also has other `session_id` partitions (Claude/header UUID).
 pub fn drop_lifecycle_run_partitions(locations: Vec<StoryCoords>) -> Vec<StoryCoords> {
     use std::collections::{HashMap, HashSet};
 
@@ -109,7 +109,7 @@ pub fn expand_story_locations_blocking(locations: Vec<StoryCoords>) -> Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trajectory::store::vortex;
+    use crate::trajectory::store::lance;
     use persisting_capture::record::{record_to_engine_line, CaptureRecord};
 
     fn note_line(session_id: &str, content: &str) -> String {
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expand_run_bucket_into_vortex_partitions() {
+    async fn expand_run_bucket_into_lance_partitions() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("store");
         std::fs::create_dir_all(&storage).unwrap();
@@ -141,10 +141,10 @@ mod tests {
         let root = "run-expand";
         let run = StoryCoords::new(&storage_s, "agent", root, Some(root.into()));
 
-        vortex::append(&run, &[note_line(root, "lifecycle")])
+        lance::append(&run, &[note_line(root, "lifecycle")])
             .await
             .unwrap();
-        vortex::append(
+        lance::append(
             &StoryCoords::new(&storage_s, "agent", "story-uuid", Some(root.into())),
             &[note_line("story-uuid", "dialogue")],
         )
@@ -164,7 +164,7 @@ mod tests {
     }
 
     /// Regression: capture.run writes `session.started` under run-* while Claude/header
-    /// traffic uses a UUID `session_id` in the same `events.vortex`.
+    /// traffic uses a UUID `session_id` in the same `events.lance`.
     #[tokio::test]
     async fn claude_run_header_session_stats_regression() {
         use persisting_capture::engine::Call;
@@ -192,7 +192,7 @@ mod tests {
             started_at: "2026-05-31T03:02:43Z".into(),
         };
         let mut lines = vec![record_to_engine_line(&started).unwrap()];
-        vortex::append(&run_coords, &lines).await.unwrap();
+        lance::append(&run_coords, &lines).await.unwrap();
         lines.clear();
         let header_coords = StoryCoords::new(&storage_s, agent, header_session, Some(run.into()));
         for i in 1..=3 {
@@ -220,16 +220,16 @@ mod tests {
             lines.push(record_to_engine_line(&req).unwrap());
             lines.push(record_to_engine_line(&resp).unwrap());
         }
-        vortex::append(&header_coords, &lines).await.unwrap();
+        lance::append(&header_coords, &lines).await.unwrap();
 
-        let run_stats = vortex::stats(&run_coords).await.unwrap();
+        let run_stats = lance::stats(&run_coords).await.unwrap();
         assert_eq!(
             run_stats.row_count, 1,
             "run id partition should only see session.started"
         );
 
         let header_coords = StoryCoords::new(&storage_s, agent, header_session, Some(run.into()));
-        let header_stats = vortex::stats(&header_coords).await.unwrap();
+        let header_stats = lance::stats(&header_coords).await.unwrap();
         assert_eq!(
             header_stats.row_count, 6,
             "header UUID partition should see all LLM events"
@@ -243,7 +243,7 @@ mod tests {
         for loc in expanded {
             row_counts.insert(
                 loc.session_id.clone(),
-                vortex::stats(&loc).await.unwrap().row_count,
+                lance::stats(&loc).await.unwrap().row_count,
             );
         }
         assert_eq!(row_counts.get(run), Some(&1));

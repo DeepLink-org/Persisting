@@ -1,23 +1,23 @@
-//! Unified trajectory storage: Vortex canonical + TLV Markdown materialized view.
+//! Unified trajectory storage: Lance canonical + TLV Markdown materialized view.
 
+pub(crate) mod lance;
 mod markdown;
 pub(crate) mod rows;
-pub(crate) mod vortex;
 
-pub(crate) use vortex::overwrite_session_lines;
+pub(crate) use lance::overwrite_session_lines;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use persisting_capture::story_coords::{story_vortex_event_path, StoryCoords};
+use persisting_capture::story_coords::{story_lance_event_path, StoryCoords};
 use persisting_proto::TrajectoryStorageFormat;
 
-/// Story coordinates for Vortex/Markdown backends (capture [`StoryCoords`]).
+/// Story coordinates for Lance/Markdown backends (capture [`StoryCoords`]).
 pub type TrajectorySession = StoryCoords;
 
-pub(crate) fn session_vortex_path(session: &StoryCoords) -> Result<PathBuf> {
-    story_vortex_event_path(
+pub(crate) fn session_lance_path(session: &StoryCoords) -> Result<PathBuf> {
+    story_lance_event_path(
         &session.storage,
         &session.agent_id,
         &session.session_id,
@@ -42,7 +42,7 @@ pub struct TrajectoryReplayOutcome {
     pub note: String,
 }
 
-/// Backend-specific stats (`row_count` = Vortex rows or markdown blocks).
+/// Backend-specific stats (`row_count` = Lance rows or markdown blocks).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrajectoryStatsOutcome {
     pub dataset: String,
@@ -52,7 +52,7 @@ pub struct TrajectoryStatsOutcome {
     pub note: String,
 }
 
-/// Physical trajectory store: Vortex event log or session markdown file(s).
+/// Physical trajectory store: Lance event log or session markdown file(s).
 #[async_trait]
 pub trait TrajectoryStore: Send + Sync {
     fn format(&self) -> TrajectoryStorageFormat;
@@ -77,26 +77,26 @@ pub trait TrajectoryStore: Send + Sync {
     async fn stats(&self, session: &TrajectorySession) -> Result<TrajectoryStatsOutcome>;
 }
 
-/// Vortex backend: raw event log at `{run}/events.vortex`.
+/// Lance backend: raw event log at `{run}/events.lance`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VortexTrajectoryStore;
+pub struct LanceTrajectoryStore;
 
 /// Markdown backend: `0001.md` (TLV blocks) under the session directory.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MarkdownTrajectoryStore;
 
 #[async_trait]
-impl TrajectoryStore for VortexTrajectoryStore {
+impl TrajectoryStore for LanceTrajectoryStore {
     fn format(&self) -> TrajectoryStorageFormat {
-        TrajectoryStorageFormat::Vortex
+        TrajectoryStorageFormat::Lance
     }
 
     fn display_path(&self, session: &TrajectorySession) -> Result<String> {
-        vortex::display_path(session)
+        lance::display_path(session)
     }
 
     async fn exists(&self, session: &TrajectorySession) -> Result<bool> {
-        vortex::exists(session).await
+        lance::exists(session).await
     }
 
     async fn append(
@@ -104,7 +104,7 @@ impl TrajectoryStore for VortexTrajectoryStore {
         session: &TrajectorySession,
         lines: &[String],
     ) -> Result<TrajectoryAppendOutcome> {
-        vortex::append(session, lines).await
+        lance::append(session, lines).await
     }
 
     async fn replay(
@@ -113,11 +113,11 @@ impl TrajectoryStore for VortexTrajectoryStore {
         offset: usize,
         limit: Option<usize>,
     ) -> Result<TrajectoryReplayOutcome> {
-        vortex::replay(session, offset, limit).await
+        lance::replay(session, offset, limit).await
     }
 
     async fn stats(&self, session: &TrajectorySession) -> Result<TrajectoryStatsOutcome> {
-        vortex::stats(session).await
+        lance::stats(session).await
     }
 }
 
@@ -161,8 +161,8 @@ impl TrajectoryStore for MarkdownTrajectoryStore {
 pub fn store_for_append(format: TrajectoryStorageFormat) -> Box<dyn TrajectoryStore> {
     match format {
         TrajectoryStorageFormat::Markdown => Box::new(MarkdownTrajectoryStore),
-        TrajectoryStorageFormat::Vortex | TrajectoryStorageFormat::Both => {
-            Box::new(VortexTrajectoryStore)
+        TrajectoryStorageFormat::Lance | TrajectoryStorageFormat::Both => {
+            Box::new(LanceTrajectoryStore)
         }
         TrajectoryStorageFormat::Auto => {
             panic!("resolve_for_append must resolve Auto before store_for_append")
@@ -173,9 +173,9 @@ pub fn store_for_append(format: TrajectoryStorageFormat) -> Box<dyn TrajectorySt
 /// Single backend for read/stats after `resolve_for_read_with_root`.
 pub fn store_for_read(format: TrajectoryStorageFormat) -> Box<dyn TrajectoryStore> {
     match format {
-        TrajectoryStorageFormat::Vortex
+        TrajectoryStorageFormat::Lance
         | TrajectoryStorageFormat::Both
-        | TrajectoryStorageFormat::Auto => Box::new(VortexTrajectoryStore),
+        | TrajectoryStorageFormat::Auto => Box::new(LanceTrajectoryStore),
         TrajectoryStorageFormat::Markdown => Box::new(MarkdownTrajectoryStore),
     }
 }
@@ -187,8 +187,8 @@ mod tests {
     #[test]
     fn append_store_covers_formats() {
         assert!(matches!(
-            store_for_append(TrajectoryStorageFormat::Vortex).format(),
-            TrajectoryStorageFormat::Vortex
+            store_for_append(TrajectoryStorageFormat::Lance).format(),
+            TrajectoryStorageFormat::Lance
         ));
         assert!(matches!(
             store_for_append(TrajectoryStorageFormat::Markdown).format(),
@@ -196,19 +196,19 @@ mod tests {
         ));
         assert!(matches!(
             store_for_append(TrajectoryStorageFormat::Both).format(),
-            TrajectoryStorageFormat::Vortex
+            TrajectoryStorageFormat::Lance
         ));
     }
 
     #[test]
-    fn read_store_prefers_vortex_for_both_and_auto() {
+    fn read_store_prefers_lance_for_both_and_auto() {
         assert!(matches!(
             store_for_read(TrajectoryStorageFormat::Both).format(),
-            TrajectoryStorageFormat::Vortex
+            TrajectoryStorageFormat::Lance
         ));
         assert!(matches!(
             store_for_read(TrajectoryStorageFormat::Auto).format(),
-            TrajectoryStorageFormat::Vortex
+            TrajectoryStorageFormat::Lance
         ));
     }
 }

@@ -1,4 +1,4 @@
-//! Sidecar Vortex layers under `{run}/layers/` (manifest + joinable files).
+//! Sidecar Lance layers under `{run}/layers/` (manifest + joinable datasets).
 
 mod judge_sidecar;
 mod manifest;
@@ -48,7 +48,7 @@ pub fn layer_field_name(rubric_id: &str) -> String {
 }
 
 pub fn layer_file_name(rubric_id: &str) -> String {
-    format!("{}.vortex", layer_field_name(rubric_id))
+    format!("{}.lance", layer_field_name(rubric_id))
 }
 
 fn sanitize_layer_token(raw: &str) -> String {

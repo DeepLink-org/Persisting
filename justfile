@@ -1,9 +1,8 @@
 # Persisting — 仓库主任务入口
 # 安装：brew install just / cargo install just
 #
-# 测试选单：just test-suite          # 交互选择测试 / 回归套件
-#           just test-suite list     # 列出全部套件
-#           just test-suite gate     # 直接运行指定套件
+# 集成测试：scripts/integration/*.sh（推荐 ./scripts/test_suite.sh）
+#           just 仅作薄封装：just smoke / just traj-e2e / just capture-all
 
 repo := justfile_directory()
 docs_dir := repo / "docs"
@@ -29,41 +28,62 @@ default:
     @just --list --unsorted
     @echo ""
     @echo "常用："
-    @echo "  just fmt                 # 格式化 Rust + Python"
-    @echo "  just lint                # clippy + ruff check"
-    @echo "  just fix                 # 自动 format + ruff --fix"
-    @echo "  just test-suite          # 测试 / 回归选单（推荐入口）"
-    @echo "  just test-suite list     # 列出全部套件"
-    @echo "  just dev                 # 日常开发（fmt + clippy + check-quick）"
     @echo "  just gate                # 提交前（fmt + lint + test-rust）"
-    @echo "  just ci-lint             # CI lint（只检查、不改写）"
+    @echo "  just smoke               # search + traj CLI 冒烟"
+    @echo "  just regression          # capture Rust + 集成 + smoke"
+    @echo "  ./scripts/test_suite.sh  # 集成测试套件（shell）"
     @echo "  just ci                  # CI 近似全量"
     @echo "  just py-dev              # maturin develop（Python 扩展）"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just capture-all         # 全部 capture 集成"
     @echo "  just docs-serve          # 本地文档"
 
-# ── 测试 / 回归统一入口 ───────────────────────────────────────────────────────
+# ── 测试套件导航 ──────────────────────────────────────────────────────────────
 
-# 交互选单或直接运行：just test-suite [dev|gate|traj-e2e|all-regression|…]
-# 环境变量：PERSISTING_BUILD_PROFILE=debug  SKIP_REBUILD=1
-test-suite name="":
+# 列出推荐测试（Rust/门禁用 just；集成用 scripts/test_suite.sh）
+[group('test')]
+test-list:
     #!/usr/bin/env bash
     set -euo pipefail
-    export PERSISTING_BUILD_PROFILE="${PERSISTING_BUILD_PROFILE:-debug}"
-    export SKIP_REBUILD="${SKIP_REBUILD:-0}"
-    bash "{{ test_suite_sh }}" {{ if name != "" { name } else { "menu" } }}
+    cat <<'EOF'
+    Persisting 测试入口
 
-# 列出全部测试套件（非交互）
-test-list:
+      门禁 / Rust（just）
+        just gate                 提交前：fmt + lint + test-rust
+        just dev                  日常：fmt + clippy + check-quick
+        just ci                   CI 近似
+        just test-rust / test-engine / capture-test / test-py
+
+      集成（shell → scripts/integration/）
+        ./scripts/test_suite.sh list
+        ./scripts/test_suite.sh smoke
+        ./scripts/test_suite.sh traj-e2e
+        ./scripts/test_suite.sh capture-all
+        ./scripts/test_suite.sh all-integration
+
+      just 薄封装（等价调用上述脚本）
+        just smoke / just integration / just traj-e2e
+        just capture-integration / just capture-stress / just capture-run-e2e
+        just capture-all / just regression
+
+    环境变量：PERSISTING_BUILD_PROFILE  SKIP_BUILD=1  SKIP_REBUILD=1
+    EOF
+
+# 集成套件入口（转发到 scripts/test_suite.sh）
+[group('test')]
+test-suite name="list":
+    bash "{{ test_suite_sh }}" {{ name }}
+
+[group('test')]
+test-menu:
     bash "{{ test_suite_sh }}" list
 
-# 别名
-test-menu:
-    just test-suite
-
-regression:
-    SKIP_REBUILD="${SKIP_REBUILD:-0}" just test-suite all-regression
+# capture Rust + 全部 shell 集成 + CLI 冒烟（跳过 fmt/clippy）
+[group('test')]
+regression profile="debug":
+    just capture-test
+    just capture-all profile="{{ profile }}"
+    just smoke profile="{{ profile }}"
 
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 
@@ -204,7 +224,9 @@ test-capture-network:
 test-engine-integration:
     cargo test -p persisting-engine --test search_integration
 
-_test-engine:
+# persisting-engine 库单测
+[group('test')]
+test-engine:
     cargo test -p persisting-engine --lib
 
 # Rust + Python
@@ -263,202 +285,36 @@ generate-benchmark search_rows="100" traj_rows="50" seed="42" search_out="" traj
     [[ -n "{{ traj_out }}" ]] && args+=(--traj-out "{{ traj_out }}")
     python3 "$gen_py" "${args[@]}"
 
-# ── Search + Trajectory CLI 集成 ─────────────────────────────────────────────
+# ── Search + Trajectory CLI 集成（scripts/integration/*.sh）──────────────────
 
-# 全链路：generate → search → trajectory；quick=1 为冒烟规模
-integration profile="debug" cli_source="target" cli_bin="" engine_override="" reorder="0" quick="0" search_rows="100000" traj_rows="100000" seed="42" skip_rebuild="0" embed_dim="32" num_partitions="128" nprobes="32" replay_limit="50": (_integration-build-if-target cli_source profile)
+# 全链路：generate → search → trajectory（环境变量见 search_traj_e2e.sh）
+integration profile="debug":
     #!/usr/bin/env bash
     set -euo pipefail
-    repo="{{ repo }}"
-    gen_py="{{ gen_py }}"
-    die() { echo "error: $*" >&2; exit 1; }
-    command -v python3 >/dev/null || die "need python3"
-    [[ -f "$gen_py" ]] || die "missing $gen_py"
-
-    cli_source="{{ cli_source }}"
-    profile="{{ profile }}"
-    td="$repo/target/$profile"
-
-    if [[ "$cli_source" == "target" ]]; then
-      export PERSISTING_CLI="$td/persisting"
-      export PERSISTING_ENGINE_LIB="$td/{{ engine_filename }}"
-    elif [[ -n "{{ cli_bin }}" ]]; then
-      export PERSISTING_CLI="{{ cli_bin }}"
-      if [[ -n "{{ engine_override }}" ]]; then
-        export PERSISTING_ENGINE_LIB="{{ engine_override }}"
-      else
-        unset PERSISTING_ENGINE_LIB || true
-      fi
-    else
-      command -v persisting >/dev/null || die "cli_source=path needs persisting on PATH or cli_bin=..."
-      export PERSISTING_CLI="$(command -v persisting)"
-      if [[ -n "{{ engine_override }}" ]]; then
-        export PERSISTING_ENGINE_LIB="{{ engine_override }}"
-      else
-        unset PERSISTING_ENGINE_LIB || true
-      fi
-    fi
-
-    [[ -x "$PERSISTING_CLI" ]] || die "not executable: $PERSISTING_CLI"
-
-    reorder="{{ reorder }}"
-    quick="{{ quick }}"
-    seed="{{ seed }}"
-    skip_rebuild="{{ skip_rebuild }}"
-    embed_dim="{{ embed_dim }}"
-    replay_limit="{{ replay_limit }}"
-
-    if [[ "$quick" == "1" ]]; then
-      sr=70; tr=25; np=2; nv=2
-    else
-      sr="{{ search_rows }}"; tr="{{ traj_rows }}"
-      np="{{ num_partitions }}"; nv="{{ nprobes }}"
-    fi
-
-    echo "==> CLI: $PERSISTING_CLI"
-    if [[ -n "${PERSISTING_ENGINE_LIB:-}" ]]; then
-      echo "==> PERSISTING_ENGINE_LIB=$PERSISTING_ENGINE_LIB"
-    else
-      echo "==> PERSISTING_ENGINE_LIB unset (CLI default lookup)"
-    fi
-    echo "==> params: cli_source=$cli_source profile=$profile reorder=$reorder quick=$quick rows=$sr/$tr seed=$seed"
-
-    WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-it.XXXXXX")"
-    trap 'rm -rf "$WORKDIR"' EXIT
-
-    DATASET="$WORKDIR/search_ds"
-    STORAGE="$WORKDIR/traj_root"
-    TRAJ_AGENT="bench_agent"
-    TRAJ_SESSION="cli_bench_run"
-    SEARCH_JSONL="$WORKDIR/docs.jsonl"
-    TRAJ_INPUT="$WORKDIR/traj_records.toml"
-
-    if [[ -t 1 ]]; then
-      _b=$'\033[1m'; _c=$'\033[36m'; _m=$'\033[35m'; _y=$'\033[33m'; _n=$'\033[0m'
-    else
-      _b=; _c=; _m=; _y=; _n=
-    fi
-    it_rule() { printf '%b%s%b\n' "$_b$_c" "────────────────────────────────────────────────────────" "$_n"; }
-    it_sh() {
-      it_rule; printf '%b$ ' "$_b$_m"; printf '%q ' "$@"; printf '%b\n' "$_n"; it_rule; "$@"
-    }
-    it_run_cli_out() {
-      it_rule; printf '%b$ ' "$_b$_m"; printf '%q' "$PERSISTING_CLI"; printf ' %q' "$@"; printf '%b\n' "$_n"
-      it_rule; out=$("$PERSISTING_CLI" "$@")
-      printf '%b[stdout 捕获]%b\n' "$_b$_y" "$_n"; printf '%s\n\n' "$out"
-    }
-    timer_start() { export TIMER_START="$(python3 -c "import time; print(time.perf_counter())")"; }
-    timer_end() {
-      python3 -c "import os,time,sys; t0=float(os.environ['TIMER_START']); print(f\"[timer] {sys.argv[1]}: {time.perf_counter()-t0:.3f}s\")" "$1"
-    }
-    assert_ok() {
-      grep -qE 'status:\s*"ok"|status\s*=\s*"ok"' <<<"$1" || { echo "--- bad response ---"; echo "$1"; exit 1; }
-    }
-
-    export RUNNER_T0="$(python3 -c "import time; print(time.perf_counter())")"
-
-    echo "==> generate JSONL (seed=$seed)"
-    timer_start
-    it_sh python3 "$gen_py" --seed "$seed" --search-rows "$sr" --traj-rows "$tr" --search-out "$SEARCH_JSONL" --traj-out "$TRAJ_INPUT"
-    timer_end "generate_benchmark_data.py"
-
-    echo "==> search create ($sr rows)"
-    timer_start
-    it_run_cli_out search create "$DATASET" --input "$SEARCH_JSONL" --format jsonl --embedding-dim "$embed_dim"
-    assert_ok "$out"; timer_end "search create"
-
-    echo "==> search index list (pre-build)"
-    timer_start
-    it_run_cli_out search index list "$DATASET"
-    assert_ok "$out"; timer_end "search index list (pre-build)"
-
-    echo "==> search index build"
-    timer_start
-    it_run_cli_out search index build "$DATASET" \
-      --vector-column embedding --text-column text --metric cosine \
-      --num-partitions "$np" --ivf-max-iters 12 \
-      --pq-num-sub-vectors 8 --pq-num-bits 4 --pq-max-iters 12 \
-      --pq-sample-rate 4 --pq-kmeans-redos 1
-    assert_ok "$out"; timer_end "search index build"
-
-    echo "==> search index list (post-build)"
-    timer_start
-    it_run_cli_out search index list "$DATASET"
-    assert_ok "$out"
-    grep -q 'persisting_ivf_pq' <<<"$out" || die "missing persisting_ivf_pq"
-    grep -q 'persisting_fts' <<<"$out" || die "missing persisting_fts"
-    timer_end "search index list (post-build)"
-
-    echo "==> search query x3"
-    timer_start
-    it_run_cli_out search query "$DATASET" "integration alpha gamma" --mode vector --k 5 --embedding-dim "$embed_dim" --nprobes "$nv"
-    assert_ok "$out"
-    it_run_cli_out search query "$DATASET" "integration" --mode fts --k 8 --embedding-dim "$embed_dim"
-    assert_ok "$out"
-    it_run_cli_out search query "$DATASET" "keyword beta" --mode hybrid --k 5 --embedding-dim "$embed_dim"
-    assert_ok "$out"
-    timer_end "search query (3 modes)"
-
-    if [[ "$reorder" == "1" ]]; then
-      echo "==> search index reorder"
-      timer_start
-      it_run_cli_out search index reorder "$DATASET" persisting_ivf_pq --in-place
-      assert_ok "$out"; timer_end "search index reorder"
-    fi
-
-    if [[ "$skip_rebuild" != "1" ]]; then
-      echo "==> search index rebuild"
-      timer_start
-      it_run_cli_out search index rebuild "$DATASET" --no-retrain
-      assert_ok "$out"; timer_end "search index rebuild"
-    else
-      echo "==> skip search index rebuild"
-    fi
-
-    echo "==> trajectory add ($tr rows)"
-    timer_start
-    it_run_cli_out trajectory add "$STORAGE" --agent-id "$TRAJ_AGENT" --session-id "$TRAJ_SESSION" --format toml --input "$TRAJ_INPUT"
-    assert_ok "$out"; timer_end "trajectory add"
-
-    echo "==> trajectory stats"
-    timer_start
-    it_run_cli_out trajectory stats "$STORAGE" --agent-id "$TRAJ_AGENT" --session-id "$TRAJ_SESSION"
-    assert_ok "$out"
-    grep -Fq "$TRAJ_SESSION" <<<"$out" || die "stats missing session_id"
-    grep -Fq "$TRAJ_AGENT" <<<"$out" || die "stats missing agent_id"
-    timer_end "trajectory stats"
-
-    echo "==> trajectory replay"
-    timer_start
-    it_run_cli_out trajectory replay "$STORAGE" --agent-id "$TRAJ_AGENT" --session-id "$TRAJ_SESSION" --offset 2 --limit "$replay_limit"
-    assert_ok "$out"
-    grep -qE '\[\[records\]\]|^records\s*=' <<<"$out" || die "replay missing TOML records"
-    timer_end "trajectory replay"
-
-    it_sh python3 -c "import os,time; t0=float(os.environ['RUNNER_T0']); print(f'[timer] TOTAL wall: {time.perf_counter()-t0:.3f}s')"
-    echo "==> integration OK"
-
-_integration-build-if-target cli_source profile:
-    #!/usr/bin/env bash
-    if [[ "{{ cli_source }}" == "target" ]]; then
-      cd "{{ repo }}"
-      if [[ "{{ profile }}" == "release" ]]; then
-        cargo build -p persisting-cli -p persisting-engine --release
-      else
-        cargo build -p persisting-cli -p persisting-engine
-      fi
-    fi
+    export PERSISTING_BUILD_PROFILE="{{ profile }}"
+    export CLI_SOURCE="${CLI_SOURCE:-target}"
+    export QUICK="${QUICK:-0}"
+    [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
+    echo "==> search/traj integration (profile={{ profile }} QUICK=${QUICK:-0})"
+    bash "{{ repo }}/scripts/integration/search_traj_e2e.sh"
 
 check profile="debug":
-    just _test-engine
+    just test-engine
     just integration profile="{{ profile }}"
 
 smoke profile="debug":
-    just integration profile="{{ profile }}" quick="1"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PERSISTING_BUILD_PROFILE="{{ profile }}"
+    export CLI_SOURCE="${CLI_SOURCE:-target}"
+    export QUICK=1
+    [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
+    echo "==> search/traj smoke (profile={{ profile }})"
+    bash "{{ repo }}/scripts/integration/search_traj_e2e.sh"
 
 check-quick profile="debug":
-    just _test-engine
-    just integration profile="{{ profile }}" quick="1"
+    just test-engine
+    just smoke profile="{{ profile }}"
 
 # ── Capture 集成（scripts/integration/*.sh，build 由 _common.sh 处理）────────
 

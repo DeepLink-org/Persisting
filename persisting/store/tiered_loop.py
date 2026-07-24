@@ -26,7 +26,9 @@ class TieredEventLoop:
         """
         self._fill_blocks = fill_blocks
         self._reader, self._writer = os.pipe()
-        self._prefetch_queue: queue.Queue[tuple[list[BlockId], Callable[[], None] | None]] = queue.Queue()
+        self._prefetch_queue: queue.Queue[tuple[list[BlockId], Callable[[], None] | None]] = (
+            queue.Queue()
+        )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()

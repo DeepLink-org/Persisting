@@ -21,7 +21,7 @@ Agent trajectories, model parameters, and KV cache share the same tiered storage
 
     ---
 
-    Record every LLM call. Stored as `(agent_id, run_id, time)` tensors alongside canonical Vortex event logs and human-readable Markdown.
+    Record every LLM call. Stored as `(agent_id, run_id, time)` tensors alongside canonical Lance event logs and human-readable Markdown.
 
     ```bash
     persisting traj capture -o ./store -c proxy.toml -- claude
