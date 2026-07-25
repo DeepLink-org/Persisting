@@ -87,13 +87,13 @@ persisting traj capture -o ./store -c proxy.toml -f md -- python3 agent.py
 export DEEPSEEK_API_KEY=sk-...
 ```
 
-配置见 [`examples/llm-proxy/`](../../examples/llm-proxy/)：
+配置见 [examples/llm-proxy](https://github.com/DeepLink-org/Persisting/tree/main/examples/llm-proxy)：
 
 | 文件 | 用途 |
 |------|------|
-| [`deepseek.toml`](../../examples/llm-proxy/deepseek.toml) | DeepSeek 双协议（默认 `public`） |
-| [`multi-provider.toml`](../../examples/llm-proxy/multi-provider.toml) | 多厂商按 model 前缀路由 |
-| [`allowlist.toml`](../../examples/llm-proxy/allowlist.toml) | Harbor 风格 `allowlist` 出口控制 |
+| [`deepseek.toml`](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/deepseek.toml) | DeepSeek 双协议（默认 `public`） |
+| [`multi-provider.toml`](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/multi-provider.toml) | 多厂商按 model 前缀路由 |
+| [`allowlist.toml`](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/allowlist.toml) | Harbor 风格 `allowlist` 出口控制 |
 
 - `listen`：Capture 代理监听地址（默认 `127.0.0.1:19081`）
 - `agent_id`：轨迹目录名（如 `deepseek-proxy`）
@@ -112,7 +112,7 @@ export DEEPSEEK_API_KEY=sk-...
 
 `allowed_hosts` 条目：精确 hostname、`*.example.com`（不含 apex）、IPv4/IPv6 literal、CIDR；不要写 URL、端口或路径。`example.com` 不含 `www.example.com`；需要两者时同时写 `example.com` 与 `*.example.com`。打到 `listen` 的相对路径 LLM 网关不受名单约束；`localhost` / `127.0.0.1` / `::1` 始终旁路。
 
-完整示例：[allowlist.toml](../../examples/llm-proxy/allowlist.toml)。片段：
+完整示例：[allowlist.toml](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/allowlist.toml)。片段：
 
 ```toml
 [network]
@@ -162,7 +162,7 @@ persisting traj capture -o ./store -c your.toml -f md -- python3 your_agent.py
 | `-c FILE` | 代理 TOML（`listen`、`models`、upstream） |
 | `-f md` | **仅 Markdown**（默认，live upsert 到 `{session}.md`，并写 reconcile） |
 | `-f lance` | **仅 Lance**（`events.lance/` 目录）；md 用 `traj materialize` 生成 |
-| `capture_level` | TOML 中 `summary` / `dialogue`（默认）/ `full`；见 [Capture 架构 §6.4](../design/capture.md#64-可见对话提取含多模态) |
+| `capture_level` | TOML 中 `summary` / `dialogue`（默认）/ `full`；见 [Capture 架构](../design/capture.md) 的多模态说明 |
 | `--debug` | 将代理请求打到 stderr 与 `.capture/debug.log` |
 | `--` 之后 | 要执行的子命令 |
 
@@ -341,7 +341,7 @@ persisting traj materialize ./store \
 
 也可直接传 **run 目录** 或 `*.md` 路径，`traj` 会自动推断 `agent_id` / `session_id`。
 
-**多模态（截图 / 出图）**：默认 `capture_level = dialogue` 下，Markdown 与 stats 中图像以 **`[image: …]` / `[image_generated: …]` 占位符** 出现，不含像素；需完整 JSON 时在 TOML 设 `capture_level = "full"`。详见 [轨迹 Markdown §2.7](../design/trajectory-format.md#27-多模态对话正文phase-0)。
+**多模态（截图 / 出图）**：默认 `capture_level = dialogue` 下，Markdown 与 stats 中图像以 **`[image: …]` / `[image_generated: …]` 占位符** 出现，不含像素；需完整 JSON 时在 TOML 设 `capture_level = "full"`。详见 [轨迹 Markdown 格式](../design/trajectory-format.md)。
 
 ---
 
@@ -424,4 +424,4 @@ persisting traj capture -o ./store -c your.toml -f md --debug -- claude
 - [Capture 架构设计](../design/capture.md) — 产品定位、数据流、设计原则
 - [轨迹 Markdown 格式](../design/trajectory-format.md) — TLV 块与 frontmatter
 - [Trajectory 命令](../design/cli-traj.md) — `traj` 完整参数
-- [分步示例代码](../../examples/capture-walkthrough/README.md) — Mock LLM 与校验脚本
+- [分步示例代码](https://github.com/DeepLink-org/Persisting/tree/main/examples/capture-walkthrough) — Mock LLM 与校验脚本

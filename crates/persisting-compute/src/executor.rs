@@ -21,33 +21,54 @@ use tokio_util::sync::CancellationToken;
 
 /// Long-lived host: load plan module once, call `execute(item)`.
 const PLAN_EXECUTE_HOST: &str = r#"
-import importlib.util, json, sys, traceback
+import importlib.util, json, sys, traceback, types
 from pathlib import Path
 
 plan_mods = {}
 
-def load_plan_module(script, argv=None):
+def install_context(raw):
+    # A tiny injected module keeps execute(item) stateless while making
+    # placement data available to algorithm code.
+    mod = types.ModuleType("persisting_compute")
+    frozen = json.loads(json.dumps(raw or {}))
+    mod.context = lambda: json.loads(json.dumps(frozen))
+    sys.modules["persisting_compute"] = mod
+    return frozen
+
+def load_plan_module(script, argv=None, context=None):
     script = str(Path(script).resolve())
     if script in plan_mods:
         return plan_mods[script]
     path = Path(script)
+    worker_context = install_context(context)
     # Match `python task.py --foo bar` so argparse works at import time.
     sys.argv = [script, *(argv or [])]
     spec = importlib.util.spec_from_file_location("user_plan_exec", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    setup = getattr(mod, "setup_worker", None)
+    if setup is not None:
+        if not callable(setup):
+            raise TypeError("setup_worker must be callable")
+        setup(worker_context)
     plan_mods[script] = mod
     return mod
 
 def handle(msg):
     cmd = msg.get("cmd")
     if cmd == "shutdown":
+        for mod in plan_mods.values():
+            teardown = getattr(mod, "teardown_worker", None)
+            if teardown is not None:
+                if not callable(teardown):
+                    raise TypeError("teardown_worker must be callable")
+                teardown()
         return {"ok": True, "value": "bye"}
     if cmd == "run_plan":
         script = msg.get("script")
         if not script:
             raise ValueError("run_plan requires script= path to plan.py")
-        mod = load_plan_module(script, msg.get("argv") or [])
+        mod = load_plan_module(script, msg.get("argv") or [], msg.get("context") or {})
         if not hasattr(mod, "execute"):
             raise AttributeError(
                 f"{script} must define execute(item) — same object plan() yields"
@@ -107,14 +128,16 @@ struct PlanHost {
 struct PlanHostExecutor {
     python: PathBuf,
     pythonpath_extra: Vec<PathBuf>,
+    worker_context: Value,
     host: Mutex<Option<PlanHost>>,
 }
 
 impl PlanHostExecutor {
-    fn new(python: PathBuf, pythonpath_extra: Vec<PathBuf>) -> Self {
+    fn new(python: PathBuf, pythonpath_extra: Vec<PathBuf>, worker_context: Value) -> Self {
         Self {
             python,
             pythonpath_extra,
+            worker_context,
             host: Mutex::new(None),
         }
     }
@@ -239,6 +262,7 @@ impl PlanHostExecutor {
             "script": script,
             "argv": script_args,
             "task": task_json,
+            "context": self.worker_context,
         });
         // In-flight cancel: kill the Python host so execute does not outlive Ctrl-C.
         let result = {
@@ -318,8 +342,13 @@ impl ExecutorRouter {
         pythonpath_extra: Vec<PathBuf>,
         plan_script: PathBuf,
         script_args: Vec<String>,
+        worker_context: Value,
     ) -> Self {
-        let host = Arc::new(PlanHostExecutor::new(python, pythonpath_extra));
+        let host = Arc::new(PlanHostExecutor::new(
+            python,
+            pythonpath_extra,
+            worker_context,
+        ));
         let execute = Arc::new(PlanExecuteExecutor {
             host: Arc::clone(&host),
             plan_script,
@@ -384,7 +413,13 @@ def execute(item):
 "#,
         )
         .unwrap();
-        let router = ExecutorRouter::local_stack(PathBuf::from("python3"), vec![], script, vec![]);
+        let router = ExecutorRouter::local_stack(
+            PathBuf::from("python3"),
+            vec![],
+            script,
+            vec![],
+            json!({}),
+        );
         let cancel = CancellationToken::new();
         let bg = cancel.clone();
         tokio::spawn(async move {
@@ -414,11 +449,56 @@ def execute(item):
 "#,
         )
         .unwrap();
-        let router = ExecutorRouter::local_stack(PathBuf::from("python3"), vec![], script, vec![]);
+        let router = ExecutorRouter::local_stack(
+            PathBuf::from("python3"),
+            vec![],
+            script,
+            vec![],
+            json!({}),
+        );
         let task = TaskExpr::from_value(json!({"id": "t-0", "x": 3})).unwrap();
         let r = router.run(task, "w0").await;
         assert!(r.ok);
         assert_eq!(r.value, Some(json!({"x2": 6})));
+        router.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_context_and_hooks_do_not_change_execute_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("context.py");
+        std::fs::write(
+            &script,
+            r#"
+from persisting_compute import context
+
+def setup_worker(ctx):
+    assert ctx["worker_id"] == "w-context"
+
+def plan():
+    yield {"id": "unused"}
+
+def execute(item):
+    ctx = context()
+    return {"metrics": {"rank": ctx["rank"]}, "artifacts": {"worker": ctx["worker_id"]}}
+
+def teardown_worker():
+    pass
+"#,
+        )
+        .unwrap();
+        let router = ExecutorRouter::local_stack(
+            PathBuf::from("python3"),
+            vec![],
+            script,
+            vec![],
+            json!({"worker_id": "w-context", "rank": 3}),
+        );
+        let task = TaskExpr::from_value(json!({"id": "t-0"})).unwrap();
+        let result = router.run(task, "w-context").await;
+        assert!(result.ok);
+        assert_eq!(result.metrics.get("rank"), Some(&3.0));
+        assert_eq!(result.artifacts.get("worker"), Some(&json!("w-context")));
         router.shutdown().await;
     }
 }

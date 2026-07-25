@@ -37,7 +37,7 @@ Subagent：`{run}/subagents/{session_id}/`。路径可传 session 目录，CLI �
 |------|------|
 | **add** | TOML/JSONL/Markdown → `CaptureRecord` → **写入单一层** |
 | **truncate** | 保留 Lance 前 N 行（按 `seq`） |
-| **stats** | 双层摘要；`--detail` 逐轮树；未指定 `--session-id` 时扫描 agent 下全部 run，并对 run bucket **展开** Lance 内 distinct `session_id` 后逐分区统计（见 [轨迹存储 §7.1.1](trajectory.md#711-run-bucket-内多-session_id-分区)） |
+| **stats** | 双层摘要；`--detail` 逐轮树；未指定 `--session-id` 时扫描 agent 下全部 run，并对 run bucket **展开** Lance 内 distinct `session_id` 后逐分区统计（见[轨迹存储](trajectory.md)的 run bucket 分区说明） |
 | **replay** | 分页输出事件 JSON |
 | **extract** | 拷贝 Story/Run 目录树 |
 | **materialize** | Lance → Markdown 全量物化 |

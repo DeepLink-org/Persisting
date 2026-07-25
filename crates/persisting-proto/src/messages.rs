@@ -375,6 +375,7 @@ pub struct SessionJudgeStats {
     pub verdict_partial: usize,
     pub verdict_fail: usize,
     pub manual_count: usize,
+    /// Path to `events.lance` holding judge columns (field name kept for compatibility).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub layers_path: String,
     pub status: String,
@@ -527,6 +528,8 @@ pub struct TrajectoryJudgeResponse {
     pub scope: JudgeScope,
     pub method: JudgeMethod,
     pub layer_name: String,
+    /// Path to the Lance dataset that holds judge columns (`events.lance`).
+    /// Field name kept for ABI compatibility with older clients.
     pub sidecar_path: String,
     /// Units scored this run (turns or one story).
     pub judged_calls: usize,

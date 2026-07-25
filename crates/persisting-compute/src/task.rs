@@ -40,12 +40,18 @@ impl TaskExpr {
         let id = obj
             .remove("id")
             .or_else(|| obj.remove("task_id"))
-            .and_then(|x| match x {
-                Value::String(s) => Some(s),
-                Value::Number(n) => Some(n.to_string()),
-                _ => None,
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "task must define a stable non-empty 'id' (or 'task_id'); \
+                     random ids are not generated because they break deduplication and --resume"
+                )
             })
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            .and_then(|x| match x {
+                Value::String(s) if !s.trim().is_empty() => Ok(s),
+                Value::Number(n) => Ok(n.to_string()),
+                Value::String(_) => Err(anyhow::anyhow!("task id must not be empty")),
+                _ => Err(anyhow::anyhow!("task id must be a string or number")),
+            })?;
 
         let op = obj
             .remove("op")
@@ -89,10 +95,22 @@ pub struct TaskResult {
     pub cancelled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
+    /// Numeric measurements returned by `execute()` as `{"metrics": {...}}`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metrics: HashMap<String, f64>,
+    /// References to large outputs returned by `execute()` as `{"artifacts": {...}}`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub artifacts: HashMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traceback: Option<String>,
+    /// Stable terminal failure category for filtering and retry policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ErrorKind>,
+    /// Whether retrying the task in a later job may be useful.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,6 +120,14 @@ pub struct TaskResult {
     /// How many L2 infra retries before this terminal result (0 = first try).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub infra_retries: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+    Execute,
+    Infra,
+    Cancelled,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -115,13 +141,18 @@ impl TaskResult {
         worker: &str,
         started_at: f64,
     ) -> Self {
+        let (metrics, artifacts) = result_metadata(&value);
         Self {
             task_id: task_id.into(),
             ok: true,
             cancelled: false,
             value: Some(value),
+            metrics,
+            artifacts,
             error: None,
             traceback: None,
+            error_kind: None,
+            retryable: false,
             worker: Some(worker.to_string()),
             started_at: Some(started_at),
             finished_at: Some(now_secs()),
@@ -136,13 +167,37 @@ impl TaskResult {
         worker: &str,
         started_at: f64,
     ) -> Self {
+        Self::failure_with_kind(
+            task_id,
+            error,
+            traceback,
+            worker,
+            started_at,
+            ErrorKind::Execute,
+            false,
+        )
+    }
+
+    pub fn failure_with_kind(
+        task_id: impl Into<String>,
+        error: impl Into<String>,
+        traceback: Option<String>,
+        worker: &str,
+        started_at: f64,
+        error_kind: ErrorKind,
+        retryable: bool,
+    ) -> Self {
         Self {
             task_id: task_id.into(),
             ok: false,
             cancelled: false,
             value: None,
+            metrics: HashMap::new(),
+            artifacts: HashMap::new(),
             error: Some(error.into()),
             traceback,
+            error_kind: Some(error_kind),
+            retryable,
             worker: Some(worker.to_string()),
             started_at: Some(started_at),
             finished_at: Some(now_secs()),
@@ -157,8 +212,12 @@ impl TaskResult {
             ok: false,
             cancelled: true,
             value: None,
+            metrics: HashMap::new(),
+            artifacts: HashMap::new(),
             error: Some("cancelled".into()),
             traceback: None,
+            error_kind: Some(ErrorKind::Cancelled),
+            retryable: false,
             worker: None,
             started_at: Some(started),
             finished_at: Some(started),
@@ -169,6 +228,33 @@ impl TaskResult {
     pub fn to_ndjson(&self) -> anyhow::Result<String> {
         Ok(serde_json::to_string(self)?)
     }
+}
+
+fn result_metadata(value: &Value) -> (HashMap<String, f64>, HashMap<String, Value>) {
+    let Some(obj) = value.as_object() else {
+        return (HashMap::new(), HashMap::new());
+    };
+    let metrics = obj
+        .get("metrics")
+        .and_then(Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(name, value)| value.as_f64().map(|number| (name.clone(), number)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let artifacts = obj
+        .get("artifacts")
+        .and_then(Value::as_object)
+        .map(|items| {
+            items
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    (metrics, artifacts)
 }
 
 pub fn unix_now() -> f64 {
@@ -223,10 +309,29 @@ mod tests {
     }
 
     #[test]
-    fn missing_id_gets_uuid() {
-        let t = TaskExpr::from_value(json!({"x": 1})).unwrap();
-        assert!(!t.id.is_empty());
-        assert_eq!(t.args.get("x"), Some(&json!(1)));
+    fn success_extracts_metrics_and_artifacts_without_changing_value() {
+        let value = json!({
+            "metrics": {"reward": 0.75, "label": "ignored"},
+            "artifacts": {"trajectory": "lance://runs/t-0"},
+            "payload": {"x": 1}
+        });
+        let result = TaskResult::success("t", value.clone(), "w0", 0.0);
+        assert_eq!(result.value, Some(value));
+        assert_eq!(result.metrics.get("reward"), Some(&0.75));
+        assert_eq!(result.artifacts["trajectory"], json!("lance://runs/t-0"));
+    }
+
+    #[test]
+    fn missing_id_is_rejected_for_stable_resume_identity() {
+        let err = TaskExpr::from_value(json!({"x": 1})).unwrap_err();
+        assert!(err.to_string().contains("stable non-empty 'id'"));
+    }
+
+    #[test]
+    fn invalid_ids_are_rejected() {
+        assert!(TaskExpr::from_value(json!({"id": "", "x": 1})).is_err());
+        assert!(TaskExpr::from_value(json!({"id": null, "x": 1})).is_err());
+        assert!(TaskExpr::from_value(json!({"id": {"nested": 1}, "x": 1})).is_err());
     }
 
     #[test]

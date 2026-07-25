@@ -167,4 +167,4 @@ fd = start_uffd_handler(base_address, length, block_size, l3_file_path)
 # Close fd to stop the handler
 ```
 
-→ [BlockStore Internals](../design/blockstore.md) for implementation details.
+→ [BlockStore Internals](../design/block-store.md) for implementation details.

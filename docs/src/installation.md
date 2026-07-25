@@ -53,4 +53,4 @@ print("PersistingBackend:", PersistingBackend)
 ## Next Steps
 
 - [Quick Start](quickstart.md) — Get started in 5 minutes
-- [API Reference](api_reference.md) — Full API documentation
+- [API Reference](api/index.md) — Full API documentation

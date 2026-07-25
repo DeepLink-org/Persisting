@@ -18,7 +18,7 @@
 
 Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、git diff、code review）。为此采用**两层存储**：Lance 为 canonical raw event log，TLV Markdown 为按需物化的人读视图。
 
-**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ 事件记录 → Lance/Markdown`。协议差异在 Story 边界前消化；事件记录是存储层统一中间表示。详见 [Capture §4.2 三层词汇表](capture.md#42-三层词汇表)。
+**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ 事件记录 → Lance/Markdown`。协议差异在 Story 边界前消化；事件记录是存储层统一中间表示。详见 [Capture 架构](capture.md) 的核心概念。
 
 ```mermaid
 graph TD
@@ -91,7 +91,7 @@ graph TD
 | **格式** | 列存（`EventRow`），capture run 使用 run 级 `events.lance/`（Lance dataset **目录**） | TLV 块序列（`MarkdownBlock`），纯文本文件 |
 | **写入方式** | `-f lance` / `traj add --storage-format lance` 时 append；import 批量 append | Proxy `-f md` 时 **CaptureEngine live upsert**；均可 `materialize` 全量重建 |
 | **典型操作** | `replay`、`stats`、Search import、FTS | 直接打开、`git diff`、code review |
-| **按 session 分片** | ✅ `events.lance/` 内按 `session_id` 列过滤；同一 run **dataset** 可含**多个** distinct `session_id`（见 [§7.1.1](#711-run-bucket-内多-session_id-分区)） | ✅ `{run_dir}/{storage_session_id}.md` |
+| **按 session 分片** | ✅ `events.lance/` 内按 `session_id` 列过滤；同一 run **dataset** 可含**多个** distinct `session_id`（见 7.1.1 节） | ✅ `{run_dir}/{storage_session_id}.md` |
 
 ---
 
@@ -99,7 +99,7 @@ graph TD
 
 ### 3.1 Capture Proxy（`-f md`）— 事件驱动 + live Markdown
 
-Proxy 侧采集经 [`CaptureEngine`](../../crates/persisting-capture/src/engine/mod.rs) 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_apply` → Event WAL → `ApplyDispatcher`），Markdown 写入在后台完成。**`-f md` 不写 Lance**。
+Proxy 侧采集经 `CaptureEngine` 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_apply` → Event WAL → `ApplyDispatcher`），Markdown 写入在后台完成。**`-f md` 不写 Lance**。
 
 ```mermaid
 sequenceDiagram
@@ -384,7 +384,7 @@ Lance event log (`events.lance`)
 
 ## 6. 对话过滤规则
 
-live / materialize / reconcile **统一**经 `storage/markdown_pipeline.rs` 的 [`MarkdownPipeline`](../../crates/persisting-capture/src/storage/markdown_pipeline.rs)：
+live / materialize / reconcile **统一**经 `storage/markdown_pipeline.rs` 的 `MarkdownPipeline`：
 
 | API | 用途 |
 |-----|------|
@@ -454,9 +454,18 @@ impl MarkdownPipeline {
 - 主 md **不内联**子 agent 的完整轨迹，而是通过 `llm.spawn_link` 块引用 sibling 文件
 - traj capture 模式下**不写** `session-meta.yaml`；客户端元信息进入 Markdown YAML frontmatter 的 `client:` 段
 
-#### 7.1.0 Judge sidecar（可选）
+#### 7.1.0 Judge 列（可选，Lance data evolution）
 
-LLM-as-judge 结果写在 `{run}/layers/judge_{rubric}.lance/`，并由同目录 `manifest.json`（本地 JSON，非外部 layout API）登记 join 键 `[session_id, call_id]`。
+LLM-as-judge 结果以**原生列**写回 `{run}/events.lance/`（`add_columns` + `MergeInsert` on `seq`，不重写已有事件 payload）：
+
+| 列 | 类型 | 说明 |
+|----|------|------|
+| `judge_{rubric}_score` | Int64 nullable | 0–100 |
+| `judge_{rubric}_verdict` | Utf8 nullable | `pass` / `partial` / `fail` |
+| `judge_{rubric}_rationale` | Utf8 nullable | 理由；人工评分带 `[manual] ` 前缀 |
+| `judge_{rubric}_unit` | Utf8 nullable | `__story__`（整段）或 turn 的 `call_id` |
+
+`traj judge` 响应里的 `sidecar_path` / stats 的 `layers_path` 现指向 `events.lance`（字段名保留兼容）。
 
 #### 7.1.1 Run bucket 内多 `session_id` 分区
 
@@ -626,7 +635,7 @@ StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`s
 | Lance worker flush 失败 | 磁盘 / IO 异常 | `trajectory_dead_letter.jsonl` 保留 RON batch |
 | Lance dataset 过大 | 长 run / 高频事件 | 按 run 或 agent 拆分；Overwrite 路径会重写整个 dataset（规划中） |
 
-详见 [Capture 架构设计 §10](capture.md#10-可靠性与运行形态)。
+详见 [Capture 架构设计](capture.md) 的可靠性与运行形态章节。
 
 ---
 

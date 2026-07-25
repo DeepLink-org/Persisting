@@ -35,37 +35,20 @@ docs/
 ├── overrides/              # Theme customizations
 │   └── home.html           # Custom homepage template
 └── src/                    # Documentation source files
-    ├── index.md            # Homepage
-    ├── installation.md     # Installation guide
-    ├── quickstart.md       # Quick start (5 paths)
-    ├── guide/              # User guides
-    │   ├── capture.md      # Trajectory capture
-    │   ├── queue.md        # Streaming queue
-    │   ├── tensor-memory.md # TTAS tensor memory
-    │   ├── search.md       # Agent search
-    │   ├── compute.md      # Task orchestration
-    │   └── custom-backends.md # Custom storage backends
-    ├── api/                # API reference
-    │   ├── tensor-memory.md
-    │   ├── queue.md
-    │   ├── search.md
-    │   └── ttas.md
-    ├── design/             # Design documents
-    │   ├── architecture.md
-    │   ├── ttas.md
-    │   ├── distributed-tiered-storage.md
-    │   ├── capture.md
-    │   ├── trajectory.md
-    │   ├── compute.md
-    │   ├── cli.md
-    │   └── references/
-    └── dev/                # Implementation tracking
-        └── tiered-storage-steps.md
+    ├── index.md            # Product overview
+    ├── installation.md     # Start here: installation
+    ├── quickstart.md       # Start here: first workflows
+    ├── guide/              # Capability-oriented user guides
+    ├── api/                # Public Python API reference
+    ├── design/             # Architecture, internals, and CLI reference
+    │   └── references/     # Research inputs; not product contracts
+    └── dev/                # Contributor-facing implementation notes
 ```
 
 ## Translation
 
-Documentation supports English and Chinese. For each `.md` file:
+Documentation supports English and Chinese. For each user-facing `.md` file
+where a translation is maintained:
 
 - `file.md` — English version
 - `file.zh.md` — Chinese version

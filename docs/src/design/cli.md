@@ -4,7 +4,7 @@
 
 `search`、`traj`（`trajectory`）等子命令共用此架构。
 
-`compute` 例外：编排逻辑在 `persisting-compute` 内由 CLI 直接调用（不经 engine RON ABI）；见 [Compute 架构](compute_control_plane.zh.md) · [快速上手](../guide/compute_quickstart.zh.md)。
+`compute` 例外：编排逻辑在 `persisting-compute` 内由 CLI 直接调用（不经 engine RON ABI）；见 [Compute 架构](compute.md) · [快速上手](../guide/compute.md)。
 
 ---
 
@@ -119,6 +119,6 @@ flowchart LR
 
 ## 8. 相关文档
 
-- [`persisting search`](cli_search_command.zh.md)
+- [`persisting search`](cli-search.md)
 - [`persisting traj`](cli-traj.md) — 轨迹统一入口（含 capture / proxy）
 - [Capture 子命令](cli-capture.md) — `traj capture` / `traj proxy` / `traj import`

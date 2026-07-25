@@ -1,6 +1,6 @@
 docs/site/
 target/
-store/
+/store/
 *.pyc
 __pycache__/
 .pytest_cache/

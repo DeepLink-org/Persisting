@@ -1,6 +1,6 @@
 # 分层存储实现步骤与测试清单
 
-与 [distributed_tiered_storage.md](distributed_tiered_storage.md) 对应，按「小步实现、每步有严格单元测试」推进。
+与 [分布式分层存储](../design/distributed-tiered-storage.md) 对应，按「小步实现、每步有严格单元测试」推进。
 
 ---
 

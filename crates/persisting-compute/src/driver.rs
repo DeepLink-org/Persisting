@@ -16,7 +16,7 @@ use crate::pulsing_ext::{ask_timeout, ASK_TIMEOUT};
 use crate::scheduler::{AcquireError, Scheduler, StickyLost, WorkerPool};
 use crate::sink_writer::SinkSubmitter;
 use crate::skip::SkipSet;
-use crate::task::{unix_now, TaskExpr, TaskResult};
+use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
 use crate::worker::{WorkerCommand, WorkerReply};
 use anyhow::Result;
 use futures::stream::FuturesUnordered;
@@ -241,8 +241,15 @@ async fn execute_with_placement(
                 observer
                     .task_finished(&task_id, false, false, Some(err.clone()), &sched)
                     .await;
-                let mut r =
-                    TaskResult::failure(task_id, format!("infra: {err}"), None, "infra", started);
+                let mut r = TaskResult::failure_with_kind(
+                    task_id,
+                    format!("infra: {err}"),
+                    None,
+                    "infra",
+                    started,
+                    ErrorKind::Infra,
+                    true,
+                );
                 r.infra_retries = attempt;
                 return Ok(r);
             }
@@ -252,8 +259,15 @@ async fn execute_with_placement(
                 observer
                     .task_finished(&task_id, false, false, Some(err.clone()), &sched)
                     .await;
-                let mut r =
-                    TaskResult::failure(task_id, format!("infra: {err}"), None, "infra", started);
+                let mut r = TaskResult::failure_with_kind(
+                    task_id,
+                    format!("infra: {err}"),
+                    None,
+                    "infra",
+                    started,
+                    ErrorKind::Infra,
+                    true,
+                );
                 r.infra_retries = attempt;
                 return Ok(r);
             }
@@ -337,12 +351,14 @@ async fn execute_with_placement(
     observer
         .task_finished(&task_id, false, false, Some(err.clone()), &sched)
         .await;
-    let mut r = TaskResult::failure(
+    let mut r = TaskResult::failure_with_kind(
         task_id,
         format!("infra retries exhausted: {err}"),
         None,
         "infra",
         started,
+        ErrorKind::Infra,
+        true,
     );
     r.infra_retries = infra_retries;
     Ok(r)

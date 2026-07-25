@@ -98,4 +98,4 @@ class SimpleBackend:
 ## 下一步
 
 - [架构设计](../design/architecture.md) — 后端在系统中的位置
-- [API 参考](../api_reference.md) — 完整 API 文档
+- [API 参考](../api/index.md) — 完整 API 文档

@@ -44,7 +44,7 @@ cd examples/capture-walkthrough
 
 Output: `store/demo-agent/walkthrough-001/0001.md`
 
-Manual two-terminal flow: see [examples/capture-walkthrough/README.md](../../examples/capture-walkthrough/README.md).
+Manual two-terminal flow: see the [capture walkthrough](https://github.com/DeepLink-org/Persisting/tree/main/examples/capture-walkthrough).
 
 ---
 
@@ -72,7 +72,7 @@ Codex: replace `claude` with `codex`. Custom agent: `... -- python3 your_agent.p
 | `-f lance` | Lance only (`events.lance/` directory); use `traj materialize` for md |
 | `--debug` | Log proxied requests to stderr + `.capture/debug.log` |
 
-Optional Harbor-aligned egress control — see [`examples/llm-proxy/allowlist.toml`](../../examples/llm-proxy/allowlist.toml):
+Optional Harbor-aligned egress control — see [`allowlist.toml`](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/allowlist.toml):
 
 ```toml
 [network]
@@ -86,7 +86,7 @@ allowed_hosts = [
 ]
 ```
 
-Applies to forward-proxy traffic (`CONNECT` + absolute-URI HTTP). Default `public` preserves prior behavior. Relative-path LLM gateway on `listen` is not filtered; configured `[[models]]` upstream hosts are auto-merged into the allowlist. See the [Chinese guide](capture.zh.md) for full semantics.
+Applies to forward-proxy traffic (`CONNECT` + absolute-URI HTTP). Default `public` preserves prior behavior. Relative-path LLM gateway on `listen` is not filtered; configured `[[models]]` upstream hosts are auto-merged into the allowlist. See the Chinese version of this guide for full semantics.
 
 `traj capture` is **in-process** — no `traj proxy stop` needed when the child exits.
 
@@ -213,7 +213,7 @@ persisting traj replay ./store --agent-id deepseek-proxy --session-id run-...
 persisting traj materialize ./store --agent-id ... --root-session-id ... --session-id ...
 ```
 
-**Multimodal (screenshots / image generation):** with default `capture_level = dialogue`, images appear as **`[image: …]` / `[image_generated: …]` placeholders** in Markdown and stats—not embedded pixels. Set `capture_level = "full"` in TOML for raw JSON in Lance. See [trajectory Markdown format §2.7](../design/trajectory-format.md#27-多模态对话正文phase-0).
+**Multimodal (screenshots / image generation):** with default `capture_level = dialogue`, images appear as **`[image: …]` / `[image_generated: …]` placeholders** in Markdown and stats—not embedded pixels. Set `capture_level = "full"` in TOML for raw JSON in Lance. See the [trajectory Markdown format](../design/trajectory-format.md).
 
 ---
 
@@ -258,4 +258,4 @@ persisting traj import ./store --provider ide --since-days 7 --project "$(pwd)"
 - [Capture architecture](../design/capture.md)
 - [Trajectory Markdown format](../design/trajectory-format.md)
 - [Traj CLI](../design/cli-traj.md)
-- [Walkthrough example](../../examples/capture-walkthrough/README.md)
+- [Walkthrough example](https://github.com/DeepLink-org/Persisting/tree/main/examples/capture-walkthrough)

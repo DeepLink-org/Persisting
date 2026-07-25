@@ -100,7 +100,7 @@ if grep -q 'judgment_count:' "$STATS_PLAIN"; then
   [[ "${PRE_JUDGE:-0}" == "0" ]] || die "expected judgment_count=0 before judge, got $PRE_JUDGE"
   pass "stats judgment_count=0 (pre-judge)"
 else
-  pass "stats has no judge sidecar yet (pre-judge)"
+  pass "stats has no judge columns yet (pre-judge)"
 fi
 
 # --- 3. judge (non-interactive fixed score) ---------------------------------
@@ -114,11 +114,14 @@ JUDGE_OUT="$(run_cli traj judge "$STORAGE" \
   --force)"
 grep -qE 'judged_calls\s*=\s*[1-9]|judged_calls: [1-9]' <<<"$JUDGE_OUT" \
   || { echo "$JUDGE_OUT"; die "judge did not score any units"; }
-pass "traj judge wrote sidecar"
+pass "traj judge wrote native columns"
 
-[[ -f "$STORAGE/$AGENT_ID/$SESSION_ID/layers/judge_default.lance" ]] \
-  || die "missing judge_default.lance"
-pass "judge sidecar file exists"
+# Judge columns live on events.lance (no layers/ sidecar).
+[[ -d "$STORAGE/$AGENT_ID/$SESSION_ID/events.lance" ]] \
+  || die "missing events.lance after judge"
+[[ ! -e "$STORAGE/$AGENT_ID/$SESSION_ID/layers" ]] \
+  || die "unexpected layers/ sidecar after native judge"
+pass "judge columns on events.lance (no layers/)"
 
 # --- 4. stats + judge-stats (post-judge) ------------------------------------
 section "traj stats (after judge)"

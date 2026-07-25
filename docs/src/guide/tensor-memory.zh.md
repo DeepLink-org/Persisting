@@ -252,7 +252,7 @@ key = region.project_prefix([SESSION])     # → ("s1",) 用于路由
 assert is_range_query(region, TIME)        # → True
 ```
 
-→ [TTAS 设计文档](../design/ttas.md) 了解完整形式化模型。
+→ [TTAS 设计文档](../design/tensor-address-space.md) 了解完整形式化模型。
 
 ---
 
@@ -268,5 +268,5 @@ assert is_range_query(region, TIME)        # → True
 ## 下一步
 
 - [API 参考 — Tensor Memory](../api/tensor-memory.md) — 所有方法签名
-- [TTAS 设计文档](../design/ttas.md) — 形式化寻址模型
+- [TTAS 设计文档](../design/tensor-address-space.md) — 形式化寻址模型
 - [分布式分层存储](../design/distributed-tiered-storage.md) — block 模型、mmap+UFFD、跨节点

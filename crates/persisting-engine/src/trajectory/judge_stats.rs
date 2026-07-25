@@ -1,4 +1,4 @@
-//! Aggregate judge sidecar rows under `{run}/layers/`.
+//! Aggregate judge columns from `{run}/events.lance`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -9,8 +9,8 @@ use persisting_proto::{
 };
 
 use super::expand::{drop_lifecycle_run_partitions, expand_story_locations};
-use super::layers::{
-    layers_dir, load_manifest, read_judge_rows, JudgeRow, MANUAL_RATIONALE_PREFIX, STORY_CALL_ID,
+use super::judge_columns::{
+    dataset_path, read_judge_rows, JudgeRow, MANUAL_RATIONALE_PREFIX, STORY_CALL_ID,
 };
 use super::path::{list_traj_read_locations, StoryCoords};
 
@@ -34,7 +34,7 @@ pub async fn judge_stats_async(
     let mut rows_by_run: HashMap<RunKey, Vec<JudgeRow>> = HashMap::new();
     for loc in &locations {
         let run = run_bucket_coords(loc);
-        rows_by_run.entry(run).or_insert_with(|| Vec::new());
+        rows_by_run.entry(run).or_default();
     }
     for (run, rows) in rows_by_run.iter_mut() {
         *rows = load_judge_rows_for_run(run).await?;
@@ -60,7 +60,7 @@ pub async fn judge_stats_async(
             .filter(|r| r.session_id == loc.session_id)
             .cloned()
             .collect();
-        sessions.push(session_entry(loc, &run, &scoped));
+        sessions.push(session_entry(loc, &run, &scoped).await);
     }
 
     let rubrics = summarize_rubrics(&all_rows);
@@ -70,7 +70,7 @@ pub async fn judge_stats_async(
     let rubric_count = rubrics.len();
     let storage = request.storage.clone();
     let note = format!(
-        "Judge stats: {judged_session_count}/{session_count} session(s) with sidecar rows, {judgment_count} judgment(s), {rubric_count} rubric(s)"
+        "Judge stats: {judged_session_count}/{session_count} session(s) with judge columns, {judgment_count} judgment(s), {rubric_count} rubric(s)"
     );
 
     Ok(TrajectoryJudgeStatsResponse {
@@ -120,34 +120,10 @@ fn run_session_coords(key: &RunKey) -> StoryCoords {
 
 async fn load_judge_rows_for_run(key: &RunKey) -> Result<Vec<JudgeRow>> {
     let run = run_session_coords(key);
-    let layers = layers_dir(&run)?;
-    if !layers.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut rows = Vec::new();
-    let manifest = load_manifest(&run)?;
-    if !manifest.layers.is_empty() {
-        for entry in &manifest.layers {
-            if !entry.name.starts_with("judge_") {
-                continue;
-            }
-            let path = layers.join(&entry.path);
-            rows.extend(read_judge_rows(&path).await?);
-        }
-    } else {
-        for entry in std::fs::read_dir(&layers)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("judge_") && name.ends_with(".lance") {
-                rows.extend(read_judge_rows(&entry.path()).await?);
-            }
-        }
-    }
-    Ok(rows)
+    read_judge_rows(&run).await
 }
 
-/// Judge sidecar summary for one session (shared by `traj stats` and `traj judge stats`).
+/// Judge summary for one session (shared by `traj stats` and `traj judge stats`).
 pub async fn session_judge_stats(loc: &StoryCoords) -> SessionJudgeStats {
     let run = run_bucket_coords(loc);
     let rows = load_judge_rows_for_run(&run).await.unwrap_or_default();
@@ -156,10 +132,10 @@ pub async fn session_judge_stats(loc: &StoryCoords) -> SessionJudgeStats {
         .filter(|r| r.session_id == loc.session_id)
         .cloned()
         .collect();
-    session_entry(loc, &run, &scoped).into()
+    session_entry(loc, &run, &scoped).await.into()
 }
 
-fn session_entry(loc: &StoryCoords, run: &RunKey, rows: &[JudgeRow]) -> JudgeStatsSession {
+async fn session_entry(loc: &StoryCoords, run: &RunKey, rows: &[JudgeRow]) -> JudgeStatsSession {
     let (verdict_pass, verdict_partial, verdict_fail) = verdict_counts(rows);
     let manual_count = rows
         .iter()
@@ -168,8 +144,8 @@ fn session_entry(loc: &StoryCoords, run: &RunKey, rows: &[JudgeRow]) -> JudgeSta
     let turn_judgments = rows.iter().filter(|r| r.call_id != STORY_CALL_ID).count();
     let story_judgments = rows.len().saturating_sub(turn_judgments);
     let rubric_ids = distinct_rubric_ids(rows);
-    let layers_path = layers_dir(&run_session_coords(run))
-        .map(|p| p.display().to_string())
+    let layers_path = dataset_path(&run_session_coords(run))
+        .await
         .unwrap_or_default();
 
     JudgeStatsSession {

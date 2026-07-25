@@ -10,6 +10,7 @@ use crate::result_cache::{ResultCache, DEFAULT_RESULT_CACHE_CAP};
 use crate::task::{TaskExpr, TaskResult};
 use pulsing_actor::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -109,6 +110,7 @@ impl WorkerConfig {
                 self.pythonpath_extra.clone(),
                 self.plan_script.clone(),
                 self.script_args.clone(),
+                worker_context(&self.worker_id),
             )),
             done: 0,
             shutdown_gate: self.shutdown_gate.clone(),
@@ -116,6 +118,40 @@ impl WorkerConfig {
             result_cache: Arc::clone(&self.result_cache),
         }
     }
+}
+
+/// Process-local placement information exposed to Python as
+/// `persisting_compute.context()`. `execute(item)` remains stateless.
+fn worker_context(worker_id: &str) -> serde_json::Value {
+    let rank = std::env::var("RANK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let local_rank = std::env::var("LOCAL_RANK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(rank);
+    let device = if std::env::var_os("LOCAL_RANK").is_some() {
+        format!("cuda:{local_rank}")
+    } else {
+        "cpu".to_string()
+    };
+    let labels: Vec<_> = std::env::var("PERSISTING_COMPUTE_WORKER_LABELS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)
+        .collect();
+    json!({
+        "worker_id": worker_id,
+        "rank": rank,
+        "local_rank": local_rank,
+        "device": device,
+        "job_id": std::env::var("PERSISTING_COMPUTE_JOB_ID").unwrap_or_else(|_| "local".into()),
+        "output_dir": std::env::var("PERSISTING_COMPUTE_OUTPUT_DIR").ok(),
+        "labels": labels,
+    })
 }
 
 pub struct WorkerActor {

@@ -101,4 +101,4 @@ Capture 采集能力已并入 **`persisting traj`**（`trajectory` 全名）：`
 - [Capture 架构设计](capture.md)
 - [轨迹存储模型](trajectory.md)
 - [Capture 快速上手](../guide/capture.md)
-- [分步示例](../../examples/capture-walkthrough/README.md)
+- [分步示例](https://github.com/DeepLink-org/Persisting/tree/main/examples/capture-walkthrough)

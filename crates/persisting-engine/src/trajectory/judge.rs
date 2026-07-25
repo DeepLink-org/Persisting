@@ -1,4 +1,4 @@
-//! Judge egress: read canonical Lance, write `{run}/layers/judge_*.lance` sidecars.
+//! Judge egress: read canonical Lance, write native judge columns on `events.lance`.
 //!
 //! Modes (scope × method):
 //! - **story + llm**: one LLM call scores the full trajectory per rubric dimension
@@ -14,9 +14,8 @@ use persisting_proto::{
 };
 use serde::Deserialize;
 
-use super::layers::{
-    ensure_layers_dir, has_judgment, layer_file_name, load_manifest, merge_judge_rows,
-    read_judge_rows, register_layer, save_manifest, sidecar_path, write_judge_rows, JudgeRow,
+use super::judge_columns::{
+    dataset_path, has_judgment, layer_field_name, read_judge_rows, write_judge_rows, JudgeRow,
     MANUAL_RATIONALE_PREFIX, STORY_CALL_ID,
 };
 use super::store::{LanceTrajectoryStore, TrajectoryStore};
@@ -90,17 +89,13 @@ pub async fn judge_async(request: TrajectoryJudgeRequest) -> Result<TrajectoryJu
         );
     }
 
-    ensure_layers_dir(&session).await?;
-
+    let existing = read_judge_rows(&session).await?;
     let mut total_judged = 0usize;
     let mut total_skipped = 0usize;
-    let mut last_sidecar = String::new();
     let mut last_layer = String::new();
+    let mut incoming_all: Vec<JudgeRow> = Vec::new();
 
     for rubric_id in &rubric_ids {
-        let sidecar = sidecar_path(&session, &layer_file_name(rubric_id))?;
-        let existing = read_judge_rows(&sidecar).await?;
-
         let (to_judge, skipped) = pending_units(
             &existing,
             &session.session_id,
@@ -111,6 +106,7 @@ pub async fn judge_async(request: TrajectoryJudgeRequest) -> Result<TrajectoryJu
         total_skipped += skipped;
 
         if to_judge.is_empty() {
+            last_layer = layer_field_name(rubric_id);
             continue;
         }
 
@@ -139,14 +135,15 @@ pub async fn judge_async(request: TrajectoryJudgeRequest) -> Result<TrajectoryJu
         };
 
         total_judged += to_judge.len();
-        let merged = merge_judge_rows(existing, incoming, &session.session_id, rubric_id);
-        write_judge_rows(&sidecar, &merged).await?;
-        last_sidecar = sidecar.display().to_string();
-
-        let mut manifest = load_manifest(&session)?;
-        last_layer = register_layer(&mut manifest, rubric_id);
-        save_manifest(&session, &manifest)?;
+        last_layer = layer_field_name(rubric_id);
+        incoming_all.extend(incoming);
     }
+
+    let dataset = if incoming_all.is_empty() {
+        dataset_path(&session).await?
+    } else {
+        write_judge_rows(&session, &incoming_all).await?
+    };
 
     Ok(TrajectoryJudgeResponse {
         storage: request.storage,
@@ -157,17 +154,19 @@ pub async fn judge_async(request: TrajectoryJudgeRequest) -> Result<TrajectoryJu
         scope: request.scope,
         method: request.method,
         layer_name: last_layer,
-        sidecar_path: last_sidecar,
+        sidecar_path: dataset.clone(),
         judged_calls: total_judged,
         skipped_calls: total_skipped,
         status: "ok".to_string(),
         note: format!(
-            "Judge {:?}/{:?}: {} rubric(s), {} unit(s) scored, {} skipped. Sidecar updated.",
+            "Judge {:?}/{:?}: {} rubric(s), {} unit(s) scored, {} skipped. \
+             Native columns on {}.",
             request.method,
             request.scope,
             rubric_ids.len(),
             total_judged,
-            total_skipped
+            total_skipped,
+            dataset
         ),
     })
 }
@@ -424,9 +423,9 @@ fn build_llm_prompt(
         JudgeScope::Story => format!(
             "Score the ENTIRE trajectory once (call_id=\"{STORY_CALL_ID}\") on rubric `{rubric_id}`."
         ),
-        JudgeScope::Turn => format!(
-            "Score EACH dialogue turn separately on rubric `{rubric_id}`."
-        ),
+        JudgeScope::Turn => {
+            format!("Score EACH dialogue turn separately on rubric `{rubric_id}`.")
+        }
     };
 
     format!(
@@ -522,13 +521,10 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn judge_dry_run_turn_llm_writes_sidecar() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = dir.path().to_string_lossy().into_owned();
-        let call = sample_call("c1");
+    async fn seed_dialogue(storage: &str, session_id: &str, call_id: &str) {
+        let call = sample_call(call_id);
         let req = llm_request_summary_record(
-            Some("run".into()),
+            Some(session_id.into()),
             Some("agent".into()),
             "m",
             "/v1/chat/completions",
@@ -542,7 +538,7 @@ mod tests {
             None,
         );
         let resp = llm_response_record_with_content(
-            Some("run".into()),
+            Some(session_id.into()),
             Some("agent".into()),
             200,
             &serde_json::json!({}),
@@ -556,18 +552,25 @@ mod tests {
             persisting_capture::record::record_to_engine_line(&resp).unwrap(),
         ];
         append_async(TrajectoryAppendRequest {
-            storage: storage.clone(),
+            storage: storage.to_string(),
             agent_id: "agent".into(),
-            session_id: "run".into(),
+            session_id: session_id.into(),
             root_session_id: None,
             records_ronl: lines.join("\n") + "\n",
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn judge_dry_run_turn_llm_writes_native_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().to_string_lossy().into_owned();
+        seed_dialogue(&storage, "run", "c1").await;
 
         let out = judge_async(TrajectoryJudgeRequest {
-            storage,
+            storage: storage.clone(),
             agent_id: "agent".into(),
             session_id: "run".into(),
             root_session_id: None,
@@ -585,55 +588,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.judged_calls, 1);
-        assert!(std::path::Path::new(&out.sidecar_path).is_dir());
+        assert!(out.sidecar_path.contains("events.lance"));
+        assert_eq!(out.layer_name, "judge_default");
+
+        let session = super::super::session_from_request(&storage, "agent", "run", None);
+        let rows = read_judge_rows(&session).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].call_id, "c1");
+        assert_eq!(rows[0].score, 100);
     }
 
     #[tokio::test]
     async fn judge_manual_story_accepts_scores() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().to_string_lossy().into_owned();
-        let call = sample_call("c1");
-        let req = llm_request_summary_record(
-            Some("run".into()),
-            Some("agent".into()),
-            "m",
-            "/v1/chat/completions",
-            10,
-            "chat",
-            "openai",
-            Some("hi".into()),
-            None,
-            &call,
-            CaptureLevel::Dialogue,
-            None,
-        );
-        let resp = llm_response_record_with_content(
-            Some("run".into()),
-            Some("agent".into()),
-            200,
-            &serde_json::json!({}),
-            false,
-            Some("ok".into()),
-            &call,
-            CaptureLevel::Dialogue,
-        );
-        let lines = [
-            persisting_capture::record::record_to_engine_line(&req).unwrap(),
-            persisting_capture::record::record_to_engine_line(&resp).unwrap(),
-        ];
-        append_async(TrajectoryAppendRequest {
-            storage: storage.clone(),
-            agent_id: "agent".into(),
-            session_id: "run".into(),
-            root_session_id: None,
-            records_ronl: lines.join("\n") + "\n",
-            storage_format: TrajectoryStorageFormat::Lance,
-        })
-        .await
-        .unwrap();
+        seed_dialogue(&storage, "run", "c1").await;
 
         let out = judge_async(TrajectoryJudgeRequest {
-            storage,
+            storage: storage.clone(),
             agent_id: "agent".into(),
             session_id: "run".into(),
             root_session_id: None,
@@ -657,18 +629,45 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.judged_calls, 1);
-        let rows = read_judge_rows(std::path::Path::new(&out.sidecar_path))
-            .await
-            .unwrap();
+        let session = super::super::session_from_request(&storage, "agent", "run", None);
+        let rows = read_judge_rows(&session).await.unwrap();
+        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].call_id, STORY_CALL_ID);
         assert!(rows[0].rationale.starts_with(MANUAL_RATIONALE_PREFIX));
     }
 
     #[tokio::test]
-    async fn judge_rejudge_without_force_preserves_sidecar() {
+    async fn append_after_judge_still_works_with_evolved_schema() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().to_string_lossy().into_owned();
-        let call = sample_call("c1");
+        seed_dialogue(&storage, "run", "c1").await;
+
+        judge_async(TrajectoryJudgeRequest {
+            storage: storage.clone(),
+            agent_id: "agent".into(),
+            session_id: "run".into(),
+            root_session_id: None,
+            rubric_id: "default".into(),
+            rubric_ids: vec![],
+            scope: JudgeScope::Story,
+            method: JudgeMethod::Manual,
+            model: None,
+            dry_run: false,
+            force: false,
+            manual_scores: vec![JudgeScoreInput {
+                call_id: None,
+                rubric_id: "default".into(),
+                score: 70,
+                verdict: "partial".into(),
+                rationale: "ok".into(),
+            }],
+            few_shot_limit: 0,
+        })
+        .await
+        .unwrap();
+
+        // Capture append still uses schema v1 (subset); judge columns are nullable.
+        let call = sample_call("c2");
         let req = llm_request_summary_record(
             Some("run".into()),
             Some("agent".into()),
@@ -677,7 +676,7 @@ mod tests {
             10,
             "chat",
             "openai",
-            Some("hi".into()),
+            Some("again".into()),
             None,
             &call,
             CaptureLevel::Dialogue,
@@ -689,7 +688,7 @@ mod tests {
             200,
             &serde_json::json!({}),
             false,
-            Some("ok".into()),
+            Some("ok2".into()),
             &call,
             CaptureLevel::Dialogue,
         );
@@ -707,6 +706,18 @@ mod tests {
         })
         .await
         .unwrap();
+
+        let session = super::super::session_from_request(&storage, "agent", "run", None);
+        let rows = read_judge_rows(&session).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].score, 70);
+    }
+
+    #[tokio::test]
+    async fn judge_rejudge_without_force_preserves_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().to_string_lossy().into_owned();
+        seed_dialogue(&storage, "run", "c1").await;
 
         let first = judge_async(TrajectoryJudgeRequest {
             storage: storage.clone(),
@@ -732,11 +743,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(first.judged_calls, 1);
-        let sidecar = first.sidecar_path.clone();
-        assert!(std::path::Path::new(&sidecar).is_dir());
 
         let second = judge_async(TrajectoryJudgeRequest {
-            storage,
+            storage: storage.clone(),
             agent_id: "agent".into(),
             session_id: "run".into(),
             root_session_id: None,
@@ -760,10 +769,9 @@ mod tests {
         .unwrap();
         assert_eq!(second.judged_calls, 0);
         assert_eq!(second.skipped_calls, 1);
-        assert!(std::path::Path::new(&sidecar).is_dir());
-        let rows = read_judge_rows(std::path::Path::new(&sidecar))
-            .await
-            .unwrap();
+
+        let session = super::super::session_from_request(&storage, "agent", "run", None);
+        let rows = read_judge_rows(&session).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].score, 88);
     }
