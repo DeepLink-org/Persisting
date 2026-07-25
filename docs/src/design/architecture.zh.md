@@ -4,7 +4,7 @@
 
 Persisting 为 Pulsing 扩展分布式分层内存：**Pulsing 负责控制面**（actor 运行时），**Persisting 负责数据面**（多维寻址、GPU/host/SSD 分层、放置）。
 
-本文档描述**队列持久化**架构——当前已可用的能力。Tensor Memory 架构（TTAS 寻址、分层存储、KV Cache）请参阅 [TTAS](tensor_address_algebra.md) 和[设计文档索引](index.md)。
+本文档描述**队列持久化**架构——当前已可用的能力。Tensor Memory 架构（TTAS 寻址、分层存储、KV Cache）请参阅 [TTAS](tensor-address-space.md) 和[架构文档索引](index.md)。
 
 ### 队列持久化
 
@@ -62,7 +62,7 @@ Lance Dataset (磁盘)
 
 下一阶段 **Tensor Memory** 将补全核心分布式分层内存能力：
 
-- **TTAS 寻址**：多维 tensor 寻址（`kv["s1", 0, 2, 0:512]`），含规范化、路由和批量优化。详见 [TTAS](tensor_address_algebra.md)。
+- **TTAS 寻址**：多维 tensor 寻址（`kv["s1", 0, 2, 0:512]`），含规范化、路由和批量优化。详见 [TTAS](tensor-address-space.md)。
 - **分层存储**：GPU ↔ host ↔ SSD，对应用透明。数据放置由 TTAS 分区键驱动。
 - **应用场景**：KV Cache offloading、参数服务、轨迹存储——均为同一分布式分层内存的不同视图。
 

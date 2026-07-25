@@ -2,7 +2,7 @@
 
 本文档描述 BlockStore 单节点内部的实现细节：Block Table、跨平台缺页处理、事件循环、预取与驱逐调度。
 
-BlockStore 的架构定位与对外接口见 [分布式分层存储](distributed_tiered_storage.md)。
+BlockStore 的架构定位与对外接口见 [分布式分层存储](distributed-tiered-storage.md)。
 
 ---
 

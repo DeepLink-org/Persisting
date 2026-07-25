@@ -80,9 +80,12 @@ plugins:
           site_name: "Persisting 文档"
           nav_translations:
             Home: 首页
+            Start Here: 开始使用
             Installation: 安装指南
             Quick Start: 快速开始
+            Choose a Capability: 选择能力
             User Guide: 用户指南
+            Guides: 使用指南
             Capture: 轨迹采集
             Queue: 队列
             Tensor Memory: 张量内存
@@ -90,7 +93,13 @@ plugins:
             Compute: 计算编排
             Custom Backends: 自定义后端
             API Reference: API 参考
+            Reference: 参考
             Design: 设计文档
+            Architecture & Internals: 架构与内部实现
+            Engineering Notes: 工程笔记
+            Implementation status: 实现状态
+            Tiered-storage implementation steps: 分层存储实现步骤
+            Research Notes: 调研笔记
             Architecture: 架构设计
             Distributed Tiered Storage: 分布式分层存储
             Trajectory Storage: 轨迹存储模型
@@ -116,43 +125,47 @@ plugins:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Quick Start: quickstart.md
-  - User Guide:
-      - guide/index.md
-      - Capture: guide/capture.md
-      - Queue: guide/queue.md
-      - Tensor Memory: guide/tensor-memory.md
-      - Search: guide/search.md
-      - Compute: guide/compute.md
-      - Custom Backends: guide/custom-backends.md
-  - API Reference:
-      - api/index.md
-      - Tensor Memory: api/tensor-memory.md
-      - Queue: api/queue.md
-      - Search: api/search.md
-      - Tensor Address Space: api/tensor-address-space.md
-  - Design:
-      - design/index.md
-      - Architecture: design/architecture.md
-      - Tiered Storage:
-          - Tensor Address Space: design/tensor-address-space.md
-          - Distributed Tiered Storage: design/distributed-tiered-storage.md
-          - Block Store Internals: design/block-store.md
-      - Capture & Trajectory:
-          - Capture Architecture: design/capture.md
-          - Trajectory Storage: design/trajectory.md
-          - Trajectory Format: design/trajectory-format.md
-          - Traj CLI: design/cli-traj.md
-          - Capture CLI: design/cli-capture.md
-      - CLI Architecture: design/cli.md
-      - Compute Architecture: design/compute.md
-      - Search CLI: design/cli-search.md
-      - References:
-          - Similar Systems: design/references/similar-systems.md
-          - TransferQueue Comparison: design/references/transfer-queue-comparison.md
-          - TransferQueue Interface: design/references/transfer-queue-interface.md
-          - LMCache: design/references/lmcache.md
+  - Start Here:
+      - Installation: installation.md
+      - Quick Start: quickstart.md
+      - Choose a Capability: guide/index.md
+  - Guides:
+      - Capture agent trajectories: guide/capture.md
+      - Run batch compute: guide/compute.md
+      - Index and search documents: guide/search.md
+      - Stream events with Queue: guide/queue.md
+      - Use Tensor Memory (experimental): guide/tensor-memory.md
+      - Build a custom queue backend: guide/custom-backends.md
+  - Reference:
+      - Python API overview: api/index.md
+      - Tensor Memory API: api/tensor-memory.md
+      - Queue API: api/queue.md
+      - Search API: api/search.md
+      - TTAS types: api/tensor-address-space.md
+      - CLI architecture and loading: design/cli.md
+      - traj command reference: design/cli-traj.md
+      - Capture command reference: design/cli-capture.md
+      - search command reference: design/cli-search.md
+  - Architecture & Internals:
+      - Overview and maturity: design/index.md
+      - Queue persistence: design/architecture.md
+      - Capture and trajectory:
+          - Capture pipeline: design/capture.md
+          - Trajectory storage: design/trajectory.md
+          - Trajectory Markdown format: design/trajectory-format.md
+      - Compute control plane: design/compute.md
+      - Tensor memory (experimental):
+          - TTAS model: design/tensor-address-space.md
+          - Distributed tiered storage: design/distributed-tiered-storage.md
+          - BlockStore internals: design/block-store.md
+  - Engineering Notes:
+      - Implementation status: dev/index.md
+      - Tiered-storage implementation steps: dev/tiered-storage-steps.md
+  - Research Notes:
+      - Similar systems: design/references/similar-systems.md
+      - TransferQueue comparison: design/references/transfer-queue-comparison.md
+      - TransferQueue interface mapping: design/references/transfer-queue-interface.md
+      - LMCache analysis: design/references/lmcache.md
 
 extra:
   generator: false

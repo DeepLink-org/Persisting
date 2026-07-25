@@ -13,6 +13,7 @@ use crate::skip::SkipSet;
 use crate::task::TaskResult;
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -55,9 +56,24 @@ pub struct ComputeArgs {
     #[arg(long, value_name = "DIR")]
     pub sink: Option<PathBuf>,
 
+    /// Logical run identifier exposed to workers through `persisting_compute.context()`.
+    /// Defaults to the sink directory name, or the plan filename for ephemeral runs.
+    #[arg(long)]
+    pub job_id: Option<String>,
+
+    /// Capability labels exposed as `context()["labels"]` (comma-separated).
+    /// They are informational in this release; scheduling remains least-loaded.
+    #[arg(long, value_delimiter = ',')]
+    pub worker_label: Vec<String>,
+
     /// Resume from `--sink`: skip task ids already in ready/failures.
     #[arg(long)]
     pub resume: bool,
+
+    /// With `--resume`, run failures of these kinds again (`execute`, `infra`,
+    /// or `cancelled`). May be repeated or comma-separated.
+    #[arg(long, value_delimiter = ',')]
+    pub rerun_failed: Vec<String>,
 
     /// Also append terminal results to a Lance trajectory (requires `--sink`).
     /// Writes `compute.result` / `compute.failure` events under traj storage.
@@ -160,6 +176,31 @@ pub async fn run_compute(args: ComputeArgs) -> Result<ExitCode> {
     }
 
     let under_torch = std::env::var_os("RANK").is_some();
+    let job_id = args.job_id.clone().unwrap_or_else(|| {
+        args.sink
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                script
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "compute".into())
+    });
+    std::env::set_var("PERSISTING_COMPUTE_JOB_ID", &job_id);
+    if let Some(dir) = &args.sink {
+        std::env::set_var("PERSISTING_COMPUTE_OUTPUT_DIR", dir);
+    }
+    if !args.worker_label.is_empty() {
+        std::env::set_var(
+            "PERSISTING_COMPUTE_WORKER_LABELS",
+            args.worker_label.join(","),
+        );
+    }
     let per_worker = args.per_worker.max(1);
     let max_inflight = args.max_inflight.unwrap_or_else(|| {
         if under_torch {
@@ -225,6 +266,14 @@ pub async fn run_compute(args: ComputeArgs) -> Result<ExitCode> {
     if args.resume && file_sink.is_none() {
         bail!("--resume requires --sink DIR");
     }
+    if !args.rerun_failed.is_empty() && !args.resume {
+        bail!("--rerun-failed requires --resume --sink DIR");
+    }
+    for kind in &args.rerun_failed {
+        if !matches!(kind.as_str(), "execute" | "infra" | "cancelled") {
+            bail!("--rerun-failed expects execute, infra, or cancelled (got {kind:?})");
+        }
+    }
 
     #[cfg(feature = "traj-sink")]
     if args.traj && args.sink.is_none() {
@@ -237,11 +286,19 @@ pub async fn run_compute(args: ComputeArgs) -> Result<ExitCode> {
             let ledger = CheckpointLedger::load(dir)
                 .await
                 .context("load checkpoint ledger")?;
-            let skip = ledger.skip_ids();
+            let mut skip = ledger.skip_ids();
+            let rerun = ledger
+                .failed_ids_matching(dir, &args.rerun_failed)
+                .await
+                .context("filter failed task ids")?;
+            for id in &rerun {
+                skip.remove(id);
+            }
             eprintln!(
-                "[ckpt] resume: ready={} fail={} skip_total={}",
+                "[ckpt] resume: ready={} fail={} rerun={} skip_total={}",
                 ledger.ready.len(),
                 ledger.failed.len(),
+                rerun.len(),
                 skip.len()
             );
             tracker.seed_from_ledger(&ledger);
@@ -329,19 +386,18 @@ pub async fn run_compute(args: ComputeArgs) -> Result<ExitCode> {
     }
 
     let failed = collected.iter().filter(|r| !r.ok || r.cancelled).count();
+    let summary = build_run_summary(&collected, args.sink.as_ref());
+    if let Some(dir) = &args.sink {
+        tokio::fs::write(
+            dir.join("summary.json"),
+            serde_json::to_vec_pretty(&summary).context("encode run summary")?,
+        )
+        .await
+        .context("write summary.json")?;
+    }
 
     if matches!(results_fmt, ResultsFormat::Summary) {
-        let ok = collected.iter().filter(|r| r.ok && !r.cancelled).count();
-        println!(
-            "{}",
-            serde_json::json!({
-                "total": collected.len(),
-                "ok": ok,
-                "failed": failed,
-                "cancelled": collected.iter().filter(|r| r.cancelled).count(),
-                "sink": args.sink.as_ref().map(|p| p.display().to_string()),
-            })
-        );
+        println!("{summary}");
         for r in &collected {
             if !r.ok {
                 if let Ok(line) = r.to_ndjson() {
@@ -355,6 +411,44 @@ pub async fn run_compute(args: ComputeArgs) -> Result<ExitCode> {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    })
+}
+
+fn build_run_summary(results: &[TaskResult], sink: Option<&PathBuf>) -> serde_json::Value {
+    let mut aggregates: BTreeMap<String, (f64, u64)> = BTreeMap::new();
+    let mut error_kinds: BTreeMap<String, u64> = BTreeMap::new();
+    let mut artifacts = 0u64;
+    for result in results {
+        for (name, value) in &result.metrics {
+            let entry = aggregates.entry(name.clone()).or_insert((0.0, 0));
+            entry.0 += value;
+            entry.1 += 1;
+        }
+        artifacts += result.artifacts.len() as u64;
+        if let Some(kind) = &result.error_kind {
+            *error_kinds
+                .entry(format!("{kind:?}").to_lowercase())
+                .or_default() += 1;
+        }
+    }
+    let metrics: BTreeMap<_, _> = aggregates
+        .into_iter()
+        .map(|(name, (sum, count))| {
+            (
+                name,
+                serde_json::json!({"count": count, "sum": sum, "mean": sum / count as f64}),
+            )
+        })
+        .collect();
+    serde_json::json!({
+        "total": results.len(),
+        "ok": results.iter().filter(|r| r.ok && !r.cancelled).count(),
+        "failed": results.iter().filter(|r| !r.ok || r.cancelled).count(),
+        "cancelled": results.iter().filter(|r| r.cancelled).count(),
+        "error_kinds": error_kinds,
+        "metrics": metrics,
+        "artifact_count": artifacts,
+        "sink": sink.map(|p| p.display().to_string()),
     })
 }
 

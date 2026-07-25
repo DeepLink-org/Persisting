@@ -255,7 +255,7 @@ key = region.project_prefix([SESSION])     # → ("s1",) for routing
 assert is_range_query(region, TIME)        # → True
 ```
 
-→ [TTAS Design Document](../design/ttas.md) for the full formal model.
+→ [TTAS Design Document](../design/tensor-address-space.md) for the full formal model.
 
 ---
 
@@ -271,5 +271,5 @@ assert is_range_query(region, TIME)        # → True
 ## Next Steps
 
 - [API Reference — Tensor Memory](../api/tensor-memory.md) — all method signatures
-- [TTAS Design Document](../design/ttas.md) — formal addressing model
+- [TTAS Design Document](../design/tensor-address-space.md) — formal addressing model
 - [Distributed Tiered Storage](../design/distributed-tiered-storage.md) — block model, mmap+UFFD, cross-node

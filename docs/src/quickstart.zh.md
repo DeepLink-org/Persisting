@@ -8,7 +8,7 @@
 pip install persisting[lance]
 ```
 
-CLI 工具（`persisting traj`、`persisting compute`、`persisting search`）需[从源码构建](installation.md#from-source)。
+CLI 工具（`persisting traj`、`persisting compute`、`persisting search`）需[从源码构建](installation.md)。
 
 ---
 

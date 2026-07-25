@@ -1,17 +1,19 @@
 # API Reference
 
-Persisting's APIs share a common core — TTAS addressing, Lance storage, Pulsing distribution.
+This section documents public Python APIs. APIs marked experimental have a
+smaller compatibility commitment and should not be treated as the shared
+runtime for every Persisting capability.
 
 | Module | Use for | Status |
 |--------|---------|--------|
-| [Tensor Memory](tensor-memory.md) | `persisting.open()` — unified storage for parameters, KV cache, trajectories | 🧪 Experimental |
+| [Tensor Memory](tensor-memory.md) | `persisting.open()` — local/tiered tensor namespace API | 🧪 Experimental |
 | [Queue](queue.md) | `persisting.Queue` — event streaming, KV interface, samplers | ✅ Stable |
 | [Search](search.md) | `persisting.search` — document indexing and retrieval | ✅ Stable |
 | [Tensor Address Space](tensor-address-space.md) | `persisting.core` — direct access to Dimension, Region, canonicalization | 🧪 Experimental |
 
 ---
 
-## Unified Tensor Storage
+## Tensor Memory
 
 ```python
 persisting.open(namespace, dims, ...) → TensorNamespace
@@ -20,13 +22,15 @@ h.tensor()                           → ndarray
 h.put(data)                          → None
 ```
 
-One interface for all three workloads:
+Current namespace examples:
 
 | Namespace | Dims | Use |
 |-----------|------|-----|
 | `params/llama-70b` | `(param_id, shard)` | Model weights |
 | `kvcache/v1` | `(session, layer, head, time)` | KV cache |
-| `trajectories/v1` (planned) | `(run_id, time)` | Trajectory tensor access |
+
+Trajectory capture uses its own Lance/Markdown storage model today; it does
+not expose a tensor namespace through this API.
 
 → [Tensor Memory API](tensor-memory.md)
 

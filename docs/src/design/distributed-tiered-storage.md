@@ -2,7 +2,7 @@
 
 本文档涵盖 Block 模型、虚拟地址映射（mmap + UFFD）、分布式路由（Pulsing）与传输选路。
 
-寻址模型（TTAS）的完整形式化定义见 [分层张量地址空间 (TTAS)](tensor_address_algebra.md)。BlockStore 内部实现细节（Block Table、事件循环、缺页处理）见 [BlockStore 内部设计](blockstore_internals.zh.md)。实现步骤与单测清单见 [分层存储实现步骤](../dev/tiered_storage_implementation_steps.md)。
+寻址模型（TTAS）的完整形式化定义见 [分层张量地址空间 (TTAS)](tensor-address-space.md)。BlockStore 内部实现细节（Block Table、事件循环、缺页处理）见 [BlockStore 内部设计](block-store.md)。实现步骤与单测清单见 [分层存储实现步骤](../dev/tiered-storage-steps.md)。
 
 ---
 
@@ -16,7 +16,7 @@ TTAS（Tiered Tensor Address Space）是 Persisting 数据面的寻址模型：�
 
 TTAS 不是独立软件层，而是贯穿各层的寻址模型：TensorNamespace 用它做用户下标 → Region，DistributedStore 用它做路由，BlockStore 用它做 Region → Block 列表。
 
-完整定义（Dimension、Address、Constraint、规范化、lowering）见 [TTAS](tensor_address_algebra.md)。
+完整定义（Dimension、Address、Constraint、规范化、lowering）见 [TTAS](tensor-address-space.md)。
 
 ---
 
@@ -165,7 +165,7 @@ Backing 协议不需要改变。`BlockMappedBacking` 只是 Backing 的一个实
 |------|------|
 | **TensorNamespace / Handler** | 用户接口。`open() → kv[key] → h.tensor() / h.put(data)`。使用 TTAS 做下标 → Region。 |
 | **DistributedStore** | 分布式路由。使用 TTAS 的 partition_dims 做路由决策，本地请求发给本机 BlockStore，远程请求经 Pulsing 解析端点后发给远程 BlockStore。 |
-| **BlockStore**（每节点一个） | 单节点分层存储 + 对外服务。管理本机 L0 GPU / L1 CPU / L3 SSD 的 Block（L2 Remote 的 Block 由远程节点管理，本机仅跟踪），miss 时 fetch。通过 mmap + UFFD 对上层暴露连续虚拟空间。内部设计详见 [BlockStore 内部设计](blockstore_internals.zh.md)。 |
+| **BlockStore**（每节点一个） | 单节点分层存储 + 对外服务。管理本机 L0 GPU / L1 CPU / L3 SSD 的 Block（L2 Remote 的 Block 由远程节点管理，本机仅跟踪），miss 时 fetch。通过 mmap + UFFD 对上层暴露连续虚拟空间。内部设计详见 [BlockStore 内部设计](block-store.md)。 |
 
 TTAS 是贯穿各层的寻址模型，不是独立的一层。
 

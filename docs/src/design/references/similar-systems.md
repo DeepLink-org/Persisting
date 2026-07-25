@@ -1,6 +1,6 @@
 # 类似系统参考 — 分布式分层存储
 
-**文档用途**：基于 [Distributed Tiered Storage](distributed_tiered_storage.md) 的设计要点，梳理可参考、借鉴的类似系统，供实现与演进时对照。
+**文档用途**：基于 [Distributed Tiered Storage](../distributed-tiered-storage.md) 的设计要点，梳理可参考、借鉴的类似系统，供实现与演进时对照。
 
 ---
 
@@ -125,4 +125,4 @@ Persisting 分布式分层存储的核心特征可概括为：
 | **GPU VA** | CUDA UVM/VMM API 的 reserve-map-setAccess、多 GPU VA 实践 | 仅 L0 用 GPU VA；L1 用 mmap+UFFD；调度统一在 Rust |
 | **分布式** | Plasma 同节点零拷贝与对象语义 | 我们以 Block 为单元、跨节点经 Pulsing 路由、RDMA/ RPC |
 
-实现时建议优先参考：**UMap**（UFFD 与 handler 设计）、**LMCache**（多 tier 与推理引擎集成）、**CUDA VMM**（L0 Block 映射），并在文档与代码中保持与 [Distributed Tiered Storage](distributed_tiered_storage.md) 的对应关系。
+实现时建议优先参考：**UMap**（UFFD 与 handler 设计）、**LMCache**（多 tier 与推理引擎集成）、**CUDA VMM**（L0 Block 映射），并在文档与代码中保持与 [Distributed Tiered Storage](../distributed-tiered-storage.md) 的对应关系。

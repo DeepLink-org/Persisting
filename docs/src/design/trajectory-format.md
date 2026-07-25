@@ -57,7 +57,7 @@ Import 路径仍使用批量 **append**。详见 [轨迹存储 §5.3](trajectory
 | 字段 | 必填 | 说明 |
 |------|:----:|------|
 | `type` | ✅ | 固定 `"markdown"`（存储单元类型，不是 `CaptureRecord.kind`） |
-| `length` | ✅ | 正文 **UTF-8 字节长度**，含 [§2.5](#25-subagent-脚注) 脚注行；编码时由 `encode_block_with_header` 写入 |
+| `length` | ✅ | 正文 **UTF-8 字节长度**，含 2.5 节脚注行；编码时由 `encode_block_with_header` 写入 |
 | `v` | 推荐 | 块头 schema 版本，当前为 **`1`**；解析器应忽略未知版本或按迁移表处理 |
 | `format_block` | 可选 | 字符串别名 **`"1.0"`**，与文档级 `format: persisting:1.0` 对应；工具可只实现其一 |
 | `kind` | ✅ | `CaptureRecord.kind`（如 `llm.request`、`llm.response.stream`） |
@@ -134,7 +134,7 @@ prompt: A gray tabby cat hugging an otter…
 | `dialogue` | ✅ | ❌ |
 | `full` | ✅ | 在 `payload.body` 中保留完整 JSON（含 base64），仍不进 Markdown 正文 |
 
-**物化限制**：`traj materialize` 当前**不会**把占位符展开为 `<img>`；完整像素仅在 `full` 级 Lance `payload.body` 或后续 sidecar Phase 1 中可恢复。详见 [Capture 架构 §6.4](capture.md#64-可见对话提取含多模态)。
+**物化限制**：`traj materialize` 当前**不会**把占位符展开为 `<img>`；完整像素仅在 `full` 级 Lance `payload.body` 或后续 sidecar Phase 1 中可恢复。详见 [Capture 架构](capture.md) 的多模态说明。
 
 ### 2.8 完整示例
 
@@ -169,8 +169,8 @@ YAML frontmatter 固定 `format: persisting:1.0`，并含会话级 rollup（见 
 
 **Golden 示例**（由 `encode_block_with_header` 生成，CI 校验）：
 
-- 测试 fixture：[`crates/persisting-capture/tests/fixtures/tlv/demo-run-001.md`](../../crates/persisting-capture/tests/fixtures/tlv/demo-run-001.md)
-- 文档示例副本：[`examples/trajectory-tlv/demo-agent/demo-run-001/0001.md`](../../examples/trajectory-tlv/demo-agent/demo-run-001/0001.md)
+- 测试 fixture：`crates/persisting-capture/tests/fixtures/tlv/demo-run-001.md`
+- 文档示例副本：[trajectory TLV 示例](https://github.com/DeepLink-org/Persisting/blob/main/examples/trajectory-tlv/demo-agent/demo-run-001/0001.md)
 
 重新生成：`WRITE_TLV_GOLDEN=1 cargo test -p persisting-capture --test tlv_golden demo_run_001_matches_golden_fixture`
 
@@ -199,7 +199,7 @@ YAML frontmatter 固定 `format: persisting:1.0`，并含会话级 rollup（见 
 | 数据完整性 | 有损（过滤内部事件） | 无损 |
 | 典型操作 | 打开、git diff | replay、stats、Search |
 
-双向转换由 `persisting-capture::trajectory_convert` 与引擎 `trajectory::convert` 实现。Subagent 块头字段与 [§2.5](#25-subagent-脚注) 脚注分工见上。详见 [轨迹存储模型](trajectory.md)。
+双向转换由 `persisting-capture::trajectory_convert` 与引擎 `trajectory::convert` 实现。Subagent 块头字段与 2.5 节脚注分工见上。详见 [轨迹存储模型](trajectory.md)。
 
 ---
 

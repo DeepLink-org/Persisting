@@ -33,6 +33,43 @@ impl CheckpointLedger {
         let failed = load_task_ids(&root.join("failures.ndjson")).await?;
         Ok(Self { ready, failed })
     }
+
+    /// Task ids in `failures.ndjson` whose stable `error_kind` matches one of
+    /// `kinds`. Legacy failure rows without the field are treated as `execute`.
+    pub async fn failed_ids_matching(
+        &self,
+        root: &Path,
+        kinds: &[String],
+    ) -> Result<HashSet<String>> {
+        let wanted: HashSet<&str> = kinds.iter().map(String::as_str).collect();
+        if wanted.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let path = root.join("failures.ndjson");
+        let mut matched = HashSet::new();
+        if !path.exists() {
+            return Ok(matched);
+        }
+        let f = fs::File::open(&path)
+            .await
+            .with_context(|| format!("open {}", path.display()))?;
+        let mut lines = BufReader::new(f).lines();
+        while let Some(line) = lines.next_line().await? {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            let kind = value
+                .get("error_kind")
+                .and_then(|kind| kind.as_str())
+                .unwrap_or("execute");
+            if wanted.contains(kind) {
+                if let Some(id) = value.get("task_id").and_then(|id| id.as_str()) {
+                    matched.insert(id.to_string());
+                }
+            }
+        }
+        Ok(matched)
+    }
 }
 
 async fn load_task_ids(path: &Path) -> Result<HashSet<String>> {
@@ -262,6 +299,31 @@ mod tests {
         tracker.seed_from_ledger(&ledger);
         assert_eq!(tracker.snapshot().ok, 1);
         assert_eq!(tracker.snapshot().fail, 1);
+    }
+
+    #[tokio::test]
+    async fn failed_ids_can_be_filtered_by_error_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("failures.ndjson"),
+            concat!(
+                r#"{"task_id":"execute","error_kind":"execute"}"#,
+                "\n",
+                r#"{"task_id":"infra","error_kind":"infra"}"#,
+                "\n",
+                r#"{"task_id":"legacy"}"#,
+                "\n"
+            ),
+        )
+        .await
+        .unwrap();
+        let ledger = CheckpointLedger::load(dir.path()).await.unwrap();
+        let ids = ledger
+            .failed_ids_matching(dir.path(), &["execute".into()])
+            .await
+            .unwrap();
+        assert!(ids.contains("execute") && ids.contains("legacy"));
+        assert!(!ids.contains("infra"));
     }
 
     #[tokio::test]

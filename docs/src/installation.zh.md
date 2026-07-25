@@ -53,4 +53,4 @@ print("PersistingBackend:", PersistingBackend)
 ## 下一步
 
 - [快速开始](quickstart.md) — 5 分钟上手
-- [API 参考](api_reference.md) — 完整 API 文档
+- [API 参考](api/index.md) — 完整 API 文档

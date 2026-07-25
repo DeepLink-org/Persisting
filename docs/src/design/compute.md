@@ -2,7 +2,7 @@
 
 > 状态：**Phase-1 已落地**  
 > 代码：`crates/persisting-compute` · CLI：`persisting compute`  
-> 用法：[Compute 快速上手](../guide/compute_quickstart.zh.md) · 示例：`examples/compute/`
+> 用法：[Compute 快速上手](../guide/compute.md) · 示例：`examples/compute/`
 
 薄编排层：算法写一个 Python 文件（`plan` + `execute`），控制面负责流式派发、并行执行、落盘与续跑。  
 **不是** Ray，**不**嵌用户解释器，**不**自研替代 `torchrun` 的启动器。
@@ -66,9 +66,9 @@ L3 执行缝         每槽一个长驻 Python host，只调用户 execute
 
 ## 3. 用户合约（算法面）
 
-产品面只有一个文件、两个函数（细节与示例见[快速上手](../guide/compute_quickstart.zh.md)）：
+产品面只有一个文件、两个函数（细节与示例见[快速上手](../guide/compute.md)）：
 
-1. **`plan()`**（或常量 `PLAN`）流式产出可 JSON 序列化的 object。
+1. **`plan()`**（或常量 `PLAN`）流式产出可 JSON 序列化的 object；每项必须包含稳定、非空的字符串或数字 `id`。系统不生成随机 ID，因为同一逻辑任务跨运行必须保持相同 ID，才能可靠去重和续跑。
 2. **`execute(item)`** 收到与 yield **同形**的 dict（`{id, …fields}`）。
 3. **argv 一致**：`python task.py --n 2` 与 `persisting compute task.py -- --n 2` 看到同一套 `sys.argv`。
 4. **扩规模不改文件**：只换 `-w` / `--per-worker` / `torchrun`。
@@ -76,6 +76,12 @@ L3 执行缝         每槽一个长驻 Python host，只调用户 execute
 内部控制面会把平面 JSON 归一成 `TaskExpr`（`id` / `op=execute` / `args` / `meta`）；产品面 **只支持** `op=execute`。新能力写在用户 `execute` 里，不靠扩展 op 表。
 
 结果线格式为 `TaskResult`：`task_id`、`ok`、`cancelled`、`value` / `error`、`worker`、时间戳、`infra_retries` 等。
+
+算法脚手架扩展保持在这个边界内：`setup_worker(context)` 与
+`teardown_worker()` 为可选的 process-local hook，`execute(item)` 仍是唯一必需且
+无状态的计算入口。worker context 通过 Python 的 `persisting_compute.context()`
+读取，不作为 `execute` 参数传递。`TaskResult` 还可投影用户返回 object 中的
+`metrics`（数值）与 `artifacts`（大结果引用）；它们不改变原始 `value`。
 
 ---
 
@@ -174,6 +180,27 @@ Worker **不**解释业务；Driver **不**碰 Python。失败 traceback 编进 
 | L2 | 计算单元在不在（ask / 节点） | `--retries` + sticky + quarantine |
 | L3 | 要不要再产一次（业务） | 未做；留给用户 `execute` |
 
+### 6.4 执行与恢复语义契约
+
+Compute 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否需要使用
+`task_id` 在外部系统中实现幂等：
+
+| 场景 | 保证与行为 |
+|------|------------|
+| worker reply 丢失、原 slot 仍可用 | 只在同一 slot 重试；优先从 slot `ResultCache` 返回结果，不跨 slot 重跑 |
+| 已接触的 slot 被 quarantine / 永久失联 | 拒绝跨 slot 重跑，任务终止为 infra failure |
+| `execute()` 返回业务错误 | 记录 failure；`--retries` 不重跑业务错误 |
+| Driver / rank0 在结果提交前崩溃 | 该任务处于不确定状态；全作业重启后可能再次执行 |
+| terminal result 已写入 JSONL | `--resume` 按稳定 `task_id` 跳过，不再派发 |
+| JSONL append 返回成功但机器随后掉电 | 当前仅 `flush`、未逐条 `fsync`；不能视为断电级 durability |
+| 用户取消在途任务 | kill 对应 Python host 并记录 cancelled；外部副作用是否已发生不可由控制面回滚 |
+
+因此当前语义可概括为：
+
+- **同一作业内的 infra retry**：sticky、偏向避免重复执行；
+- **整个作业崩溃后 resume**：以已提交 JSONL 为界，未提交任务可能 at-least-once；
+- **外部副作用**：由用户以稳定 `task_id` 作为 idempotency key。
+
 ---
 
 ## 7. 模块地图
@@ -230,7 +257,7 @@ Worker **不**解释业务；Driver **不**碰 Python。失败 traceback 编进 
 
 ## 9. 相关文档
 
-- [Compute 快速上手](../guide/compute_quickstart.zh.md)
+- [Compute 快速上手](../guide/compute.md)
 - [CLI 整体架构](cli.md)（`compute` 为例外静态路径）
 - [轨迹存储](trajectory.md)（`--traj` / L1）
-- 示例：[`examples/compute/`](../../../examples/compute/)
+- 示例：[examples/compute](https://github.com/DeepLink-org/Persisting/tree/main/examples/compute)

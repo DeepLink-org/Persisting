@@ -9,18 +9,18 @@
 
 ## 目录
 
-1. [摘要](#1-摘要)
-2. [问题与价值](#2-问题与价值)
-3. [设计原则](#3-设计原则)
-4. [核心概念](#4-核心概念)
-5. [系统全景](#5-系统全景)
-6. [数据流：从 HTTP 到轨迹](#6-数据流从-http-到轨迹)（含 [§6.4 多模态](#64-可见对话提取含多模态)）
-7. [存储与一致性](#7-存储与一致性)
-8. [网关与协议](#8-网关与协议)
-9. [多 Agent 与会话](#9-多-agent-与会话)
-10. [可靠性与运行形态](#10-可靠性与运行形态)
-11. [演进方向](#11-演进方向)
-12. [延伸阅读](#12-延伸阅读)
+1. 摘要
+2. 问题与价值
+3. 设计原则
+4. 核心概念
+5. 系统全景
+6. 数据流：从 HTTP 到轨迹（含 §6.4 多模态）
+7. 存储与一致性
+8. 网关与协议
+9. 多 Agent 与会话
+10. 可靠性与运行形态
+11. 演进方向
+12. 延伸阅读
 
 ---
 
@@ -321,7 +321,7 @@ sequenceDiagram
 | `dialogue`（默认） | `user_content` / `assistant_content` 可见对话文本 | ❌ |
 | `full` | 同上 + 完整解析后的请求/响应 JSON | ✅ |
 
-省略无关探测流量（如 `count_tokens`、history replay）的规则与采集级别无关，由物化过滤统一处理。详见 [§6.4](#64-可见对话提取含多模态)。
+省略无关探测流量（如 `count_tokens`、history replay）的规则与采集级别无关，由物化过滤统一处理。详见本页 6.4 节。
 
 存储记录类型（`llm.request`、`llm.response.stream`、`llm.spawn_link`、`session.*` 等）属于**存储层词汇**，由故事层事件推导，不必与 HTTP 一一对应。
 
@@ -361,7 +361,7 @@ Capture 在 **Dialogue** 级别下，从客户端原始 HTTP body（而非 upstr
 纯图无文字的用户 turn **仍计为 1 轮**（修复「有图无文 → stats 0 turns」）。  
 `capture_level = full` 时完整 JSON 仍在 `payload.body`，但 Markdown 物化**仍只展示占位符**，不嵌入像素数据。
 
-**后续（规划）**：sidecar 资产目录 `{run}/assets/{call_id}/…` + payload 引用；`traj materialize` 可输出 `![…](assets/…)`。见 [演进 §11](#11-演进方向)。
+**后续（规划）**：sidecar 资产目录 `{run}/assets/{call_id}/…` + payload 引用；`traj materialize` 可输出 `![…](assets/…)`。见本页 11 节演进方向。
 
 协议回归：`crates/persisting-capture/tests/ag_fixture_tests.rs` + `tests/support/ag_capture_cases.rs`（agentgateway fixture 矩阵）。
 
@@ -459,7 +459,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 | Capture 生命周期 / run 头 | `run-{timestamp}-…`（与目录名一致） |
 | Claude Code 对话 HTTP | header 注入的 UUID（与 run id 不同） |
 
-因此 **`traj stats` 扫描 agent 目录时**，对 run bucket（`session_id == root_session_id`）会先读 Lance 中 distinct `session_id`，再**逐分区统计**，避免「第二个 session 显示 0 turns」。实现：`persisting-engine::trajectory::expand_story_locations`。详见 [轨迹存储 §7.1.1](trajectory.md#711-run-bucket-内多-session_id-分区)。
+因此 **`traj stats` 扫描 agent 目录时**，对 run bucket（`session_id == root_session_id`）会先读 Lance 中 distinct `session_id`，再**逐分区统计**，避免「第二个 session 显示 0 turns」。实现：`persisting-engine::trajectory::expand_story_locations`。详见 [轨迹存储](trajectory.md) 的 run bucket 分区说明。
 
 ---
 
@@ -484,7 +484,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 | **Barrier flush** | 优雅退出前排空队列与 Actor 邮箱 |
 | **Dead letter** | 可运维重放，而非静默丢数 |
 
-已知限制（实现仍在加强）：极端崩溃场景下 WAL 序号与重复投递策略、超长会话 Markdown 全文件 upsert 的 IO 成本等——见 [§11 演进方向](#11-演进方向)。
+已知限制（实现仍在加强）：极端崩溃场景下 WAL 序号与重复投递策略、超长会话 Markdown 全文件 upsert 的 IO 成本等——见本页 11 节演进方向。
 
 ### 10.2 运行形态
 
@@ -530,7 +530,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 | Lance 列布局优化 | 更好利用列存检索，而非大 blob |
 | 协议面收敛 | 随行业 API 稳定，收缩长期维护的转换矩阵 |
 
-块格式已通过 `v: 1` 预留兼容；详见 [轨迹 Markdown 格式 §2.6](trajectory-format.md#26-大文件-upsert演进格式不变)。
+块格式已通过 `v: 1` 预留兼容；详见 [轨迹 Markdown 格式](trajectory-format.md) 的大文件 upsert 说明。
 
 ---
 
@@ -547,7 +547,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 
 **示例轨迹文件**（由编码器生成的 golden，可供格式对照）：
 
-- [`examples/trajectory-tlv/demo-agent/demo-run-001/0001.md`](../../examples/trajectory-tlv/demo-agent/demo-run-001/0001.md)
+- [trajectory TLV 示例](https://github.com/DeepLink-org/Persisting/blob/main/examples/trajectory-tlv/demo-agent/demo-run-001/0001.md)
 
 ---
 

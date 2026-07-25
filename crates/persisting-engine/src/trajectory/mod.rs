@@ -20,11 +20,16 @@ pub use persisting_proto::{
 mod convert;
 mod expand;
 mod judge;
+mod judge_columns;
 mod judge_stats;
-pub mod layers;
 pub mod path;
 mod storage;
 pub mod store;
+
+pub use judge_columns::{
+    dataset_path as judge_dataset_path, has_judgment, layer_field_name, read_judge_rows,
+    write_judge_rows, JudgeRow, MANUAL_RATIONALE_PREFIX, STORY_CALL_ID,
+};
 
 pub use storage::{detect_story_primary_layer, story_stats_note};
 

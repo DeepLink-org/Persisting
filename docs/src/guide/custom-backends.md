@@ -98,4 +98,4 @@ Custom backends that implement this interface can be used internally where the q
 ## Next Steps
 
 - [Architecture](../design/architecture.md) — How backends fit into the system
-- [API Reference](../api_reference.md) — Full API documentation
+- [API Reference](../api/index.md) — Full API documentation

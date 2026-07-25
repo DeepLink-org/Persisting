@@ -1,72 +1,31 @@
-# Design Documents
+# Architecture & Internals
 
-Persisting's architecture, addressing model, and storage design.
+These documents explain how Persisting is built. They are not the primary
+starting point for using a capability; begin with [Choose a Capability](../guide/index.md)
+for supported workflows.
 
----
+## Read by subsystem
 
-## Architecture
+| Subsystem | Start here | Then read |
+|---|---|---|
+| Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
+| Capture and trajectories | [Capture pipeline](capture.md) | [Trajectory storage](trajectory.md) → [Markdown format](trajectory-format.md) |
+| Compute | [Compute control plane](compute.md) | [Compute guide](../guide/compute.md) |
+| Tensor Memory (experimental) | [TTAS model](tensor-address-space.md) | [Tiered storage](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
+| CLI boundary | [CLI architecture](cli.md) | command references under **Reference** |
 
-| Document | Description |
-|----------|-------------|
-| [Architecture](architecture.md) | Queue persistence and system overview |
-| [CLI Architecture](cli.md) | Thin CLI + dynamic engine loading (中文) |
+## Maturity and scope
 
-## Tiered Storage
+| Area | Status | Notes |
+|---|---|---|
+| Capture, Queue, Search, Compute | Implemented | Each has an independent product path and storage model |
+| TTAS / tiered tensor memory | Experimental | Host/SSD work exists; GPU and cross-node data paths remain planned |
+| Research comparisons | Reference | Input to future design, not a product commitment |
 
-| Document | Description |
-|----------|-------------|
-| [TTAS Addressing](tensor-address-space.md) | Tiered Tensor Address Space — formal addressing model |
-| [Distributed Tiered Storage](distributed-tiered-storage.md) | Block model, virtual address mapping, Pulsing integration |
-| [Block Store Internals](block-store.md) | Block table, page fault handling, event loop (中文) |
+## Design principles
 
-## Capture & Trajectory
-
-| Document | Description |
-|----------|-------------|
-| [Capture Architecture](capture.md) | LLM proxy, event model, dual storage (中文) |
-| [Trajectory Storage](trajectory.md) | Lance canonical + Markdown materialization (中文) |
-| [Trajectory Markdown Format](trajectory-format.md) | TLV block model, frontmatter, live upsert (中文) |
-| [Traj CLI](cli-traj.md) | `persisting traj` command reference (中文) |
-| [Capture CLI](cli-capture.md) | `traj capture` / `traj proxy` subcommands (中文) |
-
-## Compute
-
-| Document | Description |
-|----------|-------------|
-| [Compute Architecture](compute.md) | Driver/Worker, scheduling, sink, checkpoint (中文) |
-
-## Search
-
-| Document | Description |
-|----------|-------------|
-| [Search CLI](cli-search.md) | `persisting search` command design (中文) |
-
----
-
-## Reference & Analysis
-
-| Document | Description |
-|----------|-------------|
-| [Similar Systems](references/similar-systems.md) | LMCache, vLLM, UMap, CUDA VMM comparison |
-| [vs TransferQueue](references/transfer-queue-comparison.md) | Scoring and migration analysis |
-| [TransferQueue Interface](references/transfer-queue-interface.md) | API comparison table |
-| [LMCache KV Cache](references/lmcache.md) | LMCache analysis for KV Cache implementation (中文) |
-
----
-
-## Implementation Tracking
-
-| Document | Description |
-|----------|-------------|
-| [Tiered Storage Steps](../dev/tiered-storage-steps.md) | Step-by-step implementation with test checklists |
-
----
-
-## Design Principles
-
-1. **Lance is the baseline** — All caches and accelerations are built on top of "reads from file."
-2. **One foundation, multiple patterns** — Trajectory, Search, KV, Queue share the Lance ecosystem.
-3. **Trajectory dual-view** — Lance (canonical dataset) + Markdown (materialized); `-f md` live upserts Markdown, `-f lance` writes Lance only (materialize for md).
-4. **Capture is self-contained** — Embedded proxy captures LLM traffic; IDE import is supplementary.
-5. **TTAS is internal** — Users see `kv[key].tensor()`, not raw address algebra.
-6. **Performance is product** — P99 latency, GPU utilization, capture real-time fidelity.
+1. Keep user programming models small and capability-specific.
+2. Use Lance as a durable baseline where a subsystem needs columnar storage.
+3. Keep control-plane concerns separate from data movement and user execution.
+4. Treat TTAS as an experimental internal substrate until its end-to-end data path is complete.
+5. Prefer explicit failure and recovery semantics over implied exactly-once guarantees.

@@ -38,9 +38,59 @@ if __name__ == "__main__":
 
 约定很简单：
 
-- `plan()` yield dict——每条必须有 `id`（缺则生成 UUID）
+- `plan()` yield dict——每条必须有稳定、非空的字符串或数字 `id`
+- 系统不会隐式生成 ID：同一个逻辑任务每次运行都必须产出相同 ID，去重与 `--resume` 才能正确工作
 - `execute(item)` 收到 `plan()` yield 出来的那条
 - 参数放在 `--` 后面——和 `python task.py --n 2` 一样
+
+## Worker 本地初始化，但 `execute` 保持无状态
+
+`execute(item)` 被刻意保持为无状态。每个 worker slot 都有一个长驻 Python host，
+因此脚本可选地只初始化一次进程本地模型或客户端，而不改变 `execute` 签名：
+
+```python
+from persisting_compute import context
+
+def setup_worker(ctx):
+    global model
+    model = load_model(ctx["device"])
+
+def execute(item):
+    return {"score": model(item["prompt"])}
+
+def teardown_worker():
+    model.close()
+```
+
+`context()` 返回 worker context 的副本：`worker_id`、`rank`、`local_rank`、
+`device`、`job_id`、可选 `output_dir` 和 `labels`。可使用 `--job-id`、`--sink`
+及 `--worker-label gpu,a100` 设置运行元数据。本版本 labels 仅提供信息，调度仍是
+least-loaded。
+
+## 结果、指标与失败任务重跑
+
+`execute()` 可以返回任意 JSON 值。返回 object 时，额外的 `metrics` 与
+`artifacts` object 会被写入终态结果：
+
+```python
+def execute(item):
+    score = evaluate(item)
+    return {
+        "metrics": {"reward": score, "tokens": 128},
+        "artifacts": {"trajectory": f"lance://rollouts/{item['id']}"},
+        "payload": {"score": score},
+    }
+```
+
+使用 `--sink runs/exp-01` 时，终态行包含 `metrics`、`artifacts`、`error_kind`
+和 `retryable`；Compute 会额外写入包含 count/sum/mean 指标聚合的 `summary.json`。
+失败类型稳定为 `execute`、`infra`、`cancelled`。
+
+resume 默认跳过所有终态失败；当算法确认安全时，可只重跑一类失败：
+
+```bash
+persisting compute plan.py --sink runs/exp-01 --resume --rerun-failed infra
+```
 
 ---
 

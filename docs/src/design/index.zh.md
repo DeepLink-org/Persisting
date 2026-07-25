@@ -1,73 +1,30 @@
-# 设计文档
+# 架构与内部实现
 
-Persisting 的架构、寻址模型与存储设计。
+这些文档解释 Persisting 的实现方式。使用某项能力时，请优先阅读[选择能力](../guide/index.md)
+中的已支持工作流。
 
----
+## 按子系统阅读
 
-## 架构
+| 子系统 | 先读 | 再读 |
+|---|---|---|
+| Queue | [队列持久化](architecture.zh.md) | [自定义后端指南](../guide/custom-backends.md) |
+| Capture 与轨迹 | [Capture 管线](capture.md) | [轨迹存储](trajectory.md) → [Markdown 格式](trajectory-format.md) |
+| Compute | [Compute 控制面](compute.md) | [Compute 指南](../guide/compute.md) |
+| Tensor Memory（实验性） | [TTAS 模型](tensor-address-space.md) | [分层存储](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
+| CLI 边界 | [CLI 整体架构](cli.md) | **参考**中的命令文档 |
 
-| 文档 | 描述 |
-|------|------|
-| [Architecture](architecture.md) | 队列持久化与系统概览（英文） |
-| [架构设计](architecture.zh.md) | 队列持久化、并发模型、Tensor Memory |
-| [CLI 整体架构](cli.md) | 瘦 CLI + 动态引擎加载 |
+## 成熟度与范围
 
-## 分层存储
-
-| 文档 | 描述 |
-|------|------|
-| [TTAS 寻址模型](tensor-address-space.md) | 分层张量地址空间——形式化寻址模型 |
-| [分布式分层存储](distributed-tiered-storage.md) | Block 模型、虚拟地址映射、Pulsing 集成（英文） |
-| [Block Store 内部设计](block-store.md) | Block Table、缺页处理、事件循环 |
-
-## Capture 与轨迹
-
-| 文档 | 描述 |
-|------|------|
-| [Capture 架构设计](capture.md) | LLM 代理、事件模型、双层存储 |
-| [轨迹存储模型](trajectory.md) | Lance canonical + Markdown 物化 |
-| [轨迹 Markdown 格式](trajectory-format.md) | TLV 块模型、frontmatter、live upsert |
-| [Traj CLI](cli-traj.md) | `persisting traj` 命令参考 |
-| [Capture CLI](cli-capture.md) | `traj capture` / `traj proxy` 子命令 |
-
-## Compute
-
-| 文档 | 描述 |
-|------|------|
-| [Compute 架构](compute.md) | Driver/Worker、调度、sink、checkpoint |
-
-## Search
-
-| 文档 | 描述 |
-|------|------|
-| [Search CLI](cli-search.md) | `persisting search` 命令设计 |
-
----
-
-## 参考与分析
-
-| 文档 | 描述 |
-|------|------|
-| [类似系统参考](references/similar-systems.md) | LMCache、vLLM、UMap、CUDA VMM |
-| [vs TransferQueue](references/transfer-queue-comparison.md) | 打分与迁移分析 |
-| [TransferQueue 接口对比](references/transfer-queue-interface.md) | API 对照表 |
-| [LMCache KV Cache 参考](references/lmcache.md) | KV Cache 实现参考 |
-
----
-
-## 实现追踪
-
-| 文档 | 描述 |
-|------|------|
-| [分层存储实现步骤](../dev/tiered-storage-steps.md) | 分步实现与测试清单 |
-
----
+| 区域 | 状态 | 说明 |
+|---|---|---|
+| Capture、Queue、Search、Compute | 已实现 | 各自有独立的产品路径和存储模型 |
+| TTAS / 分层张量内存 | 实验性 | 已有 host/SSD 工作；GPU 与跨节点数据路径仍在规划 |
+| 竞品与系统比较 | 参考 | 为后续设计提供输入，不构成产品承诺 |
 
 ## 设计原则
 
-1. **Lance 是兜底** — 上层缓存与加速都建立在「从文件读」这一基线之上。
-2. **一种底座，多种模式** — 轨迹、Search、KV、队列共享 Lance 生态。
-3. **轨迹两层视图** — Lance canonical（`events.lance/`）+ Markdown 物化；`-f md` live upsert，`-f lance` 只写 Lance（md 经 materialize）。
-4. **Capture 自给自足** — 内嵌代理即可完整捕获 LLM 流量。
-5. **TTAS 对内** — 用户看到 `kv[key].tensor()`，而非原始代数。
-6. **性能是产品** — P99 延迟、GPU 利用率、capture 实时性是核心指标。
+1. 保持用户编程模型小而且与能力匹配。
+2. 当子系统需要列式存储时，使用 Lance 作为耐久基线。
+3. 分离控制面、数据移动和用户执行。
+4. 在 TTAS 端到端数据路径完成前，把它视为实验性内部底座。
+5. 明确失败和恢复语义，不暗示 exactly-once 保证。

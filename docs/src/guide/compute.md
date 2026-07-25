@@ -38,9 +38,65 @@ if __name__ == "__main__":
 
 The contract is simple:
 
-- `plan()` yields dicts — each must have an `id` (UUID generated if missing)
+- `plan()` yields dicts — each must have a stable, non-empty string or numeric `id`
+- IDs are never generated implicitly: the same logical task must emit the same ID on every run so deduplication and `--resume` remain correct
 - `execute(item)` receives exactly what `plan()` yielded
 - Arguments go after `--` — same as `python task.py --n 2`
+
+## Worker-local setup without stateful `execute`
+
+`execute(item)` deliberately stays stateless. Each worker slot owns one long-lived
+Python host, so scripts may optionally initialize process-local models or clients
+once without changing the `execute` signature:
+
+```python
+from persisting_compute import context
+
+def setup_worker(ctx):
+    # Runs once per worker host. Its return value is intentionally ignored.
+    global model
+    model = load_model(ctx["device"])
+
+def execute(item):
+    # The only required task function stays execute(item).
+    return {"score": model(item["prompt"])}
+
+def teardown_worker():
+    model.close()
+```
+
+`context()` returns a copy of the worker context: `worker_id`, `rank`,
+`local_rank`, `device`, `job_id`, optional `output_dir`, and `labels`.
+Use `--job-id`, `--sink`, and `--worker-label gpu,a100` to set the relevant
+run metadata. Labels are informational in this release; placement remains
+least-loaded.
+
+## Results, metrics, and failed-task reruns
+
+`execute()` can return any JSON value. When it returns an object, optional
+`metrics` and `artifacts` objects are also indexed into the terminal result:
+
+```python
+def execute(item):
+    score = evaluate(item)
+    return {
+        "metrics": {"reward": score, "tokens": 128},
+        "artifacts": {"trajectory": f"lance://rollouts/{item['id']}"},
+        "payload": {"score": score},
+    }
+```
+
+With `--sink runs/exp-01`, terminal rows contain `metrics`, `artifacts`,
+`error_kind`, and `retryable`; Compute also writes `summary.json` with metric
+count/sum/mean aggregates. Failures use the stable kinds `execute`, `infra`,
+and `cancelled`.
+
+Resume normally skips all terminal failures. Re-run only a category when it is
+safe for the algorithm:
+
+```bash
+persisting compute plan.py --sink runs/exp-01 --resume --rerun-failed infra
+```
 
 ---
 

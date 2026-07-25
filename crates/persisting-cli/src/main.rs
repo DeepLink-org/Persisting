@@ -627,9 +627,9 @@ enum TrajectoryCommand {
     Extract(TrajectoryExtractArgs),
     /// Lance → TLV Markdown（有损物化，维护用）。
     Materialize(TrajectoryMaterializeArgs),
-    /// LLM-as-judge：读 canonical Lance，写 `{run}/layers/judge_*.lance` sidecar。
+    /// LLM-as-judge：读 canonical Lance，把分数写为 `events.lance` 上的原生列。
     Judge(TrajectoryJudgeArgs),
-    /// 汇总 judge sidecar 分数（按 session + rubric）。
+    /// 汇总 `events.lance` 上的 judge 列分数（按 session + rubric）。
     #[command(name = "judge-stats")]
     JudgeStats(TrajectoryJudgeStatsArgs),
 }

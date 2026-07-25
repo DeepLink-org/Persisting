@@ -8,7 +8,7 @@ use crate::terminal_markdown::{format_turn_markdown, print_section};
 use persisting_capture::engine::TurnKind;
 use persisting_capture::engine::{rebuild_session_story, Story};
 use persisting_capture::record::CaptureRecord;
-use persisting_engine::trajectory::layers::MANUAL_RATIONALE_PREFIX;
+use persisting_engine::trajectory::MANUAL_RATIONALE_PREFIX;
 use persisting_proto::{JudgeSampleMode, JudgeScope, JudgeScoreInput};
 
 /// Pick up to `limit` sessions from a scan list (`limit == 0` → keep all).
