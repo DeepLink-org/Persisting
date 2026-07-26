@@ -14,12 +14,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::TryStreamExt;
-use lance::dataset::{
-    MergeInsertBuilder, NewColumnTransform, WhenMatched, WhenNotMatched,
-};
-use lance::deps::arrow_array::{
-    Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
-};
+use lance::dataset::{MergeInsertBuilder, NewColumnTransform, WhenMatched, WhenNotMatched};
+use lance::deps::arrow_array::{Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray};
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use lance::Dataset;
 
@@ -130,8 +126,7 @@ pub async fn read_judge_rows(session: &TrajectorySession) -> Result<Vec<JudgeRow
     }
 
     let mut scan = ds.scan();
-    scan.project(&project)
-        .context("project judge columns")?;
+    scan.project(&project).context("project judge columns")?;
     let stream = scan
         .try_into_stream()
         .await
@@ -365,16 +360,10 @@ async fn apply_rubric_rows(ds: &mut Dataset, prefix: &str, rows: &[&JudgeRow]) -
             Arc::new(Int64Array::from(seqs)),
             Arc::new(Int64Array::from(scores)),
             Arc::new(StringArray::from(
-                verdicts
-                    .iter()
-                    .map(|v| v.as_deref())
-                    .collect::<Vec<_>>(),
+                verdicts.iter().map(|v| v.as_deref()).collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                rationales
-                    .iter()
-                    .map(|v| v.as_deref())
-                    .collect::<Vec<_>>(),
+                rationales.iter().map(|v| v.as_deref()).collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
                 units.iter().map(|v| v.as_deref()).collect::<Vec<_>>(),
@@ -384,17 +373,16 @@ async fn apply_rubric_rows(ds: &mut Dataset, prefix: &str, rows: &[&JudgeRow]) -
     .context("build judge merge RecordBatch")?;
 
     let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
-    let (updated, _stats) = MergeInsertBuilder::try_new(Arc::new(ds.clone()), vec![
-        TRAJECTORY_SEQ_COL.to_string(),
-    ])
-    .context("MergeInsertBuilder")?
-    .when_matched(WhenMatched::UpdateAll)
-    .when_not_matched(WhenNotMatched::DoNothing)
-    .try_build()
-    .context("build merge insert job")?
-    .execute_reader(reader)
-    .await
-    .context("merge insert judge columns")?;
+    let (updated, _stats) =
+        MergeInsertBuilder::try_new(Arc::new(ds.clone()), vec![TRAJECTORY_SEQ_COL.to_string()])
+            .context("MergeInsertBuilder")?
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::DoNothing)
+            .try_build()
+            .context("build merge insert job")?
+            .execute_reader(reader)
+            .await
+            .context("merge insert judge columns")?;
 
     *ds = Arc::try_unwrap(updated).unwrap_or_else(|arc| (*arc).clone());
     Ok(())
@@ -408,6 +396,9 @@ mod tests {
     fn sanitize_rubric_for_column_prefix() {
         assert_eq!(layer_field_name("default"), "judge_default");
         assert_eq!(layer_field_name("task/success"), "judge_task_success");
-        assert_eq!(rubric_from_score_column("judge_default_score").as_deref(), Some("default"));
+        assert_eq!(
+            rubric_from_score_column("judge_default_score").as_deref(),
+            Some("default")
+        );
     }
 }
