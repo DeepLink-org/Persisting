@@ -5292,8 +5292,9 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "ipnet",
  "lazy_static",
+ "persisting-proto",
+ "persisting-pvisor",
  "pulsing-actor",
  "regex",
  "reqwest 0.12.28",
@@ -5429,6 +5430,22 @@ dependencies = [
  "bincode 2.0.1",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "persisting-pvisor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ipnet",
+ "libc",
+ "persisting-proto",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

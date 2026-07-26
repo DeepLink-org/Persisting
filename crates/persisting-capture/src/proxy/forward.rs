@@ -27,6 +27,14 @@ pub async fn handle_connect(req: Request, policy: &NetworkPolicy) -> Response {
         let (status, msg) = forbidden_response(&host, &reason);
         return (status, msg).into_response();
     }
+    handle_connect_authorized(req).await
+}
+
+/// Execute a CONNECT request after the caller's pVisor controller authorized it.
+pub async fn handle_connect_authorized(req: Request) -> Response {
+    let Some(authority) = req.uri().authority().map(|a| a.to_string()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     let target = connect_target(&authority);
     let on_upgrade: OnUpgrade = hyper::upgrade::on(req);
     tokio::spawn(async move {
@@ -85,7 +93,15 @@ pub async fn transparent_forward(
             .body(Body::from(msg))
             .expect("403 body"));
     }
+    transparent_forward_authorized(client, req).await
+}
 
+/// Forward an absolute-URI request after the caller's pVisor controller
+/// authorized it.
+pub async fn transparent_forward_authorized(
+    client: &reqwest::Client,
+    req: Request,
+) -> anyhow::Result<Response<Body>> {
     let (parts, body) = req.into_parts();
     let url = parts.uri.to_string();
     let body_bytes = body
@@ -120,9 +136,9 @@ pub async fn transparent_forward(
         }
         builder = builder.header(name, value);
     }
-    Ok(builder
+    builder
         .body(Body::from(bytes))
-        .map_err(|e| anyhow::anyhow!("build response: {e}"))?)
+        .map_err(|e| anyhow::anyhow!("build response: {e}"))
 }
 
 #[cfg(test)]

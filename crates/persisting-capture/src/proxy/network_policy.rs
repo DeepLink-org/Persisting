@@ -4,11 +4,13 @@
 //! Matching: exact hostname, leading `*.suffix`, IPv4/IPv6 literal, CIDR.
 //! Entries are not URLs, ports, or paths.
 
-use std::net::IpAddr;
-use std::str::FromStr;
-
 use axum::http::StatusCode;
-use ipnet::IpNet;
+use persisting_proto::{AccessReason, NetworkAccessRequest, NetworkCapability, NetworkTransport};
+pub use persisting_pvisor::{
+    host_matches, normalize_host, parse_network_rule as parse_allowed_entry,
+    NetworkRule as AllowedEntry,
+};
+use persisting_pvisor::{AccessController, NetworkGuard, PolicyAccessController};
 
 use crate::config::{NetworkConfig, NetworkMode, ProxyConfig};
 
@@ -20,14 +22,9 @@ pub struct NetworkPolicy {
     pub allowed: Vec<AllowedEntry>,
     /// Host part of `listen` (always bypassed with other loopbacks).
     pub listen_host: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AllowedEntry {
-    Exact(String),
-    WildcardSuffix(String),
-    Ip(IpAddr),
-    Cidr(IpNet),
+    /// Compiled pVisor policy. Capture owns protocol adaptation; pVisor owns
+    /// the allow/deny decision.
+    pub guard: NetworkGuard,
 }
 
 impl NetworkPolicy {
@@ -41,14 +38,18 @@ impl NetworkPolicy {
                 }
             }
         }
-        let mut allowed = Vec::with_capacity(raw.len());
-        for entry in &raw {
-            allowed.push(parse_allowed_entry(entry)?);
-        }
+        let capability = match cfg.network.mode {
+            NetworkMode::Public => NetworkCapability::Ambient,
+            NetworkMode::NoNetwork => NetworkCapability::Deny,
+            NetworkMode::Allowlist => NetworkCapability::AllowList { hosts: raw },
+        };
+        let guard = NetworkGuard::compile(capability, [listen_host.clone()])?;
+        let allowed = guard.rules().to_vec();
         Ok(Self {
             mode: cfg.network.mode,
             allowed,
             listen_host,
+            guard,
         })
     }
 
@@ -66,15 +67,6 @@ pub fn validate_network_config(network: &NetworkConfig) -> anyhow::Result<()> {
         parse_allowed_entry(entry)?;
     }
     Ok(())
-}
-
-/// Normalize host for comparison: trim, lowercase, strip trailing dot.
-pub fn normalize_host(host: &str) -> String {
-    host.trim()
-        .trim_matches(|c| c == '[' || c == ']')
-        .to_ascii_lowercase()
-        .trim_end_matches('.')
-        .to_string()
 }
 
 /// Parse `listen` (`127.0.0.1:19081` or `http://127.0.0.1:19081`) into host.
@@ -103,114 +95,6 @@ pub fn host_from_authority(authority: &str) -> String {
     normalize_host(authority)
 }
 
-pub fn parse_allowed_entry(raw: &str) -> anyhow::Result<AllowedEntry> {
-    let entry = raw.trim();
-    if entry.is_empty() {
-        anyhow::bail!("allowed_hosts entry must not be empty");
-    }
-    if entry.contains("://") || entry.contains(']') || entry.contains('[') {
-        anyhow::bail!(
-            "allowed_hosts entry `{entry}` must be a hostname, `*.suffix`, IP, or CIDR \
-             (not a URL or bracketed IPv6)"
-        );
-    }
-    // Path-like (but allow CIDR `a.b.c.d/nn`).
-    if entry.contains('/') && IpNet::from_str(entry).is_err() {
-        anyhow::bail!(
-            "allowed_hosts entry `{entry}` must be a hostname, `*.suffix`, IP, or CIDR \
-             (not a URL path)"
-        );
-    }
-    // Port in entry is forbidden (Harbor semantics).
-    if let Some((host_part, maybe_port)) = entry.rsplit_once(':') {
-        if !host_part.is_empty()
-            && maybe_port.chars().all(|c| c.is_ascii_digit())
-            && !entry.contains('/')
-            && host_part.parse::<IpAddr>().is_err()
-            && !host_part.contains(':')
-        {
-            // hostname:port — reject
-            anyhow::bail!(
-                "allowed_hosts entry `{entry}` must not include a port (got hostname:port)"
-            );
-        }
-    }
-
-    if let Some(suffix) = entry.strip_prefix("*.") {
-        let suffix = normalize_host(suffix);
-        if suffix.is_empty() || suffix.contains('*') {
-            anyhow::bail!("invalid wildcard allowed_hosts entry `{entry}`");
-        }
-        if suffix.parse::<IpAddr>().is_ok() {
-            anyhow::bail!("wildcard allowed_hosts cannot wrap an IP (`{entry}`)");
-        }
-        return Ok(AllowedEntry::WildcardSuffix(suffix));
-    }
-
-    if entry.contains('*') {
-        anyhow::bail!(
-            "allowed_hosts entry `{entry}`: only leading `*.suffix` wildcards are supported"
-        );
-    }
-
-    if let Ok(cidr) = IpNet::from_str(entry) {
-        // Prefer CIDR form when a prefix length is present.
-        if entry.contains('/') {
-            return Ok(AllowedEntry::Cidr(cidr));
-        }
-        // `IpNet::from_str("1.1.1.1")` succeeds as /32 — treat as literal IP.
-        return Ok(AllowedEntry::Ip(cidr.addr()));
-    }
-    if let Ok(ip) = IpAddr::from_str(entry) {
-        return Ok(AllowedEntry::Ip(ip));
-    }
-
-    let host = normalize_host(entry);
-    if host.is_empty() || host.contains(':') {
-        anyhow::bail!("invalid allowed_hosts hostname `{entry}`");
-    }
-    Ok(AllowedEntry::Exact(host))
-}
-
-pub fn host_matches(host: &str, allowed: &[AllowedEntry]) -> bool {
-    let host = normalize_host(host);
-    if host.is_empty() {
-        return false;
-    }
-    let host_ip = IpAddr::from_str(&host).ok();
-    for entry in allowed {
-        match entry {
-            AllowedEntry::Exact(h) => {
-                if host == *h {
-                    return true;
-                }
-            }
-            AllowedEntry::WildcardSuffix(suffix) => {
-                // `*.example.com` matches subdomains only, not apex `example.com`.
-                if host.ends_with(suffix)
-                    && host.len() > suffix.len()
-                    && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
-                {
-                    return true;
-                }
-            }
-            AllowedEntry::Ip(ip) => {
-                if host_ip == Some(*ip) {
-                    return true;
-                }
-            }
-            AllowedEntry::Cidr(net) => {
-                if let Some(ip) = host_ip {
-                    if net.contains(&ip) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
 pub fn is_loopback_host(host: &str, listen_host: &str) -> bool {
     let h = normalize_host(host);
     if h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "0:0:0:0:0:0:0:1" {
@@ -219,7 +103,7 @@ pub fn is_loopback_host(host: &str, listen_host: &str) -> bool {
     if !listen_host.is_empty() && h == normalize_host(listen_host) {
         return true;
     }
-    if let Ok(ip) = IpAddr::from_str(&h) {
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
         return ip.is_loopback();
     }
     false
@@ -244,23 +128,51 @@ impl DenyReason {
 
 /// Check whether forward-proxy egress to `host` is allowed.
 pub fn assert_egress_allowed(policy: &NetworkPolicy, host: &str) -> Result<(), DenyReason> {
-    if is_loopback_host(host, &policy.listen_host) {
+    assert_egress_allowed_with(
+        &PolicyAccessController,
+        policy,
+        host,
+        None,
+        NetworkTransport::TcpTunnel,
+    )
+}
+
+pub fn assert_egress_allowed_with(
+    controller: &dyn AccessController,
+    policy: &NetworkPolicy,
+    host: &str,
+    port: Option<u16>,
+    transport: NetworkTransport,
+) -> Result<(), DenyReason> {
+    authorize_egress(
+        controller,
+        policy,
+        &NetworkAccessRequest {
+            run_id: None,
+            attempt_id: None,
+            storyline_id: None,
+            host: host.to_string(),
+            port,
+            transport,
+        },
+    )
+}
+
+/// Authorize an identity-bearing egress request through pVisor.
+pub fn authorize_egress(
+    controller: &dyn AccessController,
+    policy: &NetworkPolicy,
+    request: &NetworkAccessRequest,
+) -> Result<(), DenyReason> {
+    let decision = controller.authorize_network(&policy.guard, request);
+    if decision.is_allowed() {
         return Ok(());
     }
-    match policy.mode {
-        NetworkMode::Public => Ok(()),
-        NetworkMode::NoNetwork => Err(DenyReason::NoNetwork),
-        NetworkMode::Allowlist => {
-            if policy.allowed.is_empty() {
-                return Err(DenyReason::AllowlistEmpty);
-            }
-            if host_matches(host, &policy.allowed) {
-                Ok(())
-            } else {
-                Err(DenyReason::NotInAllowlist)
-            }
-        }
-    }
+    Err(match decision.reason {
+        AccessReason::NetworkDenied => DenyReason::NoNetwork,
+        AccessReason::NetworkAllowListEmpty => DenyReason::AllowlistEmpty,
+        _ => DenyReason::NotInAllowlist,
+    })
 }
 
 pub fn forbidden_response(host: &str, reason: &DenyReason) -> (StatusCode, String) {
@@ -297,6 +209,34 @@ fn upstream_hosts_from_models(cfg: &ProxyConfig) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, ProxyConfig};
+    use persisting_proto::{
+        AccessDecision, AccessReason, ModelAccessPolicy, ModelCallRequest, RunId, StorylineId,
+    };
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingDenyController {
+        network_request: Mutex<Option<NetworkAccessRequest>>,
+    }
+
+    impl AccessController for RecordingDenyController {
+        fn authorize_network(
+            &self,
+            _policy: &NetworkGuard,
+            request: &NetworkAccessRequest,
+        ) -> AccessDecision {
+            *self.network_request.lock().unwrap() = Some(request.clone());
+            AccessDecision::deny(AccessReason::HostNotAllowed)
+        }
+
+        fn authorize_model(
+            &self,
+            _policy: &ModelAccessPolicy,
+            _request: &ModelCallRequest,
+        ) -> AccessDecision {
+            AccessDecision::deny(AccessReason::ModelNotAllowed)
+        }
+    }
 
     fn cfg(mode: NetworkMode, allowed: &[&str], upstream: Option<&str>) -> ProxyConfig {
         ProxyConfig {
@@ -371,6 +311,30 @@ mod tests {
     fn public_allows_all() {
         let p = NetworkPolicy::from_config(&cfg(NetworkMode::Public, &[], None)).unwrap();
         assert!(assert_egress_allowed(&p, "evil.example").is_ok());
+    }
+
+    #[test]
+    fn injected_pvisor_controller_is_authoritative_and_receives_identity() {
+        let policy = NetworkPolicy::from_config(&cfg(NetworkMode::Public, &[], None)).unwrap();
+        let controller = RecordingDenyController::default();
+        let request = NetworkAccessRequest {
+            run_id: Some(RunId::new("run-42")),
+            attempt_id: None,
+            storyline_id: Some(StorylineId::new("story-7")),
+            host: "api.example.com".into(),
+            port: Some(443),
+            transport: NetworkTransport::Https,
+        };
+
+        assert_eq!(
+            authorize_egress(&controller, &policy, &request),
+            Err(DenyReason::NotInAllowlist)
+        );
+        let seen = controller.network_request.lock().unwrap();
+        let seen = seen.as_ref().expect("controller saw request");
+        assert_eq!(seen.run_id.as_ref().unwrap().as_str(), "run-42");
+        assert_eq!(seen.storyline_id.as_ref().unwrap().as_str(), "story-7");
+        assert_eq!(seen.host, "api.example.com");
     }
 
     #[test]

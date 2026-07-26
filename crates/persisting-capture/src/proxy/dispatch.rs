@@ -10,14 +10,16 @@ use axum::routing::any;
 use axum::Router;
 use bytes::Bytes;
 use http_body_util::BodyExt;
+use persisting_proto::{NetworkAccessRequest, NetworkTransport, RunId, StorylineId};
 
 use super::common::effective_config;
 use super::forward::{
-    handle_connect, is_forward_proxy_request, is_llm_capture_path, transparent_forward,
+    handle_connect_authorized, is_forward_proxy_request, is_llm_capture_path,
+    transparent_forward_authorized,
 };
 use super::llm_capture::llm_capture;
 use super::network_policy::{
-    assert_egress_allowed, forbidden_response, host_from_authority, NetworkPolicy,
+    authorize_egress, forbidden_response, host_from_authority, NetworkPolicy,
 };
 use super::state::ProxyState;
 use crate::debug::{self, is_debug_enabled};
@@ -98,7 +100,18 @@ async fn dispatch_impl(
             .map(|a| a.to_string())
             .unwrap_or_else(|| uri.clone());
         let host = host_from_authority(&authority);
-        if let Err(reason) = assert_egress_allowed(&policy, &host) {
+        if let Err(reason) = authorize_egress(
+            state.access_controller.as_ref(),
+            &policy,
+            &NetworkAccessRequest {
+                run_id: log_route.root_session.clone().map(RunId),
+                attempt_id: None,
+                storyline_id: Some(StorylineId(log_route.session_id.clone())),
+                host: host.clone(),
+                port: req.uri().port_u16(),
+                transport: NetworkTransport::TcpTunnel,
+            },
+        ) {
             return Ok(deny_egress(
                 &state,
                 &policy,
@@ -111,13 +124,29 @@ async fn dispatch_impl(
         if debug_on {
             debug::log_connect(state.storage.as_path(), &authority, &session_id);
         }
-        return Ok(handle_connect(req, &policy).await);
+        return Ok(handle_connect_authorized(req).await);
     }
 
     let path = req.uri().path().to_string();
     if is_forward_proxy_request(req.method(), req.uri()) {
         let host = req.uri().host().map(str::to_string).unwrap_or_default();
-        if let Err(reason) = assert_egress_allowed(&policy, &host) {
+        let transport = if req.uri().scheme_str() == Some("https") {
+            NetworkTransport::Https
+        } else {
+            NetworkTransport::Http
+        };
+        if let Err(reason) = authorize_egress(
+            state.access_controller.as_ref(),
+            &policy,
+            &NetworkAccessRequest {
+                run_id: log_route.root_session.clone().map(RunId),
+                attempt_id: None,
+                storyline_id: Some(StorylineId(log_route.session_id.clone())),
+                host: host.clone(),
+                port: req.uri().port_u16(),
+                transport,
+            },
+        ) {
             return Ok(deny_egress(
                 &state,
                 &policy,
@@ -148,7 +177,7 @@ async fn dispatch_impl(
                 "forward",
             );
         }
-        let resp = transparent_forward(&state.client, req, &policy).await?;
+        let resp = transparent_forward_authorized(&state.client, req).await?;
         if debug_on {
             let status = resp.status();
             let headers = resp.headers().clone();

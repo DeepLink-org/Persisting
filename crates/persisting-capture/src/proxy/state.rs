@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
+use persisting_pvisor::{AccessController, PolicyAccessController};
 use tokio::task::JoinHandle;
 
 use super::admin::{admin_router, AdminState};
@@ -27,6 +28,7 @@ pub struct ProxyState {
     pub index: SessionIndexHandle,
     pub session_clients: Arc<SessionClientRegistry>,
     pub reasoning_cache: Arc<ReasoningCacheHandle>,
+    pub access_controller: Arc<dyn AccessController>,
     pub active_requests: Arc<AtomicUsize>,
     pub started_at: String,
 }
@@ -63,6 +65,31 @@ pub async fn serve_with_shutdown_and_ready(
     storage: impl AsRef<Path>,
     sink: Arc<dyn CaptureSink>,
     stream_markdown: bool,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    serve_with_runtime_control(
+        config,
+        storage,
+        sink,
+        stream_markdown,
+        Arc::new(PolicyAccessController),
+        ready,
+        shutdown,
+    )
+    .await
+}
+
+/// Capture data plane with an injected pVisor access controller.
+///
+/// pVisor owns model/network authorization; Capture retains HTTP protocol
+/// adaptation, streaming, and trajectory extraction.
+pub async fn serve_with_runtime_control(
+    config: ProxyConfig,
+    storage: impl AsRef<Path>,
+    sink: Arc<dyn CaptureSink>,
+    stream_markdown: bool,
+    access_controller: Arc<dyn AccessController>,
     ready: Option<tokio::sync::oneshot::Sender<()>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
@@ -108,6 +135,7 @@ pub async fn serve_with_shutdown_and_ready(
         index: index.clone(),
         session_clients: Arc::new(SessionClientRegistry::default()),
         reasoning_cache: Arc::new(ReasoningCacheHandle::new()),
+        access_controller,
         active_requests: Arc::clone(&active_requests),
         started_at: started_at.clone(),
     };

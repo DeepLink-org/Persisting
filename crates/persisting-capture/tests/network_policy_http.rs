@@ -8,9 +8,33 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Router;
 use persisting_capture::config::ProxyConfig;
-use persisting_capture::proxy::serve_with_shutdown_and_ready;
+use persisting_capture::proxy::{serve_with_runtime_control, serve_with_shutdown_and_ready};
 use persisting_capture::sink::SeqOnlySink;
+use persisting_proto::{
+    AccessDecision, AccessReason, ModelAccessPolicy, ModelCallRequest, NetworkAccessRequest,
+};
+use persisting_pvisor::{AccessController, NetworkGuard, PolicyAccessController};
 use tokio::sync::oneshot;
+
+struct DenyModelController;
+
+impl AccessController for DenyModelController {
+    fn authorize_network(
+        &self,
+        policy: &NetworkGuard,
+        request: &NetworkAccessRequest,
+    ) -> AccessDecision {
+        PolicyAccessController.authorize_network(policy, request)
+    }
+
+    fn authorize_model(
+        &self,
+        _policy: &ModelAccessPolicy,
+        _request: &ModelCallRequest,
+    ) -> AccessDecision {
+        AccessDecision::deny(AccessReason::ModelNotAllowed)
+    }
+}
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -69,6 +93,39 @@ async fn spawn_proxy(toml: &str) -> (String, tempfile::TempDir, oneshot::Sender<
                 let _ = stop_rx.await;
             })
             .await;
+    });
+    ready_rx.await.expect("proxy ready");
+    (format!("http://127.0.0.1:{listen_port}"), tmp, stop_tx)
+}
+
+async fn spawn_proxy_with_controller(
+    toml: &str,
+    controller: Arc<dyn AccessController>,
+) -> (String, tempfile::TempDir, oneshot::Sender<()>) {
+    let listen_port = free_port();
+    let admin_port = free_port();
+    let toml = toml
+        .replace("{{LISTEN}}", &format!("127.0.0.1:{listen_port}"))
+        .replace("{{ADMIN}}", &format!("127.0.0.1:{admin_port}"));
+    let cfg = ProxyConfig::from_toml_str(&toml).expect("proxy toml");
+    let tmp = tempfile::tempdir().unwrap();
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let storage = tmp.path().to_path_buf();
+    let sink: Arc<dyn persisting_capture::sink::CaptureSink> = Arc::new(SeqOnlySink::new());
+    tokio::spawn(async move {
+        let _ = serve_with_runtime_control(
+            cfg,
+            storage,
+            sink,
+            false,
+            controller,
+            Some(ready_tx),
+            async move {
+                let _ = stop_rx.await;
+            },
+        )
+        .await;
     });
     ready_rx.await.expect("proxy ready");
     (format!("http://127.0.0.1:{listen_port}"), tmp, stop_tx)
@@ -286,6 +343,47 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
     // Must not be blocked by network policy (403). Upstream mock returns 200.
     assert_ne!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(resp.status(), StatusCode::OK);
+    let _ = stop.send(());
+    let _ = mock_stop.send(());
+}
+
+#[tokio::test]
+async fn e2e_injected_pvisor_controller_denies_model_before_upstream() {
+    let (mock_port, mock_stop) = spawn_mock_http().await;
+    let toml = format!(
+        r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+agent_id = "t"
+
+[network]
+mode = "public"
+
+[[models]]
+name = "*"
+upstream = "http://127.0.0.1:{mock_port}/v1"
+"#
+    );
+    let (proxy, _tmp, stop) =
+        spawn_proxy_with_controller(&toml, Arc::new(DenyModelController)).await;
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let resp = client
+        .post(format!("{proxy}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .body(r#"{"model":"test","messages":[{"role":"user","content":"hi"}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(
+        resp.text().await.unwrap().contains("model-not-allowed"),
+        "denial should expose the stable pVisor reason"
+    );
     let _ = stop.send(());
     let _ = mock_stop.send(());
 }

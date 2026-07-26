@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::http::HeaderMap;
 use bytes::Bytes;
+use persisting_proto::ModelAccessPolicy;
 use serde_json::Value;
 
 use super::state::ProxyState;
@@ -20,6 +21,30 @@ pub(crate) fn effective_config(state: &ProxyState, route: &CaptureRoute) -> Arc<
     load_session_proxy_config(state.storage.as_path(), route_config_key(route))
         .map(Arc::new)
         .unwrap_or_else(|| Arc::clone(&state.config))
+}
+
+pub(crate) fn model_access_policy(config: &ProxyConfig) -> ModelAccessPolicy {
+    let allowed_models = config
+        .models
+        .iter()
+        .map(|route| route.name.clone())
+        .collect();
+    let providers: Vec<String> = config
+        .models
+        .iter()
+        .filter_map(|route| route.provider.clone())
+        .collect();
+    // An inferred/custom provider must remain representable during migration.
+    // An empty provider list means model identity is enforced but provider is open.
+    let allowed_providers = if providers.len() == config.models.len() {
+        providers
+    } else {
+        Vec::new()
+    };
+    ModelAccessPolicy {
+        allowed_models,
+        allowed_providers,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

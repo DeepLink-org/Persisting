@@ -6,6 +6,7 @@
 pub mod invoke_abi;
 mod messages;
 pub mod rpc_dispatch;
+pub mod runtime;
 
 pub use invoke_abi::{
     invoke_ron_utf8_via_jobs_sync, job_take_result_utf8_with_buffer, poll_status_label,
@@ -27,6 +28,7 @@ pub use rpc_dispatch::{
     application_error_response, dispatch_bincode_with, handle_rpc_request_with,
     malformed_request_response, version_mismatch_response,
 };
+pub use runtime::*;
 
 use anyhow::{Context, Result};
 
