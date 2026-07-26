@@ -299,8 +299,9 @@ enum Command {
     /// Agent trajectory: capture, proxy, inspect, repair（短名 `traj`）
     #[command(visible_alias = "traj", long_about = TRAJ_LONG_ABOUT)]
     Trajectory(TrajectoryArgs),
-    /// Run a compute plan (default). Use `--check` to validate locally first.
-    Compute(persisting_compute::ComputeArgs),
+    /// pPilot durable Run orchestration. `compute` remains a compatibility alias.
+    #[command(name = "ppilot", visible_alias = "compute")]
+    PPilot(persisting_ppilot::PPilotArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1035,12 +1036,12 @@ fn engine_lib_names() -> [&'static str; 3] {
 fn main() -> Result<()> {
     let cli = Cli::parse_from(normalize_cli_args(std::env::args().collect()));
     match &cli.command {
-        Command::Compute(args) => {
-            persisting_compute::cli::init_tracing_with_verbose(args.verbose);
+        Command::PPilot(args) => {
+            persisting_ppilot::cli::init_tracing_with_verbose(args.verbose);
             let args = args.clone();
             let code = tokio::runtime::Runtime::new()
                 .context("tokio runtime")?
-                .block_on(persisting_compute::run_compute(args))?;
+                .block_on(persisting_ppilot::run_ppilot(args))?;
             if code != std::process::ExitCode::SUCCESS {
                 std::process::exit(1);
             }

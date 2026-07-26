@@ -8,7 +8,7 @@ Get started with Persisting in 5 minutes.
 pip install persisting[lance]
 ```
 
-For CLI tools (`persisting traj`, `persisting compute`, `persisting search`), [build from source](installation.md#from-source).
+For CLI tools (`persisting traj`, `persisting ppilot`, `persisting search`), [build from source](installation.md#from-source).
 
 ---
 
@@ -121,16 +121,16 @@ results = query("docs", "search query", mode="hybrid", k=10)
 
 → [Search Guide](guide/search.md)
 
-### Compute
+### pPilot
 
 Map-style tasks with checkpoint/resume:
 
 ```bash
-persisting compute task.py -w 4 --check       # validate
-persisting compute task.py -w 4 -- --n 1000   # run
+persisting ppilot task.py -w 4 --check       # validate
+persisting ppilot task.py -w 4 -- --n 1000   # run
 ```
 
-→ [Compute Guide](guide/compute.md)
+→ [pPilot Guide](guide/ppilot.md)
 
 ---
 

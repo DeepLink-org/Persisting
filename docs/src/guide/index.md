@@ -11,7 +11,7 @@ workflows; architecture pages explain internal choices and experimental work.
 | Record agent LLM calls | [Capture](capture.md) |
 | Stream events with persistence | [Queue](queue.md) |
 | Index and search documents | [Search](search.md) |
-| Run batch jobs with checkpoint/resume | [Compute](compute.md) |
+| Run batch jobs with checkpoint/resume | [pPilot](ppilot.md) |
 | Plug in custom storage | [Custom Backends](custom-backends.md) |
 
 ## Capability maturity
@@ -19,7 +19,7 @@ workflows; architecture pages explain internal choices and experimental work.
 | Capability | What it provides | Maturity |
 |---|---|---|
 | [Capture](capture.md) | Capture LLM traffic into Lance and Markdown views | Stable |
-| [Compute](compute.md) | Map-style task execution with checkpoint/resume | Stable |
+| [pPilot](ppilot.md) | Map-style task execution with checkpoint/resume | Stable |
 | [Search](search.md) | Document indexing and vector/hybrid retrieval | Stable |
 | [Queue](queue.md) | Persistent event stream and KV-style access | Stable |
 | [Tensor Memory](tensor-memory.md) | Tensor subscript API and host/SSD block storage | Experimental |
@@ -27,7 +27,7 @@ workflows; architecture pages explain internal choices and experimental work.
 
 ## How the pieces relate
 
-Capture, Search, Queue, and Compute are independently useful tools. Tensor
+Capture, Search, Queue, and pPilot are independently useful tools. Tensor
 Memory is an experimental storage substrate with TTAS addressing; it is not a
 required dependency for the stable tools. See [Architecture & Internals](../design/index.md)
 when you need the implementation model or roadmap.

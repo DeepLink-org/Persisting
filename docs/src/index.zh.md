@@ -101,10 +101,10 @@ Agent 轨迹、模型参数和 KV Cache 共享同一套分层存储 —— **一
     Map 式任务编排。`plan()` + `execute()`，本地并行或 torchrun。
 
     ```bash
-    persisting compute task.py -w 4 -- --n 1000
+    persisting ppilot task.py -w 4 -- --n 1000
     ```
 
-    → [Compute 指南](guide/compute.md)
+    → [pPilot 指南](guide/ppilot.md)
 
 </div>
 

@@ -10,7 +10,7 @@ for supported workflows.
 |---|---|---|
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
 | Capture and trajectories | [Capture pipeline](capture.md) | [Trajectory storage](trajectory.md) → [Markdown format](trajectory-format.md) |
-| Compute | [Compute control plane](compute.md) | [Compute guide](../guide/compute.md) |
+| pPilot | [pPilot control plane](ppilot.md) | [pPilot guide](../guide/ppilot.md) |
 | Tensor Memory (experimental) | [TTAS model](tensor-address-space.md) | [Tiered storage](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
 | CLI boundary | [CLI architecture](cli.md) | command references under **Reference** |
 
@@ -18,7 +18,7 @@ for supported workflows.
 
 | Area | Status | Notes |
 |---|---|---|
-| Capture, Queue, Search, Compute | Implemented | Each has an independent product path and storage model |
+| Capture, Queue, Search, pPilot | Implemented | Each has an independent product path and storage model |
 | TTAS / tiered tensor memory | Experimental | Host/SSD work exists; GPU and cross-node data paths remain planned |
 | Research comparisons | Reference | Input to future design, not a product commitment |
 

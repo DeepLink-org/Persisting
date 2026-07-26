@@ -1,7 +1,7 @@
 //! pVisor — Portable Agent Execution Runtime.
 //!
 //! pVisor owns the execution of one [`persisting_proto::RunSpec`]. Batch
-//! expansion, fleet scheduling, and result collection remain Compute concerns.
+//! expansion, fleet scheduling, and result collection remain pPilot concerns.
 
 mod access;
 mod event;
