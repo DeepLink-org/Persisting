@@ -42,8 +42,11 @@ runs:
       shell: bash
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y -qq --no-install-recommends protobuf-compiler
+        sudo apt-get install -y -qq --no-install-recommends \
+          protobuf-compiler \
+          libprotobuf-dev
         protoc --version
+        test -f /usr/include/google/protobuf/empty.proto
 
     - name: Install protoc
       if: inputs.install-protoc == 'true' && runner.os == 'macOS'
