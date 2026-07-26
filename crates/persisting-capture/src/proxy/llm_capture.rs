@@ -8,11 +8,13 @@ use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
+use persisting_proto::{ModelCallRequest, RunId, StorylineId};
 use serde_json::Value;
 
 use super::auth::{apply_upstream_headers, resolve_upstream_api_key};
 use super::common::{
     attach_capture_headers, call_context, effective_config, extract_model, is_models_list_path,
+    model_access_policy,
 };
 use super::http_headers::{is_websocket_upgrade, skip_response_header_when_body_changed};
 use super::models_list::build_models_response;
@@ -132,6 +134,42 @@ pub(super) async fn llm_capture(
     let mut upstream_url = route.resolve_upstream_url(&upstream_path, upstream_protocol)?;
     if let Some(q) = parts.uri.query() {
         upstream_url.set_query(Some(q));
+    }
+
+    let access_decision = state.access_controller.authorize_model(
+        &model_access_policy(&cfg),
+        &ModelCallRequest {
+            run_id: capture_route.root_session.clone().map(RunId::new),
+            attempt_id: None,
+            storyline_id: Some(StorylineId::new(capture_route.session_id.clone())),
+            call_id: call.call_id.clone(),
+            client_model: client_model.clone(),
+            upstream_model: upstream_model.clone(),
+            provider: provider.as_str().to_string(),
+            protocol: protocol.as_str().to_string(),
+            upstream_host: upstream_url.host_str().unwrap_or_default().to_string(),
+        },
+    );
+    if !access_decision.is_allowed() {
+        tracing::warn!(
+            target: "persisting_capture",
+            run_id = capture_route.root_session.as_deref().unwrap_or("-"),
+            storyline_id = %capture_route.session_id,
+            call_id = %call.call_id,
+            client_model = %client_model,
+            upstream_model = %upstream_model,
+            provider = provider.as_str(),
+            reason = access_decision.reason.code(),
+            "pVisor denied model call"
+        );
+        return Ok((
+            StatusCode::FORBIDDEN,
+            format!(
+                "persisting-proxy: pVisor denied model `{client_model}` ({})",
+                access_decision.reason.code()
+            ),
+        )
+            .into_response());
     }
 
     if debug_on {

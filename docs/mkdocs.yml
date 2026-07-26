@@ -148,6 +148,7 @@ nav:
       - search command reference: design/cli-search.md
   - Architecture & Internals:
       - Overview and maturity: design/index.md
+      - Agent infrastructure: design/agent-infrastructure.md
       - Queue persistence: design/architecture.md
       - Capture and trajectory:
           - Capture pipeline: design/capture.md
