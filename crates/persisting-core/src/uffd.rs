@@ -68,7 +68,7 @@ fn uffd_create() -> std::io::Result<i32> {
         features: 0,
         ioctl_bits: 0,
     };
-    if unsafe { ioctl(fd, UFFDIO_API as i32, &api) } < 0 {
+    if unsafe { ioctl(fd, UFFDIO_API as libc::Ioctl, &api) } < 0 {
         let e = std::io::Error::last_os_error();
         unsafe { libc::close(fd) };
         return Err(e);
@@ -83,7 +83,7 @@ fn uffd_register(fd: i32, start: u64, len: u64) -> std::io::Result<()> {
         mode: UFFDIO_REGISTER_MODE_MISSING,
         ioctls: 0,
     };
-    if unsafe { ioctl(fd, UFFDIO_REGISTER as i32, &reg) } < 0 {
+    if unsafe { ioctl(fd, UFFDIO_REGISTER as libc::Ioctl, &reg) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
@@ -98,7 +98,7 @@ fn uffd_copy(fd: i32, dst: u64, src: *const u8, len: usize) -> std::io::Result<(
         mode: 0,
         copy: 0,
     };
-    if unsafe { ioctl(fd, UFFDIO_COPY as i32, &mut copy) } < 0 {
+    if unsafe { ioctl(fd, UFFDIO_COPY as libc::Ioctl, &mut copy) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
