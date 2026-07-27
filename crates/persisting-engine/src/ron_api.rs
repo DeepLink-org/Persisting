@@ -41,10 +41,16 @@ mod tests {
 
     #[test]
     fn invoke_ron_search_add_roundtrip_envelope() {
+        let temp = tempfile::tempdir().unwrap();
+        let dataset = temp
+            .path()
+            .join("search.lance")
+            .to_string_lossy()
+            .into_owned();
         let req = RpcRequest {
             version: PROTOCOL_VERSION,
             body: RequestBody::SearchAdd(SearchAddRequest {
-                dataset: "ds".into(),
+                dataset: dataset.clone(),
                 id: Some("i1".into()),
                 text: "hello".into(),
                 metadata: None,
@@ -57,7 +63,7 @@ mod tests {
         assert_eq!(resp.version, PROTOCOL_VERSION);
         match resp.body {
             ResponseBody::SearchAdd(r) => {
-                assert_eq!(r.dataset, "ds");
+                assert_eq!(r.dataset, dataset);
                 assert_eq!(r.id, "i1");
             }
             _ => panic!("expected SearchAdd response"),

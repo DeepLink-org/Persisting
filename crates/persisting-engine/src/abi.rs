@@ -106,11 +106,11 @@ mod tests {
         RequestBody, RpcRequest, RpcResponse, SearchAddRequest, PROTOCOL_VERSION,
     };
 
-    fn sample_request_ron() -> String {
+    fn sample_request_ron(dataset: &str) -> String {
         let req = RpcRequest {
             version: PROTOCOL_VERSION,
             body: RequestBody::SearchAdd(SearchAddRequest {
-                dataset: "ds".into(),
+                dataset: dataset.into(),
                 id: None,
                 text: "hi".into(),
                 metadata: None,
@@ -126,7 +126,9 @@ mod tests {
 
     #[test]
     fn submit_poll_take_smoke() {
-        let ron_in = sample_request_ron();
+        let temp = tempfile::tempdir().unwrap();
+        let dataset = temp.path().join("search.lance");
+        let ron_in = sample_request_ron(&dataset.to_string_lossy());
         let mut handle: u64 = 0;
         let st =
             unsafe { persisting_engine_submit(ron_in.as_ptr(), ron_in.len() as u64, &mut handle) };
@@ -162,7 +164,9 @@ mod tests {
 
     #[test]
     fn take_out_too_small_then_retry() {
-        let ron_in = sample_request_ron();
+        let temp = tempfile::tempdir().unwrap();
+        let dataset = temp.path().join("search.lance");
+        let ron_in = sample_request_ron(&dataset.to_string_lossy());
         let mut handle: u64 = 0;
         unsafe { persisting_engine_submit(ron_in.as_ptr(), ron_in.len() as u64, &mut handle) };
         loop {

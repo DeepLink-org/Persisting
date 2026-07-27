@@ -6,8 +6,15 @@ use pyo3::prelude::*;
 use std::sync::{mpsc, Mutex};
 use std::thread;
 
+/// 分区坐标值。保留整数与字符串的类型信息，与 Python BlockId 对应。
+#[allow(dead_code)]
+enum CoordValue {
+    Int(i64),
+    Str(String),
+}
+
 /// 单条预取任务：(partition_key, block_id)，与 Python BlockId 对应。
-pub type BlockRef = (Vec<i64>, i64);
+type BlockRef = (Vec<CoordValue>, i64);
 
 /// Rust 侧主事件循环：单线程消费预取队列，填页逻辑（fill_blocks）全在 Rust，不持 GIL。
 #[pyclass]
@@ -93,14 +100,10 @@ fn parse_single_block(item: &Bound<'_, PyAny>) -> PyResult<BlockRef> {
     let mut key = Vec::with_capacity(len);
     for i in 0..len {
         let v = pk_seq.get_item(i)?;
-        let v: i64 = if let Ok(n) = v.extract::<i64>() {
-            n
+        let v = if let Ok(n) = v.extract::<i64>() {
+            CoordValue::Int(n)
         } else if let Ok(s) = v.extract::<String>() {
-            // TODO: BlockRef 当前使用 Vec<i64>，无法忠实表示字符串 partition key。
-            // 改为支持 CoordValue（Int/Str/Bytes）后再启用字符串 key。
-            return Err(PyTypeError::new_err(format!(
-                "string partition keys not yet supported (got {s:?}); use integer keys"
-            )));
+            CoordValue::Str(s)
         } else {
             return Err(PyTypeError::new_err(
                 "partition_key elements must be int or str",

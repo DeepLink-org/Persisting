@@ -5,6 +5,7 @@
 """
 
 import ctypes
+import errno
 import os
 import sys
 
@@ -27,6 +28,22 @@ def _is_linux():
     return sys.platform == "linux"
 
 
+def _start_handler_or_skip(base, length, block_size, path):
+    """Skip when the host kernel exposes userfaultfd but forbids this process from using it."""
+    try:
+        return start_uffd_handler(base, length, block_size, path)
+    except OSError as exc:
+        unavailable = {errno.EPERM, errno.EACCES, errno.ENOSYS}
+        message = str(exc).lower()
+        if _is_linux() and (
+            getattr(exc, "errno", None) in unavailable
+            or "operation not permitted" in message
+            or "os error 1" in message
+        ):
+            pytest.skip(f"userfaultfd unavailable to this process: {exc}")
+        raise
+
+
 @pytest.mark.skipif(not _fault_handler_available(), reason="start_uffd_handler 仅 Linux/macOS 可用")
 class TestStartUffdHandlerContract:
     """start_uffd_handler API 契约：返回值、关闭 fd、参数边界。"""
@@ -36,7 +53,7 @@ class TestStartUffdHandlerContract:
         region = mmap_reserve(PAGE_SIZE * 2)
         path = tmp_path / "l3.bin"
         path.write_bytes(b"x" * (PAGE_SIZE * 2))
-        fd = start_uffd_handler(
+        fd = _start_handler_or_skip(
             region.base_address,
             region.length,
             PAGE_SIZE,
@@ -50,7 +67,7 @@ class TestStartUffdHandlerContract:
         region = mmap_reserve(PAGE_SIZE * 2)
         path = tmp_path / "l3.bin"
         path.write_bytes(b"x" * (PAGE_SIZE * 2))
-        fd = start_uffd_handler(
+        fd = _start_handler_or_skip(
             region.base_address,
             region.length,
             PAGE_SIZE,
@@ -64,7 +81,7 @@ class TestStartUffdHandlerContract:
         region = mmap_reserve(PAGE_SIZE * 2)
         path = tmp_path / "l3.bin"
         path.write_bytes(b"y" * (PAGE_SIZE * 2))
-        fd = start_uffd_handler(
+        fd = _start_handler_or_skip(
             region.base_address,
             region.length,
             PAGE_SIZE,
@@ -93,7 +110,7 @@ class TestPageFaultFillsFromFile:
         second_page = b"B" * PAGE_SIZE
         path.write_bytes(first_page + second_page)
 
-        fd = start_uffd_handler(
+        fd = _start_handler_or_skip(
             region.base_address,
             region.length,
             PAGE_SIZE,
@@ -118,7 +135,7 @@ class TestPageFaultFillsFromFile:
         second_page = b"B" * PAGE_SIZE
         path.write_bytes(first_page + second_page)
 
-        fd = start_uffd_handler(
+        fd = _start_handler_or_skip(
             region.base_address,
             region.length,
             PAGE_SIZE,
@@ -143,7 +160,7 @@ class TestPageFaultFillsFromFile:
         path = tmp_path / "l3.bin"
         path.write_bytes(b"0" * PAGE_SIZE + b"1" * PAGE_SIZE)
 
-        fd = start_uffd_handler(
+        fd = _start_handler_or_skip(
             region.base_address,
             region.length,
             PAGE_SIZE,

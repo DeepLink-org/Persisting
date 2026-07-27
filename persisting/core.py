@@ -11,6 +11,7 @@ from persisting._core import (
     Range,
     Region,
     SetC,
+    TieredLoop,
     block_read,
     block_write,
     canonicalize,
@@ -96,6 +97,7 @@ __all__ = [
     "Address",
     "Region",
     "TensorView",
+    "TieredLoop",
     "canonicalize",
     "project_prefix",
     "is_point_query",
@@ -104,4 +106,5 @@ __all__ = [
     "block_write",
     "MmapRegion",
     "mmap_reserve",
+    "start_uffd_handler",
 ]
