@@ -90,7 +90,7 @@ plugins:
             Queue: 队列
             Tensor Memory: 张量内存
             Search: 检索
-            Compute: 计算编排
+            pPilot: pPilot 编排
             Custom Backends: 自定义后端
             API Reference: API 参考
             Reference: 参考
@@ -108,7 +108,7 @@ plugins:
             Traj CLI: Traj 命令
             Capture CLI: Capture 子命令
             Search CLI: Search 命令
-            Compute Architecture: Compute 架构
+            pPilot Architecture: pPilot 架构
             References: 参考
             Similar Systems: 类似系统
             TransferQueue Comparison: TransferQueue 对比
@@ -131,7 +131,7 @@ nav:
       - Choose a Capability: guide/index.md
   - Guides:
       - Capture agent trajectories: guide/capture.md
-      - Run batch compute: guide/compute.md
+      - Run batches with pPilot: guide/ppilot.md
       - Index and search documents: guide/search.md
       - Stream events with Queue: guide/queue.md
       - Use Tensor Memory (experimental): guide/tensor-memory.md
@@ -154,7 +154,7 @@ nav:
           - Capture pipeline: design/capture.md
           - Trajectory storage: design/trajectory.md
           - Trajectory Markdown format: design/trajectory-format.md
-      - Compute control plane: design/compute.md
+      - pPilot control plane: design/ppilot.md
       - Tensor memory (experimental):
           - TTAS model: design/tensor-address-space.md
           - Distributed tiered storage: design/distributed-tiered-storage.md

@@ -8,7 +8,7 @@
 pip install persisting[lance]
 ```
 
-CLI 工具（`persisting traj`、`persisting compute`、`persisting search`）需[从源码构建](installation.md)。
+CLI 工具（`persisting traj`、`persisting ppilot`、`persisting search`）需[从源码构建](installation.md)。
 
 ---
 
@@ -126,11 +126,11 @@ results = query("docs", "搜索查询", mode="hybrid", k=10)
 Map 式任务，支持断点续跑：
 
 ```bash
-persisting compute task.py -w 4 --check       # 验证
-persisting compute task.py -w 4 -- --n 1000   # 运行
+persisting ppilot task.py -w 4 --check       # 验证
+persisting ppilot task.py -w 4 -- --n 1000   # 运行
 ```
 
-→ [Compute 指南](guide/compute.md)
+→ [pPilot 指南](guide/ppilot.md)
 
 ---
 

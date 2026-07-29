@@ -7,7 +7,7 @@ members = [
     "crates/persisting-capture",
     "crates/persisting-cli",
     "crates/persisting-dlcapt",
-    "crates/persisting-compute",
+    "crates/persisting-ppilot",
     "crates/persisting-pvisor",
 ]
 

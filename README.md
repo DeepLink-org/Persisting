@@ -112,7 +112,7 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 |------------|--------|-------------|
 | **Agent Trajectory Capture** | ✅ Stable | Proxy + record LLM traffic as Lance + Markdown |
 | **Streaming Queue** | ✅ Stable | Lance-backed append/consume, KV API, samplers |
-| **Compute Orchestration** | ✅ Stable | `plan()` + `execute()`, local/torchrun |
+| **pPilot Orchestration** | ✅ Stable | `plan()` + `execute()`, local/torchrun |
 | **Agent Search** | ✅ Stable | Document indexing, IVF-PQ, hybrid search |
 | **Tensor Memory (TTAS)** | 🧪 Experimental | Multi-dim tensor subscript, tiered backends |
 | **Cross-node KV Cache** | 📋 Planned | Pulsing + RDMA data plane |
@@ -159,7 +159,7 @@ pip install persisting[lance]        # Full
 pip install persisting               # Minimal
 ```
 
-For the CLI tools (`persisting traj`, `persisting compute`, `persisting search`):
+For the CLI tools (`persisting traj`, `persisting ppilot`, `persisting search`):
 
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git

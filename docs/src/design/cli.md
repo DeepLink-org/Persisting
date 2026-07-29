@@ -4,7 +4,7 @@
 
 `search`、`traj`（`trajectory`）等子命令共用此架构。
 
-`compute` 例外：编排逻辑在 `persisting-compute` 内由 CLI 直接调用（不经 engine RON ABI）；见 [Compute 架构](compute.md) · [快速上手](../guide/compute.md)。
+`ppilot` 例外：编排逻辑在 `persisting-ppilot` 内由 CLI 直接调用（不经 engine RON ABI）；见 [pPilot 架构](ppilot.md) · [快速上手](../guide/ppilot.md)。旧命令名 `compute` 仅作为兼容别名。
 
 ---
 

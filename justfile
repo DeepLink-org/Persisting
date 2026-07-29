@@ -193,7 +193,7 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# 单 crate：engine | proto | core | capture | cli | compute | pvisor | dlcapt
+# 单 crate：engine | proto | core | capture | cli | ppilot | pvisor | dlcapt
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -203,10 +203,10 @@ test-crate crate:
       core) cargo test -p persisting-core ;;
       capture) cargo test -p persisting-capture ;;
       cli) cargo test -p persisting-cli ;;
-      compute) cargo test -p persisting-compute ;;
+      ppilot|compute) cargo test -p persisting-ppilot ;;
       pvisor) cargo test -p persisting-pvisor ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
-      *) echo "unknown crate: {{ crate }} (engine|proto|core|capture|cli|compute|pvisor|dlcapt)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (engine|proto|core|capture|cli|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
     esac
 
 test-rust:

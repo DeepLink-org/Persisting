@@ -1,4 +1,4 @@
-//! Stable value types shared by pVisor, Compute, capture, and storage.
+//! Stable value types shared by pVisor, pPilot, capture, and storage.
 //!
 //! The runtime and narrative dimensions are deliberately orthogonal:
 //!

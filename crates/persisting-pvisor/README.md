@@ -29,7 +29,7 @@ Those guarantees require later container or WASM executors behind the same
 `RunExecutor` contract.
 
 Batch expansion and fleet scheduling are intentionally outside this crate and
-remain responsibilities of `persisting-compute`.
+remain responsibilities of `persisting-ppilot`.
 
 ## Capture integration
 

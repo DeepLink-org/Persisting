@@ -10,7 +10,7 @@
 | 记录 Agent LLM 调用 | [Capture](capture.md) |
 | 流式传输事件并持久化 | [Queue](queue.md) |
 | 索引和检索文档 | [Search](search.md) |
-| 运行批量任务并断点续跑 | [Compute](compute.md) |
+| 运行批量任务并断点续跑 | [pPilot](ppilot.md) |
 | 接入自定义存储 | [Custom Backends](custom-backends.md) |
 
 ## 能力成熟度
@@ -18,7 +18,7 @@
 | 能力 | 提供内容 | 状态 |
 |---|---|---|
 | [Capture](capture.md) | 捕获 LLM 流量并生成 Lance 与 Markdown 视图 | 稳定 |
-| [Compute](compute.md) | 带 checkpoint/resume 的 Map 式任务执行 | 稳定 |
+| [pPilot](ppilot.md) | 带 checkpoint/resume 的 Map 式任务执行 | 稳定 |
 | [Search](search.md) | 文档索引与向量/混合检索 | 稳定 |
 | [Queue](queue.md) | 持久事件流和 KV 风格访问 | 稳定 |
 | [Tensor Memory](tensor-memory.md) | 张量下标 API 与 host/SSD block 存储 | 实验性 |
@@ -26,6 +26,6 @@
 
 ## 这些能力如何关联
 
-Capture、Search、Queue 和 Compute 都可以独立使用。Tensor Memory 是带 TTAS
+Capture、Search、Queue 和 pPilot 都可以独立使用。Tensor Memory 是带 TTAS
 寻址的实验性存储底座，不是稳定工具的必需依赖。需要了解实现模型或路线图时，
 请阅读[架构与内部实现](../design/index.md)。
