@@ -244,10 +244,13 @@ mod tests {
             ctx_req,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 10,
                 user_content: Some("hi".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         );
         engine.spawn_apply(
@@ -260,6 +263,7 @@ mod tests {
                 streaming: false,
                 stream_metrics: None,
                 assistant_content: Some("ok".into()),
+                headers: vec![],
             }),
         );
 

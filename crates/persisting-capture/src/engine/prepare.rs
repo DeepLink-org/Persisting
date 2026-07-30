@@ -10,7 +10,7 @@ use super::wire::{run_enrich, StoryCommand, StoryScope};
 use super::{CallContext, CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent};
 use crate::debug;
 use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
-use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
+use crate::sink::{attach_connection_and_client, attach_http_wire_request, attach_http_wire_response, attach_recorded_headers, llm_request_summary_record, llm_response_record_with_content};
 use crate::subagent_link::SpawnLinkBackfill;
 use crate::usage::{
     estimate_cost_usd, extract_usage_from_response, extract_usage_from_sse, StreamMetrics,
@@ -75,6 +75,32 @@ impl CapturePreparer {
             &ctx.call,
             ctx.level,
             event.body_json.as_ref(),
+        );
+        attach_recorded_headers(&mut rec.payload, &event.headers);
+        // Prefer event headers for connection flags; fall back to ctx request headers.
+        let hdrs = if event.headers.is_empty() {
+            &ctx.request_headers
+        } else {
+            &event.headers
+        };
+        attach_connection_and_client(
+            &mut rec.payload,
+            hdrs,
+            ctx.http_version.as_deref(),
+            ctx.client_peer.as_deref(),
+            ctx.client_meta.as_ref(),
+        );
+        // Raw SoT (RFC-0002): always persist wire body into `http.request_body` when
+        // available. Flat `payload.body` remains gated by CaptureLevel::Full for
+        // dialogue-oriented consumers.
+        let body_for_wire = event.body_json.as_ref();
+        attach_http_wire_request(
+            &mut rec.payload,
+            &event.method,
+            &event.path,
+            event.url.as_deref().or(ctx.upstream_url.as_deref()),
+            body_for_wire,
+            body_for_wire.is_some() && !event.headers.is_empty(),
         );
         let backfills = run_enrich(run, &mut rec, ctx, event.body_json.as_ref(), None).await?;
         let scope = StoryScope::from_context(ctx);
@@ -213,6 +239,25 @@ impl CapturePreparer {
             assistant_content.clone(),
             &ctx.call,
             ctx.level,
+        );
+        attach_recorded_headers(&mut rec.payload, &event.headers);
+        attach_connection_and_client(
+            &mut rec.payload,
+            &ctx.request_headers,
+            ctx.http_version.as_deref(),
+            ctx.client_peer.as_deref(),
+            ctx.client_meta.as_ref(),
+        );
+        // Raw SoT: always mirror response bytes into `http.response_body`.
+        let body_for_wire = Some(&resp_json);
+        attach_http_wire_response(
+            &mut rec.payload,
+            event.status,
+            ctx.upstream_url.as_deref(),
+            body_for_wire,
+            true,
+            event.streaming,
+            !event.headers.is_empty(),
         );
         let backfills = run_enrich(run, &mut rec, ctx, None, assistant_content.as_deref()).await?;
         let scope = StoryScope::from_context(ctx);

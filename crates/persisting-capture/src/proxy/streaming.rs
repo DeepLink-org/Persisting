@@ -16,7 +16,7 @@ use super::http_headers::skip_response_header_when_body_changed;
 use super::state::ProxyState;
 use crate::conversion::{ProtocolBridge, StreamTranslator};
 use crate::debug;
-use crate::engine::{CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event};
+use crate::engine::{headers_to_vec, CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event};
 
 const STREAM_DRAFT_MD_INTERVAL: Duration = Duration::from_millis(150);
 /// Bounded queue between upstream reader and client SSE writer (backpressure).
@@ -48,6 +48,7 @@ pub(super) async fn streaming_llm_response(
 ) -> anyhow::Result<Response> {
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
+    let recorded_resp_headers = headers_to_vec(&resp_headers);
     let translate = bridge.needs_response_translation();
     let session_id = ctx.route().session_id.clone();
     let agent_id = ctx.agent_id().to_string();
@@ -185,6 +186,7 @@ pub(super) async fn streaming_llm_response(
                 streaming: true,
                 stream_metrics,
                 assistant_content: stream_assistant_text,
+                headers: recorded_resp_headers,
             }),
         );
     });

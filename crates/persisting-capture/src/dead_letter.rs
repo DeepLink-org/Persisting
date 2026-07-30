@@ -18,6 +18,8 @@ use crate::provider::ProviderKind;
 use crate::session_storage::CaptureRoute;
 use crate::usage::StreamMetrics;
 
+fn default_post() -> String { "POST".into() }
+
 const DEAD_LETTER_FILENAME: &str = "dead_letter.jsonl";
 const TRAJECTORY_DEAD_LETTER_FILENAME: &str = "trajectory_dead_letter.jsonl";
 
@@ -72,6 +74,8 @@ pub struct DeadLetterContext {
     pub route: CaptureRoute,
     pub agent_id: String,
     pub call: Call,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub request_headers: Vec<(String, String)>,
     pub level: CaptureLevel,
     pub client_model: String,
     pub upstream_model: String,
@@ -79,6 +83,14 @@ pub struct DeadLetterContext {
     pub provider: ProviderKind,
     #[serde(with = "serde_compat::protocol")]
     pub protocol: ProtocolKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_peer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_meta: Option<crate::session_client::SessionClientMeta>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_url: Option<String>,
 }
 
 /// Serializable event (wire format for JSONL).
@@ -87,10 +99,16 @@ pub struct DeadLetterContext {
 pub enum SerializableEvent {
     Request {
         path: String,
+        #[serde(default = "default_post")]
+        method: String,
+        #[serde(default)]
+        url: Option<String>,
         body_bytes: usize,
         user_content: Option<String>,
         body_json: Option<Value>,
         model_rewritten: bool,
+        #[serde(default)]
+        headers: Vec<(String, String)>,
     },
     ResponseComplete {
         status: u16,
@@ -98,6 +116,8 @@ pub enum SerializableEvent {
         streaming: bool,
         stream_metrics: Option<StreamMetrics>,
         assistant_content: Option<String>,
+        #[serde(default)]
+        headers: Vec<(String, String)>,
     },
     ResponseDraft {
         status: u16,
@@ -258,27 +278,44 @@ impl DeadLetterContext {
             route: ctx.route().clone(),
             agent_id: ctx.agent_id().to_string(),
             call: ctx.call.clone(),
+            request_headers: ctx.request_headers.clone(),
             level: ctx.level,
             client_model: ctx.client_model.clone(),
             upstream_model: ctx.upstream_model.clone(),
             provider: ctx.provider,
             protocol: ctx.protocol,
+            client_peer: ctx.client_peer.clone(),
+            client_meta: ctx.client_meta.clone(),
+            http_version: ctx.http_version.clone(),
+            upstream_url: ctx.upstream_url.clone(),
         }
     }
 
     pub fn to_call_context(&self) -> CallContext {
-        CallContext::new(
+        let mut ctx = CallContext::new(
             self.route.clone(),
             self.agent_id.clone(),
             self.call.clone(),
-            Vec::new(),
+            self.request_headers.clone(),
             self.level,
             self.client_model.clone(),
             self.upstream_model.clone(),
             self.provider,
             self.protocol,
             false,
-        )
+        );
+        if let Some(peer) = &self.client_peer {
+            ctx.attach_client(peer.clone(), self.client_meta.clone());
+        } else if self.client_meta.is_some() {
+            ctx.client_meta = self.client_meta.clone();
+        }
+        if let Some(v) = &self.http_version {
+            ctx.attach_http_version(v.clone());
+        }
+        if let Some(u) = &self.upstream_url {
+            ctx.attach_upstream_url(u.clone());
+        }
+        ctx
     }
 }
 
@@ -287,10 +324,13 @@ impl SerializableEvent {
         match event {
             Event::Request(e) => Self::Request {
                 path: e.path.clone(),
+                method: e.method.clone(),
+                url: e.url.clone(),
                 body_bytes: e.body_bytes,
                 user_content: e.user_content.clone(),
                 body_json: e.body_json.clone(),
                 model_rewritten: e.model_rewritten,
+                headers: e.headers.clone(),
             },
             Event::ResponseComplete(e) => Self::ResponseComplete {
                 status: e.status,
@@ -298,6 +338,7 @@ impl SerializableEvent {
                 streaming: e.streaming,
                 stream_metrics: e.stream_metrics.clone(),
                 assistant_content: e.assistant_content.clone(),
+                headers: e.headers.clone(),
             },
             Event::ResponseDraft(e) => Self::ResponseDraft {
                 status: e.status,
@@ -315,16 +356,22 @@ impl SerializableEvent {
         match self {
             Self::Request {
                 path,
+                method,
+                url,
                 body_bytes,
                 user_content,
                 body_json,
                 model_rewritten,
+                headers,
             } => Event::Request(RequestEvent {
                 path: path.clone(),
+                method: method.clone(),
+                url: url.clone(),
                 body_bytes: *body_bytes,
                 user_content: user_content.clone(),
                 body_json: body_json.clone(),
                 model_rewritten: *model_rewritten,
+                headers: headers.clone(),
             }),
             Self::ResponseComplete {
                 status,
@@ -332,12 +379,14 @@ impl SerializableEvent {
                 streaming,
                 stream_metrics,
                 assistant_content,
+                headers,
             } => Event::ResponseComplete(CompleteEvent {
                 status: *status,
                 resp_bytes: payload_to_bytes(resp_payload),
                 streaming: *streaming,
                 stream_metrics: stream_metrics.clone(),
                 assistant_content: assistant_content.clone(),
+                headers: headers.clone(),
             }),
             Self::ResponseDraft {
                 status,
@@ -442,11 +491,14 @@ mod tests {
         let ctx = sample_ctx(dir.path());
         let event = Event::Request(RequestEvent {
             path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
             body_bytes: 10,
             user_content: Some("hi".into()),
             body_json: None,
             model_rewritten: false,
-        });
+                headers: vec![],
+            });
         append_dead_letter(dir.path(), &ctx, &event, "mailbox full", None).unwrap();
         let entries = read_dead_letter_entries(dir.path()).unwrap();
         assert_eq!(entries.len(), 1);

@@ -12,10 +12,13 @@ async fn request_event_appends_single_llm_request() {
             &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 12,
                 user_content: Some("hi".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         )
         .await
@@ -41,6 +44,7 @@ async fn response_event_appends_single_stream_record() {
                 streaming: true,
                 stream_metrics: None,
                 assistant_content: Some("hello".into()),
+                headers: vec![],
             }),
         )
         .await

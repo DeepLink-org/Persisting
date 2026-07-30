@@ -17,10 +17,13 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
             &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 12,
                 user_content: Some("hello user".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         )
         .await
@@ -44,6 +47,7 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
                 streaming: true,
                 stream_metrics: None,
                 assistant_content: Some("final assistant".into()),
+                headers: vec![],
             }),
         )
         .await
@@ -88,10 +92,13 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
             &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 12,
                 user_content: Some("hi".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         )
         .await
@@ -130,6 +137,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
                 streaming: true,
                 stream_metrics: None,
                 assistant_content: Some("done".into()),
+                headers: vec![],
             }),
         )
         .await
@@ -169,10 +177,13 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
             &ctx_a,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 12,
                 user_content: Some("req-a".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         )
         .await
@@ -199,10 +210,13 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
             &ctx_b,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 12,
                 user_content: Some("req-b".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         )
         .await
@@ -217,6 +231,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
                 streaming: true,
                 stream_metrics: None,
                 assistant_content: Some("final-a".into()),
+                headers: vec![],
             }),
         )
         .await

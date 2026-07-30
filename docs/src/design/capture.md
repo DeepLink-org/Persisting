@@ -1,7 +1,7 @@
 # Persisting Capture — 架构与设计
 
 > **读者**：需要在 Agent 与 LLM 之间落地**可观测、可回放、可审计**轨迹的平台工程师、架构师与集成方。  
-> **版本**：1.0（对外） &emsp;|&emsp; **最后更新**：2026-05-28
+> **版本**：1.1（对外） &emsp;|&emsp; **最后更新**：2026-07-30
 
 本文描述 **Persisting Capture** 的产品定位、核心概念与架构取舍。实现细节（块格式字段表、CLI 参数、目录布局）见文末延伸阅读；文中尽量避免绑定具体源码路径。
 
@@ -26,15 +26,25 @@
 
 ## 1. 摘要
 
-**Persisting Capture 是 coding agents 的轨迹层**：让 **Claude Code** 或 **OpenAI Codex** 通过本地代理运行，即可得到持久化事件日志、人类可读的 Markdown 轨迹，以及运行结束时的 consistency report。
+**Persisting Capture 是 coding agents 的轨迹层**：让 **Claude Code** 或 **OpenAI Codex** 通过本地代理运行，即可得到可回放的事件流，并在其上完成格式转换与落盘。
 
-它是一个可嵌入的 **LLM 反向代理 + 轨迹采集引擎**。在已支持的客户端上，只需通过 `traj capture` 注入代理或显式将 API 指到 Capture，即可在**不修改业务代码**的前提下：
+主链路：
+
+```text
+HTTP  ──►  events 流
+              ├─ 记录（append → events.lance，SoT）
+              └─ 触发（订阅 / handler）
+                   └─ 格式转换（经 storyline hub）+ 落盘
+                      （agenticmd / atif / openai_msg / …）
+```
+
+它是一个可嵌入的 **LLM 反向代理 + 事件引擎**。在已支持的客户端上，通过 `traj capture` 注入代理或显式将 API 指到 Capture，即可在**不修改业务代码**的前提下：
 
 - 透明转发对话流量到上游模型；
-- 将对话与调用上下文沉淀为**机器可读**的事件日志与**人类可读**的 Markdown 轨迹；
-- 在运行结束或运维流程中，对「事件日志 / 对话视图 / 叙事模型」做**三轨对账**，发现物化偏差。
+- 把每次 HTTP 交换写入 **events 流**（可持久化、可回放）；
+- 由 events 上的订阅触发物化与导出（Markdown、ATIF、openai_msg 等），而不是在代理路径里硬编码多种格式。
 
-Capture 不是通用 API 网关的替代品，而是围绕 **Agent 轨迹（trajectory）** 设计的观测与存储子系统；路由与协议转换能力服务于「采得全、看得懂、对得上」。
+Capture 不是通用 API 网关的替代品，而是围绕 **Agent 轨迹（trajectory）** 设计的观测与存储子系统。
 
 ---
 
@@ -82,20 +92,19 @@ Capture 不是通用 API 网关的替代品，而是围绕 **Agent 轨迹（traj
 
 ```text
 Agent 客户端
-      │
+      │ HTTP
       ▼
 ┌─────────────────────────────────────┐
-│  Persisting Capture（本文）          │  ← 代理 + 采集 + 物化
-│  · 事件日志（Lance）                 │
-│  · 人读轨迹（Markdown）              │
+│  Persisting Capture                  │
+│  HTTP → events 流                    │
+│   · 记录 → events.lance（SoT）       │
+│   · 触发 → storyline → 格式落盘      │
 └──────────────┬──────────────────────┘
-               │ CaptureRecord / 轨迹文件
+               │ events / 派生产物
                ▼
 ┌─────────────────────────────────────┐
-│  Persisting Engine / 分析 / 检索     │  ← 消费 canonical 数据
+│  Persisting Engine / 分析 / 检索     │
 └─────────────────────────────────────┘
-
-运行时编排可依托 Pulsing Actor（每故事线串行处理），与分布式 Actor 集群解耦部署。
 ```
 
 ---
@@ -105,104 +114,101 @@ Agent 客户端
 | 原则 | 含义 |
 |------|------|
 | **观测不阻断** | 用户请求的延迟与成功率优先；采集失败写入 dead letter，**不**因写盘失败而中断 HTTP 响应。 |
-| **Story 边界** | 协议差异在「进入故事模型」之前消化；故事层只谈谁、第几轮、哪次调用、发生了什么。 |
-| **Lance 为事实源** | 全量事件以结构化记录 append 到 `events.lance`；Markdown 是**物化视图**，允许有损过滤。 |
-| **写读对称** | 在线维护的「轮次 / 调用」读模型，与离线从事件日志重放的结果一致（通过对账与测试保证）。 |
-| **单一可见文本语义** | 用户/助手可见正文只有一套提取规则，供轮次索引、Markdown 正文、过滤策略共用。 |
-| **单一写入门** | 每条进入 Lance 的会话事件，经统一的故事线 Actor 路径落盘，避免双写竞态。 |
+| **HTTP → events** | 代理主产物是 **events 流**（HTTP-first wire）；不是直接写 Markdown / ATIF。 |
+| **记录与触发分离** | 同一条 event 可 **append 落盘**，也可 **fan-out 触发**下游 handler；二者解耦。 |
+| **转换经 hub** | 物化 / 导出经 **storyline**（ATIF-aligned）再落到各格式；禁止外围格式两两直转。 |
+| **Lance 为事实源** | canonical 仅 `events.lance`；Markdown / ATIF 等是**派生落盘**，允许有损。 |
+| **单一写入门** | 进入 Lance 的 append 经统一引擎路径，避免双写竞态。 |
 
 ---
 
 ## 4. 核心概念
 
-### 4.1 叙事层级
-
-Capture 用一套与具体 HTTP API **无关**的故事词汇描述 Agent 行为：
+### 4.1 主链路
 
 ```text
-Run（一次采集工作区 / 根会话）
- └── Story（一条独立故事线 ≈ 一个会话文件 + 一份事件数据集）
-      └── Turn（语义轮次：用户意图 → 助手回应）
-           └── Call（单次 LLM HTTP 往返）
-                └── Phase（请求 / 流式草稿 / 完成 / 取消）
+Agent HTTP
+    │
+    ▼
+Capture Proxy（转发 + 发出 wire 观测）
+    │
+    ▼
+events 流  ────────────────────────────────────────┐
+    │                                              │
+    ├─ 记录 append ──► events.lance（SoT / replay） │
+    │                                              │
+    └─ 触发 handler ──► interpret / fold            │
+                           │                       │
+                           ▼                       │
+                      storyline（hub）              │
+                           │                       │
+              ┌────────────┼────────────┐          │
+              ▼            ▼            ▼          │
+         agenticmd       atif      openai_msg …    │
+              │            │            │          │
+              └──────── 落盘 / 物化 ─────┘          │
+                                                   │
+（可选）从 Lance 重放 ──────────────────────────────┘
 ```
+
+要点：
+
+1. **Proxy 只负责 HTTP 与发 event**，不直接写多种轨迹格式。
+2. **events 流是总线**：可记录、可订阅；同一条记录可同时落盘与触发。
+3. **格式转换与落盘是下游**：经 storyline hub，输出 agenticmd / atif / openai_msg 等。
+
+辅助坐标（会话边界，非 SoT）：
 
 | 概念 | 说明 |
 |------|------|
-| **Run** | 一次 `traj capture` 或逻辑上的根工作区；子 Agent 注册与对账的边界。 |
-| **Story** | 主 Agent 或某个 subagent 的独立轨迹线（例如 `run-*.md` 与 `agent-*.md`）。 |
-| **Turn** | Story 内的语义轮；区分「对话轮」与「无 opening user 的自主段」（工具循环等）。 |
-| **Call** | 一次模型调用，由 `call_id` 等标识关联请求与响应。 |
-| **Event** | 写路径上的采集单元：请求到达、流式草稿、响应完成、客户端取消等。 |
+| **Run** | 一次 `traj capture` / 根工作区 |
+| **session** | 一条 Agent 会话线（≈ ATIF `session_id` / storyline `session`） |
+| **call_id** | 关联同一次 HTTP 往返的 request/response（events 信封字段） |
 
-早期设计中的「Beat / Invocation」等概念已收敛为上述层级，避免与存储记录类型混淆。
-
-### 4.2 三层词汇表
-
-为避免「协议字段」污染「故事语义」和「存储行格式」，系统刻意划分三层：
+### 4.2 分层
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│  协议层：HTTP、SSE、OpenAI/Anthropic/Responses 形态          │
-│  职责：转发、翻译、提取可见正文与 usage                        │
+│  协议层：HTTP、SSE、OpenAI / Anthropic / Responses           │
+│  职责：转发、翻译；发出 HTTP-first 观测                       │
 └───────────────────────────┬─────────────────────────────────┘
-                            │ Ingress
+                            │ emit
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  故事层：Run / Story / Turn / Call / Event                   │
-│  职责：编排「发生了什么」、维护轮次与调用关系                  │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ 持久化
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│  存储层：CaptureRecord（事件） + MarkdownBlock（物化块）     │
-│  职责：append-only 事实日志 + 人读视图                        │
-└─────────────────────────────────────────────────────────────┘
-                            │ Egress
-                            ▼
-              快照、materialize、对账、导出、下游检索
+│  events 流                                                   │
+│  职责：有序事件；append 记录；fan-out 触发                    │
+└───────────────┬─────────────────────────┬───────────────────┘
+                │ record                  │ trigger
+                ▼                         ▼
+         events.lance              handlers（interpret）
+                                          │
+                                          ▼
+                                   storyline → 各格式落盘
 ```
 
-**Ingress**：协议层输出「故事层事件 + 上下文」，不再向下游泄漏 `messages`/`completions` 原生结构。  
-**Egress**：从事件日志重放故事、生成 Markdown、或导出给外部系统；协议回归测试与采集主路径分离。
+**Ingress**：协议层 → events（尽量保留 wire；摘要字段可选）。  
+**Egress**：events 重放 / 订阅 → storyline → 派生格式落盘；与采集主路径解耦。
 
 ```mermaid
 flowchart LR
-    subgraph Protocol["协议层"]
-        P1["路由与鉴权"]
-        P2["协议桥与流式翻译"]
-    end
-    subgraph Story["故事层"]
-        S1["Event 与 Call 上下文"]
-        S2["轮次状态机"]
-        S3["Story 读模型"]
-    end
-    subgraph Storage["存储层"]
-        ST1["事件日志"]
-        ST2["Markdown 物化"]
-    end
-
-    P1 --> P2
-    P2 --> S1
-    S1 --> S2
-    S1 --> ST1
-    ST1 --> S2
-    S2 --> S3
-    ST1 --> ST2
+    Proxy["Proxy HTTP"] --> Events["events 流"]
+    Events --> Lance["记录 events.lance"]
+    Events --> Handlers["触发 handlers"]
+    Handlers --> Storyline["storyline hub"]
+    Storyline --> Formats["agenticmd / atif / … 落盘"]
+    Lance -.->|"replay"| Handlers
 ```
 
-### 4.3 写模型与读模型
+### 4.3 写路径与派生路径
 
-| | 写模型 | 读模型 |
+| | 写路径（记录） | 派生路径（触发） |
 |---|--------|--------|
-| **是什么** | 追加式**事件记录**（canonical） | **Story**：轮次、调用阶段、关联关系 |
-| **谁维护** | 采集引擎在 apply 路径写入 | 轮次状态机在线观察 + 离线重放 |
-| **用途** | 审计、replay、检索、对账 | 摘要、frontmatter、运维快照 |
-| **对外暴露** | 文件与 Engine 消费 | 运行时查询快照；进程退出时写入故事快照文件 |
+| **输入** | Proxy / import 发出的 event | 已进入流的 event（实时或重放） |
+| **输出** | `events.lance` append | storyline 及 agenticmd / atif / … |
+| **失败策略** | dead letter；不阻断 HTTP | 独立重试；不影响 SoT |
+| **保真** | HTTP-first，目标可回放 | 允许有损折叠 |
 
-读模型中的父子 Story 链接、调用元数据（模型名、协议类型）等字段在 schema 上已预留，部分仍在与 spawn 链路对齐中完善。
-
----
+Live Markdown、轮次索引等视为 **events 触发的一类 handler**，不是与 events 并列的第二事实源。
 
 ## 5. 系统全景
 
@@ -218,31 +224,31 @@ flowchart LR
               │   Capture Proxy        │
               │   · 路由 / 鉴权        │
               │   · 协议桥 / 流式转发   │
-              │   · 触发采集事件        │
+              │   · emit → events 流    │
               └───────────┬────────────┘
                           │
           ┌───────────────┼───────────────┐
           ▼               ▼               ▼
    ┌────────────┐  ┌────────────┐  ┌────────────┐
-   │ 采集引擎    │  │ 上游 LLM    │  │ 会话索引    │
-   │ WAL·队列   │  │            │  │ (列表/用量) │
-   │ 故事 Actor │  └────────────┘  └────────────┘
+   │ events 引擎 │  │ 上游 LLM    │  │ 会话索引    │
+   │ · 记录      │  │            │  │            │
+   │ · 触发      │  └────────────┘  └────────────┘
    └──────┬─────┘
           │
-    ┌─────┴─────┐
-    ▼           ▼
- Lance       Markdown
- (events.lance/)  (物化视图)
+    ┌─────┴──────────────────┐
+    ▼                        ▼
+ events.lance          handlers → storyline
+ （SoT）                  → agenticmd / atif / … 落盘
 ```
 
 | 组件 | 职责 |
 |------|------|
-| **Proxy** | 唯一 HTTP 入口；在转发前后发射采集事件；流式场景下节流草稿事件。 |
-| **采集引擎** | 将事件转为记录；按故事线串行 apply；协调 Lance 与 Markdown 写入。 |
-| **Run 协调** | 跨故事线的 spawn 关联、主从路由、记录 enrichment。 |
-| **故事线处理** | 每 Story 一个串行执行体：轮次状态、Lance 序号、Live Markdown、摘要刷新。 |
-| **会话索引** | 轻量 `sessions.json`：列表、token、费用估算、状态；批量刷盘。 |
-| **对账与 dead letter** | 运行结束三轨校验；失败事件可重放。 |
+| **Proxy** | 唯一 HTTP 入口；转发上下游；把观测 **emit 进 events 流**（不直接写多种格式）。 |
+| **events 引擎** | 维护有序流：**记录**（append Lance）与 **触发**（fan-out handlers）。 |
+| **记录路径** | WAL → per-session 有序 apply → `events.lance`。 |
+| **触发路径** | 订阅 events → interpret → storyline → 各格式落盘 / Live Markdown。 |
+| **会话索引** | 轻量 `sessions.json`：列表、token、费用估算。 |
+| **对账与 dead letter** | SoT 与派生落盘一致性；失败事件可重放。 |
 
 ### 5.2 集成方式（概念）
 
@@ -260,46 +266,47 @@ Capture 在**配置语义与路由模型**上借鉴 agentgateway 子集，并可
 
 ## 6. 数据流：从 HTTP 到轨迹
 
+主路径：**HTTP → events 流 →（记录 | 触发）→ 落盘**。
+
 ### 6.1 一次对话请求（概念时序）
 
 ```mermaid
 sequenceDiagram
     participant Agent
     participant Proxy as Capture Proxy
-    participant Engine as 采集引擎
-    participant Upstream as 上游模型
+    participant Bus as events 流
     participant Lance as events.lance
-    participant MD as Markdown 视图
+    participant H as handlers
+    participant Upstream as 上游模型
 
     Agent->>Proxy: 对话请求
-    Proxy->>Engine: 请求事件（异步，不阻塞）
-    Engine->>Lance: 记录 user 侧事件
-    Engine->>MD: 追加/更新 user 块
-
-    Proxy->>Upstream: 转发（可能协议转换）
+    Proxy->>Bus: emit request event（异步）
+    Bus->>Lance: 记录
+    Bus->>H: 触发（storyline / Markdown …）
+    Proxy->>Upstream: 转发
     Upstream-->>Proxy: 流式响应
 
     loop 流式生成
-        Proxy->>Engine: 草稿事件
-        Engine->>MD: upsert assistant 草稿块
+        Proxy->>Bus: emit draft（可选）
+        Bus->>H: 触发 Live Markdown upsert
         Proxy->>Agent: 转发 SSE
     end
 
     alt 客户端断开
-        Proxy->>Engine: 取消事件
-        Engine->>Lance: 仅记录取消（不进 Markdown）
+        Proxy->>Bus: emit cancel
+        Bus->>Lance: 记录取消
     else 正常结束
-        Proxy->>Engine: 完成事件
-        Engine->>Lance: 记录完整响应事件
-        Engine->>MD: 定稿 assistant 块
+        Proxy->>Bus: emit response complete
+        Bus->>Lance: 记录完整响应
+        Bus->>H: 触发定稿 / 格式落盘
     end
 ```
 
 要点：
 
-1. **Proxy 不等待**整段采集完成再响应；事件先入 WAL，再进入 per-story 有序队列。
-2. **草稿只更新 Markdown**；完整响应以**一条**事件进入 Lance，避免 partial 行污染事实源。
-3. 慢客户端通过有界队列对上游施加背压，避免无限缓冲。
+1. **Proxy 不等待**派生落盘完成再响应；先 emit，再继续转发。
+2. **草稿默认只触发 handler**（如 Live Markdown）；完整响应才 **记录**进 Lance，避免 partial 污染 SoT。
+3. 派生格式（agenticmd / atif / …）一律经 **storyline**；可实时触发，也可事后从 Lance 重放再触发。
 
 ### 6.2 采集事件与记录类型
 
@@ -323,7 +330,7 @@ sequenceDiagram
 
 省略无关探测流量（如 `count_tokens`、history replay）的规则与采集级别无关，由物化过滤统一处理。详见本页 6.4 节。
 
-存储记录类型（`llm.request`、`llm.response.stream`、`llm.spawn_link`、`session.*` 等）属于**存储层词汇**，由故事层事件推导，不必与 HTTP 一一对应。
+存储记录类型（`http.request` / `llm.request`、`llm.response.stream`、`session.*` 等）属于 **events 词汇**，由 Proxy emit；handler 再折叠为 storyline，不必与 HTTP 帧一一对应到对话轮。
 
 ### 6.3 流式与人读视图
 

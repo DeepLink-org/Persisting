@@ -10,6 +10,8 @@
 |-----------|-----|
 | Capture 代理的整体架构（概念、Story 边界、采集管线） | [Capture 架构设计](capture.md) §4–§6 |
 | TLV Markdown 的块格式规范 | [轨迹 Markdown 格式](trajectory-format.md) |
+| Storyline 枢纽互操作格式 | [RFC-0001 Storyline Format](../rfcs/0001-storyline-format.md) |
+| Events 事实流格式 | [RFC-0002 Events Format](../rfcs/0002-events-format.md) |
 | `persisting traj` 命令用法 | [Traj 命令](cli-traj.md) · [Capture 子命令](cli-capture.md) |
 
 ---

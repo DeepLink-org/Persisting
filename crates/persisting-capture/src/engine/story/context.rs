@@ -48,6 +48,14 @@ pub struct CallContext {
     pub provider: ProviderKind,
     pub protocol: ProtocolKind,
     pub debug_on: bool,
+    /// Client socket address (`ip:port`) from `ConnectInfo`, when known.
+    pub client_peer: Option<String>,
+    /// Best-effort process / machine metadata for the peer.
+    pub client_meta: Option<crate::session_client::SessionClientMeta>,
+    /// HTTP version string, e.g. `HTTP/1.1`.
+    pub http_version: Option<String>,
+    /// Upstream request URL when known (proxy path).
+    pub upstream_url: Option<String>,
 }
 
 impl CallContext {
@@ -74,7 +82,28 @@ impl CallContext {
             provider,
             protocol,
             debug_on,
+            client_peer: None,
+            client_meta: None,
+            http_version: None,
+            upstream_url: None,
         }
+    }
+
+    pub fn attach_client(
+        &mut self,
+        peer: impl std::fmt::Display,
+        meta: Option<crate::session_client::SessionClientMeta>,
+    ) {
+        self.client_peer = Some(peer.to_string());
+        self.client_meta = meta;
+    }
+
+    pub fn attach_http_version(&mut self, version: impl Into<String>) {
+        self.http_version = Some(version.into());
+    }
+
+    pub fn attach_upstream_url(&mut self, url: impl Into<String>) {
+        self.upstream_url = Some(url.into());
     }
 
     pub fn story_id(&self) -> &StoryId {

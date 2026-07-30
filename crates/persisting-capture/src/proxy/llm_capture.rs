@@ -17,6 +17,7 @@ use super::common::{
     model_access_policy,
 };
 use super::http_headers::{is_websocket_upgrade, skip_response_header_when_body_changed};
+use crate::engine::headers_to_vec;
 use super::models_list::build_models_response;
 use super::router::resolve_route;
 use super::state::ProxyState;
@@ -29,6 +30,32 @@ use crate::engine::{CompleteEvent, Event, RequestEvent};
 use crate::protocol::ProtocolKind;
 use crate::session_storage::resolve_capture_route;
 use crate::Call;
+
+
+fn client_request_url(parts: &axum::http::request::Parts) -> String {
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or(parts.uri.path());
+    if let Some(host) = parts.headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()) {
+        // Scheme is not visible on the proxy request; record as authority+path for correlation.
+        format!("//{host}{path_and_query}")
+    } else {
+        path_and_query.to_string()
+    }
+}
+
+fn http_version_label(version: axum::http::Version) -> String {
+    match version {
+        axum::http::Version::HTTP_09 => "HTTP/0.9".into(),
+        axum::http::Version::HTTP_10 => "HTTP/1.0".into(),
+        axum::http::Version::HTTP_11 => "HTTP/1.1".into(),
+        axum::http::Version::HTTP_2 => "HTTP/2".into(),
+        axum::http::Version::HTTP_3 => "HTTP/3".into(),
+        other => format!("{other:?}"),
+    }
+}
 
 pub(super) async fn llm_capture(
     state: ProxyState,
@@ -80,9 +107,12 @@ pub(super) async fn llm_capture(
             .into_response());
     }
 
-    state
-        .session_clients
-        .ensure(state.storage.as_path(), &agent_id, &capture_route, peer);
+    let client_meta = state.session_clients.ensure(
+        state.storage.as_path(),
+        &agent_id,
+        &capture_route,
+        peer,
+    );
 
     let client_model = extract_model(&body_bytes).unwrap_or_else(|| "_unknown".to_string());
     let resolved = resolve_route(&cfg.models, &client_model)?;
@@ -94,7 +124,7 @@ pub(super) async fn llm_capture(
 
     // Wrap once in Arc so the request, response (or stream draft), and final events
     // all share a single allocation; clones become refcount bumps.
-    let call_ctx: Arc<_> = Arc::new(call_context(
+    let mut ctx = call_context(
         &state,
         &capture_route,
         &agent_id,
@@ -105,7 +135,10 @@ pub(super) async fn llm_capture(
         provider,
         protocol,
         debug_on,
-    ));
+    );
+    ctx.attach_client(peer, client_meta);
+    ctx.attach_http_version(http_version_label(parts.version));
+    let mut call_ctx: Arc<_> = Arc::new(ctx);
 
     {
         let user_content = extract_user_message_from_request_body(&body_bytes);
@@ -114,10 +147,13 @@ pub(super) async fn llm_capture(
             Arc::clone(&call_ctx),
             Event::Request(RequestEvent {
                 path: path.clone(),
+                method: method.as_str().to_string(),
+                url: Some(client_request_url(&parts)),
                 body_bytes: body_bytes.len(),
                 user_content,
                 body_json,
                 model_rewritten: resolved.model_rewritten,
+                headers: headers_to_vec(&parts.headers),
             }),
         );
     }
@@ -134,6 +170,12 @@ pub(super) async fn llm_capture(
     let mut upstream_url = route.resolve_upstream_url(&upstream_path, upstream_protocol)?;
     if let Some(q) = parts.uri.query() {
         upstream_url.set_query(Some(q));
+    }
+
+    {
+        let mut ctx = (*call_ctx).clone();
+        ctx.attach_upstream_url(upstream_url.as_str());
+        call_ctx = Arc::new(ctx);
     }
 
     let access_decision = state.access_controller.authorize_model(
@@ -289,6 +331,7 @@ pub(super) async fn llm_capture(
             streaming: false,
             stream_metrics: None,
             assistant_content: None,
+            headers: headers_to_vec(&resp_headers),
         }),
     );
 

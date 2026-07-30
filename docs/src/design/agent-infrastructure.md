@@ -132,7 +132,7 @@ Run
 |---|---|---|
 | Run | 一次顶层 Agent workload | `run_id` |
 | Storyline | Run 中一条主/子 Agent 的连续会话线 | `story_id` |
-| Turn | Storyline 中用户可理解的一轮推进 | `turn_id` 或稳定序号 |
+| Turn | Storyline 中用户可理解的一轮推进 | `id`（≈ ATIF `step_id`） |
 | Call | 一次模型、工具、文件、网络或系统调用周期 | `call_id` |
 | Event | 不可变的最小运行事实 | `event_id` |
 | Revision | 固定消费集合或派生版本 | `revision_id` |

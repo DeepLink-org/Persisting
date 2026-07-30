@@ -14,10 +14,13 @@ async fn story_snapshot_reflects_applied_turns() {
             &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 12,
                 user_content: Some("hello".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         )
         .await
@@ -43,10 +46,13 @@ async fn shutdown_persists_story_snapshots_for_active_stories() {
             &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 12,
                 user_content: Some("hello".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         )
         .await
@@ -71,11 +77,14 @@ async fn shutdown_drains_spawned_apply_before_snapshot() {
         ctx,
         Event::Request(RequestEvent {
             path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
             body_bytes: 12,
             user_content: Some("queued hello".into()),
             body_json: None,
             model_rewritten: false,
-        }),
+                headers: vec![],
+            }),
     );
 
     engine.shutdown().await.unwrap();
@@ -101,10 +110,13 @@ async fn flush_persists_dirty_session_index() {
             &ctx,
             Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 12,
                 user_content: Some("ping".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         )
         .await
@@ -127,11 +139,14 @@ async fn flush_drains_spawned_apply_without_sleep() {
         ctx,
         Event::Request(RequestEvent {
             path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
             body_bytes: 12,
             user_content: Some("queued ping".into()),
             body_json: None,
             model_rewritten: false,
-        }),
+                headers: vec![],
+            }),
     );
 
     engine.flush().await.unwrap();
