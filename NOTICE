@@ -11,3 +11,15 @@ dependencies: none identified at migration time.
 
 If additional vendored sources or incompatible licenses are discovered,
 stop publication and obtain explicit clearance before release.
+
+dldb
+====
+
+This workspace hosts an installable top-level Python package `dldb` at
+`persisting/dldb` (setuptools `package-dir` maps import name `dldb` to that
+directory).
+
+Origin: Kun Cai / internal dldb (`feature/timing-model` timing & metrics line).
+License: MIT (see `persisting/dldb/LICENSE`), separate from the Apache-2.0
+Persisting workspace license.
+Install: `pip install -e ./persisting/dldb`
