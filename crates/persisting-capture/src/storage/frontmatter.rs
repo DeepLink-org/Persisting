@@ -120,6 +120,7 @@ fn lookup_session_index(
     })
 }
 
+#[allow(clippy::type_complexity)]
 fn index_stats(
     row: Option<&SessionSummary>,
     fallback_session: &str,

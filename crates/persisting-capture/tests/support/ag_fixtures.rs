@@ -31,9 +31,9 @@ pub fn read_fixture_bytes(relative: &str) -> Bytes {
 
 /// Strip insta YAML frontmatter (`---` … `---`) from AG snapshot files.
 pub fn strip_snap_frontmatter(raw: &str) -> &str {
-    if raw.starts_with("---\n") {
-        if let Some(end) = raw[4..].find("\n---\n") {
-            return raw[4 + end + 5..].trim_start();
+    if let Some(stripped) = raw.strip_prefix("---\n") {
+        if let Some(end) = stripped.find("\n---\n") {
+            return stripped[end + 5..].trim_start();
         }
     }
     raw.trim()

@@ -14,10 +14,13 @@ async fn wal_replays_unacked_events_on_next_engine() {
             &test_context(),
             &Event::Request(RequestEvent {
                 path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
                 body_bytes: 5,
                 user_content: Some("survives crash".into()),
                 body_json: None,
                 model_rewritten: false,
+                headers: vec![],
             }),
         );
         assert!(appended.is_some(), "wal append should have succeeded");

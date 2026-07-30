@@ -9,6 +9,19 @@ members = [
     "crates/persisting-dlcapt",
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
+    "crates/persisting-pchronicle",
+]
+
+default-members = [
+    "crates/persisting-proto",
+    "crates/persisting-engine",
+    "crates/persisting-core",
+    "crates/persisting-capture",
+    "crates/persisting-cli",
+    "crates/persisting-dlcapt",
+    "crates/persisting-ppilot",
+    "crates/persisting-pvisor",
+    "crates/persisting-pchronicle",
 ]
 
 [workspace.package]

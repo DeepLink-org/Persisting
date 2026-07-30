@@ -73,7 +73,7 @@ pub fn block_to_replay_json(block: &MarkdownBlock) -> Result<String> {
 }
 
 pub fn block_to_capture_record(block: &MarkdownBlock) -> Result<CaptureRecord> {
-    let content = strip_subagent_footer_from_body(&block.value_utf8()?.to_string());
+    let content = strip_subagent_footer_from_body(block.value_utf8()?);
     let kind = block.kind().unwrap_or("markdown").to_string();
     let role = block.role().unwrap_or("note");
     let seq = block

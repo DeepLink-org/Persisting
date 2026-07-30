@@ -153,7 +153,7 @@ impl SetC {
         for v in &self.values {
             list.append(coord_value_to_py(v, py)).unwrap();
         }
-        list.into_py(py)
+        list.into_any().unbind()
     }
 }
 
@@ -249,7 +249,7 @@ fn meet_constraint(c1: &Constraint, c2: &Constraint) -> MeetResult {
         (Set(s), Range { lo, hi }) | (Range { lo, hi }, Set(s)) => {
             let u: BTreeSet<_> = s
                 .iter()
-                .filter(|x| x.as_int().map_or(false, |i| *lo <= i && i < *hi))
+                .filter(|x| x.as_int().is_some_and(|i| *lo <= i && i < *hi))
                 .cloned()
                 .collect();
             if u.is_empty() {
@@ -338,7 +338,7 @@ impl Address {
             })
             .collect::<PyResult<Vec<_>>>()?;
         let t = pyo3::types::PyTuple::new(py, vals)?;
-        Ok(t.into_py(py))
+        Ok(t.into_any().unbind())
     }
 
     fn __repr__(&self) -> String {
@@ -460,11 +460,11 @@ impl Region {
     fn constraints_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
         let dict = pyo3::types::PyDict::new(py);
         for (dim, c) in self.constraints.read().unwrap().iter() {
-            let key = dim.clone().into_py(py);
+            let key = dim.clone().into_pyobject(py)?.into_any().unbind();
             let val = constraint_to_py(c, py)?;
             dict.set_item(key, val)?;
         }
-        Ok(dict.into_py(py))
+        Ok(dict.into_any().unbind())
     }
 
     fn __repr__(&self) -> String {
@@ -530,7 +530,7 @@ fn constraint_to_py(c: &Constraint, py: Python<'_>) -> PyResult<PyObject> {
     match c {
         Constraint::Point(v) => {
             let p = Point { value: v.clone() };
-            Ok(p.into_py(py))
+            Ok(p.into_pyobject(py)?.into_any().unbind())
         }
         Constraint::Range { lo, hi } => {
             if *lo >= *hi {
@@ -539,11 +539,11 @@ fn constraint_to_py(c: &Constraint, py: Python<'_>) -> PyResult<PyObject> {
                 ));
             }
             let r = Range { lo: *lo, hi: *hi };
-            Ok(r.into_py(py))
+            Ok(r.into_pyobject(py)?.into_any().unbind())
         }
         Constraint::Set(s) => {
             let set = SetC { values: s.clone() };
-            Ok(set.into_py(py))
+            Ok(set.into_pyobject(py)?.into_any().unbind())
         }
     }
 }
@@ -585,7 +585,7 @@ fn project_prefix(
         let mut out = Vec::with_capacity(dims.len());
         for d in &dims {
             match region.constraints.read().unwrap().get(d) {
-                Some(Constraint::Point(v)) => out.push(coord_value_to_py(&v, py)),
+                Some(Constraint::Point(v)) => out.push(coord_value_to_py(v, py)),
                 _ => {
                     return Err(PyValueError::new_err(
                         "project_prefix on Region requires all requested dimensions to be Point",
@@ -762,6 +762,7 @@ fn search_add_batch(
 
 #[pyfunction]
 #[pyo3(signature = (dataset, query, mode="hybrid", k=10, embedding_dim=384, text_column="text", filter=None, nprobes=None, minimum_nprobes=None, maximum_nprobes=None, adaptive_nprobes_margin=None))]
+#[allow(clippy::too_many_arguments)]
 fn search_query(
     py: Python<'_>,
     dataset: String,
@@ -797,6 +798,7 @@ fn search_query(
 
 #[pyfunction]
 #[pyo3(signature = (dataset, vector_column="embedding", text_column="text", metric="cosine", num_partitions=None, ivf_max_iters=None, ivf_balance_factor=None, ivf_balance_postprocess=None, ivf_postprocess_max_cluster_ratio=None, ivf_sample_rate=None, ivf_target_partition_size=None, ivf_shuffle_partition_batches=None, ivf_shuffle_partition_concurrency=None, pq_num_sub_vectors=None, pq_num_bits=None, pq_max_iters=None, pq_kmeans_redos=None, pq_sample_rate=None))]
+#[allow(clippy::too_many_arguments)]
 fn search_index(
     py: Python<'_>,
     dataset: String,

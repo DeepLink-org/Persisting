@@ -9,7 +9,7 @@ for supported workflows.
 | Subsystem | Start here | Then read |
 |---|---|---|
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
-| Capture and trajectories | [Capture pipeline](capture.md) | [Trajectory storage](trajectory.md) → [Markdown format](trajectory-format.md) |
+| Capture and trajectories | [Capture pipeline](capture.md) | [Trajectory storage](trajectory.md) → [Markdown format](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
 | pPilot | [pPilot control plane](ppilot.md) | [pPilot guide](../guide/ppilot.md) |
 | Tensor Memory (experimental) | [TTAS model](tensor-address-space.md) | [Tiered storage](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
 | CLI boundary | [CLI architecture](cli.md) | command references under **Reference** |

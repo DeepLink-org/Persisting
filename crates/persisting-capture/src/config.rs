@@ -232,7 +232,7 @@ impl ModelRoute {
         self.provider_kind()
     }
 
-    fn effective_upstream_base<'a>(&'a self, protocol: ProtocolKind) -> anyhow::Result<&'a str> {
+    fn effective_upstream_base(&self, protocol: ProtocolKind) -> anyhow::Result<&str> {
         if protocol == ProtocolKind::Messages {
             if let Some(ref u) = self.upstream_anthropic {
                 return Ok(u.as_str());
@@ -319,8 +319,6 @@ fn detect_incoming_api_prefix(incoming_path: &str) -> &'static str {
     let incoming = incoming_path.trim_start_matches('/');
     if incoming.starts_with("v1beta/") || incoming == "v1beta" {
         "/v1beta"
-    } else if incoming.starts_with("v1/") || incoming == "v1" {
-        "/v1"
     } else {
         "/v1"
     }

@@ -30,10 +30,16 @@ pub struct DraftEvent {
 #[derive(Debug, Clone)]
 pub struct RequestEvent {
     pub path: String,
+    /// HTTP method (`GET`, `POST`, …).
+    pub method: String,
+    /// Best-effort request URL (Host + path/query when available).
+    pub url: Option<String>,
     pub body_bytes: usize,
     pub user_content: Option<String>,
     pub body_json: Option<Value>,
     pub model_rewritten: bool,
+    /// HTTP request headers as `(name, value)` pairs (may include duplicates).
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,4 +49,6 @@ pub struct CompleteEvent {
     pub streaming: bool,
     pub stream_metrics: Option<StreamMetrics>,
     pub assistant_content: Option<String>,
+    /// HTTP response headers as `(name, value)` pairs (may include duplicates).
+    pub headers: Vec<(String, String)>,
 }

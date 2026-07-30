@@ -2305,7 +2305,7 @@ fn resolve_judge_locations(
 }
 
 fn run_traj_judge(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeArgs) -> Result<()> {
-    let rubric_ids = resolve_judge_rubrics(&args);
+    let rubric_ids = resolve_judge_rubrics(args);
     let scope: JudgeScope = args.scope.into();
     let method: JudgeMethod = if args.score.is_some() {
         JudgeMethod::Manual
@@ -2536,17 +2536,6 @@ mod tests {
             parent_call_id: None,
             payload: serde_json::json!({}),
         }
-    }
-
-    fn add_args_from_cli(argv: &[&str]) -> TrajectoryAddArgs {
-        let cli = Cli::try_parse_from(argv).unwrap();
-        let Command::Trajectory(TrajectoryArgs {
-            command: TrajectoryCommand::Add(args),
-        }) = cli.command
-        else {
-            panic!("expected traj/trajectory add");
-        };
-        args
     }
 
     #[test]

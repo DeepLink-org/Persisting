@@ -188,23 +188,6 @@ fn otlp_log_record_to_pending(lr: &Value, file_order: u64, sub_line: u64) -> Pen
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn envelope_line() {
-        let v: Value = serde_json::from_str(
-            r#"{"source":"agentgateway","kind":"llm.request","timestamp":"2026-05-20T12:00:00+00:00","session_id":"s1","payload":{"model":"x"}}"#,
-        )
-        .unwrap();
-        let recs = parse_value(v, 0).unwrap();
-        assert_eq!(recs.len(), 1);
-        assert_eq!(recs[0].source, "agentgateway");
-        assert_eq!(recs[0].session_id.as_deref(), Some("s1"));
-    }
-}
-
 fn generic_gateway_line(v: Value, line_no: u64) -> PendingRecord {
     PendingRecord {
         sort_key: SortKey {
@@ -220,5 +203,22 @@ fn generic_gateway_line(v: Value, line_no: u64) -> PendingRecord {
         parent_uuid: None,
         trace_id: None,
         payload: v,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn envelope_line() {
+        let v: Value = serde_json::from_str(
+            r#"{"source":"agentgateway","kind":"llm.request","timestamp":"2026-05-20T12:00:00+00:00","session_id":"s1","payload":{"model":"x"}}"#,
+        )
+        .unwrap();
+        let recs = parse_value(v, 0).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].source, "agentgateway");
+        assert_eq!(recs[0].session_id.as_deref(), Some("s1"));
     }
 }

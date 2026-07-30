@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 use crate::capture::record::{CaptureRecord, PendingRecord};
 
 pub fn merge_and_assign_seq(mut pending: Vec<PendingRecord>) -> Vec<CaptureRecord> {
-    pending.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
+    pending.sort_by_key(|a| a.sort_key);
     pending
         .into_iter()
         .enumerate()

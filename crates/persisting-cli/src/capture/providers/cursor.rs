@@ -61,7 +61,7 @@ pub fn collect(opts: CursorOptions<'_>) -> Result<Vec<PendingRecord>> {
         )?;
     }
 
-    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files.sort_by_key(|a| a.0);
 
     let mut out = Vec::new();
     for (order, path) in files {

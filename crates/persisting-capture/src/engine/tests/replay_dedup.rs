@@ -46,10 +46,13 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
                 &call_ctx,
                 Event::Request(RequestEvent {
                     path: "/v1/messages".into(),
+                    method: "POST".into(),
+                    url: None,
                     body_bytes: 100,
                     user_content: Some(user.into()),
                     body_json: Some(body),
                     model_rewritten: false,
+                    headers: vec![],
                 }),
             )
             .await
@@ -72,6 +75,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
                     streaming: true,
                     stream_metrics: None,
                     assistant_content: Some(text.into()),
+                    headers: vec![],
                 }),
             )
             .await

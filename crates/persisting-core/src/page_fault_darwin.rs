@@ -30,7 +30,7 @@ fn fetch_page_from_block(
     block_size: usize,
     page_offset_in_block: usize,
 ) -> std::io::Result<[u8; PAGE_SIZE]> {
-    let offset = block_id as u64 * block_size as u64 + page_offset_in_block as u64;
+    let offset = block_id * block_size as u64 + page_offset_in_block as u64;
     let mut f = File::open(path)?;
     f.seek(SeekFrom::Start(offset))?;
     let mut page = [0u8; PAGE_SIZE];
@@ -124,13 +124,10 @@ pub fn run_mach_handler(
         let page_offset_in_block = (offset_in_region % block_size as u64) as usize;
 
         let page_start_usize = page_start as usize;
-        match fetch_page_from_block(&path, block_id, block_size, page_offset_in_block) {
-            Ok(page) => {
-                if fill_page(page_start_usize, &page).is_err() {
-                    // 填页失败，不回复或回复失败，让内核继续链
-                }
+        if let Ok(page) = fetch_page_from_block(&path, block_id, block_size, page_offset_in_block) {
+            if fill_page(page_start_usize, &page).is_err() {
+                // 填页失败，不回复或回复失败，让内核继续链
             }
-            Err(_) => {}
         }
 
         let reply_id = req.Head.msgh_id.wrapping_add(EXC_REPLY_OFFSET);
@@ -148,7 +145,7 @@ pub fn run_mach_handler(
         };
         let send_ret = unsafe {
             mach_msg(
-                &mut reply.Head as *mut _ as *mut mach_msg_header_t,
+                &mut reply.Head as *mut _,
                 MACH_SEND_MSG,
                 reply.Head.msgh_size,
                 0,
@@ -179,10 +176,10 @@ pub fn mach_register_and_spawn_handler(
     let kr =
         unsafe { mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &mut exc_port) };
     if kr != KERN_SUCCESS {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("mach_port_allocate: {:?}", kr),
-        ));
+        return Err(std::io::Error::other(format!(
+            "mach_port_allocate: {:?}",
+            kr
+        )));
     }
     let kr = unsafe {
         mach_port_insert_right(
@@ -193,19 +190,19 @@ pub fn mach_register_and_spawn_handler(
         )
     };
     if kr != KERN_SUCCESS {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("mach_port_insert_right: {:?}", kr),
-        ));
+        return Err(std::io::Error::other(format!(
+            "mach_port_insert_right: {:?}",
+            kr
+        )));
     }
     let kr = unsafe {
         task_set_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, exc_port, BEHAVIOR, 0)
     };
     if kr != KERN_SUCCESS {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("task_set_exception_ports: {:?}", kr),
-        ));
+        return Err(std::io::Error::other(format!(
+            "task_set_exception_ports: {:?}",
+            kr
+        )));
     }
 
     let mut pipe_fds: [libc::c_int; 2] = [0, 0];
@@ -238,5 +235,5 @@ pub fn start_mach_handler(
 ) -> PyResult<i32> {
     let (write_fd, _handle) = mach_register_and_spawn_handler(base, len, block_size, path)
         .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))?;
-    Ok(write_fd as i32)
+    Ok(write_fd)
 }

@@ -159,6 +159,10 @@ nav:
           - TTAS model: design/tensor-address-space.md
           - Distributed tiered storage: design/distributed-tiered-storage.md
           - BlockStore internals: design/block-store.md
+  - RFCs:
+      - Index: rfcs/index.md
+      - 0001 Storyline format: rfcs/0001-storyline-format.md
+      - 0002 Events format: rfcs/0002-events-format.md
   - Engineering Notes:
       - Implementation status: dev/index.md
       - Tiered-storage implementation steps: dev/tiered-storage-steps.md

@@ -26,7 +26,7 @@ use super::{
 async fn dataset_exists(uri: &str) -> Result<bool> {
     match Dataset::open(uri).await {
         Ok(_) => Ok(true),
-        Err(e) if matches!(e, LanceError::DatasetNotFound { .. }) => Ok(false),
+        Err(LanceError::DatasetNotFound { .. }) => Ok(false),
         Err(e) => Err(anyhow::anyhow!("{:#}", e)),
     }
 }

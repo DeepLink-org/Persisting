@@ -8,7 +8,7 @@
 | 子系统 | 先读 | 再读 |
 |---|---|---|
 | Queue | [队列持久化](architecture.zh.md) | [自定义后端指南](../guide/custom-backends.md) |
-| Capture 与轨迹 | [Capture 管线](capture.md) | [轨迹存储](trajectory.md) → [Markdown 格式](trajectory-format.md) |
+| Capture 与轨迹 | [Capture 管线](capture.md) | [轨迹存储](trajectory.md) → [Markdown 格式](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
 | pPilot | [pPilot 控制面](ppilot.md) | [pPilot 指南](../guide/ppilot.md) |
 | Tensor Memory（实验性） | [TTAS 模型](tensor-address-space.md) | [分层存储](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
 | CLI 边界 | [CLI 整体架构](cli.md) | **参考**中的命令文档 |

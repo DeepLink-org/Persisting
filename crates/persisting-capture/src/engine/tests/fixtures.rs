@@ -1,11 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use bytes::Bytes;
-
 use crate::config::CaptureLevel;
-use crate::engine::{CallContext, CaptureEngine, CompleteEvent, DraftEvent, Event, RequestEvent};
-use crate::markdown_trajectory::session_markdown_write_path_for_key;
+use crate::engine::{CallContext, CaptureEngine};
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
 use crate::record::CaptureRecord;
