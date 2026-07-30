@@ -42,10 +42,8 @@ fn print_markdown_rendered_stdout(title: Option<&str>, markdown: &str) {
             let _ = writeln!(out, "{header}");
         }
     }
-    if !markdown.is_empty() {
-        if skin.write_text_on(&mut out, markdown).is_err() {
-            let _ = write!(out, "{markdown}");
-        }
+    if !markdown.is_empty() && skin.write_text_on(&mut out, markdown).is_err() {
+        let _ = write!(out, "{markdown}");
     }
     let _ = writeln!(out);
     let _ = out.flush();

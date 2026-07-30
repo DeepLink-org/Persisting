@@ -34,14 +34,14 @@ async fn session_sink_failure_writes_dead_letter_with_record() {
     let ctx = test_context();
     let event = Event::Request(RequestEvent {
         path: "/v1/chat/completions".into(),
-                method: "POST".into(),
-                url: None,
+        method: "POST".into(),
+        url: None,
         body_bytes: 10,
         user_content: Some("hi".into()),
         body_json: None,
         model_rewritten: false,
-                headers: vec![],
-            });
+        headers: vec![],
+    });
     assert!(engine.apply(&ctx, event).await.is_err());
     engine.flush().await.unwrap();
     let entries = read_dead_letter_entries(dir.path()).unwrap();

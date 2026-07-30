@@ -66,7 +66,11 @@ def _flatten(session, step, call) -> dict[str, Any]:
         "arguments": None if call is None else call.arguments,
         "tool_call_extra": None if call is None else call.extra,
     }
-    return {k: v for k, v in row.items() if v is not None or k in {"tool_call_id", "function_name", "arguments", "tool_call_extra"}}
+    return {
+        k: v
+        for k, v in row.items()
+        if v is not None or k in {"tool_call_id", "function_name", "arguments", "tool_call_extra"}
+    }
 
 
 def atif_trajectory_sql_ddl() -> str:

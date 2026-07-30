@@ -31,7 +31,8 @@ pub fn spawn_link_backfill_record(
         .collect();
     payload["refs_subagent_ids"] = json!(ids);
     payload["subagent_trajectories"] = json!(paths);
-    let rec = CaptureRecord {
+
+    CaptureRecord {
         seq: 0,
         source: "persisting-proxy".to_string(),
         kind: "llm.spawn_link".to_string(),
@@ -46,8 +47,7 @@ pub fn spawn_link_backfill_record(
         branch: None,
         parent_call_id: Some(parent_call_id.to_string()),
         payload,
-    };
-    rec
+    }
 }
 pub fn main_route_for_backfill(route: &CaptureRoute, registry: &SubagentRegistry) -> CaptureRoute {
     let run_key = run_registry_key(route);

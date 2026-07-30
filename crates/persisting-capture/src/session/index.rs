@@ -261,7 +261,7 @@ pub fn discover_sessions(storage: &Path) -> Result<Vec<SessionSummary>> {
         }
     }
     let mut out: Vec<_> = by_key.into_values().collect();
-    out.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+    out.sort_by_key(|b| std::cmp::Reverse(b.last_seen));
     Ok(out)
 }
 

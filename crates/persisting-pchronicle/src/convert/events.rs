@@ -84,25 +84,25 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
                                 .and_then(|v| v.as_i64())
                         });
                     if latency_from_payload.is_none() {
-                        latency_from_payload = ev
-                            .payload
-                            .get("latency_ms")
-                            .and_then(|v| v.as_i64());
+                        latency_from_payload =
+                            ev.payload.get("latency_ms").and_then(|v| v.as_i64());
                     }
                 }
                 _ => {}
             }
         }
 
-        let latency_ms = latency_from_payload
-            .or_else(|| latency_between(req_ts.as_deref(), resp_ts.as_deref()));
+        let latency_ms =
+            latency_from_payload.or_else(|| latency_between(req_ts.as_deref(), resp_ts.as_deref()));
 
         if let Some(ut) = user_text.clone() {
             if asst_text.is_some() {
                 turns.push(StorylineTurn {
                     id: next_id,
                     kind: None,
-                    timestamp: req_ts.clone().or_else(|| evs.first().and_then(|e| e.timestamp.clone())),
+                    timestamp: req_ts
+                        .clone()
+                        .or_else(|| evs.first().and_then(|e| e.timestamp.clone())),
                     source: "user".into(),
                     message: serde_json::Value::String(ut),
                     reasoning_content: None,
@@ -382,7 +382,10 @@ fn parse_rfc3339_millis(s: &str) -> Option<i64> {
         return None;
     };
     let mut millis = 0i64;
-    let digits: String = frac_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = frac_str
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     if !digits.is_empty() {
         let padded = format!("{:0<3}", digits.chars().take(3).collect::<String>());
         millis = padded.parse().ok()?;

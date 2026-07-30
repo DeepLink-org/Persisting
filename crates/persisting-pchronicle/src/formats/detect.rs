@@ -91,7 +91,10 @@ pub fn detect_format_from_content(input: &str) -> Result<Option<ChronicleFormat>
 }
 
 /// Prefer path detection; fall back to content.
-pub fn detect_format(path: Option<&Path>, content: Option<&str>) -> Result<Option<ChronicleFormat>> {
+pub fn detect_format(
+    path: Option<&Path>,
+    content: Option<&str>,
+) -> Result<Option<ChronicleFormat>> {
     if let Some(p) = path {
         if let Some(fmt) = detect_format_from_path(p) {
             return Ok(Some(fmt));

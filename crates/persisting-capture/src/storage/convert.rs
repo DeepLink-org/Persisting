@@ -41,6 +41,7 @@ pub struct CompactStats {
 }
 
 /// Convert raw events to TLV blocks (applies dialogue filter; may skip rows).
+#[allow(clippy::type_complexity)]
 pub fn capture_records_to_markdown_blocks(
     records: &[CaptureRecord],
 ) -> Result<(Vec<(BlockHeader, Vec<u8>)>, MaterializeStats)> {

@@ -71,7 +71,11 @@ impl FsChronicleStore {
                 .push(row);
         }
         for rows in self.tool_calls.values_mut() {
-            rows.sort_by(|a, b| a.step_id.cmp(&b.step_id).then(a.tool_call_id.cmp(&b.tool_call_id)));
+            rows.sort_by(|a, b| {
+                a.step_id
+                    .cmp(&b.step_id)
+                    .then(a.tool_call_id.cmp(&b.tool_call_id))
+            });
         }
         Ok(())
     }
@@ -79,7 +83,11 @@ impl FsChronicleStore {
     fn persist(&self) -> Result<()> {
         write_jsonl(
             &self.path(tables::SESSIONS),
-            self.sessions.values().cloned().collect::<Vec<_>>().as_slice(),
+            self.sessions
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .as_slice(),
         )?;
         let mut all_steps = Vec::new();
         for rows in self.steps.values() {
@@ -120,11 +128,7 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
             continue;
         }
         let row = serde_json::from_str::<T>(&line).map_err(|e| {
-            crate::Error::Other(format!(
-                "parse {} line {}: {e}",
-                path.display(),
-                idx + 1
-            ))
+            crate::Error::Other(format!("parse {} line {}: {e}", path.display(), idx + 1))
         })?;
         out.push(row);
     }
@@ -193,7 +197,11 @@ impl ChronicleStore for FsChronicleStore {
                 });
             }
         }
-        rows.sort_by(|a, b| a.step_id.cmp(&b.step_id).then(a.tool_call_id.cmp(&b.tool_call_id)));
+        rows.sort_by(|a, b| {
+            a.step_id
+                .cmp(&b.step_id)
+                .then(a.tool_call_id.cmp(&b.tool_call_id))
+        });
         self.tool_calls.insert(session_id.to_string(), rows);
         self.persist()
     }

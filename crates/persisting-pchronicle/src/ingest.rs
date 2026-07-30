@@ -92,7 +92,10 @@ pub fn ingest_trajectory(store: &mut dyn ChronicleStore, traj: &AtifTrajectory) 
 }
 
 /// Rebuild an ATIF trajectory document from the three tables.
-pub fn reconstruct_trajectory(store: &dyn ChronicleStore, session_id: &str) -> Result<AtifTrajectory> {
+pub fn reconstruct_trajectory(
+    store: &dyn ChronicleStore,
+    session_id: &str,
+) -> Result<AtifTrajectory> {
     let session = store
         .get_session(session_id)?
         .ok_or_else(|| crate::Error::SessionNotFound(session_id.to_string()))?;
@@ -128,7 +131,9 @@ pub fn reconstruct_trajectory(store: &dyn ChronicleStore, session_id: &str) -> R
                 reasoning_effort: step.reasoning_effort,
                 message: step.message,
                 reasoning_content: step.reasoning_content,
-                tool_calls: calls_by_step.remove(&step.step_id).filter(|v| !v.is_empty()),
+                tool_calls: calls_by_step
+                    .remove(&step.step_id)
+                    .filter(|v| !v.is_empty()),
                 observation,
                 metrics: step.metrics,
                 extra: step.extra,

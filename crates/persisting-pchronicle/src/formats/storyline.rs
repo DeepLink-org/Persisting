@@ -271,10 +271,7 @@ impl StorylineDocument {
         let mut seen = std::collections::HashSet::new();
         for turn in &self.turns {
             if turn.source.is_empty() {
-                return Err(Error::Other(format!(
-                    "turn id={} src is required",
-                    turn.id
-                )));
+                return Err(Error::Other(format!("turn id={} src is required", turn.id)));
             }
             if !seen.insert(turn.id) {
                 return Err(Error::Other(format!("duplicate turn id {}", turn.id)));

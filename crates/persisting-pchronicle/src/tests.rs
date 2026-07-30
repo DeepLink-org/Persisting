@@ -135,9 +135,7 @@ fn fs_store_persists_jsonl_tables() {
     assert_eq!(rebuilt.agent.name, "harbor-agent");
     assert_eq!(rebuilt.steps[1].tool_calls.as_ref().unwrap().len(), 2);
 
-    let rows = AtifTrajectoryView::new(&reopened)
-        .query(None)
-        .unwrap();
+    let rows = AtifTrajectoryView::new(&reopened).query(None).unwrap();
     assert_eq!(rows.len(), 3);
 }
 
@@ -150,22 +148,48 @@ fn sql_ddl_mentions_three_tables_and_view_name() {
     assert!(ddl.contains("LEFT JOIN tool_calls"));
 }
 
-
 #[test]
 fn chronicle_format_aliases() {
     use crate::ChronicleFormat;
     use std::str::FromStr;
-    assert_eq!(ChronicleFormat::from_str("storyline").unwrap(), ChronicleFormat::Storyline);
-    assert_eq!(ChronicleFormat::from_str("storyline/v1").unwrap(), ChronicleFormat::Storyline);
+    assert_eq!(
+        ChronicleFormat::from_str("storyline").unwrap(),
+        ChronicleFormat::Storyline
+    );
+    assert_eq!(
+        ChronicleFormat::from_str("storyline/v1").unwrap(),
+        ChronicleFormat::Storyline
+    );
     assert!(ChronicleFormat::Storyline.is_hub());
-    assert_eq!(ChronicleFormat::from_str("events").unwrap(), ChronicleFormat::Events);
-    assert_eq!(ChronicleFormat::from_str("lance").unwrap(), ChronicleFormat::Events);
+    assert_eq!(
+        ChronicleFormat::from_str("events").unwrap(),
+        ChronicleFormat::Events
+    );
+    assert_eq!(
+        ChronicleFormat::from_str("lance").unwrap(),
+        ChronicleFormat::Events
+    );
     assert!(ChronicleFormat::Events.is_lance_only());
-    assert_eq!(ChronicleFormat::from_str("agenticmd").unwrap(), ChronicleFormat::Agenticmd);
-    assert_eq!(ChronicleFormat::from_str("md").unwrap(), ChronicleFormat::Agenticmd);
-    assert_eq!(ChronicleFormat::from_str("openai_msg").unwrap(), ChronicleFormat::OpenaiMsg);
-    assert_eq!(ChronicleFormat::from_str("session_steps").unwrap(), ChronicleFormat::OpenaiMsg);
-    assert_eq!(ChronicleFormat::from_str("atif").unwrap(), ChronicleFormat::Atif);
+    assert_eq!(
+        ChronicleFormat::from_str("agenticmd").unwrap(),
+        ChronicleFormat::Agenticmd
+    );
+    assert_eq!(
+        ChronicleFormat::from_str("md").unwrap(),
+        ChronicleFormat::Agenticmd
+    );
+    assert_eq!(
+        ChronicleFormat::from_str("openai_msg").unwrap(),
+        ChronicleFormat::OpenaiMsg
+    );
+    assert_eq!(
+        ChronicleFormat::from_str("session_steps").unwrap(),
+        ChronicleFormat::OpenaiMsg
+    );
+    assert_eq!(
+        ChronicleFormat::from_str("atif").unwrap(),
+        ChronicleFormat::Atif
+    );
 }
 
 #[test]
@@ -283,13 +307,17 @@ fn events_string_convert_is_lance_only_error() {
     use crate::formats::events::events_lance_only_message;
     use crate::ChronicleFormat;
     let err = into_storyline(ChronicleFormat::Events, "[]").unwrap_err();
-    assert!(err.to_string().contains("Lance-only") || err.to_string().contains(events_lance_only_message().split(';').next().unwrap()));
+    assert!(
+        err.to_string().contains("Lance-only")
+            || err
+                .to_string()
+                .contains(events_lance_only_message().split(';').next().unwrap())
+    );
     let story = crate::StorylineDocument::new("s", "a");
     assert!(from_storyline(ChronicleFormat::Events, &story).is_err());
     assert!(convert(ChronicleFormat::Atif, ChronicleFormat::Events, "{}").is_err());
     assert!(ChronicleFormat::Events.is_lance_only());
 }
-
 
 #[test]
 fn export_events_jsonl_debug_roundtrip_via_test_parser() {
@@ -320,7 +348,6 @@ fn export_events_jsonl_debug_roundtrip_via_test_parser() {
     assert_eq!(doc.events[0].kind, "llm.request");
     assert_eq!(doc.session_id.as_deref(), Some("s1"));
 }
-
 
 #[test]
 fn parse_agenticmd_document_roundtrip() {
@@ -468,7 +495,6 @@ fn openai_msg_preserves_user_and_llm_turns() {
     assert_eq!(story.turns[1].source, "agent");
     assert_eq!(story.turns[1].message, serde_json::json!("pong"));
 }
-
 
 #[test]
 fn storyline_wire_uses_short_keys() {

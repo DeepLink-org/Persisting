@@ -77,14 +77,14 @@ async fn shutdown_drains_spawned_apply_before_snapshot() {
         ctx,
         Event::Request(RequestEvent {
             path: "/v1/chat/completions".into(),
-                method: "POST".into(),
-                url: None,
+            method: "POST".into(),
+            url: None,
             body_bytes: 12,
             user_content: Some("queued hello".into()),
             body_json: None,
             model_rewritten: false,
-                headers: vec![],
-            }),
+            headers: vec![],
+        }),
     );
 
     engine.shutdown().await.unwrap();
@@ -139,14 +139,14 @@ async fn flush_drains_spawned_apply_without_sleep() {
         ctx,
         Event::Request(RequestEvent {
             path: "/v1/chat/completions".into(),
-                method: "POST".into(),
-                url: None,
+            method: "POST".into(),
+            url: None,
             body_bytes: 12,
             user_content: Some("queued ping".into()),
             body_json: None,
             model_rewritten: false,
-                headers: vec![],
-            }),
+            headers: vec![],
+        }),
     );
 
     engine.flush().await.unwrap();

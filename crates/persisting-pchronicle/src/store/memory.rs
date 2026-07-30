@@ -69,7 +69,11 @@ impl ChronicleStore for MemoryChronicleStore {
                 });
             }
         }
-        rows.sort_by(|a, b| a.step_id.cmp(&b.step_id).then(a.tool_call_id.cmp(&b.tool_call_id)));
+        rows.sort_by(|a, b| {
+            a.step_id
+                .cmp(&b.step_id)
+                .then(a.tool_call_id.cmp(&b.tool_call_id))
+        });
         self.tool_calls.insert(session_id.to_string(), rows);
         Ok(())
     }

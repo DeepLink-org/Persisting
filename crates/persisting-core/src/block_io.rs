@@ -30,6 +30,7 @@ pub fn block_write(path: &str, offset: u64, data: &[u8]) -> PyResult<()> {
     let mut f = File::options()
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .map_err(|e| PyIOError::new_err(e.to_string()))?;
     f.seek(SeekFrom::Start(offset))

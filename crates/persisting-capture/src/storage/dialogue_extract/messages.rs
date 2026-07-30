@@ -126,9 +126,7 @@ impl SseStreamBlockParser {
     }
 
     fn process_line(&mut self, line: &str) -> Option<ContentBlock> {
-        let Some(json_str) = line.strip_prefix("data:") else {
-            return None;
-        };
+        let json_str = line.strip_prefix("data:")?;
         let json_str = json_str.trim();
         if json_str.is_empty() || json_str == "[DONE]" {
             return None;
@@ -170,9 +168,7 @@ impl SseStreamBlockParser {
             }
             Some("content_block_delta") => {
                 let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                let Some(delta) = v.get("delta") else {
-                    return None;
-                };
+                let delta = v.get("delta")?;
                 let entry = self.by_index.entry(index).or_insert_with(|| {
                     self.order.push(index);
                     BlockBuilder {

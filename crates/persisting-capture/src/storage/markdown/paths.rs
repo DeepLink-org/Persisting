@@ -66,7 +66,7 @@ pub fn is_subagent_session_storage_key(session_key: &str) -> bool {
 
 fn is_subagent_markdown_filename(name: &str) -> bool {
     name.strip_suffix(".md")
-        .is_some_and(|stem| is_subagent_session_storage_key(stem))
+        .is_some_and(is_subagent_session_storage_key)
 }
 
 /// Capture-run bucket markdown: `{run_dir}/run-{id}.md` when the directory itself is `run-*`.

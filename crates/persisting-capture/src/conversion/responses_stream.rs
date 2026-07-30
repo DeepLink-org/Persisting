@@ -285,10 +285,8 @@ impl CompletionsToResponsesStreamTranslator {
                     )
                 };
 
-                if emit.6.is_some() || emit.5 {
-                    if self.metrics.ttft_ms.is_none() {
-                        self.metrics.ttft_ms = Some(self.started.elapsed().as_millis() as u64);
-                    }
+                if (emit.6.is_some() || emit.5) && self.metrics.ttft_ms.is_none() {
+                    self.metrics.ttft_ms = Some(self.started.elapsed().as_millis() as u64);
                 }
                 if !emit.4 && emit.5 {
                     out.push_str(

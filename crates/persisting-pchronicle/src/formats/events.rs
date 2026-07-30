@@ -110,9 +110,8 @@ pub fn parse_events_jsonl_for_test(input: &str) -> Result<EventsDocument> {
         if line.is_empty() {
             continue;
         }
-        let event = serde_json::from_str::<EventRecord>(line).map_err(|e| {
-            Error::Other(format!("events jsonl line {}: {e}", idx + 1))
-        })?;
+        let event = serde_json::from_str::<EventRecord>(line)
+            .map_err(|e| Error::Other(format!("events jsonl line {}: {e}", idx + 1)))?;
         events.push(event);
     }
     Ok(EventsDocument::new(events))

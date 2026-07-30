@@ -38,11 +38,7 @@ pub fn agenticmd_to_storyline(doc: &AgenticmdDocument) -> Result<StorylineDocume
             .fields
             .get("latency_ms")
             .and_then(|v| v.as_i64());
-        let ttft_ms = block
-            .header
-            .fields
-            .get("ttft_ms")
-            .and_then(|v| v.as_i64());
+        let ttft_ms = block.header.fields.get("ttft_ms").and_then(|v| v.as_i64());
 
         turns.push(StorylineTurn {
             id,

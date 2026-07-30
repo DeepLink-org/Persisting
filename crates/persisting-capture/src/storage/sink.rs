@@ -39,6 +39,12 @@ pub struct SeqOnlySink {
     next_seq: Mutex<HashMap<String, u64>>,
 }
 
+impl Default for SeqOnlySink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SeqOnlySink {
     pub fn new() -> Self {
         Self {
@@ -83,6 +89,7 @@ impl CaptureSink for SeqOnlySink {
 pub struct CallbackSink {
     agent_id: String,
     next_seq: Mutex<HashMap<String, u64>>,
+    #[allow(clippy::type_complexity)]
     callback: Box<dyn Fn(&CaptureRoute, &str, CaptureRecord) -> Result<()> + Send + Sync>,
 }
 
@@ -134,7 +141,6 @@ impl CaptureSink for CallbackSink {
     }
 }
 
-
 /// Sensitive header names (lowercase) — values replaced with `<redacted>` when recorded.
 const REDACT_HEADER_NAMES: &[&str] = &[
     "authorization",
@@ -145,12 +151,6 @@ const REDACT_HEADER_NAMES: &[&str] = &[
     "api-key",
     "x-goog-api-key",
 ];
-
-/// Persist HTTP headers onto an event payload (flat `headers` + nested `http.headers`).
-///
-/// Sensitive values are replaced with `<redacted>` and `headers_redacted` is set.
-/// Empty `headers` still writes an empty object so callers can tell "recorded empty"
-/// from "not recorded" only if they omit this call entirely.
 
 /// Infer keep-alive / persistent connection flags from request headers + HTTP version.
 pub fn infer_connection_persistent(
@@ -177,10 +177,7 @@ pub fn infer_connection_persistent(
     } else if conn_l.split(',').any(|p| p.trim() == "keep-alive") {
         true
     } else {
-        match http_version.unwrap_or("HTTP/1.1") {
-            v if v.starts_with("HTTP/1.0") => false,
-            _ => true,
-        }
+        !matches!(http_version.unwrap_or("HTTP/1.1"), v if v.starts_with("HTTP/1.0"))
     };
     (persistent, connection_header, keep_alive, upgrade)
 }
@@ -251,7 +248,6 @@ pub fn attach_connection_and_client(
         obj.insert("client".into(), Value::Object(client));
     }
 }
-
 
 /// Dual-write RFC-0002 `payload.http.*` request wire fields (keeps flat compat keys).
 pub fn attach_http_wire_request(
@@ -324,6 +320,11 @@ pub fn attach_http_wire_response(
     }
 }
 
+/// Persist HTTP headers onto an event payload (flat `headers` + nested `http.headers`).
+///
+/// Sensitive values are replaced with `<redacted>` and `headers_redacted` is set.
+/// Empty `headers` still writes an empty object so callers can tell "recorded empty"
+/// from "not recorded" only if they omit this call entirely.
 pub fn attach_recorded_headers(payload: &mut Value, headers: &[(String, String)]) {
     let mut map = serde_json::Map::new();
     let mut redacted = false;
@@ -361,6 +362,7 @@ fn attach_call_context(rec: &mut CaptureRecord, call: &Call) {
     rec.call_id = Some(call.call_id.clone());
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn llm_request_summary_record(
     session_id: Option<String>,
     agent_id: Option<String>,
@@ -482,6 +484,7 @@ pub fn llm_response_record(
     rec
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn llm_response_record_with_content(
     session_id: Option<String>,
     agent_id: Option<String>,
@@ -571,7 +574,10 @@ mod header_tests {
         assert_eq!(payload["http"]["method"], "POST");
         assert_eq!(payload["http"]["path"], "/v1/chat/completions");
         assert_eq!(payload["http"]["url"], "//localhost/v1/chat/completions");
-        assert_eq!(payload["http"]["request_body"]["messages"][0]["content"], "hi");
+        assert_eq!(
+            payload["http"]["request_body"]["messages"][0]["content"],
+            "hi"
+        );
         assert!(payload.get("degraded").is_none());
     }
 

@@ -76,14 +76,12 @@ pub fn truncate_body(raw: &str) -> String {
     if raw.chars().count() <= MAX_BODY_CHARS {
         return raw.to_string();
     }
-    let mut n = 0;
     let mut end = 0;
-    for (i, c) in raw.char_indices() {
+    for (n, (i, c)) in raw.char_indices().enumerate() {
         if n >= MAX_BODY_CHARS {
             break;
         }
         end = i + c.len_utf8();
-        n += 1;
     }
     format!("{}…[truncated]", &raw[..end])
 }
@@ -140,6 +138,7 @@ pub fn log_dispatch(storage: &Path, method: &str, uri: &str, session_id: &str, m
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn log_llm_request(
     storage: &Path,
     session_id: &str,
@@ -174,6 +173,7 @@ pub fn log_llm_upstream_sending(storage: &Path, session_id: &str, upstream: &str
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn log_llm_upstream_headers(
     storage: &Path,
     session_id: &str,

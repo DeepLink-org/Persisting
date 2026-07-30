@@ -107,7 +107,10 @@ pub fn encode_agenticmd_document(doc: &AgenticmdDocument) -> Result<String> {
         out.push_str(&format!("agent: {agent}\n"));
     }
     for (k, v) in &doc.frontmatter {
-        if matches!(k.as_str(), "format" | "session" | "session_id" | "agent" | "agent_id") {
+        if matches!(
+            k.as_str(),
+            "format" | "session" | "session_id" | "agent" | "agent_id"
+        ) {
             continue;
         }
         out.push_str(&format!("{k}: {v}\n"));
@@ -266,7 +269,9 @@ fn extract_json_object(s: &str) -> Result<&str> {
             _ => {}
         }
     }
-    Err(Error::Other("unbalanced JSON object in block header".into()))
+    Err(Error::Other(
+        "unbalanced JSON object in block header".into(),
+    ))
 }
 
 fn skip_ws(bytes: &[u8], mut pos: usize) -> usize {

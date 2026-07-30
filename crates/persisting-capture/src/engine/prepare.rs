@@ -10,7 +10,10 @@ use super::wire::{run_enrich, StoryCommand, StoryScope};
 use super::{CallContext, CancelEvent, CompleteEvent, DraftEvent, Event, RequestEvent};
 use crate::debug;
 use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
-use crate::sink::{attach_connection_and_client, attach_http_wire_request, attach_http_wire_response, attach_recorded_headers, llm_request_summary_record, llm_response_record_with_content};
+use crate::sink::{
+    attach_connection_and_client, attach_http_wire_request, attach_http_wire_response,
+    attach_recorded_headers, llm_request_summary_record, llm_response_record_with_content,
+};
 use crate::subagent_link::SpawnLinkBackfill;
 use crate::usage::{
     estimate_cost_usd, extract_usage_from_response, extract_usage_from_sse, StreamMetrics,

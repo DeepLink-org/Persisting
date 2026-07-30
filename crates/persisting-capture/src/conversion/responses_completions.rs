@@ -262,13 +262,13 @@ impl InputConverter {
             }
             if item_type == "message" {
                 self.flush_pending_tool_calls();
-                append_message_input_item(item, &mut self.pending_messages());
+                append_message_input_item(item, self.pending_messages());
                 return;
             }
         }
 
         self.flush_pending_tool_calls();
-        append_legacy_input_item(item, &mut self.pending_messages());
+        append_legacy_input_item(item, self.pending_messages());
     }
 
     fn flush(&mut self, messages: &mut Vec<Value>) {

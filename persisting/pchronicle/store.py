@@ -54,16 +54,12 @@ class MemoryChronicleStore:
         step_ids = {s.step_id for s in self.list_steps(session_id)}
         for row in rows:
             if row.session_id != session_id:
-                raise ValueError(
-                    f"tool_call session_id mismatch: {row.session_id} != {session_id}"
-                )
+                raise ValueError(f"tool_call session_id mismatch: {row.session_id} != {session_id}")
             if row.step_id not in step_ids:
                 raise ValueError(
                     f"orphan tool_call {row.tool_call_id} references missing step {row.step_id}"
                 )
-        self._tool_calls[session_id] = sorted(
-            rows, key=lambda r: (r.step_id, r.tool_call_id)
-        )
+        self._tool_calls[session_id] = sorted(rows, key=lambda r: (r.step_id, r.tool_call_id))
 
     def list_tool_calls(self, session_id: str) -> list[ToolCallRow]:
         return list(self._tool_calls.get(session_id, []))

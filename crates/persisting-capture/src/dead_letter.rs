@@ -18,7 +18,9 @@ use crate::provider::ProviderKind;
 use crate::session_storage::CaptureRoute;
 use crate::usage::StreamMetrics;
 
-fn default_post() -> String { "POST".into() }
+fn default_post() -> String {
+    "POST".into()
+}
 
 const DEAD_LETTER_FILENAME: &str = "dead_letter.jsonl";
 const TRAJECTORY_DEAD_LETTER_FILENAME: &str = "trajectory_dead_letter.jsonl";
@@ -491,14 +493,14 @@ mod tests {
         let ctx = sample_ctx(dir.path());
         let event = Event::Request(RequestEvent {
             path: "/v1/chat/completions".into(),
-                method: "POST".into(),
-                url: None,
+            method: "POST".into(),
+            url: None,
             body_bytes: 10,
             user_content: Some("hi".into()),
             body_json: None,
             model_rewritten: false,
-                headers: vec![],
-            });
+            headers: vec![],
+        });
         append_dead_letter(dir.path(), &ctx, &event, "mailbox full", None).unwrap();
         let entries = read_dead_letter_entries(dir.path()).unwrap();
         assert_eq!(entries.len(), 1);

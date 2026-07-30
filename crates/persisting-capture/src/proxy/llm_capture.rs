@@ -17,7 +17,6 @@ use super::common::{
     model_access_policy,
 };
 use super::http_headers::{is_websocket_upgrade, skip_response_header_when_body_changed};
-use crate::engine::headers_to_vec;
 use super::models_list::build_models_response;
 use super::router::resolve_route;
 use super::state::ProxyState;
@@ -26,11 +25,11 @@ use super::upstream::prepare_upstream_body;
 use crate::conversion::{translate_response_for_bridge, ProtocolBridge};
 use crate::debug::{self, truncate_body_bytes};
 use crate::dialogue_extract::extract_user_message_from_request_body;
+use crate::engine::headers_to_vec;
 use crate::engine::{CompleteEvent, Event, RequestEvent};
 use crate::protocol::ProtocolKind;
 use crate::session_storage::resolve_capture_route;
 use crate::Call;
-
 
 fn client_request_url(parts: &axum::http::request::Parts) -> String {
     let path_and_query = parts
@@ -38,7 +37,11 @@ fn client_request_url(parts: &axum::http::request::Parts) -> String {
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or(parts.uri.path());
-    if let Some(host) = parts.headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()) {
+    if let Some(host) = parts
+        .headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+    {
         // Scheme is not visible on the proxy request; record as authority+path for correlation.
         format!("//{host}{path_and_query}")
     } else {
@@ -107,12 +110,10 @@ pub(super) async fn llm_capture(
             .into_response());
     }
 
-    let client_meta = state.session_clients.ensure(
-        state.storage.as_path(),
-        &agent_id,
-        &capture_route,
-        peer,
-    );
+    let client_meta =
+        state
+            .session_clients
+            .ensure(state.storage.as_path(), &agent_id, &capture_route, peer);
 
     let client_model = extract_model(&body_bytes).unwrap_or_else(|| "_unknown".to_string());
     let resolved = resolve_route(&cfg.models, &client_model)?;

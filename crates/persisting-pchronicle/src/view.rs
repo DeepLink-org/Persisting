@@ -82,11 +82,7 @@ impl<'a> AtifTrajectoryView<'a> {
     /// Query the join view, optionally filtered by `session_id`.
     pub fn query(&self, session_id: Option<&str>) -> Result<Vec<AtifViewRow>> {
         let sessions = match session_id {
-            Some(id) => self
-                .store
-                .get_session(id)?
-                .into_iter()
-                .collect::<Vec<_>>(),
+            Some(id) => self.store.get_session(id)?.into_iter().collect::<Vec<_>>(),
             None => self.store.list_sessions()?,
         };
 

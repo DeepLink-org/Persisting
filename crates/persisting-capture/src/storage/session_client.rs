@@ -231,10 +231,10 @@ impl SessionClientRegistry {
 
         let meta = finalize_client_meta(meta, peer);
 
-        if should_persist_session_meta_file(storage, route) {
-            if write_session_client_meta(&path, &meta).is_err() {
-                return None;
-            }
+        if should_persist_session_meta_file(storage, route)
+            && write_session_client_meta(&path, &meta).is_err()
+        {
+            return None;
         }
 
         self.recorded.lock().unwrap().insert(key);

@@ -26,6 +26,11 @@ pub extern "C" fn persisting_engine_ron_abi_version() -> u32 {
 }
 
 /// 提交 UTF-8 RON `RpcRequest`；成功时写入 **非零** `*handle_out`，任务在后台执行。
+///
+/// # Safety
+///
+/// - `request` 必须为 null（且 `request_len == 0`）或指向至少 `request_len` 字节的可读缓冲。
+/// - `handle_out` 必须非 null，并指向可写的 `u64`。
 #[no_mangle]
 pub unsafe extern "C" fn persisting_engine_submit(
     request: *const u8,
@@ -59,6 +64,10 @@ pub unsafe extern "C" fn persisting_engine_submit(
 }
 
 /// 查询任务状态与 `progress_percent`（0–100，粗粒度）。
+///
+/// # Safety
+///
+/// - `status_out` 必须非 null，并指向可写的 [`PersistingJobStatus`]。
 #[no_mangle]
 pub unsafe extern "C" fn persisting_engine_job_poll(
     job: u64,
@@ -83,6 +92,11 @@ pub unsafe extern "C" fn persisting_engine_job_poll(
 }
 
 /// 取走 UTF-8 RON `RpcResponse`：probe / fill 语义见 **`persisting_proto::invoke_abi`**；fill 成功后 job 从表中移除。
+///
+/// # Safety
+///
+/// - 当 `response_capacity > 0` 时，`response_out` 必须指向至少 `response_capacity` 字节的可写缓冲。
+/// - `response_len_out` 必须非 null（若底层实现要求），具体契约见 `take_job_result`。
 #[no_mangle]
 pub unsafe extern "C" fn persisting_engine_job_take_result(
     job: u64,
@@ -94,6 +108,10 @@ pub unsafe extern "C" fn persisting_engine_job_take_result(
 }
 
 /// 取消或清理任务（未 `take_result` 也可调用）；无此 handle 时仍返回 OK。
+///
+/// # Safety
+///
+/// 无额外指针参数；`job` 为不透明句柄，可对未知 id 安全调用。
 #[no_mangle]
 pub unsafe extern "C" fn persisting_engine_job_release(job: u64) -> i32 {
     crate::jobs::release_job(job)

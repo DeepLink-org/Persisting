@@ -28,11 +28,7 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
         .as_ref()
         .map(|subs| {
             subs.iter()
-                .filter_map(|sub| {
-                    sub.trajectory_id
-                        .clone()
-                        .or_else(|| sub.session_id.clone())
-                })
+                .filter_map(|sub| sub.trajectory_id.clone().or_else(|| sub.session_id.clone()))
                 .collect()
         })
         .unwrap_or_default();

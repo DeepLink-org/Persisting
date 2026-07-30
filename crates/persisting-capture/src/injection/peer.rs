@@ -22,7 +22,7 @@ pub(crate) fn resolve_peer_client(peer: SocketAddr) -> Result<Option<SessionClie
                 }));
             }
         }
-        return Ok(None);
+        Ok(None)
     }
     #[cfg(not(unix))]
     {

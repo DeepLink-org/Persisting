@@ -13,9 +13,14 @@ JSONL/DataFrame-oriented surface for inspection and SQL engines (DuckDB).
 
 from __future__ import annotations
 
+from persisting.pchronicle.atif import (
+    AtifTrajectory,
+    ingest_trajectory,
+    reconstruct_trajectory,
+    split_trajectory,
+)
 from persisting.pchronicle.schema import SessionRow, StepRow, ToolCallRow
 from persisting.pchronicle.store import FsChronicleStore, MemoryChronicleStore
-from persisting.pchronicle.atif import AtifTrajectory, ingest_trajectory, reconstruct_trajectory, split_trajectory
 from persisting.pchronicle.view import (
     ATIF_TRAJECTORY_VIEW,
     AtifTrajectoryView,
