@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dldb"
+version = "1.0.0"
+description = "A lightweight data storage and retrieval library built on LanceDB and shared file system."
+authors = [
+    { name = "Kun Cai" },
+]
+keywords = ["distributed query processing", "lance", "LanceDB"]
+requires-python = ">=3.10,<3.13"
+license = {text = "MIT"}
+dependencies = [
+    "pandas>=2.3.3,<3",
+    "loguru>=0.7.3",
+    "lancedb>=0.34.0,<0.35",
+    "pylance>=9.0.0,<10",
+    "sqlglot>=20.0.0,<31",
+    "pyarrow>=21.0.0,<24",
+    "prometheus-client>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.2",
+]
+
+[project.urls]
+Repository = "https://github.com/DeepLink-org/Persisting"
+
+# Install from this directory: `pip install -e ./persisting/dldb`
+# Maps the top-level import name `dldb` to the files in this folder.
+[tool.setuptools]
+packages = ["dldb"]
+package-dir = {"dldb" = "."}
