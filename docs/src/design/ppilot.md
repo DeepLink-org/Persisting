@@ -4,17 +4,17 @@
 >
 > 状态：**Phase-1 已落地；目标架构部分对齐**
 >
-> 代码：`crates/persisting-ppilot` · CLI：`persisting ppilot`
+> 代码：`crates/persisting-ppilot`（内部库，无顶层 CLI 动词）
 >
-> 用法：[pPilot 快速上手](../guide/ppilot.md) · 示例：`examples/ppilot/`
+> 用法 / 示例：库 API 与 `examples/ppilot/`；产品面批量入口规划为 `persisting agent bexecute`
 
 pPilot 负责计划、调度、恢复和收成许多独立 Run。当前 Phase-1 以
 `plan()` + `execute(item)` 提供 map 式批量编排；目标形态是只操作
 `RunSpec`、`RunFuture` 和 `RunCommit`，将单 Run 执行交给 pVisor，将运行事实
 交给 pChronicle。
 
-CLI 以 `persisting ppilot` 为正式入口；`persisting compute` 暂时保留为兼容别名。
-Agent 产品面最终由 `persisting agent bexecute` 复用同一 pPilot 契约。
+**不**作为 `persisting ppilot` / `persisting compute` 命令暴露。Agent 产品面最终由
+`persisting agent bexecute` 复用同一 pPilot 契约。
 
 **不是** Ray，**不**定义 Agent DSL，**不**自研替代 `torchrun` 的启动器。
 

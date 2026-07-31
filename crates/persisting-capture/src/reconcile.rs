@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{rebuild_session_story, story_call_ids, story_user_turn_count};
-use crate::markdown_trajectory::read_blocks_from_file;
+use crate::markdown_pipeline::MarkdownPipeline;
 use crate::record::CaptureRecord;
-use crate::storage::markdown_pipeline::MarkdownPipeline;
+use persisting_pchronicle::read_agenticmd_blocks_from_file as read_blocks_from_file;
 
 /// Per-session reconcile outcome.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,23 +204,24 @@ pub fn write_run_reconcile_report(storage: &Path, report: &RunReconcileReport) -
 mod tests {
     use super::*;
     use crate::config::CaptureLevel;
-    use crate::markdown_trajectory::{encode_block_with_header, BlockHeader};
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
     use crate::Call;
+    use persisting_pchronicle::AgenticmdBlock;
+    use persisting_pchronicle::{encode_agenticmd_block_validated, AgenticmdHeader};
     use std::collections::BTreeMap as Map;
 
     fn block(call_id: &str, role: &str, body: &str) -> String {
         let mut fields = Map::new();
         fields.insert("call_id".into(), serde_json::json!(call_id));
         fields.insert("role".into(), serde_json::json!(role));
-        encode_block_with_header(
-            BlockHeader {
+        encode_agenticmd_block_validated(&AgenticmdBlock {
+            header: AgenticmdHeader {
                 type_name: "dialogue".into(),
                 length: body.len(),
                 fields,
             },
-            body.as_bytes(),
-        )
+            body: body.to_string(),
+        })
         .unwrap()
     }
 

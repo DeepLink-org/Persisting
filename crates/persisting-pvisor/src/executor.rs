@@ -51,7 +51,7 @@ impl AttemptContext {
     }
 
     pub async fn transition(&self, state: RunState, message: impl Into<Option<String>>) {
-        let now = crate::runtime::unix_now_ms();
+        let now = crate::util::unix_now_ms();
         let message = message.into();
         self.status.send_modify(|status| {
             status.state = state;

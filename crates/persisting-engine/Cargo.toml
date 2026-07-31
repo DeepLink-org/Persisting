@@ -20,6 +20,7 @@ lance-table = "7.0.0"
 futures = "0.3"
 uuid = "1"
 persisting-capture = { path = "../persisting-capture" }
+persisting-pchronicle = { path = "../persisting-pchronicle" }
 persisting-proto = { path = "../persisting-proto" }
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }

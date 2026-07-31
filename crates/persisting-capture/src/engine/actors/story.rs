@@ -10,10 +10,10 @@ use pulsing_actor::prelude::*;
 use super::super::story::{StoryId, TurnMachine};
 use super::super::wire::{CaptureAck, DraftPayload, StoryCommand, StoryReply, StoryScope};
 use crate::dialogue::draft_stream_assistant_block;
+use crate::frontmatter::refresh_document_frontmatter;
+use crate::markdown_pipeline::{LiveMarkdownWriter, MarkdownTarget};
+use crate::markdown_policy::should_refresh_frontmatter;
 use crate::sink::CaptureSink;
-use crate::storage::frontmatter::refresh_document_frontmatter;
-use crate::storage::markdown_pipeline::{LiveMarkdownWriter, MarkdownTarget};
-use crate::storage::markdown_policy::should_refresh_frontmatter;
 
 /// Injected sink + markdown flag for each story actor instance.
 #[derive(Clone)]
@@ -166,11 +166,9 @@ impl StoryActor {
                     .sink
                     .peek_next_seq(scope.route())
                     .context("draft markdown requires sink peek_next_seq")?;
-                if let Some((header, body)) =
-                    draft_stream_assistant_block(&rec, &draft.assistant_content)?
-                {
+                if let Some(block) = draft_stream_assistant_block(&rec, &draft.assistant_content)? {
                     self.md_writer(&scope)
-                        .write_draft(rec.call_id.as_deref().unwrap_or(""), (header, body))?;
+                        .write_draft(rec.call_id.as_deref().unwrap_or(""), block)?;
                 }
             }
             StoryCommand::Flush | StoryCommand::Snapshot { .. } | StoryCommand::LocalSnapshot => {

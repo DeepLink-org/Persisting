@@ -23,6 +23,9 @@ use crate::{Error, Result};
 pub const AGENTICMD_FORMAT_NAME: &str = "agenticmd";
 pub const AGENTICMD_FRONTMATTER_FORMAT: &str = "persisting:1.0";
 pub const BLOCK_MARKER: &str = "<!-- persisting:block";
+/// Layout hint embedded in capture live-document YAML (`block:` field).
+pub const AGENTICMD_BLOCK_LAYOUT: &str =
+    "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgenticmdHeader {
@@ -78,8 +81,17 @@ impl AgenticmdDocument {
 }
 
 pub fn parse_agenticmd_document(input: &str) -> Result<AgenticmdDocument> {
-    let (frontmatter, body) = split_frontmatter(input);
-    let mut doc = AgenticmdDocument::new(parse_blocks(body)?);
+    parse_agenticmd_document_with(input, AgenticmdParseMode::Lenient)
+}
+
+/// Parse agenticmd with an explicit [`AgenticmdParseMode`].
+pub fn parse_agenticmd_document_with(
+    input: &str,
+    mode: AgenticmdParseMode,
+) -> Result<AgenticmdDocument> {
+    let (frontmatter, _body, _off) = split_frontmatter_with_offset(input)?;
+    let spans = parse_agenticmd_blocks_with_spans(input, mode)?;
+    let mut doc = AgenticmdDocument::new(spans.into_iter().map(|s| s.block).collect());
     doc.frontmatter = frontmatter;
     if let Some(fmt) = doc.frontmatter.get("format") {
         doc.frontmatter_format = fmt.clone();
@@ -95,6 +107,57 @@ pub fn parse_agenticmd_document(input: &str) -> Result<AgenticmdDocument> {
         .cloned()
         .or_else(|| doc.frontmatter.get("agent_id").cloned());
     Ok(doc)
+}
+
+/// How to treat non-block lines while parsing agenticmd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgenticmdParseMode {
+    /// Skip non-block lines (legacy notes). Used by `traj convert`.
+    #[default]
+    Lenient,
+    /// Reject unexpected non-block content (capture live-document semantics).
+    Strict,
+}
+
+/// One parsed block plus its absolute byte range in the source document.
+///
+/// `start..end` covers the comment line through trailing blank lines — the same
+/// span capture uses for markdown upsert rewrites.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgenticmdBlockSpan {
+    pub block: AgenticmdBlock,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Parse blocks with absolute byte spans (for capture upsert / diagnostics).
+pub fn parse_agenticmd_blocks_with_spans(
+    input: &str,
+    mode: AgenticmdParseMode,
+) -> Result<Vec<AgenticmdBlockSpan>> {
+    let (_frontmatter, body, body_offset) = split_frontmatter_with_offset(input)?;
+    parse_blocks_with_spans(body, body_offset, mode)
+}
+
+/// Byte offset where the document body begins (immediately after YAML frontmatter).
+///
+/// Returns `0` when there is no opening `---` frontmatter. Errors on unclosed
+/// frontmatter. Does **not** skip `#` comment lines — callers that rewrite
+/// session rollup frontmatter should preserve everything after this offset.
+pub fn agenticmd_body_byte_offset(input: &str) -> Result<usize> {
+    let (_fm, _body, offset) = split_frontmatter_with_offset(input)?;
+    Ok(offset)
+}
+
+/// Encode a YAML frontmatter fence (`---\n…\n---\n\n`) from any serializable mapping.
+///
+/// Used by capture for live document / session-rollup preambles (nested `client`, etc.).
+/// Distinct from [`encode_agenticmd_document`], which emits a flat string frontmatter
+/// suitable for hub interchange.
+pub fn encode_agenticmd_preamble<T: Serialize>(frontmatter: &T) -> Result<String> {
+    let yaml = serde_yaml::to_string(frontmatter)
+        .map_err(|e| Error::Other(format!("agenticmd frontmatter yaml: {e}")))?;
+    Ok(format!("---\n{yaml}---\n\n"))
 }
 
 pub fn encode_agenticmd_document(doc: &AgenticmdDocument) -> Result<String> {
@@ -117,18 +180,20 @@ pub fn encode_agenticmd_document(doc: &AgenticmdDocument) -> Result<String> {
     }
     out.push_str("---\n\n");
     for block in &doc.blocks {
-        out.push_str(&encode_block(block)?);
+        out.push_str(&encode_agenticmd_block(block)?);
     }
     Ok(out)
 }
 
-fn encode_block(block: &AgenticmdBlock) -> Result<String> {
-    let mut header = AgenticmdHeader {
+/// Encode a single agenticmd / capture TLV block (comment header + body).
+///
+/// Normative on-disk layout shared with `persisting-capture` live write paths.
+pub fn encode_agenticmd_block(block: &AgenticmdBlock) -> Result<String> {
+    let header = AgenticmdHeader {
         type_name: block.header.type_name.clone(),
         length: block.body.len(),
         fields: block.header.fields.clone(),
     };
-    header.length = block.body.len();
     let speaker = header
         .fields
         .get("role")
@@ -141,17 +206,16 @@ fn encode_block(block: &AgenticmdBlock) -> Result<String> {
     ))
 }
 
-fn split_frontmatter(input: &str) -> (BTreeMap<String, String>, &str) {
-    let bytes = input.as_bytes();
+fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, String>, &str, usize)> {
     if !input.starts_with("---") {
-        return (BTreeMap::new(), input);
+        return Ok((BTreeMap::new(), input, 0));
     }
     let Some(rest) = input.strip_prefix("---") else {
-        return (BTreeMap::new(), input);
+        return Ok((BTreeMap::new(), input, 0));
     };
     let rest = rest.strip_prefix('\n').unwrap_or(rest);
     let Some(end) = rest.find("\n---") else {
-        return (BTreeMap::new(), input);
+        return Err(Error::Other("unclosed YAML frontmatter".into()));
     };
     let yaml = &rest[..end];
     let after = &rest[end + "\n---".len()..];
@@ -166,16 +230,23 @@ fn split_frontmatter(input: &str) -> (BTreeMap<String, String>, &str) {
             map.insert(k.trim().to_string(), v.trim().to_string());
         }
     }
-    let _ = bytes;
-    (map, body)
+    let body_offset = input.len() - body.len();
+    Ok((map, body, body_offset))
 }
 
-fn parse_blocks(input: &str) -> Result<Vec<AgenticmdBlock>> {
+fn parse_blocks_with_spans(
+    input: &str,
+    base_offset: usize,
+    mode: AgenticmdParseMode,
+) -> Result<Vec<AgenticmdBlockSpan>> {
     let bytes = input.as_bytes();
     let mut pos = 0usize;
     let mut blocks = Vec::new();
     while pos < bytes.len() {
-        pos = skip_ws(bytes, pos);
+        pos = match mode {
+            AgenticmdParseMode::Lenient => skip_ws(bytes, pos),
+            AgenticmdParseMode::Strict => skip_strict_preamble(bytes, pos),
+        };
         if pos >= bytes.len() {
             break;
         }
@@ -187,10 +258,24 @@ fn parse_blocks(input: &str) -> Result<Vec<AgenticmdBlock>> {
         let line = std::str::from_utf8(&bytes[pos..line_end])
             .map_err(|e| Error::Other(format!("agenticmd utf8: {e}")))?;
         if !line.trim_start().starts_with(BLOCK_MARKER) {
-            // skip non-block content (legacy notes)
-            pos = line_end + 1;
-            continue;
+            match mode {
+                AgenticmdParseMode::Lenient => {
+                    pos = if line_end < bytes.len() {
+                        line_end + 1
+                    } else {
+                        line_end
+                    };
+                    continue;
+                }
+                AgenticmdParseMode::Strict => {
+                    return Err(Error::Other(format!(
+                        "expected `{BLOCK_MARKER}:{{speaker}} {{json}} -->` at offset {}",
+                        base_offset + pos
+                    )));
+                }
+            }
         }
+        let start = base_offset + pos;
         let header: AgenticmdHeader = parse_block_comment(line.trim())?;
         let mut next = if line_end < bytes.len() {
             line_end + 1
@@ -208,7 +293,12 @@ fn parse_blocks(input: &str) -> Result<Vec<AgenticmdBlock>> {
         let body = std::str::from_utf8(&bytes[next..body_end])
             .map_err(|e| Error::Other(format!("agenticmd body utf8: {e}")))?
             .to_string();
-        blocks.push(AgenticmdBlock { header, body });
+        let end = base_offset + skip_blank_lines(bytes, body_end);
+        blocks.push(AgenticmdBlockSpan {
+            block: AgenticmdBlock { header, body },
+            start,
+            end,
+        });
         pos = skip_blank_lines(bytes, body_end);
     }
     Ok(blocks)
@@ -277,6 +367,27 @@ fn extract_json_object(s: &str) -> Result<&str> {
 fn skip_ws(bytes: &[u8], mut pos: usize) -> usize {
     while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t' | b'\r' | b'\n') {
         pos += 1;
+    }
+    pos
+}
+
+/// Capture-compatible preamble skip: blank lines and `#` comment lines only.
+fn skip_strict_preamble(bytes: &[u8], mut pos: usize) -> usize {
+    while pos < bytes.len() {
+        if bytes[pos] == b'#' {
+            while pos < bytes.len() && bytes[pos] != b'\n' {
+                pos += 1;
+            }
+            if pos < bytes.len() {
+                pos += 1;
+            }
+            continue;
+        }
+        if bytes[pos] == b'\n' || bytes[pos] == b'\r' {
+            pos = skip_blank_lines(bytes, pos);
+            continue;
+        }
+        break;
     }
     pos
 }

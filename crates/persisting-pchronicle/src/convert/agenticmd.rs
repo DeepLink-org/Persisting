@@ -1,8 +1,12 @@
 //! agenticmd ⇄ storyline.
+//!
+//! Correlation fields (`call_id`, `seq`, …) ride in `StorylineTurn.extra` so
+//! `traj convert` through the hub can round-trip upsert keys. Capture live
+//! Lance↔md still uses [`crate::mapping`] directly (not this hub path).
 
 use std::collections::BTreeMap;
 
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::convert::message_text;
 use crate::formats::agenticmd::{
@@ -13,6 +17,18 @@ use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineTurn, STORYLINE_SCHEMA_VERSION,
 };
 use crate::Result;
+
+/// Header field names preserved via `turn.extra` for hub round-trips.
+const EXTRA_CORRELATION_KEYS: &[&str] = &[
+    "call_id",
+    "seq",
+    "turn",
+    "trace_id",
+    "parent_uuid",
+    "draft",
+    "v",
+    "source",
+];
 
 pub fn agenticmd_to_storyline(doc: &AgenticmdDocument) -> Result<StorylineDocument> {
     let session_id = doc.session_id.clone().unwrap_or_else(|| "unknown".into());
@@ -39,13 +55,25 @@ pub fn agenticmd_to_storyline(doc: &AgenticmdDocument) -> Result<StorylineDocume
             .get("latency_ms")
             .and_then(|v| v.as_i64());
         let ttft_ms = block.header.fields.get("ttft_ms").and_then(|v| v.as_i64());
+        let kind = block
+            .header
+            .fields
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let timestamp = block
+            .header
+            .fields
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
 
         turns.push(StorylineTurn {
             id,
-            kind: None,
-            timestamp: None,
+            kind,
+            timestamp,
             source: source.into(),
-            message: serde_json::Value::String(block.body.clone()),
+            message: Value::String(block.body.clone()),
             reasoning_content: None,
             reasoning_effort: None,
             tool_calls: None,
@@ -56,7 +84,7 @@ pub fn agenticmd_to_storyline(doc: &AgenticmdDocument) -> Result<StorylineDocume
             is_copied_context: None,
             latency_ms,
             ttft_ms,
-            extra: None,
+            extra: Some(agenticmd_block_extra(block)),
         });
     }
 
@@ -94,7 +122,11 @@ pub fn storyline_to_agenticmd(story: &StorylineDocument) -> Result<AgenticmdDocu
         let body = message_text(&turn.message).unwrap_or_default();
         let mut fields = BTreeMap::new();
         fields.insert("role".into(), json!(role));
-        fields.insert("kind".into(), json!(turn.effective_kind()));
+        let kind = turn
+            .kind
+            .clone()
+            .unwrap_or_else(|| turn.effective_kind().to_string());
+        fields.insert("kind".into(), json!(kind));
         if let Some(model) = &turn.model_name {
             fields.insert("model".into(), json!(model));
         }
@@ -104,9 +136,22 @@ pub fn storyline_to_agenticmd(story: &StorylineDocument) -> Result<AgenticmdDocu
         if let Some(ms) = turn.ttft_ms {
             fields.insert("ttft_ms".into(), json!(ms));
         }
+        if let Some(ts) = &turn.timestamp {
+            fields.insert("timestamp".into(), json!(ts));
+        }
+        restore_agenticmd_extra_fields(&mut fields, turn.extra.as_ref());
+
+        let type_name = turn
+            .extra
+            .as_ref()
+            .and_then(|e| e.get("block_type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("text")
+            .to_string();
+
         blocks.push(AgenticmdBlock {
             header: AgenticmdHeader {
-                type_name: "text".into(),
+                type_name,
                 length: body.len(),
                 fields,
             },
@@ -122,4 +167,35 @@ pub fn storyline_to_agenticmd(story: &StorylineDocument) -> Result<AgenticmdDocu
         frontmatter: BTreeMap::new(),
         blocks,
     })
+}
+
+fn agenticmd_block_extra(block: &AgenticmdBlock) -> Value {
+    let mut extra = Map::new();
+    extra.insert("block_type".into(), json!(&block.header.type_name));
+    for key in EXTRA_CORRELATION_KEYS {
+        if let Some(v) = block.header.fields.get(*key) {
+            extra.insert((*key).into(), v.clone());
+        }
+    }
+    // Prefer header session/agent when present (document-level may be unset).
+    for key in ["session_id", "agent_id"] {
+        if let Some(v) = block.header.fields.get(key) {
+            extra.insert(key.into(), v.clone());
+        }
+    }
+    Value::Object(extra)
+}
+
+fn restore_agenticmd_extra_fields(fields: &mut BTreeMap<String, Value>, extra: Option<&Value>) {
+    let Some(extra) = extra.and_then(|v| v.as_object()) else {
+        return;
+    };
+    for key in EXTRA_CORRELATION_KEYS
+        .iter()
+        .chain(["session_id", "agent_id"].iter())
+    {
+        if let Some(v) = extra.get(*key) {
+            fields.insert((*key).into(), v.clone());
+        }
+    }
 }

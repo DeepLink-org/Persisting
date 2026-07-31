@@ -12,7 +12,7 @@ use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::RecordBatch;
 use lance::Dataset;
 use lance::Error as LanceError;
-use persisting_capture::event_row::EventRow;
+use persisting_pchronicle::EventRow;
 
 use super::rows::{
     reassign_global_seq, record_batch_from_rows, replay_records_from_batch, rows_for_lines,
@@ -279,7 +279,7 @@ pub async fn stats(session: &TrajectorySession) -> Result<TrajectoryStatsOutcome
 mod tests {
     use super::*;
     use persisting_capture::record::{record_to_engine_line, CaptureRecord};
-    use persisting_capture::story_coords::StoryCoords;
+    use persisting_pchronicle::StoryCoords;
 
     const CHUNK_ROWS: usize = 8192;
 

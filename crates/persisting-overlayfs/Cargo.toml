@@ -1,0 +1,34 @@
+[package]
+name = "persisting-overlayfs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Cross-platform FUSE overlay (macFUSE / libfuse) for pVisor staging"
+readme = "README.md"
+
+[[bin]]
+name = "persisting-overlayfs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+redb = "3.1.3"
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2.0.1", default-features = false, features = ["std", "serde"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { version = "0.15", features = ["abi-7-19", "libfuse", "macfuse-5"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.15", default-features = false, features = ["abi-7-31"] }
+
+[target.'cfg(not(any(target_os = "macos", target_os = "linux")))'.dependencies]
+fuser = { version = "0.15", features = ["abi-7-19", "libfuse"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -181,4 +181,9 @@ cd Persisting && cargo build -p persisting-cli -p persisting-engine
 
 ## License
 
-Apache-2.0
+[GPL-3.0-or-later](LICENSE)
+
+Persisting includes a vendored copy of
+[fuse-overlayfs](https://github.com/containers/fuse-overlayfs)
+(`crates/persisting-fs-overlay`, upstream GPL-2.0-or-later). See [`NOTICE`](NOTICE)
+for third-party attribution.

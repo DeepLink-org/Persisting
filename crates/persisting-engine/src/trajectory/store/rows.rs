@@ -5,7 +5,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use lance::deps::arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
-use persisting_capture::event_row::{engine_line_to_event_row, event_row_to_replay_json, EventRow};
+use persisting_capture::record::engine_line_to_record;
+use persisting_pchronicle::{
+    event_record_to_event_row, event_row_to_replay_json, EventRecord, EventRow,
+};
 
 use crate::trajectory::{
     TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL,
@@ -87,6 +90,12 @@ pub fn record_batch_from_rows(schema: Arc<ArrowSchema>, rows: &[EventRow]) -> Re
         ],
     )
     .context("build trajectory RecordBatch")
+}
+
+/// Parse a RON/JSON engine line into an [`EventRow`] (Lance append path).
+pub fn engine_line_to_event_row(line: &str, seq: i64) -> Result<EventRow> {
+    let rec = engine_line_to_record(line)?;
+    event_record_to_event_row(&EventRecord::from(rec), seq)
 }
 
 pub fn rows_for_lines(
@@ -254,6 +263,39 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].seq, 10);
         assert_eq!(rows[0].session_id.as_deref(), Some("sess-a"));
+    }
+
+    #[test]
+    fn engine_line_to_event_row_preserves_call_id() {
+        use persisting_capture::record::{record_to_engine_line, CaptureRecord};
+        use persisting_capture::sink::llm_response_record;
+        use persisting_capture::Call;
+        use persisting_pchronicle::event_row_to_event_record;
+
+        let call = Call {
+            call_id: "call-a".into(),
+            trace_id: "trace-a".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let resp = llm_response_record(
+            Some("sess".into()),
+            Some("agent".into()),
+            200,
+            &serde_json::json!({
+                "choices":[{"message":{"role":"assistant","content":"你好！"}}],
+            }),
+            false,
+            &call,
+        );
+        let line = record_to_engine_line(&resp).unwrap();
+        let row = engine_line_to_event_row(&line, 2).unwrap();
+        assert_eq!(row.call_id.as_deref(), Some("call-a"));
+        assert_eq!(row.trace_id.as_deref(), Some("trace-a"));
+        assert_eq!(row.seq, 2);
+
+        let back = CaptureRecord::from(event_row_to_event_record(&row).unwrap());
+        assert_eq!(back.call_id.as_deref(), Some("call-a"));
+        assert_eq!(back.seq, 2);
     }
 
     #[test]

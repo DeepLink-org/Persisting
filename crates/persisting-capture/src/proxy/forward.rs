@@ -159,6 +159,7 @@ mod tests {
                 mode,
                 allowed_hosts: allowed.iter().map(|s| (*s).to_string()).collect(),
             },
+            overlay: Default::default(),
             models: vec![ModelRoute {
                 name: "*".into(),
                 provider: None,

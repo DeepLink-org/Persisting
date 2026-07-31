@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use persisting_pvisor::{AccessController, PolicyAccessController};
+use persisting_access::{AccessController, PolicyAccessController};
 use tokio::task::JoinHandle;
 
 use super::admin::{admin_router, AdminState};

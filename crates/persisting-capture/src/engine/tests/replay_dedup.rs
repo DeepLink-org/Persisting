@@ -1,5 +1,4 @@
 use super::fixtures::*;
-use super::support::*;
 
 fn claude_messages_body(user_lines: &[&str]) -> serde_json::Value {
     let messages: Vec<serde_json::Value> = user_lines
@@ -16,8 +15,9 @@ fn claude_messages_body(user_lines: &[&str]) -> serde_json::Value {
 
 #[tokio::test]
 async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
-    use crate::markdown_trajectory::read_blocks_from_file;
+    use crate::engine::tests::support::*;
     use crate::session_storage::trajectory_run_dir;
+    use persisting_pchronicle::read_agenticmd_blocks_from_file as read_blocks_from_file;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -101,10 +101,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
     let run_dir = trajectory_run_dir(storage.as_path(), ctx.agent_id(), ctx.route());
     let md_path = session_markdown_write_path_for_key(&run_dir, &ctx.route().storage_session_id);
     let blocks = read_blocks_from_file(&md_path).unwrap();
-    let bodies: Vec<_> = blocks
-        .iter()
-        .map(|b| b.value_utf8().unwrap().to_string())
-        .collect();
+    let bodies: Vec<_> = blocks.iter().map(|b| b.body.to_string()).collect();
     assert_eq!(
         bodies,
         vec![

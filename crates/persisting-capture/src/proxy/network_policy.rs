@@ -5,12 +5,12 @@
 //! Entries are not URLs, ports, or paths.
 
 use axum::http::StatusCode;
-use persisting_proto::{AccessReason, NetworkAccessRequest, NetworkCapability, NetworkTransport};
-pub use persisting_pvisor::{
+pub use persisting_access::{
     host_matches, normalize_host, parse_network_rule as parse_allowed_entry,
     NetworkRule as AllowedEntry,
 };
-use persisting_pvisor::{AccessController, NetworkGuard, PolicyAccessController};
+use persisting_access::{AccessController, NetworkGuard, PolicyAccessController};
+use persisting_proto::{AccessReason, NetworkAccessRequest, NetworkCapability, NetworkTransport};
 
 use crate::config::{NetworkConfig, NetworkMode, ProxyConfig};
 
@@ -30,19 +30,7 @@ pub struct NetworkPolicy {
 impl NetworkPolicy {
     pub fn from_config(cfg: &ProxyConfig) -> anyhow::Result<Self> {
         let listen_host = host_from_listen(&cfg.listen);
-        let mut raw = cfg.network.allowed_hosts.clone();
-        if cfg.network.mode == NetworkMode::Allowlist {
-            for host in upstream_hosts_from_models(cfg) {
-                if !raw.iter().any(|h| normalize_host(h) == host) {
-                    raw.push(host);
-                }
-            }
-        }
-        let capability = match cfg.network.mode {
-            NetworkMode::Public => NetworkCapability::Ambient,
-            NetworkMode::NoNetwork => NetworkCapability::Deny,
-            NetworkMode::Allowlist => NetworkCapability::AllowList { hosts: raw },
-        };
+        let capability = network_capability_from_config(cfg);
         let guard = NetworkGuard::compile(capability, [listen_host.clone()])?;
         let allowed = guard.rules().to_vec();
         Ok(Self {
@@ -58,6 +46,23 @@ impl NetworkPolicy {
             NetworkMode::Public => "public",
             NetworkMode::NoNetwork => "no-network",
             NetworkMode::Allowlist => "allowlist",
+        }
+    }
+}
+
+/// Map capture TOML `[network]` (+ model upstream hosts for allowlist) to a pVisor capability.
+pub fn network_capability_from_config(cfg: &ProxyConfig) -> NetworkCapability {
+    match cfg.network.mode {
+        NetworkMode::Public => NetworkCapability::Ambient,
+        NetworkMode::NoNetwork => NetworkCapability::Deny,
+        NetworkMode::Allowlist => {
+            let mut hosts = cfg.network.allowed_hosts.clone();
+            for host in upstream_hosts_from_models(cfg) {
+                if !hosts.iter().any(|h| normalize_host(h) == host) {
+                    hosts.push(host);
+                }
+            }
+            NetworkCapability::AllowList { hosts }
         }
     }
 }
@@ -250,6 +255,7 @@ mod tests {
                 mode,
                 allowed_hosts: allowed.iter().map(|s| (*s).to_string()).collect(),
             },
+            overlay: Default::default(),
             models: vec![ModelRoute {
                 name: "*".into(),
                 provider: None,

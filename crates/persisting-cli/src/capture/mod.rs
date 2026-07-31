@@ -2,7 +2,6 @@
 
 pub mod daemon;
 mod debug_setup;
-pub mod in_process;
 pub mod reconcile;
 pub mod replay_dead_letter;
 pub mod run;

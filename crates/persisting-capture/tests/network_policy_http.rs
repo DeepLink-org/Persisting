@@ -7,13 +7,13 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Router;
+use persisting_access::{AccessController, NetworkGuard, PolicyAccessController};
 use persisting_capture::config::ProxyConfig;
 use persisting_capture::proxy::{serve_with_runtime_control, serve_with_shutdown_and_ready};
 use persisting_capture::sink::SeqOnlySink;
 use persisting_proto::{
     AccessDecision, AccessReason, ModelAccessPolicy, ModelCallRequest, NetworkAccessRequest,
 };
-use persisting_pvisor::{AccessController, NetworkGuard, PolicyAccessController};
 use tokio::sync::oneshot;
 
 struct DenyModelController;

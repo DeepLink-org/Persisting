@@ -90,7 +90,7 @@ graph TD
 |------|-------------------|----------------------------------|
 | **角色** | 全量 event log，系统的 single source of truth | 人类可读对话视图 |
 | **完整性** | 无损，所有事件全部保留 | 有损，过滤内部流量与 lifecycle |
-| **格式** | 列存（`EventRow`），capture run 使用 run 级 `events.lance/`（Lance dataset **目录**） | TLV 块序列（`MarkdownBlock`），纯文本文件 |
+| **格式** | 列存（`EventRow`），capture run 使用 run 级 `events.lance/`（Lance dataset **目录**） | TLV 块序列（`AgenticmdBlock`），纯文本文件 |
 | **写入方式** | `-f lance` / `traj add --storage-format lance` 时 append；import 批量 append | Proxy `-f md` 时 **CaptureEngine live upsert**；均可 `materialize` 全量重建 |
 | **典型操作** | `replay`、`stats`、Search import、FTS | 直接打开、`git diff`、code review |
 | **按 session 分片** | ✅ `events.lance/` 内按 `session_id` 列过滤；同一 run **dataset** 可含**多个** distinct `session_id`（见 7.1.1 节） | ✅ `{run_dir}/{storage_session_id}.md` |
@@ -234,16 +234,18 @@ pub struct EventRow {
 
 **反规范化设计**：`kind`、`session_id`、`model` 等高频查询字段提升为独立列，`payload_json` 存储完整 JSON。这样可以在不解析 JSON 的情况下做过滤和聚合。
 
-### 4.3 MarkdownBlock（人读块）
+### 4.3 AgenticmdBlock（人读块）
+
+Wire 类型由 pChronicle 拥有；capture 侧以别名 `BlockHeader = AgenticmdHeader` 引用。
 
 ```rust
-pub struct MarkdownBlock {
-    pub header: BlockHeader,  // 元数据（type, length, role, kind, turn, ...）
-    pub body: Vec<u8>,        // 正文内容（纯文本 / JSON）
+pub struct AgenticmdBlock {
+    pub header: AgenticmdHeader,  // 元数据（type, length, role, kind, turn, ...）
+    pub body: String,             // 正文内容（UTF-8）
 }
 
-pub struct BlockHeader {
-    pub type_name: String,           // "llm.request" | "llm.response" 等
+pub struct AgenticmdHeader {
+    pub type_name: String,           // 存储单元类型，通常 "markdown"
     pub length: usize,               // body 字节长度
     pub fields: BTreeMap<String, Value>,  // role, kind, turn, model, seq, tokens...
 }
@@ -300,10 +302,10 @@ Lance event log (全量扫描)
     │  event_row_to_capture_record()
     ▼
 CaptureRecord[]
-    │  MarkdownPipeline::blocks_from_records()  ← 静态过滤 + history replay dedup
+    │  MarkdownPipeline::agenticmd_blocks_from_records()  ← 静态过滤 + history replay dedup
     ▼
-(BlockHeader, Vec<u8>)[]
-    │  format_document_preamble() + encode_block_with_header()
+AgenticmdBlock[]
+    │  format_document_preamble() + encode_agenticmd_block_validated()
     ▼
 TLV Markdown 文件 (全量重写)
 ```
@@ -314,7 +316,7 @@ Proxy 流式场景下，Markdown 通过 `upsert_block_by_call_id()` 增量更新
 
 ```
 Event::Request
-    │  MarkdownPipeline::try_block() → user block
+    │  MarkdownPipeline::try_agenticmd_block() → user block
     ▼
 upsert_block_by_call_id(call_id, role=user)   ← 不存在则 append
 
@@ -325,7 +327,7 @@ upsert_block_by_call_id(call_id, role=assistant)   ← 流式原地更新
 
 Event::ResponseComplete
     │  enrich + append Lance llm.response.stream
-    │  MarkdownPipeline::try_block() → final assistant
+    │  MarkdownPipeline::try_agenticmd_block() → final assistant
     ▼
 upsert_block_by_call_id(call_id, role=assistant)   ← 覆盖 draft，移除 draft 标记
 ```
@@ -348,7 +350,7 @@ pub struct StreamMaterializeStats {
 
 ```
 新批次的 engine lines (RON)
-    │  engine_line_to_record() + MarkdownPipeline::try_block()
+    │  engine_line_to_record() + MarkdownPipeline::try_agenticmd_block()
     ▼
 筛选后的 (BlockHeader, Vec<u8>)[]
     │  append_engine_lines_to_markdown()
@@ -371,8 +373,8 @@ pub struct CompactStats {
 TLV Markdown 文件
     │  parse_document()
     ▼
-MarkdownBlock[]
-    │  block_to_capture_record() + enrich: payload["_tlv"] = {...}
+AgenticmdBlock[]
+    │  agenticmd_block_to_capture_record() + enrich: payload["_tlv"] = {...}
     ▼
 CaptureRecord[]
     │  capture_record_to_event_row()
@@ -392,7 +394,7 @@ live / materialize / reconcile **统一**经 `storage/markdown_pipeline.rs` 的 
 |-----|------|
 | `MarkdownPipeline::should_skip()` | 有状态过滤（含 **history replay dedup**：`user_message_count` 未增则跳过） |
 | `MarkdownPipeline::static_skip()` / `skip_markdown_block()` | 无状态静态过滤（`dialogue.rs` re-export 后者供测试/CLI） |
-| `MarkdownPipeline::try_block()` | 过滤 + `capture_record_to_block()` |
+| `MarkdownPipeline::try_agenticmd_block()` | 过滤 + `capture_record_to_agenticmd_block()` |
 
 | 跳过项 | 检测条件 | 原因 |
 |--------|---------|------|

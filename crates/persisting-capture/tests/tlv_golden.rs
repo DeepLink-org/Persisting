@@ -1,8 +1,10 @@
-//! Golden TLV markdown document built only via [`encode_block_with_header`].
+//! Golden TLV markdown document built via [`encode_agenticmd_block_validated`].
 
-use persisting_capture::dialogue::{block_to_capture_record, capture_record_to_block};
+use persisting_capture::dialogue::{
+    agenticmd_block_to_capture_record, capture_record_to_agenticmd_block,
+};
 use persisting_capture::markdown_trajectory::{
-    encode_block_with_header, format_document_preamble, parse_document,
+    encode_agenticmd_block_validated, format_document_preamble, parse_document,
 };
 use persisting_capture::sink::{llm_request_record, llm_response_record};
 use persisting_capture::Call;
@@ -63,8 +65,8 @@ fn build_demo_document() -> String {
 
     let mut out = format_document_preamble(None).unwrap();
     for rec in [req, resp, note] {
-        let (h, b) = capture_record_to_block(&rec).unwrap();
-        out.push_str(&encode_block_with_header(h, &b).unwrap());
+        let block = capture_record_to_agenticmd_block(&rec).unwrap();
+        out.push_str(&encode_agenticmd_block_validated(&block).unwrap());
     }
     out
 }
@@ -101,11 +103,12 @@ fn demo_blocks_carry_v_field_and_strip_subagent_footer_on_import() {
         .and_then(|v| v.as_u64())
         .is_some());
 
-    let mut body = blocks[1].body.clone();
-    body.extend_from_slice(b"\n<!-- persisting:subagent-self agent-abc.md -->\n");
     let mut block = blocks[1].clone();
-    block.body = body;
-    let rec = block_to_capture_record(&block).unwrap();
+    block
+        .body
+        .push_str("\n<!-- persisting:subagent-self agent-abc.md -->\n");
+    block.header.length = block.body.len();
+    let rec = agenticmd_block_to_capture_record(&block).unwrap();
     let content = rec.visible_assistant_text().unwrap_or_default();
     assert!(!content.contains("persisting:subagent"));
     assert!(content.contains("你好"));

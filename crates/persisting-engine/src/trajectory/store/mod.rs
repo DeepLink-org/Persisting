@@ -10,10 +10,10 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use persisting_capture::story_coords::{story_lance_event_path, StoryCoords};
+use persisting_pchronicle::{story_lance_event_path, StoryCoords};
 use persisting_proto::TrajectoryStorageFormat;
 
-/// Story coordinates for Lance/Markdown backends (capture [`StoryCoords`]).
+/// Story coordinates for Lance/Markdown backends (pChronicle [`StoryCoords`]).
 pub type TrajectorySession = StoryCoords;
 
 pub(crate) fn session_lance_path(session: &StoryCoords) -> Result<PathBuf> {

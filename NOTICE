@@ -1,13 +1,49 @@
+Persisting
+==========
+
+Copyright (c) Persisting contributors.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+See the repository root `LICENSE` file for the full GPL-3.0 text.
+
+Third-party notices
+===================
+
+persisting-fs-overlay / fuse-overlayfs
+-------------------------------------
+
+`crates/persisting-fs-overlay` incorporates source code derived from
+[containers/fuse-overlayfs](https://github.com/containers/fuse-overlayfs)
+(Copyright its authors and contributors).
+
+Upstream license: GPL-2.0-or-later (see `crates/persisting-fs-overlay/COPYING`).
+Persisting vendors that tree at `crates/persisting-fs-overlay` and distributes
+the overall Persisting project under GPL-3.0-or-later. Upstream “or later”
+permits use under GPL-3.0 terms.
+
+Pin / provenance files in that crate:
+
+- `UPSTREAM.REVISION`
+- `UPSTREAM.REMOTE`
+- `UPSTREAM.LOG`
+
+Refresh with `./scripts/sync-fuse-overlayfs.sh`.
+
 persisting-dlcapt
-=================
+-----------------
 
-This workspace includes `persisting-dlcapt`, migrated from
-`capture/external/dlcapt` (source tree copy of first-party Rust sources).
+`persisting-dlcapt` was migrated from Capture `external/dlcapt` (first-party
+Rust sources). It follows the workspace GPL-3.0-or-later policy.
 
-Target package: persisting-dlcapt
-License: Apache-2.0 (workspace policy)
-Third-party source files copied verbatim outside Cargo crates.io
-dependencies: none identified at migration time.
+agentgateway test fixtures
+--------------------------
 
-If additional vendored sources or incompatible licenses are discovered,
-stop publication and obtain explicit clearance before release.
+Regression fixtures under `crates/persisting-capture/tests/fixtures/` may
+include materials originally published under Apache-2.0 by the agentgateway
+project. Those files remain under their upstream Apache-2.0 terms as noted in
+the fixtures README; they are separate from the GPL-covered Persisting program
+sources.

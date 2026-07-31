@@ -23,6 +23,14 @@ atif ─────┘
 
 API：`into_storyline` / `from_storyline` / `convert`。
 
+CLI：
+
+```bash
+persisting traj convert <INPUT> -o <DEST> -f storyline|atif|openai_msg|agenticmd|events [--from …]
+```
+
+示例：`traj convert storyline.json -o out.md -f agenticmd`；`events` 读写会话目录 / `events.lance`（非 JSONL）。
+
 ## 与 ATIF
 
 | ATIF | Storyline |

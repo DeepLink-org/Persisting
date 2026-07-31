@@ -30,7 +30,66 @@ pub struct ProxyConfig {
     /// Harbor-aligned egress policy for forward-proxy traffic (`CONNECT` + absolute-URI).
     #[serde(default)]
     pub network: NetworkConfig,
+    /// Optional fuse-overlayfs mount for the Attempt (consumed by pVisor).
+    #[serde(default)]
+    pub overlay: OverlayConfig,
     pub models: Vec<ModelRoute>,
+}
+
+/// Filesystem overlay settings (same capture TOML; applied by pVisor).
+///
+/// Model: **target** (read-only base / apply destination) + **staging** (upper
+/// holds deltas). The Agent sees `merged`; changes do **not** touch `target`
+/// until an explicit [`crate::runtime::overlay::apply_overlay`].
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OverlayConfig {
+    /// When true, pVisor mounts fuse-overlayfs for the Attempt.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Target filesystem: primary lower layer and destination for `apply`.
+    /// Prefer this over listing the same path in `lower_dirs`.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Extra read-only lower layers stacked under `target` (bottom → top before target).
+    #[serde(default)]
+    pub lower_dirs: Vec<String>,
+    /// Root for staging (`upper` / `work` / `merged`). Default:
+    /// `{capture_storage}/.overlay/{session_id}/`.
+    #[serde(default)]
+    pub stage_dir: Option<String>,
+    /// Writable upper backend. `redb` is the default; `directory` preserves
+    /// the traditional fuse-overlayfs staging layout.
+    #[serde(default)]
+    pub backend: OverlayBackend,
+    /// redb database path (overrides `{stage_dir}/upper.redb`).
+    #[serde(default)]
+    pub database_path: Option<String>,
+    /// Writable upper directory (overrides `{stage_dir}/upper` when set).
+    #[serde(default)]
+    pub upper_dir: Option<String>,
+    /// Overlay work directory (overrides `{stage_dir}/work` when set).
+    #[serde(default)]
+    pub work_dir: Option<String>,
+    /// Merged mount point (overrides `{stage_dir}/merged` when set).
+    #[serde(default)]
+    pub merged_dir: Option<String>,
+    /// If true, apply staging onto `target` automatically when the Attempt ends.
+    /// Default false — review then `persisting runtime overlay apply`.
+    #[serde(default)]
+    pub auto_apply: bool,
+    /// Legacy compatibility field. pVisor now embeds the FUSE server and does
+    /// not execute this binary.
+    #[serde(default)]
+    pub fuse_overlayfs: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayBackend {
+    Directory,
+    #[default]
+    Redb,
 }
 
 /// Egress control for the capture forward proxy (Harbor-style modes).
@@ -167,6 +226,22 @@ impl ProxyConfig {
     /// Validate model entries, `forward` references, network policy, and duplicate names.
     pub fn validate(&self) -> anyhow::Result<()> {
         crate::proxy::network_policy::validate_network_config(&self.network)?;
+        match self.overlay.backend {
+            OverlayBackend::Redb => {
+                if self.overlay.upper_dir.is_some() || self.overlay.work_dir.is_some() {
+                    anyhow::bail!(
+                        "overlay backend `redb` cannot be combined with upper_dir or work_dir"
+                    );
+                }
+            }
+            OverlayBackend::Directory => {
+                if self.overlay.database_path.is_some() {
+                    anyhow::bail!(
+                        "overlay backend `directory` cannot be combined with database_path"
+                    );
+                }
+            }
+        }
         let mut seen = HashSet::new();
         for route in &self.models {
             if !seen.insert(route.name.clone()) {

@@ -1,6 +1,6 @@
 //! Stable one-way machine fingerprint for session client metadata.
 //!
-//! Stored as `machine_fp` on [`SessionClientMeta`](crate::storage::session_client::SessionClientMeta)
+//! Stored as `machine_fp` on [`SessionClientMeta`](crate::session_client::SessionClientMeta)
 //! (32-char hex = first 128 bits of BLAKE3).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

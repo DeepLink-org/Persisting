@@ -379,6 +379,91 @@ fn parse_agenticmd_document_roundtrip() {
     assert_eq!(parsed.blocks.len(), 1);
     assert_eq!(parsed.blocks[0].body, "hello");
     assert_eq!(parsed.blocks[0].role(), Some("user"));
+
+    use crate::encode_agenticmd_block;
+    let one = encode_agenticmd_block(&doc.blocks[0]).unwrap();
+    assert!(text.contains(one.trim_end()));
+}
+
+#[test]
+fn agenticmd_strict_rejects_garbage_and_unclosed_frontmatter() {
+    use crate::{
+        parse_agenticmd_blocks_with_spans, parse_agenticmd_document_with, AgenticmdParseMode,
+    };
+
+    let unclosed = "---\nformat: persisting:1.0\n";
+    let err = parse_agenticmd_document_with(unclosed, AgenticmdParseMode::Strict).unwrap_err();
+    assert!(
+        err.to_string().contains("unclosed YAML frontmatter"),
+        "{err}"
+    );
+
+    let garbage = "---\nformat: persisting:1.0\n---\n\nnot a block\n";
+    let err = parse_agenticmd_document_with(garbage, AgenticmdParseMode::Strict).unwrap_err();
+    assert!(
+        err.to_string().contains("expected `<!-- persisting:block"),
+        "{err}"
+    );
+
+    // Lenient still skips notes between / after frontmatter.
+    let with_note = "---\nformat: persisting:1.0\n---\n\nnote line\n";
+    let doc = parse_agenticmd_document_with(with_note, AgenticmdParseMode::Lenient).unwrap();
+    assert!(doc.blocks.is_empty());
+
+    let spans = parse_agenticmd_blocks_with_spans(
+        "---\nformat: persisting:1.0\n---\n\n",
+        AgenticmdParseMode::Strict,
+    )
+    .unwrap();
+    assert!(spans.is_empty());
+}
+
+#[test]
+fn agenticmd_body_byte_offset_matches_split() {
+    use crate::agenticmd_body_byte_offset;
+    assert_eq!(agenticmd_body_byte_offset("no-fm").unwrap(), 0);
+    let doc = "---\nformat: persisting:1.0\n---\n\nbody";
+    let off = agenticmd_body_byte_offset(doc).unwrap();
+    assert_eq!(&doc[off..], "\nbody");
+    let err = agenticmd_body_byte_offset("---\nno close\n").unwrap_err();
+    assert!(err.to_string().contains("unclosed YAML frontmatter"));
+}
+
+#[test]
+fn encode_agenticmd_preamble_preserves_nested_mapping() {
+    use crate::{
+        agenticmd_body_byte_offset, encode_agenticmd_preamble, AGENTICMD_BLOCK_LAYOUT,
+        AGENTICMD_FRONTMATTER_FORMAT,
+    };
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct Fm<'a> {
+        format: &'a str,
+        block: &'a str,
+        client: Client,
+    }
+    #[derive(Serialize)]
+    struct Client {
+        peer_port: u16,
+        command: String,
+    }
+
+    let preamble = encode_agenticmd_preamble(&Fm {
+        format: AGENTICMD_FRONTMATTER_FORMAT,
+        block: AGENTICMD_BLOCK_LAYOUT,
+        client: Client {
+            peer_port: 9,
+            command: "x".into(),
+        },
+    })
+    .unwrap();
+    assert!(preamble.contains("peer_port: 9"));
+    let off = agenticmd_body_byte_offset(&preamble).unwrap();
+    assert!(
+        preamble[off..].trim().is_empty(),
+        "body after preamble should be blank"
+    );
 }
 
 #[test]
@@ -523,4 +608,387 @@ fn storyline_wire_uses_short_keys() {
     assert!(!out.contains(r#""schema_version""#));
     assert!(!out.contains(r#""source""#));
     assert!(!out.contains(r#""message""#));
+}
+
+#[test]
+fn convert_storyline_agenticmd_preserves_dialogue_and_timing() {
+    use crate::convert::convert;
+    use crate::ChronicleFormat;
+    let story = r#"{
+      "spec": "storyline/v1",
+      "session": "sess-md",
+      "agent": { "id": "agent-md", "name": "demo" },
+      "turns": [
+        { "id": 1, "src": "user", "msg": "ask me" },
+        { "id": 2, "src": "agent", "msg": "answer", "latency_ms": 42, "ttft_ms": 7, "model": "m1" }
+      ]
+    }"#;
+    let md = convert(
+        ChronicleFormat::Storyline,
+        ChronicleFormat::Agenticmd,
+        story,
+    )
+    .unwrap();
+    assert!(md.contains("format: persisting:1.0"));
+    assert!(md.contains("ask me"));
+    assert!(md.contains("answer"));
+    assert!(md.contains("latency_ms"));
+    let back = convert(ChronicleFormat::Agenticmd, ChronicleFormat::Storyline, &md).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&back).unwrap();
+    assert_eq!(v["session"], "sess-md");
+    assert_eq!(v["agent"]["id"], "agent-md");
+    let turns = v["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0]["src"], "user");
+    assert_eq!(turns[0]["msg"], "ask me");
+    assert_eq!(turns[1]["src"], "agent");
+    assert_eq!(turns[1]["msg"], "answer");
+    assert_eq!(turns[1]["latency_ms"], 42);
+    assert_eq!(turns[1]["ttft_ms"], 7);
+}
+
+#[test]
+fn convert_agenticmd_storyline_preserves_call_id_and_seq() {
+    use crate::convert::{agenticmd_to_storyline, storyline_to_agenticmd};
+    use crate::formats::agenticmd::{AgenticmdBlock, AgenticmdDocument, AgenticmdHeader};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn block(role: &str, kind: &str, call_id: &str, seq: u64, body: &str) -> AgenticmdBlock {
+        let mut fields = BTreeMap::new();
+        fields.insert("role".into(), json!(role));
+        fields.insert("kind".into(), json!(kind));
+        fields.insert("call_id".into(), json!(call_id));
+        fields.insert("seq".into(), json!(seq));
+        fields.insert("turn".into(), json!(seq / 2 + 1));
+        AgenticmdBlock {
+            header: AgenticmdHeader {
+                type_name: "markdown".into(),
+                length: body.len(),
+                fields,
+            },
+            body: body.into(),
+        }
+    }
+
+    let doc = AgenticmdDocument {
+        format: "agenticmd".into(),
+        frontmatter_format: "persisting:1.0".into(),
+        session_id: Some("s-cid".into()),
+        agent_id: Some("a-cid".into()),
+        frontmatter: BTreeMap::new(),
+        blocks: vec![
+            block("user", "llm.request", "c-42", 0, "hello"),
+            block("assistant", "llm.response", "c-42", 1, "world"),
+        ],
+    };
+    let story = agenticmd_to_storyline(&doc).unwrap();
+    assert_eq!(story.turns.len(), 2);
+    assert_eq!(
+        story.turns[0].extra.as_ref().unwrap()["call_id"],
+        json!("c-42")
+    );
+    assert_eq!(story.turns[0].extra.as_ref().unwrap()["seq"], json!(0));
+    assert_eq!(
+        story.turns[1].extra.as_ref().unwrap()["call_id"],
+        json!("c-42")
+    );
+    assert_eq!(story.turns[1].extra.as_ref().unwrap()["seq"], json!(1));
+    assert_eq!(story.turns[0].kind.as_deref(), Some("llm.request"));
+    assert_eq!(story.turns[1].kind.as_deref(), Some("llm.response"));
+
+    let back = storyline_to_agenticmd(&story).unwrap();
+    assert_eq!(back.blocks.len(), 2);
+    assert_eq!(
+        back.blocks[0].header.fields.get("call_id"),
+        Some(&json!("c-42"))
+    );
+    assert_eq!(back.blocks[0].header.fields.get("seq"), Some(&json!(0)));
+    assert_eq!(
+        back.blocks[1].header.fields.get("call_id"),
+        Some(&json!("c-42"))
+    );
+    assert_eq!(back.blocks[1].header.fields.get("seq"), Some(&json!(1)));
+    assert_eq!(back.blocks[0].header.type_name, "markdown");
+    assert_eq!(
+        back.blocks[0].header.fields.get("kind"),
+        Some(&json!("llm.request"))
+    );
+}
+
+#[test]
+fn events_storyline_roundtrip_preserves_call_id_and_seq() {
+    use crate::convert::{events_to_storyline, storyline_to_events};
+    use crate::formats::events::{EventRecord, EventsDocument};
+    use serde_json::json;
+    let doc = EventsDocument::new(vec![
+        EventRecord {
+            seq: 10,
+            source: "proxy".into(),
+            kind: "llm.request".into(),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+            session_id: Some("s-seq".into()),
+            agent_id: Some("a-seq".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: Some("call-x".into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({"messages":[{"role":"user","content":"ping"}]}),
+        },
+        EventRecord {
+            seq: 11,
+            source: "proxy".into(),
+            kind: "llm.response".into(),
+            timestamp: Some("2026-01-01T00:00:01Z".into()),
+            session_id: Some("s-seq".into()),
+            agent_id: Some("a-seq".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: Some("call-x".into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({"content":"pong"}),
+        },
+    ]);
+    let story = events_to_storyline(&doc).unwrap();
+    assert_eq!(
+        story.turns[0].extra.as_ref().unwrap()["call_id"],
+        json!("call-x")
+    );
+    assert_eq!(story.turns[0].extra.as_ref().unwrap()["seq"], json!(10));
+    assert_eq!(
+        story.turns[1].extra.as_ref().unwrap()["call_id"],
+        json!("call-x")
+    );
+    assert_eq!(story.turns[1].extra.as_ref().unwrap()["seq"], json!(11));
+
+    let back = storyline_to_events(&story).unwrap();
+    assert_eq!(back.events[0].call_id.as_deref(), Some("call-x"));
+    assert_eq!(back.events[0].seq, 10);
+    assert_eq!(back.events[1].call_id.as_deref(), Some("call-x"));
+    assert_eq!(back.events[1].seq, 11);
+}
+
+#[test]
+fn convert_openai_msg_storyline_roundtrip_messages() {
+    use crate::convert::convert;
+    use crate::ChronicleFormat;
+    let raw = r#"{
+      "format_version": 1,
+      "session_id": "s-om",
+      "session_dir": "s-om",
+      "agent_id": "a-om",
+      "run_bucket": "b1",
+      "source": "dlcapt-proxy",
+      "authoritative": "json_file",
+      "session_steps": [{
+        "id": "step-1",
+        "session_id": "s-om",
+        "step_id": 0,
+        "job_id": "",
+        "agent_id": "a-om",
+        "group_id": "",
+        "env_name": "",
+        "llm_model": "gpt-4o",
+        "step_reward": 1.0,
+        "reward": 1.0,
+        "is_terminal": true,
+        "is_truncated": false,
+        "is_session_completed": true,
+        "is_trainable": true,
+        "created_at": "2026-07-29T00:00:00Z",
+        "messages": [{"role":"user","content":"ping"}],
+        "response": {"role":"assistant","content":"pong"},
+        "run_bucket": "b1",
+        "call_id": "c1"
+      }]
+    }"#;
+    let story = convert(ChronicleFormat::OpenaiMsg, ChronicleFormat::Storyline, raw).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&story).unwrap();
+    assert_eq!(v["session"], "s-om");
+    assert_eq!(v["turns"][0]["msg"], "ping");
+    assert_eq!(v["turns"][1]["msg"], "pong");
+
+    let back = convert(
+        ChronicleFormat::Storyline,
+        ChronicleFormat::OpenaiMsg,
+        &story,
+    )
+    .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&back).unwrap();
+    assert_eq!(doc["session_id"], "s-om");
+    assert!(!doc["session_steps"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn events_storyline_roundtrip_preserves_call_dialogue() {
+    use crate::convert::{events_to_storyline, storyline_to_events};
+    use crate::formats::events::{EventRecord, EventsDocument};
+    use serde_json::json;
+    let doc = EventsDocument::new(vec![
+        EventRecord {
+            seq: 0,
+            source: "proxy".into(),
+            kind: "llm.request".into(),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+            session_id: Some("s-ev".into()),
+            agent_id: Some("a-ev".into()),
+            parent_uuid: None,
+            trace_id: Some("t1".into()),
+            call_id: Some("c1".into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({"model":"m","messages":[{"role":"user","content":"hi there"}]}),
+        },
+        EventRecord {
+            seq: 1,
+            source: "proxy".into(),
+            kind: "llm.response".into(),
+            timestamp: Some("2026-01-01T00:00:01Z".into()),
+            session_id: Some("s-ev".into()),
+            agent_id: Some("a-ev".into()),
+            parent_uuid: None,
+            trace_id: Some("t1".into()),
+            call_id: Some("c1".into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({"content":"hello back", "latency_ms": 900, "ttft_ms": 50}),
+        },
+    ]);
+    let story = events_to_storyline(&doc).unwrap();
+    assert_eq!(story.session_id, "s-ev");
+    assert_eq!(story.agent.id, "a-ev");
+    assert_eq!(story.turns.len(), 2);
+    assert_eq!(story.turns[0].source, "user");
+    assert_eq!(story.turns[0].message, json!("hi there"));
+    assert_eq!(story.turns[1].source, "agent");
+    assert_eq!(story.turns[1].message, json!("hello back"));
+    assert_eq!(story.turns[1].latency_ms, Some(900));
+    assert_eq!(story.turns[1].ttft_ms, Some(50));
+
+    let back = storyline_to_events(&story).unwrap();
+    assert_eq!(back.session_id.as_deref(), Some("s-ev"));
+    assert!(!back.events.is_empty());
+    let again = events_to_storyline(&back).unwrap();
+    assert_eq!(again.session_id, "s-ev");
+    let user = again.turns.iter().find(|t| t.source == "user").unwrap();
+    let agent = again.turns.iter().find(|t| t.source == "agent").unwrap();
+    assert_eq!(user.message, json!("hi there"));
+    assert_eq!(agent.message, json!("hello back"));
+}
+
+#[test]
+fn convert_identity_and_cross_atif_storyline() {
+    use crate::convert::convert;
+    use crate::ChronicleFormat;
+    let atif = serde_json::to_string_pretty(&sample_traj()).unwrap();
+    let same = convert(ChronicleFormat::Atif, ChronicleFormat::Atif, &atif).unwrap();
+    assert_eq!(same, atif);
+
+    let story = convert(ChronicleFormat::Atif, ChronicleFormat::Storyline, &atif).unwrap();
+    let back = convert(ChronicleFormat::Storyline, ChronicleFormat::Atif, &story).unwrap();
+    let traj: crate::AtifTrajectory = serde_json::from_str(&back).unwrap();
+    assert_eq!(traj.effective_session_id().unwrap(), "sess-1");
+    assert_eq!(traj.steps.len(), 2);
+    assert_eq!(traj.steps[0].source, "user");
+    assert_eq!(traj.steps[1].source, "agent");
+    assert_eq!(
+        traj.steps[1].tool_calls.as_ref().unwrap()[0].function_name,
+        "financial_search"
+    );
+}
+
+#[test]
+fn storyline_to_events_assigns_call_id_for_paired_turns() {
+    use crate::convert::{events_to_storyline, storyline_to_events};
+    use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
+    use serde_json::json;
+    let story = StorylineDocument {
+        schema_version: "storyline/v1".into(),
+        run_id: None,
+        session_id: "s-pair".into(),
+        agent: StorylineAgent {
+            id: "a1".into(),
+            name: Some("demo".into()),
+            version: None,
+            model_name: None,
+            tool_definitions: None,
+            extra: None,
+        },
+        parent: None,
+        child_session_ids: None,
+        notes: None,
+        final_metrics: None,
+        continued_trajectory_ref: None,
+        extra: None,
+        turns: vec![
+            StorylineTurn {
+                id: 1,
+                kind: None,
+                timestamp: None,
+                source: "user".into(),
+                message: json!("hello"),
+                reasoning_content: None,
+                reasoning_effort: None,
+                tool_calls: None,
+                observation: None,
+                metrics: None,
+                model_name: None,
+                llm_call_count: None,
+                is_copied_context: None,
+                latency_ms: None,
+                ttft_ms: None,
+                extra: None,
+            },
+            StorylineTurn {
+                id: 2,
+                kind: None,
+                timestamp: None,
+                source: "agent".into(),
+                message: json!("world"),
+                reasoning_content: None,
+                reasoning_effort: None,
+                tool_calls: None,
+                observation: None,
+                metrics: None,
+                model_name: None,
+                llm_call_count: Some(1),
+                is_copied_context: None,
+                latency_ms: Some(10),
+                ttft_ms: None,
+                extra: None,
+            },
+        ],
+    };
+    let doc = storyline_to_events(&story).unwrap();
+    assert_eq!(doc.events.len(), 2);
+    assert_eq!(doc.events[0].call_id.as_deref(), Some("turn-1"));
+    assert_eq!(doc.events[1].call_id.as_deref(), Some("turn-1"));
+    let back = events_to_storyline(&doc).unwrap();
+    assert_eq!(back.turns.len(), 2);
+    assert_eq!(back.turns[0].message, json!("hello"));
+    assert_eq!(back.turns[1].message, json!("world"));
+}
+
+#[test]
+fn convert_atif_to_agenticmd_keeps_user_agent_text() {
+    use crate::convert::convert;
+    use crate::ChronicleFormat;
+    let atif = serde_json::to_string(&sample_traj()).unwrap();
+    let md = convert(ChronicleFormat::Atif, ChronicleFormat::Agenticmd, &atif).unwrap();
+    assert!(md.contains("What is the price of GOOGL?"));
+    assert!(md.contains("I will search."));
+    let story = convert(ChronicleFormat::Agenticmd, ChronicleFormat::Storyline, &md).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&story).unwrap();
+    assert_eq!(v["session"], "sess-1");
+    assert!(v["turns"].as_array().unwrap().len() >= 2);
 }

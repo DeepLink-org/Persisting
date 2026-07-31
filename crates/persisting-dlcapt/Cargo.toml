@@ -25,6 +25,7 @@ tokio-stream = "0.1"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+persisting-pchronicle = { path = "../persisting-pchronicle" }
 
 [dev-dependencies]
 tempfile = "3"
