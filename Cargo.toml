@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/persisting-proto",
+    "crates/persisting-access",
     "crates/persisting-engine",
     "crates/persisting-core",
     "crates/persisting-capture",
@@ -10,10 +11,12 @@ members = [
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
+    "crates/persisting-overlayfs",
 ]
 
 default-members = [
     "crates/persisting-proto",
+    "crates/persisting-access",
     "crates/persisting-engine",
     "crates/persisting-core",
     "crates/persisting-capture",
@@ -28,7 +31,7 @@ default-members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["reiase"]
-license = "Apache-2.0"
+license = "GPL-3.0-or-later"
 description = "Persistent Storage for Parameters, KV Cache, and Trajectories"
 
 [profile.dev]
@@ -47,3 +50,6 @@ codegen-units = 1
 
 [workspace.dependencies]
 pulsing-actor = { version = "0.1.2", default-features = false }
+
+[patch.crates-io]
+fuser = { path = "vendor/fuser" }

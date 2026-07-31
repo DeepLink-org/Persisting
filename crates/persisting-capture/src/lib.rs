@@ -10,52 +10,46 @@
 //! use persisting_capture::engine::CaptureEngine;
 //! use persisting_capture::proxy::serve;
 //! ```
-//!
-//! Short path aliases (`session_storage`, `markdown_trajectory`, …) re-export whole
-//! modules only — they are not a flat public API surface.
 
 pub mod config;
 pub mod conversion;
 pub mod dead_letter;
+pub mod dialogue;
+pub mod dialogue_extract;
 pub mod engine;
+pub mod frontmatter;
 pub mod injection;
+pub mod lifecycle;
+pub mod markdown_pipeline;
+pub mod markdown_policy;
+pub mod markdown_trajectory;
 pub mod protocol;
 pub mod provider;
 pub mod proxy;
 pub mod reconcile;
+pub mod record;
 pub mod runtime;
 pub mod session;
-pub mod storage;
+pub mod session_client;
+pub mod session_storage;
+pub mod sink;
+pub mod story_snapshots;
+pub mod subagent_link;
+pub mod trajectory_convert;
 pub mod usage;
 
-// --- module path aliases (no `pub use` of individual types at crate root) ---
+// --- short aliases (compat with existing call sites) ---
 
 pub use runtime::debug;
 pub use runtime::discover;
 pub use runtime::discover as discover_daemon;
+pub use runtime::in_process;
 pub use runtime::run_config;
 pub use runtime::run_env;
 pub use runtime::service;
 
 pub use session::chain as session_chain;
 pub use session::index as session_index;
-
-pub use storage::convert as trajectory_convert;
-pub use storage::dialogue;
-pub use storage::dialogue_extract;
-pub use storage::egress;
-pub use storage::event_row;
-pub use storage::frontmatter;
-pub use storage::lifecycle;
-pub use storage::markdown as markdown_trajectory;
-pub use storage::markdown_pipeline;
-pub use storage::path_layout;
-pub use storage::record;
-pub use storage::session as session_storage;
-pub use storage::session_client;
-pub use storage::sink;
-pub use storage::story_coords::{self, StoryCoords};
-pub use storage::subagent_link;
 
 pub use proxy::models_list;
 

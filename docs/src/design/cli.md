@@ -2,9 +2,15 @@
 
 `persisting` CLI 是**薄前端**：负责解析用户意图、序列化请求、展示结果；重逻辑（Search 用 Lance、轨迹用 Lance、检索索引）在**可独立发版的引擎**中运行。
 
-`search`、`traj`（`trajectory`）等子命令共用此架构。
+`search`、`traj`（`trajectory`）、`agent`、`runtime`（别名 `run`）等子命令共用此架构。
 
-`ppilot` 例外：编排逻辑在 `persisting-ppilot` 内由 CLI 直接调用（不经 engine RON ABI）；见 [pPilot 架构](ppilot.md) · [快速上手](../guide/ppilot.md)。旧命令名 `compute` 仅作为兼容别名。
+| 产品命令 | 对应 |
+|----------|------|
+| `persisting agent execute` / `bexecute` | OpenShell 类能力；`-c` 复用 capture TOML；直接调 `PVisor::run` |
+| `persisting runtime` / `run` | pVisor 运维面（inspect / providers） |
+| `persisting traj capture` | 薄包装同一 `PVisor::run` 路径 |
+
+pPilot（`persisting-ppilot`）是**内部编排库**，不作为顶层 CLI 动词暴露。
 
 ---
 

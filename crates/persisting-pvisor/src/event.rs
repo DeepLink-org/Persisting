@@ -96,7 +96,7 @@ impl RunEventPublisher {
             turn_id: None,
             call_id: None,
             seq: self.next_seq.fetch_add(1, Ordering::AcqRel),
-            timestamp_unix_ms: crate::runtime::unix_now_ms(),
+            timestamp_unix_ms: crate::util::unix_now_ms(),
             kind: kind.into(),
             source: source.into(),
             producer: self.producer.clone(),

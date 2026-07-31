@@ -36,6 +36,7 @@ pub fn openai_msg_to_storyline(doc: &OpenaiMsgDocument) -> Result<StorylineDocum
                 extra: Some(serde_json::json!({
                     "openai_msg_step_id": step.id,
                     "run_bucket": step.run_bucket,
+                    "call_id": step.call_id,
                 })),
             });
             next_id += 1;

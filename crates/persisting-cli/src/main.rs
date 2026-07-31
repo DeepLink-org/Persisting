@@ -1,10 +1,13 @@
 //! CLI loads `libpersisting_engine` lazily and calls **`persisting_engine_submit`** / **`job_poll`** /
 //! **`job_take_result`**（异步 job + 进度；见 `persisting_proto::invoke_abi`）。
 
+mod agent;
 mod capture;
 mod judge_manual;
+mod runtime_cmd;
 mod stats_output;
 mod terminal_markdown;
+mod trajectory_convert;
 mod trajectory_detail;
 mod trajectory_format;
 mod trajectory_stdout_toml;
@@ -58,7 +61,9 @@ proxy start  background daemon\n  \
 import       post-hoc IDE / gateway JSONL\n  \
 replay-dead-letter  retry failed capture events (not `traj replay`)\n\n\
 Egress (read/write store):\n  \
-stats · replay · materialize · add · truncate · extract · judge · judge-stats\n\n\
+stats · replay · materialize · convert · add · truncate · extract · judge · judge-stats\n\n\
+Convert formats via storyline hub:\n  \
+`traj convert <IN> -o <OUT> -f storyline|atif|openai_msg|agenticmd|events [--from …]`\n\n\
 Omit <STORAGE> on stats/replay/materialize/truncate when \
 PERSISTING_CAPTURE_STORAGE or last `traj proxy start` is set.";
 
@@ -282,7 +287,7 @@ fn rpc_request_pretty(body: RequestBody) -> Result<String> {
 #[command(
     name = "persisting",
     version,
-    about = "Agent memory, search, and trajectory storage (engine .so loaded lazily; RON C ABI)"
+    about = "Persisting CLI: agent execute|bexecute, runtime|run (pVisor), traj, search"
 )]
 struct Cli {
     /// Path to `libpersisting_engine` dynamic library (`.dylib`, `.so`, or `.dll`).
@@ -295,13 +300,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// OpenShell-like agent entry: `execute` one Run, `bexecute` many.
+    Agent(agent::AgentArgs),
+    /// pVisor ops (`run` is a short alias).
+    #[command(visible_alias = "run")]
+    Runtime(runtime_cmd::RuntimeArgs),
     Search(SearchArgs),
     /// Agent trajectory: capture, proxy, inspect, repair（短名 `traj`）
     #[command(visible_alias = "traj", long_about = TRAJ_LONG_ABOUT)]
     Trajectory(TrajectoryArgs),
-    /// pPilot durable Run orchestration. `compute` remains a compatibility alias.
-    #[command(name = "ppilot", visible_alias = "compute")]
-    PPilot(persisting_ppilot::PPilotArgs),
 }
 
 #[derive(Debug, Args)]
@@ -628,6 +635,8 @@ enum TrajectoryCommand {
     Extract(TrajectoryExtractArgs),
     /// Lance → TLV Markdown（有损物化，维护用）。
     Materialize(TrajectoryMaterializeArgs),
+    /// 经 storyline hub 互转 chronicle 格式（指定 `-f`/`--fmt` 与 `-o` 目的地）。
+    Convert(trajectory_convert::TrajectoryConvertArgs),
     /// LLM-as-judge：读 canonical Lance，把分数写为 `events.lance` 上的原生列。
     Judge(TrajectoryJudgeArgs),
     /// 汇总 `events.lance` 上的 judge 列分数（按 session + rubric）。
@@ -1036,15 +1045,16 @@ fn engine_lib_names() -> [&'static str; 3] {
 fn main() -> Result<()> {
     let cli = Cli::parse_from(normalize_cli_args(std::env::args().collect()));
     match &cli.command {
-        Command::PPilot(args) => {
-            persisting_ppilot::cli::init_tracing_with_verbose(args.verbose);
-            let args = args.clone();
+        Command::Agent(args) => {
             let code = tokio::runtime::Runtime::new()
                 .context("tokio runtime")?
-                .block_on(persisting_ppilot::run_ppilot(args))?;
-            if code != std::process::ExitCode::SUCCESS {
-                std::process::exit(1);
+                .block_on(agent::run_agent(args.clone()))?;
+            if code != 0 {
+                std::process::exit(code);
             }
+        }
+        Command::Runtime(args) => {
+            runtime_cmd::run_runtime(args.clone())?;
         }
         Command::Search(args) => {
             let mut lazy = LazyEngine::new(&cli);
@@ -2225,6 +2235,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             .context("encode TrajectoryMaterialize RpcRequest RON")?;
             lazy.invoke_engine_ron(&payload)?;
         }
+        TrajectoryCommand::Convert(args) => trajectory_convert::run_traj_convert(args)?,
         TrajectoryCommand::Judge(args) => run_traj_judge(lazy, args)?,
         TrajectoryCommand::JudgeStats(args) => run_traj_judge_stats(lazy, args)?,
     }

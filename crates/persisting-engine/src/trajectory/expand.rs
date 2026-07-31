@@ -1,7 +1,7 @@
 //! Expand run-bucket locations into per-`session_id` story views (shared Lance file).
 
 use anyhow::Result;
-use persisting_capture::StoryCoords;
+use persisting_pchronicle::StoryCoords;
 
 use super::store::lance;
 

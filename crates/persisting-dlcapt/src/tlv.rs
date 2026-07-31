@@ -9,8 +9,8 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::Mutex;
 
-const BLOCK_MARKER: &str = "<!-- persisting:block";
-const BLOCK_LAYOUT: &str = "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n";
+const BLOCK_MARKER: &str = persisting_pchronicle::BLOCK_MARKER;
+const BLOCK_LAYOUT: &str = persisting_pchronicle::AGENTICMD_BLOCK_LAYOUT;
 const BLOCK_FORMAT_VERSION: u64 = 1;
 
 #[derive(Debug, Clone)]

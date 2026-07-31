@@ -1,0 +1,50 @@
+//! Speaker / type validation for live agenticmd documents (strict capture semantics).
+
+use anyhow::{bail, Result};
+
+use super::agenticmd::{AgenticmdBlock, AgenticmdHeader};
+
+pub fn block_speaker(header: &AgenticmdHeader) -> &str {
+    header
+        .fields
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or("note")
+}
+
+pub fn validate_speaker(speaker: &str) -> Result<()> {
+    let s = speaker.trim();
+    if s.is_empty() {
+        bail!("block speaker must not be empty");
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        bail!("invalid block speaker: {speaker}");
+    }
+    Ok(())
+}
+
+pub fn validate_type_name(type_name: &str) -> Result<()> {
+    let t = type_name.trim();
+    if t.is_empty() {
+        bail!("block type must not be empty");
+    }
+    if t.contains('\n') || t.contains(':') {
+        bail!("block type must not contain ':' or newline");
+    }
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/'))
+    {
+        bail!("invalid block type: {type_name}");
+    }
+    Ok(())
+}
+
+pub fn validate_agenticmd_block(block: &AgenticmdBlock) -> Result<()> {
+    validate_type_name(&block.header.type_name)?;
+    validate_speaker(block_speaker(&block.header))?;
+    Ok(())
+}

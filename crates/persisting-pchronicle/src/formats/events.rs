@@ -17,6 +17,10 @@ use serde_json::Value;
 use crate::{Error, Result};
 
 /// One capture event — field-compatible with `persisting_capture::record::CaptureRecord`.
+///
+/// Capture provides `From` conversions both ways. Prefer this type for chronicle
+/// storage / convert paths; capture keeps `CaptureRecord` for live proxy methods
+/// (`visible_user_text`, etc.) until those helpers migrate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventRecord {
     pub seq: u64,

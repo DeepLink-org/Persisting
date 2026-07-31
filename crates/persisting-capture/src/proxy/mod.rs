@@ -18,6 +18,7 @@ pub mod upstream;
 
 pub use auth::{apply_upstream_headers, resolve_upstream_api_key};
 pub use model::rewrite_model_in_body;
+pub use network_policy::{network_capability_from_config, NetworkPolicy};
 pub use reasoning::ReasoningCacheHandle;
 pub use state::{
     serve, serve_with_runtime_control, serve_with_shutdown, serve_with_shutdown_and_ready,

@@ -120,7 +120,7 @@ impl RunExecutor for ProcessExecutor {
     async fn execute(&self, context: AttemptContext) -> RunResult {
         let spec = context.spec().clone();
         let RunInvocation::Process(invocation) = &spec.invocation;
-        let started_at = crate::runtime::unix_now_ms();
+        let started_at = crate::util::unix_now_ms();
         context
             .transition(RunState::Starting, Some("spawning local process".into()))
             .await;
@@ -133,7 +133,7 @@ impl RunExecutor for ProcessExecutor {
                     attempt_id: context.attempt_id().clone(),
                     state: RunState::Failed,
                     started_at_unix_ms: started_at,
-                    finished_at_unix_ms: crate::runtime::unix_now_ms(),
+                    finished_at_unix_ms: crate::util::unix_now_ms(),
                     exit_code: None,
                     failure: Some(RunFailure {
                         kind: RunFailureKind::Spawn,
@@ -205,7 +205,7 @@ impl RunExecutor for ProcessExecutor {
             }
         }
 
-        let finished_at = crate::runtime::unix_now_ms();
+        let finished_at = crate::util::unix_now_ms();
         let (state, exit_code, failure) = match end {
             End::Exited(Ok(status)) if status.success() => {
                 (RunState::Completed, status.code(), None)

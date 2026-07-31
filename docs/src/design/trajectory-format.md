@@ -57,7 +57,7 @@ Import 路径仍使用批量 **append**。详见 [轨迹存储 §5.3](trajectory
 | 字段 | 必填 | 说明 |
 |------|:----:|------|
 | `type` | ✅ | 固定 `"markdown"`（存储单元类型，不是 `CaptureRecord.kind`） |
-| `length` | ✅ | 正文 **UTF-8 字节长度**，含 2.5 节脚注行；编码时由 `encode_block_with_header` 写入 |
+| `length` | ✅ | 正文 **UTF-8 字节长度**，含 2.5 节脚注行；编码时由 `encode_agenticmd_block_validated` 写入 |
 | `v` | 推荐 | 块头 schema 版本，当前为 **`1`**；解析器应忽略未知版本或按迁移表处理 |
 | `format_block` | 可选 | 字符串别名 **`"1.0"`**，与文档级 `format: persisting:1.0` 对应；工具可只实现其一 |
 | `kind` | ✅ | `CaptureRecord.kind`（如 `llm.request`、`llm.response.stream`） |
@@ -85,7 +85,7 @@ Import 路径仍使用批量 **append**。详见 [轨迹存储 §5.3](trajectory
 ```
 
 - **编码**：`append_subagent_refs_footer` 在可见文本之后追加。
-- **解析 / compact**：`strip_subagent_footer_from_body` 在 `block_to_capture_record` 与可见文本提取前剔除**整行**脚注（行首 trim 后匹配 `<!-- persisting:subagent-` … `-->`）。
+- **解析 / compact**：`strip_subagent_footer_from_body` 在 `agenticmd_block_to_capture_record` 与可见文本提取前剔除**整行**脚注（行首 trim 后匹配 `<!-- persisting:subagent-` … `-->`）。
 - **权威元数据**：`subagent_id`、`subagent_trajectories` 等仍以块头 JSON 与 Lance 为准；脚注供人读与 grep。
 
 ### 2.6 大文件 upsert（演进，格式不变）
@@ -167,7 +167,7 @@ client:
 
 YAML frontmatter 固定 `format: persisting:1.0`，并含会话级 rollup（见 [轨迹存储 §8.1](trajectory.md)）。
 
-**Golden 示例**（由 `encode_block_with_header` 生成，CI 校验）：
+**Golden 示例**（由 `encode_agenticmd_block_validated` 生成，CI 校验）：
 
 - 测试 fixture：`crates/persisting-capture/tests/fixtures/tlv/demo-run-001.md`
 - 文档示例副本：[trajectory TLV 示例](https://github.com/DeepLink-org/Persisting/blob/main/examples/trajectory-tlv/demo-agent/demo-run-001/0001.md)

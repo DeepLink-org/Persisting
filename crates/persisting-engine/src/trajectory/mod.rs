@@ -46,8 +46,8 @@ pub use path::{
     try_infer_traj_location, StoryCoords, StoryCoords as TrajLocation, StoryLocationPartial,
     StoryLocationPartial as TrajLocationPartial,
 };
-pub use persisting_capture::egress::{export_story_bundle, parse_engine_records, ExportOutcome};
-pub use persisting_capture::story_coords::{
+pub use persisting_pchronicle::{export_story_bundle, parse_engine_records, ExportOutcome};
+pub use persisting_pchronicle::{
     story_lance_event_path as trajectory_event_log_path, story_run_dir as trajectory_run_dir,
 };
 
@@ -402,7 +402,7 @@ async fn stats_dual_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_capture::markdown_trajectory as md;
+    use persisting_pchronicle::{agenticmd_block_count, session_markdown_write_path_for_key};
 
     #[test]
     fn parse_engine_records_counts() {
@@ -664,7 +664,7 @@ mod tests {
         assert_eq!(row["content"], "second");
         assert_eq!(row["role"], "assistant");
 
-        let md_path = md::session_markdown_write_path_for_key(
+        let md_path = session_markdown_write_path_for_key(
             &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
             "s",
         );
@@ -715,7 +715,7 @@ mod tests {
 
         let lance_path = trajectory_event_log_path(&storage_s, "a", "s", None).unwrap();
         assert!(lance_path.is_dir());
-        let md_path = md::session_markdown_write_path_for_key(
+        let md_path = session_markdown_write_path_for_key(
             &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
             "s",
         );
@@ -731,7 +731,7 @@ mod tests {
         let storage_s = dir.path().to_string_lossy().to_string();
         std::fs::create_dir_all(&storage_s).unwrap();
         let run = trajectory_run_dir(&storage_s, "a", "s", None).unwrap();
-        let md_path = md::session_markdown_write_path_for_key(&run, "s");
+        let md_path = session_markdown_write_path_for_key(&run, "s");
         if let Some(parent) = md_path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -1151,11 +1151,11 @@ mod tests {
 
         let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
         materialize_lance_to_markdown(&session).await.unwrap();
-        let md_path = md::session_markdown_write_path_for_key(
+        let md_path = session_markdown_write_path_for_key(
             &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
             "s",
         );
-        let blocks_before = md::block_count(&md_path).unwrap();
+        let blocks_before = agenticmd_block_count(&md_path).unwrap();
 
         truncate_async(TrajectoryTruncateRequest {
             storage: storage_s.clone(),
@@ -1167,7 +1167,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(md::block_count(&md_path).unwrap(), blocks_before);
+        assert_eq!(agenticmd_block_count(&md_path).unwrap(), blocks_before);
         let replay = replay_async(TrajectoryReplayRequest {
             storage: storage_s,
             agent_id: "a".into(),
@@ -1277,7 +1277,7 @@ mod tests {
         let lance_path = trajectory_event_log_path(&storage_s, "a", "s", None).unwrap();
         assert!(!lance_path.exists());
 
-        let md_path = md::session_markdown_write_path_for_key(
+        let md_path = session_markdown_write_path_for_key(
             &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
             "s",
         );
@@ -1355,9 +1355,9 @@ mod tests {
         use crate::trajectory::expand_story_locations;
         use persisting_capture::engine::Call;
         use persisting_capture::lifecycle::{session_started_record, CaptureMode};
-        use persisting_capture::path_layout::list_story_read_locations;
         use persisting_capture::record::record_to_engine_line;
         use persisting_capture::sink::{llm_request_record, llm_response_record};
+        use persisting_pchronicle::list_story_read_locations;
 
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store");

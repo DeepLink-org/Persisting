@@ -6,7 +6,7 @@ use super::convert::LayerStats;
 use super::store::{
     session_lance_path, LanceTrajectoryStore, MarkdownTrajectoryStore, TrajectoryStore,
 };
-use persisting_capture::story_coords::StoryCoords;
+use persisting_pchronicle::StoryCoords;
 
 pub fn detect_story_primary_layer(
     layers: &LayerStats,
@@ -150,9 +150,7 @@ pub fn dataset_display(
     let dir = session.run_dir()?;
     match fmt {
         TrajectoryStorageFormat::Markdown => {
-            let path = persisting_capture::markdown_trajectory::locate_session_markdown_for_key(
-                &dir, session_id,
-            );
+            let path = persisting_pchronicle::locate_session_markdown_for_key(&dir, session_id);
             Ok(path
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| dir.display().to_string()))

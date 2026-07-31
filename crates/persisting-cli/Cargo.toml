@@ -24,12 +24,14 @@ libloading = "0.8"
 persisting-capture = { path = "../persisting-capture" }
 persisting-dlcapt = { path = "../persisting-dlcapt", optional = true }
 persisting-engine = { path = "../persisting-engine" }
+persisting-pchronicle = { path = "../persisting-pchronicle" }
 persisting-proto = { path = "../persisting-proto" }
-persisting-ppilot = { path = "../persisting-ppilot", features = ["traj-sink"] }
+persisting-pvisor = { path = "../persisting-pvisor" }
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 termimad = "0.34"
 toml = "0.8"

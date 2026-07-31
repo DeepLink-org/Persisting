@@ -95,11 +95,21 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
         let latency_ms =
             latency_from_payload.or_else(|| latency_between(req_ts.as_deref(), resp_ts.as_deref()));
 
+        let req_seq = evs.iter().find(|e| e.kind == "llm.request").map(|e| e.seq);
+        let resp_seq = evs
+            .iter()
+            .find(|e| e.kind == "llm.response" || e.kind == "llm.response.stream")
+            .map(|e| e.seq);
+
         if let Some(ut) = user_text.clone() {
             if asst_text.is_some() {
+                let mut user_extra = json!({"call_id": cid});
+                if let Some(seq) = req_seq {
+                    user_extra["seq"] = json!(seq);
+                }
                 turns.push(StorylineTurn {
                     id: next_id,
-                    kind: None,
+                    kind: Some("llm.request".into()),
                     timestamp: req_ts
                         .clone()
                         .or_else(|| evs.first().and_then(|e| e.timestamp.clone())),
@@ -115,23 +125,41 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
                     is_copied_context: None,
                     latency_ms: None,
                     ttft_ms: None,
-                    extra: None,
+                    extra: Some(user_extra),
                 });
                 next_id += 1;
             }
         }
 
-        let (source, message) = if let Some(a) = asst_text {
-            ("agent", serde_json::Value::String(a))
+        let (source, message, turn_kind, turn_seq) = if let Some(a) = asst_text {
+            (
+                "agent",
+                serde_json::Value::String(a),
+                "llm.response",
+                resp_seq,
+            )
         } else if let Some(u) = user_text {
-            ("user", serde_json::Value::String(u))
+            ("user", serde_json::Value::String(u), "llm.request", req_seq)
         } else {
-            ("agent", serde_json::Value::String(String::new()))
+            (
+                "agent",
+                serde_json::Value::String(String::new()),
+                "llm.response",
+                resp_seq.or(req_seq),
+            )
         };
+
+        let mut agent_extra = json!({
+            "call_id": cid,
+            "request_messages": request_messages,
+        });
+        if let Some(seq) = turn_seq {
+            agent_extra["seq"] = json!(seq);
+        }
 
         turns.push(StorylineTurn {
             id: next_id,
-            kind: None,
+            kind: Some(turn_kind.into()),
             timestamp: resp_ts
                 .or(req_ts)
                 .or_else(|| evs.first().and_then(|e| e.timestamp.clone())),
@@ -147,10 +175,7 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
             is_copied_context: None,
             latency_ms: if source == "agent" { latency_ms } else { None },
             ttft_ms: if source == "agent" { ttft_ms } else { None },
-            extra: Some(json!({
-                "call_id": cid,
-                "request_messages": request_messages,
-            })),
+            extra: Some(agent_extra),
         });
         next_id += 1;
     }
@@ -173,7 +198,7 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
                 is_copied_context: None,
                 latency_ms: None,
                 ttft_ms: None,
-                extra: Some(json!({"event_seq": ev.seq})),
+                extra: Some(json!({"seq": ev.seq, "event_seq": ev.seq})),
             });
             next_id += 1;
         }
@@ -204,9 +229,12 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
 pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> {
     story.validate()?;
     let mut events = Vec::new();
-    let mut seq = 0u64;
-    for turn in &story.turns {
+    let mut next_seq = 0u64;
+    let mut i = 0;
+    while i < story.turns.len() {
+        let turn = &story.turns[i];
         if turn.effective_kind() == "internal" {
+            let seq = take_seq(turn.extra.as_ref(), &mut next_seq);
             events.push(EventRecord {
                 seq,
                 source: "pchronicle".into(),
@@ -223,29 +251,59 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                 parent_call_id: None,
                 payload: turn.message.clone(),
             });
-            seq += 1;
+            i += 1;
             continue;
         }
 
-        let call_id = turn
+        let explicit_call_id = turn
             .extra
             .as_ref()
             .and_then(|e| e.get("call_id").and_then(|c| c.as_str()))
+            .filter(|s| !s.is_empty())
             .map(str::to_string);
+
+        // Pair consecutive user → agent turns under one call_id so events→storyline
+        // can rebuild dialogue (orphans without call_id are otherwise dropped).
+        let paired_agent = if turn.source == "user" {
+            story
+                .turns
+                .get(i + 1)
+                .filter(|t| t.source == "agent" && t.effective_kind() != "internal")
+        } else {
+            None
+        };
+        let call_id = explicit_call_id.or_else(|| {
+            paired_agent
+                .and_then(|a| {
+                    a.extra
+                        .as_ref()
+                        .and_then(|e| e.get("call_id").and_then(|c| c.as_str()))
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+                .or_else(|| Some(format!("turn-{}", turn.id)))
+        });
+
         let text = message_text(&turn.message).unwrap_or_default();
 
         match turn.source.as_str() {
             "user" => {
+                let seq = take_seq(turn.extra.as_ref(), &mut next_seq);
+                let req_kind = turn
+                    .kind
+                    .as_deref()
+                    .filter(|k| k.starts_with("llm."))
+                    .unwrap_or("llm.request");
                 events.push(EventRecord {
                     seq,
                     source: "pchronicle".into(),
-                    kind: "llm.request".into(),
+                    kind: req_kind.into(),
                     timestamp: turn.timestamp.clone(),
                     session_id: Some(story.session_id.clone()),
                     agent_id: Some(story.agent.id.clone()),
                     parent_uuid: None,
                     trace_id: None,
-                    call_id,
+                    call_id: call_id.clone(),
                     subagent_id: None,
                     parent_agent_id: None,
                     branch: None,
@@ -255,7 +313,40 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                         "messages": [{"role":"user","content": text}],
                     }),
                 });
-                seq += 1;
+
+                if let Some(agent) = paired_agent {
+                    let atext = message_text(&agent.message).unwrap_or_default();
+                    let seq = take_seq(agent.extra.as_ref(), &mut next_seq);
+                    let resp_kind = agent
+                        .kind
+                        .as_deref()
+                        .filter(|k| k.starts_with("llm."))
+                        .unwrap_or("llm.response");
+                    events.push(EventRecord {
+                        seq,
+                        source: "pchronicle".into(),
+                        kind: resp_kind.into(),
+                        timestamp: agent.timestamp.clone(),
+                        session_id: Some(story.session_id.clone()),
+                        agent_id: Some(story.agent.id.clone()),
+                        parent_uuid: None,
+                        trace_id: None,
+                        call_id,
+                        subagent_id: None,
+                        parent_agent_id: None,
+                        branch: None,
+                        parent_call_id: None,
+                        payload: json!({
+                            "content": atext,
+                            "choices":[{"message":{"role":"assistant","content": atext}}],
+                            "usage": agent.metrics,
+                            "latency_ms": agent.latency_ms,
+                            "ttft_ms": agent.ttft_ms,
+                        }),
+                    });
+                    i += 2;
+                    continue;
+                }
             }
             _ => {
                 if let Some(msgs) = turn
@@ -263,6 +354,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                     .as_ref()
                     .and_then(|e| e.get("request_messages").cloned())
                 {
+                    let seq = take_seq(None, &mut next_seq);
                     events.push(EventRecord {
                         seq,
                         source: "pchronicle".into(),
@@ -282,12 +374,17 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                             "messages": msgs,
                         }),
                     });
-                    seq += 1;
                 }
+                let seq = take_seq(turn.extra.as_ref(), &mut next_seq);
+                let resp_kind = turn
+                    .kind
+                    .as_deref()
+                    .filter(|k| k.starts_with("llm."))
+                    .unwrap_or("llm.response");
                 events.push(EventRecord {
                     seq,
                     source: "pchronicle".into(),
-                    kind: "llm.response".into(),
+                    kind: resp_kind.into(),
                     timestamp: turn.timestamp.clone(),
                     session_id: Some(story.session_id.clone()),
                     agent_id: Some(story.agent.id.clone()),
@@ -299,15 +396,16 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                     branch: None,
                     parent_call_id: None,
                     payload: json!({
+                        "content": text,
                         "choices":[{"message":{"role":"assistant","content": text}}],
                         "usage": turn.metrics,
                         "latency_ms": turn.latency_ms,
                         "ttft_ms": turn.ttft_ms,
                     }),
                 });
-                seq += 1;
             }
         }
+        i += 1;
     }
 
     Ok(EventsDocument {
@@ -316,6 +414,19 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
         agent_id: Some(story.agent.id.clone()),
         events,
     })
+}
+
+/// Prefer explicit `extra.seq`; otherwise allocate the next monotonic seq.
+fn take_seq(extra: Option<&serde_json::Value>, next_seq: &mut u64) -> u64 {
+    if let Some(seq) = extra.and_then(|e| e.get("seq")).and_then(|v| v.as_u64()) {
+        if seq >= *next_seq {
+            *next_seq = seq + 1;
+        }
+        return seq;
+    }
+    let seq = *next_seq;
+    *next_seq += 1;
+    seq
 }
 
 fn latency_between(req: Option<&str>, resp: Option<&str>) -> Option<i64> {

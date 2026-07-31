@@ -1,10 +1,10 @@
 use super::fixtures::*;
-use super::support::*;
 
 #[tokio::test]
 async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
-    use crate::markdown_trajectory::read_blocks_from_file;
+    use super::support::*;
     use crate::session_storage::trajectory_run_dir;
+    use persisting_pchronicle::read_agenticmd_blocks_from_file as read_blocks_from_file;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -63,13 +63,13 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     assert_eq!(records[1].seq, 1);
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0].role(), Some("user"));
-    assert_eq!(blocks[0].value_utf8().unwrap(), "hello user");
+    assert_eq!(blocks[0].body, "hello user");
     assert_eq!(
         blocks[0].header.fields.get("seq").and_then(|v| v.as_u64()),
         Some(0)
     );
     assert_eq!(blocks[1].role(), Some("assistant"));
-    assert_eq!(blocks[1].value_utf8().unwrap(), "final assistant");
+    assert_eq!(blocks[1].body, "final assistant");
     assert_eq!(
         blocks[1].header.fields.get("seq").and_then(|v| v.as_u64()),
         Some(1)
@@ -78,8 +78,9 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
 
 #[tokio::test]
 async fn draft_markdown_uses_peeked_seq_and_matches_final() {
-    use crate::markdown_trajectory::read_blocks_from_file;
+    use super::support::*;
     use crate::session_storage::trajectory_run_dir;
+    use persisting_pchronicle::read_agenticmd_blocks_from_file as read_blocks_from_file;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -158,8 +159,9 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
 
 #[tokio::test]
 async fn overlapping_calls_preserve_later_user_block_in_markdown() {
-    use crate::markdown_trajectory::read_blocks_from_file;
+    use super::support::*;
     use crate::session_storage::trajectory_run_dir;
+    use persisting_pchronicle::read_agenticmd_blocks_from_file as read_blocks_from_file;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -242,7 +244,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     let md_path = session_markdown_write_path_for_key(&run_dir, &ctx_a.route().storage_session_id);
     let blocks = read_blocks_from_file(&md_path).unwrap();
     assert_eq!(blocks.len(), 3);
-    assert_eq!(blocks[0].value_utf8().unwrap(), "req-a");
-    assert_eq!(blocks[1].value_utf8().unwrap(), "final-a");
-    assert_eq!(blocks[2].value_utf8().unwrap(), "req-b");
+    assert_eq!(blocks[0].body, "req-a");
+    assert_eq!(blocks[1].body, "final-a");
+    assert_eq!(blocks[2].body, "req-b");
 }

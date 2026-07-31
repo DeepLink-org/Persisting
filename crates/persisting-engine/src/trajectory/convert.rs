@@ -10,7 +10,7 @@ use super::store::{
     overwrite_session_lines, LanceTrajectoryStore, MarkdownTrajectoryStore, TrajectorySession,
     TrajectoryStore,
 };
-use persisting_capture::story_coords::story_run_dir;
+use persisting_pchronicle::story_run_dir;
 
 /// Result of materializing Lance raw log → TLV Markdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,11 +101,9 @@ pub async fn compact_markdown_to_lance(
         &session.session_id,
         session.root_session_id.as_deref(),
     )?;
-    let md_path = persisting_capture::markdown_trajectory::locate_session_markdown_for_key(
-        &run_dir,
-        &session.session_id,
-    )
-    .ok_or_else(|| anyhow::anyhow!("markdown not found under {}", run_dir.display()))?;
+    let md_path =
+        persisting_pchronicle::locate_session_markdown_for_key(&run_dir, &session.session_id)
+            .ok_or_else(|| anyhow::anyhow!("markdown not found under {}", run_dir.display()))?;
     let doc = tokio::fs::read_to_string(&md_path)
         .await
         .with_context(|| format!("read {}", md_path.display()))?;
@@ -169,13 +167,11 @@ pub async fn layer_stats(session: &TrajectorySession) -> Result<LayerStats> {
             &session.session_id,
             session.root_session_id.as_deref(),
         )?;
-        let path = persisting_capture::markdown_trajectory::locate_session_markdown_for_key(
-            &run_dir,
-            &session.session_id,
-        );
+        let path =
+            persisting_pchronicle::locate_session_markdown_for_key(&run_dir, &session.session_id);
         let count = path
             .as_ref()
-            .map(|p| persisting_capture::markdown_trajectory::block_count(p).unwrap_or(0))
+            .map(|p| persisting_pchronicle::agenticmd_block_count(p).unwrap_or(0))
             .unwrap_or(0);
         (count, path.map(|p| p.display().to_string()))
     } else {

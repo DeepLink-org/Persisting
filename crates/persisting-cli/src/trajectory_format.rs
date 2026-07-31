@@ -4,9 +4,9 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
-use persisting_capture::dialogue::import_markdown_to_engine_lines;
-use persisting_capture::markdown_trajectory::is_trajectory_markdown_path;
 use persisting_capture::record::json_to_engine_line;
+use persisting_capture::trajectory_convert::markdown_document_to_engine_lines;
+use persisting_pchronicle::is_trajectory_markdown_path;
 use persisting_proto::TrajectoryStorageFormat;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -72,7 +72,7 @@ impl TrajectoryFormatManager {
 
     pub fn prepare_append_batch(format: TrajectoryAddFormat, raw: &str) -> Result<String> {
         match format {
-            TrajectoryAddFormat::Markdown => import_markdown_to_engine_lines(raw),
+            TrajectoryAddFormat::Markdown => markdown_document_to_engine_lines(raw),
             TrajectoryAddFormat::Jsonl => lines_from_jsonl(raw),
             TrajectoryAddFormat::Toml => lines_from_toml(raw),
             TrajectoryAddFormat::Auto => {

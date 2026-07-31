@@ -1,0 +1,15 @@
+FROM rust:alpine AS builder
+WORKDIR /build
+RUN apk add musl-dev fuse3-dev
+
+COPY . /build/fuse-overlayfs
+RUN cd fuse-overlayfs && \
+    cargo build --release && \
+    cp target/release/fuse-overlayfs /usr/bin/fuse-overlayfs
+
+FROM alpine
+RUN apk add fuse3
+COPY --from=builder /usr/bin/fuse-overlayfs /usr/bin/fuse-overlayfs
+
+USER nobody
+ENTRYPOINT ["/usr/bin/fuse-overlayfs","-f"]
