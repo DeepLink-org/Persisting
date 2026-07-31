@@ -1,12 +1,12 @@
-import hashlib
-from typing import Union
 import base64
+import hashlib
 import io
+from typing import List, Union
+
 import pyarrow as pa
 import pyarrow.ipc as ipc
 import sqlglot
 from sqlglot import exp
-from typing import List
 
 
 def stable_hash(value: Union[int, str]) -> int:

@@ -1,3 +1,9 @@
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dldb.session import LanceSession
+
+
 def connect(
     db_name,
     use_memory_queue: bool = False,
@@ -7,8 +13,9 @@ def connect(
     **kwargs,
 ) -> "LanceSession":
     import atexit
-    from dldb.session import LanceSession
+
     from dldb.instrumentation import instrument_session
+    from dldb.session import LanceSession
 
     assert not use_memory_queue, "memory queue not supported, will support later"
 

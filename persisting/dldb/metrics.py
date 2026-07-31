@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Tuple, Iterable
+from typing import Dict, Iterable, Tuple
 
 from prometheus_client import CollectorRegistry, Counter, Histogram
 

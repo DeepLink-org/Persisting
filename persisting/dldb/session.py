@@ -1,16 +1,21 @@
-import pandas as pd
-from dataclasses import dataclass
-from collections import deque
-import lancedb
-from loguru import logger
 import sys
-import pyarrow as pa
-from typing import Union, Dict, List, Optional, Any
-from lancedb.index import IndexConfig
+from collections import deque
+from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any, Dict, List, Optional, Union
 
-from dldb.table import create_table, open_table, open_table_by_partition_type, InformationSchemaTable
+import lancedb
+import pandas as pd
+import pyarrow as pa
 from dldb.metrics import MetricsCollector
+from dldb.table import (
+    InformationSchemaTable,
+    create_table,
+    open_table,
+    open_table_by_partition_type,
+)
+from lancedb.index import IndexConfig
+from loguru import logger
 
 logger.remove()
 logger.add(sys.stdout, level="INFO")
