@@ -2704,6 +2704,7 @@ name = "fuser"
 version = "0.15.1"
 dependencies = [
  "libc",
+ "libloading",
  "log",
  "memchr",
  "nix",

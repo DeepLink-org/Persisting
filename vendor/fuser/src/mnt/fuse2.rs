@@ -23,20 +23,24 @@ pub struct Mount {
     mountpoint: CString,
     #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
     channel: Option<usize>,
+    #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+    macfuse: Option<Arc<MacFuseApi>>,
 }
 impl Mount {
     pub fn new(mountpoint: &Path, options: &[MountOption]) -> io::Result<(Arc<File>, Mount)> {
         let mountpoint = CString::new(mountpoint.as_os_str().as_bytes()).unwrap();
+        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+        let macfuse = MacFuseApi::load()?;
         with_fuse_args(options, |args| {
             #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
             let (fd, channel) = unsafe {
-                let channel = fuse_mount(mountpoint.as_ptr(), args);
+                let channel = (macfuse.mount)(mountpoint.as_ptr(), args);
                 if channel.is_null() {
                     return Err(ensure_last_os_error());
                 }
-                let fd = libc::dup(fuse_chan_fd(channel));
+                let fd = libc::dup((macfuse.chan_fd)(channel));
                 if fd < 0 {
-                    fuse_unmount(mountpoint.as_ptr(), channel);
+                    (macfuse.unmount)(mountpoint.as_ptr(), channel);
                     return Err(ensure_last_os_error());
                 }
                 (fd, Some(channel as usize))
@@ -53,6 +57,8 @@ impl Mount {
                         mountpoint,
                         #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
                         channel,
+                        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+                        macfuse: Some(Arc::clone(&macfuse)),
                     },
                 ))
             }
@@ -63,7 +69,11 @@ impl Drop for Mount {
     fn drop(&mut self) {
         #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
         if let Some(channel) = self.channel.take() {
-            unsafe { fuse_unmount(self.mountpoint.as_ptr(), channel as *mut fuse_chan) };
+            if let Some(macfuse) = self.macfuse.take() {
+                unsafe {
+                    (macfuse.unmount)(self.mountpoint.as_ptr(), channel as *mut fuse_chan);
+                }
+            }
             return;
         }
 
