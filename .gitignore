@@ -3,6 +3,7 @@ target/
 /store/
 *.pyc
 __pycache__/
+*.egg-info/
 .pytest_cache/
 .venv/
 *.abi3.so
@@ -14,3 +15,4 @@ crates/persisting-dlcapt/.capture/
 crates/persisting-dlcapt/tmp/
 .build-tmp/
 target/dlcapt/
+build/

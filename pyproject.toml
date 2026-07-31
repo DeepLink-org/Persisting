@@ -37,6 +37,9 @@ manifest-path = "crates/persisting-core/Cargo.toml"
 python-packages = ["persisting"]
 features = ["python-extension"]
 sdist-include = ["LICENSE", "README.md"]
+# Keep the installable top-level dldb package out of the persisting wheel tree.
+# Install dldb separately: pip install -e ./persisting/dldb
+exclude = ["persisting/dldb/**"]
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
