@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(all(target_os = "macos", not(debug_assertions)))]
 
 use std::fs::{self, File};
 use std::process::{Command, Stdio};
@@ -16,9 +16,6 @@ const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(10);
 #[test]
 #[ignore = "requires an enabled macFUSE kernel extension and measures wall-clock performance"]
 fn recursive_lower_walk_does_not_materialize_file_payloads() {
-    #[cfg(debug_assertions)]
-    panic!("performance tests must be built with --release");
-
     let temporary = tempfile::tempdir().expect("create performance fixture root");
     let lower = temporary.path().join("lower");
     let stage = temporary.path().join("stage");
