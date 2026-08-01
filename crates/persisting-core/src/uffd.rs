@@ -133,7 +133,6 @@ pub fn run_uffd_handler(
     let base = base as u64;
     let mut msg: UffdMsg = unsafe { std::mem::zeroed() };
     let msg_size = std::mem::size_of::<UffdMsg>();
-    let mut page_buf = [0u8; PAGE_SIZE];
 
     loop {
         let n = unsafe { read(uffd_fd, &mut msg as *mut _ as *mut c_void, msg_size) };
@@ -154,8 +153,7 @@ pub fn run_uffd_handler(
 
         match fetch_page_from_block(&path, block_id, block_size, page_offset_in_block) {
             Ok(page) => {
-                page_buf = page;
-                if uffd_copy(uffd_fd, page_start, page_buf.as_ptr(), PAGE_SIZE).is_err() {
+                if uffd_copy(uffd_fd, page_start, page.as_ptr(), PAGE_SIZE).is_err() {
                     // 填页失败可记录并跳过，触缺页线程将再次 fault
                 }
             }
