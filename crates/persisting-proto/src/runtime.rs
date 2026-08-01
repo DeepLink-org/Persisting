@@ -453,6 +453,7 @@ pub enum RunFailureKind {
     Unsupported,
     Spawn,
     ProcessExit,
+    Workload,
     DeadlineExceeded,
     Infrastructure,
 }
@@ -500,6 +501,9 @@ pub struct RunResult {
     pub failure: Option<RunFailure>,
     #[serde(default)]
     pub output: ProcessOutput,
+    /// Small structured workload result. Large outputs belong in `artifacts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
     #[serde(default)]
     pub metrics: BTreeMap<String, f64>,
     #[serde(default)]

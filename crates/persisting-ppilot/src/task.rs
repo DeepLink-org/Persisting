@@ -89,6 +89,9 @@ impl TaskExpr {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {
     pub task_id: String,
+    /// Stable pVisor Run identity generated for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub ok: bool,
     /// pPilot cancellation (not an execute failure).
     #[serde(default)]
@@ -144,6 +147,7 @@ impl TaskResult {
         let (metrics, artifacts) = result_metadata(&value);
         Self {
             task_id: task_id.into(),
+            run_id: None,
             ok: true,
             cancelled: false,
             value: Some(value),
@@ -189,6 +193,7 @@ impl TaskResult {
     ) -> Self {
         Self {
             task_id: task_id.into(),
+            run_id: None,
             ok: false,
             cancelled: false,
             value: None,
@@ -209,6 +214,7 @@ impl TaskResult {
         let started = now_secs();
         Self {
             task_id: task_id.into(),
+            run_id: None,
             ok: false,
             cancelled: true,
             value: None,

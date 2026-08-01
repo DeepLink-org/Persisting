@@ -50,24 +50,6 @@ use trajectory_stdout_toml::{
     print_trajectory_stats_as_toml, print_trajectory_truncate_as_toml,
 };
 
-const TRAJ_LONG_ABOUT: &str = "\
-Agent trajectory store: import events, inspect sessions, and maintain views.\n\n\
-Ingress (write):\n  \
-proxy        long-running proxy (foreground)\n  \
-proxy start  background daemon\n  \
-import       post-hoc IDE / gateway JSONL\n  \
-replay-dead-letter  retry failed capture events (not `traj replay`)\n\n\
-Egress (read/write store):\n  \
-stats · replay · materialize · convert · add · truncate · extract · judge · judge-stats\n\n\
-Convert formats via storyline hub:\n  \
-`traj convert <IN> -o <OUT> -f storyline|atif|openai_msg|agenticmd|events [--from …]`\n\n\
-Omit <STORAGE> on stats/replay/materialize/truncate when \
-PERSISTING_CAPTURE_STORAGE or last `traj proxy start` is set.";
-
-const PROXY_AFTER_HELP: &str = "\
-\nForeground: `traj proxy -o <DIR> -c <proxy.toml>` (no subcommand).\n\
-Background: `traj proxy start -o <DIR> -c <proxy.toml>`.";
-
 type RonAbiVersionFn = unsafe extern "C" fn() -> u32;
 
 fn ron_request_pretty<T: Serialize>(v: &T) -> Result<String> {
@@ -89,19 +71,22 @@ struct Engine {
 }
 
 /// Resolves path and opens the engine on first call that needs it.
-struct LazyEngine<'a> {
-    cli: &'a Cli,
+struct LazyEngine {
+    core_lib: Option<PathBuf>,
     engine: Option<Engine>,
 }
 
-impl<'a> LazyEngine<'a> {
-    fn new(cli: &'a Cli) -> Self {
-        Self { cli, engine: None }
+impl LazyEngine {
+    fn new(core_lib: Option<PathBuf>) -> Self {
+        Self {
+            core_lib,
+            engine: None,
+        }
     }
 
     fn engine_mut(&mut self) -> Result<&Engine> {
         if self.engine.is_none() {
-            let path = resolve_engine_path(self.cli.core_lib.as_deref())?;
+            let path = resolve_engine_path(self.core_lib.as_deref())?;
             self.engine = Some(Engine::load(&path)?);
         }
         Ok(self.engine.as_ref().unwrap())
@@ -220,7 +205,7 @@ fn print_engine_ron_response(raw: &str) -> Result<()> {
 }
 
 /// 多行 JSONL/CSV：按批 `SearchAddBatch` 写入 Lance（每批一次 `InsertBuilder`，远快于逐行 `SearchAdd`）。
-fn search_add_batch(lazy: &mut LazyEngine<'_>, mut rows: Vec<SearchAddRequest>) -> Result<()> {
+fn search_add_batch(lazy: &mut LazyEngine, mut rows: Vec<SearchAddRequest>) -> Result<()> {
     const CHUNK: usize = 256;
     let total = rows.len();
     if total == 0 {
@@ -278,10 +263,10 @@ fn rpc_request_pretty(body: RequestBody) -> Result<String> {
 #[command(
     name = "persisting",
     version,
-    about = "Persisting data CLI: pChronicle trajectories and search; use `pvisor` for Agent Runs"
+    about = "Unified CLI for Agent execution, environments, orchestration, and durable history"
 )]
 struct Cli {
-    /// Path to `libpersisting_engine` dynamic library (`.dylib`, `.so`, or `.dll`).
+    /// Engine library used by search, history, evaluation, and Gateway commands.
     #[arg(long, env = "PERSISTING_ENGINE_LIB")]
     core_lib: Option<PathBuf>,
 
@@ -291,10 +276,109 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Execute one Agent or command in a fresh pVisor Run.
+    #[command(visible_alias = "exec")]
+    Execute(ForwardArgs),
+    /// Manage durable reusable pVisor execution environments.
+    #[command(visible_alias = "environment")]
+    Env(ForwardArgs),
+    /// Run a pPilot batch plan.
+    Batch(ForwardArgs),
+    /// Query Lance or ATIF history with pPilot/DataFusion SQL.
+    Query(ForwardArgs),
+    /// Import, replay, convert, and maintain trajectory history.
+    History(HistoryArgs),
+    /// Evaluate trajectory quality.
+    Eval(EvalArgs),
+    /// Manage Search data and indexes.
     Search(SearchArgs),
-    /// Agent trajectory: import, proxy, inspect, and maintain pChronicle data（短名 `traj`）
-    #[command(visible_alias = "traj", long_about = TRAJ_LONG_ABOUT)]
-    Trajectory(TrajectoryArgs),
+    /// Run or manage the long-lived Gateway capture service.
+    Gateway(GatewayArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(disable_help_flag = true)]
+struct ForwardArgs {
+    /// Arguments forwarded unchanged to the component command.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct HistoryArgs {
+    #[command(subcommand)]
+    command: HistoryCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum HistoryCommand {
+    /// Merge IDE or Gateway events into one trajectory session.
+    Import(CaptureImportArgs),
+    /// Retry capture events recorded in the dead-letter log.
+    #[command(name = "replay-dead-letter")]
+    ReplayDeadLetter(CaptureReplayDeadLetterArgs),
+    /// Append normalized events to a trajectory store.
+    Add(TrajectoryAddArgs),
+    /// Keep only the first N Lance events.
+    Truncate(TrajectoryTruncateArgs),
+    /// Summarize one or more runs and stories.
+    Stats(TrajectoryStatsArgs),
+    /// Page through stored events in sequence order.
+    Replay(TrajectoryReplayArgs),
+    /// Export a Story or Run directory tree.
+    Extract(TrajectoryExtractArgs),
+    /// Rebuild the human-readable AgenticMD projection from Lance.
+    Materialize(TrajectoryMaterializeArgs),
+    /// Convert between Storyline, ATIF, OpenAI messages, AgenticMD, and events.
+    Convert(trajectory_convert::TrajectoryConvertArgs),
+}
+
+#[derive(Debug, Args)]
+struct EvalArgs {
+    #[command(subcommand)]
+    command: EvalCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum EvalCommand {
+    /// Judge trajectory quality manually or with an LLM.
+    Judge(TrajectoryJudgeArgs),
+    /// Aggregate persisted judge scores by session and rubric.
+    Stats(TrajectoryJudgeStatsArgs),
+}
+
+#[derive(Debug, Args)]
+struct GatewayArgs {
+    #[command(subcommand)]
+    command: GatewayCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum GatewayCommand {
+    /// Run the Gateway in the foreground.
+    Serve(GatewayServeArgs),
+    /// Start the Gateway daemon.
+    Start(GatewayStartArgs),
+    /// Stop the Gateway daemon.
+    Stop(GatewaySelectArgs),
+    /// List captured sessions.
+    List(GatewaySelectArgs),
+    /// Show Gateway daemon status.
+    Status(GatewaySelectArgs),
+}
+
+#[derive(Debug, Args)]
+struct GatewayServeArgs {
+    #[arg(long, value_enum, default_value_t = GatewayBackend::Capture)]
+    backend: GatewayBackend,
+    #[arg(long, short = 'o', value_name = "DIR")]
+    output_dir: Option<String>,
+    #[arg(long, short = 'c', value_name = "FILE")]
+    config: Option<PathBuf>,
+    #[arg(long)]
+    debug: bool,
+    #[arg(long, short = 'f', value_enum)]
+    format: Option<capture::CaptureFormat>,
 }
 
 #[derive(Debug, Args)]
@@ -311,15 +395,11 @@ struct CaptureReplayDeadLetterArgs {
     format: capture::CaptureFormat,
 }
 
-#[derive(Debug, Args)]
-struct CaptureServeArgs {
-    #[arg(long, short = 'o', value_name = "DIR")]
+#[derive(Debug)]
+struct CaptureServeConfig {
     output_dir: String,
-    #[arg(long, short = 'c', value_name = "FILE")]
     config: PathBuf,
-    #[arg(long)]
     debug: bool,
-    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
     format: capture::CaptureFormat,
 }
 
@@ -563,88 +643,15 @@ struct SearchReorderArgs {
     in_place: bool,
 }
 
-#[derive(Debug, Args)]
-struct TrajectoryArgs {
-    #[command(subcommand)]
-    command: TrajectoryCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum TrajectoryCommand {
-    /// Long-running LLM proxy (`traj proxy`) or daemon control (`traj proxy start|stop|…`).
-    Proxy(ProxyArgs),
-    /// Merge IDE / agentgateway events into one trajectory session.
-    Import(CaptureImportArgs),
-    /// Re-apply failed capture events from dead letter (not `traj replay`).
-    #[command(
-        name = "replay-dead-letter",
-        after_long_help = "Differs from `traj replay`, which reads stored events from a session."
-    )]
-    ReplayDeadLetter(CaptureReplayDeadLetterArgs),
-    /// 批量追加 CaptureRecord 事件（写 Lance canonical）。
-    Add(TrajectoryAddArgs),
-    /// 截断 Lance 事件日志（保留前 N 行）；默认在存在 Markdown 层时同步重建 md。
-    Truncate(TrajectoryTruncateArgs),
-    /// 统计规模；`auto` 时报告 Lance + Markdown 两层。
-    Stats(TrajectoryStatsArgs),
-    /// 按 seq 回放事件（默认读 Lance）。
-    Replay(TrajectoryReplayArgs),
-    /// 导出 Story / Run 目录树到目标路径。
-    Extract(TrajectoryExtractArgs),
-    /// Lance → TLV Markdown（有损物化，维护用）。
-    Materialize(TrajectoryMaterializeArgs),
-    /// 经 storyline hub 互转 chronicle 格式（指定 `-f`/`--fmt` 与 `-o` 目的地）。
-    Convert(trajectory_convert::TrajectoryConvertArgs),
-    /// LLM-as-judge：读 canonical Lance，把分数写为 `events.lance` 上的原生列。
-    Judge(TrajectoryJudgeArgs),
-    /// 汇总 `events.lance` 上的 judge 列分数（按 session + rubric）。
-    #[command(name = "judge-stats")]
-    JudgeStats(TrajectoryJudgeStatsArgs),
-}
-
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
-enum ProxyBackend {
+enum GatewayBackend {
     #[default]
     Capture,
     Dlcapt,
 }
 
-/// `traj proxy` (foreground) or `traj proxy start|stop|list|status`.
 #[derive(Debug, Args)]
-#[command(args_conflicts_with_subcommands = true, after_long_help = PROXY_AFTER_HELP)]
-struct ProxyArgs {
-    #[command(subcommand)]
-    action: Option<ProxyAction>,
-    #[arg(long, value_enum, default_value_t = ProxyBackend::Capture)]
-    backend: ProxyBackend,
-    /// Foreground proxy only: trajectory store root (`-o` with `traj proxy start` too).
-    #[arg(long, short = 'o', value_name = "DIR")]
-    output_dir: Option<String>,
-    /// Foreground proxy only: proxy TOML (`listen`, `models`, …).
-    #[arg(long, short = 'c', value_name = "FILE")]
-    config: Option<PathBuf>,
-    /// Foreground proxy only: log proxied HTTP to stderr / `.capture/debug.log`.
-    #[arg(long)]
-    debug: bool,
-    /// Foreground proxy only: `md` (Markdown only) or `lance` / `bin` (Lance only; no live Markdown).
-    #[arg(long, short = 'f', value_enum)]
-    format: Option<capture::CaptureFormat>,
-}
-
-#[derive(Debug, Subcommand)]
-enum ProxyAction {
-    /// Start background proxy daemon.
-    Start(ProxyDaemonArgs),
-    /// Stop background proxy for this storage root.
-    Stop(ProxyManageArgs),
-    /// List recorded sessions with usage and estimated cost.
-    List(ProxyManageArgs),
-    /// Query running daemon (active connections + sessions).
-    Status(ProxyManageArgs),
-}
-
-#[derive(Debug, Args)]
-struct ProxyDaemonArgs {
+struct GatewayStartArgs {
     #[arg(
         long,
         short = 'o',
@@ -661,8 +668,8 @@ struct ProxyDaemonArgs {
 }
 
 #[derive(Debug, Args)]
-struct ProxyManageArgs {
-    /// Trajectory store (default: last `traj proxy start` or `PERSISTING_CAPTURE_STORAGE`).
+struct GatewaySelectArgs {
+    /// Trajectory store (default: last `gateway start` or `PERSISTING_CAPTURE_STORAGE`).
     #[arg(
         long,
         short = 'o',
@@ -683,7 +690,7 @@ struct TrajectoryAddArgs {
     /// Session / run id（单层路径段；省略则自动生成并在 stderr 打印）。
     #[arg(long, value_name = "SEG")]
     session_id: Option<String>,
-    /// 输入格式；`auto` 时按 `--input` 文件名推断（`0001.md` → markdown，`.jsonl` → jsonl，…）。
+    /// 输入格式；`auto` 时按 `--input` 文件名推断（`{session_id}.md` → markdown，`.jsonl` → jsonl，…）。
     #[arg(long, value_enum, default_value_t = TrajectoryAddFormat::Auto)]
     format: TrajectoryAddFormat,
     #[arg(long, default_value = "-")]
@@ -1001,38 +1008,86 @@ fn engine_lib_names() -> [&'static str; 3] {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse_from(normalize_cli_args(std::env::args().collect()));
-    match &cli.command {
-        Command::Search(args) => {
-            let mut lazy = LazyEngine::new(&cli);
-            run_search(&mut lazy, args)?;
-        }
-        Command::Trajectory(args) => {
-            let mut lazy = LazyEngine::new(&cli);
-            run_trajectory(&mut lazy, args)?;
-        }
+    let cli = Cli::parse();
+    let mut lazy = LazyEngine::new(cli.core_lib);
+    match cli.command {
+        Command::Execute(args) => dispatch_component("pvisor", &["run"], args)?,
+        Command::Env(args) => dispatch_component("pvisor", &["env"], args)?,
+        Command::Batch(args) => dispatch_component("ppilot", &["run"], args)?,
+        Command::Query(args) => dispatch_component("ppilot", &["query"], args)?,
+        Command::History(args) => run_history(&mut lazy, args)?,
+        Command::Eval(args) => run_eval(&mut lazy, args)?,
+        Command::Search(args) => run_search(&mut lazy, &args)?,
+        Command::Gateway(args) => run_gateway(&mut lazy, args)?,
     }
     Ok(())
 }
 
-/// `traj judge stats …` → `traj judge-stats …`（clap 无法在同一层同时挂 positional 与 `stats` 子命令）。
-fn normalize_cli_args(mut args: Vec<String>) -> Vec<String> {
-    let mut i = 0;
-    while i + 2 < args.len() {
-        if (args[i] == "traj" || args[i] == "trajectory")
-            && args[i + 1] == "judge"
-            && args[i + 2] == "stats"
-        {
-            args.remove(i + 2);
-            args[i + 1] = "judge-stats".into();
-            break;
-        }
-        i += 1;
+fn dispatch_component(component: &str, prefix: &[&str], forwarded: ForwardArgs) -> Result<()> {
+    let env_name = match component {
+        "pvisor" => "PERSISTING_PVISOR_BIN",
+        "ppilot" => "PERSISTING_PPILOT_BIN",
+        _ => unreachable!("known Persisting component"),
+    };
+    let program = std::env::var_os(env_name)
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(|parent| parent.join(component)))
+                .filter(|path| path.is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from(component));
+    let status = std::process::Command::new(&program)
+        .args(prefix)
+        .args(forwarded.args)
+        .status()
+        .with_context(|| {
+            format!(
+                "launch {component} component at {}; install the matching binary or set {env_name}",
+                program.display()
+            )
+        })?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
     }
-    args
+    Ok(())
 }
 
-fn run_traj_import(lazy: &mut LazyEngine<'_>, args: &CaptureImportArgs) -> Result<()> {
+fn run_eval(lazy: &mut LazyEngine, args: EvalArgs) -> Result<()> {
+    match &args.command {
+        EvalCommand::Judge(args) => run_eval_judge(lazy, args),
+        EvalCommand::Stats(args) => run_eval_stats(lazy, args),
+    }
+}
+
+fn run_gateway(lazy: &mut LazyEngine, args: GatewayArgs) -> Result<()> {
+    match args.command {
+        GatewayCommand::Serve(args) => match args.backend {
+            GatewayBackend::Capture => run_capture_gateway(lazy, &args),
+            GatewayBackend::Dlcapt => run_dlcapt_proxy(&args),
+        },
+        GatewayCommand::Start(args) => capture::daemon::cmd_start(capture::daemon::StartOptions {
+            output_dir: PathBuf::from(&args.output_dir),
+            config: args.config,
+            debug: args.debug,
+            format: args.format,
+        }),
+        GatewayCommand::Stop(args) => {
+            capture::daemon::cmd_stop(args.output_dir.as_deref().map(Path::new))
+        }
+        GatewayCommand::List(args) => {
+            let sessions = capture::daemon::cmd_list(args.output_dir.as_deref().map(Path::new))?;
+            capture::daemon::print_list_table(&sessions);
+            Ok(())
+        }
+        GatewayCommand::Status(args) => {
+            capture::daemon::cmd_status(args.output_dir.as_deref().map(Path::new))
+        }
+    }
+}
+
+fn run_history_import(lazy: &mut LazyEngine, args: &CaptureImportArgs) -> Result<()> {
     let merged = merge_traj_location(
         args.storage.clone(),
         args.agent_id.clone(),
@@ -1061,7 +1116,7 @@ fn run_traj_import(lazy: &mut LazyEngine<'_>, args: &CaptureImportArgs) -> Resul
         &opts,
         |storage, agent_id, session_id, records_ronl| {
             eprintln!(
-                "[persisting-cli] traj import: {record_count} records -> {storage}/{agent_id}/{session_id}",
+                "[persisting-cli] history import: {record_count} records -> {storage}/{agent_id}/{session_id}",
                 record_count = records_ronl.lines().filter(|l| !l.trim().is_empty()).count(),
                 storage = storage,
                 agent_id = agent_id,
@@ -1084,65 +1139,35 @@ fn run_traj_import(lazy: &mut LazyEngine<'_>, args: &CaptureImportArgs) -> Resul
     Ok(())
 }
 
-fn run_traj_proxy(lazy: &mut LazyEngine<'_>, args: &ProxyArgs) -> Result<()> {
-    match args.backend {
-        ProxyBackend::Capture => run_capture_proxy(lazy, args),
-        ProxyBackend::Dlcapt => run_dlcapt_proxy(args),
-    }
-}
-
-fn capture_output_dir(args: &ProxyArgs) -> Option<String> {
+fn capture_output_dir(args: &GatewayServeArgs) -> Option<String> {
     args.output_dir
         .clone()
         .or_else(|| std::env::var("PERSISTING_CAPTURE_STORAGE").ok())
 }
 
-fn run_capture_proxy(lazy: &mut LazyEngine<'_>, args: &ProxyArgs) -> Result<()> {
+fn run_capture_gateway(lazy: &mut LazyEngine, args: &GatewayServeArgs) -> Result<()> {
     let format = args.format.unwrap_or(capture::CaptureFormat::Markdown);
-    match &args.action {
-        None => {
-            let capture_output_dir = capture_output_dir(args);
-            let output_dir = capture_output_dir
-                .as_deref()
-                .context("traj proxy requires -o <DIR>")?;
-            let config = args
-                .config
-                .as_deref()
-                .context("traj proxy requires -c <proxy.toml>")?;
-            run_capture_serve(
-                lazy,
-                &CaptureServeArgs {
-                    output_dir: output_dir.to_string(),
-                    config: config.to_path_buf(),
-                    debug: args.debug,
-                    format,
-                },
-            )
-        }
-        Some(ProxyAction::Start(daemon)) => {
-            capture::daemon::cmd_start(capture::daemon::StartOptions {
-                output_dir: PathBuf::from(&daemon.output_dir),
-                config: daemon.config.clone(),
-                debug: daemon.debug,
-                format: daemon.format,
-            })
-        }
-        Some(ProxyAction::Stop(manage)) => {
-            capture::daemon::cmd_stop(manage.output_dir.as_deref().map(Path::new))
-        }
-        Some(ProxyAction::List(manage)) => {
-            let sessions = capture::daemon::cmd_list(manage.output_dir.as_deref().map(Path::new))?;
-            capture::daemon::print_list_table(&sessions);
-            Ok(())
-        }
-        Some(ProxyAction::Status(manage)) => {
-            capture::daemon::cmd_status(manage.output_dir.as_deref().map(Path::new))
-        }
-    }
+    let capture_output_dir = capture_output_dir(args);
+    let output_dir = capture_output_dir
+        .as_deref()
+        .context("gateway serve requires -o <DIR>")?;
+    let config = args
+        .config
+        .as_deref()
+        .context("gateway serve requires -c <proxy.toml>")?;
+    run_capture_serve(
+        lazy,
+        &CaptureServeConfig {
+            output_dir: output_dir.to_string(),
+            config: config.to_path_buf(),
+            debug: args.debug,
+            format,
+        },
+    )
 }
 
 #[cfg(feature = "dlcapt")]
-fn reject_dlcapt_capture_options(args: &ProxyArgs) -> Result<()> {
+fn reject_dlcapt_capture_options(args: &GatewayServeArgs) -> Result<()> {
     if args.output_dir.is_some() {
         anyhow::bail!(
             "-o is only supported by the capture backend; configure store_dir in the dlcapt TOML"
@@ -1154,14 +1179,11 @@ fn reject_dlcapt_capture_options(args: &ProxyArgs) -> Result<()> {
     if args.debug {
         anyhow::bail!("--debug is only supported by the capture backend");
     }
-    if args.action.is_some() {
-        anyhow::bail!("start, stop, list, and status are only supported by the capture backend");
-    }
     Ok(())
 }
 
 #[cfg(not(feature = "dlcapt"))]
-fn run_dlcapt_proxy(_args: &ProxyArgs) -> Result<()> {
+fn run_dlcapt_proxy(_args: &GatewayServeArgs) -> Result<()> {
     anyhow::bail!(
         "dlcapt backend is not included in this build; rebuild persisting-cli with --features dlcapt"
     )
@@ -1178,12 +1200,12 @@ fn init_dlcapt_cli_tracing_once() {
 }
 
 #[cfg(feature = "dlcapt")]
-fn run_dlcapt_proxy(args: &ProxyArgs) -> Result<()> {
+fn run_dlcapt_proxy(args: &GatewayServeArgs) -> Result<()> {
     reject_dlcapt_capture_options(args)?;
     let config_path = args
         .config
         .as_deref()
-        .context("traj proxy --backend dlcapt requires -c <dlcapt.toml>")?;
+        .context("gateway serve --backend dlcapt requires -c <dlcapt.toml>")?;
     let config = persisting_dlcapt::config::ProxyConfig::load(config_path)
         .with_context(|| format!("load dlcapt config {}", config_path.display()))?;
     init_dlcapt_cli_tracing_once();
@@ -1388,15 +1410,12 @@ fn load_storage_agent_id(storage: &Path) -> String {
     "capture".into()
 }
 
-fn run_replay_dead_letter(
-    lazy: &mut LazyEngine<'_>,
-    args: &CaptureReplayDeadLetterArgs,
-) -> Result<()> {
+fn run_replay_dead_letter(lazy: &mut LazyEngine, args: &CaptureReplayDeadLetterArgs) -> Result<()> {
     let storage = PathBuf::from(&args.output_dir);
     let storage = storage.canonicalize().unwrap_or(storage);
     let agent_id = load_storage_agent_id(&storage);
     let (sink, mut worker) = build_capture_trajectory_sink(
-        lazy.cli.core_lib.clone(),
+        lazy.core_lib.clone(),
         storage.display().to_string(),
         agent_id,
         args.format,
@@ -1443,7 +1462,7 @@ impl Drop for TrajectoryAppendWorker {
     }
 }
 
-fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Result<()> {
+fn run_capture_serve(lazy: &mut LazyEngine, args: &CaptureServeConfig) -> Result<()> {
     let storage_path = PathBuf::from(&args.output_dir);
     let _run_session =
         persisting_gateway::runtime::run_env::ensure_serve_run_session(&storage_path)
@@ -1452,7 +1471,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
         .with_context(|| format!("apply daemon env snapshot for {}", storage_path.display()))?;
     if !applied.is_empty() {
         eprintln!(
-            "[persisting-cli] traj proxy: applied daemon env snapshot ({} keys: {})",
+            "[persisting-cli] gateway: applied daemon env snapshot ({} keys: {})",
             applied.len(),
             applied.join(", ")
         );
@@ -1484,7 +1503,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
         .init();
 
     let (sink, mut worker) = build_capture_trajectory_sink(
-        lazy.cli.core_lib.clone(),
+        lazy.core_lib.clone(),
         args.output_dir.clone(),
         config.agent_id.clone(),
         args.format,
@@ -1504,7 +1523,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
 fn print_capture_summary(summary: &capture::CaptureImportSummary, dry_run: bool) {
     let mode = if dry_run { "dry-run" } else { "imported" };
     eprintln!(
-        "[persisting-cli] traj import {mode}: {} records @ {} (agent_id={} session_id={})",
+        "[persisting-cli] history import {mode}: {} records @ {} (agent_id={} session_id={})",
         summary.record_count, summary.storage, summary.agent_id, summary.session_id
     );
     for (src, n) in &summary.sources {
@@ -1512,7 +1531,7 @@ fn print_capture_summary(summary: &capture::CaptureImportSummary, dry_run: bool)
     }
 }
 
-fn run_search(lazy: &mut LazyEngine<'_>, args: &SearchArgs) -> Result<()> {
+fn run_search(lazy: &mut LazyEngine, args: &SearchArgs) -> Result<()> {
     match &args.command {
         SearchCommand::Create(args) => {
             let fmt = resolve_import_format(&args.input, args.format)?;
@@ -1823,7 +1842,7 @@ fn parse_csv_import(
 }
 
 fn invoke_trajectory_stats(
-    lazy: &mut LazyEngine<'_>,
+    lazy: &mut LazyEngine,
     req: TrajectoryStatsRequest,
 ) -> Result<TrajectoryStatsResponse> {
     let payload =
@@ -1836,7 +1855,7 @@ fn invoke_trajectory_stats(
 }
 
 fn invoke_trajectory_judge(
-    lazy: &mut LazyEngine<'_>,
+    lazy: &mut LazyEngine,
     req: TrajectoryJudgeRequest,
 ) -> Result<TrajectoryJudgeResponse> {
     let payload =
@@ -1849,7 +1868,7 @@ fn invoke_trajectory_judge(
 }
 
 fn invoke_trajectory_judge_stats(
-    lazy: &mut LazyEngine<'_>,
+    lazy: &mut LazyEngine,
     req: TrajectoryJudgeStatsRequest,
 ) -> Result<TrajectoryJudgeStatsResponse> {
     let payload = rpc_request_pretty(RequestBody::TrajectoryJudgeStats(req))
@@ -1862,7 +1881,7 @@ fn invoke_trajectory_judge_stats(
 }
 
 fn invoke_trajectory_replay(
-    lazy: &mut LazyEngine<'_>,
+    lazy: &mut LazyEngine,
     req: TrajectoryReplayRequest,
 ) -> Result<TrajectoryReplayResponse> {
     let payload = rpc_request_pretty(RequestBody::TrajectoryReplay(req))
@@ -1875,7 +1894,7 @@ fn invoke_trajectory_replay(
 }
 
 fn run_trajectory_stats_detail(
-    lazy: &mut LazyEngine<'_>,
+    lazy: &mut LazyEngine,
     loc: &TrajLocation,
     storage_format: TrajectoryStorageCli,
     backend: ResolvedStatsOutputBackend,
@@ -1948,12 +1967,11 @@ fn stats_detail_section_label(loc: &TrajLocation) -> String {
     }
 }
 
-fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()> {
+fn run_history(lazy: &mut LazyEngine, args: HistoryArgs) -> Result<()> {
     match &args.command {
-        TrajectoryCommand::Proxy(args) => run_traj_proxy(lazy, args)?,
-        TrajectoryCommand::Import(args) => run_traj_import(lazy, args)?,
-        TrajectoryCommand::ReplayDeadLetter(args) => run_replay_dead_letter(lazy, args)?,
-        TrajectoryCommand::Add(args) => {
+        HistoryCommand::Import(args) => run_history_import(lazy, args)?,
+        HistoryCommand::ReplayDeadLetter(args) => run_replay_dead_letter(lazy, args)?,
+        HistoryCommand::Add(args) => {
             let auto_agent = args.agent_id.is_none();
             let auto_session = args.session_id.is_none();
             let (agent_id, session_id) =
@@ -1997,7 +2015,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             lazy.invoke_engine_ron(&payload)?;
             eprintln!("[persisting-cli] trajectory add: engine returned");
         }
-        TrajectoryCommand::Truncate(args) => {
+        HistoryCommand::Truncate(args) => {
             let loc = resolve_traj_ids_for_read(
                 "trajectory truncate",
                 args.storage.clone(),
@@ -2016,7 +2034,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                 .context("encode TrajectoryTruncate RpcRequest RON")?;
             lazy.invoke_engine_ron(&payload)?;
         }
-        TrajectoryCommand::Extract(args) => {
+        HistoryCommand::Extract(args) => {
             let loc = resolve_traj_ids_for_read(
                 "trajectory extract",
                 Some(args.storage.clone()),
@@ -2036,7 +2054,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                 .context("encode TrajectoryExtract RpcRequest RON")?;
             lazy.invoke_engine_ron(&payload)?;
         }
-        TrajectoryCommand::Replay(args) => {
+        HistoryCommand::Replay(args) => {
             let loc = resolve_traj_ids_for_read(
                 "trajectory replay",
                 args.storage.clone(),
@@ -2057,7 +2075,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                 .context("encode TrajectoryReplay RpcRequest RON")?;
             lazy.invoke_engine_ron(&payload)?;
         }
-        TrajectoryCommand::Stats(args) => {
+        HistoryCommand::Stats(args) => {
             let path_arg = resolve_traj_storage_arg(args.storage.clone())?;
             let backend = args.output.resolve();
             let mut locations = list_traj_read_locations(
@@ -2134,7 +2152,7 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
                 )?;
             }
         }
-        TrajectoryCommand::Materialize(args) => {
+        HistoryCommand::Materialize(args) => {
             let storage = resolve_traj_storage_arg(args.storage.clone())?;
             let (agent_id, session_id) =
                 resolve_traj_ids_for_write(args.agent_id.clone(), args.session_id.clone())?;
@@ -2149,14 +2167,12 @@ fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()
             .context("encode TrajectoryMaterialize RpcRequest RON")?;
             lazy.invoke_engine_ron(&payload)?;
         }
-        TrajectoryCommand::Convert(args) => trajectory_convert::run_traj_convert(args)?,
-        TrajectoryCommand::Judge(args) => run_traj_judge(lazy, args)?,
-        TrajectoryCommand::JudgeStats(args) => run_traj_judge_stats(lazy, args)?,
+        HistoryCommand::Convert(args) => trajectory_convert::run_traj_convert(args)?,
     }
     Ok(())
 }
 
-fn run_traj_judge_stats(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeStatsArgs) -> Result<()> {
+fn run_eval_stats(lazy: &mut LazyEngine, args: &TrajectoryJudgeStatsArgs) -> Result<()> {
     let storage = resolve_traj_storage_arg(args.storage.clone())?;
     let req = TrajectoryJudgeStatsRequest {
         storage,
@@ -2229,7 +2245,7 @@ fn resolve_judge_locations(
     Ok(judge_manual::sample_locations(locs, mode, limit))
 }
 
-fn run_traj_judge(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeArgs) -> Result<()> {
+fn run_eval_judge(lazy: &mut LazyEngine, args: &TrajectoryJudgeArgs) -> Result<()> {
     let rubric_ids = resolve_judge_rubrics(args);
     let scope: JudgeScope = args.scope.into();
     let method: JudgeMethod = if args.score.is_some() {
@@ -2288,7 +2304,7 @@ fn run_traj_judge(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeArgs) -> Resu
             scope
         );
 
-        match run_traj_judge_one(lazy, loc, args, &rubric_ids, scope, method, total == 1) {
+        match run_eval_judge_one(lazy, loc, args, &rubric_ids, scope, method, total == 1) {
             Ok(out) if out.judged_calls > 0 => ok += 1,
             Ok(out) => {
                 eprintln!(
@@ -2331,7 +2347,7 @@ fn dialogue_turn_count(story: &persisting_gateway::engine::Story) -> usize {
 }
 
 fn manual_judge_incomplete(
-    lazy: &mut LazyEngine<'_>,
+    lazy: &mut LazyEngine,
     loc: &TrajLocation,
     scope: JudgeScope,
     rubrics: &[String],
@@ -2363,8 +2379,8 @@ fn manual_judge_incomplete(
     })
 }
 
-fn run_traj_judge_one(
-    lazy: &mut LazyEngine<'_>,
+fn run_eval_judge_one(
+    lazy: &mut LazyEngine,
     loc: &TrajLocation,
     args: &TrajectoryJudgeArgs,
     rubric_ids: &[String],
@@ -2443,6 +2459,29 @@ fn read_input(path: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unified_command_tree_parses() {
+        for args in [
+            vec!["persisting", "execute", "--", "/bin/true"],
+            vec!["persisting", "exec", "--", "/bin/true"],
+            vec!["persisting", "env", "list"],
+            vec!["persisting", "environment", "status", "demo"],
+            vec!["persisting", "batch", "plan.py", "--workers", "2"],
+            vec!["persisting", "query", "input.jsonl", "--sql", "SELECT 1"],
+            vec!["persisting", "history", "stats", "./store"],
+            vec!["persisting", "eval", "stats", "./store"],
+            vec!["persisting", "gateway", "status"],
+        ] {
+            Cli::try_parse_from(args).expect("valid unified Persisting command");
+        }
+    }
+
+    #[test]
+    fn removed_trajectory_compatibility_commands_are_rejected() {
+        assert!(Cli::try_parse_from(["persisting", "traj", "stats", "./store"]).is_err());
+        assert!(Cli::try_parse_from(["persisting", "trajectory", "stats", "./store"]).is_err());
+    }
 
     fn capture_record(kind: &str) -> persisting_gateway::record::CaptureRecord {
         persisting_gateway::record::CaptureRecord {

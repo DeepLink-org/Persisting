@@ -14,8 +14,8 @@
 use super::implant::OverlayHint;
 use persisting_gateway::config::{OverlayBackend, OverlayConfig};
 use persisting_overlayfs::{
-    apply_redb_upper, discard_redb_upper, mount as mount_embedded_overlay, redb_upper_status,
-    OverlayMountConfig, OverlaySession,
+    jujutsu_upper_dir, mount as mount_embedded_overlay, snapshot_jujutsu_upper, OverlayMountConfig,
+    OverlaySession,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -78,8 +78,10 @@ pub enum OverlayUpper {
         upper_dir: PathBuf,
         work_dir: PathBuf,
     },
-    Redb {
-        database_path: PathBuf,
+    Jujutsu {
+        store_path: PathBuf,
+        workspace: String,
+        upper_dir: PathBuf,
     },
 }
 
@@ -87,7 +89,7 @@ impl OverlayUpper {
     pub fn path(&self) -> &Path {
         match self {
             Self::Directory { upper_dir, .. } => upper_dir,
-            Self::Redb { database_path } => database_path,
+            Self::Jujutsu { upper_dir, .. } => upper_dir,
         }
     }
 }
@@ -153,6 +155,10 @@ impl Drop for ReadOnlyOverlayMount {
 }
 
 impl OverlayMount {
+    pub fn mountpoint(&self) -> &Path {
+        &self.record.merged_dir
+    }
+
     pub fn record(&self) -> &OverlayRecord {
         &self.record
     }
@@ -193,14 +199,16 @@ pub fn resolve_overlay_workspace(
         return Ok(None);
     }
     match cfg.backend {
-        OverlayBackend::Redb if cfg.upper_dir.is_some() || cfg.work_dir.is_some() => {
+        OverlayBackend::Directory
+            if cfg.jujutsu_store_path.is_some() || cfg.jujutsu_workspace.is_some() =>
+        {
             return Err(OverlayError::InvalidConfig(
-                "redb cannot be combined with upper_dir or work_dir".into(),
+                "directory cannot be combined with Jujutsu options".into(),
             ));
         }
-        OverlayBackend::Directory if cfg.database_path.is_some() => {
+        OverlayBackend::Jujutsu if cfg.upper_dir.is_some() || cfg.work_dir.is_some() => {
             return Err(OverlayError::InvalidConfig(
-                "directory cannot be combined with database_path".into(),
+                "jujutsu cannot be combined with upper_dir or work_dir".into(),
             ));
         }
         _ => {}
@@ -242,13 +250,24 @@ pub fn resolve_overlay_workspace(
                 .map(resolve)
                 .unwrap_or_else(|| stage_dir.join("work")),
         },
-        OverlayBackend::Redb => OverlayUpper::Redb {
-            database_path: cfg
-                .database_path
+        OverlayBackend::Jujutsu => {
+            let store_path = cfg
+                .jujutsu_store_path
                 .as_deref()
                 .map(resolve)
-                .unwrap_or_else(|| stage_dir.join("upper.redb")),
-        },
+                .unwrap_or_else(|| storage.join(".overlay").join("jujutsu"));
+            let workspace = cfg
+                .jujutsu_workspace
+                .clone()
+                .unwrap_or_else(|| session_id.to_owned());
+            let upper_dir = jujutsu_upper_dir(&store_path, &workspace)
+                .map_err(|error| OverlayError::InvalidConfig(error.to_string()))?;
+            OverlayUpper::Jujutsu {
+                store_path,
+                workspace,
+                upper_dir,
+            }
+        }
     };
     let merged = cfg
         .merged_dir
@@ -270,22 +289,33 @@ pub fn resolve_overlay_workspace(
 
 /// Build an [`OverlayHint`] from a resolved record + full lower stack.
 pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> OverlayHint {
-    let (upper_dir, work_dir) = match &record.upper {
+    let (upper_dir, work_dir, jujutsu_store_path, jujutsu_workspace) = match &record.upper {
         OverlayUpper::Directory {
             upper_dir,
             work_dir,
-        } => (Some(upper_dir.clone()), Some(work_dir.clone())),
-        OverlayUpper::Redb { .. } => (None, None),
+        } => (Some(upper_dir.clone()), Some(work_dir.clone()), None, None),
+        OverlayUpper::Jujutsu {
+            store_path,
+            workspace,
+            ..
+        } => (
+            None,
+            None,
+            Some(store_path.clone()),
+            Some(workspace.clone()),
+        ),
     };
     OverlayHint {
         lower_dirs,
         stage_dir: Some(record.stage_dir.clone()),
         upper_dir,
         work_dir,
+        jujutsu_store_path,
+        jujutsu_workspace,
         merged_dir: Some(record.merged_dir.clone()),
         backend: match &record.upper {
             OverlayUpper::Directory { .. } => OverlayBackend::Directory,
-            OverlayUpper::Redb { .. } => OverlayBackend::Redb,
+            OverlayUpper::Jujutsu { .. } => OverlayBackend::Jujutsu,
         },
         auto_apply: record.auto_apply,
         auto_discard: record.auto_discard,
@@ -330,10 +360,8 @@ pub fn mount_overlay_record(
             fs::create_dir_all(upper_dir).map_err(OverlayError::Prepare)?;
             fs::create_dir_all(work_dir).map_err(OverlayError::Prepare)?;
         }
-        OverlayUpper::Redb { database_path } => {
-            if let Some(parent) = database_path.parent() {
-                fs::create_dir_all(parent).map_err(OverlayError::Prepare)?;
-            }
+        OverlayUpper::Jujutsu { store_path, .. } => {
+            fs::create_dir_all(store_path).map_err(OverlayError::Prepare)?;
         }
     }
 
@@ -347,9 +375,14 @@ pub fn mount_overlay_record(
             Some(work_dir.clone()),
             record.merged_dir.clone(),
         ),
-        OverlayUpper::Redb { database_path } => OverlayMountConfig::new_redb(
+        OverlayUpper::Jujutsu {
+            store_path,
+            workspace,
+            ..
+        } => OverlayMountConfig::new_jujutsu(
             lower_dirs.to_vec(),
-            database_path.clone(),
+            store_path.clone(),
+            workspace.clone(),
             record.merged_dir.clone(),
         ),
     };
@@ -390,9 +423,14 @@ pub fn mount_overlay_record_read_only(
             Some(work_dir.clone()),
             mountpoint.to_path_buf(),
         ),
-        OverlayUpper::Redb { database_path } => OverlayMountConfig::new_redb(
+        OverlayUpper::Jujutsu {
+            store_path,
+            workspace,
+            ..
+        } => OverlayMountConfig::new_jujutsu(
             lower_dirs.to_vec(),
-            database_path.clone(),
+            store_path.clone(),
+            workspace.clone(),
             mountpoint.to_path_buf(),
         ),
     };
@@ -428,21 +466,10 @@ pub fn load_overlay_record(stage_dir: &Path) -> Result<OverlayRecord, OverlayErr
 }
 
 pub fn overlay_status(record: &OverlayRecord) -> Result<OverlayStatus, OverlayError> {
-    if let OverlayUpper::Redb { database_path } = &record.upper {
-        let status = redb_upper_status(database_path)
-            .map_err(|error| OverlayError::Apply(error.to_string()))?;
-        return Ok(OverlayStatus {
-            changed_files: status.changed_paths,
-            whiteouts: status.whiteouts,
-            sample_paths: status
-                .sample_paths
-                .into_iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-        });
-    }
-    let OverlayUpper::Directory { upper_dir, .. } = &record.upper else {
-        unreachable!()
+    let upper_dir = match &record.upper {
+        OverlayUpper::Directory { upper_dir, .. } | OverlayUpper::Jujutsu { upper_dir, .. } => {
+            upper_dir
+        }
     };
     let mut changed = 0usize;
     let mut whiteouts = 0usize;
@@ -479,18 +506,25 @@ pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
         )));
     }
     match &record.upper {
-        OverlayUpper::Redb { database_path } => {
-            apply_redb_upper(database_path, &record.target)
-                .map_err(|error| OverlayError::Apply(error.to_string()))?;
-            discard_redb_upper(database_path)
-                .map_err(|error| OverlayError::Apply(error.to_string()))?;
-        }
         OverlayUpper::Directory { upper_dir, .. } => {
             if upper_dir.is_dir() {
                 apply_upper_onto_target(upper_dir, &record.target)?;
                 fs::remove_dir_all(upper_dir)?;
                 fs::create_dir_all(upper_dir)?;
             }
+        }
+        OverlayUpper::Jujutsu {
+            store_path,
+            workspace,
+            upper_dir,
+        } => {
+            if upper_dir.is_dir() {
+                apply_upper_onto_target(upper_dir, &record.target)?;
+                fs::remove_dir_all(upper_dir)?;
+                fs::create_dir_all(upper_dir)?;
+            }
+            snapshot_jujutsu_upper(store_path, workspace)
+                .map_err(|error| OverlayError::Apply(error.to_string()))?;
         }
     }
     record.state = OverlayState::Applied;
@@ -518,8 +552,16 @@ pub fn discard_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
                 let _ = fs::remove_dir_all(work_dir);
             }
         }
-        OverlayUpper::Redb { database_path } => {
-            discard_redb_upper(database_path)?;
+        OverlayUpper::Jujutsu {
+            store_path,
+            workspace,
+            upper_dir,
+        } => {
+            if upper_dir.exists() {
+                fs::remove_dir_all(upper_dir)?;
+            }
+            snapshot_jujutsu_upper(store_path, workspace)
+                .map_err(|error| OverlayError::Apply(error.to_string()))?;
         }
     }
     record.state = OverlayState::Discarded;
@@ -992,8 +1034,9 @@ mod tests {
         assert_eq!(rec.stage_dir, PathBuf::from("/tmp/store/.overlay/run-1"));
         assert_eq!(
             rec.upper,
-            OverlayUpper::Redb {
-                database_path: PathBuf::from("/tmp/store/.overlay/run-1/upper.redb")
+            OverlayUpper::Directory {
+                upper_dir: PathBuf::from("/tmp/store/.overlay/run-1/upper"),
+                work_dir: PathBuf::from("/tmp/store/.overlay/run-1/work")
             }
         );
     }
@@ -1003,13 +1046,51 @@ mod tests {
         let cfg = OverlayConfig {
             enabled: true,
             target: Some("/proj".into()),
-            upper_dir: Some("/upper".into()),
+            jujutsu_store_path: Some("/shared/jj".into()),
             ..OverlayConfig::default()
         };
         assert!(matches!(
             resolve_overlay_workspace(&cfg, Path::new("/tmp/store"), "run-1"),
             Err(OverlayError::InvalidConfig(_))
         ));
+    }
+
+    #[test]
+    fn jujutsu_sessions_share_store_but_get_distinct_workspaces() {
+        let storage = Path::new("/tmp/store");
+        let cfg = OverlayConfig {
+            enabled: true,
+            target: Some("/proj".into()),
+            backend: OverlayBackend::Jujutsu,
+            ..OverlayConfig::default()
+        };
+        let first = resolve_overlay_workspace(&cfg, storage, "fork-a")
+            .unwrap()
+            .unwrap();
+        let second = resolve_overlay_workspace(&cfg, storage, "fork-b")
+            .unwrap()
+            .unwrap();
+        let OverlayUpper::Jujutsu {
+            store_path: first_store,
+            workspace: first_workspace,
+            upper_dir: first_upper,
+        } = first.upper
+        else {
+            panic!("expected Jujutsu upper")
+        };
+        let OverlayUpper::Jujutsu {
+            store_path: second_store,
+            workspace: second_workspace,
+            upper_dir: second_upper,
+        } = second.upper
+        else {
+            panic!("expected Jujutsu upper")
+        };
+        assert_eq!(first_store, second_store);
+        assert_eq!(first_store, PathBuf::from("/tmp/store/.overlay/jujutsu"));
+        assert_eq!(first_workspace, "fork-a");
+        assert_eq!(second_workspace, "fork-b");
+        assert_ne!(first_upper, second_upper);
     }
 
     #[test]
@@ -1035,7 +1116,8 @@ mod tests {
         let tmp = tempdir().unwrap();
         let lower = tmp.path().join("lower");
         let stage = tmp.path().join("stage");
-        let database = stage.join("upper.redb");
+        let upper = stage.join("upper");
+        let work = stage.join("work");
         let merged = stage.join("merged");
         fs::create_dir_all(&lower).unwrap();
         fs::write(lower.join("lower-file"), b"lower").unwrap();
@@ -1043,8 +1125,9 @@ mod tests {
         let record = OverlayRecord {
             id: "embedded-e2e".into(),
             target: lower.clone(),
-            upper: OverlayUpper::Redb {
-                database_path: database.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper.clone(),
+                work_dir: work,
             },
             merged_dir: merged.clone(),
             stage_dir: stage.clone(),
@@ -1067,8 +1150,7 @@ mod tests {
         )
         .unwrap();
         std::os::unix::fs::symlink("created", merged.join("created-symlink")).unwrap();
-        assert!(database.is_file());
-        assert!(!stage.join("upper").exists());
+        assert!(upper.is_dir());
         let mut record = mount.unmount().unwrap();
         assert_eq!(record.state, OverlayState::Staged);
         assert!(!is_mountpoint(&merged));
@@ -1092,7 +1174,7 @@ mod tests {
             fs::metadata(lower.join("created")).unwrap().ino(),
             fs::metadata(lower.join("created-link")).unwrap().ino()
         );
-        assert!(!database.exists());
+        assert!(upper.is_dir());
     }
 
     #[test]

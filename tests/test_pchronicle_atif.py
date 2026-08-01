@@ -5,7 +5,6 @@ import pytest
 from persisting.pchronicle import (
     ATIF_TRAJECTORY_VIEW,
     AtifTrajectoryView,
-    FsChronicleStore,
     MemoryChronicleStore,
     atif_trajectory_sql_ddl,
     ingest_trajectory,
@@ -99,14 +98,3 @@ def test_falsy_tool_arguments_roundtrip_without_coercion():
     ingest_trajectory(store, sample)
     rebuilt = reconstruct_trajectory(store, "sess-1")
     assert rebuilt["steps"][1]["tool_calls"][0]["arguments"] == []
-
-
-def test_fs_store_reopens_through_canonical_rust_backend(tmp_path):
-    store = FsChronicleStore(tmp_path)
-    ingest_trajectory(store, SAMPLE)
-
-    reopened = FsChronicleStore(tmp_path)
-    rebuilt = reconstruct_trajectory(reopened, "sess-1")
-
-    assert rebuilt["trajectory_id"] == "traj-1"
-    assert (tmp_path / ".chronicle.snapshot.json").is_file()

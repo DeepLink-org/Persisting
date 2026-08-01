@@ -19,7 +19,7 @@ use std::path::PathBuf;
     about = "Cross-platform FUSE overlay for pVisor (macFUSE / libfuse)"
 )]
 struct Args {
-    /// Mount options: lowerdir=a:b plus either upperdir=u[,workdir=w] or database=db.
+    /// Mount options: lowerdir=a:b plus upperdir=u or jjstore=s,jjworkspace=w.
     #[arg(short = 'o', long = "options", value_name = "OPTS")]
     #[arg(required = true)]
     options: Vec<String>,
@@ -35,7 +35,8 @@ struct Args {
 struct MountOpts {
     lowerdir: Vec<PathBuf>,
     upperdir: Option<PathBuf>,
-    database: Option<PathBuf>,
+    jjstore: Option<PathBuf>,
+    jjworkspace: Option<String>,
     workdir: Option<PathBuf>,
     allow_other: bool,
     allow_root: bool,
@@ -71,7 +72,8 @@ fn split_escaped(raw: &str, separator: char) -> Vec<String> {
 fn parse_options(raw: &str) -> Result<MountOpts> {
     let mut lowerdir = None;
     let mut upperdir = None;
-    let mut database = None;
+    let mut jjstore = None;
+    let mut jjworkspace = None;
     let mut workdir = None;
     let mut allow_other = false;
     let mut allow_root = false;
@@ -107,7 +109,8 @@ fn parse_options(raw: &str) -> Result<MountOpts> {
                 );
             }
             "upperdir" => upperdir = Some(PathBuf::from(v)),
-            "database" => database = Some(PathBuf::from(v)),
+            "jjstore" => jjstore = Some(PathBuf::from(v)),
+            "jjworkspace" => jjworkspace = Some(v.to_owned()),
             "workdir" => workdir = Some(PathBuf::from(v)),
             "fsname" => fsname = v.to_string(),
             "backend" if matches!(v, "kernel" | "fskit") => backend = Some(v.to_string()),
@@ -119,18 +122,27 @@ fn parse_options(raw: &str) -> Result<MountOpts> {
     if lowerdir.is_empty() {
         bail!("lowerdir must list at least one path");
     }
-    match (&upperdir, &database) {
-        (None, None) => bail!("missing upper backend: specify upperdir= or database="),
-        (Some(_), Some(_)) => bail!("upperdir= and database= are mutually exclusive"),
-        (None, Some(_)) if workdir.is_some() => {
-            bail!("workdir= is only valid with the directory upper backend")
-        }
-        _ => {}
+    let backend_count = usize::from(upperdir.is_some()) + usize::from(jjstore.is_some());
+    if backend_count == 0 {
+        bail!("missing upper backend: specify upperdir= or jjstore=");
+    }
+    if backend_count != 1 {
+        bail!("upperdir= and jjstore= are mutually exclusive");
+    }
+    if upperdir.is_none() && workdir.is_some() {
+        bail!("workdir= is only valid with the directory upper backend");
+    }
+    if jjstore.is_some() && jjworkspace.as_deref().is_none_or(str::is_empty) {
+        bail!("jjworkspace= is required with jjstore=");
+    }
+    if jjstore.is_none() && jjworkspace.is_some() {
+        bail!("jjworkspace= is only valid with jjstore=");
     }
     Ok(MountOpts {
         lowerdir,
         upperdir,
-        database,
+        jjstore,
+        jjworkspace,
         workdir,
         allow_other,
         allow_root,
@@ -155,13 +167,17 @@ fn main() -> Result<()> {
         .init();
 
     let opts = parse_options(&args.options.join(","))?;
-    let mut config = match (opts.upperdir, opts.database) {
+    let mut config = match (opts.upperdir, opts.jjstore) {
         (Some(upperdir), None) => {
             OverlayMountConfig::new(opts.lowerdir, upperdir, opts.workdir, args.mountpoint)
         }
-        (None, Some(database)) => {
-            OverlayMountConfig::new_redb(opts.lowerdir, database, args.mountpoint)
-        }
+        (None, Some(store)) => OverlayMountConfig::new_jujutsu(
+            opts.lowerdir,
+            store,
+            opts.jjworkspace
+                .expect("parse_options requires jjworkspace"),
+            args.mountpoint,
+        ),
         _ => unreachable!("parse_options validates the upper backend"),
     };
     config.allow_other = opts.allow_other;
@@ -207,18 +223,16 @@ mod tests {
     }
 
     #[test]
-    fn database_upper_is_exclusive() {
+    fn jujutsu_upper_requires_store_and_workspace() {
         let options =
-            parse_options("lowerdir=/lower,database=/stage/upper.redb").expect("database options");
-        assert_eq!(options.database, Some(PathBuf::from("/stage/upper.redb")));
-        assert!(options.upperdir.is_none());
-        assert!(
-            parse_options("lowerdir=/lower,database=/db,upperdir=/upper").is_err(),
-            "two upper backends must be rejected"
-        );
-        assert!(
-            parse_options("lowerdir=/lower,database=/db,workdir=/work").is_err(),
-            "redb has no work directory"
-        );
+            parse_options("lowerdir=/lower,jjstore=/shared/overlay.jj,jjworkspace=attempt-1")
+                .expect("Jujutsu options");
+        assert_eq!(options.jjstore, Some(PathBuf::from("/shared/overlay.jj")));
+        assert_eq!(options.jjworkspace.as_deref(), Some("attempt-1"));
+        assert!(parse_options("lowerdir=/lower,jjstore=/shared/overlay.jj").is_err());
+        assert!(parse_options(
+            "lowerdir=/lower,jjstore=/shared/overlay.jj,jjworkspace=x,upperdir=/upper"
+        )
+        .is_err());
     }
 }

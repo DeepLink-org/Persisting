@@ -78,6 +78,17 @@ impl AttemptContext {
             )
             .await;
     }
+
+    /// Make a terminal status visible after finalization and terminal-event commit.
+    pub(crate) fn finish(&self, state: RunState, message: Option<String>) {
+        let now = crate::util::unix_now_ms();
+        self.status.send_modify(|status| {
+            status.state = state;
+            status.updated_at_unix_ms = now;
+            status.message = message.clone();
+            status.attempt.finished_at_unix_ms = Some(now);
+        });
+    }
 }
 
 #[async_trait]

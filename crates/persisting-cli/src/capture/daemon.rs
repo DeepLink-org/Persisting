@@ -1,4 +1,4 @@
-//! `traj proxy start` / `stop` / `list` / `status`.
+//! `gateway start` / `stop` / `list` / `status`.
 
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     if let Some(state) = CaptureDaemonState::read(&opts.output_dir)? {
         if state.is_running() {
             anyhow::bail!(
-                "traj proxy already running (pid {}) for {}",
+                "gateway already running (pid {}) for {}",
                 state.pid,
                 opts.output_dir.display()
             );
@@ -40,7 +40,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     let env_snap = snapshot_daemon_env(&opts.output_dir, &config)
         .with_context(|| format!("snapshot daemon env for {}", opts.output_dir.display()))?;
     eprintln!(
-        "[persisting-cli] traj proxy daemon env snapshot: {} ({} keys)",
+        "[persisting-cli] gateway daemon env snapshot: {} ({} keys)",
         env_snap.display(),
         load_daemon_env_snapshot(&opts.output_dir)
             .ok()
@@ -51,8 +51,8 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
 
     let mut cmd = Command::new(&exe);
     let args = vec![
-        "traj".to_string(),
-        "proxy".to_string(),
+        "gateway".to_string(),
+        "serve".to_string(),
         "-o".to_string(),
         opts.output_dir.to_string_lossy().to_string(),
         "-c".to_string(),
@@ -83,7 +83,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(stderr)
         .spawn()
-        .context("spawn traj proxy")?;
+        .context("spawn gateway service")?;
 
     let state = CaptureDaemonState {
         pid: child.id(),
@@ -97,7 +97,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     write_current(&state)?;
     if opts.debug {
         eprintln!(
-            "[persisting-cli] traj proxy debug enabled (daemon env {}=1)",
+            "[persisting-cli] gateway debug enabled (daemon env {}=1)",
             persisting_gateway::debug::ENV_CAPTURE_DEBUG
         );
     }
@@ -139,7 +139,7 @@ pub fn cmd_stop(storage: Option<&Path>) -> Result<()> {
     log_storage_resolution(&res);
     stop_daemon(&res.storage)?;
     eprintln!(
-        "[persisting-cli] traj proxy stopped ({})",
+        "[persisting-cli] gateway stopped ({})",
         res.storage.display()
     );
     Ok(())

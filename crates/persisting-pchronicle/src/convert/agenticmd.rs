@@ -1,7 +1,7 @@
 //! agenticmd ⇄ storyline.
 //!
 //! Correlation fields (`call_id`, `seq`, …) ride in `StorylineTurn.extra` so
-//! `traj convert` through the hub can round-trip upsert keys. Capture live
+//! `history convert` through the hub can round-trip upsert keys. Capture live
 //! Lance↔md still uses [`crate::mapping`] directly (not this hub path).
 
 use std::collections::BTreeMap;

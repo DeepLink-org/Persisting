@@ -1,0 +1,128 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "fixture-sparse_13",
+  "trajectory_id": "run-sparse_13",
+  "agent": {
+    "name": "pchronicle-fixture-agent",
+    "version": "1.0.0",
+    "model_name": "fixture-model-v1",
+    "tool_definitions": [
+      {
+        "description": "Search deterministic fixture data",
+        "name": "knowledge_search"
+      },
+      {
+        "description": "Evaluate an arithmetic expression",
+        "name": "calculator"
+      }
+    ],
+    "extra": {
+      "case": "sparse_13",
+      "generator": "generate_atif_corpus"
+    }
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "system",
+      "message": "Turn 1 from system: deterministic fixture content for pChronicle."
+    },
+    {
+      "step_id": 2,
+      "source": "user",
+      "message": "Turn 2 from user: deterministic fixture content for pChronicle."
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "Turn 3 from agent: deterministic fixture content for pChronicle.",
+      "llm_call_count": 1
+    },
+    {
+      "step_id": 4,
+      "source": "user",
+      "message": "Turn 4 from user: deterministic fixture content for pChronicle."
+    },
+    {
+      "step_id": 5,
+      "source": "agent",
+      "message": "Turn 5 from agent: deterministic fixture content for pChronicle.",
+      "llm_call_count": 1
+    },
+    {
+      "step_id": 6,
+      "source": "user",
+      "message": "Turn 6 from user: deterministic fixture content for pChronicle."
+    },
+    {
+      "step_id": 7,
+      "source": "agent",
+      "message": "Turn 7 from agent: deterministic fixture content for pChronicle.",
+      "llm_call_count": 1
+    },
+    {
+      "step_id": 8,
+      "source": "user",
+      "message": "Turn 8 from user: deterministic fixture content for pChronicle."
+    },
+    {
+      "step_id": 9,
+      "source": "agent",
+      "message": "Turn 9 from agent: deterministic fixture content for pChronicle.",
+      "tool_calls": [
+        {
+          "tool_call_id": "sparse_13-step-9-call-0",
+          "function_name": "knowledge_search",
+          "arguments": {
+            "limit": 5,
+            "query": "sparse_13 topic 9"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "content": "deterministic result 9-0: alpha beta gamma",
+            "source_call_id": "sparse_13-step-9-call-0",
+            "status": "success"
+          }
+        ]
+      },
+      "llm_call_count": 1
+    },
+    {
+      "step_id": 10,
+      "source": "user",
+      "message": "Turn 10 from user: deterministic fixture content for pChronicle."
+    },
+    {
+      "step_id": 11,
+      "source": "agent",
+      "message": "Turn 11 from agent: deterministic fixture content for pChronicle.",
+      "llm_call_count": 1
+    },
+    {
+      "step_id": 12,
+      "source": "user",
+      "message": "Turn 12 from user: deterministic fixture content for pChronicle."
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "message": "Turn 13 from agent: deterministic fixture content for pChronicle.",
+      "llm_call_count": 1
+    }
+  ],
+  "notes": "Deterministic sparse_13 fixture for conversion and storage benchmarks.",
+  "final_metrics": {
+    "fixture": true,
+    "steps": 13
+  },
+  "extra": {
+    "coverage": {
+      "multimodal": false,
+      "reasoning": false,
+      "tools": true
+    }
+  }
+}

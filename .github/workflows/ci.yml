@@ -59,8 +59,23 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets --locked
 
+      - name: Build Agent CLI component set
+        run: |
+          cargo build -p persisting-cli --bin persisting --locked
+          cargo build -p persisting-pvisor --bin pvisor --locked
+          cargo build -p persisting-ppilot --features cli --bin ppilot --locked
+
       - name: Test
         run: cargo test --workspace --locked
+
+      - name: Test pPilot CLI feature
+        run: cargo test -p persisting-ppilot --features cli --locked
+
+      - name: Smoke unified component dispatch
+        run: |
+          ./target/debug/persisting execute -- /usr/bin/true
+          ./target/debug/persisting batch --help
+          ./target/debug/persisting query --help
 
   python-test:
     name: Python Test

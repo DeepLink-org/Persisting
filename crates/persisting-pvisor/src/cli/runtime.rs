@@ -14,7 +14,7 @@ const DEFAULT_STORAGE: &str = ".persisting/capture";
 
 #[derive(Debug, Clone, Args)]
 pub struct StatusArgs {
-    /// Run id, stage directory, upper directory, upper.redb, or workspace path.
+    /// Run id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -24,7 +24,7 @@ pub struct StatusArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct InspectArgs {
-    /// Run id, stage directory, upper directory, upper.redb, or workspace path.
+    /// Run id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -35,7 +35,7 @@ pub struct InspectArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct SelectArgs {
-    /// Run id, stage directory, upper directory, upper.redb, or workspace path.
+    /// Run id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -43,7 +43,7 @@ pub struct SelectArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct ApplyArgs {
-    /// Run id, stage directory, upper directory, upper.redb, or workspace path.
+    /// Run id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,

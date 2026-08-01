@@ -7,6 +7,11 @@ license.workspace = true
 description = "pPilot durable Run orchestrator: plan, schedule, resume, reconcile, and collect independent Runs"
 readme = "README.md"
 
+[[bin]]
+name = "ppilot"
+path = "src/bin/ppilot.rs"
+required-features = ["cli"]
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
@@ -15,7 +20,8 @@ clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 persisting-engine = { path = "../persisting-engine", optional = true }
 persisting-pchronicle = { path = "../persisting-pchronicle", optional = true }
-persisting-proto = { path = "../persisting-proto", optional = true }
+persisting-proto = { path = "../persisting-proto" }
+persisting-pvisor = { path = "../persisting-pvisor", default-features = false }
 pulsing-actor = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -27,8 +33,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 default = []
+# Public `ppilot` command and DataFusion query surface. The core orchestrator
+# always uses pVisor; this feature only adds the query-specific pChronicle API.
+cli = ["query"]
+query = ["dep:persisting-pchronicle"]
 # Append pPilot results to Lance via TrajectoryAppend (Tee with JsonlFileSink).
-traj-sink = ["dep:chrono", "dep:persisting-engine", "dep:persisting-pchronicle", "dep:persisting-proto"]
+traj-sink = ["dep:chrono", "dep:persisting-engine", "dep:persisting-pchronicle"]
 
 [dev-dependencies]
 tempfile = "3"

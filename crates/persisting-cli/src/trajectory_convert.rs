@@ -1,4 +1,4 @@
-//! `traj convert`: chronicle format interchange via the pChronicle storyline hub.
+//! `history convert`: chronicle format interchange via the pChronicle storyline hub.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -15,22 +15,14 @@ use persisting_pchronicle::{
     StructuredStore,
 };
 
-/// CLI mirror of [`ChronicleFormat`] with clap aliases.
+/// CLI mirror of [`ChronicleFormat`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ChronicleFormatCli {
     Storyline,
-    #[value(alias = "lance", alias = "bin", alias = "event")]
     Events,
-    #[value(alias = "md", alias = "markdown", alias = "tlv")]
     Agenticmd,
-    #[value(
-        name = "openai_msg",
-        alias = "openai",
-        alias = "openai-msg",
-        alias = "dlcapt"
-    )]
+    #[value(name = "openai_msg")]
     OpenaiMsg,
-    #[value(alias = "harbor")]
     Atif,
 }
 
@@ -85,7 +77,7 @@ pub fn run_traj_convert(args: &TrajectoryConvertArgs) -> Result<()> {
         let text = read_string_input(&args.input)?;
         write_string_output(&args.output, &text)?;
         eprintln!(
-            "[persisting-cli] traj convert: {from} → {to} (identity) input={} output={}",
+            "[persisting-cli] history convert: {from} → {to} (identity) input={} output={}",
             display_io(&args.input),
             display_io(&args.output)
         );
@@ -170,7 +162,7 @@ fn write_converted(
             let session = resolve_events_dest_session(args, story)?;
             write_events_lance(&session, story, args.force)?;
             eprintln!(
-                "[persisting-cli] traj convert: {from} → events input={} output={}",
+                "[persisting-cli] history convert: {from} → events input={} output={}",
                 display_io(&args.input),
                 session.lance_event_path()?.display()
             );
@@ -179,7 +171,7 @@ fn write_converted(
             let text = from_storyline(other, story).map_err(|e| anyhow::anyhow!("{e}"))?;
             write_string_output(&args.output, &text)?;
             eprintln!(
-                "[persisting-cli] traj convert: {from} → {other} input={} output={}",
+                "[persisting-cli] history convert: {from} → {other} input={} output={}",
                 display_io(&args.input),
                 display_io(&args.output)
             );
@@ -302,7 +294,7 @@ fn load_events_document(session: &TrajectorySession) -> Result<EventsDocument> {
         let events = lance
             .read_events(session, 0, None)
             .await
-            .context("read Lance events for traj convert")?;
+            .context("read Lance events for history convert")?;
         Ok(EventsDocument {
             format: EventsDocument::FORMAT_NAME.into(),
             session_id: Some(session.session_id.clone()),

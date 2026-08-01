@@ -21,7 +21,7 @@ pub enum ChronicleFormat {
     Agenticmd,
     /// dlcapt OpenAI-messages step table (`openai_msg`).
     OpenaiMsg,
-    /// Harbor ATIF three-table interchange (`atif`).
+    /// Harbor ATIF JSON interchange (`atif`).
     Atif,
 }
 
@@ -69,7 +69,7 @@ impl ChronicleFormat {
             Self::Events => "events.lance",
             Self::Agenticmd => "*.md",
             Self::OpenaiMsg => "session_steps.json",
-            Self::Atif => "sessions.jsonl + steps.jsonl + tool_calls.jsonl",
+            Self::Atif => "*.atif.json / *.atif.jsonl",
         }
     }
 }
@@ -85,19 +85,11 @@ impl FromStr for ChronicleFormat {
 
     fn from_str(s: &str) -> Result<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "storyline" | "story" | "narrative" | "storyline/v1" => Ok(Self::Storyline),
-            "events" | "event" | "lance" | "bin" | "events.lance" => Ok(Self::Events),
-            "agenticmd" | "agentic-md" | "md" | "markdown" | "tlv" | "persisting:1.0" => {
-                Ok(Self::Agenticmd)
-            }
-            "openai_msg"
-            | "openai-msg"
-            | "openai"
-            | "openai_messages"
-            | "session_steps"
-            | "json_file"
-            | "dlcapt" => Ok(Self::OpenaiMsg),
-            "atif" | "atif-v1" | "atif_v1" | "harbor" => Ok(Self::Atif),
+            "storyline" => Ok(Self::Storyline),
+            "events" => Ok(Self::Events),
+            "agenticmd" => Ok(Self::Agenticmd),
+            "openai_msg" => Ok(Self::OpenaiMsg),
+            "atif" => Ok(Self::Atif),
             other => Err(Error::Other(format!(
                 "unknown chronicle format '{other}'; expected storyline|events|agenticmd|openai_msg|atif"
             ))),

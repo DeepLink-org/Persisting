@@ -20,7 +20,7 @@ use persisting_gateway::runtime::run_env::{
 };
 use persisting_gateway::sink::SeqOnlySink;
 use persisting_overlaynet::policy::network_capability_from_config;
-use persisting_proto::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec};
+use persisting_proto::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -41,7 +41,8 @@ pub struct AttemptSession {
 }
 
 impl AttemptSession {
-    pub fn teardown(mut self, exit_code: Option<i32>) -> anyhow::Result<()> {
+    pub(crate) fn teardown(mut self, exit_code: Option<i32>) -> AttemptTeardown {
+        let mut errors = Vec::new();
         let duration_ms = self.started_at.elapsed().as_millis() as u64;
         if let Some(sink) = &self.sink {
             if let Err(err) = append_lifecycle(
@@ -57,12 +58,19 @@ impl AttemptSession {
                     Some(duration_ms),
                 ),
             ) {
-                tracing::warn!(error = %err, "failed to append session.ended");
+                errors.push(format!("append session.ended: {err:#}"));
             }
         }
 
         let mut record = if let Some(mount) = self.overlay.take() {
-            Some(mount.unmount()?)
+            let fallback = self.overlay_record.take();
+            match mount.unmount() {
+                Ok(record) => Some(record),
+                Err(err) => {
+                    errors.push(format!("unmount OverlayFS: {err:#}"));
+                    fallback
+                }
+            }
         } else {
             self.overlay_record.take()
         };
@@ -70,11 +78,11 @@ impl AttemptSession {
         if let Some(ref mut rec) = record {
             if rec.auto_discard {
                 if let Err(err) = discard_overlay(rec) {
-                    tracing::warn!(error = %err, "overlay automatic drop failed");
+                    errors.push(format!("discard OverlayFS staging: {err:#}"));
                 }
             } else if rec.auto_apply {
                 if let Err(err) = apply_overlay(rec) {
-                    tracing::warn!(error = %err, "overlay auto_apply failed");
+                    errors.push(format!("apply OverlayFS staging: {err:#}"));
                 } else {
                     tracing::info!(
                         id = %rec.id,
@@ -98,18 +106,38 @@ impl AttemptSession {
         self.overlay_record = record;
 
         if let Some(gateway) = self.gateway.take() {
-            gateway.shutdown()?;
+            if let Err(err) = gateway.shutdown() {
+                errors.push(format!("shutdown Gateway: {err:#}"));
+            }
         }
-        self.run_record.state = match exit_code {
-            Some(0) => "completed",
-            Some(_) => "failed",
-            None => "terminated",
-        }
-        .into();
         self.run_record.finished_at_unix_ms = Some(crate::util::unix_now_ms());
         self.run_record.overlay = self.overlay_record.clone();
-        self.run_record.write()?;
-        Ok(())
+        AttemptTeardown {
+            run_record: self.run_record,
+            errors,
+        }
+    }
+}
+
+pub(crate) struct AttemptTeardown {
+    run_record: RunRecord,
+    errors: Vec<String>,
+}
+
+impl AttemptTeardown {
+    pub(crate) fn error_message(&self) -> Option<String> {
+        (!self.errors.is_empty()).then(|| self.errors.join("; "))
+    }
+
+    pub(crate) fn commit_state(&mut self, state: RunState) -> anyhow::Result<()> {
+        self.run_record.state = match state {
+            RunState::Completed => "completed",
+            RunState::Cancelled => "cancelled",
+            RunState::Failed => "failed",
+            _ => "terminated",
+        }
+        .into();
+        self.run_record.write()
     }
 }
 
@@ -166,7 +194,9 @@ pub fn prepare_attempt(
         opts.controller,
     )?;
 
-    let root_session = format!("run-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S-%f"));
+    // A Run has one top-level identity across pVisor, Gateway and pChronicle.
+    // Subagent sessions remain separate Storylines beneath this root.
+    let root_session = spec.run_id.as_str().to_string();
     write_run_session(&storage, &root_session)?;
     let config_snapshot = snapshot_proxy_config(&storage, &root_session, &config)?;
 
@@ -336,10 +366,22 @@ pub fn prepare_overlay_attempt(
                 upper_dir.display().to_string(),
             );
         }
-        super::overlay::OverlayUpper::Redb { database_path } => {
+        super::overlay::OverlayUpper::Jujutsu {
+            store_path,
+            workspace,
+            upper_dir,
+        } => {
             plan.env.insert(
-                "PERSISTING_OVERLAY_DATABASE".into(),
-                database_path.display().to_string(),
+                "PERSISTING_OVERLAY_UPPER".into(),
+                upper_dir.display().to_string(),
+            );
+            plan.env.insert(
+                "PERSISTING_OVERLAY_JUJUTSU_STORE".into(),
+                store_path.display().to_string(),
+            );
+            plan.env.insert(
+                "PERSISTING_OVERLAY_JUJUTSU_WORKSPACE".into(),
+                workspace.clone(),
             );
         }
     }
@@ -383,12 +425,23 @@ fn apply_overlay_override(
     if let Some(upper) = &overlay_override.upper_dir {
         overlay_cfg.upper_dir = Some(upper.display().to_string());
         overlay_cfg.backend = persisting_gateway::config::OverlayBackend::Directory;
-        overlay_cfg.database_path = None;
+        overlay_cfg.jujutsu_store_path = None;
+        overlay_cfg.jujutsu_workspace = None;
     }
     if let Some(work) = &overlay_override.work_dir {
         overlay_cfg.work_dir = Some(work.display().to_string());
         overlay_cfg.backend = persisting_gateway::config::OverlayBackend::Directory;
-        overlay_cfg.database_path = None;
+        overlay_cfg.jujutsu_store_path = None;
+        overlay_cfg.jujutsu_workspace = None;
+    }
+    if let Some(store) = &overlay_override.jujutsu_store_path {
+        overlay_cfg.jujutsu_store_path = Some(store.display().to_string());
+        overlay_cfg.backend = persisting_gateway::config::OverlayBackend::Jujutsu;
+        overlay_cfg.upper_dir = None;
+        overlay_cfg.work_dir = None;
+    }
+    if let Some(workspace) = &overlay_override.jujutsu_workspace {
+        overlay_cfg.jujutsu_workspace = Some(workspace.clone());
     }
     if !overlay_override.lower_dirs.is_empty() {
         // First lower treated as target when target unset.
@@ -538,10 +591,22 @@ fn enrich_with_session(
                     upper_dir.display().to_string(),
                 );
             }
-            super::overlay::OverlayUpper::Redb { database_path } => {
+            super::overlay::OverlayUpper::Jujutsu {
+                store_path,
+                workspace,
+                upper_dir,
+            } => {
                 plan.env.insert(
-                    "PERSISTING_OVERLAY_DATABASE".into(),
-                    database_path.display().to_string(),
+                    "PERSISTING_OVERLAY_UPPER".into(),
+                    upper_dir.display().to_string(),
+                );
+                plan.env.insert(
+                    "PERSISTING_OVERLAY_JUJUTSU_STORE".into(),
+                    store_path.display().to_string(),
+                );
+                plan.env.insert(
+                    "PERSISTING_OVERLAY_JUJUTSU_WORKSPACE".into(),
+                    workspace.clone(),
                 );
             }
         }

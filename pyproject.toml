@@ -1,7 +1,7 @@
 [project]
 name = "persisting"
 version = "0.1.0"
-description = "Persistent Storage for Parameters, KV Cache, and Trajectories"
+description = "Agent execution, orchestration, and durable history infrastructure"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "GPL-3.0-or-later"}
@@ -55,4 +55,3 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-

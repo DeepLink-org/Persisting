@@ -12,7 +12,7 @@ pub struct ServeBanner<'a> {
     pub output_dir: &'a Path,
     pub agent_id: &'a str,
     pub format: CaptureFormat,
-    /// `traj proxy start` (background) vs `traj proxy` (foreground).
+    /// `gateway start` (background) vs `gateway serve` (foreground).
     pub background: bool,
     pub pid: Option<u32>,
 }
@@ -26,14 +26,14 @@ pub fn eprint_serve_banner(info: &ServeBanner<'_>) {
     eprintln!();
     if info.background {
         eprintln!(
-            "[persisting-cli] traj proxy started: pid={} proxy={proxy} admin={admin}",
+            "[persisting-cli] gateway started: pid={} proxy={proxy} admin={admin}",
             info.pid.unwrap_or(0)
         );
     } else {
-        eprintln!("[persisting-cli] traj proxy: proxy={proxy} admin={admin}");
+        eprintln!("[persisting-cli] gateway: proxy={proxy} admin={admin}");
     }
     eprintln!(
-        "[persisting-cli] traj: store={store} agent_id={} format={}",
+        "[persisting-cli] history: store={store} agent_id={} format={}",
         info.agent_id,
         info.format.as_str()
     );
@@ -50,14 +50,14 @@ pub fn eprint_serve_banner(info: &ServeBanner<'_>) {
     eprintln!("  codex -c 'openai_base_url=\"{openai_v1}\"'");
     eprintln!();
     eprintln!("One-shot in-process (stop proxy on same -o first):");
-    eprintln!("  pvisor run --config <run.toml> --workspace <run-dir> -- claude");
+    eprintln!("  persisting execute --config <run.toml> --workspace <run-dir> -- claude");
     eprintln!();
     eprintln!("Inspect:");
-    eprintln!("  persisting traj proxy list -o {store}");
-    eprintln!("  persisting traj proxy status -o {store}");
-    eprintln!("  persisting traj stats {store} --detail");
+    eprintln!("  persisting gateway list -o {store}");
+    eprintln!("  persisting gateway status -o {store}");
+    eprintln!("  persisting history stats {store} --detail");
     if info.background {
-        eprintln!("  persisting traj proxy stop -o {store}");
+        eprintln!("  persisting gateway stop -o {store}");
     } else {
         eprintln!("  Ctrl+C to stop this server");
     }

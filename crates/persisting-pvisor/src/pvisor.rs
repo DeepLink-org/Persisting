@@ -14,8 +14,8 @@ use crate::util::unix_now_ms;
 use crate::TrajectoryEventSink;
 use persisting_control::ControlController;
 use persisting_proto::{
-    AttemptId, AttemptInfo, EventEnvelope, PolicyMode, RunResult, RunSpec, RunState, RunStatus,
-    RUNTIME_SCHEMA_VERSION,
+    AttemptId, AttemptInfo, EventEnvelope, PolicyMode, RunFailure, RunFailureKind, RunResult,
+    RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -40,6 +40,22 @@ pub enum PVisorError {
 }
 
 pub type RunEventStream = broadcast::Receiver<EventEnvelope>;
+
+/// Cloneable, provider-independent cancellation capability for an in-flight Run.
+#[derive(Clone)]
+pub struct RunCancellation {
+    token: CancellationToken,
+}
+
+impl RunCancellation {
+    pub fn cancel(&self) {
+        self.token.cancel();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+}
 
 /// Handle for one in-flight Run: status, cancel, wait, event subscribe.
 pub struct RunHandle {
@@ -76,6 +92,12 @@ impl RunHandle {
     /// Cooperative cancel followed by executor-specific termination.
     pub fn cancel(&self) {
         self.cancellation.cancel();
+    }
+
+    pub fn cancellation(&self) -> RunCancellation {
+        RunCancellation {
+            token: self.cancellation.clone(),
+        }
     }
 
     pub async fn wait(self) -> Result<RunResult, PVisorError> {
@@ -278,14 +300,22 @@ impl PVisor {
         );
         let join = tokio::spawn(async move {
             let mut result = executor.execute(context.clone()).await;
-            if let Some(session) = session {
-                if let Err(err) = session.teardown(result.exit_code) {
-                    result
-                        .warnings
-                        .push(format!("attempt session teardown failed: {err:#}"));
+            let mut teardown = session.map(|session| session.teardown(result.exit_code));
+            if let Some(error) = teardown
+                .as_ref()
+                .and_then(|teardown| teardown.error_message())
+            {
+                fail_finalization(&mut result, format!("attempt teardown failed: {error}"));
+            }
+            if let Some(teardown) = teardown.as_mut() {
+                if let Err(error) = teardown.commit_state(result.state) {
+                    fail_finalization(
+                        &mut result,
+                        format!("commit local Run record failed: {error:#}"),
+                    );
+                    let _ = teardown.commit_state(RunState::Failed);
                 }
             }
-            context.transition(result.state, None).await;
             let kind = match result.state {
                 RunState::Completed => "run.completed",
                 RunState::Cancelled => "run.cancelled",
@@ -293,23 +323,28 @@ impl PVisor {
             };
             if let Err(error) = context
                 .events()
-                .publish(
-                    kind,
-                    "runtime",
-                    json!({
-                        "state": result.state,
-                        "exit_code": result.exit_code,
-                        "failure": result.failure,
-                        "started_at_unix_ms": result.started_at_unix_ms,
-                        "finished_at_unix_ms": result.finished_at_unix_ms,
-                    }),
-                )
+                .publish(kind, "runtime", terminal_payload(&result))
                 .await
             {
-                result
-                    .warnings
-                    .push(format!("terminal event sink failed: {error:#}"));
+                fail_finalization(
+                    &mut result,
+                    format!("terminal event sink failed: {error:#}"),
+                );
+                if let Some(teardown) = teardown.as_mut() {
+                    let _ = teardown.commit_state(RunState::Failed);
+                }
+                // A sink may reject only the original terminal kind. Give it a
+                // chance to persist the finalization failure as the sole visible
+                // terminal result.
+                let _ = context
+                    .events()
+                    .publish("run.failed", "runtime", terminal_payload(&result))
+                    .await;
             }
+            context.finish(
+                result.state,
+                result.failure.as_ref().map(|f| f.message.clone()),
+            );
             result
         });
 
@@ -324,6 +359,27 @@ impl PVisor {
     }
 }
 
+fn terminal_payload(result: &RunResult) -> serde_json::Value {
+    json!({
+        "state": result.state,
+        "exit_code": result.exit_code,
+        "failure": result.failure,
+        "started_at_unix_ms": result.started_at_unix_ms,
+        "finished_at_unix_ms": result.finished_at_unix_ms,
+    })
+}
+
+fn fail_finalization(result: &mut RunResult, message: String) {
+    result.warnings.push(message.clone());
+    result.state = RunState::Failed;
+    result.finished_at_unix_ms = unix_now_ms();
+    result.failure = Some(RunFailure {
+        kind: RunFailureKind::Infrastructure,
+        message,
+        retryable: true,
+    });
+}
+
 fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
     if spec.schema_version != RUNTIME_SCHEMA_VERSION {
         return Err(PVisorError::InvalidSpec(format!(
@@ -333,6 +389,12 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
     }
     if spec.run_id.is_empty() {
         return Err(PVisorError::InvalidSpec("run_id must not be empty".into()));
+    }
+    let run_id = spec.run_id.as_str().trim();
+    if run_id == "." || run_id == ".." || run_id.contains('/') || run_id.contains('\\') {
+        return Err(PVisorError::InvalidSpec(
+            "run_id must be one non-empty path-safe segment".into(),
+        ));
     }
     if spec.agent.name.trim().is_empty() {
         return Err(PVisorError::InvalidSpec(
@@ -361,8 +423,26 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MemoryEventSink;
+    use crate::{EventSink, MemoryEventSink};
+    use async_trait::async_trait;
     use persisting_proto::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RejectCompletedSink {
+        kinds: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl EventSink for RejectCompletedSink {
+        async fn append(&self, event: &EventEnvelope) -> anyhow::Result<()> {
+            if event.kind == "run.completed" {
+                anyhow::bail!("simulated terminal commit failure");
+            }
+            self.kinds.lock().unwrap().push(event.kind.clone());
+            Ok(())
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]
@@ -385,6 +465,44 @@ mod tests {
         assert_eq!(kinds.first().map(String::as_str), Some("run.created"));
         assert_eq!(kinds.last().map(String::as_str), Some("run.completed"));
         assert!(kinds.iter().any(|kind| kind == "run.state_changed"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_sink_failure_prevents_completed_result() {
+        let sink = Arc::new(RejectCompletedSink::default());
+        let runtime = PVisor::builder().event_sink(sink.clone()).build();
+        let mut spec = RunSpec::process("run-terminal-failure", "test-agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "exit 0".into()];
+
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Failed);
+        assert_eq!(
+            result.failure.as_ref().map(|failure| failure.kind),
+            Some(RunFailureKind::Infrastructure)
+        );
+        assert!(result
+            .failure
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("terminal event sink failed"));
+        let kinds = sink.kinds.lock().unwrap().clone();
+        assert!(!kinds.iter().any(|kind| kind == "run.completed"));
+        assert_eq!(kinds.last().map(String::as_str), Some("run.failed"));
+    }
+
+    #[tokio::test]
+    async fn run_id_must_be_a_capture_safe_path_segment() {
+        for invalid in ["../escape", "nested/run", r"nested\run", ".", ".."] {
+            let spec = RunSpec::process(invalid, "agent", "echo");
+            let error = match PVisor::new().run(spec).await {
+                Ok(_) => panic!("invalid run id was accepted: {invalid}"),
+                Err(error) => error,
+            };
+            assert!(matches!(error, PVisorError::InvalidSpec(_)));
+        }
     }
 
     #[cfg(unix)]

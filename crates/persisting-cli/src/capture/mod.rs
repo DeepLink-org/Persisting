@@ -23,15 +23,15 @@ pub use record::CaptureRecord;
 /// Capture trajectory storage format.
 ///
 /// - `md`: TLV Markdown only (`{session}.md` live upsert); reconcile replays from Markdown.
-/// - `lance` (alias `bin`): Lance canonical (`events.lance`) only; use `traj materialize` for md.
+/// - `lance`: Lance canonical (`events.lance`) only; use `history materialize` for md.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CaptureFormat {
     /// Human-readable TLV Markdown only.
-    #[value(name = "md", alias = "markdown")]
+    #[value(name = "md")]
     #[default]
     Markdown,
     /// Lance event log (canonical); no live Markdown sidecar during capture.
-    #[value(name = "lance", alias = "bin")]
+    #[value(name = "lance")]
     Lance,
 }
 
@@ -80,11 +80,12 @@ mod tests {
     use clap::ValueEnum;
 
     #[test]
-    fn capture_format_bin_alias_maps_to_lance() {
+    fn capture_format_uses_canonical_lance_name() {
         assert_eq!(
-            CaptureFormat::from_str("bin", false).unwrap(),
+            CaptureFormat::from_str("lance", false).unwrap(),
             CaptureFormat::Lance
         );
+        assert!(CaptureFormat::from_str("bin", false).is_err());
         assert!(CaptureFormat::Lance.writes_lance());
     }
 

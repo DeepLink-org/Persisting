@@ -464,7 +464,7 @@ mod tests {
             .join("deepseek-proxy")
             .join("run-20260524-015351-928492000");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+        std::fs::write(session.join("run-20260524-015351-928492000.md"), "# test\n").unwrap();
 
         let p = infer_traj_location_from_path(session.to_str().unwrap()).unwrap();
         assert!(p.storage.ends_with("store"));
@@ -478,13 +478,13 @@ mod tests {
     fn infer_flat_session_path_string_only() {
         let base = std::env::temp_dir().join(format!("persisting-traj-rel-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let session = base.join("store").join("a").join("s");
+        let session = base.join("store").join("a").join("session-0001");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
-        assert!(infer_traj_location_from_path("store/a/s").is_none());
+        std::fs::write(session.join("session-0001.md"), "# test\n").unwrap();
+        assert!(infer_traj_location_from_path("store/a/session-0001").is_none());
         let p = infer_traj_location_from_path(session.to_str().unwrap()).unwrap();
         assert_eq!(p.agent_id, "a");
-        assert_eq!(p.session_id, "s");
+        assert_eq!(p.session_id, "session-0001");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -500,7 +500,7 @@ mod tests {
             .join("subagents")
             .join("sub-uuid");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+        std::fs::write(session.join("sub-uuid.md"), "# test\n").unwrap();
 
         let p = infer_traj_location_from_path(session.to_str().unwrap()).unwrap();
         assert!(p.storage.ends_with("store"));
@@ -523,7 +523,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let session = base.join("store").join("deepseek-proxy").join("run-abc");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+        std::fs::write(session.join("run-abc.md"), "# test\n").unwrap();
 
         let loc = resolve_traj_read_location(
             "trajectory stats",
@@ -753,7 +753,7 @@ mod tests {
         for (agent, run) in [("a1", "run-1"), ("a2", "run-2")] {
             let session = store.join(agent).join(run);
             std::fs::create_dir_all(&session).unwrap();
-            std::fs::write(session.join("0001.md"), "# t\n").unwrap();
+            std::fs::write(session.join(format!("{run}.md")), "# t\n").unwrap();
         }
 
         let locs =
@@ -781,7 +781,7 @@ mod tests {
         let agent = base.join("store").join("deepseek-proxy");
         let session = agent.join("run-only");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+        std::fs::write(session.join("run-only.md"), "# test\n").unwrap();
 
         let p = infer_from_agent_dir(agent.to_str().unwrap()).unwrap();
         assert!(p.storage.ends_with("store"));
@@ -799,7 +799,7 @@ mod tests {
         let store = base.join("store");
         let session = store.join("agent-a").join("run-one");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+        std::fs::write(session.join("run-one.md"), "# test\n").unwrap();
 
         let loc = try_infer_story_location(store.to_str().unwrap()).unwrap();
         assert!(loc.storage.ends_with("store"));
@@ -814,9 +814,9 @@ mod tests {
         let base =
             std::env::temp_dir().join(format!("persisting-traj-partial-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let session = base.join("store").join("a").join("s");
+        let session = base.join("store").join("a").join("session-0001");
         std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("0001.md"), "# test\n").unwrap();
+        std::fs::write(session.join("session-0001.md"), "# test\n").unwrap();
 
         let loc = merge_traj_location(
             session.to_str().unwrap().into(),
@@ -826,7 +826,7 @@ mod tests {
         );
         assert!(loc.storage.ends_with("store"));
         assert_eq!(loc.agent_id.as_deref(), Some("override-agent"));
-        assert_eq!(loc.session_id.as_deref(), Some("s"));
+        assert_eq!(loc.session_id.as_deref(), Some("session-0001"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -25,19 +25,23 @@ pVisor Gateway / import
 events.lance                  canonical、append-only、可回放
       │
       ├──► AgenticMD          可重建的人读投影
-      ├──► Storyline          ATIF-aligned 互操作 hub
+      ├──► Storyline          ATIF-aligned 互操作 hub / 三表 Lance
       └──► normalized ATIF    sessions / steps / tool_calls 查询视图
 ```
 
 - `StructuredStore` 是统一异步物理存储接口。
 - `LanceEventStore` 是 canonical event log 后端。
 - `AgenticMdStore` 是 AgenticMD 物理投影后端。
+- `LanceStorylineStore` 将 Storyline 原子提交为 `runs.lance`、`steps.lance`、`tool_calls.lance` 三张规范化表。
+- `StorylineDataSource` 将同一 generation 的三张表注册到 DataFusion，并下推列裁剪、谓词、limit 和标量索引查询。
+- `AtifDataSource` 把单个 ATIF JSON、ATIF 数组、JSONL/NDJSON 或目录一次解析为同 schema 的 Arrow `MemTable`。
+- `ChronicleQueryEngine` 对 Lance 与 ATIF 暴露同一套 `runs`、`steps`、`tool_calls` SQL 和 Arrow/JSONL 结果 API。
 - `AgenticmdSessionFrontmatter`、`write_agenticmd_document`、`rewrite_agenticmd_preamble` 和 `index_agenticmd_path` 统一负责 AgenticMD 文档契约与文件操作。
-- `NormalizedStore` 是派生 ATIF 三表的查询接口；旧名 `ChronicleStore` 仅为兼容别名。
+- `NormalizedStore` 是派生 ATIF 三表的查询接口。
 - `materialize_lance_to_markdown`、`compact_markdown_to_lance` 和 `layer_stats` 统一负责层间操作。
 - `StorageSelection`、`expand_story_locations` 与 `truncate_lance_session` 统一负责存储策略和维护。
 - `judge_trajectory`、`JudgeRow` 及 judgment API 统一负责评测规划、provider 调用和结构化持久化；Engine 只映射 proto。
-- Python `persisting.pchronicle` 是通过 `persisting._core` 调用本 crate 的兼容层，不单独实现校验、存储或视图语义。
+- Python `persisting.pchronicle` 通过 `persisting._core` 绑定本 crate，不单独实现校验、存储或视图语义。
 
 ## 格式架构
 
@@ -56,11 +60,11 @@ atif ─────┘
 | `storyline` | ATIF-aligned 互操作 hub | `storyline.json` |
 | `agenticmd` | 人读 TLV Markdown 投影 | `{session}.md` |
 | `openai_msg` | OpenAI messages 外围格式 | JSON |
-| `atif` | Harbor ATIF 外围格式及规范化视图 | JSON / 三表 |
+| `atif` | Harbor ATIF 外围格式及规范化视图 | JSON / JSONL |
 
 字符串格式转换使用 `into_storyline`、`from_storyline`、`convert`。`events` 的 JSON/JSONL 只用于调试导出，不是正式存储格式。
 
-## 跨组件兼容语料
+## 跨组件测试语料
 
 pChronicle 的测试直接复用 `persisting-gateway/tests/fixtures`，而不是只依赖手工构造的最小记录：
 
@@ -69,6 +73,17 @@ pChronicle 的测试直接复用 `persisting-gateway/tests/fixtures`，而不是
 - corpus 测试设置最小样本数量，防止 fixture 被意外缩减后测试仍静默通过。
 
 对应测试见 `tests/capture_fixture_corpus.rs`。
+
+独立的 ATIF corpus 位于 `tests/fixtures/atif/`，包含 8 条 10–20 step 的确定性轨迹，
+供格式转换、Storyline 三表和空间占用测试共同使用：
+
+```bash
+cargo test -p persisting-pchronicle --test atif_lance_corpus
+cargo bench -p persisting-pchronicle --bench atif_storyline_lance
+PCHRONICLE_BENCH_SCALE=128 cargo bench -p persisting-pchronicle --bench lance_vs_json
+```
+
+可通过 `PCHRONICLE_BENCH_ITERS` 调整转换 benchmark 的重复次数。
 
 ## 规范
 

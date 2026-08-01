@@ -1,7 +1,7 @@
 # pChronicle 轨迹存储
 
 > 当前实现说明。规范性所有权见 [RFC-0003](../rfcs/0003-pchronicle-ownership.md)，
-> 命令见 [`persisting traj`](cli-traj.md)。
+> 命令见 [`persisting history` / `eval` / `gateway`](cli-history.md)。
 
 ## 1. 定位
 
@@ -52,11 +52,18 @@ AgenticMD 是面向人的结构化 Markdown。它保存可见对话块和会话�
 
 两者不是要求同步双写的两份事实源：
 
-- `pvisor run --chronicle-mode lance` 写 Lance；
-- `pvisor run --gateway-stream-markdown` 直接维护 AgenticMD，适合轻量本地使用；
-- `traj materialize` 从 Lance 重建 AgenticMD；
-- `traj add` 根据显式选择或已有层写入一个存储层；
-- `traj replay --storage-format auto` 优先读取 Lance，只有 Markdown 时读取 Markdown。
+- `persisting execute --chronicle-mode lance` 写 Lance；
+- `persisting execute --gateway-stream-markdown` 直接维护 AgenticMD，适合轻量本地使用；
+- `persisting history materialize` 从 Lance 重建 AgenticMD；
+- `persisting history add` 根据显式选择或已有层写入一个存储层；
+- `persisting history replay --storage-format auto` 优先读取 Lance，只有 Markdown 时读取 Markdown。
+
+### Storyline 三表 Lance
+
+`LanceStorylineStore` 提供面向分析和 ATIF 互操作的规范化物理表示：
+`runs.lance`、`steps.lance`、`tool_calls.lance`。它按 `source_call_id` 将 observation
+result 归并到 tool call 行，并通过 generation 指针保证三表原子切换。详细 schema
+与目录布局见 [Storyline 三表 Lance 存储](storyline-lance.md)。
 
 ## 4. 目录布局
 
@@ -81,8 +88,8 @@ storage/
         └── agent-<id>.md
 ```
 
-读取器仍能识别早期的 `0001.md` 和 `trajectory.tlv.md`，但新写入使用
-`{session_id}.md`。这些名称只是历史数据读取规则，不是新的写入选项。
+AgenticMD 只接受 canonical `{session_id}.md` 文件名和带 speaker 的
+`<!-- persisting:block:{speaker} … -->` 块结构。
 
 ## 5. 写入与一致性
 
@@ -105,7 +112,7 @@ OpenAI msg ┘
 ```
 
 需要保存原始 payload 的路径直接读写 events，不能经有损 Storyline roundtrip。
-`traj convert` 用于文件格式转换；`traj materialize` 专门处理 Lance → AgenticMD。
+`persisting history convert` 用于文件格式转换；`persisting history materialize` 专门处理 Lance → AgenticMD。
 
 ## 7. 组件边界
 
@@ -121,4 +128,4 @@ OpenAI msg ┘
 - [AgenticMD 格式](trajectory-format.md)
 - [Gateway 架构](gateway.md)
 - [pVisor 命令](cli-pvisor.md)
-- [Traj 命令](cli-traj.md)
+- [History / Eval / Gateway 命令](cli-history.md)

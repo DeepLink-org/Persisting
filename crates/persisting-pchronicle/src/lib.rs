@@ -35,6 +35,7 @@ pub mod schema;
 pub mod selection;
 pub mod service;
 pub mod store;
+pub mod storyline_schema;
 pub mod view;
 
 pub use atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
@@ -49,14 +50,14 @@ pub use formats::{
     encode_agenticmd_block, encode_agenticmd_document, encode_agenticmd_preamble,
     encode_agenticmd_session_frontmatter, events_lance_only_message, export_events_json_pretty,
     export_events_jsonl, is_subagent_footer_line, parse_agenticmd_blocks_with_spans,
-    parse_agenticmd_document, parse_agenticmd_document_with, parse_openai_msg_document,
-    parse_storyline_document, strip_subagent_footer_from_body, validate_agenticmd_block,
-    validate_speaker, validate_type_name, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdClientMeta,
-    AgenticmdDocument, AgenticmdHeader, AgenticmdParseMode, AgenticmdSessionFrontmatter,
-    EventRecord, EventsDocument, OpenaiMsgDocument, OpenaiMsgStep, StoryLink, StorylineAgent,
-    StorylineDocument, StorylineToolCall, StorylineTurn, AGENTICMD_BLOCK_LAYOUT,
-    AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT, BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION,
-    BLOCK_MARKER, OPENAI_MSG_FORMAT_VERSION, STORYLINE_SCHEMA_VERSION,
+    parse_agenticmd_document, parse_openai_msg_document, parse_storyline_document,
+    strip_subagent_footer_from_body, validate_agenticmd_block, validate_speaker,
+    validate_type_name, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdClientMeta, AgenticmdDocument,
+    AgenticmdHeader, AgenticmdSessionFrontmatter, EventRecord, EventsDocument, OpenaiMsgDocument,
+    OpenaiMsgStep, StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
+    AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT,
+    BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION, BLOCK_MARKER, OPENAI_MSG_FORMAT_VERSION,
+    STORYLINE_SCHEMA_VERSION,
 };
 pub use ingest::{ingest_trajectory, reconstruct_trajectory, split_trajectory, SplitTables};
 pub use judge_service::{
@@ -78,11 +79,9 @@ pub use layout::{
     list_traj_read_locations, locate_run_bucket_markdown, locate_session_markdown,
     locate_session_markdown_for_key, merge_story_location, merge_traj_location,
     resolve_story_read_location, resolve_traj_read_location, sanitize_session_filename,
-    session_markdown_filename, session_markdown_path, session_markdown_path_for_key,
-    session_markdown_write_path, session_markdown_write_path_for_key, story_lance_event_path,
-    story_run_dir, try_infer_story_location, try_infer_traj_location, StoryCoords,
-    StoryLocationPartial, TrajLocation, TrajLocationPartial, LEGACY_TRAJECTORY_MARKDOWN_FILENAME,
-    SESSION_MARKDOWN_FILENAME,
+    session_markdown_filename, session_markdown_path_for_key, session_markdown_write_path_for_key,
+    story_lance_event_path, story_run_dir, try_infer_story_location, try_infer_traj_location,
+    StoryCoords, StoryLocationPartial, TrajLocation, TrajLocationPartial,
 };
 pub use mapping::{
     agenticmd_block_to_event_record, agenticmd_block_to_replay_json,
@@ -117,14 +116,20 @@ pub use store::{
     parse_agenticmd_spans_validated, parse_engine_records, read_agenticmd_blocks_from_file,
     rewrite_agenticmd_preamble, rewrite_block_range, session_lance_path, structured_store,
     trajectory_arrow_schema, upsert_block_by_call_id, write_agenticmd_document, AgenticMdStore,
-    AgenticmdFileIndex, AppendOutcome, ChronicleStore, EventRow, ExportOutcome, FsChronicleStore,
-    LanceEventStore, LanceTrajectoryStore, MarkdownTrajectoryStore, MemoryChronicleStore,
-    NormalizedStore, ReplayOutcome, StorageKind, StructuredStore, TrajectoryAppendOutcome,
-    TrajectoryReplayOutcome, TrajectorySession, TrajectoryStats, TrajectoryStatsOutcome,
-    TrajectoryStore, TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_KIND_COL,
-    TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL, TRAJECTORY_PAYLOAD_JSON_COL,
-    TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL, TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL,
-    TRAJECTORY_TRACE_ID_COL, TRAJECTORY_V1_COLS,
+    AgenticmdFileIndex, AppendOutcome, AtifDataSource, AtifDataSourceOptions,
+    ChronicleQueryBackend, ChronicleQueryEngine, EventRow, ExportOutcome, LanceEventStore,
+    LanceStorylineStore, MemoryChronicleStore, NormalizedStore, ReplayOutcome, StorageKind,
+    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
+    StorylineTableKind, StorylineTablePaths, StorylineTableProvider, StructuredStore,
+    TrajectorySession, TrajectoryStats, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
+    DATAFUSION_TOOL_CALLS_TABLE, TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL,
+    TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL,
+    TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
+    TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL, TRAJECTORY_V1_COLS,
+};
+pub use storyline_schema::{
+    reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
+    StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
 pub use view::{atif_trajectory_sql_ddl, AtifTrajectoryView, AtifViewRow, ATIF_TRAJECTORY_VIEW};
 

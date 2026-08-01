@@ -1,5 +1,6 @@
 //! Standalone `pvisor` command-line frontend.
 
+mod env;
 mod run;
 pub mod runtime;
 mod trajectory;
@@ -21,6 +22,8 @@ struct Cli {
 enum Command {
     /// Execute one Agent Run under pVisor management (default command).
     Run(Box<run::RunArgs>),
+    /// Manage durable reusable execution environments.
+    Env(env::EnvArgs),
     /// Show the selected Run's process, filesystem, and network status.
     Status(runtime::StatusArgs),
     /// Open a read-only shell or run a command against a Run workspace.
@@ -40,6 +43,12 @@ pub fn main() -> anyhow::Result<()> {
                 std::process::exit(code);
             }
         }
+        Command::Env(args) => {
+            let code = env::run(args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         Command::Status(args) => runtime::status(args)?,
         Command::Inspect(args) => {
             let code = runtime::inspect(args)?;
@@ -55,7 +64,7 @@ pub fn main() -> anyhow::Result<()> {
 
 fn normalize_default_run(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let first = args.get(1).and_then(|value| value.to_str());
-    let reserved = ["run", "status", "inspect", "apply", "drop", "help"];
+    let reserved = ["run", "env", "status", "inspect", "apply", "drop", "help"];
     if first.is_some_and(|value| {
         !reserved.contains(&value) && value != "--help" && value != "-h" && value != "--version"
     }) {
@@ -76,6 +85,12 @@ mod tests {
             vec!["pvisor", "apply", "run-1"],
             vec!["pvisor", "apply", "run-1", "--target", "/tmp/restored"],
             vec!["pvisor", "drop", "run-1"],
+            vec!["pvisor", "env", "create", "demo", "--target", "/tmp"],
+            vec!["pvisor", "env", "exec", "demo", "--", "/bin/true"],
+            vec!["pvisor", "env", "shell", "demo"],
+            vec!["pvisor", "env", "list"],
+            vec!["pvisor", "env", "status", "demo"],
+            vec!["pvisor", "env", "delete", "demo", "--force"],
             vec!["pvisor", "run", "--", "/usr/bin/true"],
         ] {
             Cli::try_parse_from(args).expect("valid pvisor command");

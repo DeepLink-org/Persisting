@@ -21,6 +21,11 @@ pVisor
 RunHandle::wait / cancel / events
 ```
 
+The Run id is also the Gateway root-session id. A Run becomes terminal only
+after driver teardown, local RunRecord persistence, and terminal-event sink
+acceptance; finalization failure is reported as a retryable infrastructure
+failure rather than a successful Run with warnings.
+
 There is no network control daemon. Hosts call the crate API directly;
 `persisting-control` is the shared state/transition protocol used by runtime
 drivers. A Run-local Unix socket exists only for discovery and owner-mediated
@@ -50,7 +55,7 @@ command = ["codex"]
 [overlayfs]
 mode = "overlay"
 target = "/path/to/project"
-backend = "redb"
+backend = "directory"
 commit = "manual"
 
 [overlaynet]
@@ -71,16 +76,29 @@ upstream = "https://api.openai.com/v1"
 ```text
 target (real FS) ──RO──┐
                        ├─► merged (Agent cwd)
-upper.redb (deltas) ───┘
+upper/ (deltas) ───────┘
 
-Attempt ends → unmount, keep upper.redb
+Attempt ends → unmount, keep upper/
   → pvisor status|inspect|apply|drop
 ```
 
-The upper is one exclusive backend: either a redb file or a directory tree.
-The default redb backend stores contents and metadata directly and never
-creates a parallel materialized upper directory. Use `backend = "directory"`
-with optional `upper_dir`/`work_dir` for the traditional layout.
+The upper is one exclusive backend: a directory tree or a named Jujutsu
+workspace. Directory is the default backend and accepts optional
+`upper_dir`/`work_dir` paths.
+
+Use `backend = "jujutsu"` with `jujutsu_store` and `jujutsu_workspace` in the
+pVisor run configuration when multiple Attempts should keep independent heads
+in one shared `jj-lib` repository. The CLI selects both with one stage address,
+for example `--overlayfs-stage jj:/tmp/shared.jj@fork-a`. Reusable environments
+can use the same model directly:
+
+```bash
+pvisor env create experiment-a --backend jujutsu --target ./project
+pvisor env create experiment-b --backend jujutsu --target ./project
+```
+
+Both environments use `<env-root>/.jujutsu` by default but retain separate
+working-copy commits and directory uppers.
 
 ### Embedded overlay runtime
 
@@ -119,13 +137,13 @@ timestamps and xattrs, and processes opaque markers before staged children.
 
 - `pvisor run --workspace DIR [DRIVER OPTIONS] -- <agent>`
 - `pvisor run --config run.toml [OVERRIDES] [-- <agent>]`
-- `pvisor status [RUN|STAGE|UPPER|DB]`
-- `pvisor inspect [RUN|STAGE|UPPER|DB] [-- COMMAND...]`
-- `pvisor apply|drop [RUN|STAGE|UPPER|DB]`
+- `pvisor status [RUN|STAGE|UPPER]`
+- `pvisor inspect [RUN|STAGE|UPPER] [-- COMMAND...]`
+- `pvisor apply|drop [RUN|STAGE|UPPER]`
 
 Each Run writes `run.json`, `lease.lock`, and (while live) `control.sock` next
 to `overlay.json`. `status` uses these records to aggregate process, network,
 and filesystem state. `inspect` creates a separate kernel-read-only view of the
-same upper; the owning pVisor creates that view for a live Redb Run.
+same upper; the owning pVisor creates that view for a live Run.
 
 Capture is a Gateway capability, not pVisor's component identity.

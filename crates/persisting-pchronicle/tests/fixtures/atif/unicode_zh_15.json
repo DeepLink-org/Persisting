@@ -1,0 +1,295 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "fixture-unicode_zh_15",
+  "trajectory_id": "run-unicode_zh_15",
+  "agent": {
+    "name": "pchronicle-fixture-agent",
+    "version": "1.0.0",
+    "model_name": "fixture-model-v1",
+    "tool_definitions": [
+      {
+        "description": "Search deterministic fixture data",
+        "name": "knowledge_search"
+      },
+      {
+        "description": "Evaluate an arithmetic expression",
+        "name": "calculator"
+      }
+    ],
+    "extra": {
+      "case": "unicode_zh_15",
+      "generator": "generate_atif_corpus"
+    }
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-06-15T09:00:01Z",
+      "source": "system",
+      "message": "第 1 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 1
+      }
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-06-15T09:00:02Z",
+      "source": "user",
+      "message": "第 2 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 2
+      },
+      "is_copied_context": false
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-06-15T09:00:03Z",
+      "source": "agent",
+      "model_name": "fixture-model-v1",
+      "reasoning_effort": "medium",
+      "message": "第 3 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "reasoning_content": "Check constraints for step 3, select evidence, then answer.",
+      "metrics": {
+        "completion_tokens": 41,
+        "latency_ms": 46,
+        "prompt_tokens": 153,
+        "ttft_ms": 12
+      },
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 3
+      },
+      "llm_call_count": 1,
+      "is_copied_context": false
+    },
+    {
+      "step_id": 4,
+      "timestamp": "2026-06-15T09:00:04Z",
+      "source": "user",
+      "message": "第 4 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 4
+      },
+      "is_copied_context": false
+    },
+    {
+      "step_id": 5,
+      "timestamp": "2026-06-15T09:00:05Z",
+      "source": "agent",
+      "model_name": "fixture-model-v1",
+      "reasoning_effort": "high",
+      "message": "第 5 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "reasoning_content": "Check constraints for step 5, select evidence, then answer.",
+      "metrics": {
+        "completion_tokens": 47,
+        "latency_ms": 50,
+        "prompt_tokens": 175,
+        "ttft_ms": 14
+      },
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 5
+      },
+      "llm_call_count": 1,
+      "is_copied_context": true
+    },
+    {
+      "step_id": 6,
+      "timestamp": "2026-06-15T09:00:06Z",
+      "source": "user",
+      "message": "第 6 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 6
+      },
+      "is_copied_context": false
+    },
+    {
+      "step_id": 7,
+      "timestamp": "2026-06-15T09:00:07Z",
+      "source": "agent",
+      "model_name": "fixture-model-v1",
+      "reasoning_effort": "medium",
+      "message": "第 7 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "reasoning_content": "Check constraints for step 7, select evidence, then answer.",
+      "metrics": {
+        "completion_tokens": 53,
+        "latency_ms": 54,
+        "prompt_tokens": 197,
+        "ttft_ms": 16
+      },
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 7
+      },
+      "llm_call_count": 1,
+      "is_copied_context": false
+    },
+    {
+      "step_id": 8,
+      "timestamp": "2026-06-15T09:00:08Z",
+      "source": "user",
+      "message": "第 8 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 8
+      },
+      "is_copied_context": false
+    },
+    {
+      "step_id": 9,
+      "timestamp": "2026-06-15T09:00:09Z",
+      "source": "agent",
+      "model_name": "fixture-model-v1",
+      "reasoning_effort": "high",
+      "message": "第 9 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "reasoning_content": "Check constraints for step 9, select evidence, then answer.",
+      "tool_calls": [
+        {
+          "tool_call_id": "unicode_zh_15-step-9-call-0",
+          "function_name": "knowledge_search",
+          "arguments": {
+            "limit": 5,
+            "query": "unicode_zh_15 topic 9"
+          },
+          "extra": {
+            "cache_hit": true,
+            "duration_ms": 16
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "content": "deterministic result 9-0: alpha beta gamma",
+            "source_call_id": "unicode_zh_15-step-9-call-0",
+            "status": "success"
+          }
+        ]
+      },
+      "metrics": {
+        "completion_tokens": 59,
+        "latency_ms": 58,
+        "prompt_tokens": 219,
+        "ttft_ms": 18
+      },
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 9
+      },
+      "llm_call_count": 1,
+      "is_copied_context": false
+    },
+    {
+      "step_id": 10,
+      "timestamp": "2026-06-15T09:00:10Z",
+      "source": "user",
+      "message": "第 10 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 10
+      },
+      "is_copied_context": true
+    },
+    {
+      "step_id": 11,
+      "timestamp": "2026-06-15T09:00:11Z",
+      "source": "agent",
+      "model_name": "fixture-model-v1",
+      "reasoning_effort": "medium",
+      "message": "第 11 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "reasoning_content": "Check constraints for step 11, select evidence, then answer.",
+      "metrics": {
+        "completion_tokens": 65,
+        "latency_ms": 62,
+        "prompt_tokens": 241,
+        "ttft_ms": 20
+      },
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 11
+      },
+      "llm_call_count": 1,
+      "is_copied_context": false
+    },
+    {
+      "step_id": 12,
+      "timestamp": "2026-06-15T09:00:12Z",
+      "source": "user",
+      "message": "第 12 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 12
+      },
+      "is_copied_context": false
+    },
+    {
+      "step_id": 13,
+      "timestamp": "2026-06-15T09:00:13Z",
+      "source": "agent",
+      "model_name": "fixture-model-v1",
+      "reasoning_effort": "high",
+      "message": "第 13 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "reasoning_content": "Check constraints for step 13, select evidence, then answer.",
+      "metrics": {
+        "completion_tokens": 71,
+        "latency_ms": 66,
+        "prompt_tokens": 263,
+        "ttft_ms": 22
+      },
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 13
+      },
+      "llm_call_count": 1,
+      "is_copied_context": false
+    },
+    {
+      "step_id": 14,
+      "timestamp": "2026-06-15T09:00:14Z",
+      "source": "user",
+      "message": "第 14 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 14
+      },
+      "is_copied_context": false
+    },
+    {
+      "step_id": 15,
+      "timestamp": "2026-06-15T09:00:15Z",
+      "source": "agent",
+      "model_name": "fixture-model-v1",
+      "reasoning_effort": "medium",
+      "message": "第 15 轮：验证中文、标点与 Unicode 数据的无损存储。",
+      "reasoning_content": "Check constraints for step 15, select evidence, then answer.",
+      "metrics": {
+        "completion_tokens": 77,
+        "latency_ms": 70,
+        "prompt_tokens": 285,
+        "ttft_ms": 24
+      },
+      "extra": {
+        "fixture_case": "unicode_zh_15",
+        "ordinal": 15
+      },
+      "llm_call_count": 1,
+      "is_copied_context": true
+    }
+  ],
+  "notes": "Deterministic unicode_zh_15 fixture for conversion and storage benchmarks.",
+  "final_metrics": {
+    "fixture": true,
+    "steps": 15
+  },
+  "extra": {
+    "coverage": {
+      "multimodal": false,
+      "reasoning": true,
+      "tools": true
+    }
+  }
+}

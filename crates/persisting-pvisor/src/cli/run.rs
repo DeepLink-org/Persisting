@@ -70,8 +70,45 @@ struct OverlayFsOverrides {
     overlayfs_lower: Vec<PathBuf>,
     #[arg(long, value_enum)]
     overlayfs_backend: Option<OverlayFsBackend>,
+    /// Versioned upper stage, for example `jj:/tmp/shared.jj@fork-a`.
+    #[arg(
+        long,
+        value_name = "BACKEND:STORE@FORK",
+        conflicts_with = "overlayfs_backend"
+    )]
+    overlayfs_stage: Option<OverlayFsStage>,
     #[arg(long, value_enum)]
     overlayfs_commit: Option<OverlayFsCommit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OverlayFsStage {
+    Jujutsu { store: PathBuf, workspace: String },
+}
+
+impl FromStr for OverlayFsStage {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let Some(address) = value.strip_prefix("jj:") else {
+            return Err(format!(
+                "unsupported OverlayFS stage {value:?}; expected jj:<store>@<fork>"
+            ));
+        };
+        let Some((store, workspace)) = address.rsplit_once('@') else {
+            return Err("invalid Jujutsu stage; expected jj:<store>@<fork>".into());
+        };
+        if store.is_empty() {
+            return Err("invalid Jujutsu stage: store path cannot be empty".into());
+        }
+        if workspace.is_empty() {
+            return Err("invalid Jujutsu stage: fork name cannot be empty".into());
+        }
+        Ok(Self::Jujutsu {
+            store: PathBuf::from(store),
+            workspace: workspace.to_owned(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Args)]
@@ -326,6 +363,15 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
     if let Some(value) = args.overlayfs.overlayfs_backend {
         config.overlayfs.backend = value;
     }
+    if let Some(stage) = args.overlayfs.overlayfs_stage {
+        match stage {
+            OverlayFsStage::Jujutsu { store, workspace } => {
+                config.overlayfs.backend = OverlayFsBackend::Jujutsu;
+                config.overlayfs.jujutsu_store = Some(store);
+                config.overlayfs.jujutsu_workspace = Some(workspace);
+            }
+        }
+    }
     if let Some(value) = args.overlayfs.overlayfs_commit {
         config.overlayfs.commit = value;
     }
@@ -489,9 +535,11 @@ fn resolve_overlay(
         lower_dirs: lowers,
         stage_dir: Some(workspace.to_path_buf()),
         backend: match config.overlayfs.backend {
-            OverlayFsBackend::Redb => OverlayBackend::Redb,
             OverlayFsBackend::Directory => OverlayBackend::Directory,
+            OverlayFsBackend::Jujutsu => OverlayBackend::Jujutsu,
         },
+        jujutsu_store_path: config.overlayfs.jujutsu_store.clone(),
+        jujutsu_workspace: config.overlayfs.jujutsu_workspace.clone(),
         auto_apply: config.overlayfs.commit == OverlayFsCommit::Apply,
         auto_discard: config.overlayfs.commit == OverlayFsCommit::Drop,
         ..OverlayHint::default()
@@ -588,5 +636,74 @@ mod tests {
         };
         apply_cli(&mut config, *args);
         assert_eq!(config.overlaynet.allow, ["new.example"]);
+    }
+
+    #[test]
+    fn cli_selects_named_workspace_in_shared_jujutsu_store() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--overlayfs-stage",
+            "jj:/tmp/shared.jj@fork-a",
+            "--",
+            "true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args);
+        assert_eq!(config.overlayfs.backend, OverlayFsBackend::Jujutsu);
+        assert_eq!(
+            config.overlayfs.jujutsu_store.as_deref(),
+            Some(Path::new("/tmp/shared.jj"))
+        );
+        assert_eq!(
+            config.overlayfs.jujutsu_workspace.as_deref(),
+            Some("fork-a")
+        );
+    }
+
+    #[test]
+    fn overlayfs_stage_uses_the_final_at_sign_as_the_fork_separator() {
+        assert_eq!(
+            "jj:/tmp/user@example/store@fork-a"
+                .parse::<OverlayFsStage>()
+                .unwrap(),
+            OverlayFsStage::Jujutsu {
+                store: PathBuf::from("/tmp/user@example/store"),
+                workspace: "fork-a".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn overlayfs_stage_rejects_incomplete_addresses() {
+        for value in [
+            "unsupported:/tmp/store@fork-a",
+            "jj:/tmp/store",
+            "jj:@fork-a",
+            "jj:/tmp/store@",
+        ] {
+            assert!(value.parse::<OverlayFsStage>().is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn overlayfs_stage_conflicts_with_an_explicit_backend() {
+        let error = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--overlayfs-backend",
+            "directory",
+            "--overlayfs-stage",
+            "jj:/tmp/shared.jj@fork-a",
+            "--",
+            "true",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }

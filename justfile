@@ -34,6 +34,7 @@ default:
     @echo "  ./scripts/test_suite.sh  # 集成测试套件（shell）"
     @echo "  just ci                  # CI 近似全量"
     @echo "  just py-dev              # maturin develop（Python 扩展）"
+    @echo "  just install-cli         # 安装统一 CLI、pvisor、ppilot 和匹配引擎"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just capture-all         # 全部 capture 集成"
     @echo "  just docs-serve          # 本地文档"
@@ -89,9 +90,24 @@ regression profile="debug":
 
 build profile="debug":
     cargo build -p persisting-cli -p persisting-engine {{ if profile == "release" { "--release" } else { "" } }}
+    cargo build -p persisting-pvisor --bin pvisor {{ if profile == "release" { "--release" } else { "" } }}
+    cargo build -p persisting-ppilot --features cli --bin ppilot {{ if profile == "release" { "--release" } else { "" } }}
 
 build-release:
     just build profile=release
+
+# Install the complete component set expected by the unified `persisting` CLI.
+# The engine shared library is installed beside the binaries for lazy discovery.
+install-cli:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
+    cargo install --path crates/persisting-cli --locked --force --root "$install_root"
+    cargo install --path crates/persisting-pvisor --locked --force --root "$install_root"
+    cargo install --path crates/persisting-ppilot --features cli --locked --force --root "$install_root"
+    cargo build -p persisting-engine --release --locked
+    cp "target/release/{{ engine_filename }}" "$install_root/bin/{{ engine_filename }}"
+    printf 'Installed Persisting component set in %s/bin\n' "$install_root"
 
 # maturin release wheel（当前平台）→ dist/
 build-wheel:

@@ -15,6 +15,10 @@ pub struct OverlayHint {
     pub upper_dir: Option<PathBuf>,
     /// Work directory required by overlay implementations.
     pub work_dir: Option<PathBuf>,
+    /// Shared Jujutsu repository root for all OverlayFS forks.
+    pub jujutsu_store_path: Option<PathBuf>,
+    /// Jujutsu workspace/fork name within the shared repository.
+    pub jujutsu_workspace: Option<String>,
     /// Merged mount point visible to the Agent as cwd/root when set.
     pub merged_dir: Option<PathBuf>,
     /// Writable staging representation.

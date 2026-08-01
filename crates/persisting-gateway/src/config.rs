@@ -59,13 +59,17 @@ pub struct OverlayConfig {
     /// `{capture_storage}/.overlay/{session_id}/`.
     #[serde(default)]
     pub stage_dir: Option<String>,
-    /// Writable upper backend. `redb` is the default; `directory` preserves
-    /// the traditional fuse-overlayfs staging layout.
+    /// Writable upper backend. `directory` is the default; `jujutsu` adds
+    /// named persistent forks in a shared repository.
     #[serde(default)]
     pub backend: OverlayBackend,
-    /// redb database path (overrides `{stage_dir}/upper.redb`).
+    /// Shared Jujutsu store. All named workspaces use the same object store and
+    /// operation log (overrides `{storage}/.overlay/jujutsu`).
     #[serde(default)]
-    pub database_path: Option<String>,
+    pub jujutsu_store_path: Option<String>,
+    /// Jujutsu workspace/fork name (defaults to the pVisor session id).
+    #[serde(default)]
+    pub jujutsu_workspace: Option<String>,
     /// Writable upper directory (overrides `{stage_dir}/upper` when set).
     #[serde(default)]
     pub upper_dir: Option<String>,
@@ -87,9 +91,9 @@ pub struct OverlayConfig {
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayBackend {
-    Directory,
     #[default]
-    Redb,
+    Directory,
+    Jujutsu,
 }
 
 fn default_admin_listen() -> String {
@@ -190,18 +194,16 @@ impl ProxyConfig {
             anyhow::bail!("overlay auto_apply and auto_discard are mutually exclusive");
         }
         match self.overlay.backend {
-            OverlayBackend::Redb => {
-                if self.overlay.upper_dir.is_some() || self.overlay.work_dir.is_some() {
-                    anyhow::bail!(
-                        "overlay backend `redb` cannot be combined with upper_dir or work_dir"
-                    );
+            OverlayBackend::Directory => {
+                if self.overlay.jujutsu_store_path.is_some()
+                    || self.overlay.jujutsu_workspace.is_some()
+                {
+                    anyhow::bail!("overlay backend `directory` cannot use Jujutsu options");
                 }
             }
-            OverlayBackend::Directory => {
-                if self.overlay.database_path.is_some() {
-                    anyhow::bail!(
-                        "overlay backend `directory` cannot be combined with database_path"
-                    );
+            OverlayBackend::Jujutsu => {
+                if self.overlay.upper_dir.is_some() || self.overlay.work_dir.is_some() {
+                    anyhow::bail!("overlay backend `jujutsu` cannot use directory upper options");
                 }
             }
         }

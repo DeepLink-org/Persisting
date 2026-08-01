@@ -73,6 +73,19 @@ impl RunRecord {
         let path = stage.join(RUN_META_FILENAME);
         Ok(serde_json::from_slice(&fs::read(&path)?)?)
     }
+
+    pub fn remove_index(&self) -> anyhow::Result<()> {
+        let path = self
+            .storage
+            .join(".pvisor")
+            .join("runs")
+            .join(format!("{}.json", encode_id(&self.run_id)));
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,7 +148,7 @@ pub struct ControlOverlayStatus {
 }
 
 /// Attempt-scoped local control endpoint. The owning pVisor creates read-only
-/// views so a second CLI process never has to reopen a live Redb writer.
+/// views so a second CLI process never interferes with a live writable mount.
 pub struct RunControlServer {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
@@ -432,7 +445,14 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
                             OverlayUpper::Directory { upper_dir, .. } => {
                                 path_within(&absolute, upper_dir)
                             }
-                            OverlayUpper::Redb { database_path } => absolute == *database_path,
+                            OverlayUpper::Jujutsu {
+                                store_path,
+                                upper_dir,
+                                ..
+                            } => {
+                                path_within(&absolute, upper_dir)
+                                    || path_within(&absolute, store_path)
+                            }
                         }
                 }) {
                     return Ok(record);

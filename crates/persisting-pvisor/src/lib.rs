@@ -33,6 +33,6 @@ pub use event::{EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher};
 pub use executor::{AttemptContext, RunExecutor};
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;
-pub use pvisor::{PVisor, PVisorBuilder, PVisorError, RunEventStream, RunHandle};
+pub use pvisor::{PVisor, PVisorBuilder, PVisorError, RunCancellation, RunEventStream, RunHandle};
 pub use runtime::{ImplantPlan, OverlayHint, RuntimeCapabilities};
 pub use util::unix_now_ms;

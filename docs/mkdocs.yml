@@ -105,7 +105,7 @@ plugins:
             Trajectory Storage: 轨迹存储模型
             Trajectory Format: 轨迹 Markdown 格式
             CLI Architecture: CLI 整体架构
-            Traj CLI: Traj 命令
+            History / Eval / Gateway CLI: History / Eval / Gateway 命令
             Capture CLI: Capture 子命令
             Search CLI: Search 命令
             pPilot Architecture: pPilot 架构
@@ -143,7 +143,8 @@ nav:
       - TTAS types: api/tensor-address-space.md
       - CLI architecture and loading: design/cli.md
       - pVisor command reference: design/cli-pvisor.md
-      - traj command reference: design/cli-traj.md
+      - pPilot command reference: design/cli-ppilot.md
+      - history, eval, and gateway command reference: design/cli-history.md
       - search command reference: design/cli-search.md
   - Architecture & Internals:
       - Overview and maturity: design/index.md
@@ -155,6 +156,7 @@ nav:
       - pPilot orchestration: design/ppilot.md
       - pChronicle history store:
           - Trajectory storage: design/trajectory.md
+          - Storyline three-table Lance: design/storyline-lance.md
           - Trajectory Markdown format: design/trajectory-format.md
       - Queue persistence: design/architecture.md
       - Tensor memory (experimental):

@@ -5,17 +5,15 @@
 //! and fuse-overlayfs-compatible CLI wrapper around this library.
 
 mod core;
-mod db_apply;
-mod db_store;
 mod fs;
-mod snapshot;
+mod jj_backend;
 mod sys;
 
 use anyhow::{bail, Context, Result};
-pub use db_apply::{apply_redb_upper, discard_redb_upper, redb_upper_status, RedbUpperStatus};
 use fs::OverlayFs;
 use fuser::{BackgroundSession, MountOption, Session};
-use snapshot::SnapshotFilesystem;
+use jj_backend::JujutsuWorkspace;
+pub use jj_backend::{jujutsu_upper_dir, snapshot_jujutsu_upper};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,8 +24,9 @@ pub enum UpperBackend {
         upper_dir: PathBuf,
         work_dir: Option<PathBuf>,
     },
-    Redb {
-        database_path: PathBuf,
+    Jujutsu {
+        store_path: PathBuf,
+        workspace: String,
     },
 }
 
@@ -70,9 +69,17 @@ impl OverlayMountConfig {
         }
     }
 
-    pub fn new_redb(lower_dirs: Vec<PathBuf>, database_path: PathBuf, mountpoint: PathBuf) -> Self {
+    pub fn new_jujutsu(
+        lower_dirs: Vec<PathBuf>,
+        store_path: PathBuf,
+        workspace: String,
+        mountpoint: PathBuf,
+    ) -> Self {
         let mut config = Self::new(lower_dirs, PathBuf::new(), None, mountpoint);
-        config.upper = UpperBackend::Redb { database_path };
+        config.upper = UpperBackend::Jujutsu {
+            store_path,
+            workspace,
+        };
         config
     }
 }
@@ -80,6 +87,7 @@ impl OverlayMountConfig {
 #[derive(Debug)]
 pub struct OverlaySession {
     background: Option<BackgroundSession>,
+    jujutsu: Option<JujutsuWorkspace>,
     mountpoint: PathBuf,
 }
 
@@ -100,20 +108,24 @@ impl OverlaySession {
     }
 
     fn unmount_inner(&mut self) -> Result<()> {
-        let Some(background) = self.background.take() else {
-            return Ok(());
-        };
-        background
-            .unmount()
-            .context("unmount FUSE session and stop request loop")?;
-        for _ in 0..250 {
-            if !is_mountpoint(&self.mountpoint) {
-                return Ok(());
+        if let Some(background) = self.background.take() {
+            background
+                .unmount()
+                .context("unmount FUSE session and stop request loop")?;
+            for _ in 0..250 {
+                if !is_mountpoint(&self.mountpoint) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
-            std::thread::sleep(Duration::from_millis(20));
+            if is_mountpoint(&self.mountpoint) {
+                bail!("FUSE mount did not detach: {}", self.mountpoint.display());
+            }
         }
-        if is_mountpoint(&self.mountpoint) {
-            bail!("FUSE mount did not detach: {}", self.mountpoint.display());
+        if let Some(workspace) = self.jujutsu.take() {
+            workspace
+                .snapshot()
+                .context("snapshot Jujutsu overlay workspace")?;
         }
         Ok(())
     }
@@ -126,52 +138,40 @@ impl Drop for OverlaySession {
 }
 
 pub fn mount(config: OverlayMountConfig) -> Result<OverlaySession> {
-    let (filesystem, mountpoint, options) = prepare(config)?;
-    let background = match filesystem {
-        FilesystemBackend::Directory(filesystem) => {
-            let session = Session::new(filesystem, &mountpoint, &options)
-                .with_context(|| format!("mount {}", mountpoint.display()))?;
-            BackgroundSession::new(session)
-        }
-        FilesystemBackend::Redb(filesystem) => {
-            let session = Session::new(filesystem, &mountpoint, &options)
-                .with_context(|| format!("mount {}", mountpoint.display()))?;
-            BackgroundSession::new(session)
-        }
-    }
-    .context("start FUSE request loop")?;
+    let (filesystem, mountpoint, options, jujutsu) = prepare(config)?;
+    let session = Session::new(filesystem, &mountpoint, &options)
+        .with_context(|| format!("mount {}", mountpoint.display()))?;
+    let background = BackgroundSession::new(session).context("start FUSE request loop")?;
     log::info!("persisting-overlayfs mounted at {}", mountpoint.display());
     Ok(OverlaySession {
         background: Some(background),
+        jujutsu,
         mountpoint,
     })
 }
 
 pub fn run_foreground(config: OverlayMountConfig) -> Result<()> {
-    let (filesystem, mountpoint, options) = prepare(config)?;
+    let (filesystem, mountpoint, options, jujutsu) = prepare(config)?;
     log::info!("persisting-overlayfs mounted at {}", mountpoint.display());
-    match filesystem {
-        FilesystemBackend::Directory(filesystem) => {
-            let mut session = Session::new(filesystem, &mountpoint, &options)
-                .with_context(|| format!("mount {}", mountpoint.display()))?;
-            session.run().context("FUSE session")
-        }
-        FilesystemBackend::Redb(filesystem) => {
-            let mut session = Session::new(filesystem, &mountpoint, &options)
-                .with_context(|| format!("mount {}", mountpoint.display()))?;
-            session.run().context("FUSE session")
-        }
+    let mut session = Session::new(filesystem, &mountpoint, &options)
+        .with_context(|| format!("mount {}", mountpoint.display()))?;
+    session.run().context("FUSE session")?;
+    if let Some(workspace) = jujutsu {
+        workspace
+            .snapshot()
+            .context("snapshot Jujutsu overlay workspace")?;
     }
-}
-
-enum FilesystemBackend {
-    Directory(OverlayFs),
-    Redb(SnapshotFilesystem),
+    Ok(())
 }
 
 fn prepare(
     mut config: OverlayMountConfig,
-) -> Result<(FilesystemBackend, PathBuf, Vec<MountOption>)> {
+) -> Result<(
+    OverlayFs,
+    PathBuf,
+    Vec<MountOption>,
+    Option<JujutsuWorkspace>,
+)> {
     if config.lower_dirs.is_empty() {
         bail!("lowerdir must list at least one path");
     }
@@ -187,11 +187,9 @@ fn prepare(
                     .with_context(|| format!("create workdir {}", work.display()))?;
             }
         }
-        UpperBackend::Redb { database_path } => {
-            if let Some(parent) = database_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("create database parent {}", parent.display()))?;
-            }
+        UpperBackend::Jujutsu { store_path, .. } => {
+            std::fs::create_dir_all(store_path)
+                .with_context(|| format!("create Jujutsu store {}", store_path.display()))?;
         }
     }
     let fskit = config.backend.as_deref() == Some("fskit");
@@ -216,20 +214,13 @@ fn prepare(
                 .transpose()
                 .context("canonicalize workdir")?,
         },
-        UpperBackend::Redb { database_path } => {
-            let database_path = if database_path.exists() {
-                std::fs::canonicalize(database_path)?
-            } else {
-                let parent = database_path
-                    .parent()
-                    .context("database path must have a parent")?;
-                let name = database_path
-                    .file_name()
-                    .context("database path must have a file name")?;
-                std::fs::canonicalize(parent)?.join(name)
-            };
-            UpperBackend::Redb { database_path }
-        }
+        UpperBackend::Jujutsu {
+            store_path,
+            workspace,
+        } => UpperBackend::Jujutsu {
+            store_path: std::fs::canonicalize(store_path)?,
+            workspace,
+        },
     };
     config.lower_dirs = config
         .lower_dirs
@@ -262,7 +253,9 @@ fn prepare(
             UpperBackend::Directory { upper_dir, .. } => {
                 upper_dir.starts_with(lower) || lower.starts_with(upper_dir)
             }
-            UpperBackend::Redb { database_path } => database_path.starts_with(lower),
+            UpperBackend::Jujutsu { store_path, .. } => {
+                store_path.starts_with(lower) || lower.starts_with(store_path)
+            }
         };
         if upper_overlaps || mountpoint.starts_with(lower) || lower.starts_with(&mountpoint) {
             bail!(
@@ -302,13 +295,23 @@ fn prepare(
         }
     }
 
+    let mut jujutsu = None;
     let filesystem = match config.upper {
         UpperBackend::Directory {
             upper_dir,
             work_dir,
-        } => FilesystemBackend::Directory(OverlayFs::new(config.lower_dirs, upper_dir, work_dir)?),
-        UpperBackend::Redb { database_path } => {
-            FilesystemBackend::Redb(SnapshotFilesystem::new(config.lower_dirs, database_path)?)
+        } => OverlayFs::new(config.lower_dirs, upper_dir, work_dir)?,
+        UpperBackend::Jujutsu {
+            store_path,
+            workspace,
+        } => {
+            let workspace = JujutsuWorkspace::open(store_path, workspace, config.read_only)?;
+            let upper_dir = workspace.upper_dir().to_path_buf();
+            let filesystem = OverlayFs::new(config.lower_dirs, upper_dir, None)?;
+            if !config.read_only {
+                jujutsu = Some(workspace);
+            }
+            filesystem
         }
     };
     let mut options = vec![MountOption::FSName(config.fsname)];
@@ -330,7 +333,7 @@ fn prepare(
     if config.read_only {
         options.push(MountOption::RO);
     }
-    Ok((filesystem, mountpoint, options))
+    Ok((filesystem, mountpoint, options, jujutsu))
 }
 
 fn is_mountpoint(path: &Path) -> bool {

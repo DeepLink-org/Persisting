@@ -1,8 +1,9 @@
-# `persisting trajectory` / `traj` — 轨迹 CLI
+# `persisting history` / `eval` / `gateway` — 命令参考
 
-**`traj`** 是 pChronicle 轨迹数据入口：负责 import 与 stats/replay/materialize 等数据操作。实时执行和 Gateway 生命周期由并列的 `pvisor run` / `persisting traj proxy` 命令负责。
+轨迹命令按职责拆为三个稳定入口：`history` 负责数据生命周期，`eval` 负责评测，
+`gateway` 负责长期采集服务。pChronicle 只提供底层存储和查询能力。
 
-短名：**`traj`**（`trajectory` 全名）。单 Run 实时采集由 [`pvisor run`](cli-pvisor.md) 负责。
+单 Run 实时采集由 [`persisting execute`](cli-pvisor.md) 负责。
 
 ---
 
@@ -25,11 +26,11 @@ Subagent：`{run}/subagents/{session_id}/`。路径可传 session 目录，CLI �
 
 | 命令 | 说明 |
 |------|------|
-| **`pvisor run`** | 一次性：进程内代理 + 子命令 |
-| **`persisting traj proxy`** | 前台长期代理 |
-| **`persisting traj proxy start\|stop\|list\|status`** | 守护进程生命周期与观测 |
-| **`traj import`** | IDE / 网关日志事后导入 |
-| **`traj replay-dead-letter`** | 重放 `.capture/dead_letter.jsonl` |
+| **`persisting execute`** | 一次性：进程内代理 + 子命令 |
+| **`persisting gateway serve`** | 前台长期代理 |
+| **`persisting gateway start\|stop\|list\|status`** | 守护进程生命周期与观测 |
+| **`persisting history import`** | IDE / 网关日志事后导入 |
+| **`persisting history replay-dead-letter`** | 重放 `.capture/dead_letter.jsonl` |
 
 ### Egress（读写 store）
 
@@ -43,15 +44,15 @@ Subagent：`{run}/subagents/{session_id}/`。路径可传 session 目录，CLI �
 | **materialize** | Lance → Markdown 全量物化 |
 
 ```text
-pvisor run     [OPTIONS] -- <CMD>
-persisting traj proxy         -o DIR -c FILE [OPTIONS]
-persisting traj proxy start   -o DIR -c FILE [OPTIONS]
-persisting traj add           <STORAGE> [OPTIONS]
-persisting traj truncate  <STORAGE> [OPTIONS]
-persisting traj stats     <STORAGE> [OPTIONS]
-persisting traj replay    <STORAGE> [OPTIONS]
-persisting traj extract   <STORAGE> <OUT_DIR> [OPTIONS]
-persisting traj materialize <STORAGE> [OPTIONS]
+persisting execute             [OPTIONS] -- <CMD>
+persisting gateway serve       -o DIR -c FILE [OPTIONS]
+persisting gateway start       -o DIR -c FILE [OPTIONS]
+persisting history add         <STORAGE> [OPTIONS]
+persisting history truncate    <STORAGE> [OPTIONS]
+persisting history stats       <STORAGE> [OPTIONS]
+persisting history replay      <STORAGE> [OPTIONS]
+persisting history extract     <STORAGE> <OUT_DIR> [OPTIONS]
+persisting history materialize <STORAGE> [OPTIONS]
 ```
 
 实现：`persisting-pchronicle` 拥有格式、路径、Lance/Markdown store 与领域服务；`persisting-engine` 只保留 CLI 动态 ABI 的 RPC 适配。
@@ -78,19 +79,19 @@ persisting traj materialize <STORAGE> [OPTIONS]
 
 ```bash
 # 追加 JSONL 到 Lance
-persisting traj add ./store --agent-id a --session-id s --format jsonl --input batch.jsonl --storage-format lance
+persisting history add ./store --agent-id a --session-id s --format jsonl --input batch.jsonl --storage-format lance
 
 # 截断 Lance（Markdown 需单独 materialize）
-persisting traj truncate ./store --agent-id a --session-id s --keep-rows 100
+persisting history truncate ./store --agent-id a --session-id s --keep-rows 100
 
 # 双层统计（只读；省略 --session-id 时扫描 agent 下所有 run / session 分区）
-persisting traj stats ./store --agent-id a --detail
+persisting history stats ./store --agent-id a --detail
 
 # 指定单个 header session UUID（Claude 对话分区）
-persisting traj stats ./store --agent-id a --root-session-id run-1 --session-id 58867536-…
+persisting history stats ./store --agent-id a --root-session-id run-1 --session-id 58867536-…
 
 # 从 Lance 补人读视图
-persisting traj materialize ./store --agent-id a --session-id s --root-session-id run-1
+persisting history materialize ./store --agent-id a --session-id s --root-session-id run-1
 ```
 
 ---
@@ -99,5 +100,5 @@ persisting traj materialize ./store --agent-id a --session-id s --root-session-i
 
 | 路径 | 入口 |
 |------|------|
-| 实时采集 | `pvisor run` / `persisting traj proxy`（Ingress + live md） |
-| 离线运维 | `traj stats` / `replay` / `materialize` / … |
+| 实时采集 | `persisting execute` / `persisting gateway serve`（Ingress + live md） |
+| 离线运维 | `persisting history stats` / `replay` / `materialize` / … |

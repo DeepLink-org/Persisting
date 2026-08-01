@@ -1,7 +1,7 @@
 # AgenticMD 轨迹格式
 
 AgenticMD 是 pChronicle 的人读轨迹表示：普通 Markdown 正文加可机器定位的块头。
-新文件使用 `{session_id}.md`；`0001.md` 与 `.tlv.md` 仅作为历史读取格式保留。
+文件统一使用 `{session_id}.md`，不读取编号文件或 `.tlv.md` 历史格式。
 
 ## 1. 文档结构
 
@@ -68,7 +68,7 @@ Markdown 模式下，Gateway 将可见对话投影为 AgenticMD：
 
 ## 5. 与 Lance 的关系
 
-AgenticMD 强调可读性，Lance events 强调保真和结构化查询。`traj materialize` 可以从
+AgenticMD 强调可读性，Lance events 强调保真和结构化查询。`history materialize` 可以从
 Lance 重建 AgenticMD；反向导入只能恢复 Markdown 中实际存在的信息，不能恢复被投影
 过滤掉的原始协议字段。
 

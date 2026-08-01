@@ -14,8 +14,7 @@ pub enum TrajectoryStorageCli {
     /// Read/stats: detect layer; append: detect target layer (`auto` → Lance if empty, else existing layer).
     #[default]
     Auto,
-    /// Lance raw event log (canonical). Legacy alias: `bin`.
-    #[value(name = "lance", alias = "bin")]
+    /// Lance raw event log (canonical).
     Lance,
     /// TLV Markdown session file (read/materialize view).
     Markdown,
@@ -33,7 +32,7 @@ impl From<TrajectoryStorageCli> for TrajectoryStorageFormat {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum TrajectoryAddFormat {
-    /// Infer from `--input` path (`0001.md` / legacy `.tlv.md` → markdown, `.jsonl` → jsonl, …).
+    /// Infer from `--input` path (`{session_id}.md` → markdown, `.jsonl` → jsonl, …).
     #[default]
     Auto,
     Toml,
@@ -78,7 +77,7 @@ impl TrajectoryFormatManager {
     }
 }
 
-/// Numbered session markdown (`0001.md`) or legacy `.tlv.md` → default append target Lance (parse TLV, write event log).
+/// Canonical session markdown (`{session_id}.md`) defaults to Lance append after parsing.
 pub fn infer_storage_format_from_path(input_path: &str) -> Option<TrajectoryStorageFormat> {
     if input_path == "-" {
         return None;
@@ -157,8 +156,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_md_uses_lance_storage_and_markdown_parser() {
-        let p = "examples/foo/0001.md";
+    fn canonical_session_md_uses_lance_storage_and_markdown_parser() {
+        let p = "examples/foo/run-20260101-example.md";
         assert_eq!(
             infer_storage_format_from_path(p),
             Some(TrajectoryStorageFormat::Lance)
@@ -166,15 +165,6 @@ mod tests {
         assert_eq!(
             TrajectoryFormatManager::resolve_add_format(p, TrajectoryAddFormat::Auto).unwrap(),
             TrajectoryAddFormat::Markdown
-        );
-    }
-
-    #[test]
-    fn legacy_tlv_md_input_still_lance_storage() {
-        let p = "examples/foo/trajectory.tlv.md";
-        assert_eq!(
-            infer_storage_format_from_path(p),
-            Some(TrajectoryStorageFormat::Lance)
         );
     }
 
@@ -194,12 +184,15 @@ mod tests {
     #[test]
     fn explicit_storage_overrides_filename() {
         assert_eq!(
-            TrajectoryFormatManager::resolve_storage_format("0001.md", TrajectoryStorageCli::Lance),
+            TrajectoryFormatManager::resolve_storage_format(
+                "run-20260101-example.md",
+                TrajectoryStorageCli::Lance
+            ),
             TrajectoryStorageFormat::Lance
         );
         assert_eq!(
             TrajectoryFormatManager::resolve_storage_format(
-                "0001.md",
+                "run-20260101-example.md",
                 TrajectoryStorageCli::Markdown
             ),
             TrajectoryStorageFormat::Markdown
