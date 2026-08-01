@@ -18,7 +18,7 @@ persisting-engine = { path = "../persisting-engine" }
 persisting-pchronicle = { path = "../persisting-pchronicle" }
 persisting-proto = { path = "../persisting-proto" }
 libc = "0.2"
-# 与 pyproject.toml `requires-python >=3.10` 一致；ABI3 Cargo 构建不探测本机 Python（见 `.cargo/config.toml`）。
+# 与 pyproject.toml `requires-python >=3.10` 一致；解释器选择见 `.cargo/config.toml`。
 pyo3 = { version = "0.23", default-features = false, features = ["abi3-py310", "macros"] }
 pythonize = "0.23"
 ron = "0.8"
