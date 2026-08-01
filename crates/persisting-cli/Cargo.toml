@@ -23,7 +23,6 @@ dirs = "6"
 libloading = "0.8"
 persisting-gateway = { path = "../persisting-gateway" }
 persisting-dlcapt = { path = "../persisting-dlcapt", optional = true }
-persisting-engine = { path = "../persisting-engine" }
 persisting-pchronicle = { path = "../persisting-pchronicle" }
 persisting-proto = { path = "../persisting-proto" }
 ron = "0.8"

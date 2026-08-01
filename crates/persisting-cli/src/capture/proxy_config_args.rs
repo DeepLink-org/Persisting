@@ -1,4 +1,4 @@
-//! Shared proxy config CLI flags + env vars for `traj capture` / `traj proxy`.
+//! Shared proxy config flags and environment variables for `gateway`.
 
 use std::path::PathBuf;
 
@@ -130,7 +130,11 @@ pub struct ResolvedProxyConfig {
 }
 
 impl ProxyConfigArgs {
-    pub fn materialize(&self, storage: &std::path::Path, cli_debug: bool) -> Result<ResolvedProxyConfig> {
+    pub fn materialize(
+        &self,
+        storage: &std::path::Path,
+        cli_debug: bool,
+    ) -> Result<ResolvedProxyConfig> {
         let mut input = self.input()?;
         if cli_debug {
             input.overrides.debug = Some(true);

@@ -1,17 +1,39 @@
 # CLI 整体架构
 
-`persisting` CLI 是**薄前端**：负责解析用户意图、序列化请求、展示结果；重逻辑（Search 用 Lance、轨迹用 Lance、检索索引）在**可独立发版的引擎**中运行。
+`persisting` 是面向用户的统一入口。它把单次执行和持久环境交给 pVisor，把批量编排和
+SQL 查询交给 pPilot，并直接提供历史维护、评测、搜索和 Gateway 管理。pChronicle 是
+底层存储与查询库，不提供独立命令行。
 
-`search` 与 `traj`（`trajectory`）子命令共用此架构；Run 的执行入口是独立的 `pvisor` 二进制。
+`pvisor` 和 `ppilot` 二进制仍保留为组件级、专家级入口，方便独立部署和调试；日常使用
+不需要记住它们。
 
-| 产品命令 | 对应 |
-|----------|------|
-| `pvisor [run]` | pVisor 前台 Run 入口，装配 Gateway/Control/OverlayNet/OverlayFS |
-| `pvisor status/inspect` | 根据 Run、stage、upper 或 DB 定位并观测/只读检查 |
-| `pvisor apply/drop` | 提交或丢弃已停止 Run 的 OverlayFS stage |
-| `persisting traj proxy` | 独立 Gateway 的前台/后台管理入口 |
+| 统一命令 | 实现边界 |
+|----------|----------|
+| `persisting execute`（别名 `exec`） | 转发到 `pvisor run`，创建一次性 Run |
+| `persisting env …` | 转发到 `pvisor env …`，管理可复用的持久 OverlayFS 环境 |
+| `persisting batch …` | 转发到 `ppilot run …`，批量编排 Run |
+| `persisting query …` | 转发到 `ppilot query …`，以 DataFusion SQL 查询 Lance/ATIF |
+| `persisting history …` | 导入、追加、转换、回放、统计和物化轨迹 |
+| `persisting eval …` | judge 与评测统计 |
+| `persisting search …` | Search 数据与索引 |
+| `persisting gateway …` | 长期 Gateway 服务和状态管理 |
 
-pPilot（`persisting-ppilot`）是**内部编排库**，不作为顶层 CLI 动词暴露。
+轨迹能力分别由 `history`、`eval` 和 `gateway` 提供，不再保留第二套轨迹命令树。
+
+```text
+persisting
+├── execute
+├── env
+│   ├── create / start / stop / exec / shell
+│   └── list / status / inspect / apply / drop / delete
+├── batch
+├── query
+├── history
+├── eval
+├── search
+└── gateway
+```
+查询实现和物理格式仍归 pChronicle 所有，pPilot 只拥有用户交互。
 
 ---
 
@@ -19,8 +41,8 @@ pPilot（`persisting-ppilot`）是**内部编排库**，不作为顶层 CLI 动�
 
 | 原则 | 说明 |
 |------|------|
-| **瘦 CLI** | 不静态链接 Lance 或引擎；启动快、二进制小 |
-| **动态引擎** | 运行时加载引擎库；CLI 与引擎可独立升级 |
+| **组件化 CLI** | `persisting`、`pvisor`、`ppilot` 作为匹配的组件集安装；统一入口按职责转发 |
+| **动态引擎** | Search 等旧引擎请求仍通过窄 ABI 惰性加载；pChronicle 历史格式由 CLI 直接链接 |
 | **版本门禁** | 加载时校验 ABI 版本，不兼容则拒绝执行 |
 | **异步任务** | 一次用户操作对应一个引擎 job，可报告进度 |
 | **文本协议** | CLI 与引擎之间用结构化文本（RON）交换请求与响应 |
@@ -29,11 +51,12 @@ pPilot（`persisting-ppilot`）是**内部编排库**，不作为顶层 CLI 动�
 用户命令
     │
     ▼
-CLI（解析 · 组装请求 · 展示结果）
-    │
-    │  动态加载 · 窄 ABI · 异步 job
-    ▼
-引擎（Search · Lance 轨迹 · …）
+CLI（解析 · 组件转发 · 历史格式 · 展示结果）
+    ├── pvisor（Run / Env）
+    ├── ppilot（Batch / Query）
+    └── 动态加载 · 窄 ABI · 异步 job
+        ▼
+      引擎（Search 等旧引擎请求）
     │
     ▼
 持久化存储
@@ -63,7 +86,8 @@ CLI（解析 · 组装请求 · 展示结果）
 - **轮询**可选：长任务（大批量导入、索引构建）可反馈进度百分比。
 - **释放**幂等：异常或提前退出时可安全清理。
 
-Python API **不经过**此路径——它直接绑定引擎，适合嵌入式与交互式场景。CLI 用户只需保证引擎库版本与 CLI 匹配。
+Python API **不经过**此路径——它直接绑定 Python 扩展，适合嵌入式与交互式场景。
+CLI 通过 `just install-cli` 安装匹配的三个二进制和引擎库，避免只安装统一入口却在运行时缺少组件。
 
 ---
 
@@ -89,10 +113,11 @@ CLI 在加载时校验 ABI；协议版本由请求携带、引擎侧校验。
 | 用户意图 | CLI | 引擎能力 |
 |----------|-----|----------|
 | 导入文档、建索引、检索 | `search` | Search |
-| 随 Run 实时采集 LLM 流量 | `pvisor run` | Gateway sink + pChronicle |
-| 独立代理采集 LLM 流量 | `traj proxy` | Gateway sink + pChronicle |
-| 追加 / 回放 / 统计 / 物化轨迹 | `traj add` / `stats` / `replay` / `materialize` / … | Trajectory |
-| 事后导入 IDE 或网关日志 | `traj import` | Trajectory（CLI 侧归一化） |
+| 随 Run 实时采集 LLM 流量 | `persisting execute` | pVisor + Gateway sink + pChronicle |
+| 独立代理采集 LLM 流量 | `persisting gateway serve` | Gateway sink + pChronicle |
+| 追加 / 回放 / 统计 / 物化轨迹 | `persisting history add` / `replay` / `stats` / `materialize` / … | Trajectory |
+| 事后导入 IDE 或网关日志 | `persisting history import` | Trajectory（CLI 侧归一化） |
+| Lance/ATIF SQL 分析 | `persisting query` | pPilot + pChronicle DataFusion |
 
 部分纯本地操作（如格式转换）可由 CLI 侧直接完成；索引文件重排等数据操作仍经过引擎。
 
@@ -128,5 +153,6 @@ flowchart LR
 ## 8. 相关文档
 
 - [`persisting search`](cli-search.md)
-- [`persisting traj`](cli-traj.md) — 轨迹数据与独立代理入口
-- [`pvisor`](cli-pvisor.md) — 单 Run 执行与环境管理
+- [`persisting history` / `eval` / `gateway`](cli-history.md) — 轨迹数据、评测与代理入口
+- [`persisting execute` / `env`](cli-pvisor.md) — 单 Run 执行与环境管理
+- [`persisting batch` / `query`](cli-ppilot.md) — 批量编排与 SQL 分析

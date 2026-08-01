@@ -10,8 +10,8 @@ use serde::Serialize;
 
 use crate::formats::agenticmd::{
     encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans,
-    parse_agenticmd_document_with, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdHeader,
-    AgenticmdParseMode, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
+    parse_agenticmd_document, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdHeader,
+    AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
 };
 use crate::formats::agenticmd_validate::{
     block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
@@ -51,7 +51,7 @@ pub fn encode_agenticmd_block_validated(block: &AgenticmdBlock) -> Result<String
 
 /// Strict parse with speaker/type checks.
 pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<AgenticmdBlock>> {
-    parse_agenticmd_document_with(input, AgenticmdParseMode::Strict)
+    parse_agenticmd_document(input)
         .map_err(|e| anyhow::anyhow!("agenticmd parse: {e}"))?
         .blocks
         .into_iter()
@@ -65,7 +65,7 @@ pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<AgenticmdBl
 
 /// Strict parse with absolute byte spans (upsert rewrite ranges).
 pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(AgenticmdBlock, usize, usize)>> {
-    let spans = parse_agenticmd_blocks_with_spans(input, AgenticmdParseMode::Strict)
+    let spans = parse_agenticmd_blocks_with_spans(input)
         .map_err(|e| anyhow::anyhow!("agenticmd span parse: {e}"))?;
     spans
         .into_iter()
@@ -326,7 +326,7 @@ mod tests {
     use super::*;
     use crate::formats::agenticmd::{
         encode_agenticmd_preamble, AgenticmdHeader, AGENTICMD_BLOCK_LAYOUT,
-        AGENTICMD_FRONTMATTER_FORMAT, BLOCK_MARKER,
+        AGENTICMD_FRONTMATTER_FORMAT,
     };
     use serde::Serialize;
     use serde_json::json;
@@ -497,7 +497,7 @@ mod tests {
         )
         .unwrap();
         let blocks = read_blocks(&path);
-        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0].body, "req-a");
         assert_eq!(blocks[1].body, "final-a");
         assert_eq!(blocks[2].body, "req-b");
@@ -530,24 +530,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_legacy_block_marker_without_speaker() {
-        let doc = format!(
-            "{BLOCK_MARKER} {{\"type\":\"markdown\",\"length\":2,\"role\":\"assistant\"}} -->\nok\n"
-        );
-        let blocks = parse_agenticmd_document_validated(&doc).unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].role(), Some("assistant"));
-    }
+    fn rejects_noncanonical_block_marker_and_hash_preamble() {
+        let marker_without_speaker = "<!-- persisting:block {\"type\":\"markdown\",\"length\":2,\"role\":\"assistant\"} -->\nok\n";
+        assert!(parse_agenticmd_document_validated(marker_without_speaker).is_err());
 
-    #[test]
-    fn parse_legacy_hash_preamble() {
-        let doc = format!(
-            "# persisting trajectory\n# legacy header\n\n{}",
+        let hash_preamble = format!(
+            "# old preamble\n{}",
             encode_block(block_header("note", "note"), "hi")
         );
-        let blocks = parse_agenticmd_document_validated(&doc).unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].body, "hi");
+        assert!(parse_agenticmd_document_validated(&hash_preamble).is_err());
     }
 
     #[test]
@@ -666,7 +657,7 @@ mod tests {
     #[test]
     fn append_then_read_matches_canonical_layout() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("0001.md");
+        let path = dir.path().join("run-test.md");
         append_agenticmd_blocks(
             &path,
             &[

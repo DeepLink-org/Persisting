@@ -1,0 +1,224 @@
+//! Public SQL engine tests shared by Lance and ATIF datasources.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use datafusion::prelude::SessionContext;
+use persisting_pchronicle::{
+    into_storyline, AtifDataSource, AtifDataSourceOptions, AtifTrajectory, ChronicleFormat,
+    ChronicleQueryBackend, ChronicleQueryEngine, LanceStorylineStore,
+    StorylineDataFusionTableNames,
+};
+
+const SHARED_SQL: &str =
+    "SELECT s.session_id, s.step_id, s.source, t.tool_call_id, t.function_name \
+     FROM steps s LEFT JOIN tool_calls t \
+       ON s.session_id = t.session_id AND s.step_id = t.step_id \
+     WHERE s.session_id IN ('fixture-parallel_tools_14', 'fixture-reasoning_16') \
+     ORDER BY s.session_id, s.step_id, t.call_index";
+
+fn fixture_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif")
+}
+
+fn fixture_paths() -> Result<Vec<PathBuf>> {
+    let mut paths = std::fs::read_dir(fixture_root())?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.retain(|path| path.extension().and_then(|value| value.to_str()) == Some("json"));
+    paths.sort();
+    Ok(paths)
+}
+
+fn load_trajectories() -> Result<Vec<AtifTrajectory>> {
+    fixture_paths()?
+        .into_iter()
+        .map(|path| {
+            AtifTrajectory::from_json_str(&std::fs::read_to_string(path)?).map_err(Into::into)
+        })
+        .collect()
+}
+
+fn write_ndjson(path: &Path, trajectories: &[AtifTrajectory]) -> Result<()> {
+    let mut lines = trajectories
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .join("\n");
+    lines.push('\n');
+    std::fs::write(path, lines)?;
+    Ok(())
+}
+
+#[test]
+fn atif_datasource_accepts_json_array_jsonl_and_directory() -> Result<()> {
+    let trajectories = load_trajectories()?;
+    let array = serde_json::to_string(&trajectories)?;
+    let from_array = AtifDataSource::from_json(&array)?;
+    assert_eq!(from_array.document_count(), 8);
+    assert_eq!(from_array.step_count(), 118);
+    assert_eq!(from_array.tool_call_count(), 23);
+
+    let dir = tempfile::tempdir()?;
+    let ndjson = dir.path().join("atif.ndjson");
+    write_ndjson(&ndjson, &trajectories)?;
+    let from_jsonl = AtifDataSource::open(&ndjson)?;
+    assert_eq!(from_jsonl.document_count(), 8);
+    assert_eq!(from_jsonl.step_count(), 118);
+
+    let from_directory = AtifDataSource::open(fixture_root())?;
+    assert_eq!(from_directory.document_count(), 8);
+    assert_eq!(from_directory.step_count(), 118);
+    Ok(())
+}
+
+#[tokio::test]
+async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()> {
+    assert!(AtifDataSource::from_json("").is_err());
+    assert!(AtifDataSource::from_json("[]").is_err());
+    assert!(
+        AtifDataSource::from_json_with_options("{}", AtifDataSourceOptions { batch_size: 0 })
+            .unwrap_err()
+            .to_string()
+            .contains("batch_size")
+    );
+
+    let trajectories = load_trajectories()?;
+    let duplicate = vec![trajectories[0].clone(), trajectories[0].clone()];
+    assert!(AtifDataSource::from_trajectories(&duplicate)
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate ATIF session_id"));
+
+    let dir = tempfile::tempdir()?;
+    assert!(AtifDataSource::open(dir.path()).is_err());
+    let invalid_jsonl = dir.path().join("invalid.jsonl");
+    std::fs::write(&invalid_jsonl, "{}\nnot-json\n")?;
+    let invalid_error = AtifDataSource::open(&invalid_jsonl).unwrap_err();
+    assert!(
+        format!("{invalid_error:#}").contains("line 1"),
+        "{invalid_error:#}"
+    );
+
+    let source = AtifDataSource::from_trajectories_with_options(
+        &trajectories[..2],
+        AtifDataSourceOptions { batch_size: 3 },
+    )?;
+    let context = SessionContext::new();
+    source.register_as(
+        &context,
+        &StorylineDataFusionTableNames {
+            runs: "atif_runs".into(),
+            steps: "atif_steps".into(),
+            tool_calls: "atif_tools".into(),
+        },
+    )?;
+    let batches = context
+        .sql("SELECT COUNT(*) AS count FROM atif_steps")
+        .await?
+        .collect()
+        .await?;
+    assert_eq!(
+        batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        1
+    );
+
+    let duplicate_names = StorylineDataFusionTableNames {
+        runs: "same".into(),
+        steps: "same".into(),
+        tool_calls: "tools".into(),
+    };
+    assert!(source.register_as(&context, &duplicate_names).is_err());
+    let empty_name = StorylineDataFusionTableNames {
+        runs: "".into(),
+        steps: "steps".into(),
+        tool_calls: "tools".into(),
+    };
+    assert!(source.register_as(&context, &empty_name).is_err());
+
+    let missing = dir.path().join("missing.json");
+    assert!(AtifDataSource::open(missing).is_err());
+    assert!(AtifDataSource::open(dir.path()).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn same_sql_returns_identical_results_for_lance_and_atif() -> Result<()> {
+    let trajectories = load_trajectories()?;
+    let atif_engine =
+        ChronicleQueryEngine::from_atif_source(AtifDataSource::from_trajectories(&trajectories)?)?;
+    assert!(matches!(
+        atif_engine.backend(),
+        ChronicleQueryBackend::Atif {
+            documents: 8,
+            steps: 118,
+            tool_calls: 23
+        }
+    ));
+
+    let dir = tempfile::tempdir()?;
+    let store = LanceStorylineStore::open(dir.path()).await?;
+    let stories = trajectories
+        .iter()
+        .map(|trajectory| {
+            into_storyline(
+                ChronicleFormat::Atif,
+                &serde_json::to_string(trajectory).unwrap(),
+            )
+        })
+        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+    store.replace_storylines(&stories).await?;
+    let lance_engine = ChronicleQueryEngine::open_lance(dir.path()).await?;
+    assert!(matches!(
+        lance_engine.backend(),
+        ChronicleQueryBackend::Lance { .. }
+    ));
+
+    let atif_jsonl = atif_engine.query_jsonl(SHARED_SQL).await?;
+    let lance_jsonl = lance_engine.query_jsonl(SHARED_SQL).await?;
+    assert_eq!(lance_jsonl, atif_jsonl);
+    assert_eq!(atif_jsonl.lines().count(), 33);
+
+    let aggregate = lance_engine
+        .query_jsonl("SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source")
+        .await?;
+    assert_eq!(aggregate.lines().count(), 3);
+    for line in aggregate.lines() {
+        let _: serde_json::Value = serde_json::from_str(line)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn query_engine_rejects_writes_and_multiple_statements() -> Result<()> {
+    let engine = ChronicleQueryEngine::open_atif(fixture_root())?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+
+    let copy_error = runtime
+        .block_on(engine.dataframe("COPY steps TO '/tmp/pchronicle.parquet' STORED AS PARQUET"))
+        .expect_err("COPY must be rejected");
+    assert!(copy_error.to_string().contains("only accepts"));
+
+    let multi_error = runtime
+        .block_on(engine.dataframe("SELECT 1; SELECT 2"))
+        .expect_err("multiple statements must be rejected");
+    assert!(multi_error.to_string().contains("exactly one"));
+
+    let empty_error = runtime
+        .block_on(engine.dataframe(""))
+        .expect_err("empty SQL must be rejected");
+    assert!(empty_error.to_string().contains("exactly one"));
+
+    let insert_error = runtime
+        .block_on(engine.dataframe("INSERT INTO steps VALUES (1)"))
+        .expect_err("INSERT must be rejected");
+    assert!(insert_error.to_string().contains("only accepts"));
+
+    let values = runtime.block_on(engine.query_jsonl("VALUES (1), (2)"))?;
+    assert_eq!(values.lines().count(), 2);
+    let explain = runtime.block_on(engine.query("EXPLAIN SELECT * FROM runs"))?;
+    assert!(!explain.is_empty());
+    let empty_result = runtime.block_on(engine.query_jsonl("SELECT * FROM runs WHERE 1 = 0"))?;
+    assert!(empty_result.is_empty());
+    Ok(())
+}

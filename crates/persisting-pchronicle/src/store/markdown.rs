@@ -8,7 +8,7 @@ use crate::{
     agenticmd_block_count, agenticmd_block_to_replay_json, append_agenticmd_blocks,
     event_record_to_agenticmd_block, locate_session_markdown_for_key,
     read_agenticmd_blocks_from_file, sanitize_session_filename, session_markdown_path_for_key,
-    session_markdown_write_path_for_key, EventRecord, SESSION_MARKDOWN_FILENAME,
+    session_markdown_write_path_for_key, EventRecord,
 };
 
 fn run_dir(session: &TrajectorySession) -> Result<std::path::PathBuf> {
@@ -50,10 +50,9 @@ pub fn replay(
     let run = run_dir(session)?;
     let md_path = locate_session_markdown_for_key(&run, &session.session_id).ok_or_else(|| {
         anyhow::anyhow!(
-            "markdown session file does not exist under {} (expected {}.md or legacy {})",
+            "markdown session file does not exist under {} (expected {}.md)",
             run.display(),
-            sanitize_session_filename(&session.session_id),
-            SESSION_MARKDOWN_FILENAME
+            sanitize_session_filename(&session.session_id)
         )
     })?;
     let blocks = read_agenticmd_blocks_from_file(&md_path)?;

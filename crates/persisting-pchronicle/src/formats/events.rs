@@ -9,7 +9,7 @@
 //!   (programmatic, after you already loaded rows from Lance)
 //! - [`export_events_jsonl`] / [`export_events_json_pretty`]: **debug export only**
 //!
-//! Use `persisting traj` (or similar) to extract Lance → JSON for inspection.
+//! Use `persisting history` to extract Lance → JSON for inspection.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

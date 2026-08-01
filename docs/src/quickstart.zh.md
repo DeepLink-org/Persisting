@@ -8,7 +8,7 @@
 pip install persisting[lance]
 ```
 
-CLI 工具（`pvisor`、`persisting traj`、`persisting search`）需[从源码构建](installation.md)。
+CLI 工具（`persisting`、`pvisor` 和 `ppilot`）需[从源码构建](installation.md)。
 
 ---
 

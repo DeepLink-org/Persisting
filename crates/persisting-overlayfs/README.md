@@ -11,8 +11,8 @@ portable `.wh.*` whiteouts that can be committed by pVisor.
 
 | Feature | Status |
 |---------|--------|
-| Ordered multi-`lowerdir` merge + directory or redb upper | yes |
-| File contents and POSIX/macOS metadata stored directly in redb | yes |
+| Ordered multi-`lowerdir` merge + directory or Jujutsu upper | yes |
+| Multiple named OverlayFS forks in one Jujutsu store | yes |
 | Unprivileged `.wh.*` whiteouts | yes |
 | Opaque directories (`.wh..wh..opq` and overlay xattrs) | yes |
 | Atomic copy-up through `workdir` | yes |
@@ -83,23 +83,32 @@ cargo build -p persisting-overlayfs --release
 ## CLI
 
 ```bash
-# Database-backed upper (pVisor default)
-persisting-overlayfs -o lowerdir=/target,database=/stage/upper.redb /stage/merged
-
-# Traditional directory-backed upper
+# Directory-backed upper (pVisor default)
 persisting-overlayfs -o lowerdir=/target,upperdir=/stage/upper,workdir=/stage/work /stage/merged
+
+# Jujutsu-managed fork; another jjworkspace can share the same jjstore
+persisting-overlayfs -o lowerdir=/target,jjstore=/shared/overlay.jj,jjworkspace=attempt-1 /stage/merged
 ```
 
 The parser accepts repeated fuse-style option content including `allow_other`,
 `allow_root`, `default_permissions`, `ro`/`rw`, and `fsname=...`. Escape a
 literal lower-layer colon as `\:`. As with overlayfs and fuse-overlayfs, the
 leftmost entry in `lowerdir=top:next:bottom` has the highest priority.
-`database=` and `upperdir=` are mutually exclusive. A redb upper stores file
-data, inode metadata, xattrs, hard-link identity, whiteouts, opaque-directory
-markers, and the change generation in one database; no shadow upper directory
-is created. `workdir=` is valid only for a directory upper. In directory mode,
-`upperdir` and `workdir` must be separate directories on the same filesystem;
-layer, work, upper, and mount paths may not overlap.
+`workdir=` is valid only for a directory upper. In directory mode, `upperdir`
+and `workdir` must be separate directories on the same filesystem; layer,
+work, upper, and mount paths may not overlap.
+
+The Jujutsu backend gives every `jjworkspace` an independent directory upper
+and Jujutsu working-copy commit. Named workspaces share the repository under
+`jjstore`, including its Git objects and operation log. A clean writable
+unmount snapshots the upper through `jj-lib`; read-only inspection never moves
+the workspace head. Only one writable mount of a given workspace is allowed at
+a time, while different workspaces can be mounted concurrently.
+
+The live upper remains a normal POSIX directory, so random writes do not create
+a Jujutsu commit per FUSE request. Jujutsu's Git object model preserves file
+contents and executable bits in history; full uid/gid/xattr/hard-link recovery
+from an old Jujutsu commit will require the planned OverlayFS metadata manifest.
 
 The default macFUSE backend is the kernel VFS backend. `backend=fskit` is also
 accepted on supported macFUSE versions, but FSKit mount points must be direct

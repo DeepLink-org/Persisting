@@ -350,6 +350,15 @@ async fn handle_inference(
 
     let status = StatusCode::from_u16(upstream_response.status().as_u16())
         .unwrap_or(StatusCode::BAD_GATEWAY);
+    if status.is_server_error() {
+        state
+            .push_error(format!(
+                "upstream returned HTTP {} for {}",
+                status.as_u16(),
+                call.request_path
+            ))
+            .await;
+    }
     let content_type = upstream_response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)

@@ -1,18 +1,26 @@
-//! Transitional executor seam — Worker invokes this while pPilot schedules TaskExpr.
+//! pVisor executor provider used by pPilot workers while the Driver schedules TaskExpr.
 //!
-//! In the target architecture this implementation becomes a pVisor executor
-//! provider; pPilot itself should only submit RunSpec and observe RunFuture.
+//! Every TaskExpr is adapted to one stable RunSpec. The long-lived Python host
+//! implements [`RunExecutor`], so execution, cancellation and terminal state all
+//! pass through pVisor without paying one Python import per task.
 //!
 //! **Primitive:** [`Executor`] trait · [`ExecutorRouter`] (product: `op=execute` only).
 //!
 //! ```text
-//! Driver --ask--> WorkerActor -- op=execute --> plan.py::execute(item)
+//! Driver --ask--> WorkerActor -- RunSpec --> pVisor --> plan.py::execute(item)
 //! ```
 
 use crate::python_env;
-use crate::task::{unix_now, TaskExpr, TaskResult};
+use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
 use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
+use persisting_proto::{
+    ArtifactRef, ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure,
+    RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
+};
+use persisting_pvisor::{AttemptContext, PVisor, RunExecutor};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -315,10 +323,59 @@ impl PlanExecuteExecutor {
     }
 }
 
+#[async_trait]
+impl RunExecutor for PlanExecuteExecutor {
+    fn descriptor(&self) -> ExecutorDescriptor {
+        ExecutorDescriptor {
+            name: "ppilot-plan-host-v1".into(),
+            kind: ExecutorKind::Process,
+            isolation: IsolationKind::HostProcess,
+            enforces_capabilities: false,
+            supports_checkpoint: false,
+            supports_migration: false,
+        }
+    }
+
+    fn supports(&self, invocation: &RunInvocation) -> bool {
+        matches!(invocation, RunInvocation::Process(_))
+    }
+
+    async fn execute(&self, context: AttemptContext) -> RunResult {
+        let spec = context.spec().clone();
+        let started_at_unix_ms = unix_ms();
+        context
+            .transition(RunState::Starting, Some("starting pPilot plan host".into()))
+            .await;
+        let task = match serde_json::from_value::<TaskExpr>(spec.input.clone()) {
+            Ok(task) => task,
+            Err(error) => {
+                return failed_run_result(
+                    &spec,
+                    &context,
+                    started_at_unix_ms,
+                    RunFailureKind::InvalidSpec,
+                    format!("decode pPilot TaskExpr from RunSpec.input: {error}"),
+                    false,
+                );
+            }
+        };
+        let worker_id = spec
+            .metadata
+            .get("ppilot.worker_id")
+            .and_then(Value::as_str)
+            .unwrap_or("ppilot-worker");
+        context.transition(RunState::Running, None).await;
+        let task_result = self
+            .run_with_cancel(task, worker_id, context.cancellation())
+            .await;
+        task_result_to_run_result(spec, context.attempt_id().clone(), task_result)
+    }
+}
+
 /// Routes `op=execute` to [`PlanExecuteExecutor`]. Unknown ops fail clearly.
 pub struct ExecutorRouter {
-    execute: Arc<PlanExecuteExecutor>,
     host: Arc<PlanHostExecutor>,
+    pvisor: PVisor,
 }
 
 impl ExecutorRouter {
@@ -340,7 +397,10 @@ impl ExecutorRouter {
             plan_script,
             script_args,
         });
-        Self { execute, host }
+        let pvisor = PVisor::builder()
+            .executors(vec![Arc::clone(&execute) as Arc<dyn RunExecutor>])
+            .build();
+        Self { host, pvisor }
     }
 
     #[cfg(test)]
@@ -368,12 +428,233 @@ impl ExecutorRouter {
                 started,
             );
         }
-        self.execute.run_with_cancel(task, worker_id, cancel).await
+        let task_id = task.id.clone();
+        let started = unix_now();
+        let mut spec = task_run_spec(&task, worker_id);
+        spec.input = match serde_json::to_value(&task) {
+            Ok(value) => value,
+            Err(error) => {
+                return TaskResult::failure(
+                    task_id,
+                    format!("encode task as RunSpec input: {error}"),
+                    None,
+                    worker_id,
+                    started,
+                );
+            }
+        };
+        let handle = match self.pvisor.submit(spec).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                return TaskResult::failure_with_kind(
+                    task_id,
+                    format!("pVisor submit failed: {error}"),
+                    Some(format!("{error:#}")),
+                    worker_id,
+                    started,
+                    ErrorKind::Infra,
+                    true,
+                );
+            }
+        };
+        let cancellation = handle.cancellation();
+        let wait = handle.wait();
+        tokio::pin!(wait);
+        let result = tokio::select! {
+            result = &mut wait => result,
+            _ = cancel.cancelled() => {
+                cancellation.cancel();
+                wait.await
+            }
+        };
+        match result {
+            Ok(result) => run_result_to_task_result(result, &task_id, worker_id, started),
+            Err(error) => TaskResult::failure_with_kind(
+                task_id,
+                format!("pVisor Run wait failed: {error}"),
+                Some(format!("{error:#}")),
+                worker_id,
+                started,
+                ErrorKind::Infra,
+                true,
+            ),
+        }
     }
 
     pub async fn shutdown(&self) {
         self.host.shutdown().await;
     }
+}
+
+fn task_run_spec(task: &TaskExpr, worker_id: &str) -> RunSpec {
+    let job_id = std::env::var("PERSISTING_COMPUTE_JOB_ID").unwrap_or_else(|_| "local".into());
+    let run_id = format!(
+        "ppilot-{}-{}",
+        encode_run_id_part(&job_id),
+        encode_run_id_part(&task.id)
+    );
+    let mut spec = RunSpec::process(run_id, "ppilot", "ppilot-plan-host");
+    spec.task_id = Some(task.id.clone());
+    spec.metadata
+        .insert("ppilot.worker_id".into(), Value::String(worker_id.into()));
+    spec.metadata
+        .insert("ppilot.job_id".into(), Value::String(job_id));
+    spec
+}
+
+fn encode_run_id_part(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                encoded.push(char::from(byte));
+            }
+            byte => encoded.push_str(&format!("~{byte:02x}")),
+        }
+    }
+    encoded
+}
+
+fn task_result_to_run_result(
+    spec: RunSpec,
+    attempt_id: persisting_proto::AttemptId,
+    task: TaskResult,
+) -> RunResult {
+    let output = ProcessOutput {
+        stderr: task.traceback.clone(),
+        ..ProcessOutput::default()
+    };
+    let state = if task.ok {
+        RunState::Completed
+    } else if task.cancelled {
+        RunState::Cancelled
+    } else {
+        RunState::Failed
+    };
+    let failure = (!task.ok && !task.cancelled).then(|| RunFailure {
+        kind: match task.error_kind {
+            Some(ErrorKind::Infra) => RunFailureKind::Infrastructure,
+            _ => RunFailureKind::Workload,
+        },
+        message: task
+            .error
+            .clone()
+            .unwrap_or_else(|| "workload failed".into()),
+        retryable: task.retryable,
+    });
+    let artifacts = task
+        .artifacts
+        .iter()
+        .map(|(name, value)| ArtifactRef {
+            name: name.clone(),
+            uri: value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string()),
+            media_type: None,
+            digest: None,
+        })
+        .collect();
+    RunResult {
+        run_id: spec.run_id,
+        attempt_id,
+        state,
+        started_at_unix_ms: seconds_to_millis(task.started_at),
+        finished_at_unix_ms: seconds_to_millis(task.finished_at),
+        exit_code: None,
+        failure,
+        output,
+        value: task.value,
+        metrics: task.metrics.into_iter().collect::<BTreeMap<_, _>>(),
+        artifacts,
+        event_stream_ref: None,
+        warnings: Vec::new(),
+    }
+}
+
+fn run_result_to_task_result(
+    result: RunResult,
+    task_id: &str,
+    worker_id: &str,
+    fallback_started: f64,
+) -> TaskResult {
+    let run_id = result.run_id.as_str().to_string();
+    let started_at = if result.started_at_unix_ms == 0 {
+        fallback_started
+    } else {
+        result.started_at_unix_ms as f64 / 1000.0
+    };
+    let mut task = match result.state {
+        RunState::Completed => {
+            let mut task = TaskResult::success(
+                task_id,
+                result.value.unwrap_or(Value::Null),
+                worker_id,
+                started_at,
+            );
+            task.finished_at = Some(result.finished_at_unix_ms as f64 / 1000.0);
+            task
+        }
+        RunState::Cancelled => TaskResult::cancelled(task_id),
+        _ => {
+            let failure = result.failure.unwrap_or(RunFailure {
+                kind: RunFailureKind::Infrastructure,
+                message: "pVisor Run failed without a failure record".into(),
+                retryable: true,
+            });
+            TaskResult::failure_with_kind(
+                task_id,
+                failure.message,
+                result.output.stderr,
+                worker_id,
+                started_at,
+                match failure.kind {
+                    RunFailureKind::Infrastructure | RunFailureKind::Spawn => ErrorKind::Infra,
+                    _ => ErrorKind::Execute,
+                },
+                failure.retryable,
+            )
+        }
+    };
+    task.run_id = Some(run_id);
+    task
+}
+
+fn failed_run_result(
+    spec: &RunSpec,
+    context: &AttemptContext,
+    started_at_unix_ms: u64,
+    kind: RunFailureKind,
+    message: String,
+    retryable: bool,
+) -> RunResult {
+    RunResult {
+        run_id: spec.run_id.clone(),
+        attempt_id: context.attempt_id().clone(),
+        state: RunState::Failed,
+        started_at_unix_ms,
+        finished_at_unix_ms: unix_ms(),
+        exit_code: None,
+        failure: Some(RunFailure {
+            kind,
+            message,
+            retryable,
+        }),
+        output: ProcessOutput::default(),
+        value: None,
+        metrics: BTreeMap::new(),
+        artifacts: Vec::new(),
+        event_stream_ref: None,
+        warnings: Vec::new(),
+    }
+}
+
+fn seconds_to_millis(value: Option<f64>) -> u64 {
+    value.unwrap_or_else(unix_now).max(0.0).mul_add(1000.0, 0.0) as u64
+}
+
+fn unix_ms() -> u64 {
+    seconds_to_millis(Some(unix_now()))
 }
 
 #[cfg(test)]
@@ -446,7 +727,37 @@ def execute(item):
         let task = TaskExpr::from_value(json!({"id": "t-0", "x": 3})).unwrap();
         let r = router.run(task, "w0").await;
         assert!(r.ok);
+        assert_eq!(r.run_id.as_deref(), Some("ppilot-local-t-0"));
         assert_eq!(r.value, Some(json!({"x2": 6})));
+        router.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workload_failure_roundtrips_through_run_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fail.py");
+        std::fs::write(
+            &script,
+            r#"
+def execute(item):
+    raise ValueError("bad item")
+"#,
+        )
+        .unwrap();
+        let router = ExecutorRouter::local_stack(
+            PathBuf::from("python3"),
+            vec![],
+            script,
+            vec![],
+            json!({}),
+        );
+        let task = TaskExpr::from_value(json!({"id": "bad/task"})).unwrap();
+        let result = router.run(task, "w0").await;
+        assert!(!result.ok);
+        assert_eq!(result.run_id.as_deref(), Some("ppilot-local-bad~2ftask"));
+        assert_eq!(result.error_kind, Some(ErrorKind::Execute));
+        assert!(result.error.as_deref().unwrap().contains("bad item"));
+        assert!(result.traceback.as_deref().unwrap().contains("ValueError"));
         router.shutdown().await;
     }
 

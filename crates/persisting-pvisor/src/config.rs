@@ -75,6 +75,8 @@ pub struct OverlayFsSettings {
     pub target: Option<PathBuf>,
     pub lower: Vec<PathBuf>,
     pub backend: OverlayFsBackend,
+    pub jujutsu_store: Option<PathBuf>,
+    pub jujutsu_workspace: Option<String>,
     pub commit: OverlayFsCommit,
 }
 
@@ -84,7 +86,9 @@ impl Default for OverlayFsSettings {
             mode: OverlayFsMode::Host,
             target: None,
             lower: Vec::new(),
-            backend: OverlayFsBackend::Redb,
+            backend: OverlayFsBackend::Directory,
+            jujutsu_store: None,
+            jujutsu_workspace: None,
             commit: OverlayFsCommit::Manual,
         }
     }
@@ -102,8 +106,8 @@ pub enum OverlayFsMode {
 #[serde(rename_all = "kebab-case")]
 pub enum OverlayFsBackend {
     #[default]
-    Redb,
     Directory,
+    Jujutsu,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]

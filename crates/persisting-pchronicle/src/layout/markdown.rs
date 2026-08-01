@@ -2,14 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Legacy numbered session file (pre `{session_id}.md` layout).
-pub const SESSION_MARKDOWN_FILENAME: &str = "0001.md";
-
 /// Max filename stem length for `{session_id}.md` on disk.
 const SESSION_FILENAME_MAX_LEN: usize = 128;
-
-/// Legacy filename; still recognized for read / import.
-pub const LEGACY_TRAJECTORY_MARKDOWN_FILENAME: &str = "trajectory.tlv.md";
 
 /// Sanitize a logical session id for use as a markdown filename stem.
 pub fn sanitize_session_filename(session_id: &str) -> String {
@@ -37,10 +31,6 @@ pub fn session_markdown_filename(session_key: &str) -> String {
     format!("{}.md", sanitize_session_filename(session_key))
 }
 
-pub fn session_markdown_path(session_dir: &Path) -> PathBuf {
-    session_dir.join(SESSION_MARKDOWN_FILENAME)
-}
-
 /// `{run_dir}/{session_key}.md`
 pub fn session_markdown_path_for_key(run_dir: &Path, session_key: &str) -> PathBuf {
     run_dir.join(session_markdown_filename(session_key))
@@ -50,11 +40,6 @@ pub fn session_markdown_path_for_key(run_dir: &Path, session_key: &str) -> PathB
 pub fn session_markdown_write_path_for_key(run_dir: &Path, session_key: &str) -> PathBuf {
     locate_session_markdown_for_key(run_dir, session_key)
         .unwrap_or_else(|| session_markdown_path_for_key(run_dir, session_key))
-}
-
-/// Path to append markdown blocks: existing session file, or [`SESSION_MARKDOWN_FILENAME`] for new sessions.
-pub fn session_markdown_write_path(session_dir: &Path) -> PathBuf {
-    locate_session_markdown(session_dir).unwrap_or_else(|| session_markdown_path(session_dir))
 }
 
 /// Whether `session_key` names a subagent markdown stem (`agent-{id}`).
@@ -84,7 +69,7 @@ pub fn locate_run_bucket_markdown(run_dir: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Find markdown for one session key under a run directory (prefers `{key}.md`, then legacy `0001.md`).
+/// Find canonical `{key}.md` for one session under a run directory.
 pub fn locate_session_markdown_for_key(run_dir: &Path, session_key: &str) -> Option<PathBuf> {
     let named = session_markdown_path_for_key(run_dir, session_key);
     if named.is_file() {
@@ -98,21 +83,12 @@ pub fn locate_session_markdown_for_key(run_dir: &Path, session_key: &str) -> Opt
     if let Some(run_md) = locate_run_bucket_markdown(run_dir) {
         return Some(run_md);
     }
-    locate_session_markdown(run_dir)
+    None
 }
 
-/// Find the readable session markdown file (legacy `0001.md`, `{session_id}.md`, …).
+/// Find the first canonical session-key markdown file in a directory.
 pub fn locate_session_markdown(session_dir: &Path) -> Option<PathBuf> {
-    let preferred = session_dir.join(SESSION_MARKDOWN_FILENAME);
-    if preferred.is_file() {
-        return Some(preferred);
-    }
-    let legacy = session_dir.join(LEGACY_TRAJECTORY_MARKDOWN_FILENAME);
-    if legacy.is_file() {
-        return Some(legacy);
-    }
     let mut session_key_files = Vec::new();
-    let mut numbered = Vec::new();
     if let Ok(read_dir) = std::fs::read_dir(session_dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
@@ -122,53 +98,33 @@ pub fn locate_session_markdown(session_dir: &Path) -> Option<PathBuf> {
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if is_numbered_session_markdown_name(name) {
-                numbered.push(path);
-            } else if is_session_key_markdown_name(name) && !is_subagent_markdown_filename(name) {
+            if is_session_key_markdown_name(name) && !is_subagent_markdown_filename(name) {
                 session_key_files.push(path);
             }
         }
     }
     session_key_files.sort();
-    if let Some(path) = session_key_files.into_iter().next() {
-        return Some(path);
-    }
-    numbered.sort();
-    numbered.into_iter().next()
+    session_key_files.into_iter().next()
 }
 
-/// Whether `path` names a persisting session markdown file (`{session_id}.md`, `0001.md`, …).
+/// Whether `path` names a canonical `{session_id}.md` file.
 pub fn is_trajectory_markdown_path(path: impl AsRef<Path>) -> bool {
     let Some(name) = path.as_ref().file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    is_numbered_session_markdown_name(name)
-        || is_session_key_markdown_name(name)
-        || name.eq_ignore_ascii_case(LEGACY_TRAJECTORY_MARKDOWN_FILENAME)
-        || name.to_ascii_lowercase().ends_with(".tlv.md")
+    is_session_key_markdown_name(name)
 }
 
 fn is_session_key_markdown_name(name: &str) -> bool {
     let Some(stem) = name.strip_suffix(".md") else {
         return false;
     };
-    if stem.is_empty()
-        || is_numbered_session_markdown_name(name)
-        || name.eq_ignore_ascii_case(LEGACY_TRAJECTORY_MARKDOWN_FILENAME)
-        || name.to_ascii_lowercase().ends_with(".tlv.md")
-    {
+    if stem.is_empty() {
         return false;
     }
     stem.starts_with("agent-")
         || stem.starts_with("run-")
         || (stem.contains('-') && stem.len() >= 8)
-}
-
-fn is_numbered_session_markdown_name(name: &str) -> bool {
-    let Some(stem) = name.strip_suffix(".md") else {
-        return false;
-    };
-    stem.len() == 4 && stem.chars().all(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -218,11 +174,10 @@ mod tests {
     }
 
     #[test]
-    fn main_session_prefers_run_bucket_over_numbered_md() {
+    fn main_session_prefers_run_bucket() {
         let dir = tempfile::tempdir().unwrap();
         let run_dir = dir.path().join("run-main-bucket");
         touch(run_dir.join("run-main-bucket.md"));
-        touch(run_dir.join("0001.md"));
 
         let resolved = locate_session_markdown_for_key(&run_dir, "header-session-uuid");
         assert_eq!(
@@ -232,26 +187,14 @@ mod tests {
     }
 
     #[test]
-    fn numbered_session_markdown_detected() {
-        assert!(is_trajectory_markdown_path("0001.md"));
-        assert!(is_trajectory_markdown_path("/a/b/0042.md"));
-        assert!(is_trajectory_markdown_path("trajectory.tlv.md"));
+    fn canonical_session_markdown_detected() {
         assert!(is_trajectory_markdown_path("agent-abc123.md"));
         assert!(is_trajectory_markdown_path(
             "5e27e4a7-f42a-42a9-8448-79608bd95c53.md"
         ));
         assert!(!is_trajectory_markdown_path("notes.md"));
-    }
-
-    #[test]
-    fn locate_prefers_0001_over_legacy() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(LEGACY_TRAJECTORY_MARKDOWN_FILENAME), "x").unwrap();
-        std::fs::write(dir.path().join(SESSION_MARKDOWN_FILENAME), "y").unwrap();
-        assert_eq!(
-            locate_session_markdown(dir.path()).unwrap(),
-            dir.path().join(SESSION_MARKDOWN_FILENAME)
-        );
+        assert!(!is_trajectory_markdown_path("0001.md"));
+        assert!(!is_trajectory_markdown_path("trajectory.tlv.md"));
     }
 
     #[test]
@@ -274,8 +217,9 @@ mod tests {
         );
         assert_eq!(
             locate_session_markdown_for_key(dir.path(), "37343ad1-ed7d-49dc-b080-9c4afd9873c2"),
-            Some(main_md)
+            None
         );
+        assert!(main_md.is_file());
     }
 
     #[test]

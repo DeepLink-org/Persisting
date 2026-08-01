@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 use crate::ingest::{ingest_trajectory, reconstruct_trajectory, split_trajectory};
-use crate::store::{FsChronicleStore, MemoryChronicleStore};
+use crate::store::MemoryChronicleStore;
 use crate::view::{atif_trajectory_sql_ddl, AtifTrajectoryView, ATIF_TRAJECTORY_VIEW};
 
 fn sample_traj() -> AtifTrajectory {
@@ -121,41 +121,7 @@ fn memory_roundtrip_and_view_expands_tool_calls() {
 }
 
 #[test]
-fn fs_store_persists_jsonl_tables() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut store = FsChronicleStore::open(dir.path()).unwrap();
-    ingest_trajectory(&mut store, &sample_traj()).unwrap();
-
-    assert!(dir.path().join("sessions.jsonl").exists());
-    assert!(dir.path().join("steps.jsonl").exists());
-    assert!(dir.path().join("tool_calls.jsonl").exists());
-    assert!(dir.path().join(".chronicle.snapshot.json").exists());
-
-    let reopened = FsChronicleStore::open(dir.path()).unwrap();
-    let rebuilt = reconstruct_trajectory(&reopened, "sess-1").unwrap();
-    assert_eq!(rebuilt.agent.name, "harbor-agent");
-    assert_eq!(rebuilt.steps[1].tool_calls.as_ref().unwrap().len(), 2);
-
-    let rows = AtifTrajectoryView::new(&reopened).query(None).unwrap();
-    assert_eq!(rows.len(), 3);
-}
-
-#[test]
-fn fs_store_reopens_from_atomic_snapshot_when_projection_is_corrupt() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut store = FsChronicleStore::open(dir.path()).unwrap();
-    ingest_trajectory(&mut store, &sample_traj()).unwrap();
-
-    std::fs::write(dir.path().join("steps.jsonl"), "{not-json\n").unwrap();
-
-    let reopened = FsChronicleStore::open(dir.path()).unwrap();
-    let rebuilt = reconstruct_trajectory(&reopened, "sess-1").unwrap();
-    assert_eq!(rebuilt.steps.len(), 2);
-    assert_eq!(rebuilt.steps[1].tool_calls.as_ref().unwrap().len(), 2);
-}
-
-#[test]
-fn typed_events_roundtrip_through_legacy_wire_adapter() {
+fn typed_events_roundtrip_through_ron_transport() {
     let record = crate::EventRecord {
         seq: 7,
         source: "test".into(),
@@ -187,43 +153,31 @@ fn sql_ddl_mentions_three_tables_and_view_name() {
 }
 
 #[test]
-fn chronicle_format_aliases() {
+fn chronicle_format_names_are_canonical_only() {
     use crate::ChronicleFormat;
     use std::str::FromStr;
     assert_eq!(
         ChronicleFormat::from_str("storyline").unwrap(),
         ChronicleFormat::Storyline
     );
-    assert_eq!(
-        ChronicleFormat::from_str("storyline/v1").unwrap(),
-        ChronicleFormat::Storyline
-    );
+    assert!(ChronicleFormat::from_str("storyline/v1").is_err());
     assert!(ChronicleFormat::Storyline.is_hub());
     assert_eq!(
         ChronicleFormat::from_str("events").unwrap(),
         ChronicleFormat::Events
     );
-    assert_eq!(
-        ChronicleFormat::from_str("lance").unwrap(),
-        ChronicleFormat::Events
-    );
+    assert!(ChronicleFormat::from_str("lance").is_err());
     assert!(ChronicleFormat::Events.is_lance_only());
     assert_eq!(
         ChronicleFormat::from_str("agenticmd").unwrap(),
         ChronicleFormat::Agenticmd
     );
-    assert_eq!(
-        ChronicleFormat::from_str("md").unwrap(),
-        ChronicleFormat::Agenticmd
-    );
+    assert!(ChronicleFormat::from_str("md").is_err());
     assert_eq!(
         ChronicleFormat::from_str("openai_msg").unwrap(),
         ChronicleFormat::OpenaiMsg
     );
-    assert_eq!(
-        ChronicleFormat::from_str("session_steps").unwrap(),
-        ChronicleFormat::OpenaiMsg
-    );
+    assert!(ChronicleFormat::from_str("session_steps").is_err());
     assert_eq!(
         ChronicleFormat::from_str("atif").unwrap(),
         ChronicleFormat::Atif
@@ -466,34 +420,23 @@ fn parse_agenticmd_document_roundtrip() {
 
 #[test]
 fn agenticmd_strict_rejects_garbage_and_unclosed_frontmatter() {
-    use crate::{
-        parse_agenticmd_blocks_with_spans, parse_agenticmd_document_with, AgenticmdParseMode,
-    };
+    use crate::{parse_agenticmd_blocks_with_spans, parse_agenticmd_document};
 
     let unclosed = "---\nformat: persisting:1.0\n";
-    let err = parse_agenticmd_document_with(unclosed, AgenticmdParseMode::Strict).unwrap_err();
+    let err = parse_agenticmd_document(unclosed).unwrap_err();
     assert!(
         err.to_string().contains("unclosed YAML frontmatter"),
         "{err}"
     );
 
     let garbage = "---\nformat: persisting:1.0\n---\n\nnot a block\n";
-    let err = parse_agenticmd_document_with(garbage, AgenticmdParseMode::Strict).unwrap_err();
+    let err = parse_agenticmd_document(garbage).unwrap_err();
     assert!(
         err.to_string().contains("expected `<!-- persisting:block"),
         "{err}"
     );
 
-    // Lenient still skips notes between / after frontmatter.
-    let with_note = "---\nformat: persisting:1.0\n---\n\nnote line\n";
-    let doc = parse_agenticmd_document_with(with_note, AgenticmdParseMode::Lenient).unwrap();
-    assert!(doc.blocks.is_empty());
-
-    let spans = parse_agenticmd_blocks_with_spans(
-        "---\nformat: persisting:1.0\n---\n\n",
-        AgenticmdParseMode::Strict,
-    )
-    .unwrap();
+    let spans = parse_agenticmd_blocks_with_spans("---\nformat: persisting:1.0\n---\n\n").unwrap();
     assert!(spans.is_empty());
 }
 

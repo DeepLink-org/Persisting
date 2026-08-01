@@ -2,55 +2,31 @@
 
 use persisting_pchronicle::{
     ingest_trajectory, reconstruct_trajectory, split_trajectory, AtifTrajectory,
-    AtifTrajectoryView, Error, FsChronicleStore, MemoryChronicleStore, NormalizedStore, SessionRow,
-    StepRow, ToolCallRow,
+    AtifTrajectoryView, Error, MemoryChronicleStore, NormalizedStore, SessionRow, StepRow,
+    ToolCallRow,
 };
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-enum Store {
-    Memory(MemoryChronicleStore),
-    Fs(FsChronicleStore),
-}
-
-impl Store {
-    fn as_ref(&self) -> &dyn NormalizedStore {
-        match self {
-            Self::Memory(store) => store,
-            Self::Fs(store) => store,
-        }
-    }
-
-    fn as_mut(&mut self) -> &mut dyn NormalizedStore {
-        match self {
-            Self::Memory(store) => store,
-            Self::Fs(store) => store,
-        }
-    }
-}
-
 /// Opaque owner of a Rust normalized pChronicle store.
 #[pyclass(name = "_PChronicleStore", unsendable)]
 pub(crate) struct PyChronicleStore {
-    store: Store,
+    store: MemoryChronicleStore,
 }
 
 #[pymethods]
 impl PyChronicleStore {
     #[new]
-    #[pyo3(signature = (root=None))]
-    fn new(root: Option<String>) -> PyResult<Self> {
-        let store = match root {
-            Some(root) => Store::Fs(FsChronicleStore::open(root).map_err(map_error)?),
-            None => Store::Memory(MemoryChronicleStore::new()),
-        };
-        Ok(Self { store })
+    fn new() -> Self {
+        Self {
+            store: MemoryChronicleStore::new(),
+        }
     }
 
     fn ingest(&mut self, trajectory: Bound<'_, PyAny>) -> PyResult<String> {
         let trajectory: AtifTrajectory = pythonize::depythonize(&trajectory)?;
-        ingest_trajectory(self.store.as_mut(), &trajectory).map_err(map_error)
+        ingest_trajectory(&mut self.store, &trajectory).map_err(map_error)
     }
 
     fn split(
@@ -68,14 +44,13 @@ impl PyChronicleStore {
     }
 
     fn reconstruct(&self, py: Python<'_>, session_id: &str) -> PyResult<Py<PyAny>> {
-        let trajectory =
-            reconstruct_trajectory(self.store.as_ref(), session_id).map_err(map_error)?;
+        let trajectory = reconstruct_trajectory(&self.store, session_id).map_err(map_error)?;
         to_python(py, &trajectory)
     }
 
     #[pyo3(signature = (session_id=None))]
     fn query(&self, py: Python<'_>, session_id: Option<&str>) -> PyResult<Py<PyAny>> {
-        let rows = AtifTrajectoryView::new(self.store.as_ref())
+        let rows = AtifTrajectoryView::new(&self.store)
             .query(session_id)
             .map_err(map_error)?;
         to_python(py, &rows)
@@ -83,54 +58,40 @@ impl PyChronicleStore {
 
     fn upsert_session(&mut self, row: Bound<'_, PyAny>) -> PyResult<()> {
         let row: SessionRow = pythonize::depythonize(&row)?;
-        self.store.as_mut().upsert_session(row).map_err(map_error)
+        self.store.upsert_session(row).map_err(map_error)
     }
 
     fn get_session(&self, py: Python<'_>, session_id: &str) -> PyResult<Py<PyAny>> {
-        let row = self
-            .store
-            .as_ref()
-            .get_session(session_id)
-            .map_err(map_error)?;
+        let row = self.store.get_session(session_id).map_err(map_error)?;
         to_python(py, &row)
     }
 
     fn list_sessions(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let rows = self.store.as_ref().list_sessions().map_err(map_error)?;
+        let rows = self.store.list_sessions().map_err(map_error)?;
         to_python(py, &rows)
     }
 
     fn replace_steps(&mut self, session_id: &str, rows: Bound<'_, PyAny>) -> PyResult<()> {
         let rows: Vec<StepRow> = pythonize::depythonize(&rows)?;
         self.store
-            .as_mut()
             .replace_steps(session_id, rows)
             .map_err(map_error)
     }
 
     fn list_steps(&self, py: Python<'_>, session_id: &str) -> PyResult<Py<PyAny>> {
-        let rows = self
-            .store
-            .as_ref()
-            .list_steps(session_id)
-            .map_err(map_error)?;
+        let rows = self.store.list_steps(session_id).map_err(map_error)?;
         to_python(py, &rows)
     }
 
     fn replace_tool_calls(&mut self, session_id: &str, rows: Bound<'_, PyAny>) -> PyResult<()> {
         let rows: Vec<ToolCallRow> = pythonize::depythonize(&rows)?;
         self.store
-            .as_mut()
             .replace_tool_calls(session_id, rows)
             .map_err(map_error)
     }
 
     fn list_tool_calls(&self, py: Python<'_>, session_id: &str) -> PyResult<Py<PyAny>> {
-        let rows = self
-            .store
-            .as_ref()
-            .list_tool_calls(session_id)
-            .map_err(map_error)?;
+        let rows = self.store.list_tool_calls(session_id).map_err(map_error)?;
         to_python(py, &rows)
     }
 }

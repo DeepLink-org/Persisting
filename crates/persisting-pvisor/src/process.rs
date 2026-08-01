@@ -235,6 +235,7 @@ impl RunExecutor for ProcessExecutor {
                         retryable: false,
                     }),
                     output: ProcessOutput::default(),
+                    value: None,
                     metrics: Default::default(),
                     artifacts: Vec::new(),
                     event_stream_ref: None,
@@ -261,6 +262,7 @@ impl RunExecutor for ProcessExecutor {
                         retryable: false,
                     }),
                     output: ProcessOutput::default(),
+                    value: None,
                     metrics: Default::default(),
                     artifacts: Vec::new(),
                     event_stream_ref: None,
@@ -375,6 +377,7 @@ impl RunExecutor for ProcessExecutor {
             exit_code,
             failure,
             output,
+            value: None,
             metrics: Default::default(),
             artifacts: Vec::new(),
             event_stream_ref: None,
@@ -390,9 +393,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn resolves_bare_program_before_overlay_cwd_is_applied() {
+        let resolved = resolve_host_program("sh");
+        assert!(
+            resolved.is_absolute(),
+            "resolved path: {}",
+            resolved.display()
+        );
+        assert!(
+            is_executable(&resolved),
+            "resolved path: {}",
+            resolved.display()
+        );
         assert_eq!(
-            resolve_host_program("sh"),
-            std::path::PathBuf::from("/bin/sh")
+            resolved.file_name().and_then(|name| name.to_str()),
+            Some("sh")
+        );
+        let path = std::env::var_os("PATH").expect("test requires PATH");
+        assert!(
+            std::env::split_paths(&path).any(|directory| directory.join("sh") == resolved),
+            "{} was not resolved from PATH",
+            resolved.display()
         );
         assert_eq!(
             resolve_host_program("./agent-script"),

@@ -24,10 +24,7 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<ChronicleFormat
     if name == "session_steps.json" || name == "session_steps.lance" {
         return Some(ChronicleFormat::OpenaiMsg);
     }
-    if name == "sessions.jsonl" || name == "steps.jsonl" || name == "tool_calls.jsonl" {
-        return Some(ChronicleFormat::Atif);
-    }
-    if name.ends_with(".md") || name.ends_with(".tlv.md") {
+    if name.ends_with(".md") {
         return Some(ChronicleFormat::Agenticmd);
     }
     None

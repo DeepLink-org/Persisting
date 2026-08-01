@@ -102,8 +102,9 @@ impl RunEventPublisher {
             producer: self.producer.clone(),
             payload,
         };
-        let _ = self.live.send(event.clone());
         self.sink.append(&event).await?;
+        // Live observers only see events accepted by the canonical sink.
+        let _ = self.live.send(event.clone());
         Ok(event)
     }
 }

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 from typing import Protocol
 
 from persisting import _core
@@ -49,14 +48,6 @@ class MemoryChronicleStore:
 
     def list_tool_calls(self, session_id: str) -> list[ToolCallRow]:
         return [ToolCallRow(**row) for row in self._inner.list_tool_calls(session_id)]
-
-
-class FsChronicleStore(MemoryChronicleStore):
-    """Rust pChronicle filesystem store rooted at ``root``."""
-
-    def __init__(self, root: str | Path) -> None:
-        self.root = Path(root)
-        self._inner = _core._PChronicleStore(str(self.root))
 
 
 def _row_dict(row: SessionRow | StepRow | ToolCallRow) -> dict:

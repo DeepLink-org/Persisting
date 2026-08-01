@@ -31,7 +31,7 @@ pub struct PPilotArgs {
     pub script: Option<PathBuf>,
 
     /// Built-in smoke test (no user plan).
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub self_test: bool,
 
     /// Validate env + plan + execute (+ sample run) instead of a full run.

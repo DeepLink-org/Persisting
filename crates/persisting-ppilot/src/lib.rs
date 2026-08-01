@@ -28,6 +28,8 @@ pub mod observe;
 pub(crate) mod plan;
 pub mod pulsing_ext;
 pub(crate) mod python_env;
+#[cfg(feature = "query")]
+pub mod query_cli;
 pub(crate) mod result_cache;
 pub mod runtime;
 pub(crate) mod scheduler;
@@ -47,6 +49,8 @@ pub use cli::{init_tracing, init_tracing_with_verbose, run_ppilot, PPilotArgs, R
 pub use dist::DistEnv;
 pub use driver::{Driver, RunOptions};
 pub use observe::{Observer, ObserverOptions};
+#[cfg(feature = "query")]
+pub use query_cli::{run_query, QueryArgs, QuerySource};
 pub use runtime::{run_fleet, run_local_fleet};
 pub use skip::SkipSet;
 pub use task::{TaskExpr, TaskResult};

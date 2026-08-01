@@ -76,7 +76,7 @@ Gateway 不是通用企业 API 网关的替代品，也不拥有网络数据面�
 
 **擅长**
 
-- 单次或长期 `pvisor run` / `persisting traj proxy` 下，对 **Claude Code / Codex** 的对话采集；
+- 单次或长期 `persisting execute` / `persisting gateway serve` 下，对 **Claude Code / Codex** 的对话采集；
 - Claude Code 场景的 history replay 去重、subagent 分轨；
 - Codex 场景的 Responses ↔ Completions 桥接与上下文注入过滤；
 - Lance 全量事件 + Markdown 物化视图的双层存储；
@@ -257,7 +257,7 @@ Live Markdown、轮次索引等视为 **events 触发的一类 handler**，不�
 ### 5.2 集成方式（概念）
 
 - **库嵌入**：Rust 工程可挂载 OverlayNet 与 Gateway sink，并自行提供轨迹 event sink。
-- **CLI**：`pvisor run` 包装子进程；`persisting traj proxy` 长期监听。
+- **CLI**：`persisting execute` 包装子进程；`persisting gateway serve` 长期监听。
 - **配置**：TOML 声明监听地址、模型路由、采集级别、存储根目录；无需改 Agent 源码。
 
 公开 API 以**模块边界**发布（代理、引擎、记录、轨迹、会话），避免扁平导出 hundreds 个符号；故事读模型主要通过快照与对账产物对外可见。
@@ -351,7 +351,7 @@ Lance:      —      —              一条最终响应事件
 
 ### 6.4 可见对话提取（含多模态）
 
-Gateway 在 **Dialogue** 级别下，从客户端原始 HTTP body（而非 upstream 转换后形态）提取「人读可见」正文，写入 `payload.user_content` / `payload.assistant_content`，并驱动 Markdown 块正文、frontmatter `turns` 与 `traj stats`。
+Gateway 在 **Dialogue** 级别下，从客户端原始 HTTP body（而非 upstream 转换后形态）提取「人读可见」正文，写入 `payload.user_content` / `payload.assistant_content`，并驱动 Markdown 块正文、frontmatter `turns` 与 `history stats`。
 
 **统一入口**：`dialogue_extract` 模块；按 wire 协议分支：
 
@@ -372,7 +372,7 @@ Gateway 在 **Dialogue** 级别下，从客户端原始 HTTP body（而非 upstr
 纯图无文字的用户 turn **仍计为 1 轮**（修复「有图无文 → stats 0 turns」）。  
 `capture_level = full` 时完整 JSON 仍在 `payload.body`，但 Markdown 物化**仍只展示占位符**，不嵌入像素数据。
 
-**后续（规划）**：sidecar 资产目录 `{run}/assets/{call_id}/…` + payload 引用；`traj materialize` 可输出 `![…](assets/…)`。见本页 11 节演进方向。
+**后续（规划）**：sidecar 资产目录 `{run}/assets/{call_id}/…` + payload 引用；`history materialize` 可输出 `![…](assets/…)`。见本页 11 节演进方向。
 
 协议回归：`crates/persisting-gateway/tests/ag_fixture_tests.rs` + `tests/support/ag_capture_cases.rs`（agentgateway fixture 矩阵）。
 
@@ -470,7 +470,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 | pVisor 生命周期 / Run 头 | `run-{uuid}`（与目录名一致） |
 | Claude Code 对话 HTTP | header 注入的 UUID（与 run id 不同） |
 
-因此 **`traj stats` 扫描 agent 目录时**，对 run bucket（`session_id == root_session_id`）会先读 Lance 中 distinct `session_id`，再**逐分区统计**，避免「第二个 session 显示 0 turns」。实现位于 `persisting-pchronicle::expand_story_locations`；Engine 仅在 `rpc::trajectory` 中做协议适配。详见 [轨迹存储](trajectory.md) 的 run bucket 分区说明。
+因此 **`history stats` 扫描 agent 目录时**，对 run bucket（`session_id == root_session_id`）会先读 Lance 中 distinct `session_id`，再**逐分区统计**，避免「第二个 session 显示 0 turns」。实现位于 `persisting-pchronicle::expand_story_locations`；Engine 仅在 `rpc::trajectory` 中做协议适配。详见 [轨迹存储](trajectory.md) 的 run bucket 分区说明。
 
 ---
 
@@ -501,11 +501,11 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 
 | 形态 | 适用场景 |
 |------|----------|
-| **`pvisor run`** | 包装一次 Agent 命令（如 `claude`、`codex`）；注入代理环境变量；结束打印会话摘要 |
-| **`persisting traj proxy`** | 前台长期代理；多终端共用 |
-| **`persisting traj proxy start`** | 后台守护进程（spawn `persisting traj proxy`） |
+| **`persisting execute`** | 包装一次 Agent 命令（如 `claude`、`codex`）；注入代理环境变量；结束打印会话摘要 |
+| **`persisting gateway serve`** | 前台长期代理；多终端共用 |
+| **`persisting gateway start`** | 后台守护进程（spawn `persisting gateway serve`） |
 | **仅 Lance / 补 Markdown** | `--chronicle-mode lance` 落盘到 `events.lance/`；需要 live md 时同时启用 `--gateway-stream-markdown` |
-| **Dead letter 重放** | `traj replay-dead-letter` |
+| **Dead letter 重放** | `persisting history replay-dead-letter` |
 
 配置示例（节选）：
 
@@ -553,8 +553,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 | [轨迹存储模型](trajectory.md) | Lance ↔ Markdown 数据流、materialize、import |
 | [轨迹 Markdown 格式](trajectory-format.md) | 块结构、字段规范、subagent 脚注、golden 示例 |
 | [pVisor 命令](cli-pvisor.md) | 单 Run 执行、状态与文件系统操作 |
-| [Traj 命令](cli-traj.md) | 独立代理与 pChronicle 数据操作 |
-| [Trajectory / `traj` 命令](cli-traj.md) | Capture 离线 Egress：add、truncate、stats、replay、extract、materialize |
+| [History / Eval / Gateway 命令](cli-history.md) | 独立代理、评测与 pChronicle 数据操作 |
 | [CLI 整体架构](cli.md) | Persisting 命令行体系 |
 
 **示例轨迹文件**（由编码器生成的 golden，可供格式对照）：

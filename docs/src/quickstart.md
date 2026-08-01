@@ -8,7 +8,7 @@ Get started with Persisting in 5 minutes.
 pip install persisting[lance]
 ```
 
-For CLI tools (`pvisor`, `persisting traj`, `persisting search`), [build from source](installation.md#from-source).
+For CLI tools (`persisting`, `pvisor`, and `ppilot`), [build from source](installation.md#from-source).
 
 ---
 

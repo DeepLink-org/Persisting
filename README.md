@@ -60,15 +60,21 @@ additional capability-specific data systems.
 ## Quick Start
 
 ```bash
-pip install persisting[lance]
+git clone https://github.com/DeepLink-org/Persisting.git
+cd Persisting
+just install-cli
 ```
+
+`install-cli` installs the matching `persisting`, `pvisor`, and `ppilot`
+binaries plus the lazily loaded engine library into the same Cargo bin directory.
+The Python package is installed separately with `pip install persisting[lance]`.
 
 ### Agent Trajectories
 
-Execute an Agent under pVisor and record its LLM calls:
+Execute an Agent through the unified CLI and record its LLM calls:
 
 ```bash
-pvisor run --workspace ./run \
+persisting execute --workspace ./run \
   --overlaynet-mode proxy \
   --gateway-mode capture \
   --gateway-route 'name="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
@@ -179,12 +185,18 @@ pip install persisting[lance]        # Full
 pip install persisting               # Minimal
 ```
 
-For the CLI tools (`persisting traj`, `persisting ppilot`, `persisting search`):
+For the unified CLI (`execute/env/batch/query/history/eval/search/gateway`):
 
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting && cargo build -p persisting-pvisor --bin pvisor -p persisting-cli -p persisting-engine
+cd Persisting
+just install-cli
 ```
+
+The unified command deliberately ships as a matched component set. `persisting`
+dispatches execution/environment commands to the sibling `pvisor` binary and
+batch/query commands to the sibling `ppilot` binary. `PERSISTING_PVISOR_BIN`,
+`PERSISTING_PPILOT_BIN`, and `PERSISTING_ENGINE_LIB` remain explicit overrides.
 
 ---
 

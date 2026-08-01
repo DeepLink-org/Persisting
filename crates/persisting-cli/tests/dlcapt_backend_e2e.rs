@@ -199,8 +199,8 @@ fn cli_dlcapt_backend_ignores_capture_storage_environment() {
         |dir, config| {
             Command::new(env!("CARGO_BIN_EXE_persisting"))
                 .args([
-                    "traj",
-                    "proxy",
+                    "gateway",
+                    "serve",
                     "--backend",
                     "dlcapt",
                     "-c",

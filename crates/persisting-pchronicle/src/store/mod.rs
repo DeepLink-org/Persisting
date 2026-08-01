@@ -1,13 +1,17 @@
 //! Chronicle storage backends: ATIF tables, agenticmd FS, egress, event-row helpers.
 
 mod agenticmd_fs;
+mod atif_datafusion;
 mod egress;
 mod event_row;
-mod fs;
 mod lance;
 mod lance_rows;
 pub(crate) mod markdown;
 mod memory;
+mod query_engine;
+mod storyline_datafusion;
+mod storyline_lance;
+mod storyline_lance_rows;
 
 pub use agenticmd_fs::{
     agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
@@ -17,16 +21,28 @@ pub use agenticmd_fs::{
     read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
     upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
 };
+pub use atif_datafusion::{AtifDataSource, AtifDataSourceOptions};
 pub use egress::{export_source_dirs, export_story_bundle, parse_engine_records, ExportOutcome};
 pub use event_row::{
     event_record_to_event_row, event_row_to_event_record, event_row_to_replay_json, EventRow,
 };
-pub use fs::FsChronicleStore;
 pub use lance::{distinct_session_ids_in_run, overwrite_session_events, overwrite_session_lines};
 pub use lance_rows::{
     event_row_from_batch, event_rows_from_batch, event_rows_to_batch, trajectory_arrow_schema,
 };
 pub use memory::MemoryChronicleStore;
+pub use query_engine::{ChronicleQueryBackend, ChronicleQueryEngine};
+pub use storyline_datafusion::{
+    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
+    StorylineTableKind, StorylineTableProvider, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
+    DATAFUSION_TOOL_CALLS_TABLE,
+};
+pub use storyline_lance::{LanceStorylineStore, StorylineTablePaths};
+pub use storyline_lance_rows::{
+    story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
+    story_steps_from_batch, story_steps_to_batch, story_tool_calls_arrow_schema,
+    story_tool_calls_from_batch, story_tool_calls_to_batch,
+};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -94,7 +110,7 @@ pub struct TrajectoryStats {
     pub note: String,
 }
 
-/// Decode legacy RPC/engine RON records at the pChronicle boundary.
+/// Decode the current RPC/engine RON transport into typed events.
 pub fn decode_event_lines(lines: &[String]) -> anyhow::Result<Vec<EventRecord>> {
     lines
         .iter()
@@ -108,7 +124,7 @@ pub fn decode_event_lines(lines: &[String]) -> anyhow::Result<Vec<EventRecord>> 
         .collect()
 }
 
-/// Encode typed records for compatibility with the existing RPC wire.
+/// Encode typed records for the current RPC/engine RON transport.
 pub fn encode_event_lines(records: &[EventRecord]) -> anyhow::Result<Vec<String>> {
     records
         .iter()
@@ -140,7 +156,7 @@ pub trait StructuredStore: Send + Sync {
     ) -> anyhow::Result<ReplayOutcome>;
     async fn stats(&self, session: &TrajectorySession) -> anyhow::Result<TrajectoryStats>;
 
-    /// Typed append API for new callers. RON exists only as a compatibility wire.
+    /// Typed append API for callers that do not operate on the internal RON transport.
     async fn append_events(
         &self,
         session: &TrajectorySession,
@@ -174,14 +190,6 @@ pub struct LanceEventStore;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AgenticMdStore;
-
-/// Compatibility aliases while downstream crates migrate terminology.
-pub type LanceTrajectoryStore = LanceEventStore;
-pub type MarkdownTrajectoryStore = AgenticMdStore;
-pub type TrajectoryAppendOutcome = AppendOutcome;
-pub type TrajectoryReplayOutcome = ReplayOutcome;
-pub type TrajectoryStatsOutcome = TrajectoryStats;
-pub use StructuredStore as TrajectoryStore;
 
 pub fn structured_store(kind: StorageKind) -> Box<dyn StructuredStore> {
     match kind {
@@ -311,6 +319,3 @@ pub trait NormalizedStore: Send {
             .collect())
     }
 }
-
-/// Backward-compatible name for [`NormalizedStore`].
-pub use NormalizedStore as ChronicleStore;

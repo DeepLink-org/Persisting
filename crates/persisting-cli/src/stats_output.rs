@@ -1,4 +1,4 @@
-//! `traj stats` output backends.
+//! `history stats` output backends.
 //!
 //! | Backend | Role |
 //! |---------|------|

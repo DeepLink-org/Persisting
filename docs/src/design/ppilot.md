@@ -4,17 +4,18 @@
 >
 > 状态：**Phase-1 已落地；目标架构部分对齐**
 >
-> 代码：`crates/persisting-ppilot`（内部库，无顶层 CLI 动词）
+> 代码：`crates/persisting-ppilot`（library + 独立 `ppilot` CLI）
 >
-> 使用方式：Rust 库 API；当前不维护公共 CLI 示例
+> 使用方式：`persisting batch/query`、`ppilot run/query/self-test` 或 Rust 库 API
 
 pPilot 负责计划、调度、恢复和收成许多独立 Run。当前 Phase-1 以
 `plan()` + `execute(item)` 提供 map 式批量编排；目标形态是只操作
 `RunSpec`、`RunFuture` 和 `RunCommit`，将单 Run 执行交给 pVisor，将运行事实
 交给 pChronicle。
 
-**不**作为 `persisting ppilot` / `persisting compute` 命令暴露；当前没有批量执行的
-公共 CLI，避免在 Run 契约稳定前引入临时命令面。
+面向用户的统一入口是 `persisting batch/query`；独立 `ppilot` binary 用于组件部署、
+调试与自检。pPilot 拥有编排和分析交互，pChronicle 仍独占轨迹 schema、物理存储、
+DataFusion datasource 与查询执行。
 
 **不是** Ray，**不**定义 Agent DSL，**不**自研替代 `torchrun` 的启动器。
 
@@ -38,10 +39,30 @@ pPilot                  计划 · 有界并发 · lease · retry · resume · co
 | 编排独立 Run / task | 新 DSL / 装饰器框架 |
 | 真实 `torchrun` 多进程 | 自研 rdzv / launcher |
 | Rust Pulsing 做发现与投递 | Python 侧 Actor 编程模型 |
-| 通过 provider 扩展执行位置 | 保存或解释 Agent 会话 |
+| 通过 provider 扩展执行位置 | 定义 Agent 会话格式或物理存储 |
 
-与 `search` / `traj` 不同，pPilot 当前不接入公共 CLI，也不经 Engine RON ABI。
-落盘若走 Lance，由 sink adapter 写入 pChronicle；编排状态仍由本 crate 管理。
+`persisting` 对 batch/query 做薄转发，不让 pPilot 经过 Engine RON ABI。
+`ppilot query` 直接调用 pChronicle library；落盘若走 Lance，由 sink adapter 写入
+pChronicle；编排状态仍由本 crate 管理。
+
+### 1.1 公共 CLI
+
+```text
+ppilot run <SCRIPT> [OPTIONS]
+ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif]
+ppilot self-test [OPTIONS]
+```
+
+`run` 收纳原有 `PPilotArgs`；`self-test` 是无需用户脚本的环境与执行链路验证。
+`query` 对三表 Storyline Lance store、ATIF JSON/数组/JSONL/目录注册同名的 `runs`、
+`steps`、`tool_calls` 表，执行一条只读 DataFusion SQL，并把 JSONL 写到 stdout。
+
+CLI 通过 `cli` feature 构建；默认 library feature 仍为空，避免只嵌入调度器的应用
+无条件编译 Lance/DataFusion：
+
+```bash
+cargo build -p persisting-ppilot --features cli --bin ppilot
+```
 
 ---
 
@@ -51,22 +72,21 @@ pPilot                  计划 · 有界并发 · lease · retry · resume · co
 
 | 设计要求 | 当前状态 | 判断 |
 |---|---|---|
-| 稳定 task / Run identity | manifest item 强制稳定 `id`，支持 resume | **已对齐**；需升级为 `task_id → run_id` |
+| 稳定 task / Run identity | manifest item 强制稳定 `id`；adapter 生成确定性 `run_id` 并写入 TaskResult | **已对齐** |
 | 有界并发与反压 | `max_inflight` + sink queue backpressure | **已对齐** |
 | 基础设施重试与语义重试分离 | `--retries` 只处理 ask/worker 故障 | **已对齐** |
 | 唯一结果收成路径 | Driver 经异步 sink 写 terminal result | **基本对齐**；尚无 RunCommit CAS |
 | durable checkpoint | JSONL + `checkpoint.json` | **部分对齐**；不是 Job/Run/Attempt 状态存储 |
 | lease 与 stale worker fencing | sticky/quarantine，缺少持久 lease epoch | **部分对齐** |
-| pPilot 只操作 RunFuture | crate 仍直接拥有 WorkerActor、Python host 和 Executor | **不对齐**；执行职责应下沉 pVisor |
+| pPilot 只操作 RunFuture | Worker 将 TaskExpr 转成 RunSpec，Python host 实现 pVisor RunExecutor | **部分对齐**；Driver transport 仍是 Worker ask |
 | reconcile | resume 只扫描 JSONL，未核对活跃 Attempt 与 pChronicle | **缺失** |
 | pChronicle terminal facts | 可选 Tee Lance 保存 `ppilot.result/failure` | **过渡实现**；需改为 canonical Event + RunCommit |
 
 因此重构顺序不是推翻现有调度器，而是：
 
-1. 以 `RunSpec/RunFuture` adapter 替换 Driver 对 Worker 的直接 `ask`。
-2. 将 `worker`、`executor`、Python host 移入 pVisor executor provider。
-3. 将 checkpoint 扩展为 Job/Task/Run/Attempt + lease epoch 的持久状态。
-4. 增加 reconciler，对照 checkpoint、pVisor Attempt 和 pChronicle RunCommit 收敛。
+1. 将当前 Worker 内的 `TaskExpr ↔ RunSpec/RunResult` adapter 提升为 Driver 可观察的 RunFuture。
+2. 将 checkpoint 扩展为 Job/Task/Run/Attempt + lease epoch 的持久状态。
+3. 增加 reconciler，对照 checkpoint、pVisor Attempt 和 pChronicle RunCommit 收敛。
 
 ---
 
@@ -112,7 +132,7 @@ pPilot                  计划 · 有界并发 · lease · retry · resume · co
 
 内部控制面会把平面 JSON 归一成 `TaskExpr`（`id` / `op=execute` / `args` / `meta`）；产品面 **只支持** `op=execute`。新能力写在用户 `execute` 里，不靠扩展 op 表。
 
-结果线格式为 `TaskResult`：`task_id`、`ok`、`cancelled`、`value` / `error`、`worker`、时间戳、`infra_retries` 等。
+结果线格式为 `TaskResult`：`task_id`、`run_id`、`ok`、`cancelled`、`value` / `error`、`worker`、时间戳、`infra_retries` 等。
 
 算法脚手架扩展保持在这个边界内：`setup_worker(context)` 与
 `teardown_worker()` 为可选的 process-local hook，`execute(item)` 仍是唯一必需且
@@ -170,7 +190,7 @@ pPilot                  计划 · 有界并发 · lease · retry · resume · co
 `--retries` 只覆盖 **worker ask / 基础设施**失败；**不**解读业务
 `ok=false`。质量重试、重新采样和策略变化必须显式创建派生 Run。
 
-### 6.3 过渡执行缝
+### 6.3 pVisor Python-host provider
 
 每槽一个长驻 Python 子进程（行协议 JSON）：
 
@@ -179,9 +199,9 @@ pPilot                  计划 · 有界并发 · lease · retry · resume · co
 | `run_plan` | 加载脚本（带 argv），调 `execute(item)`；按路径缓存模块 |
 | `shutdown` | 退出 host |
 
-Worker **不**解释业务；Driver **不**碰 Python。失败 traceback 编进 `TaskResult`。
-这段实现当前保证产品可用，但从目标边界看属于 pVisor executor provider，不应长期由
-pPilot 持有。
+Worker **不**解释业务；Driver **不**碰 Python。每个 Task 先转换为稳定 RunSpec，长驻
+Python host 实现 pVisor `RunExecutor`；取消和终态经 RunHandle/RunResult 返回，再由唯一
+adapter 转为 TaskResult。provider 代码目前仍位于 pPilot crate，后续可独立成部署 provider。
 
 ### 6.4 取消
 
@@ -282,8 +302,8 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 | 真 torchrun CI | 有双 ActorSystem 烟测；真实多进程 e2e 仍薄 |
 | 错误分类 | infra / execute / cancel 尚未成稳定枚举字段 |
 | DeathWatch | 仅本地；远端死槽靠 ask 失败路径 |
-| Run contract | 内部仍 `TaskExpr/TaskResult`；需增加 `RunSpec/RunFuture/RunResult` adapter |
-| pVisor boundary | Worker、Executor 与 Python host 仍在 pPilot crate |
+| Run contract | adapter 已落地；Driver 尚不能直接观察 RunHandle/Attempt 状态 |
+| pVisor boundary | Python host 已实现 RunExecutor，但 provider 代码仍在 pPilot crate |
 | reconcile | 尚无 checkpoint / active Attempt / RunCommit 三方收敛 |
 | terminal commit | JSONL 是 resume truth；尚无 pChronicle CAS |
 
@@ -301,5 +321,5 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 ## 10. 相关文档
 
 - [Agent 基础设施](agent-infrastructure.md)
-- [CLI 整体架构](cli.md)（pPilot 当前不接入公共 CLI）
+- [`ppilot` 命令参考](cli-ppilot.md)
 - [轨迹存储](trajectory.md)

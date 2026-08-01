@@ -81,16 +81,8 @@ impl AgenticmdDocument {
 }
 
 pub fn parse_agenticmd_document(input: &str) -> Result<AgenticmdDocument> {
-    parse_agenticmd_document_with(input, AgenticmdParseMode::Lenient)
-}
-
-/// Parse agenticmd with an explicit [`AgenticmdParseMode`].
-pub fn parse_agenticmd_document_with(
-    input: &str,
-    mode: AgenticmdParseMode,
-) -> Result<AgenticmdDocument> {
     let (frontmatter, _body, _off) = split_frontmatter_with_offset(input)?;
-    let spans = parse_agenticmd_blocks_with_spans(input, mode)?;
+    let spans = parse_agenticmd_blocks_with_spans(input)?;
     let mut doc = AgenticmdDocument::new(spans.into_iter().map(|s| s.block).collect());
     doc.frontmatter = frontmatter;
     if let Some(fmt) = doc.frontmatter.get("format") {
@@ -109,16 +101,6 @@ pub fn parse_agenticmd_document_with(
     Ok(doc)
 }
 
-/// How to treat non-block lines while parsing agenticmd.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AgenticmdParseMode {
-    /// Skip non-block lines (legacy notes). Used by `traj convert`.
-    #[default]
-    Lenient,
-    /// Reject unexpected non-block content (capture live-document semantics).
-    Strict,
-}
-
 /// One parsed block plus its absolute byte range in the source document.
 ///
 /// `start..end` covers the comment line through trailing blank lines — the same
@@ -131,12 +113,9 @@ pub struct AgenticmdBlockSpan {
 }
 
 /// Parse blocks with absolute byte spans (for capture upsert / diagnostics).
-pub fn parse_agenticmd_blocks_with_spans(
-    input: &str,
-    mode: AgenticmdParseMode,
-) -> Result<Vec<AgenticmdBlockSpan>> {
+pub fn parse_agenticmd_blocks_with_spans(input: &str) -> Result<Vec<AgenticmdBlockSpan>> {
     let (_frontmatter, body, body_offset) = split_frontmatter_with_offset(input)?;
-    parse_blocks_with_spans(body, body_offset, mode)
+    parse_blocks_with_spans(body, body_offset)
 }
 
 /// Byte offset where the document body begins (immediately after YAML frontmatter).
@@ -234,19 +213,12 @@ fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, String
     Ok((map, body, body_offset))
 }
 
-fn parse_blocks_with_spans(
-    input: &str,
-    base_offset: usize,
-    mode: AgenticmdParseMode,
-) -> Result<Vec<AgenticmdBlockSpan>> {
+fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<AgenticmdBlockSpan>> {
     let bytes = input.as_bytes();
     let mut pos = 0usize;
     let mut blocks = Vec::new();
     while pos < bytes.len() {
-        pos = match mode {
-            AgenticmdParseMode::Lenient => skip_ws(bytes, pos),
-            AgenticmdParseMode::Strict => skip_strict_preamble(bytes, pos),
-        };
+        pos = skip_blank_lines(bytes, pos);
         if pos >= bytes.len() {
             break;
         }
@@ -258,22 +230,10 @@ fn parse_blocks_with_spans(
         let line = std::str::from_utf8(&bytes[pos..line_end])
             .map_err(|e| Error::Other(format!("agenticmd utf8: {e}")))?;
         if !line.trim_start().starts_with(BLOCK_MARKER) {
-            match mode {
-                AgenticmdParseMode::Lenient => {
-                    pos = if line_end < bytes.len() {
-                        line_end + 1
-                    } else {
-                        line_end
-                    };
-                    continue;
-                }
-                AgenticmdParseMode::Strict => {
-                    return Err(Error::Other(format!(
-                        "expected `{BLOCK_MARKER}:{{speaker}} {{json}} -->` at offset {}",
-                        base_offset + pos
-                    )));
-                }
-            }
+            return Err(Error::Other(format!(
+                "expected `{BLOCK_MARKER}:{{speaker}} {{json}} -->` at offset {}",
+                base_offset + pos
+            )));
         }
         let start = base_offset + pos;
         let header: AgenticmdHeader = parse_block_comment(line.trim())?;
@@ -308,15 +268,16 @@ fn parse_block_comment(line: &str) -> Result<AgenticmdHeader> {
     let after = line
         .strip_prefix(BLOCK_MARKER)
         .ok_or_else(|| Error::Other("missing persisting:block marker".into()))?
-        .trim_start();
-    let after = if let Some(rest) = after.strip_prefix(':') {
-        let json_start = rest
-            .find('{')
-            .ok_or_else(|| Error::Other("block JSON object missing".into()))?;
-        &rest[json_start..]
-    } else {
-        after
-    };
+        .strip_prefix(':')
+        .ok_or_else(|| Error::Other("block marker must include a speaker".into()))?;
+    let json_start = after
+        .find('{')
+        .ok_or_else(|| Error::Other("block JSON object missing".into()))?;
+    let speaker = after[..json_start].trim();
+    if speaker.is_empty() {
+        return Err(Error::Other("block speaker is empty".into()));
+    }
+    let after = &after[json_start..];
     let json_part = after
         .strip_suffix("-->")
         .ok_or_else(|| Error::Other("unclosed block comment".into()))?
@@ -325,7 +286,13 @@ fn parse_block_comment(line: &str) -> Result<AgenticmdHeader> {
         .find('{')
         .ok_or_else(|| Error::Other("block JSON object missing".into()))?;
     let json_str = extract_json_object(&json_part[json_start..])?;
-    Ok(serde_json::from_str(json_str)?)
+    let header: AgenticmdHeader = serde_json::from_str(json_str)?;
+    if header.fields.get("role").and_then(Value::as_str) != Some(speaker) {
+        return Err(Error::Other(format!(
+            "block speaker '{speaker}' does not match header role"
+        )));
+    }
+    Ok(header)
 }
 
 fn extract_json_object(s: &str) -> Result<&str> {
@@ -362,34 +329,6 @@ fn extract_json_object(s: &str) -> Result<&str> {
     Err(Error::Other(
         "unbalanced JSON object in block header".into(),
     ))
-}
-
-fn skip_ws(bytes: &[u8], mut pos: usize) -> usize {
-    while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t' | b'\r' | b'\n') {
-        pos += 1;
-    }
-    pos
-}
-
-/// Capture-compatible preamble skip: blank lines and `#` comment lines only.
-fn skip_strict_preamble(bytes: &[u8], mut pos: usize) -> usize {
-    while pos < bytes.len() {
-        if bytes[pos] == b'#' {
-            while pos < bytes.len() && bytes[pos] != b'\n' {
-                pos += 1;
-            }
-            if pos < bytes.len() {
-                pos += 1;
-            }
-            continue;
-        }
-        if bytes[pos] == b'\n' || bytes[pos] == b'\r' {
-            pos = skip_blank_lines(bytes, pos);
-            continue;
-        }
-        break;
-    }
-    pos
 }
 
 fn skip_blank_lines(bytes: &[u8], mut pos: usize) -> usize {

@@ -5,6 +5,7 @@ target/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+.persisting/
 .venv/
 *.abi3.so
 crates/persisting-engine/ds/

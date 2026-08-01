@@ -23,31 +23,27 @@ Persisting 不定义 Agent framework、提示词 DSL 或训练算法，也不替
 
 ## 2. 产品入口
 
-面向 Agent 使用者的前台命令由 pVisor 承担：
+面向 Agent 使用者的统一入口是 `persisting`：
 
 ```text
-pvisor
-├── run           执行一个 Run
-├── status        汇总 Run 的文件系统与网络状态
-├── inspect       只读进入 Run 的文件系统视图
-└── apply/drop    提交或丢弃 OverlayFS stage
-
-persisting traj
-├── import        向 pChronicle 导入外部事件
-├── proxy         管理独立 Gateway sink
-├── replay        从 pChronicle 读取 Run 历史
-└── stats/...     数据维护与派生
+persisting
+├── execute       执行一个 Run
+├── env           管理持久执行环境
+├── batch/query   批量编排与历史 SQL
+├── history       导入、回放和维护 Run 历史
+├── eval          评测 Run 历史
+└── gateway       管理长期捕获 sink
 ```
 
 命令与组件的关系：
 
 | 命令 | 主组件 | 产品语义 |
 |---|---|---|
-| `pvisor [run]` | pVisor | 创建并执行一个 Run，装配 Gateway、Control、OverlayNet 与 OverlayFS |
-| `pvisor status/inspect` | pVisor | 按 Run、stage、upper 或 DB 发现并只读检查运行环境 |
-| `pvisor apply/drop` | pVisor | 提交或丢弃已停止 Run 的 OverlayFS stage |
-| `persisting traj import/replay/stats/...` | pChronicle | 导入、读取和维护 Run 历史 |
-| `persisting traj proxy` | Gateway | 独立启动或管理长期捕获 sink |
+| `persisting execute` | pVisor | 创建并执行一个 Run，装配 Gateway、Control、OverlayNet 与 OverlayFS |
+| `persisting env` | pVisor | 创建、执行、检查和维护持久运行环境 |
+| `persisting batch/query` | pPilot | 批量编排和历史 SQL 分析 |
+| `persisting history/eval` | pChronicle | 导入、读取、维护和评测 Run 历史 |
+| `persisting gateway` | Gateway | 独立启动或管理长期捕获 sink |
 
 ## 3. 设计目标与非目标
 
@@ -137,7 +133,7 @@ Run
 | Event | 不可变的最小运行事实 | `event_id` |
 | Revision | 固定消费集合或派生版本 | `revision_id` |
 
-当前 Capture 的 `agent_id`、`root_session_id`、`session_id`、`call_id` 和 `trace_id` 继续保存在事件中。目标语义是 `root_session_id → run_id`、`session_id → story_id`，代码内部可渐进迁移。
+Capture 的 `agent_id`、`root_session_id`、`session_id`、`call_id` 和 `trace_id` 继续保存在事件中。pVisor 已令顶层 `root_session_id == run_id`；子会话的 `session_id → story_id` 仍按 Storyline 模型渐进迁移。
 
 ### 5.2 Run、Attempt 与 Job
 
@@ -320,8 +316,9 @@ pPilot 不做 Agent 质量判断、工具协议解释、prompt 设计、业务�
 
 ### 7.2 批次模型
 
-pPilot 当前作为内部库接收带稳定 `id` 的任务流，每个 item 对应一个独立任务；未来与
-pVisor 的正式集成以 `RunSpec` 为边界，不预设新的顶层 CLI 动词。
+pPilot 接收带稳定 `id` 的任务流，每个 item 对应一个独立 Run；Worker 内的唯一 adapter
+将 TaskExpr 转换为 RunSpec，并通过 pVisor RunExecutor/RunResult 执行和收成。后续仍需
+让 Driver 与 durable checkpoint 直接观察 RunFuture/Attempt 状态。
 
 ```json
 {"id":"repo-a","command":"claude","input":"/work/repo-a"}
@@ -485,7 +482,7 @@ pPilot library
 | worker reply 丢失 | 查询 pVisor/provider handle；不擅自跨 lease 重复副作用 |
 | 控制面崩溃 | 由 checkpoint、活跃 Attempt 和 pChronicle commit 恢复 |
 | 用户取消 | 停止新 item、取消 Future、记录原因；外部副作用不保证回滚 |
-| schema 演进 | Event 带 schema version；reader 向后兼容，view 可重建 |
+| schema 演进 | Event 带 schema version；不兼容变更通过显式迁移完成，view 可重建 |
 
 ### 10.2 安全原则
 
@@ -511,8 +508,8 @@ pPilot library
 | canonical Lance events | `persisting-pchronicle::{EventRow, LanceEventStore}` | 统一 canonical-first，Markdown 降为 view |
 | Storyline / replay view | story actor、TLV Markdown、materialize、replay | 将 session 对齐为 Storyline，并补充因果关系 |
 | pVisor proxy drivers | `persisting-overlaynet` 独占显式 HTTP/HTTPS proxy 数据面；Gateway 是 LLM/轨迹 `OverlaySink`；另有 `persisting-dlcapt` | 可配置其他 sink；当前不宣称透明网络隔离。Linux 透明截获已定稿设计（主方案：非特权 netns + 进程内用户态协议栈；备选：seccomp user-notify + ADDFD），见 [OverlayNet interception](overlaynet.md) |
-| pVisor executor | pPilot 过渡 `Executor`、Python host、Capture child process | 从 pPilot 下沉并补齐统一 RunContext、RunFuture 和 Attempt 契约 |
-| pPilot batch control | `persisting-ppilot` Driver、Scheduler、Sink、Checkpoint | 增加 RunSpec/manifest adapter 和 durable reconcile |
+| pVisor executor | Local ProcessExecutor；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；尚缺 WASM/Container/Remote |
+| pPilot batch control | Driver、Scheduler、Sink、Checkpoint；TaskExpr ↔ RunSpec/RunResult adapter | 将 Run/Attempt 写入 durable checkpoint 并增加 reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |
 | distributed providers | Pulsing actors、torchrun integration | 只承担发现、投递和 worker 生命周期 |
 | pChronicle consumers | Engine trajectory/search、Judge | 改为 canonical history 的消费者 |
@@ -523,7 +520,7 @@ pPilot library
 
 1. `pvisor run` 创建 canonical Run，返回稳定 RunResult。
 2. Gateway、执行和导入使用同一 Run/Event identity。
-3. `persisting traj replay` 读取 pChronicle 历史。
+3. `persisting history replay` 读取 pChronicle 历史。
 4. append、WAL、dead letter、repair 和 terminal commit 可测试。
 
 ### 阶段二：pPilot 批量闭环

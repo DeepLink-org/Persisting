@@ -12,9 +12,8 @@ pub mod storyline;
 pub use agenticmd::{
     agenticmd_body_byte_offset, encode_agenticmd_block, encode_agenticmd_document,
     encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans, parse_agenticmd_document,
-    parse_agenticmd_document_with, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdDocument,
-    AgenticmdHeader, AgenticmdParseMode, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FORMAT_NAME,
-    AGENTICMD_FRONTMATTER_FORMAT, BLOCK_MARKER,
+    AgenticmdBlock, AgenticmdBlockSpan, AgenticmdDocument, AgenticmdHeader, AGENTICMD_BLOCK_LAYOUT,
+    AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT, BLOCK_MARKER,
 };
 pub use agenticmd_body::{
     append_subagent_refs_footer, is_subagent_footer_line, strip_subagent_footer_from_body,

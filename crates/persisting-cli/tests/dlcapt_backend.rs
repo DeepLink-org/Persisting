@@ -4,7 +4,14 @@ use std::process::Command;
 #[test]
 fn dlcapt_backend_without_feature_explains_how_to_enable_it() {
     let output = Command::new(env!("CARGO_BIN_EXE_persisting"))
-        .args(["traj", "proxy", "--backend", "dlcapt", "-c", "proxy.toml"])
+        .args([
+            "gateway",
+            "serve",
+            "--backend",
+            "dlcapt",
+            "-c",
+            "proxy.toml",
+        ])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -17,8 +24,8 @@ fn dlcapt_backend_without_feature_explains_how_to_enable_it() {
 fn dlcapt_backend_rejects_capture_only_output_directory() {
     let output = Command::new(env!("CARGO_BIN_EXE_persisting"))
         .args([
-            "traj",
-            "proxy",
+            "gateway",
+            "serve",
             "--backend",
             "dlcapt",
             "-c",

@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(all(target_os = "macos", not(debug_assertions)))]
 
 use std::fs::{self, File};
 use std::process::{Command, Stdio};
@@ -8,7 +8,6 @@ const DIRECTORY_COUNT: usize = 32;
 const FILES_PER_DIRECTORY: usize = 32;
 const LOWER_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(10);
-const MAX_READ_ONLY_UPPER_BYTES: u64 = 8 * 1024 * 1024;
 
 /// End-to-end guard against making lower-file payload I/O part of readdir/getattr.
 ///
@@ -17,9 +16,6 @@ const MAX_READ_ONLY_UPPER_BYTES: u64 = 8 * 1024 * 1024;
 #[test]
 #[ignore = "requires an enabled macFUSE kernel extension and measures wall-clock performance"]
 fn recursive_lower_walk_does_not_materialize_file_payloads() {
-    #[cfg(debug_assertions)]
-    panic!("performance tests must be built with --release");
-
     let temporary = tempfile::tempdir().expect("create performance fixture root");
     let lower = temporary.path().join("lower");
     let stage = temporary.path().join("stage");
@@ -87,22 +83,21 @@ fn recursive_lower_walk_does_not_materialize_file_payloads() {
         "recursive walk took {elapsed:?}, exceeding {max_elapsed:?}"
     );
 
-    let database_bytes = fs::metadata(stage.join("upper.redb"))
-        .expect("read upper.redb metadata")
-        .len();
+    let upper_entries = fs::read_dir(stage.join("upper"))
+        .expect("read directory upper")
+        .count();
     assert!(
-        database_bytes <= MAX_READ_ONLY_UPPER_BYTES,
-        "read-only walk grew upper.redb to {database_bytes} bytes"
+        upper_entries == 0,
+        "read-only walk materialized {upper_entries} entries in the directory upper"
     );
     assert!(lower.join("dir-00/file-0000.bin").is_file());
 
     eprintln!(
-        "pvisor overlayfs perf: {} files, {} MiB apparent lower data, host={host_elapsed:?}, pvisor={ambient_elapsed:?}, overlay={elapsed:?}, pvisor_overhead={:?}, overlay_total_overhead={:?}, {} KiB upper.redb",
+        "pvisor overlayfs perf: {} files, {} MiB apparent lower data, host={host_elapsed:?}, pvisor={ambient_elapsed:?}, overlay={elapsed:?}, pvisor_overhead={:?}, overlay_total_overhead={:?}",
         DIRECTORY_COUNT * FILES_PER_DIRECTORY,
         DIRECTORY_COUNT as u64 * FILES_PER_DIRECTORY as u64 * LOWER_FILE_BYTES / 1024 / 1024,
         ambient_elapsed.saturating_sub(host_elapsed),
-        elapsed.saturating_sub(host_elapsed),
-        database_bytes / 1024
+        elapsed.saturating_sub(host_elapsed)
     );
 }
 
