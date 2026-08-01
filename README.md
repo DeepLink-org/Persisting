@@ -1,18 +1,30 @@
 # Persisting
 
-**Persistent Storage for Trajectories, Parameters, and KV Cache.**
+**Agent execution, orchestration, and durable history.**
 
-Persisting provides a **unified tiered storage** for AI workloads — agent trajectories, model parameters, and KV cache share the same multi-dimensional addressing (TTAS), the same Lance columnar storage engine, and the same Pulsing-powered distribution. Data lives across GPU, host memory, and SSD, addressed by tensor subscript, materialized on demand.
+Persisting's Agent infrastructure has three peer components: **pVisor** manages
+one Agent Run, **pPilot** orchestrates many Runs, and **pChronicle** stores
+canonical Run history. Gateway, OverlayNet, Control, and OverlayFS are runtime
+drivers assembled by pVisor.
+
+```text
+pPilot ── RunSpec ──► pVisor ── EventRecord ──► pChronicle
+  │                    │                         ▲
+  └──── history ───────┴─────────────────────────┘
+                       ├─ Control
+                       ├─ OverlayFS
+                       └─ OverlayNet → Gateway sink
+```
 
 ---
 
-## One Storage, Many Workloads
+## Experimental Unified Data-Plane Vision
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Application                                 │
 │                                                                  │
-│   traj capture          persisting.open()       Queue           │
+│   pvisor run            persisting.open()       Queue           │
 │   (agent proxy)         (tensor subscript)      (event stream)  │
 │                                                                  │
 ├─────────────────────────────────────────────────────────────────┤
@@ -39,6 +51,10 @@ Persisting provides a **unified tiered storage** for AI workloads — agent traj
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+The diagram above is a target for TTAS/tiered tensor storage, not the current
+pChronicle trajectory architecture. Tensor Memory, Queue, and Search remain
+additional capability-specific data systems.
+
 ---
 
 ## Quick Start
@@ -49,11 +65,15 @@ pip install persisting[lance]
 
 ### Agent Trajectories
 
-Record every LLM call your agent makes:
+Execute an Agent under pVisor and record its LLM calls:
 
 ```bash
-persisting traj capture -o ./store -c proxy.toml -f md -- claude
-# or: -f lance  →  only events.lance/ dataset; then traj materialize for Markdown
+pvisor run --workspace ./run \
+  --overlaynet-mode proxy \
+  --gateway-mode capture \
+  --gateway-route 'name="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
+  --gateway-stream-markdown \
+  -- claude
 ```
 
 Trajectories are stored as `(agent_id, run_id, time)` — the same TTAS model used for KV cache and parameters.
@@ -163,7 +183,7 @@ For the CLI tools (`persisting traj`, `persisting ppilot`, `persisting search`):
 
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting && cargo build -p persisting-cli -p persisting-engine
+cd Persisting && cargo build -p persisting-pvisor --bin pvisor -p persisting-cli -p persisting-engine
 ```
 
 ---

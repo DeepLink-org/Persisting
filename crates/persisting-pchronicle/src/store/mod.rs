@@ -3,40 +3,307 @@
 mod agenticmd_fs;
 mod egress;
 mod event_row;
-mod events_log;
 mod fs;
+mod lance;
+mod lance_rows;
+pub(crate) mod markdown;
 mod memory;
 
 pub use agenticmd_fs::{
-    agenticmd_block_count, append_agenticmd_blocks, encode_agenticmd_block_validated,
-    find_block_by_call_id_and_role, parse_agenticmd_document_validated,
-    parse_agenticmd_spans_validated, read_agenticmd_blocks_from_file, rewrite_block_range,
-    upsert_block_by_call_id,
+    agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
+    append_agenticmd_blocks, count_agenticmd_role, encode_agenticmd_block_validated,
+    find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,
+    parse_agenticmd_document_validated, parse_agenticmd_spans_validated,
+    read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
+    upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
 };
 pub use egress::{export_source_dirs, export_story_bundle, parse_engine_records, ExportOutcome};
 pub use event_row::{
     event_record_to_event_row, event_row_to_event_record, event_row_to_replay_json, EventRow,
 };
-pub use events_log::EventLogStore;
 pub use fs::FsChronicleStore;
+pub use lance::{distinct_session_ids_in_run, overwrite_session_events, overwrite_session_lines};
+pub use lance_rows::{
+    event_row_from_batch, event_rows_from_batch, event_rows_to_batch, trajectory_arrow_schema,
+};
 pub use memory::MemoryChronicleStore;
 
+use anyhow::Context;
+use async_trait::async_trait;
+use std::path::PathBuf;
+
 use crate::schema::{SessionRow, StepRow, ToolCallRow};
-use crate::Result;
+use crate::{story_lance_event_path, EventRecord, Result as ChronicleResult, StoryCoords};
 
-/// Persistence API for normalized ATIF tables.
-pub trait ChronicleStore: Send {
-    fn upsert_session(&mut self, row: SessionRow) -> Result<()>;
-    fn get_session(&self, session_id: &str) -> Result<Option<SessionRow>>;
-    fn list_sessions(&self) -> Result<Vec<SessionRow>>;
+pub const TRAJECTORY_SEQ_COL: &str = "seq";
+pub const TRAJECTORY_TIMESTAMP_COL: &str = "timestamp";
+pub const TRAJECTORY_SOURCE_COL: &str = "source";
+pub const TRAJECTORY_KIND_COL: &str = "kind";
+pub const TRAJECTORY_SESSION_ID_COL: &str = "session_id";
+pub const TRAJECTORY_AGENT_ID_COL: &str = "agent_id";
+pub const TRAJECTORY_CALL_ID_COL: &str = "call_id";
+pub const TRAJECTORY_PARENT_CALL_ID_COL: &str = "parent_call_id";
+pub const TRAJECTORY_MODEL_COL: &str = "model";
+pub const TRAJECTORY_TRACE_ID_COL: &str = "trace_id";
+pub const TRAJECTORY_PAYLOAD_JSON_COL: &str = "payload_json";
 
-    fn replace_steps(&mut self, session_id: &str, rows: Vec<StepRow>) -> Result<()>;
-    fn list_steps(&self, session_id: &str) -> Result<Vec<StepRow>>;
+/// Stable physical schema for the canonical Lance event log.
+pub const TRAJECTORY_V1_COLS: &[&str] = &[
+    TRAJECTORY_SEQ_COL,
+    TRAJECTORY_TIMESTAMP_COL,
+    TRAJECTORY_KIND_COL,
+    TRAJECTORY_SOURCE_COL,
+    TRAJECTORY_AGENT_ID_COL,
+    TRAJECTORY_SESSION_ID_COL,
+    TRAJECTORY_CALL_ID_COL,
+    TRAJECTORY_TRACE_ID_COL,
+    TRAJECTORY_PARENT_CALL_ID_COL,
+    TRAJECTORY_MODEL_COL,
+    TRAJECTORY_PAYLOAD_JSON_COL,
+];
 
-    fn replace_tool_calls(&mut self, session_id: &str, rows: Vec<ToolCallRow>) -> Result<()>;
-    fn list_tool_calls(&self, session_id: &str) -> Result<Vec<ToolCallRow>>;
+/// Physical representations owned by pChronicle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageKind {
+    Lance,
+    AgenticMd,
+}
 
-    fn list_tool_calls_for_step(&self, session_id: &str, step_id: i64) -> Result<Vec<ToolCallRow>> {
+/// Story coordinates accepted by every pChronicle physical backend.
+pub type TrajectorySession = StoryCoords;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendOutcome {
+    pub accepted_records: usize,
+    pub persisted_units: usize,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayOutcome {
+    pub records: Vec<String>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrajectoryStats {
+    pub dataset: String,
+    pub row_count: usize,
+    pub manifest_version: Option<u64>,
+    pub status: String,
+    pub note: String,
+}
+
+/// Decode legacy RPC/engine RON records at the pChronicle boundary.
+pub fn decode_event_lines(lines: &[String]) -> anyhow::Result<Vec<EventRecord>> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let value: serde_json::Value = ron::from_str(line.trim())
+                .with_context(|| format!("decode record[{index}] RON"))?;
+            serde_json::from_value(value)
+                .with_context(|| format!("decode record[{index}] as EventRecord"))
+        })
+        .collect()
+}
+
+/// Encode typed records for compatibility with the existing RPC wire.
+pub fn encode_event_lines(records: &[EventRecord]) -> anyhow::Result<Vec<String>> {
+    records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            let value = serde_json::to_value(record)
+                .with_context(|| format!("serialize record[{index}]"))?;
+            ron::to_string(&value).with_context(|| format!("encode record[{index}] RON"))
+        })
+        .collect()
+}
+
+/// Unified async API for canonical event storage and rebuildable projections.
+#[async_trait]
+pub trait StructuredStore: Send + Sync {
+    fn kind(&self) -> StorageKind;
+    fn display_path(&self, session: &TrajectorySession) -> anyhow::Result<String>;
+    async fn exists(&self, session: &TrajectorySession) -> anyhow::Result<bool>;
+    async fn append(
+        &self,
+        session: &TrajectorySession,
+        records_ron: &[String],
+    ) -> anyhow::Result<AppendOutcome>;
+    async fn replay(
+        &self,
+        session: &TrajectorySession,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> anyhow::Result<ReplayOutcome>;
+    async fn stats(&self, session: &TrajectorySession) -> anyhow::Result<TrajectoryStats>;
+
+    /// Typed append API for new callers. RON exists only as a compatibility wire.
+    async fn append_events(
+        &self,
+        session: &TrajectorySession,
+        records: &[EventRecord],
+    ) -> anyhow::Result<AppendOutcome> {
+        self.append(session, &encode_event_lines(records)?).await
+    }
+
+    /// Typed read API for new callers.
+    async fn read_events(
+        &self,
+        session: &TrajectorySession,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<EventRecord>> {
+        let replay = self.replay(session, offset, limit).await?;
+        replay
+            .records
+            .iter()
+            .enumerate()
+            .map(|(index, record)| {
+                serde_json::from_str(record)
+                    .with_context(|| format!("decode replay record[{index}] as EventRecord"))
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LanceEventStore;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AgenticMdStore;
+
+/// Compatibility aliases while downstream crates migrate terminology.
+pub type LanceTrajectoryStore = LanceEventStore;
+pub type MarkdownTrajectoryStore = AgenticMdStore;
+pub type TrajectoryAppendOutcome = AppendOutcome;
+pub type TrajectoryReplayOutcome = ReplayOutcome;
+pub type TrajectoryStatsOutcome = TrajectoryStats;
+pub use StructuredStore as TrajectoryStore;
+
+pub fn structured_store(kind: StorageKind) -> Box<dyn StructuredStore> {
+    match kind {
+        StorageKind::Lance => Box::new(LanceEventStore),
+        StorageKind::AgenticMd => Box::new(AgenticMdStore),
+    }
+}
+
+pub fn session_lance_path(session: &TrajectorySession) -> anyhow::Result<PathBuf> {
+    story_lance_event_path(
+        &session.storage,
+        &session.agent_id,
+        &session.session_id,
+        session.root_session_id.as_deref(),
+    )
+}
+
+#[async_trait]
+impl StructuredStore for LanceEventStore {
+    fn kind(&self) -> StorageKind {
+        StorageKind::Lance
+    }
+
+    fn display_path(&self, session: &TrajectorySession) -> anyhow::Result<String> {
+        lance::display_path(session)
+    }
+
+    async fn exists(&self, session: &TrajectorySession) -> anyhow::Result<bool> {
+        lance::exists(session).await
+    }
+
+    async fn append(
+        &self,
+        session: &TrajectorySession,
+        records_ron: &[String],
+    ) -> anyhow::Result<AppendOutcome> {
+        lance::append(session, records_ron).await
+    }
+
+    async fn replay(
+        &self,
+        session: &TrajectorySession,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> anyhow::Result<ReplayOutcome> {
+        lance::replay(session, offset, limit).await
+    }
+
+    async fn stats(&self, session: &TrajectorySession) -> anyhow::Result<TrajectoryStats> {
+        lance::stats(session).await
+    }
+}
+
+#[async_trait]
+impl StructuredStore for AgenticMdStore {
+    fn kind(&self) -> StorageKind {
+        StorageKind::AgenticMd
+    }
+
+    fn display_path(&self, session: &TrajectorySession) -> anyhow::Result<String> {
+        markdown::display_path(session)
+    }
+
+    async fn exists(&self, session: &TrajectorySession) -> anyhow::Result<bool> {
+        markdown::exists(session)
+    }
+
+    async fn append(
+        &self,
+        session: &TrajectorySession,
+        records_ron: &[String],
+    ) -> anyhow::Result<AppendOutcome> {
+        markdown::append(session, records_ron)
+    }
+
+    async fn replay(
+        &self,
+        session: &TrajectorySession,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> anyhow::Result<ReplayOutcome> {
+        markdown::replay(session, offset, limit)
+    }
+
+    async fn stats(&self, session: &TrajectorySession) -> anyhow::Result<TrajectoryStats> {
+        markdown::stats(session)
+    }
+}
+
+/// Persistence API for the rebuildable, normalized ATIF query tables.
+///
+/// This is distinct from [`StructuredStore`]: the latter owns the canonical
+/// event stream and physical trajectory projections, while this trait exposes
+/// relational views derived from trajectory documents.
+pub trait NormalizedStore: Send {
+    fn upsert_session(&mut self, row: SessionRow) -> ChronicleResult<()>;
+    fn get_session(&self, session_id: &str) -> ChronicleResult<Option<SessionRow>>;
+    fn list_sessions(&self) -> ChronicleResult<Vec<SessionRow>>;
+
+    fn replace_steps(&mut self, session_id: &str, rows: Vec<StepRow>) -> ChronicleResult<()>;
+    fn list_steps(&self, session_id: &str) -> ChronicleResult<Vec<StepRow>>;
+
+    fn replace_tool_calls(
+        &mut self,
+        session_id: &str,
+        rows: Vec<ToolCallRow>,
+    ) -> ChronicleResult<()>;
+    fn list_tool_calls(&self, session_id: &str) -> ChronicleResult<Vec<ToolCallRow>>;
+
+    /// Atomically replace all normalized rows for one trajectory when supported.
+    fn replace_trajectory(&mut self, split: crate::ingest::SplitTables) -> ChronicleResult<()> {
+        let session_id = split.session.session_id.clone();
+        self.upsert_session(split.session)?;
+        self.replace_steps(&session_id, split.steps)?;
+        self.replace_tool_calls(&session_id, split.tool_calls)
+    }
+
+    fn list_tool_calls_for_step(
+        &self,
+        session_id: &str,
+        step_id: i64,
+    ) -> ChronicleResult<Vec<ToolCallRow>> {
         Ok(self
             .list_tool_calls(session_id)?
             .into_iter()
@@ -44,3 +311,6 @@ pub trait ChronicleStore: Send {
             .collect())
     }
 }
+
+/// Backward-compatible name for [`NormalizedStore`].
+pub use NormalizedStore as ChronicleStore;

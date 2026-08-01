@@ -6,18 +6,14 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
-use persisting_capture::record::{record_to_engine_line, CaptureRecord};
-use persisting_engine::trajectory::{
-    resolve_traj_read_location, truncate_async, LanceTrajectoryStore, TrajectorySession,
-    TrajectoryStore,
-};
 use persisting_pchronicle::convert::{
     events_to_storyline, from_storyline, into_storyline, storyline_to_events,
 };
 use persisting_pchronicle::{
-    detect_format, ChronicleFormat, EventRecord, EventsDocument, StorylineDocument,
+    detect_format, overwrite_session_events, resolve_traj_read_location, ChronicleFormat,
+    EventsDocument, LanceEventStore, StoryCoords as TrajectorySession, StorylineDocument,
+    StructuredStore,
 };
-use persisting_proto::TrajectoryTruncateRequest;
 
 /// CLI mirror of [`ChronicleFormat`] with clap aliases.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -296,23 +292,17 @@ fn load_events_document(session: &TrajectorySession) -> Result<EventsDocument> {
         .build()
         .context("create tokio runtime for Lance replay")?;
     rt.block_on(async {
-        let lance = LanceTrajectoryStore;
+        let lance = LanceEventStore;
         if !lance.exists(session).await? {
             bail!(
                 "Lance event log missing at {}; --from events requires events.lance",
                 lance.display_path(session)?
             );
         }
-        let outcome = lance
-            .replay(session, 0, None)
+        let events = lance
+            .read_events(session, 0, None)
             .await
-            .context("replay Lance for traj convert")?;
-        let mut events = Vec::with_capacity(outcome.records.len());
-        for (i, json) in outcome.records.iter().enumerate() {
-            let rec: CaptureRecord =
-                serde_json::from_str(json).with_context(|| format!("decode replay record[{i}]"))?;
-            events.push(capture_to_event(rec));
-        }
+            .context("read Lance events for traj convert")?;
         Ok(EventsDocument {
             format: EventsDocument::FORMAT_NAME.into(),
             session_id: Some(session.session_id.clone()),
@@ -328,22 +318,13 @@ fn write_events_lance(
     force: bool,
 ) -> Result<()> {
     let doc = storyline_to_events(story).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let lines: Vec<String> = doc
-        .events
-        .iter()
-        .enumerate()
-        .map(|(i, ev)| {
-            let rec = event_to_capture(ev);
-            record_to_engine_line(&rec).with_context(|| format!("encode event[{i}]"))
-        })
-        .collect::<Result<_>>()?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("create tokio runtime for Lance write")?;
     rt.block_on(async {
-        let lance = LanceTrajectoryStore;
+        let lance = LanceEventStore;
         if lance.exists(session).await? {
             if !force {
                 bail!(
@@ -351,17 +332,12 @@ fn write_events_lance(
                     lance.display_path(session)?
                 );
             }
-            truncate_async(TrajectoryTruncateRequest {
-                storage: session.storage.clone(),
-                agent_id: session.agent_id.clone(),
-                session_id: session.session_id.clone(),
-                root_session_id: session.root_session_id.clone(),
-                keep_rows: 0,
-            })
-            .await
-            .context("truncate existing Lance before --force write")?;
+            overwrite_session_events(session, &doc.events)
+                .await
+                .context("overwrite existing Lance events")?;
+            return Ok(());
         }
-        if lines.is_empty() {
+        if doc.events.is_empty() {
             // Ensure run dir exists even for empty conversion.
             let run = session.run_dir()?;
             fs::create_dir_all(&run)
@@ -369,49 +345,11 @@ fn write_events_lance(
             return Ok(());
         }
         lance
-            .append(session, &lines)
+            .append_events(session, &doc.events)
             .await
             .context("append converted events to Lance")?;
         Ok(())
     })
-}
-
-fn capture_to_event(rec: CaptureRecord) -> EventRecord {
-    EventRecord {
-        seq: rec.seq,
-        source: rec.source,
-        kind: rec.kind,
-        timestamp: rec.timestamp,
-        session_id: rec.session_id,
-        agent_id: rec.agent_id,
-        parent_uuid: rec.parent_uuid,
-        trace_id: rec.trace_id,
-        call_id: rec.call_id,
-        subagent_id: rec.subagent_id,
-        parent_agent_id: rec.parent_agent_id,
-        branch: rec.branch,
-        parent_call_id: rec.parent_call_id,
-        payload: rec.payload,
-    }
-}
-
-fn event_to_capture(ev: &EventRecord) -> CaptureRecord {
-    CaptureRecord {
-        seq: ev.seq,
-        source: ev.source.clone(),
-        kind: ev.kind.clone(),
-        timestamp: ev.timestamp.clone(),
-        session_id: ev.session_id.clone(),
-        agent_id: ev.agent_id.clone(),
-        parent_uuid: ev.parent_uuid.clone(),
-        trace_id: ev.trace_id.clone(),
-        call_id: ev.call_id.clone(),
-        subagent_id: ev.subagent_id.clone(),
-        parent_agent_id: ev.parent_agent_id.clone(),
-        branch: ev.branch.clone(),
-        parent_call_id: ev.parent_call_id.clone(),
-        payload: ev.payload.clone(),
-    }
 }
 
 fn read_string_input(input: &str) -> Result<String> {

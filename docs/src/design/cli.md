@@ -2,13 +2,14 @@
 
 `persisting` CLI 是**薄前端**：负责解析用户意图、序列化请求、展示结果；重逻辑（Search 用 Lance、轨迹用 Lance、检索索引）在**可独立发版的引擎**中运行。
 
-`search`、`traj`（`trajectory`）、`agent`、`runtime`（别名 `run`）等子命令共用此架构。
+`search` 与 `traj`（`trajectory`）子命令共用此架构；Run 的执行入口是独立的 `pvisor` 二进制。
 
 | 产品命令 | 对应 |
 |----------|------|
-| `persisting agent execute` / `bexecute` | OpenShell 类能力；`-c` 复用 capture TOML；直接调 `PVisor::run` |
-| `persisting runtime` / `run` | pVisor 运维面（inspect / providers） |
-| `persisting traj capture` | 薄包装同一 `PVisor::run` 路径 |
+| `pvisor [run]` | pVisor 前台 Run 入口，装配 Gateway/Control/OverlayNet/OverlayFS |
+| `pvisor status/inspect` | 根据 Run、stage、upper 或 DB 定位并观测/只读检查 |
+| `pvisor apply/drop` | 提交或丢弃已停止 Run 的 OverlayFS stage |
+| `persisting traj proxy` | 独立 Gateway 的前台/后台管理入口 |
 
 pPilot（`persisting-ppilot`）是**内部编排库**，不作为顶层 CLI 动词暴露。
 
@@ -88,7 +89,8 @@ CLI 在加载时校验 ABI；协议版本由请求携带、引擎侧校验。
 | 用户意图 | CLI | 引擎能力 |
 |----------|-----|----------|
 | 导入文档、建索引、检索 | `search` | Search |
-| 实时采集 LLM 流量 | `traj capture` / `traj proxy` | Trajectory（经 capture 运行时） |
+| 随 Run 实时采集 LLM 流量 | `pvisor run` | Gateway sink + pChronicle |
+| 独立代理采集 LLM 流量 | `traj proxy` | Gateway sink + pChronicle |
 | 追加 / 回放 / 统计 / 物化轨迹 | `traj add` / `stats` / `replay` / `materialize` / … | Trajectory |
 | 事后导入 IDE 或网关日志 | `traj import` | Trajectory（CLI 侧归一化） |
 
@@ -126,5 +128,5 @@ flowchart LR
 ## 8. 相关文档
 
 - [`persisting search`](cli-search.md)
-- [`persisting traj`](cli-traj.md) — 轨迹统一入口（含 capture / proxy）
-- [Capture 子命令](cli-capture.md) — `traj capture` / `traj proxy` / `traj import`
+- [`persisting traj`](cli-traj.md) — 轨迹数据与独立代理入口
+- [`pvisor`](cli-pvisor.md) — 单 Run 执行与环境管理

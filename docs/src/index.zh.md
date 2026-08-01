@@ -24,7 +24,7 @@ Agent 轨迹、模型参数和 KV Cache 共享同一套分层存储 —— **一
     记录每一次 LLM 调用。以 `(agent_id, run_id, time)` 张量存储，附带 canonical Lance 事件日志和人读 Markdown。
 
     ```bash
-    persisting traj capture -o ./store -c proxy.toml -- claude
+    pvisor run --config run.toml -- claude
     ```
 
     → [Capture 指南](guide/capture.md)
@@ -94,18 +94,6 @@ Agent 轨迹、模型参数和 KV Cache 共享同一套分层存储 —— **一
 
     → [Search 指南](guide/search.md)
 
--   **⚡ 计算编排**
-
-    ---
-
-    Map 式任务编排。`plan()` + `execute()`，本地并行或 torchrun。
-
-    ```bash
-    persisting ppilot task.py -w 4 -- --n 1000
-    ```
-
-    → [pPilot 指南](guide/ppilot.md)
-
 </div>
 
 ---
@@ -137,7 +125,7 @@ Agent 轨迹、模型参数和 KV Cache 共享同一套分层存储 —— **一
 |------|------|
 | 轨迹采集 (`traj`) | ✅ 稳定 |
 | 流式队列 | ✅ 稳定 |
-| 计算编排 | ✅ 稳定 |
+| pPilot 编排库 | 🚧 内部组件 |
 | Agent 检索 | ✅ 稳定 |
 | 张量内存 (TTAS) | 🧪 实验性 |
 | GPU 分层 / 跨节点 | 📋 规划中 |

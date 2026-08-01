@@ -5,10 +5,10 @@ use std::io::{self, Write};
 use anyhow::{Context, Result};
 
 use crate::terminal_markdown::{format_turn_markdown, print_section};
-use persisting_capture::engine::TurnKind;
-use persisting_capture::engine::{rebuild_session_story, Story};
-use persisting_capture::record::CaptureRecord;
-use persisting_engine::trajectory::MANUAL_RATIONALE_PREFIX;
+use persisting_gateway::engine::TurnKind;
+use persisting_gateway::engine::{rebuild_session_story, Story};
+use persisting_gateway::record::CaptureRecord;
+use persisting_pchronicle::MANUAL_RATIONALE_PREFIX;
 use persisting_proto::{JudgeSampleMode, JudgeScope, JudgeScoreInput};
 
 /// Pick up to `limit` sessions from a scan list (`limit == 0` → keep all).
@@ -330,9 +330,9 @@ mod tests {
 
     #[test]
     fn fixed_manual_scores_story_scope() {
-        use persisting_capture::config::CaptureLevel;
-        use persisting_capture::engine::Call;
-        use persisting_capture::sink::{
+        use persisting_gateway::config::CaptureLevel;
+        use persisting_gateway::engine::Call;
+        use persisting_gateway::sink::{
             llm_request_summary_record, llm_response_record_with_content,
         };
 
@@ -387,9 +387,9 @@ mod tests {
 
     #[test]
     fn fixed_manual_scores_rejects_out_of_range() {
-        use persisting_capture::config::CaptureLevel;
-        use persisting_capture::engine::Call;
-        use persisting_capture::sink::{
+        use persisting_gateway::config::CaptureLevel;
+        use persisting_gateway::engine::Call;
+        use persisting_gateway::sink::{
             llm_request_summary_record, llm_response_record_with_content,
         };
 

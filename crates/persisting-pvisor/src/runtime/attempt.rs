@@ -1,59 +1,64 @@
-//! Attempt-scoped capture + overlay session owned by pVisor prepare.
+//! Attempt-scoped Gateway + OverlayFS session owned by pVisor.
 
 use super::implant::{ImplantPlan, OverlayHint};
 use super::overlay::{
-    apply_overlay, hint_from_record, lower_stack_from_config, mount_overlay_record,
-    resolve_overlay_workspace, OverlayMount, OverlayRecord,
+    apply_overlay, discard_overlay, hint_from_record, lower_stack_from_config,
+    mount_overlay_record, resolve_overlay_workspace, OverlayMount, OverlayRecord,
 };
-use persisting_capture::config::ProxyConfig;
-use persisting_capture::injection::{client_gateway_config_args, proxy_environment};
-use persisting_capture::lifecycle::{
+use super::registry::{RunControlServer, RunLease, RunRecord};
+use crate::TrajectoryEventSink;
+use persisting_control::ControlController;
+use persisting_gateway::config::ProxyConfig;
+use persisting_gateway::injection::{client_gateway_config_args, proxy_environment};
+use persisting_gateway::lifecycle::{
     append_lifecycle, root_session_route, session_ended_record, session_started_record, CaptureMode,
 };
-use persisting_capture::proxy::network_capability_from_config;
-use persisting_capture::runtime::in_process::InProcessCapture;
-use persisting_capture::runtime::run_config::snapshot_run_proxy_config;
-use persisting_capture::runtime::run_env::{
+use persisting_gateway::runtime::in_process::InProcessCapture;
+use persisting_gateway::runtime::run_config::snapshot_proxy_config;
+use persisting_gateway::runtime::run_env::{
     apply_daemon_env, snapshot_daemon_env, strip_capture_proxy_env, write_run_session,
 };
-use persisting_capture::sink::{CaptureSink, SeqOnlySink};
+use persisting_gateway::sink::SeqOnlySink;
+use persisting_overlaynet::policy::network_capability_from_config;
 use persisting_proto::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 /// Live controls for one Attempt: capture proxy + optional overlay mount.
 pub struct AttemptSession {
     pub root_session: String,
-    pub listen: String,
     pub agent_id: String,
-    pub config_path: PathBuf,
-    pub storage: PathBuf,
     /// Staging record retained after unmount (for apply / discard).
     pub overlay_record: Option<OverlayRecord>,
-    capture: Option<InProcessCapture>,
+    gateway: Option<InProcessCapture>,
     overlay: Option<OverlayMount>,
-    sink: Arc<dyn CaptureSink>,
+    sink: Option<Arc<dyn TrajectoryEventSink>>,
     started_at: Instant,
+    run_record: RunRecord,
+    _control: Option<RunControlServer>,
+    _lease: RunLease,
 }
 
 impl AttemptSession {
     pub fn teardown(mut self, exit_code: Option<i32>) -> anyhow::Result<()> {
         let duration_ms = self.started_at.elapsed().as_millis() as u64;
-        if let Err(err) = append_lifecycle(
-            self.sink.as_ref(),
-            &root_session_route(&self.root_session),
-            &self.agent_id,
-            session_ended_record(
-                Some(self.root_session.clone()),
-                Some(self.agent_id.clone()),
-                CaptureMode::Run,
-                "child_exit",
-                exit_code,
-                Some(duration_ms),
-            ),
-        ) {
-            tracing::warn!(error = %err, "failed to append session.ended");
+        if let Some(sink) = &self.sink {
+            if let Err(err) = append_lifecycle(
+                sink.as_ref(),
+                &root_session_route(&self.root_session),
+                &self.agent_id,
+                session_ended_record(
+                    Some(self.root_session.clone()),
+                    Some(self.agent_id.clone()),
+                    CaptureMode::Run,
+                    "child_exit",
+                    exit_code,
+                    Some(duration_ms),
+                ),
+            ) {
+                tracing::warn!(error = %err, "failed to append session.ended");
+            }
         }
 
         let mut record = if let Some(mount) = self.overlay.take() {
@@ -63,7 +68,11 @@ impl AttemptSession {
         };
 
         if let Some(ref mut rec) = record {
-            if rec.auto_apply {
+            if rec.auto_discard {
+                if let Err(err) = discard_overlay(rec) {
+                    tracing::warn!(error = %err, "overlay automatic drop failed");
+                }
+            } else if rec.auto_apply {
                 if let Err(err) = apply_overlay(rec) {
                     tracing::warn!(error = %err, "overlay auto_apply failed");
                 } else {
@@ -79,41 +88,61 @@ impl AttemptSession {
                     stage = %rec.stage_dir.display(),
                     target = %rec.target.display(),
                     "overlay staged — review then: \
-                     `persisting runtime overlay apply -o <storage> --id {}` \
-                     or `… discard`",
-                    rec.id
+                     `pvisor status {}` then `pvisor apply {}` or `pvisor drop {}`",
+                    rec.id,
+                    rec.id,
+                    rec.id,
                 );
             }
         }
         self.overlay_record = record;
 
-        if let Some(capture) = self.capture.take() {
-            capture.shutdown()?;
+        if let Some(gateway) = self.gateway.take() {
+            gateway.shutdown()?;
         }
+        self.run_record.state = match exit_code {
+            Some(0) => "completed",
+            Some(_) => "failed",
+            None => "terminated",
+        }
+        .into();
+        self.run_record.finished_at_unix_ms = Some(crate::util::unix_now_ms());
+        self.run_record.overlay = self.overlay_record.clone();
+        self.run_record.write()?;
         Ok(())
     }
 }
 
 pub struct AttemptPrepareOpts<'a> {
-    pub config_path: &'a Path,
+    pub config: &'a ProxyConfig,
     pub storage: &'a Path,
-    pub sink: Option<Arc<dyn CaptureSink>>,
+    pub sink: Option<Arc<dyn TrajectoryEventSink>>,
     pub stream_markdown: bool,
     /// Extra overlay hint from CLI (overrides paths when set).
     pub overlay_override: OverlayHint,
+    pub controller: Arc<dyn ControlController>,
+    pub gateway_enabled: bool,
 }
 
-/// Start capture + overlay from the shared capture TOML, then enrich `spec`.
+pub struct OverlayAttemptPrepareOpts<'a> {
+    pub storage: &'a Path,
+    pub overlay: OverlayHint,
+}
+
+struct PreparedOverlay {
+    mount: Option<OverlayMount>,
+    hint: OverlayHint,
+    record: Option<OverlayRecord>,
+    lowers: Vec<std::path::PathBuf>,
+}
+
+/// Start pVisor's configured Gateway and OverlayFS drivers, then enrich `spec`.
 pub fn prepare_attempt(
     spec: &mut RunSpec,
     opts: AttemptPrepareOpts<'_>,
 ) -> anyhow::Result<(AttemptSession, ImplantPlan)> {
-    let config = ProxyConfig::from_file(opts.config_path).map_err(|err| {
-        anyhow::anyhow!(
-            "load capture config {}: {err:#}",
-            opts.config_path.display()
-        )
-    })?;
+    let config = opts.config.clone();
+    spec.agent.name = config.agent_id.clone();
     let storage = opts
         .storage
         .canonicalize()
@@ -127,69 +156,58 @@ pub fn prepare_attempt(
 
     let sink = opts
         .sink
-        .unwrap_or_else(|| Arc::new(SeqOnlySink::new()) as Arc<dyn CaptureSink>);
+        .unwrap_or_else(|| Arc::new(SeqOnlySink::new()) as Arc<dyn TrajectoryEventSink>);
 
-    let capture = InProcessCapture::start(
+    let gateway = InProcessCapture::start_with_control(
         config.clone(),
         storage.clone(),
         Arc::clone(&sink),
         opts.stream_markdown,
+        opts.controller,
     )?;
 
     let root_session = format!("run-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S-%f"));
     write_run_session(&storage, &root_session)?;
-    snapshot_run_proxy_config(&storage, &root_session, opts.config_path)?;
+    let config_snapshot = snapshot_proxy_config(&storage, &root_session, &config)?;
 
     let mut overlay_cfg = config.overlay.clone();
-    // CLI overrides
-    if let Some(merged) = &opts.overlay_override.merged_dir {
-        overlay_cfg.merged_dir = Some(merged.display().to_string());
-        overlay_cfg.enabled = true;
-    }
-    if let Some(upper) = &opts.overlay_override.upper_dir {
-        overlay_cfg.upper_dir = Some(upper.display().to_string());
-        overlay_cfg.backend = persisting_capture::config::OverlayBackend::Directory;
-        overlay_cfg.database_path = None;
-    }
-    if let Some(work) = &opts.overlay_override.work_dir {
-        overlay_cfg.work_dir = Some(work.display().to_string());
-        overlay_cfg.backend = persisting_capture::config::OverlayBackend::Directory;
-        overlay_cfg.database_path = None;
-    }
-    if !opts.overlay_override.lower_dirs.is_empty() {
-        // First lower treated as target when target unset.
-        if overlay_cfg.target.is_none() {
-            overlay_cfg.target = Some(opts.overlay_override.lower_dirs[0].display().to_string());
-            overlay_cfg.lower_dirs = opts.overlay_override.lower_dirs[1..]
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
-        } else {
-            overlay_cfg.lower_dirs = opts
-                .overlay_override
-                .lower_dirs
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
-        }
-        overlay_cfg.enabled = true;
-    }
+    apply_overlay_override(&mut overlay_cfg, &opts.overlay_override);
 
-    let (overlay_mount, overlay_hint, overlay_record) =
-        if overlay_cfg.enabled || overlay_cfg.target.is_some() {
-            match resolve_overlay_workspace(&overlay_cfg, &storage, &root_session)? {
-                Some(record) => {
-                    let lowers = lower_stack_from_config(&overlay_cfg, &storage, &record.target);
-                    let mount = mount_overlay_record(&record, &lowers, None)?;
-                    let record = mount.record().clone();
-                    let hint = hint_from_record(&record, lowers);
-                    (Some(mount), hint, Some(record))
-                }
-                None => (None, OverlayHint::default(), None),
-            }
-        } else {
-            (None, OverlayHint::default(), None)
-        };
+    let prepared_overlay = prepare_overlay(&overlay_cfg, &storage, &root_session)?;
+    let PreparedOverlay {
+        mount: overlay_mount,
+        hint: overlay_hint,
+        record: overlay_record,
+        lowers: overlay_lowers,
+    } = prepared_overlay;
+
+    let RunInvocation::Process(process) = &spec.invocation;
+    let stage_dir = overlay_record
+        .as_ref()
+        .map(|record| record.stage_dir.clone())
+        .unwrap_or_else(|| storage.clone());
+    let lease = RunLease::acquire(&stage_dir)?;
+    let run_record = RunRecord {
+        schema_version: 1,
+        run_id: spec.run_id.as_str().to_string(),
+        session_id: root_session.clone(),
+        agent: config.agent_id.clone(),
+        pid: std::process::id(),
+        command: std::iter::once(process.program.clone())
+            .chain(process.args.iter().cloned())
+            .collect(),
+        state: "running".into(),
+        started_at_unix_ms: crate::util::unix_now_ms(),
+        finished_at_unix_ms: None,
+        storage: storage.clone(),
+        overlaynet_listen: Some(gateway.listen.clone()),
+        gateway_listen: opts.gateway_enabled.then(|| gateway.listen.clone()),
+        network: serde_json::to_value(&spec.capabilities.network)?,
+        overlay: overlay_record.clone(),
+        overlay_lowers,
+    };
+    run_record.write()?;
+    let control = RunControlServer::start(&run_record)?;
 
     let RunInvocation::Process(ref process) = spec.invocation;
     let program = process.program.clone();
@@ -201,47 +219,261 @@ pub fn prepare_attempt(
             Some(root_session.clone()),
             Some(config.agent_id.clone()),
             CaptureMode::Run,
-            Some(&capture.listen),
+            Some(&gateway.listen),
             Some(program.as_str()),
         ),
     )?;
 
     let plan = enrich_with_session(
         spec,
-        &capture.listen,
-        &root_session,
-        &overlay_hint,
-        overlay_record.as_ref(),
-        &storage,
-        opts.config_path,
+        SessionImplantOpts {
+            listen: &gateway.listen,
+            root_session: &root_session,
+            overlay: &overlay_hint,
+            overlay_record: overlay_record.as_ref(),
+            storage: &storage,
+            config_path: &config_snapshot,
+            gateway_enabled: opts.gateway_enabled,
+        },
     )?;
 
     Ok((
         AttemptSession {
             root_session,
-            listen: capture.listen.clone(),
             agent_id: config.agent_id.clone(),
-            config_path: opts.config_path.to_path_buf(),
-            storage,
             overlay_record,
-            capture: Some(capture),
+            gateway: Some(gateway),
             overlay: overlay_mount,
-            sink,
+            sink: Some(sink),
             started_at: Instant::now(),
+            run_record,
+            _control: control,
+            _lease: lease,
         },
         plan,
     ))
 }
 
+/// Prepare a durable OverlayFS Run without enabling the optional Gateway.
+pub fn prepare_overlay_attempt(
+    spec: &mut RunSpec,
+    opts: OverlayAttemptPrepareOpts<'_>,
+) -> anyhow::Result<(AttemptSession, ImplantPlan)> {
+    let storage = opts
+        .storage
+        .canonicalize()
+        .unwrap_or_else(|_| opts.storage.to_path_buf());
+    let root_session = spec.run_id.as_str().to_string();
+    let mut overlay_cfg = persisting_gateway::config::OverlayConfig::default();
+    apply_overlay_override(&mut overlay_cfg, &opts.overlay);
+    let prepared_overlay = prepare_overlay(&overlay_cfg, &storage, &root_session)?;
+    let PreparedOverlay {
+        mount: overlay_mount,
+        hint: overlay_hint,
+        record: overlay_record,
+        lowers: overlay_lowers,
+    } = prepared_overlay;
+    let overlay_record = overlay_record.ok_or_else(|| {
+        anyhow::anyhow!("overlay preparation requested without a target or lower directory")
+    })?;
+
+    let RunInvocation::Process(process) = &spec.invocation;
+    let lease = RunLease::acquire(&overlay_record.stage_dir)?;
+    let run_record = RunRecord {
+        schema_version: 1,
+        run_id: spec.run_id.as_str().to_string(),
+        session_id: root_session.clone(),
+        agent: spec.agent.name.clone(),
+        pid: std::process::id(),
+        command: std::iter::once(process.program.clone())
+            .chain(process.args.iter().cloned())
+            .collect(),
+        state: "running".into(),
+        started_at_unix_ms: crate::util::unix_now_ms(),
+        finished_at_unix_ms: None,
+        storage: storage.clone(),
+        overlaynet_listen: None,
+        gateway_listen: None,
+        network: serde_json::to_value(&spec.capabilities.network)?,
+        overlay: Some(overlay_record.clone()),
+        overlay_lowers,
+    };
+    run_record.write()?;
+    let control = RunControlServer::start(&run_record)?;
+
+    let mut plan = ImplantPlan {
+        env: ImplantPlan::marker_env(),
+        cwd: overlay_hint.merged_dir.clone(),
+        overlay: overlay_hint,
+        notes: vec![format!(
+            "filesystem: overlay target={} staging={} (apply later unless auto_apply)",
+            overlay_record.target.display(),
+            overlay_record.stage_dir.display()
+        )],
+    };
+    plan.env
+        .insert("PERSISTING_RUN_ID".into(), spec.run_id.as_str().to_string());
+    plan.env
+        .insert("PERSISTING_AGENT".into(), spec.agent.name.clone());
+    plan.env.insert(
+        "PERSISTING_PVISOR_STORAGE".into(),
+        storage.display().to_string(),
+    );
+    plan.env.insert(
+        "PERSISTING_OVERLAY_TARGET".into(),
+        overlay_record.target.display().to_string(),
+    );
+    plan.env.insert(
+        "PERSISTING_OVERLAY_STAGE".into(),
+        overlay_record.stage_dir.display().to_string(),
+    );
+    plan.env
+        .insert("PERSISTING_OVERLAY_ID".into(), overlay_record.id.clone());
+    match &overlay_record.upper {
+        super::overlay::OverlayUpper::Directory { upper_dir, .. } => {
+            plan.env.insert(
+                "PERSISTING_OVERLAY_UPPER".into(),
+                upper_dir.display().to_string(),
+            );
+        }
+        super::overlay::OverlayUpper::Redb { database_path } => {
+            plan.env.insert(
+                "PERSISTING_OVERLAY_DATABASE".into(),
+                database_path.display().to_string(),
+            );
+        }
+    }
+    let RunInvocation::Process(ref mut process) = spec.invocation;
+    apply_implant(process, &plan);
+    spec.metadata
+        .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
+
+    Ok((
+        AttemptSession {
+            root_session,
+            agent_id: spec.agent.name.clone(),
+            overlay_record: Some(overlay_record),
+            gateway: None,
+            overlay: overlay_mount,
+            sink: None,
+            started_at: Instant::now(),
+            run_record,
+            _control: control,
+            _lease: lease,
+        },
+        plan,
+    ))
+}
+
+fn apply_overlay_override(
+    overlay_cfg: &mut persisting_gateway::config::OverlayConfig,
+    overlay_override: &OverlayHint,
+) {
+    overlay_cfg.backend = overlay_override.backend;
+    overlay_cfg.auto_apply = overlay_override.auto_apply;
+    overlay_cfg.auto_discard = overlay_override.auto_discard;
+    if let Some(stage) = &overlay_override.stage_dir {
+        overlay_cfg.stage_dir = Some(stage.display().to_string());
+        overlay_cfg.enabled = true;
+    }
+    if let Some(merged) = &overlay_override.merged_dir {
+        overlay_cfg.merged_dir = Some(merged.display().to_string());
+        overlay_cfg.enabled = true;
+    }
+    if let Some(upper) = &overlay_override.upper_dir {
+        overlay_cfg.upper_dir = Some(upper.display().to_string());
+        overlay_cfg.backend = persisting_gateway::config::OverlayBackend::Directory;
+        overlay_cfg.database_path = None;
+    }
+    if let Some(work) = &overlay_override.work_dir {
+        overlay_cfg.work_dir = Some(work.display().to_string());
+        overlay_cfg.backend = persisting_gateway::config::OverlayBackend::Directory;
+        overlay_cfg.database_path = None;
+    }
+    if !overlay_override.lower_dirs.is_empty() {
+        // First lower treated as target when target unset.
+        if overlay_cfg.target.is_none() {
+            overlay_cfg.target = Some(overlay_override.lower_dirs[0].display().to_string());
+            overlay_cfg.lower_dirs = overlay_override.lower_dirs[1..]
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+        } else {
+            overlay_cfg.lower_dirs = overlay_override
+                .lower_dirs
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+        }
+        overlay_cfg.enabled = true;
+    }
+}
+
+fn prepare_overlay(
+    overlay_cfg: &persisting_gateway::config::OverlayConfig,
+    storage: &Path,
+    root_session: &str,
+) -> anyhow::Result<PreparedOverlay> {
+    if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
+        return Ok(PreparedOverlay {
+            mount: None,
+            hint: OverlayHint::default(),
+            record: None,
+            lowers: Vec::new(),
+        });
+    }
+    match resolve_overlay_workspace(overlay_cfg, storage, root_session)? {
+        Some(record) => {
+            if let Ok(existing) = RunRecord::read(&record.stage_dir) {
+                anyhow::bail!(
+                    "OverlayFS stage {} already belongs to Run {}; choose a unique stage_dir",
+                    record.stage_dir.display(),
+                    existing.run_id
+                );
+            }
+            let lowers = lower_stack_from_config(overlay_cfg, storage, &record.target);
+            let mount = mount_overlay_record(&record, &lowers)?;
+            let record = mount.record().clone();
+            let hint = hint_from_record(&record, lowers.clone());
+            Ok(PreparedOverlay {
+                mount: Some(mount),
+                hint,
+                record: Some(record),
+                lowers,
+            })
+        }
+        None => Ok(PreparedOverlay {
+            mount: None,
+            hint: OverlayHint::default(),
+            record: None,
+            lowers: Vec::new(),
+        }),
+    }
+}
+
+struct SessionImplantOpts<'a> {
+    listen: &'a str,
+    root_session: &'a str,
+    overlay: &'a OverlayHint,
+    overlay_record: Option<&'a OverlayRecord>,
+    storage: &'a Path,
+    config_path: &'a Path,
+    gateway_enabled: bool,
+}
+
 fn enrich_with_session(
     spec: &mut RunSpec,
-    listen: &str,
-    root_session: &str,
-    overlay: &OverlayHint,
-    overlay_record: Option<&OverlayRecord>,
-    storage: &Path,
-    config_path: &Path,
+    opts: SessionImplantOpts<'_>,
 ) -> anyhow::Result<ImplantPlan> {
+    let SessionImplantOpts {
+        listen,
+        root_session,
+        overlay,
+        overlay_record,
+        storage,
+        config_path,
+        gateway_enabled,
+    } = opts;
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
         cwd: overlay.merged_dir.clone(),
@@ -333,7 +565,9 @@ fn enrich_with_session(
 
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
-    inject_gateway_args(process, listen);
+    if gateway_enabled {
+        inject_gateway_args(process, listen);
+    }
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
     Ok(plan)

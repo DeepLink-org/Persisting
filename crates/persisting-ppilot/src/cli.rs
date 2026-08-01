@@ -1,4 +1,4 @@
-//! CLI surface for pPilot — used by `persisting ppilot [plan]`.
+//! Embeddable argument surface for a pPilot host.
 //!
 //! - With script → **run** (default); `--check` validates first
 //! - `--self-test` → built-in smoke (no user plan)
@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// `persisting ppilot [plan.py] …`
+/// Arguments accepted by an embedding pPilot host.
 #[derive(Debug, Clone, Args)]
 #[command(
     about = "Run a pPilot plan (`plan()` + `execute(item)`).",
@@ -133,7 +133,7 @@ pub struct PPilotArgs {
     pub verbose: bool,
 
     /// Args forwarded to the plan script (`sys.argv[1:]`). Put after `--`.
-    /// Example: `persisting ppilot task.py -- --model x --n 2`
+    /// Example forwarded values: `--model x --n 2`.
     #[arg(last = true, value_name = "SCRIPT_ARGS")]
     pub script_args: Vec<String>,
 }

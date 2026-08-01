@@ -16,11 +16,11 @@ use serde_json::Value;
 
 use crate::{Error, Result};
 
-/// One capture event — field-compatible with `persisting_capture::record::CaptureRecord`.
+/// Canonical Agent trajectory event.
 ///
-/// Capture provides `From` conversions both ways. Prefer this type for chronicle
-/// storage / convert paths; capture keeps `CaptureRecord` for live proxy methods
-/// (`visible_user_text`, etc.) until those helpers migrate.
+/// Capture uses this type directly (its `CaptureRecord` name is a compatibility
+/// alias) and adds producer-specific payload interpretation through an extension
+/// trait rather than defining a second serialized record schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventRecord {
     pub seq: u64,

@@ -1,0 +1,317 @@
+//! Session client detection: peer port → process command line, persisted for trajectory headers.
+
+use std::collections::HashSet;
+use std::fs;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::injection::host_identity::machine_fingerprint_for_client;
+use crate::injection::peer::resolve_peer_client;
+use crate::runtime::run_env::{read_run_child_info, read_run_session};
+
+use super::storage::{trajectory_run_dir, CaptureRoute};
+
+/// Sidecar metadata for `capture serve` (no `run_session`). `capture run` uses `run_child.yaml` + markdown frontmatter instead.
+pub const SESSION_CLIENT_META_FILENAME: &str = "session-meta.yaml";
+
+pub use persisting_pchronicle::AgenticmdClientMeta as SessionClientMeta;
+
+fn finalize_client_meta(mut meta: SessionClientMeta, peer: SocketAddr) -> SessionClientMeta {
+    if meta.machine_fp.is_none() {
+        let pid = (meta.pid > 0).then_some(meta.pid);
+        meta.machine_fp = Some(machine_fingerprint_for_client(peer, pid));
+    }
+    meta
+}
+
+fn peer_for_finalize(meta: &SessionClientMeta) -> SocketAddr {
+    meta.peer
+        .parse()
+        .unwrap_or_else(|_| "127.0.0.1:0".parse().expect("loopback"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionMetaFile {
+    client: SessionClientMeta,
+}
+
+pub fn session_client_meta_path(storage: &Path, agent_id: &str, session_id: &str) -> PathBuf {
+    storage
+        .join(agent_id)
+        .join(session_id)
+        .join(SESSION_CLIENT_META_FILENAME)
+}
+
+pub fn session_client_meta_path_in_dir(session_dir: &Path) -> PathBuf {
+    session_dir.join(SESSION_CLIENT_META_FILENAME)
+}
+
+pub fn load_session_client_meta(path: &Path) -> Result<Option<SessionClientMeta>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let file: SessionMetaFile =
+        serde_yaml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    Ok(Some(file.client))
+}
+
+pub fn write_session_client_meta(path: &Path, meta: &SessionClientMeta) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = SessionMetaFile {
+        client: meta.clone(),
+    };
+    let yaml = serde_yaml::to_string(&file).context("serialize session-meta.yaml")?;
+    fs::write(path, yaml).with_context(|| format!("write {}", path.display()))
+}
+
+/// Client metadata for markdown frontmatter on a capture run directory.
+pub fn resolve_client_meta_for_run_dir(
+    storage: &Path,
+    run_dir: &Path,
+) -> Option<SessionClientMeta> {
+    if let Ok(Some(m)) = load_session_client_meta(&session_client_meta_path_in_dir(run_dir)) {
+        let peer = peer_for_finalize(&m);
+        return Some(finalize_client_meta(m, peer));
+    }
+    let run_id = run_dir.file_name()?.to_str()?;
+    let route = CaptureRoute {
+        root_session: Some(run_id.to_string()),
+        session_id: run_id.to_string(),
+        storage_session_id: run_id.to_string(),
+        subagent_id: None,
+    };
+    client_meta_from_run_child(storage, &route).map(|m| {
+        let peer: SocketAddr = "127.0.0.1:0".parse().expect("loopback");
+        finalize_client_meta(m, peer)
+    })
+}
+
+/// Client metadata for markdown frontmatter: sidecar file, else `capture run` child snapshot.
+pub fn resolve_client_meta_for_session_dir(
+    storage: &Path,
+    session_dir: &Path,
+) -> Option<SessionClientMeta> {
+    resolve_client_meta_for_run_dir(storage, session_dir)
+}
+
+fn is_capture_run_active(storage: &Path, route: &CaptureRoute) -> bool {
+    read_run_session(storage)
+        .as_deref()
+        .zip(route.root_session.as_deref())
+        .is_some_and(|(a, b)| a == b)
+}
+
+fn client_meta_from_run_child(storage: &Path, route: &CaptureRoute) -> Option<SessionClientMeta> {
+    if !is_capture_run_active(storage, route) {
+        return None;
+    }
+    let run_child = read_run_child_info(storage)?;
+    Some(SessionClientMeta {
+        peer: String::new(),
+        peer_port: 0,
+        pid: run_child.pid,
+        command: run_child.command,
+        machine_fp: None,
+    })
+}
+
+fn should_persist_session_meta_file(storage: &Path, route: &CaptureRoute) -> bool {
+    !is_capture_run_active(storage, route)
+}
+
+/// Records client metadata once per session (best-effort; ignores lookup failures).
+#[derive(Default)]
+pub struct SessionClientRegistry {
+    recorded: Mutex<HashSet<String>>,
+}
+
+impl SessionClientRegistry {
+    pub fn ensure(
+        &self,
+        storage: &Path,
+        agent_id: &str,
+        route: &CaptureRoute,
+        peer: SocketAddr,
+    ) -> Option<SessionClientMeta> {
+        let session_dir = trajectory_run_dir(storage, agent_id, route);
+        let path = session_client_meta_path_in_dir(&session_dir);
+        if should_persist_session_meta_file(storage, route) {
+            if let Ok(Some(existing)) = load_session_client_meta(&path) {
+                return Some(finalize_client_meta(existing, peer));
+            }
+        } else if let Some(m) = client_meta_from_run_child(storage, route) {
+            return Some(finalize_client_meta(
+                SessionClientMeta {
+                    peer: peer.to_string(),
+                    peer_port: peer.port(),
+                    ..m
+                },
+                peer,
+            ));
+        }
+
+        let key = format!("{}|{agent_id}|{}", storage.display(), route.seq_key());
+        {
+            let guard = self.recorded.lock().unwrap();
+            if guard.contains(&key) {
+                if should_persist_session_meta_file(storage, route) {
+                    return load_session_client_meta(&path)
+                        .ok()
+                        .flatten()
+                        .map(|m| finalize_client_meta(m, peer));
+                }
+                return client_meta_from_run_child(storage, route).map(|m| {
+                    finalize_client_meta(
+                        SessionClientMeta {
+                            peer: peer.to_string(),
+                            peer_port: peer.port(),
+                            ..m
+                        },
+                        peer,
+                    )
+                });
+            }
+        }
+
+        let mut meta = if is_capture_run_active(storage, route) {
+            read_run_child_info(storage).map(|run_child| SessionClientMeta {
+                peer: peer.to_string(),
+                peer_port: peer.port(),
+                pid: run_child.pid,
+                command: run_child.command,
+                machine_fp: None,
+            })
+        } else {
+            None
+        };
+
+        if meta.is_none() {
+            meta = match resolve_peer_client(peer) {
+                Ok(Some(m)) => Some(m),
+                Ok(None) => {
+                    tracing::debug!(
+                        target: "persisting_gateway",
+                        %peer,
+                        session_id = %route.session_id,
+                        "session client: no process found for peer port"
+                    );
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "persisting_gateway",
+                        %peer,
+                        session_id = %route.session_id,
+                        "session client lookup failed: {e:#}"
+                    );
+                    None
+                }
+            };
+        }
+
+        let Some(meta) = meta else {
+            self.recorded.lock().unwrap().insert(key);
+            return None;
+        };
+
+        let meta = finalize_client_meta(meta, peer);
+
+        if should_persist_session_meta_file(storage, route)
+            && write_session_client_meta(&path, &meta).is_err()
+        {
+            return None;
+        }
+
+        self.recorded.lock().unwrap().insert(key);
+        tracing::debug!(
+            target: "persisting_gateway",
+            peer = %meta.peer,
+            pid = meta.pid,
+            session_id = %route.session_id,
+            command = %meta.command,
+            "session client recorded"
+        );
+        Some(meta)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_meta_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session-meta.yaml");
+        let meta = SessionClientMeta {
+            peer: "127.0.0.1:54321".into(),
+            peer_port: 54321,
+            pid: 4242,
+            command: "python3 agent.py --verbose".into(),
+            machine_fp: Some("abc123".into()),
+        };
+        write_session_client_meta(&path, &meta).unwrap();
+        let loaded = load_session_client_meta(&path).unwrap().unwrap();
+        assert_eq!(loaded, meta);
+    }
+
+    #[test]
+    fn ensure_prefers_run_child_over_lsof() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path();
+        std::fs::create_dir_all(storage.join(".capture")).unwrap();
+        std::fs::write(storage.join(".capture/run_session"), "sess-a").unwrap();
+        crate::runtime::run_env::write_run_child_info(
+            storage,
+            4242,
+            &["claude".into(), "--model".into()],
+        )
+        .unwrap();
+
+        let registry = SessionClientRegistry::default();
+        let peer: std::net::SocketAddr = "127.0.0.1:55522".parse().unwrap();
+        let route = CaptureRoute {
+            root_session: Some("sess-a".into()),
+            session_id: "sess-a".into(),
+            storage_session_id: "sess-a".into(),
+            subagent_id: None,
+        };
+        let meta = registry
+            .ensure(storage, "agent", &route, peer)
+            .expect("run_child metadata");
+        assert_eq!(meta.command, "claude --model");
+        assert_eq!(meta.pid, 4242);
+        assert_eq!(meta.peer_port, 55522);
+        assert!(meta.machine_fp.as_ref().is_some_and(|fp| fp.len() == 32));
+        assert!(
+            !session_client_meta_path_in_dir(&storage.join("agent/sess-a")).exists(),
+            "capture run should not write session-meta.yaml"
+        );
+    }
+
+    #[test]
+    fn resolve_client_meta_from_run_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path();
+        std::fs::create_dir_all(storage.join(".capture")).unwrap();
+        std::fs::write(storage.join(".capture/run_session"), "sess-b").unwrap();
+        crate::runtime::run_env::write_run_child_info(
+            storage,
+            99,
+            &["python3".into(), "agent.py".into()],
+        )
+        .unwrap();
+        let session_dir = storage.join("agent").join("sess-b");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let meta = resolve_client_meta_for_session_dir(storage, &session_dir).unwrap();
+        assert_eq!(meta.command, "python3 agent.py");
+        assert_eq!(meta.pid, 99);
+    }
+}

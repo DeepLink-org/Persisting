@@ -1,261 +1,129 @@
-# Capture Quick Start
+# Capture Agent Trajectories
 
-Get **`persisting traj`** running in **5–10 minutes**: use `traj capture` or `traj proxy` to record agent sessions, then `traj stats` / `traj replay` to inspect Markdown trajectories.
+Use `pvisor run` for one managed Agent Run. Use `persisting traj proxy` only when
+several independently started clients need to share a long-running Gateway.
 
-> Architecture: [Capture Architecture](../design/capture.md) (中文). CLI reference: [Traj command](../design/cli-traj.md) and [Capture subcommands](../design/cli-capture.md).
+References: [pVisor CLI](../design/cli-pvisor.md), [Traj CLI](../design/cli-traj.md),
+[Gateway architecture](../design/gateway.md).
 
----
-
-## What you get
-
-`traj capture`:
-
-1. Starts a local **LLM reverse proxy** (forwards to your upstream model).
-2. Writes **one** storage layer: **Markdown only** (`-f md`, default) or **Lance canonical** (`-f lance` → `{run}/events.lance/` dataset directory).
-3. With `-f md`, live-upserts dialogue Markdown (`tail -f` friendly) and writes `.capture/reconcile.json` on exit.
-4. With `-f lance`, appends structured rows only; generate Markdown later with `traj materialize`.
-
-Supported live clients: **Claude Code**, **OpenAI Codex** (via proxy). Cursor is not supported yet.
-
----
-
-## 0. Build the CLI
+## Build
 
 ```bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
-cargo build -p persisting-cli -p persisting-engine
+cargo build --release -p persisting-pvisor -p persisting-cli -p persisting-engine
+export PATH="$(pwd)/target/release:$PATH"
+export PERSISTING_ENGINE_LIB="$(pwd)/target/release/libpersisting_engine.dylib" # .so on Linux
 ```
 
-```bash
-export PERSISTING="$(pwd)/target/debug/persisting"
-export PERSISTING_ENGINE_LIB="$(pwd)/target/debug/libpersisting_engine.dylib"  # .so on Linux
-"$PERSISTING" traj --help
-```
+## Local walkthrough
 
----
-
-## 1. Fastest path: no API key
+The repository includes a mock OpenAI-compatible model, a two-turn Agent, and
+an AgenticMD validator:
 
 ```bash
 cd examples/capture-walkthrough
 ./run.sh
 ```
 
-Output: `store/demo-agent/walkthrough-001/0001.md`
+The script prints the generated path. pVisor assigns the Run ID, so do not
+hard-code a session directory or `0001.md` filename.
 
-Manual two-terminal flow: see the [capture walkthrough](https://github.com/DeepLink-org/Persisting/tree/main/examples/capture-walkthrough).
+## Run a real Agent
 
----
-
-## 2. Real models: Claude Code / Codex
+Provide the upstream route and its API key directly:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
-```
 
-```bash
-persisting traj capture \
-  -o ./store \
-  -c examples/llm-proxy/deepseek.toml \
-  -f md \
+pvisor run \
+  --workspace ./store/run \
+  --agent deepseek \
+  --overlaynet-mode proxy \
+  --gateway-mode capture \
+  --gateway-route 'name="deepseek", upstream="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"' \
+  --gateway-route 'name="*", forward="deepseek"' \
+  --gateway-stream-markdown \
   -- claude
 ```
 
-Codex: replace `claude` with `codex`. Custom agent: `... -- python3 your_agent.py`.
+Replace `claude` with `codex` or any program that uses an injected proxy/base
+URL. pVisor starts the in-process Gateway, injects the child environment, waits
+for the child, and stops the Gateway.
 
-| Flag | Meaning |
-|------|---------|
-| `-o DIR` | Store root (default `.persisting/capture`) |
-| `-c FILE` | Proxy TOML (`listen`, `models`, upstream; optional `[network]`) |
-| `-f md` | Markdown only (default); live upsert + reconcile |
-| `-f lance` | Lance only (`events.lance/` directory); use `traj materialize` for md |
-| `--debug` | Log proxied requests to stderr + `.capture/debug.log` |
+### Storage mode
 
-Optional Harbor-aligned egress control — see [`allowlist.toml`](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/allowlist.toml):
+| Option | Writes | Use when |
+|---|---|---|
+| `--gateway-stream-markdown` | Live AgenticMD projection | You want a lightweight human-readable run |
+| `--chronicle-mode lance` | Canonical structured events | You need complete events, judgment, or derived views |
 
-```toml
-[network]
-mode = "allowlist"   # public | no-network | allowlist
-allowed_hosts = [
-    "pypi.org",
-    "files.pythonhosted.org",
-    "github.com",
-    "api.github.com",
-    "registry.npmjs.org",
-]
-```
+Generate AgenticMD from a Lance run with `persisting traj materialize`.
 
-Applies to forward-proxy traffic (`CONNECT` + absolute-URI HTTP). Default `public` preserves prior behavior. Relative-path LLM gateway on `listen` is not filtered; configured `[[models]]` upstream hosts are auto-merged into the allowlist. See the Chinese version of this guide for full semantics.
+## Long-running Gateway
 
-`traj capture` is **in-process** — no `traj proxy stop` needed when the child exits.
-
----
-
-## 3. Long-running: `traj proxy` / `traj proxy start`
-
-Use **`traj proxy`** (foreground) or **`traj proxy start`** (background) when multiple terminals share one proxy and store — not `traj capture` per session.
-
-### 3.1 Which mode?
-
-| Mode | Command | Proxy lifetime | Typical use |
-|------|---------|----------------|-------------|
-| One-shot | `traj capture` | Ends with child process | Scripts, CI |
-| Foreground | `traj proxy` | Blocks until `Ctrl+C` | Local dev, debugging |
-| Background | `traj proxy start` | Until `traj proxy stop` | Long-lived shared proxy |
-
-Same `-c` / `-o` / `-f` for all three. **Do not** mix `traj proxy` (or `traj proxy start`) with `traj capture` on the same `-o`.
-
-### 3.2 `traj proxy`
+Start a foreground proxy:
 
 ```bash
-persisting traj proxy -o ./store -c examples/llm-proxy/deepseek.toml -f md
+persisting traj proxy -o ./store -c examples/llm-proxy/deepseek.toml -f markdown
 ```
 
-On startup the CLI prints **usage hints**: `proxy`, `admin`, `store`, `agent_id`, and the `export` lines below.
-
-In **another terminal** (example `listen = 127.0.0.1:19081`):
-
-```bash
-export HTTP_PROXY=http://127.0.0.1:19081 HTTPS_PROXY=http://127.0.0.1:19081
-export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
-export OPENAI_BASE_URL=http://127.0.0.1:19081/v1
-export ANTHROPIC_BASE_URL=http://127.0.0.1:19081
-claude
-# Codex: codex -c 'openai_base_url="http://127.0.0.1:19081/v1"'
-```
-
-Sessions use a **flat** `{agent_id}/{session_id}/` layout (unlike `run-{timestamp}/` from `traj capture`).
-
-Stop with **`Ctrl+C`** in the `traj proxy` terminal.
-
-### 3.3 `traj proxy start` (daemon)
+The startup banner prints the proxy address and environment variables. Export
+them in the terminal that starts the Agent. For a background daemon:
 
 ```bash
-persisting traj proxy start -o ./store -c examples/llm-proxy/deepseek.toml -f md
-persisting traj proxy status   # live connections
-persisting traj proxy list     # history, tokens, cost
+persisting traj proxy start -o ./store -c examples/llm-proxy/deepseek.toml -f markdown
+persisting traj proxy status
+persisting traj proxy list
 persisting traj proxy stop
 ```
 
-Omit `-o` on `list` / `status` / `stop` when using the last `start` dir or `PERSISTING_CAPTURE_STORAGE`.
+Do not run `pvisor run` and a standalone proxy against the same storage root at
+the same time. The standalone proxy does not provide pVisor's process or
+OverlayFS lifecycle.
 
-`--debug` → logs to `{store}/.capture/daemon.log`.
-
-### 3.4 vs `traj capture`
-
-| | `traj capture` | `traj proxy` / `traj proxy start` |
-|--|----------------|-----------------------------------|
-| Env injection | Automatic for child | Manual `export` in new terminal |
-| Codex | Auto `-c openai_base_url=…` | You must pass `-c` |
-| Layout | `run-{timestamp}/` | Flat `{session_id}/` |
-| Stop | Child exits | `Ctrl+C` or `traj proxy stop` |
-
-Prefer **`traj capture`** for one session; **`traj proxy`** for multi-terminal dev.
-
-### 3.5 Optional dlcapt backend
-
-`traj proxy` uses the capture backend by default. The independent dlcapt backend
-must be enabled at build time and runs in the foreground only:
+## Inspect trajectories
 
 ```bash
-export DLCAPT_CONFIG="$HOME/.config/persisting/dlcapt-openclaw.toml"
-export DLCAPT_STORE_DIR="$HOME/.local/share/persisting/dlcapt"
-export DLCAPT_UPSTREAM_BASE_URL="https://your-upstream.example/v1"
-mkdir -p "$(dirname "$DLCAPT_CONFIG")"
-cp crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml "$DLCAPT_CONFIG"
-sed -i \
-  -e "s|__STORE_DIR__|$DLCAPT_STORE_DIR|g" \
-  -e "s|__UPSTREAM_BASE_URL__|$DLCAPT_UPSTREAM_BASE_URL|g" \
-  "$DLCAPT_CONFIG"
+# Discover every Story under one Agent directory.
+persisting traj stats ./store/<agent-id> --detail
 
-cargo run -p persisting-cli --features dlcapt -- \
-  traj proxy --backend dlcapt -c "$DLCAPT_CONFIG"
+# Replay a particular Run directory.
+persisting traj replay ./store/<agent-id>/<run-id>
+persisting traj replay ./store/<agent-id>/<run-id> --storage-format markdown
+
+# Build the human-readable view from canonical Lance events.
+persisting traj materialize ./store \
+  --agent-id <agent-id> \
+  --root-session-id <run-id> \
+  --session-id <session-id>
 ```
 
-dlcapt reads its `store_dir`, storage sinks, model routes, and public/admin
-addresses from its TOML. A relative `store_dir` is resolved against the current
-process cwd, not the TOML's directory. Its storage is not managed or readable by
-`traj stats`, `traj replay`, or `traj capture`; those commands remain capture
-backend workflows. The capture-only `-o`, `-f`, `--debug`, and daemon actions
-are not supported by dlcapt. The copied configuration is outside the repository,
-so it cannot be accidentally committed.
+`stats`, `replay`, `materialize`, and `truncate` may omit the storage argument
+after `traj proxy start`, or when `PERSISTING_CAPTURE_STORAGE` is set.
 
----
-
-## 4. Output layout
+## Layout
 
 ```text
 store/
-├── .capture/          # index, reconcile, dead letters
-└── {agent_id}/
-    └── run-{timestamp}-{nanos}/
-        ├── run-*.md           # main agent dialogue
-        ├── agent-*.md         # subagents (if any)
-        └── events.lance/       # Lance dataset (only with `-f lance`)
+├── .capture/                 # Gateway runtime metadata and failure records
+└── agent-id/
+    └── run-id/
+        ├── events.lance/     # with --chronicle-mode lance
+        ├── run-id.md         # with --gateway-stream-markdown or after materialize
+        └── agent-<id>.md     # optional subagent Story
 ```
 
-```bash
-# After `-f md` (or after `traj materialize`):
-tail -f store/deepseek-proxy/run-*/run-*.md
-```
+Legacy `0001.md` and `.tlv.md` files remain readable, but new examples and new
+writes use session-named AgenticMD files.
 
----
+## Troubleshooting
 
-## 5. Inspect & repair
+| Problem | Check |
+|---|---|
+| Agent cannot reach Gateway | Use the injected child via `pvisor run`, or export the standalone proxy banner variables |
+| Codex bypasses the proxy | Pass the printed `-c openai_base_url=...` setting |
+| No Markdown with Lance output | Enable `--gateway-stream-markdown` or run `traj materialize` |
+| Failed capture event | Inspect `.capture/dead_letter.jsonl`, then use `traj replay-dead-letter` |
+| `pvisor run` reports an active owner | Stop `traj proxy`, wait for the live Run, or use another storage root |
 
-If you ran `traj proxy start` or set `PERSISTING_CAPTURE_STORAGE`, you can omit `<STORAGE>` on `stats`, `replay`, `materialize`, and `truncate`.
-
-```bash
-# Omit --session-id to scan all runs under agent/ and expand Lance session_id partitions
-persisting traj stats ./store/deepseek-proxy/ --detail
-persisting traj replay ./store --agent-id deepseek-proxy --session-id run-...
-persisting traj materialize ./store --agent-id ... --root-session-id ... --session-id ...
-```
-
-**Multimodal (screenshots / image generation):** with default `capture_level = dialogue`, images appear as **`[image: …]` / `[image_generated: …]` placeholders** in Markdown and stats—not embedded pixels. Set `capture_level = "full"` in TOML for raw JSON in Lance. See the [trajectory Markdown format](../design/trajectory-format.md).
-
----
-
-## 6. Post-hoc import (optional)
-
-```bash
-persisting traj import ./store --provider ide --since-days 7 --project "$(pwd)"
-```
-
----
-
-## 7. Command cheat sheet
-
-| Command | Purpose |
-|---------|---------|
-| `traj capture` | One-shot: proxy + child command |
-| `traj proxy` | Foreground long-running proxy |
-| `traj proxy start` / `stop` | Background daemon |
-| `traj proxy list` / `status` | Sessions and live connections |
-| `traj import` | Post-hoc IDE / gateway import |
-| `traj replay-dead-letter` | Replay failed capture events |
-| `traj stats` | Stats; `--detail` per-turn tree |
-| `traj replay` | Event JSON replay |
-| `traj materialize` | Lance → Markdown rebuild |
-
----
-
-## 8. Troubleshooting
-
-| Issue | Action |
-|-------|--------|
-| Agent cannot reach proxy | `export` env vars from startup banner in a **new** terminal; Codex needs `-c openai_base_url=…` |
-| md vs Lance mismatch | Only when both layers exist: check `.capture/reconcile.json`, then `traj materialize` from Lance |
-| Failed capture events | `traj replay-dead-letter -o ./store` |
-| `traj capture` conflicts with daemon | `traj proxy stop` or use another `-o` |
-| `stats` shows 0 turns | Scan **`./store/{agent_id}/`** without `--session-id` so CLI expands all Lance `session_id` partitions; or pass the specific header UUID with `--session-id` |
-
----
-
-## Next steps
-
-- [Capture architecture](../design/capture.md)
-- [Trajectory Markdown format](../design/trajectory-format.md)
-- [Traj CLI](../design/cli-traj.md)
-- [Walkthrough example](https://github.com/DeepLink-org/Persisting/tree/main/examples/capture-walkthrough)
+The independent dlcapt implementation has its own configuration and storage
+model; see `crates/persisting-dlcapt/README.md` when working on that component.

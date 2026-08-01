@@ -26,7 +26,7 @@ capture_resolve_binaries "${SKIP_BUILD:-0}" 1
 command -v python3 >/dev/null || die "need python3"
 [[ -f "$MOCK_PY" && -f "$LOAD_PY" ]] || die "missing stress scripts"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-capture-stress.XXXXXX")"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-gateway-stress.XXXXXX")"
 STORAGE="$WORKDIR/store"
 mkdir -p "$STORAGE"
 SUMMARY_JSON="$WORKDIR/load.json"

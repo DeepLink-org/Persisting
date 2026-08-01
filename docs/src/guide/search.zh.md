@@ -36,7 +36,7 @@ add_document("docs", "要配置代理，编辑 proxy.toml...",
 add_documents_batch("docs", [
     {"text": "认证需要在 header 中携带 API key...", "id": "doc-2"},
     {"text": "代理默认监听 127.0.0.1:19081...", "id": "doc-3"},
-    {"text": "采集轨迹运行 `persisting traj capture`...", "id": "doc-4"},
+    {"text": "采集轨迹运行 `pvisor run`...", "id": "doc-4"},
 ], embedding_dim=384)
 
 # 从已有 Lance 表导入

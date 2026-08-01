@@ -4,17 +4,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use persisting_capture::dead_letter::replay_dead_letter;
-use persisting_capture::engine::CaptureEngine;
-use persisting_capture::session_index::SessionIndexStore;
-use persisting_capture::sink::CaptureSink;
+use persisting_gateway::dead_letter::replay_dead_letter;
+use persisting_gateway::engine::CaptureEngine;
+use persisting_gateway::session_index::SessionIndexStore;
+use persisting_gateway::sink::CaptureEventSink;
 
 use super::CaptureFormat;
 
 pub struct ReplayDeadLetterOptions {
     pub output_dir: PathBuf,
     pub format: CaptureFormat,
-    pub sink: Arc<dyn CaptureSink>,
+    pub sink: Arc<dyn CaptureEventSink>,
 }
 
 pub fn cmd_replay_dead_letter(opts: ReplayDeadLetterOptions) -> Result<()> {

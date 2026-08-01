@@ -201,7 +201,7 @@ test-crate crate:
       engine) cargo test -p persisting-engine ;;
       proto) cargo test -p persisting-proto ;;
       core) cargo test -p persisting-core ;;
-      capture) cargo test -p persisting-capture ;;
+      capture) cargo test -p persisting-gateway ;;
       cli) cargo test -p persisting-cli ;;
       ppilot|compute) cargo test -p persisting-ppilot ;;
       pvisor) cargo test -p persisting-pvisor ;;
@@ -213,14 +213,14 @@ test-rust:
     cargo test --workspace
 
 test-capture-claude:
-    cargo test -p persisting-capture --test capture_apps_claude
+    cargo test -p persisting-gateway --test capture_apps_claude
 
 test-capture-fixtures:
-    cargo test -p persisting-capture --test llm_fixtures --test ag_fixture_tests
+    cargo test -p persisting-gateway --test llm_fixtures --test ag_fixture_tests
 
 test-capture-network:
-    cargo test -p persisting-capture --lib network_policy
-    cargo test -p persisting-capture --test network_policy_http
+    cargo test -p persisting-gateway --lib network_policy
+    cargo test -p persisting-gateway --test network_policy_http
 
 test-engine-integration:
     cargo test -p persisting-engine --test search_integration

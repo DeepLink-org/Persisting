@@ -129,6 +129,7 @@ fn fs_store_persists_jsonl_tables() {
     assert!(dir.path().join("sessions.jsonl").exists());
     assert!(dir.path().join("steps.jsonl").exists());
     assert!(dir.path().join("tool_calls.jsonl").exists());
+    assert!(dir.path().join(".chronicle.snapshot.json").exists());
 
     let reopened = FsChronicleStore::open(dir.path()).unwrap();
     let rebuilt = reconstruct_trajectory(&reopened, "sess-1").unwrap();
@@ -137,6 +138,43 @@ fn fs_store_persists_jsonl_tables() {
 
     let rows = AtifTrajectoryView::new(&reopened).query(None).unwrap();
     assert_eq!(rows.len(), 3);
+}
+
+#[test]
+fn fs_store_reopens_from_atomic_snapshot_when_projection_is_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsChronicleStore::open(dir.path()).unwrap();
+    ingest_trajectory(&mut store, &sample_traj()).unwrap();
+
+    std::fs::write(dir.path().join("steps.jsonl"), "{not-json\n").unwrap();
+
+    let reopened = FsChronicleStore::open(dir.path()).unwrap();
+    let rebuilt = reconstruct_trajectory(&reopened, "sess-1").unwrap();
+    assert_eq!(rebuilt.steps.len(), 2);
+    assert_eq!(rebuilt.steps[1].tool_calls.as_ref().unwrap().len(), 2);
+}
+
+#[test]
+fn typed_events_roundtrip_through_legacy_wire_adapter() {
+    let record = crate::EventRecord {
+        seq: 7,
+        source: "test".into(),
+        kind: "http.request".into(),
+        timestamp: None,
+        session_id: Some("sess-1".into()),
+        agent_id: Some("agent".into()),
+        parent_uuid: None,
+        trace_id: None,
+        call_id: Some("call-1".into()),
+        subagent_id: None,
+        parent_agent_id: None,
+        branch: None,
+        parent_call_id: None,
+        payload: json!({"http": {"method": "POST", "path": "/v1/messages"}}),
+    };
+    let lines = crate::encode_event_lines(std::slice::from_ref(&record)).unwrap();
+    let decoded = crate::decode_event_lines(&lines).unwrap();
+    assert_eq!(decoded, vec![record]);
 }
 
 #[test]
@@ -255,7 +293,6 @@ fn convert_peripheral_via_hub_only() {
 
 #[test]
 fn events_in_memory_to_storyline() {
-    use crate::convert::events_to_storyline;
     use crate::formats::events::{EventRecord, EventsDocument};
     use serde_json::json;
     let doc = EventsDocument::new(vec![
@@ -292,13 +329,55 @@ fn events_in_memory_to_storyline() {
             payload: json!({"content":"hello", "latency_ms": 1000, "ttft_ms": 120}),
         },
     ]);
-    let story = events_to_storyline(&doc).unwrap();
+    let story = crate::convert::events_to_storyline(&doc).unwrap();
     assert_eq!(story.session_id, "s1");
     assert!(!story.turns.is_empty());
     let agent = story.turns.iter().find(|t| t.source == "agent").unwrap();
     assert_eq!(agent.message, json!("hello"));
     assert_eq!(agent.latency_ms, Some(1000));
     assert_eq!(agent.ttft_ms, Some(120));
+}
+
+#[test]
+fn http_event_aliases_project_to_storyline() {
+    let doc = crate::EventsDocument::new(vec![
+        crate::EventRecord {
+            seq: 0,
+            source: "capture".into(),
+            kind: "http.request".into(),
+            timestamp: None,
+            session_id: Some("http-session".into()),
+            agent_id: Some("agent".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: Some("call-http".into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({"user_content": "hello", "model": "m"}),
+        },
+        crate::EventRecord {
+            seq: 1,
+            source: "capture".into(),
+            kind: "http.response".into(),
+            timestamp: None,
+            session_id: Some("http-session".into()),
+            agent_id: Some("agent".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: Some("call-http".into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({"assistant_content": "world"}),
+        },
+    ]);
+    let story = crate::convert::events_to_storyline(&doc).unwrap();
+    assert_eq!(story.turns.len(), 2);
+    assert_eq!(story.turns[0].message, json!("hello"));
+    assert_eq!(story.turns[1].message, json!("world"));
 }
 
 #[test]

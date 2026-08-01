@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
-use persisting_capture::config::ProxyConfig;
-use persisting_capture::runtime::discover::{StorageResolution, StorageSource};
-use persisting_capture::runtime::run_env::{load_daemon_env_snapshot, snapshot_daemon_env};
-use persisting_capture::runtime::service::{
+use persisting_gateway::config::ProxyConfig;
+use persisting_gateway::runtime::discover::{StorageResolution, StorageSource};
+use persisting_gateway::runtime::run_env::{load_daemon_env_snapshot, snapshot_daemon_env};
+use persisting_gateway::runtime::service::{
     resolve_storage_detailed, stop_daemon, write_current, CaptureDaemonState,
 };
-use persisting_capture::session_index::{discover_sessions, SessionSummary};
+use persisting_gateway::session_index::{discover_sessions, SessionSummary};
 
 use super::usage;
 
@@ -62,7 +62,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     ];
     cmd.args(args);
     if opts.debug {
-        cmd.env(persisting_capture::debug::ENV_CAPTURE_DEBUG, "1");
+        cmd.env(persisting_gateway::debug::ENV_CAPTURE_DEBUG, "1");
     }
     let stderr = if opts.debug {
         let log_path = opts.output_dir.join(".capture").join("daemon.log");
@@ -98,7 +98,7 @@ pub fn cmd_start(opts: StartOptions) -> Result<()> {
     if opts.debug {
         eprintln!(
             "[persisting-cli] traj proxy debug enabled (daemon env {}=1)",
-            persisting_capture::debug::ENV_CAPTURE_DEBUG
+            persisting_gateway::debug::ENV_CAPTURE_DEBUG
         );
     }
     usage::eprint_serve_banner(&usage::ServeBanner {

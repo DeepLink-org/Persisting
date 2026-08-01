@@ -1,8 +1,6 @@
 //! Local validation: prove env + plan + execute before scale-out.
 //!
-//! ```text
-//! persisting ppilot plan.py --check --python python3
-//! ```
+//! The embedding host exposes this through [`crate::cli::PPilotArgs::check`].
 
 use crate::plan::stream_plan_tasks;
 use crate::python_env::{self, pythonpath_for_script};

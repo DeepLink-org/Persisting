@@ -7,7 +7,7 @@ use crate::sink::ResultSink;
 use crate::task::TaskResult;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use persisting_capture::record::{now_rfc3339, record_to_engine_line, CaptureRecord};
+use persisting_pchronicle::{encode_event_lines, EventRecord};
 use persisting_proto::{TrajectoryAppendRequest, TrajectoryStorageFormat};
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -53,18 +53,18 @@ impl LanceResultSink {
         }
     }
 
-    fn to_record(&self, result: &TaskResult) -> Result<CaptureRecord> {
+    fn to_record(&self, result: &TaskResult) -> Result<EventRecord> {
         let kind = if result.ok && !result.cancelled {
             "ppilot.result"
         } else {
             "ppilot.failure"
         };
         let payload = serde_json::to_value(result).context("TaskResult to JSON")?;
-        Ok(CaptureRecord {
+        Ok(EventRecord {
             seq: 0,
             source: "persisting-ppilot".into(),
             kind: kind.into(),
-            timestamp: Some(now_rfc3339()),
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
             session_id: Some(self.session_id.clone()),
             agent_id: Some(self.agent_id.clone()),
             parent_uuid: None,
@@ -90,7 +90,10 @@ impl LanceResultSink {
         }
         let write = async {
             let rec = self.to_record(result)?;
-            let line = record_to_engine_line(&rec).context("encode CaptureRecord")?;
+            let line = encode_event_lines(&[rec])?
+                .into_iter()
+                .next()
+                .context("encode EventRecord produced no line")?;
             let req = TrajectoryAppendRequest {
                 storage: self.storage.clone(),
                 agent_id: self.agent_id.clone(),

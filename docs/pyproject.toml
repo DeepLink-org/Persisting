@@ -11,12 +11,11 @@ dependencies = [
     "mkdocs-static-i18n>=1.0.0",
     "mkdocstrings>=0.24.0",
     "mkdocstrings-python>=1.7.0",
-    "mkdocs-linkcheck>=1.0.0",
     "jieba>=0.42.1",  # Chinese word segmentation for search
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "mkdocs-minify-plugin>=0.7.0",  # Minify HTML output
     "mkdocs-git-revision-date-localized-plugin>=1.2.0",  # Add git revision date
     "ruff>=0.4.0",  # For linting markdown code blocks
@@ -30,4 +29,3 @@ extend-include = ["*.ipynb"]
 [tool.ruff.lint]
 select = ["E", "F", "UP", "B", "SIM", "I"]
 ignore = ["E501"]  # Ignore line length in documentation
-

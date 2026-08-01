@@ -66,7 +66,7 @@ cleanup() {
 trap cleanup EXIT
 
 # --- temp workspace -------------------------------------------------------
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-capture-it.XXXXXX")"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-gateway-it.XXXXXX")"
 STORAGE="$WORKDIR/trajectory-store"
 mkdir -p "$STORAGE"
 

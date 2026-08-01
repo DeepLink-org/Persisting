@@ -13,7 +13,7 @@ import urllib.request
 def main() -> int:
     base = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")
     if not base:
-        print("OPENAI_BASE_URL not set — run under `persisting traj capture`", file=sys.stderr)
+        print("OPENAI_BASE_URL not set — run under `pvisor`", file=sys.stderr)
         return 2
 
     turns = int(os.environ.get("CAPTURE_AGENT_TURNS", "3"))

@@ -2,10 +2,10 @@
 //!
 //! Semantic block: [`crate::blocks::ids::PLACEMENT`] (distributed naming + seed).
 //!
-//! We do **not** spawn processes ourselves. Launch with:
+//! We do **not** spawn processes ourselves. An embedding host may launch with:
 //!
 //! ```bash
-//! torchrun --nproc_per_node=4 -- persisting ppilot plan.py
+//! torchrun --nproc_per_node=4 -- <ppilot-host> plan.py
 //! ```
 
 use anyhow::{bail, Context, Result};

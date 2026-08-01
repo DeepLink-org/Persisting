@@ -1,6 +1,6 @@
 //! Capture records for `capture import`.
 
-pub use persisting_capture::record::{records_to_engine_lines, CaptureRecord};
+pub use persisting_gateway::record::CaptureRecord;
 
 #[derive(Debug, Clone)]
 pub struct PendingRecord {

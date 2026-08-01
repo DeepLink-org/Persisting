@@ -1,8 +1,8 @@
 # `persisting trajectory` / `traj` — 轨迹 CLI
 
-**`traj`** 是轨迹的统一入口：包含 **Ingress**（`traj capture` / `traj proxy` / `traj import`）与 **Egress**（`stats` / `replay` / `materialize` / …）。在 Run/Story 坐标上读写 **Lance 事实源**（`CaptureRecord`）与 **TLV Markdown 物化视图**，语义与 [Capture 架构](capture.md) §4 一致。
+**`traj`** 是 pChronicle 轨迹数据入口：负责 import 与 stats/replay/materialize 等数据操作。实时执行和 Gateway 生命周期由并列的 `pvisor run` / `persisting traj proxy` 命令负责。
 
-短名：**`traj`**（`trajectory` 全名）。Capture 采集子命令见 [Capture 子命令设计](cli-capture.md)。
+短名：**`traj`**（`trajectory` 全名）。单 Run 实时采集由 [`pvisor run`](cli-pvisor.md) 负责。
 
 ---
 
@@ -25,9 +25,9 @@ Subagent：`{run}/subagents/{session_id}/`。路径可传 session 目录，CLI �
 
 | 命令 | 说明 |
 |------|------|
-| **`traj capture`** | 一次性：进程内代理 + 子命令 |
-| **`traj proxy`** | 前台长期代理 |
-| **`traj proxy start\|stop\|list\|status`** | 守护进程生命周期与观测 |
+| **`pvisor run`** | 一次性：进程内代理 + 子命令 |
+| **`persisting traj proxy`** | 前台长期代理 |
+| **`persisting traj proxy start\|stop\|list\|status`** | 守护进程生命周期与观测 |
 | **`traj import`** | IDE / 网关日志事后导入 |
 | **`traj replay-dead-letter`** | 重放 `.capture/dead_letter.jsonl` |
 
@@ -43,7 +43,7 @@ Subagent：`{run}/subagents/{session_id}/`。路径可传 session 目录，CLI �
 | **materialize** | Lance → Markdown 全量物化 |
 
 ```text
-persisting traj capture     [OPTIONS] -- <CMD>
+pvisor run     [OPTIONS] -- <CMD>
 persisting traj proxy         -o DIR -c FILE [OPTIONS]
 persisting traj proxy start   -o DIR -c FILE [OPTIONS]
 persisting traj add           <STORAGE> [OPTIONS]
@@ -54,7 +54,7 @@ persisting traj extract   <STORAGE> <OUT_DIR> [OPTIONS]
 persisting traj materialize <STORAGE> [OPTIONS]
 ```
 
-实现：`persisting-capture` 的 `storage::{story_coords, path_layout, egress, convert}`；`persisting-engine` 负责 Lance/Markdown store 与 RPC。
+实现：`persisting-pchronicle` 拥有格式、路径、Lance/Markdown store 与领域服务；`persisting-engine` 只保留 CLI 动态 ABI 的 RPC 适配。
 
 ---
 
@@ -99,5 +99,5 @@ persisting traj materialize ./store --agent-id a --session-id s --root-session-i
 
 | 路径 | 入口 |
 |------|------|
-| 实时采集 | `persisting traj capture` / `traj proxy`（Ingress + live md） |
+| 实时采集 | `pvisor run` / `persisting traj proxy`（Ingress + live md） |
 | 离线运维 | `traj stats` / `replay` / `materialize` / … |

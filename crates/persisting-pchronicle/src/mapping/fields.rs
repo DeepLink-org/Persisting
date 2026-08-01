@@ -9,8 +9,10 @@ use super::text::{compact_json, content_to_string, visible_assistant_text, visib
 
 pub(super) fn role_and_body(rec: &EventRecord) -> Result<(String, String)> {
     Ok(match rec.kind.as_str() {
-        "llm.request" => ("user".into(), visible_user_text(rec).unwrap_or_default()),
-        "llm.response" | "llm.response.stream" => (
+        "llm.request" | "http.request" => {
+            ("user".into(), visible_user_text(rec).unwrap_or_default())
+        }
+        "llm.response" | "llm.response.stream" | "http.response" | "http.response.stream" => (
             "assistant".into(),
             visible_assistant_text(rec).unwrap_or_default(),
         ),
@@ -48,7 +50,7 @@ pub(super) fn attach_subagent_link_fields(fields: &mut BTreeMap<String, Value>, 
 
 pub(super) fn attach_llm_fields(fields: &mut BTreeMap<String, Value>, rec: &EventRecord) {
     match rec.kind.as_str() {
-        "llm.request" => {
+        "llm.request" | "http.request" => {
             if let Some(model) = rec.payload.get("model").and_then(|v| v.as_str()) {
                 fields.insert("model".into(), json!(model));
             }
@@ -56,7 +58,7 @@ pub(super) fn attach_llm_fields(fields: &mut BTreeMap<String, Value>, rec: &Even
                 fields.insert("path".into(), json!(path));
             }
         }
-        "llm.response" | "llm.response.stream" => {
+        "llm.response" | "llm.response.stream" | "http.response" | "http.response.stream" => {
             if let Some(status) = rec.payload.get("status") {
                 fields.insert("status".into(), status.clone());
             }

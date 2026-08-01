@@ -30,6 +30,15 @@ fn errno(error: &io::Error) -> i32 {
     error.raw_os_error().unwrap_or(libc::EIO)
 }
 
+fn no_xattr() -> io::Error {
+    error(
+        #[cfg(target_os = "macos")]
+        libc::ENOATTR,
+        #[cfg(not(target_os = "macos"))]
+        libc::ENODATA,
+    )
+}
+
 fn now() -> (i64, u32) {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -79,22 +88,8 @@ fn fuse_kind(kind: StoredKind) -> FileType {
     }
 }
 
-fn lower_node(path: &Path, metadata: &Metadata) -> io::Result<StoredNode> {
+fn lower_node_metadata(metadata: &Metadata) -> StoredNode {
     let kind = stored_kind(&metadata.file_type());
-    let data = match kind {
-        StoredKind::File => fs::read(path)?,
-        StoredKind::Symlink => fs::read_link(path)?.as_os_str().as_bytes().to_vec(),
-        _ => Vec::new(),
-    };
-    let xattrs = sys::list_xattrs(path)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|name| {
-            sys::get_xattr(path, OsStr::from_bytes(&name))
-                .ok()
-                .map(|value| (name, value))
-        })
-        .collect();
     #[cfg(target_os = "macos")]
     let flags = {
         use std::os::macos::fs::MetadataExt as MacMetadataExt;
@@ -102,7 +97,7 @@ fn lower_node(path: &Path, metadata: &Metadata) -> io::Result<StoredNode> {
     };
     #[cfg(not(target_os = "macos"))]
     let flags = 0;
-    Ok(StoredNode {
+    StoredNode {
         kind,
         mode: metadata.mode(),
         uid: metadata.uid(),
@@ -128,9 +123,30 @@ fn lower_node(path: &Path, metadata: &Metadata) -> io::Result<StoredNode> {
             .map(|time| time.subsec_nanos())
             .unwrap_or_else(|| metadata.ctime_nsec().max(0) as u32),
         flags,
-        data,
-        xattrs,
-    })
+        // Lower payload and xattrs are intentionally lazy. Directory listing
+        // and getattr must never read complete file contents.
+        data: Vec::new(),
+        xattrs: Vec::new(),
+    }
+}
+
+fn lower_node_for_copy_up(path: &Path, metadata: &Metadata) -> io::Result<StoredNode> {
+    let mut node = lower_node_metadata(metadata);
+    node.data = match node.kind {
+        StoredKind::File => fs::read(path)?,
+        StoredKind::Symlink => fs::read_link(path)?.as_os_str().as_bytes().to_vec(),
+        _ => Vec::new(),
+    };
+    node.xattrs = sys::list_xattrs(path)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|name| {
+            sys::get_xattr(path, OsStr::from_bytes(&name))
+                .ok()
+                .map(|value| (name, value))
+        })
+        .collect();
+    Ok(node)
 }
 
 #[derive(Clone, Debug)]
@@ -221,10 +237,7 @@ impl SnapshotCore {
         for lower in &self.lowers {
             let real = lower.join(path);
             if let Ok(metadata) = fs::symlink_metadata(&real) {
-                return Ok(Some(Resolved::Lower(
-                    real.clone(),
-                    lower_node(&real, &metadata)?,
-                )));
+                return Ok(Some(Resolved::Lower(real, lower_node_metadata(&metadata))));
             }
         }
         Ok(None)
@@ -246,7 +259,7 @@ impl SnapshotCore {
             if resolved.node().kind != StoredKind::Directory {
                 return Err(error(libc::ENOTDIR));
             }
-            self.store.create(&current, resolved.node())?;
+            self.copy_up(&current)?;
         }
         Ok(())
     }
@@ -259,7 +272,13 @@ impl SnapshotCore {
             return Err(error(libc::ENOENT));
         };
         self.ensure_parents(path)?;
-        let node = resolved.node().clone();
+        let node = match resolved {
+            Resolved::Lower(real, _) => {
+                let metadata = fs::symlink_metadata(&real)?;
+                lower_node_for_copy_up(&real, &metadata)?
+            }
+            Resolved::Upper(_, node) => node,
+        };
         let id = self.store.create(path, &node)?;
         Ok((id, node))
     }
@@ -774,7 +793,12 @@ impl Filesystem for SnapshotFilesystem {
             if resolved.node().kind != StoredKind::Symlink {
                 return Err(error(libc::EINVAL));
             }
-            Ok(resolved.node().data.clone())
+            match resolved {
+                Resolved::Upper(_, node) => Ok(node.data),
+                Resolved::Lower(path, _) => {
+                    Ok(fs::read_link(path)?.as_os_str().as_bytes().to_vec())
+                }
+            }
         });
         match result {
             Ok(target) => reply.data(&target),
@@ -1281,20 +1305,15 @@ impl Filesystem for SnapshotFilesystem {
                 .core
                 .resolve(&path)?
                 .ok_or_else(|| error(libc::ENOENT))?;
-            resolved
-                .node()
-                .xattrs
-                .iter()
-                .find(|(key, _)| key == name.as_bytes())
-                .map(|(_, value)| value.clone())
-                .ok_or_else(|| {
-                    error(
-                        #[cfg(target_os = "macos")]
-                        libc::ENOATTR,
-                        #[cfg(not(target_os = "macos"))]
-                        libc::ENODATA,
-                    )
-                })
+            match resolved {
+                Resolved::Upper(_, node) => node
+                    .xattrs
+                    .iter()
+                    .find(|(key, _)| key == name.as_bytes())
+                    .map(|(_, value)| value.clone())
+                    .ok_or_else(no_xattr),
+                Resolved::Lower(path, _) => sys::get_xattr(&path, name),
+            }
         });
         match result {
             Ok(value) if size == 0 => reply.size(value.len() as u32),
@@ -1310,9 +1329,13 @@ impl Filesystem for SnapshotFilesystem {
                 .core
                 .resolve(&path)?
                 .ok_or_else(|| error(libc::ENOENT))?;
+            let xattrs: Vec<Vec<u8>> = match resolved {
+                Resolved::Upper(_, node) => node.xattrs.into_iter().map(|(name, _)| name).collect(),
+                Resolved::Lower(path, _) => sys::list_xattrs(&path)?,
+            };
             let mut names = Vec::new();
-            for (name, _) in &resolved.node().xattrs {
-                names.extend_from_slice(name);
+            for name in xattrs {
+                names.extend_from_slice(&name);
                 names.push(0);
             }
             Ok(names)
@@ -1604,6 +1627,22 @@ mod tests {
             Some(b"value".as_slice())
         );
         assert!(!temp.path().join("upper").exists());
+    }
+
+    #[test]
+    fn lower_payload_is_loaded_only_when_copied_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("base"), b"payload").unwrap();
+        let core = SnapshotCore::new(vec![lower], temp.path().join("upper.redb")).unwrap();
+
+        let resolved = core.resolve(Path::new("base")).unwrap().unwrap();
+        assert_eq!(resolved.node().size, 7);
+        assert!(resolved.node().data.is_empty());
+
+        let (_, copied) = core.copy_up(Path::new("base")).unwrap();
+        assert_eq!(copied.data, b"payload");
     }
 
     #[test]

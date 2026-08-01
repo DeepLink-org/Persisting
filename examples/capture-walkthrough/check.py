@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验 capture 生成的 0001.md（YAML frontmatter + 裸对话块）。"""
+"""校验 pVisor 生成的 AgenticMD（YAML frontmatter + 对话块）。"""
 
 from __future__ import annotations
 
@@ -65,16 +65,14 @@ def main() -> int:
     if [h.get("kind") for h, _ in blocks] != ["llm.request", "llm.response"] * 2:
         errors.append("kind 顺序应为 request/response × 2")
 
+    expected_text = [value for pair in zip(TURNS, REPLIES, strict=True) for value in pair]
     for i, (h, text) in enumerate(blocks):
         if len(text.encode("utf-8")) != h.get("length"):
             errors.append(f"块 {i}: length 与正文字节数不一致")
         if text.startswith("{") and text.endswith("}"):
             errors.append(f"块 {i}: 正文不应为 JSON，应为裸对话 markdown")
-        t = h.get("turn", 0) - 1
-        if h.get("kind") == "llm.request" and t < len(TURNS) and text != TURNS[t]:
-            errors.append(f"块 {i}: 用户消息不匹配")
-        if h.get("kind") == "llm.response" and t < len(REPLIES) and text != REPLIES[t]:
-            errors.append(f"块 {i}: 助手回复不匹配")
+        if i < len(expected_text) and text != expected_text[i]:
+            errors.append(f"块 {i}: 对话正文不匹配")
 
     if errors:
         print("check: FAIL", file=sys.stderr)

@@ -8,7 +8,7 @@ Get started with Persisting in 5 minutes.
 pip install persisting[lance]
 ```
 
-For CLI tools (`persisting traj`, `persisting ppilot`, `persisting search`), [build from source](installation.md#from-source).
+For CLI tools (`pvisor`, `persisting traj`, `persisting search`), [build from source](installation.md#from-source).
 
 ---
 
@@ -87,7 +87,7 @@ records = await q.get(limit=100)
 Record every LLM call — Claude Code, Codex, or custom scripts:
 
 ```bash
-persisting traj capture -o ./store -c proxy.toml -f md -- claude
+pvisor run --config run.toml -- claude
 ```
 
 → [Capture Guide](guide/capture.md)
@@ -120,19 +120,6 @@ results = query("docs", "search query", mode="hybrid", k=10)
 ```
 
 → [Search Guide](guide/search.md)
-
-### pPilot
-
-Map-style tasks with checkpoint/resume:
-
-```bash
-persisting ppilot task.py -w 4 --check       # validate
-persisting ppilot task.py -w 4 -- --n 1000   # run
-```
-
-→ [pPilot Guide](guide/ppilot.md)
-
----
 
 ## Next Steps
 

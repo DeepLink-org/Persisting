@@ -8,10 +8,10 @@ TURNS = [
 REPLIES = [
     (
         "Persisting capture 通过内嵌代理拦截 LLM 调用，"
-        "把对话写入 session markdown（默认 `0001.md`）。"
+        "把对话写入 session 命名的 AgenticMD。"
     ),
     (
-        "路径为 `{storage}/{agent_id}/{session_id}/0001.md`，"
+        "路径为 `{storage}/{agent_id}/{run_id}/{session_id}.md`，"
         "文件头为 YAML frontmatter，每块是 "
         "`<!-- persisting:block:{speaker} {json} -->` + 裸正文。"
     ),

@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use persisting_capture::reconcile::{
+use persisting_gateway::reconcile::{
     build_run_report, list_run_markdown_paths, write_run_reconcile_report, RunReconcileReport,
 };
-use persisting_capture::record::CaptureRecord;
-use persisting_capture::runtime::run_env::read_run_session;
+use persisting_gateway::record::CaptureRecord;
+use persisting_gateway::runtime::run_env::read_run_session;
 use persisting_proto::{TrajectoryReplayRequest, TrajectoryReplayResponse};
 
 use super::CaptureFormat;

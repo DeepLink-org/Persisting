@@ -1,652 +1,124 @@
-# 轨迹存储模型 — 完整架构设计
+# pChronicle 轨迹存储
 
-> **版本**：v0.5.0 &emsp;|&emsp; **最后更新**：2026-05-30
+> 当前实现说明。规范性所有权见 [RFC-0003](../rfcs/0003-pchronicle-ownership.md)，
+> 命令见 [`persisting traj`](cli-traj.md)。
 
----
+## 1. 定位
 
-## 文档地图
+`persisting-pchronicle` 是 Agent 轨迹的结构化存储层，统一拥有：
 
-| 你想了解… | 见 |
-|-----------|-----|
-| Capture 代理的整体架构（概念、Story 边界、采集管线） | [Capture 架构设计](capture.md) §4–§6 |
-| TLV Markdown 的块格式规范 | [轨迹 Markdown 格式](trajectory-format.md) |
-| Storyline 枢纽互操作格式 | [RFC-0001 Storyline Format](../rfcs/0001-storyline-format.md) |
-| Events 事实流格式 | [RFC-0002 Events Format](../rfcs/0002-events-format.md) |
-| `persisting traj` 命令用法 | [Traj 命令](cli-traj.md) · [Capture 子命令](cli-capture.md) |
+- `EventRecord` 逻辑事件和 Lance `EventRow` schema；
+- Run / Story 坐标、目录布局和发现规则；
+- Lance 与 AgenticMD 的读写、统计和维护；
+- events、Storyline、ATIF、OpenAI messages、AgenticMD 之间的格式转换；
+- materialize、judgment 和标准查询视图。
 
----
+Gateway 负责把协议流量解释为事件；Engine 只提供动态 ABI 和 RPC 适配；CLI 只
+解析参数与展示结果。三者都不定义第二套轨迹落盘格式。
 
-## 1. 概述
-
-Agent 轨迹在 Persisting 中同时服务两类读者：**机器**（回放、统计、检索）与**人**（阅读、git diff、code review）。为此采用**两层存储**：Lance 为 canonical raw event log，TLV Markdown 为按需物化的人读视图。
-
-**与 Story 的关系**：Capture 主路径为 `任意协议 → Story（Call + Event）→ 事件记录 → Lance/Markdown`。协议差异在 Story 边界前消化；事件记录是存储层统一中间表示。详见 [Capture 架构](capture.md) 的核心概念。
-
-```mermaid
-graph TD
-    subgraph "数据源"
-        S1["Capture Proxy<br/>(实时代理流量)"]:::accent1
-        S2["CLI import<br/>(IDE 日志 / 历史导出)"]:::accent1
-    end
-
-    subgraph "归一化层"
-        N["CaptureRecord<br/>(统一中间表示)"]:::accent0
-    end
-
-    subgraph "引擎层"
-        CE["CaptureEngine<br/>(事件驱动采集核心)"]:::accent0
-        AQ["ApplyDispatcher<br/>(per-story_id 有序 apply)"]:::accent0
-        MP["MarkdownPipeline<br/>(过滤 + live/batch/reconcile)"]:::accent3
-        E1["Lance Append<br/>(canonical)"]:::accent2
-        E2["Materialize<br/>(全量 Lance → Markdown)"]:::accent3
-        E3["Live Upsert<br/>(call_id+role 流式 md)"]:::accent3
-        E3b["Frontmatter Refresh<br/>(会话 YAML 摘要)"]:::accent3
-        E4["Stream Append<br/>(import 批量 append md)"]:::accent3
-        E5["Compact<br/>(Markdown → Lance)"]:::accent3
-    end
-
-    subgraph "存储层"
-        L1["Lance Event Log<br/>列存 · 无损 · {run}/events.lance/"]:::accent4
-        L2["TLV Markdown<br/>人读 · 对话块 · 可选物化"]:::accent5
-        L3["sessions.json<br/>内存索引 · 快速 list"]:::accent5
-    end
-
-    S1 --> CE
-    S2 --> N
-    N --> E1
-    CE --> AQ
-    AQ --> N
-    CE --> E3
-    E3 --> MP
-    MP --> E3
-    E1 --> L1
-    E3 --> L2
-    E3 --> E3b
-    E3b --> L2
-    E1 --> E4
-    E4 --> L2
-    L1 --> E2
-    E2 --> MP
-    MP --> L2
-    L2 --> E5
-    E5 --> L1
-    CE --> L3
-
-    classDef accent0 fill:#e1bee7,stroke:#7b1fa2,color:#000
-    classDef accent1 fill:#bbdefb,stroke:#1565c0,color:#000
-    classDef accent2 fill:#c8e6c9,stroke:#2e7d32,color:#000
-    classDef accent3 fill:#fff9c4,stroke:#f9a825,color:#000
-    classDef accent4 fill:#ffccbc,stroke:#d84315,color:#000
-    classDef accent5 fill:#d7ccc8,stroke:#4e342e,color:#000
-```
-
-**核心 invariant**：`Lance row_count ≥ Markdown block_count`（materialize 是有损的）。
-
----
-
-## 2. 两层结构对比
-
-| 维度 | Lance (canonical) | TLV Markdown (materialized view) |
-|------|-------------------|----------------------------------|
-| **角色** | 全量 event log，系统的 single source of truth | 人类可读对话视图 |
-| **完整性** | 无损，所有事件全部保留 | 有损，过滤内部流量与 lifecycle |
-| **格式** | 列存（`EventRow`），capture run 使用 run 级 `events.lance/`（Lance dataset **目录**） | TLV 块序列（`AgenticmdBlock`），纯文本文件 |
-| **写入方式** | `-f lance` / `traj add --storage-format lance` 时 append；import 批量 append | Proxy `-f md` 时 **CaptureEngine live upsert**；均可 `materialize` 全量重建 |
-| **典型操作** | `replay`、`stats`、Search import、FTS | 直接打开、`git diff`、code review |
-| **按 session 分片** | ✅ `events.lance/` 内按 `session_id` 列过滤；同一 run **dataset** 可含**多个** distinct `session_id`（见 7.1.1 节） | ✅ `{run_dir}/{storage_session_id}.md` |
-
----
-
-## 3. 数据流全景
-
-### 3.1 Capture Proxy（`-f md`）— 事件驱动 + live Markdown
-
-Proxy 侧采集经 `CaptureEngine` 统一处理；**Proxy 不 await 完整 `apply`**（`spawn_apply` → Event WAL → `ApplyDispatcher`），Markdown 写入在后台完成。**`-f md` 不写 Lance**。
-
-```mermaid
-sequenceDiagram
-    participant Agent
-    participant Proxy as Capture Proxy
-    participant Queue as ApplyDispatcher
-    participant Engine as CaptureEngine
-    participant MD as TLV Markdown
-
-    Agent->>Proxy: POST /v1/messages
-
-    Proxy->>Queue: spawn_apply Event::Request（先写 Event WAL，不阻塞 upstream）
-    Queue->>Engine: 按 story_id 有序 apply
-    Engine->>Engine: prepare + StoryActor ask
-    Engine->>MD: upsert user block + refresh frontmatter
-
-    loop SSE stream (150ms 节流)
-        Proxy->>Queue: spawn_apply Event::ResponseDraft
-        Queue->>Engine: 有序 apply
-        Engine->>MD: upsert assistant block (draft: true)
-    end
-
-    alt 客户端断开
-        Proxy->>Queue: spawn_apply Event::Cancelled
-        Queue->>Engine: 有序 apply
-        Note over Engine,MD: cancelled 可不进 Markdown
-    else 正常结束
-        Proxy->>Queue: spawn_apply Event::ResponseComplete
-        Queue->>Engine: 有序 apply
-        Engine->>MD: upsert assistant (final) + refresh frontmatter
-    end
-```
-
-关键设计决策：
-
-1. **`-f md` 只写 Markdown**。需要 canonical 列存时改用 `-f lance`，或事后 `traj compact` / import。
-2. **Live Markdown 用 upsert**。`upsert_block_by_call_id` 按 **`call_id` + `role`** 匹配；块区间替换使用 `rewrite_block_range`。
-3. **ApplyDispatcher 保证有序**。同一 `story_id` 内 Request / Draft / Complete 按序 apply。
-4. **StoryActor `ask`**。生产环境等待 story actor 处理结果；失败写入 `dead_letter.jsonl`。
-5. **Run 结束对账**。写 `.capture/reconcile.json`（md call_id vs Markdown replay）；不涉及 Lance。
-6. **Frontmatter 摘要**。每次 dialogue 写入后刷新 YAML；`traj capture` 结束打印 stderr 一行汇总。
-
-### 3.1b Capture Proxy（`-f lance`）— 仅 canonical dataset
-
-`-f lance`（别名 `bin`）只 append 到 `{run}/events.lance/`（Lance dataset 目录），**不** live 写 Markdown、**不**写 reconcile。人读视图用 `traj materialize`。
-
-```mermaid
-sequenceDiagram
-    participant Agent
-    participant Proxy as Capture Proxy
-    participant Queue as ApplyDispatcher
-    participant Engine as CaptureEngine
-    participant Sink as CallbackSink / Worker
-    participant Lance as events.lance/
-
-    Agent->>Proxy: POST /v1/messages
-    Proxy->>Queue: spawn_apply Event::Request
-    Queue->>Engine: 有序 apply
-    Engine->>Sink: append llm.request
-    Sink->>Lance: Lance Append flush
-    Note over Engine,Lance: ResponseDraft 不落盘
-    Proxy->>Queue: spawn_apply Event::ResponseComplete
-    Queue->>Engine: 有序 apply
-    Engine->>Sink: append llm.response.stream
-    Sink->>Lance: flush
-```
-
-### 3.2 CLI Import — 按 `--storage-format` 只写一层
-
-IDE 日志 / gateway 导入不经 Proxy，走 `CaptureRecord` → 选定层 append。默认目标多为 Lance；`-f md` / `--storage-format markdown` 时对 engine lines 调用 `stream_engine_lines_to_markdown()` **末尾追加**（无 upsert）。
-
-```mermaid
-sequenceDiagram
-    participant Import as traj import
-    participant Worker as TrajectoryAppendWorker
-    participant Lance as events.lance/
-    participant MD as TLV Markdown
-
-    Import->>Worker: CaptureRecord (RON line)
-    Worker->>Worker: buffer (≤32 或关键事件 flush)
-    alt storage-format lance
-        Worker->>Lance: TrajectoryAppend
-    else storage-format markdown
-        Worker->>MD: stream_engine_lines_to_markdown (append)
-    end
-```
-
----
-
-## 4. 核心数据结构
-
-### 4.1 CaptureRecord（统一中间表示）
-
-```rust
-pub struct CaptureRecord {
-    pub seq: u64,                    // session 内单调序号
-    pub source: String,              // "persisting-proxy" | "persisting-capture"
-    pub kind: String,                // "llm.request" | "llm.response" | "session.started" | ...
-    pub timestamp: Option<String>,   // RFC3339
-    pub session_id: Option<String>,
-    pub agent_id: Option<String>,
-    pub trace_id: Option<String>,
-    pub call_id: Option<String>,
-    pub subagent_id: Option<String>,
-    pub parent_agent_id: Option<String>,
-    pub parent_call_id: Option<String>,
-    pub payload: serde_json::Value,  // 自由格式，按 kind 不同
-}
-```
-
-`CaptureRecord` 是系统中**唯一的内部数据交换格式**。数据源（proxy / CLI import）产出 `CaptureRecord`，引擎（Lance / Markdown / Index）消费它。
-
-### 4.2 EventRow（列存行）
-
-```rust
-pub struct EventRow {
-    pub seq: i64,                     // 会话内序号
-    pub timestamp: Option<String>,
-    pub kind: String,                 // 索引列
-    pub source: String,
-    pub agent_id: Option<String>,     // 过滤/路由
-    pub session_id: Option<String>,   // 过滤/路由
-    pub call_id: Option<String>,      // 调用链
-    pub trace_id: Option<String>,
-    pub parent_call_id: Option<String>,
-    pub model: Option<String>,        // 从 payload 反规范化
-    pub payload_json: String,         // 完整 CaptureRecord JSON（canonical 载荷）
-}
-```
-
-**反规范化设计**：`kind`、`session_id`、`model` 等高频查询字段提升为独立列，`payload_json` 存储完整 JSON。这样可以在不解析 JSON 的情况下做过滤和聚合。
-
-### 4.3 AgenticmdBlock（人读块）
-
-Wire 类型由 pChronicle 拥有；capture 侧以别名 `BlockHeader = AgenticmdHeader` 引用。
-
-```rust
-pub struct AgenticmdBlock {
-    pub header: AgenticmdHeader,  // 元数据（type, length, role, kind, turn, ...）
-    pub body: String,             // 正文内容（UTF-8）
-}
-
-pub struct AgenticmdHeader {
-    pub type_name: String,           // 存储单元类型，通常 "markdown"
-    pub length: usize,               // body 字节长度
-    pub fields: BTreeMap<String, Value>,  // role, kind, turn, model, seq, tokens...
-}
-```
-
-详见 [轨迹 Markdown 格式](trajectory-format.md)。
-
----
-
-## 5. 转换管线
-
-### 5.1 四条转换路径
-
-```mermaid
-graph LR
-    A["CaptureRecord[]"] -->|"1. capture_records_to_markdown_blocks"| B["(BlockHeader, Vec&lt;u8&gt;)[]"]
-    B -->|"2. write_markdown_document"| C["TLV Markdown 文件"]
-
-    A -->|"3. capture_record_to_event_row"| D["EventRow"]
-    D -->|"4. Lance append"| E["events.lance/"]
-
-    C -->|"5. markdown_document_to_capture_records"| A
-    E -->|"6. event_row_to_capture_record"| A
-
-    style A fill:#e1bee7,stroke:#7b1fa2,color:#000
-    style C fill:#c8e6c9,stroke:#2e7d32,color:#000
-    style E fill:#ffccbc,stroke:#d84315,color:#000
-```
-
-| 方向 | API | 模式 | 触发场景 |
-|------|-----|------|---------|
-| **CaptureRecord → Markdown** | `capture_records_to_markdown_blocks()` | 过滤 + 转换 | `traj materialize` |
-| **Block → .md 文件** | `write_markdown_document()` | 全量重写 | materialize 全量 |
-| **Block → .md 文件（增量 append）** | `stream_engine_lines_to_markdown()` | 末尾追加 | **import** `-f md`（非 Proxy live 路径） |
-| **Block → .md 文件（live upsert）** | `upsert_block_by_call_id()` | 按 call_id+role 替换或 append | Proxy `-f md` 流式采集 |
-| **.md 文件 → CaptureRecord** | `markdown_document_to_capture_records()` | 解析 + 重建 | compact 导入 |
-| **CaptureRecord → Lance** | `capture_record_to_event_row()` | 一行一条 | Lance append |
-| **Lance → CaptureRecord** | `event_row_to_capture_record()` | 反序列化 | replay / stats |
-
-### 5.2 Materialize（Lance → Markdown 全量）
-
-```rust
-pub struct MaterializeStats {
-    pub source_events: usize,    // Lance 行数
-    pub markdown_blocks: usize,  // Markdown 块数
-    pub skipped_events: usize,   // 被过滤的事件数
-}
-```
-
-流程：
-
-```
-Lance event log (全量扫描)
-    │  event_row_to_capture_record()
-    ▼
-CaptureRecord[]
-    │  MarkdownPipeline::agenticmd_blocks_from_records()  ← 静态过滤 + history replay dedup
-    ▼
-AgenticmdBlock[]
-    │  format_document_preamble() + encode_agenticmd_block_validated()
-    ▼
-TLV Markdown 文件 (全量重写)
-```
-
-### 5.3 Live Upsert（Proxy `-f md` 流式）
-
-Proxy 流式场景下，Markdown 通过 `upsert_block_by_call_id()` 增量更新，而非每批 append：
-
-```
-Event::Request
-    │  MarkdownPipeline::try_agenticmd_block() → user block
-    ▼
-upsert_block_by_call_id(call_id, role=user)   ← 不存在则 append
-
-Event::ResponseDraft (≤150ms)
-    │  draft_stream_assistant_block() → header.draft=true
-    ▼
-upsert_block_by_call_id(call_id, role=assistant)   ← 流式原地更新
-
-Event::ResponseComplete
-    │  enrich + append Lance llm.response.stream
-    │  MarkdownPipeline::try_agenticmd_block() → final assistant
-    ▼
-upsert_block_by_call_id(call_id, role=assistant)   ← 覆盖 draft，移除 draft 标记
-```
-
-**匹配键**：`call_id` + `role`（user / assistant 各一块，互不覆盖）。同一 call 的 user 与 assistant 可并存。
-
-**seq 预览**：draft 块通过 `sink.peek_next_seq()` 写入 header，与实际 Lance append 序号对齐；finalize 后以 stamped record 的 seq 覆盖。
-
-### 5.4 Stream Append（Import `-f md` 增量）
-
-```rust
-pub struct StreamMaterializeStats {
-    pub events_seen: usize,      // 本批 lines 数
-    pub blocks_appended: usize,  // 实际写入文件的块数
-    pub skipped_events: usize,   // 被过滤的事件数
-}
-```
-
-与 live upsert 的区别：**仅 append 到文件末尾**，无 call_id 级 rewrite；适用于离线 import，不适用于 Proxy 流式 draft。
-
-```
-新批次的 engine lines (RON)
-    │  engine_line_to_record() + MarkdownPipeline::try_agenticmd_block()
-    ▼
-筛选后的 (BlockHeader, Vec<u8>)[]
-    │  append_engine_lines_to_markdown()
-    ▼
-已有 .md 文件 (末尾追加)
-```
-
-### 5.5 Compact（Markdown → Lance）
-
-```rust
-pub struct CompactStats {
-    pub source_blocks: usize,   // Markdown 块数
-    pub event_rows: usize,      // 生成的 Lance 行数
-}
-```
-
-流程：
-
-```
-TLV Markdown 文件
-    │  parse_document()
-    ▼
-AgenticmdBlock[]
-    │  agenticmd_block_to_capture_record() + enrich: payload["_tlv"] = {...}
-    ▼
-CaptureRecord[]
-    │  capture_record_to_event_row()
-    ▼
-Lance event log (`events.lance`)
-```
-
-**`_tlv` 字段**：compact 时为每个 `CaptureRecord` 注入 `payload._tlv`，包含 `role` 和原始 `block_fields`。这保留了 TLV 元数据，使 compact 操作是信息增量的 —— 但 materialize 时丢弃的内部事件（如 lifecycle）无法通过 compact 恢复。
-
----
-
-## 6. 对话过滤规则
-
-live / materialize / reconcile **统一**经 `storage/markdown_pipeline.rs` 的 `MarkdownPipeline`：
-
-| API | 用途 |
-|-----|------|
-| `MarkdownPipeline::should_skip()` | 有状态过滤（含 **history replay dedup**：`user_message_count` 未增则跳过） |
-| `MarkdownPipeline::static_skip()` / `skip_markdown_block()` | 无状态静态过滤（`dialogue.rs` re-export 后者供测试/CLI） |
-| `MarkdownPipeline::try_agenticmd_block()` | 过滤 + `capture_record_to_agenticmd_block()` |
-
-| 跳过项 | 检测条件 | 原因 |
-|--------|---------|------|
-| history replay | `user_message_count` 未增 | Claude Code 重发全量 history，无新 user turn |
-| 内部探测请求 | `path` 含 `count_tokens` 或 `count-tokens` | 非对话流量 |
-| 无可见文本的空白请求 | `visible_user_text()` 为 None | 无信息量 |
-| 无可见文本的空白响应 | `visible_assistant_text()` 为 None | 无信息量 |
-| 流式 partial（仅 md） | payload `stream_partial: true` | 不落 Markdown |
-| 流式 draft（仅 md） | header `draft: true` | 不落 Lance；finalize 后 draft 被覆盖 |
-| 生命周期事件 | `kind` 以 `session.` 开头 | 不在对话中展示 |
-| 客户端取消 | `llm.call.cancelled` | 仅 Lance；不进 Markdown |
-| 主 session flash/haiku 影子请求 | 无 subagent_id + model 含 `flash`/`haiku` + 非 subagent shape payload | Claude Code 的预热探测，与 pro 内容重复 |
-| `llm.spawn_link` | **不跳过**，始终保留 | 主/子代理关联是重要轨迹信息 |
-
-```rust
-// 静态过滤（无 history dedup）
-pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
-    MarkdownPipeline::static_skip(rec)
-}
-
-// live 路径：有状态 dedup
-impl MarkdownPipeline {
-    pub fn should_skip(&mut self, rec: &CaptureRecord) -> bool {
-        if self.skip_history_replay(rec) { return true; }
-        Self::static_skip(rec)
-    }
-}
-```
-
-**invariant**：materialize 之后 `Lance row_count ≥ Markdown block_count`。
-
-**turn 字段**：`turn = seq / 2 + 1` 为全局 seq 的派生编号，**不**保证同一 call 的 user/assistant 共享语义轮次；并发 in-flight 时相邻块可能属于不同 call 却共享 turn 值。分析对话轮次时应以 `call_id` 为准。
-
-## 7. 存储布局
-
-### 7.1 Capture run 布局（推荐）
-
-```
-{store}/
-├── .capture/
-│   ├── sessions.json                   ← 全局会话索引
-│   ├── dead_letter.jsonl               ← Event apply 失败（可 replay）
-│   ├── trajectory_dead_letter.jsonl    ← Lance worker flush 失败
-│   ├── reconcile.json                  ← run 结束 md↔Lance 对账
-│   ├── run_session                     ← 当前 run_id（纯文本一行）
-│   ├── run_child.yaml                  ← 子进程信息 (PID + 命令行)
-│   └── daemon.env.json                 ← daemon 环境快照 (API keys)
-│
-├── {agent_id}/
-│   └── run-{timestamp}-{nanos}/        ← 一次 traj capture 的根目录
-│       ├── run-{timestamp}-{nanos}.md   ← 主 agent Markdown (run bucket)
-│       ├── agent-{claude_agent_id}.md   ← 子 agent Markdown (sibling)
-│       ├── agent-{...}.md               ← 更多子 agent
-│       └── events.lance/                ← run 级 Lance dataset（目录；仅 `-f lance`）
-```
-
-**关键隔离 invariant**：
-
-- 子 agent 的 user/assistant/tool 块**仅**写入对应的 `agent-{id}.md`
-- 主 agent 对话与 `llm.spawn_link`**仅**写入 `run-{run_id}.md` 或 `{header_session_id}.md`
-- 主 md **不内联**子 agent 的完整轨迹，而是通过 `llm.spawn_link` 块引用 sibling 文件
-- traj capture 模式下**不写** `session-meta.yaml`；客户端元信息进入 Markdown YAML frontmatter 的 `client:` 段
-
-#### 7.1.0 Judge 列（可选，Lance data evolution）
-
-LLM-as-judge 结果以**原生列**写回 `{run}/events.lance/`（`add_columns` + `MergeInsert` on `seq`，不重写已有事件 payload）：
-
-| 列 | 类型 | 说明 |
-|----|------|------|
-| `judge_{rubric}_score` | Int64 nullable | 0–100 |
-| `judge_{rubric}_verdict` | Utf8 nullable | `pass` / `partial` / `fail` |
-| `judge_{rubric}_rationale` | Utf8 nullable | 理由；人工评分带 `[manual] ` 前缀 |
-| `judge_{rubric}_unit` | Utf8 nullable | `__story__`（整段）或 turn 的 `call_id` |
-
-`traj judge` 响应里的 `sidecar_path` / stats 的 `layers_path` 现指向 `events.lance`（字段名保留兼容）。
-
-#### 7.1.1 Run bucket 内多 `session_id` 分区
-
-Claude Code 等客户端会在 HTTP header 注入 **header session UUID**，与 capture run 目录名 `run-*` 不同。同一 `events.lance/` dataset 内因此常见：
+## 2. 逻辑坐标
 
 ```text
-session_id = run-20260530-120000-123   ← session.started / 部分元数据
-session_id = 58867536-…                ← 实际 LLM 对话行
+Run
+└── Storyline
+    └── Turn
+        └── Call
+            └── EventRecord
 ```
 
-**读取规则**：
-
-| 操作 | 行为 |
-|------|------|
-| `traj stats <agent_dir>`（未指定 `--session-id`） | 列出 run bucket → **展开** Lance 内 distinct `session_id` → 逐分区统计 |
-| `traj stats --session-id <uuid>` | 只过滤该 `session_id` 的行 |
-| `traj replay` / materialize | 按 Story 坐标中的 `session_id` 过滤 |
-
-实现：`expand_story_locations`（`persisting-engine`）。**不要**假设「一个 run 目录 = 一个 session_id」。
-
-### 7.2 扁平 session 布局（serve 模式）
-
-```
-{store}/
-├── {agent_id}/
-│   └── {session_id}/
-│       ├── {session_id}.md             ← Markdown（可选）
-│       ├── session-meta.yaml           ← 客户端进程元信息（serve 模式）
-│       └── events.lance/            ← Lance dataset（可选；`-f lance`）
-```
-
-serve 模式下无 `run_session`，每个逻辑 session 独立一个目录。`session-meta.yaml` 记录发起连接的客户端进程信息（peer addr / PID / 命令行）。
-
-### 7.3 Markdown 路径解析算法
-
-`locate_session_markdown_for_key()` 在给定 run 目录内按以下优先级解析目标 Markdown 文件：
-
-```
-输入: run_dir, storage_session_id
-
-1.  {run_dir}/{storage_session_id}.md 已存在 → 使用该文件
-2.  storage_session_id 为 "agent-*" → 仅匹配 {run_dir}/agent-{id}.md；
-    不 fallback 到 run 主文件（防止主 session 误写入 subagent 文件）
-3.  run_dir 名为 "run-*" → 优先 {run_dir}/run-{run_dir名}.md (locate_run_bucket_markdown)
-4.  扫描时排除 agent-*.md，避免主 session 误走 subagent 路径
-5.  均不存在 → 新建 {run_dir}/{storage_session_id}.md
-    （subagent 则为 agent-{id}.md）
-```
-
-该算法同时服务于 capture CLI worker 和 `traj materialize`。
-
----
-
-## 8. 存储策略
-
-### Capture（`-f`）
-
-| 策略 | `-f` | 行为 |
-|------|------|------|
-| **Markdown only** | `md` | CaptureEngine live upsert 到 `{session}.md`（**不写 Lance**） |
-| **Lance only** | `lance` | 仅 append `events.lance`；人读视图用 `traj materialize` 按需生成 |
-
-### Trajectory CLI（`--storage-format`）
-
-两种物理层：**Lance**（canonical）、**Markdown**（物化视图）。`traj add` **每次只写一层**（由 `--storage-format` 决定）；`materialize` 为 Lance → Markdown 全量导出（不随 add 自动触发）。
-
-| 值 | 行为 |
-|----|------|
-| **auto** | **写**：无层→Lance，仅 md→Markdown，仅 Lance→Lance，两层都有→Lance；**读** replay：有 Lance 读 Lance，否则 Markdown；stats：两层都有时同时摘要 |
-| **lance** / **markdown** | 强制读/写/统计指定层 |
-| **both** | 遗留别名（append→Lance only；read/stats 同 auto），不推荐 |
-
-**读取优先级**：`replay` 在两层并存时默认 Lance；纯 Markdown session 从块序列还原。`-f md` run 结束后优先查看 `reconcile.json`；不一致且存在 Lance 层时执行 `traj materialize` 全量对齐。
-
----
-
-## 8.2 Markdown Frontmatter 摘要
-
-每个 live md 文件头部 YAML 含会话 rollup（实现：`storage/frontmatter.rs`）：
+离线存储使用 `StoryCoords`：
 
 | 字段 | 含义 |
-|------|------|
-| `format` | 固定 `persisting:1.0` |
-| `block` | TLV 块布局说明（模板字符串） |
-| `session` / `agent` | 逻辑 session 与租户 |
-| `model` / `provider` | 来自 `sessions.json` |
-| `started` / `duration` | 首末请求时间差 |
-| `turns` | user 块数量 |
-| `total_tokens` / `estimated_cost_usd` | 累计用量与成本 |
-| `subagents` | 同 run 下 `agent-*.md` stem 列表 |
-| `client` | 子进程 / peer 元信息 |
+|---|---|
+| `storage` | pChronicle 根目录 |
+| `agent_id` | Agent 身份，单路径段 |
+| `root_session_id` | 可选 Run 身份；主 Agent 与 subagent 共用 |
+| `session_id` | Story 身份，也是 Lance 分区键 |
 
-刷新：dialogue 块写入后自动更新；`traj capture` 结束全量 refresh + stderr 摘要行。
+有 `root_session_id` 时，多个 Story 共用一个 Run 级 `events.lance`；没有时，
+`session_id` 自身就是目录边界。
 
----
+## 3. 物理表示
 
-## 8.3 Run 结束 Reconcile
+### Lance events
 
-`traj capture -f md` 在 worker shutdown **之后**：
+`events.lance/` 是完整事件表示，保留 HTTP/模型调用、时间、身份、payload 和顺序，
+适合回放、统计、评测和派生数据。需要审计保真度的工作流应使用这一层。
 
-1. 扫描 run 目录下所有 `*.md`
-2. 对 Markdown 层做 replay / 解析，提取 **call_id 集合**
-3. 与 live md 结构对照（及 excessive blank lines 等）
-4. 写入 `{storage}/.capture/reconcile.json`
+### AgenticMD
 
-纯 `-f lance` **不**写 reconcile。若之后又有 Lance 层且需对齐人读视图，用 `traj materialize`。
+AgenticMD 是面向人的结构化 Markdown。它保存可见对话块和会话摘要，适合实时查看、
+代码审阅与人工分析。它会省略协议噪声，因此不是原始 HTTP 事件的无损替代。
 
----
+两者不是要求同步双写的两份事实源：
 
-## 9. 双向转换的保真度
+- `pvisor run --chronicle-mode lance` 写 Lance；
+- `pvisor run --gateway-stream-markdown` 直接维护 AgenticMD，适合轻量本地使用；
+- `traj materialize` 从 Lance 重建 AgenticMD；
+- `traj add` 根据显式选择或已有层写入一个存储层；
+- `traj replay --storage-format auto` 优先读取 Lance，只有 Markdown 时读取 Markdown。
 
-```mermaid
-graph LR
-    V["Lance<br/>(无损全量)"] -->|"materialize<br/>(有损: 过滤内部事件)"| M["Markdown<br/>(人读视图)"]
-    M -->|"compact<br/>(信息增量: + _tlv)"| V2["Lance<br/>(含 _tlv)"]
+## 4. 目录布局
 
-    style V fill:#ffccbc,stroke:#d84315,color:#000
-    style M fill:#c8e6c9,stroke:#2e7d32,color:#000
-    style V2 fill:#ffccbc,stroke:#d84315,color:#000
+扁平 Story：
+
+```text
+storage/
+└── agent_id/
+    └── session_id/
+        ├── events.lance/
+        └── session_id.md
 ```
 
-| 操作 | 方向 | 信息变化 |
-|------|------|---------|
-| **materialize** | Lance → Markdown | **有损**：丢弃 count_tokens / lifecycle / flash影子请求 / 空 turn；**图像仅保留 dialogue 占位符**，不嵌 `<img>` |
-| **compact** | Markdown → Lance | **信息增量**：注入 `payload._tlv`（TLV 元数据）；但无法恢复已丢弃的内部事件与 sidecar 未写入的像素 |
+包含 subagent 的 Run：
 
-**结论**：Lance 是 canonical。Markdown 可以从 Lance 重建，但反过来不能。永远不要把 Markdown 当作唯一存储。
-
----
-
-## 10. 与 Capture 代理的集成
-
-### 10.1 CaptureEngine 事件模型
-
-Proxy 通过 `CaptureEngine::spawn_apply(ctx, event)`（`llm_capture` / `streaming` 直接调用）→ `ApplyDispatcher` → `CaptureEngine::apply` 处理采集；prepare / StoryActor 失败写入 `.capture/dead_letter.jsonl`；Lance worker flush 失败写入 `.capture/trajectory_dead_letter.jsonl`。
-
-事件命名属于 **Story 区**（`engine/story/event.rs`），与 wire 协议无关：
-
-| Event 变体 | Lance | Markdown | Proxy 调度 | 说明 |
-|------------|-------|----------|------------|------|
-| `Event::Request` | ✅ `llm.request` | ✅ user upsert + frontmatter | spawn_apply（非阻塞） | 转发 upstream 前触发 |
-| `Event::ResponseDraft` | ❌ | ✅ assistant upsert (`draft: true`) | spawn_apply | SSE 150ms 节流 |
-| `Event::ResponseComplete` | ✅ `llm.response` / `.stream` | ✅ assistant upsert (final) + frontmatter | spawn_apply | 流结束或非流式 |
-| `Event::Cancelled` | ✅ `llm.call.cancelled` | ❌ | spawn_apply | 客户端提前断开 SSE |
-
-```
-Proxy (spawn_apply)           ApplyDispatcher              CaptureEngine
-  │                                │                                │
-  ├─ Event::Request                ├─ 按 story_id 有序 ───────────→ prepare + StoryActor ask
-  │                                │                                ├─ md upsert (MarkdownPipeline)
-  ├─ Event::ResponseDraft          ├─ 有序 apply ─────────────────→ md only
-  ├─ Event::ResponseComplete       ├─ 有序 apply ─────────────────→ ask → append Lance
-  │                                │                                ├─ md final + frontmatter
-  └─ Event::Cancelled              └─ 有序 apply ─────────────────→ ask → append (cancelled)
+```text
+storage/
+└── agent_id/
+    └── root_session_id/
+        ├── events.lance/          # 按 session_id 分区
+        ├── root_session_id.md
+        └── agent-<id>.md
 ```
 
-StoryActor 生产环境使用 **`ask`**（可观测 + 失败 dead letter）；`shutdown` 前先通过 `ApplyDispatcher` barrier drain 已接收事件，再对各 story 发送 `Flush` drain mailbox。`spawn_apply` 在入队前写 `.capture/events.wal.jsonl`，clean shutdown 后 truncate；非 clean shutdown 下次启动 replay 未 ack event。`CallbackSink` → `TrajectoryAppendWorker` 负责 Lance 批量 flush。
+读取器仍能识别早期的 `0001.md` 和 `trajectory.tlv.md`，但新写入使用
+`{session_id}.md`。这些名称只是历史数据读取规则，不是新的写入选项。
 
-### 10.2 已知限制
+## 5. 写入与一致性
 
-| 现象 | 原因 | 缓解 |
-|------|------|------|
-| md 与 Lance 短暂不一致 | 后台 apply 尚未 drain | shutdown `Flush` + `reconcile.json` |
-| turn 编号跨 call 重复 | `turn = seq/2+1` 非 per-call | 消费方用 `call_id` 分组 |
-| apply 队列满 / 采集失败 | 背压 | dead letter + `replay-dead-letter` |
-| Event WAL 多轮 crash | replay entry 暂未 ack 原 seq；`next_seq` 未从旧 WAL 恢复 | 补 `PendingEntry.seq` + open 扫描 max(seq)+1 |
-| Lance worker flush 失败 | 磁盘 / IO 异常 | `trajectory_dead_letter.jsonl` 保留 RON batch |
-| Lance dataset 过大 | 长 run / 高频事件 | 按 run 或 agent 拆分；Overwrite 路径会重写整个 dataset（规划中） |
+1. `EventRecord` 进入 Lance 前转换为稳定 Arrow 行。
+2. 同一 dataset 内分配单调 `seq`；当前进程内写入串行化。
+3. Run bucket 中不同 Story 共享 dataset，但 replay/stats 按 `session_id` 隔离。
+4. live Markdown 以 `call_id + speaker` 定位块，允许流式 assistant 原地更新。
+5. canonical append 与派生投影分别报告结果；投影失败不能伪装成事件已持久化。
 
-详见 [Capture 架构设计](capture.md) 的可靠性与运行形态章节。
+跨进程多 writer 仍需要上层单 writer/租约约束；当前实现不宣称提供分布式 CAS。
 
----
+## 6. 格式转换
 
-## 11. 相关文档
+通用外围格式通过 Storyline hub 转换：
 
-- [Capture 架构设计](capture.md) — 代理路由、协议转换、采集管线
-- [轨迹 Markdown 格式](trajectory-format.md) — TLV block 完整规范
-- [Capture 架构设计](capture.md) — 代理路由、协议转换、子代理隔离
+```text
+AgenticMD ─┐
+ATIF ──────┼── Storyline ── events / AgenticMD / ATIF / OpenAI messages
+OpenAI msg ┘
+```
+
+需要保存原始 payload 的路径直接读写 events，不能经有损 Storyline roundtrip。
+`traj convert` 用于文件格式转换；`traj materialize` 专门处理 Lance → AgenticMD。
+
+## 7. 组件边界
+
+| 组件 | 负责 | 不负责 |
+|---|---|---|
+| Gateway | 协议解析、调用生命周期、采集顺序、live projection 策略 | 通用 store、格式 schema、离线转换 |
+| pChronicle | 格式、路径、落盘、读取、转换、judgment | 网络转发、Agent 生命周期 |
+| Engine | Search 实现、稳定 ABI、trajectory RPC 适配 | 轨迹领域实现 |
+| pVisor | Run 生命周期及 Gateway/OverlayNet/OverlayFS 装配 | 长期轨迹 schema |
+
+## 8. 相关文档
+
+- [AgenticMD 格式](trajectory-format.md)
+- [Gateway 架构](gateway.md)
+- [pVisor 命令](cli-pvisor.md)
 - [Traj 命令](cli-traj.md)
-- [Traj Capture 子命令](cli-capture.md)

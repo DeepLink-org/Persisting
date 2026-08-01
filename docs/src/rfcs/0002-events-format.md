@@ -5,9 +5,9 @@
 | **Status** | Draft |
 | **Schema / format name** | `events`（逻辑文档）；物理存储常为 `events.lance` |
 | **Date** | 2026-07-30 |
-| **Component** | Capture + pChronicle |
-| **Implements** | `persisting-capture` `CaptureRecord` / `EventRow` · `persisting-pchronicle` `formats/events.rs` |
-| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [Capture 管线](../design/capture.md) · [轨迹存储](../design/trajectory.md) |
+| **Component** | Gateway + pChronicle |
+| **Implements** | `persisting-gateway` `CaptureRecord` / `EventRow` · `persisting-pchronicle` `formats/events.rs` |
+| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [Capture 管线](../design/gateway.md) · [轨迹存储](../design/trajectory.md) |
 
 ---
 
@@ -47,7 +47,7 @@ Agent 轨迹若只存「user/assistant 文本 + tool_calls」，会丢掉：
 - 流式分片、重试、取消、非 2xx、内部探测流量；
 - 足以 **原样重放 HTTP** 或 **换协议解析器重解** 的材料。
 
-Persisting Capture 的主入口是代理流量。`events` 应对齐这一现实：**一行事件 ≈ 一次可定位的 HTTP 方向记录**（request 或 response），外加关联键（`session_id` / `call_id` / `trace_id`）。
+Persisting Gateway 的主入口是代理流量。`events` 应对齐这一现实：**一行事件 ≈ 一次可定位的 HTTP 方向记录**（request 或 response），外加关联键（`session_id` / `call_id` / `trace_id`）。
 
 对话摘要（`user_content` / `assistant_content`）可以写进 payload 作为 **可选索引/加速字段**，但：
 
@@ -112,7 +112,7 @@ Persisting Capture 的主入口是代理流量。`events` 应对齐这一现实�
 |---|---|
 | **Wire record** | 一次 HTTP（或同类）方向的原始交换描述：method/url/headers/body/status/timing… |
 | **EventRecord** | 逻辑事件 = 关联信封 + `kind` + wire-oriented `payload` |
-| **CaptureRecord** | Capture 管线内部同形表示（演进目标与本 RFC 对齐） |
+| **CaptureRecord** | Gateway 采集管线内部兼容表示（演进目标与本 RFC 对齐） |
 | **EventRow** | Lance 列存行：索引列 + `payload_json` |
 | **Summary fields** | `user_content` / `assistant_content` / `model` 等可选派生字段 |
 | **Replay** | 用 wire 字段重建并再次发出（或模拟）等价交换 |
@@ -128,7 +128,7 @@ Persisting Capture 的主入口是代理流量。`events` 应对齐这一现实�
 | Field | Type | Status | Description |
 |---|---|---|---|
 | `seq` | integer | Required | dataset / 会话内单调序号 |
-| `source` | string | Required | 如 `persisting-proxy`、`persisting-capture` |
+| `source` | string | Required | 如 `persisting-proxy`、`persisting-gateway` |
 | `kind` | string | Required | 见 kind 节；HTTP 方向优先 |
 | `timestamp` | string | Optional | RFC3339（事件观测时间） |
 | `session_id` | string | Optional | ≈ Storyline `story_id` |
@@ -532,7 +532,7 @@ key = events 字段，value = 在 Storyline 上求值的 JSONPath。
 | 文档 | 关系 |
 |---|---|
 | [轨迹存储](../design/trajectory.md) | Lance SoT；本 RFC 强调 SoT 内容应是 HTTP wire |
-| [Capture 管线](../design/capture.md) | 生产 events；Story 边界在 **之后** 解释 |
+| [Gateway 管线](../design/gateway.md) | 生产 events；Story 边界在 **之后** 解释 |
 | [RFC-0001 Storyline](0001-storyline-format.md) | 有损 Normal 视图 / hub |
 | [轨迹 Markdown 格式](../design/trajectory-format.md) | 人读投影，不是 SoT |
 

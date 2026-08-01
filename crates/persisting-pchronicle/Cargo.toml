@@ -4,12 +4,16 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "pChronicle: Canonical Run History Store (ATIF format support and rebuildable views)"
+description = "pChronicle: Persisting's structured storage layer for Agent trajectories"
 readme = "README.md"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
+futures = "0.3"
+lance = { version = "7.0.0", features = ["aws", "azure", "gcp"] }
 ron = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

@@ -1,7 +1,8 @@
 # Harbor 风格出口白名单 — 转发代理仅允许下列 host
 #
 #   export DEEPSEEK_API_KEY=sk-...
-#   persisting traj capture -o ./store -c examples/llm-proxy/allowlist.toml -f md -- claude
+#   This is a standalone `persisting traj proxy -c` config. For pVisor, use
+#   the equivalent [overlaynet]/[gateway] RunConfig fields or CLI options.
 #
 # 说明：
 #   - mode = "allowlist"：未列出的 CONNECT / 绝对 URI 出站返回 403

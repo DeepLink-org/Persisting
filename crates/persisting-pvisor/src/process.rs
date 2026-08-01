@@ -8,6 +8,72 @@ use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 
+#[cfg(unix)]
+struct ForegroundProcessGroup {
+    terminal_fd: libc::c_int,
+    original_pgrp: libc::pid_t,
+}
+
+#[cfg(unix)]
+impl ForegroundProcessGroup {
+    fn give_to(child: &Child, invocation: &ProcessInvocation) -> std::io::Result<Option<Self>> {
+        if invocation.stdin != StdioMode::Inherit
+            || unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
+        {
+            return Ok(None);
+        }
+        let Some(pid) = child.id() else {
+            return Ok(None);
+        };
+        let terminal_fd = libc::STDIN_FILENO;
+        let original_pgrp = unsafe { libc::tcgetpgrp(terminal_fd) };
+        if original_pgrp < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        set_terminal_pgrp(terminal_fd, pid as libc::pid_t)?;
+        // The child may have attempted a terminal read between spawn and
+        // tcsetpgrp and received SIGTTIN. Resume its whole process group.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGCONT);
+        }
+        Ok(Some(Self {
+            terminal_fd,
+            original_pgrp,
+        }))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ForegroundProcessGroup {
+    fn drop(&mut self) {
+        let _ = set_terminal_pgrp(self.terminal_fd, self.original_pgrp);
+    }
+}
+
+/// Change the terminal foreground group without letting a background caller
+/// stop itself with SIGTTOU. Signal masking is thread-local and restored before
+/// returning, so it is safe inside the multi-threaded Tokio runtime.
+#[cfg(unix)]
+fn set_terminal_pgrp(fd: libc::c_int, pgrp: libc::pid_t) -> std::io::Result<()> {
+    unsafe {
+        let mut blocked: libc::sigset_t = std::mem::zeroed();
+        let mut previous: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut blocked);
+        libc::sigaddset(&mut blocked, libc::SIGTTOU);
+        let mask_error = libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut previous);
+        if mask_error != 0 {
+            return Err(std::io::Error::from_raw_os_error(mask_error));
+        }
+        let result = libc::tcsetpgrp(fd, pgrp);
+        let error = (result != 0).then(std::io::Error::last_os_error);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+        match error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ProcessExecutor;
 
@@ -48,9 +114,37 @@ fn stdio(mode: StdioMode) -> Stdio {
     }
 }
 
+fn resolve_host_program(program: &str) -> std::path::PathBuf {
+    if program.contains(std::path::MAIN_SEPARATOR) {
+        return program.into();
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return program.into();
+    };
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(program))
+        .find(|candidate| is_executable(candidate))
+        .unwrap_or_else(|| program.into())
+}
+
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
 impl ProcessExecutor {
     fn spawn_command(invocation: &ProcessInvocation) -> Command {
-        let mut command = Command::new(&invocation.program);
+        // Resolve a bare command against the host PATH before changing cwd to
+        // an OverlayFS merged root. The executable belongs to the host-process
+        // executor and need not exist inside the projected lower filesystem.
+        let mut command = Command::new(resolve_host_program(&invocation.program));
         command
             .args(&invocation.args)
             .stdin(stdio(invocation.stdin))
@@ -138,6 +232,32 @@ impl RunExecutor for ProcessExecutor {
                     failure: Some(RunFailure {
                         kind: RunFailureKind::Spawn,
                         message: error.to_string(),
+                        retryable: false,
+                    }),
+                    output: ProcessOutput::default(),
+                    metrics: Default::default(),
+                    artifacts: Vec::new(),
+                    event_stream_ref: None,
+                    warnings: Vec::new(),
+                };
+            }
+        };
+
+        #[cfg(unix)]
+        let _foreground = match ForegroundProcessGroup::give_to(&child, invocation) {
+            Ok(foreground) => foreground,
+            Err(error) => {
+                terminate_process_tree(&mut child, spec.runtime.termination_grace_ms).await;
+                return RunResult {
+                    run_id: spec.run_id,
+                    attempt_id: context.attempt_id().clone(),
+                    state: RunState::Failed,
+                    started_at_unix_ms: started_at,
+                    finished_at_unix_ms: crate::util::unix_now_ms(),
+                    exit_code: None,
+                    failure: Some(RunFailure {
+                        kind: RunFailureKind::Infrastructure,
+                        message: format!("failed to give terminal to child process: {error}"),
                         retryable: false,
                     }),
                     output: ProcessOutput::default(),
@@ -260,5 +380,23 @@ impl RunExecutor for ProcessExecutor {
             event_stream_ref: None,
             warnings: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_bare_program_before_overlay_cwd_is_applied() {
+        assert_eq!(
+            resolve_host_program("sh"),
+            std::path::PathBuf::from("/bin/sh")
+        );
+        assert_eq!(
+            resolve_host_program("./agent-script"),
+            std::path::PathBuf::from("./agent-script")
+        );
     }
 }

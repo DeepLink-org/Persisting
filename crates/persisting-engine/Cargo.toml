@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Persisting engine: Lance-backed search, Lance trajectory, and stable C ABI"
+description = "Persisting engine: Lance search and stable ABI adapters"
 
 [lib]
 name = "persisting_engine"
@@ -19,15 +19,12 @@ lance-linalg = "7.0.0"
 lance-table = "7.0.0"
 futures = "0.3"
 uuid = "1"
-persisting-capture = { path = "../persisting-capture" }
 persisting-pchronicle = { path = "../persisting-pchronicle" }
 persisting-proto = { path = "../persisting-proto" }
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
-async-trait = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 persisting-proto = { path = "../persisting-proto" }

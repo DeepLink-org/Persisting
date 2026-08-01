@@ -26,9 +26,6 @@ struct Args {
     /// Mount point (merged view).
     #[arg(value_name = "MOUNTPOINT")]
     mountpoint: PathBuf,
-    /// Foreground (default). Kept for fuse-overlayfs CLI compatibility.
-    #[arg(short = 'f', long = "foreground", default_value_t = true)]
-    foreground: bool,
     /// Debug logging.
     #[arg(short = 'd', long = "debug", default_value_t = false)]
     debug: bool,
