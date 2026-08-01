@@ -15,10 +15,8 @@ fn dlcapt_backend_without_feature_explains_how_to_enable_it() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("rebuild persisting-cli with --features dlcapt")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("rebuild persisting-cli with --features dlcapt"));
 }
 
 #[cfg(feature = "dlcapt")]
@@ -38,8 +36,6 @@ fn dlcapt_backend_rejects_capture_only_output_directory() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("-o is only supported by the capture backend")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("-o is only supported by the capture backend"));
 }
