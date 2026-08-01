@@ -58,6 +58,10 @@ fn build_demo_document() -> String {
         let block = capture_record_to_agenticmd_block(&rec).unwrap();
         out.push_str(&encode_agenticmd_block_validated(&block).unwrap());
     }
+    // A block keeps a blank separator for append; a closed document ends in
+    // exactly one newline so the checked-in golden has no trailing blank line.
+    debug_assert!(out.ends_with("\n\n"));
+    out.pop();
     out
 }
 
