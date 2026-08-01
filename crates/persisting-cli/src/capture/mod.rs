@@ -4,10 +4,8 @@ pub mod daemon;
 mod debug_setup;
 pub mod reconcile;
 pub mod replay_dead_letter;
-pub mod run;
 pub mod usage;
 pub use debug_setup::{enable_if_requested as enable_capture_debug, CaptureDebugContext};
-pub use run::{cmd_run, RunOptions};
 mod merge;
 mod project_path;
 pub mod providers;
@@ -239,7 +237,7 @@ pub fn import_to_trajectory_with_engine(
         return Ok(summary);
     }
 
-    let engine_lines = record::records_to_engine_lines(&records)?;
+    let engine_lines = persisting_pchronicle::encode_event_lines(&records)?.join("\n");
     append_engine_lines(storage, &agent_id, &session_id, &engine_lines)?;
     Ok(summary)
 }

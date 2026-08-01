@@ -1,8 +1,9 @@
 //! Filesystem store for agenticmd session markdown (append + call_id upsert).
 
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -15,6 +16,15 @@ use crate::formats::agenticmd::{
 use crate::formats::agenticmd_validate::{
     block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
 };
+use crate::mapping::agenticmd_block_to_replay_json;
+
+/// Storage-level index of one AgenticMD document.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgenticmdFileIndex {
+    pub block_count: usize,
+    pub call_ids: BTreeSet<String>,
+    pub structural_issues: Vec<String>,
+}
 
 #[derive(Serialize)]
 struct DefaultPreamble {
@@ -103,6 +113,113 @@ pub fn append_agenticmd_blocks(
     Ok(blocks.len())
 }
 
+/// Replace a complete AgenticMD document with an already-encoded preamble and blocks.
+pub fn write_agenticmd_document(
+    path: &Path,
+    preamble: &str,
+    blocks: &[AgenticmdBlock],
+) -> Result<()> {
+    let mut output = preamble.to_string();
+    for block in blocks {
+        output.push_str(&encode_agenticmd_block_validated(block)?);
+    }
+    write_atomic(path, output.as_bytes())
+}
+
+/// Replace only the YAML preamble while preserving every encoded block byte-for-byte.
+pub fn rewrite_agenticmd_preamble(path: &Path, preamble: &str) -> Result<()> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let body_start = crate::formats::agenticmd_body_byte_offset(&content)
+        .map_err(|e| anyhow::anyhow!("agenticmd body offset: {e}"))?;
+    let mut output = preamble.as_bytes().to_vec();
+    output.extend_from_slice(&content.as_bytes()[body_start..]);
+    write_atomic(path, &output)
+}
+
+/// Convert a page of parsed AgenticMD blocks to canonical replay JSON records.
+pub fn agenticmd_replay_json_lines(
+    blocks: &[AgenticmdBlock],
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<Vec<String>> {
+    let end = limit
+        .map(|limit| offset.saturating_add(limit).min(blocks.len()))
+        .unwrap_or(blocks.len());
+    blocks
+        .get(offset..end)
+        .unwrap_or(&[])
+        .iter()
+        .map(agenticmd_block_to_replay_json)
+        .collect()
+}
+
+/// List AgenticMD candidates directly below a run directory.
+pub fn list_agenticmd_paths(run_dir: &Path) -> Result<Vec<PathBuf>> {
+    if !run_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut paths = Vec::new();
+    for entry in
+        std::fs::read_dir(run_dir).with_context(|| format!("read_dir {}", run_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) == Some("md") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Inspect block count, call IDs, and format-level structural issues.
+pub fn index_agenticmd_path(path: &Path) -> Result<AgenticmdFileIndex> {
+    let raw = if path.exists() {
+        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
+    } else {
+        String::new()
+    };
+    let blocks = if raw.is_empty() {
+        Vec::new()
+    } else {
+        parse_agenticmd_document_validated(&raw)?
+    };
+    let call_ids = blocks
+        .iter()
+        .filter_map(|block| {
+            block
+                .header
+                .fields
+                .get("call_id")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .collect();
+    Ok(AgenticmdFileIndex {
+        block_count: blocks.len(),
+        call_ids,
+        structural_issues: agenticmd_structural_issues(&raw),
+    })
+}
+
+/// Detect structural anomalies independent of any capture producer.
+pub fn agenticmd_structural_issues(document: &str) -> Vec<String> {
+    let mut issues = Vec::new();
+    if document.contains("\n\n\n\n") {
+        issues.push("excessive_blank_lines".to_string());
+    }
+    issues
+}
+
+/// Count blocks with a specific AgenticMD `role`.
+pub fn count_agenticmd_role(path: &Path, role: &str) -> Result<u64> {
+    Ok(read_agenticmd_blocks_from_file(path)?
+        .iter()
+        .filter(|block| block.role() == Some(role))
+        .count() as u64)
+}
+
 /// Replace the block whose header `call_id` and `role` match, or append when missing.
 ///
 /// Returns `true` when an existing block was rewritten.
@@ -162,8 +279,7 @@ pub fn rewrite_block_range(path: &Path, start: usize, end: usize, new_block: &[u
     let mut out = bytes[..start].to_vec();
     out.extend_from_slice(new_block);
     out.extend_from_slice(&bytes[end..]);
-    std::fs::write(path, out).with_context(|| format!("write {}", path.display()))?;
-    Ok(())
+    write_atomic(path, &out)
 }
 
 /// Strict-parse all agenticmd blocks from a markdown file (empty if missing).
@@ -177,6 +293,32 @@ pub fn read_agenticmd_blocks_from_file(path: &Path) -> Result<Vec<AgenticmdBlock
 
 pub fn agenticmd_block_count(path: &Path) -> Result<usize> {
     Ok(read_agenticmd_blocks_from_file(path)?.len())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create_dir_all {}", parent.display()))?;
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    let mut file =
+        std::fs::File::create(&temp).with_context(|| format!("create {}", temp.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("write {}", temp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("sync {}", temp.display()))?;
+    std::fs::rename(&temp, path)
+        .with_context(|| format!("commit {} -> {}", temp.display(), path.display()))?;
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .with_context(|| format!("sync parent {}", parent.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -355,7 +497,7 @@ mod tests {
         )
         .unwrap();
         let blocks = read_blocks(&path);
-        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].body, "req-a");
         assert_eq!(blocks[1].body, "final-a");
         assert_eq!(blocks[2].body, "req-b");
@@ -411,10 +553,10 @@ mod tests {
     #[test]
     fn parse_repo_example() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/trajectory-tlv/demo-agent/demo-run-001/0001.md");
+            .join("../../examples/trajectory-agenticmd/demo-agent/demo-run-001/demo-run-001.md");
         let blocks =
             parse_agenticmd_document_validated(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].role(), Some("user"));
         assert_eq!(blocks[0].body.trim(), "你好");
     }
@@ -541,5 +683,61 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].body, "hi");
         assert_eq!(blocks[1].body, "again");
+    }
+
+    #[test]
+    fn document_io_and_index_are_owned_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.md");
+        let blocks = vec![
+            block_with_call("c1", "user", "hi"),
+            block_with_call("c1", "assistant", "hello"),
+        ];
+        write_agenticmd_document(&path, &baseline_preamble(), &blocks).unwrap();
+
+        let index = index_agenticmd_path(&path).unwrap();
+        assert_eq!(index.block_count, 2);
+        assert_eq!(index.call_ids, BTreeSet::from(["c1".to_string()]));
+        assert!(index.structural_issues.is_empty());
+        assert_eq!(count_agenticmd_role(&path, "user").unwrap(), 1);
+        assert_eq!(
+            list_agenticmd_paths(dir.path()).unwrap(),
+            vec![path.clone()]
+        );
+
+        #[derive(Serialize)]
+        struct SummaryPreamble {
+            format: &'static str,
+            block: &'static str,
+            turns: u64,
+        }
+        let replacement = encode_agenticmd_preamble(&SummaryPreamble {
+            format: AGENTICMD_FRONTMATTER_FORMAT,
+            block: AGENTICMD_BLOCK_LAYOUT,
+            turns: 1,
+        })
+        .unwrap();
+        rewrite_agenticmd_preamble(&path, &replacement).unwrap();
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert!(rewritten.contains("turns: 1"));
+        assert_eq!(read_blocks(&path), blocks);
+    }
+
+    #[test]
+    fn structural_scan_and_replay_paging_are_storage_primitives() {
+        assert_eq!(
+            agenticmd_structural_issues("a\n\n\n\nb"),
+            vec!["excessive_blank_lines"]
+        );
+        let blocks = vec![
+            block_with_call("c1", "user", "one"),
+            block_with_call("c2", "assistant", "two"),
+        ];
+        let replay = agenticmd_replay_json_lines(&blocks, 1, Some(1)).unwrap();
+        assert_eq!(replay.len(), 1);
+        assert!(replay[0].contains("\"call_id\":\"c2\""));
+        assert!(agenticmd_replay_json_lines(&blocks, usize::MAX, None)
+            .unwrap()
+            .is_empty());
     }
 }

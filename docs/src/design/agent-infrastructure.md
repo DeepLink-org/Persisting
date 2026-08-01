@@ -1,6 +1,6 @@
 # Persisting Agent 基础设施设计
 
-> 状态：目标架构。本文以当前 Persisting 的 Capture、Trajectory、pPilot、Queue、Lance 与 Pulsing 实现为起点，定义面向 Agent workload 的统一演进方向。除“当前实现映射”明确列出的内容外，本文不把目标能力视为已实现。
+> 状态：目标架构。本文以当前 Persisting 的 Gateway、Trajectory、pPilot、Queue、Lance 与 Pulsing 实现为起点，定义面向 Agent workload 的统一演进方向。除“当前实现映射”明确列出的内容外，本文不把目标能力视为已实现。
 
 ## 1. 产品定义
 
@@ -23,34 +23,31 @@ Persisting 不定义 Agent framework、提示词 DSL 或训练算法，也不替
 
 ## 2. 产品入口
 
-面向 Agent 使用者的命令保持为 Run 操作：
+面向 Agent 使用者的前台命令由 pVisor 承担：
 
 ```text
-persisting agent
-├── execute       通过 pVisor 执行一个 Run
-├── bexecute      通过 pPilot 编排多个 pVisor Run
-├── capture       接入或导入外部 Run 的事件
-└── replay        从 pChronicle 读取 Run 历史
-```
+pvisor
+├── run           执行一个 Run
+├── status        汇总 Run 的文件系统与网络状态
+├── inspect       只读进入 Run 的文件系统视图
+└── apply/drop    提交或丢弃 OverlayFS stage
 
-pVisor 的运维能力通过 runtime 命令暴露，不增加独立的 `pvisor` 命令面：
-
-```text
-persisting runtime
-├── status
-├── inspect
-└── providers
+persisting traj
+├── import        向 pChronicle 导入外部事件
+├── proxy         管理独立 Gateway sink
+├── replay        从 pChronicle 读取 Run 历史
+└── stats/...     数据维护与派生
 ```
 
 命令与组件的关系：
 
 | 命令 | 主组件 | 产品语义 |
 |---|---|---|
-| `agent execute` | pVisor | 创建并执行一个 Run，返回 RunFuture 与 RunResult |
-| `agent bexecute` | pPilot | 将 manifest 展开为多个 RunSpec，可靠编排与收成 |
-| `agent capture` | pChronicle | 将外部运行关联为 Run，并持续追加事件 |
-| `agent replay` | pChronicle | 只读回放 Run、Storyline、Turn、Call 与 Event |
-| `runtime *` | pVisor | 检查 runtime、provider、placement 与执行状态 |
+| `pvisor [run]` | pVisor | 创建并执行一个 Run，装配 Gateway、Control、OverlayNet 与 OverlayFS |
+| `pvisor status/inspect` | pVisor | 按 Run、stage、upper 或 DB 发现并只读检查运行环境 |
+| `pvisor apply/drop` | pVisor | 提交或丢弃已停止 Run 的 OverlayFS stage |
+| `persisting traj import/replay/stats/...` | pChronicle | 导入、读取和维护 Run 历史 |
+| `persisting traj proxy` | Gateway | 独立启动或管理长期捕获 sink |
 
 ## 3. 设计目标与非目标
 
@@ -79,6 +76,7 @@ flowchart TB
 
   PPILOT["pPilot<br/>Durable Run Orchestrator"]
   PVISOR["pVisor<br/>Portable Agent Execution Runtime"]
+  CONTROL["Control Protocol<br/>State · Transition · Policy"]
   PCHRONICLE["pChronicle<br/>Canonical Run History Store"]
 
   PROVIDERS["Runtime Providers<br/>Model · Tool · File · Network · Compute"]
@@ -88,7 +86,8 @@ flowchart TB
   SURFACE -->|"single RunSpec"| PVISOR
   SURFACE -->|"manifest / batch"| PPILOT
   PPILOT -->|"RunSpec × N"| PVISOR
-  PVISOR -->|"resource calls"| PROVIDERS
+  PVISOR -->|"control context"| CONTROL
+  CONTROL -->|"allowed / denied transitions"| PROVIDERS
   PVISOR -->|"placement / Attempt"| EXECUTORS
   PVISOR -->|"EventIngest / Artifact"| PCHRONICLE
   PPILOT -->|"RunCommit / reconcile"| PCHRONICLE
@@ -102,6 +101,7 @@ flowchart TB
 | 组件 | 拥有的状态 | 对外契约 | 不拥有 |
 |---|---|---|---|
 | pVisor | 单个 Run 的 runtime state、Attempt、capability、placement、checkpoint handle | `submit / poll / wait / cancel / checkpoint / migrate` | batch 计划、长期历史、派生数据 |
+| Control | 资源请求的 `Requested → Allowed/Denied → Applied/Failed` 状态与转移历史 | `ControlRequest / ControlController / ControlMachine` | 网络转发、模型调用、文件 I/O |
 | pPilot | Job、Task、RunFuture 集合、lease、checkpoint、retry、reconcile | `submit_batch / status / resume / cancel` | Agent 会话、provider 协议、事件 payload |
 | pChronicle | canonical events、RunCommit、artifact manifest、catalog、revision lineage | `append / commit / scan / get / materialize` | 执行控制、任务调度、业务语义重试 |
 
@@ -179,9 +179,10 @@ stateDiagram-v2
 |---|---|---|
 | `RunSpec` | CLI / pPilot → pVisor | workload、运行配置、环境、策略和捕获配置 |
 | `RunContext` | pVisor → runtime drivers | identity、capability、credential ref、budget、placement |
+| `ControlTransition` | pVisor policy → OverlayNet / Gateway / OverlayFS | 资源授权决策、执行结果与状态历史 |
 | `RunFuture` | pVisor → CLI / pPilot | 位置无关的 poll、wait、cancel 与恢复句柄 |
 | `RunResult` | pVisor / pChronicle → CLI / pPilot | 终态、指标、错误分类、artifact 与 event refs |
-| `EventIngest` | pVisor / Capture / providers → pChronicle | 多源、幂等、持续追加的运行事实 |
+| `EventIngest` | pVisor / Gateway / providers → pChronicle | 多源、幂等、持续追加的运行事实 |
 | `RunCommit` | pVisor / pPilot → pChronicle | 每个 Run 唯一可见终态与事件高水位 |
 | `RunView` | pChronicle → consumers | replay、检索、评测、派生和 lineage |
 
@@ -267,7 +268,7 @@ RunFuture.terminal() -> RunResult | RunFailure
 | Executor | 用途 | 当前基础 |
 |---|---|---|
 | Local process | Agent CLI 或用户 Python 子进程 | Capture child process、pPilot 过渡 Python host |
-| Proxy-assisted | 关联模型/工具流量并执行访问策略 | Capture proxy、dlcapt |
+| Proxy-assisted | 关联模型/工具流量并执行访问策略 | Gateway sink、dlcapt |
 | Long-lived worker | 批量 item 的高吞吐执行 | `persisting-ppilot` WorkerActor |
 | WASM | 便携、受限的执行环境 | 目标能力 |
 | Container / Cloud | 远端、隔离或异构资源 | 目标能力 |
@@ -317,9 +318,10 @@ pPilot
 
 pPilot 不做 Agent 质量判断、工具协议解释、prompt 设计、业务语义重试或训练数据选择。
 
-### 7.2 bexecute 批次模型
+### 7.2 批次模型
 
-`persisting agent bexecute` 是 pPilot 的首个产品入口。输入是带稳定 `id` 的 JSONL manifest，每个 item 对应一个 Run。
+pPilot 当前作为内部库接收带稳定 `id` 的任务流，每个 item 对应一个独立任务；未来与
+pVisor 的正式集成以 `RunSpec` 为边界，不预设新的顶层 CLI 动词。
 
 ```json
 {"id":"repo-a","command":"claude","input":"/work/repo-a"}
@@ -364,7 +366,7 @@ pChronicle 保存“发生了什么”，并把运行历史组织为可查询、
 
 ```text
 Producers
-  pVisor · Capture · providers · import
+  pVisor · Gateway · providers · import
         │
 Event Ingress
   validate · dedupe · WAL · dead letter
@@ -447,7 +449,7 @@ RunResult 不内嵌全量轨迹，只保存状态、指标、错误、artifact �
 ### 9.1 单 Run
 
 ```text
-agent execute
+pvisor run
   → RunSpec
   → pVisor admission / RunContext
   → Attempt on executor
@@ -459,7 +461,7 @@ agent execute
 ### 9.2 批量 Run
 
 ```text
-agent bexecute
+pPilot library
   → manifest → pPilot planner
   → RunSpec × N
   → pVisor fleet → RunFuture × N
@@ -505,10 +507,10 @@ agent bexecute
 
 | 目标概念 | 当前实现 | 差距 |
 |---|---|---|
-| canonical record | `persisting-capture::CaptureRecord` | 将 `run_id` 升为跨路径一等身份 |
-| canonical Lance events | `EventRow`、`persisting-engine::trajectory` | 统一 canonical-first，Markdown 降为 view |
+| canonical record | `persisting-pchronicle::EventRecord`（Gateway 内部称 `CaptureRecord`） | 将 `run_id` 升为跨路径一等身份 |
+| canonical Lance events | `persisting-pchronicle::{EventRow, LanceEventStore}` | 统一 canonical-first，Markdown 降为 view |
 | Storyline / replay view | story actor、TLV Markdown、materialize、replay | 将 session 对齐为 Storyline，并补充因果关系 |
-| pVisor proxy drivers | `persisting-capture` proxy、`persisting-dlcapt` | 收敛关联协议、capability 和审计模型 |
+| pVisor proxy drivers | `persisting-overlaynet` 独占显式 HTTP/HTTPS proxy 数据面；Gateway 是 LLM/轨迹 `OverlaySink`；另有 `persisting-dlcapt` | 可配置其他 sink；当前不宣称透明网络隔离。Linux 透明截获已定稿设计（主方案：非特权 netns + 进程内用户态协议栈；备选：seccomp user-notify + ADDFD），见 [OverlayNet interception](overlaynet.md) |
 | pVisor executor | pPilot 过渡 `Executor`、Python host、Capture child process | 从 pPilot 下沉并补齐统一 RunContext、RunFuture 和 Attempt 契约 |
 | pPilot batch control | `persisting-ppilot` Driver、Scheduler、Sink、Checkpoint | 增加 RunSpec/manifest adapter 和 durable reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |
@@ -519,14 +521,14 @@ agent bexecute
 
 ### 阶段一：pVisor + pChronicle 单 Run 闭环
 
-1. `agent execute` 创建 canonical Run，返回稳定 RunResult。
-2. Capture、执行和导入使用同一 Run/Event identity。
-3. `agent replay` 支持 Run、JSONL 与 `--follow`。
+1. `pvisor run` 创建 canonical Run，返回稳定 RunResult。
+2. Gateway、执行和导入使用同一 Run/Event identity。
+3. `persisting traj replay` 读取 pChronicle 历史。
 4. append、WAL、dead letter、repair 和 terminal commit 可测试。
 
 ### 阶段二：pPilot 批量闭环
 
-1. `agent bexecute` 的 item 与 Run 一一对应，支持有界并发、取消和 resume。
+1. pPilot item 与 Run 一一对应，支持有界并发、取消和 resume。
 2. `TaskExpr/TaskResult` 与 `RunSpec/RunResult` 只有一个 adapter。
 3. checkpoint、lease、infra retry、reconcile 与 terminal commit 可审计。
 4. pPilot 重启后可从 pVisor 与 pChronicle facts 收敛。

@@ -292,9 +292,6 @@ pub enum TrajectoryStorageFormat {
     /// TLV Markdown session file (materialized / human-readable view).
     #[serde(rename = "markdown", alias = "tlv")]
     Markdown,
-    /// Legacy alias: append writes [`Lance`](Self::Lance) only; read/stats like [`Auto`](Self::Auto).
-    #[serde(alias = "both")]
-    Both,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,15 +6,15 @@
 >
 > 代码：`crates/persisting-ppilot`（内部库，无顶层 CLI 动词）
 >
-> 用法 / 示例：库 API 与 `examples/ppilot/`；产品面批量入口规划为 `persisting agent bexecute`
+> 使用方式：Rust 库 API；当前不维护公共 CLI 示例
 
 pPilot 负责计划、调度、恢复和收成许多独立 Run。当前 Phase-1 以
 `plan()` + `execute(item)` 提供 map 式批量编排；目标形态是只操作
 `RunSpec`、`RunFuture` 和 `RunCommit`，将单 Run 执行交给 pVisor，将运行事实
 交给 pChronicle。
 
-**不**作为 `persisting ppilot` / `persisting compute` 命令暴露。Agent 产品面最终由
-`persisting agent bexecute` 复用同一 pPilot 契约。
+**不**作为 `persisting ppilot` / `persisting compute` 命令暴露；当前没有批量执行的
+公共 CLI，避免在 Run 契约稳定前引入临时命令面。
 
 **不是** Ray，**不**定义 Agent DSL，**不**自研替代 `torchrun` 的启动器。
 
@@ -40,7 +40,8 @@ pPilot                  计划 · 有界并发 · lease · retry · resume · co
 | Rust Pulsing 做发现与投递 | Python 侧 Actor 编程模型 |
 | 通过 provider 扩展执行位置 | 保存或解释 Agent 会话 |
 
-与 `search` / `traj` 不同：`pPilot` **静态链接**进 CLI，直接 async 跑，不经 engine RON ABI。落盘若走 Lance，再经 sink adapter 写轨迹；编排本身仍在本 crate。
+与 `search` / `traj` 不同，pPilot 当前不接入公共 CLI，也不经 Engine RON ABI。
+落盘若走 Lance，由 sink adapter 写入 pChronicle；编排状态仍由本 crate 管理。
 
 ---
 
@@ -102,11 +103,11 @@ pPilot                  计划 · 有界并发 · lease · retry · resume · co
 
 ## 4. 用户合约（算法面）
 
-产品面只有一个文件、两个函数（细节与示例见[快速上手](../guide/ppilot.md)）：
+内部 Python workload 合约只有一个文件、两个函数：
 
 1. **`plan()`**（或常量 `PLAN`）流式产出可 JSON 序列化的 object；每项必须包含稳定、非空的字符串或数字 `id`。系统不生成随机 ID，因为同一逻辑任务跨运行必须保持相同 ID，才能可靠去重和续跑。
 2. **`execute(item)`** 收到与 yield **同形**的 dict（`{id, …fields}`）。
-3. **argv 一致**：`python task.py --n 2` 与 `persisting ppilot task.py -- --n 2` 看到同一套 `sys.argv`。
+3. **argv 一致**：嵌入方传入的 plan 参数与 Python 直接执行时保持一致。
 4. **扩规模不改文件**：只换 `-w` / `--per-worker` / `torchrun`。
 
 内部控制面会把平面 JSON 归一成 `TaskExpr`（`id` / `op=execute` / `args` / `meta`）；产品面 **只支持** `op=execute`。新能力写在用户 `execute` 里，不靠扩展 op 表。
@@ -289,7 +290,7 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 ### 设计原则（摘要）
 
 1. 算法入口极轻：两个函数；本地 `for` 循环即真。  
-2. 扩规模换命令，不改文件。  
+2. 扩规模换 deployment，不改 workload 文件。
 3. Driver ≠ Actor；Pulsing ≠ 调度器。  
 4. 跨槽拒绝优先于跨槽重跑。  
 5. persist 失败必须可见；JSONL 是 resume 真相。  
@@ -299,8 +300,6 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 
 ## 10. 相关文档
 
-- [pPilot 快速上手](../guide/ppilot.md)
-- [CLI 整体架构](cli.md)（`pPilot` 为例外静态路径）
-- [Agent 基础设施设计](agent-infrastructure.md)
-- [轨迹存储](trajectory.md)（当前 `--traj` 过渡路径）
-- 示例：[examples/ppilot](https://github.com/DeepLink-org/Persisting/tree/main/examples/ppilot)
+- [Agent 基础设施](agent-infrastructure.md)
+- [CLI 整体架构](cli.md)（pPilot 当前不接入公共 CLI）
+- [轨迹存储](trajectory.md)

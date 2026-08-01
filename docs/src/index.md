@@ -24,7 +24,7 @@ Agent trajectories, model parameters, and KV cache share the same tiered storage
     Record every LLM call. Stored as `(agent_id, run_id, time)` tensors alongside canonical Lance event logs and human-readable Markdown.
 
     ```bash
-    persisting traj capture -o ./store -c proxy.toml -- claude
+    pvisor run --config run.toml -- claude
     ```
 
     → [Capture Guide](guide/capture.md)
@@ -94,18 +94,6 @@ Agent trajectories, model parameters, and KV cache share the same tiered storage
 
     → [Search Guide](guide/search.md)
 
--   **⚡ pPilot Orchestration**
-
-    ---
-
-    Map-style task orchestration. `plan()` + `execute()`, local parallelism or torchrun.
-
-    ```bash
-    persisting ppilot task.py -w 4 -- --n 1000
-    ```
-
-    → [pPilot Guide](guide/ppilot.md)
-
 </div>
 
 ---
@@ -137,7 +125,7 @@ Agent trajectories, model parameters, and KV cache share the same tiered storage
 |-----------|--------|
 | Trajectory Capture (`traj`) | ✅ Stable |
 | Streaming Queue | ✅ Stable |
-| pPilot Orchestration | ✅ Stable |
+| pPilot Orchestration Library | 🚧 Internal |
 | Agent Search | ✅ Stable |
 | Tensor Memory (TTAS) | 🧪 Experimental |
 | GPU Tiering / Cross-node | 📋 Planned |

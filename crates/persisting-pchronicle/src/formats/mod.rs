@@ -2,6 +2,7 @@
 
 pub mod agenticmd;
 pub mod agenticmd_body;
+pub mod agenticmd_frontmatter;
 pub mod agenticmd_validate;
 pub mod detect;
 pub mod events;
@@ -18,6 +19,9 @@ pub use agenticmd::{
 pub use agenticmd_body::{
     append_subagent_refs_footer, is_subagent_footer_line, strip_subagent_footer_from_body,
     BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION,
+};
+pub use agenticmd_frontmatter::{
+    encode_agenticmd_session_frontmatter, AgenticmdClientMeta, AgenticmdSessionFrontmatter,
 };
 pub use agenticmd_validate::{
     block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,

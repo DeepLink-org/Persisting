@@ -1,15 +1,23 @@
-use super::attempt::{apply_implant, prepare_attempt, AttemptPrepareOpts, AttemptSession};
+use super::attempt::{
+    apply_implant, prepare_attempt, prepare_overlay_attempt, AttemptPrepareOpts, AttemptSession,
+    OverlayAttemptPrepareOpts,
+};
 use super::implant::{ImplantPlan, OverlayHint};
-use persisting_access::PolicyAccessController;
-use persisting_capture::sink::CaptureSink;
+use crate::GatewayDriverConfig;
+use crate::TrajectoryEventSink;
+use persisting_control::{ControlController, PolicyControlController};
+use persisting_gateway::config::ProxyConfig;
 use persisting_proto::{NetworkCapability, RunSpec};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// What the in-guest runtime can enforce for one Attempt.
+/// Runtime features and strong capability enforcement available for one Attempt.
+///
+/// `network` and `filesystem` report non-bypassable policy enforcement, not
+/// proxy injection or a staged filesystem projection.
 #[derive(Debug, Clone)]
 pub struct RuntimeCapabilities {
-    pub capture: bool,
+    pub gateway: bool,
     pub network: bool,
     pub filesystem: bool,
     pub providers: Vec<&'static str>,
@@ -18,14 +26,14 @@ pub struct RuntimeCapabilities {
 impl Default for RuntimeCapabilities {
     fn default() -> Self {
         Self {
-            capture: true,
-            network: true,
-            filesystem: true,
+            gateway: true,
+            network: false,
+            filesystem: false,
             providers: vec![
                 "local-process",
                 "in-process-capture",
-                "network-policy",
-                "fs-overlay",
+                "overlaynet-explicit-proxy",
+                "fs-overlay-staging",
             ],
         }
     }
@@ -35,25 +43,24 @@ impl Default for RuntimeCapabilities {
 /// public configuration goes through [`crate::PVisorBuilder`].
 #[derive(Clone, Default)]
 pub struct RuntimeSupervisorBuilder {
-    capture_https_proxy: Option<String>,
-    capture_http_proxy: Option<String>,
-    capture_config_path: Option<PathBuf>,
-    capture_output_dir: Option<PathBuf>,
+    proxy: Option<ProxyConfig>,
+    gateway_output_dir: Option<PathBuf>,
+    gateway_enabled: bool,
+    storage: Option<PathBuf>,
     stream_markdown: bool,
-    sink: Option<Arc<dyn CaptureSink>>,
+    sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
-    access: Option<Arc<PolicyAccessController>>,
+    controller: Option<Arc<dyn ControlController>>,
 }
 
 impl std::fmt::Debug for RuntimeSupervisorBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeSupervisorBuilder")
-            .field("capture_https_proxy", &self.capture_https_proxy)
-            .field("capture_http_proxy", &self.capture_http_proxy)
-            .field("capture_config_path", &self.capture_config_path)
-            .field("capture_output_dir", &self.capture_output_dir)
+            .field("proxy", &self.proxy.as_ref().map(|_| "<ProxyConfig>"))
+            .field("gateway_output_dir", &self.gateway_output_dir)
+            .field("storage", &self.storage)
             .field("stream_markdown", &self.stream_markdown)
-            .field("sink", &self.sink.as_ref().map(|_| "<CaptureSink>"))
+            .field("sink", &self.sink.as_ref().map(|_| "<TrajectoryEventSink>"))
             .field("overlay", &self.overlay)
             .finish_non_exhaustive()
     }
@@ -64,32 +71,21 @@ impl RuntimeSupervisorBuilder {
         Self::default()
     }
 
-    pub fn capture_https_proxy(mut self, url: impl Into<String>) -> Self {
-        self.capture_https_proxy = Some(url.into());
+    pub fn gateway(mut self, gateway: GatewayDriverConfig) -> Self {
+        self.storage = Some(gateway.output_dir.clone());
+        self.proxy = Some(gateway.proxy);
+        self.gateway_output_dir = Some(gateway.output_dir);
+        self.stream_markdown = gateway.stream_markdown;
+        self.gateway_enabled = gateway.gateway_enabled;
         self
     }
 
-    pub fn capture_http_proxy(mut self, url: impl Into<String>) -> Self {
-        self.capture_http_proxy = Some(url.into());
+    pub fn storage(mut self, storage: PathBuf) -> Self {
+        self.storage = Some(storage);
         self
     }
 
-    pub fn capture_config(mut self, path: impl Into<PathBuf>) -> Self {
-        self.capture_config_path = Some(path.into());
-        self
-    }
-
-    pub fn capture_output_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.capture_output_dir = Some(path.into());
-        self
-    }
-
-    pub fn stream_markdown(mut self, enabled: bool) -> Self {
-        self.stream_markdown = enabled;
-        self
-    }
-
-    pub fn capture_sink(mut self, sink: Arc<dyn CaptureSink>) -> Self {
+    pub fn trajectory_sink(mut self, sink: Arc<dyn TrajectoryEventSink>) -> Self {
         self.sink = Some(sink);
         self
     }
@@ -99,23 +95,23 @@ impl RuntimeSupervisorBuilder {
         self
     }
 
-    pub fn access_controller(mut self, access: Arc<PolicyAccessController>) -> Self {
-        self.access = Some(access);
+    pub fn control_controller(mut self, controller: Arc<dyn ControlController>) -> Self {
+        self.controller = Some(controller);
         self
     }
 
     pub fn build(self) -> RuntimeSupervisor {
         RuntimeSupervisor {
-            capture_https_proxy: self.capture_https_proxy,
-            capture_http_proxy: self.capture_http_proxy,
-            capture_config_path: self.capture_config_path,
-            capture_output_dir: self.capture_output_dir,
+            proxy: self.proxy,
+            gateway_output_dir: self.gateway_output_dir,
+            gateway_enabled: self.gateway_enabled,
+            storage: self.storage,
             stream_markdown: self.stream_markdown,
             sink: self.sink,
             overlay: self.overlay,
-            access: self
-                .access
-                .unwrap_or_else(|| Arc::new(PolicyAccessController)),
+            controller: self
+                .controller
+                .unwrap_or_else(|| Arc::new(PolicyControlController)),
         }
     }
 }
@@ -123,15 +119,14 @@ impl RuntimeSupervisorBuilder {
 /// Capture / network / overlay prepare options for one Attempt.
 #[derive(Clone)]
 pub struct RuntimeSupervisor {
-    capture_https_proxy: Option<String>,
-    capture_http_proxy: Option<String>,
-    capture_config_path: Option<PathBuf>,
-    capture_output_dir: Option<PathBuf>,
+    proxy: Option<ProxyConfig>,
+    gateway_output_dir: Option<PathBuf>,
+    gateway_enabled: bool,
+    storage: Option<PathBuf>,
     stream_markdown: bool,
-    sink: Option<Arc<dyn CaptureSink>>,
+    sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
-    #[allow(dead_code)] // reserved for serve_with_runtime_control wiring
-    access: Arc<PolicyAccessController>,
+    controller: Arc<dyn ControlController>,
 }
 
 impl Default for RuntimeSupervisor {
@@ -145,32 +140,48 @@ impl RuntimeSupervisor {
         RuntimeCapabilities::default()
     }
 
-    /// True when this prepare path will start an in-process capture proxy from config.
-    pub fn enforces_via_capture(&self) -> bool {
-        self.capture_config_path.is_some()
-    }
-
-    /// Start capture + overlay (when configured) and merge implant into `spec`.
+    /// Start configured pVisor drivers and merge their implant into `spec`.
     pub fn prepare(&self, spec: &mut RunSpec) -> anyhow::Result<Option<AttemptSession>> {
-        if let Some(config_path) = &self.capture_config_path {
+        if let Some(proxy) = &self.proxy {
             let storage = self
-                .capture_output_dir
+                .storage
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".persisting/capture"));
             let (session, _plan) = prepare_attempt(
                 spec,
                 AttemptPrepareOpts {
-                    config_path,
+                    config: proxy,
                     storage: &storage,
                     sink: self.sink.clone(),
                     stream_markdown: self.stream_markdown,
                     overlay_override: self.overlay.clone(),
+                    controller: Arc::clone(&self.controller),
+                    gateway_enabled: self.gateway_enabled,
                 },
             )?;
             return Ok(Some(session));
         }
 
-        // Legacy path: env-only implant (external/daemon capture).
+        if !self.overlay.lower_dirs.is_empty()
+            || self.overlay.stage_dir.is_some()
+            || self.overlay.upper_dir.is_some()
+            || self.overlay.work_dir.is_some()
+            || self.overlay.merged_dir.is_some()
+        {
+            let storage = self
+                .storage
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(".persisting/capture"));
+            let (session, _plan) = prepare_overlay_attempt(
+                spec,
+                OverlayAttemptPrepareOpts {
+                    storage: &storage,
+                    overlay: self.overlay.clone(),
+                },
+            )?;
+            return Ok(Some(session));
+        }
+
         let _ = self.enrich_spec(spec);
         Ok(None)
     }
@@ -198,25 +209,11 @@ impl RuntimeSupervisor {
         plan.env
             .insert("PERSISTING_AGENT".into(), spec.agent.name.clone());
 
-        if let Some(url) = &self.capture_https_proxy {
-            plan.env.insert("HTTPS_PROXY".into(), url.clone());
-            plan.env.insert("https_proxy".into(), url.clone());
-            plan.notes.push("capture: HTTPS_PROXY injected".into());
-        }
-        if let Some(url) = &self.capture_http_proxy {
-            plan.env.insert("HTTP_PROXY".into(), url.clone());
-            plan.env.insert("http_proxy".into(), url.clone());
-            plan.notes.push("capture: HTTP_PROXY injected".into());
-        }
-        if let Some(path) = &self.capture_config_path {
-            plan.env.insert(
-                "PERSISTING_CAPTURE_CONFIG".into(),
-                path.display().to_string(),
-            );
+        if self.proxy.is_some() {
             plan.notes
-                .push("capture: config path set (call prepare() to start in-process proxy)".into());
+                .push("network: in-process OverlayNet proxy configured".into());
         }
-        if let Some(path) = &self.capture_output_dir {
+        if let Some(path) = &self.gateway_output_dir {
             plan.env.insert(
                 "PERSISTING_CAPTURE_STORAGE".into(),
                 path.display().to_string(),
@@ -234,7 +231,7 @@ impl RuntimeSupervisor {
                 plan.env
                     .insert("PERSISTING_NETWORK_POLICY".into(), "deny".into());
                 plan.notes
-                    .push("network: deny (enforced by access controller / capture proxy)".into());
+                    .push("network: deny (interposed by control-aware capture proxy)".into());
             }
             NetworkCapability::AllowList { hosts } => {
                 plan.env

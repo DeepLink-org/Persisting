@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use persisting_capture::config::{
+use persisting_gateway::config::{
     env, materialize_proxy_config, parse_capture_level, resolve_proxy_config, CaptureLevel,
     ProxyConfig, ProxyConfigInput, ProxyConfigOverrides,
 };
@@ -54,9 +54,6 @@ pub struct ProxyConfigOverrideArgs {
     /// Forward client model to another configured route name.
     #[arg(long, env = env::FORWARD, value_name = "NAME")]
     pub forward: Option<String>,
-    /// Legacy API path prefix for `--model` route (prefer full prefix in `--upstream`).
-    #[arg(long, env = env::PATH_PREFIX, value_name = "PREFIX")]
-    pub path_prefix: Option<String>,
 }
 
 impl ProxyConfigOverrideArgs {
@@ -81,7 +78,6 @@ impl ProxyConfigOverrideArgs {
             api_key_env: self.api_key_env.clone(),
             api_key: self.api_key.clone(),
             forward: self.forward.clone(),
-            path_prefix: self.path_prefix.clone(),
         })
     }
 }

@@ -100,7 +100,7 @@ pub fn agenticmd_block_to_event_record(block: &AgenticmdBlock) -> Result<EventRe
         .unwrap_or(0);
 
     let payload = match kind.as_str() {
-        "llm.request" => {
+        "llm.request" | "http.request" => {
             let mut p = json!({ "body": { "messages": [{"role": role, "content": content}] } });
             if let Some(model) = block.header.fields.get("model").and_then(|v| v.as_str()) {
                 p["model"] = json!(model);
@@ -110,7 +110,7 @@ pub fn agenticmd_block_to_event_record(block: &AgenticmdBlock) -> Result<EventRe
             }
             p
         }
-        "llm.response" | "llm.response.stream" => {
+        "llm.response" | "llm.response.stream" | "http.response" | "http.response.stream" => {
             let status = block
                 .header
                 .fields

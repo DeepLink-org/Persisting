@@ -36,7 +36,7 @@ add_document("docs", "To configure the proxy, edit proxy.toml...",
 add_documents_batch("docs", [
     {"text": "Authentication requires an API key in the header...", "id": "doc-2"},
     {"text": "The proxy listens on 127.0.0.1:19081 by default...", "id": "doc-3"},
-    {"text": "To capture trajectories, run `persisting traj capture`...", "id": "doc-4"},
+    {"text": "To capture trajectories, run `pvisor run`...", "id": "doc-4"},
 ], embedding_dim=384)
 
 # From an existing Lance table

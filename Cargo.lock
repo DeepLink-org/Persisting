@@ -5360,52 +5360,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df202b0b0f5b8e389955afd5f27b007b00fb948162953f1db9c70d2c7e3157d7"
 
 [[package]]
-name = "persisting-access"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ipnet",
- "persisting-proto",
-]
-
-[[package]]
-name = "persisting-capture"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "blake3",
- "bytes",
- "chrono",
- "dashmap",
- "dirs",
- "futures-util",
- "hostname",
- "http 1.4.0",
- "http-body-util",
- "hyper",
- "hyper-util",
- "lazy_static",
- "persisting-access",
- "persisting-pchronicle",
- "persisting-proto",
- "pulsing-actor",
- "regex",
- "reqwest 0.12.28",
- "ron",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "tokio",
- "tokio-stream",
- "toml",
- "tower",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "persisting-cli"
 version = "0.1.0"
 dependencies = [
@@ -5415,12 +5369,11 @@ dependencies = [
  "csv",
  "dirs",
  "libloading",
- "persisting-capture",
  "persisting-dlcapt",
  "persisting-engine",
+ "persisting-gateway",
  "persisting-pchronicle",
  "persisting-proto",
- "persisting-pvisor",
  "reqwest 0.12.28",
  "ron",
  "serde",
@@ -5435,16 +5388,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "persisting-control"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ipnet",
+ "persisting-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "persisting-core"
 version = "0.1.0"
 dependencies = [
  "libc",
  "mach2",
  "persisting-engine",
+ "persisting-pchronicle",
  "persisting-proto",
  "pyo3",
  "pythonize",
  "ron",
+ "serde",
  "serde_json",
 ]
 
@@ -5478,23 +5444,54 @@ name = "persisting-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "futures",
  "lance",
  "lance-core",
  "lance-index",
  "lance-linalg",
  "lance-table",
- "persisting-capture",
  "persisting-pchronicle",
  "persisting-proto",
- "reqwest 0.12.28",
  "ron",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "persisting-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "blake3",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "dirs",
+ "futures-util",
+ "hostname",
+ "http-body-util",
+ "lazy_static",
+ "persisting-control",
+ "persisting-overlaynet",
+ "persisting-pchronicle",
+ "persisting-proto",
+ "pulsing-actor",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -5514,10 +5511,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "persisting-overlaynet"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "persisting-control",
+ "persisting-proto",
+ "reqwest 0.12.28",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "persisting-pchronicle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "futures",
+ "lance",
+ "reqwest 0.12.28",
  "ron",
  "serde",
  "serde_json",
@@ -5536,8 +5555,8 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
- "persisting-capture",
  "persisting-engine",
+ "persisting-pchronicle",
  "persisting-proto",
  "pulsing-actor",
  "serde",
@@ -5567,10 +5586,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "clap",
  "libc",
- "persisting-access",
- "persisting-capture",
+ "persisting-control",
+ "persisting-gateway",
  "persisting-overlayfs",
+ "persisting-overlaynet",
+ "persisting-pchronicle",
  "persisting-proto",
  "serde",
  "serde_json",
@@ -5578,7 +5600,9 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

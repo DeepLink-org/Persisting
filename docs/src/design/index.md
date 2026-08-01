@@ -8,9 +8,11 @@ for supported workflows.
 
 | Subsystem | Start here | Then read |
 |---|---|---|
+| pVisor | [Agent infrastructure](agent-infrastructure.md) | standalone `pvisor` CLI → [Gateway driver](gateway.md) → [OverlayNet interception](overlaynet.md) |
+| pChronicle | [Agent infrastructure](agent-infrastructure.md) | [Trajectory storage](trajectory.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
+| pPilot | [pPilot control plane](ppilot.md) | Internal library; no public CLI |
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
-| Capture and trajectories | [Capture pipeline](capture.md) | [Trajectory storage](trajectory.md) → [Markdown format](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
-| pPilot | [pPilot control plane](ppilot.md) | [pPilot guide](../guide/ppilot.md) |
+| Gateway capture driver | [Gateway pipeline](gateway.md) | [Markdown format](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
 | Tensor Memory (experimental) | [TTAS model](tensor-address-space.md) | [Tiered storage](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
 | CLI boundary | [CLI architecture](cli.md) | command references under **Reference** |
 
@@ -18,7 +20,9 @@ for supported workflows.
 
 | Area | Status | Notes |
 |---|---|---|
-| Capture, Queue, Search, pPilot | Implemented | Each has an independent product path and storage model |
+| pVisor, pPilot, pChronicle | Implemented | Peer Agent execution, orchestration, and history components |
+| Gateway, OverlayNet, OverlayFS | Implemented | pVisor runtime drivers; Gateway supplies capture semantics |
+| OverlayNet transparent interception | Planned | Linux netns / seccomp drivers; see [design](overlaynet.md) |
 | TTAS / tiered tensor memory | Experimental | Host/SSD work exists; GPU and cross-node data paths remain planned |
 | Research comparisons | Reference | Input to future design, not a product commitment |
 

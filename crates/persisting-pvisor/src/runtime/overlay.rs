@@ -12,7 +12,7 @@
 //! ```
 //!
 use super::implant::OverlayHint;
-use persisting_capture::config::{OverlayBackend, OverlayConfig};
+use persisting_gateway::config::{OverlayBackend, OverlayConfig};
 use persisting_overlayfs::{
     apply_redb_upper, discard_redb_upper, mount as mount_embedded_overlay, redb_upper_status,
     OverlayMountConfig, OverlaySession,
@@ -40,8 +40,6 @@ const OPAQUE_XATTRS: [&[u8]; 3] = [
 pub enum OverlayError {
     #[error("overlay enabled but no target / lower_dirs configured")]
     MissingTarget,
-    #[error("overlay enabled but merged_dir unresolved")]
-    MissingMerged,
     #[error("invalid overlay upper configuration: {0}")]
     InvalidConfig(String),
     #[error("overlay meta missing or invalid at {0}")]
@@ -68,6 +66,8 @@ pub struct OverlayRecord {
     pub merged_dir: PathBuf,
     pub stage_dir: PathBuf,
     pub auto_apply: bool,
+    #[serde(default)]
+    pub auto_discard: bool,
     pub state: OverlayState,
 }
 
@@ -108,7 +108,6 @@ pub enum OverlayState {
 /// Summary of files present in upper (not a full recursive diff vs target).
 #[derive(Debug, Clone)]
 pub struct OverlayStatus {
-    pub record: OverlayRecord,
     pub changed_files: usize,
     pub whiteouts: usize,
     pub sample_paths: Vec<String>,
@@ -121,17 +120,41 @@ pub struct OverlayMount {
     session: Option<OverlaySession>,
 }
 
-impl OverlayMount {
-    pub fn merged_dir(&self) -> &Path {
-        &self.record.merged_dir
+/// Independent kernel-enforced read-only view used by `pvisor inspect`.
+pub struct ReadOnlyOverlayMount {
+    session: Option<OverlaySession>,
+    mountpoint: PathBuf,
+}
+
+impl ReadOnlyOverlayMount {
+    pub fn mountpoint(&self) -> &Path {
+        &self.mountpoint
     }
 
+    pub fn unmount(mut self) -> anyhow::Result<()> {
+        self.unmount_inner()
+    }
+
+    fn unmount_inner(&mut self) -> anyhow::Result<()> {
+        if let Some(session) = self.session.take() {
+            session.unmount()?;
+        }
+        if self.mountpoint.is_dir() {
+            let _ = fs::remove_dir(&self.mountpoint);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ReadOnlyOverlayMount {
+    fn drop(&mut self) {
+        let _ = self.unmount_inner();
+    }
+}
+
+impl OverlayMount {
     pub fn record(&self) -> &OverlayRecord {
         &self.record
-    }
-
-    pub fn upper(&self) -> &OverlayUpper {
-        &self.record.upper
     }
 
     /// Unmount and mark staging as [`OverlayState::Staged`] (keep upper).
@@ -168,12 +191,6 @@ pub fn resolve_overlay_workspace(
 ) -> Result<Option<OverlayRecord>, OverlayError> {
     if !cfg.enabled && cfg.target.is_none() && cfg.lower_dirs.is_empty() {
         return Ok(None);
-    }
-    if !cfg.enabled && cfg.target.is_none() {
-        // Legacy: only merged_dir override without enabled — skip unless lowers exist.
-        if cfg.lower_dirs.is_empty() {
-            return Ok(None);
-        }
     }
     match cfg.backend {
         OverlayBackend::Redb if cfg.upper_dir.is_some() || cfg.work_dir.is_some() => {
@@ -246,6 +263,7 @@ pub fn resolve_overlay_workspace(
         merged_dir: merged,
         stage_dir,
         auto_apply: cfg.auto_apply,
+        auto_discard: cfg.auto_discard,
         state: OverlayState::Active,
     }))
 }
@@ -261,9 +279,16 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
     };
     OverlayHint {
         lower_dirs,
+        stage_dir: Some(record.stage_dir.clone()),
         upper_dir,
         work_dir,
         merged_dir: Some(record.merged_dir.clone()),
+        backend: match &record.upper {
+            OverlayUpper::Directory { .. } => OverlayBackend::Directory,
+            OverlayUpper::Redb { .. } => OverlayBackend::Redb,
+        },
+        auto_apply: record.auto_apply,
+        auto_discard: record.auto_discard,
     }
 }
 
@@ -283,26 +308,10 @@ pub fn lower_stack_from_config(cfg: &OverlayConfig, storage: &Path, target: &Pat
     lowers
 }
 
-/// Compatibility helper used by older call sites / tests.
-pub fn overlay_hint_from_config(cfg: &OverlayConfig, storage: &Path) -> OverlayHint {
-    if !cfg.enabled && cfg.target.is_none() && cfg.lower_dirs.is_empty() {
-        return OverlayHint::default();
-    }
-    let Ok(Some(record)) = resolve_overlay_workspace(cfg, storage, "preview") else {
-        return OverlayHint::default();
-    };
-    let lowers = lower_stack_from_config(cfg, storage, &record.target);
-    hint_from_record(&record, lowers)
-}
-
 /// Mount the overlay in-process; pVisor becomes the FUSE userspace server.
-///
-/// `binary` is retained for source compatibility with older callers and is
-/// ignored. No helper binary is spawned.
 pub fn mount_overlay_record(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
-    binary: Option<&str>,
 ) -> Result<OverlayMount, OverlayError> {
     if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
@@ -328,12 +337,6 @@ pub fn mount_overlay_record(
         }
     }
 
-    if let Some(binary) = binary {
-        tracing::debug!(
-            configured_binary = binary,
-            "ignoring external fuse-overlayfs path; using embedded FUSE session"
-        );
-    }
     let mut config = match &record.upper {
         OverlayUpper::Directory {
             upper_dir,
@@ -365,49 +368,43 @@ pub fn mount_overlay_record(
     })
 }
 
-/// Mount from legacy [`OverlayHint`] (no durable record / apply).
-pub fn mount_overlay(
-    hint: &OverlayHint,
-    binary: Option<&str>,
-) -> Result<Option<OverlayMount>, OverlayError> {
-    if hint.merged_dir.is_none() && hint.lower_dirs.is_empty() {
-        return Ok(None);
-    }
-    let merged = hint.merged_dir.clone().ok_or(OverlayError::MissingMerged)?;
-    if hint.lower_dirs.is_empty() {
+/// Mount the same lower/upper projection without permitting any mutation.
+/// The kernel's read-only FUSE mount rejects writes before they reach the
+/// writable overlay implementation.
+pub fn mount_overlay_record_read_only(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    mountpoint: &Path,
+) -> Result<ReadOnlyOverlayMount, OverlayError> {
+    if lower_dirs.is_empty() {
         return Err(OverlayError::MissingTarget);
     }
-    let target = hint
-        .lower_dirs
-        .first()
-        .cloned()
-        .ok_or(OverlayError::MissingTarget)?;
-    let upper = hint
-        .upper_dir
-        .clone()
-        .unwrap_or_else(|| merged.parent().unwrap_or(Path::new(".")).join("upper"));
-    let work = hint
-        .work_dir
-        .clone()
-        .unwrap_or_else(|| merged.parent().unwrap_or(Path::new(".")).join("work"));
-    let stage = upper.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let record = OverlayRecord {
-        id: "ad-hoc".into(),
-        target,
-        upper: OverlayUpper::Directory {
-            upper_dir: upper,
-            work_dir: work,
-        },
-        merged_dir: merged,
-        stage_dir: stage,
-        auto_apply: false,
-        state: OverlayState::Active,
+    fs::create_dir_all(mountpoint).map_err(OverlayError::Prepare)?;
+    let mut config = match &record.upper {
+        OverlayUpper::Directory {
+            upper_dir,
+            work_dir,
+        } => OverlayMountConfig::new(
+            lower_dirs.to_vec(),
+            upper_dir.clone(),
+            Some(work_dir.clone()),
+            mountpoint.to_path_buf(),
+        ),
+        OverlayUpper::Redb { database_path } => OverlayMountConfig::new_redb(
+            lower_dirs.to_vec(),
+            database_path.clone(),
+            mountpoint.to_path_buf(),
+        ),
     };
-    Ok(Some(mount_overlay_record(
-        &record,
-        &hint.lower_dirs,
-        binary,
-    )?))
+    config.fsname = format!("pvisor-inspect-{}", record.id);
+    config.read_only = true;
+    let session =
+        mount_embedded_overlay(config).map_err(|error| OverlayError::Mount(error.to_string()))?;
+    wait_merged_ready(mountpoint, &session)?;
+    Ok(ReadOnlyOverlayMount {
+        session: Some(session),
+        mountpoint: mountpoint.to_path_buf(),
+    })
 }
 
 pub fn overlay_meta_path(stage_dir: &Path) -> PathBuf {
@@ -427,32 +424,7 @@ pub fn load_overlay_record(stage_dir: &Path) -> Result<OverlayRecord, OverlayErr
     let path = overlay_meta_path(stage_dir);
     let raw =
         fs::read_to_string(&path).map_err(|_| OverlayError::Meta(path.display().to_string()))?;
-    let mut value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| OverlayError::Meta(format!("{}: {e}", path.display())))?;
-    // Read staging records written before upper backends became an explicit
-    // tagged choice. New records are always written in the exclusive form.
-    if value.get("upper").is_none() {
-        let upper_dir = value
-            .as_object_mut()
-            .and_then(|object| object.remove("upper_dir"));
-        let work_dir = value
-            .as_object_mut()
-            .and_then(|object| object.remove("work_dir"));
-        if let (Some(upper_dir), Some(work_dir)) = (upper_dir, work_dir) {
-            value["upper"] = serde_json::json!({
-                "kind": "directory",
-                "upper_dir": upper_dir,
-                "work_dir": work_dir,
-            });
-        }
-    }
-    serde_json::from_value(value)
-        .map_err(|e| OverlayError::Meta(format!("{}: {e}", path.display())))
-}
-
-/// Find staging by id under `{storage}/.overlay/{id}`.
-pub fn load_overlay_by_id(storage: &Path, id: &str) -> Result<OverlayRecord, OverlayError> {
-    load_overlay_record(&storage.join(".overlay").join(id))
+    serde_json::from_str(&raw).map_err(|e| OverlayError::Meta(format!("{}: {e}", path.display())))
 }
 
 pub fn overlay_status(record: &OverlayRecord) -> Result<OverlayStatus, OverlayError> {
@@ -460,7 +432,6 @@ pub fn overlay_status(record: &OverlayRecord) -> Result<OverlayStatus, OverlayEr
         let status = redb_upper_status(database_path)
             .map_err(|error| OverlayError::Apply(error.to_string()))?;
         return Ok(OverlayStatus {
-            record: record.clone(),
             changed_files: status.changed_paths,
             whiteouts: status.whiteouts,
             sample_paths: status
@@ -490,7 +461,6 @@ pub fn overlay_status(record: &OverlayRecord) -> Result<OverlayStatus, OverlayEr
         })?;
     }
     Ok(OverlayStatus {
-        record: record.clone(),
         changed_files: changed,
         whiteouts,
         sample_paths: sample,
@@ -951,15 +921,27 @@ fn wait_merged_ready(merged: &Path, session: &OverlaySession) -> Result<(), Over
                 "embedded FUSE request loop exited before mount became ready".into(),
             ));
         }
-        if is_mountpoint(merged) {
+        if merged_root_is_ready(merged) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    if is_mountpoint(merged) {
+    if merged_root_is_ready(merged) {
         return Ok(());
     }
     Err(OverlayError::NotReady(merged.display().to_string()))
+}
+
+fn merged_root_is_ready(path: &Path) -> bool {
+    if !is_mountpoint(path) {
+        return false;
+    }
+    // macFUSE may publish the mountpoint before its request loop can serve the
+    // root directory. Probe opendir/readdir so the Agent never races the mount.
+    match fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_none_or(|entry| entry.is_ok()),
+        Err(_) => false,
+    }
 }
 
 fn is_mountpoint(path: &Path) -> bool {
@@ -1067,15 +1049,11 @@ mod tests {
             merged_dir: merged.clone(),
             stage_dir: stage.clone(),
             auto_apply: false,
+            auto_discard: false,
             state: OverlayState::Staged,
         };
 
-        let mount = mount_overlay_record(
-            &record,
-            std::slice::from_ref(&lower),
-            Some("/definitely/not-an-overlay-binary"),
-        )
-        .unwrap();
+        let mount = mount_overlay_record(&record, std::slice::from_ref(&lower)).unwrap();
         assert_eq!(fs::read(merged.join("lower-file")).unwrap(), b"lower");
         fs::write(merged.join("lower-file"), b"copied-up").unwrap();
         fs::remove_file(merged.join("deleted-file")).unwrap();
@@ -1140,6 +1118,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             auto_apply: false,
+            auto_discard: false,
             state: OverlayState::Staged,
         };
         apply_overlay(&mut rec).unwrap();
@@ -1203,6 +1182,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             auto_apply: false,
+            auto_discard: false,
             state: OverlayState::Staged,
         };
         let status = overlay_status(&record).unwrap();
@@ -1225,6 +1205,7 @@ mod tests {
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             auto_apply: false,
+            auto_discard: false,
             state: OverlayState::Staged,
         };
         discard_overlay(&mut rec).unwrap();

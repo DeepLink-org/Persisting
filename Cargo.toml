@@ -2,29 +2,31 @@
 resolver = "2"
 members = [
     "crates/persisting-proto",
-    "crates/persisting-access",
+    "crates/persisting-control",
     "crates/persisting-engine",
     "crates/persisting-core",
-    "crates/persisting-capture",
+    "crates/persisting-gateway",
     "crates/persisting-cli",
     "crates/persisting-dlcapt",
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
     "crates/persisting-overlayfs",
+    "crates/persisting-overlaynet",
 ]
 
 default-members = [
     "crates/persisting-proto",
-    "crates/persisting-access",
+    "crates/persisting-control",
     "crates/persisting-engine",
     "crates/persisting-core",
-    "crates/persisting-capture",
+    "crates/persisting-gateway",
     "crates/persisting-cli",
     "crates/persisting-dlcapt",
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
+    "crates/persisting-overlaynet",
 ]
 
 [workspace.package]
@@ -32,7 +34,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["reiase"]
 license = "GPL-3.0-or-later"
-description = "Persistent Storage for Parameters, KV Cache, and Trajectories"
+description = "Agent execution, orchestration, and durable history infrastructure"
 
 [profile.dev]
 debug = "line-tables-only"

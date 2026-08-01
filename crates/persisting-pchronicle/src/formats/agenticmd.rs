@@ -1,4 +1,4 @@
-//! `agenticmd` format — persisting-capture TLV markdown dialogue view.
+//! `agenticmd` format — persisting-gateway TLV markdown dialogue view.
 //!
 //! On-disk layout matches capture `{session_id}.md`:
 //! ```text
@@ -187,7 +187,7 @@ pub fn encode_agenticmd_document(doc: &AgenticmdDocument) -> Result<String> {
 
 /// Encode a single agenticmd / capture TLV block (comment header + body).
 ///
-/// Normative on-disk layout shared with `persisting-capture` live write paths.
+/// Normative on-disk layout shared with `persisting-gateway` live write paths.
 pub fn encode_agenticmd_block(block: &AgenticmdBlock) -> Result<String> {
     let header = AgenticmdHeader {
         type_name: block.header.type_name.clone(),

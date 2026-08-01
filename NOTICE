@@ -42,7 +42,7 @@ Rust sources). It follows the workspace GPL-3.0-or-later policy.
 agentgateway test fixtures
 --------------------------
 
-Regression fixtures under `crates/persisting-capture/tests/fixtures/` may
+Regression fixtures under `crates/persisting-gateway/tests/fixtures/` may
 include materials originally published under Apache-2.0 by the agentgateway
 project. Those files remain under their upstream Apache-2.0 terms as noted in
 the fixtures README; they are separate from the GPL-covered Persisting program

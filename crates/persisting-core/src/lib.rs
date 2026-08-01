@@ -6,6 +6,7 @@ mod block_io;
 mod mmap_region;
 #[cfg(target_os = "macos")]
 mod page_fault_darwin;
+mod pchronicle;
 mod tiered_loop;
 #[cfg(target_os = "linux")]
 mod uffd;
@@ -982,7 +983,7 @@ fn trajectory_replay(
     limit: Option<usize>,
     root_session_id: Option<String>,
 ) -> PyResult<Py<PyAny>> {
-    let loc = persisting_engine::trajectory::resolve_traj_read_location(
+    let loc = persisting_pchronicle::resolve_traj_read_location(
         "trajectory replay",
         storage,
         agent_id,
@@ -1014,7 +1015,7 @@ fn trajectory_stats(
     session_id: Option<String>,
     root_session_id: Option<String>,
 ) -> PyResult<Py<PyAny>> {
-    let loc = persisting_engine::trajectory::resolve_traj_read_location(
+    let loc = persisting_pchronicle::resolve_traj_read_location(
         "trajectory stats",
         storage,
         agent_id,
@@ -1047,6 +1048,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SetC>()?;
     m.add_class::<Address>()?;
     m.add_class::<Region>()?;
+    m.add_class::<pchronicle::PyChronicleStore>()?;
     m.add_function(wrap_pyfunction!(canonicalize, m)?)?;
     m.add_function(wrap_pyfunction!(project_prefix, m)?)?;
     m.add_function(wrap_pyfunction!(is_point_query, m)?)?;
@@ -1066,6 +1068,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(trajectory_append, m)?)?;
     m.add_function(wrap_pyfunction!(trajectory_replay, m)?)?;
     m.add_function(wrap_pyfunction!(trajectory_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        pchronicle::pchronicle_atif_trajectory_sql_ddl,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(block_io::block_read, m)?)?;
     m.add_function(wrap_pyfunction!(block_io::block_write, m)?)?;
     #[cfg(unix)]

@@ -1,8 +1,9 @@
-//! pVisor — portable Agent execution runtime (library API).
+//! pVisor — foreground Agent Run manager and portable execution runtime.
 //!
 //! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. There is no
 //! separate control plane: CLI / pPilot talk to this API directly.
 
+use crate::config::{GatewayDriverConfig, PVisorConfig};
 use crate::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::executor::{AttemptContext, RunExecutor};
 use crate::process::ProcessExecutor;
@@ -10,14 +11,13 @@ use crate::runtime::{
     ImplantPlan, OverlayHint, RuntimeCapabilities, RuntimeSupervisor, RuntimeSupervisorBuilder,
 };
 use crate::util::unix_now_ms;
-use persisting_access::PolicyAccessController;
-use persisting_capture::sink::CaptureSink;
+use crate::TrajectoryEventSink;
+use persisting_control::ControlController;
 use persisting_proto::{
     AttemptId, AttemptInfo, EventEnvelope, PolicyMode, RunResult, RunSpec, RunState, RunStatus,
     RUNTIME_SCHEMA_VERSION,
 };
 use serde_json::json;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
@@ -86,7 +86,7 @@ impl RunHandle {
 /// Builder for a configured [`PVisor`].
 #[derive(Clone, Default)]
 pub struct PVisorBuilder {
-    capture: RuntimeSupervisorBuilder,
+    runtime: RuntimeSupervisorBuilder,
     event_sink: Option<Arc<dyn EventSink>>,
     executors: Option<Vec<Arc<dyn RunExecutor>>>,
 }
@@ -94,7 +94,7 @@ pub struct PVisorBuilder {
 impl std::fmt::Debug for PVisorBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PVisorBuilder")
-            .field("capture", &self.capture)
+            .field("runtime", &self.runtime)
             .field(
                 "event_sink",
                 &self.event_sink.as_ref().map(|_| "<EventSink>"),
@@ -109,48 +109,40 @@ impl PVisorBuilder {
         Self::default()
     }
 
-    pub fn capture_https_proxy(mut self, url: impl Into<String>) -> Self {
-        self.capture = self.capture.capture_https_proxy(url);
+    /// Apply the top-level pVisor configuration.
+    pub fn config(mut self, config: PVisorConfig) -> Self {
+        if let Some(gateway) = config.gateway {
+            self.runtime = self.runtime.gateway(gateway);
+        }
+        self.runtime = self.runtime.overlay(config.overlay);
         self
     }
 
-    pub fn capture_http_proxy(mut self, url: impl Into<String>) -> Self {
-        self.capture = self.capture.capture_http_proxy(url);
+    /// Enable pVisor's built-in Agent protocol Gateway driver.
+    pub fn gateway(mut self, gateway: GatewayDriverConfig) -> Self {
+        self.runtime = self.runtime.gateway(gateway);
         self
     }
 
-    pub fn capture_config(mut self, path: impl Into<PathBuf>) -> Self {
-        self.capture = self.capture.capture_config(path);
-        self
-    }
-
-    pub fn capture_output_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.capture = self.capture.capture_output_dir(path);
-        self
-    }
-
-    pub fn stream_markdown(mut self, enabled: bool) -> Self {
-        self.capture = self.capture.stream_markdown(enabled);
-        self
-    }
-
-    pub fn capture_sink(mut self, sink: Arc<dyn CaptureSink>) -> Self {
-        self.capture = self.capture.capture_sink(sink);
+    /// Inject the structured trajectory output port used by the Gateway driver.
+    pub fn trajectory_sink(mut self, sink: Arc<dyn TrajectoryEventSink>) -> Self {
+        self.runtime = self.runtime.trajectory_sink(sink);
         self
     }
 
     pub fn overlay(mut self, overlay: OverlayHint) -> Self {
-        self.capture = self.capture.overlay(overlay);
+        self.runtime = self.runtime.overlay(overlay);
         self
     }
 
-    #[deprecated(note = "pVisor now embeds overlayfs; external FUSE binaries are ignored")]
-    pub fn fuse_overlayfs(self, _path: impl Into<String>) -> Self {
+    /// Set durable Run workspace storage independently of the optional Gateway.
+    pub fn storage(mut self, storage: impl Into<std::path::PathBuf>) -> Self {
+        self.runtime = self.runtime.storage(storage.into());
         self
     }
 
-    pub fn access_controller(mut self, access: Arc<PolicyAccessController>) -> Self {
-        self.capture = self.capture.access_controller(access);
+    pub fn control_controller(mut self, controller: Arc<dyn ControlController>) -> Self {
+        self.runtime = self.runtime.control_controller(controller);
         self
     }
 
@@ -173,7 +165,7 @@ impl PVisorBuilder {
             event_sink: self
                 .event_sink
                 .unwrap_or_else(|| Arc::new(NoopEventSink) as Arc<dyn EventSink>),
-            controls: self.capture.build(),
+            runtime: self.runtime.build(),
         }
     }
 }
@@ -186,7 +178,7 @@ impl PVisorBuilder {
 pub struct PVisor {
     executors: Arc<Vec<Arc<dyn RunExecutor>>>,
     event_sink: Arc<dyn EventSink>,
-    controls: RuntimeSupervisor,
+    runtime: RuntimeSupervisor,
 }
 
 impl Default for PVisor {
@@ -205,12 +197,12 @@ impl PVisor {
     }
 
     pub fn capabilities(&self) -> RuntimeCapabilities {
-        self.controls.capabilities()
+        self.runtime.capabilities()
     }
 
     /// Dry-run implant plan (env / network markers) without starting capture.
     pub fn plan_for(&self, spec: &RunSpec) -> ImplantPlan {
-        self.controls.plan_for(spec)
+        self.runtime.plan_for(spec)
     }
 
     /// Start one Run: prepare controls → execute → teardown on completion.
@@ -221,10 +213,6 @@ impl PVisor {
     /// Alias for [`Self::run`].
     pub async fn submit(&self, mut spec: RunSpec) -> Result<RunHandle, PVisorError> {
         validate_spec(&spec)?;
-        let session = self
-            .controls
-            .prepare(&mut spec)
-            .map_err(PVisorError::Prepare)?;
         let executor = self
             .executors
             .iter()
@@ -232,13 +220,13 @@ impl PVisor {
             .cloned()
             .ok_or(PVisorError::UnsupportedInvocation)?;
         let descriptor = executor.descriptor();
-        let capture_enforced = session.is_some() || self.controls.enforces_via_capture();
-        if spec.runtime.policy_mode == PolicyMode::Enforce
-            && !descriptor.enforces_capabilities
-            && !capture_enforced
-        {
+        if spec.runtime.policy_mode == PolicyMode::Enforce && !descriptor.enforces_capabilities {
             return Err(PVisorError::UnsupportedPolicy(descriptor.name));
         }
+        let session = self
+            .runtime
+            .prepare(&mut spec)
+            .map_err(PVisorError::Prepare)?;
 
         let run_id = spec.run_id.clone();
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
@@ -451,11 +439,77 @@ mod tests {
         assert!(matches!(error, PVisorError::UnsupportedPolicy(_)));
     }
 
-    #[test]
-    fn builder_injects_capture_and_network_markers() {
-        let pvisor = PVisor::builder()
-            .capture_https_proxy("http://127.0.0.1:8080")
+    #[tokio::test]
+    async fn gateway_driver_does_not_elevate_host_process_enforcement() {
+        let proxy = persisting_gateway::config::ProxyConfig::from_toml_str(
+            r#"
+listen = "127.0.0.1:19081"
+admin_listen = "127.0.0.1:9876"
+agent_id = "test"
+
+[[models]]
+name = "*"
+upstream = "https://example.com"
+"#,
+        )
+        .unwrap();
+        let runtime = PVisor::builder()
+            .gateway(GatewayDriverConfig::new(proxy))
             .build();
+        let mut spec = RunSpec::process("run-enforce-capture", "test-agent", "echo");
+        spec.runtime.policy_mode = PolicyMode::Enforce;
+        spec.capabilities.network = NetworkCapability::Deny;
+        let error = match runtime.run(spec).await {
+            Ok(_) => panic!("explicit proxy capture cannot enforce host process capabilities"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, PVisorError::UnsupportedPolicy(_)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requires an enabled macFUSE kernel extension"]
+    async fn overlay_run_does_not_require_gateway() {
+        let temporary = tempfile::tempdir().unwrap();
+        let target = temporary.path().join("target");
+        let storage = temporary.path().join("storage");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("base.txt"), b"base").unwrap();
+
+        let pvisor = PVisor::builder()
+            .storage(&storage)
+            .overlay(OverlayHint {
+                lower_dirs: vec![target.clone()],
+                ..OverlayHint::default()
+            })
+            .build();
+        let mut spec = RunSpec::process("run-overlay-only", "agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec![
+            "-c".into(),
+            "test \"$(cat base.txt)\" = base && printf changed > base.txt && printf new > new.txt"
+                .into(),
+        ];
+
+        let result = pvisor.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Completed);
+        assert_eq!(std::fs::read(target.join("base.txt")).unwrap(), b"base");
+        assert!(!target.join("new.txt").exists());
+
+        let record =
+            crate::runtime::resolve_run(Some(std::path::Path::new("run-overlay-only")), &storage)
+                .unwrap();
+        assert!(record.gateway_listen.is_none());
+        let mut overlay = record.overlay.unwrap();
+        assert_eq!(format!("{:?}", overlay.state), "Staged");
+        crate::runtime::apply_overlay(&mut overlay).unwrap();
+        assert_eq!(std::fs::read(target.join("base.txt")).unwrap(), b"changed");
+        assert_eq!(std::fs::read(target.join("new.txt")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn builder_injects_runtime_and_network_markers() {
+        let pvisor = PVisor::builder().build();
         let mut spec = RunSpec::process("run-implant", "agent", "echo");
         spec.capabilities.network = NetworkCapability::Deny;
         let plan = pvisor.plan_for(&spec);
@@ -466,15 +520,11 @@ mod tests {
             Some("1")
         );
         assert_eq!(
-            plan.env.get("HTTPS_PROXY").map(String::as_str),
-            Some("http://127.0.0.1:8080")
-        );
-        assert_eq!(
             plan.env
                 .get("PERSISTING_NETWORK_POLICY")
                 .map(String::as_str),
             Some("deny")
         );
-        assert!(plan.notes.iter().any(|n| n.contains("capture")));
+        assert!(plan.notes.iter().any(|note| note.contains("network")));
     }
 }

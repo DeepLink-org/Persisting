@@ -41,7 +41,7 @@ case "$CAPTURE_FORMAT" in
   *) die "CAPTURE_FORMAT must be lance or bin (got $CAPTURE_FORMAT)" ;;
 esac
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-capture-run-e2e.XXXXXX")"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-gateway-run-e2e.XXXXXX")"
 STORAGE="$WORKDIR/store"
 mkdir -p "$STORAGE"
 

@@ -13,8 +13,10 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::schema::{tables, SessionRow, StepRow, ToolCallRow};
-use crate::store::ChronicleStore;
+use crate::store::NormalizedStore;
 use crate::Result;
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,16 @@ pub struct FsChronicleStore {
     sessions: BTreeMap<String, SessionRow>,
     steps: BTreeMap<String, Vec<StepRow>>,
     tool_calls: BTreeMap<String, Vec<ToolCallRow>>,
+}
+
+const SNAPSHOT_FILE: &str = ".chronicle.snapshot.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoreSnapshot {
+    version: u32,
+    sessions: Vec<SessionRow>,
+    steps: Vec<StepRow>,
+    tool_calls: Vec<ToolCallRow>,
 }
 
 impl FsChronicleStore {
@@ -52,10 +64,22 @@ impl FsChronicleStore {
         self.steps.clear();
         self.tool_calls.clear();
 
-        for row in read_jsonl::<SessionRow>(&self.path(tables::SESSIONS))? {
+        let snapshot_path = self.root.join(SNAPSHOT_FILE);
+        let (sessions, steps, tool_calls) = if snapshot_path.exists() {
+            let snapshot: StoreSnapshot =
+                serde_json::from_reader(BufReader::new(File::open(&snapshot_path)?))?;
+            (snapshot.sessions, snapshot.steps, snapshot.tool_calls)
+        } else {
+            (
+                read_jsonl::<SessionRow>(&self.path(tables::SESSIONS))?,
+                read_jsonl::<StepRow>(&self.path(tables::STEPS))?,
+                read_jsonl::<ToolCallRow>(&self.path(tables::TOOL_CALLS))?,
+            )
+        };
+        for row in sessions {
             self.sessions.insert(row.session_id.clone(), row);
         }
-        for row in read_jsonl::<StepRow>(&self.path(tables::STEPS))? {
+        for row in steps {
             self.steps
                 .entry(row.session_id.clone())
                 .or_default()
@@ -64,7 +88,7 @@ impl FsChronicleStore {
         for rows in self.steps.values_mut() {
             rows.sort_by_key(|r| r.step_id);
         }
-        for row in read_jsonl::<ToolCallRow>(&self.path(tables::TOOL_CALLS))? {
+        for row in tool_calls {
             self.tool_calls
                 .entry(row.session_id.clone())
                 .or_default()
@@ -81,14 +105,7 @@ impl FsChronicleStore {
     }
 
     fn persist(&self) -> Result<()> {
-        write_jsonl(
-            &self.path(tables::SESSIONS),
-            self.sessions
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )?;
+        let sessions = self.sessions.values().cloned().collect::<Vec<_>>();
         let mut all_steps = Vec::new();
         for rows in self.steps.values() {
             all_steps.extend(rows.iter().cloned());
@@ -98,8 +115,6 @@ impl FsChronicleStore {
                 .cmp(&b.session_id)
                 .then(a.step_id.cmp(&b.step_id))
         });
-        write_jsonl(&self.path(tables::STEPS), &all_steps)?;
-
         let mut all_calls = Vec::new();
         for rows in self.tool_calls.values() {
             all_calls.extend(rows.iter().cloned());
@@ -110,7 +125,19 @@ impl FsChronicleStore {
                 .then(a.step_id.cmp(&b.step_id))
                 .then(a.tool_call_id.cmp(&b.tool_call_id))
         });
-        write_jsonl(&self.path(tables::TOOL_CALLS), &all_calls)?;
+        let snapshot = StoreSnapshot {
+            version: 1,
+            sessions: sessions.clone(),
+            steps: all_steps.clone(),
+            tool_calls: all_calls.clone(),
+        };
+        write_json_atomic(&self.root.join(SNAPSHOT_FILE), &snapshot)?;
+
+        // JSONL tables are compatibility projections; the atomic snapshot above is
+        // authoritative for reopen/recovery.
+        let _ = write_jsonl_atomic(&self.path(tables::SESSIONS), &sessions);
+        let _ = write_jsonl_atomic(&self.path(tables::STEPS), &all_steps);
+        let _ = write_jsonl_atomic(&self.path(tables::TOOL_CALLS), &all_calls);
         Ok(())
     }
 }
@@ -135,22 +162,67 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
     Ok(out)
 }
 
-fn write_jsonl<T: serde::Serialize>(path: &Path, rows: &[T]) -> Result<()> {
+fn temporary_path(path: &Path) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.with_extension(format!("tmp-{}-{nonce}", std::process::id()))
+}
+
+fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = File::create(path)?;
+    let temp = temporary_path(path);
+    let mut file = File::create(&temp)?;
+    serde_json::to_writer(&mut file, value)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    fs::rename(&temp, path)?;
+    sync_parent(path)?;
+    Ok(())
+}
+
+fn write_jsonl_atomic<T: serde::Serialize>(path: &Path, rows: &[T]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = temporary_path(path);
+    let mut file = File::create(&temp)?;
     for row in rows {
         serde_json::to_writer(&mut file, row)?;
         file.write_all(b"\n")?;
     }
+    file.sync_all()?;
+    fs::rename(&temp, path)?;
+    sync_parent(path)?;
     Ok(())
 }
 
-impl ChronicleStore for FsChronicleStore {
+fn sync_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+impl NormalizedStore for FsChronicleStore {
     fn upsert_session(&mut self, row: SessionRow) -> Result<()> {
-        self.sessions.insert(row.session_id.clone(), row);
-        self.persist()
+        let key = row.session_id.clone();
+        let old = self.sessions.insert(key.clone(), row);
+        if let Err(error) = self.persist() {
+            match old {
+                Some(row) => {
+                    self.sessions.insert(key, row);
+                }
+                None => {
+                    self.sessions.remove(&key);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn get_session(&self, session_id: &str) -> Result<Option<SessionRow>> {
@@ -171,8 +243,20 @@ impl ChronicleStore for FsChronicleStore {
             }
         }
         rows.sort_by_key(|r| r.step_id);
-        self.steps.insert(session_id.to_string(), rows);
-        self.persist()
+        let key = session_id.to_string();
+        let old = self.steps.insert(key.clone(), rows);
+        if let Err(error) = self.persist() {
+            match old {
+                Some(rows) => {
+                    self.steps.insert(key, rows);
+                }
+                None => {
+                    self.steps.remove(&key);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn list_steps(&self, session_id: &str) -> Result<Vec<StepRow>> {
@@ -202,11 +286,58 @@ impl ChronicleStore for FsChronicleStore {
                 .cmp(&b.step_id)
                 .then(a.tool_call_id.cmp(&b.tool_call_id))
         });
-        self.tool_calls.insert(session_id.to_string(), rows);
-        self.persist()
+        let key = session_id.to_string();
+        let old = self.tool_calls.insert(key.clone(), rows);
+        if let Err(error) = self.persist() {
+            match old {
+                Some(rows) => {
+                    self.tool_calls.insert(key, rows);
+                }
+                None => {
+                    self.tool_calls.remove(&key);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn list_tool_calls(&self, session_id: &str) -> Result<Vec<ToolCallRow>> {
         Ok(self.tool_calls.get(session_id).cloned().unwrap_or_default())
+    }
+
+    fn replace_trajectory(&mut self, split: crate::ingest::SplitTables) -> Result<()> {
+        let backup = (
+            self.sessions.clone(),
+            self.steps.clone(),
+            self.tool_calls.clone(),
+        );
+        let session_id = split.session.session_id.clone();
+        let mut steps = split.steps;
+        steps.sort_by_key(|row| row.step_id);
+        let step_ids: std::collections::HashSet<_> = steps.iter().map(|row| row.step_id).collect();
+        let mut calls = split.tool_calls;
+        for row in &calls {
+            if row.session_id != session_id || !step_ids.contains(&row.step_id) {
+                return Err(crate::Error::OrphanToolCall {
+                    session_id,
+                    step_id: row.step_id,
+                    tool_call_id: row.tool_call_id.clone(),
+                });
+            }
+        }
+        calls.sort_by(|a, b| {
+            a.step_id
+                .cmp(&b.step_id)
+                .then(a.tool_call_id.cmp(&b.tool_call_id))
+        });
+        self.sessions.insert(session_id.clone(), split.session);
+        self.steps.insert(session_id.clone(), steps);
+        self.tool_calls.insert(session_id, calls);
+        if let Err(error) = self.persist() {
+            (self.sessions, self.steps, self.tool_calls) = backup;
+            return Err(error);
+        }
+        Ok(())
     }
 }

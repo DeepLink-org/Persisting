@@ -1,0 +1,65 @@
+[package]
+name = "persisting-gateway"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Agent protocol gateway for forwarding and trajectory capture"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+serde_yaml = "0.9"
+dirs = "6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net", "io-util"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+url = "2"
+regex = "1"
+lazy_static = "1"
+pulsing-actor = { workspace = true }
+dashmap = "6"
+blake3 = "1"
+hostname = "0.4"
+persisting-control = { path = "../persisting-control" }
+persisting-overlaynet = { path = "../persisting-overlaynet" }
+persisting-pchronicle = { path = "../persisting-pchronicle" }
+persisting-proto = { path = "../persisting-proto" }
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "llm_fixtures"
+path = "tests/llm_fixtures.rs"
+
+[[test]]
+name = "ag_fixture_tests"
+path = "tests/ag_fixture_tests.rs"
+
+[[test]]
+name = "capture_apps_claude"
+path = "tests/capture_apps_claude.rs"
+
+[[test]]
+name = "agenticmd_golden"
+path = "tests/agenticmd_golden.rs"
+
+[[test]]
+name = "agenticmd_bridge"
+path = "tests/agenticmd_bridge.rs"
+
+[[test]]
+name = "network_policy_http"
+path = "tests/network_policy_http.rs"

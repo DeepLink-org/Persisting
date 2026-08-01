@@ -56,8 +56,8 @@ impl ChronicleFormat {
     pub fn origin(self) -> &'static str {
         match self {
             Self::Storyline => "pchronicle (hub)",
-            Self::Events => "persisting-capture (Lance)",
-            Self::Agenticmd => "persisting-capture",
+            Self::Events => "persisting-gateway (Lance)",
+            Self::Agenticmd => "persisting-gateway",
             Self::OpenaiMsg => "dlcapt",
             Self::Atif => "Harbor ATIF",
         }

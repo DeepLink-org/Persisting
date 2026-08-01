@@ -29,5 +29,4 @@ clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 
 check-links:
-	uv run mkdocs-linkcheck src
-
+	uv run mkdocs build --strict

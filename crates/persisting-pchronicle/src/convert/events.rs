@@ -57,7 +57,7 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
         let mut request_messages = None;
         for ev in evs {
             match ev.kind.as_str() {
-                "llm.request" => {
+                "llm.request" | "http.request" => {
                     req_ts = ev.timestamp.clone();
                     model = ev
                         .payload
@@ -67,7 +67,10 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
                     user_text = extract_user(&ev.payload);
                     request_messages = ev.payload.get("messages").cloned();
                 }
-                "llm.response" | "llm.response.stream" => {
+                "llm.response"
+                | "llm.response.stream"
+                | "http.response"
+                | "http.response.stream" => {
                     resp_ts = ev.timestamp.clone();
                     asst_text = extract_assistant(&ev.payload);
                     if let Some(u) = ev.payload.get("usage") {
@@ -95,10 +98,21 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
         let latency_ms =
             latency_from_payload.or_else(|| latency_between(req_ts.as_deref(), resp_ts.as_deref()));
 
-        let req_seq = evs.iter().find(|e| e.kind == "llm.request").map(|e| e.seq);
+        let req_seq = evs
+            .iter()
+            .find(|e| matches!(e.kind.as_str(), "llm.request" | "http.request"))
+            .map(|e| e.seq);
         let resp_seq = evs
             .iter()
-            .find(|e| e.kind == "llm.response" || e.kind == "llm.response.stream")
+            .find(|e| {
+                matches!(
+                    e.kind.as_str(),
+                    "llm.response"
+                        | "llm.response.stream"
+                        | "http.response"
+                        | "http.response.stream"
+                )
+            })
             .map(|e| e.seq);
 
         if let Some(ut) = user_text.clone() {
@@ -292,7 +306,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                 let req_kind = turn
                     .kind
                     .as_deref()
-                    .filter(|k| k.starts_with("llm."))
+                    .filter(|k| k.starts_with("llm.") || k.starts_with("http."))
                     .unwrap_or("llm.request");
                 events.push(EventRecord {
                     seq,
@@ -320,7 +334,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                     let resp_kind = agent
                         .kind
                         .as_deref()
-                        .filter(|k| k.starts_with("llm."))
+                        .filter(|k| k.starts_with("llm.") || k.starts_with("http."))
                         .unwrap_or("llm.response");
                     events.push(EventRecord {
                         seq,
@@ -379,7 +393,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                 let resp_kind = turn
                     .kind
                     .as_deref()
-                    .filter(|k| k.starts_with("llm."))
+                    .filter(|k| k.starts_with("llm.") || k.starts_with("http."))
                     .unwrap_or("llm.response");
                 events.push(EventRecord {
                     seq,

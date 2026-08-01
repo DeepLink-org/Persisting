@@ -1,11 +1,12 @@
 use bincode::config::standard;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 const SCHEMA_VERSION: u64 = 1;
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
@@ -77,6 +78,9 @@ pub(crate) struct RedbStore {
     path: PathBuf,
 }
 
+static OPEN_DATABASES: LazyLock<Mutex<HashMap<PathBuf, Weak<Database>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 pub(crate) struct StoreSnapshot {
     pub entries: Vec<(PathBuf, u64, StoredNode)>,
     pub whiteouts: Vec<PathBuf>,
@@ -128,7 +132,19 @@ fn decode_node(bytes: &[u8]) -> io::Result<StoredNode> {
 
 impl RedbStore {
     pub fn open(path: PathBuf) -> io::Result<Self> {
-        let database = Database::create(&path).map_err(io_other)?;
+        let mut open = OPEN_DATABASES.lock().map_err(io_other)?;
+        let (database, initialize) = if let Some(database) = open.get(&path).and_then(Weak::upgrade)
+        {
+            (database, false)
+        } else {
+            let database = Arc::new(Database::create(&path).map_err(io_other)?);
+            open.insert(path.clone(), Arc::downgrade(&database));
+            (database, true)
+        };
+        drop(open);
+        if !initialize {
+            return Ok(Self { database, path });
+        }
         let write = database.begin_write().map_err(io_other)?;
         {
             let mut meta = write.open_table(META).map_err(io_other)?;
@@ -157,10 +173,7 @@ impl RedbStore {
             write.open_table(OPAQUE).map_err(io_other)?;
         }
         write.commit().map_err(io_other)?;
-        Ok(Self {
-            database: Arc::new(database),
-            path,
-        })
+        Ok(Self { database, path })
     }
 
     pub fn path(&self) -> &Path {
@@ -755,5 +768,16 @@ mod tests {
         assert!(reopened.is_whiteout(Path::new("removed")).unwrap());
         assert!(reopened.is_opaque(Path::new("opaque")).unwrap());
         assert_eq!(reopened.generation().unwrap(), generation);
+    }
+
+    #[test]
+    fn database_handle_is_shared_for_owner_mediated_read_only_mounts() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("upper.redb");
+        let first = RedbStore::open(database.clone()).unwrap();
+        let second = RedbStore::open(database).unwrap();
+        let node = StoredNode::directory(0o755, 501, 20, (1, 0));
+        first.create(Path::new("shared"), &node).unwrap();
+        assert!(second.lookup(Path::new("shared")).unwrap().is_some());
     }
 }

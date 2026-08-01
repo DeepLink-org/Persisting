@@ -1,427 +1,125 @@
-# Capture 快速上手
+# 采集 Agent 轨迹
 
-本页帮你在 **5–10 分钟内**跑通 `persisting traj`：用 `traj capture` / `traj proxy` 采集 Agent 对话，用 `traj stats` 等查看 Markdown 轨迹。
+单次受管 Agent Run 使用 `pvisor run`。只有多个独立启动的客户端需要共享长期
+Gateway 时，才使用 `persisting traj proxy`。
 
-> 架构与概念见 [Capture 架构设计](../design/capture.md)；命令参数见 [Traj 命令](../design/cli-traj.md) 与 [Capture 子命令](../design/cli-capture.md)。
+参考：[pVisor 命令](../design/cli-pvisor.md)、[Traj 命令](../design/cli-traj.md)、
+[Gateway 架构](../design/gateway.md)。
 
----
-
-## 你将得到什么
-
-运行 `traj capture` 后，Persisting 会：
-
-1. 在本地启动 **LLM 反向代理**（透明转发到上游模型）；
-2. 按 `-f` **只写一层**：默认 **仅 Markdown**（`-f md`），或 **Lance canonical**（`-f lance` → `{run}/events.lance/` 数据集目录）；
-3. `-f md` 时 live upsert 对话 Markdown（可 `tail -f`），退出时写 `.capture/reconcile.json`；
-4. `-f lance` 时只 append 结构化事件行；需要人读视图时再跑 `traj materialize`。
-
-支持的实时采集客户端：**Claude Code**、**OpenAI Codex**（经代理）。Cursor 当前不支持。
-
----
-
-## 0. 准备 CLI
-
-Capture 由 Rust CLI 提供，需从源码构建：
+## 构建
 
 ```bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
-cargo build -p persisting-cli -p persisting-engine
+cargo build --release -p persisting-pvisor -p persisting-cli -p persisting-engine
+export PATH="$(pwd)/target/release:$PATH"
+export PERSISTING_ENGINE_LIB="$(pwd)/target/release/libpersisting_engine.dylib" # Linux 使用 .so
 ```
 
-使用本地构建的二进制（macOS / Linux 示例）：
+## 本地示例
 
-```bash
-export PERSISTING="$(pwd)/target/debug/persisting"
-# macOS：让 CLI 加载刚编译的 engine dylib
-export PERSISTING_ENGINE_LIB="$(pwd)/target/debug/libpersisting_engine.dylib"
-# Linux 将 .dylib 换成 libpersisting_engine.so
-```
-
-验证：
-
-```bash
-"$PERSISTING" --help
-"$PERSISTING" traj --help
-```
-
----
-
-## 1. 最快路径：零 API Key 示例
-
-仓库自带 **Mock LLM** 示例，无需真实模型密钥：
+仓库提供 Mock 模型、两轮示例 Agent 和 AgenticMD 校验器：
 
 ```bash
 cd examples/capture-walkthrough
 ./run.sh
 ```
 
-脚本会依次：构建 CLI → 启动 Mock LLM → `traj capture` 执行示例 Agent → 打印 `0001.md` 并校验。
+脚本会打印实际产物路径。Run ID 由 pVisor 分配，不要依赖固定 session 目录或
+`0001.md` 文件名。
 
-产物路径：
+## 运行真实 Agent
 
-```text
-examples/capture-walkthrough/store/demo-agent/walkthrough-001/0001.md
-```
-
-想分步理解流程（两个终端）：
-
-```bash
-# 终端 A
-./run.sh mock
-
-# 终端 B
-persisting traj capture -o ./store -c proxy.toml -f md -- python3 agent.py
-./run.sh check
-```
-
----
-
-## 2. 真实模型：Claude Code / Codex
-
-### 2.1 准备代理配置
-
-复制并编辑示例配置（以 DeepSeek 为例）：
+直接指定上游路由并配置对应 API key：
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
-```
 
-配置见 [examples/llm-proxy](https://github.com/DeepLink-org/Persisting/tree/main/examples/llm-proxy)：
-
-| 文件 | 用途 |
-|------|------|
-| [`deepseek.toml`](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/deepseek.toml) | DeepSeek 双协议（默认 `public`） |
-| [`multi-provider.toml`](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/multi-provider.toml) | 多厂商按 model 前缀路由 |
-| [`allowlist.toml`](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/allowlist.toml) | Harbor 风格 `allowlist` 出口控制 |
-
-- `listen`：Capture 代理监听地址（默认 `127.0.0.1:19081`）
-- `agent_id`：轨迹目录名（如 `deepseek-proxy`）
-- `[[models]]`：上游路由（OpenAI / Anthropic 双协议）
-- `[network]`（可选）：Harbor 风格出口控制，见下方
-
-#### 网络出口策略（可选）
-
-`[network]` 对齐 [Harbor Network Policy](https://www.harborframework.com/docs/tasks/network-policy) 的三种模式，但强制手段不同：Capture 在显式 `HTTP_PROXY` 的 `CONNECT` / 绝对 URI 转发入口拦截，不做 nft/gost 透明劫持。仍依赖子进程遵守代理环境变量。
-
-| `mode` | 行为 |
-|--------|------|
-| `public`（默认） | 转发代理全放行（与旧行为一致） |
-| `no-network` | 拒绝非本机出站 |
-| `allowlist` | 仅允许 `allowed_hosts`；列表为空则全拒。配置的 `[[models]].upstream` / `upstream_anthropic` host 会自动并入白名单 |
-
-`allowed_hosts` 条目：精确 hostname、`*.example.com`（不含 apex）、IPv4/IPv6 literal、CIDR；不要写 URL、端口或路径。`example.com` 不含 `www.example.com`；需要两者时同时写 `example.com` 与 `*.example.com`。打到 `listen` 的相对路径 LLM 网关不受名单约束；`localhost` / `127.0.0.1` / `::1` 始终旁路。
-
-完整示例：[allowlist.toml](https://github.com/DeepLink-org/Persisting/blob/main/examples/llm-proxy/allowlist.toml)。片段：
-
-```toml
-[network]
-mode = "allowlist"
-allowed_hosts = [
-    "pypi.org",
-    "files.pythonhosted.org",
-    "github.com",
-    "api.github.com",
-    "registry.npmjs.org",
-]
-```
-
-### 2.2 用 `traj capture` 包装 Agent
-
-**Claude Code**（自动注入网关环境变量）：
-
-```bash
-persisting traj capture \
-  -o ./store \
-  -c examples/llm-proxy/deepseek.toml \
-  -f md \
+pvisor run \
+  --workspace ./store/run \
+  --agent deepseek \
+  --overlaynet-mode proxy \
+  --gateway-mode capture \
+  --gateway-route 'name="deepseek", upstream="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"' \
+  --gateway-route 'name="*", forward="deepseek"' \
+  --gateway-stream-markdown \
   -- claude
 ```
 
-**OpenAI Codex**：
+可以把 `claude` 换成 `codex` 或其他使用代理/base URL 的程序。pVisor 会启动进程内
+Gateway、注入子进程环境、等待子进程结束并关闭 Gateway。
+
+### 存储模式
+
+| 参数 | 写入 | 适用场景 |
+|---|---|---|
+| `--gateway-stream-markdown` | live AgenticMD 投影 | 轻量、本地、人读优先 |
+| `--chronicle-mode lance` | canonical 结构化事件 | 完整事件、评测和派生视图 |
+
+Lance Run 可通过 `persisting traj materialize` 生成 AgenticMD。
+
+## 长期 Gateway
+
+前台启动：
 
 ```bash
-persisting traj capture \
-  -o ./store \
-  -c examples/llm-proxy/deepseek.toml \
-  -f md \
-  -- codex
+persisting traj proxy -o ./store -c examples/llm-proxy/deepseek.toml -f markdown
 ```
 
-**自研脚本**（走 OpenAI SDK / `HTTP_PROXY`）：
+启动 banner 会打印代理地址和环境变量；在启动 Agent 的终端中导出它们。后台模式：
 
 ```bash
-persisting traj capture -o ./store -c your.toml -f md -- python3 your_agent.py
+persisting traj proxy start -o ./store -c examples/llm-proxy/deepseek.toml -f markdown
+persisting traj proxy status
+persisting traj proxy list
+persisting traj proxy stop
 ```
 
-常用选项：
+不要让 `pvisor run` 和独立 proxy 同时写同一个 storage。独立 proxy 不提供 pVisor 的
+进程与 OverlayFS 生命周期。
 
-| 选项 | 含义 |
-|------|------|
-| `-o DIR` | 轨迹 store 根目录（默认 `.persisting/capture`） |
-| `-c FILE` | 代理 TOML（`listen`、`models`、upstream） |
-| `-f md` | **仅 Markdown**（默认，live upsert 到 `{session}.md`，并写 reconcile） |
-| `-f lance` | **仅 Lance**（`events.lance/` 目录）；md 用 `traj materialize` 生成 |
-| `capture_level` | TOML 中 `summary` / `dialogue`（默认）/ `full`；见 [Capture 架构](../design/capture.md) 的多模态说明 |
-| `--debug` | 将代理请求打到 stderr 与 `.capture/debug.log` |
-| `--` 之后 | 要执行的子命令 |
-
-`traj capture` 是 **进程内代理**：子进程退出后代理自动关闭，**不需要** `traj proxy stop`。
-
----
-
-## 3. 长期开发：`traj proxy` / `traj proxy start`
-
-当你要在**多个终端**里反复启动 Agent、共用同一代理与 store 时，用 `serve`（前台）或 `start`（后台），而不是每次 `traj capture`。
-
-### 3.1 三种运行形态怎么选
-
-| 形态 | 命令 | 代理生命周期 | 典型场景 |
-|------|------|--------------|----------|
-| **一次性** | `traj capture` | 随子进程退出而结束 | 单次任务、CI、脚本包装 |
-| **前台长期** | `traj proxy` | 当前终端阻塞，直到 `Ctrl+C` | 本地开发、看日志、调试 |
-| **后台守护** | `traj proxy start` | 脱离终端，需 `traj proxy stop` | 长期挂着代理，多终端共用 |
-
-三者共用同一套 TOML（`-c`）、store（`-o`）与 `-f` 格式。**同一 `-o` 目录不能同时**跑 `traj proxy`（或 `traj proxy start`）与 `traj capture`。
-
-### 3.2 `traj proxy`（前台）
+## 查看轨迹
 
 ```bash
-persisting traj proxy \
-  -o ./store \
-  -c examples/llm-proxy/deepseek.toml \
-  -f md
+# 发现 Agent 目录下的全部 Story。
+persisting traj stats ./store/<agent-id> --detail
+
+# 回放一个 Run 目录。
+persisting traj replay ./store/<agent-id>/<run-id>
+persisting traj replay ./store/<agent-id>/<run-id> --storage-format markdown
+
+# 从 canonical Lance events 生成可读视图。
+persisting traj materialize ./store \
+  --agent-id <agent-id> \
+  --root-session-id <run-id> \
+  --session-id <session-id>
 ```
 
-启动后会打印 **使用说明**（与下文一致），包括：
+执行过 `traj proxy start` 或设置 `PERSISTING_CAPTURE_STORAGE` 后，`stats`、`replay`、
+`materialize` 和 `truncate` 可以省略 storage 参数。
 
-- `proxy=http://…` — LLM 反向代理地址（对应 TOML 里 `listen`）
-- `admin=http://…` — 管理接口（`admin_listen`，供 `traj proxy status` 查询）
-- `store` / `agent_id` / `format`
-
-若目录里已有 `daemon.env.json`（上次 `traj proxy start` 或 `traj capture` 写入的 API key 快照），会先提示 `applied daemon env snapshot`。
-
-**在另一个终端**把 Agent 指到代理（以 `listen = 127.0.0.1:19081` 为例）：
-
-```bash
-export HTTP_PROXY=http://127.0.0.1:19081 HTTPS_PROXY=http://127.0.0.1:19081
-export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
-export OPENAI_BASE_URL=http://127.0.0.1:19081/v1
-export ANTHROPIC_BASE_URL=http://127.0.0.1:19081
-
-# Claude Code（读 ANTHROPIC_BASE_URL / HTTP_PROXY）
-claude
-
-# Codex 不读 OPENAI_BASE_URL，需显式改 config：
-codex -c 'openai_base_url="http://127.0.0.1:19081/v1"'
-```
-
-说明：
-
-- `HTTP_PROXY` / `HTTPS_PROXY`：走代理的客户端会把 LLM HTTPS 流量经 Capture 转发并采集。
-- `NO_PROXY`：避免本机 `127.0.0.1` 被误走代理环路。
-- `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`：OpenAI / Anthropic SDK 直连 Capture 网关路径。
-- **Codex** 只认自己的 `config.toml`，必须用 `-c openai_base_url=…`（`traj capture` 会自动注入，`traj proxy` 时需自己写）。
-
-每次新连上的 Agent 会话在 store 里通常是 **扁平 session 目录**（`{agent_id}/{session_id}/`），与 `traj capture` 的 `run-{timestamp}/` 布局不同；Markdown 可直接 `tail -f`：
-
-```bash
-tail -f store/deepseek-proxy/*/*.md
-```
-
-结束：在 `traj proxy` 终端按 **`Ctrl+C`**。
-
-### 3.3 `traj proxy start`（后台守护进程）
-
-与 `serve` 相同能力，但以子进程在后台运行：
-
-```bash
-persisting traj proxy start \
-  -o ./store \
-  -c examples/llm-proxy/deepseek.toml \
-  -f md
-```
-
-输出示例：`traj proxy started: pid=… proxy=… admin=…`，以及与前台 `traj proxy` 相同的环境变量与运维提示。
-
-| 命令 | 作用 |
-|------|------|
-| `persisting traj proxy status` | 当前活跃连接与会话（调 admin API） |
-| `persisting traj proxy list` | 历史会话、token、成本估算 |
-| `persisting traj proxy stop` | 停止后台代理 |
-
-`list` / `status` / `stop` 可省略 `-o`：自动用最近一次 `start` 的目录，或环境变量 `PERSISTING_CAPTURE_STORAGE`。
-
-加 `--debug` 时，守护进程 stderr 写入 `{store}/.capture/daemon.log`，并开启请求调试（类似 `traj capture --debug`）。
-
-### 3.4 与 `traj capture` 的对比
-
-| | `traj capture` | `traj proxy` / `traj proxy start` |
-|--|---------------|-----------------------------------|
-| 环境注入 | **自动**为子进程设置 `HTTP_PROXY`、`OPENAI_BASE_URL` 等 | 需在**新终端**手动 `export`（见上） |
-| Codex | 自动追加 `-c openai_base_url=…` | 需手写 `-c` |
-| 目录布局 | `run-{timestamp}/` + 对账 `reconcile.json` | 扁平 `{session_id}/` |
-| 结束方式 | 子进程退出即停 | `Ctrl+C`（`traj proxy`）或 `traj proxy stop`（后台） |
-
-若只想跑一轮对话，仍推荐 **`traj capture`**；长期多终端开发用 **`traj proxy`** 或 **`traj proxy start`**。
-
-### 3.5 可选 dlcapt 后端
-
-`traj proxy` 默认仍使用 capture backend。独立的 dlcapt 后端必须在构建时启用，且只支持前台运行：
-
-```bash
-export DLCAPT_CONFIG="$HOME/.config/persisting/dlcapt-openclaw.toml"
-export DLCAPT_STORE_DIR="$HOME/.local/share/persisting/dlcapt"
-export DLCAPT_UPSTREAM_BASE_URL="https://your-upstream.example/v1"
-mkdir -p "$(dirname "$DLCAPT_CONFIG")"
-cp crates/persisting-dlcapt/config/proxy.openclaw-test.example.toml "$DLCAPT_CONFIG"
-sed -i \
-  -e "s|__STORE_DIR__|$DLCAPT_STORE_DIR|g" \
-  -e "s|__UPSTREAM_BASE_URL__|$DLCAPT_UPSTREAM_BASE_URL|g" \
-  "$DLCAPT_CONFIG"
-
-cargo run -p persisting-cli --features dlcapt -- \
-  traj proxy --backend dlcapt -c "$DLCAPT_CONFIG"
-```
-
-dlcapt 从自己的 TOML 读取 `store_dir`、存储 sinks、模型路由和 public/admin 监听地址。相对
-`store_dir` 按当前进程 cwd 解析，而不是按 TOML 文件目录解析。`traj stats`、`traj replay` 和
-`traj capture` 都不能读取或管理 dlcapt 的存储；这些命令仍属于 capture backend 工作流。仅属于
-capture backend 的 `-o`、`-f`、`--debug` 和 daemon actions 都不受 dlcapt 支持。复制后的配置位于仓库外，
-不会被意外提交。
-
----
-
-## 4. 输出目录长什么样
-
-一次 `traj capture` 的典型布局：
+## 目录布局
 
 ```text
 store/
-├── .capture/
-│   ├── sessions.json          # 会话索引
-│   ├── reconcile.json         # `-f md` run 结束对账（纯 `-f lance` 通常无）
-│   ├── dead_letter.jsonl      # 采集失败事件（可 replay）
-│   └── events.wal.jsonl       # 未 ack 事件 WAL（异常退出时）
-└── {agent_id}/
-    └── run-20260528-120000-123456789/
-        ├── run-20260528-120000-123456789.md   # 主 Agent 对话（`-f md` 或 materialize 后）
-        ├── agent-{subagent-id}.md             # 子 Agent（若有）
-        └── events.lance/                      # Lance dataset（仅 `-f lance`）
+├── .capture/                 # Gateway runtime 元数据和失败记录
+└── agent-id/
+    └── run-id/
+        ├── events.lance/     # --chronicle-mode lance
+        ├── run-id.md         # --gateway-stream-markdown 或 materialize 后
+        └── agent-<id>.md     # 可选 subagent Story
 ```
 
-**阅读轨迹**：打开 `*.md`，或实时跟踪（需已有 Markdown 层）：
+读取器仍识别早期 `0001.md` 和 `.tlv.md`，新示例和新写入使用 session 命名的
+AgenticMD 文件。
 
-```bash
-tail -f store/deepseek-proxy/run-*/run-*.md
-```
+## 常见问题
 
----
+| 问题 | 检查 |
+|---|---|
+| Agent 无法连接 Gateway | 使用 `pvisor run` 注入的子进程，或导出独立 proxy banner 中的变量 |
+| Codex 绕过代理 | 使用 banner 打印的 `-c openai_base_url=...` |
+| Lance 输出没有 Markdown | 启用 `--gateway-stream-markdown` 或执行 `traj materialize` |
+| 采集事件失败 | 查看 `.capture/dead_letter.jsonl`，再使用 `traj replay-dead-letter` |
+| pVisor 提示已有 owner | 停止 proxy、等待 live Run 结束，或更换 storage |
 
-## 5. 查看与运维：`traj`
-
-Capture **生产**数据；`persisting traj`（别名 `trajectory`）用于 **离线读取 / 统计 / 修复**。
-
-若已 `traj proxy start` 或设置了 `PERSISTING_CAPTURE_STORAGE`，`stats` / `replay` / `materialize` / `truncate` 可 **省略** `<STORAGE>` 参数。
-
-```bash
-# 统计（`-f md` 直接读 Markdown；`-f lance` 可先 materialize）
-# 省略 --session-id 时扫描 agent 下全部 run，并展开 Lance 内多个 session_id 分区
-persisting traj stats ./store/deepseek-proxy/ --detail
-
-# 重放为 JSON 行
-persisting traj replay ./store --agent-id deepseek-proxy --session-id run-20260528-120000-123456789
-
-# 从 Lance 全量重建 Markdown（对账不一致或 md 损坏时）
-persisting traj materialize ./store \
-  --agent-id deepseek-proxy \
-  --root-session-id run-20260528-120000-123456789 \
-  --session-id run-20260528-120000-123456789
-```
-
-也可直接传 **run 目录** 或 `*.md` 路径，`traj` 会自动推断 `agent_id` / `session_id`。
-
-**多模态（截图 / 出图）**：默认 `capture_level = dialogue` 下，Markdown 与 stats 中图像以 **`[image: …]` / `[image_generated: …]` 占位符** 出现，不含像素；需完整 JSON 时在 TOML 设 `capture_level = "full"`。详见 [轨迹 Markdown 格式](../design/trajectory-format.md)。
-
----
-
-## 6. 事后导入（可选）
-
-补录 Claude Code 本地 JSONL（非实时路径）：
-
-```bash
-persisting traj import ./store \
-  --provider ide \
-  --since-days 7 \
-  --project "$(pwd)"
-```
-
-`--dry-run` 仅统计；多会话匹配时用 `--session-id` 指定。详见 [Traj import 说明](../design/cli-capture.md#5-traj-import)。
-
----
-
-## 7. 常见问题
-
-### 对账不一致
-
-`.capture/reconcile.json` 主要出现在 **`-f md`** 采集后。若同时存在 Lance 层且与 md 不一致（例如事后又写了 Lance，或旧数据）：
-
-```bash
-persisting traj materialize ./store --agent-id <id> --root-session-id <run-id> --session-id <story-id>
-```
-
-纯 `-f lance` 采集没有 live Markdown，需要人读视图时直接 `traj materialize`。
-
-### 采集失败事件
-
-```bash
-persisting traj replay-dead-letter -o ./store -f md
-```
-
-### `traj capture` 提示已有守护进程
-
-同一 `output_dir` 下不能同时跑 `serve`/`start` 与 `run`。先 `traj proxy stop`，或换 `-o` 目录。
-
-### `traj stats` 显示 0 轮 / 块数很少
-
-确认路径指向 **run 目录**或主 `run-*.md`，不要只传 `store/{agent_id}/` 根目录。Capture run 下真实 Markdown 在 `run-{timestamp}/` 内。
-
-### `serve` / `start` 下 Agent 连不上代理
-
-1. 确认 `serve` 或 `start` 终端已打印 `proxy=http://…` 且无报错。
-2. 在 **新终端**按启动横幅 `export` 环境变量（`traj capture` 会自动注入，`serve` 不会）。
-3. Codex 需额外：`codex -c 'openai_base_url="http://127.0.0.1:PORT/v1"'`（端口与 TOML `listen` 一致）。
-4. 检查是否误在同一 `-o` 上同时跑了 `traj capture`。
-
-### 调试代理流量
-
-```bash
-persisting traj capture -o ./store -c your.toml -f md --debug -- claude
-# 同时查看 store/.capture/debug.log
-```
-
----
-
-## 8. 命令速查
-
-| 命令 | 用途 |
-|------|------|
-| `traj capture` | **推荐**：包装一次 Agent 命令，进程内代理 |
-| `traj proxy` | 前台长期代理 |
-| `traj proxy start` / `stop` | 后台守护进程 |
-| `traj proxy list` | 会话列表、token、成本估算 |
-| `traj proxy status` | 运行中连接与会话 |
-| `traj import` | 从 IDE JSONL 事后导入 |
-| `traj replay-dead-letter` | 重放失败采集事件 |
-| `traj stats` | 统计 / `--detail` 逐轮 |
-| `traj replay` | 事件 JSON 重放 |
-| `traj materialize` | Lance → Markdown 全量重建 |
-
----
-
-## 下一步
-
-- [Capture 架构设计](../design/capture.md) — 产品定位、数据流、设计原则
-- [轨迹 Markdown 格式](../design/trajectory-format.md) — TLV 块与 frontmatter
-- [Trajectory 命令](../design/cli-traj.md) — `traj` 完整参数
-- [分步示例代码](https://github.com/DeepLink-org/Persisting/tree/main/examples/capture-walkthrough) — Mock LLM 与校验脚本
+独立 dlcapt 有自己的配置和存储模型；需要它时查看
+`crates/persisting-dlcapt/README.md`。

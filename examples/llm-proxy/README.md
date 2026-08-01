@@ -1,6 +1,6 @@
 # LLM proxy configs
 
-TOML for `persisting traj capture` / `traj proxy` (`-c`).
+TOML for `pvisor` / `traj proxy` (`-c`).
 
 | File | Notes |
 |------|--------|

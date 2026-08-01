@@ -2,7 +2,7 @@
 
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 use crate::schema::{SessionRow, StepRow, ToolCallRow};
-use crate::store::ChronicleStore;
+use crate::store::NormalizedStore;
 use crate::Result;
 
 /// Result of normalizing one ATIF trajectory into three tables.
@@ -81,19 +81,17 @@ pub fn split_trajectory(traj: &AtifTrajectory) -> Result<SplitTables> {
     })
 }
 
-/// Persist a split ATIF trajectory into a [`ChronicleStore`].
-pub fn ingest_trajectory(store: &mut dyn ChronicleStore, traj: &AtifTrajectory) -> Result<String> {
+/// Persist a split ATIF trajectory into a [`NormalizedStore`].
+pub fn ingest_trajectory(store: &mut dyn NormalizedStore, traj: &AtifTrajectory) -> Result<String> {
     let split = split_trajectory(traj)?;
     let session_id = split.session.session_id.clone();
-    store.upsert_session(split.session)?;
-    store.replace_steps(&session_id, split.steps)?;
-    store.replace_tool_calls(&session_id, split.tool_calls)?;
+    store.replace_trajectory(split)?;
     Ok(session_id)
 }
 
 /// Rebuild an ATIF trajectory document from the three tables.
 pub fn reconstruct_trajectory(
-    store: &dyn ChronicleStore,
+    store: &dyn NormalizedStore,
     session_id: &str,
 ) -> Result<AtifTrajectory> {
     let session = store

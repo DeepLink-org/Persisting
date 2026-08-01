@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "pPilot durable Run orchestrator: plan, schedule, resume, reconcile, and collect independent Runs"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1"
@@ -12,8 +13,8 @@ async-trait = "0.1"
 chrono = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
-persisting-capture = { path = "../persisting-capture", optional = true }
 persisting-engine = { path = "../persisting-engine", optional = true }
+persisting-pchronicle = { path = "../persisting-pchronicle", optional = true }
 persisting-proto = { path = "../persisting-proto", optional = true }
 pulsing-actor = { workspace = true }
 serde = { version = "1", features = ["derive"] }
@@ -27,7 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 default = []
 # Append pPilot results to Lance via TrajectoryAppend (Tee with JsonlFileSink).
-traj-sink = ["dep:chrono", "dep:persisting-capture", "dep:persisting-engine", "dep:persisting-proto"]
+traj-sink = ["dep:chrono", "dep:persisting-engine", "dep:persisting-pchronicle", "dep:persisting-proto"]
 
 [dev-dependencies]
 tempfile = "3"

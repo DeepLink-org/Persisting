@@ -1,6 +1,12 @@
 # pVisor
 
-**Portable Agent Execution Runtime** — library API for one Agent Run.
+**Foreground Agent Run Manager and Portable Execution Runtime.**
+
+pVisor is a first-class Persisting component alongside pPilot and pChronicle:
+
+- pVisor owns one Run and its Attempts;
+- pPilot plans and orchestrates many Runs;
+- pChronicle stores canonical Run history and derived views.
 
 ```text
 CLI / pPilot / host
@@ -8,42 +14,56 @@ CLI / pPilot / host
         │  PVisor::run(spec) → RunHandle
         ▼
 pVisor
-    │  prepare: capture TOML → proxy + [network] + [overlay]
+    │  prepare drivers: Gateway/OverlayNet + Control + OverlayFS
     │  execute Attempt
     │  teardown
         ▼
 RunHandle::wait / cancel / events
 ```
 
-No separate control plane. Hosts call the crate API directly.
+There is no network control daemon. Hosts call the crate API directly;
+`persisting-control` is the shared state/transition protocol used by runtime
+drivers. A Run-local Unix socket exists only for discovery and owner-mediated
+read-only inspection of a live OverlayFS workspace.
 
 ## Modules
 
 | Module | Role |
 |--------|------|
 | `pvisor` | [`PVisor`] / [`PVisorBuilder`] / [`RunHandle`] |
-| `runtime` | Attempt prepare (capture, network, overlay) |
-| `access` | Re-export of `persisting-access` |
+| `config` | canonical `RunConfig` plus programmatic driver configuration |
+| `runtime` | Attempt preparation and driver ownership |
+| `control` | Re-export of the shared `persisting-control` state protocol |
 | `process` | Host process executor |
 
-## Shared config
+## Runtime configuration
 
-Capture, network, and overlay share the capture TOML (`ProxyConfig`):
+pVisor owns one canonical `RunConfig`. TOML and command-line options map to the
+same fields; runtime drivers consume the resolved in-memory value and never
+re-read a Gateway-specific file:
 
 ```toml
-listen = "127.0.0.1:19081"
+[run]
+workspace = "/tmp/my-run"
+command = ["codex"]
 
-[network]
-mode = "allowlist"
-allowed_hosts = ["pypi.org"]
+[overlayfs]
+mode = "overlay"
+target = "/path/to/project"
+backend = "redb"
+commit = "manual"
 
-[overlay]
-enabled = true
-target = "/path/to/project"     # RO lower + apply destination
-backend = "redb"                # default; alternative: "directory"
-# database_path = "…"           # default: {stage_dir}/upper.redb
-# stage_dir = "…"               # default: {storage}/.overlay/{session}/
-# auto_apply = false            # review then apply
+[overlaynet]
+mode = "proxy"
+policy = "allowlist"
+allow = ["api.openai.com"]
+
+[gateway]
+mode = "capture"
+
+[[gateway.routes]]
+name = "openai"
+upstream = "https://api.openai.com/v1"
 ```
 
 ### Overlay model
@@ -54,7 +74,7 @@ target (real FS) ──RO──┐
 upper.redb (deltas) ───┘
 
 Attempt ends → unmount, keep upper.redb
-  → runtime overlay status|apply|discard
+  → pvisor status|inspect|apply|drop
 ```
 
 The upper is one exclusive backend: either a redb file or a directory tree.
@@ -77,25 +97,35 @@ cargo build -p persisting-pvisor --release
 The standalone `persisting-overlayfs` binary remains available only for
 diagnostics and fuse-overlayfs-compatible manual mounts.
 
+### Network enforcement roadmap
+
+Today's network driver is an explicit proxy: coverage is opt-in and
+`RuntimeCapabilities.network` honestly reports observe-grade behavior. The
+accepted Linux design for non-bypassable interception — an unprivileged
+network namespace whose only egress is a pVisor-owned in-process userspace
+stack (mirroring the embedded FUSE decision), with a seccomp user-notify +
+`ADDFD` fallback for hosts without user namespaces — is specified in
+`docs/src/design/overlaynet.md`. Once a transparent driver is attached,
+`PolicyMode::Enforce` becomes satisfiable for network capabilities on Linux;
+other hosts keep observe mode.
+
 The macOS implementation supports multi-layer merge, metadata-preserving
 copy-up, whiteouts/opaque directories, lower-directory rename, links, xattrs,
 directory snapshots and synchronization/statistics operations. pVisor's
-`overlay apply` path preserves symlinks, hard links, modes, ownership,
+`apply` path preserves symlinks, hard links, modes, ownership,
 timestamps and xattrs, and processes opaque markers before staged children.
 
 ## Usage
 
-```rust
-let pvisor = PVisor::builder()
-    .capture_config("proxy.toml")
-    .capture_output_dir("./store")
-    .build();
-let handle = pvisor.run(spec).await?;
-let result = handle.wait().await?;
-```
+- `pvisor run --workspace DIR [DRIVER OPTIONS] -- <agent>`
+- `pvisor run --config run.toml [OVERRIDES] [-- <agent>]`
+- `pvisor status [RUN|STAGE|UPPER|DB]`
+- `pvisor inspect [RUN|STAGE|UPPER|DB] [-- COMMAND...]`
+- `pvisor apply|drop [RUN|STAGE|UPPER|DB]`
 
-CLI:
+Each Run writes `run.json`, `lease.lock`, and (while live) `control.sock` next
+to `overlay.json`. `status` uses these records to aggregate process, network,
+and filesystem state. `inspect` creates a separate kernel-read-only view of the
+same upper; the owning pVisor creates that view for a live Redb Run.
 
-- `persisting agent execute -c FILE -o DIR --overlay-target PATH -- <cmd>`
-- `persisting runtime overlay status|apply|discard -o DIR --id run-…`
-- `persisting traj capture …` — thin wrapper over the same API
+Capture is a Gateway capability, not pVisor's component identity.

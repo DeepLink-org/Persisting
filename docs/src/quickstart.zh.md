@@ -8,7 +8,7 @@
 pip install persisting[lance]
 ```
 
-CLI 工具（`persisting traj`、`persisting ppilot`、`persisting search`）需[从源码构建](installation.md)。
+CLI 工具（`pvisor`、`persisting traj`、`persisting search`）需[从源码构建](installation.md)。
 
 ---
 
@@ -87,7 +87,7 @@ records = await q.get(limit=100)
 记录每一次 LLM 调用——Claude Code、Codex 或自定义脚本：
 
 ```bash
-persisting traj capture -o ./store -c proxy.toml -f md -- claude
+pvisor run --config run.toml -- claude
 ```
 
 → [Capture 指南](guide/capture.md)
@@ -120,19 +120,6 @@ results = query("docs", "搜索查询", mode="hybrid", k=10)
 ```
 
 → [Search 指南](guide/search.md)
-
-### 计算编排
-
-Map 式任务，支持断点续跑：
-
-```bash
-persisting ppilot task.py -w 4 --check       # 验证
-persisting ppilot task.py -w 4 -- --n 1000   # 运行
-```
-
-→ [pPilot 指南](guide/ppilot.md)
-
----
 
 ## 下一步
 

@@ -1,14 +1,12 @@
-"""pChronicle — ATIF normalized tables and trajectory view.
-
-This Python package mirrors the Rust `persisting-pchronicle` crate:
+"""Python compatibility surface for the Rust-owned pChronicle layer.
 
 * `sessions` keyed by `session_id`
 * `steps` keyed by `(session_id, step_id)`
 * `tool_calls` keyed by `(session_id, tool_call_id)`
 * `atif_trajectory` view = sessions ⋈ steps ⟕ tool_calls
 
-For production writes prefer the Rust crate; this module is a convenient
-JSONL/DataFrame-oriented surface for inspection and SQL engines (DuckDB).
+Formats, validation, storage, reconstruction, and view semantics execute in
+the Rust `persisting-pchronicle` crate. Python types are compatibility DTOs.
 """
 
 from __future__ import annotations

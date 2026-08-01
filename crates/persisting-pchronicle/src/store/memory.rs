@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::schema::{SessionRow, StepRow, ToolCallRow};
-use crate::store::ChronicleStore;
+use crate::store::NormalizedStore;
 use crate::Result;
 
 #[derive(Debug, Default, Clone)]
@@ -19,7 +19,7 @@ impl MemoryChronicleStore {
     }
 }
 
-impl ChronicleStore for MemoryChronicleStore {
+impl NormalizedStore for MemoryChronicleStore {
     fn upsert_session(&mut self, row: SessionRow) -> Result<()> {
         self.sessions.insert(row.session_id.clone(), row);
         Ok(())
@@ -80,5 +80,38 @@ impl ChronicleStore for MemoryChronicleStore {
 
     fn list_tool_calls(&self, session_id: &str) -> Result<Vec<ToolCallRow>> {
         Ok(self.tool_calls.get(session_id).cloned().unwrap_or_default())
+    }
+
+    fn replace_trajectory(&mut self, split: crate::ingest::SplitTables) -> Result<()> {
+        let session_id = split.session.session_id.clone();
+        for row in &split.steps {
+            if row.session_id != session_id {
+                return Err(crate::Error::Other("step session_id mismatch".into()));
+            }
+        }
+        let step_ids: std::collections::HashSet<_> =
+            split.steps.iter().map(|row| row.step_id).collect();
+        for row in &split.tool_calls {
+            if row.session_id != session_id || !step_ids.contains(&row.step_id) {
+                return Err(crate::Error::OrphanToolCall {
+                    session_id,
+                    step_id: row.step_id,
+                    tool_call_id: row.tool_call_id.clone(),
+                });
+            }
+        }
+        let mut steps = split.steps;
+        steps.sort_by_key(|row| row.step_id);
+        let mut calls = split.tool_calls;
+        calls.sort_by(|a, b| {
+            a.step_id
+                .cmp(&b.step_id)
+                .then(a.tool_call_id.cmp(&b.tool_call_id))
+        });
+        self.sessions
+            .insert(split.session.session_id.clone(), split.session);
+        self.steps.insert(session_id.clone(), steps);
+        self.tool_calls.insert(session_id, calls);
+        Ok(())
     }
 }

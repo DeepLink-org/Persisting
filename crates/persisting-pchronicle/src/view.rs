@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::schema::{tables, SessionRow, StepRow, ToolCallRow};
-use crate::store::ChronicleStore;
+use crate::store::NormalizedStore;
 use crate::Result;
 
 /// Canonical SQL view name for the denormalized ATIF join.
@@ -69,13 +69,13 @@ pub struct AtifViewRow {
     pub tool_call_extra: Option<Value>,
 }
 
-/// In-process join view over a [`ChronicleStore`].
+/// In-process join view over a [`NormalizedStore`].
 pub struct AtifTrajectoryView<'a> {
-    store: &'a dyn ChronicleStore,
+    store: &'a dyn NormalizedStore,
 }
 
 impl<'a> AtifTrajectoryView<'a> {
-    pub fn new(store: &'a dyn ChronicleStore) -> Self {
+    pub fn new(store: &'a dyn NormalizedStore) -> Self {
         Self { store }
     }
 
@@ -100,7 +100,7 @@ impl<'a> AtifTrajectoryView<'a> {
     }
 }
 
-fn join_session(store: &dyn ChronicleStore, session: &SessionRow) -> Result<Vec<AtifViewRow>> {
+fn join_session(store: &dyn NormalizedStore, session: &SessionRow) -> Result<Vec<AtifViewRow>> {
     let steps = store.list_steps(&session.session_id)?;
     let tool_calls = store.list_tool_calls(&session.session_id)?;
     let mut by_step: std::collections::BTreeMap<i64, Vec<&ToolCallRow>> =

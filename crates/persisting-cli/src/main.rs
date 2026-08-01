@@ -1,10 +1,8 @@
 //! CLI loads `libpersisting_engine` lazily and calls **`persisting_engine_submit`** / **`job_poll`** /
 //! **`job_take_result`**（异步 job + 进度；见 `persisting_proto::invoke_abi`）。
 
-mod agent;
 mod capture;
 mod judge_manual;
-mod runtime_cmd;
 mod stats_output;
 mod terminal_markdown;
 mod trajectory_convert;
@@ -33,10 +31,10 @@ use persisting_proto::{
 };
 use serde::{Deserialize, Serialize};
 
-use persisting_capture::engine::TurnKind;
-use persisting_engine::trajectory::{
+use persisting_gateway::engine::TurnKind;
+use persisting_pchronicle::{
     drop_lifecycle_run_partitions, expand_story_locations_blocking, list_traj_read_locations,
-    merge_traj_location, resolve_traj_read_location, TrajLocation,
+    merge_traj_location, resolve_traj_read_location, StoryCoords as TrajLocation,
 };
 use stats_output::{
     print_stats_section_divider, print_trajectory_stats_detail, print_trajectory_stats_list,
@@ -53,9 +51,8 @@ use trajectory_stdout_toml::{
 };
 
 const TRAJ_LONG_ABOUT: &str = "\
-Agent trajectory store: capture LLM traffic, inspect sessions, repair views.\n\n\
+Agent trajectory store: import events, inspect sessions, and maintain views.\n\n\
 Ingress (write):\n  \
-capture      one-shot proxy + child command\n  \
 proxy        long-running proxy (foreground)\n  \
 proxy start  background daemon\n  \
 import       post-hoc IDE / gateway JSONL\n  \
@@ -67,15 +64,9 @@ Convert formats via storyline hub:\n  \
 Omit <STORAGE> on stats/replay/materialize/truncate when \
 PERSISTING_CAPTURE_STORAGE or last `traj proxy start` is set.";
 
-const CAPTURE_AFTER_HELP: &str = "\
-\nLong-running / multi-terminal: `persisting traj proxy` or `traj proxy start` \
-(injects env only for `traj capture`).\n\
-After capture: `traj stats <store> --detail`, `traj proxy list -o <store>`.";
-
 const PROXY_AFTER_HELP: &str = "\
 \nForeground: `traj proxy -o <DIR> -c <proxy.toml>` (no subcommand).\n\
-Background: `traj proxy start -o <DIR> -c <proxy.toml>`.\n\
-One-shot with auto env: `traj capture -o <DIR> -c <proxy.toml> -- claude`.";
+Background: `traj proxy start -o <DIR> -c <proxy.toml>`.";
 
 type RonAbiVersionFn = unsafe extern "C" fn() -> u32;
 
@@ -287,7 +278,7 @@ fn rpc_request_pretty(body: RequestBody) -> Result<String> {
 #[command(
     name = "persisting",
     version,
-    about = "Persisting CLI: agent execute|bexecute, runtime|run (pVisor), traj, search"
+    about = "Persisting data CLI: pChronicle trajectories and search; use `pvisor` for Agent Runs"
 )]
 struct Cli {
     /// Path to `libpersisting_engine` dynamic library (`.dylib`, `.so`, or `.dll`).
@@ -300,41 +291,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// OpenShell-like agent entry: `execute` one Run, `bexecute` many.
-    Agent(agent::AgentArgs),
-    /// pVisor ops (`run` is a short alias).
-    #[command(visible_alias = "run")]
-    Runtime(runtime_cmd::RuntimeArgs),
     Search(SearchArgs),
-    /// Agent trajectory: capture, proxy, inspect, repair（短名 `traj`）
+    /// Agent trajectory: import, proxy, inspect, and maintain pChronicle data（短名 `traj`）
     #[command(visible_alias = "traj", long_about = TRAJ_LONG_ABOUT)]
     Trajectory(TrajectoryArgs),
-}
-
-#[derive(Debug, Args)]
-#[command(after_long_help = CAPTURE_AFTER_HELP)]
-struct CaptureRunArgs {
-    /// Trajectory output directory (default: `.persisting/capture`).
-    #[arg(
-        long,
-        short = 'o',
-        value_name = "DIR",
-        env = "PERSISTING_CAPTURE_STORAGE",
-        default_value = ".persisting/capture"
-    )]
-    output_dir: String,
-    /// Proxy config TOML (`listen`, `models`, …).
-    #[arg(long, short = 'c', value_name = "FILE")]
-    config: PathBuf,
-    /// Log every proxied / captured HTTP request to stderr and `{output_dir}/.capture/debug.log`.
-    #[arg(long)]
-    debug: bool,
-    /// Storage: `md` (Markdown only) or `lance` / `bin` (Lance canonical only; no live Markdown).
-    #[arg(long, short = 'f', value_enum, default_value_t = capture::CaptureFormat::Markdown)]
-    format: capture::CaptureFormat,
-    /// Command and arguments to execute (after `--`).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    command: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -611,8 +571,6 @@ struct TrajectoryArgs {
 
 #[derive(Debug, Subcommand)]
 enum TrajectoryCommand {
-    /// One-shot: in-process LLM proxy + run a child command (`claude`, `codex`, …).
-    Capture(CaptureRunArgs),
     /// Long-running LLM proxy (`traj proxy`) or daemon control (`traj proxy start|stop|…`).
     Proxy(ProxyArgs),
     /// Merge IDE / agentgateway events into one trajectory session.
@@ -979,7 +937,7 @@ fn resolve_traj_storage_arg(storage: Option<String>) -> Result<String> {
     if let Some(s) = storage {
         return Ok(s);
     }
-    let res = persisting_capture::runtime::service::resolve_storage_detailed(None)?;
+    let res = persisting_gateway::runtime::service::resolve_storage_detailed(None)?;
     Ok(res.storage.to_string_lossy().into_owned())
 }
 
@@ -1045,17 +1003,6 @@ fn engine_lib_names() -> [&'static str; 3] {
 fn main() -> Result<()> {
     let cli = Cli::parse_from(normalize_cli_args(std::env::args().collect()));
     match &cli.command {
-        Command::Agent(args) => {
-            let code = tokio::runtime::Runtime::new()
-                .context("tokio runtime")?
-                .block_on(agent::run_agent(args.clone()))?;
-            if code != 0 {
-                std::process::exit(code);
-            }
-        }
-        Command::Runtime(args) => {
-            runtime_cmd::run_runtime(args.clone())?;
-        }
         Command::Search(args) => {
             let mut lazy = LazyEngine::new(&cli);
             run_search(&mut lazy, args)?;
@@ -1250,7 +1197,7 @@ struct TrajectoryAppendJob {
     agent_id: String,
     session_id: String,
     root_session_id: Option<String>,
-    record: persisting_capture::record::CaptureRecord,
+    record: persisting_gateway::record::CaptureRecord,
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -1263,7 +1210,7 @@ struct TrajectoryBatchKey {
 
 const CAPTURE_TRAJECTORY_BATCH: usize = 32;
 
-fn should_flush_capture_record(record: &persisting_capture::record::CaptureRecord) -> bool {
+fn should_flush_capture_record(record: &persisting_gateway::record::CaptureRecord) -> bool {
     matches!(
         record.kind.as_str(),
         "llm.request" | "llm.response" | "llm.spawn_link" | "session.started" | "session.ended"
@@ -1281,7 +1228,7 @@ fn records_ronl_from_lines(lines: &[String]) -> String {
 fn write_trajectory_dead_letter(key: &TrajectoryBatchKey, lines: &[String], error: &str) {
     let storage_path = std::path::Path::new(&key.storage);
     let records_ronl = records_ronl_from_lines(lines);
-    if let Err(dl) = persisting_capture::dead_letter::append_trajectory_dead_letter(
+    if let Err(dl) = persisting_gateway::dead_letter::append_trajectory_dead_letter(
         storage_path,
         &key.agent_id,
         &key.session_id,
@@ -1335,11 +1282,11 @@ fn build_capture_trajectory_sink(
     agent_id: String,
     format: capture::CaptureFormat,
 ) -> Result<(
-    std::sync::Arc<dyn persisting_capture::sink::CaptureSink>,
+    std::sync::Arc<dyn persisting_gateway::sink::CaptureEventSink>,
     TrajectoryAppendWorker,
 )> {
     if !format.writes_lance() {
-        let sink = std::sync::Arc::new(persisting_capture::sink::SeqOnlySink::new());
+        let sink = std::sync::Arc::new(persisting_gateway::sink::SeqOnlySink::new());
         return Ok((sink, TrajectoryAppendWorker::noop()));
     }
     let engine_path = resolve_engine_path(core_lib.as_deref())?;
@@ -1372,7 +1319,11 @@ fn build_capture_trajectory_sink(
                     session_id: job.session_id,
                     root_session_id: job.root_session_id,
                 };
-                let line = persisting_capture::record::record_to_engine_line(&job.record)?;
+                let line =
+                    persisting_pchronicle::encode_event_lines(std::slice::from_ref(&job.record))?
+                        .into_iter()
+                        .next()
+                        .context("encode capture event produced no line")?;
                 let flush_now = should_flush_capture_record(&job.record);
                 let batch = batches.entry(key.clone()).or_default();
                 batch.push(line);
@@ -1393,7 +1344,7 @@ fn build_capture_trajectory_sink(
     });
 
     let sink_storage = storage;
-    let callback_sink = std::sync::Arc::new(persisting_capture::sink::CallbackSink::new(
+    let callback_sink = std::sync::Arc::new(persisting_gateway::sink::CallbackSink::new(
         agent_id,
         move |route, agent_id, record| {
             tx.send(TrajectoryAppendJob {
@@ -1407,7 +1358,7 @@ fn build_capture_trajectory_sink(
             Ok(())
         },
     ));
-    let sink: std::sync::Arc<dyn persisting_capture::sink::CaptureSink> = callback_sink;
+    let sink: std::sync::Arc<dyn persisting_gateway::sink::CaptureEventSink> = callback_sink;
     Ok((
         sink,
         TrajectoryAppendWorker {
@@ -1417,52 +1368,19 @@ fn build_capture_trajectory_sink(
     ))
 }
 
-fn run_capture_run(lazy: &mut LazyEngine<'_>, args: &CaptureRunArgs) -> Result<i32> {
-    let storage = PathBuf::from(&args.output_dir);
-    let storage = storage.canonicalize().unwrap_or(storage);
-    let config = persisting_capture::config::ProxyConfig::from_file(&args.config)
-        .with_context(|| format!("load proxy config {}", args.config.display()))?;
-    let agent_id = config.agent_id.clone();
-    let (sink, mut worker) = build_capture_trajectory_sink(
-        lazy.cli.core_lib.clone(),
-        storage.display().to_string(),
-        agent_id.clone(),
-        args.format,
-    )?;
-    let code = capture::cmd_run(capture::RunOptions {
-        output_dir: storage.clone(),
-        config: args.config.clone(),
-        command: args.command.clone(),
-        debug: args.debug,
-        format: args.format,
-        sink,
-    })?;
-    worker.shutdown();
-    if args.format.stream_markdown_in_engine() {
-        if let Err(e) =
-            capture::reconcile::reconcile_run_after_flush(&storage, &agent_id, args.format, |req| {
-                invoke_trajectory_replay(lazy, req)
-            })
-        {
-            eprintln!("[persisting-cli] capture reconcile skipped: {e:#}");
-        }
-    }
-    Ok(code)
-}
-
 fn load_storage_agent_id(storage: &Path) -> String {
     for name in ["proxy.toml", "proxy.yaml"] {
         let path = storage.join(name);
         if path.is_file() {
-            if let Ok(cfg) = persisting_capture::config::ProxyConfig::from_file(&path) {
+            if let Ok(cfg) = persisting_gateway::config::ProxyConfig::from_file(&path) {
                 return cfg.agent_id;
             }
         }
     }
-    if let Ok(Some(state)) = persisting_capture::runtime::service::CaptureDaemonState::read(storage)
+    if let Ok(Some(state)) = persisting_gateway::runtime::service::CaptureDaemonState::read(storage)
     {
         if let Ok(cfg) =
-            persisting_capture::config::ProxyConfig::from_file(Path::new(&state.config_path))
+            persisting_gateway::config::ProxyConfig::from_file(Path::new(&state.config_path))
         {
             return cfg.agent_id;
         }
@@ -1528,9 +1446,9 @@ impl Drop for TrajectoryAppendWorker {
 fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Result<()> {
     let storage_path = PathBuf::from(&args.output_dir);
     let _run_session =
-        persisting_capture::runtime::run_env::ensure_serve_run_session(&storage_path)
+        persisting_gateway::runtime::run_env::ensure_serve_run_session(&storage_path)
             .with_context(|| format!("ensure serve run_session for {}", storage_path.display()))?;
-    let applied = persisting_capture::runtime::run_env::apply_daemon_env(&storage_path)
+    let applied = persisting_gateway::runtime::run_env::apply_daemon_env(&storage_path)
         .with_context(|| format!("apply daemon env snapshot for {}", storage_path.display()))?;
     if !applied.is_empty() {
         eprintln!(
@@ -1540,7 +1458,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
         );
     }
 
-    let config = persisting_capture::config::ProxyConfig::from_file(&args.config)
+    let config = persisting_gateway::config::ProxyConfig::from_file(&args.config)
         .with_context(|| format!("load proxy config {}", args.config.display()))?;
 
     capture::enable_capture_debug(
@@ -1573,7 +1491,7 @@ fn run_capture_serve(lazy: &mut LazyEngine<'_>, args: &CaptureServeArgs) -> Resu
     )?;
 
     let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
-    rt.block_on(persisting_capture::proxy::serve(
+    rt.block_on(persisting_gateway::serve(
         config,
         &args.output_dir,
         sink,
@@ -2032,10 +1950,6 @@ fn stats_detail_section_label(loc: &TrajLocation) -> String {
 
 fn run_trajectory(lazy: &mut LazyEngine<'_>, args: &TrajectoryArgs) -> Result<()> {
     match &args.command {
-        TrajectoryCommand::Capture(args) => {
-            let code = run_capture_run(lazy, args)?;
-            std::process::exit(code);
-        }
         TrajectoryCommand::Proxy(args) => run_traj_proxy(lazy, args)?,
         TrajectoryCommand::Import(args) => run_traj_import(lazy, args)?,
         TrajectoryCommand::ReplayDeadLetter(args) => run_replay_dead_letter(lazy, args)?,
@@ -2404,7 +2318,7 @@ fn run_traj_judge(lazy: &mut LazyEngine<'_>, args: &TrajectoryJudgeArgs) -> Resu
     Ok(())
 }
 
-fn dialogue_turn_count(story: &persisting_capture::engine::Story) -> usize {
+fn dialogue_turn_count(story: &persisting_gateway::engine::Story) -> usize {
     story
         .turns
         .iter()
@@ -2421,7 +2335,7 @@ fn manual_judge_incomplete(
     loc: &TrajLocation,
     scope: JudgeScope,
     rubrics: &[String],
-    story: &persisting_capture::engine::Story,
+    story: &persisting_gateway::engine::Story,
 ) -> Result<bool> {
     let js = invoke_trajectory_judge_stats(
         lazy,
@@ -2530,8 +2444,8 @@ fn read_input(path: &str) -> Result<String> {
 mod tests {
     use super::*;
 
-    fn capture_record(kind: &str) -> persisting_capture::record::CaptureRecord {
-        persisting_capture::record::CaptureRecord {
+    fn capture_record(kind: &str) -> persisting_gateway::record::CaptureRecord {
+        persisting_gateway::record::CaptureRecord {
             seq: 0,
             source: "test".to_string(),
             kind: kind.to_string(),

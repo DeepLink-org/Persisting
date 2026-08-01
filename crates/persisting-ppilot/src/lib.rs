@@ -7,19 +7,13 @@
 //!
 //! # Design sketch
 //!
-//! - **One CLI** = `persisting ppilot` (`compute` remains a compatibility alias)
-//! - **Driver** owns plan emit + dispatch (least-loaded asks workers directly)
-//! - **Launch with torchrun** for multi-process; local `-w N` for single-process
-//! - **Plan script** (user Python): `plan()` + `execute(item)`; argv after `--`
+//! The driver owns plan emission and dispatch. A Python workload supplies
+//! `plan()` and `execute(item)`; an embedding host chooses local workers or a
+//! torchrun-created multi-process environment. pPilot currently has no public
+//! top-level Persisting command.
 //!
-//! ```text
-//! torchrun --nproc_per_node=4 -- persisting ppilot plan.py -- --n 2
-//!   rank0: Driver (plan + dispatch) + worker slots
-//!   rankN: worker slots
-//! ```
-//!
-//! Most modules are `pub(crate)`; only surfaces needed by the CLI binary and
-//! integration tests are re-exported or left as `pub mod`.
+//! Most modules are `pub(crate)`; only embedding and integration-test surfaces
+//! are re-exported or left as `pub mod`.
 
 pub mod blocks;
 pub(crate) mod check;
@@ -45,7 +39,7 @@ pub(crate) mod skip;
 pub mod task;
 pub(crate) mod worker;
 
-// ── Public surface (CLI + integration tests) ─────────────────────────
+// ── Public surface (embedding + integration tests) ──────────────────
 
 pub use check::{run_check, run_self_test, CheckOptions, CheckReport};
 pub use checkpoint::CheckpointLedger;
@@ -58,7 +52,7 @@ pub use skip::SkipSet;
 pub use task::{TaskExpr, TaskResult};
 pub use worker::{WorkerActor, WorkerCommand, WorkerReply};
 
-// Sink types used by CLI orchestration (re-exported so `cli` stays thin).
+// Sink types used by orchestration hosts.
 pub use sink::{JsonlFileSink, ResultSink, TeeSink};
 #[cfg(feature = "traj-sink")]
 pub use sink_traj::LanceResultSink;

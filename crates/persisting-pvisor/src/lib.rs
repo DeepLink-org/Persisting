@@ -1,32 +1,38 @@
-//! pVisor — Portable Agent Execution Runtime.
+//! pVisor — foreground Agent Run manager and portable execution runtime.
 //!
-//! Library API for one Agent Run. Hosts (CLI, pPilot, …) call [`PVisor::run`]
-//! directly; there is no separate control plane.
+//! pVisor is a top-level Persisting component alongside pPilot and pChronicle.
+//! Hosts call [`PVisor::run`] directly; pVisor assembles execution, control,
+//! network, filesystem, and the optional internal Gateway driver.
 //!
-//! Attempt prepare (capture proxy, network policy, embedded FUSE overlay) lives under
-//! [`runtime`] and is driven from the shared capture TOML.
+//! pChronicle is a peer history service, not a child module. A trajectory sink
+//! connects Gateway events to a pChronicle-backed adapter when requested.
 
-pub mod runtime;
+pub mod cli;
+mod runtime;
 
-mod access;
+mod config;
+mod control;
 mod event;
 mod executor;
 mod process;
 mod pvisor;
 mod util;
 
-pub use access::{
-    host_matches, normalize_host, parse_network_rule, AccessController, NetworkGuard, NetworkRule,
-    PolicyAccessController,
+pub use config::{
+    ChronicleMode, ChronicleSettings, GatewayDriverConfig, GatewayMode, GatewaySettings,
+    OverlayFsBackend, OverlayFsCommit, OverlayFsMode, OverlayFsSettings, OverlayNetMode,
+    OverlayNetPolicy, OverlayNetSettings, PVisorConfig, RunConfig, RunPolicy, RunSettings,
+    RunStdio,
+};
+pub use control::{
+    host_matches, normalize_host, parse_network_rule, ControlController, ControlEffect,
+    ControlMachine, ControlReason, ControlRequest, ControlState, ControlTransition, NetworkGuard,
+    NetworkRule, PolicyControlController,
 };
 pub use event::{EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher};
 pub use executor::{AttemptContext, RunExecutor};
+pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;
 pub use pvisor::{PVisor, PVisorBuilder, PVisorError, RunEventStream, RunHandle};
-pub use runtime::{
-    apply_overlay, discard_overlay, load_overlay_by_id, load_overlay_record, mount_overlay,
-    mount_overlay_record, overlay_hint_from_config, overlay_status, resolve_overlay_workspace,
-    AttemptPrepareOpts, AttemptSession, ImplantPlan, OverlayError, OverlayHint, OverlayMount,
-    OverlayRecord, OverlayState, OverlayStatus, OverlayUpper, RuntimeCapabilities,
-};
+pub use runtime::{ImplantPlan, OverlayHint, RuntimeCapabilities};
 pub use util::unix_now_ms;

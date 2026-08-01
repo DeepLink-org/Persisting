@@ -2,7 +2,8 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use persisting_capture::record::CaptureRecord;
+use persisting_gateway::record::CaptureRecord;
+use persisting_gateway::record::CaptureRecordExt;
 use persisting_proto::TrajectoryStatsResponse;
 use std::collections::HashSet;
 

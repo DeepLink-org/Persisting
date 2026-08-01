@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use persisting_capture::injection::capture_openai_v1_base;
+use persisting_gateway::injection::capture_openai_v1_base;
 
 use super::CaptureFormat;
 
@@ -50,10 +50,7 @@ pub fn eprint_serve_banner(info: &ServeBanner<'_>) {
     eprintln!("  codex -c 'openai_base_url=\"{openai_v1}\"'");
     eprintln!();
     eprintln!("One-shot in-process (stop proxy on same -o first):");
-    eprintln!(
-        "  persisting traj capture -o {store} -c <proxy.toml> -f {} -- claude",
-        info.format.as_str()
-    );
+    eprintln!("  pvisor run --config <run.toml> --workspace <run-dir> -- claude");
     eprintln!();
     eprintln!("Inspect:");
     eprintln!("  persisting traj proxy list -o {store}");

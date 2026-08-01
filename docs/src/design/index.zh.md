@@ -7,9 +7,11 @@
 
 | 子系统 | 先读 | 再读 |
 |---|---|---|
+| pVisor | [Agent 基础设施](agent-infrastructure.md) | 独立 `pvisor` CLI → [Gateway 驱动](gateway.md) |
+| pChronicle | [Agent 基础设施](agent-infrastructure.md) | [轨迹存储](trajectory.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
+| pPilot | [pPilot 控制面](ppilot.md) | 内部库；暂无公共 CLI |
 | Queue | [队列持久化](architecture.zh.md) | [自定义后端指南](../guide/custom-backends.md) |
-| Capture 与轨迹 | [Capture 管线](capture.md) | [轨迹存储](trajectory.md) → [Markdown 格式](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
-| pPilot | [pPilot 控制面](ppilot.md) | [pPilot 指南](../guide/ppilot.md) |
+| Gateway 采集驱动 | [Gateway 管线](gateway.md) | [Markdown 格式](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
 | Tensor Memory（实验性） | [TTAS 模型](tensor-address-space.md) | [分层存储](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
 | CLI 边界 | [CLI 整体架构](cli.md) | **参考**中的命令文档 |
 
@@ -17,7 +19,8 @@
 
 | 区域 | 状态 | 说明 |
 |---|---|---|
-| Capture、Queue、Search、pPilot | 已实现 | 各自有独立的产品路径和存储模型 |
+| pVisor、pPilot、pChronicle | 已实现 | 并列的 Agent 执行、编排与历史组件 |
+| Gateway、OverlayNet、OverlayFS | 已实现 | pVisor 运行时驱动；Gateway 提供 capture 语义 |
 | TTAS / 分层张量内存 | 实验性 | 已有 host/SSD 工作；GPU 与跨节点数据路径仍在规划 |
 | 竞品与系统比较 | 参考 | 为后续设计提供输入，不构成产品承诺 |
 

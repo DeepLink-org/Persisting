@@ -131,7 +131,6 @@ nav:
       - Choose a Capability: guide/index.md
   - Guides:
       - Capture agent trajectories: guide/capture.md
-      - Run batches with pPilot: guide/ppilot.md
       - Index and search documents: guide/search.md
       - Stream events with Queue: guide/queue.md
       - Use Tensor Memory (experimental): guide/tensor-memory.md
@@ -143,18 +142,21 @@ nav:
       - Search API: api/search.md
       - TTAS types: api/tensor-address-space.md
       - CLI architecture and loading: design/cli.md
+      - pVisor command reference: design/cli-pvisor.md
       - traj command reference: design/cli-traj.md
-      - Capture command reference: design/cli-capture.md
       - search command reference: design/cli-search.md
   - Architecture & Internals:
       - Overview and maturity: design/index.md
       - Agent infrastructure: design/agent-infrastructure.md
-      - Queue persistence: design/architecture.md
-      - Capture and trajectory:
-          - Capture pipeline: design/capture.md
+      - pVisor execution runtime:
+          - Gateway capture driver: design/gateway.md
+          - OverlayNet transparent interception: design/overlaynet.md
+          - CLI and runtime boundary: design/cli.md
+      - pPilot orchestration: design/ppilot.md
+      - pChronicle history store:
           - Trajectory storage: design/trajectory.md
           - Trajectory Markdown format: design/trajectory-format.md
-      - pPilot control plane: design/ppilot.md
+      - Queue persistence: design/architecture.md
       - Tensor memory (experimental):
           - TTAS model: design/tensor-address-space.md
           - Distributed tiered storage: design/distributed-tiered-storage.md
@@ -163,6 +165,7 @@ nav:
       - Index: rfcs/index.md
       - 0001 Storyline format: rfcs/0001-storyline-format.md
       - 0002 Events format: rfcs/0002-events-format.md
+      - 0003 pChronicle ownership: rfcs/0003-pchronicle-ownership.md
   - Engineering Notes:
       - Implementation status: dev/index.md
       - Tiered-storage implementation steps: dev/tiered-storage-steps.md

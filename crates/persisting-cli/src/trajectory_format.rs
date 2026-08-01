@@ -4,9 +4,9 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
-use persisting_capture::record::json_to_engine_line;
-use persisting_capture::trajectory_convert::markdown_document_to_engine_lines;
-use persisting_pchronicle::is_trajectory_markdown_path;
+use persisting_pchronicle::{
+    encode_event_lines, is_trajectory_markdown_path, markdown_document_to_event_lines, EventRecord,
+};
 use persisting_proto::TrajectoryStorageFormat;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -19,9 +19,6 @@ pub enum TrajectoryStorageCli {
     Lance,
     /// TLV Markdown session file (read/materialize view).
     Markdown,
-    /// Legacy: append → Lance only; read/stats → same as `auto`. Hidden from help.
-    #[value(hide = true)]
-    Both,
 }
 
 impl From<TrajectoryStorageCli> for TrajectoryStorageFormat {
@@ -30,7 +27,6 @@ impl From<TrajectoryStorageCli> for TrajectoryStorageFormat {
             TrajectoryStorageCli::Auto => TrajectoryStorageFormat::Auto,
             TrajectoryStorageCli::Lance => TrajectoryStorageFormat::Lance,
             TrajectoryStorageCli::Markdown => TrajectoryStorageFormat::Markdown,
-            TrajectoryStorageCli::Both => TrajectoryStorageFormat::Both,
         }
     }
 }
@@ -72,7 +68,7 @@ impl TrajectoryFormatManager {
 
     pub fn prepare_append_batch(format: TrajectoryAddFormat, raw: &str) -> Result<String> {
         match format {
-            TrajectoryAddFormat::Markdown => markdown_document_to_engine_lines(raw),
+            TrajectoryAddFormat::Markdown => Ok(markdown_document_to_event_lines(raw)?.join("\n")),
             TrajectoryAddFormat::Jsonl => lines_from_jsonl(raw),
             TrajectoryAddFormat::Toml => lines_from_toml(raw),
             TrajectoryAddFormat::Auto => {
@@ -125,7 +121,7 @@ fn lines_from_jsonl(src: &str) -> Result<String> {
         .map(|(i, line)| {
             let v: serde_json::Value = serde_json::from_str(line.trim())
                 .with_context(|| format!("jsonl line {}", i + 1))?;
-            json_to_engine_line(&v)
+            event_value_to_engine_line(v).with_context(|| format!("jsonl line {}", i + 1))
         })
         .collect::<Result<Vec<_>>>()
         .map(|lines| lines.join("\n"))
@@ -142,10 +138,18 @@ fn lines_from_toml(src: &str) -> Result<String> {
         .enumerate()
         .map(|(i, item)| {
             let v = serde_json::to_value(item).with_context(|| format!("toml records[{i}]"))?;
-            json_to_engine_line(&v)
+            event_value_to_engine_line(v).with_context(|| format!("toml records[{i}]"))
         })
         .collect::<Result<Vec<_>>>()
         .map(|lines| lines.join("\n"))
+}
+
+fn event_value_to_engine_line(value: serde_json::Value) -> Result<String> {
+    let event: EventRecord = serde_json::from_value(value).context("decode EventRecord")?;
+    encode_event_lines(&[event])?
+        .into_iter()
+        .next()
+        .context("encode EventRecord produced no line")
 }
 
 #[cfg(test)]
@@ -212,7 +216,7 @@ mod tests {
 
     #[test]
     fn prepare_append_batch_jsonl() {
-        let raw = r#"{"kind":"note","payload":{"content":"x"}}"#;
+        let raw = r#"{"seq":0,"source":"test","kind":"note","timestamp":null,"session_id":null,"agent_id":null,"parent_uuid":null,"trace_id":null,"call_id":null,"subagent_id":null,"parent_agent_id":null,"branch":null,"parent_call_id":null,"payload":{"content":"x"}}"#;
         let out =
             TrajectoryFormatManager::prepare_append_batch(TrajectoryAddFormat::Jsonl, raw).unwrap();
         assert!(out.contains("kind"));
@@ -225,15 +229,11 @@ mod tests {
             TrajectoryStorageFormat::from(TrajectoryStorageCli::Lance),
             TrajectoryStorageFormat::Lance
         ));
-        assert!(matches!(
-            TrajectoryStorageFormat::from(TrajectoryStorageCli::Both),
-            TrajectoryStorageFormat::Both
-        ));
     }
 
     #[test]
     fn resolve_capture_run_dir_to_header_session_stem() {
-        use persisting_engine::trajectory::resolve_traj_read_location;
+        use persisting_pchronicle::resolve_traj_read_location;
 
         let path = "store/deepseek-proxy/run-20260529-020451-705391000";
         if !std::path::Path::new(path).is_dir() {
