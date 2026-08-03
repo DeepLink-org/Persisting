@@ -52,7 +52,9 @@ pub use control::{
     ControlEffect, ControlMachine, ControlReason, ControlRequest, ControlState, ControlTransition,
     NetworkGuard, NetworkHostRule, NetworkRule, PolicyControlController,
 };
-pub use event::{EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher};
+pub use event::{
+    EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
+};
 pub use executor::{AttemptContext, RunExecutor};
 pub use kvm::KvmExecutor;
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;

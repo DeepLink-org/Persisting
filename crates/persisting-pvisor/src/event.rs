@@ -6,9 +6,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
+/// Whether an append error proves that the event was not persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventAppendErrorKind {
+    /// The sink guarantees that this event was not committed.
+    Rejected,
+    /// The caller cannot know whether the sink committed the event.
+    Unknown,
+}
+
 #[async_trait]
 pub trait EventSink: Send + Sync {
     async fn append(&self, event: &EventEnvelope) -> Result<()>;
+
+    /// Errors are ambiguous by default. A sink may opt into `Rejected` only
+    /// when it can prove the append had no durable effect.
+    fn classify_append_error(&self, _error: &anyhow::Error) -> EventAppendErrorKind {
+        EventAppendErrorKind::Unknown
+    }
 }
 
 #[derive(Debug, Default)]
@@ -79,6 +94,10 @@ impl RunEventPublisher {
 
     pub fn subscribe(&self) -> broadcast::Receiver<EventEnvelope> {
         self.live.subscribe()
+    }
+
+    pub(crate) fn classify_append_error(&self, error: &anyhow::Error) -> EventAppendErrorKind {
+        self.sink.classify_append_error(error)
     }
 
     pub async fn publish(

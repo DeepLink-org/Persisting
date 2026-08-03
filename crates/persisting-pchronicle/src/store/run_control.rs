@@ -235,15 +235,17 @@ impl RunControlStore {
             let Some(current) = current else {
                 return Ok(Mutation::Unchanged(false));
             };
+            let now = unix_now_ms();
             let matches = current.commit.is_none()
-                && current
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.epoch == epoch && lease.owner == owned_owner);
+                && current.lease.as_ref().is_some_and(|lease| {
+                    lease.epoch == epoch
+                        && lease.owner == owned_owner
+                        && lease.expires_at_unix_ms > now
+                });
             if !matches {
                 return Ok(Mutation::Unchanged(false));
             }
-            let expires_at = unix_now_ms().saturating_add(ttl_ms.max(1));
+            let expires_at = now.saturating_add(ttl_ms.max(1));
             let record = next_record(Some(current), owned_run_id.clone(), |record| {
                 if let Some(lease) = record.lease.as_mut() {
                     lease.expires_at_unix_ms = expires_at;
@@ -677,29 +679,53 @@ mod tests {
             .unwrap();
         let run = RunId::new("run-renew");
         let lease = store
-            .acquire_lease(&run, Some("task-renew"), "owner-a", 20)
+            .acquire_lease(&run, Some("task-renew"), "owner-a", 1_000)
             .await
             .unwrap();
         let LeaseAcquireOutcome::Acquired(lease) = lease else {
             panic!()
         };
         assert!(!store
-            .renew_lease(&run, lease.epoch, "owner-b", 100)
+            .renew_lease(&run, lease.epoch, "owner-b", 2_000)
             .await
             .unwrap());
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         assert!(store
-            .renew_lease(&run, lease.epoch, "owner-a", 100)
+            .renew_lease(&run, lease.epoch, "owner-a", 2_000)
             .await
             .unwrap());
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let renewed = store.get(&run).await.unwrap().unwrap().lease.unwrap();
+        assert!(renewed.expires_at_unix_ms > lease.expires_at_unix_ms);
         assert!(matches!(
             store
-                .acquire_lease(&run, Some("task-renew"), "owner-b", 100)
+                .acquire_lease(&run, Some("task-renew"), "owner-b", 2_000)
                 .await
                 .unwrap(),
             LeaseAcquireOutcome::Held(held) if held.epoch == lease.epoch
         ));
+    }
+
+    #[tokio::test]
+    async fn renewal_cannot_revive_an_expired_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunControlStore::open(dir.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let run = RunId::new("run-expired-renewal");
+        let lease = store
+            .acquire_lease(&run, Some("task-expired"), "owner", 5)
+            .await
+            .unwrap();
+        let LeaseAcquireOutcome::Acquired(lease) = lease else {
+            panic!()
+        };
+        while unix_now_ms() <= lease.expires_at_unix_ms {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        assert!(!store
+            .renew_lease(&run, lease.epoch, "owner", 10_000)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

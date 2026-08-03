@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,7 +23,31 @@ use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const RESULT_JOURNAL_SCHEMA_VERSION: u32 = 1;
+pub const MIN_LEASE_TTL_MS: u64 = 1_000;
 static OWNER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+enum LeaseRenewalOutcome {
+    Stopped,
+    DeadlineExceeded,
+    Finished(Result<bool>),
+}
+
+async fn wait_for_lease_renewal<F>(
+    stop: &CancellationToken,
+    deadline: tokio::time::Instant,
+    renewal: F,
+) -> LeaseRenewalOutcome
+where
+    F: Future<Output = Result<bool>>,
+{
+    tokio::select! {
+        _ = stop.cancelled() => LeaseRenewalOutcome::Stopped,
+        renewal = tokio::time::timeout_at(deadline, renewal) => match renewal {
+            Ok(result) => LeaseRenewalOutcome::Finished(result),
+            Err(_) => LeaseRenewalOutcome::DeadlineExceeded,
+        },
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -146,6 +171,10 @@ impl RunCoordinator {
         lease_ttl_ms: u64,
         run_id_prefix: Option<String>,
     ) -> Result<Self> {
+        anyhow::ensure!(
+            lease_ttl_ms >= MIN_LEASE_TTL_MS,
+            "lease TTL must be at least {MIN_LEASE_TTL_MS}ms; got {lease_ttl_ms}ms"
+        );
         let journal_root = sink_root.into().join(".ppilot-state").join("results");
         tokio::fs::create_dir_all(&journal_root)
             .await
@@ -153,7 +182,7 @@ impl RunCoordinator {
         Ok(Self {
             control: Arc::new(RunControlStore::open(control_root).await?),
             journal_root,
-            lease_ttl_ms: lease_ttl_ms.max(1),
+            lease_ttl_ms,
             owner_id: unique_owner_id(),
             run_id_prefix,
             orphaned_runs: Arc::new(Mutex::new(BTreeSet::new())),
@@ -191,23 +220,43 @@ impl RunCoordinator {
         let heartbeat_run_id = run_id.clone();
         tokio::spawn(async move {
             let interval_ms = (ttl_ms / 3).clamp(1, 10_000);
+            let interval = std::time::Duration::from_millis(interval_ms);
+            let mut ticker =
+                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_success = tokio::time::Instant::now();
             loop {
                 tokio::select! {
                     _ = heartbeat_stop.cancelled() => break,
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(interval_ms)) => {}
+                    _ = ticker.tick() => {}
                 }
-                match control
-                    .renew_lease(&heartbeat_run_id, lease_epoch, &owner, ttl_ms)
-                    .await
-                {
-                    Ok(true) => last_success = tokio::time::Instant::now(),
-                    Ok(false) => {
+                let deadline = last_success + std::time::Duration::from_millis(ttl_ms);
+                let renewal = wait_for_lease_renewal(
+                    &heartbeat_stop,
+                    deadline,
+                    control.renew_lease(&heartbeat_run_id, lease_epoch, &owner, ttl_ms),
+                )
+                .await;
+                match renewal {
+                    LeaseRenewalOutcome::Stopped => break,
+                    LeaseRenewalOutcome::DeadlineExceeded => {
+                        tracing::warn!(
+                            run_id = %heartbeat_run_id,
+                            lease_epoch,
+                            "Run lease renewal exceeded its validity deadline"
+                        );
+                        task_cancel.cancel();
+                        break;
+                    }
+                    LeaseRenewalOutcome::Finished(Ok(true)) => {
+                        last_success = tokio::time::Instant::now()
+                    }
+                    LeaseRenewalOutcome::Finished(Ok(false)) => {
                         tracing::warn!(run_id = %heartbeat_run_id, lease_epoch, "Run lease ownership lost");
                         task_cancel.cancel();
                         break;
                     }
-                    Err(error) => {
+                    LeaseRenewalOutcome::Finished(Err(error)) => {
                         tracing::warn!(run_id = %heartbeat_run_id, lease_epoch, %error, "Run lease renewal failed");
                         if last_success.elapsed() >= std::time::Duration::from_millis(ttl_ms) {
                             task_cancel.cancel();
@@ -777,25 +826,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn renewal_wait_honors_the_lease_deadline() {
+        let stop = CancellationToken::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            wait_for_lease_renewal(
+                &stop,
+                tokio::time::Instant::now() + std::time::Duration::from_millis(10),
+                std::future::pending(),
+            ),
+        )
+        .await
+        .expect("renewal deadline should not hang");
+
+        assert!(matches!(outcome, LeaseRenewalOutcome::DeadlineExceeded));
+    }
+
+    #[tokio::test]
+    async fn lease_ttl_below_minimum_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = RunCoordinator::open(
+            dir.path().to_string_lossy(),
+            dir.path().join("sink"),
+            MIN_LEASE_TTL_MS - 1,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("lease TTL must be at least 1000ms"));
+    }
+
+    #[tokio::test]
     async fn heartbeat_keeps_long_attempt_lease_unexpired() {
         let dir = tempfile::tempdir().unwrap();
-        let coordinator =
-            RunCoordinator::open(dir.path().to_string_lossy(), dir.path().join("sink"), 30)
-                .await
-                .unwrap();
+        let coordinator = RunCoordinator::open(
+            dir.path().to_string_lossy(),
+            dir.path().join("sink"),
+            MIN_LEASE_TTL_MS,
+        )
+        .await
+        .unwrap();
         let run = RunId::new("run-heartbeat");
         let epoch = coordinator
             .acquire_lease(&run, "task-heartbeat", coordinator.owner_id())
             .await
             .unwrap();
+        let initial_expiry = coordinator
+            .control
+            .get(&run)
+            .await
+            .unwrap()
+            .unwrap()
+            .lease
+            .unwrap()
+            .expires_at_unix_ms;
         let heartbeat = coordinator
             .start_lease_heartbeat(run.clone(), epoch, CancellationToken::new())
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(90)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let expiry = coordinator
+                    .control
+                    .get(&run)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .lease
+                    .unwrap()
+                    .expires_at_unix_ms;
+                if expiry > initial_expiry {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("heartbeat should durably renew the lease");
         assert!(matches!(
             coordinator
                 .control
-                .acquire_lease(&run, Some("task-heartbeat"), "competitor", 30)
+                .acquire_lease(
+                    &run,
+                    Some("task-heartbeat"),
+                    "competitor",
+                    MIN_LEASE_TTL_MS,
+                )
                 .await
                 .unwrap(),
             LeaseAcquireOutcome::Held(held) if held.epoch == epoch

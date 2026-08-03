@@ -65,7 +65,7 @@ pub struct PPilotArgs {
     #[arg(long, env = "PERSISTING_PPILOT_CONTROL_URI", value_name = "URI")]
     pub control_uri: Option<String>,
 
-    /// Lifetime advertised by each newly issued Run lease.
+    /// Lifetime advertised by each newly issued Run lease (minimum: 1000ms).
     #[arg(long, default_value_t = 30_000)]
     pub lease_ttl_ms: u64,
 

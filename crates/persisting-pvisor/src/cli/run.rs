@@ -19,11 +19,11 @@ use crate::config::{
     OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy,
     RunStdio,
 };
-use crate::runtime::{default_run_home, resolve_run, RunLease, RunLineage, RunRecord};
+use crate::runtime::{default_run_home, resolve_run, RunLineage, RunRecord};
 use crate::{
-    latest_logical_checkpoint, restore_logical_checkpoint, unix_now_ms, ContainerExecutor,
-    GatewayDriverConfig, KvmExecutor, LogicalCheckpoint, OverlayHint, PVisor, ProcessExecutor,
-    RunBundle, RunExecutor, TrajectoryEventSink,
+    latest_logical_checkpoint, restore_logical_checkpoint, ContainerExecutor, GatewayDriverConfig,
+    KvmExecutor, LogicalCheckpoint, OverlayHint, PVisor, ProcessExecutor, RunBundle, RunExecutor,
+    TrajectoryEventSink,
 };
 
 use super::trajectory::{chronicle_sink, ChronicleWriter};
@@ -679,7 +679,6 @@ async fn execute_config(
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Kvm => Arc::new(KvmExecutor::new(config.kvm.clone())?),
     };
-    let executor_descriptor = executor.descriptor();
     let mut builder = PVisor::builder()
         .storage(&storage)
         .trajectory_sink(sink)
@@ -724,41 +723,6 @@ async fn execute_config(
             .insert("pvisor.safe".into(), serde_json::Value::Bool(true));
     }
 
-    let managed_by_driver = config.overlayfs.mode == OverlayFsMode::Overlay
-        || config.overlaynet.mode == OverlayNetMode::Proxy;
-    let mut ambient = if !managed_by_driver {
-        let record = RunRecord {
-            schema_version: 1,
-            run_id: spec.run_id.as_str().to_string(),
-            parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
-            task_id: spec.task_id.clone(),
-            session_id: spec.run_id.as_str().to_string(),
-            agent: spec.agent.name.clone(),
-            pid: std::process::id(),
-            command: config.run.command.clone(),
-            executor: Some(executor_descriptor.clone()),
-            state: "running".into(),
-            started_at_unix_ms: unix_now_ms(),
-            finished_at_unix_ms: None,
-            storage: storage.clone(),
-            overlaynet_listen: None,
-            network_interception: None,
-            network_interception_metrics: None,
-            gateway_listen: None,
-            network: serde_json::to_value(&spec.capabilities.network)?,
-            network_policy: None,
-            overlay: None,
-            overlay_lowers: Vec::new(),
-            lineage: lineage.clone(),
-            orchestration: Default::default(),
-        };
-        let lease = RunLease::acquire(&record.stage_dir())?;
-        record.write()?;
-        Some((record, lease))
-    } else {
-        None
-    };
-
     if safe_profile_requested {
         eprintln!("pVisor safe profile: staged workspace + cooperative network review");
         eprintln!("workspace: {}", storage.display());
@@ -775,32 +739,20 @@ async fn execute_config(
         }
     }
     let handle = pvisor.run(spec).await?;
-    let agent_abi = handle.agent_abi();
     let result = handle.wait().await?;
-    if let Some((record, _lease)) = &mut ambient {
-        record.state = match result.state {
-            RunState::Completed => "completed",
-            RunState::Cancelled => "cancelled",
-            _ => "failed",
-        }
-        .into();
-        record.finished_at_unix_ms = Some(unix_now_ms());
-        record.write()?;
-    }
-    drop(ambient);
     drop(pvisor);
     if let Some(writer) = writer {
         writer.finish()?;
     }
     let record = RunRecord::read(&storage)
         .with_context(|| format!("load finalized Run record from {}", storage.display()))?;
-    let bundle = RunBundle::capture(
-        &record,
-        &result,
-        agent_abi.snapshot(),
-        safe_profile_requested,
-    )?;
-    let bundle_path = bundle.write(&record.stage_dir())?;
+    let bundle = RunBundle::read(&record.stage_dir()).with_context(|| {
+        format!(
+            "load finalized Run Bundle from {}",
+            record.stage_dir().display()
+        )
+    })?;
+    let bundle_path = RunBundle::path(&record.stage_dir());
     if safe_profile_requested {
         eprintln!("Run Bundle: {}", bundle_path.display());
         eprintln!("Review: pvisor review {}", record.stage_dir().display());

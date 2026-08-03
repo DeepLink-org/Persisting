@@ -9,7 +9,8 @@ use crate::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::executor::{AttemptContext, RunExecutor};
 use crate::process::ProcessExecutor;
 use crate::runtime::{
-    ImplantPlan, OverlayHint, RuntimeCapabilities, RuntimeSupervisor, RuntimeSupervisorBuilder,
+    AttemptTeardown, ImplantPlan, OverlayHint, RuntimeCapabilities, RuntimeSupervisor,
+    RuntimeSupervisorBuilder,
 };
 use crate::util::unix_now_ms;
 use crate::TrajectoryEventSink;
@@ -439,41 +440,20 @@ impl PVisor {
                         &mut result,
                         format!("commit local Run record failed: {error:#}"),
                     );
-                    let _ = teardown.commit_state(RunState::Failed);
+                    if let Err(error) = teardown.commit_state(RunState::Failed) {
+                        result.warnings.push(format!(
+                            "commit failed Run record after finalization error: {error:#}"
+                        ));
+                    }
                 }
             }
-            let kind = match result.state {
-                RunState::Completed => "run.completed",
-                RunState::Cancelled => "run.cancelled",
-                _ => "run.failed",
-            };
-            if let Err(error) = context
-                .events()
-                .publish(kind, "runtime", terminal_payload(&result))
-                .await
-            {
-                fail_finalization(
-                    &mut result,
-                    format!("terminal event sink failed: {error:#}"),
-                );
-                if let Some(teardown) = teardown.as_mut() {
-                    let _ = teardown.commit_state(RunState::Failed);
-                }
-                // A sink may reject only the original terminal kind. Give it a
-                // chance to persist the finalization failure as the sole visible
-                // terminal result.
-                let _ = context
-                    .events()
-                    .publish("run.failed", "runtime", terminal_payload(&result))
-                    .await;
-            }
+            let safe_profile_requested = context
+                .spec()
+                .metadata
+                .get("pvisor.safe")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
             if let Some(teardown) = teardown.as_mut() {
-                let safe_profile_requested = context
-                    .spec()
-                    .metadata
-                    .get("pvisor.safe")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
                 let bundle_result = crate::RunBundle::capture(
                     teardown.run_record(),
                     &result,
@@ -486,11 +466,64 @@ impl PVisor {
                         &mut result,
                         format!("write durable Run Bundle failed: {error:#}"),
                     );
-                    let _ = teardown.commit_state(RunState::Failed);
-                    let _ = context
+                    persist_failed_local_state(
+                        teardown,
+                        &mut result,
+                        &bundle_agent_abi,
+                        safe_profile_requested,
+                        false,
+                    );
+                }
+            }
+            let kind = match result.state {
+                RunState::Completed => "run.completed",
+                RunState::Cancelled => "run.cancelled",
+                _ => "run.failed",
+            };
+            if let Err(error) = context
+                .events()
+                .publish(kind, "runtime", terminal_payload(&result))
+                .await
+            {
+                let append_error_kind = context.events().classify_append_error(&error);
+                fail_finalization(
+                    &mut result,
+                    format!("terminal event sink failed: {error:#}"),
+                );
+                if append_error_kind == crate::EventAppendErrorKind::Unknown {
+                    result.warnings.push(
+                        "terminal event append outcome is unknown; a replacement terminal event was suppressed"
+                            .into(),
+                    );
+                }
+                if let Some(teardown) = teardown.as_mut() {
+                    persist_failed_local_state(
+                        teardown,
+                        &mut result,
+                        &bundle_agent_abi,
+                        safe_profile_requested,
+                        true,
+                    );
+                }
+                if append_error_kind == crate::EventAppendErrorKind::Rejected {
+                    if let Err(error) = context
                         .events()
                         .publish("run.failed", "runtime", terminal_payload(&result))
-                        .await;
+                        .await
+                    {
+                        result.warnings.push(format!(
+                            "publish finalization failure event failed: {error:#}"
+                        ));
+                        if let Some(teardown) = teardown.as_mut() {
+                            persist_failed_local_state(
+                                teardown,
+                                &mut result,
+                                &bundle_agent_abi,
+                                safe_profile_requested,
+                                true,
+                            );
+                        }
+                    }
                 }
             }
             context.finish(
@@ -522,6 +555,39 @@ fn terminal_payload(result: &RunResult) -> serde_json::Value {
         "started_at_unix_ms": result.started_at_unix_ms,
         "finished_at_unix_ms": result.finished_at_unix_ms,
     })
+}
+
+fn persist_failed_local_state(
+    teardown: &mut AttemptTeardown,
+    result: &mut RunResult,
+    agent_abi: &crate::AgentAbiControl,
+    safe_profile_requested: bool,
+    invalidate_stale_bundle: bool,
+) {
+    if let Err(error) = teardown.commit_state(RunState::Failed) {
+        result
+            .warnings
+            .push(format!("commit failed Run record: {error:#}"));
+    }
+    let bundle_result = crate::RunBundle::capture(
+        teardown.run_record(),
+        result,
+        agent_abi.snapshot(),
+        safe_profile_requested,
+    )
+    .and_then(|bundle| bundle.write(&teardown.run_record().stage_dir()));
+    if let Err(error) = bundle_result {
+        result
+            .warnings
+            .push(format!("persist failed Run Bundle: {error:#}"));
+        if invalidate_stale_bundle {
+            if let Err(error) = crate::RunBundle::invalidate(&teardown.run_record().stage_dir()) {
+                result
+                    .warnings
+                    .push(format!("invalidate stale Run Bundle: {error:#}"));
+            }
+        }
+    }
 }
 
 fn fail_finalization(result: &mut RunResult, message: String) {
@@ -636,6 +702,45 @@ mod tests {
             self.kinds.lock().unwrap().push(event.kind.clone());
             Ok(())
         }
+
+        fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {
+            crate::EventAppendErrorKind::Rejected
+        }
+    }
+
+    #[derive(Default)]
+    struct CommitThenLoseAcknowledgementSink {
+        kinds: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl EventSink for CommitThenLoseAcknowledgementSink {
+        async fn append(&self, event: &EventEnvelope) -> anyhow::Result<()> {
+            self.kinds.lock().unwrap().push(event.kind.clone());
+            if event.kind == "run.completed" {
+                anyhow::bail!("simulated acknowledgement loss after commit");
+            }
+            Ok(())
+        }
+    }
+
+    struct RejectAllTerminalEventsSink;
+
+    #[async_trait]
+    impl EventSink for RejectAllTerminalEventsSink {
+        async fn append(&self, event: &EventEnvelope) -> anyhow::Result<()> {
+            if matches!(
+                event.kind.as_str(),
+                "run.completed" | "run.cancelled" | "run.failed"
+            ) {
+                anyhow::bail!("simulated terminal rejection");
+            }
+            Ok(())
+        }
+
+        fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {
+            crate::EventAppendErrorKind::Rejected
+        }
     }
 
     #[cfg(unix)]
@@ -706,6 +811,118 @@ mod tests {
         let kinds = sink.kinds.lock().unwrap().clone();
         assert!(!kinds.iter().any(|kind| kind == "run.completed"));
         assert_eq!(kinds.last().map(String::as_str), Some("run.failed"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unknown_terminal_append_does_not_publish_a_conflicting_terminal() {
+        let sink = Arc::new(CommitThenLoseAcknowledgementSink::default());
+        let runtime = PVisor::builder().event_sink(sink.clone()).build();
+        let mut spec = RunSpec::process("run-terminal-unknown", "test-agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "exit 0".into()];
+
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Failed);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("outcome is unknown")));
+        let terminal_kinds = sink
+            .kinds
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|kind| {
+                matches!(
+                    kind.as_str(),
+                    "run.completed" | "run.cancelled" | "run.failed"
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(terminal_kinds, vec!["run.completed"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replacement_terminal_failure_is_reported_in_the_result() {
+        let runtime = PVisor::builder()
+            .event_sink(Arc::new(RejectAllTerminalEventsSink))
+            .build();
+        let mut spec = RunSpec::process("run-terminal-double-reject", "test-agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "exit 0".into()];
+
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Failed);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("publish finalization failure event failed")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bundle_failure_is_published_as_the_only_terminal_result() {
+        let temporary = tempfile::tempdir().unwrap();
+        let storage = temporary.path().join("storage");
+        let sink = Arc::new(MemoryEventSink::default());
+        let runtime = PVisor::builder()
+            .storage(&storage)
+            .event_sink(sink.clone())
+            .build();
+        let mut spec = RunSpec::process("run-bundle-failure", "test-agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec![
+            "-c".into(),
+            "mkdir -p \"$1\" && mkdir \"$1/run-bundle.json\"".into(),
+            "sh".into(),
+            storage.display().to_string(),
+        ];
+
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Failed);
+        assert!(result
+            .failure
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("write durable Run Bundle failed"));
+        let terminal_kinds = sink
+            .events()
+            .into_iter()
+            .map(|event| event.kind)
+            .filter(|kind| {
+                matches!(
+                    kind.as_str(),
+                    "run.completed" | "run.cancelled" | "run.failed"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(terminal_kinds, vec!["run.failed"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn storage_only_run_persists_a_bundle_without_network_drivers() {
+        let temporary = tempfile::tempdir().unwrap();
+        let storage = temporary.path().join("storage");
+        let runtime = PVisor::builder().storage(&storage).build();
+        let mut spec = RunSpec::process("run-storage-only", "test-agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "exit 0".into()];
+
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Completed);
+        assert_eq!(
+            crate::RunBundle::read(&storage).unwrap().run.state,
+            RunState::Completed
+        );
+        assert_eq!(
+            crate::runtime::RunRecord::read(&storage).unwrap().state,
+            "completed"
+        );
     }
 
     #[tokio::test]
