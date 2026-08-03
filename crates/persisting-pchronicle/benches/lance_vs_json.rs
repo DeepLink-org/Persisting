@@ -1,4 +1,4 @@
-//! Compare indexed Lance/DataFusion queries with JSON scan and in-memory JSON baselines.
+// Compare indexed Lance/DataFusion queries with JSON scan and in-memory JSON baselines.
 
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -37,11 +37,17 @@ fn main() -> Result<()> {
         result.json_write, result.atif_open, result.lance_write, result.lance_open
     );
     print_comparison(
+        "selective",
         "selective session+step query",
         iterations,
         &result.selective,
     );
-    print_comparison("GROUP BY source analysis", iterations, &result.analytical);
+    print_comparison(
+        "group_by",
+        "GROUP BY source analysis",
+        iterations,
+        &result.analytical,
+    );
     Ok(())
 }
 
@@ -282,18 +288,19 @@ fn time_sync<T>(iterations: usize, mut operation: impl FnMut() -> Result<T>) -> 
     Ok(started.elapsed())
 }
 
-fn print_comparison(name: &str, iterations: usize, comparison: &Comparison) {
+fn print_comparison(id: &str, name: &str, iterations: usize, comparison: &Comparison) {
+    let lance_qps = iterations as f64 / comparison.lance.as_secs_f64();
+    let atif_qps = iterations as f64 / comparison.atif_datafusion.as_secs_f64();
+    let atif_over_lance_time =
+        comparison.atif_datafusion.as_secs_f64() / comparison.lance.as_secs_f64();
     println!("{name}:");
     println!(
         "  Lance/DataFusion indexed: {:?} ({:.1} queries/s)",
-        comparison.lance,
-        iterations as f64 / comparison.lance.as_secs_f64()
+        comparison.lance, lance_qps
     );
     println!(
         "  ATIF/DataFusion memory:   {:?} ({:.1} queries/s, Lance speed ratio {:.2}x)",
-        comparison.atif_datafusion,
-        iterations as f64 / comparison.atif_datafusion.as_secs_f64(),
-        comparison.atif_datafusion.as_secs_f64() / comparison.lance.as_secs_f64()
+        comparison.atif_datafusion, atif_qps, atif_over_lance_time
     );
     println!(
         "  JSON read+Serde scan:     {:?} ({:.1} queries/s, Lance {:.2}x faster)",
@@ -306,6 +313,10 @@ fn print_comparison(name: &str, iterations: usize, comparison: &Comparison) {
         comparison.json_memory,
         iterations as f64 / comparison.json_memory.as_secs_f64(),
         comparison.lance.as_secs_f64() / comparison.json_memory.as_secs_f64()
+    );
+    println!(
+        "RESULT benchmark={id} iterations={iterations} lance_qps={lance_qps:.1} \
+         atif_qps={atif_qps:.1} atif_over_lance_time={atif_over_lance_time:.3}"
     );
 }
 

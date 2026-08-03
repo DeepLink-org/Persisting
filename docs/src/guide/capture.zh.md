@@ -16,10 +16,11 @@ export PERSISTING_ENGINE_LIB="$(pwd)/target/release/libpersisting_engine.dylib" 
 
 ## 本地示例
 
-仓库提供 Mock 模型、两轮示例 Agent 和 AgenticMD 校验器：
+仓库提供 Mock 模型和两轮示例 Agent；定量示例会校验 upstream 请求数、Gateway counters
+和 AgenticMD blocks：
 
 ```bash
-cd examples/capture-walkthrough
+cd examples/pvisor/04-gateway-llm-control
 ./run.sh
 ```
 
@@ -60,13 +61,15 @@ Lance Run 可通过 `persisting history materialize` 生成 AgenticMD。
 前台启动：
 
 ```bash
-persisting gateway serve -o ./store -c examples/llm-proxy/deepseek.toml -f markdown
+persisting gateway serve -o ./store \
+  -c examples/pvisor/04-gateway-llm-control/configs/deepseek.toml -f markdown
 ```
 
 启动 banner 会打印代理地址和环境变量；在启动 Agent 的终端中导出它们。后台模式：
 
 ```bash
-persisting gateway start -o ./store -c examples/llm-proxy/deepseek.toml -f markdown
+persisting gateway start -o ./store \
+  -c examples/pvisor/04-gateway-llm-control/configs/deepseek.toml -f markdown
 persisting gateway status
 persisting gateway list
 persisting gateway stop

@@ -1,0 +1,19 @@
+# Standalone Gateway with an explicit outbound allowlist.
+listen = "127.0.0.1:19081"
+admin_listen = "127.0.0.1:9876"
+agent_id = "deepseek-allowlist"
+
+[network]
+mode = "allowlist"
+allowed_hosts = ["pypi.org", "files.pythonhosted.org", "github.com", "api.github.com"]
+
+[[models]]
+name = "deepseek-v4-flash"
+provider = "openai"
+upstream = "https://api.deepseek.com/v1"
+upstream_anthropic = "https://api.deepseek.com/anthropic/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[models]]
+name = "*"
+forward = "deepseek-v4-flash"

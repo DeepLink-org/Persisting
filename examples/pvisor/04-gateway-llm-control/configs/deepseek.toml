@@ -1,0 +1,15 @@
+# Standalone `persisting gateway serve` configuration for DeepSeek.
+listen = "127.0.0.1:19081"
+admin_listen = "127.0.0.1:9876"
+agent_id = "deepseek-proxy"
+
+[[models]]
+name = "deepseek-v4-flash"
+provider = "openai"
+upstream = "https://api.deepseek.com/v1"
+upstream_anthropic = "https://api.deepseek.com/anthropic/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[models]]
+name = "*"
+forward = "deepseek-v4-flash"

@@ -1,0 +1,15 @@
+# pVisor：轻量级隔离与 Agent Run 管控
+
+这组示例逐项测量 pVisor 的事务工作区、changeset、显式网络代理和 Gateway。每个
+`run.sh` 都输出 `RESULT` 与 `CONCLUSION`，指标不满足时返回非 0。
+
+| 示例 | 可复现结论 |
+|---|---|
+| [01-filesystem-isolation](01-filesystem-isolation/) | Agent 写入 upper，lower 在 apply 前保持不变 |
+| [02-changeset-management](02-changeset-management/) | changeset 可 review，并可分别 apply 或 drop |
+| [03-network-isolation](03-network-isolation/) | 经过显式代理的 HTTP 请求服从 allow/deny policy |
+| [04-gateway-llm-control](04-gateway-llm-control/) | Gateway 路由并捕获两次 OpenAI-compatible 调用 |
+
+文件系统示例需要 macOS 的 macFUSE 或 Linux 的 FUSE3。这里的“轻量级隔离”特指
+事务工作区和 cooperative proxy 所覆盖的数据面；Bundle 会如实报告 Host executor
+仍可访问工作区外路径、直接 socket 仍可绕过显式代理。
