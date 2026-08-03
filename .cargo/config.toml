@@ -10,6 +10,3 @@ PYO3_PYTHON = { value = "scripts/pyo3-python", relative = true }
 #      （Windows：.venv\Scripts\activate），再 pip install maturin && maturin develop --release
 #    - 或已 conda activate / 其它 venv 且设置了 CONDA_PREFIX / VIRTUAL_ENV
 #    不想用 venv 时：maturin build --release，再 pip install target/wheels/*.whl
-
-[build]
-incremental = true
