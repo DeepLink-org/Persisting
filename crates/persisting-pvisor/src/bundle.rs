@@ -1,6 +1,7 @@
 //! Durable, versioned summary of one pVisor Run.
 
 use crate::runtime::{overlay_status, OverlayState, RunLineage, RunRecord};
+use crate::util::{atomic_write, sync_directory};
 use crate::{unix_now_ms, AgentAbiSnapshot};
 use persisting_overlaynet::{InterceptionProfile, InterceptionSnapshot};
 use persisting_proto::{
@@ -8,7 +9,6 @@ use persisting_proto::{
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 1;
@@ -224,12 +224,8 @@ impl RunBundle {
     }
 
     pub fn write(&self, stage_dir: &Path) -> anyhow::Result<PathBuf> {
-        fs::create_dir_all(stage_dir)?;
         let path = Self::path(stage_dir);
-        let temporary = stage_dir.join(format!(".{RUN_BUNDLE_FILENAME}.tmp"));
-        fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
-        fs::rename(&temporary, &path)?;
+        atomic_write(&path, &serde_json::to_vec_pretty(self)?, 0o600)?;
         Ok(path)
     }
 
@@ -244,6 +240,15 @@ impl RunBundle {
         );
         Ok(bundle)
     }
+
+    pub(crate) fn invalidate(stage_dir: &Path) -> anyhow::Result<()> {
+        let path = Self::path(stage_dir);
+        match fs::remove_file(&path) {
+            Ok(()) => sync_directory(stage_dir),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +256,7 @@ mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper};
     use persisting_proto::{AttemptId, RunId};
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn bundle_is_private_and_roundtrips() {

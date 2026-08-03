@@ -177,7 +177,7 @@ struct PreparedOverlay {
 pub fn prepare_attempt(
     spec: &mut RunSpec,
     opts: AttemptPrepareOpts<'_>,
-) -> anyhow::Result<(AttemptSession, ImplantPlan)> {
+) -> anyhow::Result<AttemptSession> {
     let config = opts.config.clone();
     spec.agent.name = config.agent_id.clone();
     let storage = opts
@@ -267,7 +267,7 @@ pub fn prepare_attempt(
         ),
     )?;
 
-    let plan = enrich_with_session(
+    enrich_with_session(
         spec,
         SessionImplantOpts {
             listen: &gateway.listen,
@@ -280,28 +280,25 @@ pub fn prepare_attempt(
         },
     )?;
 
-    Ok((
-        AttemptSession {
-            root_session,
-            agent_id: config.agent_id.clone(),
-            overlay_record,
-            gateway: Some(gateway),
-            overlay: overlay_mount,
-            sink: Some(sink),
-            started_at: Instant::now(),
-            run_record,
-            _control: control,
-            _lease: lease,
-        },
-        plan,
-    ))
+    Ok(AttemptSession {
+        root_session,
+        agent_id: config.agent_id.clone(),
+        overlay_record,
+        gateway: Some(gateway),
+        overlay: overlay_mount,
+        sink: Some(sink),
+        started_at: Instant::now(),
+        run_record,
+        _control: control,
+        _lease: lease,
+    })
 }
 
 /// Prepare a durable OverlayFS Run without enabling the optional Gateway.
 pub fn prepare_overlay_attempt(
     spec: &mut RunSpec,
     opts: OverlayAttemptPrepareOpts<'_>,
-) -> anyhow::Result<(AttemptSession, ImplantPlan)> {
+) -> anyhow::Result<AttemptSession> {
     let storage = opts
         .storage
         .canonicalize()
@@ -411,21 +408,92 @@ pub fn prepare_overlay_attempt(
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
 
-    Ok((
-        AttemptSession {
-            root_session,
-            agent_id: spec.agent.name.clone(),
-            overlay_record: Some(overlay_record),
-            gateway: None,
-            overlay: overlay_mount,
-            sink: None,
-            started_at: Instant::now(),
-            run_record,
-            _control: control,
-            _lease: lease,
-        },
-        plan,
-    ))
+    Ok(AttemptSession {
+        root_session,
+        agent_id: spec.agent.name.clone(),
+        overlay_record: Some(overlay_record),
+        gateway: None,
+        overlay: overlay_mount,
+        sink: None,
+        started_at: Instant::now(),
+        run_record,
+        _control: control,
+        _lease: lease,
+    })
+}
+
+/// Prepare a metadata-only durable Run workspace without Gateway or OverlayFS.
+pub fn prepare_storage_attempt(
+    spec: &mut RunSpec,
+    storage: &Path,
+) -> anyhow::Result<AttemptSession> {
+    let storage = storage
+        .canonicalize()
+        .unwrap_or_else(|_| storage.to_path_buf());
+    let root_session = spec.run_id.as_str().to_string();
+    let RunInvocation::Process(process) = &spec.invocation;
+    let lease = RunLease::acquire(&storage)?;
+    let run_record = RunRecord {
+        schema_version: 1,
+        run_id: root_session.clone(),
+        parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
+        task_id: spec.task_id.clone(),
+        session_id: root_session.clone(),
+        agent: spec.agent.name.clone(),
+        pid: std::process::id(),
+        command: std::iter::once(process.program.clone())
+            .chain(process.args.iter().cloned())
+            .collect(),
+        executor: executor_from_spec(spec),
+        state: "running".into(),
+        started_at_unix_ms: crate::util::unix_now_ms(),
+        finished_at_unix_ms: None,
+        storage: storage.clone(),
+        overlaynet_listen: None,
+        network_interception: None,
+        network_interception_metrics: None,
+        gateway_listen: None,
+        network: serde_json::to_value(&spec.capabilities.network)?,
+        network_policy: None,
+        overlay: None,
+        overlay_lowers: Vec::new(),
+        lineage: lineage_from_spec(spec),
+        orchestration: orchestration_from_spec(spec),
+    };
+    run_record.write()?;
+    let control = RunControlServer::start(&run_record)?;
+
+    let mut plan = ImplantPlan {
+        env: ImplantPlan::marker_env(),
+        cwd: None,
+        overlay: OverlayHint::default(),
+        notes: vec![format!("durable Run workspace: {}", storage.display())],
+    };
+    plan.env
+        .insert("PERSISTING_RUN_ID".into(), root_session.clone());
+    plan.env
+        .insert("PERSISTING_AGENT".into(), spec.agent.name.clone());
+    plan.env.insert(
+        "PERSISTING_PVISOR_STORAGE".into(),
+        storage.display().to_string(),
+    );
+    let RunInvocation::Process(ref mut process) = spec.invocation;
+    apply_implant(process, &plan);
+    spec.metadata
+        .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
+
+    Ok(AttemptSession {
+        root_session,
+        agent_id: spec.agent.name.clone(),
+        overlay_record: None,
+        gateway: None,
+        overlay: None,
+        sink: None,
+        started_at: Instant::now(),
+        run_record,
+        _control: control,
+        _lease: lease,
+    })
 }
 
 fn lineage_from_spec(spec: &RunSpec) -> Option<RunLineage> {

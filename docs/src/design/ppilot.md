@@ -49,7 +49,7 @@ pChronicle；编排状态仍由本 crate 管理。
 
 ```text
 ppilot run <SCRIPT> [OPTIONS]
-ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif]
+ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
 ppilot produce <PLANNER.py> --output <DIR> [--parallelism N] [-- <PLANNER_ARGS>...]
 ppilot analysis <INPUT> [--output <DIR>] [--fmt jsonl|json|toml] [--parallelism N] (--sql <SQL> | --sql-file <FILE>)
 ppilot process <INPUT> (--script <FILE> | --count <METRIC>) [--mappers N] [--output <DIR>]
@@ -68,7 +68,8 @@ cross-rank token ledger.
 
 `run` 收纳原有 `PPilotArgs`；`self-test` 是无需用户脚本的环境与执行链路验证。
 `query` 对三表 Storyline Lance store、ATIF JSON/数组/JSONL/目录注册同名的 `runs`、
-`steps`、`tool_calls` 表，执行一条只读 DataFusion SQL，并把 JSONL 写到 stdout。
+`steps`、`tool_calls` 表；可通过可重复的 `--table NAME=FORMAT:PATH` 注册 CSV、JSON
+对象数组或 JSONL 外部表，随后执行一条只读 DataFusion SQL，并把 JSONL 写到 stdout。
 
 CLI 通过 `cli` feature 构建；默认 library feature 仍为空，避免只嵌入调度器的应用
 无条件编译 Lance/DataFusion：

@@ -542,17 +542,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_repo_example() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/trajectory-agenticmd/demo-agent/demo-run-001/demo-run-001.md");
-        let blocks =
-            parse_agenticmd_document_validated(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0].role(), Some("user"));
-        assert_eq!(blocks[0].body.trim(), "你好");
-    }
-
-    #[test]
     fn validated_encode_matches_raw_encode_after_length_set() {
         let mut fields = BTreeMap::new();
         fields.insert("role".into(), json!("assistant"));

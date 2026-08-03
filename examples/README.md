@@ -1,33 +1,41 @@
 # Persisting Examples
 
-## Python Queue 示例
+这里的 example 按产品问题组织，而不是按 API 罗列。每个目录只证明一个可复现、可量化
+的结论；`run.sh` 在结论不成立时返回非 0。
 
-演示 `persisting.Queue` API。从仓库根目录运行：
+## 1. pVisor 执行轻量级隔离
+
+| 示例 | 指标 |
+|---|---|
+| [1.1 文件系统隔离](pvisor/01-filesystem-isolation/) | lower 值、upper 文件数、Bundle changes |
+| [1.2 changeset 管理](pvisor/02-changeset-management/) | review/apply/drop 文件数 |
+| [1.3 网络系统隔离](pvisor/03-network-isolation/) | proxy allow/deny counters 与边界强度 |
+| [1.4 Gateway 捕获与管控 LLM](pvisor/04-gateway-llm-control/) | upstream POST、sink requests、AgenticMD blocks |
+
+## 2. pChronicle 轨迹存储
+
+| 示例 | 指标 |
+|---|---|
+| [2.1 导入 ATIF 并比较压缩比](pchronicle/01-atif-import-compression/) | ATIF/Lance bytes 与压缩比 |
+| [2.2 Lance vs ATIF 分析速度](pchronicle/02-lance-vs-atif-speed/) | 两类查询的 QPS 与耗时比 |
+| [2.3 分析 Lance 和 ATIF](pchronicle/03-analyze-lance-and-atif/) | 同 SQL 的结果一致性、行数、step 数 |
+
+## 3. pPilot 批量编排与轨迹处理
+
+| 示例 | 指标 |
+|---|---|
+| [3.1 run](ppilot/01-run/) | 完成/失败数、结果总和、worker slot 数 |
+| [3.2 produce](ppilot/02-produce/) | 完成数、Run Bundle 数、lineage 数 |
+| [3.3 process](ppilot/03-process/) | trajectory/step 数、mapper partial 数 |
+| [3.4 analysis](ppilot/04-analysis/) | SQL 行数、step 总数、平衡 shard 大小 |
+
+运行全部示例：
 
 ```bash
-pip install persisting[lance]
-
-python -m examples.01_core_components
-python -m examples.02_queue_options
-python -m examples.03_sampler
-python -m examples.04_producer_consumer
-python -m examples.05_multiprocess_producer_consumer
+just examples
 ```
 
-| 示例 | 内容 |
-|------|------|
-| **01_core_components** | `Queue` → put → flush → get |
-| **02_queue_options** | batch_size、metrics、stats |
-| **03_sampler** | SequentialSampler、get_batch、自定义 ReverseSampler |
-| **04_producer_consumer** | 单写单读、streaming 消费 |
-| **05_multiprocess_producer_consumer** | 多进程写/读，持久化到 /tmp |
-
-## Capture 与轨迹
-
-| 目录 | 用途 |
-|------|------|
-| [**capture-walkthrough/**](capture-walkthrough/) | `./run.sh` — Mock LLM + `pvisor run` + 校验 |
-| [**trajectory-agenticmd/**](trajectory-agenticmd/) | 静态 AgenticMD，供 replay 与格式设计对照 |
-| [**llm-proxy/**](llm-proxy/) | 真实 LLM 代理配置（DeepSeek、多厂商、`allowlist` 出口白名单） |
-
-`capture-walkthrough/store/` 为运行 demo 时本地生成，已在该目录 `.gitignore` 中忽略。
+也可以运行 `just examples-pvisor`、`just examples-pchronicle` 或
+`just examples-ppilot`。首次运行会按需编译 Rust targets，之后复用 Cargo 缓存。需要
+macOS/Linux、Cargo、Python 3、`jq`、`awk`、`curl` 和常见 POSIX 工具；OverlayFS
+示例还需要 macFUSE 或 FUSE3。

@@ -12,6 +12,7 @@
 //! ```
 //!
 use super::implant::OverlayHint;
+use crate::util::{atomic_write, create_dir_all_durable};
 use persisting_gateway::config::{OverlayBackend, OverlayConfig};
 use persisting_overlayfs::{
     jujutsu_upper_dir, mount as mount_embedded_overlay, snapshot_jujutsu_upper, OverlayMountConfig,
@@ -350,18 +351,22 @@ pub fn mount_overlay_record(
         .iter()
         .chain([&record.merged_dir, &record.stage_dir])
     {
-        fs::create_dir_all(dir).map_err(OverlayError::Prepare)?;
+        create_dir_all_durable(dir)
+            .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     }
     match &record.upper {
         OverlayUpper::Directory {
             upper_dir,
             work_dir,
         } => {
-            fs::create_dir_all(upper_dir).map_err(OverlayError::Prepare)?;
-            fs::create_dir_all(work_dir).map_err(OverlayError::Prepare)?;
+            create_dir_all_durable(upper_dir)
+                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+            create_dir_all_durable(work_dir)
+                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
         }
         OverlayUpper::Jujutsu { store_path, .. } => {
-            fs::create_dir_all(store_path).map_err(OverlayError::Prepare)?;
+            create_dir_all_durable(store_path)
+                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
         }
     }
 
@@ -450,11 +455,11 @@ pub fn overlay_meta_path(stage_dir: &Path) -> PathBuf {
 }
 
 pub fn write_overlay_record(record: &OverlayRecord) -> Result<(), OverlayError> {
-    fs::create_dir_all(&record.stage_dir)?;
     let path = overlay_meta_path(&record.stage_dir);
     let body = serde_json::to_string_pretty(record)
         .map_err(|e| OverlayError::Apply(format!("serialize meta: {e}")))?;
-    fs::write(path, body)?;
+    atomic_write(&path, body.as_bytes(), 0o600)
+        .map_err(|error| OverlayError::Apply(format!("persist meta: {error:#}")))?;
     Ok(())
 }
 

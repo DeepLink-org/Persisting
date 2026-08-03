@@ -4,6 +4,7 @@ use super::overlay::{
     load_overlay_record, mount_overlay_record_read_only, overlay_status, OverlayRecord,
     OverlayUpper, ReadOnlyOverlayMount,
 };
+use crate::util::{atomic_write, create_dir_all_durable};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -86,20 +87,17 @@ impl RunRecord {
 
     pub fn write(&self) -> anyhow::Result<()> {
         let stage = self.stage_dir();
-        fs::create_dir_all(&stage)?;
         let path = stage.join(RUN_META_FILENAME);
-        let temporary = stage.join(format!(".{RUN_META_FILENAME}.tmp"));
-        fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
-        fs::rename(temporary, path)?;
+        atomic_write(&path, &serde_json::to_vec_pretty(self)?, 0o600)?;
 
         let index_dir = self.storage.join(".pvisor").join("runs");
-        fs::create_dir_all(&index_dir)?;
-        fs::write(
-            index_dir.join(format!("{}.json", encode_id(&self.run_id))),
-            serde_json::to_vec_pretty(&RunIndex {
+        atomic_write(
+            &index_dir.join(format!("{}.json", encode_id(&self.run_id))),
+            &serde_json::to_vec_pretty(&RunIndex {
                 run_id: self.run_id.clone(),
                 stage_dir: stage,
             })?,
+            0o600,
         )?;
         Ok(())
     }
@@ -136,7 +134,7 @@ pub struct RunLease {
 
 impl RunLease {
     pub fn acquire(stage_dir: &Path) -> anyhow::Result<Self> {
-        fs::create_dir_all(stage_dir)?;
+        create_dir_all_durable(stage_dir)?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)

@@ -79,6 +79,39 @@ test-suite name="list":
 test-menu:
     bash "{{ test_suite_sh }}" list
 
+# Run the deterministic, quantitative pVisor examples.
+[group('test')]
+examples-pvisor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for script in "{{ repo }}"/examples/pvisor/*/run.sh; do
+        echo "==> ${script#"{{ repo }}/"}"
+        bash "$script"
+    done
+
+# Run the deterministic, quantitative pChronicle examples.
+[group('test')]
+examples-pchronicle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for script in "{{ repo }}"/examples/pchronicle/*/run.sh; do
+        echo "==> ${script#"{{ repo }}/"}"
+        bash "$script"
+    done
+
+# Run the deterministic, quantitative pPilot examples.
+[group('test')]
+examples-ppilot:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for script in "{{ repo }}"/examples/ppilot/*/run.sh; do
+        echo "==> ${script#"{{ repo }}/"}"
+        bash "$script"
+    done
+
+[group('test')]
+examples: examples-pvisor examples-pchronicle examples-ppilot
+
 # capture Rust + 全部 shell 集成 + CLI 冒烟（跳过 fmt/clippy）
 [group('test')]
 regression profile="debug":
@@ -379,20 +412,6 @@ capture-run-e2e profile="debug" cli_bin="" engine_override="" turns="3":
     [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
     echo "==> capture-run-e2e turns={{ turns }}"
     bash "{{ repo }}/scripts/integration/capture_run_e2e.sh"
-
-capture-walkthrough profile="debug":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    td="{{ repo }}/target/{{ profile }}"
-    [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
-    export PERSISTING_CLI="$td/persisting"
-    if [[ -f "$td/{{ engine_filename }}" ]]; then
-      export PERSISTING_ENGINE_LIB="$td/{{ engine_filename }}"
-    fi
-    if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-      just build profile="{{ profile }}"
-    fi
-    bash "{{ repo }}/examples/capture-walkthrough/run.sh"
 
 # 依次跑全部 capture 集成（不含 walkthrough demo）
 capture-all profile="debug":

@@ -556,9 +556,9 @@ api_key_env = "DEEPSEEK_API_KEY"
 | [History / Eval / Gateway 命令](cli-history.md) | 独立代理、评测与 pChronicle 数据操作 |
 | [CLI 整体架构](cli.md) | Persisting 命令行体系 |
 
-**示例轨迹文件**（由编码器生成的 golden，可供格式对照）：
+**可执行示例**：
 
-- [AgenticMD 示例](https://github.com/DeepLink-org/Persisting/blob/main/examples/trajectory-agenticmd/demo-agent/demo-run-001/demo-run-001.md)
+- [Gateway 捕获与管控 LLM](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control)
 
 ---
 

@@ -16,11 +16,12 @@ export PERSISTING_ENGINE_LIB="$(pwd)/target/release/libpersisting_engine.dylib" 
 
 ## Local walkthrough
 
-The repository includes a mock OpenAI-compatible model, a two-turn Agent, and
-an AgenticMD validator:
+The repository includes a mock OpenAI-compatible model and a two-turn Agent.
+The quantitative example verifies upstream requests, Gateway counters, and
+AgenticMD blocks:
 
 ```bash
-cd examples/capture-walkthrough
+cd examples/pvisor/04-gateway-llm-control
 ./run.sh
 ```
 
@@ -62,14 +63,16 @@ Generate AgenticMD from a Lance run with `persisting history materialize`.
 Start a foreground proxy:
 
 ```bash
-persisting gateway serve -o ./store -c examples/llm-proxy/deepseek.toml -f markdown
+persisting gateway serve -o ./store \
+  -c examples/pvisor/04-gateway-llm-control/configs/deepseek.toml -f markdown
 ```
 
 The startup banner prints the proxy address and environment variables. Export
 them in the terminal that starts the Agent. For a background daemon:
 
 ```bash
-persisting gateway start -o ./store -c examples/llm-proxy/deepseek.toml -f markdown
+persisting gateway start -o ./store \
+  -c examples/pvisor/04-gateway-llm-control/configs/deepseek.toml -f markdown
 persisting gateway status
 persisting gateway list
 persisting gateway stop

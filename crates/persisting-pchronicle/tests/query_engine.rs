@@ -6,8 +6,8 @@ use anyhow::Result;
 use datafusion::prelude::SessionContext;
 use persisting_pchronicle::{
     into_storyline, AtifDataSource, AtifDataSourceOptions, AtifTrajectory, ChronicleFormat,
-    ChronicleQueryBackend, ChronicleQueryEngine, LanceStorylineStore,
-    StorylineDataFusionTableNames,
+    ChronicleQueryBackend, ChronicleQueryEngine, ExternalTableFormat, ExternalTableSpec,
+    LanceStorylineStore, StorylineDataFusionTableNames,
 };
 
 const SHARED_SQL: &str =
@@ -186,6 +186,88 @@ async fn same_sql_returns_identical_results_for_lance_and_atif() -> Result<()> {
     for line in aggregate.lines() {
         let _: serde_json::Value = serde_json::from_str(line)?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn query_engine_joins_csv_and_json_external_tables() -> Result<()> {
+    let engine = ChronicleQueryEngine::open_atif(fixture_root())?;
+    let temp = tempfile::tempdir()?;
+    let labels = temp.path().join("labels.csv");
+    std::fs::write(
+        &labels,
+        "session_id,score\nfixture-parallel_tools_14,7\nfixture-reasoning_16,9\n",
+    )?;
+    let metadata = temp.path().join("metadata.json");
+    std::fs::write(
+        &metadata,
+        r#"[
+  {"session_id":"fixture-parallel_tools_14","category":"tools"},
+  {"session_id":"fixture-reasoning_16","category":"reasoning"}
+]"#,
+    )?;
+    let activity = temp.path().join("activity.jsonl");
+    std::fs::write(
+        &activity,
+        concat!(
+            "{\"session_id\":\"fixture-parallel_tools_14\",\"active\":true}\n",
+            "{\"session_id\":\"fixture-reasoning_16\",\"active\":false}\n"
+        ),
+    )?;
+
+    engine
+        .register_external_table(&ExternalTableSpec::new(
+            "labels",
+            ExternalTableFormat::Csv,
+            labels.to_string_lossy(),
+        ))
+        .await?;
+    engine
+        .register_external_table(&ExternalTableSpec::new(
+            "metadata",
+            ExternalTableFormat::Json,
+            metadata.to_string_lossy(),
+        ))
+        .await?;
+    engine
+        .register_external_table(&ExternalTableSpec::new(
+            "activity",
+            ExternalTableFormat::JsonLines,
+            activity.to_string_lossy(),
+        ))
+        .await?;
+
+    let output = engine
+        .query_jsonl(
+            "SELECT r.session_id, l.score, m.category, a.active \
+             FROM runs r \
+             JOIN labels l ON r.session_id = l.session_id \
+             JOIN metadata m ON r.session_id = m.session_id \
+             JOIN activity a ON r.session_id = a.session_id \
+             ORDER BY r.session_id",
+        )
+        .await?;
+    let rows = output
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["session_id"], "fixture-parallel_tools_14");
+    assert_eq!(rows[0]["score"], 7);
+    assert_eq!(rows[0]["category"], "tools");
+    assert_eq!(rows[0]["active"], true);
+    assert_eq!(rows[1]["session_id"], "fixture-reasoning_16");
+    assert_eq!(rows[1]["active"], false);
+
+    let collision = engine
+        .register_external_table(&ExternalTableSpec::new(
+            "runs",
+            ExternalTableFormat::Csv,
+            labels.to_string_lossy(),
+        ))
+        .await
+        .unwrap_err();
+    assert!(collision.to_string().contains("already registered"));
     Ok(())
 }
 

@@ -72,9 +72,6 @@ fn demo_run_001_matches_golden_fixture() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/agenticmd/demo-run-001.md");
         std::fs::write(&fixture, &built).unwrap();
-        let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/trajectory-agenticmd/demo-agent/demo-run-001/demo-run-001.md");
-        std::fs::write(example, &built).unwrap();
     }
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/agenticmd/demo-run-001.md");

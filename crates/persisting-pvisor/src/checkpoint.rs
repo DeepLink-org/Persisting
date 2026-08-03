@@ -4,6 +4,7 @@ use crate::runtime::{
     is_live, restore_overlay_upper, snapshot_overlay_upper, OverlayState, RunRecord,
 };
 use crate::unix_now_ms;
+use crate::util::{atomic_write, create_dir_all_durable};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -118,7 +119,7 @@ fn create_checkpoint(
         "logical checkpoint already exists: {}",
         root.display()
     );
-    fs::create_dir_all(&root)?;
+    create_dir_all_durable(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let upper_snapshot = root.join("upper");
     if let Err(error) = snapshot_overlay_upper(overlay, &upper_snapshot) {
@@ -140,10 +141,11 @@ fn create_checkpoint(
             record.overlay_lowers.clone()
         },
     };
-    let temporary = root.join(format!(".{CHECKPOINT_FILENAME}.tmp"));
-    fs::write(&temporary, serde_json::to_vec_pretty(&checkpoint)?)?;
-    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
-    fs::rename(temporary, root.join(CHECKPOINT_FILENAME))?;
+    atomic_write(
+        &root.join(CHECKPOINT_FILENAME),
+        &serde_json::to_vec_pretty(&checkpoint)?,
+        0o600,
+    )?;
     Ok(checkpoint)
 }
 

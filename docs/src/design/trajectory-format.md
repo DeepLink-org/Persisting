@@ -74,7 +74,7 @@ Lance 重建 AgenticMD；反向导入只能恢复 Markdown 中实际存在的信
 
 ## 6. 示例与实现
 
-- 静态示例：`examples/trajectory-agenticmd/`
-- 端到端示例：`examples/capture-walkthrough/`
+- Gateway 端到端定量示例：`examples/pvisor/04-gateway-llm-control/`
+- Lance/ATIF 存储与分析示例：`examples/pchronicle/`
 - 格式与存储实现：`crates/persisting-pchronicle/src/formats/`、`src/store/`
 - [pChronicle 轨迹存储](trajectory.md)

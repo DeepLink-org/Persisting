@@ -1,6 +1,6 @@
 use super::attempt::{
-    apply_implant, prepare_attempt, prepare_overlay_attempt, AttemptPrepareOpts, AttemptSession,
-    OverlayAttemptPrepareOpts,
+    apply_implant, prepare_attempt, prepare_overlay_attempt, prepare_storage_attempt,
+    AttemptPrepareOpts, AttemptSession, OverlayAttemptPrepareOpts,
 };
 use super::implant::{ImplantPlan, OverlayHint};
 use crate::GatewayDriverConfig;
@@ -156,7 +156,7 @@ impl RuntimeSupervisor {
                 .storage
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".persisting/capture"));
-            let (session, _plan) = prepare_attempt(
+            let session = prepare_attempt(
                 spec,
                 AttemptPrepareOpts {
                     config: &proxy,
@@ -181,13 +181,18 @@ impl RuntimeSupervisor {
                 .storage
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".persisting/capture"));
-            let (session, _plan) = prepare_overlay_attempt(
+            let session = prepare_overlay_attempt(
                 spec,
                 OverlayAttemptPrepareOpts {
                     storage: &storage,
                     overlay: self.overlay.clone(),
                 },
             )?;
+            return Ok(Some(session));
+        }
+
+        if let Some(storage) = &self.storage {
+            let session = prepare_storage_attempt(spec, storage)?;
             return Ok(Some(session));
         }
 

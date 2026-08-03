@@ -69,6 +69,12 @@ just install-cli
 binaries plus the lazily loaded engine library into the same Cargo bin directory.
 The Python package is installed separately with `pip install persisting[lance]`.
 
+Run `just examples` to execute the small quantitative experiments under
+[`examples/`](examples/). Every experiment prints
+its measured result and exits non-zero when its stated conclusion is not reproduced.
+Use `just examples-ppilot` to run the focused `run`, `produce`, `process`, and
+`analysis` demonstrations.
+
 ### Safe Agent Run
 
 Start with a transactional workspace and a durable review bundle:

@@ -1,0 +1,17 @@
+[run]
+agent = "gateway-example"
+
+[overlaynet]
+mode = "proxy"
+listen = "127.0.0.1:19081"
+policy = "public"
+
+[gateway]
+mode = "capture"
+admin_listen = "127.0.0.1:19082"
+level = "dialogue"
+stream_markdown = true
+
+[[gateway.routes]]
+name = "*"
+upstream = "http://127.0.0.1:19080/v1"
