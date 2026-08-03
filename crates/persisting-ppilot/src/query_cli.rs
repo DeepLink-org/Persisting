@@ -1,12 +1,13 @@
 //! Public pPilot SQL query command backed by pChronicle.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
-use persisting_pchronicle::ChronicleQueryEngine;
+use persisting_pchronicle::{ChronicleQueryEngine, ExternalTableFormat, ExternalTableSpec};
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub enum QuerySource {
@@ -25,6 +26,11 @@ pub struct QueryArgs {
     /// Input representation. `auto` treats a directory containing CURRENT as Lance.
     #[arg(long, value_enum, default_value_t = QuerySource::Auto)]
     pub source: QuerySource,
+
+    /// Register an external table before querying. Repeat as needed.
+    /// Formats: `NAME=csv:PATH`, `NAME=json:PATH`, `NAME=jsonl:PATH`.
+    #[arg(long = "table", value_name = "NAME=FORMAT:PATH")]
+    pub tables: Vec<String>,
 
     /// SQL to execute against runs, steps, and tool_calls.
     #[arg(
@@ -72,6 +78,7 @@ fn is_lance_object_store_uri(input: &str) -> bool {
 /// Execute one read-only SQL statement and write JSONL rows to stdout.
 pub async fn run_query(args: QueryArgs) -> Result<()> {
     let sql = read_sql(&args)?;
+    let external_tables = parse_external_tables(&args.tables)?;
     let engine = match args.source.resolve(&args.input)? {
         QuerySource::Lance => ChronicleQueryEngine::open_lance_uri(&args.input)
             .await
@@ -80,12 +87,47 @@ pub async fn run_query(args: QueryArgs) -> Result<()> {
             .with_context(|| format!("open ATIF input {}", args.input))?,
         QuerySource::Auto => unreachable!("auto source is resolved above"),
     };
+    for table in &external_tables {
+        engine.register_external_table(table).await?;
+    }
     let output = engine.query_jsonl(&sql).await?;
     match io::stdout().lock().write_all(output.as_bytes()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(error) => Err(error).context("write query JSONL to stdout"),
     }
+}
+
+fn parse_external_tables(values: &[String]) -> Result<Vec<ExternalTableSpec>> {
+    let mut names = HashSet::with_capacity(values.len());
+    values
+        .iter()
+        .map(|value| {
+            let (name, source) = value.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("invalid --table {value:?}; expected NAME=FORMAT:PATH")
+            })?;
+            let (format, path) = source.split_once(':').ok_or_else(|| {
+                anyhow::anyhow!("invalid --table {value:?}; expected NAME=FORMAT:PATH")
+            })?;
+            let name = name.trim();
+            let path = path.trim();
+            if name.is_empty() || path.is_empty() {
+                bail!("invalid --table {value:?}; NAME and PATH must not be empty");
+            }
+            let format = match format.trim().to_ascii_lowercase().as_str() {
+                "csv" => ExternalTableFormat::Csv,
+                "json" => ExternalTableFormat::Json,
+                "jsonl" | "ndjson" => ExternalTableFormat::JsonLines,
+                other => bail!(
+                    "unsupported --table format {other:?}; expected csv, json, jsonl, or ndjson"
+                ),
+            };
+            if !names.insert(name.to_string()) {
+                bail!("duplicate --table name {name:?}");
+            }
+            Ok(ExternalTableSpec::new(name, format, path))
+        })
+        .collect()
 }
 
 fn read_sql(args: &QueryArgs) -> Result<String> {
@@ -165,6 +207,7 @@ mod tests {
         let inline = QueryArgs {
             input: "ignored".into(),
             source: QuerySource::Auto,
+            tables: Vec::new(),
             sql: Some("SELECT 1".into()),
             sql_file: None,
         };
@@ -175,10 +218,64 @@ mod tests {
         let file = QueryArgs {
             input: "ignored".into(),
             source: QuerySource::Auto,
+            tables: Vec::new(),
             sql: None,
             sql_file: Some(temp.path().to_owned()),
         };
         assert_eq!(read_sql(&file)?, "SELECT * FROM steps");
         Ok(())
+    }
+
+    #[test]
+    fn parses_repeatable_external_tables_and_preserves_uri_colons() -> Result<()> {
+        let tables = parse_external_tables(&[
+            "labels=csv:/tmp/labels.csv".into(),
+            "metadata=json:s3://bucket/metadata.json".into(),
+            "events=ndjson:/tmp/events.ndjson".into(),
+        ])?;
+
+        assert_eq!(
+            tables,
+            vec![
+                ExternalTableSpec::new("labels", ExternalTableFormat::Csv, "/tmp/labels.csv"),
+                ExternalTableSpec::new(
+                    "metadata",
+                    ExternalTableFormat::Json,
+                    "s3://bucket/metadata.json"
+                ),
+                ExternalTableSpec::new(
+                    "events",
+                    ExternalTableFormat::JsonLines,
+                    "/tmp/events.ndjson"
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_external_table_specs() {
+        for value in [
+            "missing-format",
+            "=csv:/tmp/labels.csv",
+            "labels=csv:",
+            "labels=parquet:/tmp/labels.parquet",
+            "labels=csv:/tmp/a.csv,labels=csv:/tmp/b.csv",
+        ] {
+            let values = if value.contains(',') {
+                value.split(',').map(str::to_owned).collect::<Vec<_>>()
+            } else {
+                vec![value.to_owned()]
+            };
+            assert!(parse_external_tables(&values).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn query_help_documents_repeatable_external_tables() {
+        let mut command = QueryArgs::augment_args(clap::Command::new("query"));
+        let help = command.render_long_help().to_string();
+        assert!(help.contains("--table <NAME=FORMAT:PATH>"), "{help}");
+        assert!(help.contains("NAME=jsonl:PATH"), "{help}");
     }
 }

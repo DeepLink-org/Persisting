@@ -8,7 +8,7 @@ Lance/ATIF datasource 与 SQL 执行继续由 pChronicle library 提供。
 
 ```text
 ppilot run <SCRIPT> [OPTIONS]
-ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif]
+ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
 ppilot produce <PLANNER.py> --output <DIR> [--parallelism N] [-- <PLANNER_ARGS>...]
 ppilot analysis <INPUT> [--output <DIR>] [--fmt jsonl|json|toml] [--parallelism N] (--sql <SQL> | --sql-file <FILE>)
 ppilot process <INPUT> (--script <FILE> | --count <METRIC>) [--mappers N] [--output <DIR>]
@@ -19,7 +19,7 @@ ppilot self-test [OPTIONS]
 
 ```bash
 persisting batch <SCRIPT> [OPTIONS]
-persisting query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif]
+persisting query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
 ```
 
 ### `run`
@@ -55,7 +55,20 @@ ppilot query s3://trajectory-bucket/persisting/storylines \
 
 ppilot query ./trajectories.ndjson --source atif --sql-file analysis.sql
 cat analysis.sql | ppilot query ./storyline-store --sql-file -
+
+# 将带表头的 CSV 和 JSON 对象数组注册为外部表并联查
+ppilot query ./storyline-store \
+  --table labels=csv:./labels.csv \
+  --table metadata=json:./metadata.json \
+  --sql "SELECT r.session_id, l.score, m.category
+         FROM runs r
+         JOIN labels l USING (session_id)
+         JOIN metadata m USING (session_id)"
 ```
+
+`--table` 可重复。支持 `csv`、`json`、`jsonl`（别名 `ndjson`）；`csv` 默认把首行
+作为列名，`json` 表示一个 JSON 对象数组，`jsonl`/`ndjson` 表示每行一个 JSON 对象。
+表名必须匹配 `[A-Za-z_][A-Za-z0-9_]*`，且不能覆盖内建表或先前注册的外部表。
 
 只允许单条 `SELECT`、`VALUES`、`DESCRIBE` 或 `EXPLAIN`；拒绝 DDL、DML、`COPY` 和
 多语句。未显式 `ORDER BY` 时不保证结果顺序。

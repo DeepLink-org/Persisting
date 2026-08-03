@@ -33,6 +33,10 @@ ppilot query ./storyline-store \
 ppilot query s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
 ppilot query ./trajectories.ndjson --source atif --sql-file analysis.sql
+ppilot query ./storyline-store \
+  --table labels=csv:./labels.csv \
+  --table metadata=json:./metadata.json \
+  --sql 'SELECT r.session_id, l.score, m.category FROM runs r JOIN labels l USING (session_id) JOIN metadata m USING (session_id)'
 
 # Scenario 1: bounded parallel trajectory production through pVisor.
 ppilot produce production.py --output ./runs --parallelism 8 \
@@ -59,7 +63,9 @@ terminal result reaches RunCommit; loss of ownership cancels the local attempt.
 Storyline Lance and ATIF inputs. It accepts one read-only SQL statement and
 writes JSONL rows to stdout. `s3://` inputs are automatically recognized as
 Lance; credentials come from the AWS provider chain. Use `--sql-file -` to
-read SQL from stdin.
+read SQL from stdin. Repeat `--table NAME=FORMAT:PATH` to register external
+CSV (`csv`), JSON array (`json`), or newline-delimited JSON (`jsonl`/`ndjson`)
+tables in the same DataFusion session before executing the query.
 
 ## pPilot ↔ pVisor runtime control
 

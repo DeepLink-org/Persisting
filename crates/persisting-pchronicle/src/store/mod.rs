@@ -32,7 +32,9 @@ pub use lance_rows::{
     event_row_from_batch, event_rows_from_batch, event_rows_to_batch, trajectory_arrow_schema,
 };
 pub use memory::MemoryChronicleStore;
-pub use query_engine::{ChronicleQueryBackend, ChronicleQueryEngine};
+pub use query_engine::{
+    ChronicleQueryBackend, ChronicleQueryEngine, ExternalTableFormat, ExternalTableSpec,
+};
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
 pub use storyline_datafusion::{
     StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
