@@ -225,6 +225,7 @@ impl RunExecutor for ProcessExecutor {
                 return RunResult {
                     run_id: spec.run_id,
                     attempt_id: context.attempt_id().clone(),
+                    lease_epoch: spec.lease_epoch,
                     state: RunState::Failed,
                     started_at_unix_ms: started_at,
                     finished_at_unix_ms: crate::util::unix_now_ms(),
@@ -252,6 +253,7 @@ impl RunExecutor for ProcessExecutor {
                 return RunResult {
                     run_id: spec.run_id,
                     attempt_id: context.attempt_id().clone(),
+                    lease_epoch: spec.lease_epoch,
                     state: RunState::Failed,
                     started_at_unix_ms: started_at,
                     finished_at_unix_ms: crate::util::unix_now_ms(),
@@ -371,6 +373,7 @@ impl RunExecutor for ProcessExecutor {
         RunResult {
             run_id: spec.run_id,
             attempt_id: context.attempt_id().clone(),
+            lease_epoch: spec.lease_epoch,
             state,
             started_at_unix_ms: started_at,
             finished_at_unix_ms: finished_at,

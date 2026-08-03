@@ -52,7 +52,14 @@ class InformationSchemaTable:
             schema_record = InformationSchemaRecord(record)
             self.schema_records[schema_record.table_name] = schema_record
 
-    def add(self, table_name: str, schema: pa.Schema, partition_column: str = None, partition_type: str = None, partitions: int = None):
+    def add(
+        self,
+        table_name: str,
+        schema: pa.Schema,
+        partition_column: str = None,
+        partition_type: str = None,
+        partitions: int = None,
+    ):
         schema_str = schema_to_string(schema)
         record = {
             "table_name": table_name,
@@ -93,7 +100,9 @@ class InformationSchemaTable:
         return list(self.schema_records.keys())
 
 
-def _filter_with_lance(table, query: str, limit: int, columns: List[str], offset: int, order_by: str, ascending: bool) -> pd.DataFrame:
+def _filter_with_lance(
+    table, query: str, limit: int, columns: List[str], offset: int, order_by: str, ascending: bool
+) -> pd.DataFrame:
     """Use Lance dataset API to filter with order_by support.
 
     Lance's to_table natively supports order_by, and limit/offset
@@ -116,7 +125,14 @@ def _filter_with_lance(table, query: str, limit: int, columns: List[str], offset
 class BaseTable:
     """Base class for table handling"""
 
-    def __init__(self, db_conn: LanceDBConnection, schema_table: InformationSchemaTable, table_name: str, schema: pa.Schema, mode: str) -> None:
+    def __init__(
+        self,
+        db_conn: LanceDBConnection,
+        schema_table: InformationSchemaTable,
+        table_name: str,
+        schema: pa.Schema,
+        mode: str,
+    ) -> None:
         assert table_name, "table_name cannot be empty"
         assert schema_table, "schema_table cannot be empty"
         assert db_conn is not None, "db_conn cannot be None"
@@ -193,7 +209,12 @@ class SimpleTable(BaseTable):
     """Simple table without partitions"""
 
     def __init__(
-        self, db_conn: LanceDBConnection, schema_table: InformationSchemaTable, table_name: str, schema: pa.Schema = None, mode: str = None
+        self,
+        db_conn: LanceDBConnection,
+        schema_table: InformationSchemaTable,
+        table_name: str,
+        schema: pa.Schema = None,
+        mode: str = None,
     ) -> None:
         super().__init__(db_conn, schema_table, table_name, schema, mode)
         self.table_name = table_name
@@ -203,7 +224,9 @@ class SimpleTable(BaseTable):
             self.table = self.open_table()
 
     @classmethod
-    def from_table_name(cls, db_conn: LanceDBConnection, schema_table: InformationSchemaTable, table_name: str):
+    def from_table_name(
+        cls, db_conn: LanceDBConnection, schema_table: InformationSchemaTable, table_name: str
+    ):
         return cls(db_conn, schema_table, table_name)
 
     def create_table(self):
@@ -243,13 +266,17 @@ class SimpleTable(BaseTable):
         ascending: bool = True,
         checkout_latest: bool = False,
     ) -> pd.DataFrame:
-        assert partitions is None and partition_cond is None, "Partitioning not supported for SimpleTable"
+        assert partitions is None and partition_cond is None, (
+            "Partitioning not supported for SimpleTable"
+        )
         if self.table is None:
             self.open_table()
         if checkout_latest:
             self.table.checkout_latest()
         if order_by is not None:
-            return _filter_with_lance(self.table, query, limit, columns, offset, order_by, ascending)
+            return _filter_with_lance(
+                self.table, query, limit, columns, offset, order_by, ascending
+            )
         query_stat = self.table.search().where(query)
         if columns is not None:
             query_stat = query_stat.select(columns)
@@ -284,7 +311,11 @@ class SimpleTable(BaseTable):
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
             self.open_table()
-        return self.table.optimize(cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified, retrain=retrain)
+        return self.table.optimize(
+            cleanup_older_than=cleanup_older_than,
+            delete_unverified=delete_unverified,
+            retrain=retrain,
+        )
 
     def to_pandas(self, partition=None) -> pd.DataFrame:
         assert partition is None, "Partitioning not supported for SimpleTable"
@@ -309,7 +340,9 @@ class SimpleTable(BaseTable):
         if self.table is None:
             self.open_table()
 
-        self.table.merge_insert(columns).when_matched_update_all().when_not_matched_insert_all().execute(datas)
+        self.table.merge_insert(
+            columns
+        ).when_matched_update_all().when_not_matched_insert_all().execute(datas)
 
     def add_columns(self, transforms: Union[Dict[str, str], pa.field, List[pa.field], pa.Schema]):
         if self.table is None:
@@ -344,7 +377,9 @@ class ValuePartitionTable(BaseTable):
             self.open_table([partition], create_when_missing=False)
 
     def add(self, datas: pd.DataFrame, partition=None):
-        dfs = {d: g.reset_index(drop=True) for d, g in datas.groupby(self.partition_column, sort=False)}
+        dfs = {
+            d: g.reset_index(drop=True) for d, g in datas.groupby(self.partition_column, sort=False)
+        }
         if partition is not None:
             assert len(dfs) == 1 and partition in dfs, f"datas must belong partition='{partition}'"
 
@@ -384,7 +419,9 @@ class ValuePartitionTable(BaseTable):
                     else:
                         raise
             else:
-                raise ValueError(f"Table {self.raw_table_name} partition {partition} does not exist")
+                raise ValueError(
+                    f"Table {self.raw_table_name} partition {partition} does not exist"
+                )
             self.tables[partition] = table
 
     def list_partitions(self) -> list[str]:
@@ -427,7 +464,9 @@ class ValuePartitionTable(BaseTable):
             self.tables[partition].wait_for_index([index_name])
 
     def list_indices(self, partition) -> list[IndexConfig]:
-        assert partition is not None, "partition cannot be None when value partition table listing indices"
+        assert partition is not None, (
+            "partition cannot be None when value partition table listing indices"
+        )
         self.open_table([partition])
         return self.tables[partition].list_indices()
 
@@ -446,7 +485,11 @@ class ValuePartitionTable(BaseTable):
 
         self.open_table(partitions)
         for p in partitions:
-            self.tables[p].optimize(cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified, retrain=retrain)
+            self.tables[p].optimize(
+                cleanup_older_than=cleanup_older_than,
+                delete_unverified=delete_unverified,
+                retrain=retrain,
+            )
 
     def drop_table(self, partition=None):
         if partition is not None:
@@ -475,7 +518,9 @@ class ValuePartitionTable(BaseTable):
         if partitions is None:
             partitions = self.list_partitions()
             if partition_cond is not None:
-                partitions = filter_values(partitions, partition_cond, column_name=self.partition_column)
+                partitions = filter_values(
+                    partitions, partition_cond, column_name=self.partition_column
+                )
         if offset is not None:
             assert len(partitions) == 1, "offset is not supported for multiple partitions"
         partitions = sorted(partitions)
@@ -487,7 +532,9 @@ class ValuePartitionTable(BaseTable):
             if checkout_latest:
                 table.checkout_latest()
             if order_by is not None:
-                query_result = _filter_with_lance(table, query, limit, columns, offset, order_by, ascending)
+                query_result = _filter_with_lance(
+                    table, query, limit, columns, offset, order_by, ascending
+                )
             else:
                 query_stat = table.search().where(query)
                 if columns is not None:
@@ -506,7 +553,9 @@ class ValuePartitionTable(BaseTable):
         return result
 
     def to_pandas(self, partition) -> pd.DataFrame:
-        assert partition is not None, "partition cannot be None when value partition table to_pandas"
+        assert partition is not None, (
+            "partition cannot be None when value partition table to_pandas"
+        )
         self.open_table([partition])
         return self.tables[partition].to_pandas()
 
@@ -533,23 +582,37 @@ class ValuePartitionTable(BaseTable):
             self.tables[partition].update(where, values)
 
     def upsert(self, columns: List[str], datas: pd.DataFrame, partition=None):
-        dfs = {d: g.reset_index(drop=True) for d, g in datas.groupby(self.partition_column, sort=False)}
+        dfs = {
+            d: g.reset_index(drop=True) for d, g in datas.groupby(self.partition_column, sort=False)
+        }
         if partition is not None:
             assert len(dfs) == 1 and partition in dfs, f"datas must belong partition='{partition}'"
 
         self.open_table(list(dfs.keys()), create_when_missing=True)
         for partition, value in dfs.items():
-            self.tables[partition].merge_insert(columns).when_matched_update_all().when_not_matched_insert_all().execute(value)
+            self.tables[partition].merge_insert(
+                columns
+            ).when_matched_update_all().when_not_matched_insert_all().execute(value)
 
     @classmethod
-    def from_table_name(cls, db_conn: LanceDBConnection, schema_table: InformationSchemaTable, table_name: str, partition=None):
+    def from_table_name(
+        cls,
+        db_conn: LanceDBConnection,
+        schema_table: InformationSchemaTable,
+        table_name: str,
+        partition=None,
+    ):
         if not schema_table.exist(table_name):
             schema_table.reload()
         assert schema_table.exist(table_name), f"Table {table_name} does not exist"
         schema_record = schema_table.get(table_name)
         assert schema_record.schema is not None, f"Table {table_name} does not have a schema"
-        assert schema_record.partition_column is not None, f"Table {table_name} does not have a partition_column"
-        assert schema_record.partition_type == "VALUE", f"Table {table_name} partition_type={schema_record.partition_type}, not equal to VALUE"
+        assert schema_record.partition_column is not None, (
+            f"Table {table_name} does not have a partition_column"
+        )
+        assert schema_record.partition_type == "VALUE", (
+            f"Table {table_name} partition_type={schema_record.partition_type}, not equal to VALUE"
+        )
 
         return cls(
             db_conn,
@@ -587,13 +650,17 @@ class HashPartitionTable(BaseTable):
         partition: int = None,
     ) -> None:
         super().__init__(db_conn, schema_table, table_name, schema, mode)
-        assert isinstance(partitions, int) and partitions > 0, "partitions must be a positive integer"
+        assert isinstance(partitions, int) and partitions > 0, (
+            "partitions must be a positive integer"
+        )
         assert partition_column, "Partition column must be specified"
         assert mode != "overwrite", "mode cannot be overwrite for HASH partition type"
 
         self.partition_column = partition_column
         self.partitions = partitions
-        self.table_name_prefix = f"{table_name}_type_HASH_column_{partition_column}_partitions_{partitions}_partition_"
+        self.table_name_prefix = (
+            f"{table_name}_type_HASH_column_{partition_column}_partitions_{partitions}_partition_"
+        )
         self.tables = {}
         self._lock = threading.Lock()  # Add thread lock for concurrent access
         if partition is not None and mode == "OPEN":
@@ -614,7 +681,9 @@ class HashPartitionTable(BaseTable):
         for partition in partitions:
             assert partition is not None, "partition can not be None"
             assert isinstance(partition, int), "partition must be an integer"
-            assert 0 <= partition < self.partitions, f"partition must be in range [0, {self.partitions})"
+            assert 0 <= partition < self.partitions, (
+                f"partition must be in range [0, {self.partitions})"
+            )
             if partition in self.tables:
                 continue
 
@@ -635,7 +704,9 @@ class HashPartitionTable(BaseTable):
                     else:
                         raise
             else:
-                raise ValueError(f"Table {self.raw_table_name} partition {partition} does not exist")
+                raise ValueError(
+                    f"Table {self.raw_table_name} partition {partition} does not exist"
+                )
             self.tables[partition] = table
 
     def list_partitions(self) -> List[int]:
@@ -650,7 +721,10 @@ class HashPartitionTable(BaseTable):
         # Group data by hash partition
         datas = datas.copy()
         datas["_hash_partition"] = datas[self.partition_column].apply(self._hash_partition)
-        dfs = {d: g.drop(columns=["_hash_partition"]).reset_index(drop=True) for d, g in datas.groupby("_hash_partition", sort=False)}
+        dfs = {
+            d: g.drop(columns=["_hash_partition"]).reset_index(drop=True)
+            for d, g in datas.groupby("_hash_partition", sort=False)
+        }
 
         if partition is not None:
             assert len(dfs) == 1 and partition in dfs, f"datas must belong partition={partition}"
@@ -692,7 +766,9 @@ class HashPartitionTable(BaseTable):
             self.tables[partition].wait_for_index([index_name])
 
     def list_indices(self, partition) -> list[IndexConfig]:
-        assert partition is not None, "partition cannot be None when hash partition table listing indices"
+        assert partition is not None, (
+            "partition cannot be None when hash partition table listing indices"
+        )
         self.open_table([partition])
         return self.tables[partition].list_indices()
 
@@ -711,7 +787,11 @@ class HashPartitionTable(BaseTable):
 
         self.open_table(partitions)
         for p in partitions:
-            self.tables[p].optimize(cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified, retrain=retrain)
+            self.tables[p].optimize(
+                cleanup_older_than=cleanup_older_than,
+                delete_unverified=delete_unverified,
+                retrain=retrain,
+            )
 
     def drop_table(self, partition=None):
         if partition is not None:
@@ -752,7 +832,9 @@ class HashPartitionTable(BaseTable):
             if checkout_latest:
                 table.checkout_latest()
             if order_by is not None:
-                query_result = _filter_with_lance(table, query, limit, columns, offset, order_by, ascending)
+                query_result = _filter_with_lance(
+                    table, query, limit, columns, offset, order_by, ascending
+                )
             else:
                 query_stat = table.search().where(query)
                 if columns is not None:
@@ -801,25 +883,42 @@ class HashPartitionTable(BaseTable):
         # Group data by hash partition
         datas = datas.copy()
         datas["_hash_partition"] = datas[self.partition_column].apply(self._hash_partition)
-        dfs = {d: g.drop(columns=["_hash_partition"]).reset_index(drop=True) for d, g in datas.groupby("_hash_partition", sort=False)}
+        dfs = {
+            d: g.drop(columns=["_hash_partition"]).reset_index(drop=True)
+            for d, g in datas.groupby("_hash_partition", sort=False)
+        }
 
         if partition is not None:
             assert len(dfs) == 1 and partition in dfs, f"datas must belong partition={partition}"
 
         self.open_table(list(dfs.keys()), create_when_missing=True)
         for partition_idx, value in dfs.items():
-            self.tables[partition_idx].merge_insert(columns).when_matched_update_all().when_not_matched_insert_all().execute(value)
+            self.tables[partition_idx].merge_insert(
+                columns
+            ).when_matched_update_all().when_not_matched_insert_all().execute(value)
 
     @classmethod
-    def from_table_name(cls, db_conn: LanceDBConnection, schema_table: InformationSchemaTable, table_name: str, partition=None):
+    def from_table_name(
+        cls,
+        db_conn: LanceDBConnection,
+        schema_table: InformationSchemaTable,
+        table_name: str,
+        partition=None,
+    ):
         if not schema_table.exist(table_name):
             schema_table.reload()
         assert schema_table.exist(table_name), f"Table {table_name} does not exist"
         schema_record = schema_table.get(table_name)
         assert schema_record.schema is not None, f"Table {table_name} does not have a schema"
-        assert schema_record.partition_column is not None, f"Table {table_name} does not have a partition_column"
-        assert schema_record.partition_type == "HASH", f"Table {table_name} partition_type={schema_record.partition_type}, not equal to HASH"
-        assert schema_record.partitions > 0, f"Table {table_name} does not have valid partitions count"
+        assert schema_record.partition_column is not None, (
+            f"Table {table_name} does not have a partition_column"
+        )
+        assert schema_record.partition_type == "HASH", (
+            f"Table {table_name} partition_type={schema_record.partition_type}, not equal to HASH"
+        )
+        assert schema_record.partitions > 0, (
+            f"Table {table_name} does not have valid partitions count"
+        )
 
         return cls(
             db_conn,
@@ -857,14 +956,24 @@ def create_table(
         return SimpleTable(db_conn, schema_table, table_name, schema, mode)
 
     if partition_type == "VALUE":
-        return ValuePartitionTable(db_conn, schema_table, table_name, schema, mode, partition_column)
+        return ValuePartitionTable(
+            db_conn, schema_table, table_name, schema, mode, partition_column
+        )
     elif partition_type == "HASH":
-        return HashPartitionTable(db_conn, schema_table, table_name, schema, mode, partition_column, partitions)
+        return HashPartitionTable(
+            db_conn, schema_table, table_name, schema, mode, partition_column, partitions
+        )
     else:
         raise ValueError(f"Partition type must be either 'HASH' or 'VALUE', got '{partition_type}'")
 
 
-def open_table(db_conn: LanceDBConnection, schema_table: InformationSchemaTable, table_name: str, full_table_name: str, partition=None) -> BaseTable:
+def open_table(
+    db_conn: LanceDBConnection,
+    schema_table: InformationSchemaTable,
+    table_name: str,
+    full_table_name: str,
+    partition=None,
+) -> BaseTable:
     if "_type_VALUE_" in full_table_name:
         return ValuePartitionTable.from_table_name(db_conn, schema_table, table_name, partition)
     if "_type_HASH_" in full_table_name:
@@ -875,7 +984,11 @@ def open_table(db_conn: LanceDBConnection, schema_table: InformationSchemaTable,
 
 
 def open_table_by_partition_type(
-    db_conn: LanceDBConnection, schema_table: InformationSchemaTable, table_name: str, partition_type: str, partition=None
+    db_conn: LanceDBConnection,
+    schema_table: InformationSchemaTable,
+    table_name: str,
+    partition_type: str,
+    partition=None,
 ) -> BaseTable:
     if partition_type == "VALUE":
         return ValuePartitionTable.from_table_name(db_conn, schema_table, table_name, partition)

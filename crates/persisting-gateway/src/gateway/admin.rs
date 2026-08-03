@@ -8,6 +8,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::session::index::{SessionIndex, SessionIndexHandle};
+use persisting_overlaynet::{InterceptionMetrics, InterceptionProfile, InterceptionSnapshot};
 
 #[derive(Clone)]
 pub struct AdminState {
@@ -16,6 +17,7 @@ pub struct AdminState {
     pub admin_listen: String,
     pub started_at: String,
     pub active_requests: Arc<std::sync::atomic::AtomicUsize>,
+    pub interception_metrics: InterceptionMetrics,
 }
 
 #[derive(Serialize)]
@@ -24,6 +26,8 @@ pub struct StatusResponse {
     pub admin: String,
     pub started_at: String,
     pub active_requests: usize,
+    pub interception: InterceptionProfile,
+    pub interception_metrics: InterceptionSnapshot,
     pub sessions: Vec<crate::session::index::SessionSummary>,
 }
 
@@ -43,6 +47,8 @@ async fn status_handler(State(st): State<AdminState>) -> Json<StatusResponse> {
         active_requests: st
             .active_requests
             .load(std::sync::atomic::Ordering::Relaxed),
+        interception: InterceptionProfile::explicit_proxy(),
+        interception_metrics: st.interception_metrics.snapshot(),
         sessions: index.sessions,
     })
 }
@@ -68,11 +74,17 @@ mod tests {
             admin_listen: "127.0.0.1:9876".into(),
             started_at: "2026-07-31T00:00:00Z".into(),
             active_requests: Arc::new(std::sync::atomic::AtomicUsize::new(3)),
+            interception_metrics: InterceptionMetrics::default(),
         }))
         .await;
 
         assert_eq!(response.0.listen, "127.0.0.1:9875");
         assert_eq!(response.0.admin, "127.0.0.1:9876");
         assert_eq!(response.0.active_requests, 3);
+        assert!(!response.0.interception.is_enforcing());
+        assert_eq!(
+            response.0.interception_metrics,
+            InterceptionSnapshot::default()
+        );
     }
 }

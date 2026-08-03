@@ -167,6 +167,7 @@ pub async fn run_check(opts: CheckOptions) -> Result<CheckReport> {
         skip_task_ids: skip,
         checkpoint: None,
         sink_submitter: None,
+        coordinator: None,
     };
 
     match run_local_fleet(run_opts, |_| {}).await {

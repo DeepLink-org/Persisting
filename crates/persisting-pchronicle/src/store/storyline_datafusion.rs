@@ -183,6 +183,19 @@ impl StorylineDataSource {
         Self::from_store_with_options(&store, options).await
     }
 
+    pub async fn open_uri(root: impl AsRef<str>) -> Result<Self> {
+        let store = LanceStorylineStore::open_uri(root).await?;
+        Self::from_store(&store).await
+    }
+
+    pub async fn open_uri_with_options(
+        root: impl AsRef<str>,
+        options: StorylineDataSourceOptions,
+    ) -> Result<Self> {
+        let store = LanceStorylineStore::open_uri(root).await?;
+        Self::from_store_with_options(&store, options).await
+    }
+
     pub async fn from_store(store: &LanceStorylineStore) -> Result<Self> {
         Self::from_store_with_options(store, StorylineDataSourceOptions::default()).await
     }

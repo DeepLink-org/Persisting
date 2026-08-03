@@ -1,4 +1,4 @@
-//! Run a user plan script and stream TaskExpr lines (NDJSON on stdout).
+//! Run a user plan script and stream typed values (NDJSON on stdout).
 //!
 //! The control plane never embeds the user's interpreter (PyO3). It **invokes**
 //! `--python` so quirky envs stay isolated; stacks stay in that process.
@@ -7,7 +7,7 @@
 
 use crate::task::TaskExpr;
 use anyhow::{bail, Context, Result};
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
@@ -61,7 +61,21 @@ pub fn stream_plan_tasks(
     python: PathBuf,
     script_args: Vec<String>,
 ) -> Pin<Box<dyn Stream<Item = Result<TaskExpr>> + Send>> {
-    let (tx, rx) = mpsc::channel::<Result<TaskExpr>>(64);
+    Box::pin(
+        stream_plan_values(script, python, script_args)
+            .map(|value| value.and_then(TaskExpr::from_value)),
+    )
+}
+
+/// Stream raw JSON values from a Python plan. Consumers apply their own
+/// boundary type (`TaskExpr`, production Run, ...), while process isolation,
+/// async-generator support, and argument forwarding remain shared.
+pub(crate) fn stream_plan_values(
+    script: PathBuf,
+    python: PathBuf,
+    script_args: Vec<String>,
+) -> Pin<Box<dyn Stream<Item = Result<serde_json::Value>> + Send>> {
+    let (tx, rx) = mpsc::channel::<Result<serde_json::Value>>(64);
     tokio::spawn(async move {
         if let Err(e) = run_plan_process(script, python, script_args, tx.clone()).await {
             let _ = tx.send(Err(e)).await;
@@ -74,7 +88,7 @@ async fn run_plan_process(
     script: PathBuf,
     python: PathBuf,
     script_args: Vec<String>,
-    tx: mpsc::Sender<Result<TaskExpr>>,
+    tx: mpsc::Sender<Result<serde_json::Value>>,
 ) -> Result<()> {
     let script = script
         .canonicalize()
@@ -118,8 +132,7 @@ async fn run_plan_process(
             continue;
         }
         let parsed = serde_json::from_str::<serde_json::Value>(line)
-            .with_context(|| format!("invalid NDJSON from plan: {line}"))
-            .and_then(TaskExpr::from_value);
+            .with_context(|| format!("invalid NDJSON from plan: {line}"));
         if tx.send(parsed).await.is_err() {
             break;
         }
@@ -164,5 +177,59 @@ def execute(item):
             ids.push(item.unwrap().id);
         }
         assert_eq!(ids, vec!["t-0", "t-1", "t-2"]);
+    }
+
+    #[tokio::test]
+    async fn stream_plan_values_supports_async_generators_and_forwards_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("production.py");
+        std::fs::write(
+            &script,
+            r#"
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--count", type=int, required=True)
+args = parser.parse_args()
+
+async def plan():
+    for i in range(args.count):
+        yield {"id": f"run-{i}", "command": ["/bin/true"]}
+"#,
+        )
+        .unwrap();
+        let values = stream_plan_values(
+            script,
+            PathBuf::from("python3"),
+            vec!["--count".into(), "2".into()],
+        )
+        .collect::<Vec<_>>()
+        .await;
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].as_ref().unwrap()["id"], "run-0");
+        assert_eq!(values[1].as_ref().unwrap()["command"][0], "/bin/true");
+    }
+
+    #[tokio::test]
+    async fn stream_plan_values_surfaces_python_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("broken.py");
+        std::fs::write(
+            &script,
+            r#"
+def plan():
+    raise RuntimeError("planner exploded")
+"#,
+        )
+        .unwrap();
+        let errors = stream_plan_values(script, PathBuf::from("python3"), vec![])
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("planner exploded"));
     }
 }

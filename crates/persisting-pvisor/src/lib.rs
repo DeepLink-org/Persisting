@@ -10,29 +10,53 @@
 pub mod cli;
 mod runtime;
 
+mod agent_abi;
+mod artifact;
+mod bundle;
+mod checkpoint;
 mod config;
+mod container;
 mod control;
+mod delegated;
 mod event;
 mod executor;
+mod kvm;
 mod process;
 mod pvisor;
+mod supervisor;
 mod util;
 
-pub use config::{
-    ChronicleMode, ChronicleSettings, GatewayDriverConfig, GatewayMode, GatewaySettings,
-    OverlayFsBackend, OverlayFsCommit, OverlayFsMode, OverlayFsSettings, OverlayNetMode,
-    OverlayNetPolicy, OverlayNetSettings, PVisorConfig, RunConfig, RunPolicy, RunSettings,
-    RunStdio,
+pub use agent_abi::{
+    AgentAbiControl, AgentAbiServer, AgentAbiSnapshot, AgentClientSnapshot, AgentEffectSnapshot,
+    AgentProcessSnapshot, AGENT_ABI_ENDPOINT_ENV, AGENT_ABI_TOKEN_ENV, AGENT_ABI_TRANSPORT_ENV,
+    AGENT_ABI_VERSION_ENV,
 };
+pub use bundle::{
+    BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, RunBundle, SafetySummary,
+    RUN_BUNDLE_FILENAME, RUN_BUNDLE_SCHEMA_VERSION,
+};
+pub use checkpoint::{
+    create_logical_checkpoint, latest_logical_checkpoint, restore_logical_checkpoint,
+    CheckpointConsistency, LogicalCheckpoint, CHECKPOINTS_DIR,
+};
+pub use config::{
+    ChronicleMode, ChronicleSettings, ContainerMount, ContainerNetwork, ContainerPlatform,
+    ContainerSettings, GatewayDriverConfig, GatewayMode, GatewaySettings, KvmArchitecture,
+    KvmImageFormat, KvmSettings, OverlayFsBackend, OverlayFsCommit, OverlayFsMode,
+    OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig,
+    RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
+};
+pub use container::ContainerExecutor;
 pub use control::{
-    host_matches, normalize_host, parse_network_rule, ControlController, ControlEffect,
-    ControlMachine, ControlReason, ControlRequest, ControlState, ControlTransition, NetworkGuard,
-    NetworkRule, PolicyControlController,
+    host_matches, is_public_egress_ip, normalize_host, parse_network_rule, ControlController,
+    ControlEffect, ControlMachine, ControlReason, ControlRequest, ControlState, ControlTransition,
+    NetworkGuard, NetworkHostRule, NetworkRule, PolicyControlController,
 };
 pub use event::{EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher};
 pub use executor::{AttemptContext, RunExecutor};
+pub use kvm::KvmExecutor;
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;
 pub use pvisor::{PVisor, PVisorBuilder, PVisorError, RunCancellation, RunEventStream, RunHandle};
-pub use runtime::{ImplantPlan, OverlayHint, RuntimeCapabilities};
+pub use runtime::{ImplantPlan, OverlayHint, RunLineage, RuntimeCapabilities};
 pub use util::unix_now_ms;

@@ -17,6 +17,7 @@ use crate::observe::spawn_snapshot_loop;
 use crate::pulsing_ext::{ask_timeout, resolve_actor, spawn_supervised, ASK_TIMEOUT};
 use crate::python_env::pythonpath_for_script;
 use crate::scheduler::{Scheduler, WorkerPool};
+use crate::supervisor::{EmbeddedSupervisor, EmbeddedSupervisorConfig};
 use crate::task::TaskResult;
 use crate::worker::{ShutdownGate, WorkerCommand, WorkerConfig, WorkerReply};
 use anyhow::{bail, Context, Result};
@@ -58,6 +59,13 @@ pub async fn run_local_fleet(
     opts: RunOptions,
     on_result: impl FnMut(TaskResult) + Send,
 ) -> Result<Vec<TaskResult>> {
+    let supervisor = EmbeddedSupervisor::start(EmbeddedSupervisorConfig {
+        network_limit_bytes_per_second: None,
+        ..EmbeddedSupervisorConfig::default()
+    })
+    .await
+    .context("start embedded pPilot Supervisor")?;
+    let supervisor_bootstrap = supervisor.bootstrap();
     let pythonpath = apply_pythonpath(&opts);
     let system: Arc<ActorSystem> = ActorSystem::builder()
         .mailbox_capacity(256)
@@ -80,8 +88,15 @@ pub async fn run_local_fleet(
     .await?;
     let cancel_fanout = spawn_cancel_broadcast(Arc::clone(&system), opts.job_cancel.clone(), 1);
 
-    let watches =
-        spawn_local_fleet_slots(&system, n_workers, per_worker, &opts, &pythonpath).await?;
+    let watches = spawn_local_fleet_slots(
+        &system,
+        n_workers,
+        per_worker,
+        &opts,
+        &pythonpath,
+        Some(supervisor_bootstrap),
+    )
+    .await?;
     let pool: WorkerPool = Arc::new(RwLock::new(
         watches.iter().map(|(r, _)| r.clone()).collect(),
     ));
@@ -95,7 +110,11 @@ pub async fn run_local_fleet(
         "driver ready (local fleet)"
     );
 
-    run_driver_loop(pool, sched, &opts, on_result, cancel_fanout, system, None).await
+    let result = run_driver_loop(pool, sched, &opts, on_result, cancel_fanout, system, None).await;
+    if let Err(error) = supervisor.shutdown().await {
+        tracing::warn!(%error, "failed to stop embedded pPilot Supervisor");
+    }
+    result
 }
 
 /// Rank0 under torchrun: bind Pulsing seed, wait for peer slots, run Driver.
@@ -104,6 +123,13 @@ async fn run_driver_rank(
     opts: RunOptions,
     on_result: impl FnMut(TaskResult) + Send,
 ) -> Result<Vec<TaskResult>> {
+    let supervisor = EmbeddedSupervisor::start(EmbeddedSupervisorConfig {
+        network_limit_bytes_per_second: None,
+        ..EmbeddedSupervisorConfig::default()
+    })
+    .await
+    .context("start rank-local pPilot Supervisor")?;
+    let supervisor_bootstrap = supervisor.bootstrap();
     let bind = format!("0.0.0.0:{}", dist.pulsing_seed.port());
     let system: Arc<ActorSystem> = ActorSystem::builder()
         .mailbox_capacity(256)
@@ -134,12 +160,15 @@ async fn run_driver_rank(
     let pythonpath = apply_pythonpath(&opts);
     let local_watches = spawn_rank_slots(
         &system,
-        0,
-        dist.world_size,
-        per_worker,
+        RankPlacement {
+            rank: 0,
+            n_workers: dist.world_size,
+            per_worker,
+        },
         &opts,
         &pythonpath,
         None,
+        Some(supervisor_bootstrap),
     )
     .await?;
     let pool: WorkerPool = Arc::new(RwLock::new(
@@ -165,7 +194,7 @@ async fn run_driver_rank(
 
     let world_size = dist.world_size;
     let per_worker_shutdown = per_worker;
-    run_driver_loop(
+    let result = run_driver_loop(
         pool,
         sched,
         &opts,
@@ -178,11 +207,22 @@ async fn run_driver_rank(
             per_worker: per_worker_shutdown,
         }),
     )
-    .await
+    .await;
+    if let Err(error) = supervisor.shutdown().await {
+        tracing::warn!(%error, "failed to stop rank-local pPilot Supervisor");
+    }
+    result
 }
 
 /// Rank > 0: join Pulsing, serve `--per-worker` slot actors until Shutdown.
 async fn run_worker_rank(dist: DistEnv, opts: &RunOptions, pythonpath: Vec<PathBuf>) -> Result<()> {
+    let supervisor = EmbeddedSupervisor::start(EmbeddedSupervisorConfig {
+        network_limit_bytes_per_second: None,
+        ..EmbeddedSupervisorConfig::default()
+    })
+    .await
+    .context("start worker-local pPilot Supervisor")?;
+    let supervisor_bootstrap = supervisor.bootstrap();
     let seed = dist.pulsing_seed.to_string();
     let mut last = None;
     let system = {
@@ -223,12 +263,15 @@ async fn run_worker_rank(dist: DistEnv, opts: &RunOptions, pythonpath: Vec<PathB
     let gate = ShutdownGate::new(per_worker);
     let _slots = spawn_rank_slots(
         &system,
-        dist.rank,
-        dist.world_size,
-        per_worker,
+        RankPlacement {
+            rank: dist.rank,
+            n_workers: dist.world_size,
+            per_worker,
+        },
         opts,
         &pythonpath,
         Some(Arc::clone(&gate)),
+        Some(supervisor_bootstrap),
     )
     .await?;
 
@@ -238,6 +281,7 @@ async fn run_worker_rank(dist: DistEnv, opts: &RunOptions, pythonpath: Vec<PathB
         .shutdown()
         .await
         .map_err(|e| anyhow::anyhow!("shutdown: {e}"))?;
+    supervisor.shutdown().await?;
     Ok(())
 }
 
@@ -292,6 +336,7 @@ async fn spawn_one_slot(
     opts: &RunOptions,
     pythonpath: &[PathBuf],
     gate: Option<Arc<ShutdownGate>>,
+    supervisor: Option<persisting_proto::SupervisorBootstrap>,
 ) -> Result<(ActorRef, usize)> {
     let SlotPlacement {
         worker,
@@ -308,7 +353,8 @@ async fn spawn_one_slot(
         opts.script_args.clone(),
         opts.job_cancel.clone(),
         gate,
-    );
+    )
+    .with_supervisor(supervisor);
     let wref = spawn_supervised(system, &name, move || Ok(cfg.build())).await?;
     let flat = DistEnv::slot_flat_index(worker, slot, n_workers, per_worker);
     tracing::debug!(%name, worker, slot, flat, "worker slot ready");
@@ -317,15 +363,26 @@ async fn spawn_one_slot(
 
 /// Spawn all slots for one rank (torchrun driver local / worker rank).
 /// Returns `(ActorRef, slot-major flat index)` pairs.
-async fn spawn_rank_slots(
-    system: &Arc<ActorSystem>,
+#[derive(Clone, Copy)]
+struct RankPlacement {
     rank: usize,
     n_workers: usize,
     per_worker: usize,
+}
+
+async fn spawn_rank_slots(
+    system: &Arc<ActorSystem>,
+    placement: RankPlacement,
     opts: &RunOptions,
     pythonpath: &[PathBuf],
     gate: Option<Arc<ShutdownGate>>,
+    supervisor: Option<persisting_proto::SupervisorBootstrap>,
 ) -> Result<Vec<(ActorRef, usize)>> {
+    let RankPlacement {
+        rank,
+        n_workers,
+        per_worker,
+    } = placement;
     let mut out = Vec::with_capacity(per_worker);
     for slot in 0..per_worker {
         out.push(
@@ -340,6 +397,7 @@ async fn spawn_rank_slots(
                 opts,
                 pythonpath,
                 gate.clone(),
+                supervisor.clone(),
             )
             .await?,
         );
@@ -354,6 +412,7 @@ async fn spawn_local_fleet_slots(
     per_worker: usize,
     opts: &RunOptions,
     pythonpath: &[PathBuf],
+    supervisor: Option<persisting_proto::SupervisorBootstrap>,
 ) -> Result<Vec<(ActorRef, usize)>> {
     let mut out = Vec::with_capacity(n_workers.saturating_mul(per_worker));
     for slot in 0..per_worker {
@@ -370,6 +429,7 @@ async fn spawn_local_fleet_slots(
                     opts,
                     pythonpath,
                     None,
+                    supervisor.clone(),
                 )
                 .await?,
             );

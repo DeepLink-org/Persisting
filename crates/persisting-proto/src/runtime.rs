@@ -12,6 +12,7 @@ use std::fmt;
 
 pub const RUNTIME_SCHEMA_VERSION: u32 = 1;
 pub const EVENT_SCHEMA_VERSION: u32 = 2;
+pub const RUN_CONTROL_SCHEMA_VERSION: u32 = 1;
 
 macro_rules! string_id {
     ($name:ident) => {
@@ -85,6 +86,10 @@ pub struct RunSpec {
     #[serde(default = "runtime_schema_version")]
     pub schema_version: u32,
     pub run_id: RunId,
+    /// Monotonic pPilot ownership generation. Zero is reserved for callers that
+    /// do not use durable orchestration/fencing.
+    #[serde(default)]
+    pub lease_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +102,10 @@ pub struct RunSpec {
     pub runtime: RuntimeConfig,
     #[serde(default)]
     pub capabilities: CapabilitySet,
+    /// Optional pPilot control channel. Absence, connection failure, or later
+    /// disconnection never prevents standalone pVisor execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervisor: Option<crate::SupervisorBootstrap>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
 }
@@ -110,6 +119,7 @@ impl RunSpec {
         Self {
             schema_version: RUNTIME_SCHEMA_VERSION,
             run_id: run_id.into(),
+            lease_epoch: 0,
             task_id: None,
             parent_run_id: None,
             agent: AgentRef::new(agent),
@@ -117,6 +127,7 @@ impl RunSpec {
             input: Value::Null,
             runtime: RuntimeConfig::default(),
             capabilities: CapabilitySet::default(),
+            supervisor: None,
             metadata: BTreeMap::new(),
         }
     }
@@ -262,8 +273,57 @@ pub enum NetworkCapability {
     Ambient,
     Deny,
     AllowList {
+        /// Legacy host-only rules. Empty port/transport constraints mean any.
+        #[serde(default)]
         hosts: Vec<String>,
+        /// Structured rules for protocol- and port-scoped access.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rules: Vec<NetworkAccessRule>,
     },
+    /// Ordered policy surface: explicit denies win, then the default action
+    /// determines whether an allow rule is required.
+    Policy {
+        default_action: NetworkDefaultAction,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allow: Vec<NetworkAccessRule>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        deny: Vec<NetworkAccessRule>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        limits: Vec<NetworkBandwidthLimit>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkDefaultAction {
+    Allow,
+    Deny,
+}
+
+/// One declarative network grant. `host` accepts an exact hostname,
+/// `*.suffix`, an IP literal, or a CIDR. Empty `ports` or `transports` mean
+/// unrestricted for that dimension. Hostname rules reject private and
+/// loopback resolved addresses unless `allow_private_ips` is enabled; other
+/// special-purpose addresses still require an explicit IP or CIDR grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkAccessRule {
+    pub host: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transports: Vec<NetworkTransport>,
+    #[serde(default)]
+    pub allow_private_ips: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NetworkBandwidthLimit {
+    /// Absent means all intercepted destinations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    pub bytes_per_second: u64,
 }
 
 /// Runtime-neutral network request presented to pVisor for authorization.
@@ -279,6 +339,10 @@ pub struct NetworkAccessRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     pub transport: NetworkTransport,
+    /// Address selected from the request hostname's current DNS result. This
+    /// is absent only during a pre-resolution policy check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ip: Option<std::net::IpAddr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,6 +395,10 @@ pub enum AccessReason {
     NetworkDenied,
     NetworkAllowListEmpty,
     HostNotAllowed,
+    PortNotAllowed,
+    TransportNotAllowed,
+    ResolvedAddressNotAllowed,
+    ExplicitlyDenied,
     ModelAllowed,
     ModelNotAllowed,
     ProviderNotAllowed,
@@ -345,6 +413,10 @@ impl AccessReason {
             Self::NetworkDenied => "network-denied",
             Self::NetworkAllowListEmpty => "network-allowlist-empty",
             Self::HostNotAllowed => "host-not-allowed",
+            Self::PortNotAllowed => "port-not-allowed",
+            Self::TransportNotAllowed => "transport-not-allowed",
+            Self::ResolvedAddressNotAllowed => "resolved-address-not-allowed",
+            Self::ExplicitlyDenied => "explicitly-denied",
             Self::ModelAllowed => "model-allowed",
             Self::ModelNotAllowed => "model-not-allowed",
             Self::ProviderNotAllowed => "provider-not-allowed",
@@ -403,6 +475,7 @@ impl RunState {
 pub enum ExecutorKind {
     Process,
     Container,
+    VirtualMachine,
     Wasm,
     Remote,
 }
@@ -412,6 +485,7 @@ pub enum ExecutorKind {
 pub enum IsolationKind {
     HostProcess,
     Container,
+    VirtualMachine,
     Wasm,
 }
 
@@ -428,6 +502,8 @@ pub struct ExecutorDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttemptInfo {
     pub attempt_id: AttemptId,
+    #[serde(default)]
+    pub lease_epoch: u64,
     pub number: u32,
     pub executor: ExecutorDescriptor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -492,6 +568,8 @@ pub struct ArtifactRef {
 pub struct RunResult {
     pub run_id: RunId,
     pub attempt_id: AttemptId,
+    #[serde(default)]
+    pub lease_epoch: u64,
     pub state: RunState,
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: u64,
@@ -512,6 +590,62 @@ pub struct RunResult {
     pub event_stream_ref: Option<String>,
     #[serde(default)]
     pub warnings: Vec<String>,
+}
+
+/// The current pPilot execution owner for one logical Run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunLeaseRecord {
+    pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub epoch: u64,
+    pub owner: String,
+    pub issued_at_unix_ms: u64,
+    pub expires_at_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<AttemptId>,
+}
+
+/// Immutable terminal commit request. `result_digest` binds the commit to the
+/// durable pPilot completion record without embedding an arbitrarily large
+/// result in the control object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunCommitRequest {
+    pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub attempt_id: AttemptId,
+    pub lease_epoch: u64,
+    pub state: RunState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_high_watermark: Option<u64>,
+    pub result_digest: String,
+}
+
+/// The sole terminal result visible for a Run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunCommit {
+    #[serde(flatten)]
+    pub request: RunCommitRequest,
+    pub committed_at_unix_ms: u64,
+}
+
+/// CAS-managed pChronicle control record. Lease acquisition and terminal
+/// commit update this same object, closing the stale-lease/commit race.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunControlRecord {
+    #[serde(default = "run_control_schema_version")]
+    pub schema_version: u32,
+    pub revision: u64,
+    pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<RunLeaseRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<RunCommit>,
+}
+
+fn run_control_schema_version() -> u32 {
+    RUN_CONTROL_SCHEMA_VERSION
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -574,6 +708,7 @@ mod tests {
         process.stdout = StdioMode::Capture;
         spec.capabilities.network = NetworkCapability::AllowList {
             hosts: vec!["api.openai.com".into()],
+            rules: Vec::new(),
         };
 
         let json = serde_json::to_string(&spec).unwrap();
@@ -584,6 +719,35 @@ mod tests {
             decoded.capabilities.network,
             NetworkCapability::AllowList { .. }
         ));
+    }
+
+    #[test]
+    fn network_policy_roundtrips_deny_and_bandwidth_limits() {
+        let capability = NetworkCapability::Policy {
+            default_action: NetworkDefaultAction::Deny,
+            allow: vec![NetworkAccessRule {
+                host: "api.example.com".into(),
+                ports: vec![443],
+                transports: vec![NetworkTransport::TcpTunnel],
+                allow_private_ips: false,
+            }],
+            deny: vec![NetworkAccessRule {
+                host: "169.254.0.0/16".into(),
+                ports: Vec::new(),
+                transports: Vec::new(),
+                allow_private_ips: false,
+            }],
+            limits: vec![NetworkBandwidthLimit {
+                host: None,
+                port: None,
+                bytes_per_second: 1_250_000,
+            }],
+        };
+        let json = serde_json::to_string(&capability).unwrap();
+        assert_eq!(
+            serde_json::from_str::<NetworkCapability>(&json).unwrap(),
+            capability
+        );
     }
 
     #[test]

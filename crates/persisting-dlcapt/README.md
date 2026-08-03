@@ -8,10 +8,8 @@
 The maintained runtime source is this `crates/persisting-dlcapt` package. It was
 migrated from Capture `external/dlcapt`; that path describes the source
 provenance, not the current runtime location. The package follows the
-workspace's GPL-3.0-or-later license policy; see the repository `NOTICE`.
-
-This package does not replace the separate attribution for vendored
-`fuse-overlayfs` under `crates/persisting-fs-overlay`.
+workspace's Apache-2.0 license policy; see the repository `LICENSE` and
+`NOTICE` files.
 
 ## Prepare a local configuration
 

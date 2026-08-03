@@ -3,11 +3,14 @@
 //! C 宿主经 **`persisting_engine_submit`** 提交 UTF-8 RON `RpcRequest`，用 **`job_poll`** 查进度，用 **`job_take_result`** 取 `RpcResponse` RON；约定见 [`invoke_abi`]。
 //! Bincode 编解码见 [`encode_rpc_request`] 等；[`rpc_dispatch`] 模块实现与业务无关的信封转发（[`handle_rpc_request_with`](rpc_dispatch::handle_rpc_request_with)、[`dispatch_bincode_with`](rpc_dispatch::dispatch_bincode_with)），供 `persisting-engine` 等接入。
 
+pub mod agent_abi;
 pub mod invoke_abi;
 mod messages;
 pub mod rpc_dispatch;
 pub mod runtime;
+pub mod supervisor;
 
+pub use agent_abi::*;
 pub use invoke_abi::{
     invoke_ron_utf8_via_jobs_sync, job_take_result_utf8_with_buffer, poll_status_label,
     response_utf8_to_string, submit_status_label, take_status_label, PersistingEngineJobPollFn,
@@ -29,6 +32,7 @@ pub use rpc_dispatch::{
     malformed_request_response, version_mismatch_response,
 };
 pub use runtime::*;
+pub use supervisor::*;
 
 use anyhow::{Context, Result};
 

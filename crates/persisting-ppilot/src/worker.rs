@@ -8,6 +8,7 @@
 use crate::executor::ExecutorRouter;
 use crate::result_cache::{ResultCache, DEFAULT_RESULT_CACHE_CAP};
 use crate::task::{TaskExpr, TaskResult};
+use persisting_proto::SupervisorBootstrap;
 use pulsing_actor::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -20,7 +21,11 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerCommand {
-    Execute { task_json: Vec<u8> },
+    Execute {
+        task_json: Vec<u8>,
+        /// Driver-issued fencing token. It is part of the cache identity.
+        lease_epoch: u64,
+    },
     Shutdown,
 }
 
@@ -78,6 +83,7 @@ pub struct WorkerConfig {
     pub shutdown_gate: Option<Arc<ShutdownGate>>,
     /// Slot-scoped cache; one Arc per logical slot, shared by factory rebuilds.
     pub result_cache: Arc<Mutex<ResultCache>>,
+    pub supervisor: Option<SupervisorBootstrap>,
 }
 
 impl WorkerConfig {
@@ -99,7 +105,13 @@ impl WorkerConfig {
             job_cancel,
             shutdown_gate,
             result_cache: Arc::new(Mutex::new(ResultCache::new(DEFAULT_RESULT_CACHE_CAP))),
+            supervisor: None,
         }
+    }
+
+    pub fn with_supervisor(mut self, supervisor: Option<SupervisorBootstrap>) -> Self {
+        self.supervisor = supervisor;
+        self
     }
 
     pub fn build(&self) -> WorkerActor {
@@ -111,6 +123,7 @@ impl WorkerConfig {
                 self.plan_script.clone(),
                 self.script_args.clone(),
                 worker_context(&self.worker_id),
+                self.supervisor.clone(),
             )),
             done: 0,
             shutdown_gate: self.shutdown_gate.clone(),
@@ -188,9 +201,10 @@ impl WorkerActor {
         cfg.build()
     }
 
-    async fn execute(&mut self, task: TaskExpr) -> TaskResult {
+    async fn execute(&mut self, task: TaskExpr, lease_epoch: u64) -> TaskResult {
+        let cache_key = format!("{}@{}", task.id, lease_epoch);
         if let Ok(g) = self.result_cache.lock() {
-            if let Some(cached) = g.get(&task.id) {
+            if let Some(cached) = g.get(&cache_key) {
                 tracing::debug!(
                     task_id = %task.id,
                     worker = %self.worker_id,
@@ -199,16 +213,15 @@ impl WorkerActor {
                 return cached.clone();
             }
         }
-        let task_id = task.id.clone();
         let r = self
             .executors
-            .run_with_cancel(task, &self.worker_id, self.job_cancel.clone())
+            .run_with_cancel(task, &self.worker_id, self.job_cancel.clone(), lease_epoch)
             .await;
         if r.ok {
             self.done += 1;
         }
         if let Ok(mut g) = self.result_cache.lock() {
-            g.put(task_id, r.clone());
+            g.put(cache_key, r.clone());
         }
         r
     }
@@ -238,13 +251,16 @@ impl Actor for WorkerActor {
                 }
                 WorkerReply::Bye
             }
-            WorkerCommand::Execute { task_json } => {
+            WorkerCommand::Execute {
+                task_json,
+                lease_epoch,
+            } => {
                 let task: TaskExpr = serde_json::from_slice(&task_json).map_err(|e| {
                     pulsing_actor::error::PulsingError::from(
                         pulsing_actor::error::RuntimeError::Serialization(e.to_string()),
                     )
                 })?;
-                let result = self.execute(task).await;
+                let result = self.execute(task, lease_epoch).await;
                 let result_json = serde_json::to_vec(&result).map_err(|e| {
                     pulsing_actor::error::PulsingError::from(
                         pulsing_actor::error::RuntimeError::Serialization(e.to_string()),
@@ -302,6 +318,7 @@ def execute(item):
             job_cancel: token,
             shutdown_gate: None,
             result_cache: Arc::new(Mutex::new(ResultCache::new(DEFAULT_RESULT_CACHE_CAP))),
+            supervisor: None,
         };
         let w = crate::pulsing_ext::spawn_supervised(&system, "ppilot/worker/0", move || {
             Ok(cfg.build())
@@ -314,6 +331,7 @@ def execute(item):
             let reply = w
                 .ask::<_, WorkerReply>(WorkerCommand::Execute {
                     task_json: task_json.clone(),
+                    lease_epoch: 1,
                 })
                 .await
                 .unwrap();
@@ -321,6 +339,23 @@ def execute(item):
         }
         let runs = std::fs::read_to_string(&counter).unwrap();
         assert_eq!(runs.lines().count(), 1, "second ask must hit result cache");
+
+        // A new lease is a new ownership generation and must never reuse the
+        // previous generation's cached terminal result.
+        let reply = w
+            .ask::<_, WorkerReply>(WorkerCommand::Execute {
+                task_json,
+                lease_epoch: 2,
+            })
+            .await
+            .unwrap();
+        let WorkerReply::Result { result_json } = reply else {
+            panic!("execute returned Bye")
+        };
+        let result: TaskResult = serde_json::from_slice(&result_json).unwrap();
+        assert_eq!(result.lease_epoch, 2);
+        let runs = std::fs::read_to_string(&counter).unwrap();
+        assert_eq!(runs.lines().count(), 2, "new epoch must execute again");
         system.shutdown().await.unwrap();
     }
 
@@ -349,6 +384,7 @@ def execute(item):
             job_cancel: CancellationToken::new(),
             shutdown_gate: None,
             result_cache: Arc::clone(&cache),
+            supervisor: None,
         };
         let _a = cfg.build();
         cache

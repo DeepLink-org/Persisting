@@ -118,7 +118,9 @@ class SessionBase:
     ) -> pd.DataFrame:
         raise NotImplementedError
 
-    def create_scalar_index(self, table_name: str, column: str, *, partition=None, index_type: str = "BTREE"):
+    def create_scalar_index(
+        self, table_name: str, column: str, *, partition=None, index_type: str = "BTREE"
+    ):
         raise NotImplementedError
 
     def list_indices(self, table_name: str, partition=None) -> list[IndexConfig]:
@@ -170,7 +172,11 @@ class SessionBase:
         """
         raise NotImplementedError
 
-    def add_columns(self, table_name: str, transforms: Union[Dict[str, str], pa.field, List[pa.field], pa.Schema]):
+    def add_columns(
+        self,
+        table_name: str,
+        transforms: Union[Dict[str, str], pa.field, List[pa.field], pa.Schema],
+    ):
         """
         Add new columns with defined values.
 
@@ -220,7 +226,9 @@ class LanceSession(SessionBase):
         self.tables = dict()
         self.last_call: Optional[dict] = None
         self.last_calls = deque(maxlen=self.config.last_calls_maxlen)
-        self._metrics: Optional[MetricsCollector] = MetricsCollector() if self.config.model == "metrics" else None
+        self._metrics: Optional[MetricsCollector] = (
+            MetricsCollector() if self.config.model == "metrics" else None
+        )
         if self.config.use_memory_queue:
             self.memory_db_conn = lancedb.connect(self.db_name.memory_db_name)
             self.memory_tables = dict()
@@ -233,7 +241,9 @@ class LanceSession(SessionBase):
             return None
         return None
 
-    def _rows_bytes_from_result(self, api: str, result: Any, *, datas: Optional[pd.DataFrame] = None) -> tuple[Optional[int], Optional[int]]:
+    def _rows_bytes_from_result(
+        self, api: str, result: Any, *, datas: Optional[pd.DataFrame] = None
+    ) -> tuple[Optional[int], Optional[int]]:
         if api == "add" and datas is not None:
             rows = int(len(datas))
             bytes_ = self._maybe_df_bytes(datas)
@@ -295,7 +305,9 @@ class LanceSession(SessionBase):
         table_names = self.db_conn.list_tables().tables
         for full_table_name in table_names:
             if full_table_name.startswith(table_name):
-                return open_table(self.db_conn, self.schema_table, table_name, full_table_name, partition)
+                return open_table(
+                    self.db_conn, self.schema_table, table_name, full_table_name, partition
+                )
         return None
 
     def _get_table(self, table_name: str, partition=None):
@@ -306,7 +318,9 @@ class LanceSession(SessionBase):
         table = self._open_disk_table(table_name, partition)
         if table is None and self.schema_table.exist(table_name):
             record = self.schema_table.get(table_name)
-            table = open_table_by_partition_type(self.db_conn, self.schema_table, table_name, record.partition_type, partition)
+            table = open_table_by_partition_type(
+                self.db_conn, self.schema_table, table_name, record.partition_type, partition
+            )
         assert table, f"{table_name} not exist"
         self.tables[table_name] = table
         return table
@@ -318,7 +332,10 @@ class LanceSession(SessionBase):
 
     def _add_to_memory(self, table_name: str, datas: pd.DataFrame, partition=None):
         table = self.memory_tables(table_name, None)
-        if len(datas) >= self.config.flush_every or (table is not None and (table.count_rows(partition) + len(datas) >= self.config.flush_every)):
+        if len(datas) >= self.config.flush_every or (
+            table is not None
+            and (table.count_rows(partition) + len(datas) >= self.config.flush_every)
+        ):
             if table is not None:
                 datas = pd.concat([table.to_pandas(partition), datas], ignore_index=True)
                 table.clear(partition)
@@ -370,7 +387,9 @@ class LanceSession(SessionBase):
             checkout_latest=checkout_latest,
         )
 
-    def create_scalar_index(self, table_name: str, column: str, *, partition=None, index_type: str = "BTREE"):
+    def create_scalar_index(
+        self, table_name: str, column: str, *, partition=None, index_type: str = "BTREE"
+    ):
         table = self._get_table(table_name, partition)
         return table.create_scalar_index(column, partition, index_type)
 
@@ -388,7 +407,12 @@ class LanceSession(SessionBase):
         retrain: bool = False,
     ):
         table = self._get_table(table_name, partition)
-        return table.optimize(partition=partition, cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified, retrain=retrain)
+        return table.optimize(
+            partition=partition,
+            cleanup_older_than=cleanup_older_than,
+            delete_unverified=delete_unverified,
+            retrain=retrain,
+        )
 
     def drop_table(self, table_name: str, partition=None):
         table = self._get_table(table_name, partition)
@@ -455,7 +479,11 @@ class LanceSession(SessionBase):
         table = self._get_table(table_name, partition)
         return table.upsert(columns, datas, partition)
 
-    def add_columns(self, table_name: str, transforms: Union[Dict[str, str], pa.field, List[pa.field], pa.Schema]):
+    def add_columns(
+        self,
+        table_name: str,
+        transforms: Union[Dict[str, str], pa.field, List[pa.field], pa.Schema],
+    ):
         assert table_name, "table_name is required"
         assert transforms is not None, "transforms is required"
         table = self._get_table(table_name)

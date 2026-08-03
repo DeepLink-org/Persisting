@@ -12,6 +12,10 @@ name = "ppilot"
 path = "src/bin/ppilot.rs"
 required-features = ["cli"]
 
+[[test]]
+name = "integration_pulsing_cluster"
+required-features = ["query"]
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
@@ -19,26 +23,31 @@ chrono = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 persisting-engine = { path = "../persisting-engine", optional = true }
-persisting-pchronicle = { path = "../persisting-pchronicle", optional = true }
+persisting-gateway = { path = "../persisting-gateway" }
+persisting-pchronicle = { path = "../persisting-pchronicle" }
 persisting-proto = { path = "../persisting-proto" }
 persisting-pvisor = { path = "../persisting-pvisor", default-features = false }
 pulsing-actor = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "sync", "time", "signal", "fs"] }
+sha2 = "0.10"
+tempfile = { version = "3", optional = true }
+toml = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "sync", "time", "signal", "fs", "net"] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []
 # Public `ppilot` command and DataFusion query surface. The core orchestrator
 # always uses pVisor; this feature only adds the query-specific pChronicle API.
 cli = ["query"]
-query = ["dep:persisting-pchronicle"]
+query = ["dep:tempfile", "dep:toml"]
 # Append pPilot results to Lance via TrajectoryAppend (Tee with JsonlFileSink).
-traj-sink = ["dep:chrono", "dep:persisting-engine", "dep:persisting-pchronicle"]
+traj-sink = ["dep:chrono", "dep:persisting-engine"]
 
 [dev-dependencies]
 tempfile = "3"

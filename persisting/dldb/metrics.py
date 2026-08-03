@@ -89,7 +89,9 @@ class MetricsCollector:
                 yield s.name, dict(s.labels), float(s.value)
 
     @staticmethod
-    def _sum_by_api_ok(samples: Iterable[Tuple[str, Dict[str, str], float]], name: str) -> Dict[Tuple[str, str], float]:
+    def _sum_by_api_ok(
+        samples: Iterable[Tuple[str, Dict[str, str], float]], name: str
+    ) -> Dict[Tuple[str, str], float]:
         out: Dict[Tuple[str, str], float] = {}
         for n, labels, v in samples:
             if n != name:
@@ -102,7 +104,9 @@ class MetricsCollector:
         return out
 
     @staticmethod
-    def _sum_by_api(samples: Iterable[Tuple[str, Dict[str, str], float]], name: str) -> Dict[str, float]:
+    def _sum_by_api(
+        samples: Iterable[Tuple[str, Dict[str, str], float]], name: str
+    ) -> Dict[str, float]:
         out: Dict[str, float] = {}
         for n, labels, v in samples:
             if n != name:
@@ -123,9 +127,9 @@ class MetricsCollector:
         bytes_total = self._sum_by_api(samples, "dldb_api_bytes_total")
 
         apis = set()
-        for (api, _ok) in calls.keys():
+        for api, _ok in calls.keys():
             apis.add(api)
-        for (api, _ok) in latency_count.keys():
+        for api, _ok in latency_count.keys():
             apis.add(api)
         apis.update(rows_total.keys())
         apis.update(bytes_total.keys())
@@ -144,8 +148,12 @@ class MetricsCollector:
             c_all = c_ok + c_err
 
             # Histogram sum/count are in seconds.
-            sum_s = float(latency_sum.get((api, "true"), 0.0) + latency_sum.get((api, "false"), 0.0))
-            cnt = int(latency_count.get((api, "true"), 0.0) + latency_count.get((api, "false"), 0.0))
+            sum_s = float(
+                latency_sum.get((api, "true"), 0.0) + latency_sum.get((api, "false"), 0.0)
+            )
+            cnt = int(
+                latency_count.get((api, "true"), 0.0) + latency_count.get((api, "false"), 0.0)
+            )
             # Prefer call counter if available (e.g., if someone disables histogram)
             if cnt == 0 and c_all > 0:
                 cnt = c_all

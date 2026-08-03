@@ -5,7 +5,7 @@ use super::overlay::{
     apply_overlay, discard_overlay, hint_from_record, lower_stack_from_config,
     mount_overlay_record, resolve_overlay_workspace, OverlayMount, OverlayRecord,
 };
-use super::registry::{RunControlServer, RunLease, RunRecord};
+use super::registry::{RunControlServer, RunLease, RunLineage, RunRecord};
 use crate::TrajectoryEventSink;
 use persisting_control::ControlController;
 use persisting_gateway::config::ProxyConfig;
@@ -15,9 +15,7 @@ use persisting_gateway::lifecycle::{
 };
 use persisting_gateway::runtime::in_process::InProcessCapture;
 use persisting_gateway::runtime::run_config::snapshot_proxy_config;
-use persisting_gateway::runtime::run_env::{
-    apply_daemon_env, snapshot_daemon_env, strip_capture_proxy_env, write_run_session,
-};
+use persisting_gateway::runtime::run_env::write_run_session;
 use persisting_gateway::sink::SeqOnlySink;
 use persisting_overlaynet::policy::network_capability_from_config;
 use persisting_proto::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
@@ -41,6 +39,12 @@ pub struct AttemptSession {
 }
 
 impl AttemptSession {
+    pub(crate) fn checkpoint_record(&self) -> Option<RunRecord> {
+        self.overlay_record
+            .as_ref()
+            .map(|_| self.run_record.clone())
+    }
+
     pub(crate) fn teardown(mut self, exit_code: Option<i32>) -> AttemptTeardown {
         let mut errors = Vec::new();
         let duration_ms = self.started_at.elapsed().as_millis() as u64;
@@ -106,6 +110,7 @@ impl AttemptSession {
         self.overlay_record = record;
 
         if let Some(gateway) = self.gateway.take() {
+            self.run_record.network_interception_metrics = Some(gateway.interception_snapshot());
             if let Err(err) = gateway.shutdown() {
                 errors.push(format!("shutdown Gateway: {err:#}"));
             }
@@ -125,6 +130,10 @@ pub(crate) struct AttemptTeardown {
 }
 
 impl AttemptTeardown {
+    pub(crate) fn run_record(&self) -> &RunRecord {
+        &self.run_record
+    }
+
     pub(crate) fn error_message(&self) -> Option<String> {
         (!self.errors.is_empty()).then(|| self.errors.join("; "))
     }
@@ -178,10 +187,6 @@ pub fn prepare_attempt(
 
     spec.capabilities.network = network_capability_from_config(&config);
 
-    strip_capture_proxy_env();
-    snapshot_daemon_env(&storage, &config)?;
-    let _ = apply_daemon_env(&storage)?;
-
     let sink = opts
         .sink
         .unwrap_or_else(|| Arc::new(SeqOnlySink::new()) as Arc<dyn TrajectoryEventSink>);
@@ -220,21 +225,29 @@ pub fn prepare_attempt(
     let run_record = RunRecord {
         schema_version: 1,
         run_id: spec.run_id.as_str().to_string(),
+        parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
+        task_id: spec.task_id.clone(),
         session_id: root_session.clone(),
         agent: config.agent_id.clone(),
         pid: std::process::id(),
         command: std::iter::once(process.program.clone())
             .chain(process.args.iter().cloned())
             .collect(),
+        executor: executor_from_spec(spec),
         state: "running".into(),
         started_at_unix_ms: crate::util::unix_now_ms(),
         finished_at_unix_ms: None,
         storage: storage.clone(),
         overlaynet_listen: Some(gateway.listen.clone()),
+        network_interception: Some(persisting_overlaynet::InterceptionProfile::explicit_proxy()),
+        network_interception_metrics: None,
         gateway_listen: opts.gateway_enabled.then(|| gateway.listen.clone()),
         network: serde_json::to_value(&spec.capabilities.network)?,
+        network_policy: Some(serde_json::to_value(&config.network)?),
         overlay: overlay_record.clone(),
         overlay_lowers,
+        lineage: lineage_from_spec(spec),
+        orchestration: orchestration_from_spec(spec),
     };
     run_record.write()?;
     let control = RunControlServer::start(&run_record)?;
@@ -312,21 +325,29 @@ pub fn prepare_overlay_attempt(
     let run_record = RunRecord {
         schema_version: 1,
         run_id: spec.run_id.as_str().to_string(),
+        parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
+        task_id: spec.task_id.clone(),
         session_id: root_session.clone(),
         agent: spec.agent.name.clone(),
         pid: std::process::id(),
         command: std::iter::once(process.program.clone())
             .chain(process.args.iter().cloned())
             .collect(),
+        executor: executor_from_spec(spec),
         state: "running".into(),
         started_at_unix_ms: crate::util::unix_now_ms(),
         finished_at_unix_ms: None,
         storage: storage.clone(),
         overlaynet_listen: None,
+        network_interception: None,
+        network_interception_metrics: None,
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
+        network_policy: None,
         overlay: Some(overlay_record.clone()),
         overlay_lowers,
+        lineage: lineage_from_spec(spec),
+        orchestration: orchestration_from_spec(spec),
     };
     run_record.write()?;
     let control = RunControlServer::start(&run_record)?;
@@ -405,6 +426,30 @@ pub fn prepare_overlay_attempt(
         },
         plan,
     ))
+}
+
+fn lineage_from_spec(spec: &RunSpec) -> Option<RunLineage> {
+    spec.metadata
+        .get("pvisor.lineage")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn orchestration_from_spec(
+    spec: &RunSpec,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    spec.metadata
+        .iter()
+        .filter(|(key, _)| key.starts_with("ppilot.") || key.starts_with("persisting.ppilot."))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn executor_from_spec(spec: &RunSpec) -> Option<persisting_proto::ExecutorDescriptor> {
+    spec.metadata
+        .get("pvisor.executor")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn apply_overlay_override(
@@ -553,6 +598,17 @@ fn enrich_with_session(
     }
     plan.notes
         .push(format!("capture: proxy env → http://{listen}"));
+    plan.env.insert(
+        "PERSISTING_OVERLAYNET_DRIVER".into(),
+        "explicit-proxy".into(),
+    );
+    plan.env.insert(
+        "PERSISTING_OVERLAYNET_STRENGTH".into(),
+        "cooperative".into(),
+    );
+    plan.notes.push(
+        "network interception: explicit proxy (cooperative; direct sockets remain ambient)".into(),
+    );
 
     match &spec.capabilities.network {
         NetworkCapability::Ambient => {
@@ -565,16 +621,54 @@ fn enrich_with_session(
             plan.env
                 .insert("PERSISTING_NETWORK_POLICY".into(), "deny".into());
             plan.notes
-                .push("network: deny (enforced by capture proxy)".into());
+                .push("network: deny for traffic intercepted by the proxy".into());
         }
-        NetworkCapability::AllowList { hosts } => {
+        NetworkCapability::AllowList { hosts, rules } => {
             plan.env
                 .insert("PERSISTING_NETWORK_POLICY".into(), "allowlist".into());
             plan.env
                 .insert("PERSISTING_NETWORK_ALLOWLIST".into(), hosts.join(","));
+            if let Ok(serialized) = serde_json::to_string(rules) {
+                plan.env
+                    .insert("PERSISTING_NETWORK_RULES".into(), serialized);
+            }
             plan.notes.push(format!(
-                "network: allowlist ({} hosts, enforced by capture proxy)",
-                hosts.len()
+                "network: allowlist ({} legacy hosts, {} structured rules, applied to intercepted proxy traffic)",
+                hosts.len(),
+                rules.len()
+            ));
+        }
+        NetworkCapability::Policy {
+            default_action,
+            allow,
+            deny,
+            limits,
+        } => {
+            plan.env.insert(
+                "PERSISTING_NETWORK_POLICY".into(),
+                match default_action {
+                    persisting_proto::NetworkDefaultAction::Allow => "default-allow",
+                    persisting_proto::NetworkDefaultAction::Deny => "default-deny",
+                }
+                .into(),
+            );
+            for (key, value) in [
+                ("PERSISTING_NETWORK_RULES", allow),
+                ("PERSISTING_NETWORK_DENY", deny),
+            ] {
+                if let Ok(serialized) = serde_json::to_string(value) {
+                    plan.env.insert(key.into(), serialized);
+                }
+            }
+            if let Ok(serialized) = serde_json::to_string(limits) {
+                plan.env
+                    .insert("PERSISTING_NETWORK_LIMITS".into(), serialized);
+            }
+            plan.notes.push(format!(
+                "network: policy ({} allow, {} deny, {} bandwidth limits, applied to intercepted proxy traffic)",
+                allow.len(),
+                deny.len(),
+                limits.len()
             ));
         }
     }
@@ -623,7 +717,7 @@ fn enrich_with_session(
         ));
     } else if overlay.merged_dir.is_some() {
         plan.notes
-            .push("filesystem: fuse-overlayfs merged root as cwd".into());
+            .push("filesystem: embedded overlay merged root as cwd".into());
     } else {
         plan.notes.push("filesystem: host view (no overlay)".into());
     }

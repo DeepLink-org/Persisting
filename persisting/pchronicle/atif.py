@@ -26,9 +26,7 @@ class AtifTrajectory(dict):
 
 
 def split_trajectory(traj: dict[str, Any]) -> tuple[SessionRow, list[StepRow], list[ToolCallRow]]:
-    session, steps, tool_calls = MemoryChronicleStore()._inner.split(
-        AtifTrajectory.from_obj(traj)
-    )
+    session, steps, tool_calls = MemoryChronicleStore()._inner.split(AtifTrajectory.from_obj(traj))
     return (
         SessionRow(**session),
         [StepRow(**row) for row in steps],

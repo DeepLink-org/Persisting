@@ -9,6 +9,7 @@ mod lance_rows;
 pub(crate) mod markdown;
 mod memory;
 mod query_engine;
+mod run_control;
 mod storyline_datafusion;
 mod storyline_lance;
 mod storyline_lance_rows;
@@ -21,7 +22,7 @@ pub use agenticmd_fs::{
     read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
     upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
 };
-pub use atif_datafusion::{AtifDataSource, AtifDataSourceOptions};
+pub use atif_datafusion::{load_atif_trajectories, AtifDataSource, AtifDataSourceOptions};
 pub use egress::{export_source_dirs, export_story_bundle, parse_engine_records, ExportOutcome};
 pub use event_row::{
     event_record_to_event_row, event_row_to_event_record, event_row_to_replay_json, EventRow,
@@ -32,6 +33,7 @@ pub use lance_rows::{
 };
 pub use memory::MemoryChronicleStore;
 pub use query_engine::{ChronicleQueryBackend, ChronicleQueryEngine};
+pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
 pub use storyline_datafusion::{
     StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
     StorylineTableKind, StorylineTableProvider, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,

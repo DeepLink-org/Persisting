@@ -27,5 +27,6 @@ pub fn run_opts(script: PathBuf) -> RunOptions {
         skip_task_ids: SkipSet::new(),
         checkpoint: None,
         sink_submitter: None,
+        coordinator: None,
     }
 }

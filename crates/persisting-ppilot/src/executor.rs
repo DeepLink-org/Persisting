@@ -10,16 +10,20 @@
 //! Driver --ask--> WorkerActor -- RunSpec --> pVisor --> plan.py::execute(item)
 //! ```
 
+use crate::agent_abi::{AgentAbiClient, AgentAbiClientConfig};
 use crate::python_env;
+use crate::runtime_bridge::PilotRuntimeBridge;
 use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use persisting_proto::{
-    ArtifactRef, ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure,
-    RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
+    AgentCapability, AgentClientRole, AgentEffectOutcome, AgentProcessRegistration, ArtifactRef,
+    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
+    RunInvocation, RunResult, RunSpec, RunState,
 };
 use persisting_pvisor::{AttemptContext, PVisor, RunExecutor};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -331,7 +335,7 @@ impl RunExecutor for PlanExecuteExecutor {
             kind: ExecutorKind::Process,
             isolation: IsolationKind::HostProcess,
             enforces_capabilities: false,
-            supports_checkpoint: false,
+            supports_checkpoint: true,
             supports_migration: false,
         }
     }
@@ -363,19 +367,117 @@ impl RunExecutor for PlanExecuteExecutor {
             .metadata
             .get("ppilot.worker_id")
             .and_then(Value::as_str)
-            .unwrap_or("ppilot-worker");
+            .unwrap_or("ppilot-worker")
+            .to_string();
+        let agent_abi = match connect_agent_abi(&spec, &context, &worker_id) {
+            Ok(client) => client,
+            Err(error) => {
+                return failed_run_result(
+                    &spec,
+                    &context,
+                    started_at_unix_ms,
+                    RunFailureKind::Infrastructure,
+                    format!("connect pPilot to pVisor Agent ABI: {error:#}"),
+                    true,
+                );
+            }
+        };
         context.transition(RunState::Running, None).await;
+        let effect_id = format!("task:{}", task.id);
+        if let Some(bridge) = agent_abi.as_ref() {
+            let digest = format!(
+                "sha256:{:x}",
+                Sha256::digest(serde_json::to_vec(&task).unwrap_or_default())
+            );
+            let job_id = spec
+                .metadata
+                .get("ppilot.job_id")
+                .and_then(Value::as_str)
+                .unwrap_or("local");
+            if let Err(error) = bridge.begin_effect(
+                &effect_id,
+                "ppilot.task",
+                digest,
+                Some(format!("{job_id}/{}", task.id)),
+            ) {
+                return failed_run_result(
+                    &spec,
+                    &context,
+                    started_at_unix_ms,
+                    RunFailureKind::Infrastructure,
+                    format!("begin pPilot task effect: {error:#}"),
+                    true,
+                );
+            }
+        }
         let task_result = self
-            .run_with_cancel(task, worker_id, context.cancellation())
+            .run_with_cancel(task, &worker_id, context.cancellation())
             .await;
-        task_result_to_run_result(spec, context.attempt_id().clone(), task_result)
+        let effect_outcome = if task_result.ok {
+            AgentEffectOutcome::Committed
+        } else if task_result.cancelled {
+            AgentEffectOutcome::Aborted
+        } else {
+            AgentEffectOutcome::Unknown
+        };
+        let response_ref = Some(format!("ppilot://task/{}", task_result.task_id));
+        let mut result = task_result_to_run_result(spec, context.attempt_id().clone(), task_result);
+        if let Some(bridge) = agent_abi {
+            if let Err(error) = bridge.complete_effect(&effect_id, effect_outcome, response_ref) {
+                result.state = RunState::Failed;
+                result.exit_code = None;
+                result.failure = Some(RunFailure {
+                    kind: RunFailureKind::Infrastructure,
+                    message: format!("complete pPilot task effect: {error:#}"),
+                    retryable: true,
+                });
+            }
+            result.warnings.extend(bridge.finish().await);
+        }
+        result
     }
+}
+
+fn connect_agent_abi(
+    spec: &RunSpec,
+    context: &AttemptContext,
+    worker_id: &str,
+) -> Result<Option<PilotRuntimeBridge>> {
+    let RunInvocation::Process(process) = &spec.invocation;
+    let Some(config) = AgentAbiClientConfig::from_environment(
+        &process.env,
+        format!("{worker_id}:{}", context.attempt_id()),
+        AgentClientRole::Pilot,
+        spec.agent.name.clone(),
+        vec![
+            AgentCapability::Heartbeat,
+            AgentCapability::ProcessRegistry,
+            AgentCapability::CheckpointQuiesce,
+            AgentCapability::EffectJournal,
+        ],
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(PilotRuntimeBridge::start(
+        AgentAbiClient::new(config),
+        AgentProcessRegistration {
+            pid: std::process::id(),
+            parent_pid: None,
+            role: "ppilot-worker".into(),
+            executable: std::env::current_exe()
+                .ok()
+                .map(|path| path.display().to_string()),
+        },
+        context.cancellation(),
+    )?))
 }
 
 /// Routes `op=execute` to [`PlanExecuteExecutor`]. Unknown ops fail clearly.
 pub struct ExecutorRouter {
     host: Arc<PlanHostExecutor>,
     pvisor: PVisor,
+    supervisor: Option<persisting_proto::SupervisorBootstrap>,
 }
 
 impl ExecutorRouter {
@@ -386,6 +488,7 @@ impl ExecutorRouter {
         plan_script: PathBuf,
         script_args: Vec<String>,
         worker_context: Value,
+        supervisor: Option<persisting_proto::SupervisorBootstrap>,
     ) -> Self {
         let host = Arc::new(PlanHostExecutor::new(
             python,
@@ -400,12 +503,16 @@ impl ExecutorRouter {
         let pvisor = PVisor::builder()
             .executors(vec![Arc::clone(&execute) as Arc<dyn RunExecutor>])
             .build();
-        Self { host, pvisor }
+        Self {
+            host,
+            pvisor,
+            supervisor,
+        }
     }
 
     #[cfg(test)]
     async fn run(&self, task: TaskExpr, worker_id: &str) -> TaskResult {
-        self.run_with_cancel(task, worker_id, CancellationToken::new())
+        self.run_with_cancel(task, worker_id, CancellationToken::new(), 1)
             .await
     }
 
@@ -414,6 +521,7 @@ impl ExecutorRouter {
         task: TaskExpr,
         worker_id: &str,
         cancel: CancellationToken,
+        lease_epoch: u64,
     ) -> TaskResult {
         if task.op != "execute" {
             let started = unix_now();
@@ -430,7 +538,8 @@ impl ExecutorRouter {
         }
         let task_id = task.id.clone();
         let started = unix_now();
-        let mut spec = task_run_spec(&task, worker_id);
+        let mut spec = task_run_spec(&task, worker_id, lease_epoch);
+        spec.supervisor = self.supervisor.clone();
         spec.input = match serde_json::to_value(&task) {
             Ok(value) => value,
             Err(error) => {
@@ -486,20 +595,29 @@ impl ExecutorRouter {
     }
 }
 
-fn task_run_spec(task: &TaskExpr, worker_id: &str) -> RunSpec {
+pub(crate) fn task_run_spec(task: &TaskExpr, worker_id: &str, lease_epoch: u64) -> RunSpec {
     let job_id = std::env::var("PERSISTING_COMPUTE_JOB_ID").unwrap_or_else(|_| "local".into());
     let run_id = format!(
-        "ppilot-{}-{}",
-        encode_run_id_part(&job_id),
+        "{}{}",
+        job_run_id_prefix(&job_id),
         encode_run_id_part(&task.id)
     );
     let mut spec = RunSpec::process(run_id, "ppilot", "ppilot-plan-host");
+    spec.lease_epoch = lease_epoch;
     spec.task_id = Some(task.id.clone());
+    spec.parent_run_id = Some(persisting_proto::RunId::new(format!(
+        "ppilot-job-{}",
+        encode_run_id_part(&job_id)
+    )));
     spec.metadata
         .insert("ppilot.worker_id".into(), Value::String(worker_id.into()));
     spec.metadata
         .insert("ppilot.job_id".into(), Value::String(job_id));
     spec
+}
+
+pub(crate) fn job_run_id_prefix(job_id: &str) -> String {
+    format!("ppilot-{}-", encode_run_id_part(job_id))
 }
 
 fn encode_run_id_part(value: &str) -> String {
@@ -558,6 +676,7 @@ fn task_result_to_run_result(
     RunResult {
         run_id: spec.run_id,
         attempt_id,
+        lease_epoch: spec.lease_epoch,
         state,
         started_at_unix_ms: seconds_to_millis(task.started_at),
         finished_at_unix_ms: seconds_to_millis(task.finished_at),
@@ -579,6 +698,8 @@ fn run_result_to_task_result(
     fallback_started: f64,
 ) -> TaskResult {
     let run_id = result.run_id.as_str().to_string();
+    let attempt_id = result.attempt_id.as_str().to_string();
+    let lease_epoch = result.lease_epoch;
     let started_at = if result.started_at_unix_ms == 0 {
         fallback_started
     } else {
@@ -617,6 +738,8 @@ fn run_result_to_task_result(
         }
     };
     task.run_id = Some(run_id);
+    task.attempt_id = Some(attempt_id);
+    task.lease_epoch = lease_epoch;
     task
 }
 
@@ -631,6 +754,7 @@ fn failed_run_result(
     RunResult {
         run_id: spec.run_id.clone(),
         attempt_id: context.attempt_id().clone(),
+        lease_epoch: spec.lease_epoch,
         state: RunState::Failed,
         started_at_unix_ms,
         finished_at_unix_ms: unix_ms(),
@@ -687,6 +811,7 @@ def execute(item):
             script,
             vec![],
             json!({}),
+            None,
         );
         let cancel = CancellationToken::new();
         let bg = cancel.clone();
@@ -696,7 +821,7 @@ def execute(item):
         });
         let task = TaskExpr::from_value(json!({"id": "t-0", "x": 1})).unwrap();
         let t0 = std::time::Instant::now();
-        let r = router.run_with_cancel(task, "w0", cancel).await;
+        let r = router.run_with_cancel(task, "w0", cancel, 1).await;
         assert!(r.cancelled, "{r:?}");
         assert!(t0.elapsed().as_secs_f64() < 2.0);
         router.shutdown().await;
@@ -723,6 +848,7 @@ def execute(item):
             script,
             vec![],
             json!({}),
+            None,
         );
         let task = TaskExpr::from_value(json!({"id": "t-0", "x": 3})).unwrap();
         let r = router.run(task, "w0").await;
@@ -750,6 +876,7 @@ def execute(item):
             script,
             vec![],
             json!({}),
+            None,
         );
         let task = TaskExpr::from_value(json!({"id": "bad/task"})).unwrap();
         let result = router.run(task, "w0").await;
@@ -793,6 +920,7 @@ def teardown_worker():
             script,
             vec![],
             json!({"worker_id": "w-context", "rank": 3}),
+            None,
         );
         let task = TaskExpr::from_value(json!({"id": "t-0"})).unwrap();
         let result = router.run(task, "w-context").await;

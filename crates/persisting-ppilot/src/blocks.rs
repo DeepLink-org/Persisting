@@ -27,6 +27,10 @@
 //! | Fleet boot | [`run_local_fleet`], [`run_fleet`] | [`crate::runtime`] |
 //! | Observe | [`Observer`] | [`crate::observe`] |
 //! | Python env | [`merge_pythonpath_parts`] | [`crate::python_env`] |
+//! | Agent ABI | [`AgentAbiClient`], [`AgentAbiClientConfig`] | [`crate::agent_abi`] |
+//! | Runtime bridge | [`PilotRuntimeBridge`] | [`crate::runtime_bridge`] |
+//! | Batch trajectories | production + sharded analysis | [`crate::batch`] |
+//! | Federated analysis | Pulsing partial aggregation + coordinator merge | [`crate::federated`] |
 //!
 //! [`TaskExpr`]: crate::task::TaskExpr
 //! [`TaskResult`]: crate::task::TaskResult
@@ -52,6 +56,9 @@
 //! [`run_fleet`]: crate::runtime::run_fleet
 //! [`Observer`]: crate::observe::Observer
 //! [`merge_pythonpath_parts`]: crate::python_env::merge_pythonpath_parts
+//! [`AgentAbiClient`]: crate::agent_abi::AgentAbiClient
+//! [`AgentAbiClientConfig`]: crate::agent_abi::AgentAbiClientConfig
+//! [`PilotRuntimeBridge`]: crate::runtime_bridge::PilotRuntimeBridge
 
 /// Stable ids for docs / observability (not a separate test suite).
 pub mod ids {
@@ -72,10 +79,18 @@ pub mod ids {
     pub const FLEET: &str = "fleet";
     pub const OBSERVE: &str = "observe";
     pub const PYTHON_ENV: &str = "python_env";
+    pub const AGENT_ABI: &str = "agent_abi";
+    pub const RUNTIME_BRIDGE: &str = "runtime_bridge";
+    pub const BATCH_TRAJECTORY: &str = "batch_trajectory";
+    pub const FEDERATED_ANALYSIS: &str = "federated_analysis";
 
     pub const ALL: &[&str] = &[
         TASK_WIRE,
         PYTHON_ENV,
+        AGENT_ABI,
+        RUNTIME_BRIDGE,
+        BATCH_TRAJECTORY,
+        FEDERATED_ANALYSIS,
         PLACEMENT,
         RUN_FUTURE,
         IDEMPOTENCY,

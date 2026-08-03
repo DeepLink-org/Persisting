@@ -7,6 +7,7 @@
 //! later `--resume` can rediscover work that never hit durable storage.
 
 use crate::checkpoint::CheckpointTracker;
+use crate::coordination::RunCoordinator;
 use crate::sink::{persist_terminal, ResultSink};
 use crate::skip::SkipSet;
 use crate::task::TaskResult;
@@ -93,13 +94,39 @@ pub fn spawn_sink_writer(
     skip: Option<SkipSet>,
     capacity: usize,
 ) -> SinkWriterHandle {
+    spawn_sink_writer_inner(sink, checkpoint, skip, capacity, None)
+}
+
+/// Spawn a writer that makes the pChronicle RunCommit authoritative before
+/// exposing the result through the user-facing sink.
+pub fn spawn_coordinated_sink_writer(
+    sink: Arc<dyn ResultSink>,
+    checkpoint: Option<Arc<CheckpointTracker>>,
+    skip: Option<SkipSet>,
+    capacity: usize,
+    coordinator: Arc<RunCoordinator>,
+) -> SinkWriterHandle {
+    spawn_sink_writer_inner(sink, checkpoint, skip, capacity, Some(coordinator))
+}
+
+fn spawn_sink_writer_inner(
+    sink: Arc<dyn ResultSink>,
+    checkpoint: Option<Arc<CheckpointTracker>>,
+    skip: Option<SkipSet>,
+    capacity: usize,
+    coordinator: Option<Arc<RunCoordinator>>,
+) -> SinkWriterHandle {
     let capacity = capacity.max(1);
     let (tx, mut rx) = mpsc::channel::<TaskResult>(capacity);
     let errors = Arc::new(PersistErrors::default());
     let errors_bg = Arc::clone(&errors);
     let join = tokio::spawn(async move {
         while let Some(r) = rx.recv().await {
-            if let Err(e) = persist_terminal(sink.as_ref(), &r).await {
+            let persisted = match &coordinator {
+                Some(coordinator) => coordinator.finalize_result(sink.as_ref(), &r).await,
+                None => persist_terminal(sink.as_ref(), &r).await,
+            };
+            if let Err(e) = persisted {
                 tracing::error!(task_id = %r.task_id, error = %e, "sink persist failed");
                 errors_bg.note(&r.task_id, &e);
                 // Not durable — allow a future resume / duplicate plan yield to reclaim.

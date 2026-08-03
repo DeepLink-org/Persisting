@@ -9,6 +9,8 @@
 //! `receive` (that would serialize the fleet). Workers remain Pulsing actors.
 
 use crate::checkpoint::CheckpointTracker;
+use crate::coordination::RunCoordinator;
+use crate::executor::task_run_spec;
 use crate::future::RunFuture;
 use crate::observe::Observer;
 use crate::plan::stream_plan_tasks;
@@ -53,6 +55,9 @@ pub struct RunOptions {
     pub checkpoint: Option<Arc<CheckpointTracker>>,
     /// Optional async sink enqueue (awaited on completion — back-pressures drain).
     pub sink_submitter: Option<SinkSubmitter>,
+    /// Durable lease/commit control. When present every accepted task receives
+    /// one fencing epoch before it can contact a worker.
+    pub coordinator: Option<Arc<RunCoordinator>>,
 }
 
 /// Drives one pPilot job: emit plan tasks and dispatch them onto the fleet.
@@ -83,6 +88,9 @@ impl Driver {
         opts: &RunOptions,
         mut on_result: impl FnMut(TaskResult) + Send,
     ) -> Result<Vec<TaskResult>> {
+        if opts.coordinator.is_some() && opts.sink_submitter.is_none() {
+            anyhow::bail!("RunCoordinator requires a coordinated sink writer");
+        }
         let global_cap = opts.max_inflight.max(1).min(self.sched.capacity().max(1));
         let mut stream = stream_plan_tasks(
             opts.script.clone(),
@@ -97,6 +105,7 @@ impl Driver {
         let mut plan_done = false;
         let retries = opts.infra_retries;
         let observer = Arc::clone(&opts.observer);
+        let coordinator = opts.coordinator.clone();
 
         loop {
             // Guard before select: empty set + plan_done would disable every arm.
@@ -145,22 +154,10 @@ impl Driver {
                             let pool = Arc::clone(&self.pool);
                             let sched = Arc::clone(&self.sched);
                             let observer = Arc::clone(&observer);
+                            let coordinator = coordinator.clone();
                             let cancel = opts.job_cancel.child_token();
                             let cancel_watch = cancel.clone();
-                            let task_id_for_join = task_id.clone();
                             let join = tokio::spawn(async move {
-                                if cancel_watch.is_cancelled() {
-                                    observer
-                                        .task_finished(
-                                            &task_id_for_join,
-                                            false,
-                                            true,
-                                            None,
-                                            &sched,
-                                        )
-                                        .await;
-                                    return Ok(TaskResult::cancelled(task_id_for_join));
-                                }
                                 execute_with_placement(
                                     pool,
                                     sched,
@@ -168,6 +165,7 @@ impl Driver {
                                     task,
                                     retries,
                                     cancel_watch,
+                                    coordinator,
                                 )
                                 .await
                             });
@@ -194,9 +192,26 @@ async fn execute_with_placement(
     task: TaskExpr,
     infra_retries: u32,
     cancel: CancellationToken,
+    coordinator: Option<Arc<RunCoordinator>>,
 ) -> Result<TaskResult> {
     let task_id = task.id.clone();
     let started = unix_now();
+    let run_id = task_run_spec(&task, "unassigned", 0).run_id;
+    let lease_epoch = match &coordinator {
+        Some(coordinator) => {
+            coordinator
+                .acquire_lease(&run_id, &task_id, coordinator.owner_id())
+                .await?
+        }
+        None => 1,
+    };
+    let heartbeat = coordinator
+        .as_ref()
+        .map(|coordinator| {
+            coordinator.start_lease_heartbeat(run_id.clone(), lease_epoch, cancel.clone())
+        })
+        .transpose()?;
+    let outcome = async {
     let task_json = serde_json::to_vec(&task).map_err(|e| anyhow::anyhow!("encode task: {e}"))?;
     let mut last_err = None;
     // After first Execute contact: stick forever (result_cache is per-slot).
@@ -208,7 +223,11 @@ async fn execute_with_placement(
             observer
                 .task_finished(&task_id, false, true, None, &sched)
                 .await;
-            return Ok(TaskResult::cancelled(task_id));
+            return Ok(stamp_control(
+                TaskResult::cancelled(task_id),
+                &run_id,
+                lease_epoch,
+            ));
         }
         let guard = tokio::select! {
             biased;
@@ -216,7 +235,11 @@ async fn execute_with_placement(
                 observer
                     .task_finished(&task_id, false, true, None, &sched)
                     .await;
-                return Ok(TaskResult::cancelled(task_id));
+                return Ok(stamp_control(
+                    TaskResult::cancelled(task_id),
+                    &run_id,
+                    lease_epoch,
+                ));
             }
             g = async {
                 match sticky {
@@ -251,7 +274,7 @@ async fn execute_with_placement(
                     true,
                 );
                 r.infra_retries = attempt;
-                return Ok(r);
+                return Ok(stamp_control(r, &run_id, lease_epoch));
             }
             Err(PlacementErr::AllGone(AcquireError::AllQuarantined)) => {
                 let err = "all worker slots quarantined".to_string();
@@ -269,7 +292,7 @@ async fn execute_with_placement(
                     true,
                 );
                 r.infra_retries = attempt;
-                return Ok(r);
+                return Ok(stamp_control(r, &run_id, lease_epoch));
             }
         };
         let idx = guard.index();
@@ -293,6 +316,7 @@ async fn execute_with_placement(
             &worker,
             WorkerCommand::Execute {
                 task_json: task_json.clone(),
+                lease_epoch,
             },
             ASK_TIMEOUT,
         );
@@ -305,7 +329,11 @@ async fn execute_with_placement(
                 observer
                     .task_finished(&task_id, false, true, None, &sched)
                     .await;
-                return Ok(TaskResult::cancelled(task_id));
+                return Ok(stamp_control(
+                    TaskResult::cancelled(task_id),
+                    &run_id,
+                    lease_epoch,
+                ));
             }
             r = &mut ask => r,
         };
@@ -319,6 +347,29 @@ async fn execute_with_placement(
                 }
                 if r.worker.is_none() {
                     r.worker = Some(format!("w{idx}"));
+                }
+                if r.run_id.as_deref() != Some(run_id.as_str())
+                    || r.lease_epoch != lease_epoch
+                    || r.attempt_id.is_none()
+                {
+                    let detail = format!(
+                        "worker returned invalid Run identity: run={:?}, attempt={:?}, epoch={} (expected run={}, epoch={})",
+                        r.run_id,
+                        r.attempt_id,
+                        r.lease_epoch,
+                        run_id,
+                        lease_epoch
+                    );
+                    r = TaskResult::failure_with_kind(
+                        task_id.clone(),
+                        detail,
+                        None,
+                        &worker_id,
+                        started,
+                        ErrorKind::Infra,
+                        true,
+                    );
+                    r = stamp_control(r, &run_id, lease_epoch);
                 }
                 sched.note_success(idx);
                 observer
@@ -361,7 +412,28 @@ async fn execute_with_placement(
         true,
     );
     r.infra_retries = infra_retries;
-    Ok(r)
+        Ok(stamp_control(r, &run_id, lease_epoch))
+    }
+    .await;
+    if outcome.is_ok() {
+        if let Some(heartbeat) = heartbeat {
+            heartbeat.detach();
+        }
+    }
+    outcome
+}
+
+fn stamp_control(
+    mut result: TaskResult,
+    run_id: &persisting_proto::RunId,
+    epoch: u64,
+) -> TaskResult {
+    result.run_id = Some(run_id.as_str().to_string());
+    result.lease_epoch = epoch;
+    if result.attempt_id.is_none() {
+        result.attempt_id = Some(format!("ppilot-control-{}-{epoch}", result.task_id));
+    }
+    result
 }
 
 enum PlacementErr {

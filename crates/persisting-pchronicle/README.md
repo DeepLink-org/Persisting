@@ -36,12 +36,62 @@ events.lance                  canonical、append-only、可回放
 - `StorylineDataSource` 将同一 generation 的三张表注册到 DataFusion，并下推列裁剪、谓词、limit 和标量索引查询。
 - `AtifDataSource` 把单个 ATIF JSON、ATIF 数组、JSONL/NDJSON 或目录一次解析为同 schema 的 Arrow `MemTable`。
 - `ChronicleQueryEngine` 对 Lance 与 ATIF 暴露同一套 `runs`、`steps`、`tool_calls` SQL 和 Arrow/JSONL 结果 API。
+- `RunControlStore` 以单个 CAS record 管理 Run lease epoch 与 immutable terminal `RunCommit`。
 - `AgenticmdSessionFrontmatter`、`write_agenticmd_document`、`rewrite_agenticmd_preamble` 和 `index_agenticmd_path` 统一负责 AgenticMD 文档契约与文件操作。
 - `NormalizedStore` 是派生 ATIF 三表的查询接口。
 - `materialize_lance_to_markdown`、`compact_markdown_to_lance` 和 `layer_stats` 统一负责层间操作。
 - `StorageSelection`、`expand_story_locations` 与 `truncate_lance_session` 统一负责存储策略和维护。
 - `judge_trajectory`、`JudgeRow` 及 judgment API 统一负责评测规划、provider 调用和结构化持久化；Engine 只映射 proto。
 - Python `persisting.pchronicle` 通过 `persisting._core` 绑定本 crate，不单独实现校验、存储或视图语义。
+
+### S3 对象存储
+
+`RunControlStore::open` 同样接受本地路径或 `s3://` 等对象存储 URI。本地更新使用
+per-Run 文件锁、`fsync` 和原子 rename；对象存储更新使用 create-if-absent 或带
+ETag/version precondition 的 conditional update。lease 与 commit 位于同一 control
+object，避免“检查旧 lease 后、写 commit 前”被新 epoch 穿透的 TOCTOU 窗口。
+
+未过期 lease 不允许其他 owner 普通获取；reconciler 确认原 attempt 不存在后才调用
+显式 takeover 并递增 epoch。terminal commit 只接受当前 epoch，相同请求可幂等重放，
+不同 attempt/digest 返回 conflict。
+
+canonical `LanceEventStore` 和规范化 `LanceStorylineStore` 都接受
+`s3://bucket/prefix`。前者把每个 Run 写到
+`<prefix>/<agent>/<run>/events.lance`；后者把不可变 generation 与原子可见的
+`CURRENT` 指针放在同一个对象存储前缀下。本地路径 API 保持兼容：
+
+```rust,no_run
+# async fn example(stories: &[persisting_pchronicle::StorylineDocument]) -> anyhow::Result<()> {
+use persisting_pchronicle::LanceStorylineStore;
+
+let store = LanceStorylineStore::open_uri(
+    "s3://trajectory-bucket/persisting/storylines"
+).await?;
+store.replace_storylines(stories).await?;
+# Ok(())
+# }
+```
+
+S3 凭证不作为 Persisting 参数传递或写入日志，使用 AWS 标准凭证链：
+
+```bash
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+# 临时凭证还需 AWS_SESSION_TOKEN
+```
+
+MinIO 等 S3-compatible 服务另外设置 `AWS_ENDPOINT`、`AWS_DEFAULT_REGION`；HTTP
+端点还需 `AWS_ALLOW_HTTP=true`。同一个 Storyline root 目前要求单 writer；不同
+pVisor Run 使用独立 `events.lance` 前缀，可以并行生产。建议为 bucket 配置生命周期
+规则，以回收提交失败后遗留的不可达 generation。
+
+真实 S3/MinIO 契约测试默认忽略，可在有隔离测试前缀的环境中显式运行：
+
+```bash
+PCHRONICLE_S3_TEST_URI=s3://bucket/test-prefix \
+  cargo test -p persisting-pchronicle --test s3_storage -- --ignored
+```
 
 ## 格式架构
 

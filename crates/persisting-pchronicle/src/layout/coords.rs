@@ -129,4 +129,27 @@ mod tests {
             story_lance_event_path("/store", "agent", "run-x", Some("run-x")).unwrap()
         );
     }
+
+    #[test]
+    fn object_store_uri_preserves_scheme_and_run_partitioning() {
+        let root = story_lance_event_path(
+            "s3://trajectory-bucket/prefix",
+            "agent",
+            "run-001",
+            Some("run-001"),
+        )
+        .unwrap();
+        let child = story_lance_event_path(
+            "s3://trajectory-bucket/prefix",
+            "agent",
+            "child-001",
+            Some("run-001"),
+        )
+        .unwrap();
+        assert_eq!(root, child);
+        assert_eq!(
+            root.to_string_lossy(),
+            "s3://trajectory-bucket/prefix/agent/run-001/events.lance"
+        );
+    }
 }

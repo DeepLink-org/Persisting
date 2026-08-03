@@ -12,12 +12,14 @@ use crate::config::ProxyConfig;
 use crate::runtime::service::CaptureDaemonState;
 use crate::sink::CaptureEventSink;
 use persisting_control::{ControlController, PolicyControlController};
+use persisting_overlaynet::{InterceptionMetrics, InterceptionSnapshot};
 use tokio::sync::oneshot;
 
 pub struct InProcessCapture {
     shutdown_tx: Option<oneshot::Sender<()>>,
     join: Option<JoinHandle<Result<()>>>,
     pub listen: String,
+    interception_metrics: InterceptionMetrics,
 }
 
 impl InProcessCapture {
@@ -56,17 +58,22 @@ impl InProcessCapture {
 
         let listen = config.listen.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let interception_metrics = InterceptionMetrics::default();
+        let thread_metrics = interception_metrics.clone();
 
         let join = std::thread::Builder::new()
             .name("persisting-gateway".into())
             .spawn(move || {
                 let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
-                rt.block_on(crate::gateway::serve_with_runtime_control(
+                rt.block_on(crate::gateway::serve_with_runtime_control_and_metrics(
                     config,
                     storage,
                     sink,
                     stream_markdown,
-                    controller,
+                    crate::gateway::GatewayRuntimeControl {
+                        controller,
+                        interception_metrics: thread_metrics,
+                    },
                     None,
                     async {
                         let _ = shutdown_rx.await;
@@ -81,7 +88,12 @@ impl InProcessCapture {
             shutdown_tx: Some(shutdown_tx),
             join: Some(join),
             listen,
+            interception_metrics,
         })
+    }
+
+    pub fn interception_snapshot(&self) -> InterceptionSnapshot {
+        self.interception_metrics.snapshot()
     }
 
     pub fn shutdown(mut self) -> Result<()> {

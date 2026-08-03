@@ -31,7 +31,7 @@ pub struct ProxyConfig {
     /// Harbor-aligned egress policy for forward-proxy traffic (`CONNECT` + absolute-URI).
     #[serde(default)]
     pub network: NetworkConfig,
-    /// Optional fuse-overlayfs mount for the Attempt (consumed by pVisor).
+    /// Optional embedded OverlayFS mount for the Attempt (consumed by pVisor).
     #[serde(default)]
     pub overlay: OverlayConfig,
     pub models: Vec<ModelRoute>,
@@ -45,7 +45,7 @@ pub struct ProxyConfig {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OverlayConfig {
-    /// When true, pVisor mounts fuse-overlayfs for the Attempt.
+    /// When true, pVisor mounts its embedded OverlayFS for the Attempt.
     #[serde(default)]
     pub enabled: bool,
     /// Target filesystem: primary lower layer and destination for `apply`.

@@ -56,7 +56,7 @@ impl AtifDataSource {
         options: AtifDataSourceOptions,
     ) -> Result<Self> {
         validate_options(options)?;
-        let trajectories = load_path(path.as_ref())?;
+        let trajectories = load_atif_trajectories(path.as_ref())?;
         Self::from_trajectories_with_options(&trajectories, options)
     }
 
@@ -219,7 +219,13 @@ fn validate_table_names(names: &StorylineDataFusionTableNames) -> Result<()> {
     Ok(())
 }
 
-fn load_path(path: &Path) -> Result<Vec<AtifTrajectory>> {
+/// Load and validate ATIF documents for callers that partition work before
+/// building a query engine.
+pub fn load_atif_trajectories(path: impl AsRef<Path>) -> Result<Vec<AtifTrajectory>> {
+    load_atif_path(path.as_ref())
+}
+
+fn load_atif_path(path: &Path) -> Result<Vec<AtifTrajectory>> {
     if path.is_file() {
         let input = std::fs::read_to_string(path)
             .with_context(|| format!("read ATIF datasource {}", path.display()))?;
@@ -247,7 +253,7 @@ fn load_path(path: &Path) -> Result<Vec<AtifTrajectory>> {
     }
     let mut trajectories = Vec::new();
     for file in files {
-        trajectories.extend(load_path(&file)?);
+        trajectories.extend(load_atif_path(&file)?);
     }
     Ok(trajectories)
 }

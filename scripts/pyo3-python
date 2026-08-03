@@ -1,0 +1,43 @@
+#!/bin/sh
+# Select a supported interpreter for PyO3 build configuration.
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_root=$(dirname -- "$script_dir")
+
+is_supported() {
+    [ -x "$1" ] && "$1" -c \
+        'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+        >/dev/null 2>&1
+}
+
+if [ -n "${VIRTUAL_ENV:-}" ] && is_supported "$VIRTUAL_ENV/bin/python"; then
+    exec "$VIRTUAL_ENV/bin/python" "$@"
+fi
+
+if [ -n "${CONDA_PREFIX:-}" ] && is_supported "$CONDA_PREFIX/bin/python"; then
+    exec "$CONDA_PREFIX/bin/python" "$@"
+fi
+
+if is_supported "$project_root/.venv/bin/python"; then
+    exec "$project_root/.venv/bin/python" "$@"
+fi
+
+for command_name in python3 python; do
+    candidate=$(command -v "$command_name" 2>/dev/null || true)
+    if [ -n "$candidate" ] && is_supported "$candidate"; then
+        exec "$candidate" "$@"
+    fi
+done
+
+if command -v uv >/dev/null 2>&1 && [ -f "$project_root/.python-version" ]; then
+    requested=$(sed -n '1p' "$project_root/.python-version")
+    candidate=$(uv python find "$requested" 2>/dev/null || true)
+    if [ -n "$candidate" ] && is_supported "$candidate"; then
+        exec "$candidate" "$@"
+    fi
+fi
+
+echo "error: Persisting requires Python 3.10+ to build persisting-core" >&2
+echo "create .venv, activate a supported environment, or set PYO3_PYTHON" >&2
+exit 1

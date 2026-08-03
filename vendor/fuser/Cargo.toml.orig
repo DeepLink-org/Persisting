@@ -67,21 +67,5 @@ abi-7-30 = ["abi-7-29"]
 abi-7-31 = ["abi-7-30"]
 
 [[example]]
-name = "poll"
-required-features = ["abi-7-11"]
-
-[[example]]
-name = "poll_client"
-required-features = ["abi-7-11"]
-
-[[example]]
-name = "notify_inval_entry"
-required-features = ["abi-7-12"]
-
-[[example]]
-name = "notify_inval_inode"
-required-features = ["abi-7-15"]
-
-[[example]]
 name = "ioctl"
 required-features = ["abi-7-11"]

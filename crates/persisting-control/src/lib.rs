@@ -9,7 +9,8 @@
 use ipnet::IpNet;
 pub use persisting_proto::{AccessEffect as ControlEffect, AccessReason as ControlReason};
 use persisting_proto::{
-    ModelAccessPolicy, ModelCallRequest, NetworkAccessRequest, NetworkCapability,
+    ModelAccessPolicy, ModelCallRequest, NetworkAccessRequest, NetworkAccessRule,
+    NetworkCapability, NetworkDefaultAction, NetworkTransport,
 };
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -200,21 +201,58 @@ impl ControlController for PolicyControlController {
 }
 
 fn authorize_network(policy: &NetworkGuard, request: &NetworkAccessRequest) -> ControlTransition {
+    if policy.denied(request) {
+        return ControlTransition::denied(ControlReason::ExplicitlyDenied);
+    }
     if policy.is_trusted(&request.host) {
         return ControlTransition::allowed(ControlReason::TrustedLocal);
     }
     match policy.capability() {
         NetworkCapability::Ambient => ControlTransition::allowed(ControlReason::AmbientNetwork),
         NetworkCapability::Deny => ControlTransition::denied(ControlReason::NetworkDenied),
-        NetworkCapability::AllowList { .. } if policy.rules().is_empty() => {
-            ControlTransition::denied(ControlReason::NetworkAllowListEmpty)
-        }
-        NetworkCapability::AllowList { .. } if host_matches(&request.host, policy.rules()) => {
-            ControlTransition::allowed(ControlReason::NetworkAllowList)
-        }
-        NetworkCapability::AllowList { .. } => {
-            ControlTransition::denied(ControlReason::HostNotAllowed)
-        }
+        NetworkCapability::AllowList { .. } => match policy.evaluate(request) {
+            Ok(()) => ControlTransition::allowed(ControlReason::NetworkAllowList),
+            Err(NetworkMatchFailure::Empty) => {
+                ControlTransition::denied(ControlReason::NetworkAllowListEmpty)
+            }
+            Err(NetworkMatchFailure::Host) => {
+                ControlTransition::denied(ControlReason::HostNotAllowed)
+            }
+            Err(NetworkMatchFailure::Port) => {
+                ControlTransition::denied(ControlReason::PortNotAllowed)
+            }
+            Err(NetworkMatchFailure::Transport) => {
+                ControlTransition::denied(ControlReason::TransportNotAllowed)
+            }
+            Err(NetworkMatchFailure::ResolvedAddress) => {
+                ControlTransition::denied(ControlReason::ResolvedAddressNotAllowed)
+            }
+        },
+        NetworkCapability::Policy {
+            default_action: NetworkDefaultAction::Allow,
+            ..
+        } => ControlTransition::allowed(ControlReason::AmbientNetwork),
+        NetworkCapability::Policy {
+            default_action: NetworkDefaultAction::Deny,
+            ..
+        } => match policy.evaluate(request) {
+            Ok(()) => ControlTransition::allowed(ControlReason::NetworkAllowList),
+            Err(NetworkMatchFailure::Empty) => {
+                ControlTransition::denied(ControlReason::NetworkAllowListEmpty)
+            }
+            Err(NetworkMatchFailure::Host) => {
+                ControlTransition::denied(ControlReason::HostNotAllowed)
+            }
+            Err(NetworkMatchFailure::Port) => {
+                ControlTransition::denied(ControlReason::PortNotAllowed)
+            }
+            Err(NetworkMatchFailure::Transport) => {
+                ControlTransition::denied(ControlReason::TransportNotAllowed)
+            }
+            Err(NetworkMatchFailure::ResolvedAddress) => {
+                ControlTransition::denied(ControlReason::ResolvedAddressNotAllowed)
+            }
+        },
     }
 }
 
@@ -238,17 +276,35 @@ fn authorize_model(policy: &ModelAccessPolicy, request: &ModelCallRequest) -> Co
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NetworkRule {
+pub enum NetworkHostRule {
     Exact(String),
     WildcardSuffix(String),
     Ip(IpAddr),
     Cidr(IpNet),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkRule {
+    pub host: NetworkHostRule,
+    pub ports: Vec<u16>,
+    pub transports: Vec<NetworkTransport>,
+    pub allow_private_ips: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NetworkMatchFailure {
+    Empty,
+    Host,
+    Port,
+    Transport,
+    ResolvedAddress,
+}
+
 #[derive(Debug, Clone)]
 pub struct NetworkGuard {
     capability: NetworkCapability,
     rules: Vec<NetworkRule>,
+    deny_rules: Vec<NetworkRule>,
     trusted_hosts: Vec<String>,
 }
 
@@ -258,15 +314,36 @@ impl NetworkGuard {
         trusted_hosts: impl IntoIterator<Item = String>,
     ) -> anyhow::Result<Self> {
         let rules = match &capability {
-            NetworkCapability::AllowList { hosts } => hosts
+            NetworkCapability::AllowList { hosts, rules } => {
+                let mut compiled = hosts
+                    .iter()
+                    .map(|host| parse_network_rule(host))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                compiled.extend(
+                    rules
+                        .iter()
+                        .map(compile_network_rule)
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                );
+                compiled
+            }
+            NetworkCapability::Policy { allow, .. } => allow
                 .iter()
-                .map(|host| parse_network_rule(host))
+                .map(compile_network_rule)
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            _ => Vec::new(),
+        };
+        let deny_rules = match &capability {
+            NetworkCapability::Policy { deny, .. } => deny
+                .iter()
+                .map(compile_network_rule)
                 .collect::<anyhow::Result<Vec<_>>>()?,
             _ => Vec::new(),
         };
         Ok(Self {
             capability,
             rules,
+            deny_rules,
             trusted_hosts: trusted_hosts
                 .into_iter()
                 .map(|host| normalize_host(&host))
@@ -282,18 +359,115 @@ impl NetworkGuard {
         &self.rules
     }
 
+    fn evaluate(&self, request: &NetworkAccessRequest) -> Result<(), NetworkMatchFailure> {
+        evaluate_rules(&self.rules, request, true)
+    }
+
+    fn denied(&self, request: &NetworkAccessRequest) -> bool {
+        evaluate_rules(&self.deny_rules, request, false).is_ok()
+    }
+
     fn is_trusted(&self, host: &str) -> bool {
         let host = normalize_host(host);
-        if matches!(
-            host.as_str(),
-            "localhost" | "127.0.0.1" | "::1" | "0:0:0:0:0:0:0:1"
-        ) {
-            return true;
-        }
-        if host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()) {
-            return true;
-        }
         self.trusted_hosts.iter().any(|trusted| trusted == &host)
+    }
+}
+
+fn evaluate_rules(
+    rules: &[NetworkRule],
+    request: &NetworkAccessRequest,
+    enforce_resolved_address_safety: bool,
+) -> Result<(), NetworkMatchFailure> {
+    if rules.is_empty() {
+        return Err(NetworkMatchFailure::Empty);
+    }
+    let host_rules: Vec<&NetworkRule> = rules
+        .iter()
+        .filter(|rule| rule.matches_host(&request.host, request.resolved_ip))
+        .collect();
+    if host_rules.is_empty() {
+        return Err(if request.resolved_ip.is_some() {
+            NetworkMatchFailure::ResolvedAddress
+        } else {
+            NetworkMatchFailure::Host
+        });
+    }
+    let port_rules: Vec<&NetworkRule> = host_rules
+        .into_iter()
+        .filter(|rule| rule.matches_port(request.port))
+        .collect();
+    if port_rules.is_empty() {
+        return Err(NetworkMatchFailure::Port);
+    }
+    let transport_rules: Vec<&NetworkRule> = port_rules
+        .into_iter()
+        .filter(|rule| rule.matches_transport(request.transport))
+        .collect();
+    if transport_rules.is_empty() {
+        return Err(NetworkMatchFailure::Transport);
+    }
+    if enforce_resolved_address_safety
+        && request.resolved_ip.is_some()
+        && !transport_rules
+            .iter()
+            .any(|rule| rule.allows_resolved_address(request.resolved_ip))
+    {
+        return Err(NetworkMatchFailure::ResolvedAddress);
+    }
+    Ok(())
+}
+
+impl NetworkRule {
+    fn matches_host(&self, host: &str, resolved_ip: Option<IpAddr>) -> bool {
+        let host = normalize_host(host);
+        let host_ip = IpAddr::from_str(&host).ok();
+        match &self.host {
+            NetworkHostRule::Exact(allowed) => host == *allowed,
+            NetworkHostRule::WildcardSuffix(suffix) => {
+                host.ends_with(suffix)
+                    && host.len() > suffix.len()
+                    && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
+            }
+            NetworkHostRule::Ip(allowed) => {
+                host_ip == Some(*allowed) || resolved_ip == Some(*allowed)
+            }
+            NetworkHostRule::Cidr(network) => host_ip
+                .or(resolved_ip)
+                .is_some_and(|ip| network.contains(&ip)),
+        }
+    }
+
+    fn matches_port(&self, port: Option<u16>) -> bool {
+        self.ports.is_empty() || port.is_some_and(|port| self.ports.contains(&port))
+    }
+
+    fn matches_transport(&self, transport: NetworkTransport) -> bool {
+        self.transports.is_empty() || self.transports.contains(&transport)
+    }
+
+    fn allows_resolved_address(&self, resolved_ip: Option<IpAddr>) -> bool {
+        let Some(ip) = resolved_ip else {
+            return true;
+        };
+        match &self.host {
+            NetworkHostRule::Ip(allowed) => ip == *allowed,
+            NetworkHostRule::Cidr(network) => network.contains(&ip),
+            NetworkHostRule::Exact(_) | NetworkHostRule::WildcardSuffix(_) => {
+                is_public_egress_ip(ip) || (self.allow_private_ips && is_opt_in_private_ip(ip))
+            }
+        }
+    }
+}
+
+fn is_opt_in_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback(),
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_opt_in_private_ip(IpAddr::V4(mapped));
+            }
+            ip.is_loopback() || ip.segments()[0] & 0xfe00 == 0xfc00
+        }
     }
 }
 
@@ -306,6 +480,34 @@ pub fn normalize_host(host: &str) -> String {
 }
 
 pub fn parse_network_rule(raw: &str) -> anyhow::Result<NetworkRule> {
+    compile_network_rule(&NetworkAccessRule {
+        host: raw.to_string(),
+        ports: Vec::new(),
+        transports: Vec::new(),
+        allow_private_ips: false,
+    })
+}
+
+fn compile_network_rule(rule: &NetworkAccessRule) -> anyhow::Result<NetworkRule> {
+    if rule.ports.contains(&0) {
+        anyhow::bail!("network rule ports must not contain zero");
+    }
+    let mut ports = rule.ports.clone();
+    ports.sort_unstable();
+    ports.dedup();
+    let mut transports = rule.transports.clone();
+    transports.dedup();
+
+    let host = parse_network_host_rule(&rule.host)?;
+    Ok(NetworkRule {
+        host,
+        ports,
+        transports,
+        allow_private_ips: rule.allow_private_ips,
+    })
+}
+
+fn parse_network_host_rule(raw: &str) -> anyhow::Result<NetworkHostRule> {
     let entry = raw.trim();
     if entry.is_empty() {
         anyhow::bail!("network allowlist entry must not be empty");
@@ -335,40 +537,66 @@ pub fn parse_network_rule(raw: &str) -> anyhow::Result<NetworkRule> {
         if suffix.is_empty() || suffix.contains('*') || suffix.parse::<IpAddr>().is_ok() {
             anyhow::bail!("invalid wildcard network allowlist entry `{entry}`");
         }
-        return Ok(NetworkRule::WildcardSuffix(suffix));
+        return Ok(NetworkHostRule::WildcardSuffix(suffix));
     }
     if entry.contains('*') {
         anyhow::bail!("only leading `*.suffix` host wildcards are supported");
     }
     if let Ok(network) = IpNet::from_str(entry) {
         if entry.contains('/') {
-            return Ok(NetworkRule::Cidr(network));
+            return Ok(NetworkHostRule::Cidr(network));
         }
-        return Ok(NetworkRule::Ip(network.addr()));
+        return Ok(NetworkHostRule::Ip(network.addr()));
     }
     if let Ok(ip) = IpAddr::from_str(entry) {
-        return Ok(NetworkRule::Ip(ip));
+        return Ok(NetworkHostRule::Ip(ip));
     }
     let host = normalize_host(entry);
     if host.is_empty() || host.contains(':') {
         anyhow::bail!("invalid network allowlist hostname `{entry}`");
     }
-    Ok(NetworkRule::Exact(host))
+    Ok(NetworkHostRule::Exact(host))
 }
 
 pub fn host_matches(host: &str, rules: &[NetworkRule]) -> bool {
-    let host = normalize_host(host);
-    let host_ip = IpAddr::from_str(&host).ok();
-    rules.iter().any(|rule| match rule {
-        NetworkRule::Exact(allowed) => host == *allowed,
-        NetworkRule::WildcardSuffix(suffix) => {
-            host.ends_with(suffix)
-                && host.len() > suffix.len()
-                && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
+    rules.iter().any(|rule| rule.matches_host(host, None))
+}
+
+/// Whether an address is suitable as the destination of a hostname rule
+/// without an explicit private-address opt-in.
+pub fn is_public_egress_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] != 0
+                && !ip.is_loopback()
+                && !ip.is_private()
+                && !ip.is_link_local()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+                && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
+                && !(octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                && !(octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+                && !(octets[0] == 198 && (18..=19).contains(&octets[1]))
+                && !(octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+                && !(octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+                && octets[0] < 240
         }
-        NetworkRule::Ip(allowed) => host_ip == Some(*allowed),
-        NetworkRule::Cidr(network) => host_ip.is_some_and(|ip| network.contains(&ip)),
-    })
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_public_egress_ip(IpAddr::V4(mapped));
+            }
+            let segments = ip.segments();
+            // Only globally-routed unicast space is eligible. This also
+            // rejects IPv4-compatible, site-local, link-local, ULA, and other
+            // special-purpose prefixes before considering narrower carveouts.
+            (segments[0] & 0xe000 == 0x2000)
+                && !(segments[0] == 0x2001 && segments[1] <= 0x01ff)
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+                && segments[0] != 0x2002
+                && !(segments[0] == 0x3fff && segments[1] & 0xf000 == 0)
+        }
+    }
 }
 
 fn model_matches(pattern: &str, model: &str) -> bool {
@@ -397,6 +625,7 @@ mod tests {
             host: host.into(),
             port: Some(443),
             transport: NetworkTransport::TcpTunnel,
+            resolved_ip: None,
         }
     }
 
@@ -482,6 +711,7 @@ mod tests {
         let guard = NetworkGuard::compile(
             NetworkCapability::AllowList {
                 hosts: vec!["*.example.com".into(), "10.0.0.0/8".into()],
+                rules: Vec::new(),
             },
             Vec::new(),
         )
@@ -514,5 +744,177 @@ mod tests {
                 request: &request,
             })
             .is_allowed());
+    }
+
+    #[test]
+    fn loopback_is_only_trusted_when_explicitly_configured() {
+        let controller = PolicyControlController;
+        let denied = NetworkGuard::compile(NetworkCapability::Deny, Vec::new()).unwrap();
+        assert!(!controller
+            .authorize(ControlRequest::Network {
+                policy: &denied,
+                request: &network_request("127.0.0.1"),
+            })
+            .is_allowed());
+
+        let trusted = NetworkGuard::compile(NetworkCapability::Deny, ["127.0.0.1".into()]).unwrap();
+        let transition = controller.authorize(ControlRequest::Network {
+            policy: &trusted,
+            request: &network_request("127.0.0.1"),
+        });
+        assert!(transition.is_allowed());
+        assert_eq!(transition.reason, ControlReason::TrustedLocal);
+    }
+
+    #[test]
+    fn structured_rules_constrain_port_transport_and_resolved_address() {
+        let controller = PolicyControlController;
+        let guard = NetworkGuard::compile(
+            NetworkCapability::AllowList {
+                hosts: Vec::new(),
+                rules: vec![NetworkAccessRule {
+                    host: "api.example.com".into(),
+                    ports: vec![443],
+                    transports: vec![NetworkTransport::Https],
+                    allow_private_ips: false,
+                }],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let decide = |port, transport, resolved_ip| {
+            controller.authorize(ControlRequest::Network {
+                policy: &guard,
+                request: &NetworkAccessRequest {
+                    run_id: None,
+                    attempt_id: None,
+                    storyline_id: None,
+                    host: "api.example.com".into(),
+                    port: Some(port),
+                    transport,
+                    resolved_ip,
+                },
+            })
+        };
+
+        assert!(decide(
+            443,
+            NetworkTransport::Https,
+            Some("93.184.216.34".parse().unwrap())
+        )
+        .is_allowed());
+        assert_eq!(
+            decide(
+                8443,
+                NetworkTransport::Https,
+                Some("93.184.216.34".parse().unwrap())
+            )
+            .reason,
+            ControlReason::PortNotAllowed
+        );
+        assert_eq!(
+            decide(
+                443,
+                NetworkTransport::TcpTunnel,
+                Some("93.184.216.34".parse().unwrap())
+            )
+            .reason,
+            ControlReason::TransportNotAllowed
+        );
+        assert_eq!(
+            decide(
+                443,
+                NetworkTransport::Https,
+                Some("127.0.0.1".parse().unwrap())
+            )
+            .reason,
+            ControlReason::ResolvedAddressNotAllowed
+        );
+    }
+
+    #[test]
+    fn explicit_ip_and_private_opt_in_allow_private_destinations() {
+        let controller = PolicyControlController;
+        for rule in [
+            NetworkAccessRule {
+                host: "127.0.0.1".into(),
+                ports: vec![8080],
+                transports: vec![NetworkTransport::Http],
+                allow_private_ips: false,
+            },
+            NetworkAccessRule {
+                host: "local.example".into(),
+                ports: vec![8080],
+                transports: vec![NetworkTransport::Http],
+                allow_private_ips: true,
+            },
+        ] {
+            let host = rule.host.clone();
+            let guard = NetworkGuard::compile(
+                NetworkCapability::AllowList {
+                    hosts: Vec::new(),
+                    rules: vec![rule],
+                },
+                Vec::new(),
+            )
+            .unwrap();
+            let transition = controller.authorize(ControlRequest::Network {
+                policy: &guard,
+                request: &NetworkAccessRequest {
+                    run_id: None,
+                    attempt_id: None,
+                    storyline_id: None,
+                    host,
+                    port: Some(8080),
+                    transport: NetworkTransport::Http,
+                    resolved_ip: Some("127.0.0.1".parse().unwrap()),
+                },
+            });
+            assert!(transition.is_allowed());
+        }
+    }
+
+    #[test]
+    fn address_classifier_rejects_local_and_metadata_ranges() {
+        for address in [
+            "0.0.0.0",
+            "0.1.2.3",
+            "10.0.0.1",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "192.0.2.1",
+            "198.18.0.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::ffff:127.0.0.1",
+            "fc00::1",
+            "fe80::1",
+            "::192.0.2.1",
+            "2001::1",
+            "2001:db8::1",
+            "2002::1",
+            "3fff::1",
+        ] {
+            assert!(!is_public_egress_ip(address.parse().unwrap()), "{address}");
+        }
+        assert!(is_public_egress_ip("1.1.1.1".parse().unwrap()));
+        assert!(is_public_egress_ip("8.8.8.8".parse().unwrap()));
+        assert!(is_public_egress_ip("2001:4860:4860::8888".parse().unwrap()));
+        assert!(is_public_egress_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn private_opt_in_does_not_include_link_local_or_special_addresses() {
+        assert!(is_opt_in_private_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_opt_in_private_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_opt_in_private_ip("fc00::1".parse().unwrap()));
+        assert!(!is_opt_in_private_ip("169.254.169.254".parse().unwrap()));
+        assert!(!is_opt_in_private_ip("224.0.0.1".parse().unwrap()));
+        assert!(!is_opt_in_private_ip("fe80::1".parse().unwrap()));
     }
 }

@@ -10,6 +10,7 @@ description = "Lightweight HTTP proxy network overlay for pVisor"
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
+futures-util = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
@@ -17,5 +18,8 @@ persisting-control = { path = "../persisting-control" }
 persisting-proto = { path = "../persisting-proto" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["net", "io-util", "rt"] }
+tokio = { version = "1", features = ["net", "io-util", "rt", "sync", "time"] }
 tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "test-util"] }

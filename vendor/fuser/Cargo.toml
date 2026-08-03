@@ -35,22 +35,6 @@ license = "MIT"
 repository = "https://github.com/cberner/fuser"
 
 [[example]]
-name = "poll"
-required-features = ["abi-7-11"]
-
-[[example]]
-name = "poll_client"
-required-features = ["abi-7-11"]
-
-[[example]]
-name = "notify_inval_entry"
-required-features = ["abi-7-12"]
-
-[[example]]
-name = "notify_inval_inode"
-required-features = ["abi-7-15"]
-
-[[example]]
 name = "ioctl"
 required-features = ["abi-7-11"]
 

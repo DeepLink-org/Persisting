@@ -17,6 +17,7 @@ use std::sync::Arc;
 /// proxy injection or a staged filesystem projection.
 #[derive(Debug, Clone)]
 pub struct RuntimeCapabilities {
+    pub agent_abi: bool,
     pub gateway: bool,
     pub network: bool,
     pub filesystem: bool,
@@ -26,11 +27,13 @@ pub struct RuntimeCapabilities {
 impl Default for RuntimeCapabilities {
     fn default() -> Self {
         Self {
+            agent_abi: true,
             gateway: true,
             network: false,
             filesystem: false,
             providers: vec![
                 "local-process",
+                "agent-abi-unix-v1",
                 "in-process-capture",
                 "overlaynet-explicit-proxy",
                 "fs-overlay-staging",
@@ -141,8 +144,14 @@ impl RuntimeSupervisor {
     }
 
     /// Start configured pVisor drivers and merge their implant into `spec`.
-    pub fn prepare(&self, spec: &mut RunSpec) -> anyhow::Result<Option<AttemptSession>> {
+    pub fn prepare(
+        &self,
+        spec: &mut RunSpec,
+        supervisor_limits: &[persisting_proto::NetworkBandwidthLimit],
+    ) -> anyhow::Result<Option<AttemptSession>> {
         if let Some(proxy) = &self.proxy {
+            let mut proxy = proxy.clone();
+            proxy.network.limits.extend_from_slice(supervisor_limits);
             let storage = self
                 .storage
                 .clone()
@@ -150,7 +159,7 @@ impl RuntimeSupervisor {
             let (session, _plan) = prepare_attempt(
                 spec,
                 AttemptPrepareOpts {
-                    config: proxy,
+                    config: &proxy,
                     storage: &storage,
                     sink: self.sink.clone(),
                     stream_markdown: self.stream_markdown,
@@ -212,6 +221,14 @@ impl RuntimeSupervisor {
         if self.proxy.is_some() {
             plan.notes
                 .push("network: in-process OverlayNet proxy configured".into());
+            plan.env.insert(
+                "PERSISTING_OVERLAYNET_DRIVER".into(),
+                "explicit-proxy".into(),
+            );
+            plan.env.insert(
+                "PERSISTING_OVERLAYNET_STRENGTH".into(),
+                "cooperative".into(),
+            );
         }
         if let Some(path) = &self.gateway_output_dir {
             plan.env.insert(
@@ -230,16 +247,57 @@ impl RuntimeSupervisor {
             NetworkCapability::Deny => {
                 plan.env
                     .insert("PERSISTING_NETWORK_POLICY".into(), "deny".into());
-                plan.notes
-                    .push("network: deny (interposed by control-aware capture proxy)".into());
+                plan.notes.push(
+                    "network: deny requested; only intercepted proxy traffic is controlled".into(),
+                );
             }
-            NetworkCapability::AllowList { hosts } => {
+            NetworkCapability::AllowList { hosts, rules } => {
                 plan.env
                     .insert("PERSISTING_NETWORK_POLICY".into(), "allowlist".into());
                 plan.env
                     .insert("PERSISTING_NETWORK_ALLOWLIST".into(), hosts.join(","));
-                plan.notes
-                    .push(format!("network: allowlist ({} hosts)", hosts.len()));
+                if let Ok(serialized) = serde_json::to_string(rules) {
+                    plan.env
+                        .insert("PERSISTING_NETWORK_RULES".into(), serialized);
+                }
+                plan.notes.push(format!(
+                    "network: allowlist ({} legacy hosts, {} structured rules)",
+                    hosts.len(),
+                    rules.len()
+                ));
+            }
+            NetworkCapability::Policy {
+                default_action,
+                allow,
+                deny,
+                limits,
+            } => {
+                plan.env.insert(
+                    "PERSISTING_NETWORK_POLICY".into(),
+                    match default_action {
+                        persisting_proto::NetworkDefaultAction::Allow => "default-allow",
+                        persisting_proto::NetworkDefaultAction::Deny => "default-deny",
+                    }
+                    .into(),
+                );
+                for (key, value) in [
+                    ("PERSISTING_NETWORK_RULES", allow),
+                    ("PERSISTING_NETWORK_DENY", deny),
+                ] {
+                    if let Ok(serialized) = serde_json::to_string(value) {
+                        plan.env.insert(key.into(), serialized);
+                    }
+                }
+                if let Ok(serialized) = serde_json::to_string(limits) {
+                    plan.env
+                        .insert("PERSISTING_NETWORK_LIMITS".into(), serialized);
+                }
+                plan.notes.push(format!(
+                    "network: policy ({} allow, {} deny, {} bandwidth limits)",
+                    allow.len(),
+                    deny.len(),
+                    limits.len()
+                ));
             }
         }
 
