@@ -2,7 +2,6 @@
 
 pub mod daemon;
 mod debug_setup;
-pub mod reconcile;
 pub mod replay_dead_letter;
 pub mod usage;
 pub use debug_setup::{enable_if_requested as enable_capture_debug, CaptureDebugContext};
@@ -64,14 +63,6 @@ impl CaptureFormat {
     pub fn stream_markdown_in_engine(self) -> bool {
         matches!(self, Self::Markdown)
     }
-
-    /// Storage layer to replay when comparing live Markdown after a capture run.
-    pub fn reconcile_replay_format(self) -> TrajectoryStorageFormat {
-        match self {
-            Self::Lance => TrajectoryStorageFormat::Lance,
-            Self::Markdown => TrajectoryStorageFormat::Markdown,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -93,19 +84,11 @@ mod tests {
     fn lance_does_not_stream_live_markdown() {
         assert!(!CaptureFormat::Lance.stream_markdown_in_engine());
         assert!(!CaptureFormat::Lance.writes_markdown());
-        assert_eq!(
-            CaptureFormat::Lance.reconcile_replay_format(),
-            TrajectoryStorageFormat::Lance
-        );
     }
 
     #[test]
-    fn markdown_reconciles_against_markdown_layer() {
+    fn markdown_streams_live_markdown() {
         assert!(CaptureFormat::Markdown.stream_markdown_in_engine());
-        assert_eq!(
-            CaptureFormat::Markdown.reconcile_replay_format(),
-            TrajectoryStorageFormat::Markdown
-        );
     }
 }
 
