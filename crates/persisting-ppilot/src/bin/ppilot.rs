@@ -1,10 +1,14 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::{fs, io::Write};
 
-use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use anyhow::{Context, Result};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_ppilot::{
-    init_tracing_with_verbose, run_ppilot, run_query, run_self_test, PPilotArgs, QueryArgs,
+    init_tracing_with_verbose, process_federated_count, process_script, process_trajectories,
+    produce_from_planner, produce_trajectories, run_ppilot, run_query, run_self_test,
+    AnalysisOutputFormat, BatchAnalysisOptions, BatchProductionManifest, BatchProductionOptions,
+    CountTable, FederatedCountOptions, PPilotArgs, ProcessScriptOptions, QueryArgs,
 };
 
 #[derive(Debug, Parser)]
@@ -21,11 +25,123 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run a pPilot plan with bounded concurrency and durable resume.
-    Run(PPilotArgs),
+    Run(Box<PPilotArgs>),
     /// Run read-only SQL against Storyline Lance or ATIF JSON/JSONL.
     Query(QueryArgs),
+    /// Stream Runs from a Python planner into independent pVisor workspaces.
+    Produce(ProduceArgs),
+    /// Run read-only SQL over automatically sharded ATIF trajectories.
+    Analysis(AnalysisArgs),
+    /// Process and aggregate ATIF trajectories across Pulsing workers.
+    Process(ProcessArgs),
     /// Run the built-in plan/execute smoke test.
     SelfTest(SelfTestArgs),
+}
+
+#[derive(Debug, Args)]
+struct ProduceArgs {
+    /// Python planner defining plan(); .json manifests remain accepted for compatibility.
+    #[arg(value_name = "PLANNER")]
+    planner: PathBuf,
+    /// Root containing one durable pVisor workspace per Run.
+    #[arg(short, long, value_name = "DIR")]
+    output: PathBuf,
+    /// Maximum concurrent pVisor Runs.
+    #[arg(short = 'j', long, default_value_t = 4)]
+    parallelism: usize,
+    /// Disable the capture Gateway (mainly for local diagnostics).
+    #[arg(long)]
+    no_capture: bool,
+    /// Job-scoped aggregate rate delivered through the embedded Supervisor.
+    #[arg(long, value_name = "RATE", value_parser = persisting_ppilot::parse_bandwidth)]
+    cluster_network_limit: Option<u64>,
+    /// Python interpreter used to evaluate the planner.
+    #[arg(long, env = "PERSISTING_PYTHON", default_value = "python3")]
+    python: PathBuf,
+    /// Stable batch identifier; defaults to the planner filename stem.
+    #[arg(long, value_name = "ID")]
+    batch_id: Option<String>,
+    /// Arguments forwarded to the planner after `--`.
+    #[arg(last = true, value_name = "ARG")]
+    planner_args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("sql_input")
+        .required(true)
+        .multiple(false)
+        .args(["sql", "sql_file"])
+))]
+struct AnalysisArgs {
+    /// ATIF JSON/JSONL file or directory.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// Output directory for shard files, combined result, and report.
+    /// Without this option, only the combined result is written to stdout.
+    #[arg(short, long, value_name = "DIR")]
+    output: Option<PathBuf>,
+    /// Number of automatic data shards processed concurrently.
+    #[arg(short = 'j', long, default_value_t = 4)]
+    parallelism: usize,
+    /// Read-only SQL executed independently on every shard.
+    #[arg(long, short = 'q', value_name = "SQL")]
+    sql: Option<String>,
+    /// Read read-only SQL from a UTF-8 file.
+    #[arg(long, value_name = "FILE")]
+    sql_file: Option<PathBuf>,
+    /// Combined result format for stdout or results.<format>.
+    #[arg(long, value_enum, default_value_t = AnalysisOutputFormat::Jsonl)]
+    fmt: AnalysisOutputFormat,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("processor")
+        .required(true)
+        .multiple(false)
+        .args(["script", "count"])
+))]
+struct ProcessArgs {
+    /// ATIF JSON/JSONL file or directory.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// Output directory for results and report; stdout is used when omitted.
+    #[arg(short, long, value_name = "DIR")]
+    output: Option<PathBuf>,
+    /// Python map/reduce script transferred to every mapper worker.
+    #[arg(long, value_name = "FILE")]
+    script: Option<PathBuf>,
+    /// Number of deterministic mapper shards.
+    #[arg(short = 'j', long, alias = "parallelism", default_value_t = 4)]
+    mappers: usize,
+    /// Python interpreter available on every mapper node.
+    #[arg(long, env = "PERSISTING_PYTHON", default_value = "python3")]
+    python: PathBuf,
+    /// Two-level federated count metric over normalized pChronicle data.
+    #[arg(long, value_enum, value_name = "METRIC")]
+    count: Option<CountTableArg>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CountTableArg {
+    Runs,
+    Steps,
+    ToolCalls,
+    LlmCalls,
+    CopiedContextSteps,
+}
+
+impl From<CountTableArg> for CountTable {
+    fn from(value: CountTableArg) -> Self {
+        match value {
+            CountTableArg::Runs => Self::Runs,
+            CountTableArg::Steps => Self::Steps,
+            CountTableArg::ToolCalls => Self::ToolCalls,
+            CountTableArg::LlmCalls => Self::LlmCalls,
+            CountTableArg::CopiedContextSteps => Self::CopiedContextSteps,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -48,6 +164,7 @@ async fn main() -> ExitCode {
         Command::Run(args) => args.verbose,
         Command::SelfTest(args) => args.verbose,
         Command::Query(_) => false,
+        Command::Produce(_) | Command::Analysis(_) | Command::Process(_) => false,
     };
     init_tracing_with_verbose(verbose);
 
@@ -62,9 +179,146 @@ async fn main() -> ExitCode {
 
 async fn dispatch(command: Command) -> Result<ExitCode> {
     match command {
-        Command::Run(args) => run_ppilot(args).await,
+        Command::Run(args) => run_ppilot(*args).await,
         Command::Query(args) => {
             run_query(args).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Produce(args) => {
+            let options = BatchProductionOptions {
+                output_dir: args.output,
+                parallelism: args.parallelism,
+                capture_gateway: !args.no_capture,
+                supervisor_network_limit_bytes_per_second: args.cluster_network_limit,
+            };
+            let is_legacy_json = args
+                .planner
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
+            let report = if is_legacy_json {
+                if !args.planner_args.is_empty() {
+                    anyhow::bail!("legacy JSON manifests do not accept planner arguments");
+                }
+                let mut manifest = BatchProductionManifest::from_path(&args.planner)?;
+                if let Some(batch_id) = args.batch_id {
+                    manifest.batch_id = batch_id;
+                }
+                produce_trajectories(manifest, options).await?
+            } else {
+                let batch_id = args.batch_id.unwrap_or_else(|| {
+                    args.planner
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or("production")
+                        .to_owned()
+                });
+                produce_from_planner(
+                    args.planner,
+                    args.python,
+                    args.planner_args,
+                    batch_id,
+                    options,
+                )
+                .await?
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(if report.failed == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
+        Command::Analysis(args) => {
+            let sql = match (args.sql, args.sql_file) {
+                (Some(sql), None) => sql,
+                (None, Some(path)) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("read SQL file {}", path.display()))?,
+                _ => unreachable!("clap requires exactly one SQL input"),
+            };
+            let temporary = args
+                .output
+                .is_none()
+                .then(tempfile::tempdir)
+                .transpose()
+                .context("create temporary analysis output")?;
+            let output_dir = args.output.clone().unwrap_or_else(|| {
+                temporary
+                    .as_ref()
+                    .expect("temporary output exists")
+                    .path()
+                    .to_path_buf()
+            });
+            let report = process_trajectories(BatchAnalysisOptions {
+                input: args.input,
+                sql,
+                output_dir,
+                parallelism: args.parallelism,
+                format: args.fmt,
+            })
+            .await?;
+            if args.output.is_none() {
+                let bytes = fs::read(&report.output)
+                    .with_context(|| format!("read analysis result {}", report.output.display()))?;
+                std::io::stdout()
+                    .lock()
+                    .write_all(&bytes)
+                    .context("write analysis result to stdout")?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Process(args) => {
+            match (args.script, args.count) {
+                (Some(script), None) => {
+                    if let Some(report) = process_script(ProcessScriptOptions {
+                        input: args.input,
+                        script,
+                        output_dir: args.output.clone(),
+                        mappers: args.mappers,
+                        python: args.python,
+                    })
+                    .await?
+                    {
+                        if args.output.is_none() {
+                            println!("{}", serde_json::to_string_pretty(&report.result)?);
+                        }
+                    }
+                }
+                (None, Some(table)) => {
+                    let temporary = args
+                        .output
+                        .is_none()
+                        .then(tempfile::tempdir)
+                        .transpose()
+                        .context("create temporary process output")?;
+                    let output_dir = args.output.clone().unwrap_or_else(|| {
+                        temporary
+                            .as_ref()
+                            .expect("temporary process output exists")
+                            .path()
+                            .to_path_buf()
+                    });
+                    if let Some(report) = process_federated_count(FederatedCountOptions {
+                        input: args.input,
+                        output_dir,
+                        parallelism: args.mappers,
+                        table: table.into(),
+                    })
+                    .await?
+                    {
+                        if args.output.is_none() {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&serde_json::json!({
+                                    "metric": report.table,
+                                    "count": report.count,
+                                }))?
+                            );
+                        }
+                    }
+                }
+                _ => unreachable!("clap requires exactly one process mode"),
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::SelfTest(args) => {
@@ -100,6 +354,71 @@ mod tests {
 
         let self_test = Cli::try_parse_from(["ppilot", "self-test", "--workers", "1"]);
         assert!(matches!(self_test.unwrap().command, Command::SelfTest(_)));
+
+        let produce = Cli::try_parse_from([
+            "ppilot",
+            "produce",
+            "production.py",
+            "--output",
+            "runs",
+            "-j",
+            "8",
+            "--cluster-network-limit",
+            "10mbps",
+            "--",
+            "--dataset",
+            "train",
+        ]);
+        let Command::Produce(produce) = produce.unwrap().command else {
+            panic!("expected produce command")
+        };
+        assert_eq!(produce.cluster_network_limit, Some(1_250_000));
+        assert_eq!(produce.planner_args, ["--dataset", "train"]);
+
+        let analysis = Cli::try_parse_from([
+            "ppilot",
+            "analysis",
+            "atif",
+            "--output",
+            "analysis",
+            "--sql",
+            "SELECT * FROM runs",
+        ]);
+        assert!(matches!(analysis.unwrap().command, Command::Analysis(_)));
+
+        let count = Cli::try_parse_from([
+            "ppilot", "process", "atif", "--output", "analysis", "--count", "steps",
+        ]);
+        assert!(matches!(count.unwrap().command, Command::Process(_)));
+        for metric in ["llm-calls", "copied-context-steps"] {
+            let count = Cli::try_parse_from([
+                "ppilot", "process", "atif", "--output", "analysis", "--count", metric,
+            ]);
+            assert!(
+                matches!(count.unwrap().command, Command::Process(_)),
+                "metric {metric} should parse"
+            );
+        }
+        let script = Cli::try_parse_from([
+            "ppilot",
+            "process",
+            "atif",
+            "--script",
+            "job.py",
+            "--mappers",
+            "8",
+        ]);
+        assert!(matches!(script.unwrap().command, Command::Process(_)));
+
+        assert!(Cli::try_parse_from([
+            "ppilot",
+            "trajectory",
+            "produce",
+            "manifest.json",
+            "--output",
+            "runs",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -113,6 +432,36 @@ mod tests {
             "SELECT 1",
             "--sql-file",
             "query.sql",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn analysis_requires_exactly_one_sql_input_and_process_rejects_sql() {
+        assert!(
+            Cli::try_parse_from(["ppilot", "analysis", "atif", "--output", "analysis",]).is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "ppilot",
+            "analysis",
+            "atif",
+            "--output",
+            "analysis",
+            "--sql",
+            "SELECT 1",
+            "--sql-file",
+            "query.sql",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "ppilot", "process", "atif", "--output", "analysis", "--sql", "SELECT 1",
+        ])
+        .is_err());
+        assert!(
+            Cli::try_parse_from(["ppilot", "process", "atif", "--output", "analysis",]).is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "ppilot", "process", "atif", "--script", "job.py", "--count", "steps",
         ])
         .is_err());
     }

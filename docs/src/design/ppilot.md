@@ -2,7 +2,7 @@
 
 > 正式名称：**pPilot — Durable Run Orchestrator**
 >
-> 状态：**Phase-1 已落地；目标架构部分对齐**
+> 状态：**Phase-1 已落地；lease epoch、reconciler、RunCommit CAS 已对齐**
 >
 > 代码：`crates/persisting-ppilot`（library + 独立 `ppilot` CLI）
 >
@@ -30,7 +30,7 @@ pPilot                  计划 · 有界并发 · lease · retry · resume · co
          ↓
 当前：Worker + Python host          目标：RunSpec → pVisor → RunFuture
          ↓
-当前：JSONL + optional Lance        目标：RunCommit → pChronicle
+durable result journal → RunCommit CAS → JSONL / optional Lance
 ```
 
 | 是 | 不是 |
@@ -50,8 +50,21 @@ pChronicle；编排状态仍由本 crate 管理。
 ```text
 ppilot run <SCRIPT> [OPTIONS]
 ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif]
+ppilot produce <PLANNER.py> --output <DIR> [--parallelism N] [-- <PLANNER_ARGS>...]
+ppilot analysis <INPUT> [--output <DIR>] [--fmt jsonl|json|toml] [--parallelism N] (--sql <SQL> | --sql-file <FILE>)
+ppilot process <INPUT> (--script <FILE> | --count <METRIC>) [--mappers N] [--output <DIR>]
 ppilot self-test [OPTIONS]
 ```
+
+`run` and `produce` embed a job-scoped Supervisor automatically. pPilot passes
+its bootstrap through `RunSpec`; users do not start a separate Supervisor
+daemon. `--cluster-network-limit RATE` issues an initial local OverlayNet quota
+to every pVisor launched by `produce`; the configured job rate is divided by
+the maximum concurrent Run count, so fixed shares cannot exceed the aggregate
+but may leave idle bandwidth unused. The long-lived Python host behind `run`
+does not yet expose this option. The current torchrun implementation embeds one
+Supervisor per rank, so supervision is rank-local rather than one strict
+cross-rank token ledger.
 
 `run` 收纳原有 `PPilotArgs`；`self-test` 是无需用户脚本的环境与执行链路验证。
 `query` 对三表 Storyline Lance store、ATIF JSON/数组/JSONL/目录注册同名的 `runs`、
@@ -75,18 +88,15 @@ cargo build -p persisting-ppilot --features cli --bin ppilot
 | 稳定 task / Run identity | manifest item 强制稳定 `id`；adapter 生成确定性 `run_id` 并写入 TaskResult | **已对齐** |
 | 有界并发与反压 | `max_inflight` + sink queue backpressure | **已对齐** |
 | 基础设施重试与语义重试分离 | `--retries` 只处理 ask/worker 故障 | **已对齐** |
-| 唯一结果收成路径 | Driver 经异步 sink 写 terminal result | **基本对齐**；尚无 RunCommit CAS |
-| durable checkpoint | JSONL + `checkpoint.json` | **部分对齐**；不是 Job/Run/Attempt 状态存储 |
-| lease 与 stale worker fencing | sticky/quarantine，缺少持久 lease epoch | **部分对齐** |
+| 唯一结果收成路径 | durable result journal → pChronicle RunCommit CAS → sink | **已对齐** |
+| durable checkpoint | result journal + Run control record；JSONL/checkpoint 是用户视图 | **基本对齐** |
+| lease 与 stale worker fencing | 持久 epoch 贯穿 Driver/Worker/pVisor/TaskResult；在途 heartbeat 续租；CAS 拒绝旧 epoch | **已对齐** |
 | pPilot 只操作 RunFuture | Worker 将 TaskExpr 转成 RunSpec，Python host 实现 pVisor RunExecutor | **部分对齐**；Driver transport 仍是 Worker ask |
-| reconcile | resume 只扫描 JSONL，未核对活跃 Attempt 与 pChronicle | **缺失** |
-| pChronicle terminal facts | 可选 Tee Lance 保存 `ppilot.result/failure` | **过渡实现**；需改为 canonical Event + RunCommit |
+| reconcile | 启动时核对 result journal、pVisor Attempt observer 与 pChronicle control record | **已对齐**；远端 pVisor observer 待接入 |
+| pChronicle terminal facts | 每个 Run 只有一个 CAS terminal RunCommit | **已对齐**；Event 高水位字段已预留 |
 
-因此重构顺序不是推翻现有调度器，而是：
-
-1. 将当前 Worker 内的 `TaskExpr ↔ RunSpec/RunResult` adapter 提升为 Driver 可观察的 RunFuture。
-2. 将 checkpoint 扩展为 Job/Task/Run/Attempt + lease epoch 的持久状态。
-3. 增加 reconciler，对照 checkpoint、pVisor Attempt 和 pChronicle RunCommit 收敛。
+下一步不需要推翻现有调度器：重点是让 Driver 直接观察远端 pVisor RunFuture，
+并把当前 `AttemptObserver` 的 process-local 实现换成跨机 Run registry provider。
 
 ---
 
@@ -132,7 +142,8 @@ cargo build -p persisting-ppilot --features cli --bin ppilot
 
 内部控制面会把平面 JSON 归一成 `TaskExpr`（`id` / `op=execute` / `args` / `meta`）；产品面 **只支持** `op=execute`。新能力写在用户 `execute` 里，不靠扩展 op 表。
 
-结果线格式为 `TaskResult`：`task_id`、`run_id`、`ok`、`cancelled`、`value` / `error`、`worker`、时间戳、`infra_retries` 等。
+结果线格式为 `TaskResult`：`task_id`、`run_id`、`attempt_id`、`lease_epoch`、
+`ok`、`cancelled`、`value` / `error`、`worker`、时间戳、`infra_retries` 等。
 
 算法脚手架扩展保持在这个边界内：`setup_worker(context)` 与
 `teardown_worker()` 为可选的 process-local hook，`execute(item)` 仍是唯一必需且
@@ -185,7 +196,8 @@ cargo build -p persisting-ppilot --features cli --bin ppilot
 | 该槽被 quarantine | **拒绝**改投他槽，任务记 infra 失败（避免跨槽 at-least-once 重跑 `execute`） |
 | 全槽 quarantine | acquire fail-fast，不再死等 |
 
-同槽 **ResultCache**（`task_id → TaskResult`）跨 Supervision 重启共享：丢 reply 时可幂等取回，不重跑 `execute`。
+同槽 **ResultCache**（`(task_id, lease_epoch) → TaskResult`）跨 Supervision 重启共享：
+同一 ownership generation 丢 reply 时可幂等取回；新 epoch 绝不读取旧 owner 的结果。
 
 `--retries` 只覆盖 **worker ask / 基础设施**失败；**不**解读业务
 `ok=false`。质量重试、重新采样和策略变化必须显式创建派生 Run。
@@ -202,6 +214,15 @@ cargo build -p persisting-ppilot --features cli --bin ppilot
 Worker **不**解释业务；Driver **不**碰 Python。每个 Task 先转换为稳定 RunSpec，长驻
 Python host 实现 pVisor `RunExecutor`；取消和终态经 RunHandle/RunResult 返回，再由唯一
 adapter 转为 TaskResult。provider 代码目前仍位于 pPilot crate，后续可独立成部署 provider。
+
+每个 Task Run 同时启动长驻 `PilotRuntimeBridge`：按 pVisor 下发的间隔 heartbeat，
+注册 worker 进程，监听 Shutdown/Quiesce，并把 Task 包装为带稳定 idempotency key 的
+`ppilot.task` effect。Quiesce 到达后停止接收新 effect；当前 Python 调用完成、effect
+journal 清空并进入 Idle 后才确认 checkpoint。pVisor 在确认后建立逻辑 OverlayFS 快照，
+再通过 Continue 恢复 pPilot。
+
+RunSpec 使用 `parent_run_id` 表达 Job/Batch → Task Run 层级；pVisor 的 RunRecord 与
+Run Bundle 持久化 `parent_run_id`、`task_id` 和经过筛选的 `ppilot.*` 编排元数据。
 
 ### 6.4 取消
 
@@ -220,16 +241,22 @@ adapter 转为 TaskResult。provider 代码目前仍位于 pPilot crate，后续
 
 | 路径 | 作用 |
 |------|------|
-| `--sink DIR` | `ready.ndjson` + `failures.ndjson` + `checkpoint.json` |
+| `--sink DIR` | durable result journal + Run control + `ready.ndjson` / `failures.ndjson` / `checkpoint.json` |
+| `--control-uri URI` | 将 Run control offload 到 pChronicle 支持的本地或对象存储（需同时给 `--sink`） |
 | 无 `--sink` | 默认仅 stdout NDJSON（开发视图，非耐久） |
-| `--traj` | Tee 到 Lance；**JSONL 仍是 resume 真相** |
+| `--traj` | RunCommit 成功后 Tee 到 Lance；RunCommit 是 terminal truth |
 
-`JsonlFileSink`：打开时从已有文件 **seed** `task_id`；先 reserve 再写盘，失败则 **rollback seen**（seen ⊆ durable）。  
-异步 `sink_writer`：`join` 汇总 persist 失败并 fail job；失败时 `SkipSet::remove`，便于后续 `--resume` 发现未落盘 id。损坏 / 无 `task_id` 的 JSONL 行：**skip + warn**，不拖垮整本账本。
+提交顺序固定为：`{sink}/.ppilot-state/results` 原子写 result → pChronicle 对
+`(run_id, attempt_id, lease_epoch, digest)` 做 RunCommit CAS → 用户 sink。旧 epoch、不同
+attempt 或不同 digest 不能覆盖已提交结果。相同请求重放返回 AlreadyCommitted。
+
+`JsonlFileSink` 仍按 `task_id` 幂等；异步 `sink_writer` 的 `join` 汇总错误并 fail job。
+启动 reconciler 会补齐“result 已 stage、commit 未写”和“commit 已写、sink 未 append”两个崩溃窗口。
 
 ### 7.2 Checkpoint / `--resume`
 
-- 账本 = sink 下已终端的 `task_id`（ready ∪ failures）。
+- terminal truth = pChronicle RunCommit；本地 result journal 保留可重放的完整 TaskResult。
+- JSONL ledger 继续提供用户可读的 ready/failure 视图和旧版本兼容。
 - `--resume`：Driver 跳过这些 id；**`plan()` 仍会再 emit 一遍**（大 plan 的成本是已知限制）。
 - 失败 / 取消默认也不重跑；要重跑请编辑 failures 或换目录。
 
@@ -250,15 +277,18 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 | worker reply 丢失、原 slot 仍可用 | 只在同一 slot 重试；优先从 slot `ResultCache` 返回结果，不跨 slot 重跑 |
 | 已接触的 slot 被 quarantine / 永久失联 | 拒绝跨 slot 重跑，任务终止为 infra failure |
 | `execute()` 返回业务错误 | 记录 failure；`--retries` 不重跑业务错误 |
-| Driver / rank0 在结果提交前崩溃 | 该任务处于不确定状态；全作业重启后可能再次执行 |
-| terminal result 已写入 JSONL | `--resume` 按稳定 `task_id` 跳过，不再派发 |
+| Driver / rank0 在 result stage 后、RunCommit 前崩溃 | reconciler 用 journal 重放 CAS，不重新执行 |
+| RunCommit 后、用户 sink append 前崩溃 | reconciler 重放幂等 sink append |
+| 旧 worker 晚到 | `lease_epoch` fencing 拒绝旧结果；不会覆盖 canonical commit |
+| 未提交 lease 且 pVisor attempt 不存在 | reconciler 标记 retry，下一次派发显式 takeover 并递增 epoch |
+| terminal RunCommit 已存在 | 稳定 `task_id` 加入 SkipSet，不再派发 |
 | JSONL append 返回成功但机器随后掉电 | 当前仅 `flush`、未逐条 `fsync`；不能视为断电级 durability |
 | 用户取消在途任务 | kill 对应 Python host 并记录 cancelled；外部副作用是否已发生不可由控制面回滚 |
 
 因此当前语义可概括为：
 
 - **同一作业内的 infra retry**：sticky、偏向避免重复执行；
-- **整个作业崩溃后 resume**：以已提交 JSONL 为界，未提交任务可能 at-least-once；
+- **整个作业崩溃后 resume**：已 stage/commit 的终态不会重新执行；完全没有终态 payload 的 orphan attempt 会以新 epoch 重试；
 - **外部副作用**：由用户以稳定 `task_id` 作为 idempotency key。
 
 ---
@@ -275,6 +305,7 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 | `executor` / `plan` | Python host · plan NDJSON bootstrap |
 | `dist` | torchrun 环境 · slot 命名 / 扁平下标 |
 | `job_control` | 旁路 cancel · 本地 DeathWatch |
+| `coordination` | lease/takeover · durable result journal · RunCommit · reconcile |
 | `sink` / `sink_writer` / `checkpoint` / `skip` | 唯一落盘 · 异步 persist · resume 账本 · live claim |
 | `observe` | 可选进度事件 |
 | `task` | `TaskExpr` / `TaskResult` 线格式 |
@@ -300,12 +331,10 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 |----|------|
 | 昂贵 plan 无 cursor | resume 仍全量再 emit |
 | 真 torchrun CI | 有双 ActorSystem 烟测；真实多进程 e2e 仍薄 |
-| 错误分类 | infra / execute / cancel 尚未成稳定枚举字段 |
 | DeathWatch | 仅本地；远端死槽靠 ask 失败路径 |
 | Run contract | adapter 已落地；Driver 尚不能直接观察 RunHandle/Attempt 状态 |
 | pVisor boundary | Python host 已实现 RunExecutor，但 provider 代码仍在 pPilot crate |
-| reconcile | 尚无 checkpoint / active Attempt / RunCommit 三方收敛 |
-| terminal commit | JSONL 是 resume truth；尚无 pChronicle CAS |
+| reconcile provider | 协议与收敛逻辑已落地；当前启动实现知道 process-local pVisor 不跨进程存活，远端 registry observer 待接 |
 
 ### 设计原则（摘要）
 
@@ -313,7 +342,7 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 2. 扩规模换 deployment，不改 workload 文件。
 3. Driver ≠ Actor；Pulsing ≠ 调度器。  
 4. 跨槽拒绝优先于跨槽重跑。  
-5. persist 失败必须可见；JSONL 是 resume 真相。  
+5. persist 失败必须可见；RunCommit 是 terminal truth，JSONL 是用户视图。
 6. 新产品能力优先进 `execute`，不膨胀 CLI。
 
 ---

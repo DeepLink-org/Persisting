@@ -197,19 +197,27 @@ fn create(args: CreateArgs) -> Result<i32> {
     RunRecord {
         schema_version: 1,
         run_id: args.name.clone(),
+        parent_run_id: None,
+        task_id: None,
         session_id: args.name.clone(),
         agent: args.agent,
         pid: 0,
         command: Vec::new(),
+        executor: None,
         state: "ready".into(),
         started_at_unix_ms: now,
         finished_at_unix_ms: Some(now),
         storage: root,
         overlaynet_listen: None,
+        network_interception: None,
+        network_interception_metrics: None,
         gateway_listen: None,
         network: serde_json::json!({"mode": "host"}),
+        network_policy: None,
         overlay: Some(overlay),
         overlay_lowers: vec![target],
+        lineage: None,
+        orchestration: Default::default(),
     }
     .write()?;
     println!("created environment '{}' at {}", args.name, stage.display());

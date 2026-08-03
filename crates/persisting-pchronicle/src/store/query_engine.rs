@@ -46,6 +46,13 @@ impl ChronicleQueryEngine {
         Self::from_lance_source(source)
     }
 
+    /// Open a Lance store from a local path or object-store URI such as S3.
+    pub async fn open_lance_uri(root: impl AsRef<str>) -> Result<Self> {
+        let store = LanceStorylineStore::open_uri(root).await?;
+        let source = StorylineDataSource::from_store(&store).await?;
+        Self::from_lance_source(source)
+    }
+
     pub fn open_atif(path: impl AsRef<Path>) -> Result<Self> {
         Self::from_atif_source(AtifDataSource::open(path)?)
     }

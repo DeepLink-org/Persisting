@@ -30,10 +30,10 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["reiase"]
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 description = "Agent execution, orchestration, and durable history infrastructure"
 
 [profile.dev]

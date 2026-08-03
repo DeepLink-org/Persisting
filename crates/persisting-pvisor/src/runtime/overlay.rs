@@ -494,7 +494,30 @@ pub fn overlay_status(record: &OverlayRecord) -> Result<OverlayStatus, OverlayEr
     })
 }
 
-/// Merge staging upper onto `target` (handles fuse-overlayfs `.wh.` whiteouts).
+/// Copy the raw upper tree without interpreting whiteouts or opaque markers.
+/// The destination is replaced and can later seed another directory upper.
+pub fn snapshot_overlay_upper(
+    record: &OverlayRecord,
+    destination: &Path,
+) -> Result<(), OverlayError> {
+    restore_overlay_upper(record.upper.path(), destination)
+}
+
+/// Restore a raw upper snapshot into a directory upper.
+pub fn restore_overlay_upper(source: &Path, destination: &Path) -> Result<(), OverlayError> {
+    if path_exists(destination) {
+        remove_path(destination)?;
+    }
+    fs::create_dir_all(destination)?;
+    if !source.is_dir() {
+        return Ok(());
+    }
+    let mut hard_links = HashMap::new();
+    snapshot_directory_raw(source, destination, &mut hard_links)?;
+    Ok(())
+}
+
+/// Merge staging upper onto `target` (handles portable `.wh.` whiteouts).
 pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
     if matches!(
         record.state,
@@ -690,6 +713,90 @@ fn copy_upper_entry(
         }
     }
     copy_host_metadata(source, destination)?;
+    Ok(())
+}
+
+fn snapshot_directory_raw(
+    source: &Path,
+    destination: &Path,
+    hard_links: &mut HashMap<(u64, u64), PathBuf>,
+) -> Result<(), OverlayError> {
+    ensure_directory(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        snapshot_entry_raw(
+            &entry.path(),
+            &destination.join(entry.file_name()),
+            hard_links,
+        )?;
+    }
+    copy_snapshot_metadata(source, destination)?;
+    Ok(())
+}
+
+fn snapshot_entry_raw(
+    source: &Path,
+    destination: &Path,
+    hard_links: &mut HashMap<(u64, u64), PathBuf>,
+) -> Result<(), OverlayError> {
+    let metadata = fs::symlink_metadata(source)?;
+    let kind = metadata.file_type();
+    if kind.is_dir() {
+        return snapshot_directory_raw(source, destination, hard_links);
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_path(destination)?;
+    if kind.is_symlink() {
+        std::os::unix::fs::symlink(fs::read_link(source)?, destination)?;
+    } else if kind.is_file() {
+        let identity = (metadata.dev(), metadata.ino());
+        if metadata.nlink() > 1 {
+            if let Some(existing) = hard_links.get(&identity) {
+                fs::hard_link(existing, destination)?;
+                return Ok(());
+            }
+        }
+        fs::copy(source, destination)?;
+        if metadata.nlink() > 1 {
+            hard_links.insert(identity, destination.to_path_buf());
+        }
+    } else {
+        let path = c_path(destination)?;
+        // SAFETY: the C path and metadata remain valid for this call.
+        let rc = unsafe {
+            libc::mknod(
+                path.as_ptr(),
+                metadata.mode() as libc::mode_t,
+                metadata.rdev() as libc::dev_t,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+    }
+    copy_snapshot_metadata(source, destination)?;
+    Ok(())
+}
+
+fn copy_snapshot_metadata(source: &Path, destination: &Path) -> io::Result<()> {
+    copy_host_metadata(source, destination)?;
+    let source_c = c_path(source)?;
+    let destination_c = c_path(destination)?;
+    for name in OPAQUE_XATTRS {
+        let name = CString::new(name).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+        if let Ok(value) = get_host_xattr(&source_c, &name) {
+            if let Err(error) = set_host_xattr(&destination_c, &name, &value) {
+                if !matches!(
+                    error.raw_os_error(),
+                    Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::ENOTSUP)
+                ) {
+                    return Err(error);
+                }
+            }
+        }
+    }
     Ok(())
 }
 

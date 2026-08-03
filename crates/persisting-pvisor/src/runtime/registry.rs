@@ -16,29 +16,64 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use persisting_proto::ExecutorDescriptor;
+
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";
 pub const CONTROL_FILENAME: &str = "control.sock";
+
+pub fn default_run_home() -> PathBuf {
+    if let Some(root) = std::env::var_os("PERSISTING_RUN_HOME") {
+        return PathBuf::from(root);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".persisting").join("runs");
+    }
+    std::env::temp_dir().join("persisting-runs")
+}
+
+/// Provenance for a Run started from a logical checkpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunLineage {
+    pub parent_run_id: String,
+    pub checkpoint_id: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub schema_version: u32,
     pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     pub session_id: String,
     pub agent: String,
     pub pid: u32,
     pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<ExecutorDescriptor>,
     pub state: String,
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: Option<u64>,
     pub storage: PathBuf,
     #[serde(default)]
     pub overlaynet_listen: Option<String>,
+    #[serde(default)]
+    pub network_interception: Option<persisting_overlaynet::InterceptionProfile>,
+    #[serde(default)]
+    pub network_interception_metrics: Option<persisting_overlaynet::InterceptionSnapshot>,
     pub gateway_listen: Option<String>,
     pub network: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_policy: Option<serde_json::Value>,
     pub overlay: Option<OverlayRecord>,
     #[serde(default)]
     pub overlay_lowers: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<RunLineage>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl RunRecord {
@@ -373,6 +408,9 @@ pub fn is_live(stage_dir: &Path) -> anyhow::Result<bool> {
 /// inside the target/merged workspace.
 pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<RunRecord> {
     if let Some(selector) = selector {
+        if selector == Path::new("last") {
+            return latest_run(storage).or_else(|_| latest_default_run());
+        }
         if selector.exists() || selector.components().count() > 1 {
             return resolve_path(selector);
         }
@@ -385,6 +423,12 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
             let index: RunIndex = serde_json::from_slice(&fs::read(index)?)?;
             return RunRecord::read(&index.stage_dir);
         }
+        if let Some(record) = default_runs()?
+            .into_iter()
+            .find(|record| record.run_id == id)
+        {
+            return Ok(record);
+        }
         anyhow::bail!("pVisor Run not found: {}", selector.display());
     }
 
@@ -393,7 +437,39 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
             return Ok(record);
         }
     }
-    latest_run(storage)
+    latest_run(storage).or_else(|_| latest_default_run())
+}
+
+fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
+    let mut records = Vec::new();
+    let mut roots = vec![
+        default_run_home(),
+        std::env::temp_dir().join("persisting-runs"),
+    ];
+    roots.sort();
+    roots.dedup();
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(root)? {
+            let stage = entry?.path();
+            if let Ok(record) = RunRecord::read(&stage) {
+                records.push(record);
+            }
+        }
+    }
+    records.sort_by_key(|record| std::cmp::Reverse(record.started_at_unix_ms));
+    Ok(records)
+}
+
+fn latest_default_run() -> anyhow::Result<RunRecord> {
+    default_runs()?.into_iter().next().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no pVisor Runs found under {}",
+            default_run_home().display()
+        )
+    })
 }
 
 fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
@@ -517,17 +593,23 @@ mod tests {
         RunRecord {
             schema_version: 1,
             run_id: "run-test".into(),
+            parent_run_id: None,
+            task_id: None,
             session_id: "session-test".into(),
             agent: "test".into(),
             pid: 1,
             command: vec!["true".into()],
+            executor: None,
             state: "completed".into(),
             started_at_unix_ms: 1,
             finished_at_unix_ms: Some(2),
             storage: storage.to_path_buf(),
             overlaynet_listen: None,
+            network_interception: None,
+            network_interception_metrics: None,
             gateway_listen: None,
             network: serde_json::json!({"mode": "ambient"}),
+            network_policy: None,
             overlay: Some(OverlayRecord {
                 id: "session-test".into(),
                 target: storage.join("target"),
@@ -542,6 +624,8 @@ mod tests {
                 state: super::super::overlay::OverlayState::Staged,
             }),
             overlay_lowers: vec![storage.join("target")],
+            lineage: None,
+            orchestration: Default::default(),
         }
     }
 
@@ -574,5 +658,11 @@ mod tests {
         assert_eq!(resolve_path(&stage).unwrap().run_id, "run-test");
         assert_eq!(resolve_path(&upper).unwrap().run_id, "run-test");
         assert_eq!(resolve_path(&storage).unwrap().run_id, "run-test");
+        assert_eq!(
+            resolve_run(Some(Path::new("last")), &storage)
+                .unwrap()
+                .run_id,
+            "run-test"
+        );
     }
 }

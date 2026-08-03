@@ -1,6 +1,6 @@
 //! Cross-platform FUSE overlay for pVisor.
 //!
-//! Portable fuse-overlayfs-compatible semantics:
+//! Portable overlay filesystem semantics:
 //! - Reads resolve upper → lowers (top to bottom)
 //! - Writes copy-up into `upper`
 //! - Deletes create `.wh.<name>` when the name exists in a lower

@@ -37,7 +37,11 @@ def _build_timing(
     meta: Optional[dict],
 ) -> dict:
     rows_per_s = (rows / (elapsed_ms / 1000.0)) if (rows is not None and elapsed_ms > 0) else None
-    mb_per_s = ((bytes_ / (1024.0 * 1024.0)) / (elapsed_ms / 1000.0)) if (bytes_ is not None and elapsed_ms > 0) else None
+    mb_per_s = (
+        ((bytes_ / (1024.0 * 1024.0)) / (elapsed_ms / 1000.0))
+        if (bytes_ is not None and elapsed_ms > 0)
+        else None
+    )
     timing = {
         "api": api,
         "elapsed_ms": float(elapsed_ms),
@@ -64,8 +68,23 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
                 "partition_column": partition_column,
             },
         ),
-        _ApiSpec(method="add", api="add", datas_arg="datas", meta_fn=lambda self, table_name, datas, partition=None: {"table_name": table_name, "partition": partition}),
-        _ApiSpec(method="count_rows", api="count_rows", meta_fn=lambda self, table_name, partition=None: {"table_name": table_name, "partition": partition}),
+        _ApiSpec(
+            method="add",
+            api="add",
+            datas_arg="datas",
+            meta_fn=lambda self, table_name, datas, partition=None: {
+                "table_name": table_name,
+                "partition": partition,
+            },
+        ),
+        _ApiSpec(
+            method="count_rows",
+            api="count_rows",
+            meta_fn=lambda self, table_name, partition=None: {
+                "table_name": table_name,
+                "partition": partition,
+            },
+        ),
         _ApiSpec(
             method="filter",
             api="filter",
@@ -89,7 +108,14 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
                 "index_type": index_type,
             },
         ),
-        _ApiSpec(method="list_indices", api="list_indices", meta_fn=lambda self, table_name, partition=None: {"table_name": table_name, "partition": partition}),
+        _ApiSpec(
+            method="list_indices",
+            api="list_indices",
+            meta_fn=lambda self, table_name, partition=None: {
+                "table_name": table_name,
+                "partition": partition,
+            },
+        ),
         _ApiSpec(
             method="optimize",
             api="optimize",
@@ -100,15 +126,60 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
                 "delete_unverified": delete_unverified,
             },
         ),
-        _ApiSpec(method="drop_table", api="drop_table", meta_fn=lambda self, table_name, partition=None: {"table_name": table_name, "partition": partition}),
-        _ApiSpec(method="table_exists", api="table_exists", meta_fn=lambda self, table_name: {"table_name": table_name}),
+        _ApiSpec(
+            method="drop_table",
+            api="drop_table",
+            meta_fn=lambda self, table_name, partition=None: {
+                "table_name": table_name,
+                "partition": partition,
+            },
+        ),
+        _ApiSpec(
+            method="table_exists",
+            api="table_exists",
+            meta_fn=lambda self, table_name: {"table_name": table_name},
+        ),
         _ApiSpec(method="list_tables", api="list_tables"),
-        _ApiSpec(method="get_schema", api="get_schema", meta_fn=lambda self, table_name: {"table_name": table_name}),
-        _ApiSpec(method="delete", api="delete", meta_fn=lambda self, table_name, where, partition=None: {"table_name": table_name, "partition": partition}),
-        _ApiSpec(method="update", api="update", meta_fn=lambda self, table_name, where, values, partition=None: {"table_name": table_name, "partition": partition}),
-        _ApiSpec(method="upsert", api="upsert", datas_arg="datas", meta_fn=lambda self, table_name, columns, datas, partition=None: {"table_name": table_name, "partition": partition}),
-        _ApiSpec(method="add_columns", api="add_columns", meta_fn=lambda self, table_name, transforms: {"table_name": table_name}),
-        _ApiSpec(method="schema", api="schema", meta_fn=lambda self, table_name: {"table_name": table_name}),
+        _ApiSpec(
+            method="get_schema",
+            api="get_schema",
+            meta_fn=lambda self, table_name: {"table_name": table_name},
+        ),
+        _ApiSpec(
+            method="delete",
+            api="delete",
+            meta_fn=lambda self, table_name, where, partition=None: {
+                "table_name": table_name,
+                "partition": partition,
+            },
+        ),
+        _ApiSpec(
+            method="update",
+            api="update",
+            meta_fn=lambda self, table_name, where, values, partition=None: {
+                "table_name": table_name,
+                "partition": partition,
+            },
+        ),
+        _ApiSpec(
+            method="upsert",
+            api="upsert",
+            datas_arg="datas",
+            meta_fn=lambda self, table_name, columns, datas, partition=None: {
+                "table_name": table_name,
+                "partition": partition,
+            },
+        ),
+        _ApiSpec(
+            method="add_columns",
+            api="add_columns",
+            meta_fn=lambda self, table_name, transforms: {"table_name": table_name},
+        ),
+        _ApiSpec(
+            method="schema",
+            api="schema",
+            meta_fn=lambda self, table_name: {"table_name": table_name},
+        ),
     )
 
 
@@ -193,4 +264,3 @@ def instrument_session(session: Any, *, specs: Tuple[_ApiSpec, ...] | None = Non
     # Expose originals for debugging/recovery if needed
     setattr(session, "_dldb_original_methods", originals)
     return session
-

@@ -5,10 +5,11 @@
 
 use crate::check::{run_check, run_self_test, CheckOptions};
 use crate::checkpoint::{CheckpointLedger, CheckpointTracker};
+use crate::coordination::{ProcessLocalAttemptObserver, RunCoordinator};
 use crate::observe::{Observer, ObserverOptions};
 use crate::runtime::{run_fleet, RunOptions};
 use crate::sink::{JsonlFileSink, ResultSink, TeeSink};
-use crate::sink_writer::spawn_sink_writer;
+use crate::sink_writer::spawn_coordinated_sink_writer;
 use crate::skip::SkipSet;
 use crate::task::TaskResult;
 use anyhow::{bail, Context, Result};
@@ -58,6 +59,15 @@ pub struct PPilotArgs {
     /// Durable unique sink directory (`ready.ndjson` + `failures.ndjson` + `checkpoint.json`).
     #[arg(long, value_name = "DIR")]
     pub sink: Option<PathBuf>,
+
+    /// pChronicle Run control root. Supports local paths and object-store URIs.
+    /// Defaults to `--sink`, keeping `run-control/` beside the result journal.
+    #[arg(long, env = "PERSISTING_PPILOT_CONTROL_URI", value_name = "URI")]
+    pub control_uri: Option<String>,
+
+    /// Lifetime advertised by each newly issued Run lease.
+    #[arg(long, default_value_t = 30_000)]
+    pub lease_ttl_ms: u64,
 
     /// Logical run identifier exposed to workers through `persisting_ppilot.context()`.
     /// Defaults to the sink directory name, or the plan filename for ephemeral runs.
@@ -269,6 +279,9 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
     if args.resume && file_sink.is_none() {
         bail!("--resume requires --sink DIR");
     }
+    if args.control_uri.is_some() && file_sink.is_none() {
+        bail!("--control-uri requires --sink DIR for the durable result journal");
+    }
     if !args.rerun_failed.is_empty() && !args.resume {
         bail!("--rerun-failed requires --resume --sink DIR");
     }
@@ -313,6 +326,45 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
         (SkipSet::new(), None)
     };
 
+    let coordinator = if let (Some(dir), Some(sink)) = (&args.sink, &file_sink) {
+        let control_root = args
+            .control_uri
+            .clone()
+            .unwrap_or_else(|| dir.display().to_string());
+        let coordinator = Arc::new(
+            RunCoordinator::open_for_job(&control_root, dir, args.lease_ttl_ms, &job_id)
+                .await
+                .context("open pPilot Run coordinator")?,
+        );
+        let report = coordinator
+            .reconcile(sink.as_ref(), &ProcessLocalAttemptObserver)
+            .await
+            .context("reconcile pPilot Runs")?;
+        for task_id in &report.committed_task_ids {
+            skip_task_ids.insert(task_id.clone());
+        }
+        for task_id in &report.retry_task_ids {
+            skip_task_ids.remove(task_id);
+        }
+        if report.recovered_commits > 0
+            || report.recovered_sink_appends > 0
+            || report.fenced_results > 0
+            || !report.retry_task_ids.is_empty()
+        {
+            eprintln!(
+                "[reconcile] commits={} sink={} fenced={} active={} retry={}",
+                report.recovered_commits,
+                report.recovered_sink_appends,
+                report.fenced_results,
+                report.active_attempts,
+                report.retry_task_ids.len()
+            );
+        }
+        Some(coordinator)
+    } else {
+        None
+    };
+
     let observe_on = args.observe || args.observe_file.is_some() || args.observe_json;
     let observer = if observe_on {
         Observer::open(ObserverOptions {
@@ -334,11 +386,12 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
     });
 
     let sink_writer = file_sink.as_ref().map(|sink| {
-        spawn_sink_writer(
+        spawn_coordinated_sink_writer(
             Arc::clone(sink),
             checkpoint.clone(),
             Some(skip_task_ids.clone()),
             max_inflight.saturating_mul(2).max(16),
+            Arc::clone(coordinator.as_ref().expect("sink has coordinator")),
         )
     });
     let sink_submit = sink_writer.as_ref().map(|w| w.submitter());
@@ -357,6 +410,7 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
         skip_task_ids,
         checkpoint: checkpoint.clone(),
         sink_submitter: sink_submit,
+        coordinator,
     };
 
     let collected = run_fleet(opts, move |r: TaskResult| {

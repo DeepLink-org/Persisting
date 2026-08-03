@@ -135,6 +135,11 @@ impl DistEnv {
     pub fn job_control_name(rank: usize) -> String {
         format!("ppilot/job_control/{rank}")
     }
+
+    /// Node-local pChronicle worker used by federated analysis.
+    pub fn analysis_worker_name(rank: usize) -> String {
+        format!("ppilot/analysis/{rank}")
+    }
 }
 
 #[cfg(test)]
@@ -216,5 +221,10 @@ mod tests {
         // Regression: rank0's second slot is NOT flat index 1 when world>1.
         assert_eq!(DistEnv::slot_flat_index(0, 1, 2, 2), 2);
         assert_eq!(DistEnv::slot_flat_index(1, 0, 2, 2), 1);
+    }
+
+    #[test]
+    fn analysis_worker_names_are_rank_stable() {
+        assert_eq!(DistEnv::analysis_worker_name(3), "ppilot/analysis/3");
     }
 }

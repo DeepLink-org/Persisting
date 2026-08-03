@@ -92,6 +92,12 @@ pub struct TaskResult {
     /// Stable pVisor Run identity generated for this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// Concrete pVisor attempt that produced this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    /// Fencing token held by the pPilot owner when the attempt was submitted.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub lease_epoch: u64,
     pub ok: bool,
     /// pPilot cancellation (not an execute failure).
     #[serde(default)]
@@ -137,6 +143,10 @@ fn is_zero(v: &u32) -> bool {
     *v == 0
 }
 
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
 impl TaskResult {
     pub fn success(
         task_id: impl Into<String>,
@@ -148,6 +158,8 @@ impl TaskResult {
         Self {
             task_id: task_id.into(),
             run_id: None,
+            attempt_id: None,
+            lease_epoch: 0,
             ok: true,
             cancelled: false,
             value: Some(value),
@@ -194,6 +206,8 @@ impl TaskResult {
         Self {
             task_id: task_id.into(),
             run_id: None,
+            attempt_id: None,
+            lease_epoch: 0,
             ok: false,
             cancelled: false,
             value: None,
@@ -215,6 +229,8 @@ impl TaskResult {
         Self {
             task_id: task_id.into(),
             run_id: None,
+            attempt_id: None,
+            lease_epoch: 0,
             ok: false,
             cancelled: true,
             value: None,

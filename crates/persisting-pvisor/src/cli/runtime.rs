@@ -116,6 +116,14 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         "overlaynet: {}",
         record.overlaynet_listen.as_deref().unwrap_or("disabled")
     );
+    if let Some(interception) = &record.network_interception {
+        println!(
+            "network interception: {:?} ({:?}, enforcing={})",
+            interception.driver,
+            interception.strength,
+            interception.is_enforcing()
+        );
+    }
     println!(
         "gateway: {}",
         record.gateway_listen.as_deref().unwrap_or("disabled")

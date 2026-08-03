@@ -12,8 +12,11 @@ anyhow = "1"
 async-trait = "0.1"
 datafusion = { version = "53.1.0", default-features = false, features = ["sql"] }
 futures = "0.3"
+fs2 = "0.4"
 lance = { version = "7.0.0", features = ["aws", "azure", "gcp"] }
 lance-index = "7.0.0"
+object_store = "0.13.2"
+persisting-proto = { path = "../persisting-proto" }
 ron = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

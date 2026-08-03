@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use persisting_control::{ControlController, PolicyControlController};
+use persisting_overlaynet::InterceptionMetrics;
 use tokio::task::JoinHandle;
 
 use super::admin::{admin_router, AdminState};
@@ -29,6 +30,12 @@ pub(crate) struct GatewayState {
     pub(crate) reasoning_cache: Arc<ReasoningCacheHandle>,
     pub(crate) control_controller: Arc<dyn ControlController>,
     pub(crate) active_requests: Arc<AtomicUsize>,
+    pub(crate) interception_metrics: InterceptionMetrics,
+}
+
+pub(crate) struct GatewayRuntimeControl {
+    pub(crate) controller: Arc<dyn ControlController>,
+    pub(crate) interception_metrics: InterceptionMetrics,
 }
 
 pub async fn serve(
@@ -91,6 +98,30 @@ pub async fn serve_with_runtime_control(
     ready: Option<tokio::sync::oneshot::Sender<()>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
+    serve_with_runtime_control_and_metrics(
+        config,
+        storage,
+        sink,
+        stream_markdown,
+        GatewayRuntimeControl {
+            controller: control_controller,
+            interception_metrics: InterceptionMetrics::default(),
+        },
+        ready,
+        shutdown,
+    )
+    .await
+}
+
+pub(crate) async fn serve_with_runtime_control_and_metrics(
+    config: ProxyConfig,
+    storage: impl AsRef<Path>,
+    sink: Arc<dyn CaptureEventSink>,
+    stream_markdown: bool,
+    runtime_control: GatewayRuntimeControl,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
     tokio::spawn(async move {
         shutdown.await;
@@ -129,6 +160,7 @@ pub async fn serve_with_runtime_control(
         .with_context(|| format!("bind overlaynet gateway on {listen}"))?;
 
     let active_requests = Arc::new(AtomicUsize::new(0));
+    let interception_metrics = runtime_control.interception_metrics;
     let capture_engine = CaptureEngine::new(
         Arc::clone(&sink),
         index.clone(),
@@ -142,14 +174,19 @@ pub async fn serve_with_runtime_control(
         storage,
         client: reqwest::Client::builder()
             .no_proxy()
+            // Redirects must return to the proxy client so every destination
+            // gets a fresh OverlayNet authorization decision. Following a
+            // cross-origin Location here would bypass the policy gate.
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(600))
             .build()?,
         capture_engine,
         session_clients: Arc::new(SessionClientRegistry::default()),
         reasoning_cache: Arc::new(ReasoningCacheHandle::new()),
-        control_controller,
+        control_controller: runtime_control.controller,
         active_requests: Arc::clone(&active_requests),
+        interception_metrics: interception_metrics.clone(),
     };
 
     let admin_state = AdminState {
@@ -158,6 +195,7 @@ pub async fn serve_with_runtime_control(
         admin_listen: config.admin_listen.clone(),
         started_at,
         active_requests,
+        interception_metrics,
     };
     let admin_app = admin_router(admin_state);
     let admin_shutdown = wait_shutdown(stop_rx.clone());

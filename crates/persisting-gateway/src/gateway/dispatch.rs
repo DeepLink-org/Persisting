@@ -23,11 +23,11 @@ pub(crate) struct GatewayRequestContext {
 
 pub(crate) fn build_router(state: GatewayState) -> Router {
     let server = OverlayServerState::new(
-        state.client.clone(),
         state.control_controller.clone(),
         state.clone(),
         state.active_requests.clone(),
-    );
+    )
+    .with_interception_metrics(state.interception_metrics.clone());
     persisting_overlaynet::server::build_router(server)
 }
 

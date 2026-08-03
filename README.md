@@ -69,13 +69,53 @@ just install-cli
 binaries plus the lazily loaded engine library into the same Cargo bin directory.
 The Python package is installed separately with `pip install persisting[lance]`.
 
+### Safe Agent Run
+
+Start with a transactional workspace and a durable review bundle:
+
+```bash
+pvisor run --safe codex
+pvisor review last
+pvisor checkpoint last --name accepted-base
+# choose apply, drop, or explore a branch
+pvisor fork last --checkpoint accepted-base --workspace /tmp/codex-fork -- codex
+```
+
+### Batch Trajectory Workflows
+
+```bash
+# pPilot creates many independent, reviewable pVisor Runs.
+ppilot produce production.py --output ./runs --parallelism 16 -- --count 100
+
+# pPilot runs SQL over deterministic balanced ATIF shards.
+ppilot analysis ./atif --output ./analysis --parallelism 8 \
+  --sql 'SELECT session_id, COUNT(*) AS steps FROM steps GROUP BY session_id'
+
+# Transfer a Python map/reduce job to multiple Pulsing mappers.
+ppilot process ./atif --script metrics.py --mappers 8 --output ./processed
+
+# Two-level pChronicle count: Pulsing workers compute partials, pPilot merges.
+ppilot process ./atif --output ./counts --mappers 8 --count steps
+```
+
+Production writes one `run-bundle.json` per Run plus a batch report. Analysis
+writes partition JSONL, a deterministic combined JSONL file, and a shard report;
+processing writes typed partial aggregates and their checked global reduction.
+See the [pPilot component guide](crates/persisting-ppilot/README.md).
+
+The low-privilege `--safe` profile stages workspace writes and observes
+cooperative proxy traffic. With the default host executor it reports that host
+paths and direct sockets remain ambient. The same pVisor control plane can run
+inside Docker/Podman or a QEMU/KVM guest. Those executors inject the matching
+static Linux pVisor and run the normal ProcessExecutor inside the isolation
+boundary; the Run Bundle records which placement was actually used.
+
 ### Agent Trajectories
 
 Execute an Agent through the unified CLI and record its LLM calls:
 
 ```bash
 persisting execute --workspace ./run \
-  --overlaynet-mode proxy \
   --gateway-mode capture \
   --gateway-route 'name="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
   --gateway-stream-markdown \
@@ -213,9 +253,5 @@ batch/query commands to the sibling `ppilot` binary. `PERSISTING_PVISOR_BIN`,
 
 ## License
 
-[GPL-3.0-or-later](LICENSE)
-
-Persisting includes a vendored copy of
-[fuse-overlayfs](https://github.com/containers/fuse-overlayfs)
-(`crates/persisting-fs-overlay`, upstream GPL-2.0-or-later). See [`NOTICE`](NOTICE)
-for third-party attribution.
+[Apache License 2.0](LICENSE). See [`NOTICE`](NOTICE) for third-party
+attributions and components distributed under their own licenses.

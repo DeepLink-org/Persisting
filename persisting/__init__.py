@@ -8,7 +8,7 @@ Distributed tiered memory for AI workloads:
 API 与 llms.binding.md 一致：open → kv[key] → h.tensor() / h.put(data)。
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from persisting.queue import (
     BatchMeta,

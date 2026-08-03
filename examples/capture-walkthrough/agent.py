@@ -12,9 +12,7 @@ from dialogue_fixture import TURNS
 
 
 def chat(base: str, messages: list[dict[str, str]]) -> str:
-    payload = json.dumps(
-        {"model": "mock-model", "messages": messages}
-    ).encode("utf-8")
+    payload = json.dumps({"model": "mock-model", "messages": messages}).encode("utf-8")
     req = urllib.request.Request(
         f"{base.rstrip('/')}/chat/completions",
         data=payload,

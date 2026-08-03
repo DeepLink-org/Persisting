@@ -6,10 +6,7 @@ TURNS = [
 ]
 
 REPLIES = [
-    (
-        "Persisting capture 通过内嵌代理拦截 LLM 调用，"
-        "把对话写入 session 命名的 AgenticMD。"
-    ),
+    ("Persisting capture 通过内嵌代理拦截 LLM 调用，把对话写入 session 命名的 AgenticMD。"),
     (
         "路径为 `{storage}/{agent_id}/{run_id}/{session_id}.md`，"
         "文件头为 YAML frontmatter，每块是 "

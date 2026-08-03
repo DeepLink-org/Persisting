@@ -4,10 +4,9 @@ Cross-platform **FUSE overlay** for pVisor staging (macOS via [macFUSE](https://
 Linux via libfuse / fuse3).
 
 This is pVisor's unprivileged, cross-platform overlay implementation. pVisor
-links it as a library and owns the FUSE request thread in-process. It follows
-the observable semantics of
-[fuse-overlayfs](https://github.com/containers/fuse-overlayfs) while using
-portable `.wh.*` whiteouts that can be committed by pVisor.
+links it as a library and owns the FUSE request thread in-process. It implements
+overlay-style copy-up and portable `.wh.*` whiteouts that can be committed by
+pVisor.
 
 | Feature | Status |
 |---------|--------|
@@ -44,8 +43,8 @@ Linux-only container features do not have a meaningful macOS equivalent:
   because macOS FUSE does not expose Linux `renameat2` atomically to the backing
   store.
 
-For a Linux container host that needs namespace mapping and native Linux
-overlay extensions, continue to use the vendored `persisting-fs-overlay`.
+Linux namespace mapping, `metacopy`, `redirect_dir`, SELinux labeling, and
+capability semantics are outside the portable backend's current scope.
 
 ## Prerequisites
 
@@ -62,8 +61,7 @@ extended rename request layout.
 
 ### Linux
 
-FUSE3 devel packages (e.g. `libfuse3-dev`), **or** keep using
-`cargo build -p persisting-fs-overlay` for the full binary.
+FUSE3 development packages, for example `libfuse3-dev`.
 
 ## Build
 
@@ -92,7 +90,7 @@ persisting-overlayfs -o lowerdir=/target,jjstore=/shared/overlay.jj,jjworkspace=
 
 The parser accepts repeated fuse-style option content including `allow_other`,
 `allow_root`, `default_permissions`, `ro`/`rw`, and `fsname=...`. Escape a
-literal lower-layer colon as `\:`. As with overlayfs and fuse-overlayfs, the
+literal lower-layer colon as `\:`. As with Linux overlayfs, the
 leftmost entry in `lowerdir=top:next:bottom` has the highest priority.
 `workdir=` is valid only for a directory upper. In directory mode, `upperdir`
 and `workdir` must be separate directories on the same filesystem; layer,

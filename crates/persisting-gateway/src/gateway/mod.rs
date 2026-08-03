@@ -18,3 +18,4 @@ pub(crate) use reasoning::ReasoningCacheHandle;
 pub use state::{
     serve, serve_with_runtime_control, serve_with_shutdown, serve_with_shutdown_and_ready,
 };
+pub(crate) use state::{serve_with_runtime_control_and_metrics, GatewayRuntimeControl};

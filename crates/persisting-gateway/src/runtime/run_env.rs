@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ProxyConfig;
+use crate::runtime::private_fs::{ensure_private_dir, write_private_file};
 
 pub const ENV_SESSION_ID: &str = "PERSISTING_CAPTURE_SESSION_ID";
 pub const DAEMON_ENV_FILENAME: &str = "daemon.env.json";
@@ -38,10 +39,8 @@ pub fn run_session_file(storage: &Path) -> PathBuf {
 
 pub fn write_run_session(storage: &Path, session_id: &str) -> Result<()> {
     let path = run_session_file(storage);
-    if let Some(p) = path.parent() {
-        fs::create_dir_all(p)?;
-    }
-    fs::write(&path, session_id.trim()).context("write run_session")?;
+    ensure_private_capture_dir(storage)?;
+    write_private_file(&path, session_id.trim().as_bytes()).context("write run_session")?;
     Ok(())
 }
 
@@ -86,15 +85,13 @@ pub fn run_child_file(storage: &Path) -> PathBuf {
 /// Written at `capture run` child spawn — authoritative client command (not the proxy).
 pub fn write_run_child_info(storage: &Path, pid: u32, command: &[String]) -> Result<()> {
     let path = run_child_file(storage);
-    if let Some(p) = path.parent() {
-        fs::create_dir_all(p)?;
-    }
+    ensure_private_capture_dir(storage)?;
     let info = RunChildInfo {
         pid,
         command: command.join(" "),
     };
     let yaml = serde_yaml::to_string(&info).context("serialize run_child.yaml")?;
-    fs::write(&path, yaml).context("write run_child.yaml")
+    write_private_file(&path, yaml.as_bytes()).context("write run_child.yaml")
 }
 
 pub(crate) fn read_run_child_info(storage: &Path) -> Option<RunChildInfo> {
@@ -138,11 +135,16 @@ pub fn snapshot_daemon_env(storage: &Path, config: &ProxyConfig) -> Result<PathB
         vars: expand_daemon_env_aliases(vars, config),
     };
     let path = daemon_env_path(storage);
-    if let Some(p) = path.parent() {
-        fs::create_dir_all(p)?;
-    }
-    fs::write(&path, serde_json::to_string_pretty(&snap)?).context("write daemon.env.json")?;
+    ensure_private_capture_dir(storage)?;
+    let json = serde_json::to_string_pretty(&snap)?;
+    write_private_file(&path, json.as_bytes()).context("write daemon.env.json")?;
     Ok(path)
+}
+
+pub(crate) fn ensure_private_capture_dir(storage: &Path) -> Result<PathBuf> {
+    let capture_dir = storage.join(".capture");
+    ensure_private_dir(&capture_dir)?;
+    Ok(capture_dir)
 }
 
 /// Fill route `api_key_env` entries from known alias vars (e.g. `ANTHROPIC_AUTH_TOKEN` → `DEEPSEEK_API_KEY`).

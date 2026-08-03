@@ -189,6 +189,89 @@ async fn same_sql_returns_identical_results_for_lance_and_atif() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn query_engine_opens_object_store_uri() -> Result<()> {
+    let uri = format!(
+        "shared-memory://pchronicle-query-{}-{}/storylines",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+    let trajectories = load_trajectories()?;
+    let stories = trajectories[..2]
+        .iter()
+        .map(|trajectory| {
+            into_storyline(
+                ChronicleFormat::Atif,
+                &serde_json::to_string(trajectory).unwrap(),
+            )
+        })
+        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+    LanceStorylineStore::open_uri(&uri)
+        .await?
+        .replace_storylines(&stories)
+        .await?;
+
+    let engine = ChronicleQueryEngine::open_lance_uri(&uri).await?;
+    let output = engine
+        .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
+        .await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.trim())?["runs"],
+        2
+    );
+
+    // An engine pins one immutable generation. Moving CURRENT must not change
+    // the result of an already planned federated/long-running query.
+    let pinned_generation = engine.backend().clone();
+    LanceStorylineStore::open_uri(&uri)
+        .await?
+        .replace_storyline(&into_storyline(
+            ChronicleFormat::Atif,
+            &serde_json::to_string(&trajectories[2])?,
+        )?)
+        .await?;
+    let pinned_output = engine
+        .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
+        .await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(pinned_output.trim())?["runs"],
+        2
+    );
+    assert_eq!(engine.backend(), &pinned_generation);
+
+    let reopened = ChronicleQueryEngine::open_lance_uri(&uri).await?;
+    let current_output = reopened
+        .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
+        .await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(current_output.trim())?["runs"],
+        3
+    );
+    assert_ne!(reopened.backend(), &pinned_generation);
+    Ok(())
+}
+
+#[tokio::test]
+async fn query_engine_rejects_empty_object_store_without_current() -> Result<()> {
+    let uri = format!(
+        "shared-memory://pchronicle-query-empty-{}-{}/storylines",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+    let error = ChronicleQueryEngine::open_lance_uri(&uri)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("no committed generation"),
+        "{error:#}"
+    );
+    Ok(())
+}
+
 #[test]
 fn query_engine_rejects_writes_and_multiple_statements() -> Result<()> {
     let engine = ChronicleQueryEngine::open_atif(fixture_root())?;

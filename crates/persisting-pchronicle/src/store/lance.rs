@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use futures::TryStreamExt;
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::RecordBatch;
+use lance::io::ObjectStore;
 use lance::Dataset;
 use lance::Error as LanceError;
 
@@ -59,8 +60,12 @@ async fn read_all_rows(uri: &str) -> Result<Vec<EventRow>> {
 
 async fn write_all_rows(uri: &str, rows: &[EventRow]) -> Result<()> {
     if rows.is_empty() {
-        if Path::new(uri).exists() {
-            tokio::fs::remove_dir_all(uri)
+        if dataset_exists(uri).await? {
+            let (store, path) = ObjectStore::from_uri(uri)
+                .await
+                .with_context(|| format!("open object store for {uri}"))?;
+            store
+                .remove_dir_all(path)
                 .await
                 .with_context(|| format!("remove empty Lance dataset {uri}"))?;
         }
@@ -68,10 +73,12 @@ async fn write_all_rows(uri: &str, rows: &[EventRow]) -> Result<()> {
     }
     let schema = trajectory_arrow_schema();
     let batch = event_rows_to_batch(schema, rows)?;
-    if let Some(parent) = Path::new(uri).parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("create_dir_all {}", parent.display()))?;
+    if !is_object_store_uri(uri) {
+        if let Some(parent) = Path::new(uri).parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create_dir_all {}", parent.display()))?;
+        }
     }
     let mode = if dataset_exists(uri).await? {
         WriteMode::Overwrite
@@ -192,10 +199,12 @@ pub async fn append(session: &TrajectorySession, lines: &[String]) -> Result<App
         });
     }
     let batch = event_rows_to_batch(trajectory_arrow_schema(), &new_rows)?;
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("create_dir_all {}", parent.display()))?;
+    if !is_object_store_uri(&uri) {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create_dir_all {}", parent.display()))?;
+        }
     }
     if dataset_exists(&uri).await? {
         let ds = Arc::new(
@@ -227,6 +236,10 @@ pub async fn append(session: &TrajectorySession, lines: &[String]) -> Result<App
             schema_columns_note()
         ),
     })
+}
+
+fn is_object_store_uri(uri: &str) -> bool {
+    uri.contains("://")
 }
 
 pub async fn replay(
@@ -289,8 +302,18 @@ pub async fn stats(session: &TrajectorySession) -> Result<TrajectoryStats> {
 mod tests {
     use super::*;
     use crate::{EventRecord, StoryCoords};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const CHUNK_ROWS: usize = 8192;
+    static NEXT_REMOTE_STORE: AtomicU64 = AtomicU64::new(1);
+
+    fn remote_storage(label: &str) -> String {
+        format!(
+            "shared-memory://pchronicle-events-{}-{label}-{}/trajectories",
+            std::process::id(),
+            NEXT_REMOTE_STORE.fetch_add(1, Ordering::Relaxed)
+        )
+    }
 
     fn note_line(content: &str) -> String {
         ron::to_string(
@@ -360,6 +383,88 @@ mod tests {
         assert_eq!(replay.records.len(), 2);
         assert_eq!(payload_content(&replay.records[0]), "first");
         assert_eq!(payload_content(&replay.records[1]), "second");
+    }
+
+    #[tokio::test]
+    async fn object_store_uri_supports_append_replay_and_overwrite() {
+        let storage = remote_storage("round-trip");
+        let session = flat_session(&storage, "agent", "remote-session");
+        assert!(display_path(&session).unwrap().starts_with(&storage));
+
+        append(&session, &[note_line("first"), note_line("second")])
+            .await
+            .unwrap();
+        assert_eq!(replay(&session, 0, None).await.unwrap().records.len(), 2);
+
+        overwrite_session_lines(&session, &[note_line("replacement")])
+            .await
+            .unwrap();
+        let replay = replay(&session, 0, None).await.unwrap();
+        assert_eq!(replay.records.len(), 1);
+        assert_eq!(payload_content(&replay.records[0]), "replacement");
+    }
+
+    #[tokio::test]
+    async fn object_store_append_failure_preserves_committed_rows() {
+        let storage = remote_storage("failed-append");
+        let session = flat_session(&storage, "agent", "session");
+        append(&session, &[note_line("committed")]).await.unwrap();
+
+        let error = append(&session, &["this is not valid RON".into()])
+            .await
+            .unwrap_err();
+        assert!(!error.to_string().is_empty());
+
+        let replay = replay(&session, 0, None).await.unwrap();
+        assert_eq!(replay.records.len(), 1);
+        assert_eq!(payload_content(&replay.records[0]), "committed");
+    }
+
+    #[tokio::test]
+    async fn object_store_empty_overwrite_removes_only_target_partition() {
+        let storage = remote_storage("empty-overwrite");
+        let root = "run";
+        let main = run_session(&storage, "agent", root, root);
+        let sub = run_session(&storage, "agent", "sub", root);
+        append(&main, &[note_line("main")]).await.unwrap();
+        append(&sub, &[note_line("sub")]).await.unwrap();
+
+        overwrite_session_events(&sub, &[]).await.unwrap();
+        assert!(!exists(&sub).await.unwrap());
+        assert_eq!(replay(&main, 0, None).await.unwrap().records.len(), 1);
+
+        overwrite_session_events(&main, &[]).await.unwrap();
+        assert!(!exists(&main).await.unwrap());
+        assert_eq!(stats(&main).await.unwrap().status, "missing");
+        assert!(replay(&main, 0, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_object_store_appends_do_not_lose_rows() {
+        let storage = remote_storage("concurrent");
+        let session = flat_session(&storage, "agent", "session");
+        let writes = (0..8).map(|index| {
+            let session = session.clone();
+            async move { append(&session, &[note_line(&format!("event-{index}"))]).await }
+        });
+        for result in futures::future::join_all(writes).await {
+            result.unwrap();
+        }
+
+        let replay = replay(&session, 0, None).await.unwrap();
+        assert_eq!(replay.records.len(), 8);
+        let mut contents = replay
+            .records
+            .iter()
+            .map(|record| payload_content(record))
+            .collect::<Vec<_>>();
+        contents.sort();
+        assert_eq!(
+            contents,
+            (0..8)
+                .map(|index| format!("event-{index}"))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]

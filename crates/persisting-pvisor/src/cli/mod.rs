@@ -1,6 +1,7 @@
 //! Standalone `pvisor` command-line frontend.
 
 mod env;
+mod product;
 mod run;
 pub mod runtime;
 mod trajectory;
@@ -28,6 +29,12 @@ enum Command {
     Status(runtime::StatusArgs),
     /// Open a read-only shell or run a command against a Run workspace.
     Inspect(runtime::InspectArgs),
+    /// Review the durable Run Bundle before accepting filesystem changes.
+    Review(product::ReviewArgs),
+    /// Create a stopped-consistent logical filesystem checkpoint.
+    Checkpoint(product::CheckpointArgs),
+    /// Start a new safe Run from a logical checkpoint.
+    Fork(run::ForkArgs),
     /// Apply a stopped Run's staged filesystem changes to its target.
     Apply(runtime::ApplyArgs),
     /// Drop a stopped Run's staged filesystem changes.
@@ -56,6 +63,14 @@ pub fn main() -> anyhow::Result<()> {
                 std::process::exit(code);
             }
         }
+        Command::Review(args) => product::review(args)?,
+        Command::Checkpoint(args) => product::checkpoint(args)?,
+        Command::Fork(args) => {
+            let code = tokio::runtime::Runtime::new()?.block_on(run::fork(args))?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         Command::Apply(args) => runtime::apply(args)?,
         Command::Drop(args) => runtime::drop_overlay(args)?,
     }
@@ -64,7 +79,18 @@ pub fn main() -> anyhow::Result<()> {
 
 fn normalize_default_run(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let first = args.get(1).and_then(|value| value.to_str());
-    let reserved = ["run", "env", "status", "inspect", "apply", "drop", "help"];
+    let reserved = [
+        "run",
+        "env",
+        "status",
+        "inspect",
+        "review",
+        "checkpoint",
+        "fork",
+        "apply",
+        "drop",
+        "help",
+    ];
     if first.is_some_and(|value| {
         !reserved.contains(&value) && value != "--help" && value != "-h" && value != "--version"
     }) {
@@ -82,6 +108,17 @@ mod tests {
         for args in [
             vec!["pvisor", "status"],
             vec!["pvisor", "inspect", "run-1", "--", "rg", "TODO"],
+            vec!["pvisor", "review", "run-1"],
+            vec!["pvisor", "checkpoint", "run-1", "--name", "before"],
+            vec![
+                "pvisor",
+                "fork",
+                "run-1",
+                "--workspace",
+                "/tmp/fork",
+                "--",
+                "codex",
+            ],
             vec!["pvisor", "apply", "run-1"],
             vec!["pvisor", "apply", "run-1", "--target", "/tmp/restored"],
             vec!["pvisor", "drop", "run-1"],
@@ -92,6 +129,7 @@ mod tests {
             vec!["pvisor", "env", "status", "demo"],
             vec!["pvisor", "env", "delete", "demo", "--force"],
             vec!["pvisor", "run", "--", "/usr/bin/true"],
+            vec!["pvisor", "run", "--safe", "/usr/bin/true"],
         ] {
             Cli::try_parse_from(args).expect("valid pvisor command");
         }

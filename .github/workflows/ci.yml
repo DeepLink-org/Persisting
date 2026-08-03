@@ -77,6 +77,61 @@ jobs:
           ./target/debug/persisting batch --help
           ./target/debug/persisting query --help
 
+  s3-contract:
+    name: pChronicle S3 Contract (MinIO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start pinned MinIO server
+        run: |
+          docker run --detach --name persisting-minio-contract \
+            --publish 9000:9000 \
+            --env MINIO_ROOT_USER=minioadmin \
+            --env MINIO_ROOT_PASSWORD=minioadmin123 \
+            quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z \
+            server /data
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs persisting-minio-contract
+          exit 1
+
+      - name: Create isolated test bucket
+        run: |
+          docker run --rm --network host --entrypoint /bin/sh \
+            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+            'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin123 && mc mb --ignore-existing local/persisting-tests'
+
+      - name: Run real S3 storage contract
+        env:
+          PCHRONICLE_S3_TEST_URI: s3://persisting-tests/contracts
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin123
+          AWS_REGION: us-east-1
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ENDPOINT: http://127.0.0.1:9000
+          AWS_ALLOW_HTTP: "true"
+          AWS_VIRTUAL_HOSTED_STYLE_REQUEST: "false"
+        run: cargo test -p persisting-pchronicle --test s3_storage --locked -- --ignored
+
+      - name: Show MinIO logs after failure
+        if: failure()
+        run: docker logs persisting-minio-contract
+
+      - name: Stop MinIO
+        if: always()
+        run: docker rm --force persisting-minio-contract || true
+
   python-test:
     name: Python Test
     runs-on: ubuntu-latest

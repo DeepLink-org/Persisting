@@ -6,8 +6,8 @@
 mod common;
 
 use persisting_ppilot::{
-    run_local_fleet, spawn_sink_writer, CheckpointLedger, JsonlFileSink, Observer, RunOptions,
-    SkipSet,
+    run_local_fleet, spawn_coordinated_sink_writer, spawn_sink_writer, CheckpointLedger,
+    JsonlFileSink, Observer, RunCoordinator, RunOptions, SkipSet,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -47,6 +47,52 @@ def execute(item):
     assert_ne!(
         seen[0], "t-0",
         "expected fast task before slow t-0: {seen:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn driver_worker_pvisor_result_is_fenced_and_committed() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = common::write_plan(
+        dir.path(),
+        "committed.py",
+        r#"
+def plan():
+    yield {"id": "committed-task", "value": 7}
+
+def execute(item):
+    return {"value": item["value"]}
+"#,
+    );
+    let sink_root = dir.path().join("sink");
+    let sink: Arc<dyn persisting_ppilot::ResultSink> =
+        Arc::new(JsonlFileSink::open(&sink_root).await.unwrap());
+    let coordinator = Arc::new(
+        RunCoordinator::open(dir.path().to_string_lossy(), &sink_root, 30_000)
+            .await
+            .unwrap(),
+    );
+    let writer = spawn_coordinated_sink_writer(sink, None, None, 8, Arc::clone(&coordinator));
+    let mut opts = common::run_opts(script);
+    opts.workers = 1;
+    opts.max_inflight = 1;
+    opts.sink_submitter = Some(writer.submitter());
+    opts.coordinator = Some(Arc::clone(&coordinator));
+
+    let results = run_local_fleet(opts, |_| {}).await.unwrap();
+    writer.join().await.unwrap();
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert!(result.ok);
+    assert!(result.lease_epoch > 0);
+    assert!(result.attempt_id.is_some());
+    let run_id = persisting_proto::RunId::new(result.run_id.as_deref().unwrap());
+    let control = coordinator.control().get(&run_id).await.unwrap().unwrap();
+    let commit = control.commit.expect("terminal RunCommit");
+    assert_eq!(commit.request.lease_epoch, result.lease_epoch);
+    assert_eq!(
+        commit.request.attempt_id.as_str(),
+        result.attempt_id.as_deref().unwrap()
     );
 }
 
@@ -123,6 +169,7 @@ def execute(item):
         skip_task_ids: SkipSet::new(),
         checkpoint: None,
         sink_submitter: None,
+        coordinator: None,
     };
     let t0 = Instant::now();
     let results = run_local_fleet(opts, |_| {}).await.unwrap();
@@ -133,33 +180,50 @@ def execute(item):
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn per_worker_slots_run_in_parallel() {
     let dir = tempfile::tempdir().unwrap();
+    let barrier = dir.path().join("parallel-barrier");
+    std::fs::create_dir(&barrier).unwrap();
+    let barrier_literal = serde_json::to_string(barrier.to_str().unwrap()).unwrap();
     let script = common::write_plan(
         dir.path(),
         "par.py",
-        r#"
+        &format!(
+            r#"
 import time
+from pathlib import Path
+
+BARRIER = Path({barrier_literal})
 
 def plan():
     for i in range(2):
-        yield {"id": f"t-{i}"}
+        yield {{"id": f"t-{{i}}"}}
 
 def execute(item):
-    time.sleep(0.45)
-    return {}
+    (BARRIER / f"ready-{{item['id']}}").write_text("ready")
+    deadline = time.monotonic() + 5
+    while len(list(BARRIER.glob("ready-*"))) < 2:
+        if time.monotonic() >= deadline:
+            return {{"overlapped": False}}
+        time.sleep(0.01)
+    return {{"overlapped": True}}
 "#,
+        ),
     );
     let mut opts = common::run_opts(script);
     opts.workers = 1;
     opts.per_worker_inflight = 2;
     opts.max_inflight = 2;
-    let started = Instant::now();
     let results = run_local_fleet(opts, |_| {}).await.unwrap();
-    let elapsed = started.elapsed().as_secs_f64();
     assert_eq!(results.len(), 2);
     assert!(results.iter().all(|r| r.ok));
+    assert!(
+        results.iter().all(|r| r
+            .value
+            .as_ref()
+            .is_some_and(|value| value["overlapped"] == true)),
+        "worker slots did not overlap: {results:?}"
+    );
     let workers: HashSet<_> = results.iter().filter_map(|r| r.worker.clone()).collect();
     assert_eq!(workers.len(), 2, "expected two slot ids, got {workers:?}");
-    assert!(elapsed < 0.9, "took {elapsed:.2}s (looks serial)");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

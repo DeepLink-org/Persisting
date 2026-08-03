@@ -2,7 +2,7 @@
 //!
 //! pVisor owns [`OverlaySession`] directly, so the pVisor process is also the
 //! FUSE userspace server. The `persisting-overlayfs` binary is only a debugging
-//! and fuse-overlayfs-compatible CLI wrapper around this library.
+//! and manual-mount CLI wrapper around this library.
 
 mod core;
 mod fs;

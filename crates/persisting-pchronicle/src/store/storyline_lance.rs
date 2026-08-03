@@ -23,9 +23,11 @@ use futures::TryStreamExt;
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::RecordBatch;
 use lance::index::DatasetIndexExt;
+use lance::io::ObjectStore;
 use lance::Dataset;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::IndexType;
+use object_store::path::Path as ObjectPath;
 
 use crate::storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
@@ -57,6 +59,9 @@ pub struct StorylineTablePaths {
 #[derive(Debug, Clone)]
 pub struct LanceStorylineStore {
     root: PathBuf,
+    root_uri: String,
+    object_store: std::sync::Arc<ObjectStore>,
+    object_root: ObjectPath,
 }
 
 impl LanceStorylineStore {
@@ -65,7 +70,28 @@ impl LanceStorylineStore {
         tokio::fs::create_dir_all(root.join(GENERATIONS_DIR))
             .await
             .with_context(|| format!("create Storyline Lance root {}", root.display()))?;
-        let store = Self { root };
+        let root_uri = root
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Storyline Lance root is not valid UTF-8"))?;
+        Self::open_uri(root_uri).await
+    }
+
+    /// Open a Storyline store at a local path or object-store URI.
+    ///
+    /// `s3://`, `az://`, and `gs://` use Lance's standard credential and
+    /// storage-option environment variables. The commit pointer is stored in
+    /// the same backend as the immutable Lance generations.
+    pub async fn open_uri(root: impl AsRef<str>) -> Result<Self> {
+        let root_uri = normalize_root_uri(root.as_ref())?;
+        let (object_store, object_root) = ObjectStore::from_uri(&root_uri)
+            .await
+            .with_context(|| format!("open Storyline object store {root_uri}"))?;
+        let store = Self {
+            root: PathBuf::from(&root_uri),
+            root_uri,
+            object_store,
+            object_root,
+        };
         // Fail early on a malformed or dangling commit pointer.
         let _ = store.current_table_paths().await?;
         Ok(store)
@@ -75,29 +101,42 @@ impl LanceStorylineStore {
         &self.root
     }
 
+    /// The exact local path or object-store URI used for Lance datasets.
+    pub fn root_uri(&self) -> &str {
+        &self.root_uri
+    }
+
+    pub fn storage_scheme(&self) -> &str {
+        self.object_store.scheme()
+    }
+
     /// Paths for the currently committed generation, or `None` for an empty store.
     pub async fn current_table_paths(&self) -> Result<Option<StorylineTablePaths>> {
-        let pointer = self.root.join(CURRENT_FILE);
-        let generation = match tokio::fs::read_to_string(&pointer).await {
-            Ok(value) => value.trim().to_string(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("read Storyline commit pointer {}", pointer.display())
-                });
-            }
-        };
+        let pointer = self.object_root.clone().join(CURRENT_FILE);
+        if !self
+            .object_store
+            .exists(&pointer)
+            .await
+            .with_context(|| format!("check Storyline commit pointer {}/CURRENT", self.root_uri))?
+        {
+            return Ok(None);
+        }
+        let contents = self
+            .object_store
+            .read_one_all(&pointer)
+            .await
+            .with_context(|| format!("read Storyline commit pointer {}/CURRENT", self.root_uri))?;
+        let generation = std::str::from_utf8(&contents)
+            .context("Storyline commit pointer is not valid UTF-8")?
+            .trim()
+            .to_string();
         validate_generation_name(&generation)?;
         let paths = self.paths_for_generation(&generation);
-        for path in [&paths.runs, &paths.steps, &paths.tool_calls] {
-            if !path.is_dir() {
-                anyhow::bail!(
-                    "Storyline generation '{}' is incomplete: missing {}",
-                    generation,
-                    path.display()
-                );
-            }
-        }
+        tokio::try_join!(
+            validate_table(&generation, &paths.runs),
+            validate_table(&generation, &paths.steps),
+            validate_table(&generation, &paths.tool_calls),
+        )?;
         Ok(Some(paths))
     }
 
@@ -145,9 +184,6 @@ impl LanceStorylineStore {
 
         let generation = next_generation();
         let paths = self.paths_for_generation(&generation);
-        tokio::fs::create_dir_all(paths.runs.parent().expect("generation parent"))
-            .await
-            .with_context(|| format!("create Storyline generation {generation}"))?;
 
         let write_result = async {
             write_batch(
@@ -185,9 +221,10 @@ impl LanceStorylineStore {
         }
         .await;
         if write_result.is_err() {
-            let _ =
-                tokio::fs::remove_dir_all(paths.runs.parent().expect("generation parent exists"))
-                    .await;
+            let _ = self
+                .object_store
+                .remove_dir_all(self.generation_object_path(&generation))
+                .await;
         }
         write_result
     }
@@ -242,13 +279,29 @@ impl LanceStorylineStore {
     }
 
     fn paths_for_generation(&self, generation: &str) -> StorylineTablePaths {
-        let base = self.root.join(GENERATIONS_DIR).join(generation);
+        let base = join_location(&self.root_uri, &[GENERATIONS_DIR, generation]);
         StorylineTablePaths {
             generation: generation.to_string(),
-            runs: base.join(format!("{STORY_RUNS_TABLE}.lance")),
-            steps: base.join(format!("{STORY_STEPS_TABLE}.lance")),
-            tool_calls: base.join(format!("{STORY_TOOL_CALLS_TABLE}.lance")),
+            runs: PathBuf::from(join_location(
+                &base,
+                &[&format!("{STORY_RUNS_TABLE}.lance")],
+            )),
+            steps: PathBuf::from(join_location(
+                &base,
+                &[&format!("{STORY_STEPS_TABLE}.lance")],
+            )),
+            tool_calls: PathBuf::from(join_location(
+                &base,
+                &[&format!("{STORY_TOOL_CALLS_TABLE}.lance")],
+            )),
         }
+    }
+
+    fn generation_object_path(&self, generation: &str) -> ObjectPath {
+        self.object_root
+            .clone()
+            .join(GENERATIONS_DIR)
+            .join(generation)
     }
 
     async fn read_all(
@@ -257,24 +310,26 @@ impl LanceStorylineStore {
         let Some(paths) = self.current_table_paths().await? else {
             return Ok((Vec::new(), Vec::new(), Vec::new()));
         };
-        let runs = read_batches(&paths.runs)
-            .await?
+        let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
+            read_batches(&paths.runs),
+            read_batches(&paths.steps),
+            read_batches(&paths.tool_calls),
+        )?;
+        let runs = run_batches
             .iter()
             .map(story_runs_from_batch)
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()
             .collect();
-        let steps = read_batches(&paths.steps)
-            .await?
+        let steps = step_batches
             .iter()
             .map(story_steps_from_batch)
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()
             .collect();
-        let tool_calls = read_batches(&paths.tool_calls)
-            .await?
+        let tool_calls = tool_call_batches
             .iter()
             .map(story_tool_calls_from_batch)
             .collect::<Result<Vec<_>>>()?
@@ -285,24 +340,47 @@ impl LanceStorylineStore {
     }
 
     async fn commit_generation(&self, generation: &str) -> Result<()> {
-        let pointer = self.root.join(CURRENT_FILE);
-        let temp = self.root.join(format!(
-            ".CURRENT.tmp-{}-{}",
-            std::process::id(),
-            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut file = tokio::fs::File::create(&temp)
-            .await
-            .with_context(|| format!("create commit pointer {}", temp.display()))?;
-        use tokio::io::AsyncWriteExt;
-        file.write_all(format!("{generation}\n").as_bytes()).await?;
-        file.sync_all().await?;
-        drop(file);
-        tokio::fs::rename(&temp, &pointer)
+        let pointer = self.object_root.clone().join(CURRENT_FILE);
+        self.object_store
+            .put(&pointer, format!("{generation}\n").as_bytes())
             .await
             .with_context(|| format!("commit Storyline generation {generation}"))?;
         Ok(())
     }
+}
+
+async fn validate_table(generation: &str, path: &Path) -> Result<()> {
+    Dataset::open(path.to_string_lossy().as_ref())
+        .await
+        .with_context(|| {
+            format!(
+                "Storyline generation '{}' is incomplete: cannot open {}",
+                generation,
+                path.display()
+            )
+        })?;
+    Ok(())
+}
+
+fn normalize_root_uri(value: &str) -> Result<String> {
+    let mut value = value.trim().to_string();
+    anyhow::ensure!(!value.is_empty(), "Storyline Lance root must not be empty");
+    let minimum = value.find("://").map_or(1, |index| index + 3);
+    while value.len() > minimum && value.ends_with('/') {
+        value.pop();
+    }
+    Ok(value)
+}
+
+fn join_location(root: &str, parts: &[&str]) -> String {
+    let mut location = root.to_string();
+    for part in parts {
+        if !location.ends_with('/') {
+            location.push('/');
+        }
+        location.push_str(part.trim_matches('/'));
+    }
+    location
 }
 
 fn validate_generation_name(value: &str) -> Result<()> {
@@ -406,6 +484,19 @@ async fn read_batches(path: &Path) -> Result<Vec<RecordBatch>> {
 mod tests {
     use super::*;
     use crate::{StorylineAgent, StorylineToolCall, StorylineTurn, STORYLINE_SCHEMA_VERSION};
+
+    fn remote_uri(label: &str) -> String {
+        format!(
+            "shared-memory://pchronicle-storyline-{}-{label}-{}/root",
+            std::process::id(),
+            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    async fn put_remote_object(uri: &str, relative: &str, contents: &[u8]) {
+        let (store, root) = ObjectStore::from_uri(uri).await.unwrap();
+        store.put(&root.join(relative), contents).await.unwrap();
+    }
 
     fn story(session_id: &str) -> StorylineDocument {
         StorylineDocument {
@@ -637,5 +728,136 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("is incomplete"));
+    }
+
+    #[tokio::test]
+    async fn object_store_uri_round_trips_across_store_instances() {
+        let uri = format!("{}/", remote_uri("round-trip"));
+        let store = LanceStorylineStore::open_uri(&uri).await.unwrap();
+        assert_eq!(store.storage_scheme(), "shared-memory");
+        assert!(!store.root_uri().ends_with('/'));
+        store.replace_storyline(&story("remote-1")).await.unwrap();
+
+        let reopened = LanceStorylineStore::open_uri(store.root_uri())
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .get_storyline("remote-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .session_id,
+            "remote-1"
+        );
+        let paths = reopened.current_table_paths().await.unwrap().unwrap();
+        assert!(paths
+            .runs
+            .to_string_lossy()
+            .starts_with("shared-memory://pchronicle-storyline-"));
+    }
+
+    #[tokio::test]
+    async fn object_store_rejects_invalid_utf8_unsafe_and_dangling_current() {
+        let cases: [(&str, &[u8], &str); 3] = [
+            ("utf8", &[0xff], "not valid UTF-8"),
+            ("unsafe", b"../outside\n", "invalid Storyline generation"),
+            ("dangling", b"gen-missing\n", "is incomplete"),
+        ];
+        for (label, contents, expected) in cases {
+            let uri = remote_uri(label);
+            put_remote_object(&uri, CURRENT_FILE, contents).await;
+            let error = LanceStorylineStore::open_uri(&uri).await.unwrap_err();
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error for {label}: {error:#}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn object_store_detects_partially_deleted_generation() {
+        let uri = remote_uri("partial-generation");
+        let store = LanceStorylineStore::open_uri(&uri).await.unwrap();
+        store.replace_storyline(&story("session")).await.unwrap();
+        let paths = store.current_table_paths().await.unwrap().unwrap();
+        let steps_uri = paths.steps.to_string_lossy().into_owned();
+        let (object_store, steps_root) = ObjectStore::from_uri(&steps_uri).await.unwrap();
+        object_store.remove_dir_all(steps_root).await.unwrap();
+
+        let error = LanceStorylineStore::open_uri(&uri).await.unwrap_err();
+        assert!(error.to_string().contains("is incomplete"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn object_store_prefixes_are_isolated() {
+        let left_uri = remote_uri("isolation-left");
+        let right_uri = remote_uri("isolation-right");
+        let left = LanceStorylineStore::open_uri(&left_uri).await.unwrap();
+        let right = LanceStorylineStore::open_uri(&right_uri).await.unwrap();
+
+        left.replace_storyline(&story("left")).await.unwrap();
+        assert!(left.get_storyline("left").await.unwrap().is_some());
+        assert!(right.current_table_paths().await.unwrap().is_none());
+        assert!(right.list_runs().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_object_store_replacements_do_not_lose_sessions() {
+        let uri = remote_uri("concurrent");
+        let stores = futures::future::join_all((0..6).map(|_| LanceStorylineStore::open_uri(&uri)))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let writes = stores
+            .into_iter()
+            .enumerate()
+            .map(|(index, store)| async move {
+                store
+                    .replace_storyline(&story(&format!("session-{index}")))
+                    .await
+            });
+        for result in futures::future::join_all(writes).await {
+            result.unwrap();
+        }
+
+        let reopened = LanceStorylineStore::open_uri(&uri).await.unwrap();
+        let mut sessions = reopened
+            .list_runs()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|run| run.session_id)
+            .collect::<Vec<_>>();
+        sessions.sort();
+        assert_eq!(
+            sessions,
+            (0..6)
+                .map(|index| format!("session-{index}"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn joins_object_store_locations_without_losing_uri_scheme() {
+        assert_eq!(
+            normalize_root_uri("s3://bucket/trajectory-root///").unwrap(),
+            "s3://bucket/trajectory-root"
+        );
+        assert_eq!(
+            join_location(
+                "s3://bucket/trajectory-root",
+                &["generations", "gen-1", "runs.lance"]
+            ),
+            "s3://bucket/trajectory-root/generations/gen-1/runs.lance"
+        );
+        assert_eq!(normalize_root_uri("/").unwrap(), "/");
+        assert_eq!(normalize_root_uri("s3://bucket///").unwrap(), "s3://bucket");
+        assert_eq!(
+            join_location("s3://bucket/轨迹", &["generations", "/gen-1/"]),
+            "s3://bucket/轨迹/generations/gen-1"
+        );
+        assert!(normalize_root_uri("  ").is_err());
     }
 }

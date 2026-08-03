@@ -81,33 +81,42 @@ unavailable, behavior depends on the requested policy mode:
 - `PolicyMode::Enforce`: fail the Run preparation. A downgrade under Enforce
   must never be silent.
 
-## Design B (fallback): seccomp user-notify + ADDFD
+## Design B (restricted fallback): seccomp user-notify + socket broker
 
 For hosts where unprivileged user namespaces are disabled (hardened distros,
-some container runtimes), a second driver achieves per-syscall completeness
-without any namespace.
+some container runtimes), a second driver can enforce a deliberately smaller
+socket surface without a namespace. It is not considered equivalent to the
+netns driver unless unsupported channels are denied.
 
 ### Mechanism
 
-1. The Attempt child installs a seccomp filter routing `connect`, `sendto`,
-   and `sendmsg` (for unconnected sockets) to `SECCOMP_RET_USER_NOTIF`.
-2. pVisor supervises the notification fd. For each intercepted call it reads
-   and validates the socket address (with notification-cookie revalidation to
-   close the TOCTOU window), then evaluates the same `persisting-control`
-   policy.
-3. Decisions:
-   - **allow**: let the original syscall continue;
-   - **deny**: return the policy errno (`ECONNREFUSED`/`EACCES`);
-   - **redirect**: `SECCOMP_IOCTL_NOTIF_ADDFD` substitutes a pVisor-owned file
-     descriptor already connected to the policy/capture proxy. The child
-     observes a successful `connect`; no child memory is rewritten.
+1. The Attempt child installs a seccomp filter routing `socket`, `connect`,
+   `sendto`, and `sendmsg` to `SECCOMP_RET_USER_NOTIF`. `io_uring_setup`, raw
+   packet sockets, namespace changes, and unmediated descriptor passing are
+   denied while this driver claims enforcement.
+2. `socket` is brokered: pVisor creates the socket, retains a duplicate of the
+   same open file description, and injects the child descriptor with
+   `SECCOMP_IOCTL_NOTIF_ADDFD`.
+3. On `connect`, pVisor copies the socket address once, revalidates the
+   notification cookie, evaluates policy, and performs `connect` through its
+   retained descriptor. It then returns the real result without allowing the
+   child's original pointer-bearing syscall to continue. This avoids a
+   check-then-`CONTINUE` TOCTOU window.
+4. An initial seccomp driver is TCP-only. Unconnected UDP is denied until
+   OverlayNet can safely copy and broker each datagram. DNS must use a
+   pVisor-provided resolver path; otherwise a domain allowlist cannot be
+   reconstructed from the destination IP observed by `connect`.
 
 ### Properties and caveats
 
-- Covers static binaries and raw syscalls; `AF_UNIX` and loopback are passed
-  through untouched.
-- No namespace, no tun, no userspace stack — but per-datagram UDP coverage is
-  fiddlier than Design A, and the supervisor sits on the syscall hot path.
+- Covers static binaries and raw syscalls for the explicitly brokered socket
+  families. `AF_UNIX` gets a separate path policy; it is not blanket-allowed.
+- No namespace, no tun, no userspace stack — but descriptor provenance,
+  `SCM_RIGHTS`, UDP, DNS, and `io_uring` must all be closed or mediated before
+  the driver is described as non-bypassable.
+- Seccomp sees an IP address at `connect`, not the hostname the application
+  originally resolved. Domain allowlists require mediated DNS, explicit proxy
+  traffic, or SNI correlation; IP/CIDR policy can be enforced directly.
 - Chosen per Attempt; Design A remains preferred when both are available.
 
 ## Enforcement vs capture are separate layers
@@ -130,10 +139,15 @@ constraint, not specific to either driver.
 ## Capability reporting
 
 `RuntimeCapabilities.network` becomes the result of the per-Attempt driver
-probe rather than a constant:
+probe rather than a constant. Independently, every Run records an
+`InterceptionProfile` describing driver, strength, and protocol coverage:
 
 - `enforce` when the netns or seccomp driver is active (Linux, capable host);
 - `observe` when only the explicit proxy is available.
+
+The explicit proxy foundation already emits this profile as `cooperative` and
+publishes intercepted/allowed/denied/CONNECT/HTTP/sink/failure counters. These
+counters prove what reached OverlayNet; they do not estimate bypassed traffic.
 
 The honesty invariant is preserved: the host `ProcessExecutor` still never
 claims network enforcement by itself; the claim is made by the active
@@ -148,7 +162,11 @@ driver is attached.
 [overlaynet]
 mode = "auto"        # off | proxy | netns | seccomp | auto
 policy = "allowlist"
-allow = ["api.openai.com"]
+
+[[overlaynet.rules]]
+host = "api.openai.com"
+ports = [443]
+transports = ["tcp_tunnel"]
 # udp443 = "block"   # block (default) | allow
 ```
 
@@ -164,11 +182,27 @@ can report the real enforcement level of a finished Run.
   setup-host deployment model; out of scope for now.
 - TLS decryption by default. MITM stays an explicit opt-in, if ever.
 
-## Phasing
+## Delivery plan and acceptance gates
 
-1. netns driver: spawn plumbing, tun handoff, smoltcp TCP relay, DNS
-   mediation, DNS/IP allowlist.
-2. SNI-based policy; UDP/QUIC handling (default-block UDP/443).
-3. seccomp user-notify driver as fallback.
-4. Capability probing, `mode = "auto"` selection, `run.json` / `pvisor
-   status` integration.
+0. **Explicit proxy foundation (implemented):** honest cooperative profile,
+   interception counters, strict CONNECT parsing, connect-before-200,
+   streaming forwarding, dynamic hop-header stripping, redirect revalidation,
+   no implicit loopback or Gateway-upstream egress trust, structured
+   host/IP/CIDR + port + transport rules, post-DNS address authorization, and
+   pinned authorized destinations to close policy/connector DNS races.
+1. **Driver probe and selection:** introduce `off | proxy | netns | seccomp |
+   auto`; record the selected profile before child exec. `Enforce` fails closed
+   if no non-bypassable profile is available.
+2. **Netns TCP + DNS minimum:** spawn plumbing, tun handoff, TCP relay,
+   mediated resolver, DNS/IP allowlist, process-tree and namespace escape
+   tests. Do not claim enforcement until raw syscalls and environment-scrubbed
+   grandchildren are demonstrably contained.
+3. **Protocol closure:** SNI policy, literal-IP behavior, UDP policy, blocked
+   QUIC fallback, `AF_UNIX`, raw/netlink sockets, `SCM_RIGHTS`, namespace
+   changes, and `io_uring` conformance cases.
+4. **Restricted seccomp fallback:** broker TCP sockets first; deny uncovered
+   channels. Add UDP/DNS only after descriptor and datagram semantics have
+   dedicated tests.
+5. **Operations:** persist final counters and downgrade reasons in `run.json`,
+   expose them through `pvisor status`, and benchmark proxy/netns/seccomp modes
+   separately on Python, Node, Rust, static Go, and forked grandchildren.
