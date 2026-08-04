@@ -1,7 +1,7 @@
 # pVisor：轻量级隔离与 Agent Run 管控
 
-这组示例逐项测量 pVisor 的事务工作区、changeset、显式网络代理和 Gateway。每个
-`run.sh` 都输出 `RESULT` 与 `CONCLUSION`，指标不满足时返回非 0。
+这组示例依次展示 pVisor 的事务工作区、changeset、显式网络代理和 Gateway。每个
+`run.sh` 都直接执行 pVisor 命令，并打印 lower/upper、Run Bundle 或 AgenticMD 等产物。
 
 | 示例 | 可复现结论 |
 |---|---|

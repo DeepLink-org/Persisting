@@ -1,7 +1,7 @@
 # pPilot：批量编排与轨迹处理
 
-这组示例分别覆盖 pPilot 的四个公开工作模式。每个 `run.sh` 只验证一个模式，输出
-`RESULT` 与 `CONCLUSION`，指标不满足时返回非 0。
+这组示例分别覆盖 pPilot 的四个公开工作模式。每个 `run.sh` 直接执行一种模式，并打印
+durable sink、Run Bundle、处理报告或查询结果。
 
 | 示例 | 可复现结论 |
 |---|---|

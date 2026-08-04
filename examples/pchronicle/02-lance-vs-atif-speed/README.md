@@ -7,12 +7,10 @@
 
 ```bash
 ./run.sh
-SCALE=128 ITERATIONS=50 ./run.sh
-PROFILE=release ./run.sh
 ```
 
-默认 `PROFILE=debug` 以复用日常编译缓存并缩短首次体验；它适合验证方法和比较当前
-binary。需要发布构建下的数字时显式使用 `PROFILE=release`，首次编译会明显更久。
+脚本固定使用 64 组数据、20 次查询和 debug build，以便命令保持具体、容易阅读。
+需要其他规模或 release build 时，可以直接修改 `run.sh` 中对应的命令参数。
 
 结果不预设胜者。`atif_over_lance_time > 1` 表示这次测量中 Lance 用时更少，反之
 表示 ATIF 内存表更少；不同 build profile 的数字不能直接横向比较。

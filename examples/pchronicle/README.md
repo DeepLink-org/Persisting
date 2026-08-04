@@ -5,7 +5,7 @@
 
 | 示例 | 可复现结论 |
 |---|---|
-| [01-atif-import-compression](01-atif-import-compression/) | ATIF 导入三表 Lance 后报告实际物理压缩比 |
+| [01-atif-import-compression](01-atif-import-compression/) | ATIF 导入三表 Lance 后展示两边的实际物理体积 |
 | [02-lance-vs-atif-speed](02-lance-vs-atif-speed/) | 同一结果下量化 Lance 与 ATIF/DataFusion 查询吞吐 |
 | [03-analyze-lance-and-atif](03-analyze-lance-and-atif/) | 同一条只读 SQL 对 Lance 和 ATIF 返回相同结果 |
 

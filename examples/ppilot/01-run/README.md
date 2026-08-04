@@ -3,7 +3,7 @@
 问题：一个流式 Python plan 能否通过多个 worker 执行，并把终态结果写入结果 journal？
 
 `plan.py` 产生 6 个稳定 task id，`execute()` 返回每个输入的平方。脚本使用 2 个
-worker、每个 worker 2 个 slot，然后检查成功数、失败数、结果总和和实际 worker 数。
+worker、每个 worker 2 个 slot，然后直接打印执行流和 durable result journal。
 
 ```bash
 ./run.sh
