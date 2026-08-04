@@ -163,8 +163,6 @@ jobs:
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
-        with:
-          install-protoc: "false"
 
       - uses: Swatinem/rust-cache@v2
 
