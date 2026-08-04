@@ -1,35 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$DIR/../../.." && pwd)"
-PVISOR="${PVISOR_BIN:-$ROOT/target/debug/pvisor}"
-[[ -x "$PVISOR" ]] || (cd "$ROOT" && cargo build -q -p persisting-pvisor --bin pvisor)
+# Use the pVisor binary built from this checkout.
+export PATH="../../../target/debug:$PATH"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/pvisor-changeset.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/lower"
-printf 'original\n' > "$WORK/lower/existing.txt"
+# Create the host directory shared by the apply and drop examples.
+rm -rf .work
+mkdir -p .work/lower
+printf 'original\n' > .work/lower/existing.txt
 
-"$PVISOR" run --workspace "$WORK/apply-run" --overlayfs-mode overlay \
-  --overlayfs-target "$WORK/lower" --overlayfs-commit manual --stdio capture -- \
+# Review and apply the first Run, making its staged files visible on the host.
+pvisor run --workspace .work/apply-run --overlayfs-mode overlay \
+  --overlayfs-target .work/lower --overlayfs-commit manual --stdio capture -- \
   /bin/sh -c 'printf "accepted\n" > existing.txt; printf "accepted\n" > accepted.txt'
-APPLY_REVIEW="$($PVISOR review --json "$WORK/apply-run" | jq -r '.filesystem.changed_files')"
-"$PVISOR" apply "$WORK/apply-run" >/dev/null
+pvisor review --json .work/apply-run | jq '{run, filesystem}'
+pvisor apply .work/apply-run >/dev/null
 
-"$PVISOR" run --workspace "$WORK/drop-run" --overlayfs-mode overlay \
-  --overlayfs-target "$WORK/lower" --overlayfs-commit manual --stdio capture -- \
+echo 'Lower directory after apply:'
+cat .work/lower/existing.txt
+cat .work/lower/accepted.txt
+
+# Review and drop the second Run, leaving the host directory unchanged.
+pvisor run --workspace .work/drop-run --overlayfs-mode overlay \
+  --overlayfs-target .work/lower --overlayfs-commit manual --stdio capture -- \
   /bin/sh -c 'printf "rejected\n" > rejected.txt'
-DROP_REVIEW="$($PVISOR review --json "$WORK/drop-run" | jq -r '.filesystem.changed_files')"
-"$PVISOR" drop "$WORK/drop-run" >/dev/null
+pvisor review --json .work/drop-run | jq '{run, filesystem}'
+pvisor drop .work/drop-run >/dev/null
 
-APPLIED=0
-[[ "$(tr -d '\n' < "$WORK/lower/existing.txt")" == "accepted" ]] && APPLIED=$((APPLIED + 1))
-[[ -f "$WORK/lower/accepted.txt" ]] && APPLIED=$((APPLIED + 1))
-DROPPED=0
-[[ ! -e "$WORK/lower/rejected.txt" ]] && DROPPED=1
-
-printf 'RESULT reviewed_changes=%s applied_files=%s dropped_files=%s\n' \
-  "$((APPLY_REVIEW + DROP_REVIEW))" "$APPLIED" "$DROPPED"
-[[ "$APPLY_REVIEW" == "2" && "$DROP_REVIEW" == "1" && "$APPLIED" == "2" && "$DROPPED" == "1" ]]
-echo 'CONCLUSION review observed three changes; apply accepted two and drop rejected one'
+echo 'Lower directory after drop:'
+cat .work/lower/existing.txt
+cat .work/lower/accepted.txt

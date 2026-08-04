@@ -154,3 +154,37 @@ jobs:
 
       - name: Pytest
         run: uv run pytest tests/ -q
+
+  examples:
+    name: Agent Infra Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      # The pVisor filesystem examples need macFUSE/FUSE3 and are not run here;
+      # they stay covered by local `just examples-pvisor`. The quantitative
+      # pPilot/pChronicle examples below compile their own binaries from source.
+      - name: Run pPilot examples
+        run: |
+          cargo build -q -p persisting-ppilot --features cli --bin ppilot
+          for example in examples/ppilot/*; do
+            [ -f "$example/run.sh" ] || continue
+            echo "==> ${example}/run.sh"
+            (cd "$example" && bash run.sh)
+          done
+
+      - name: Run pChronicle examples
+        run: |
+          for example in examples/pchronicle/*; do
+            [ -f "$example/run.sh" ] || continue
+            echo "==> ${example}/run.sh"
+            (cd "$example" && bash run.sh)
+          done

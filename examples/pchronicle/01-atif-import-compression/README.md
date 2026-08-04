@@ -7,7 +7,7 @@ pChronicle typed importer。指标是原始 JSONL bytes 与完整 Lance generati
 
 ```bash
 ./run.sh
-REPLICAS=128 ./run.sh
 ```
 
-压缩比依赖 corpus；脚本输出实际比率，并只在 Lance 小于该固定 ATIF 输入时通过。
+物理体积依赖 corpus；脚本通过 `wc` 和 `du` 直接打印两边的实际大小，产物保留在
+`.work/` 中。

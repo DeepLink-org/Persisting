@@ -92,6 +92,7 @@ plugins:
             Search: 检索
             pPilot: pPilot 编排
             Custom Backends: 自定义后端
+            Reproducible examples: 可复现示例
             API Reference: API 参考
             Reference: 参考
             Design: 设计文档
@@ -131,6 +132,7 @@ nav:
       - Choose a Capability: guide/index.md
   - Guides:
       - Capture agent trajectories: guide/capture.md
+      - Reproducible examples: guide/examples.md
       - Index and search documents: guide/search.md
       - Stream events with Queue: guide/queue.md
       - Use Tensor Memory (experimental): guide/tensor-memory.md

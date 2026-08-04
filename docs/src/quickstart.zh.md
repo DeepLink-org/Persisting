@@ -1,128 +1,94 @@
 # 快速开始
 
-5 分钟上手 Persisting。
+五分钟走完一条主链路：装 CLI → 安全地跑一个 Agent → 批量编排 → 用 SQL 查轨迹。
+假设你有 macOS 或 Linux。
 
-## 安装
-
-```bash
-pip install persisting[lance]
-```
-
-CLI 工具（`persisting`、`pvisor` 和 `ppilot`）需[从源码构建](installation.md)。
-
----
-
-## 核心：统一张量存储
-
-Persisting 通过同一个 `persisting.open()` 接口存储轨迹、参数和 KV Cache。三者共用 TTAS（分层张量地址空间）——同一套寻址、同一个 Lance 引擎、同一种分层。
-
-```python
-import persisting
-from persisting.core import Dimension
-```
-
-### 参数
-
-按名称和分片寻址模型权重：
-
-```python
-PARAM_ID = Dimension("param_id", "str")
-SHARD    = Dimension("shard", "int")
-
-ps = persisting.open("params/llama-70b",
-    dims=(PARAM_ID, SHARD),
-    backend="tiered",
-    shape=(100, 8),
-)
-
-weights = ps["embed.weight", 0].tensor()
-ps["lm_head.weight", 0].put(updated_tensor)
-```
-
-### KV Cache
-
-跨会话、多层 KV Cache，Block 粒度分层：
-
-```python
-SESSION = Dimension("session", "str")
-LAYER   = Dimension("layer", "int")
-HEAD    = Dimension("head", "int")
-TIME    = Dimension("time", "int")
-
-kv = persisting.open("kvcache/v1",
-    dims=(SESSION, LAYER, HEAD, TIME),
-    order_dim=TIME,
-    backend="tiered",
-    shape=(100, 32, 8, 4096),
-    block_tokens=64,
-)
-
-h = kv["s1", 0, 2, 0:512]      # 切片（零拷贝）
-arr = h.tensor()                 # 从最快层物化
-h.put(other_data)                # 写回
-kv.prefetch(("s1", 0, 0:1024))  # 异步拉 block 到 host 内存
-```
-
-### 轨迹（通过 Queue）
-
-轨迹事件通过 Queue API 存储，底层同一套 Lance 引擎：
-
-```python
-from persisting import Queue
-
-q = Queue("trajectories", storage_path="./data")
-await q.put({"run_id": "r1", "step": 1, "reward": 0.5})
-await q.flush()
-records = await q.get(limit=100)
-```
-
-→ [Tensor Memory 指南](guide/tensor-memory.md) 了解后端、维度和 Block 存储详情。
-
----
-
-## 同一底座上的工具
-
-### Agent 采集
-
-记录每一次 LLM 调用——Claude Code、Codex 或自定义脚本：
+## 1. 安装 CLI
 
 ```bash
-pvisor run --config run.toml -- claude
+# 源码安装（开发用）
+git clone https://github.com/DeepLink-org/Persisting.git
+cd Persisting
+just install-cli
+
+# 或 nightly 二进制，无需 Rust 工具链
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
+# 按脚本提示把 ~/.persisting/cli/bin 加入 PATH
 ```
 
-→ [Capture 指南](guide/capture.md)
+## 2. 安全地运行一个 Agent
 
-### 队列与 KV API
+在当前项目目录里跑，工作区会被暂存而不是直接写入：
 
-兼容 TransferQueue 的追加/消费 API：
+```bash
+pvisor run --safe codex
+```
+
+`--safe` 把当前目录作为 OverlayFS lower，Agent 的修改写入 staged upper，同时启用显式
+网络代理；结束后工作区带着 `run-bundle.json` 留下来。默认 host executor 的隔离是
+进程级的——它不阻止 Agent 访问项目目录外的宿主路径，代理也可以被直接 socket 绕过，
+这些边界都会如实记录在 bundle 里。
+
+```bash
+pvisor review last     # 查看 bundle：文件变更、网络拦截、安全警告
+pvisor apply last      # 接受修改
+# 或
+pvisor drop last       # 丢弃修改
+```
+
+## 3. 批量编排
+
+写一个 `plan.py`：`plan()` 产出带稳定 `id` 的任务，`execute(item)` 处理每一项。
 
 ```python
-from persisting import Queue, SequentialSampler
+def plan():
+    for value in range(6):
+        yield {"id": f"square-{value}", "value": value}
 
-q = Queue("training_data", storage_path="./data")
-reader = q.reader()
 
-meta = await reader.get_meta(
-    fields=["input_ids"], batch_size=32, task_name="train",
-    partition_id="p0", sampler=SequentialSampler())
-batch = await reader.get_data(meta, partition_id="p0")
+def execute(item):
+    value = item["value"]
+    return {"square": value * value}
 ```
 
-→ [Queue 指南](guide/queue.md)
-
-### 检索
-
-```python
-from persisting.search import add_document, query
-
-add_document("docs", "要索引的文本...")
-results = query("docs", "搜索查询", mode="hybrid", k=10)
+```bash
+ppilot run plan.py --workers 2 --per-worker 2 --sink ./results
+cat ./results/ready.ndjson
 ```
 
-→ [Search 指南](guide/search.md)
+`--sink` 会启用 durable result journal 和 lease fencing：任务重试只回到原 slot，
+业务错误不会被自动重试，崩溃后 reconciler 会修复两个 crash window。外部副作用请用
+稳定 `id` 做幂等。
+
+仓库里 `examples/ppilot/01-run/` 是同一模式的完整可运行版本，`just examples-ppilot`
+可以直接跑通；`examples/ppilot/` 下还有 `produce` / `process` / `analysis` 三个变体。
+
+## 4. 查询轨迹历史
+
+上面的 result sink 保存任务结果，并不是轨迹存储。在 Persisting 源码目录中，可以直接
+查询仓库自带的 ATIF 轨迹 fixture：
+
+```bash
+ppilot query crates/persisting-pchronicle/tests/fixtures/atif --source atif \
+  --sql 'SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
+```
+
+输入可以是 ATIF JSON、JSONL 或目录，也可以是 Lance Storyline store（本地目录或
+`s3://` URI）；两条路径暴露相同的 `runs` / `steps` / `tool_calls` 表。pChronicle 示例会
+用同一批 fixture 构建 Lance store，并比较查询结果：
+
+```bash
+just examples-pchronicle
+```
+
+## 其他能力
+
+- [Tensor Memory（实验性）](guide/tensor-memory.md) — 张量下标与分层存储
+- [Queue](guide/queue.md) — 持久事件流
+- [Search](guide/search.md) — 文档索引与向量/混合检索
 
 ## 下一步
 
-- [用户指南](guide/index.md) — 深入指南
-- [API 参考](api/index.md) — 完整 API 文档
-- [设计文档](design/index.md) — 架构、TTAS、分层存储
+- [安装指南](installation.md) — 三个安装物详解
+- [选择能力](guide/index.md) — 按目标选择工作流
+- [设计文档](design/index.md) — 架构与内部实现

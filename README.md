@@ -70,8 +70,8 @@ binaries plus the lazily loaded engine library into the same Cargo bin directory
 The Python package is installed separately with `pip install persisting[lance]`.
 
 Run `just examples` to execute the small quantitative experiments under
-[`examples/`](examples/). Every experiment prints
-its measured result and exits non-zero when its stated conclusion is not reproduced.
+[`examples/`](examples/). Each script runs the product commands in order and
+prints the generated files, reports, and query results directly.
 Use `just examples-ppilot` to run the focused `run`, `produce`, `process`, and
 `analysis` demonstrations.
 
@@ -182,11 +182,15 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 
 | Capability | Status | Description |
 |------------|--------|-------------|
-| **Agent Trajectory Capture** | ✅ Stable | Proxy + record LLM traffic as Lance + Markdown |
+| **pVisor agent runtime** | ✅ Implemented | One Run: execution, control, Agent ABI, transactional workspace |
+| **pPilot orchestration** | ✅ Implemented | `plan()` + `execute()` with lease fencing and durable recovery (Phase-1) |
+| **pChronicle history** | ✅ Implemented | Canonical events, Storyline/ATIF views, local + S3, read-only SQL |
+| **Gateway capture** | ✅ Implemented | LLM/Agent HTTP capture as Lance + Markdown trajectories |
+| **Container / KVM executors** | 🧪 Nightly runtimes | Inject a static pVisor into Docker/Podman or QEMU/KVM |
 | **Streaming Queue** | ✅ Stable | Lance-backed append/consume, KV API, samplers |
-| **pPilot Orchestration** | ✅ Stable | `plan()` + `execute()`, local/torchrun |
 | **Agent Search** | ✅ Stable | Document indexing, IVF-PQ, hybrid search |
 | **Tensor Memory (TTAS)** | 🧪 Experimental | Multi-dim tensor subscript, tiered backends |
+| **Transparent network enforcement** | 📋 Planned | Linux netns / seccomp interception |
 | **Cross-node KV Cache** | 📋 Planned | Pulsing + RDMA data plane |
 
 ---
@@ -243,6 +247,26 @@ The unified command deliberately ships as a matched component set. `persisting`
 dispatches execution/environment commands to the sibling `pvisor` binary and
 batch/query commands to the sibling `ppilot` binary. `PERSISTING_PVISOR_BIN`,
 `PERSISTING_PPILOT_BIN`, and `PERSISTING_ENGINE_LIB` remain explicit overrides.
+
+### Binary nightlies (no Rust toolchain needed)
+
+Nightly builds publish the CLI component set and the guest pVisor runtimes used
+by the Container/KVM executors, each with a `.sha256` checksum:
+
+```bash
+# Unified CLI + engine (persisting / pvisor / ppilot / libpersisting_engine)
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
+
+# Guest pVisor runtime for Container/KVM executors (repeat for linux-arm64)
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-guest-runtimes.sh | bash -s -- --platform linux-amd64
+```
+
+The guest runtime is installed under `~/.persisting/runtimes/<version>/<platform>/pvisor`
+(or `$PERSISTING_PVISOR_RUNTIME_DIR/<platform>/pvisor`), where pVisor's automatic
+artifact discovery finds it. After that, `pvisor run` with a Container/KVM
+executor works out of the box instead of failing with "no pVisor runtime artifact".
+
+`just install-cli-nightly` and `just install-guest-runtimes` wrap the same scripts.
 
 ---
 

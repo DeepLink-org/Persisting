@@ -1,128 +1,107 @@
 # Quick Start
 
-Get started with Persisting in 5 minutes.
+Follow one main path in five minutes: install the CLI, run an Agent safely,
+orchestrate a batch, and query trajectory data with SQL. This guide assumes
+macOS or Linux.
 
-## Installation
-
-```bash
-pip install persisting[lance]
-```
-
-For CLI tools (`persisting`, `pvisor`, and `ppilot`), [build from source](installation.md#from-source).
-
----
-
-## Core: Unified Tensor Storage
-
-Persisting stores trajectories, parameters, and KV cache through the same `persisting.open()` interface. All three use TTAS (Tiered Tensor Address Space) — the same addressing, same Lance engine, same tiering.
-
-```python
-import persisting
-from persisting.core import Dimension
-```
-
-### Parameters
-
-Address model weights by name and shard:
-
-```python
-PARAM_ID = Dimension("param_id", "str")
-SHARD    = Dimension("shard", "int")
-
-ps = persisting.open("params/llama-70b",
-    dims=(PARAM_ID, SHARD),
-    backend="tiered",
-    shape=(100, 8),
-)
-
-weights = ps["embed.weight", 0].tensor()
-ps["lm_head.weight", 0].put(updated_tensor)
-```
-
-### KV Cache
-
-Cross-session, multi-layer KV cache with block-tiered storage:
-
-```python
-SESSION = Dimension("session", "str")
-LAYER   = Dimension("layer", "int")
-HEAD    = Dimension("head", "int")
-TIME    = Dimension("time", "int")
-
-kv = persisting.open("kvcache/v1",
-    dims=(SESSION, LAYER, HEAD, TIME),
-    order_dim=TIME,
-    backend="tiered",
-    shape=(100, 32, 8, 4096),
-    block_tokens=64,
-)
-
-h = kv["s1", 0, 2, 0:512]    # slice (zero copy)
-arr = h.tensor()               # materialize from fastest tier
-h.put(other_data)              # write back
-kv.prefetch(("s1", 0, 0:1024))  # async pull blocks to host memory
-```
-
-### Trajectories (via Queue)
-
-Trajectory events are stored through the Queue API, backed by the same Lance engine:
-
-```python
-from persisting import Queue
-
-q = Queue("trajectories", storage_path="./data")
-await q.put({"run_id": "r1", "step": 1, "reward": 0.5})
-await q.flush()
-records = await q.get(limit=100)
-```
-
-→ [Tensor Memory Guide](guide/tensor-memory.md) for full details on backends, dimensions, and block storage.
-
----
-
-## Tools on the Same Foundation
-
-### Agent Capture
-
-Record every LLM call — Claude Code, Codex, or custom scripts:
+## 1. Install the CLI
 
 ```bash
-pvisor run --config run.toml -- claude
+# From source, for development
+git clone https://github.com/DeepLink-org/Persisting.git
+cd Persisting
+just install-cli
+
+# Or install nightly binaries without a Rust toolchain
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
+# Add ~/.persisting/cli/bin to PATH as instructed by the installer
 ```
 
-→ [Capture Guide](guide/capture.md)
+## 2. Run one Agent safely
 
-### Queues & KV API
+Run the Agent from your project directory. Its workspace changes are staged
+instead of being written directly to the project:
 
-Append/consume events with TransferQueue-compatible APIs:
+```bash
+pvisor run --safe codex
+```
+
+`--safe` uses the current directory as the OverlayFS lower, writes Agent
+changes to a staged upper, and enables the explicit network proxy. The
+workspace and its `run-bundle.json` remain after the command exits.
+
+The default Host executor provides process-level isolation. It does not stop
+the Agent from accessing host paths outside the project, and a direct socket
+can bypass the explicit proxy. The Run Bundle reports these boundaries.
+
+```bash
+pvisor review last     # inspect file changes, network counters, and warnings
+pvisor apply last      # accept the changes
+# or
+pvisor drop last       # discard the changes
+```
+
+## 3. Orchestrate a batch
+
+Create `plan.py`. `plan()` yields tasks with stable IDs, and `execute(item)`
+handles one task:
 
 ```python
-from persisting import Queue, SequentialSampler
+def plan():
+    for value in range(6):
+        yield {"id": f"square-{value}", "value": value}
 
-q = Queue("training_data", storage_path="./data")
-reader = q.reader()
 
-meta = await reader.get_meta(
-    fields=["input_ids"], batch_size=32, task_name="train",
-    partition_id="p0", sampler=SequentialSampler())
-batch = await reader.get_data(meta, partition_id="p0")
+def execute(item):
+    value = item["value"]
+    return {"square": value * value}
 ```
 
-→ [Queue Guide](guide/queue.md)
-
-### Search
-
-```python
-from persisting.search import add_document, query
-
-add_document("docs", "text to index...")
-results = query("docs", "search query", mode="hybrid", k=10)
+```bash
+ppilot run plan.py --workers 2 --per-worker 2 --sink ./results
+cat ./results/ready.ndjson
 ```
 
-→ [Search Guide](guide/search.md)
+`--sink` enables a durable result journal and lease fencing. Retries return to
+the original slot, business errors are not retried automatically, and the
+reconciler repairs the two supported crash windows. Use stable IDs to make
+external side effects idempotent.
 
-## Next Steps
+The runnable version is under `examples/ppilot/01-run/`. The other pPilot
+examples demonstrate `produce`, `process`, and `analysis`:
 
-- [User Guide](guide/index.md) — in-depth guides
-- [API Reference](api/index.md) — complete API docs
-- [Design Docs](design/index.md) — architecture, TTAS, tiered storage
+```bash
+just examples-ppilot
+```
+
+## 4. Query trajectory history
+
+The result sink above contains task results; it is not a trajectory store.
+From a Persisting source checkout, query the bundled ATIF trajectory fixtures
+directly:
+
+```bash
+ppilot query crates/persisting-pchronicle/tests/fixtures/atif --source atif \
+  --sql 'SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
+```
+
+`ppilot query` accepts ATIF JSON, JSONL, or directories as well as local and
+`s3://` Lance Storyline stores. Both sources expose the `runs`, `steps`, and
+`tool_calls` tables. The pChronicle examples build a Lance store from those
+same fixtures and compare the query results:
+
+```bash
+just examples-pchronicle
+```
+
+## Other capabilities
+
+- [Tensor Memory (experimental)](guide/tensor-memory.md) — tensor subscripts and tiered storage
+- [Queue](guide/queue.md) — persistent event streams
+- [Search](guide/search.md) — document indexing and vector/hybrid retrieval
+
+## Next steps
+
+- [Installation](installation.md) — details for all three distributions
+- [Choose a Capability](guide/index.md) — find the workflow for your goal
+- [Architecture & Internals](design/index.md) — understand the implementation

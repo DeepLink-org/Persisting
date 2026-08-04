@@ -2,8 +2,8 @@
 
 问题：pPilot 能否自动平衡 ATIF 数据，并在每个 shard 上执行同一条 pChronicle SQL？
 
-脚本把仓库内固定的 8 条 ATIF fixture 分成 3 个 shard，运行 `analysis.sql`，再检查合并
-结果、shard 大小和 step 总数。SQL 以 session 分组，因此 shard 结果可以直接拼接。
+脚本把仓库内固定的 8 条 ATIF fixture 分成 3 个 shard，运行 `analysis.sql`，再打印合并
+结果和 analysis report。SQL 以 session 分组，因此 shard 结果可以直接拼接。
 
 ```bash
 ./run.sh

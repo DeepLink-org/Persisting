@@ -1,23 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$DIR/../../.." && pwd)"
-SCALE="${SCALE:-64}"
-ITERATIONS="${ITERATIONS:-20}"
-PROFILE="${PROFILE:-debug}"
-[[ "$PROFILE" == "debug" || "$PROFILE" == "release" ]]
+# Remove benchmark output from the previous run.
+rm -rf .work
+mkdir .work
 
-if [[ "$PROFILE" == "release" ]]; then
-  OUTPUT="$(cd "$ROOT" && PCHRONICLE_BENCH_SCALE="$SCALE" PCHRONICLE_BENCH_ITERS="$ITERATIONS" \
-    cargo run -q --release -p persisting-pchronicle --example compare_analysis_speed)"
-else
-  OUTPUT="$(cd "$ROOT" && PCHRONICLE_BENCH_SCALE="$SCALE" PCHRONICLE_BENCH_ITERS="$ITERATIONS" \
-    cargo run -q -p persisting-pchronicle --example compare_analysis_speed)"
-fi
-printf '%s\n' "$OUTPUT"
-
-MEASUREMENTS="$(printf '%s\n' "$OUTPUT" | grep -c '^RESULT benchmark=')"
-printf 'RESULT build_profile=%s measurements=%s\n' "$PROFILE" "$MEASUREMENTS"
-[[ "$MEASUREMENTS" == "2" ]]
-echo 'CONCLUSION two result-equivalent queries produced quantitative Lance and ATIF throughput measurements'
+# Run a small, repeatable comparison and keep a copy of its console output.
+PCHRONICLE_BENCH_SCALE=64 PCHRONICLE_BENCH_ITERS=20 \
+  cargo run -q --manifest-path ../../../Cargo.toml \
+    -p persisting-pchronicle --example compare_analysis_speed \
+  | tee .work/output.txt

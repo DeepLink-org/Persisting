@@ -84,9 +84,11 @@ test-menu:
 examples-pvisor:
     #!/usr/bin/env bash
     set -euo pipefail
-    for script in "{{ repo }}"/examples/pvisor/*/run.sh; do
-        echo "==> ${script#"{{ repo }}/"}"
-        bash "$script"
+    [[ -x "{{ repo }}/target/debug/pvisor" ]] || cargo build -q -p persisting-pvisor --bin pvisor
+    for example in "{{ repo }}"/examples/pvisor/*; do
+        [[ -f "$example/run.sh" ]] || continue
+        echo "==> ${example#"{{ repo }}/"}/run.sh"
+        (cd "$example" && bash run.sh)
     done
 
 # Run the deterministic, quantitative pChronicle examples.
@@ -94,9 +96,11 @@ examples-pvisor:
 examples-pchronicle:
     #!/usr/bin/env bash
     set -euo pipefail
-    for script in "{{ repo }}"/examples/pchronicle/*/run.sh; do
-        echo "==> ${script#"{{ repo }}/"}"
-        bash "$script"
+    [[ -x "{{ repo }}/target/debug/ppilot" ]] || cargo build -q -p persisting-ppilot --features cli --bin ppilot
+    for example in "{{ repo }}"/examples/pchronicle/*; do
+        [[ -f "$example/run.sh" ]] || continue
+        echo "==> ${example#"{{ repo }}/"}/run.sh"
+        (cd "$example" && bash run.sh)
     done
 
 # Run the deterministic, quantitative pPilot examples.
@@ -104,9 +108,11 @@ examples-pchronicle:
 examples-ppilot:
     #!/usr/bin/env bash
     set -euo pipefail
-    for script in "{{ repo }}"/examples/ppilot/*/run.sh; do
-        echo "==> ${script#"{{ repo }}/"}"
-        bash "$script"
+    [[ -x "{{ repo }}/target/debug/ppilot" ]] || cargo build -q -p persisting-ppilot --features cli --bin ppilot
+    for example in "{{ repo }}"/examples/ppilot/*; do
+        [[ -f "$example/run.sh" ]] || continue
+        echo "==> ${example#"{{ repo }}/"}/run.sh"
+        (cd "$example" && bash run.sh)
     done
 
 [group('test')]
@@ -304,6 +310,14 @@ test-py-v:
 # 安装本地 nightly 脚本自检（需已有 GitHub nightly release）
 install-nightly:
     bash "{{ repo }}/scripts/install-nightly.sh"
+
+# 从 nightly release 安装统一 CLI 组件集（persisting/pvisor/ppilot + engine）
+install-cli-nightly:
+    bash "{{ repo }}/scripts/install-cli-nightly.sh"
+
+# 从 nightly release 安装 guest pVisor runtime（Container/KVM executor 用）
+install-guest-runtimes platform="linux-amd64":
+    bash "{{ repo }}/scripts/install-guest-runtimes.sh" --platform {{ platform }}
 
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 

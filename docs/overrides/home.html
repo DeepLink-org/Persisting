@@ -478,9 +478,9 @@
           <h1>Persisting</h1>
         </div>
         {% if config.theme.language == "zh" %}
-        <h3>参数、KV Cache 和 Trajectory 的持久化存储</h3>
+        <h3>Agent 执行、编排与持久化历史</h3>
         {% else %}
-        <h3>Persistent Storage for Parameters, KV Cache, and Trajectories</h3>
+        <h3>Agent execution, orchestration, and durable history</h3>
         {% endif %}
         <hr class="intro-divider" />
         <ul class="list-inline">
@@ -494,7 +494,7 @@
             <a href="design/" class="md-button">{% if config.theme.language == "zh" %}设计文档{% else %}Design Docs{% endif %}</a>
           </li>
           <li>
-            <a href="https://github.com/reiase/Persisting" class="md-button" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/DeepLink-org/Persisting" class="md-button" target="_blank" rel="noopener">GitHub</a>
           </li>
         </ul>
       </div>
@@ -505,61 +505,61 @@
   <section class="persisting-features-grid">
     <div class="container">
       {% if config.theme.language == "zh" %}
-      <h2>核心特性</h2>
-      <p class="section-subtitle">为 AI 系统设计的高性能持久化存储</p>
+      <h2>核心组件</h2>
+      <p class="section-subtitle">pVisor 管理单个 Agent Run，pPilot 编排批量 Run，pChronicle 保存 canonical 历史；Gateway、OverlayNet、OverlayFS 是 pVisor 的运行时驱动</p>
       {% else %}
-      <h2>Core Features</h2>
-      <p class="section-subtitle">High-performance persistent storage designed for AI systems</p>
+      <h2>Core Components</h2>
+      <p class="section-subtitle">pVisor runs one Agent, pPilot orchestrates many Runs, pChronicle keeps the canonical history. Gateway, OverlayNet, and OverlayFS are pVisor runtime drivers.</p>
       {% endif %}
       <div class="features-grid">
         <div class="feature-card">
           <span class="feature-icon">🔌</span>
           {% if config.theme.language == "zh" %}
-          <h3>可插拔后端</h3>
-          <p>支持多种存储后端，包括内存、Lance、以及自定义实现。按需选择最适合的存储方案。</p>
+          <h3>pVisor · 单个 Run</h3>
+          <p>执行一个 Agent workload：进程级控制、Agent ABI、取消、checkpoint，以及可注入 Docker/Podman 或 KVM 的 placement。</p>
           {% else %}
-          <h3>Pluggable Backends</h3>
-          <p>Support for multiple storage backends including Memory, Lance, and custom implementations. Choose the best storage for your needs.</p>
+          <h3>pVisor · one Run</h3>
+          <p>Executes one Agent workload with process-level control, an Agent ABI, cancellation, and checkpoint, deployable inside Docker/Podman or KVM.</p>
           {% endif %}
         </div>
         <div class="feature-card">
-          <span class="feature-icon">⚡</span>
+          <span class="feature-icon">🗂️</span>
           {% if config.theme.language == "zh" %}
-          <h3>Lance 集成</h3>
-          <p>基于 Lance 列式存储格式，提供高性能随机访问、向量搜索和零拷贝版本控制。</p>
+          <h3>pPilot · 批量编排</h3>
+          <p>plan()/execute() 有界并发编排：lease fencing、基础设施重试、崩溃恢复与 durable result journal。</p>
           {% else %}
-          <h3>Lance Integration</h3>
-          <p>Built on Lance columnar format for high-performance random access, vector search, and zero-copy versioning.</p>
+          <h3>pPilot · many Runs</h3>
+          <p>plan()/execute() orchestration with bounded concurrency, lease fencing, infra retry, crash recovery, and a durable result journal.</p>
+          {% endif %}
+        </div>
+        <div class="feature-card">
+          <span class="feature-icon">🗃️</span>
+          {% if config.theme.language == "zh" %}
+          <h3>pChronicle · 历史</h3>
+          <p>Canonical Lance EventStore、AgenticMD、Storyline 与 ATIF 视图，支持 DataFusion SQL 查询与 S3 对象存储。</p>
+          {% else %}
+          <h3>pChronicle · history</h3>
+          <p>Canonical Lance EventStore, AgenticMD, Storyline, and ATIF views with DataFusion SQL and S3 object storage.</p>
           {% endif %}
         </div>
         <div class="feature-card">
           <span class="feature-icon">🔄</span>
           {% if config.theme.language == "zh" %}
-          <h3>Pulsing 集成</h3>
-          <p>与 Pulsing Actor 框架无缝集成，为分布式队列提供持久化能力。</p>
+          <h3>OverlayFS + OverlayNet</h3>
+          <p>事务式文件工作区（review/apply/drop/fork）与显式 HTTP 代理；隔离强度如实声明，不冒充不可绕过的沙箱。</p>
           {% else %}
-          <h3>Pulsing Integration</h3>
-          <p>Seamless integration with Pulsing Actor framework, providing persistence for distributed queues.</p>
+          <h3>OverlayFS + OverlayNet</h3>
+          <p>A transactional file workspace (review/apply/drop/fork) and an explicit HTTP proxy whose isolation strength is reported honestly.</p>
           {% endif %}
         </div>
         <div class="feature-card">
-          <span class="feature-icon">📊</span>
+          <span class="feature-icon">🪝</span>
           {% if config.theme.language == "zh" %}
-          <h3>Schema 演进</h3>
-          <p>支持 Schema 动态演进，无需停机即可更新数据结构，适应不断变化的需求。</p>
+          <h3>Gateway · 捕获</h3>
+          <p>适配 LLM/Agent HTTP 协议，生成 EventRecord 并汇入 pChronicle，配合轨迹 Markdown 投影。</p>
           {% else %}
-          <h3>Schema Evolution</h3>
-          <p>Support for dynamic schema evolution without downtime, adapting to changing requirements.</p>
-          {% endif %}
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon">📈</span>
-          {% if config.theme.language == "zh" %}
-          <h3>监控指标</h3>
-          <p>内置 Prometheus 指标导出，实时监控存储性能和健康状态。</p>
-          {% else %}
-          <h3>Monitoring Metrics</h3>
-          <p>Built-in Prometheus metrics export for real-time monitoring of storage performance and health.</p>
+          <h3>Gateway · capture</h3>
+          <p>Adapts LLM/Agent HTTP protocols, emits EventRecords into pChronicle, and projects live Markdown trajectories.</p>
           {% endif %}
         </div>
       </div>
@@ -574,34 +574,30 @@
         <div class="quickstart-step">
           <div class="step-number">1</div>
           <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}安装 Persisting{% else %}Install Persisting{% endif %}</h3>
+            <h3>{% if config.theme.language == "zh" %}安装 CLI{% else %}Install the CLI{% endif %}</h3>
             <div class="code-block">
-              <pre><code class="language-bash">pip install persisting
-
-# Or install with Pulsing
-pip install persisting[pulsing]</code></pre>
+              <pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
+export PATH="$HOME/.persisting/cli/bin:$PATH"</code></pre>
             </div>
           </div>
         </div>
         <div class="quickstart-step">
           <div class="step-number">2</div>
           <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}创建队列{% else %}Create a Queue{% endif %}</h3>
+            <h3>{% if config.theme.language == "zh" %}安全地运行一个 Agent{% else %}Run one Agent safely{% endif %}</h3>
             <div class="code-block">
-              <pre><code class="language-python">from persisting import Queue
-
-queue = Queue("my_topic", storage_path="./data")</code></pre>
+              <pre><code class="language-bash">pvisor run --safe codex
+pvisor review last</code></pre>
             </div>
           </div>
         </div>
         <div class="quickstart-step">
           <div class="step-number">3</div>
           <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}写入与读取{% else %}Write and Read{% endif %}</h3>
+            <h3>{% if config.theme.language == "zh" %}批量编排{% else %}Orchestrate a batch{% endif %}</h3>
             <div class="code-block">
-              <pre><code class="language-python">await queue.put({"id": "1", "value": 42})
-await queue.flush()
-records = await queue.get(limit=100)</code></pre>
+              <pre><code class="language-bash">ppilot run plan.py --workers 2 --sink ./results
+cat ./results/ready.ndjson</code></pre>
             </div>
           </div>
         </div>
@@ -615,33 +611,33 @@ records = await queue.get(limit=100)</code></pre>
       <h2>{% if config.theme.language == "zh" %}应用场景{% else %}Use Cases{% endif %}</h2>
       <div class="usecases-grid">
         <div class="usecase-card">
-          <div class="usecase-icon">🧠</div>
+          <div class="usecase-icon">🛡️</div>
           {% if config.theme.language == "zh" %}
-          <h3>KV Cache 存储</h3>
-          <p>高效存储和检索 LLM 推理过程中的 KV Cache，支持跨会话复用，降低重复计算成本。</p>
+          <h3>可审查的 Agent Run</h3>
+          <p>事务式文件工作区 + 显式网络代理。Run Bundle 记录文件变更、网络策略与警告；review/apply/drop 决定是否接受修改。</p>
           {% else %}
-          <h3>KV Cache Storage</h3>
-          <p>Efficiently store and retrieve KV Cache from LLM inference, supporting cross-session reuse to reduce computation costs.</p>
-          {% endif %}
-        </div>
-        <div class="usecase-card">
-          <div class="usecase-icon">📚</div>
-          {% if config.theme.language == "zh" %}
-          <h3>Trajectory 存储</h3>
-          <p>持久化存储强化学习和训练过程中的 Trajectory 数据，支持离线分析和经验回放。</p>
-          {% else %}
-          <h3>Trajectory Storage</h3>
-          <p>Persistent storage for RL and training trajectories, supporting offline analysis and experience replay.</p>
+          <h3>Reviewable Agent Runs</h3>
+          <p>A transactional file workspace and an explicit network proxy. The Run Bundle records changes, policy, and warnings; review/apply/drop decides what lands.</p>
           {% endif %}
         </div>
         <div class="usecase-card">
           <div class="usecase-icon">⚙️</div>
           {% if config.theme.language == "zh" %}
-          <h3>参数检查点</h3>
-          <p>高效保存和加载模型参数检查点，支持增量更新和版本管理。</p>
+          <h3>批量 Run 编排</h3>
+          <p>plan()/execute() 有界并发生产大量独立 Run，lease fencing 与崩溃恢复保证每个结果只能提交一次。</p>
           {% else %}
-          <h3>Parameter Checkpoints</h3>
-          <p>Efficiently save and load model parameter checkpoints with support for incremental updates and versioning.</p>
+          <h3>Batch Orchestration</h3>
+          <p>plan()/execute() with bounded concurrency produces many independent Runs; lease fencing and crash recovery keep each result committed at most once.</p>
+          {% endif %}
+        </div>
+        <div class="usecase-card">
+          <div class="usecase-icon">📊</div>
+          {% if config.theme.language == "zh" %}
+          <h3>轨迹分析与查询</h3>
+          <p>pChronicle 把事件沉淀为 runs/steps/tool_calls 规范视图，通过只读 DataFusion SQL 分析，本地与 S3 一致。</p>
+          {% else %}
+          <h3>Trajectory Analysis</h3>
+          <p>pChronicle reduces events to normalized runs/steps/tool_calls views queried with read-only DataFusion SQL, identically on local disk and S3.</p>
           {% endif %}
         </div>
       </div>
@@ -664,16 +660,16 @@ records = await queue.get(limit=100)</code></pre>
           <h4>Pulsing</h4>
         </div>
         <div class="integration-card">
-          <div class="integration-icon">🔍</div>
-          <h4>Probing</h4>
-        </div>
-        <div class="integration-card">
           <div class="integration-icon">🗃️</div>
           <h4>Lance</h4>
         </div>
         <div class="integration-card">
-          <div class="integration-icon">🏹</div>
-          <h4>Apache Arrow</h4>
+          <div class="integration-icon">🐳</div>
+          <h4>Docker &amp; Podman</h4>
+        </div>
+        <div class="integration-card">
+          <div class="integration-icon">🖥️</div>
+          <h4>QEMU &amp; KVM</h4>
         </div>
       </div>
     </div>
@@ -686,19 +682,23 @@ records = await queue.get(limit=100)</code></pre>
         {% if config.theme.language == "zh" %}
         <h2>为什么选择 Persisting？</h2>
         <p>
-          Persisting 是为 AI 系统量身定制的持久化存储解决方案。
-          它基于 Lance 列式存储格式，提供高性能的数据读写能力，
-          同时与 Pulsing Actor 框架深度集成，为分布式队列提供可靠的持久化支持。
-          无论是 KV Cache、Trajectory 还是模型参数，Persisting 都能高效处理。
+          Persisting 把一次不稳定、带外部副作用的 Agent workload 封装成一个可执行、可中断、
+          可检查、可追溯、可批量编排的 Run。pVisor 负责单个 Run 的生命周期与隔离边界，
+          pPilot 负责批量调度、恢复与 fencing，pChronicle 保存 canonical 事件历史。
+          隔离的强度如实声明：默认的 host executor 提供的是进程级控制面和事务工作区，
+          需要更强边界时再注入 Docker/Podman 或 KVM。
         </p>
         <a href="guide/" class="md-button md-button--primary">了解更多 →</a>
         {% else %}
         <h2>Why Persisting?</h2>
         <p>
-          Persisting is a persistent storage solution tailored for AI systems.
-          Built on the Lance columnar format, it provides high-performance data read/write capabilities
-          while deeply integrating with the Pulsing Actor framework to provide reliable persistence for distributed queues.
-          Whether it's KV Cache, Trajectories, or model parameters, Persisting handles them efficiently.
+          Persisting wraps an unreliable, side-effecting Agent workload into a Run
+          that can be executed, interrupted, reviewed, traced, and orchestrated at scale.
+          pVisor owns one Run's lifecycle and placement, pPilot schedules and recovers many,
+          and pChronicle keeps the canonical event history. Isolation strength is reported
+          honestly: the default host executor is a process-level control plane with a
+          transactional workspace, and Docker/Podman or KVM are injected when a stronger
+          boundary is needed.
         </p>
         <a href="guide/" class="md-button md-button--primary">Learn More →</a>
         {% endif %}
@@ -706,46 +706,49 @@ records = await queue.get(limit=100)</code></pre>
     </div>
   </section>
 
-  <!-- Feature: Pluggable Storage -->
+  <!-- Feature: Reviewable Isolation -->
   <section class="persisting-feature-section">
     <div class="container">
       <div class="persisting-feature-content">
         <div class="persisting-feature-text">
           {% if config.theme.language == "zh" %}
-          <h2>可插拔的存储后端</h2>
+          <h2>可审查的隔离</h2>
           <p>
-            Persisting 提供灵活的存储后端架构。
-            你可以根据需求选择内存后端（用于测试）、Lance 后端（用于生产）或实现自定义后端。
+            <code>pvisor run --safe</code> 创建 durable workspace，当前目录作为 OverlayFS lower，
+            写入暂存到 upper，并启用显式网络代理。Run Bundle 记录文件变更、网络拦截与安全警告。
           </p>
           <p>
-            所有后端遵循统一的 <code>StorageBackend</code> 协议，确保 API 一致性。
-            切换后端只需修改一个参数，无需更改业务逻辑。
+            默认的 host executor 不会阻止 Agent 访问项目目录以外的宿主路径，也不会阻止直接 socket
+            绕过代理——Run Bundle 会如实记录这些边界。需要更强隔离时，同样的控制面可以注入
+            Docker/Podman 或 KVM guest。
           </p>
-          <a href="guide/backends/" class="md-button">了解更多 →</a>
+          <a href="design/cli-pvisor/" class="md-button">了解更多 →</a>
           {% else %}
-          <h2>Pluggable Storage Backends</h2>
+          <h2>Reviewable Isolation</h2>
           <p>
-            Persisting provides a flexible storage backend architecture.
-            Choose Memory backend (for testing), Lance backend (for production), or implement custom backends based on your needs.
+            <code>pvisor run --safe</code> creates a durable workspace with the current directory as
+            the OverlayFS lower, stages writes in the upper, and enables an explicit network proxy.
+            The Run Bundle records filesystem changes, network interception, and safety warnings.
           </p>
           <p>
-            All backends follow the unified <code>StorageBackend</code> protocol, ensuring API consistency.
-            Switch backends with a single parameter change, no business logic modifications required.
+            The default host executor does not stop the Agent from touching host paths outside the
+            project, and direct sockets can bypass the proxy—the Run Bundle says so explicitly.
+            When a stronger boundary is needed, the same control plane runs inside Docker/Podman or
+            a KVM guest.
           </p>
-          <a href="guide/backends/" class="md-button">Learn More →</a>
+          <a href="design/cli-pvisor/" class="md-button">Learn More →</a>
           {% endif %}
         </div>
         <div class="persisting-feature-demo">
           <div class="code-preview">
-            <pre><code class="language-python">from persisting import Queue
-
-# Create queues with different storage paths
-queue = Queue("my_topic", storage_path="./data")
-
-# Write and read
-await queue.put({"id": "1", "value": 42})
-await queue.flush()
-records = await queue.get(limit=100)</code></pre>
+            <pre><code class="language-bash"># 事务式文件工作区 + 显式网络代理
+pvisor run --safe codex
+pvisor review last
+pvisor checkpoint last --name accepted-base
+# 接受、丢弃或分支
+pvisor apply last
+pvisor drop last
+pvisor fork last --checkpoint accepted-base -- codex</code></pre>
           </div>
         </div>
       </div>
@@ -763,19 +766,19 @@ records = await queue.get(limit=100)</code></pre>
       <p class="section-subtitle">Persisting is open source and community-driven. Get involved!</p>
       {% endif %}
       <div class="community-links">
-        <a href="https://github.com/reiase/Persisting" class="community-link" target="_blank" rel="noopener">
+        <a href="https://github.com/DeepLink-org/Persisting" class="community-link" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
           </svg>
           GitHub
         </a>
-        <a href="https://github.com/reiase/Persisting/issues" class="community-link" target="_blank" rel="noopener">
+        <a href="https://github.com/DeepLink-org/Persisting/issues" class="community-link" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
           </svg>
           {% if config.theme.language == "zh" %}问题追踪{% else %}Issues{% endif %}
         </a>
-        <a href="https://github.com/reiase/Persisting/discussions" class="community-link" target="_blank" rel="noopener">
+        <a href="https://github.com/DeepLink-org/Persisting/discussions" class="community-link" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <path d="M21 6h-2v9H6v2c0 .55.45 1 1 1h11l4 4V7c0-.55-.45-1-1-1zm-4 6V3c0-.55-.45-1-1-1H3c-.55 0-1 .45-1 1v14l4-4h10c.55 0 1-.45 1-1z"/>
           </svg>
@@ -791,4 +794,3 @@ records = await queue.get(limit=100)</code></pre>
 {% block footer %}
   {{ super() }}
 {% endblock %}
-
