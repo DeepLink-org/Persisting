@@ -6,6 +6,7 @@ from typing import Any, Iterable
 
 from persisting import _core
 
+
 def embed_text(text: str, embedding_dim: int = 384) -> list[float]:
     return list(_core.search_embed_text(text, embedding_dim))
 

@@ -102,9 +102,7 @@ def sampled_message(
     raise SystemExit("source corpus cannot produce enough distinct message text")
 
 
-def replace_message_text(
-    step: dict, sampler: SourceSampler, seen_messages: set[str]
-) -> None:
+def replace_message_text(step: dict, sampler: SourceSampler, seen_messages: set[str]) -> None:
     message = step.get("message")
     prefix = f"{step.get('source', 'unknown')} step {step.get('step_id', '?')}: "
     if isinstance(message, str) and message:
@@ -147,7 +145,4 @@ with output.open("w", encoding="utf-8") as stream:
                 replace_message_text(step, sampler, seen_messages)
             stream.write(json.dumps(trajectory, separators=(",", ":")) + "\n")
 
-print(
-    f"source_corpus_files={source_file_count} source_blocks={len(blocks)} "
-    f"seed={seed}"
-)
+print(f"source_corpus_files={source_file_count} source_blocks={len(blocks)} seed={seed}")

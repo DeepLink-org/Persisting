@@ -45,9 +45,7 @@ iterations = int(iterations_arg)
 if iterations <= 0:
     raise SystemExit("ITERATIONS must be greater than zero")
 
-trajectories = [
-    json.loads(line) for line in input_path.read_text().splitlines() if line.strip()
-]
+trajectories = [json.loads(line) for line in input_path.read_text().splitlines() if line.strip()]
 if not trajectories:
     raise SystemExit("benchmark ATIF input is empty")
 target = max(enumerate(trajectories), key=lambda item: (len(item[1]["steps"]), item[0]))[1]
@@ -70,18 +68,10 @@ def query_command(input_value: str, sql: str) -> list[str]:
     return [ppilot, "query", input_value, "--sql", sql]
 
 
-lance_selective, lance_selective_output = timed(
-    query_command(store_arg, selective_sql), iterations
-)
-atif_selective, atif_selective_output = timed(
-    query_command(input_arg, selective_sql), iterations
-)
-lance_group, lance_group_output = timed(
-    query_command(store_arg, group_sql), iterations
-)
-atif_group, atif_group_output = timed(
-    query_command(input_arg, group_sql), iterations
-)
+lance_selective, lance_selective_output = timed(query_command(store_arg, selective_sql), iterations)
+atif_selective, atif_selective_output = timed(query_command(input_arg, selective_sql), iterations)
+lance_group, lance_group_output = timed(query_command(store_arg, group_sql), iterations)
+atif_group, atif_group_output = timed(query_command(input_arg, group_sql), iterations)
 if lance_selective_output != atif_selective_output:
     raise SystemExit("selective query result differs between Lance and ATIF")
 if lance_group_output != atif_group_output:
@@ -101,19 +91,15 @@ lance_ratio = lance_bytes / atif_bytes
 selective_ratio = atif_selective / lance_selective
 group_ratio = atif_group / lance_group
 
-print(f"dataset: {len(trajectories)} trajectories, {sum(len(t['steps']) for t in trajectories)} steps")
+print(
+    f"dataset: {len(trajectories)} trajectories, {sum(len(t['steps']) for t in trajectories)} steps"
+)
 print(f"storage: ATIF={atif_bytes} bytes, Lance store={lance_bytes} bytes ({lance_ratio:.3f}x)")
 print(f"pPilot CLI import: {import_seconds * 1000:.3f} ms")
 print(f"pPilot CLI single-story replace: {replace_seconds * 1000:.3f} ms")
 print("cold pPilot query (process start + open + plan + execute):")
-print(
-    f"  selective: Lance={lance_selective * 1000:.3f} ms, "
-    f"ATIF={atif_selective * 1000:.3f} ms"
-)
-print(
-    f"  GROUP BY:  Lance={lance_group * 1000:.3f} ms, "
-    f"ATIF={atif_group * 1000:.3f} ms"
-)
+print(f"  selective: Lance={lance_selective * 1000:.3f} ms, ATIF={atif_selective * 1000:.3f} ms")
+print(f"  GROUP BY:  Lance={lance_group * 1000:.3f} ms, ATIF={atif_group * 1000:.3f} ms")
 print("Conclusion:")
 print(
     f"  Storage: Lance uses {lance_ratio * 100:.2f}% of ATIF space, "
