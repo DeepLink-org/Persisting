@@ -821,8 +821,21 @@ class HashPartitionTable(BaseTable):
 
         if partitions is None:
             partitions = self.list_partitions()
-        if offset is not None:
-            assert len(partitions) == 1, "offset is not supported for multiple partitions"
+            if offset is not None:
+                assert len(partitions) == 1, "offset is not supported for multiple partitions"
+        else:
+            # Explicit prune: reject illegal buckets; treat valid but unmaterialized
+            # buckets as empty (lazy HASH materialization).
+            for partition in partitions:
+                assert partition is not None, "partition can not be None"
+                assert isinstance(partition, int), "partition must be an integer"
+                assert 0 <= partition < self.partitions, (
+                    f"partition must be in range [0, {self.partitions})"
+                )
+            if offset is not None:
+                assert len(partitions) == 1, "offset is not supported for multiple partitions"
+            materialized = set(self.list_partitions())
+            partitions = [partition for partition in partitions if partition in materialized]
         partitions = sorted(partitions)
 
         result = pd.DataFrame()
