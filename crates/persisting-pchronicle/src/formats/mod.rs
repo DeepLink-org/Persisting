@@ -28,7 +28,7 @@ pub use agenticmd_validate::{
 pub use detect::detect_format;
 pub use events::{
     events_lance_only_error, events_lance_only_message, export_events_json_pretty,
-    export_events_jsonl, EventRecord, EventsDocument,
+    export_events_jsonl, EventIdentity, EventRecord, EventsDocument,
 };
 pub use openai_msg::{
     parse_openai_msg_document, OpenaiMsgDocument, OpenaiMsgStep, OPENAI_MSG_FORMAT_VERSION,

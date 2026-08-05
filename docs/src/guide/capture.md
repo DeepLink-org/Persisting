@@ -9,9 +9,8 @@ References: [pVisor CLI](../design/cli-pvisor.md), [History / Eval / Gateway CLI
 ## Build
 
 ```bash
-cargo build --release -p persisting-pvisor -p persisting-cli -p persisting-engine
+cargo build --release -p persisting-pvisor -p persisting-cli
 export PATH="$(pwd)/target/release:$PATH"
-export PERSISTING_ENGINE_LIB="$(pwd)/target/release/libpersisting_engine.dylib" # .so on Linux
 ```
 
 ## Local walkthrough
@@ -90,7 +89,6 @@ persisting history stats ./store/<agent-id> --detail
 
 # Replay a particular Run directory.
 persisting history replay ./store/<agent-id>/<run-id>
-persisting history replay ./store/<agent-id>/<run-id> --storage-format markdown
 
 # Build the human-readable view from canonical Lance events.
 persisting history materialize ./store \
@@ -114,7 +112,9 @@ store/
         └── agent-<id>.md     # optional subagent Story
 ```
 
-AgenticMD accepts only session-named Markdown files with canonical block headers.
+Generated AgenticMD uses session-named files and Storyline-like block fields. The
+reader also accepts legacy headers and plain Markdown because this is a debug
+view, not a storage protocol.
 
 ## Troubleshooting
 

@@ -10,7 +10,7 @@ use datafusion::prelude::{CsvReadOptions, JsonReadOptions, SessionContext};
 use datafusion::sql::parser::{DFParser, Statement as DataFusionStatement};
 use datafusion::sql::sqlparser::ast::Statement as SqlStatement;
 
-use super::{AtifDataSource, LanceStorylineStore, StorylineDataSource};
+use super::{AtifDataSource, StorylineDataSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChronicleQueryBackend {
@@ -71,15 +71,13 @@ impl std::fmt::Debug for ChronicleQueryEngine {
 
 impl ChronicleQueryEngine {
     pub async fn open_lance(root: impl AsRef<Path>) -> Result<Self> {
-        let store = LanceStorylineStore::open(root).await?;
-        let source = StorylineDataSource::from_store(&store).await?;
+        let source = StorylineDataSource::open(root).await?;
         Self::from_lance_source(source)
     }
 
     /// Open a Lance store from a local path or object-store URI such as S3.
     pub async fn open_lance_uri(root: impl AsRef<str>) -> Result<Self> {
-        let store = LanceStorylineStore::open_uri(root).await?;
-        let source = StorylineDataSource::from_store(&store).await?;
+        let source = StorylineDataSource::open_uri(root).await?;
         Self::from_lance_source(source)
     }
 

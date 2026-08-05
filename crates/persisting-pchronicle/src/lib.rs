@@ -1,8 +1,8 @@
 //! pChronicle — Persisting's structured storage layer for Agent trajectories.
 //!
 //! pChronicle owns the trajectory formats, physical schemas, storage backends,
-//! replay, conversion, and rebuildable views. Capture produces [`EventRecord`]s;
-//! Engine and CLI delegate persistence and format operations to this crate.
+//! replay, conversion, search, judgment, and rebuildable views. Capture and
+//! clients call pChronicle directly; there is no separate storage engine layer.
 //!
 //! # Format architecture
 //!
@@ -24,19 +24,18 @@ pub mod discovery;
 pub mod error;
 pub mod format;
 pub mod formats;
-pub mod ingest;
 pub mod judge_service;
 pub mod judgment;
 pub mod judgment_summary;
 pub mod layout;
 pub mod mapping;
+mod messages;
+pub mod operations;
 pub mod projection;
-pub mod schema;
-pub mod selection;
+pub mod search;
 pub mod service;
 pub mod store;
 pub mod storyline_schema;
-pub mod view;
 
 pub use atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 pub use convert::{convert, from_storyline, into_storyline};
@@ -45,6 +44,7 @@ pub use discovery::{
 };
 pub use error::{Error, Result};
 pub use format::ChronicleFormat;
+pub use formats::events::EVENT_SCHEMA_VERSION;
 pub use formats::{
     agenticmd_body_byte_offset, append_subagent_refs_footer, block_speaker, detect_format,
     encode_agenticmd_block, encode_agenticmd_document, encode_agenticmd_preamble,
@@ -53,13 +53,12 @@ pub use formats::{
     parse_agenticmd_document, parse_openai_msg_document, parse_storyline_document,
     strip_subagent_footer_from_body, validate_agenticmd_block, validate_speaker,
     validate_type_name, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdClientMeta, AgenticmdDocument,
-    AgenticmdHeader, AgenticmdSessionFrontmatter, EventRecord, EventsDocument, OpenaiMsgDocument,
-    OpenaiMsgStep, StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
-    AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT,
-    BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION, BLOCK_MARKER, OPENAI_MSG_FORMAT_VERSION,
-    STORYLINE_SCHEMA_VERSION,
+    AgenticmdHeader, AgenticmdSessionFrontmatter, EventIdentity, EventRecord, EventsDocument,
+    OpenaiMsgDocument, OpenaiMsgStep, StoryLink, StorylineAgent, StorylineDocument,
+    StorylineToolCall, StorylineTurn, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FORMAT_NAME,
+    AGENTICMD_FRONTMATTER_FORMAT, BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION, BLOCK_MARKER,
+    OPENAI_MSG_FORMAT_VERSION, STORYLINE_SCHEMA_VERSION,
 };
-pub use ingest::{ingest_trajectory, reconstruct_trajectory, split_trajectory, SplitTables};
 pub use judge_service::{
     judge_trajectory, JudgeTrajectoryOutcome, JudgeTrajectoryRequest, JudgingMethod,
 };
@@ -89,38 +88,41 @@ pub use mapping::{
     event_record_to_agenticmd_block, event_record_to_agenticmd_block_with_text,
     markdown_document_to_event_records,
 };
+pub use messages::*;
+pub use operations::bridge::{
+    search_add, search_add_batch, search_import_lance, search_index, search_index_delete,
+    search_index_list, search_index_rebuild, search_index_reorder, search_query, trajectory_append,
+    trajectory_replay, trajectory_stats as trajectory_stats_request,
+};
+pub use operations::dispatch::invoke_request_body;
 pub use projection::{
-    compact_markdown_to_lance, event_records_to_markdown_blocks, layer_stats,
-    markdown_document_to_event_lines, materialize_lance_to_markdown, materialize_markdown_path,
-    truncate_lance_session, write_markdown_projection, CompactOutcome, CompactStats, LayerStats,
-    MaterializeOutcome, MaterializeStats, TruncateOutcome,
+    event_records_to_markdown_blocks, layer_stats, markdown_document_to_event_lines,
+    materialize_lance_to_markdown, materialize_markdown_path, truncate_lance_session,
+    write_markdown_projection, LayerStats, MaterializeOutcome, MaterializeStats, TruncateOutcome,
 };
-pub use schema::{SessionRow, StepRow, ToolCallRow};
-pub use selection::{
-    dataset_display, detect_primary_layer, resolve_for_append as resolve_storage_for_append,
-    resolve_for_read as resolve_storage_for_read, selection_label, story_stats_note,
-    StorageSelection,
-};
+pub use search::agent as agent_search;
 pub use service::{
     append_trajectory, replay_trajectory, trajectory_stats, AppendServiceOutcome,
     ReplayServiceOutcome, StatsServiceOutcome,
 };
 pub use store::{
     agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
-    append_agenticmd_blocks, count_agenticmd_role, decode_event_lines, distinct_session_ids_in_run,
-    encode_agenticmd_block_validated, encode_event_lines, event_record_to_event_row,
-    event_row_from_batch, event_row_to_event_record, event_row_to_replay_json,
-    event_rows_from_batch, event_rows_to_batch, export_source_dirs, export_story_bundle,
-    find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,
-    load_atif_trajectories, overwrite_session_events, overwrite_session_lines,
-    parse_agenticmd_document_validated, parse_agenticmd_spans_validated, parse_engine_records,
-    read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
-    session_lance_path, structured_store, trajectory_arrow_schema, upsert_block_by_call_id,
-    write_agenticmd_document, AgenticMdStore, AgenticmdFileIndex, AppendOutcome, AtifDataSource,
-    AtifDataSourceOptions, ChronicleQueryBackend, ChronicleQueryEngine, CommitRunOutcome, EventRow,
-    ExportOutcome, ExternalTableFormat, ExternalTableSpec, LanceEventStore, LanceStorylineStore,
-    LeaseAcquireOutcome, MemoryChronicleStore, NormalizedStore, ReplayOutcome, RunControlStore,
-    StorageKind, StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
+    append_agenticmd_blocks, attempt_registry_now_ms, count_agenticmd_role, decode_event_lines,
+    distinct_session_ids_in_run, encode_agenticmd_block_validated, encode_event_lines,
+    event_record_to_event_row, event_row_from_batch, event_row_to_event_record,
+    event_row_to_replay_json, event_rows_from_batch, event_rows_to_batch, export_source_dirs,
+    export_story_bundle, find_block_by_call_id_and_role, index_agenticmd_path,
+    list_agenticmd_paths, load_atif_trajectories, overwrite_session_events,
+    overwrite_session_lines, parse_agenticmd_document_validated, parse_agenticmd_spans_validated,
+    raw_event_arrow_schema, raw_event_lance_path, read_agenticmd_blocks_from_file,
+    rewrite_agenticmd_preamble, rewrite_block_range, upsert_block_by_call_id, validate_event_lines,
+    write_agenticmd_document, AgenticmdFileIndex, AppendOutcome, AtifDataSource,
+    AtifDataSourceOptions, AtifReader, AttemptRecord, AttemptRecordState, AttemptRegistry,
+    ChronicleQueryBackend, ChronicleQueryEngine, CommitRunOutcome, EventRow, ExportOutcome,
+    ExternalTableFormat, ExternalTableSpec, LanceMaintenanceOptions, LanceMaintenanceReport,
+    LeaseAcquireOutcome, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome, RunControlStore,
+    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
+    StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,
     StorylineTableKind, StorylineTablePaths, StorylineTableProvider, StructuredStore,
     TrajectorySession, TrajectoryStats, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
     DATAFUSION_TOOL_CALLS_TABLE, TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL,
@@ -132,7 +134,9 @@ pub use storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
-pub use view::{atif_trajectory_sql_ddl, AtifTrajectoryView, AtifViewRow, ATIF_TRAJECTORY_VIEW};
+
+pub const PERSISTING_VECTOR_INDEX_NAME: &str = search::search_lance::PERSISTING_VECTOR_INDEX_NAME;
+pub const PERSISTING_FTS_INDEX_NAME: &str = search::search_lance::PERSISTING_FTS_INDEX_NAME;
 
 #[cfg(test)]
 mod tests;

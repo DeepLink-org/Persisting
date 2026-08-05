@@ -2,8 +2,9 @@
 
 The [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
 directory is organized around product questions. Each `run.sh` is deliberately
-linear: it clears `.work/`, runs pVisor, pPilot, or pChronicle commands, and
-prints the generated files, bundles, reports, or query results.
+linear: it clears `.work/`, runs pVisor or pPilot commands, and prints the
+generated files, bundles, reports, or query results. The pChronicle examples
+enter through `ppilot chronicle` and `ppilot query`, not internal Rust examples.
 
 ## Run the examples
 
@@ -14,9 +15,9 @@ just examples-pchronicle      # pChronicle examples
 just examples-ppilot          # pPilot examples
 ```
 
-The first run compiles missing Rust targets; later runs reuse the Cargo cache.
-Requirements are macOS or Linux, Cargo, Python 3, and common POSIX tools such
-as `jq`, `awk`, and `curl`.
+Every entry point incrementally builds and uses release Rust targets; later
+runs reuse the Cargo cache. Requirements are macOS or Linux, Cargo, Python 3,
+and common POSIX tools such as `jq`, `awk`, and `curl`.
 
 ## pVisor: lightweight isolation and Run control
 
@@ -28,7 +29,7 @@ macFUSE on macOS or FUSE3 on Linux.
 |---|---|---|
 | [01-filesystem-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/01-filesystem-isolation) | Agent writes land in the upper while the lower remains unchanged | [pVisor CLI](../design/cli-pvisor.md) |
 | [02-changeset-management](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/02-changeset-management) | A changeset can be reviewed, applied, or dropped | [pVisor CLI](../design/cli-pvisor.md) |
-| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | Proxied HTTP requests follow allow and deny policies | [OverlayNet design](../design/overlaynet.md) |
+| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | Runnable CLI/TOML walkthrough for allowlist, deny, deny-all, CIDR/port/transport rules, bandwidth limits, and the cooperative boundary | [OverlayNet design](../design/overlaynet.md) |
 | [04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control) | Gateway routes and captures two OpenAI-compatible calls | [Capture guide](capture.md) |
 
 Here, lightweight isolation covers the transactional workspace and the data
@@ -60,9 +61,9 @@ claims about Lance or ATIF.
 
 | Example | What it demonstrates | Related guide |
 |---|---|---|
-| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | Actual sizes of ATIF input and the imported three-table Lance store | [Trajectory format](../design/trajectory-format.md) |
-| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | Query throughput for Lance and ATIF/DataFusion over equal results | [Trajectory storage](../design/trajectory.md) |
-| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | The same read-only SQL returns the same rows from Lance and ATIF | [pPilot CLI](../design/cli-ppilot.md) |
+| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | pPilot reports the size ratio, saved space, and compression factor | [Trajectory format](../design/trajectory-format.md) |
+| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | End-to-end pPilot CLI import, replacement, and cold Lance/ATIF query latency | [Trajectory storage](../design/trajectory.md) |
+| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | pPilot explicitly reports cross-backend SQL equivalence | [pPilot CLI](../design/cli-ppilot.md) |
 
 ## Prerequisites
 

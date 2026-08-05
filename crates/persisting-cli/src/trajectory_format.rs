@@ -1,23 +1,21 @@
-//! `trajectory add` input → engine append lines; storage target inferred separately from input format.
+//! `trajectory add` input → pChronicle event lines; storage target inferred separately.
 
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
+use persisting_pchronicle::TrajectoryStorageFormat;
 use persisting_pchronicle::{
     encode_event_lines, is_trajectory_markdown_path, markdown_document_to_event_lines, EventRecord,
 };
-use persisting_proto::TrajectoryStorageFormat;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum TrajectoryStorageCli {
-    /// Read/stats: detect layer; append: detect target layer (`auto` → Lance if empty, else existing layer).
+    /// Use the canonical trajectory store.
     #[default]
     Auto,
     /// Lance raw event log (canonical).
     Lance,
-    /// TLV Markdown session file (read/materialize view).
-    Markdown,
 }
 
 impl From<TrajectoryStorageCli> for TrajectoryStorageFormat {
@@ -25,7 +23,6 @@ impl From<TrajectoryStorageCli> for TrajectoryStorageFormat {
         match v {
             TrajectoryStorageCli::Auto => TrajectoryStorageFormat::Auto,
             TrajectoryStorageCli::Lance => TrajectoryStorageFormat::Lance,
-            TrajectoryStorageCli::Markdown => TrajectoryStorageFormat::Markdown,
         }
     }
 }
@@ -120,7 +117,7 @@ fn lines_from_jsonl(src: &str) -> Result<String> {
         .map(|(i, line)| {
             let v: serde_json::Value = serde_json::from_str(line.trim())
                 .with_context(|| format!("jsonl line {}", i + 1))?;
-            event_value_to_engine_line(v).with_context(|| format!("jsonl line {}", i + 1))
+            event_value_to_event_line(v).with_context(|| format!("jsonl line {}", i + 1))
         })
         .collect::<Result<Vec<_>>>()
         .map(|lines| lines.join("\n"))
@@ -137,13 +134,13 @@ fn lines_from_toml(src: &str) -> Result<String> {
         .enumerate()
         .map(|(i, item)| {
             let v = serde_json::to_value(item).with_context(|| format!("toml records[{i}]"))?;
-            event_value_to_engine_line(v).with_context(|| format!("toml records[{i}]"))
+            event_value_to_event_line(v).with_context(|| format!("toml records[{i}]"))
         })
         .collect::<Result<Vec<_>>>()
         .map(|lines| lines.join("\n"))
 }
 
-fn event_value_to_engine_line(value: serde_json::Value) -> Result<String> {
+fn event_value_to_event_line(value: serde_json::Value) -> Result<String> {
     let event: EventRecord = serde_json::from_value(value).context("decode EventRecord")?;
     encode_event_lines(&[event])?
         .into_iter()
@@ -189,13 +186,6 @@ mod tests {
                 TrajectoryStorageCli::Lance
             ),
             TrajectoryStorageFormat::Lance
-        );
-        assert_eq!(
-            TrajectoryFormatManager::resolve_storage_format(
-                "run-20260101-example.md",
-                TrajectoryStorageCli::Markdown
-            ),
-            TrajectoryStorageFormat::Markdown
         );
     }
 

@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::{
-    from_storyline, into_storyline, ChronicleFormat, LanceStorylineStore, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineDocument,
+    from_storyline, into_storyline, ChronicleFormat, StorylineDataSource,
+    StorylineDataSourceOptions, StorylineDocument, StorylineLanceStore,
 };
 
 fn main() -> Result<()> {
@@ -100,7 +100,7 @@ async fn storage_benchmark(
     query_iterations: usize,
 ) -> Result<StorageResult> {
     let dir = tempfile::tempdir()?;
-    let store = LanceStorylineStore::open(dir.path()).await?;
+    let store = StorylineLanceStore::open(dir.path()).await?;
     let started = Instant::now();
     for story in stories {
         store.replace_storyline(story).await?;

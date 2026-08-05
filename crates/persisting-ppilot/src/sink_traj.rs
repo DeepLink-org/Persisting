@@ -7,8 +7,8 @@ use crate::sink::ResultSink;
 use crate::task::TaskResult;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use persisting_pchronicle::{encode_event_lines, EventRecord};
-use persisting_proto::{TrajectoryAppendRequest, TrajectoryStorageFormat};
+use persisting_pchronicle::{encode_event_lines, EventIdentity, EventRecord, EVENT_SCHEMA_VERSION};
+use persisting_pchronicle::{TrajectoryAppendRequest, TrajectoryStorageFormat};
 use std::collections::HashSet;
 use std::sync::Mutex;
 
@@ -61,6 +61,15 @@ impl LanceResultSink {
         };
         let payload = serde_json::to_value(result).context("TaskResult to JSON")?;
         Ok(EventRecord {
+            identity: EventIdentity {
+                schema_version: EVENT_SCHEMA_VERSION,
+                event_id: Some(format!("event-{}", uuid::Uuid::new_v4())),
+                run_id: result.run_id.clone(),
+                attempt_id: result.attempt_id.clone(),
+                timestamp_unix_ms: Some((chrono::Utc::now().timestamp_millis()).max(0) as u64),
+                producer: Some("persisting-ppilot".into()),
+                ..EventIdentity::default()
+            },
             seq: 0,
             source: "persisting-ppilot".into(),
             kind: kind.into(),
@@ -102,9 +111,9 @@ impl LanceResultSink {
                 records_ronl: line,
                 storage_format: TrajectoryStorageFormat::Lance,
             };
-            // bridge is sync (blocks on runtime inside engine); ok from async via spawn_blocking.
+            // The pChronicle bridge is synchronous; isolate it from the async worker.
             let resp =
-                tokio::task::spawn_blocking(move || persisting_engine::trajectory_append(req))
+                tokio::task::spawn_blocking(move || persisting_pchronicle::trajectory_append(req))
                     .await
                     .context("join trajectory_append")?
                     .context("trajectory_append")?;

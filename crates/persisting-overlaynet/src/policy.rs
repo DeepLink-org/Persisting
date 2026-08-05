@@ -9,9 +9,10 @@ use persisting_control::{
     ControlController, ControlMachine, ControlReason, ControlRequest, NetworkGuard,
     PolicyControlController,
 };
-use persisting_proto::{NetworkAccessRequest, NetworkCapability, NetworkDefaultAction};
-pub use persisting_proto::{NetworkAccessRule, NetworkBandwidthLimit};
+use persisting_control::{NetworkAccessRequest, NetworkCapability, NetworkDefaultAction};
+pub use persisting_control::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +62,11 @@ struct CompiledBandwidthLimit {
 
 impl NetworkPolicy {
     pub fn compile(network: &NetworkConfig) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            network.mode == NetworkMode::Allowlist
+                || (network.allowed_hosts.is_empty() && network.rules.is_empty()),
+            "network allow entries require mode = \"allowlist\""
+        );
         let capability = network_capability(network);
         // Gateway-owned upstream routes and the listener itself are not Agent
         // egress grants. Only explicit entries from `[network]` reach this guard.
@@ -111,10 +117,22 @@ impl NetworkPolicy {
         authorize_egress(&PolicyControlController, self, request)
     }
 
+    pub(crate) fn authorize(
+        &self,
+        controller: &dyn ControlController,
+        request: &NetworkAccessRequest,
+    ) -> Result<(), DenyReason> {
+        // The compiled policy is an invariant of the data plane. An injected
+        // controller may further restrict it, but must never be able to widen it.
+        self.preflight(request)?;
+        authorize_egress(controller, self, request)
+    }
+
     pub(crate) fn matching_limits(
         &self,
         host: &str,
         port: Option<u16>,
+        resolved_addresses: &[SocketAddr],
     ) -> Vec<NetworkBandwidthLimit> {
         self.limits
             .iter()
@@ -123,10 +141,15 @@ impl NetworkPolicy {
                     .config
                     .port
                     .is_none_or(|expected| port == Some(expected))
-                    && limit
-                        .matcher
-                        .as_ref()
-                        .is_none_or(|matcher| host_matches(host, std::slice::from_ref(matcher)))
+                    && limit.matcher.as_ref().is_none_or(|matcher| {
+                        host_matches(host, std::slice::from_ref(matcher))
+                            || resolved_addresses.iter().any(|address| {
+                                host_matches(
+                                    &address.ip().to_string(),
+                                    std::slice::from_ref(matcher),
+                                )
+                            })
+                    })
             })
             .map(|limit| limit.config.clone())
             .collect()
@@ -177,8 +200,7 @@ pub fn network_capability_from_config(config: &impl PolicyConfig) -> NetworkCapa
 }
 
 pub fn validate_network_config(network: &NetworkConfig) -> anyhow::Result<()> {
-    NetworkGuard::compile(network_capability(network), Vec::new())?;
-    Ok(())
+    NetworkPolicy::compile(network).map(|_| ())
 }
 
 pub fn host_from_authority(authority: &str) -> String {
@@ -238,9 +260,6 @@ pub fn authorize_egress(
         .expect("policy controller must return a valid authorization transition");
     let allowed = transition.is_allowed();
     let reason = transition.reason;
-    let _applied = control
-        .applied()
-        .expect("an authorization transition can be applied");
     if allowed {
         return Ok(());
     }
@@ -268,8 +287,8 @@ pub fn forbidden_response(host: &str, reason: &DenyReason) -> (StatusCode, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use persisting_control::NetworkTransport;
     use persisting_control::PolicyControlController;
-    use persisting_proto::NetworkTransport;
 
     #[test]
     fn allowlist_contains_only_explicit_network_entries() {
@@ -390,11 +409,18 @@ mod tests {
             ..NetworkConfig::default()
         })
         .unwrap();
-        let matched = policy.matching_limits("api.example.com", Some(443));
+        let matched = policy.matching_limits("api.example.com", Some(443), &[]);
         assert_eq!(matched.len(), 2);
-        assert_eq!(policy.matching_limits("api.example.com", Some(80)).len(), 1);
         assert_eq!(
-            policy.matching_limits("other.example.com", Some(443)).len(),
+            policy
+                .matching_limits("api.example.com", Some(80), &[])
+                .len(),
+            1
+        );
+        assert_eq!(
+            policy
+                .matching_limits("other.example.com", Some(443), &[])
+                .len(),
             1
         );
     }
@@ -470,11 +496,44 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            policy.matching_limits("api.example.com", Some(443)).len(),
+            policy
+                .matching_limits("api.example.com", Some(443), &[])
+                .len(),
             1
         );
-        assert!(policy.matching_limits("example.com", Some(443)).is_empty());
-        assert!(policy.matching_limits("example.net", Some(443)).is_empty());
+        assert!(policy
+            .matching_limits("example.com", Some(443), &[])
+            .is_empty());
+        assert!(policy
+            .matching_limits("example.net", Some(443), &[])
+            .is_empty());
+    }
+
+    #[test]
+    fn cidr_bandwidth_limit_matches_resolved_hostname_address() {
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            limits: vec![NetworkBandwidthLimit {
+                host: Some("10.0.0.0/8".into()),
+                port: Some(443),
+                bytes_per_second: 1_000,
+            }],
+            ..NetworkConfig::default()
+        })
+        .unwrap();
+        let resolved = ["10.4.5.6:443".parse().unwrap()];
+        assert_eq!(
+            policy
+                .matching_limits("service.internal", Some(443), &resolved)
+                .len(),
+            1
+        );
+        assert!(policy
+            .matching_limits(
+                "service.internal",
+                Some(443),
+                &["192.168.1.2:443".parse().unwrap()],
+            )
+            .is_empty());
     }
 
     #[test]
@@ -502,5 +561,35 @@ mod tests {
             })
             .is_err());
         }
+    }
+
+    #[test]
+    fn public_and_no_network_modes_reject_allow_entries() {
+        for mode in [NetworkMode::Public, NetworkMode::NoNetwork] {
+            assert!(NetworkPolicy::compile(&NetworkConfig {
+                mode,
+                rules: vec![NetworkAccessRule {
+                    host: "api.example.com".into(),
+                    ports: vec![443],
+                    transports: Vec::new(),
+                    allow_private_ips: false,
+                }],
+                ..NetworkConfig::default()
+            })
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn public_validation_rejects_invalid_bandwidth_limits() {
+        assert!(validate_network_config(&NetworkConfig {
+            limits: vec![NetworkBandwidthLimit {
+                host: None,
+                port: None,
+                bytes_per_second: 0,
+            }],
+            ..NetworkConfig::default()
+        })
+        .is_err());
     }
 }

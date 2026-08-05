@@ -1,8 +1,7 @@
 //! agenticmd ⇄ storyline.
 //!
-//! Correlation fields (`call_id`, `seq`, …) ride in `StorylineTurn.extra` so
-//! `history convert` through the hub can round-trip upsert keys. Capture live
-//! Lance↔md still uses [`crate::mapping`] directly (not this hub path).
+//! AgenticMD is a human/debugging view. Conversion prefers Storyline field
+//! names while retaining legacy aliases for older capture documents.
 
 use std::collections::BTreeMap;
 
@@ -21,6 +20,9 @@ use crate::Result;
 /// Header field names preserved via `turn.extra` for hub round-trips.
 const EXTRA_CORRELATION_KEYS: &[&str] = &[
     "call_id",
+    "event_seq",
+    "step_id",
+    "producer",
     "seq",
     "turn",
     "trace_id",
@@ -36,13 +38,8 @@ pub fn agenticmd_to_storyline(doc: &AgenticmdDocument) -> Result<StorylineDocume
 
     let mut turns = Vec::new();
     for (i, block) in doc.blocks.iter().enumerate() {
-        let id = (i as i64) + 1;
-        let role = block.role().unwrap_or("note");
-        let source = match role {
-            "user" => "user",
-            "assistant" => "agent",
-            _ => "system",
-        };
+        let id = block.step_id().unwrap_or((i as i64) + 1);
+        let source = block.source().unwrap_or("system");
         let model = block
             .header
             .fields
@@ -114,14 +111,10 @@ pub fn storyline_to_agenticmd(story: &StorylineDocument) -> Result<AgenticmdDocu
     story.validate()?;
     let mut blocks = Vec::new();
     for turn in &story.turns {
-        let role = match turn.source.as_str() {
-            "user" => "user",
-            "system" => "note",
-            _ => "assistant",
-        };
         let body = message_text(&turn.message).unwrap_or_default();
         let mut fields = BTreeMap::new();
-        fields.insert("role".into(), json!(role));
+        fields.insert("source".into(), json!(turn.source));
+        fields.insert("step_id".into(), json!(turn.id));
         let kind = turn
             .kind
             .clone()

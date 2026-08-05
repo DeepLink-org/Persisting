@@ -55,6 +55,7 @@ fn matches_spawn_hint_to_registered_subagent_by_doc_target() {
 {"description":"Review capture command design","subagent_type":"Explore","prompt":"Review docs/src/design/cli-pvisor.md"}
 ```"#;
     let mut rec = CaptureRecord {
+        identity: Default::default(),
         seq: 0,
         source: "persisting-proxy".into(),
         kind: "llm.response.stream".into(),
@@ -124,6 +125,7 @@ fn ignores_documentation_cli_agent_id_flag() {
 #[test]
 fn spawn_link_records_are_never_skipped_in_markdown() {
     let rec = CaptureRecord {
+        identity: Default::default(),
         seq: 7,
         source: "persisting-proxy".into(),
         kind: "llm.spawn_link".into(),

@@ -11,7 +11,7 @@ use persisting_pchronicle::convert::{
 };
 use persisting_pchronicle::{
     detect_format, overwrite_session_events, resolve_traj_read_location, ChronicleFormat,
-    EventsDocument, LanceEventStore, StoryCoords as TrajectorySession, StorylineDocument,
+    EventsDocument, RawEventLanceStore, StoryCoords as TrajectorySession, StorylineDocument,
     StructuredStore,
 };
 
@@ -284,7 +284,7 @@ fn load_events_document(session: &TrajectorySession) -> Result<EventsDocument> {
         .build()
         .context("create tokio runtime for Lance replay")?;
     rt.block_on(async {
-        let lance = LanceEventStore;
+        let lance = RawEventLanceStore;
         if !lance.exists(session).await? {
             bail!(
                 "Lance event log missing at {}; --from events requires events.lance",
@@ -316,7 +316,7 @@ fn write_events_lance(
         .build()
         .context("create tokio runtime for Lance write")?;
     rt.block_on(async {
-        let lance = LanceEventStore;
+        let lance = RawEventLanceStore;
         if lance.exists(session).await? {
             if !force {
                 bail!(

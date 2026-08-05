@@ -983,16 +983,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bincode"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
-dependencies = [
- "serde",
- "unty",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6352,13 +6342,10 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "csv",
  "dirs",
- "libloading",
  "persisting-dlcapt",
  "persisting-gateway",
  "persisting-pchronicle",
- "persisting-proto",
  "reqwest 0.12.28",
  "ron",
  "serde",
@@ -6378,7 +6365,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "ipnet",
- "persisting-proto",
  "serde",
  "serde_json",
 ]
@@ -6389,9 +6375,7 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "mach2",
- "persisting-engine",
  "persisting-pchronicle",
- "persisting-proto",
  "pyo3",
  "pythonize",
  "ron",
@@ -6425,27 +6409,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "persisting-engine"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "futures",
- "lance",
- "lance-core",
- "lance-index",
- "lance-linalg",
- "lance-table",
- "persisting-pchronicle",
- "persisting-proto",
- "ron",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "persisting-gateway"
 version = "0.2.0"
 dependencies = [
@@ -6464,7 +6427,6 @@ dependencies = [
  "persisting-control",
  "persisting-overlaynet",
  "persisting-pchronicle",
- "persisting-proto",
  "pulsing-actor",
  "regex",
  "reqwest 0.12.28",
@@ -6506,7 +6468,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "persisting-control",
- "persisting-proto",
  "reqwest 0.12.28",
  "serde",
  "tokio",
@@ -6519,13 +6480,17 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "datafusion",
  "fs2",
  "futures",
  "lance",
+ "lance-core",
  "lance-index",
+ "lance-linalg",
+ "lance-table",
  "object_store",
- "persisting-proto",
+ "persisting-control",
  "reqwest 0.12.28",
  "ron",
  "serde",
@@ -6534,6 +6499,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -6545,10 +6511,9 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
- "persisting-engine",
+ "persisting-control",
  "persisting-gateway",
  "persisting-pchronicle",
- "persisting-proto",
  "persisting-pvisor",
  "pulsing-actor",
  "serde",
@@ -6565,16 +6530,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "persisting-proto"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "bincode 2.0.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "persisting-pvisor"
 version = "0.2.0"
 dependencies = [
@@ -6587,7 +6542,6 @@ dependencies = [
  "persisting-overlayfs",
  "persisting-overlaynet",
  "persisting-pchronicle",
- "persisting-proto",
  "serde",
  "serde_json",
  "tempfile",
@@ -6909,7 +6863,7 @@ checksum = "8a751c49db41d362084cb011c77391c1b0e857d11f4e6a839f6452c722a090a6"
 dependencies = [
  "anyhow",
  "async-trait",
- "bincode 1.3.3",
+ "bincode",
  "bytes",
  "dashmap",
  "futures",
@@ -9052,12 +9006,6 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
-
-[[package]]
-name = "unty"
-version = "0.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
 
 [[package]]
 name = "url"

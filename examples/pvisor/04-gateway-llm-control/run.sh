@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Use the pVisor binary built from this checkout.
-export PATH="../../../target/debug:$PATH"
+export PATH="../../../target/release:$PATH"
 
 # Start a local OpenAI-compatible endpoint for the example agent.
 rm -rf .work

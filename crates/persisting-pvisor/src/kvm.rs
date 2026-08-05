@@ -6,7 +6,7 @@ use crate::config::{KvmArchitecture, KvmSettings};
 use crate::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
 use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
-use persisting_proto::{
+use persisting_control::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunState, StdioMode,
 };
@@ -581,8 +581,8 @@ async fn join_capture(
 }
 
 fn failed_to_start(
-    spec: &persisting_proto::RunSpec,
-    attempt_id: &persisting_proto::AttemptId,
+    spec: &persisting_control::RunSpec,
+    attempt_id: &persisting_control::AttemptId,
     started_at: u64,
     message: String,
 ) -> RunResult {

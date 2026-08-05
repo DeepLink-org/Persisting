@@ -1,6 +1,7 @@
-//! Direct EventRecord ⇄ AgenticmdBlock mapping (preserves call_id / seq / header fields).
+//! EventRecord ⇄ AgenticMD debug-view mapping.
 //!
-//! This path deliberately does **not** go through the storyline hub.
+//! New blocks use Storyline-like fields. Reverse conversion exists for explicit
+//! imports, but AgenticMD is intentionally not a lossless persistence boundary.
 
 mod fields;
 mod text;
@@ -12,7 +13,7 @@ use crate::formats::agenticmd::{AgenticmdBlock, AgenticmdHeader};
 use crate::formats::agenticmd_body::{
     append_subagent_refs_footer, strip_subagent_footer_from_body, BLOCK_FORMAT_VERSION,
 };
-use crate::formats::events::EventRecord;
+use crate::formats::events::{EventIdentity, EventRecord};
 
 use fields::{attach_llm_fields, attach_subagent_link_fields, role_and_body};
 
@@ -33,12 +34,18 @@ pub fn event_record_to_agenticmd_block_with_text(
     role: &str,
     body: &str,
 ) -> Result<AgenticmdBlock> {
+    let source = match role {
+        "user" => "user",
+        "assistant" | "agent" => "agent",
+        _ => "system",
+    };
     let mut fields = std::collections::BTreeMap::from([
         ("v".into(), json!(BLOCK_FORMAT_VERSION)),
         ("kind".into(), json!(rec.kind)),
-        ("source".into(), json!(rec.source)),
-        ("seq".into(), json!(rec.seq)),
-        ("turn".into(), json!(rec.seq / 2 + 1)),
+        ("source".into(), json!(source)),
+        ("producer".into(), json!(rec.source)),
+        ("event_seq".into(), json!(rec.seq)),
+        ("step_id".into(), json!(rec.seq / 2 + 1)),
     ]);
     if rec.payload.get("draft").and_then(|v| v.as_bool()) == Some(true) {
         fields.insert("draft".into(), json!(true));
@@ -62,7 +69,6 @@ pub fn event_record_to_agenticmd_block_with_text(
         fields.insert("call_id".into(), json!(c));
     }
     attach_subagent_link_fields(&mut fields, rec);
-    fields.insert("role".into(), json!(role));
     attach_llm_fields(&mut fields, rec);
 
     let body = append_subagent_refs_footer(body, &rec.payload);
@@ -92,11 +98,10 @@ pub fn agenticmd_block_to_event_record(block: &AgenticmdBlock) -> Result<EventRe
     let content = strip_subagent_footer_from_body(&block.body);
     let kind = block.kind().unwrap_or("markdown").to_string();
     let role = block.role().unwrap_or("note");
-    let seq = block
-        .header
-        .fields
-        .get("seq")
-        .and_then(|v| v.as_u64())
+    let seq = ["event_seq", "seq"]
+        .iter()
+        .find_map(|key| block.header.fields.get(*key).and_then(|v| v.as_u64()))
+        .or_else(|| block.step_id().and_then(|id| u64::try_from(id).ok()))
         .unwrap_or(0);
 
     let payload = match kind.as_str() {
@@ -137,13 +142,14 @@ pub fn agenticmd_block_to_event_record(block: &AgenticmdBlock) -> Result<EventRe
     };
 
     Ok(EventRecord {
+        identity: EventIdentity::default(),
         seq,
         source: block
             .header
             .fields
-            .get("source")
+            .get("producer")
             .and_then(|v| v.as_str())
-            .unwrap_or("markdown")
+            .unwrap_or("agenticmd-view")
             .into(),
         kind,
         timestamp: block
@@ -200,19 +206,19 @@ pub fn agenticmd_block_to_event_record(block: &AgenticmdBlock) -> Result<EventRe
     })
 }
 
-/// Attach `_tlv` so compact/import keep full block header fields.
+/// Attach source view metadata for explicit imports.
 pub fn enrich_event_from_agenticmd_block(
     mut rec: EventRecord,
     block: &AgenticmdBlock,
 ) -> EventRecord {
-    rec.payload["_tlv"] = json!({
-        "role": block.role(),
+    rec.payload["_agenticmd"] = json!({
+        "source": block.source(),
         "block_fields": block.header.fields,
     });
     rec
 }
 
-/// Map pChronicle blocks to event records (always enriches `_tlv`).
+/// Map AgenticMD blocks to event records for explicit import.
 pub fn agenticmd_blocks_to_event_records(blocks: &[AgenticmdBlock]) -> Result<Vec<EventRecord>> {
     blocks
         .iter()

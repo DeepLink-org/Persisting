@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(summary.turns, 1);
         assert_eq!(summary.session, "run-test");
         let text = std::fs::read_to_string(&md).unwrap();
-        assert!(text.contains("turns: 1"));
+        assert!(text.contains("turn_count: 1"));
         assert!(text.contains("hello"));
     }
 

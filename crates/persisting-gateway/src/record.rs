@@ -179,6 +179,7 @@ mod tests {
     #[test]
     fn visible_user_prefers_user_content_field() {
         let rec = CaptureRecord {
+            identity: Default::default(),
             seq: 0,
             source: "test".into(),
             kind: "llm.request".into(),

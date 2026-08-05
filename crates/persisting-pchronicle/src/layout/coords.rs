@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-/// Offline story coordinates (same fields as engine/CLI `TrajLocation`).
+/// Offline story coordinates shared by pChronicle clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoryCoords {
     pub storage: String,
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_session_lance_path_is_session_scoped() {
+    fn flat_raw_event_lance_path_is_session_scoped() {
         let path = story_lance_event_path("/store", "agent", "sess-flat", None).unwrap();
         assert!(path.ends_with("agent/sess-flat/events.lance"));
     }

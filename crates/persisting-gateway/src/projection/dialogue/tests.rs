@@ -86,7 +86,7 @@ fn llm_pair_writes_and_replays() {
     let blocks = parse_document(&doc).unwrap();
     let row: Value =
         serde_json::from_str(&agenticmd_block_to_replay_json(&blocks[0]).unwrap()).unwrap();
-    assert_eq!(row["role"], "user");
+    assert_eq!(row["source"], "user");
     assert_eq!(row["content"], "你好");
 }
 

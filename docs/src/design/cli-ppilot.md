@@ -8,6 +8,7 @@ Lance/ATIF datasource 与 SQL 执行继续由 pChronicle library 提供。
 
 ```text
 ppilot run <SCRIPT> [OPTIONS]
+ppilot chronicle import <INPUT> <STORE>
 ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
 ppilot produce <PLANNER.py> --output <DIR> [--parallelism N] [-- <PLANNER_ARGS>...]
 ppilot analysis <INPUT> [--output <DIR>] [--fmt jsonl|json|toml] [--parallelism N] (--sql <SQL> | --sql-file <FILE>)
@@ -15,7 +16,7 @@ ppilot process <INPUT> (--script <FILE> | --count <METRIC>) [--mappers N] [--out
 ppilot self-test [OPTIONS]
 ```
 
-前两条命令分别等价于：
+`run` 和 `query` 分别等价于：
 
 ```bash
 persisting batch <SCRIPT> [OPTIONS]
@@ -40,6 +41,17 @@ ppilot run plan.py --sink ./results \
 `--control-uri` 可覆盖默认的 sink 本地 control root，支持 pChronicle 的对象存储 URI。
 它不接受凭证参数，认证沿用对象存储 provider chain。
 
+### `chronicle import`
+
+把 ATIF JSON 对象、数组、JSONL/NDJSON 文件或目录校验并规范化为 Storyline，然后按
+`session_id` 原子写入三表 Lance store。已存在的 session 被替换，其他 session 保留。
+`STORE` 可以是本地路径或 pChronicle 支持的对象存储 URI。
+
+```bash
+ppilot chronicle import ./trajectories.ndjson ./storyline-store
+ppilot chronicle import ./atif-directory s3://trajectory-bucket/storylines
+```
+
 ### `query`
 
 对 Storyline 三表 Lance store 或 ATIF 输入执行一条只读 DataFusion SQL。两个后端暴露
@@ -53,7 +65,7 @@ ppilot query ./storyline-store \
 ppilot query s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
 
-ppilot query ./trajectories.ndjson --source atif --sql-file analysis.sql
+ppilot query ./trajectories.ndjson --sql-file analysis.sql
 cat analysis.sql | ppilot query ./storyline-store --sql-file -
 
 # 将带表头的 CSV 和 JSON 对象数组注册为外部表并联查

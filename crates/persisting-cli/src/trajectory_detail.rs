@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use persisting_gateway::record::CaptureRecord;
 use persisting_gateway::record::CaptureRecordExt;
-use persisting_proto::TrajectoryStatsResponse;
+use persisting_pchronicle::TrajectoryStatsResponse;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone)]

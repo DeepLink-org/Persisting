@@ -1,4 +1,4 @@
-//! Capture ↔ pChronicle bridge: mapping, materialize, compact (not pure codec).
+//! Capture ↔ pChronicle bridge: debug-view mapping, materialize, and explicit import.
 
 use persisting_gateway::dialogue::capture_record_to_agenticmd_block;
 use persisting_gateway::markdown_pipeline::MarkdownPipeline;
@@ -68,20 +68,20 @@ fn encoded_document_is_accepted_by_both_parser_surfaces() {
 }
 
 #[test]
-fn compact_path_uses_chronicle_parse() {
-    let records = fixture_records(fixture()).expect("compact parse");
+fn explicit_import_uses_chronicle_parse() {
+    let records = fixture_records(fixture()).expect("AgenticMD import parse");
     assert_eq!(records.len(), 2);
     assert!(records.iter().any(|r| {
         r.payload
-            .get("_tlv")
-            .and_then(|v| v.get("role"))
+            .get("_agenticmd")
+            .and_then(|v| v.get("source"))
             .and_then(|v| v.as_str())
             == Some("user")
     }));
 }
 
 #[test]
-fn import_and_compact_share_enriched_dialogue_path() {
+fn import_keeps_debug_view_metadata() {
     let doc = fixture();
     let via_engine_lines = markdown_document_to_event_lines(doc).unwrap().join("\n");
     let records = fixture_records(doc).unwrap();
@@ -89,10 +89,10 @@ fn import_and_compact_share_enriched_dialogue_path() {
     for rec in &records {
         assert!(
             rec.payload
-                .get("_tlv")
+                .get("_agenticmd")
                 .and_then(|v| v.get("block_fields"))
                 .is_some(),
-            "expected _tlv.block_fields on seq={}",
+            "expected _agenticmd.block_fields on seq={}",
             rec.seq
         );
     }
@@ -102,7 +102,7 @@ fn import_and_compact_share_enriched_dialogue_path() {
         "assistant call_id preserved"
     );
     assert_eq!(
-        records[1].payload["_tlv"]["block_fields"]["trace_id"].as_str(),
+        records[1].payload["_agenticmd"]["block_fields"]["trace_id"].as_str(),
         Some("trace-demo-1")
     );
     assert!(!via_engine_lines.is_empty());
@@ -125,7 +125,7 @@ fn capture_record_maps_through_agenticmd_block() {
     assert_eq!(block.header.type_name, "markdown");
     assert_eq!(block.role(), Some("user"));
     let wire = encode_agenticmd_block(&block).unwrap();
-    assert!(wire.contains("\"seq\":7") || wire.contains("\"seq\": 7"));
+    assert!(wire.contains("\"event_seq\":7") || wire.contains("\"event_seq\": 7"));
     let back = agenticmd_block_to_event_record(&block).unwrap();
     assert_eq!(back.seq, 7);
     assert_eq!(back.call_id.as_deref(), Some("c7"));

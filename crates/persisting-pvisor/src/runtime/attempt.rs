@@ -8,6 +8,7 @@ use super::overlay::{
 use super::registry::{RunControlServer, RunLease, RunLineage, RunRecord};
 use crate::TrajectoryEventSink;
 use persisting_control::ControlController;
+use persisting_control::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
 use persisting_gateway::config::ProxyConfig;
 use persisting_gateway::injection::{client_gateway_config_args, proxy_environment};
 use persisting_gateway::lifecycle::{
@@ -18,7 +19,6 @@ use persisting_gateway::runtime::run_config::snapshot_proxy_config;
 use persisting_gateway::runtime::run_env::write_run_session;
 use persisting_gateway::sink::SeqOnlySink;
 use persisting_overlaynet::policy::network_capability_from_config;
-use persisting_proto::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -513,7 +513,7 @@ fn orchestration_from_spec(
         .collect()
 }
 
-fn executor_from_spec(spec: &RunSpec) -> Option<persisting_proto::ExecutorDescriptor> {
+fn executor_from_spec(spec: &RunSpec) -> Option<persisting_control::ExecutorDescriptor> {
     spec.metadata
         .get("pvisor.executor")
         .cloned()
@@ -715,8 +715,8 @@ fn enrich_with_session(
             plan.env.insert(
                 "PERSISTING_NETWORK_POLICY".into(),
                 match default_action {
-                    persisting_proto::NetworkDefaultAction::Allow => "default-allow",
-                    persisting_proto::NetworkDefaultAction::Deny => "default-deny",
+                    persisting_control::NetworkDefaultAction::Allow => "default-allow",
+                    persisting_control::NetworkDefaultAction::Deny => "default-deny",
                 }
                 .into(),
             );

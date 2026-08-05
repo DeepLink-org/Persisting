@@ -74,7 +74,7 @@ invocation:
 ```text
 PERSISTING_AGENT_ABI_ENDPOINT=/tmp/pvisor-agent-….sock
 PERSISTING_AGENT_ABI_TOKEN=…
-PERSISTING_AGENT_ABI_VERSION=1
+PERSISTING_AGENT_ABI_VERSION=2
 PERSISTING_AGENT_ABI_TRANSPORT=unix
 ```
 
@@ -84,13 +84,11 @@ Docker and KVM placements start a complete pVisor inside the isolation
 boundary. That injected pVisor creates the Agent ABI locally and executes the
 Agent through the same ProcessExecutor used by a native Run; the host ABI token
 is deliberately removed from the delegated RunSpec.
-The protocol types live in `persisting-proto::agent_abi`, independently of the
-Unix transport, so a future virtio-vsock transport can reuse the same ABI.
-
-The v1 handshake negotiates `heartbeat`, `process_registry`,
-`checkpoint_quiesce`, and `effect_journal`. Heartbeats return pVisor's current
-desired state (`continue`, `quiesce`, or `shutdown`). Quiesce acknowledgements
-must match the active directive generation and the server's open-effect view.
+The compact protocol is owned by pVisor and currently uses the injected Unix
+socket directly. The v2 handshake authenticates the client and opens a session.
+Heartbeats return pVisor's current desired state (`continue`, `quiesce`, or
+`shutdown`). Quiesce acknowledgements must match the active directive
+generation and the server's open-effect view.
 
 Hosts use `RunHandle::agent_abi()` to publish desired state and inspect the
 registered clients, processes, and effects. pPilot exposes `AgentAbiClient` for
@@ -162,6 +160,9 @@ AWS_REGION=us-east-1 pvisor run \
 The resulting dataset is
 `s3://trajectory-bucket/persisting/runs/<agent>/<run-id>/events.lance`.
 Credentials use the AWS provider chain and are not persisted in Run metadata.
+The configured pChronicle writer receives both Gateway trajectory records and
+pVisor `run.*` lifecycle records as the same canonical `EventRecord`; pVisor no
+longer defines a second runtime event envelope outside pChronicle.
 
 ### Container executor
 

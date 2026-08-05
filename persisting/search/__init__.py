@@ -1,14 +1,10 @@
-"""Python wrappers for Persisting Agent Search core APIs (PyO3 → Rust engine, no JSON wire)."""
+"""Python wrappers for pChronicle Search APIs (PyO3 → Rust, no wire protocol)."""
 
 from __future__ import annotations
 
 from typing import Any, Iterable
 
 from persisting import _core
-
-# Bincode `engine_dispatch` wire version only (optional advanced use).
-ENGINE_PROTOCOL_VERSION: int = _core.engine_protocol_version()
-
 
 def embed_text(text: str, embedding_dim: int = 384) -> list[float]:
     return list(_core.search_embed_text(text, embedding_dim))
@@ -110,7 +106,7 @@ def create_index(
     pq_kmeans_redos: int | None = None,
     pq_sample_rate: int | None = None,
 ) -> dict[str, Any]:
-    """IVF/PQ fields match `persisting-proto::SearchIndexRequest` (see Lance `IvfBuildParams` / `PQBuildParams`)."""
+    """IVF/PQ fields match pChronicle's `SearchIndexRequest` and Lance build parameters."""
     return _core.search_index(
         dataset,
         vector_column,
@@ -164,7 +160,6 @@ def reorder_ivf(
 
 
 __all__ = [
-    "ENGINE_PROTOCOL_VERSION",
     "add_document",
     "add_documents_batch",
     "create_index",

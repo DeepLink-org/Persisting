@@ -1,10 +1,10 @@
 #![cfg(feature = "query")]
 
+use persisting_control::RunState;
 use persisting_ppilot::{
     process_trajectories, produce_from_planner, AnalysisOutputFormat, BatchAnalysisOptions,
     BatchProductionOptions,
 };
-use persisting_proto::RunState;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;

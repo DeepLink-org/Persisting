@@ -1,7 +1,8 @@
 # AgenticMD 轨迹格式
 
-AgenticMD 是 pChronicle 的人读轨迹表示：普通 Markdown 正文加可机器定位的块头。
-文件统一使用 `{session_id}.md`，不读取编号文件或 `.tlv.md` 历史格式。
+AgenticMD 是 pChronicle 的人读与调试视图：普通 Markdown 正文可以附带机器定位的块头。
+它不是存储协议或事实源；系统生成的文件使用 `{session_id}.md`，读取器对人工编辑、
+缺失字段和未知扩展保持宽容。
 
 ## 1. 文档结构
 
@@ -9,20 +10,21 @@ AgenticMD 是 pChronicle 的人读轨迹表示：普通 Markdown 正文加可机
 ---
 format: persisting:1.0
 block: speaker+json+markdown
-session: run-123
-agent: coding
-turns: 1
+session_id: run-123
+agent_id: coding
+turn_count: 1
 ---
 
-<!-- persisting:block:user {"v":1,"seq":1,"call_id":"call-1"} -->
+<!-- persisting:block:user {"type":"text","length":24,"source":"user","step_id":1,"call_id":"call-1"} -->
 请检查这个仓库。
 
-<!-- persisting:block:assistant {"v":1,"seq":2,"call_id":"call-1"} -->
+<!-- persisting:block:agent {"type":"text","length":27,"source":"agent","step_id":2,"call_id":"call-1"} -->
 我先查看目录结构。
 ```
 
-Frontmatter 是会话摘要；每个对话块由一行注释头和紧随其后的 Markdown 正文组成。
-正文长度和结构由解析器验证，不依赖标题或空行猜测边界。
+Frontmatter 是可选会话摘要；块头也是可选的调试元数据。系统写入时会记录正文 UTF-8
+字节长度以支持 live upsert；读取时允许省略长度，并按下一块边界解析。没有块头的普通
+Markdown 会作为一个 `system` 调试块读取。
 
 ## 2. 块头
 
@@ -30,33 +32,35 @@ Frontmatter 是会话摘要；每个对话块由一行注释头和紧随其后�
 <!-- persisting:block:{speaker} {json} -->
 ```
 
-`speaker` 当前为 `user` 或 `assistant`。JSON 的稳定核心字段是：
+新输出的 `source` 对齐 Storyline，通常为 `user`、`agent` 或 `system`。JSON 常用字段是：
 
 | 字段 | 含义 |
 |---|---|
-| `v` | 块 schema 版本 |
-| `seq` | Story 内顺序 |
+| `source` | Storyline turn source |
+| `step_id` | Storyline turn 顺序 |
 | `call_id` | 模型调用身份，用于配对与 live upsert |
+| `type`, `length` | 生成器的展示/定位提示，不构成业务 schema |
 
 时间、模型、provider、token、工具和 subagent 引用可以作为扩展字段出现。消费者应忽略
-未知字段，不应把正文中的相似 HTML 注释误认为块头。
+未知字段。旧 `role`、`seq`、`session`、`agent` 作为读取别名保留；speaker 与 JSON 字段
+不一致时不再拒绝整个文档。
 
 ## 3. Frontmatter
 
 pChronicle 定义并序列化 frontmatter，常用字段包括：
 
 - `format`、`block`；
-- `session`、`agent`、`model`、`provider`；
-- `started`、`duration`、`turns`；
+- `session_id`、`agent_id`、`model_name`、`provider`；
+- `started_at`、`duration`、`turn_count`；
 - `total_tokens`、`estimated_cost_usd`；
 - `subagents` 与可选 `client` 来源信息。
 
-零值和未知值可以省略。Gateway 可以更新会话 rollup，但不能定义另一套 frontmatter
-schema。
+零值、未知值和整段 frontmatter 都可以省略。嵌套对象与未知字段会被保留，不建立独立
+于 Storyline 的强制 frontmatter schema。
 
 ## 4. Live 更新
 
-Markdown 模式下，Gateway 将可见对话投影为 AgenticMD：
+启用 live Markdown 时，Gateway 在写入 canonical Lance 的同时将可见对话投影为 AgenticMD：
 
 1. user 块按 `call_id` 写入；
 2. 流式 assistant 使用相同 `call_id` 原地更新；
@@ -64,17 +68,17 @@ Markdown 模式下，Gateway 将可见对话投影为 AgenticMD：
 4. 内部探测、重复历史和不可见 thinking 不进入正文；
 5. 图片等多模态内容用稳定占位符表示，不内嵌大体积 base64。
 
-这些规则属于实时投影策略。文档解析、索引、写入和分页 replay 由 pChronicle 提供。
+这些规则属于实时投影策略。AgenticMD 文件失败或缺失不改变 canonical append 结果。
 
 ## 5. 与 Lance 的关系
 
-AgenticMD 强调可读性，Lance events 强调保真和结构化查询。`history materialize` 可以从
-Lance 重建 AgenticMD；反向导入只能恢复 Markdown 中实际存在的信息，不能恢复被投影
-过滤掉的原始协议字段。
+Lance events 负责保真、replay、stats 和结构化查询。`history materialize` 可以从 Lance
+重建 AgenticMD；不会自动从 AgenticMD compact 或恢复事件。显式
+`history add --format markdown` 仅用于导入外部文档，且只能恢复其中实际存在的信息。
 
 ## 6. 示例与实现
 
 - Gateway 端到端定量示例：`examples/pvisor/04-gateway-llm-control/`
 - Lance/ATIF 存储与分析示例：`examples/pchronicle/`
-- 格式与存储实现：`crates/persisting-pchronicle/src/formats/`、`src/store/`
+- 格式与视图实现：`crates/persisting-pchronicle/src/formats/`、`src/projection.rs`
 - [pChronicle 轨迹存储](trajectory.md)

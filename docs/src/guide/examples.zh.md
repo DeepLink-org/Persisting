@@ -1,8 +1,9 @@
 # 可复现示例
 
 仓库里的 [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
-按产品问题组织。每个 `run.sh` 都是平铺直叙的产品命令：先清理 `.work/`，再依次运行
-pVisor、pPilot 或 pChronicle，最后直接打印生成的文件、Bundle、报告或查询结果。
+按产品问题组织。每个 `run.sh` 都是平铺直叙的产品命令：先清理 `.work/`，再运行
+pVisor 或 pPilot，最后直接打印生成的文件、Bundle、报告或查询结果。pChronicle 示例
+统一通过 `ppilot chronicle` / `ppilot query` 进入，不调用内部 Rust example。
 
 ## 运行方式
 
@@ -13,8 +14,8 @@ just examples-pchronicle      # 只跑 pChronicle
 just examples-ppilot          # 只跑 pPilot
 ```
 
-首次运行会按需编译 Rust targets，之后复用 Cargo 缓存。需要 macOS 或 Linux、Cargo、
-Python 3 和常见 POSIX 工具（`jq`、`awk`、`curl`）。
+所有入口都会增量编译并使用 release Rust targets，之后复用 Cargo 缓存。需要 macOS
+或 Linux、Cargo、Python 3 和常见 POSIX 工具（`jq`、`awk`、`curl`）。
 
 ## pVisor：轻量级隔离与 Run 管控
 
@@ -25,7 +26,7 @@ macOS 的 macFUSE 或 Linux 的 FUSE3。
 |---|---|---|
 | [01-filesystem-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/01-filesystem-isolation) | Agent 写入 upper，lower 在 apply 前保持不变 | [pVisor CLI](../design/cli-pvisor.md) |
 | [02-changeset-management](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/02-changeset-management) | changeset 可 review，并可分别 apply 或 drop | [pVisor CLI](../design/cli-pvisor.md) |
-| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | 经过显式代理的 HTTP 请求服从 allow/deny policy | [OverlayNet 设计](../design/overlaynet.md) |
+| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | 可运行的 CLI/TOML walkthrough：allowlist、deny、deny-all、CIDR/端口/transport、限速及 cooperative 边界 | [OverlayNet 设计](../design/overlaynet.md) |
 | [04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control) | Gateway 路由并捕获两次 OpenAI-compatible 调用 | [Capture 指南](capture.md) |
 
 这里的"轻量级隔离"特指事务工作区和 cooperative proxy 覆盖的数据面；Run Bundle 会
@@ -56,9 +57,9 @@ CLI 的正式命令名是 `produce`；它对应"生产一批轨迹 Run"的模式
 
 | 示例 | 可复现结论 | 相关指南 |
 |---|---|---|
-| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | ATIF 导入三表 Lance 后展示两边的实际物理体积 | [轨迹格式](../design/trajectory-format.md) |
-| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | 同一结果下量化 Lance 与 ATIF/DataFusion 查询吞吐 | [轨迹存储](../design/trajectory.md) |
-| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | 同一条只读 SQL 对 Lance 和 ATIF 返回相同结果 | [pPilot CLI](../design/cli-ppilot.md) |
+| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | pPilot 导入后直接报告占用比例、空间节省和压缩倍数 | [轨迹格式](../design/trajectory-format.md) |
+| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | 量化 pPilot CLI 导入、替换及 Lance/ATIF 冷查询延迟 | [轨迹存储](../design/trajectory.md) |
+| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | pPilot 明确报告同一 SQL 的跨后端一致性 | [pPilot CLI](../design/cli-ppilot.md) |
 
 ## 前置条件
 

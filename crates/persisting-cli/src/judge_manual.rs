@@ -9,7 +9,7 @@ use persisting_gateway::engine::TurnKind;
 use persisting_gateway::engine::{rebuild_session_story, Story};
 use persisting_gateway::record::CaptureRecord;
 use persisting_pchronicle::MANUAL_RATIONALE_PREFIX;
-use persisting_proto::{JudgeSampleMode, JudgeScope, JudgeScoreInput};
+use persisting_pchronicle::{JudgeSampleMode, JudgeScope, JudgeScoreInput};
 
 /// Pick up to `limit` sessions from a scan list (`limit == 0` → keep all).
 pub fn sample_locations<T: Clone>(

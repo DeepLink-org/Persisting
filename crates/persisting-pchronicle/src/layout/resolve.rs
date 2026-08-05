@@ -445,7 +445,7 @@ pub fn resolve_story_read_location(
 }
 
 pub use list_story_read_locations as list_traj_read_locations;
-/// Legacy aliases for engine / CLI compatibility.
+/// Compatibility aliases for older CLI callers.
 pub use merge_story_location as merge_traj_location;
 pub use resolve_story_read_location as resolve_traj_read_location;
 pub use try_infer_story_location as try_infer_traj_location;

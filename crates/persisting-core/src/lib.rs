@@ -6,12 +6,11 @@ mod block_io;
 mod mmap_region;
 #[cfg(target_os = "macos")]
 mod page_fault_darwin;
-mod pchronicle;
 mod tiered_loop;
 #[cfg(target_os = "linux")]
 mod uffd;
 
-use persisting_proto::{
+use persisting_pchronicle::{
     SearchAddBatchRequest, SearchAddRequest, SearchImportLanceRequest, SearchIndexDeleteRequest,
     SearchIndexListRequest, SearchIndexRebuildRequest, SearchIndexReorderRequest,
     SearchIndexRequest, SearchQueryRequest, TrajectoryAppendRequest, TrajectoryReplayRequest,
@@ -19,7 +18,7 @@ use persisting_proto::{
 };
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
+use pyo3::types::{PyAny, PyDict, PyList};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -623,20 +622,8 @@ fn is_range_query(region: &Region, order_dim: &Dimension) -> bool {
 }
 
 #[pyfunction]
-fn engine_protocol_version() -> u32 {
-    persisting_engine::PROTOCOL_VERSION
-}
-
-/// Optional bincode wire: caller encodes `RpcRequest` / decodes `RpcResponse` (see `persisting-proto`).
-#[pyfunction]
-fn engine_dispatch(py: Python<'_>, request: &[u8]) -> PyResult<Py<PyBytes>> {
-    let out = persisting_engine::dispatch_bytes(request);
-    Ok(PyBytes::new(py, &out).into())
-}
-
-#[pyfunction]
 fn search_embed_text(text: &str, embedding_dim: usize) -> PyResult<Vec<f32>> {
-    persisting_engine::agent_search::embed_text(text, embedding_dim).map_err(py_runtime_error)
+    persisting_pchronicle::agent_search::embed_text(text, embedding_dim).map_err(py_runtime_error)
 }
 
 #[pyfunction]
@@ -660,13 +647,13 @@ fn search_add(
         metadata: meta,
         embedding_dim,
     };
-    let resp = persisting_engine::search_add(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::search_add(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
 }
 
-/// 批量写入文档（内部按 `chunk_size` 切块调用 `SearchAddBatch`，与 CLI `search create` 同引擎路径）。
+/// 批量写入文档（内部按 `chunk_size` 切块调用 `SearchAddBatch`）。
 #[pyfunction]
 #[pyo3(signature = (dataset, rows, *, embedding_dim=384, chunk_size=256))]
 fn search_add_batch(
@@ -731,7 +718,7 @@ fn search_add_batch(
             });
         }
         let req = SearchAddBatchRequest { rows: batch_rows };
-        let resp = persisting_engine::search_add_batch(req).map_err(py_runtime_error)?;
+        let resp = persisting_pchronicle::search_add_batch(req).map_err(py_runtime_error)?;
         if resp.status != "ok" {
             return Err(PyRuntimeError::new_err(format!(
                 "SearchAddBatch chunk {}..{}: status={} note={}",
@@ -791,7 +778,7 @@ fn search_query(
         maximum_nprobes,
         adaptive_nprobes_margin,
     };
-    let resp = persisting_engine::search_query(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::search_query(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -841,7 +828,7 @@ fn search_index(
         pq_kmeans_redos,
         pq_sample_rate,
     };
-    let resp = persisting_engine::search_index(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::search_index(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -850,7 +837,7 @@ fn search_index(
 #[pyfunction]
 fn search_index_list(py: Python<'_>, dataset: String) -> PyResult<Py<PyAny>> {
     let req = SearchIndexListRequest { dataset };
-    let resp = persisting_engine::search_index_list(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::search_index_list(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -862,7 +849,7 @@ fn search_index_delete(py: Python<'_>, dataset: String, index_name: String) -> P
         dataset,
         index_name,
     };
-    let resp = persisting_engine::search_index_delete(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::search_index_delete(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -883,7 +870,7 @@ fn search_index_rebuild(
         retrain,
         merge_num_indices,
     };
-    let resp = persisting_engine::search_index_rebuild(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::search_index_rebuild(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -904,7 +891,7 @@ fn search_index_reorder(
         target,
         in_place,
     };
-    let resp = persisting_engine::search_index_reorder(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::search_index_reorder(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -929,7 +916,7 @@ fn search_import_lance(
         embedding_dim,
         limit,
     };
-    let resp = persisting_engine::search_import_lance(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::search_import_lance(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -966,7 +953,7 @@ fn trajectory_append(
         records_ronl,
         storage_format: TrajectoryStorageFormat::Auto,
     };
-    let resp = persisting_engine::trajectory_append(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::trajectory_append(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -1000,7 +987,7 @@ fn trajectory_replay(
         storage_format: TrajectoryStorageFormat::Auto,
         root_session_id: loc.root_session_id,
     };
-    let resp = persisting_engine::trajectory_replay(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::trajectory_replay(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -1030,7 +1017,7 @@ fn trajectory_stats(
         storage_format: TrajectoryStorageFormat::Auto,
         root_session_id: loc.root_session_id,
     };
-    let resp = persisting_engine::trajectory_stats(req).map_err(py_runtime_error)?;
+    let resp = persisting_pchronicle::trajectory_stats_request(req).map_err(py_runtime_error)?;
     Ok(pythonize::pythonize(py, &resp)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         .unbind())
@@ -1048,13 +1035,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SetC>()?;
     m.add_class::<Address>()?;
     m.add_class::<Region>()?;
-    m.add_class::<pchronicle::PyChronicleStore>()?;
     m.add_function(wrap_pyfunction!(canonicalize, m)?)?;
     m.add_function(wrap_pyfunction!(project_prefix, m)?)?;
     m.add_function(wrap_pyfunction!(is_point_query, m)?)?;
     m.add_function(wrap_pyfunction!(is_range_query, m)?)?;
-    m.add_function(wrap_pyfunction!(engine_protocol_version, m)?)?;
-    m.add_function(wrap_pyfunction!(engine_dispatch, m)?)?;
     m.add_function(wrap_pyfunction!(search_embed_text, m)?)?;
     m.add_function(wrap_pyfunction!(search_add, m)?)?;
     m.add_function(wrap_pyfunction!(search_add_batch, m)?)?;
@@ -1068,10 +1052,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(trajectory_append, m)?)?;
     m.add_function(wrap_pyfunction!(trajectory_replay, m)?)?;
     m.add_function(wrap_pyfunction!(trajectory_stats, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        pchronicle::pchronicle_atif_trajectory_sql_ddl,
-        m
-    )?)?;
     m.add_function(wrap_pyfunction!(block_io::block_read, m)?)?;
     m.add_function(wrap_pyfunction!(block_io::block_write, m)?)?;
     #[cfg(unix)]

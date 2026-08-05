@@ -65,13 +65,21 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     assert_eq!(blocks[0].role(), Some("user"));
     assert_eq!(blocks[0].body, "hello user");
     assert_eq!(
-        blocks[0].header.fields.get("seq").and_then(|v| v.as_u64()),
+        blocks[0]
+            .header
+            .fields
+            .get("event_seq")
+            .and_then(|v| v.as_u64()),
         Some(0)
     );
     assert_eq!(blocks[1].role(), Some("assistant"));
     assert_eq!(blocks[1].body, "final assistant");
     assert_eq!(
-        blocks[1].header.fields.get("seq").and_then(|v| v.as_u64()),
+        blocks[1]
+            .header
+            .fields
+            .get("event_seq")
+            .and_then(|v| v.as_u64()),
         Some(1)
     );
 }
@@ -124,7 +132,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
         draft_blocks[1]
             .header
             .fields
-            .get("seq")
+            .get("event_seq")
             .and_then(|v| v.as_u64()),
         Some(1)
     );
@@ -150,7 +158,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
         final_blocks[1]
             .header
             .fields
-            .get("seq")
+            .get("event_seq")
             .and_then(|v| v.as_u64()),
         Some(1)
     );

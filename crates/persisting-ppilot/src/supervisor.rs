@@ -1,10 +1,10 @@
 //! Job-scoped pPilot supervisor embedded into normal orchestration commands.
 
 use anyhow::{bail, Context};
-use persisting_proto::{
-    NetworkBandwidthLimit, RunId, SupervisorBootstrap, SupervisorClientMessage,
-    SupervisorDirective, SupervisorDirectiveEnvelope, SupervisorNetworkQuotaGrant,
-    SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
+use persisting_control::{NetworkBandwidthLimit, RunId, SupervisorBootstrap};
+use persisting_pvisor::{
+    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveEnvelope,
+    SupervisorNetworkQuotaGrant, SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
 };
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +39,7 @@ impl Default for EmbeddedSupervisorConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupervisorRegistrationSnapshot {
     pub run_id: RunId,
-    pub attempt_id: persisting_proto::AttemptId,
+    pub attempt_id: persisting_control::AttemptId,
     pub lease_epoch: u64,
     pub connected: bool,
     pub last_heartbeat_unix_ms: u64,
@@ -124,6 +124,8 @@ impl EmbeddedSupervisor {
                 token,
                 controller_epoch,
                 connect_timeout_ms: 500,
+                attempt_registry_uri: None,
+                attempt_ttl_ms: 15_000,
             },
             state,
             stop,
@@ -286,11 +288,7 @@ async fn handle_connection(
                 let mut registrations = state.registrations.lock().await;
                 let Some(live) = registrations.get_mut(&run_id) else { continue };
                 match message {
-                    SupervisorClientMessage::Heartbeat(heartbeat)
-                        if heartbeat.run_id == run_id
-                            && heartbeat.attempt_id == live.snapshot.attempt_id
-                            && heartbeat.lease_epoch == live.snapshot.lease_epoch =>
-                    {
+                    SupervisorClientMessage::Heartbeat(heartbeat) => {
                         live.snapshot.last_heartbeat_unix_ms = unix_now_ms();
                         live.snapshot.last_applied_directive_seq = heartbeat.last_applied_directive_seq;
                     }
@@ -302,7 +300,7 @@ async fn handle_connection(
                                 .max(ack.directive_seq);
                         }
                     }
-                    SupervisorClientMessage::Register(_) | SupervisorClientMessage::Heartbeat(_) => {}
+                    SupervisorClientMessage::Register(_) => {}
                 }
             }
         }
@@ -370,7 +368,8 @@ pub fn parse_bandwidth(value: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_proto::{AttemptId, SupervisorRegistration};
+    use persisting_control::AttemptId;
+    use persisting_pvisor::SupervisorRegistration;
 
     #[test]
     fn bandwidth_parser_distinguishes_bits_and_bytes() {
@@ -398,7 +397,6 @@ mod tests {
             run_id: RunId::new("run-1"),
             attempt_id: AttemptId::new("attempt-1"),
             lease_epoch: 7,
-            capabilities: vec!["network-quota-v1".into()],
         });
         write
             .write_all(format!("{}\n", serde_json::to_string(&registration).unwrap()).as_bytes())

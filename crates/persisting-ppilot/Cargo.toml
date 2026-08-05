@@ -22,10 +22,9 @@ async-trait = "0.1"
 chrono = { version = "0.4", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
-persisting-engine = { path = "../persisting-engine", optional = true }
 persisting-gateway = { path = "../persisting-gateway" }
 persisting-pchronicle = { path = "../persisting-pchronicle" }
-persisting-proto = { path = "../persisting-proto" }
+persisting-control = { path = "../persisting-control" }
 persisting-pvisor = { path = "../persisting-pvisor", default-features = false }
 pulsing-actor = { workspace = true }
 serde = { version = "1", features = ["derive"] }
@@ -47,7 +46,7 @@ default = []
 cli = ["query"]
 query = ["dep:tempfile", "dep:toml"]
 # Append pPilot results to Lance via TrajectoryAppend (Tee with JsonlFileSink).
-traj-sink = ["dep:chrono", "dep:persisting-engine"]
+traj-sink = ["dep:chrono"]
 
 [dev-dependencies]
 tempfile = "3"

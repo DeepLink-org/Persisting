@@ -14,14 +14,6 @@ ruff_paths := "persisting tests examples"
 # lint 默认只扫包代码（与 CI 一致）；全量用 lint-py-all
 ruff_lint_paths := "persisting"
 
-engine_filename := if os() == "macos" {
-    "libpersisting_engine.dylib"
-} else if os() == "windows" {
-    "persisting_engine.dll"
-} else {
-    "libpersisting_engine.so"
-}
-
 # ── 帮助 ─────────────────────────────────────────────────────────────────────
 
 default:
@@ -29,12 +21,12 @@ default:
     @echo ""
     @echo "常用："
     @echo "  just gate                # 提交前（fmt + lint + test-rust）"
-    @echo "  just smoke               # search + traj CLI 冒烟"
+    @echo "  just smoke               # trajectory CLI 冒烟"
     @echo "  just regression          # capture Rust + 集成 + smoke"
     @echo "  ./scripts/test_suite.sh  # 集成测试套件（shell）"
     @echo "  just ci                  # CI 近似全量"
     @echo "  just py-dev              # maturin develop（Python 扩展）"
-    @echo "  just install-cli         # 安装统一 CLI、pvisor、ppilot 和匹配引擎"
+    @echo "  just install-cli         # 安装统一 CLI、pvisor 和 ppilot"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just capture-all         # 全部 capture 集成"
     @echo "  just docs-serve          # 本地文档"
@@ -53,7 +45,7 @@ test-list:
         just gate                 提交前：fmt + lint + test-rust
         just dev                  日常：fmt + clippy + check-quick
         just ci                   CI 近似
-        just test-rust / test-engine / capture-test / test-py
+        just test-rust / test-pchronicle / capture-test / test-py
 
       集成（shell → scripts/integration/）
         ./scripts/test_suite.sh list
@@ -84,7 +76,7 @@ test-menu:
 examples-pvisor:
     #!/usr/bin/env bash
     set -euo pipefail
-    [[ -x "{{ repo }}/target/debug/pvisor" ]] || cargo build -q -p persisting-pvisor --bin pvisor
+    cargo build --release -q -p persisting-pvisor --bin pvisor
     for example in "{{ repo }}"/examples/pvisor/*; do
         [[ -f "$example/run.sh" ]] || continue
         echo "==> ${example#"{{ repo }}/"}/run.sh"
@@ -96,7 +88,7 @@ examples-pvisor:
 examples-pchronicle:
     #!/usr/bin/env bash
     set -euo pipefail
-    [[ -x "{{ repo }}/target/debug/ppilot" ]] || cargo build -q -p persisting-ppilot --features cli --bin ppilot
+    cargo build --release -q -p persisting-ppilot --features cli --bin ppilot
     for example in "{{ repo }}"/examples/pchronicle/*; do
         [[ -f "$example/run.sh" ]] || continue
         echo "==> ${example#"{{ repo }}/"}/run.sh"
@@ -108,7 +100,7 @@ examples-pchronicle:
 examples-ppilot:
     #!/usr/bin/env bash
     set -euo pipefail
-    [[ -x "{{ repo }}/target/debug/ppilot" ]] || cargo build -q -p persisting-ppilot --features cli --bin ppilot
+    cargo build --release -q -p persisting-ppilot --features cli --bin ppilot
     for example in "{{ repo }}"/examples/ppilot/*; do
         [[ -f "$example/run.sh" ]] || continue
         echo "==> ${example#"{{ repo }}/"}/run.sh"
@@ -128,7 +120,7 @@ regression profile="debug":
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 
 build profile="debug":
-    cargo build -p persisting-cli -p persisting-engine {{ if profile == "release" { "--release" } else { "" } }}
+    cargo build -p persisting-cli {{ if profile == "release" { "--release" } else { "" } }}
     cargo build -p persisting-pvisor --bin pvisor {{ if profile == "release" { "--release" } else { "" } }}
     cargo build -p persisting-ppilot --features cli --bin ppilot {{ if profile == "release" { "--release" } else { "" } }}
 
@@ -136,7 +128,6 @@ build-release:
     just build profile=release
 
 # Install the complete component set expected by the unified `persisting` CLI.
-# The engine shared library is installed beside the binaries for lazy discovery.
 install-cli:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -144,8 +135,6 @@ install-cli:
     cargo install --path crates/persisting-cli --locked --force --root "$install_root"
     cargo install --path crates/persisting-pvisor --locked --force --root "$install_root"
     cargo install --path crates/persisting-ppilot --features cli --locked --force --root "$install_root"
-    cargo build -p persisting-engine --release --locked
-    cp "target/release/{{ engine_filename }}" "$install_root/bin/{{ engine_filename }}"
     printf 'Installed Persisting component set in %s/bin\n' "$install_root"
 
 # maturin release wheel（当前平台）→ dist/
@@ -248,20 +237,20 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# 单 crate：engine | proto | core | capture | cli | ppilot | pvisor | dlcapt
+# 单 crate：pchronicle | control | core | capture | cli | ppilot | pvisor | dlcapt
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
-      engine) cargo test -p persisting-engine ;;
-      proto) cargo test -p persisting-proto ;;
+      pchronicle) cargo test -p persisting-pchronicle ;;
+      control) cargo test -p persisting-control ;;
       core) cargo test -p persisting-core ;;
       capture) cargo test -p persisting-gateway ;;
       cli) cargo test -p persisting-cli ;;
       ppilot|compute) cargo test -p persisting-ppilot ;;
       pvisor) cargo test -p persisting-pvisor ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
-      *) echo "unknown crate: {{ crate }} (engine|proto|core|capture|cli|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (pchronicle|control|core|capture|cli|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
     esac
 
 test-rust:
@@ -277,13 +266,13 @@ test-capture-network:
     cargo test -p persisting-gateway --lib network_policy
     cargo test -p persisting-gateway --test network_policy_http
 
-test-engine-integration:
-    cargo test -p persisting-engine --test search_integration
+test-search-integration:
+    cargo test -p persisting-pchronicle --test search_integration
 
-# persisting-engine 库单测
+# pChronicle 库单测
 [group('test')]
-test-engine:
-    cargo test -p persisting-engine --lib
+test-pchronicle:
+    cargo test -p persisting-pchronicle --lib
 
 # Rust + Python
 test: test-rust test-py
@@ -311,7 +300,7 @@ test-py-v:
 install-nightly:
     bash "{{ repo }}/scripts/install-nightly.sh"
 
-# 从 nightly release 安装统一 CLI 组件集（persisting/pvisor/ppilot + engine）
+# 从 nightly release 安装统一 CLI 组件集（persisting/pvisor/ppilot）
 install-cli-nightly:
     bash "{{ repo }}/scripts/install-cli-nightly.sh"
 
@@ -349,62 +338,56 @@ generate-benchmark search_rows="100" traj_rows="50" seed="42" search_out="" traj
     [[ -n "{{ traj_out }}" ]] && args+=(--traj-out "{{ traj_out }}")
     python3 "$gen_py" "${args[@]}"
 
-# ── Search + Trajectory CLI 集成（scripts/integration/*.sh）──────────────────
+# ── Trajectory CLI 集成（scripts/integration/*.sh）────────────────────
 
-# 全链路：generate → search → trajectory（环境变量见 search_traj_e2e.sh）
+# 默认集成入口：轨迹 import → stats → judge → stats
 integration profile="debug":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
-    export CLI_SOURCE="${CLI_SOURCE:-target}"
-    export QUICK="${QUICK:-0}"
     [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
-    echo "==> search/traj integration (profile={{ profile }} QUICK=${QUICK:-0})"
-    bash "{{ repo }}/scripts/integration/search_traj_e2e.sh"
+    echo "==> traj integration (profile={{ profile }})"
+    bash "{{ repo }}/scripts/integration/traj_e2e.sh"
 
 check profile="debug":
-    just test-engine
+    just test-pchronicle
     just integration profile="{{ profile }}"
 
 smoke profile="debug":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
-    export CLI_SOURCE="${CLI_SOURCE:-target}"
-    export QUICK=1
     [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
-    echo "==> search/traj smoke (profile={{ profile }})"
-    bash "{{ repo }}/scripts/integration/search_traj_e2e.sh"
+    echo "==> traj smoke (profile={{ profile }})"
+    bash "{{ repo }}/scripts/integration/traj_e2e.sh"
 
 check-quick profile="debug":
-    just test-engine
+    just test-pchronicle
     just smoke profile="{{ profile }}"
 
 # ── Capture 集成（scripts/integration/*.sh，build 由 _common.sh 处理）────────
 
-# traj 子命令：import → stats → judge --score → stats / judge-stats
+# 轨迹子命令：history import/stats → eval judge/stats
 # 跳过 rebuild：SKIP_BUILD=1 或 SKIP_REBUILD=1
-traj-e2e profile="debug" cli_bin="" engine_override="":
+traj-e2e profile="debug" cli_bin="":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
     [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
     [[ -n "{{ cli_bin }}" ]] && export PERSISTING_CLI="{{ cli_bin }}"
-    [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
     echo "==> traj-e2e (profile={{ profile }})"
     bash "{{ repo }}/scripts/integration/traj_e2e.sh"
 
-capture-integration profile="debug" cli_bin="" engine_override="":
+capture-integration profile="debug" cli_bin="":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
     [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
     [[ -n "{{ cli_bin }}" ]] && export PERSISTING_CLI="{{ cli_bin }}"
-    [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
     echo "==> capture-integration (profile={{ profile }})"
     bash "{{ repo }}/scripts/integration/capture_integration.sh"
 
-capture-stress profile="debug" cli_bin="" engine_override="" requests="80" concurrency="8":
+capture-stress profile="debug" cli_bin="" requests="80" concurrency="8":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
@@ -412,18 +395,16 @@ capture-stress profile="debug" cli_bin="" engine_override="" requests="80" concu
     export CONCURRENCY="{{ concurrency }}"
     [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
     [[ -n "{{ cli_bin }}" ]] && export PERSISTING_CLI="{{ cli_bin }}"
-    [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
     echo "==> capture-stress requests={{ requests }} concurrency={{ concurrency }}"
     bash "{{ repo }}/scripts/integration/capture_stress.sh"
 
-capture-run-e2e profile="debug" cli_bin="" engine_override="" turns="3":
+capture-run-e2e profile="debug" cli_bin="" turns="3":
     #!/usr/bin/env bash
     set -euo pipefail
     export PERSISTING_BUILD_PROFILE="{{ profile }}"
     export TURNS="{{ turns }}"
     [[ "${SKIP_REBUILD:-0}" == "1" || "${SKIP_BUILD:-0}" == "1" ]] && export SKIP_BUILD=1
     [[ -n "{{ cli_bin }}" ]] && export PERSISTING_CLI="{{ cli_bin }}"
-    [[ -n "{{ engine_override }}" ]] && export PERSISTING_ENGINE_LIB="{{ engine_override }}"
     echo "==> capture-run-e2e turns={{ turns }}"
     bash "{{ repo }}/scripts/integration/capture_run_e2e.sh"
 

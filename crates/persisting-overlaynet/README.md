@@ -34,6 +34,12 @@ loopback results unless `allow_private_ips` is explicitly enabled. Link-local,
 multicast, reserved, and other special-purpose destinations still require an
 explicit IP or CIDR rule.
 
+Allow entries are valid only with `mode = "allowlist"`; configurations that
+combine them with `public` or `no-network` are rejected instead of silently
+ignoring the restriction. An injected control controller can further restrict
+the compiled policy but cannot widen it, and is consulted both before DNS and
+for every resolved address.
+
 ```toml
 [network]
 mode = "allowlist"
@@ -62,7 +68,8 @@ bytes_per_second = 250000
 
 Explicit deny rules are evaluated first. Bandwidth limits are shared across
 matching requests and connections and account for upload plus download; all
-matching limits apply.
+matching limits apply. CIDR bandwidth limits match both literal-IP targets and
+the authorized addresses produced by hostname resolution.
 
 `allowed_hosts` remains readable as a compatibility form with unrestricted
 ports and transports. New policy should use `rules`. Gateway model upstreams

@@ -1,6 +1,6 @@
 //! Session markdown (`{session_id}.md`): live append/upsert + capture preamble.
 //!
-//! Layout path helpers and strict parse live in `persisting_pchronicle`; this
+//! Layout path helpers and tolerant parsing live in `persisting_pchronicle`; this
 //! module keeps pipeline-aware IO and client-meta preamble.
 
 use std::path::Path;
@@ -72,7 +72,7 @@ fn write_agenticmd_blocks(path: &Path, blocks: &[AgenticmdBlock]) -> Result<usiz
     append_agenticmd_blocks(path, blocks, preamble.as_deref())
 }
 
-/// Replace the block whose header `call_id` and `role` match, or append when missing.
+/// Replace the block whose header `call_id` and source/legacy role match, or append when missing.
 pub fn upsert_block_by_call_id(path: &Path, call_id: &str, block: AgenticmdBlock) -> Result<bool> {
     // New files: seed capture preamble (with optional client meta) before first upsert.
     if !path.exists() {

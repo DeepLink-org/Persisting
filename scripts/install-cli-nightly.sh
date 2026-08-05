@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Install the unified Persisting CLI component set from a GitHub Release
-# (default tag: nightly): `persisting`, `pvisor`, `ppilot`, and the matching
-# `libpersisting_engine` shared library.
+# (default tag: nightly): `persisting`, `pvisor`, and `ppilot`.
 #
 # The component set lands in:
 #

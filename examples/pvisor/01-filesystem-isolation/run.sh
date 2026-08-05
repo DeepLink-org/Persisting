@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Use the pVisor binary built from this checkout.
-export PATH="../../../target/debug:$PATH"
+export PATH="../../../target/release:$PATH"
 
 # Create a clean host directory for the isolated command.
 rm -rf .work

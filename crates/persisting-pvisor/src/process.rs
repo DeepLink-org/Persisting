@@ -1,6 +1,6 @@
 use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
-use persisting_proto::{
+use persisting_control::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessInvocation, ProcessOutput, RunFailure,
     RunFailureKind, RunInvocation, RunResult, RunState, StdioMode,
 };

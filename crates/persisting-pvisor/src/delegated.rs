@@ -1,6 +1,6 @@
 //! Files and result hand-off for a pVisor delegated through Docker or KVM.
 
-use persisting_proto::{AttemptId, RunInvocation, RunResult, RunSpec};
+use persisting_control::{AttemptId, RunInvocation, RunResult, RunSpec};
 use std::path::{Path, PathBuf};
 
 pub(crate) const SPEC_FILENAME: &str = "run-spec.json";
@@ -41,7 +41,7 @@ impl DelegatedRunFiles {
 
     pub(crate) fn read_result(
         &self,
-        run_id: &persisting_proto::RunId,
+        run_id: &persisting_control::RunId,
         attempt_id: &AttemptId,
         lease_epoch: u64,
     ) -> anyhow::Result<DelegatedRunOutput> {

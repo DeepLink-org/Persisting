@@ -16,6 +16,53 @@ use serde_json::Value;
 
 use crate::{Error, Result};
 
+/// Current serialized schema for the canonical event identity fields.
+pub const EVENT_SCHEMA_VERSION: u32 = 2;
+
+fn event_schema_version() -> u32 {
+    EVENT_SCHEMA_VERSION
+}
+
+/// Runtime identity shared by lifecycle and trajectory events.
+///
+/// The fields are flattened into [`EventRecord`] on the wire. Optional IDs
+/// preserve reads of legacy capture rows; new runtime producers must populate
+/// `event_id` and `run_id` before persistence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventIdentity {
+    #[serde(default = "event_schema_version")]
+    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storyline_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
+}
+
+impl Default for EventIdentity {
+    fn default() -> Self {
+        Self {
+            schema_version: EVENT_SCHEMA_VERSION,
+            event_id: None,
+            run_id: None,
+            attempt_id: None,
+            storyline_id: None,
+            turn_id: None,
+            timestamp_unix_ms: None,
+            producer: None,
+        }
+    }
+}
+
 /// Canonical Agent trajectory event.
 ///
 /// Capture uses this type directly (its `CaptureRecord` name is a compatibility
@@ -23,6 +70,8 @@ use crate::{Error, Result};
 /// trait rather than defining a second serialized record schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventRecord {
+    #[serde(flatten)]
+    pub identity: EventIdentity,
     pub seq: u64,
     pub source: String,
     pub kind: String,
@@ -119,4 +168,27 @@ pub fn parse_events_jsonl_for_test(input: &str) -> Result<EventsDocument> {
         events.push(event);
     }
     Ok(EventsDocument::new(events))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_record_deserializes_and_runtime_identity_is_flattened() {
+        let legacy = serde_json::json!({
+            "seq": 0,
+            "source": "legacy-capture",
+            "kind": "llm.request",
+            "payload": {}
+        });
+        let mut record: EventRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(record.identity, EventIdentity::default());
+        record.identity.event_id = Some("event-1".into());
+        record.identity.run_id = Some("run-1".into());
+        let encoded = serde_json::to_value(record).unwrap();
+        assert_eq!(encoded["event_id"], "event-1");
+        assert_eq!(encoded["run_id"], "run-1");
+        assert!(encoded.get("identity").is_none());
+    }
 }

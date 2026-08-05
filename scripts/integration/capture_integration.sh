@@ -3,7 +3,6 @@
 #
 # Usage:
 #   PERSISTING_CLI=target/debug/persisting \
-#   PERSISTING_ENGINE_LIB=target/debug/libpersisting_engine.dylib \
 #     ./scripts/integration/capture_integration.sh
 #
 # Or: just capture-integration

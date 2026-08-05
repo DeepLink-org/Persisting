@@ -8,8 +8,11 @@ use crate::sink::{persist_terminal, ResultSink};
 use crate::task::TaskResult;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use persisting_pchronicle::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
-use persisting_proto::{AttemptId, RunCommitRequest, RunId, RunLeaseRecord, RunState};
+use persisting_control::{AttemptId, RunCommitRequest, RunId, RunLeaseRecord, RunResult, RunState};
+use persisting_pchronicle::{
+    attempt_registry_now_ms, AttemptRecordState, AttemptRegistry, CommitRunOutcome,
+    LeaseAcquireOutcome, RunControlStore,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -81,6 +84,9 @@ pub enum AttemptObservation {
     },
     /// The runtime has a terminal result that was not yet committed.
     Terminal(Box<TaskResult>),
+    /// The durable lease has not expired, but pVisor has not published an
+    /// Attempt record yet. Reconciliation must defer rather than re-dispatch.
+    Pending,
 }
 
 /// Runtime seam used by the reconciler. A future remote pVisor registry can
@@ -105,10 +111,66 @@ impl AttemptObserver for ProcessLocalAttemptObserver {
     }
 }
 
+/// pChronicle-backed observer used by production resume/reconciliation.
+pub struct DurableAttemptObserver {
+    registry: Arc<AttemptRegistry>,
+}
+
+impl DurableAttemptObserver {
+    fn new(registry: Arc<AttemptRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+#[async_trait]
+impl AttemptObserver for DurableAttemptObserver {
+    async fn observe(&self, lease: &RunLeaseRecord) -> Result<AttemptObservation> {
+        let Some(record) = self.registry.get(lease.run_id.as_str()).await? else {
+            return Ok(if lease.expires_at_unix_ms > attempt_registry_now_ms() {
+                AttemptObservation::Pending
+            } else {
+                AttemptObservation::Absent
+            });
+        };
+        if record.lease_epoch != lease.epoch {
+            return Ok(AttemptObservation::Absent);
+        }
+        match record.state {
+            AttemptRecordState::Active if record.is_live_at(attempt_registry_now_ms()) => {
+                Ok(AttemptObservation::Active {
+                    attempt_id: AttemptId::new(record.attempt_id),
+                    lease_epoch: record.lease_epoch,
+                })
+            }
+            AttemptRecordState::Active => Ok(AttemptObservation::Absent),
+            AttemptRecordState::Terminal => {
+                let value = record
+                    .terminal_result
+                    .context("terminal Attempt record has no result")?;
+                let result: RunResult = serde_json::from_value(value)
+                    .context("decode terminal pVisor RunResult from Attempt registry")?;
+                let task_id = lease
+                    .task_id
+                    .as_deref()
+                    .context("terminal Run lease has no task_id")?;
+                Ok(AttemptObservation::Terminal(Box::new(
+                    crate::executor::run_result_to_task_result(
+                        result,
+                        task_id,
+                        "recovered",
+                        crate::task::unix_now(),
+                    ),
+                )))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReconcileReport {
     pub committed_task_ids: BTreeSet<String>,
     pub retry_task_ids: BTreeSet<String>,
+    pub deferred_task_ids: BTreeSet<String>,
     pub recovered_commits: usize,
     pub recovered_sink_appends: usize,
     pub fenced_results: usize,
@@ -120,6 +182,7 @@ pub struct ReconcileReport {
 #[derive(Clone)]
 pub struct RunCoordinator {
     control: Arc<RunControlStore>,
+    attempt_registry: Arc<AttemptRegistry>,
     journal_root: PathBuf,
     lease_ttl_ms: u64,
     owner_id: String,
@@ -179,8 +242,10 @@ impl RunCoordinator {
         tokio::fs::create_dir_all(&journal_root)
             .await
             .with_context(|| format!("create result journal {}", journal_root.display()))?;
+        let control_root = control_root.as_ref();
         Ok(Self {
             control: Arc::new(RunControlStore::open(control_root).await?),
+            attempt_registry: Arc::new(AttemptRegistry::open(control_root).await?),
             journal_root,
             lease_ttl_ms,
             owner_id: unique_owner_id(),
@@ -196,6 +261,14 @@ impl RunCoordinator {
 
     pub fn owner_id(&self) -> &str {
         &self.owner_id
+    }
+
+    pub fn durable_attempt_observer(&self) -> DurableAttemptObserver {
+        DurableAttemptObserver::new(Arc::clone(&self.attempt_registry))
+    }
+
+    pub fn lease_ttl_ms(&self) -> u64 {
+        self.lease_ttl_ms
     }
 
     pub(crate) fn start_lease_heartbeat(
@@ -404,11 +477,16 @@ impl RunCoordinator {
                     self.note_orphaned(&lease.run_id)?;
                     report.retry_task_ids.insert(task_id);
                 }
+                AttemptObservation::Pending => {
+                    report.active_attempts += 1;
+                    report.deferred_task_ids.insert(task_id);
+                }
                 AttemptObservation::Active {
                     attempt_id,
                     lease_epoch,
                 } if lease_epoch == lease.epoch => {
                     report.active_attempts += 1;
+                    report.deferred_task_ids.insert(task_id.clone());
                     // Backfill attempt identity if the submit succeeded before a crash.
                     let _ = self
                         .control
@@ -650,6 +728,72 @@ mod tests {
         result.attempt_id = Some(attempt.into());
         result.lease_epoch = epoch;
         result
+    }
+
+    #[tokio::test]
+    async fn durable_observer_defers_live_attempt_and_recovers_terminal_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let coordinator = RunCoordinator::open(
+            dir.path().to_string_lossy(),
+            dir.path().join("sink"),
+            30_000,
+        )
+        .await
+        .unwrap();
+        let run = RunId::new("run-durable-observer");
+        let epoch = coordinator
+            .acquire_lease(&run, "task-durable", "driver-a")
+            .await
+            .unwrap();
+        let lease = coordinator
+            .control
+            .get(&run)
+            .await
+            .unwrap()
+            .unwrap()
+            .lease
+            .unwrap();
+        let observer = coordinator.durable_attempt_observer();
+        assert!(matches!(
+            observer.observe(&lease).await.unwrap(),
+            AttemptObservation::Pending
+        ));
+
+        coordinator
+            .attempt_registry
+            .publish_active(run.as_str(), "attempt-durable", epoch, 30_000)
+            .await
+            .unwrap();
+        assert!(matches!(
+            observer.observe(&lease).await.unwrap(),
+            AttemptObservation::Active { lease_epoch, .. } if lease_epoch == epoch
+        ));
+
+        let mut spec =
+            persisting_control::RunSpec::process(run.as_str(), "ppilot", "ppilot-plan-host");
+        spec.lease_epoch = epoch;
+        let run_result = crate::executor::task_result_to_run_result(
+            spec,
+            AttemptId::new("attempt-durable"),
+            terminal("task-durable", run.as_str(), "attempt-durable", epoch),
+        );
+        coordinator
+            .attempt_registry
+            .publish_terminal(
+                run.as_str(),
+                "attempt-durable",
+                epoch,
+                serde_json::to_value(run_result).unwrap(),
+            )
+            .await
+            .unwrap();
+        let AttemptObservation::Terminal(recovered) = observer.observe(&lease).await.unwrap()
+        else {
+            panic!("terminal Attempt should be recoverable");
+        };
+        assert_eq!(recovered.task_id, "task-durable");
+        assert_eq!(recovered.attempt_id.as_deref(), Some("attempt-durable"));
+        assert_eq!(recovered.lease_epoch, epoch);
     }
 
     #[tokio::test]

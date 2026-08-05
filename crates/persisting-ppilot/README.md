@@ -11,13 +11,13 @@ pPilot is a first-class Persisting component alongside pVisor and pChronicle:
 pPilot consumes Run contracts and results and is the user-facing entry point
 for querying trajectory data. It does not own provider protocol adaptation,
 execution drivers, or trajectory storage formats; those query implementations
-remain in pChronicle. It does expose the pPilot-side `AgentAbiClient` used to
-negotiate heartbeat, process registration, checkpoint quiescence, and effect
-journaling with the pVisor that owns a Run.
+remain in pChronicle. It does expose the pPilot-side `AgentAbiClient` used for
+heartbeat, process registration, checkpoint quiescence, and effect journaling
+with the pVisor that owns a Run.
 
 The client discovers the Run-scoped Unix endpoint from pVisor-injected
-environment values. Wire types are defined in `persisting-proto::agent_abi`,
-so the same client semantics can later run over virtio-vsock.
+environment values. The compact wire types are owned by pVisor alongside the
+Unix transport implementation.
 
 ```bash
 # The public binary is feature-gated so library-only builds stay lightweight.
@@ -28,11 +28,12 @@ ppilot run plan.py --workers 8 --sink ./results \
   --control-uri s3://my-bucket/ppilot-control
 ppilot self-test
 
+ppilot chronicle import ./trajectories.ndjson ./storyline-store
 ppilot query ./storyline-store \
   --sql "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source"
 ppilot query s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
-ppilot query ./trajectories.ndjson --source atif --sql-file analysis.sql
+ppilot query ./trajectories.ndjson --sql-file analysis.sql
 ppilot query ./storyline-store \
   --table labels=csv:./labels.csv \
   --table metadata=json:./metadata.json \
@@ -58,7 +59,15 @@ another owner is not stolen. Once its pVisor attempt is proven absent, the
 reconciler authorizes an explicit takeover with a newer fencing epoch.
 Long-running attempts renew the same epoch in the background until their
 terminal result reaches RunCommit; loss of ownership cancels the local attempt.
+When durable control is enabled, pVisor also publishes an epoch-fenced
+pChronicle Attempt record with heartbeat expiry and the complete terminal
+`RunResult`. After a pPilot restart, a live record is deferred instead of being
+re-dispatched, and an uncommitted terminal record is recovered into RunCommit
+and the user sink. A lease that has not yet produced an Attempt record is also
+deferred until its TTL proves it orphaned.
 
+`ppilot chronicle import` validates ATIF JSON, arrays, JSONL/NDJSON, or a directory and
+atomically replaces the corresponding Storylines in a local or object-store Lance store.
 `ppilot query` registers the same `runs`, `steps`, and `tool_calls` tables for
 Storyline Lance and ATIF inputs. It accepts one read-only SQL statement and
 writes JSONL rows to stdout. `s3://` inputs are automatically recognized as

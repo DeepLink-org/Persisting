@@ -8,7 +8,7 @@ use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
-use persisting_proto::{ModelCallRequest, RunId, StorylineId};
+use persisting_control::{ModelCallRequest, RunId, StorylineId};
 use serde_json::Value;
 
 use super::auth::{apply_upstream_headers, resolve_upstream_api_key};

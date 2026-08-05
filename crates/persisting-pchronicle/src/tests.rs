@@ -1,9 +1,6 @@
 use serde_json::json;
 
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
-use crate::ingest::{ingest_trajectory, reconstruct_trajectory, split_trajectory};
-use crate::store::MemoryChronicleStore;
-use crate::view::{atif_trajectory_sql_ddl, AtifTrajectoryView, ATIF_TRAJECTORY_VIEW};
 
 fn sample_traj() -> AtifTrajectory {
     AtifTrajectory {
@@ -81,48 +78,9 @@ fn sample_traj() -> AtifTrajectory {
 }
 
 #[test]
-fn split_creates_three_tables_with_keys() {
-    let split = split_trajectory(&sample_traj()).unwrap();
-    assert_eq!(split.session.session_id, "sess-1");
-    assert_eq!(split.steps.len(), 2);
-    assert_eq!(split.tool_calls.len(), 2);
-    assert_eq!(split.tool_calls[0].session_id, "sess-1");
-    assert_eq!(split.tool_calls[0].step_id, 2);
-    assert_eq!(split.tool_calls[0].tool_call_id, "call_price_1");
-    assert_eq!(split.tool_calls[1].tool_call_id, "call_volume_2");
-}
-
-#[test]
-fn memory_roundtrip_and_view_expands_tool_calls() {
-    let mut store = MemoryChronicleStore::new();
-    let id = ingest_trajectory(&mut store, &sample_traj()).unwrap();
-    assert_eq!(id, "sess-1");
-
-    let rebuilt = reconstruct_trajectory(&store, &id).unwrap();
-    assert_eq!(rebuilt.steps.len(), 2);
-    assert_eq!(
-        rebuilt.steps[1]
-            .tool_calls
-            .as_ref()
-            .map(|c| c.len())
-            .unwrap_or(0),
-        2
-    );
-
-    let view = AtifTrajectoryView::new(&store);
-    let rows = view.query(Some("sess-1")).unwrap();
-    // step1 (no tool) + step2 (2 tools) = 3 rows
-    assert_eq!(rows.len(), 3);
-    assert!(rows[0].tool_call_id.is_none());
-    assert_eq!(rows[1].tool_call_id.as_deref(), Some("call_price_1"));
-    assert_eq!(rows[2].tool_call_id.as_deref(), Some("call_volume_2"));
-    assert_eq!(rows[1].function_name.as_deref(), Some("financial_search"));
-    assert_eq!(rows[1].agent_name, "harbor-agent");
-}
-
-#[test]
-fn typed_events_roundtrip_through_ron_transport() {
+fn typed_events_roundtrip_through_event_lines() {
     let record = crate::EventRecord {
+        identity: crate::EventIdentity::default(),
         seq: 7,
         source: "test".into(),
         kind: "http.request".into(),
@@ -141,15 +99,6 @@ fn typed_events_roundtrip_through_ron_transport() {
     let lines = crate::encode_event_lines(std::slice::from_ref(&record)).unwrap();
     let decoded = crate::decode_event_lines(&lines).unwrap();
     assert_eq!(decoded, vec![record]);
-}
-
-#[test]
-fn sql_ddl_mentions_three_tables_and_view_name() {
-    let ddl = atif_trajectory_sql_ddl();
-    assert!(ddl.contains(ATIF_TRAJECTORY_VIEW));
-    assert!(ddl.contains("FROM sessions"));
-    assert!(ddl.contains("JOIN steps"));
-    assert!(ddl.contains("LEFT JOIN tool_calls"));
 }
 
 #[test]
@@ -251,6 +200,7 @@ fn events_in_memory_to_storyline() {
     use serde_json::json;
     let doc = EventsDocument::new(vec![
         EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 0,
             source: "proxy".into(),
             kind: "llm.request".into(),
@@ -267,6 +217,7 @@ fn events_in_memory_to_storyline() {
             payload: json!({"model":"m","messages":[{"role":"user","content":"hi"}]}),
         },
         EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 1,
             source: "proxy".into(),
             kind: "llm.response".into(),
@@ -296,6 +247,7 @@ fn events_in_memory_to_storyline() {
 fn http_event_aliases_project_to_storyline() {
     let doc = crate::EventsDocument::new(vec![
         crate::EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 0,
             source: "capture".into(),
             kind: "http.request".into(),
@@ -312,6 +264,7 @@ fn http_event_aliases_project_to_storyline() {
             payload: json!({"user_content": "hello", "model": "m"}),
         },
         crate::EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 1,
             source: "capture".into(),
             kind: "http.response".into(),
@@ -359,6 +312,7 @@ fn export_events_jsonl_debug_roundtrip_via_test_parser() {
     };
     use serde_json::json;
     let events = vec![EventRecord {
+        identity: crate::EventIdentity::default(),
         seq: 0,
         source: "proxy".into(),
         kind: "llm.request".into(),
@@ -405,6 +359,8 @@ fn parse_agenticmd_document_roundtrip() {
     doc.agent_id = Some("agent-a".into());
     let text = encode_agenticmd_document(&doc).unwrap();
     assert!(text.contains("format: persisting:1.0"));
+    assert!(text.contains("session_id: sess-1"));
+    assert!(text.contains("agent_id: agent-a"));
     assert!(text.contains("<!-- persisting:block:user"));
     let parsed = parse_agenticmd_document(&text).unwrap();
     assert_eq!(parsed.format, "agenticmd");
@@ -419,7 +375,19 @@ fn parse_agenticmd_document_roundtrip() {
 }
 
 #[test]
-fn agenticmd_strict_rejects_garbage_and_unclosed_frontmatter() {
+fn agenticmd_accepts_minimal_storyline_style_block() {
+    let text = "<!-- persisting:block {\"source\":\"agent\",\"step_id\":7} -->\n\nhello\n";
+    let doc = crate::parse_agenticmd_document(text).unwrap();
+    assert_eq!(doc.blocks.len(), 1);
+    assert_eq!(doc.blocks[0].source(), Some("agent"));
+    assert_eq!(doc.blocks[0].role(), Some("assistant"));
+    assert_eq!(doc.blocks[0].step_id(), Some(7));
+    assert_eq!(doc.blocks[0].header.type_name, "text");
+    assert_eq!(doc.blocks[0].body, "hello");
+}
+
+#[test]
+fn agenticmd_accepts_plain_markdown_but_rejects_unclosed_frontmatter() {
     use crate::{parse_agenticmd_blocks_with_spans, parse_agenticmd_document};
 
     let unclosed = "---\nformat: persisting:1.0\n";
@@ -430,11 +398,10 @@ fn agenticmd_strict_rejects_garbage_and_unclosed_frontmatter() {
     );
 
     let garbage = "---\nformat: persisting:1.0\n---\n\nnot a block\n";
-    let err = parse_agenticmd_document(garbage).unwrap_err();
-    assert!(
-        err.to_string().contains("expected `<!-- persisting:block"),
-        "{err}"
-    );
+    let parsed = parse_agenticmd_document(garbage).unwrap();
+    assert_eq!(parsed.blocks.len(), 1);
+    assert_eq!(parsed.blocks[0].body, "not a block");
+    assert_eq!(parsed.blocks[0].source(), Some("system"));
 
     let spans = parse_agenticmd_blocks_with_spans("---\nformat: persisting:1.0\n---\n\n").unwrap();
     assert!(spans.is_empty());
@@ -745,6 +712,7 @@ fn events_storyline_roundtrip_preserves_call_id_and_seq() {
     use serde_json::json;
     let doc = EventsDocument::new(vec![
         EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 10,
             source: "proxy".into(),
             kind: "llm.request".into(),
@@ -761,6 +729,7 @@ fn events_storyline_roundtrip_preserves_call_id_and_seq() {
             payload: json!({"messages":[{"role":"user","content":"ping"}]}),
         },
         EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 11,
             source: "proxy".into(),
             kind: "llm.response".into(),
@@ -854,6 +823,7 @@ fn events_storyline_roundtrip_preserves_call_dialogue() {
     use serde_json::json;
     let doc = EventsDocument::new(vec![
         EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 0,
             source: "proxy".into(),
             kind: "llm.request".into(),
@@ -870,6 +840,7 @@ fn events_storyline_roundtrip_preserves_call_dialogue() {
             payload: json!({"model":"m","messages":[{"role":"user","content":"hi there"}]}),
         },
         EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 1,
             source: "proxy".into(),
             kind: "llm.response".into(),

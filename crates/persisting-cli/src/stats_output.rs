@@ -9,7 +9,9 @@
 
 use anyhow::Result;
 use clap::ValueEnum;
-use persisting_proto::{SessionJudgeStats, TrajectoryJudgeStatsResponse, TrajectoryStatsResponse};
+use persisting_pchronicle::{
+    SessionJudgeStats, TrajectoryJudgeStatsResponse, TrajectoryStatsResponse,
+};
 
 use crate::terminal_markdown::print_markdown_stdout;
 use crate::trajectory_detail::{print_trajectory_stats_detail_plain, DetailNode};

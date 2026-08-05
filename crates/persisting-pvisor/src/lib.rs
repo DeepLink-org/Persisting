@@ -27,9 +27,12 @@ mod supervisor;
 mod util;
 
 pub use agent_abi::{
-    AgentAbiControl, AgentAbiServer, AgentAbiSnapshot, AgentClientSnapshot, AgentEffectSnapshot,
-    AgentProcessSnapshot, AGENT_ABI_ENDPOINT_ENV, AGENT_ABI_TOKEN_ENV, AGENT_ABI_TRANSPORT_ENV,
-    AGENT_ABI_VERSION_ENV,
+    AgentAbiControl, AgentAbiServer, AgentAbiSnapshot, AgentCheckpointQuiesced, AgentClientRole,
+    AgentClientSnapshot, AgentDirective, AgentEffectBegin, AgentEffectComplete, AgentEffectOutcome,
+    AgentEffectSnapshot, AgentHeartbeatAck, AgentHello, AgentLifecycleState,
+    AgentProcessRegistration, AgentProcessSnapshot, AgentRequest, AgentRequestBody, AgentResponse,
+    AgentResponseBody, AgentWelcome, AGENT_ABI_ENDPOINT_ENV, AGENT_ABI_MAX_FRAME_BYTES,
+    AGENT_ABI_TOKEN_ENV, AGENT_ABI_TRANSPORT_ENV, AGENT_ABI_VERSION, AGENT_ABI_VERSION_ENV,
 };
 pub use bundle::{
     BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, RunBundle, SafetySummary,
@@ -61,4 +64,9 @@ pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;
 pub use pvisor::{PVisor, PVisorBuilder, PVisorError, RunCancellation, RunEventStream, RunHandle};
 pub use runtime::{ImplantPlan, OverlayHint, RunLineage, RuntimeCapabilities};
+pub use supervisor::{
+    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveAck,
+    SupervisorDirectiveEnvelope, SupervisorHeartbeat, SupervisorNetworkQuotaGrant,
+    SupervisorRegistration, SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
+};
 pub use util::unix_now_ms;

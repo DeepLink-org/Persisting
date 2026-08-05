@@ -1,7 +1,7 @@
-//! DataFusion datasource for one committed Storyline Lance generation.
+//! DataFusion datasource for one committed Storyline Lance snapshot.
 //!
 //! Opening the datasource resolves `CURRENT` once and pins all three datasets
-//! to that generation. pChronicle builds the Lance scan with projection,
+//! to the exact version tuple recorded there. pChronicle builds the Lance scan with projection,
 //! filter, limit and scalar-index pushdown, plus unordered fragment reads for
 //! parallel query execution (ordered queries should use SQL `ORDER BY`).
 
@@ -20,7 +20,7 @@ use datafusion::prelude::SessionContext;
 use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 
-use super::{LanceStorylineStore, StorylineTablePaths};
+use super::{StorylineLanceStore, StorylineTablePaths};
 
 pub const DATAFUSION_RUNS_TABLE: &str = "runs";
 pub const DATAFUSION_STEPS_TABLE: &str = "steps";
@@ -171,7 +171,11 @@ pub struct StorylineDataSource {
 
 impl StorylineDataSource {
     pub async fn open(root: impl AsRef<Path>) -> Result<Self> {
-        let store = LanceStorylineStore::open(root).await?;
+        let root = root.as_ref();
+        let root = root
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Storyline Lance root is not valid UTF-8"))?;
+        let store = StorylineLanceStore::open_uri_unchecked(root).await?;
         Self::from_store(&store).await
     }
 
@@ -179,12 +183,16 @@ impl StorylineDataSource {
         root: impl AsRef<Path>,
         options: StorylineDataSourceOptions,
     ) -> Result<Self> {
-        let store = LanceStorylineStore::open(root).await?;
+        let root = root.as_ref();
+        let root = root
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Storyline Lance root is not valid UTF-8"))?;
+        let store = StorylineLanceStore::open_uri_unchecked(root).await?;
         Self::from_store_with_options(&store, options).await
     }
 
     pub async fn open_uri(root: impl AsRef<str>) -> Result<Self> {
-        let store = LanceStorylineStore::open_uri(root).await?;
+        let store = StorylineLanceStore::open_uri_unchecked(root).await?;
         Self::from_store(&store).await
     }
 
@@ -192,26 +200,26 @@ impl StorylineDataSource {
         root: impl AsRef<str>,
         options: StorylineDataSourceOptions,
     ) -> Result<Self> {
-        let store = LanceStorylineStore::open_uri(root).await?;
+        let store = StorylineLanceStore::open_uri_unchecked(root).await?;
         Self::from_store_with_options(&store, options).await
     }
 
-    pub async fn from_store(store: &LanceStorylineStore) -> Result<Self> {
+    pub async fn from_store(store: &StorylineLanceStore) -> Result<Self> {
         Self::from_store_with_options(store, StorylineDataSourceOptions::default()).await
     }
 
     pub async fn from_store_with_options(
-        store: &LanceStorylineStore,
+        store: &StorylineLanceStore,
         options: StorylineDataSourceOptions,
     ) -> Result<Self> {
         let paths = store
-            .current_table_paths()
+            .resolve_current_table_paths()
             .await?
             .ok_or_else(|| anyhow::anyhow!("Storyline Lance store has no committed generation"))?;
         let (runs, steps, tool_calls) = tokio::try_join!(
-            open_dataset(&paths.runs),
-            open_dataset(&paths.steps),
-            open_dataset(&paths.tool_calls)
+            open_dataset(&paths.runs, paths.runs_version),
+            open_dataset(&paths.steps, paths.steps_version),
+            open_dataset(&paths.tool_calls, paths.tool_calls_version)
         )?;
         Ok(Self {
             paths,
@@ -284,10 +292,16 @@ fn combine_filters(filters: &[Expr]) -> Option<Expr> {
     Some(filters.fold(first, Expr::and))
 }
 
-async fn open_dataset(path: &Path) -> Result<Dataset> {
-    Dataset::open(path.to_string_lossy().as_ref())
+async fn open_dataset(path: &Path, version: u64) -> Result<Dataset> {
+    let dataset = Dataset::open(path.to_string_lossy().as_ref())
         .await
-        .with_context(|| format!("open Storyline DataFusion table {}", path.display()))
+        .with_context(|| format!("open Storyline DataFusion table {}", path.display()))?;
+    dataset.checkout_version(version).await.with_context(|| {
+        format!(
+            "open Storyline DataFusion table {} at version {version}",
+            path.display()
+        )
+    })
 }
 
 fn validate_table_names(names: &StorylineDataFusionTableNames) -> Result<()> {

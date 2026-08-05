@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use persisting_proto::{AttemptId, EventEnvelope, EventId, RunId, EVENT_SCHEMA_VERSION};
+use persisting_control::{AttemptId, RunId};
+use persisting_pchronicle::{EventIdentity, EventRecord, EVENT_SCHEMA_VERSION};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,7 +18,7 @@ pub enum EventAppendErrorKind {
 
 #[async_trait]
 pub trait EventSink: Send + Sync {
-    async fn append(&self, event: &EventEnvelope) -> Result<()>;
+    async fn append(&self, event: &EventRecord) -> Result<()>;
 
     /// Errors are ambiguous by default. A sink may opt into `Rejected` only
     /// when it can prove the append had no durable effect.
@@ -31,7 +32,7 @@ pub struct NoopEventSink;
 
 #[async_trait]
 impl EventSink for NoopEventSink {
-    async fn append(&self, _event: &EventEnvelope) -> Result<()> {
+    async fn append(&self, _event: &EventRecord) -> Result<()> {
         Ok(())
     }
 }
@@ -39,11 +40,11 @@ impl EventSink for NoopEventSink {
 /// In-memory sink intended for embedding, tests, and early integrations.
 #[derive(Debug, Default)]
 pub struct MemoryEventSink {
-    events: Mutex<Vec<EventEnvelope>>,
+    events: Mutex<Vec<EventRecord>>,
 }
 
 impl MemoryEventSink {
-    pub fn events(&self) -> Vec<EventEnvelope> {
+    pub fn events(&self) -> Vec<EventRecord> {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -53,7 +54,7 @@ impl MemoryEventSink {
 
 #[async_trait]
 impl EventSink for MemoryEventSink {
-    async fn append(&self, event: &EventEnvelope) -> Result<()> {
+    async fn append(&self, event: &EventRecord) -> Result<()> {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -71,7 +72,7 @@ pub struct RunEventPublisher {
     producer: String,
     next_seq: Arc<AtomicU64>,
     sink: Arc<dyn EventSink>,
-    live: broadcast::Sender<EventEnvelope>,
+    live: broadcast::Sender<EventRecord>,
 }
 
 impl RunEventPublisher {
@@ -80,7 +81,7 @@ impl RunEventPublisher {
         attempt_id: AttemptId,
         producer: impl Into<String>,
         sink: Arc<dyn EventSink>,
-        live: broadcast::Sender<EventEnvelope>,
+        live: broadcast::Sender<EventRecord>,
     ) -> Self {
         Self {
             run_id,
@@ -92,7 +93,7 @@ impl RunEventPublisher {
         }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<EventEnvelope> {
+    pub fn subscribe(&self) -> broadcast::Receiver<EventRecord> {
         self.live.subscribe()
     }
 
@@ -105,20 +106,30 @@ impl RunEventPublisher {
         kind: impl Into<String>,
         source: impl Into<String>,
         payload: Value,
-    ) -> Result<EventEnvelope> {
-        let event = EventEnvelope {
-            schema_version: EVENT_SCHEMA_VERSION,
-            event_id: EventId::new(format!("event-{}", uuid::Uuid::new_v4())),
-            run_id: self.run_id.clone(),
-            attempt_id: Some(self.attempt_id.clone()),
-            storyline_id: None,
-            turn_id: None,
-            call_id: None,
+    ) -> Result<EventRecord> {
+        let event = EventRecord {
+            identity: EventIdentity {
+                schema_version: EVENT_SCHEMA_VERSION,
+                event_id: Some(format!("event-{}", uuid::Uuid::new_v4())),
+                run_id: Some(self.run_id.to_string()),
+                attempt_id: Some(self.attempt_id.to_string()),
+                timestamp_unix_ms: Some(crate::util::unix_now_ms()),
+                producer: Some(self.producer.clone()),
+                ..EventIdentity::default()
+            },
             seq: self.next_seq.fetch_add(1, Ordering::AcqRel),
-            timestamp_unix_ms: crate::util::unix_now_ms(),
             kind: kind.into(),
             source: source.into(),
-            producer: self.producer.clone(),
+            timestamp: None,
+            session_id: None,
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
             payload,
         };
         self.sink.append(&event).await?;

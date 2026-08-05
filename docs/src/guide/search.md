@@ -4,26 +4,15 @@ You've captured thousands of agent trajectories. You've indexed your documentati
 
 Persisting Search gives you document indexing and retrieval on the same Lance engine that powers everything else. Import once, build an index, and query in three modes: vector similarity, full-text, or a hybrid of both.
 
+Search is currently exposed through the Python API. The former `persisting search` command has been removed from the unified CLI.
+
 ---
 
 ## From Import to Query in Three Steps
 
 ### 1. Import Documents
 
-Start with a Lance dataset — your documents. Import them from JSONL, CSV, or an existing Lance table:
-
-```bash
-# From JSONL (one JSON object per line, must have "text" field)
-persisting search create ./docs --input docs.jsonl --format jsonl
-
-# From CSV
-persisting search create ./docs --input docs.csv --format csv
-
-# From an existing Lance dataset
-persisting search create ./docs --input existing.lance --format lance
-```
-
-Or from Python:
+Start with a Lance dataset — your documents. Import them through Python:
 
 ```python
 from persisting.search import add_document, add_documents_batch, import_from_lance
@@ -48,15 +37,9 @@ Under the hood, each document's text is embedded into a 384-dimensional vector. 
 
 ### 2. Build an Index
 
-Raw vector search works for small datasets. For anything beyond a few thousand documents, build an IVF-PQ index:
-
-```bash
-persisting search index build ./docs --num-partitions 100 --pq-num-sub-vectors 96
-```
+Raw vector search works for small datasets. For anything beyond a few thousand documents, build an IVF-PQ index.
 
 IVF-PQ (Inverted File with Product Quantization) partitions your vectors into clusters and compresses each vector. This trades a tiny amount of recall for orders-of-magnitude faster queries. The parameters above work well for most document collections; tune `num-partitions` (more = finer clusters) and `pq-num-sub-vectors` (more = better recall, larger index) for your data size.
-
-In Python:
 
 ```python
 from persisting.search import create_index
@@ -73,10 +56,6 @@ create_index("docs",
 
 ### 3. Query
 
-```bash
-persisting search query ./docs "how to configure the proxy" --mode hybrid --k 10
-```
-
 Three query modes:
 
 | Mode | What it does | Best for |
@@ -84,8 +63,6 @@ Three query modes:
 | `vector` | Compares embedding similarity | Semantic similarity — "find things like this" |
 | `fts` | Full-text keyword matching | Exact terms — "documents mentioning 'SSL error'" |
 | `hybrid` | Combines both, ranks by combined score | General search — best default |
-
-In Python:
 
 ```python
 from persisting.search import query
@@ -143,11 +120,10 @@ IVF-PQ Index  ────  partitions vectors for fast approximate search
 Results (ranked by vector similarity, text relevance, or both)
 ```
 
-The embedding step (`add_document`) calls into `persisting-engine` (Rust), which generates vectors and writes them alongside the text into a Lance table. Index building and querying also run in Rust via the engine, loaded by the CLI at runtime.
+The embedding step (`add_document`), index building, and querying call pChronicle's Rust Search implementation through the Python extension.
 
 ---
 
 ## Next Steps
 
 - [API Reference — Search](../api/search.md) — all function signatures and parameters
-- [Search CLI Design](../design/cli-search.md) — command structure and design choices

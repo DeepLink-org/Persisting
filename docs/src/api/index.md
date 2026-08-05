@@ -29,7 +29,7 @@ Current namespace examples:
 | `params/llama-70b` | `(param_id, shard)` | Model weights |
 | `kvcache/v1` | `(session, layer, head, time)` | KV cache |
 
-Trajectory capture uses its own Lance/Markdown storage model today; it does
+Trajectory capture uses canonical Lance events plus an optional Markdown debug view; it does
 not expose a tensor namespace through this API.
 
 → [Tensor Memory API](tensor-memory.md)

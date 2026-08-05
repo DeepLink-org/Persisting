@@ -62,6 +62,7 @@ mod tests {
                 agent_id: None,
                 parent_uuid: None,
                 trace_id: None,
+                call_id: None,
                 payload: json!({}),
             },
             PendingRecord {
@@ -77,6 +78,7 @@ mod tests {
                 agent_id: None,
                 parent_uuid: None,
                 trace_id: None,
+                call_id: None,
                 payload: json!({}),
             },
         ];

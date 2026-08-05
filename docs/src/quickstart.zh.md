@@ -69,7 +69,7 @@ cat ./results/ready.ndjson
 查询仓库自带的 ATIF 轨迹 fixture：
 
 ```bash
-ppilot query crates/persisting-pchronicle/tests/fixtures/atif --source atif \
+ppilot query crates/persisting-pchronicle/tests/fixtures/atif \
   --sql 'SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
 ```
 

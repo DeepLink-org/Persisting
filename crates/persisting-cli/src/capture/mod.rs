@@ -15,17 +15,17 @@ use std::io::BufReader;
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
-use persisting_proto::TrajectoryStorageFormat;
+use persisting_pchronicle::TrajectoryStorageFormat;
 
 pub use record::CaptureRecord;
 
 /// Capture trajectory storage format.
 ///
-/// - `md`: TLV Markdown only (`{session}.md` live upsert); reconcile replays from Markdown.
-/// - `lance`: Lance canonical (`events.lance`) only; use `history materialize` for md.
+/// Both modes persist canonical events to Lance. `md` additionally maintains a
+/// best-effort live Markdown view; `lance` omits that view.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CaptureFormat {
-    /// Human-readable TLV Markdown only.
+    /// Canonical Lance plus a live human-readable Markdown view.
     #[value(name = "md")]
     #[default]
     Markdown,
@@ -35,11 +35,8 @@ pub enum CaptureFormat {
 }
 
 impl From<CaptureFormat> for TrajectoryStorageFormat {
-    fn from(v: CaptureFormat) -> Self {
-        match v {
-            CaptureFormat::Markdown => TrajectoryStorageFormat::Markdown,
-            CaptureFormat::Lance => TrajectoryStorageFormat::Lance,
-        }
+    fn from(_v: CaptureFormat) -> Self {
+        TrajectoryStorageFormat::Lance
     }
 }
 
@@ -53,10 +50,6 @@ impl CaptureFormat {
 
     pub fn writes_markdown(self) -> bool {
         matches!(self, Self::Markdown)
-    }
-
-    pub fn writes_lance(self) -> bool {
-        matches!(self, Self::Lance)
     }
 
     /// Live markdown upsert inside [`CaptureEngine`] (`-f md` only).
@@ -77,7 +70,6 @@ mod tests {
             CaptureFormat::Lance
         );
         assert!(CaptureFormat::from_str("bin", false).is_err());
-        assert!(CaptureFormat::Lance.writes_lance());
     }
 
     #[test]
@@ -89,6 +81,7 @@ mod tests {
     #[test]
     fn markdown_streams_live_markdown() {
         assert!(CaptureFormat::Markdown.stream_markdown_in_engine());
+        assert!(CaptureFormat::Markdown.writes_markdown());
     }
 }
 
@@ -182,10 +175,10 @@ pub struct CaptureImportSummary {
     pub sources: std::collections::HashMap<String, usize>,
 }
 
-pub fn import_to_trajectory_with_engine(
+pub fn import_to_trajectory(
     storage: &str,
     opts: &CaptureImportOptions,
-    append_engine_lines: impl FnOnce(&str, &str, &str, &str) -> Result<()>,
+    append_event_lines: impl FnOnce(&str, &str, &str, &str) -> Result<()>,
 ) -> Result<CaptureImportSummary> {
     let pending = collect_pending(opts)?;
     if pending.is_empty() {
@@ -221,8 +214,8 @@ pub fn import_to_trajectory_with_engine(
         return Ok(summary);
     }
 
-    let engine_lines = persisting_pchronicle::encode_event_lines(&records)?.join("\n");
-    append_engine_lines(storage, &agent_id, &session_id, &engine_lines)?;
+    let event_lines = persisting_pchronicle::encode_event_lines(&records)?.join("\n");
+    append_event_lines(storage, &agent_id, &session_id, &event_lines)?;
     Ok(summary)
 }
 

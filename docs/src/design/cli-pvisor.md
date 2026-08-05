@@ -184,11 +184,14 @@ before destroying the VM. The guest must have SSH enabled and accept the
 configured key. KVM requires a Linux host; host Gateway/OverlayNet endpoints
 are rejected until a guest-visible transport is available.
 
-The three OverlayNet policy flags and Gateway capture automatically enable the
+The four visible OverlayNet policy flags and Gateway capture automatically enable the
 proxy driver. In TOML, driver modes remain explicit;
 OverlayFS overlay mode requires `--workspace` and `--overlayfs-target`.
 OverlayNet policy applies to traffic routed through the explicit proxy and does
 not claim non-bypassable host network isolation.
+`--overlaynet-deny-all` provides the discoverable deny-all form for
+forward-proxy egress. Direct sockets remain ambient, and relative local Gateway
+routes remain available for configured model traffic.
 
 ## Run workspace and discovery
 

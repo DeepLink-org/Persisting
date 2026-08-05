@@ -1,6 +1,6 @@
 use crate::event::RunEventPublisher;
 use async_trait::async_trait;
-use persisting_proto::{
+use persisting_control::{
     AttemptId, ExecutorDescriptor, RunInvocation, RunResult, RunSpec, RunState, RunStatus,
 };
 use serde_json::json;

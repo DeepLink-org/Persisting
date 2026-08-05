@@ -522,4 +522,47 @@ upstream = "http://example.com/v1"
         let again = ProxyConfig::from_toml_str(&cfg.to_toml_string().unwrap()).unwrap();
         assert_eq!(cfg.listen, again.listen);
     }
+
+    #[test]
+    fn config_rejects_allow_entries_without_allowlist_mode() {
+        let error = ProxyConfig::from_toml_str(
+            r#"
+listen = "127.0.0.1:1"
+
+[network]
+allowed_hosts = ["api.example.com"]
+
+[[models]]
+name = "*"
+upstream = "http://example.com/v1"
+"#,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("network allow entries require mode"));
+    }
+
+    #[test]
+    fn config_rejects_invalid_bandwidth_limits_at_load_time() {
+        let error = ProxyConfig::from_toml_str(
+            r#"
+listen = "127.0.0.1:1"
+
+[network]
+mode = "public"
+
+[[network.limits]]
+bytes_per_second = 0
+
+[[models]]
+name = "*"
+upstream = "http://example.com/v1"
+"#,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("network bandwidth limit must be greater than zero"));
+    }
 }
