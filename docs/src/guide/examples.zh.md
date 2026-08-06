@@ -60,6 +60,7 @@ CLI 的正式命令名是 `produce`；它对应"生产一批轨迹 Run"的模式
 | [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | pPilot 导入后直接报告占用比例、空间节省和压缩倍数 | [轨迹格式](../design/trajectory-format.md) |
 | [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | 量化 pPilot CLI 导入、替换及 Lance/ATIF 冷查询延迟 | [轨迹存储](../design/trajectory.md) |
 | [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | pPilot 明确报告同一 SQL 的跨后端一致性 | [pPilot CLI](../design/cli-ppilot.md) |
+| [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | 对比单 step、完整轨迹、64-key 批查与实时 canonical event follow 延迟 | [History CLI](../design/cli-history.md) |
 
 ## 前置条件
 

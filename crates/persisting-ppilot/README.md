@@ -29,12 +29,16 @@ ppilot run plan.py --workers 8 --sink ./results \
 ppilot self-test
 
 ppilot chronicle import ./trajectories.ndjson ./storyline-store
-ppilot query ./storyline-store \
+ppilot query point ./storyline-store --session-id run-001 --step-id 7
+ppilot query point ./storyline-store --session-id run-001
+ppilot query batch ./storyline-store --session-id run-001,run-002 --step-id 7
+ppilot query follow ./capture --agent-id agent-001 --session-id run-001
+ppilot query sql ./storyline-store \
   --sql "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source"
-ppilot query s3://trajectory-bucket/persisting/storylines \
+ppilot query sql s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
-ppilot query ./trajectories.ndjson --sql-file analysis.sql
-ppilot query ./storyline-store \
+ppilot query sql ./trajectories.ndjson --sql-file analysis.sql
+ppilot query sql ./storyline-store \
   --table labels=csv:./labels.csv \
   --table metadata=json:./metadata.json \
   --sql 'SELECT r.session_id, l.score, m.category FROM runs r JOIN labels l USING (session_id) JOIN metadata m USING (session_id)'
@@ -68,13 +72,17 @@ deferred until its TTL proves it orphaned.
 
 `ppilot chronicle import` validates ATIF JSON, arrays, JSONL/NDJSON, or a directory and
 atomically replaces the corresponding Storylines in a local or object-store Lance store.
-`ppilot query` registers the same `runs`, `steps`, and `tool_calls` tables for
-Storyline Lance and ATIF inputs. It accepts one read-only SQL statement and
-writes JSONL rows to stdout. `s3://` inputs are automatically recognized as
-Lance; credentials come from the AWS provider chain. Use `--sql-file -` to
+`ppilot query` exposes `sql`, `point`, `batch`, and `follow` modes backed by
+pChronicle and writes JSONL to stdout. Point and batch operate on normalized
+Storyline Lance data; follow continuously reads committed canonical events.
+Batch Storyline reads use one snapshot across `runs`, `steps`, and
+`tool_calls`, rather than N point lookups. SQL registers the same three tables
+for Storyline Lance and ATIF inputs. `s3://` inputs are automatically recognized
+as Lance; credentials come from the AWS provider chain. Use `--sql-file -` to
 read SQL from stdin. Repeat `--table NAME=FORMAT:PATH` to register external
 CSV (`csv`), JSON array (`json`), or newline-delimited JSON (`jsonl`/`ndjson`)
 tables in the same DataFusion session before executing the query.
+The former `ppilot query <INPUT> --sql ...` spelling remains compatible.
 
 ## pPilot ↔ pVisor runtime control
 

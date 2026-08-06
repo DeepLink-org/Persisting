@@ -27,7 +27,7 @@ struct Cli {
 enum Command {
     /// Run a pPilot plan with bounded concurrency and durable resume.
     Run(Box<PPilotArgs>),
-    /// Run read-only SQL against Storyline Lance or ATIF JSON/JSONL.
+    /// Query pChronicle by SQL, point, batch, or live follow mode.
     Query(QueryArgs),
     /// Import and operate pChronicle trajectory stores.
     Chronicle(ChronicleArgs),
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn parses_public_subcommands() {
-        let query = Cli::try_parse_from([
+        let legacy_query = Cli::try_parse_from([
             "ppilot",
             "query",
             "input.jsonl",
@@ -356,8 +356,83 @@ mod tests {
             "atif",
             "--sql",
             "SELECT 1",
-        ]);
-        assert!(matches!(query.unwrap().command, Command::Query(_)));
+        ])
+        .unwrap();
+        assert!(matches!(legacy_query.command, Command::Query(_)));
+
+        let sql = Cli::try_parse_from([
+            "ppilot",
+            "query",
+            "sql",
+            "input.jsonl",
+            "--source",
+            "atif",
+            "--sql",
+            "SELECT 1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            sql.command,
+            Command::Query(QueryArgs {
+                command: Some(persisting_ppilot::QueryCommand::Sql(_)),
+                ..
+            })
+        ));
+
+        let point = Cli::try_parse_from([
+            "ppilot",
+            "query",
+            "point",
+            "storyline-store",
+            "--session-id",
+            "run-a",
+            "--step-id",
+            "3",
+        ])
+        .unwrap();
+        assert!(matches!(
+            point.command,
+            Command::Query(QueryArgs {
+                command: Some(persisting_ppilot::QueryCommand::Point(_)),
+                ..
+            })
+        ));
+
+        let batch = Cli::try_parse_from([
+            "ppilot",
+            "query",
+            "batch",
+            "storyline-store",
+            "--session-id",
+            "run-a,run-b",
+        ])
+        .unwrap();
+        assert!(matches!(
+            batch.command,
+            Command::Query(QueryArgs {
+                command: Some(persisting_ppilot::QueryCommand::Batch(_)),
+                ..
+            })
+        ));
+
+        let follow = Cli::try_parse_from([
+            "ppilot",
+            "query",
+            "follow",
+            "capture",
+            "--agent-id",
+            "agent-a",
+            "--session-id",
+            "run-a",
+        ])
+        .unwrap();
+        assert!(matches!(
+            follow.command,
+            Command::Query(QueryArgs {
+                command: Some(persisting_ppilot::QueryCommand::Follow(_)),
+                ..
+            })
+        ));
 
         let chronicle = Cli::try_parse_from([
             "ppilot",

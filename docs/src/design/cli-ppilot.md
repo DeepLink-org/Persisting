@@ -9,7 +9,10 @@ Lance/ATIF datasource 与 SQL 执行继续由 pChronicle library 提供。
 ```text
 ppilot run <SCRIPT> [OPTIONS]
 ppilot chronicle import <INPUT> <STORE>
-ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
+ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
+ppilot query point <STORE> --session-id <ID> [--step-id <N>]
+ppilot query batch <STORE> --session-id <ID[,ID]...> [--step-id <N>]
+ppilot query follow <STORAGE> --agent-id <ID> --session-id <ID> [--offset <N>] [--limit <N>] [--poll-interval-ms <MS>]
 ppilot produce <PLANNER.py> --output <DIR> [--parallelism N] [-- <PLANNER_ARGS>...]
 ppilot analysis <INPUT> [--output <DIR>] [--fmt jsonl|json|toml] [--parallelism N] (--sql <SQL> | --sql-file <FILE>)
 ppilot process <INPUT> (--script <FILE> | --count <METRIC>) [--mappers N] [--output <DIR>]
@@ -54,22 +57,27 @@ ppilot chronicle import ./atif-directory s3://trajectory-bucket/storylines
 
 ### `query`
 
-对 Storyline 三表 Lance store 或 ATIF 输入执行一条只读 DataFusion SQL。两个后端暴露
-相同的 `runs`、`steps`、`tool_calls` 表，默认按 `<INPUT>/CURRENT` 是否存在自动识别；
-可通过 `--source` 覆盖。结果只向 stdout 输出 JSONL，错误只向 stderr 输出。
+`query` 统一承载四种 pChronicle 查询模式：`sql` 用于自由分析，`point` 查询一个 step
+或完整 Storyline，`batch` 在同一快照批量查询，`follow` 持续读取运行中已经提交的
+canonical event。结果只向 stdout 输出 JSONL，错误和进度只向 stderr 输出。
 
 ```bash
-ppilot query ./storyline-store \
+ppilot query point ./storyline-store --session-id run-001 --step-id 7
+ppilot query point ./storyline-store --session-id run-001
+ppilot query batch ./storyline-store --session-id run-001,run-002 --step-id 7
+ppilot query follow ./capture --agent-id agent-001 --session-id run-001
+
+ppilot query sql ./storyline-store \
   --sql "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source"
 
-ppilot query s3://trajectory-bucket/persisting/storylines \
+ppilot query sql s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
 
-ppilot query ./trajectories.ndjson --sql-file analysis.sql
-cat analysis.sql | ppilot query ./storyline-store --sql-file -
+ppilot query sql ./trajectories.ndjson --sql-file analysis.sql
+cat analysis.sql | ppilot query sql ./storyline-store --sql-file -
 
 # 将带表头的 CSV 和 JSON 对象数组注册为外部表并联查
-ppilot query ./storyline-store \
+ppilot query sql ./storyline-store \
   --table labels=csv:./labels.csv \
   --table metadata=json:./metadata.json \
   --sql "SELECT r.session_id, l.score, m.category
@@ -77,6 +85,10 @@ ppilot query ./storyline-store \
          JOIN labels l USING (session_id)
          JOIN metadata m USING (session_id)"
 ```
+
+原有 `ppilot query <INPUT> --sql ...` 仍作为 SQL 兼容语法保留。`batch` 不会循环执行
+N 次点查：step 批查生成一次 `IN` 查询，完整轨迹批查则对三张表各读取一次同一 generation
+快照，并按输入 session 顺序输出每条 Storyline。
 
 `--table` 可重复。支持 `csv`、`json`、`jsonl`（别名 `ndjson`）；`csv` 默认把首行
 作为列名，`json` 表示一个 JSON 对象数组，`jsonl`/`ndjson` 表示每行一个 JSON 对象。

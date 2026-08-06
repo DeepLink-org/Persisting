@@ -14,7 +14,7 @@
 //!     tool_calls.lance/
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -580,30 +580,74 @@ impl StorylineLanceStore {
     }
 
     pub async fn get_storyline(&self, session_id: &str) -> Result<Option<StorylineDocument>> {
+        Ok(self
+            .get_storylines(&[session_id.to_string()])
+            .await?
+            .into_iter()
+            .next()
+            .flatten())
+    }
+
+    /// Read multiple Storylines from one committed three-table snapshot.
+    ///
+    /// The returned vector is aligned with `session_ids`; missing sessions are
+    /// represented by `None`. All requested rows are fetched with one indexed
+    /// predicate per table rather than one store open per session.
+    pub async fn get_storylines(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<Option<StorylineDocument>>> {
+        if session_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let requested = session_ids.iter().cloned().collect::<HashSet<_>>();
+        anyhow::ensure!(
+            requested.len() == session_ids.len(),
+            "duplicate session_id in Storyline point batch"
+        );
         let Some(paths) = self.resolve_current_table_paths().await? else {
-            return Ok(None);
+            return Ok(vec![None; session_ids.len()]);
         };
-        let predicate = session_predicate(session_id);
+        let predicate = session_set_predicate(&requested);
         let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
             read_filtered_batches(&paths.runs, paths.runs_version, &predicate),
             read_filtered_batches(&paths.steps, paths.steps_version, &predicate),
             read_filtered_batches(&paths.tool_calls, paths.tool_calls_version, &predicate),
         )?;
-        let mut matching_runs = decode_run_batches(&run_batches)?.into_iter();
-        let Some(run) = matching_runs.next() else {
-            return Ok(None);
-        };
-        if matching_runs.next().is_some() {
-            anyhow::bail!("duplicate runs rows for session_id '{session_id}'");
+        let mut runs = HashMap::with_capacity(session_ids.len());
+        for run in decode_run_batches(&run_batches)? {
+            let session_id = run.session_id.clone();
+            if runs.insert(session_id.clone(), run).is_some() {
+                anyhow::bail!("duplicate runs rows for session_id '{session_id}'");
+            }
         }
-        let tables = StorylineTables {
-            run,
-            steps: decode_step_batches(&step_batches)?,
-            tool_calls: decode_tool_call_batches(&tool_call_batches)?,
-        };
-        reconstruct_storyline(tables)
-            .map(Some)
-            .map_err(anyhow::Error::from)
+        let mut steps = HashMap::<String, Vec<StoryStepRow>>::new();
+        for step in decode_step_batches(&step_batches)? {
+            steps.entry(step.session_id.clone()).or_default().push(step);
+        }
+        let mut tool_calls = HashMap::<String, Vec<StoryToolCallRow>>::new();
+        for tool_call in decode_tool_call_batches(&tool_call_batches)? {
+            tool_calls
+                .entry(tool_call.session_id.clone())
+                .or_default()
+                .push(tool_call);
+        }
+
+        session_ids
+            .iter()
+            .map(|session_id| {
+                let Some(run) = runs.remove(session_id) else {
+                    return Ok(None);
+                };
+                reconstruct_storyline(StorylineTables {
+                    run,
+                    steps: steps.remove(session_id).unwrap_or_default(),
+                    tool_calls: tool_calls.remove(session_id).unwrap_or_default(),
+                })
+                .map(Some)
+                .map_err(anyhow::Error::from)
+            })
+            .collect()
     }
 
     pub async fn list_runs(&self) -> Result<Vec<StoryRunRow>> {
@@ -1487,6 +1531,30 @@ mod tests {
                 .generation,
             committed
         );
+    }
+
+    #[tokio::test]
+    async fn batch_get_preserves_request_order_and_missing_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StorylineLanceStore::open(dir.path()).await.unwrap();
+        let first = story("a");
+        let second = story("b");
+        store
+            .replace_storylines(&[first.clone(), second.clone()])
+            .await
+            .unwrap();
+
+        let actual = store
+            .get_storylines(&["b".into(), "missing".into(), "a".into()])
+            .await
+            .unwrap();
+        assert_eq!(actual, [Some(second), None, Some(first)]);
+        assert!(store
+            .get_storylines(&["a".into(), "a".into()])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate session_id"));
     }
 
     #[tokio::test]

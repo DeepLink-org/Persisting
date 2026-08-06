@@ -8,6 +8,7 @@
 | [01-atif-import-compression](01-atif-import-compression/) | 直接报告占用比例、空间节省和压缩倍数 |
 | [02-lance-vs-atif-speed](02-lance-vs-atif-speed/) | 直接总结构建、冷查询、点查、增量替换和 warm SQL 收益与边界 |
 | [03-analyze-lance-and-atif](03-analyze-lance-and-atif/) | 明确报告同一条 SQL 的跨后端一致性结论 |
+| [04-point-batch-live-query](04-point-batch-live-query/) | 对比单 step、整轨迹、64-key 批查和运行中 event follow 的延迟与吞吐 |
 
 体积和速度结论都限定在脚本打印的数据规模、查询与当前机器；示例不会宣称 Lance 在
 任意数据分布和任意查询上必然更小或更快。
