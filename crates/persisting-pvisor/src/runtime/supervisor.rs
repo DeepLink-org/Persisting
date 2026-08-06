@@ -75,7 +75,6 @@ impl RuntimeSupervisorBuilder {
     }
 
     pub fn gateway(mut self, gateway: GatewayDriverConfig) -> Self {
-        self.storage = Some(gateway.output_dir.clone());
         self.proxy = Some(gateway.proxy);
         self.gateway_output_dir = Some(gateway.output_dir);
         self.stream_markdown = gateway.stream_markdown;
@@ -156,11 +155,16 @@ impl RuntimeSupervisor {
                 .storage
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".persisting/capture"));
+            let capture_storage = self
+                .gateway_output_dir
+                .clone()
+                .unwrap_or_else(|| storage.clone());
             let session = prepare_attempt(
                 spec,
                 AttemptPrepareOpts {
                     config: &proxy,
                     storage: &storage,
+                    capture_storage: &capture_storage,
                     sink: self.sink.clone(),
                     stream_markdown: self.stream_markdown,
                     overlay_override: self.overlay.clone(),

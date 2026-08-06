@@ -12,7 +12,8 @@ pvisor apply last
 pvisor drop last
 ```
 
-`--safe` creates a durable workspace automatically, stages changes through
+`--safe` uses the current directory as a reusable project workspace, creates
+an independent durable Run under `PERSISTING_RUN_HOME`, stages changes through
 OverlayFS, enables the cooperative OverlayNet proxy, and writes a private
 versioned `run-bundle.json`. With the default host executor it is a
 review-oriented low-privilege profile, not a VM boundary: the Agent can still
@@ -102,7 +103,7 @@ re-read a Gateway-specific file:
 
 ```toml
 [run]
-workspace = "/tmp/my-run"
+workspace = "/path/to/project"
 executor = "container"
 command = ["codex"]
 
@@ -120,8 +121,7 @@ target = "/cache"
 read_only = false
 
 [overlayfs]
-mode = "overlay"
-target = "/path/to/project"
+base = "/path/to/project"
 backend = "directory"
 commit = "manual"
 
@@ -147,11 +147,11 @@ dir = "s3://trajectory-bucket/persisting/runs"
 ```
 
 `chronicle.dir` accepts either a local directory or an S3 URI. The equivalent
-CLI form keeps the Run workspace local while offloading the canonical event log:
+CLI form keeps the reusable project workspace local while offloading the canonical event log:
 
 ```bash
 AWS_REGION=us-east-1 pvisor run \
-  --workspace /tmp/run-001 \
+  --workspace /path/to/project \
   --chronicle-mode lance \
   --chronicle-dir s3://trajectory-bucket/persisting/runs \
   -- codex
@@ -232,23 +232,20 @@ transport watchdog tears down the entire VM.
 ### Overlay model
 
 ```text
-target (real FS) ──RO──┐
-                       ├─► merged (Agent cwd)
-upper/ (deltas) ───────┘
+base (real FS) ───────────RO──┐
+compose layers (optional) ────┼─► merged (Agent cwd)
+stage/upper (deltas) ─────────┘
 
 Attempt ends → unmount, keep upper/
   → pvisor status|inspect|apply|drop
 ```
 
-The upper is one exclusive backend: a directory tree or a named Jujutsu
-workspace. Directory is the default backend and accepts optional
-`upper_dir`/`work_dir` paths.
-
-Use `backend = "jujutsu"` with `jujutsu_store` and `jujutsu_workspace` in the
-pVisor run configuration when multiple Attempts should keep independent heads
-in one shared `jj-lib` repository. The CLI selects both with one stage address,
-for example `--overlayfs-stage jj:/tmp/shared.jj@fork-a`. Reusable environments
-can use the same model directly:
+Any OverlayFS option enables the driver. `base` defaults to the project
+workspace, `stage` defaults to the generated per-Run directory, and repeated
+`compose` paths form read-only layers above the base. Directory is the default
+backend. With `backend = "jujutsu"`, pVisor creates a Run-named Jujutsu
+workspace in `<stage>/jujutsu`. Reusable environments can use the same backend
+directly:
 
 ```bash
 pvisor env create experiment-a --backend jujutsu --target ./project
@@ -317,9 +314,11 @@ pvisor run \
   -- codex
 ```
 
-OverlayNet-only Runs do not require `--workspace`; pVisor uses an internal
-directory below the system temporary directory. Supply `--workspace` when the
-Run record and Bundle must remain at a stable, user-selected path.
+`--workspace` defaults to the current directory and can be shared by any
+number of Runs. Run records and Bundles normally remain independent under
+`PERSISTING_RUN_HOME` (default `~/.persisting/runs`). If that Run Home would
+sit inside an OverlayFS base or compose layer, pVisor uses the system temporary
+Run root instead so the writable stage cannot overlap a read-only layer.
 
 `kbps`/`mbps`/`gbps` use network-standard bits per second; `kb/s`/`mb/s`/`gb/s`
 use bytes per second. Limits aggregate upload and download across matching
@@ -349,7 +348,7 @@ timestamps and xattrs, and processes opaque markers before staged children.
 - `pvisor run --config run.toml [OVERRIDES] [-- <agent>]`
 - `pvisor review [RUN|WORKSPACE] [--json]`
 - `pvisor checkpoint [RUN|WORKSPACE] [--name NAME]`
-- `pvisor fork RUN --checkpoint NAME --workspace DIR -- <agent>`
+- `pvisor fork RUN --checkpoint NAME [--workspace PROJECT] -- <agent>`
 - `pvisor status [RUN|STAGE|UPPER]`
 - `pvisor inspect [RUN|STAGE|UPPER] [-- COMMAND...]`
 - `pvisor apply|drop [RUN|STAGE|UPPER]`

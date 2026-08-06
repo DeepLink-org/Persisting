@@ -33,9 +33,10 @@ Provide the upstream route and its API key directly:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
+export PERSISTING_RUN_HOME=$HOME/.persisting/runs
 
 pvisor run \
-  --workspace ./store/run \
+  --workspace . \
   --agent deepseek \
   --gateway-mode capture \
   --gateway-route 'name="deepseek", upstream="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"' \
@@ -46,7 +47,8 @@ pvisor run \
 
 Replace `claude` with `codex` or any program that uses an injected proxy/base
 URL. pVisor starts the in-process Gateway, injects the child environment, waits
-for the child, and stops the Gateway.
+for the child, and stops the Gateway. The workspace is reusable; each execution
+writes an independent `run-<uuid>` directory below `PERSISTING_RUN_HOME`.
 
 ### Storage mode
 

@@ -18,7 +18,8 @@ pub struct RunConfig {
     pub run: RunSettings,
     pub container: ContainerSettings,
     pub kvm: KvmSettings,
-    pub overlayfs: OverlayFsSettings,
+    /// Transactional filesystem configuration. Absence means host filesystem access.
+    pub overlayfs: Option<OverlayFsSettings>,
     pub overlaynet: OverlayNetSettings,
     pub gateway: GatewaySettings,
     pub chronicle: ChronicleSettings,
@@ -259,35 +260,26 @@ pub enum RunPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayFsSettings {
-    pub mode: OverlayFsMode,
-    pub target: Option<PathBuf>,
-    pub lower: Vec<PathBuf>,
+    /// Bottom read-only layer and default apply destination. Defaults to the Run workspace.
+    pub base: Option<PathBuf>,
+    /// Additional read-only layers composed above `base`, in command-line order.
+    pub compose: Vec<PathBuf>,
+    /// Durable writable stage root. Defaults to the generated per-Run storage directory.
+    pub stage: Option<PathBuf>,
     pub backend: OverlayFsBackend,
-    pub jujutsu_store: Option<PathBuf>,
-    pub jujutsu_workspace: Option<String>,
     pub commit: OverlayFsCommit,
 }
 
 impl Default for OverlayFsSettings {
     fn default() -> Self {
         Self {
-            mode: OverlayFsMode::Host,
-            target: None,
-            lower: Vec::new(),
+            base: None,
+            compose: Vec::new(),
+            stage: None,
             backend: OverlayFsBackend::Directory,
-            jujutsu_store: None,
-            jujutsu_workspace: None,
             commit: OverlayFsCommit::Manual,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum OverlayFsMode {
-    #[default]
-    Host,
-    Overlay,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
@@ -472,7 +464,7 @@ mod tests {
         let config: RunConfig = toml::from_str(
             r#"
 [run]
-workspace = "/tmp/run"
+workspace = "/tmp/project"
 executor = "container"
 command = ["codex"]
 
@@ -482,8 +474,7 @@ image = "example/agent:latest"
 network = "none"
 
 [overlayfs]
-mode = "overlay"
-target = "/tmp/lower"
+base = "/tmp/lower"
 
 [overlaynet]
 mode = "proxy"
@@ -509,7 +500,13 @@ upstream = "https://api.openai.com/v1"
 "#,
         )
         .unwrap();
-        assert_eq!(config.overlayfs.mode, OverlayFsMode::Overlay);
+        assert_eq!(
+            config
+                .overlayfs
+                .as_ref()
+                .and_then(|overlay| overlay.base.as_deref()),
+            Some(Path::new("/tmp/lower"))
+        );
         assert_eq!(config.run.executor, RunExecutorKind::Container);
         assert_eq!(config.container.runtime, Path::new("podman"));
         assert_eq!(config.container.image, "example/agent:latest");

@@ -142,21 +142,18 @@ executor 使用进程内代理时要求 `--container-network host`。
 
 ## 检查运行结果
 
-如果需要在命令结束后检查网络策略和计数，请指定 workspace：
+当前目录默认就是可重复使用的 workspace；每次调用都会在 `PERSISTING_RUN_HOME` 下保留
+一条独立 Run：
 
 ```bash
 pvisor run \
-  --workspace .persisting/runs/network-001 \
   --overlaynet-deny 169.254.0.0/16 \
   -- agent-command
 
-pvisor review .persisting/runs/network-001
-
-jq '{policy: .network.policy,
+pvisor review --json last | jq '{policy: .network.policy,
      interception: .network.interception,
      counters: .network.intercepted,
-     non_bypassable: .safety.network_non_bypassable}' \
-  .persisting/runs/network-001/run-bundle.json
+     non_bypassable: .safety.network_non_bypassable}'
 ```
 
 这些 counter 只描述真正到达 OverlayNet 的请求，无法统计绕过代理的流量。

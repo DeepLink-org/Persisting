@@ -172,6 +172,7 @@ nav:
       - 0003 pChronicle ownership: rfcs/0003-pchronicle-ownership.md
   - Engineering Notes:
       - Implementation status: dev/index.md
+      - Releasing persisting: dev/releasing.md
       - Tiered-storage implementation steps: dev/tiered-storage-steps.md
   - Research Notes:
       - Similar systems: design/references/similar-systems.md

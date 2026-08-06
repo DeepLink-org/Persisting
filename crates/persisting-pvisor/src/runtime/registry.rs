@@ -1,4 +1,4 @@
-//! Durable Run identity and liveness metadata colocated with an Overlay workspace.
+//! Durable Run identity, project association, and liveness metadata.
 
 use super::overlay::{
     load_overlay_record, mount_overlay_record_read_only, overlay_status, OverlayRecord,
@@ -58,6 +58,9 @@ pub struct RunRecord {
     pub started_at_unix_ms: u64,
     pub finished_at_unix_ms: Option<u64>,
     pub storage: PathBuf,
+    /// Reusable project workspace associated with this Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
     #[serde(default)]
     pub overlaynet_listen: Option<String>,
     #[serde(default)]
@@ -143,7 +146,7 @@ impl RunLease {
             .open(stage_dir.join(LEASE_FILENAME))?;
         let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if result != 0 {
-            anyhow::bail!("Run workspace is already leased: {}", stage_dir.display());
+            anyhow::bail!("Run storage is already leased: {}", stage_dir.display());
         }
         Ok(Self { file })
     }
@@ -407,6 +410,14 @@ pub fn is_live(stage_dir: &Path) -> anyhow::Result<bool> {
 pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<RunRecord> {
     if let Some(selector) = selector {
         if selector == Path::new("last") {
+            if let Ok(current) = std::env::current_dir() {
+                if let Ok(record) = resolve_path(&current) {
+                    return Ok(record);
+                }
+                if let Ok(record) = latest_workspace_run(&current) {
+                    return Ok(record);
+                }
+            }
             return latest_run(storage).or_else(|_| latest_default_run());
         }
         if selector.exists() || selector.components().count() > 1 {
@@ -434,6 +445,9 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
         if let Ok(record) = resolve_path(&current) {
             return Ok(record);
         }
+        if let Ok(record) = latest_workspace_run(&current) {
+            return Ok(record);
+        }
     }
     latest_run(storage).or_else(|_| latest_default_run())
 }
@@ -451,9 +465,11 @@ fn default_runs() -> anyhow::Result<Vec<RunRecord>> {
             continue;
         }
         for entry in fs::read_dir(root)? {
-            let stage = entry?.path();
-            if let Ok(record) = RunRecord::read(&stage) {
+            let storage = entry?.path();
+            if let Ok(record) = RunRecord::read(&storage) {
                 records.push(record);
+            } else {
+                records.extend(all_runs(&storage)?);
             }
         }
     }
@@ -468,6 +484,23 @@ fn latest_default_run() -> anyhow::Result<RunRecord> {
             default_run_home().display()
         )
     })
+}
+
+fn latest_workspace_run(workspace: &Path) -> anyhow::Result<RunRecord> {
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    default_runs()?
+        .into_iter()
+        .find(|record| {
+            record.workspace.as_ref().is_some_and(|root| {
+                let root = root.canonicalize().unwrap_or_else(|_| root.clone());
+                workspace.starts_with(root)
+            })
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("no pVisor Runs found for workspace {}", workspace.display())
+        })
 }
 
 fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
@@ -504,6 +537,10 @@ fn resolve_path(path: &Path) -> anyhow::Result<RunRecord> {
                 return Ok(record);
             }
         }
+    }
+
+    if let Ok(record) = latest_workspace_run(&absolute) {
+        return Ok(record);
     }
 
     // A target or merged path is not necessarily below stage_dir. Scan the
@@ -602,6 +639,7 @@ mod tests {
             started_at_unix_ms: 1,
             finished_at_unix_ms: Some(2),
             storage: storage.to_path_buf(),
+            workspace: None,
             overlaynet_listen: None,
             network_interception: None,
             network_interception_metrics: None,

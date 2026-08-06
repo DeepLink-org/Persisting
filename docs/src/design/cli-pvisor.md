@@ -23,12 +23,11 @@ pvisor run --safe codex
 pvisor review last
 ```
 
-`--safe` chooses a durable workspace under `PERSISTING_RUN_HOME` (default
-`~/.persisting/runs`), uses the current directory as the OverlayFS lower,
-retains changes for manual review, enables the explicit OverlayNet proxy on
-ephemeral loopback ports, and writes `run-bundle.json` with mode `0600`.
-If that workspace root overlaps the selected lower (for example, running from
-the home directory), pVisor uses the system temporary run root instead.
+`--safe` uses the current directory as the reusable project workspace and
+OverlayFS base, creates an independent Run and writable stage under
+`PERSISTING_RUN_HOME` (default `~/.persisting/runs`), retains changes for
+manual review, enables the explicit OverlayNet proxy on ephemeral loopback
+ports, and writes `run-bundle.json` with mode `0600`.
 With the default host executor, the profile is deliberately described as
 review-safe rather than sandboxed: filesystem access outside the project is
 not contained, and direct sockets can bypass the cooperative proxy. Docker and
@@ -41,8 +40,7 @@ After completion:
 ```bash
 pvisor review last
 pvisor checkpoint last --name before-experiment
-pvisor fork last --checkpoint before-experiment \
-  --workspace /tmp/experiment-b -- codex
+pvisor fork last --checkpoint before-experiment -- codex
 pvisor apply last       # or: pvisor drop last
 ```
 
@@ -79,10 +77,9 @@ pVisor does not discover a hidden project configuration file.
 
 ```bash
 pvisor run \
-  --workspace /tmp/my-run \
+  --workspace /path/to/project \
   --agent codex \
-  --overlayfs-mode overlay \
-  --overlayfs-target /path/to/project \
+  --overlayfs-base /path/to/project \
   --overlayfs-backend directory \
   --overlayfs-commit manual \
   --overlaynet-allow api.openai.com:443 \
@@ -100,7 +97,7 @@ The equivalent TOML is:
 
 ```toml
 [run]
-workspace = "/tmp/my-run"
+workspace = "/path/to/project"
 agent = "codex"
 executor = "container"
 command = ["codex"]
@@ -111,8 +108,7 @@ image = "example/codex-agent:latest"
 network = "host"
 
 [overlayfs]
-mode = "overlay"
-target = "/path/to/project"
+base = "/path/to/project"
 backend = "directory"
 commit = "manual"
 
@@ -145,7 +141,7 @@ mode = "lance"
 ```
 
 Run it with `pvisor run --config run.toml`. Explicit CLI scalars replace TOML
-scalars. Supplying any repeated CLI field (`--overlayfs-lower`,
+scalars. Supplying any repeated CLI field (`--overlayfs-compose`,
 `--overlaynet-allow`, `--overlaynet-deny`, `--overlaynet-limit`, or
 `--gateway-route`) replaces that complete TOML list.
 The command after `--` replaces `run.command`.
@@ -185,11 +181,13 @@ configured key. KVM requires a Linux host; host Gateway/OverlayNet endpoints
 are rejected until a guest-visible transport is available.
 
 The four visible OverlayNet policy flags and Gateway capture automatically enable the
-proxy driver. In TOML, driver modes remain explicit;
-OverlayFS overlay mode requires `--workspace` and `--overlayfs-target`.
-OverlayNet by itself does not require `--workspace`; without one, pVisor uses an
-internal Run directory under the system temporary directory. Pass `--workspace`
-when the Run record and Bundle need a stable, user-selected location.
+proxy driver. Any `--overlayfs-base`, `--overlayfs-compose`,
+`--overlayfs-stage`, `--overlayfs-backend`, or `--overlayfs-commit` option
+automatically enables OverlayFS; no separate mode switch exists. The base
+defaults to the workspace, and the stage defaults to the generated Run
+directory. Both `commit=apply` and the later `pvisor apply` command are rejected
+for composed Runs until pVisor can materialize a complete merged-vs-base diff
+safely.
 OverlayNet policy applies to traffic routed through the explicit proxy and does
 not claim non-bypassable host network isolation.
 `--overlaynet-deny-all` provides the discoverable deny-all form for
@@ -198,31 +196,38 @@ routes remain available for configured model traffic.
 
 ## Run workspace and discovery
 
-`--workspace` is the exact durable Run directory. pVisor never appends a hidden
-Run-id child:
+`--workspace` is a reusable project directory and defaults to the current
+directory. Multiple Runs may use the same workspace. Each Run receives an
+independent directory under `PERSISTING_RUN_HOME`. If that root would be inside
+the selected OverlayFS base or a compose layer, pVisor instead uses the system
+temporary Run root to keep the writable stage disjoint:
 
 ```text
-workspace/
-├── run.json
-├── run-bundle.json    # mode 0600; outcome + safety + changes + effects
-├── overlay.json       # when OverlayFS is enabled
-├── upper/             # or a Jujutsu workspace upper
-├── merged/
-├── checkpoints/       # named logical upper snapshots
-├── lease.lock
-├── control.sock       # while a live OverlayFS Run is available
-├── .capture/          # when OverlayNet/Gateway is enabled
-└── chronicle/         # default pChronicle location
+project/                         # reusable workspace / default base
+
+~/.persisting/runs/
+└── run-<uuid>/                  # one generated Run and default stage
+    ├── run.json
+    ├── run-bundle.json          # mode 0600; outcome + safety + changes + effects
+    ├── overlay.json             # when OverlayFS is enabled
+    ├── upper/                   # or a Run-named Jujutsu workspace upper
+    ├── merged/
+    ├── checkpoints/
+    ├── lease.lock
+    ├── control.sock             # while a live OverlayFS Run is available
+    ├── .capture/                # when OverlayNet/Gateway is enabled
+    └── chronicle/               # default pChronicle location
 ```
 
-Lifecycle commands accept a workspace, `run.json`, upper or merged path:
+Lifecycle commands accept a Run id, Run directory, project workspace,
+`run.json`, upper, or merged path. A project workspace selects its latest Run:
 
 ```bash
-pvisor status /tmp/my-run
-pvisor inspect /tmp/my-run -- rg TODO .
-pvisor apply /tmp/my-run
-pvisor apply /tmp/my-run --target /path/to/another-target
-pvisor drop /tmp/my-run
+pvisor status /path/to/project
+pvisor inspect /path/to/project -- rg TODO .
+pvisor apply /path/to/project
+pvisor apply /path/to/project --target /path/to/another-target
+pvisor drop /path/to/project
 ```
 
 `inspect` creates a separate kernel-read-only view. `apply` and `drop` refuse

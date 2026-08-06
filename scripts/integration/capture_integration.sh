@@ -211,26 +211,28 @@ pass "gateway status auto-discovers gateway serve"
 # --- 7. execute (in-process Gateway, no forked daemon) -----------------------
 section "execute (subprocess + injected Gateway env)"
 
-RUN_STORAGE="$WORKDIR/run-store"
-mkdir -p "$RUN_STORAGE"
+RUN_WORKSPACE="$WORKDIR/run-workspace"
+RUN_HOME="$WORKDIR/run-home"
+mkdir -p "$RUN_WORKSPACE"
 RUN_PROXY_PORT="$(pick_port)"
 RUN_ADMIN_PORT="$(pick_port)"
 while [[ "$RUN_PROXY_PORT" == "$RUN_ADMIN_PORT" || "$RUN_PROXY_PORT" == "$MOCK_PORT" || "$RUN_ADMIN_PORT" == "$MOCK_PORT" ]]; do
   RUN_PROXY_PORT="$(pick_port)"
   RUN_ADMIN_PORT="$(pick_port)"
 done
-RUN_OUT="$(run_cli execute \
-  --workspace "$RUN_STORAGE" \
+RUN_OUT="$(PERSISTING_RUN_HOME="$RUN_HOME" run_cli execute \
+  --workspace "$RUN_WORKSPACE" \
   --agent capture-it-agent \
   --overlaynet-listen "127.0.0.1:${RUN_PROXY_PORT}" \
   --gateway-mode capture \
   --gateway-admin-listen "127.0.0.1:${RUN_ADMIN_PORT}" \
   --gateway-route "name=\"*\", upstream=\"http://127.0.0.1:${MOCK_PORT}/v1\"" \
   --chronicle-mode lance \
-  --chronicle-dir "$RUN_STORAGE" \
   -- true)"
 pass "execute completed with an in-process Gateway"
 
+RUN_STORAGE="$(find "$RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | head -n 1)"
+[[ -n "$RUN_STORAGE" ]] || die "missing generated Run storage under $RUN_HOME"
 [[ -f "$RUN_STORAGE/.capture/run_session" ]] || die "missing run_session file"
 RUN_SESSION="$(capture_read_run_session "$RUN_STORAGE")"
 [[ "$RUN_SESSION" == run-* ]] || die "run_session content mismatch: $RUN_SESSION"

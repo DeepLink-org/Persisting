@@ -13,6 +13,12 @@ dependencies = [
     "tensordict>=0.6.0",
 ]
 
+[project.urls]
+Homepage = "https://deeplink-org.github.io/Persisting/"
+Documentation = "https://deeplink-org.github.io/Persisting/"
+Repository = "https://github.com/DeepLink-org/Persisting"
+Issues = "https://github.com/DeepLink-org/Persisting/issues"
+
 [project.optional-dependencies]
 lance = [
     "lance>=0.9.0",

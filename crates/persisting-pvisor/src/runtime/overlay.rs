@@ -323,7 +323,7 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
     }
 }
 
-/// Lower stack for mount: target first (top), then additional lower layers.
+/// Lower stack for mount: compose layers first (top), then the base target.
 pub fn lower_stack_from_config(cfg: &OverlayConfig, storage: &Path, target: &Path) -> Vec<PathBuf> {
     let resolve = |p: &str| -> PathBuf {
         let path = PathBuf::from(p);
@@ -335,7 +335,7 @@ pub fn lower_stack_from_config(cfg: &OverlayConfig, storage: &Path, target: &Pat
     };
     let mut lowers: Vec<PathBuf> = cfg.lower_dirs.iter().map(|p| resolve(p)).collect();
     lowers.retain(|p| p != target);
-    lowers.insert(0, target.to_path_buf());
+    lowers.push(target.to_path_buf());
     lowers
 }
 
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_stack_keeps_target_as_highest_priority_layer() {
+    fn lower_stack_keeps_target_as_bottom_base_layer() {
         let cfg = OverlayConfig {
             lower_dirs: vec!["extra-a".into(), "extra-b".into()],
             ..OverlayConfig::default()
@@ -1214,9 +1214,9 @@ mod tests {
         assert_eq!(
             lower_stack_from_config(&cfg, Path::new("/store"), Path::new("/target")),
             vec![
-                PathBuf::from("/target"),
                 PathBuf::from("/store/extra-a"),
                 PathBuf::from("/store/extra-b"),
+                PathBuf::from("/target"),
             ]
         );
     }

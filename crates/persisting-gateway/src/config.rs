@@ -52,7 +52,7 @@ pub struct OverlayConfig {
     /// Prefer this over listing the same path in `lower_dirs`.
     #[serde(default)]
     pub target: Option<String>,
-    /// Extra read-only lower layers stacked under `target` (bottom → top before target).
+    /// Read-only compose layers stacked above `target`, highest priority first.
     #[serde(default)]
     pub lower_dirs: Vec<String>,
     /// Root for staging (`upper` / `work` / `merged`). Default:

@@ -278,6 +278,7 @@ mod tests {
             started_at_unix_ms: 10,
             finished_at_unix_ms: Some(20),
             storage: temp.path().to_path_buf(),
+            workspace: None,
             overlaynet_listen: None,
             network_interception: Some(InterceptionProfile::explicit_proxy()),
             network_interception_metrics: None,

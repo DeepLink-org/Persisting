@@ -19,7 +19,7 @@ use persisting_gateway::runtime::run_config::snapshot_proxy_config;
 use persisting_gateway::runtime::run_env::write_run_session;
 use persisting_gateway::sink::SeqOnlySink;
 use persisting_overlaynet::policy::network_capability_from_config;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -152,7 +152,10 @@ impl AttemptTeardown {
 
 pub struct AttemptPrepareOpts<'a> {
     pub config: &'a ProxyConfig,
+    /// Durable pVisor Run storage and default OverlayFS stage.
     pub storage: &'a Path,
+    /// Gateway capture and session configuration storage.
+    pub capture_storage: &'a Path,
     pub sink: Option<Arc<dyn TrajectoryEventSink>>,
     pub stream_markdown: bool,
     /// Extra overlay hint from CLI (overrides paths when set).
@@ -184,6 +187,10 @@ pub fn prepare_attempt(
         .storage
         .canonicalize()
         .unwrap_or_else(|_| opts.storage.to_path_buf());
+    let capture_storage = opts
+        .capture_storage
+        .canonicalize()
+        .unwrap_or_else(|_| opts.capture_storage.to_path_buf());
 
     spec.capabilities.network = network_capability_from_config(&config);
 
@@ -193,7 +200,7 @@ pub fn prepare_attempt(
 
     let gateway = InProcessCapture::start_with_control(
         config.clone(),
-        storage.clone(),
+        capture_storage.clone(),
         Arc::clone(&sink),
         opts.stream_markdown,
         opts.controller,
@@ -202,8 +209,8 @@ pub fn prepare_attempt(
     // A Run has one top-level identity across pVisor, Gateway and pChronicle.
     // Subagent sessions remain separate Storylines beneath this root.
     let root_session = spec.run_id.as_str().to_string();
-    write_run_session(&storage, &root_session)?;
-    let config_snapshot = snapshot_proxy_config(&storage, &root_session, &config)?;
+    write_run_session(&capture_storage, &root_session)?;
+    let config_snapshot = snapshot_proxy_config(&capture_storage, &root_session, &config)?;
 
     let mut overlay_cfg = config.overlay.clone();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay_override);
@@ -238,6 +245,7 @@ pub fn prepare_attempt(
         started_at_unix_ms: crate::util::unix_now_ms(),
         finished_at_unix_ms: None,
         storage: storage.clone(),
+        workspace: workspace_from_spec(spec),
         overlaynet_listen: Some(gateway.listen.clone()),
         network_interception: Some(persisting_overlaynet::InterceptionProfile::explicit_proxy()),
         network_interception_metrics: None,
@@ -274,7 +282,8 @@ pub fn prepare_attempt(
             root_session: &root_session,
             overlay: &overlay_hint,
             overlay_record: overlay_record.as_ref(),
-            storage: &storage,
+            run_storage: &storage,
+            capture_storage: &capture_storage,
             config_path: &config_snapshot,
             gateway_enabled: opts.gateway_enabled,
         },
@@ -335,6 +344,7 @@ pub fn prepare_overlay_attempt(
         started_at_unix_ms: crate::util::unix_now_ms(),
         finished_at_unix_ms: None,
         storage: storage.clone(),
+        workspace: workspace_from_spec(spec),
         overlaynet_listen: None,
         network_interception: None,
         network_interception_metrics: None,
@@ -422,7 +432,7 @@ pub fn prepare_overlay_attempt(
     })
 }
 
-/// Prepare a metadata-only durable Run workspace without Gateway or OverlayFS.
+/// Prepare metadata-only durable Run storage without Gateway or OverlayFS.
 pub fn prepare_storage_attempt(
     spec: &mut RunSpec,
     storage: &Path,
@@ -449,6 +459,7 @@ pub fn prepare_storage_attempt(
         started_at_unix_ms: crate::util::unix_now_ms(),
         finished_at_unix_ms: None,
         storage: storage.clone(),
+        workspace: workspace_from_spec(spec),
         overlaynet_listen: None,
         network_interception: None,
         network_interception_metrics: None,
@@ -467,7 +478,7 @@ pub fn prepare_storage_attempt(
         env: ImplantPlan::marker_env(),
         cwd: None,
         overlay: OverlayHint::default(),
-        notes: vec![format!("durable Run workspace: {}", storage.display())],
+        notes: vec![format!("durable Run storage: {}", storage.display())],
     };
     plan.env
         .insert("PERSISTING_RUN_ID".into(), root_session.clone());
@@ -511,6 +522,13 @@ fn orchestration_from_spec(
         .filter(|(key, _)| key.starts_with("ppilot.") || key.starts_with("persisting.ppilot."))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
+}
+
+fn workspace_from_spec(spec: &RunSpec) -> Option<PathBuf> {
+    spec.metadata
+        .get("pvisor.workspace")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
 }
 
 fn executor_from_spec(spec: &RunSpec) -> Option<persisting_control::ExecutorDescriptor> {
@@ -557,13 +575,15 @@ fn apply_overlay_override(
         overlay_cfg.jujutsu_workspace = Some(workspace.clone());
     }
     if !overlay_override.lower_dirs.is_empty() {
-        // First lower treated as target when target unset.
+        // The final lower is the base/apply target; preceding entries are
+        // read-only compose layers ordered from highest to lowest priority.
         if overlay_cfg.target.is_none() {
-            overlay_cfg.target = Some(overlay_override.lower_dirs[0].display().to_string());
-            overlay_cfg.lower_dirs = overlay_override.lower_dirs[1..]
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
+            let (target, compose) = overlay_override
+                .lower_dirs
+                .split_last()
+                .expect("non-empty lower stack");
+            overlay_cfg.target = Some(target.display().to_string());
+            overlay_cfg.lower_dirs = compose.iter().map(|p| p.display().to_string()).collect();
         } else {
             overlay_cfg.lower_dirs = overlay_override
                 .lower_dirs
@@ -622,7 +642,8 @@ struct SessionImplantOpts<'a> {
     root_session: &'a str,
     overlay: &'a OverlayHint,
     overlay_record: Option<&'a OverlayRecord>,
-    storage: &'a Path,
+    run_storage: &'a Path,
+    capture_storage: &'a Path,
     config_path: &'a Path,
     gateway_enabled: bool,
 }
@@ -636,7 +657,8 @@ fn enrich_with_session(
         root_session,
         overlay,
         overlay_record,
-        storage,
+        run_storage,
+        capture_storage,
         config_path,
         gateway_enabled,
     } = opts;
@@ -657,7 +679,11 @@ fn enrich_with_session(
     );
     plan.env.insert(
         "PERSISTING_CAPTURE_STORAGE".into(),
-        storage.display().to_string(),
+        capture_storage.display().to_string(),
+    );
+    plan.env.insert(
+        "PERSISTING_PVISOR_STORAGE".into(),
+        run_storage.display().to_string(),
     );
     plan.notes.push("capture: in-process proxy started".into());
 

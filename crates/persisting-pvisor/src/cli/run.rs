@@ -15,11 +15,11 @@ use serde::Deserialize;
 
 use crate::config::{
     ChronicleMode, ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode,
-    KvmArchitecture, KvmImageFormat, OverlayFsBackend, OverlayFsCommit, OverlayFsMode,
+    KvmArchitecture, KvmImageFormat, OverlayFsBackend, OverlayFsCommit, OverlayFsSettings,
     OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy,
     RunStdio,
 };
-use crate::runtime::{default_run_home, resolve_run, RunLineage, RunRecord};
+use crate::runtime::{default_run_home, resolve_run, RunLineage};
 use crate::{
     latest_logical_checkpoint, restore_logical_checkpoint, ContainerExecutor, GatewayDriverConfig,
     KvmExecutor, LogicalCheckpoint, OverlayHint, PVisor, ProcessExecutor, RunBundle, RunExecutor,
@@ -73,9 +73,9 @@ pub struct ForkArgs {
     /// Logical checkpoint id; the latest checkpoint is used when omitted.
     #[arg(long, value_name = "ID")]
     checkpoint: Option<String>,
-    /// New durable Run workspace.
+    /// Reusable project workspace for the child Run; defaults to the source workspace.
     #[arg(long, value_name = "DIR")]
-    workspace: PathBuf,
+    workspace: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = ".persisting/capture")]
     output_dir: PathBuf,
     /// Agent command; defaults to the source Run command.
@@ -85,7 +85,7 @@ pub struct ForkArgs {
 
 #[derive(Debug, Clone, Default, Args)]
 struct RunOverrides {
-    /// Exact durable directory for this Run; no Run-id child is added.
+    /// Reusable project workspace. Defaults to the current directory.
     #[arg(long, value_name = "DIR")]
     workspace: Option<PathBuf>,
     #[arg(long)]
@@ -189,55 +189,19 @@ impl FromStr for ContainerMountArg {
 
 #[derive(Debug, Clone, Default, Args)]
 struct OverlayFsOverrides {
-    #[arg(long, value_enum)]
-    overlayfs_mode: Option<OverlayFsMode>,
-    /// Primary read-only lower and default apply destination.
+    /// Bottom read-only layer and default apply destination. Defaults to the Run workspace.
     #[arg(long, value_name = "DIR")]
-    overlayfs_target: Option<PathBuf>,
-    /// Additional lower layer; repeat to add multiple layers.
+    overlayfs_base: Option<PathBuf>,
+    /// Read-only layer composed above the base; repeat to add multiple layers.
     #[arg(long, value_name = "DIR")]
-    overlayfs_lower: Vec<PathBuf>,
+    overlayfs_compose: Vec<PathBuf>,
+    /// Durable writable stage root. Defaults to the generated per-Run directory.
+    #[arg(long, value_name = "DIR")]
+    overlayfs_stage: Option<PathBuf>,
     #[arg(long, value_enum)]
     overlayfs_backend: Option<OverlayFsBackend>,
-    /// Versioned upper stage, for example `jj:/tmp/shared.jj@fork-a`.
-    #[arg(
-        long,
-        value_name = "BACKEND:STORE@FORK",
-        conflicts_with = "overlayfs_backend"
-    )]
-    overlayfs_stage: Option<OverlayFsStage>,
     #[arg(long, value_enum)]
     overlayfs_commit: Option<OverlayFsCommit>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum OverlayFsStage {
-    Jujutsu { store: PathBuf, workspace: String },
-}
-
-impl FromStr for OverlayFsStage {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let Some(address) = value.strip_prefix("jj:") else {
-            return Err(format!(
-                "unsupported OverlayFS stage {value:?}; expected jj:<store>@<fork>"
-            ));
-        };
-        let Some((store, workspace)) = address.rsplit_once('@') else {
-            return Err("invalid Jujutsu stage; expected jj:<store>@<fork>".into());
-        };
-        if store.is_empty() {
-            return Err("invalid Jujutsu stage: store path cannot be empty".into());
-        }
-        if workspace.is_empty() {
-            return Err("invalid Jujutsu stage: fork name cannot be empty".into());
-        }
-        Ok(Self::Jujutsu {
-            store: PathBuf::from(store),
-            workspace: workspace.to_owned(),
-        })
-    }
 }
 
 #[derive(Debug, Clone, Default, Args)]
@@ -490,7 +454,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
         .unwrap_or_default();
     apply_cli(&mut config, args);
     if safe {
-        apply_safe_defaults(&mut config, &run_id)?;
+        apply_safe_defaults(&mut config)?;
     }
     execute_config(config, run_id, safe, None).await
 }
@@ -587,31 +551,38 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         checkpoint.run_id,
         source.run_id
     );
-    anyhow::ensure!(
-        !args.workspace.exists(),
-        "fork workspace already exists: {}",
-        args.workspace.display()
-    );
-    std::fs::create_dir_all(&args.workspace)?;
-    let fork_workspace = args.workspace.canonicalize()?;
-    let upper = fork_workspace.join("upper");
-    if let Err(error) = restore_logical_checkpoint(&checkpoint, &upper) {
-        let _ = std::fs::remove_dir_all(&fork_workspace);
-        return Err(error);
-    }
-
+    let fork_workspace = args
+        .workspace
+        .or_else(|| source.workspace.clone())
+        .unwrap_or_else(|| checkpoint.target.clone());
+    let fork_workspace = resolve_workspace(&fork_workspace)?;
+    let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = RunConfig::default();
-    config.run.workspace = Some(fork_workspace);
+    config.run.workspace = Some(fork_workspace.clone());
     let (agent, command) = fork_command(&source.agent, &source.command, args.command);
     config.run.agent = agent;
     config.run.command = command;
-    config.overlayfs.mode = OverlayFsMode::Overlay;
-    config.overlayfs.target = Some(checkpoint.target.clone());
-    config.overlayfs.lower = checkpoint.lower_dirs.iter().skip(1).cloned().collect();
-    config.overlayfs.backend = OverlayFsBackend::Directory;
-    config.overlayfs.commit = OverlayFsCommit::Manual;
-    let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    apply_safe_defaults(&mut config, &run_id)?;
+    config.overlayfs = Some(OverlayFsSettings {
+        base: Some(checkpoint.target.clone()),
+        compose: checkpoint
+            .lower_dirs
+            .iter()
+            .filter(|lower| *lower != &checkpoint.target)
+            .cloned()
+            .collect(),
+        stage: None,
+        backend: OverlayFsBackend::Directory,
+        commit: OverlayFsCommit::Manual,
+    });
+    let stage = select_run_storage(&config, &fork_workspace, &run_id)?;
+    std::fs::create_dir_all(&stage)?;
+    let upper = stage.join("upper");
+    if let Err(error) = restore_logical_checkpoint(&checkpoint, &upper) {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(error);
+    }
+    config.overlayfs.as_mut().expect("configured above").stage = Some(stage);
+    apply_safe_defaults(&mut config)?;
     execute_config(
         config,
         run_id,
@@ -658,22 +629,13 @@ async fn execute_config(
         .run
         .workspace
         .as_deref()
-        .map(resolve_workspace)
-        .transpose()?;
-    if let Some(workspace) = &workspace {
-        if let Ok(existing) = RunRecord::read(workspace) {
-            bail!(
-                "pVisor workspace {} already belongs to Run {}; choose a new workspace",
-                workspace.display(),
-                existing.run_id
-            );
-        }
-    }
-    let overlay = resolve_overlay(&config, workspace.as_deref())?;
+        .map(Path::to_path_buf)
+        .unwrap_or(std::env::current_dir()?);
+    let workspace = resolve_workspace(&workspace)?;
+    let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
+    let overlay = resolve_overlay(&config, &workspace, &storage, &run_id)?;
+    let overlay_enabled = overlay.is_some();
     let proxy = resolve_proxy(&config)?;
-    let storage = workspace
-        .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join(&run_id));
 
     if config.gateway.debug {
         persisting_gateway::runtime::debug::enable_debug(&storage)?;
@@ -683,7 +645,7 @@ async fn execute_config(
         .chronicle
         .dir
         .clone()
-        .or_else(|| workspace.as_ref().map(|path| path.join("chronicle")));
+        .or_else(|| Some(storage.join("chronicle")));
     let (sink, event_sink, writer): (
         Arc<dyn TrajectoryEventSink>,
         Arc<dyn crate::EventSink>,
@@ -738,7 +700,14 @@ async fn execute_config(
         RunStdio::Capture => StdioMode::Capture,
     };
     process.stderr = process.stdout;
+    if !overlay_enabled {
+        process.cwd = Some(workspace.display().to_string());
+    }
     spec.runtime.timeout_ms = config.run.timeout_ms;
+    spec.metadata.insert(
+        "pvisor.workspace".into(),
+        serde_json::Value::String(workspace.display().to_string()),
+    );
     if config.run.policy == RunPolicy::Enforce {
         spec.runtime.policy_mode = PolicyMode::Enforce;
     }
@@ -753,7 +722,8 @@ async fn execute_config(
 
     if safe_profile_requested {
         eprintln!("pVisor safe profile: staged workspace + cooperative network review");
-        eprintln!("workspace: {}", storage.display());
+        eprintln!("workspace: {}", workspace.display());
+        eprintln!("Run storage: {}", storage.display());
         match config.run.executor {
             RunExecutorKind::Host => eprintln!(
                 "boundary: host process and direct sockets remain outside non-bypassable enforcement"
@@ -772,8 +742,8 @@ async fn execute_config(
     if let Some(writer) = writer {
         writer.finish()?;
     }
-    let record = RunRecord::read(&storage)
-        .with_context(|| format!("load finalized Run record from {}", storage.display()))?;
+    let record = resolve_run(Some(Path::new(&run_id)), &storage)
+        .with_context(|| format!("load finalized Run record for {run_id}"))?;
     let bundle = RunBundle::read(&record.stage_dir()).with_context(|| {
         format!(
             "load finalized Run Bundle from {}",
@@ -807,27 +777,11 @@ async fn execute_config(
     })
 }
 
-fn apply_safe_defaults(config: &mut RunConfig, run_id: &str) -> anyhow::Result<()> {
-    let generated_workspace = config.run.workspace.is_none();
-    if config.overlayfs.mode == OverlayFsMode::Host {
-        config.overlayfs.mode = OverlayFsMode::Overlay;
-        if config.overlayfs.target.is_none() {
-            config.overlayfs.target = Some(std::env::current_dir()?);
-        }
-    }
-    config.overlayfs.commit = OverlayFsCommit::Manual;
-    if generated_workspace {
-        let mut workspace = default_safe_workspace(run_id);
-        if config
-            .overlayfs
-            .target
-            .as_ref()
-            .is_some_and(|target| paths_overlap(target, &workspace))
-        {
-            workspace = std::env::temp_dir().join("persisting-runs").join(run_id);
-        }
-        config.run.workspace = Some(workspace);
-    }
+fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
+    config
+        .overlayfs
+        .get_or_insert_with(OverlayFsSettings::default)
+        .commit = OverlayFsCommit::Manual;
     if config.overlaynet.mode == OverlayNetMode::Off {
         config.overlaynet.mode = OverlayNetMode::Proxy;
         config.overlaynet.policy = OverlayNetPolicy::Public;
@@ -848,10 +802,6 @@ fn apply_safe_defaults(config: &mut RunConfig, run_id: &str) -> anyhow::Result<(
         }
     }
     Ok(())
-}
-
-fn default_safe_workspace(run_id: &str) -> PathBuf {
-    default_run_home().join(run_id)
 }
 
 fn free_loopback_address() -> anyhow::Result<String> {
@@ -992,29 +942,30 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
         config.run.executor = RunExecutorKind::Kvm;
     }
 
-    if let Some(value) = args.overlayfs.overlayfs_mode {
-        config.overlayfs.mode = value;
-    }
-    if let Some(value) = args.overlayfs.overlayfs_target {
-        config.overlayfs.target = Some(value);
-    }
-    if !args.overlayfs.overlayfs_lower.is_empty() {
-        config.overlayfs.lower = args.overlayfs.overlayfs_lower;
-    }
-    if let Some(value) = args.overlayfs.overlayfs_backend {
-        config.overlayfs.backend = value;
-    }
-    if let Some(stage) = args.overlayfs.overlayfs_stage {
-        match stage {
-            OverlayFsStage::Jujutsu { store, workspace } => {
-                config.overlayfs.backend = OverlayFsBackend::Jujutsu;
-                config.overlayfs.jujutsu_store = Some(store);
-                config.overlayfs.jujutsu_workspace = Some(workspace);
-            }
+    let enables_overlayfs = args.overlayfs.overlayfs_base.is_some()
+        || !args.overlayfs.overlayfs_compose.is_empty()
+        || args.overlayfs.overlayfs_stage.is_some()
+        || args.overlayfs.overlayfs_backend.is_some()
+        || args.overlayfs.overlayfs_commit.is_some();
+    if enables_overlayfs {
+        let overlayfs = config
+            .overlayfs
+            .get_or_insert_with(OverlayFsSettings::default);
+        if let Some(value) = args.overlayfs.overlayfs_base {
+            overlayfs.base = Some(value);
         }
-    }
-    if let Some(value) = args.overlayfs.overlayfs_commit {
-        config.overlayfs.commit = value;
+        if !args.overlayfs.overlayfs_compose.is_empty() {
+            overlayfs.compose = args.overlayfs.overlayfs_compose;
+        }
+        if let Some(value) = args.overlayfs.overlayfs_stage {
+            overlayfs.stage = Some(value);
+        }
+        if let Some(value) = args.overlayfs.overlayfs_backend {
+            overlayfs.backend = value;
+        }
+        if let Some(value) = args.overlayfs.overlayfs_commit {
+            overlayfs.commit = value;
+        }
     }
 
     let enables_overlaynet = !args.overlaynet.overlaynet_allow.is_empty()
@@ -1135,22 +1086,11 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
             bail!("KVM executor does not yet expose the host Gateway/OverlayNet endpoint to the guest");
         }
     }
-    let needs_workspace = config.overlayfs.mode == OverlayFsMode::Overlay
-        || config.gateway.mode == GatewayMode::Capture
-        || config.chronicle.mode == ChronicleMode::Lance;
-    if needs_workspace && config.run.workspace.is_none() {
-        bail!("--workspace is required when a persistent runtime driver is enabled");
-    }
-    match config.overlayfs.mode {
-        OverlayFsMode::Host => {
-            if config.overlayfs.target.is_some() || !config.overlayfs.lower.is_empty() {
-                bail!("OverlayFS target/lower paths require --overlayfs-mode overlay");
-            }
-        }
-        OverlayFsMode::Overlay => {
-            if config.overlayfs.target.is_none() {
-                bail!("--overlayfs-target is required with --overlayfs-mode overlay");
-            }
+    if let Some(overlayfs) = &config.overlayfs {
+        if overlayfs.commit == OverlayFsCommit::Apply && !overlayfs.compose.is_empty() {
+            bail!(
+                "--overlayfs-commit apply cannot be combined with --overlayfs-compose until composed layers can be materialized safely"
+            );
         }
     }
     if config.overlaynet.mode == OverlayNetMode::Off {
@@ -1195,11 +1135,56 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
 }
 
 fn resolve_workspace(workspace: &Path) -> anyhow::Result<PathBuf> {
-    std::fs::create_dir_all(workspace)
-        .with_context(|| format!("create pVisor workspace {}", workspace.display()))?;
-    workspace
+    let workspace = workspace
         .canonicalize()
-        .with_context(|| format!("resolve pVisor workspace {}", workspace.display()))
+        .with_context(|| format!("resolve pVisor workspace {}", workspace.display()))?;
+    anyhow::ensure!(
+        workspace.is_dir(),
+        "pVisor workspace must be a directory: {}",
+        workspace.display()
+    );
+    Ok(workspace)
+}
+
+fn resolve_run_storage(storage: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(storage)
+        .with_context(|| format!("create pVisor Run storage {}", storage.display()))?;
+    storage
+        .canonicalize()
+        .with_context(|| format!("resolve pVisor Run storage {}", storage.display()))
+}
+
+fn select_run_storage(
+    config: &RunConfig,
+    workspace: &Path,
+    run_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let run_home = default_run_home();
+    let run_home = if run_home.is_absolute() {
+        run_home
+    } else {
+        std::env::current_dir()?.join(run_home)
+    };
+    let preferred = run_home.join(run_id);
+    let Some(overlayfs) = &config.overlayfs else {
+        return Ok(preferred);
+    };
+    let mut read_only_layers = Vec::with_capacity(overlayfs.compose.len() + 1);
+    for layer in &overlayfs.compose {
+        read_only_layers.push(resolve_directory(layer, "OverlayFS compose layer")?);
+    }
+    read_only_layers.push(resolve_directory(
+        overlayfs.base.as_deref().unwrap_or(workspace),
+        "OverlayFS base",
+    )?);
+    if read_only_layers
+        .iter()
+        .any(|layer| paths_overlap(layer, &preferred))
+    {
+        Ok(std::env::temp_dir().join("persisting-runs").join(run_id))
+    } else {
+        Ok(preferred)
+    }
 }
 
 fn resolve_directory(path: &Path, description: &str) -> anyhow::Result<PathBuf> {
@@ -1216,41 +1201,63 @@ fn resolve_directory(path: &Path, description: &str) -> anyhow::Result<PathBuf> 
 
 fn resolve_overlay(
     config: &RunConfig,
-    workspace: Option<&Path>,
+    workspace: &Path,
+    storage: &Path,
+    run_id: &str,
 ) -> anyhow::Result<Option<OverlayHint>> {
-    if config.overlayfs.mode == OverlayFsMode::Host {
+    let Some(overlayfs) = &config.overlayfs else {
         return Ok(None);
-    }
-    let workspace = workspace.context("OverlayFS requires a workspace")?;
-    let target = resolve_directory(
-        config
-            .overlayfs
-            .target
-            .as_deref()
-            .context("OverlayFS target missing")?,
-        "OverlayFS target",
+    };
+    let base = resolve_directory(
+        overlayfs.base.as_deref().unwrap_or(workspace),
+        "OverlayFS base",
     )?;
+    let stage = overlayfs
+        .stage
+        .clone()
+        .unwrap_or_else(|| storage.to_path_buf());
+    let stage = if stage.exists() {
+        stage
+            .canonicalize()
+            .with_context(|| format!("resolve OverlayFS stage {}", stage.display()))?
+    } else {
+        std::fs::create_dir_all(&stage)
+            .with_context(|| format!("create OverlayFS stage {}", stage.display()))?;
+        stage
+            .canonicalize()
+            .with_context(|| format!("resolve OverlayFS stage {}", stage.display()))?
+    };
     anyhow::ensure!(
-        !paths_overlap(&target, workspace),
-        "OverlayFS target and workspace must not overlap: target={}, workspace={}",
-        target.display(),
-        workspace.display()
+        !paths_overlap(&base, &stage),
+        "OverlayFS base and stage must not overlap: base={}, stage={}",
+        base.display(),
+        stage.display()
     );
-    let mut lowers = vec![target];
-    for lower in &config.overlayfs.lower {
-        lowers.push(resolve_directory(lower, "OverlayFS lower")?);
+    let mut compose = Vec::with_capacity(overlayfs.compose.len());
+    for layer in &overlayfs.compose {
+        let layer = resolve_directory(layer, "OverlayFS compose layer")?;
+        anyhow::ensure!(
+            !paths_overlap(&layer, &stage),
+            "OverlayFS compose layer and stage must not overlap: compose={}, stage={}",
+            layer.display(),
+            stage.display()
+        );
+        compose.push(layer);
     }
+    compose.push(base);
     Ok(Some(OverlayHint {
-        lower_dirs: lowers,
-        stage_dir: Some(workspace.to_path_buf()),
-        backend: match config.overlayfs.backend {
+        lower_dirs: compose,
+        stage_dir: Some(stage.clone()),
+        backend: match overlayfs.backend {
             OverlayFsBackend::Directory => OverlayBackend::Directory,
             OverlayFsBackend::Jujutsu => OverlayBackend::Jujutsu,
         },
-        jujutsu_store_path: config.overlayfs.jujutsu_store.clone(),
-        jujutsu_workspace: config.overlayfs.jujutsu_workspace.clone(),
-        auto_apply: config.overlayfs.commit == OverlayFsCommit::Apply,
-        auto_discard: config.overlayfs.commit == OverlayFsCommit::Drop,
+        jujutsu_store_path: (overlayfs.backend == OverlayFsBackend::Jujutsu)
+            .then(|| stage.join("jujutsu")),
+        jujutsu_workspace: (overlayfs.backend == OverlayFsBackend::Jujutsu)
+            .then(|| run_id.to_owned()),
+        auto_apply: overlayfs.commit == OverlayFsCommit::Apply,
+        auto_discard: overlayfs.commit == OverlayFsCommit::Drop,
         ..OverlayHint::default()
     }))
 }
@@ -1319,10 +1326,10 @@ mod tests {
         assert!(args.safe);
         let mut config = RunConfig::default();
         apply_cli(&mut config, *args);
-        apply_safe_defaults(&mut config, "run-safe").unwrap();
-        assert_eq!(config.overlayfs.mode, OverlayFsMode::Overlay);
-        assert_eq!(config.overlayfs.commit, OverlayFsCommit::Manual);
-        assert!(config.overlayfs.target.is_some());
+        apply_safe_defaults(&mut config).unwrap();
+        let overlayfs = config.overlayfs.as_ref().expect("safe enables OverlayFS");
+        assert_eq!(overlayfs.commit, OverlayFsCommit::Manual);
+        assert!(overlayfs.base.is_none());
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Public);
         assert_eq!(config.run.agent, "true");
@@ -1352,9 +1359,7 @@ mod tests {
             "run",
             "--workspace",
             "/tmp/run",
-            "--overlayfs-mode",
-            "overlay",
-            "--overlayfs-target",
+            "--overlayfs-base",
             "/tmp/lower",
             "--overlaynet-mode",
             "proxy",
@@ -1581,6 +1586,28 @@ mod tests {
     }
 
     #[test]
+    fn help_exposes_compositional_overlayfs_without_a_mode_switch() {
+        let error = Cli::try_parse_from(["pvisor", "run", "--help"]).unwrap_err();
+        let help = error.to_string();
+        for option in [
+            "--overlayfs-base",
+            "--overlayfs-compose",
+            "--overlayfs-stage",
+            "--overlayfs-backend",
+            "--overlayfs-commit",
+        ] {
+            assert!(help.contains(option), "missing {option}");
+        }
+        for obsolete in [
+            "--overlayfs-mode",
+            "--overlayfs-target",
+            "--overlayfs-lower",
+        ] {
+            assert!(!help.contains(obsolete), "obsolete option {obsolete}");
+        }
+    }
+
+    #[test]
     fn deny_all_is_discoverable_and_replaces_configured_policy_details() {
         let crate::cli::Command::Run(args) =
             Cli::try_parse_from(["pvisor", "run", "--overlaynet-deny-all", "--", "true"])
@@ -1719,12 +1746,14 @@ mod tests {
     }
 
     #[test]
-    fn cli_selects_named_workspace_in_shared_jujutsu_store() {
+    fn overlayfs_options_enable_the_driver_and_select_a_stage() {
         let crate::cli::Command::Run(args) = Cli::try_parse_from([
             "pvisor",
             "run",
             "--overlayfs-stage",
-            "jj:/tmp/shared.jj@fork-a",
+            "/tmp/pvisor-stage",
+            "--overlayfs-backend",
+            "jujutsu",
             "--",
             "true",
         ])
@@ -1735,55 +1764,126 @@ mod tests {
         };
         let mut config = RunConfig::default();
         apply_cli(&mut config, *args);
-        assert_eq!(config.overlayfs.backend, OverlayFsBackend::Jujutsu);
+        let overlayfs = config.overlayfs.expect("OverlayFS should be enabled");
+        assert_eq!(overlayfs.backend, OverlayFsBackend::Jujutsu);
         assert_eq!(
-            config.overlayfs.jujutsu_store.as_deref(),
-            Some(Path::new("/tmp/shared.jj"))
-        );
-        assert_eq!(
-            config.overlayfs.jujutsu_workspace.as_deref(),
-            Some("fork-a")
+            overlayfs.stage.as_deref(),
+            Some(Path::new("/tmp/pvisor-stage"))
         );
     }
 
     #[test]
-    fn overlayfs_stage_uses_the_final_at_sign_as_the_fork_separator() {
+    fn overlayfs_defaults_base_to_workspace_and_stage_to_run_storage() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let compose = temporary.path().join("compose");
+        let storage = temporary.path().join("run");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&compose).unwrap();
+        std::fs::create_dir_all(&storage).unwrap();
+        let config = RunConfig {
+            overlayfs: Some(OverlayFsSettings {
+                compose: vec![compose.clone()],
+                ..OverlayFsSettings::default()
+            }),
+            ..RunConfig::default()
+        };
+
+        let hint = resolve_overlay(&config, &workspace, &storage, "run-test")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            "jj:/tmp/user@example/store@fork-a"
-                .parse::<OverlayFsStage>()
-                .unwrap(),
-            OverlayFsStage::Jujutsu {
-                store: PathBuf::from("/tmp/user@example/store"),
-                workspace: "fork-a".into(),
-            }
+            hint.lower_dirs,
+            [
+                compose.canonicalize().unwrap(),
+                workspace.canonicalize().unwrap()
+            ]
+        );
+        assert_eq!(
+            hint.stage_dir.as_deref(),
+            Some(storage.canonicalize().unwrap().as_path())
         );
     }
 
     #[test]
-    fn overlayfs_stage_rejects_incomplete_addresses() {
-        for value in [
-            "unsupported:/tmp/store@fork-a",
-            "jj:/tmp/store",
-            "jj:@fork-a",
-            "jj:/tmp/store@",
+    fn overlayfs_rejects_stage_nested_inside_base_or_compose() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let compose = temporary.path().join("compose");
+        let storage = temporary.path().join("run");
+        std::fs::create_dir_all(workspace.join("stage")).unwrap();
+        std::fs::create_dir_all(compose.join("stage")).unwrap();
+        std::fs::create_dir_all(&storage).unwrap();
+
+        for (base, layers, stage) in [
+            (workspace.clone(), Vec::new(), workspace.join("stage")),
+            (
+                workspace.clone(),
+                vec![compose.clone()],
+                compose.join("stage"),
+            ),
         ] {
-            assert!(value.parse::<OverlayFsStage>().is_err(), "accepted {value}");
+            let config = RunConfig {
+                overlayfs: Some(OverlayFsSettings {
+                    base: Some(base),
+                    compose: layers,
+                    stage: Some(stage),
+                    ..OverlayFsSettings::default()
+                }),
+                ..RunConfig::default()
+            };
+            assert!(resolve_overlay(&config, &workspace, &storage, "run-test").is_err());
         }
     }
 
     #[test]
-    fn overlayfs_stage_conflicts_with_an_explicit_backend() {
-        let error = Cli::try_parse_from([
+    fn composed_layers_cannot_be_auto_applied() {
+        let config = RunConfig {
+            run: crate::config::RunSettings {
+                command: vec!["true".into()],
+                ..crate::config::RunSettings::default()
+            },
+            overlayfs: Some(OverlayFsSettings {
+                compose: vec!["/tmp/layer".into()],
+                commit: OverlayFsCommit::Apply,
+                ..OverlayFsSettings::default()
+            }),
+            ..RunConfig::default()
+        };
+        assert!(validate(&config)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be combined"));
+    }
+
+    #[test]
+    fn compose_replaces_configured_layers_and_enables_overlayfs() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
             "pvisor",
             "run",
-            "--overlayfs-backend",
-            "directory",
-            "--overlayfs-stage",
-            "jj:/tmp/shared.jj@fork-a",
+            "--overlayfs-compose",
+            "/tmp/first",
+            "--overlayfs-compose",
+            "/tmp/second",
             "--",
             "true",
         ])
-        .unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig {
+            overlayfs: Some(OverlayFsSettings {
+                compose: vec!["/tmp/old".into()],
+                ..OverlayFsSettings::default()
+            }),
+            ..RunConfig::default()
+        };
+        apply_cli(&mut config, *args);
+        assert_eq!(
+            config.overlayfs.unwrap().compose,
+            [PathBuf::from("/tmp/first"), PathBuf::from("/tmp/second")]
+        );
     }
 }

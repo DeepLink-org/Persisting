@@ -208,6 +208,7 @@ fn create(args: CreateArgs) -> Result<i32> {
         started_at_unix_ms: now,
         finished_at_unix_ms: Some(now),
         storage: root,
+        workspace: Some(target.clone()),
         overlaynet_listen: None,
         network_interception: None,
         network_interception_metrics: None,

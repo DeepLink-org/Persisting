@@ -23,9 +23,9 @@ instead of being written directly to the project:
 pvisor run --safe codex
 ```
 
-`--safe` uses the current directory as the OverlayFS lower, writes Agent
-changes to a staged upper, and enables the explicit network proxy. The
-workspace and its `run-bundle.json` remain after the command exits.
+`--safe` uses the current directory as the reusable workspace and OverlayFS
+base, writes Agent changes to a per-Run stage, and enables the explicit network
+proxy. The Run and its `run-bundle.json` remain under `PERSISTING_RUN_HOME`.
 
 The default Host executor provides process-level isolation. It does not stop
 the Agent from accessing host paths outside the project, and a direct socket
