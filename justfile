@@ -89,6 +89,7 @@ examples-pchronicle:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -q -p persisting-ppilot --features cli --bin ppilot
+    cargo build --release -q -p persisting-cli --bin persisting
     for example in "{{ repo }}"/examples/pchronicle/*; do
         [[ -f "$example/run.sh" ]] || continue
         echo "==> ${example#"{{ repo }}/"}/run.sh"

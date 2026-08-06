@@ -153,11 +153,11 @@ dataset；已有 store 则以最多 256 个 Storyline 为一个增量替换批�
 CLI 使用相同引擎，输出稳定的 JSONL：
 
 ```bash
-ppilot query ./trajectories.ndjson \
+ppilot query sql ./trajectories.ndjson \
   --sql 'SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
 
 # 含 CURRENT 的三表 store 根目录会被 auto 识别为 Lance
-ppilot query ./storyline-store \
+ppilot query sql ./storyline-store \
   --sql 'SELECT step_id, source FROM steps WHERE session_id = '\''s-1'\'' ORDER BY step_id'
 ```
 

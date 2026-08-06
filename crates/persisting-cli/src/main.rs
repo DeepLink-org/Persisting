@@ -10,10 +10,12 @@ mod trajectory_format;
 mod trajectory_stdout_toml;
 
 use std::fs;
-use std::io::{self, Read};
+use std::future::Future;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -28,7 +30,8 @@ use persisting_pchronicle::{
 use persisting_gateway::engine::TurnKind;
 use persisting_pchronicle::{
     drop_lifecycle_run_partitions, expand_story_locations_blocking, list_traj_read_locations,
-    merge_traj_location, resolve_traj_read_location, StoryCoords as TrajLocation,
+    merge_traj_location, resolve_traj_read_location, RawEventLanceStore,
+    StoryCoords as TrajLocation,
 };
 use stats_output::{
     print_stats_section_divider, print_trajectory_stats_detail, print_trajectory_stats_list,
@@ -374,6 +377,13 @@ struct TrajectoryReplayArgs {
     offset: usize,
     #[arg(long)]
     limit: Option<usize>,
+    /// Continue reading newly committed canonical events until Ctrl-C.
+    /// Existing events are emitted first, beginning at --offset.
+    #[arg(long)]
+    follow: bool,
+    /// Delay between empty follow polls. Only valid with --follow (default: 100).
+    #[arg(long, value_name = "MILLISECONDS")]
+    poll_interval_ms: Option<u64>,
     /// Canonical 存储选择；`auto` 与 `lance` 当前都读取 Lance。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
@@ -1125,6 +1135,99 @@ fn invoke_trajectory_replay(
     }
 }
 
+fn run_trajectory_follow(
+    loc: &TrajLocation,
+    storage_format: TrajectoryStorageCli,
+    offset: usize,
+    limit: Option<usize>,
+    poll_interval_ms: u64,
+) -> Result<()> {
+    eprintln!(
+        "[persisting-cli] compatibility alias: prefer `persisting query follow ...` for live queries"
+    );
+    anyhow::ensure!(
+        poll_interval_ms > 0,
+        "--poll-interval-ms must be greater than zero"
+    );
+    anyhow::ensure!(
+        limit != Some(0),
+        "--limit must be greater than zero with --follow"
+    );
+    let page_size = limit.or(Some(256));
+    eprintln!(
+        "[persisting-cli] following {}/{}/{} from offset {} every {} ms",
+        loc.storage, loc.agent_id, loc.session_id, offset, poll_interval_ms
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build pChronicle follow runtime")?;
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    runtime.block_on(follow_trajectory_jsonl(
+        loc,
+        offset,
+        page_size,
+        Duration::from_millis(poll_interval_ms),
+        storage_format.into(),
+        &mut output,
+        async {
+            let _ = tokio::signal::ctrl_c().await;
+        },
+    ))
+}
+
+async fn follow_trajectory_jsonl<W, S>(
+    loc: &TrajLocation,
+    mut offset: usize,
+    page_size: Option<usize>,
+    poll_interval: Duration,
+    _storage_format: TrajectoryStorageFormat,
+    output: &mut W,
+    shutdown: S,
+) -> Result<()>
+where
+    W: Write,
+    S: Future<Output = ()>,
+{
+    tokio::pin!(shutdown);
+    let store = RawEventLanceStore;
+    loop {
+        let page = tokio::select! {
+            _ = &mut shutdown => return Ok(()),
+            page = store.replay_available(loc, offset, page_size) => page?,
+        };
+        let records = page.map(|page| page.records).unwrap_or_default();
+        if !records.is_empty() {
+            for record in &records {
+                let line = record.trim_end();
+                if let Err(error) = output
+                    .write_all(line.as_bytes())
+                    .and_then(|_| output.write_all(b"\n"))
+                {
+                    if error.kind() == io::ErrorKind::BrokenPipe {
+                        return Ok(());
+                    }
+                    return Err(error).context("write followed trajectory JSONL");
+                }
+            }
+            if let Err(error) = output.flush() {
+                if error.kind() == io::ErrorKind::BrokenPipe {
+                    return Ok(());
+                }
+                return Err(error).context("flush followed trajectory JSONL");
+            }
+            offset = offset.saturating_add(records.len());
+            continue;
+        }
+
+        tokio::select! {
+            _ = &mut shutdown => return Ok(()),
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+    }
+}
+
 fn run_trajectory_stats_detail(
     lazy: &mut ChronicleClient,
     loc: &TrajLocation,
@@ -1278,6 +1381,9 @@ fn run_history(lazy: &mut ChronicleClient, args: HistoryArgs) -> Result<()> {
             lazy.invoke(&payload)?;
         }
         HistoryCommand::Replay(args) => {
+            if !args.follow && args.poll_interval_ms.is_some() {
+                anyhow::bail!("--poll-interval-ms requires --follow");
+            }
             let loc = resolve_traj_ids_for_read(
                 "trajectory replay",
                 args.storage.clone(),
@@ -1285,16 +1391,26 @@ fn run_history(lazy: &mut ChronicleClient, args: HistoryArgs) -> Result<()> {
                 args.session_id.clone(),
                 args.root_session_id.clone(),
             )?;
-            let payload = RequestBody::TrajectoryReplay(TrajectoryReplayRequest {
-                storage: loc.storage,
-                agent_id: loc.agent_id,
-                session_id: loc.session_id,
-                offset: args.offset,
-                limit: args.limit,
-                storage_format: args.storage_format.into(),
-                root_session_id: loc.root_session_id,
-            });
-            lazy.invoke(&payload)?;
+            if args.follow {
+                run_trajectory_follow(
+                    &loc,
+                    args.storage_format,
+                    args.offset,
+                    args.limit,
+                    args.poll_interval_ms.unwrap_or(100),
+                )?;
+            } else {
+                let payload = RequestBody::TrajectoryReplay(TrajectoryReplayRequest {
+                    storage: loc.storage,
+                    agent_id: loc.agent_id,
+                    session_id: loc.session_id,
+                    offset: args.offset,
+                    limit: args.limit,
+                    storage_format: args.storage_format.into(),
+                    root_session_id: loc.root_session_id,
+                });
+                lazy.invoke(&payload)?;
+            }
         }
         HistoryCommand::Stats(args) => {
             let path_arg = resolve_traj_storage_arg(args.storage.clone())?;
@@ -1687,11 +1803,99 @@ mod tests {
             vec!["persisting", "batch", "plan.py", "--workers", "2"],
             vec!["persisting", "query", "input.jsonl", "--sql", "SELECT 1"],
             vec!["persisting", "history", "stats", "./store"],
+            vec![
+                "persisting",
+                "history",
+                "replay",
+                "./store",
+                "--agent-id",
+                "agent",
+                "--session-id",
+                "session",
+                "--follow",
+                "--poll-interval-ms",
+                "25",
+            ],
             vec!["persisting", "eval", "stats", "./store"],
             vec!["persisting", "gateway", "status"],
         ] {
             Cli::try_parse_from(args).expect("valid unified Persisting command");
         }
+    }
+
+    #[tokio::test]
+    async fn follow_waits_for_first_dataset_and_emits_jsonl() {
+        struct VisibleOutput {
+            bytes: Vec<u8>,
+            first_write: Option<tokio::sync::oneshot::Sender<()>>,
+        }
+
+        impl Write for VisibleOutput {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.bytes.extend_from_slice(buf);
+                if !buf.is_empty() {
+                    if let Some(first_write) = self.first_write.take() {
+                        let _ = first_write.send(());
+                    }
+                }
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let loc = TrajLocation::new(
+            dir.path().to_string_lossy().into_owned(),
+            "agent",
+            "session",
+            None,
+        );
+        let follow_loc = loc.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (visible_tx, visible_rx) = tokio::sync::oneshot::channel::<()>();
+        let follower = tokio::spawn(async move {
+            let mut output = VisibleOutput {
+                bytes: Vec::new(),
+                first_write: Some(visible_tx),
+            };
+            follow_trajectory_jsonl(
+                &follow_loc,
+                0,
+                Some(1),
+                Duration::from_millis(5),
+                TrajectoryStorageFormat::Lance,
+                &mut output,
+                async {
+                    let _ = shutdown_rx.await;
+                },
+            )
+            .await
+            .unwrap();
+            output.bytes
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        RawEventLanceStore
+            .append_event_batch(&[(loc, capture_record("note"))])
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), visible_rx)
+            .await
+            .expect("follow should observe the committed event")
+            .expect("follow output task should notify before exiting");
+        shutdown_tx.send(()).unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(5), follower)
+            .await
+            .unwrap()
+            .unwrap();
+        let lines = String::from_utf8(output).unwrap();
+        let records = lines.lines().collect::<Vec<_>>();
+        assert_eq!(records.len(), 1, "{lines}");
+        let record: serde_json::Value = serde_json::from_str(records[0]).unwrap();
+        assert_eq!(record["kind"], "note");
     }
 
     #[test]

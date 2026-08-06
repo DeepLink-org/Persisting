@@ -1,7 +1,7 @@
 # CLI 整体架构
 
 `persisting` 是面向用户的统一入口。它把单次执行和持久环境交给 pVisor，把批量编排和
-SQL 查询交给 pPilot，并直接提供历史维护、评测和 Gateway 管理。pChronicle 是
+点查、批查、实时 follow 与 SQL 查询交给 pPilot，并直接提供历史维护、评测和 Gateway 管理。pChronicle 是
 底层存储与查询库，不提供独立命令行。
 
 `pvisor` 和 `ppilot` 二进制仍保留为组件级、专家级入口，方便独立部署和调试；日常使用
@@ -12,7 +12,7 @@ SQL 查询交给 pPilot，并直接提供历史维护、评测和 Gateway 管理
 | `persisting execute`（别名 `exec`） | 转发到 `pvisor run`，创建一次性 Run |
 | `persisting env …` | 转发到 `pvisor env …`，管理可复用的持久 OverlayFS 环境 |
 | `persisting batch …` | 转发到 `ppilot run …`，批量编排 Run |
-| `persisting query …` | 转发到 `ppilot query …`，以 DataFusion SQL 查询 Lance/ATIF |
+| `persisting query …` | 转发到 `ppilot query …`，提供 SQL、点查、批查与实时 follow |
 | `persisting history …` | 导入、追加、转换、回放、统计和物化轨迹 |
 | `persisting eval …` | judge 与评测统计 |
 | `persisting gateway …` | 长期 Gateway 服务和状态管理 |

@@ -562,22 +562,43 @@ pub async fn replay(
     offset: usize,
     limit: Option<usize>,
 ) -> Result<ReplayOutcome> {
+    replay_available(session, offset, limit)
+        .await?
+        .ok_or_else(|| {
+            let uri = raw_event_lance_path(session)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "<invalid trajectory path>".into());
+            anyhow::anyhow!("trajectory Lance dataset does not exist at {uri}")
+        })
+}
+
+/// Replay the currently committed rows for one Storyline, returning `None`
+/// while its run-level Lance dataset has not been created yet.
+///
+/// Unlike a cached [`Dataset`] handle, each call opens the latest MVCC version.
+/// This makes the method suitable for append-only follow loops that advance
+/// `offset` by the number of returned records.
+pub async fn replay_available(
+    session: &TrajectorySession,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<Option<ReplayOutcome>> {
     let path = raw_event_lance_path(session)?;
     let uri = path.to_string_lossy().into_owned();
     let Some(dataset) = open_dataset(&uri).await? else {
-        anyhow::bail!("trajectory Lance dataset does not exist at {uri}");
+        return Ok(None);
     };
     let rows = read_session_rows(&dataset, &session.session_id, offset, limit).await?;
     let schema = raw_event_arrow_schema();
     let batch = event_rows_to_batch(schema, &rows)?;
     let records = replay_records_from_batch(&batch)?;
-    Ok(ReplayOutcome {
+    Ok(Some(ReplayOutcome {
         records,
         note: format!(
             "Replay Lance v1 at {uri}: session_id={}, ordered by 'seq', offset={offset}, limit={limit:?}.",
             session.session_id,
         ),
-    })
+    }))
 }
 
 pub async fn stats(session: &TrajectorySession) -> Result<TrajectoryStats> {
@@ -696,6 +717,59 @@ mod tests {
         assert_eq!(replay.records.len(), 2);
         assert_eq!(payload_content(&replay.records[0]), "first");
         assert_eq!(payload_content(&replay.records[1]), "second");
+    }
+
+    #[tokio::test]
+    async fn replay_available_follows_committed_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("store");
+        std::fs::create_dir_all(&storage).unwrap();
+        let storage_s = storage.to_string_lossy().to_string();
+        let session = flat_session(&storage_s, "agent", "sess");
+
+        assert!(replay_available(&session, 0, Some(2))
+            .await
+            .unwrap()
+            .is_none());
+
+        append(
+            &session,
+            &[note_line("first"), note_line("second"), note_line("third")],
+        )
+        .await
+        .unwrap();
+        let first_page = replay_available(&session, 0, Some(2))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first_page
+                .records
+                .iter()
+                .map(|record| payload_content(record))
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+
+        append(&session, &[note_line("fourth")]).await.unwrap();
+        let second_page = replay_available(&session, first_page.records.len(), Some(2))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            second_page
+                .records
+                .iter()
+                .map(|record| payload_content(record))
+                .collect::<Vec<_>>(),
+            ["third", "fourth"]
+        );
+        assert!(replay_available(&session, 4, Some(2))
+            .await
+            .unwrap()
+            .unwrap()
+            .records
+            .is_empty());
     }
 
     #[tokio::test]

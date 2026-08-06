@@ -31,8 +31,13 @@ events.lance                  canonical、append-only、可回放
 - `RawEventLanceStore` 是 canonical event log 后端。
 - `RawEventLanceAppender` 为在线 capture 缓存已打开的 Dataset；pVisor writer 用 2 ms / 256
   条的有界窗口合并 Lance append，并在结束时执行 fragment/index/vacuum 维护。
+- `RawEventLanceStore::replay_available` 每次读取最新的 Lance MVCC 版本；数据集尚未创建时
+  返回 `None`，供 `persisting query follow` 从 offset 连续消费运行中已提交的
+  event micro-batch。
 - AgenticMD 是从 canonical events 或 Storyline 生成的可丢弃人读/调试视图，不是存储后端。
 - `StorylineLanceStore` 将 Storyline 原子提交为 `runs.lance`、`steps.lance`、`tool_calls.lance` 三张规范化表。
+- `StorylineLanceStore::get_storylines` 对三张表各读取一次同一 generation 快照，支持
+  pPilot 批量重建多条 Storyline，并保持请求顺序。
 - `StorylineDataSource` 将同一 generation 的三张表注册到 DataFusion，并下推列裁剪、谓词、limit 和标量索引查询。
 - `AtifDataSource::open` 以 DataFusion `StreamingTable` 逐行/逐文件扫描 ATIF，使用有界
   Arrow batch；只有显式传入完整内存值的 `from_json` / `from_trajectories` 保留 `MemTable`。
@@ -157,6 +162,7 @@ pChronicle 的测试直接复用 `persisting-gateway/tests/fixtures`，而不是
 cargo test -p persisting-pchronicle --test atif_lance_corpus
 cargo bench -p persisting-pchronicle --bench atif_storyline_lance
 PCHRONICLE_BENCH_SCALE=128 cargo bench -p persisting-pchronicle --bench lance_vs_json
+just examples-pchronicle  # 包含 point / batch / live follow 的可复现产品 CLI 对比
 ```
 
 可通过 `PCHRONICLE_BENCH_ITERS` 调整转换 benchmark 的重复次数。

@@ -252,6 +252,20 @@ impl RawEventLanceStore {
     ) -> anyhow::Result<LanceMaintenanceReport> {
         raw_event_lance::maintain(session, options).await
     }
+
+    /// Read the latest committed page for an append-only follow loop.
+    ///
+    /// `None` means the run-level dataset has not been created yet. Once it
+    /// exists, an empty `records` page means there are currently no rows after
+    /// `offset` for this Storyline.
+    pub async fn replay_available(
+        &self,
+        session: &TrajectorySession,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Option<ReplayOutcome>> {
+        raw_event_lance::replay_available(session, offset, limit).await
+    }
 }
 
 pub fn raw_event_lance_path(session: &TrajectorySession) -> anyhow::Result<PathBuf> {

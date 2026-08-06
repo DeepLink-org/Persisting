@@ -64,6 +64,7 @@ claims about Lance or ATIF.
 | [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | pPilot reports the size ratio, saved space, and compression factor | [Trajectory format](../design/trajectory-format.md) |
 | [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | End-to-end pPilot CLI import, replacement, and cold Lance/ATIF query latency | [Trajectory storage](../design/trajectory.md) |
 | [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | pPilot explicitly reports cross-backend SQL equivalence | [pPilot CLI](../design/cli-ppilot.md) |
+| [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | Point-step, full-trajectory, 64-key batch, and live canonical-event follow latency | [History CLI](../design/cli-history.md) |
 
 ## Prerequisites
 

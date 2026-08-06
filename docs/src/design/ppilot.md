@@ -50,7 +50,10 @@ pChronicle；编排状态仍由本 crate 管理。
 ```text
 ppilot run <SCRIPT> [OPTIONS]
 ppilot chronicle import <INPUT> <STORE>
-ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
+ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
+ppilot query point <STORE> --session-id <ID> [--step-id <N>]
+ppilot query batch <STORE> --session-id <ID[,ID]...> [--step-id <N>]
+ppilot query follow <STORAGE> --agent-id <ID> --session-id <ID> [OPTIONS]
 ppilot produce <PLANNER.py> --output <DIR> [--parallelism N] [-- <PLANNER_ARGS>...]
 ppilot analysis <INPUT> [--output <DIR>] [--fmt jsonl|json|toml] [--parallelism N] (--sql <SQL> | --sql-file <FILE>)
 ppilot process <INPUT> (--script <FILE> | --count <METRIC>) [--mappers N] [--output <DIR>]
@@ -70,9 +73,10 @@ cross-rank token ledger.
 `run` 收纳原有 `PPilotArgs`；`self-test` 是无需用户脚本的环境与执行链路验证。
 `chronicle import` 将 ATIF JSON、数组、JSONL/NDJSON 或目录通过 pChronicle 规范化后，
 按 `session_id` 原子写入本地或对象存储 Storyline Lance store。
-`query` 对三表 Storyline Lance store、ATIF JSON/数组/JSONL/目录注册同名的 `runs`、
-`steps`、`tool_calls` 表；可通过可重复的 `--table NAME=FORMAT:PATH` 注册 CSV、JSON
-对象数组或 JSONL 外部表，随后执行一条只读 DataFusion SQL，并把 JSONL 写到 stdout。
+`query` 是 SQL、点查、批查和实时 follow 的统一入口，执行和存储语义仍归 pChronicle。
+SQL 对三表 Storyline Lance store、ATIF JSON/数组/JSONL/目录注册同名的 `runs`、
+`steps`、`tool_calls` 表；点查与批查读取 normalized Storyline，follow 持续读取运行中
+已提交的 canonical events。所有模式把 JSONL 写到 stdout。
 
 CLI 通过 `cli` feature 构建；默认 library feature 仍为空，避免只嵌入调度器的应用
 无条件编译 Lance/DataFusion：
