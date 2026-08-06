@@ -1,0 +1,227 @@
+name: Publish PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release
+    if: github.repository == 'DeepLink-org/Persisting'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch main release boundary
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+
+      - name: Validate tag, versions, and lockfile
+        id: version
+        shell: bash
+        run: |
+          args=(--main-ref origin/main)
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            args+=(--tag "${GITHUB_REF_NAME}")
+          fi
+          version="$(python scripts/ci/check_release_version.py "${args[@]}")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Wheel (Linux x86_64)
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          python-version: "3.12"
+          install-protoc: "false"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build manylinux wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: >-
+            --release --locked --out dist --compatibility manylinux2014
+            --auditwheel repair
+          before-script-linux: >-
+            env -u RUSTC_WRAPPER
+            /opt/python/cp312-cp312/bin/python scripts/packaging/stage_wheel_binaries.py
+            --target x86_64-unknown-linux-gnu --profile release --locked
+          sccache: "true"
+          manylinux: 2014
+          maturin-version: v1.14.1
+          rust-toolchain: stable
+
+      - name: Verify wheel component set
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          python scripts/packaging/verify_wheel.py "$wheel" --install-smoke
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-wheel-linux-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+  macos:
+    name: Wheel (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            target: x86_64
+            rust-target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64
+            rust-target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          python-version: "3.12"
+          install-protoc: "false"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Stage wheel CLI component set
+        run: >-
+          python3 scripts/packaging/stage_wheel_binaries.py
+          --target ${{ matrix.rust-target }} --profile release --locked
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: >-
+            --release --locked --out dist --find-interpreter
+          sccache: "true"
+          maturin-version: v1.14.1
+          rust-toolchain: stable
+
+      - name: Verify wheel component set
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          python scripts/packaging/verify_wheel.py "$wheel" --install-smoke
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-wheel-macos-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+  verify:
+    name: Verify release artifact set
+    needs: [validate, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Download platform wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-wheel-*
+          merge-multiple: true
+          path: dist
+
+      - name: Check completeness and package metadata
+        run: |
+          python scripts/ci/check_release_artifacts.py \
+            dist --version "${{ needs.validate.outputs.version }}"
+          uvx twine check dist/*.whl
+
+      - name: Upload verified release set
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-wheels
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+  pypi-publish:
+    name: Publish to PyPI
+    if: github.event_name == 'push'
+    needs: [validate, verify]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/persisting
+    permissions:
+      id-token: write
+    steps:
+      - name: Download verified release set
+        uses: actions/download-artifact@v4
+        with:
+          name: release-wheels
+          path: dist
+
+      - name: Publish package distributions
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  github-release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push'
+    needs: [validate, pypi-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release set
+        uses: actions/download-artifact@v4
+        with:
+          name: release-wheels
+          path: dist
+
+      - name: Create or repair GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.whl \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.whl \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --latest \
+              --title "Persisting ${RELEASE_VERSION}"
+          fi

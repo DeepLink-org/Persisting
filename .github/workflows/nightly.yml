@@ -65,6 +65,7 @@ jobs:
             --release --locked --out dist --compatibility manylinux2014
             --auditwheel repair
           before-script-linux: >-
+            env -u RUSTC_WRAPPER
             /opt/python/cp312-cp312/bin/python scripts/packaging/stage_wheel_binaries.py
             --target x86_64-unknown-linux-gnu --profile release --locked
           sccache: "true"
