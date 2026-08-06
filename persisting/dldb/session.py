@@ -9,6 +9,7 @@ import pandas as pd
 import pyarrow as pa
 from dldb.metrics import MetricsCollector
 from dldb.table import (
+    IndexCoverage,
     InformationSchemaTable,
     create_table,
     open_table,
@@ -124,6 +125,24 @@ class SessionBase:
         raise NotImplementedError
 
     def list_indices(self, table_name: str, partition=None) -> list[IndexConfig]:
+        raise NotImplementedError
+
+    def list_index_coverage(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        index_name: Optional[str] = None,
+    ) -> list[IndexCoverage]:
+        raise NotImplementedError
+
+    def has_unindexed(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        index_name: Optional[str] = None,
+    ) -> bool:
         raise NotImplementedError
 
     def optimize(
@@ -396,6 +415,30 @@ class LanceSession(SessionBase):
     def list_indices(self, table_name: str, partition=None) -> list[IndexConfig]:
         table = self._get_table(table_name, partition)
         return table.list_indices(partition)
+
+    def list_index_coverage(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        index_name: Optional[str] = None,
+    ) -> list[IndexCoverage]:
+        table = self._get_table(table_name, partition)
+        return table.list_index_coverage(partition, index_name=index_name)
+
+    def has_unindexed(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        index_name: Optional[str] = None,
+    ) -> bool:
+        coverage = self.list_index_coverage(
+            table_name, partition=partition, index_name=index_name
+        )
+        if not coverage:
+            return False
+        return any(not c.fully_indexed for c in coverage)
 
     def optimize(
         self,

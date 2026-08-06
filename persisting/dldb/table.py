@@ -1,12 +1,63 @@
 import threading
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 import pyarrow as pa
 from dldb.utils import filter_values, schema_from_string, schema_to_string, stable_hash
 from lancedb import LanceDBConnection
 from lancedb.index import IndexConfig
+
+
+@dataclass(frozen=True)
+class IndexCoverage:
+    table_name: str
+    partition: Any
+    index_name: str
+    num_indexed_rows: Optional[int]
+    num_unindexed_rows: Optional[int]
+    fully_indexed: bool
+
+
+def _read_index_row_stats(lance_table, index_cfg) -> tuple[Optional[int], Optional[int]]:
+    name = index_cfg.name
+    stats = lance_table.index_stats(name)
+    indexed = None
+    unindexed = None
+    if stats is not None:
+        indexed = getattr(stats, "num_indexed_rows", None)
+        unindexed = getattr(stats, "num_unindexed_rows", None)
+    if unindexed is None:
+        unindexed = getattr(index_cfg, "num_unindexed_rows", None)
+    if indexed is None:
+        indexed = getattr(index_cfg, "num_indexed_rows", None)
+    return indexed, unindexed
+
+
+def _coverage_for_lance_table(
+    lance_table,
+    table_name: str,
+    partition,
+    index_name: Optional[str] = None,
+) -> List[IndexCoverage]:
+    indices = list(lance_table.list_indices())
+    if index_name is not None:
+        indices = [i for i in indices if i.name == index_name]
+    out: List[IndexCoverage] = []
+    for idx in indices:
+        indexed, unindexed = _read_index_row_stats(lance_table, idx)
+        out.append(
+            IndexCoverage(
+                table_name=table_name,
+                partition=partition,
+                index_name=idx.name,
+                num_indexed_rows=indexed,
+                num_unindexed_rows=unindexed,
+                fully_indexed=(unindexed == 0),
+            )
+        )
+    return out
 
 
 class InformationSchemaRecord:
@@ -176,6 +227,11 @@ class BaseTable:
     def list_indices(self, partition=None) -> list[IndexConfig]:
         raise NotImplementedError
 
+    def list_index_coverage(
+        self, partition=None, index_name: Optional[str] = None
+    ) -> List[IndexCoverage]:
+        raise NotImplementedError
+
     def optimize(
         self,
         *,
@@ -299,6 +355,16 @@ class SimpleTable(BaseTable):
         if self.table is None:
             self.open_table()
         return self.table.list_indices()
+
+    def list_index_coverage(
+        self, partition=None, index_name: Optional[str] = None
+    ) -> List[IndexCoverage]:
+        assert partition is None, "Partitioning not supported for SimpleTable"
+        if self.table is None:
+            self.open_table()
+        return _coverage_for_lance_table(
+            self.table, self.raw_table_name, None, index_name=index_name
+        )
 
     def optimize(
         self,
@@ -469,6 +535,20 @@ class ValuePartitionTable(BaseTable):
         )
         self.open_table([partition])
         return self.tables[partition].list_indices()
+
+    def list_index_coverage(
+        self, partition=None, index_name: Optional[str] = None
+    ) -> List[IndexCoverage]:
+        assert partition is not None, (
+            "partition cannot be None when value partition table listing index coverage"
+        )
+        self.open_table([partition])
+        return _coverage_for_lance_table(
+            self.tables[partition],
+            self.raw_table_name,
+            partition,
+            index_name=index_name,
+        )
 
     def optimize(
         self,
@@ -771,6 +851,24 @@ class HashPartitionTable(BaseTable):
         )
         self.open_table([partition])
         return self.tables[partition].list_indices()
+
+    def list_index_coverage(
+        self, partition=None, index_name: Optional[str] = None
+    ) -> List[IndexCoverage]:
+        assert partition is not None, (
+            "partition cannot be None when hash partition table listing index coverage"
+        )
+        assert isinstance(partition, int), "partition must be an integer"
+        assert 0 <= partition < self.partitions, (
+            f"partition must be in range [0, {self.partitions})"
+        )
+        self.open_table([partition])
+        return _coverage_for_lance_table(
+            self.tables[partition],
+            self.raw_table_name,
+            partition,
+            index_name=index_name,
+        )
 
     def optimize(
         self,
