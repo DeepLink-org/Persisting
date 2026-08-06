@@ -87,6 +87,7 @@ plugins:
             User Guide: 用户指南
             Guides: 使用指南
             Capture: 轨迹采集
+            Control network access with OverlayNet: 使用 OverlayNet 控制网络访问
             Queue: 队列
             Tensor Memory: 张量内存
             Search: 检索
@@ -131,6 +132,7 @@ nav:
       - Choose a Capability: guide/index.md
   - Guides:
       - Capture agent trajectories: guide/capture.md
+      - Control network access with OverlayNet: guide/overlaynet.md
       - Reproducible examples: guide/examples.md
       - Index and search documents: guide/search.md
       - Stream events with Queue: guide/queue.md

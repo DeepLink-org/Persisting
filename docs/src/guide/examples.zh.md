@@ -26,7 +26,7 @@ macOS 的 macFUSE 或 Linux 的 FUSE3。
 |---|---|---|
 | [01-filesystem-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/01-filesystem-isolation) | Agent 写入 upper，lower 在 apply 前保持不变 | [pVisor CLI](../design/cli-pvisor.md) |
 | [02-changeset-management](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/02-changeset-management) | changeset 可 review，并可分别 apply 或 drop | [pVisor CLI](../design/cli-pvisor.md) |
-| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | 三条平铺命令验证 allowlist、deny-all 和 direct socket 绕过边界 | [OverlayNet 设计](../design/overlaynet.md) |
+| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | 三条平铺命令验证 allowlist、deny-all 和 direct socket 绕过边界 | [OverlayNet 指南](overlaynet.md) |
 | [04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control) | Gateway 路由并捕获两次 OpenAI-compatible 调用 | [Capture 指南](capture.md) |
 
 这里的"轻量级隔离"特指事务工作区和 cooperative proxy 覆盖的数据面；Run Bundle 会

@@ -187,6 +187,9 @@ are rejected until a guest-visible transport is available.
 The four visible OverlayNet policy flags and Gateway capture automatically enable the
 proxy driver. In TOML, driver modes remain explicit;
 OverlayFS overlay mode requires `--workspace` and `--overlayfs-target`.
+OverlayNet by itself does not require `--workspace`; without one, pVisor uses an
+internal Run directory under the system temporary directory. Pass `--workspace`
+when the Run record and Bundle need a stable, user-selected location.
 OverlayNet policy applies to traffic routed through the explicit proxy and does
 not claim non-bypassable host network isolation.
 `--overlaynet-deny-all` provides the discoverable deny-all form for

@@ -1270,7 +1270,7 @@ safetensors = [
 [package.metadata]
 requires-dist = [
     { name = "lance", marker = "extra == 'lance'", specifier = ">=0.9.0" },
-    { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.14,<2.0" },
     { name = "persisting", extras = ["lance"], marker = "extra == 'all'" },
     { name = "persisting", extras = ["safetensors"], marker = "extra == 'all'" },
     { name = "pulsing" },

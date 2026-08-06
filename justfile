@@ -138,21 +138,26 @@ install-cli:
     cargo install --path crates/persisting-ppilot --features cli --locked --force --root "$install_root"
     printf 'Installed Persisting component set in %s/bin\n' "$install_root"
 
-# maturin release wheel（当前平台）→ dist/
+# PEP 517 release wheel（Python extension + persisting/pvisor/ppilot）→ dist/
 build-wheel:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p dist
-    uvx maturin build --release -o dist
-    ls -la dist/*.whl
+    uv build --force-pep517 --wheel --out-dir dist
+    wheel=$(ls -t dist/*.whl | head -n 1)
+    python3 scripts/packaging/verify_wheel.py "$wheel" --install-smoke
+    ls -la "$wheel"
 
-# 开发调试 wheel（不 strip）
+# 开发调试 wheel（dev profile，不 strip）
 build-wheel-debug:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p dist
-    uvx maturin build -o dist
-    ls -la dist/*.whl
+    uv build --force-pep517 --wheel --out-dir dist \
+      --config-setting 'build-args=--profile dev'
+    wheel=$(ls -t dist/*.whl | head -n 1)
+    python3 scripts/packaging/verify_wheel.py "$wheel" --install-smoke
+    ls -la "$wheel"
 
 clean:
     cargo clean

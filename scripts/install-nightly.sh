@@ -87,3 +87,17 @@ echo "Installing ${url}" >&2
 "$PYTHON" -m pip install --upgrade pip
 "$PYTHON" -m pip install --force-reinstall "$url"
 "$PYTHON" -c "import persisting; print('persisting', persisting.__version__)"
+
+scripts_dir="$($PYTHON -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+for binary in persisting pvisor ppilot; do
+  if [ ! -x "$scripts_dir/$binary" ]; then
+    echo "error: wheel did not install executable $scripts_dir/$binary" >&2
+    exit 1
+  fi
+  "$scripts_dir/$binary" --version
+done
+echo "CLI component set installed in $scripts_dir" >&2
+case ":$PATH:" in
+  *":$scripts_dir:"*) ;;
+  *) echo "Add it to PATH: export PATH=\"$scripts_dir:\$PATH\"" >&2 ;;
+esac

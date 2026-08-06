@@ -244,21 +244,21 @@ impl FromStr for OverlayFsStage {
 struct OverlayNetOverrides {
     #[arg(long, value_enum, hide = true)]
     overlaynet_mode: Option<OverlayNetMode>,
-    /// Explicit proxy listen address; supplying it enables OverlayNet and requires --workspace.
+    /// Explicit proxy listen address; supplying it enables OverlayNet.
     #[arg(long, value_name = "ADDR")]
     overlaynet_listen: Option<String>,
     #[arg(long, value_enum, hide = true)]
     overlaynet_policy: Option<OverlayNetPolicy>,
-    /// Allowed HOST[:PORT] or CIDR[:PORT]; enables the cooperative proxy and requires --workspace.
+    /// Allowed HOST[:PORT] or CIDR[:PORT]; enables the cooperative proxy.
     #[arg(long, value_name = "TARGET")]
     overlaynet_allow: Vec<OverlayNetTargetArg>,
-    /// Denied HOST[:PORT] or CIDR[:PORT]; enables the cooperative proxy and requires --workspace.
+    /// Denied HOST[:PORT] or CIDR[:PORT]; enables the cooperative proxy.
     #[arg(long, value_name = "TARGET")]
     overlaynet_deny: Vec<OverlayNetTargetArg>,
-    /// Aggregate bandwidth limit; enables the cooperative proxy and requires --workspace.
+    /// Aggregate bandwidth limit; enables the cooperative proxy.
     #[arg(long, value_name = "[TARGET=]RATE")]
     overlaynet_limit: Vec<OverlayNetLimitArg>,
-    /// Deny all forward-proxy egress and enable OverlayNet; requires --workspace.
+    /// Deny all forward-proxy egress and enable OverlayNet.
     /// Direct sockets and local Gateway routes remain outside this rule.
     #[arg(
         long,
@@ -1136,7 +1136,6 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
         }
     }
     let needs_workspace = config.overlayfs.mode == OverlayFsMode::Overlay
-        || config.overlaynet.mode == OverlayNetMode::Proxy
         || config.gateway.mode == GatewayMode::Capture
         || config.chronicle.mode == ChronicleMode::Lance;
     if needs_workspace && config.run.workspace.is_none() {
@@ -1563,6 +1562,8 @@ mod tests {
             Some("api.example.com")
         );
         assert_eq!(config.overlaynet.limits[1].bytes_per_second, 250_000);
+        assert!(config.run.workspace.is_none());
+        validate(&config).unwrap();
     }
 
     #[test]
@@ -1574,6 +1575,7 @@ mod tests {
         assert!(help.contains("--overlaynet-limit"));
         assert!(help.contains("--overlaynet-deny-all"));
         assert!(help.to_ascii_lowercase().contains("direct sockets"));
+        assert!(!help.contains("requires --workspace"));
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
     }

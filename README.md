@@ -60,15 +60,14 @@ additional capability-specific data systems.
 ## Quick Start
 
 ```bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
-just install-cli
+pip install persisting
 ```
 
-`install-cli` installs the matching `persisting`, `pvisor`, and `ppilot`
-binaries into the same Cargo bin directory. Trajectory and Search operations are
-provided directly by pChronicle; no separate Engine library is installed.
-The Python package is installed separately with `pip install persisting[lance]`.
+The platform wheel installs the Python package and the matching `persisting`,
+`pvisor`, and `ppilot` host binaries into the same Python scripts directory.
+Trajectory and Search operations are provided directly by pChronicle; no
+separate Engine library is installed. Source developers can still use
+`just install-cli` to install the three binaries into a Cargo bin directory.
 
 Run `just examples` to execute the small quantitative experiments under
 [`examples/`](examples/). Each script runs the product commands in order and
@@ -236,12 +235,12 @@ pip install persisting[lance]        # Full
 pip install persisting               # Minimal
 ```
 
-For the unified CLI (`execute/env/batch/query/history/eval/gateway`):
+The same wheel installs the unified CLI (`execute/env/batch/query/history/eval/gateway`):
 
 ```bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
-just install-cli
+persisting --version
+pvisor --version
+ppilot --help
 ```
 
 The unified command deliberately ships as a matched component set. `persisting`

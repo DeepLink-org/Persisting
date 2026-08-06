@@ -6,14 +6,11 @@
 ## 1. 安装 CLI
 
 ```bash
-# 源码安装（开发用）
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
-just install-cli
+# 稳定版 wheel：同时安装 persisting、pvisor、ppilot
+pip install persisting
 
-# 或 nightly 二进制，无需 Rust 工具链
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
-# 按脚本提示把 ~/.persisting/cli/bin 加入 PATH
+# 或安装 nightly wheel
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
 ```
 
 ## 2. 安全地运行一个 Agent
