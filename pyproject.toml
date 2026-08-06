@@ -28,7 +28,7 @@ all = [
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
-    "maturin>=1.0",
+    "maturin>=1.14,<2.0",
 ]
 
 [tool.maturin]
@@ -36,14 +36,24 @@ module-name = "persisting._core"
 manifest-path = "crates/persisting-core/Cargo.toml"
 python-packages = ["persisting"]
 features = ["python-extension"]
-sdist-include = ["LICENSE", "README.md"]
+data = "target/wheel-data"
+profile = "release"
+editable-profile = "dev"
+locked = true
+sdist-generator = "git"
+include = [
+    { path = "LICENSE", format = "sdist" },
+    { path = "README.md", format = "sdist" },
+    { path = "scripts/packaging/*.py", format = "sdist" },
+]
 # Keep the installable top-level dldb package out of the persisting wheel tree.
 # Install dldb separately: pip install -e ./persisting/dldb
 exclude = ["persisting/dldb/**"]
 
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
-build-backend = "maturin"
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "build_backend"
+backend-path = ["scripts/packaging"]
 
 [tool.ruff]
 line-length = 100

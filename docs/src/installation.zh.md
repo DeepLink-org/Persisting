@@ -1,11 +1,11 @@
 # 安装指南
 
-Persisting 拆成三个安装物，按用途选择：
+Persisting 提供三种安装形态，按用途选择：
 
 | 安装物 | 内容 | 用途 |
 |---|---|---|
-| Python 包 | `persisting`（wheel） | Python API：tensor memory、queue、search |
-| 统一 CLI | `persisting`、`pvisor`、`ppilot` | `execute` / `env` / `batch` / `query` / `history` / `eval` / `gateway` |
+| 宿主机 wheel | Python 包以及 `persisting`、`pvisor`、`ppilot` | Python API 和完整宿主机 CLI 组件集 |
+| CLI 压缩包 | 不含 Python 的同一组三个宿主机二进制 | 独立部署组件 |
 | Guest runtime | 静态 Linux `pvisor`（`linux-amd64` / `linux-arm64`） | Container/KVM executor 注入 guest 用 |
 
 ## 环境要求
@@ -23,6 +23,9 @@ pip install persisting[lance]
 # 最小安装（不含 Lance，仅用于自定义后端）
 pip install persisting
 ```
+
+上面两种安装命令都会把版本匹配的 `persisting`、`pvisor`、`ppilot` 安装到 Python 环境的
+scripts 目录。
 
 ### Nightly wheel
 
@@ -42,10 +45,10 @@ pip install -e ".[lance]"
 
 ## 统一 CLI
 
-CLI 是匹配的组件集：`persisting` 把执行/环境命令转发给 `pvisor`，批量/查询命令转发给
+wheel 内的 CLI 是匹配的组件集：`persisting` 把执行/环境命令转发给 `pvisor`，批量/查询命令转发给
 `ppilot`，history/eval 直接调用 pChronicle。三种安装方式：
 
-### 从源码（推荐开发）
+### 通过 Cargo 从源码安装
 
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
@@ -53,7 +56,8 @@ cd Persisting
 just install-cli
 ```
 
-会安装与仓库版本匹配的 `persisting`、`pvisor` 和 `ppilot` 到 Cargo bin 目录。
+这是不安装 Python 包的替代路径，会把版本匹配的 `persisting`、`pvisor` 和 `ppilot`
+安装到 Cargo bin 目录。
 
 ### Nightly 二进制（无需 Rust 工具链）
 

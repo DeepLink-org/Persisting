@@ -1,12 +1,12 @@
 # Installation
 
-Persisting is distributed as three installable parts. Choose the parts needed
+Persisting is distributed as three installable forms. Choose the form needed
 for your workflow:
 
 | Distribution | Contents | Use case |
 |---|---|---|
-| Python package | `persisting` wheel | Python APIs for Tensor Memory, Queue, and Search |
-| Unified CLI | `persisting`, `pvisor`, and `ppilot` | `execute`, `env`, `batch`, `query`, `history`, `eval`, and `gateway` commands |
+| Host wheel | Python package plus `persisting`, `pvisor`, and `ppilot` | Python APIs and the complete host CLI component set |
+| CLI archive | The same three host binaries without Python | Standalone component deployment |
 | Guest runtime | Static Linux `pvisor` for `linux-amd64` or `linux-arm64` | Injection into Container and KVM executors |
 
 ## Requirements
@@ -24,6 +24,9 @@ pip install persisting[lance]
 # Minimal install without Lance, for custom backends only
 pip install persisting
 ```
+
+Both installation commands install the matching `persisting`, `pvisor`, and `ppilot`
+binaries into the Python environment's scripts directory.
 
 ### Nightly wheel
 
@@ -44,11 +47,11 @@ pip install -e ".[lance]"
 
 ## Unified CLI
 
-The CLI is a matched component set. `persisting` delegates execution and
+The CLI bundled in the wheel is a matched component set. `persisting` delegates execution and
 environment commands to `pvisor`, batch and query commands to `ppilot`, and
 calls pChronicle directly for History and Eval.
 
-### From source (recommended for development)
+### Cargo installation from source
 
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
@@ -56,8 +59,8 @@ cd Persisting
 just install-cli
 ```
 
-This installs matching builds of `persisting`, `pvisor`, and `ppilot` into the
-Cargo binary directory.
+This alternative installs matching builds of `persisting`, `pvisor`, and
+`ppilot` into the Cargo binary directory without installing the Python package.
 
 ### Nightly binaries (no Rust toolchain required)
 

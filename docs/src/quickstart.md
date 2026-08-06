@@ -7,14 +7,11 @@ macOS or Linux.
 ## 1. Install the CLI
 
 ```bash
-# From source, for development
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
-just install-cli
+# Stable wheel: installs persisting, pvisor, and ppilot together
+pip install persisting
 
-# Or install nightly binaries without a Rust toolchain
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
-# Add ~/.persisting/cli/bin to PATH as instructed by the installer
+# Or install the nightly wheel
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
 ```
 
 ## 2. Run one Agent safely
