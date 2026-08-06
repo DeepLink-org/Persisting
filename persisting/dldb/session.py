@@ -156,6 +156,17 @@ class SessionBase:
     ):
         raise NotImplementedError
 
+    def optimize_indices(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        retrain: bool = False,
+        num_indices_to_merge: Optional[int] = None,
+        index_names: Optional[List[str]] = None,
+    ) -> None:
+        raise NotImplementedError
+
     def drop_table(self, table_name: str, partition=None):
         raise NotImplementedError
 
@@ -455,6 +466,23 @@ class LanceSession(SessionBase):
             cleanup_older_than=cleanup_older_than,
             delete_unverified=delete_unverified,
             retrain=retrain,
+        )
+
+    def optimize_indices(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        retrain: bool = False,
+        num_indices_to_merge: Optional[int] = None,
+        index_names: Optional[List[str]] = None,
+    ) -> None:
+        table = self._get_table(table_name, partition)
+        return table.optimize_indices(
+            partition=partition,
+            retrain=retrain,
+            num_indices_to_merge=num_indices_to_merge,
+            index_names=index_names,
         )
 
     def drop_table(self, table_name: str, partition=None):

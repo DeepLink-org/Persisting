@@ -173,6 +173,23 @@ def _filter_with_lance(
     return ds.to_table(**kwargs).to_pandas()
 
 
+def _optimize_indices_on_lance_table(
+    lance_table,
+    *,
+    retrain: bool = False,
+    num_indices_to_merge: Optional[int] = None,
+    index_names: Optional[List[str]] = None,
+) -> None:
+    kwargs = {}
+    if retrain:
+        kwargs["retrain"] = True
+    if num_indices_to_merge is not None:
+        kwargs["num_indices_to_merge"] = num_indices_to_merge
+    if index_names is not None:
+        kwargs["index_names"] = index_names
+    lance_table.to_lance().optimize.optimize_indices(**kwargs)
+
+
 class BaseTable:
     """Base class for table handling"""
 
@@ -240,6 +257,16 @@ class BaseTable:
         delete_unverified: bool = False,
         retrain: bool = False,
     ):
+        raise NotImplementedError
+
+    def optimize_indices(
+        self,
+        *,
+        partition=None,
+        retrain: bool = False,
+        num_indices_to_merge: Optional[int] = None,
+        index_names: Optional[List[str]] = None,
+    ) -> None:
         raise NotImplementedError
 
     def to_pandas(self, partition=None) -> pd.DataFrame:
@@ -381,6 +408,24 @@ class SimpleTable(BaseTable):
             cleanup_older_than=cleanup_older_than,
             delete_unverified=delete_unverified,
             retrain=retrain,
+        )
+
+    def optimize_indices(
+        self,
+        *,
+        partition=None,
+        retrain: bool = False,
+        num_indices_to_merge: Optional[int] = None,
+        index_names: Optional[List[str]] = None,
+    ) -> None:
+        assert partition is None, "Partitioning not supported for SimpleTable"
+        if self.table is None:
+            self.open_table()
+        _optimize_indices_on_lance_table(
+            self.table,
+            retrain=retrain,
+            num_indices_to_merge=num_indices_to_merge,
+            index_names=index_names,
         )
 
     def to_pandas(self, partition=None) -> pd.DataFrame:
@@ -569,6 +614,28 @@ class ValuePartitionTable(BaseTable):
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+            )
+
+    def optimize_indices(
+        self,
+        *,
+        partition=None,
+        retrain: bool = False,
+        num_indices_to_merge: Optional[int] = None,
+        index_names: Optional[List[str]] = None,
+    ) -> None:
+        if partition is not None:
+            partitions = [partition]
+        else:
+            partitions = self.list_partitions()
+
+        self.open_table(partitions)
+        for p in partitions:
+            _optimize_indices_on_lance_table(
+                self.tables[p],
+                retrain=retrain,
+                num_indices_to_merge=num_indices_to_merge,
+                index_names=index_names,
             )
 
     def drop_table(self, partition=None):
@@ -889,6 +956,28 @@ class HashPartitionTable(BaseTable):
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+            )
+
+    def optimize_indices(
+        self,
+        *,
+        partition=None,
+        retrain: bool = False,
+        num_indices_to_merge: Optional[int] = None,
+        index_names: Optional[List[str]] = None,
+    ) -> None:
+        if partition is not None:
+            partitions = [partition]
+        else:
+            partitions = self.list_partitions()
+
+        self.open_table(partitions)
+        for p in partitions:
+            _optimize_indices_on_lance_table(
+                self.tables[p],
+                retrain=retrain,
+                num_indices_to_merge=num_indices_to_merge,
+                index_names=index_names,
             )
 
     def drop_table(self, partition=None):
