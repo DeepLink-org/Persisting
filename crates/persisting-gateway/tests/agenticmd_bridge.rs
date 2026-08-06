@@ -1,8 +1,8 @@
 //! Capture ↔ pChronicle bridge: debug-view mapping, materialize, and explicit import.
 
-use persisting_gateway::dialogue::capture_record_to_agenticmd_block;
-use persisting_gateway::markdown_pipeline::MarkdownPipeline;
-use persisting_gateway::markdown_trajectory::format_document_preamble;
+use persisting_gateway::projection::dialogue::capture_record_to_agenticmd_block;
+use persisting_gateway::projection::markdown_pipeline::MarkdownPipeline;
+use persisting_gateway::projection::markdown_trajectory::format_document_preamble;
 use persisting_gateway::record::CaptureRecord;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;

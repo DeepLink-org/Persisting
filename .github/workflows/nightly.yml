@@ -142,116 +142,10 @@ jobs:
           path: dist/*.whl
           retention-days: 14
 
-  guest-runtimes:
-    name: Guest pVisor runtime (${{ matrix.target }})
-    if: github.repository == 'DeepLink-org/Persisting'
-    needs: meta
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            platform: linux-amd64
-          - target: aarch64-unknown-linux-musl
-            platform: linux-arm64
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.13.0
-
-      - name: Install cargo-zigbuild
-        run: |
-          rustup target add ${{ matrix.target }}
-          cargo install cargo-zigbuild --locked
-
-      - name: Build static pVisor for ${{ matrix.target }}
-        run: |
-          cargo zigbuild --package persisting-pvisor --bin pvisor \
-            --target ${{ matrix.target }} --release --locked
-
-      - name: Assemble guest runtime archive
-        run: |
-          version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
-          mkdir -p "runtimes/${{ matrix.platform }}"
-          cp "target/${{ matrix.target }}/release/pvisor" "runtimes/${{ matrix.platform }}/pvisor"
-          chmod +x "runtimes/${{ matrix.platform }}/pvisor"
-          tar -czf "persisting-guest-runtime-${version}-${{ matrix.platform }}.tar.gz" \
-            "runtimes/${{ matrix.platform }}/pvisor"
-          sha256sum "persisting-guest-runtime-${version}-${{ matrix.platform }}.tar.gz" \
-            > "persisting-guest-runtime-${version}-${{ matrix.platform }}.tar.gz.sha256"
-
-      - name: Upload guest runtime
-        uses: actions/upload-artifact@v4
-        with:
-          name: guest-runtime-${{ matrix.platform }}
-          path: |
-            persisting-guest-runtime-*.tar.gz
-            persisting-guest-runtime-*.tar.gz.sha256
-          retention-days: 14
-
-  cli:
-    name: CLI component set (${{ matrix.target }})
-    if: github.repository == 'DeepLink-org/Persisting'
-    needs: meta
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build CLI component set
-        run: |
-          cargo build --release --locked \
-            -p persisting-cli --bin persisting \
-            -p persisting-pvisor --bin pvisor \
-            -p persisting-ppilot --features cli --bin ppilot
-
-      - name: Assemble CLI archive
-        run: |
-          version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
-          mkdir -p cli/bin
-          cp target/release/persisting target/release/pvisor target/release/ppilot cli/bin/
-          tar -czf "persisting-cli-${version}-${{ matrix.target }}.tar.gz" cli/
-          archive="persisting-cli-${version}-${{ matrix.target }}.tar.gz"
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            shasum -a 256 "$archive" > "$archive.sha256"
-          else
-            sha256sum "$archive" > "$archive.sha256"
-          fi
-
-      - name: Upload CLI archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-${{ matrix.target }}
-          path: |
-            persisting-cli-*.tar.gz
-            persisting-cli-*.tar.gz.sha256
-          retention-days: 14
-
   publish:
     name: Publish nightly release
     if: github.repository == 'DeepLink-org/Persisting'
-    needs: [meta, linux, macos, guest-runtimes, cli]
+    needs: [meta, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -265,28 +159,6 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Download guest runtimes
-        uses: actions/download-artifact@v4
-        with:
-          pattern: guest-runtime-*
-          merge-multiple: true
-          path: dist
-
-      - name: Download CLI archives
-        uses: actions/download-artifact@v4
-        with:
-          pattern: cli-*
-          merge-multiple: true
-          path: dist
-
-      - name: Check artifact completeness
-        run: |
-          ls -la dist/
-          test -n "$(ls dist/persisting-guest-runtime-*.tar.gz 2>/dev/null || true)" \
-            && echo "guest runtimes present"
-          test -n "$(ls dist/persisting-cli-*.tar.gz 2>/dev/null || true)" \
-            && echo "CLI archives present"
-
       - name: Publish rolling nightly release
         uses: ncipollo/release-action@v1
         with:
@@ -298,10 +170,7 @@ jobs:
           prerelease: true
           removeArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: |
-            dist/*.whl
-            dist/*.tar.gz
-            dist/*.sha256
+          artifacts: dist/*.whl
           body: |
             Rolling nightly build from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) on **${{ github.ref_name }}**.
 
@@ -311,16 +180,4 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash
             ```
 
-            **Unified CLI component set** (`persisting`, `pvisor`, `ppilot`):
-
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-cli-nightly.sh | bash
-            ```
-
-            **Guest pVisor runtimes** for Container/KVM executors (`linux-amd64`, `linux-arm64`):
-
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-guest-runtimes.sh | bash -s -- --platform linux-amd64
-            ```
-
-            Every archive ships with a `.sha256` checksum next to it. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).
+            The wheel includes the matched `persisting`, `pvisor`, and `ppilot` CLI component set. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).

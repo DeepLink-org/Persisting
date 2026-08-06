@@ -4,7 +4,7 @@ use super::support::{
     body_bytes, claude_run_storage, fixture_body, headers, main_trajectory_dir,
     resolve_claude_route, subagent_markdown_path, CLAUDE_SESSION, PROXY_AGENT, RUN_ROOT,
 };
-use persisting_gateway::session_storage::resolve_capture_route;
+use persisting_gateway::session::storage::resolve_capture_route;
 
 #[test]
 fn main_agent_pro_turn_writes_header_session_md() {

@@ -1,6 +1,6 @@
 //! Golden AgenticMD document built through the production encoder.
 
-use persisting_gateway::dialogue::capture_record_to_agenticmd_block;
+use persisting_gateway::projection::dialogue::capture_record_to_agenticmd_block;
 use persisting_gateway::record::CaptureRecordExt;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;

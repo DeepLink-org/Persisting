@@ -14,14 +14,17 @@ pub fn enable_if_requested(ctx: &CaptureDebugContext<'_>, requested: bool) -> Re
     if !requested {
         return Ok(());
     }
-    persisting_gateway::debug::enable_debug(ctx.storage)?;
+    persisting_gateway::runtime::debug::enable_debug(ctx.storage)?;
     if !ctx.applied_env_keys.is_empty() {
-        persisting_gateway::debug::log_daemon_env_applied(ctx.storage, ctx.applied_env_keys);
+        persisting_gateway::runtime::debug::log_daemon_env_applied(
+            ctx.storage,
+            ctx.applied_env_keys,
+        );
     }
     eprintln!(
         "[persisting-cli] capture debug → {} (mirror stderr: set {}=1)",
-        persisting_gateway::debug::debug_log_path(ctx.storage).display(),
-        persisting_gateway::debug::ENV_CAPTURE_DEBUG_STDERR,
+        persisting_gateway::runtime::debug::debug_log_path(ctx.storage).display(),
+        persisting_gateway::runtime::debug::ENV_CAPTURE_DEBUG_STDERR,
     );
     Ok(())
 }

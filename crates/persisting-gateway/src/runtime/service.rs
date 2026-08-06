@@ -106,13 +106,13 @@ pub(crate) fn clear_current() -> Result<()> {
 /// `PERSISTING_CAPTURE_STORAGE` → `~/.persisting/capture/current.json`.
 pub fn resolve_storage_detailed(
     explicit: Option<&Path>,
-) -> Result<crate::discover_daemon::StorageResolution> {
-    use crate::discover_daemon::{discover_running_captures, StorageSource};
+) -> Result<crate::runtime::discover::StorageResolution> {
+    use crate::runtime::discover::{discover_running_captures, StorageSource};
 
     let running = discover_running_captures().unwrap_or_default();
 
     if let Some(p) = explicit {
-        return Ok(crate::discover_daemon::StorageResolution {
+        return Ok(crate::runtime::discover::StorageResolution {
             storage: p.to_path_buf(),
             source: StorageSource::Cli,
             running,
@@ -120,7 +120,7 @@ pub fn resolve_storage_detailed(
     }
 
     if let Some(first) = running.first() {
-        return Ok(crate::discover_daemon::StorageResolution {
+        return Ok(crate::runtime::discover::StorageResolution {
             storage: PathBuf::from(&first.storage),
             source: StorageSource::ProcessList,
             running,
@@ -130,7 +130,7 @@ pub fn resolve_storage_detailed(
     if let Ok(s) = std::env::var("PERSISTING_CAPTURE_STORAGE") {
         let s = s.trim();
         if !s.is_empty() {
-            return Ok(crate::discover_daemon::StorageResolution {
+            return Ok(crate::runtime::discover::StorageResolution {
                 storage: PathBuf::from(s),
                 source: StorageSource::Env,
                 running,
@@ -139,7 +139,7 @@ pub fn resolve_storage_detailed(
     }
 
     if let Some(state) = read_current()? {
-        return Ok(crate::discover_daemon::StorageResolution {
+        return Ok(crate::runtime::discover::StorageResolution {
             storage: PathBuf::from(state.storage),
             source: StorageSource::CurrentRegistry,
             running,

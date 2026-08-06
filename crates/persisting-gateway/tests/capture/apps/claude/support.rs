@@ -4,7 +4,7 @@ use axum::http::header::HeaderName;
 use axum::http::HeaderMap;
 use axum::http::HeaderValue;
 use bytes::Bytes;
-use persisting_gateway::session_storage::{
+use persisting_gateway::session::storage::{
     resolve_capture_route, trajectory_markdown_path, trajectory_run_dir, CaptureRoute,
 };
 

@@ -298,12 +298,7 @@ impl PVisor {
     }
 
     /// Start one Run: prepare controls → execute → teardown on completion.
-    pub async fn run(&self, spec: RunSpec) -> Result<RunHandle, PVisorError> {
-        self.submit(spec).await
-    }
-
-    /// Alias for [`Self::run`].
-    pub async fn submit(&self, mut spec: RunSpec) -> Result<RunHandle, PVisorError> {
+    pub async fn run(&self, mut spec: RunSpec) -> Result<RunHandle, PVisorError> {
         validate_spec(&spec)?;
         let executor = self
             .executors

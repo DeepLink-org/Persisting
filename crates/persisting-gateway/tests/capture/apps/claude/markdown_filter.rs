@@ -1,8 +1,8 @@
 //! Markdown trajectory filters for Claude Code traffic patterns.
 
 use persisting_gateway::config::CaptureLevel;
-use persisting_gateway::dialogue::skip_markdown_block;
 use persisting_gateway::engine::Call;
+use persisting_gateway::projection::dialogue::skip_markdown_block;
 use persisting_gateway::record::CaptureRecord;
 use persisting_gateway::sink::llm_request_summary_record;
 use serde_json::json;

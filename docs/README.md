@@ -9,20 +9,23 @@ This folder contains the documentation for Persisting.
 
 ## Quick Start
 
+Run the documentation tasks from the repository root:
+
 ```bash
-cd docs
+# Install the locked documentation environment
+just docs-sync
 
 # Local preview (auto-reload on src/ changes)
-make serve
+just docs-serve
 
 # Force rebuild if auto-reload isn't working
-make serve-dirty
+just docs-serve-dirty
 
 # Build static site
-make build
+just docs-build
 
 # Check dead links
-make check-links
+just docs-links
 ```
 
 ## Structure
@@ -31,7 +34,6 @@ make check-links
 docs/
 ├── mkdocs.yml              # MkDocs configuration
 ├── pyproject.toml          # Python dependencies
-├── Makefile                # Build commands
 ├── overrides/              # Theme customizations
 │   └── home.html           # Custom homepage template
 └── src/                    # Documentation source files
@@ -57,6 +59,6 @@ Not all files have both language versions. The i18n plugin falls back to English
 
 ## Contributing
 
-1. `cd docs` and run `make serve` for local preview
+1. Run `just docs-serve` for local preview
 2. Edit files under `src/` — browser should auto-reload
 3. Submit a PR

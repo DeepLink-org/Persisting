@@ -26,15 +26,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r docs/requirements.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync locked dependencies
+        working-directory: docs
+        run: uv sync --frozen
 
       - name: Build and deploy docs
-        run: |
-          cd docs
-          mkdocs gh-deploy --force --config-file mkdocs.yml
+        working-directory: docs
+        run: uv run mkdocs gh-deploy --force --config-file mkdocs.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

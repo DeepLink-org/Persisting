@@ -1,7 +1,7 @@
 [project]
 name = "persisting-docs"
 version = "0.2.0"
-description = "Documentation for Persisting - Persistent Storage for AI Systems"
+description = "Documentation for Persisting agent infrastructure"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,8 +16,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "mkdocs-minify-plugin>=0.7.0",  # Minify HTML output
-    "mkdocs-git-revision-date-localized-plugin>=1.2.0",  # Add git revision date
     "ruff>=0.4.0",  # For linting markdown code blocks
 ]
 

@@ -204,13 +204,13 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
             })
             .unwrap_or_else(|| "ppilot".into())
     });
-    std::env::set_var("PERSISTING_COMPUTE_JOB_ID", &job_id);
+    std::env::set_var("PERSISTING_PPILOT_JOB_ID", &job_id);
     if let Some(dir) = &args.sink {
-        std::env::set_var("PERSISTING_COMPUTE_OUTPUT_DIR", dir);
+        std::env::set_var("PERSISTING_PPILOT_OUTPUT_DIR", dir);
     }
     if !args.worker_label.is_empty() {
         std::env::set_var(
-            "PERSISTING_COMPUTE_WORKER_LABELS",
+            "PERSISTING_PPILOT_WORKER_LABELS",
             args.worker_label.join(","),
         );
     }

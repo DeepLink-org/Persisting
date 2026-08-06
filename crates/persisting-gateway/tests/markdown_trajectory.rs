@@ -2,8 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use persisting_gateway::markdown_trajectory::{format_document_preamble, upsert_block_by_call_id};
-use persisting_gateway::session_client::{
+use persisting_gateway::projection::markdown_trajectory::{
+    format_document_preamble, upsert_block_by_call_id,
+};
+use persisting_gateway::session::client::{
     write_session_client_meta, SessionClientMeta, SESSION_CLIENT_META_FILENAME,
 };
 use persisting_pchronicle::{

@@ -676,7 +676,7 @@ async fn execute_config(
         .unwrap_or_else(|| std::env::temp_dir().join(&run_id));
 
     if config.gateway.debug {
-        persisting_gateway::debug::enable_debug(&storage)?;
+        persisting_gateway::runtime::debug::enable_debug(&storage)?;
     }
 
     let chronicle_dir = config

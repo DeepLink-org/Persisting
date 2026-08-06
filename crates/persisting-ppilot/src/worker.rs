@@ -149,7 +149,7 @@ fn worker_context(worker_id: &str) -> serde_json::Value {
     } else {
         "cpu".to_string()
     };
-    let labels: Vec<_> = std::env::var("PERSISTING_COMPUTE_WORKER_LABELS")
+    let labels: Vec<_> = std::env::var("PERSISTING_PPILOT_WORKER_LABELS")
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
@@ -161,8 +161,8 @@ fn worker_context(worker_id: &str) -> serde_json::Value {
         "rank": rank,
         "local_rank": local_rank,
         "device": device,
-        "job_id": std::env::var("PERSISTING_COMPUTE_JOB_ID").unwrap_or_else(|_| "local".into()),
-        "output_dir": std::env::var("PERSISTING_COMPUTE_OUTPUT_DIR").ok(),
+        "job_id": std::env::var("PERSISTING_PPILOT_JOB_ID").unwrap_or_else(|_| "local".into()),
+        "output_dir": std::env::var("PERSISTING_PPILOT_OUTPUT_DIR").ok(),
         "labels": labels,
     })
 }

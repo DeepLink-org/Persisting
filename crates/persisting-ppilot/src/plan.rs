@@ -100,8 +100,7 @@ async fn run_plan_process(
         .arg(&script)
         .args(&script_args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("PERSISTING_COMPUTE_EMIT_PLAN", "1");
+        .stderr(Stdio::piped());
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawn plan python: {}", python.display()))?;

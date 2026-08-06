@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use persisting_gateway::dead_letter::replay_dead_letter;
 use persisting_gateway::engine::CaptureEngine;
-use persisting_gateway::session_index::SessionIndexStore;
+use persisting_gateway::session::index::SessionIndexStore;
 use persisting_gateway::sink::CaptureEventSink;
 
 use super::CaptureFormat;
