@@ -313,10 +313,7 @@ impl RunExecutor for KvmExecutor {
         }
 
         let prepared = (|| {
-            let binary = resolve_pvisor_binary(
-                self.settings.pvisor_binary.as_deref(),
-                self.settings.architecture.platform(),
-            )?;
+            let binary = resolve_pvisor_binary(self.settings.pvisor_binary.as_deref())?;
             let files = DelegatedRunFiles::new(&spec)?;
             let port = match self.settings.ssh_port {
                 Some(port) => port,

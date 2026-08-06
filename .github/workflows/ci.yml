@@ -76,6 +76,23 @@ jobs:
           ./target/debug/persisting execute -- /usr/bin/true
           ./target/debug/persisting batch --help
           ./target/debug/persisting query --help
+          ./target/debug/persisting history --help
+          ./target/debug/persisting eval --help
+          ./target/debug/persisting gateway --help
+
+      - name: Test unified History CLI integration
+        if: runner.os == 'Linux'
+        env:
+          PERSISTING_CLI: ${{ github.workspace }}/target/debug/persisting
+          SKIP_BUILD: "1"
+        run: ./scripts/test_suite.sh traj-e2e
+
+      - name: Test unified Gateway CLI integration
+        if: runner.os == 'Linux'
+        env:
+          PERSISTING_CLI: ${{ github.workspace }}/target/debug/persisting
+          SKIP_BUILD: "1"
+        run: ./scripts/test_suite.sh capture-integration
 
   s3-contract:
     name: pChronicle S3 Contract (MinIO)

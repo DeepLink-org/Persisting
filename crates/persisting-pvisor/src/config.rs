@@ -123,13 +123,6 @@ impl ContainerPlatform {
             Self::LinuxArm64 => "linux/arm64",
         }
     }
-
-    pub(crate) const fn artifact_directory(self) -> &'static str {
-        match self {
-            Self::LinuxAmd64 => "linux-amd64",
-            Self::LinuxArm64 => "linux-arm64",
-        }
-    }
 }
 
 impl std::str::FromStr for ContainerPlatform {
@@ -198,15 +191,6 @@ pub enum KvmArchitecture {
     #[default]
     X86_64,
     Aarch64,
-}
-
-impl KvmArchitecture {
-    pub(crate) const fn platform(self) -> ContainerPlatform {
-        match self {
-            Self::X86_64 => ContainerPlatform::LinuxAmd64,
-            Self::Aarch64 => ContainerPlatform::LinuxArm64,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]

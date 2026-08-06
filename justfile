@@ -253,7 +253,7 @@ test-crate crate:
       core) cargo test -p persisting-core ;;
       capture) cargo test -p persisting-gateway ;;
       cli) cargo test -p persisting-cli ;;
-      ppilot|compute) cargo test -p persisting-ppilot ;;
+      ppilot) cargo test -p persisting-ppilot ;;
       pvisor) cargo test -p persisting-pvisor ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
       *) echo "unknown crate: {{ crate }} (pchronicle|control|core|capture|cli|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
@@ -306,18 +306,10 @@ test-py-v:
 install-nightly:
     bash "{{ repo }}/scripts/install-nightly.sh"
 
-# 从 nightly release 安装统一 CLI 组件集（persisting/pvisor/ppilot）
-install-cli-nightly:
-    bash "{{ repo }}/scripts/install-cli-nightly.sh"
-
-# 从 nightly release 安装 guest pVisor runtime（Container/KVM executor 用）
-install-guest-runtimes platform="linux-amd64":
-    bash "{{ repo }}/scripts/install-guest-runtimes.sh" --platform {{ platform }}
-
 # ── 文档（docs/ 子项目）──────────────────────────────────────────────────────
 
 docs-sync:
-    cd "{{ docs_dir }}" && uv sync --all-extras
+    cd "{{ docs_dir }}" && uv sync --frozen
 
 docs-serve:
     cd "{{ docs_dir }}" && uv run mkdocs serve
@@ -329,7 +321,7 @@ docs-build:
     cd "{{ docs_dir }}" && uv run mkdocs build
 
 docs-links:
-    cd "{{ docs_dir }}" && uv run mkdocs-linkcheck src
+    cd "{{ docs_dir }}" && uv run mkdocs build --strict
 
 # ── 数据与 fixture ───────────────────────────────────────────────────────────
 

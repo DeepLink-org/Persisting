@@ -123,7 +123,7 @@ view, not a storage protocol.
 | Agent cannot reach Gateway | Use the injected child via `pvisor run`, or export the standalone proxy banner variables |
 | Codex bypasses the proxy | Pass the printed `-c openai_base_url=...` setting |
 | No Markdown with Lance output | Enable `--gateway-stream-markdown` or run `history materialize` |
-| Failed capture event | Inspect `.capture/dead_letter.jsonl`, then use `traj replay-dead-letter` |
+| Failed capture event | Inspect `.capture/dead_letter.jsonl`, then use `history replay-dead-letter` |
 | `persisting execute` reports an active owner | Stop `gateway`, wait for the live Run, or use another storage root |
 
 The independent dlcapt implementation has its own configuration and storage

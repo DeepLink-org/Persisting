@@ -181,17 +181,15 @@ pvisor run \
 ```
 
 Supplying `--container-image` selects the container executor automatically.
-The executor discovers the matching `linux-amd64` or `linux-arm64` static
-pVisor, mounts it read-only at `/opt/persisting/pvisor`, overrides the image
+The executor requires a compatible `linux-amd64` or `linux-arm64` pVisor via
+`--container-pvisor-binary`, mounts it read-only at `/opt/persisting/pvisor`, overrides the image
 entrypoint, and executes `pvisor run --executor host --run-spec ...`. The Agent
 command never appears in the Docker/Podman argument list. The injected pVisor
 returns a typed RunResult through a private mounted control directory. The
 transport maps cancellation to `stop` followed by `kill` when necessary.
 
-Packaged runtimes are discovered under
-`~/.persisting/runtimes/<version>/<platform>/pvisor`, under the installation
-prefix's `libexec/persisting/<version>/`, or through
-`PERSISTING_PVISOR_RUNTIME_DIR`. `--container-pvisor-binary` overrides discovery.
+Container and KVM runtimes must be configured explicitly with
+`--container-pvisor-binary` or `--kvm-pvisor-binary`, respectively.
 The final OverlayFS cwd and per-session Gateway configuration are mounted at
 their existing paths. Additional mounts use `--container-mount
 'source="/host/path", target="/container/path", read_only=true'`.

@@ -49,9 +49,6 @@ def install_context(raw):
     frozen = json.loads(json.dumps(raw or {}))
     mod.context = lambda: json.loads(json.dumps(frozen))
     sys.modules["persisting_ppilot"] = mod
-    # Compatibility for existing plan scripts. New code should import
-    # `persisting_ppilot`; this alias can be removed after the migration window.
-    sys.modules["persisting_compute"] = mod
     return frozen
 
 def load_plan_module(script, argv=None, context=None):
@@ -546,7 +543,7 @@ impl ExecutorRouter {
                 );
             }
         };
-        let handle = match self.pvisor.submit(spec).await {
+        let handle = match self.pvisor.run(spec).await {
             Ok(handle) => handle,
             Err(error) => {
                 return TaskResult::failure_with_kind(
@@ -590,7 +587,7 @@ impl ExecutorRouter {
 }
 
 pub(crate) fn task_run_spec(task: &TaskExpr, worker_id: &str, lease_epoch: u64) -> RunSpec {
-    let job_id = std::env::var("PERSISTING_COMPUTE_JOB_ID").unwrap_or_else(|_| "local".into());
+    let job_id = std::env::var("PERSISTING_PPILOT_JOB_ID").unwrap_or_else(|_| "local".into());
     let run_id = format!(
         "{}{}",
         job_run_id_prefix(&job_id),
@@ -890,11 +887,9 @@ def execute(item):
             &script,
             r#"
 from persisting_ppilot import context
-from persisting_compute import context as legacy_context
 
 def setup_worker(ctx):
     assert ctx["worker_id"] == "w-context"
-    assert legacy_context()["worker_id"] == "w-context"
 
 def plan():
     yield {"id": "unused"}

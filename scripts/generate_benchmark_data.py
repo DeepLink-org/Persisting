@@ -73,7 +73,7 @@ def main() -> None:
     n_t = args.traj_rows
     with args.traj_out.open("w", encoding="utf-8", buffering=1024 * 1024) as f:
         if args.traj_format == "toml":
-            f.write("# benchmark trajectory (CaptureRecord-shaped [[records]] for traj add)\n\n")
+            f.write("# benchmark trajectory (CaptureRecord-shaped [[records]] for history add)\n\n")
             for i in range(n_t):
                 tok = rng.randrange(2**31)
                 f.write("[[records]]\n")

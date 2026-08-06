@@ -40,12 +40,12 @@ SUITE_NAMES=(
 )
 
 SUITE_DESCS=(
-  "traj CLI 冒烟"
-  "traj CLI 集成"
+  "trajectory CLI 冒烟"
+  "trajectory CLI 集成"
   "history import/stats → eval judge/stats"
   "proxy / import / daemon 集成"
   "capture 写入压测"
-  "traj capture -f lance 全链路"
+  "execute + Gateway Lance capture 全链路"
   "全部 capture 集成脚本"
   "全部集成脚本（smoke + capture-all）"
 )

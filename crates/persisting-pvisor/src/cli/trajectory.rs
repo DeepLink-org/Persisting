@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use persisting_gateway::record::CaptureRecord;
-use persisting_gateway::session_storage::CaptureRoute;
+use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::sink::CallbackSink;
 use persisting_pchronicle::{
     EventRecord, LanceMaintenanceOptions, RawEventLanceAppender, StoryCoords,

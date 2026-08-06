@@ -248,25 +248,18 @@ dispatches execution/environment commands to the sibling `pvisor` binary and
 batch/query commands to the sibling `ppilot` binary. `PERSISTING_PVISOR_BIN`
 and `PERSISTING_PPILOT_BIN` remain explicit overrides.
 
-### Binary nightlies (no Rust toolchain needed)
+### Nightly wheel
 
-Nightly builds publish the CLI component set and the guest pVisor runtimes used
-by the Container/KVM executors, each with a `.sha256` checksum:
+The nightly wheel includes the matching `persisting`, `pvisor`, and `ppilot`
+commands and does not require a Rust toolchain:
 
 ```bash
-# Unified CLI component set (persisting / pvisor / ppilot)
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
-
-# Guest pVisor runtime for Container/KVM executors (repeat for linux-arm64)
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-guest-runtimes.sh | bash -s -- --platform linux-amd64
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
 ```
 
-The guest runtime is installed under `~/.persisting/runtimes/<version>/<platform>/pvisor`
-(or `$PERSISTING_PVISOR_RUNTIME_DIR/<platform>/pvisor`), where pVisor's automatic
-artifact discovery finds it. After that, `pvisor run` with a Container/KVM
-executor works out of the box instead of failing with "no pVisor runtime artifact".
-
-`just install-cli-nightly` and `just install-guest-runtimes` wrap the same scripts.
+Container/KVM executors require a compatible pVisor runtime supplied explicitly
+through their `pvisor_binary` setting; nightly releases do not publish a separate
+guest runtime.
 
 ---
 

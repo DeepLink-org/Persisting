@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Simulated agent: multi-turn chat via OPENAI_BASE_URL (set by ``traj capture``)."""
+"""Simulated agent: multi-turn chat via OPENAI_BASE_URL injected by pVisor."""
 
 from __future__ import annotations
 

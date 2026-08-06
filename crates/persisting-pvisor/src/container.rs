@@ -297,7 +297,7 @@ impl RunExecutor for ContainerExecutor {
 
         let prepared = async {
             let platform = self.resolve_platform().await?;
-            let binary = resolve_pvisor_binary(self.settings.pvisor_binary.as_deref(), platform)?;
+            let binary = resolve_pvisor_binary(self.settings.pvisor_binary.as_deref())?;
             let files = DelegatedRunFiles::new(&spec)?;
             let command = self.build_command(
                 invocation,

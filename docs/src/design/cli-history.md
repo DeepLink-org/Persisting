@@ -39,7 +39,7 @@ Subagent：`{run}/subagents/{session_id}/`。路径可传 session 目录，CLI �
 | **add** | TOML/JSONL/Markdown → `EventRecord` → canonical Lance |
 | **truncate** | 保留 Lance 前 N 行（按 `seq`） |
 | **stats** | canonical Lance 摘要，并附带 Markdown 调试视图信息；`--detail` 逐轮树；未指定 `--session-id` 时扫描 agent 下全部 run，并对 run bucket **展开** Lance 内 distinct `session_id` 后逐分区统计 |
-| **replay** | 分页输出事件；`--follow` 先回放历史，再持续输出新提交的 canonical event JSONL |
+| **replay** | 按 `--offset` / `--limit` 分页输出已有事件 |
 | **extract** | 拷贝 Story/Run 目录树 |
 | **materialize** | Lance → Markdown 全量物化 |
 
@@ -95,16 +95,12 @@ persisting history stats ./store --agent-id a --root-session-id run-1 --session-
 # 从 Lance 补人读视图
 persisting history materialize ./store --agent-id a --session-id s --root-session-id run-1
 
-# 从 offset=0 输出已有 JSONL，然后持续跟随运行中已提交的 event micro-batch
-persisting history replay ./store --agent-id a --session-id s \
-  --follow --poll-interval-ms 100 --limit 256
+# 从 offset=0 分页输出已有事件
+persisting history replay ./store --agent-id a --session-id s --offset 0 --limit 256
 ```
 
-普通 `replay` 保持 TOML 输出，`--offset` / `--limit` 表示一次分页。`--follow` 改为适合
-管道消费的纯 JSONL；它从 `--offset`（默认 0）回放已有事件，之后每次重新打开最新 Lance
-MVCC 版本。follow 模式下 `--limit` 是每次读取的页大小（默认 256），空页按
-`--poll-interval-ms`（默认 100 ms）等待，Ctrl-C 正常退出。数据集尚未首次创建时会继续
-等待，不会把 Run 尚未终态提交等同于数据不可见。
+`replay` 保持 TOML 输出，`--offset` / `--limit` 表示一次分页。需要持续读取运行中已提交的
+event micro-batch 时，使用 `persisting query follow`。
 
 ---
 
@@ -116,5 +112,4 @@ MVCC 版本。follow 模式下 `--limit` 是每次读取的页大小（默认 25
 | 实时事件查询 | `persisting query follow`（已提交 canonical event micro-batch） |
 | 离线运维 | `persisting history stats` / `replay` / `materialize` / … |
 
-`persisting history replay --follow` 保留为兼容别名；新脚本应使用 pPilot 所有的统一
-`persisting query follow` 入口。
+实时查询统一使用 pPilot 所有的 `persisting query follow` 入口。

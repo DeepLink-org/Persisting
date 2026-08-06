@@ -65,7 +65,7 @@ impl CaptureDaemonState {
     }
 }
 
-/// `~/.persisting/capture/current.json` — last successful `traj proxy start`.
+/// `~/.persisting/capture/current.json` — last successful `gateway start`.
 pub fn global_registry_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("home directory")?;
     Ok(home
@@ -106,13 +106,13 @@ pub(crate) fn clear_current() -> Result<()> {
 /// `PERSISTING_CAPTURE_STORAGE` → `~/.persisting/capture/current.json`.
 pub fn resolve_storage_detailed(
     explicit: Option<&Path>,
-) -> Result<crate::discover_daemon::StorageResolution> {
-    use crate::discover_daemon::{discover_running_captures, StorageSource};
+) -> Result<crate::runtime::discover::StorageResolution> {
+    use crate::runtime::discover::{discover_running_captures, StorageSource};
 
     let running = discover_running_captures().unwrap_or_default();
 
     if let Some(p) = explicit {
-        return Ok(crate::discover_daemon::StorageResolution {
+        return Ok(crate::runtime::discover::StorageResolution {
             storage: p.to_path_buf(),
             source: StorageSource::Cli,
             running,
@@ -120,7 +120,7 @@ pub fn resolve_storage_detailed(
     }
 
     if let Some(first) = running.first() {
-        return Ok(crate::discover_daemon::StorageResolution {
+        return Ok(crate::runtime::discover::StorageResolution {
             storage: PathBuf::from(&first.storage),
             source: StorageSource::ProcessList,
             running,
@@ -130,7 +130,7 @@ pub fn resolve_storage_detailed(
     if let Ok(s) = std::env::var("PERSISTING_CAPTURE_STORAGE") {
         let s = s.trim();
         if !s.is_empty() {
-            return Ok(crate::discover_daemon::StorageResolution {
+            return Ok(crate::runtime::discover::StorageResolution {
                 storage: PathBuf::from(s),
                 source: StorageSource::Env,
                 running,
@@ -139,7 +139,7 @@ pub fn resolve_storage_detailed(
     }
 
     if let Some(state) = read_current()? {
-        return Ok(crate::discover_daemon::StorageResolution {
+        return Ok(crate::runtime::discover::StorageResolution {
             storage: PathBuf::from(state.storage),
             source: StorageSource::CurrentRegistry,
             running,
@@ -147,7 +147,7 @@ pub fn resolve_storage_detailed(
     }
 
     anyhow::bail!(
-        "no Gateway instance found: start one with `persisting traj proxy start -o <DIR> -c <config.toml>`, \
+        "no Gateway instance found: start one with `persisting gateway start -o <DIR> -c <config.toml>`, \
          or pass `-o <DIR>`, or set PERSISTING_CAPTURE_STORAGE"
     )
 }

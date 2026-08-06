@@ -57,7 +57,7 @@ fn lsof_client_pid_for_peer(peer: SocketAddr) -> Result<Option<u32>> {
             continue;
         }
         if let Some(cmd) = command_line_for_pid(entry.pid)? {
-            if is_capture_proxy_command(&cmd) {
+            if is_gateway_serve_command(&cmd) {
                 continue;
             }
             return Ok(Some(entry.pid));
@@ -122,8 +122,8 @@ fn format_socket_addr(addr: SocketAddr) -> String {
 }
 
 #[cfg(unix)]
-fn is_capture_proxy_command(cmd: &str) -> bool {
-    cmd.contains("persisting traj proxy") || cmd.contains("persisting trajectory proxy")
+fn is_gateway_serve_command(cmd: &str) -> bool {
+    cmd.contains("persisting gateway serve")
 }
 
 #[cfg(unix)]
@@ -211,10 +211,10 @@ n127.0.0.1:55522->127.0.0.1:8080
     }
 
     #[test]
-    fn skips_capture_proxy_command() {
-        assert!(is_capture_proxy_command(
-            "./target/debug/persisting traj proxy -o ./store"
+    fn skips_gateway_serve_command() {
+        assert!(is_gateway_serve_command(
+            "./target/debug/persisting gateway serve -o ./store"
         ));
-        assert!(!is_capture_proxy_command("claude --model deepseek"));
+        assert!(!is_gateway_serve_command("claude --model deepseek"));
     }
 }

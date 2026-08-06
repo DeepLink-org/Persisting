@@ -1,19 +1,17 @@
 # Installation
 
-Persisting is distributed as three installable forms. Choose the form needed
-for your workflow:
+Persisting is distributed as a Python wheel containing both the Python package
+and its matched CLI component set:
 
 | Distribution | Contents | Use case |
 |---|---|---|
 | Host wheel | Python package plus `persisting`, `pvisor`, and `ppilot` | Python APIs and the complete host CLI component set |
-| CLI archive | The same three host binaries without Python | Standalone component deployment |
-| Guest runtime | Static Linux `pvisor` for `linux-amd64` or `linux-arm64` | Injection into Container and KVM executors |
 
 ## Requirements
 
 - Python 3.10+
 - Pulsing, installed automatically as a dependency
-- macOS or Linux for the CLI; guest runtimes are static Linux binaries
+- macOS or Linux for the CLI
 
 ## Python package
 
@@ -62,39 +60,17 @@ just install-cli
 This alternative installs matching builds of `persisting`, `pvisor`, and
 `ppilot` into the Cargo binary directory without installing the Python package.
 
-### Nightly binaries (no Rust toolchain required)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
-```
-
-The installer writes the component set to `~/.persisting/cli/bin`, or under
-`PERSISTING_CLI_ROOT` when set, and prints the line needed to add it to `PATH`.
-Every release archive has a matching `.sha256` checksum.
-
 ### Component overrides
 
 Set `PERSISTING_PVISOR_BIN` or `PERSISTING_PPILOT_BIN` to select an explicit
 component binary.
 
-## Guest runtime for Container and KVM executors
+## Container and KVM executors
 
-`pvisor run --executor container|kvm` needs a static Linux pVisor matching the
-guest platform:
-
-```bash
-# linux-amd64 is the default; repeat with --platform linux-arm64 when needed
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-guest-runtimes.sh | bash -s -- --platform linux-amd64
-```
-
-The runtime is installed at
-`~/.persisting/runtimes/<version>/<platform>/pvisor`, or at
-`$PERSISTING_PVISOR_RUNTIME_DIR/<platform>/pvisor` when the override is set.
-pVisor discovers it automatically. Host execution remains available without a
-guest runtime; only Container and KVM execution require one.
-
-`just install-cli-nightly` and `just install-guest-runtimes` wrap the same
-installer scripts.
+`pvisor run --executor container|kvm` requires a compatible Linux pVisor for
+the guest platform. Supply it explicitly through the executor's `pvisor_binary`
+setting. Nightly releases do not publish a separate guest runtime. Host
+execution does not need this additional artifact.
 
 ## Verify the installation
 

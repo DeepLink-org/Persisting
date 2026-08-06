@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP load against persisting traj proxy (mock upstream behind proxy)."""
+"""HTTP load against a Persisting Gateway with a mock upstream."""
 
 from __future__ import annotations
 
@@ -13,7 +13,9 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def one_request(proxy_base: str, session_id: str, req_id: int, timeout: float) -> tuple[bool, float, str | None]:
+def one_request(
+    proxy_base: str, session_id: str, req_id: int, timeout: float
+) -> tuple[bool, float, str | None]:
     url = f"{proxy_base.rstrip('/')}/v1/chat/completions"
     body = json.dumps(
         {
