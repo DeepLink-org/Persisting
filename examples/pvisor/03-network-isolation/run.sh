@@ -18,39 +18,34 @@ trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || 
 sleep 0.3
 
 echo '1. Allowlist permits the declared destination'
-pvisor run --workspace "$work_dir/allow" \
-  --overlaynet-allow "127.0.0.1:$server_port" --stdio inherit -- \
+pvisor run --overlaynet-allow "127.0.0.1:$server_port" -- \
   bash -ceu '
     body=$(curl --fail --silent --show-error \
       --proxy "$HTTP_PROXY" --noproxy "" "$1")
-    printf "response: %s\n" "$body"
     test "$body" = allowed
   ' bash "$server_url"
 echo 'PASS: the proxied request was allowed.'
 
 echo
 echo '2. Deny-all rejects traffic that uses the injected proxy'
-set +e
-denied_output=$(pvisor run --workspace "$work_dir/deny" \
-  --overlaynet-deny-all --stdio inherit -- \
-  bash -c 'curl --fail-with-body --silent --show-error \
-    --proxy "$HTTP_PROXY" --noproxy "" "$1"' bash "$server_url" 2>&1)
-denied_status=$?
-set -e
-printf '%s\n' "$denied_output"
-if [ "$denied_status" -eq 0 ] || [[ "$denied_output" != *'(no-network)'* ]]; then
-  echo 'FAIL: deny-all did not reject the proxied request.' >&2
-  exit 1
-fi
+pvisor run --overlaynet-deny-all -- \
+  bash -ceu '
+    if denied_output=$(curl --fail-with-body --silent --show-error \
+      --proxy "$HTTP_PROXY" --noproxy "" "$1" 2>&1); then
+      exit 1
+    fi
+    case "$denied_output" in
+      *"(no-network)"*) ;;
+      *) exit 1 ;;
+    esac
+  ' bash "$server_url"
 echo 'PASS: the proxied request was rejected with no-network.'
 
 echo
 echo '3. A direct socket can bypass the cooperative proxy'
-pvisor run --workspace "$work_dir/direct" \
-  --overlaynet-deny-all --stdio inherit -- \
+pvisor run --overlaynet-deny-all -- \
   bash -ceu '
     body=$(curl --fail --silent --show-error --noproxy "*" "$1")
-    printf "response: %s\n" "$body"
     test "$body" = allowed
   ' bash "$server_url"
 echo 'PASS: direct access bypassed the proxy, as documented.'

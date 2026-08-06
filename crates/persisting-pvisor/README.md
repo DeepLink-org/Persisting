@@ -316,8 +316,12 @@ pvisor run \
   --overlaynet-deny bad.example.com \
   --overlaynet-limit 10mbps \
   --overlaynet-limit api.openai.com:443=2mbps \
-  --workspace /tmp/my-run -- codex
+  -- codex
 ```
+
+OverlayNet-only Runs do not require `--workspace`; pVisor uses an internal
+directory below the system temporary directory. Supply `--workspace` when the
+Run record and Bundle must remain at a stable, user-selected path.
 
 `kbps`/`mbps`/`gbps` use network-standard bits per second; `kb/s`/`mb/s`/`gb/s`
 use bytes per second. Limits aggregate upload and download across matching

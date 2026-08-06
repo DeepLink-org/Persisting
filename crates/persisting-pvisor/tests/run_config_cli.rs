@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{net::TcpListener, process::Command};
 
 use persisting_pvisor::{ChronicleMode, RunBundle, RunConfig};
 
@@ -6,16 +6,21 @@ use persisting_pvisor::{ChronicleMode, RunBundle, RunConfig};
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
-fn run_without_workspace_finalizes_ephemeral_record() {
+fn network_run_without_workspace_finalizes_ephemeral_record() {
     let temporary = tempfile::Builder::new()
         .prefix("pv")
         .tempdir_in("/tmp")
         .expect("create short temporary run root");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve a loopback port");
+    let listen = listener.local_addr().unwrap().to_string();
+    drop(listener);
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--", "/usr/bin/true"])
+        .args(["run", "--overlaynet-listen"])
+        .arg(&listen)
+        .args(["--overlaynet-deny-all", "--", "/usr/bin/true"])
         .env("TMPDIR", temporary.path())
         .output()
-        .expect("execute pvisor without an explicit workspace");
+        .expect("execute network-only pvisor without an explicit workspace");
     assert!(
         output.status.success(),
         "pvisor failed: {}",
@@ -41,6 +46,7 @@ fn run_without_workspace_finalizes_ephemeral_record() {
     assert_eq!(record["command"][0], "/usr/bin/true");
     let bundle = RunBundle::read(&run_dirs[0]).expect("read generated Run Bundle");
     assert_eq!(bundle.run.exit_code, Some(0));
+    assert!(bundle.network.interception.is_some());
 }
 
 #[test]
