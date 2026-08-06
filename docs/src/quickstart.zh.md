@@ -21,8 +21,9 @@ curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/script
 pvisor run --safe codex
 ```
 
-`--safe` 把当前目录作为 OverlayFS lower，Agent 的修改写入 staged upper，同时启用显式
-网络代理；结束后工作区带着 `run-bundle.json` 留下来。默认 host executor 的隔离是
+`--safe` 把当前目录作为可复用 workspace 和 OverlayFS base，Agent 的修改写入每个 Run
+独立的 stage，同时启用显式网络代理；结束后 Run 和 `run-bundle.json` 保存在
+`PERSISTING_RUN_HOME`。默认 host executor 的隔离是
 进程级的——它不阻止 Agent 访问项目目录外的宿主路径，代理也可以被直接 socket 绕过，
 这些边界都会如实记录在 bundle 里。
 

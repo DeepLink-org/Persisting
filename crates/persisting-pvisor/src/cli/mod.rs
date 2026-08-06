@@ -27,7 +27,7 @@ enum Command {
     Env(env::EnvArgs),
     /// Show the selected Run's process, filesystem, and network status.
     Status(runtime::StatusArgs),
-    /// Open a read-only shell or run a command against a Run workspace.
+    /// Open a read-only shell or run a command against a Run filesystem view.
     Inspect(runtime::InspectArgs),
     /// Review the durable Run Bundle before accepting filesystem changes.
     Review(product::ReviewArgs),

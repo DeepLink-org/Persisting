@@ -227,7 +227,7 @@ impl PVisorBuilder {
         self
     }
 
-    /// Set durable Run workspace storage independently of the optional Gateway.
+    /// Set durable Run storage independently of the optional Gateway.
     pub fn storage(mut self, storage: impl Into<std::path::PathBuf>) -> Self {
         self.runtime = self.runtime.storage(storage.into());
         self

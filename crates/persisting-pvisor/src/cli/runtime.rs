@@ -262,6 +262,17 @@ fn mutate(args: SelectArgs, apply: bool, target: Option<&Path>) -> anyhow::Resul
         .overlay
         .take()
         .context("this Run has no OverlayFS workspace")?;
+    if apply
+        && record
+            .overlay_lowers
+            .iter()
+            .any(|lower| lower != &overlay.target)
+    {
+        bail!(
+            "Run {} composes read-only layers above its base; apply is disabled until pVisor can materialize the complete merged diff",
+            record.run_id
+        );
+    }
     if apply && overlay.state == OverlayState::Applied {
         println!(
             "already applied {} → {}",

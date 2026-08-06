@@ -50,7 +50,7 @@ pub fn eprint_serve_banner(info: &ServeBanner<'_>) {
     eprintln!("  codex -c 'openai_base_url=\"{openai_v1}\"'");
     eprintln!();
     eprintln!("One-shot in-process (stop proxy on same -o first):");
-    eprintln!("  persisting execute --config <run.toml> --workspace <run-dir> -- claude");
+    eprintln!("  persisting execute --config <run.toml> --workspace <project-dir> -- claude");
     eprintln!();
     eprintln!("Inspect:");
     eprintln!("  persisting gateway list -o {store}");

@@ -45,9 +45,9 @@ pub use checkpoint::{
 pub use config::{
     ChronicleMode, ChronicleSettings, ContainerMount, ContainerNetwork, ContainerPlatform,
     ContainerSettings, GatewayDriverConfig, GatewayMode, GatewaySettings, KvmArchitecture,
-    KvmImageFormat, KvmSettings, OverlayFsBackend, OverlayFsCommit, OverlayFsMode,
-    OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig,
-    RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
+    KvmImageFormat, KvmSettings, OverlayFsBackend, OverlayFsCommit, OverlayFsSettings,
+    OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig, RunConfig, RunExecutorKind,
+    RunPolicy, RunSettings, RunStdio,
 };
 pub use container::ContainerExecutor;
 pub use control::{

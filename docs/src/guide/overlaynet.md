@@ -156,22 +156,18 @@ requires `--container-network host` when using the in-process proxy.
 
 ## Review the result
 
-Use a workspace when the network policy and counters need to remain available
-after the command exits:
+The current directory is the default reusable workspace. Each invocation keeps
+an independent Run under `PERSISTING_RUN_HOME`:
 
 ```bash
 pvisor run \
-  --workspace .persisting/runs/network-001 \
   --overlaynet-deny 169.254.0.0/16 \
   -- agent-command
 
-pvisor review .persisting/runs/network-001
-
-jq '{policy: .network.policy,
+pvisor review --json last | jq '{policy: .network.policy,
      interception: .network.interception,
      counters: .network.intercepted,
-     non_bypassable: .safety.network_non_bypassable}' \
-  .persisting/runs/network-001/run-bundle.json
+     non_bypassable: .safety.network_non_bypassable}'
 ```
 
 The counters describe only requests that reached OverlayNet. They cannot count

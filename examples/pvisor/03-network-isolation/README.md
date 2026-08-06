@@ -22,9 +22,8 @@ pvisor run --overlaynet-deny-all -- \
   agent-command
 ```
 
-纯 OverlayNet 运行不需要 `--workspace`。pVisor 会在系统临时目录中保存运行期间所需的
-内部状态；需要保留固定路径下的 Run 记录、Bundle 或后续 review 时，再显式传入
-`--workspace`。
+纯 OverlayNet 运行不需要显式传 `--workspace`：当前目录会作为可复用 workspace，
+每次执行的 Run 记录和 Bundle 则独立保存在 `PERSISTING_RUN_HOME` 下。
 
 `run.sh` 中的短 `bash -c` 用于让 curl 显式读取 pVisor 注入的 `$HTTP_PROXY`，并就地断言
 响应结果，没有额外测试框架或隐藏的辅助脚本。任一场景失败都会立即以非零状态退出。

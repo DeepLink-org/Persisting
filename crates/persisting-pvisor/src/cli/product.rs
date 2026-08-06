@@ -10,7 +10,7 @@ const DEFAULT_STORAGE: &str = ".persisting/capture";
 
 #[derive(Debug, Clone, Args)]
 pub struct ReviewArgs {
-    /// Run id, workspace, run.json, or a path inside the Run workspace.
+    /// Run id, project workspace, run.json, or a path inside the Run filesystem.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -21,7 +21,7 @@ pub struct ReviewArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct CheckpointArgs {
-    /// Stopped Run id, workspace, or run.json.
+    /// Stopped Run id, project workspace, or run.json.
     pub selector: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = DEFAULT_STORAGE)]
     pub output_dir: PathBuf,
@@ -175,7 +175,7 @@ pub fn checkpoint(args: CheckpointArgs) -> anyhow::Result<()> {
         );
         println!("manifest: {}", checkpoint.manifest_path().display());
         println!(
-            "fork: pvisor fork {} --checkpoint {} --workspace <DIR> -- <agent>",
+            "fork: pvisor fork {} --checkpoint {} [--workspace <PROJECT>] -- <agent>",
             record.stage_dir().display(),
             checkpoint.checkpoint_id
         );

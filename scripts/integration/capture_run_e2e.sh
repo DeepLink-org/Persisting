@@ -35,8 +35,9 @@ capture_resolve_binaries "${SKIP_BUILD:-0}"
 command -v python3 >/dev/null || die "need python3"
 [[ -f "$MOCK_API" && -f "$AGENT_PY" ]] || die "missing scripts"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/persisting-gateway-run-e2e.XXXXXX")"
-STORAGE="$WORKDIR/store"
-mkdir -p "$STORAGE"
+WORKSPACE="$WORKDIR/workspace"
+RUN_HOME="$WORKDIR/runs"
+mkdir -p "$WORKSPACE"
 
 MOCK_PORT="$(capture_pick_port)"
 PROXY_PORT="$(capture_pick_port)"
@@ -79,8 +80,8 @@ export CAPTURE_AGENT_TURNS="$TURNS"
 export CAPTURE_AGENT_MANIFEST="$MANIFEST"
 
 set +e
-RUN_OUT="$("$CLI" execute \
-  --workspace "$STORAGE" \
+RUN_OUT="$(PERSISTING_RUN_HOME="$RUN_HOME" "$CLI" execute \
+  --workspace "$WORKSPACE" \
   --agent "$AGENT_ID" \
   --overlaynet-listen "127.0.0.1:${PROXY_PORT}" \
   --gateway-mode capture \
@@ -88,7 +89,6 @@ RUN_OUT="$("$CLI" execute \
   --gateway-session-header x-persisting-session-id \
   --gateway-route "name=\"*\", upstream=\"http://127.0.0.1:${MOCK_PORT}/v1\"" \
   --chronicle-mode lance \
-  --chronicle-dir "$STORAGE" \
   -- python3 "$AGENT_PY" 2>&1)"
 RUN_CODE=$?
 set -e
@@ -97,7 +97,10 @@ echo "$RUN_OUT"
 echo "$RUN_OUT" | grep -q '\[capture-run-agent\] session=' || die "OPENAI_BASE_URL not injected"
 pass "persisting execute completed"
 
-ROOT_SESSION="$(capture_read_run_session "$STORAGE")"
+RUN_STORAGE="$(find "$RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | head -n 1)"
+[[ -n "$RUN_STORAGE" ]] || die "missing generated Run storage under $RUN_HOME"
+STORAGE="$RUN_STORAGE/chronicle"
+ROOT_SESSION="$(capture_read_run_session "$RUN_STORAGE")"
 [[ "$ROOT_SESSION" == run-* ]] || die "unexpected run_session: $ROOT_SESSION"
 echo "$RUN_OUT" | grep -q "session=${ROOT_SESSION}" || die "run session not in capture output"
 pass "run_session=$ROOT_SESSION"
@@ -187,7 +190,7 @@ PY
 pass "materialized markdown content matches agent manifest"
 
 section "gateway list shows session"
-LIST_OUT="$("$CLI" gateway list -o "$STORAGE" 2>&1)"
+LIST_OUT="$("$CLI" gateway list -o "$RUN_STORAGE" 2>&1)"
 SESSION_PREFIX="${ROOT_SESSION:0:24}"
 grep -q "$SESSION_PREFIX" <<<"$LIST_OUT" || { echo "$LIST_OUT"; die "gateway list missing run session"; }
 pass "gateway list contains run_session"

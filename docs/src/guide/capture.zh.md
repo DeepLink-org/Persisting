@@ -32,9 +32,10 @@ cd examples/pvisor/04-gateway-llm-control
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
+export PERSISTING_RUN_HOME=$HOME/.persisting/runs
 
 pvisor run \
-  --workspace ./store/run \
+  --workspace . \
   --agent deepseek \
   --gateway-mode capture \
   --gateway-route 'name="deepseek", upstream="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"' \
@@ -44,7 +45,8 @@ pvisor run \
 ```
 
 可以把 `claude` 换成 `codex` 或其他使用代理/base URL 的程序。pVisor 会启动进程内
-Gateway、注入子进程环境、等待子进程结束并关闭 Gateway。
+Gateway、注入子进程环境、等待子进程结束并关闭 Gateway。workspace 可以重复使用，
+每次执行都会在 `PERSISTING_RUN_HOME` 下写入独立的 `run-<uuid>` 目录。
 
 ### 存储模式
 
