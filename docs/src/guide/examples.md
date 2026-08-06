@@ -29,7 +29,7 @@ macFUSE on macOS or FUSE3 on Linux.
 |---|---|---|
 | [01-filesystem-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/01-filesystem-isolation) | Agent writes land in the upper while the lower remains unchanged | [pVisor CLI](../design/cli-pvisor.md) |
 | [02-changeset-management](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/02-changeset-management) | A changeset can be reviewed, applied, or dropped | [pVisor CLI](../design/cli-pvisor.md) |
-| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | Runnable CLI/TOML walkthrough for allowlist, deny, deny-all, CIDR/port/transport rules, bandwidth limits, and the cooperative boundary | [OverlayNet design](../design/overlaynet.md) |
+| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | Three direct commands verify allowlist, deny-all, and the direct-socket bypass boundary | [OverlayNet design](../design/overlaynet.md) |
 | [04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control) | Gateway routes and captures two OpenAI-compatible calls | [Capture guide](capture.md) |
 
 Here, lightweight isolation covers the transactional workspace and the data

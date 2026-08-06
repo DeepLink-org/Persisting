@@ -9,7 +9,7 @@
 |---|---|
 | [1.1 文件系统隔离](pvisor/01-filesystem-isolation/) | lower 值、upper 文件数、Bundle changes |
 | [1.2 changeset 管理](pvisor/02-changeset-management/) | review/apply/drop 文件数 |
-| [1.3 OverlayNet 网络策略](pvisor/03-network-isolation/) | allowlist/deny/deny-all、CIDR/端口/transport、叠加限速与边界强度 |
+| [1.3 pVisor 网络边界](pvisor/03-network-isolation/) | allowlist、deny-all，以及 direct socket 可绕过 cooperative proxy 的边界 |
 | [1.4 Gateway 捕获与管控 LLM](pvisor/04-gateway-llm-control/) | upstream POST、sink requests、AgenticMD blocks |
 
 ## 2. pChronicle 轨迹存储
