@@ -22,7 +22,7 @@ die() { capture_die "$@"; }
 pick_port() { capture_pick_port; }
 wait_http() { capture_wait_http "$@"; }
 
-capture_resolve_binaries "${SKIP_BUILD:-0}" 1
+capture_resolve_binaries "${SKIP_BUILD:-0}"
 command -v python3 >/dev/null || die "need python3"
 [[ -f "$MOCK_PY" && -f "$LOAD_PY" ]] || die "missing stress scripts"
 
@@ -59,7 +59,6 @@ EOF
 
 cleanup() {
   set +e
-  [[ -n "${STORAGE:-}" ]] && "$CLI" traj proxy stop -o "$STORAGE" >/dev/null 2>&1
   [[ -n "${MOCK_PID:-}" ]] && kill "$MOCK_PID" 2>/dev/null
   wait "${MOCK_PID:-}" 2>/dev/null || true
   kill "${SERVE_PID:-}" 2>/dev/null || true
@@ -76,11 +75,10 @@ MOCK_PID=$!
 sleep 0.2
 kill -0 "$MOCK_PID" || die "mock upstream failed"
 
-# Optional: `-f bin` is a legacy alias for `-f lance`.
-"$CLI" traj proxy -o "$STORAGE" -c "$CONFIG" -f lance >>"$SERVE_LOG" 2>&1 &
+"$CLI" gateway serve -o "$STORAGE" -c "$CONFIG" -f lance >>"$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 sleep 0.3
-kill -0 "$SERVE_PID" || { tail -20 "$SERVE_LOG"; die "traj proxy exited early"; }
+kill -0 "$SERVE_PID" || { tail -20 "$SERVE_LOG"; die "gateway serve exited early"; }
 wait_http "http://127.0.0.1:${ADMIN_PORT}/admin/status" || die "admin not ready"
 
 echo "==> load"

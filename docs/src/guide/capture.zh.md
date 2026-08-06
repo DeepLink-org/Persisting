@@ -118,7 +118,7 @@ store/
 | Agent 无法连接 Gateway | 使用 `pvisor run` 注入的子进程，或导出独立 proxy banner 中的变量 |
 | Codex 绕过代理 | 使用 banner 打印的 `-c openai_base_url=...` |
 | Lance 输出没有 Markdown | 启用 `--gateway-stream-markdown` 或执行 `history materialize` |
-| 采集事件失败 | 查看 `.capture/dead_letter.jsonl`，再使用 `traj replay-dead-letter` |
+| 采集事件失败 | 查看 `.capture/dead_letter.jsonl`，再使用 `history replay-dead-letter` |
 | pVisor 提示已有 owner | 停止 proxy、等待 live Run 结束，或更换 storage |
 
 独立 dlcapt 有自己的配置和存储模型；需要它时查看

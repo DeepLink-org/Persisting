@@ -1,4 +1,4 @@
-//! In-process capture proxy for one Attempt / `traj capture` (no forked daemon).
+//! In-process Gateway for one pVisor Attempt (no forked daemon).
 
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -48,9 +48,10 @@ impl InProcessCapture {
         if let Some(state) = CaptureDaemonState::read(&storage)? {
             if state.is_running() {
                 anyhow::bail!(
-                    "traj proxy already running (pid {}) for {}; \
-                     stop it first — in-process capture does not fork a daemon",
+                    "Gateway already running (pid {}) for {}; \
+                     stop it with `persisting gateway stop -o {}` first — in-process capture does not fork a daemon",
                     state.pid,
+                    storage.display(),
                     storage.display(),
                 );
             }

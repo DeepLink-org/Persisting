@@ -1,4 +1,4 @@
-//! Discover running `persisting traj proxy` processes.
+//! Discover running `persisting gateway serve` processes.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -57,30 +57,19 @@ pub(crate) fn discover_running_captures() -> Result<Vec<CaptureDaemonState>> {
     Ok(running)
 }
 
-/// Parse storage from `traj proxy -o <DIR> …` (foreground proxy).
-pub fn storage_from_proxy_cmdline(cmdline: &str) -> Option<PathBuf> {
+/// Parse storage from `persisting gateway serve -o <DIR> …`.
+pub fn storage_from_gateway_cmdline(cmdline: &str) -> Option<PathBuf> {
     let parts: Vec<&str> = cmdline.split_whitespace().collect();
-    let proxy_idx = parts.iter().position(|&t| t == "proxy")?;
-    // `traj proxy start` is the short-lived wrapper; the child is `traj proxy -o …`.
-    if parts.get(proxy_idx + 1).is_some_and(|&t| t == "start") {
-        return None;
-    }
-    let tail = &parts[proxy_idx + 1..];
+    let gateway_idx = parts
+        .windows(2)
+        .position(|pair| pair == ["gateway", "serve"])?;
+    let tail = &parts[gateway_idx + 2..];
     for (j, &next) in tail.iter().enumerate() {
         if matches!(next, "-o" | "--output-dir" | "--output_dir") {
             if let Some(&path) = tail.get(j + 1) {
                 return Some(PathBuf::from(path));
             }
         }
-    }
-    for &next in tail {
-        if next.starts_with('-') {
-            continue;
-        }
-        if next == "traj" || next == "trajectory" || next.ends_with("persisting") {
-            continue;
-        }
-        return Some(PathBuf::from(next));
     }
     None
 }
@@ -100,13 +89,10 @@ fn discover_storage_paths_from_processes() -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for line in text.lines() {
         let line = line.trim();
-        if !line.contains("persisting") || !line.contains("proxy") {
+        if !line.contains("persisting") || !line.contains("gateway serve") {
             continue;
         }
-        if line.contains("proxy start") {
-            continue;
-        }
-        if let Some(p) = storage_from_proxy_cmdline(line) {
+        if let Some(p) = storage_from_gateway_cmdline(line) {
             paths.push(p);
         }
     }
@@ -123,28 +109,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_proxy_storage_with_output_flag() {
-        let p = storage_from_proxy_cmdline(
-            "/usr/bin/persisting traj proxy -o ./trajectory-store -c /tmp/c.yaml -f md",
+    fn parse_gateway_storage_with_output_flag() {
+        let p = storage_from_gateway_cmdline(
+            "/usr/bin/persisting gateway serve -o ./trajectory-store -c /tmp/c.toml -f md",
         )
         .unwrap();
         assert_eq!(p, PathBuf::from("./trajectory-store"));
     }
 
     #[test]
-    fn parse_proxy_skips_start_wrapper() {
+    fn parse_gateway_ignores_start_wrapper() {
         assert!(
-            storage_from_proxy_cmdline("persisting traj proxy start -o ./store -c cfg.toml")
+            storage_from_gateway_cmdline("persisting gateway start -o ./store -c cfg.toml")
                 .is_none()
         );
     }
 
     #[test]
-    fn parse_proxy_storage_positional() {
-        let p = storage_from_proxy_cmdline(
-            "persisting trajectory proxy ./data/store --config cfg.yaml",
+    fn parse_gateway_requires_output_flag() {
+        assert!(storage_from_gateway_cmdline(
+            "persisting gateway serve ./data/store --config cfg.toml",
         )
-        .unwrap();
-        assert_eq!(p, PathBuf::from("./data/store"));
+        .is_none());
     }
 }

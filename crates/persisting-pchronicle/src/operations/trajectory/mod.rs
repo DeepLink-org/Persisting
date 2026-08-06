@@ -1137,7 +1137,7 @@ mod tests {
         assert!(std::path::Path::new(&resp.markdown_path).exists());
     }
 
-    /// End-to-end regression for `traj stats store/{agent}/` scan:
+    /// End-to-end regression for `history stats store/{agent}/` scan:
     /// list run buckets → expand lance partitions → stats each session_id.
     #[tokio::test]
     async fn stats_agent_scan_expands_lance_session_partitions() {

@@ -5,10 +5,10 @@
 | 脚本 | 说明 |
 |------|------|
 | [`traj_e2e.sh`](traj_e2e.sh) | **轨迹读写链路**：`history import/stats` → `eval judge/stats` |
-| [`capture_integration.sh`](capture_integration.sh) | `persisting traj`：proxy 守护进程、admin/list、mock 代理、`traj import` |
+| [`capture_integration.sh`](capture_integration.sh) | `gateway` 守护进程、admin/list、mock 代理、`history import` 与 `execute` |
 | [`capture_stress.sh`](capture_stress.sh) | 实时写入压测：并发请求、延迟分位、Lance 行数、append 失败日志 |
-| [`capture_run_e2e.sh`](capture_run_e2e.sh) | **`traj capture -f lance`**（或 `bin`）：mock LLM + 多轮 agent，Lance drain → materialize → lance replay |
-| [`capture_run_agent.py`](capture_run_agent.py) | 在 `traj capture` 子进程内调 `OPENAI_BASE_URL` |
+| [`capture_run_e2e.sh`](capture_run_e2e.sh) | **`persisting execute`**：mock LLM + 多轮 agent，Lance drain → materialize → replay |
+| [`capture_run_agent.py`](capture_run_agent.py) | 在 pVisor Run 内通过注入的 `OPENAI_BASE_URL` 调用 Gateway |
 | [`mock_llm_api_server.py`](mock_llm_api_server.py) | 可记录请求的 mock LLM API（上游） |
 
 **统一入口：**
@@ -42,7 +42,7 @@ just capture-all
 
 环境变量：`PERSISTING_CLI`、`SKIP_BUILD=1`、`PERSISTING_BUILD_PROFILE=release`。
 
-`capture_run_e2e.sh` 额外变量：`TURNS`、`DRAIN_SEC`、`CAPTURE_FORMAT`（`lance` 或 legacy 别名 `bin`）。
+`capture_run_e2e.sh` 额外变量：`TURNS`、`DRAIN_SEC`。
 
 压测：
 
@@ -53,9 +53,9 @@ REQUESTS=200 CONCURRENCY=20 MIN_SUCCESS_RATE=0.99 just capture-stress
 
 `capture_stress.sh` 额外变量：`DRAIN_SEC`、`MIN_ROW_RATIO`、`MAX_P99_MS`。
 
-**`traj capture` 全链路：**
+**`persisting execute` + Gateway capture 全链路：**
 
 ```bash
 just capture-run-e2e
-TURNS=5 CAPTURE_FORMAT=bin just capture-run-e2e
+TURNS=5 just capture-run-e2e
 ```

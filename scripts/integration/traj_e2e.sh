@@ -23,7 +23,7 @@ pass() { echo "  ok: $*"; }
 section() { echo ""; echo "==> $*"; }
 die() { capture_die "$@"; }
 
-capture_resolve_binaries "${SKIP_BUILD:-0}" 1
+capture_resolve_binaries "${SKIP_BUILD:-0}"
 
 [[ -f "$FIXTURE" ]] || die "missing fixture: $FIXTURE"
 

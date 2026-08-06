@@ -25,7 +25,7 @@ capture_read_run_session() {
   tr -d '[:space:]' <"$f"
 }
 
-# Sets CLI. The second argument is accepted temporarily for script compatibility.
+# Resolve the unified Persisting CLI, building it unless requested otherwise.
 capture_resolve_binaries() {
   local skip_build="${1:-0}"
   local profile="${PERSISTING_BUILD_PROFILE:-debug}"
@@ -56,7 +56,7 @@ capture_wait_http() {
   return 1
 }
 
-# Poll traj stats (Lance layer) until row_count >= expected or plateau.
+# Poll history stats (Lance layer) until row_count >= expected or plateau.
 capture_drain_event_rows() {
   local storage="$1" agent_id="$2" session_id="$3" expected="$4" drain_sec="$5"
   local stats_toml="$6"
@@ -64,7 +64,7 @@ capture_drain_event_rows() {
   local i max=$((drain_sec * 2))
 
   for ((i = 0; i < max; i++)); do
-    if "$CLI" traj stats "$storage" \
+    if "$CLI" history stats "$storage" \
       --agent-id "$agent_id" \
       --session-id "$session_id" \
       --storage-format lance >"$stats_toml" 2>/dev/null; then
