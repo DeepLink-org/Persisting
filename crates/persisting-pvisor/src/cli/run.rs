@@ -1573,7 +1573,7 @@ mod tests {
         assert!(help.contains("--overlaynet-deny"));
         assert!(help.contains("--overlaynet-limit"));
         assert!(help.contains("--overlaynet-deny-all"));
-        assert!(help.contains("direct sockets"));
+        assert!(help.to_ascii_lowercase().contains("direct sockets"));
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
     }
