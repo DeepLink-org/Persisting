@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use persisting_pchronicle::{
     ChronicleQueryEngine, ExternalTableFormat, ExternalTableSpec, RawEventLanceStore, StoryCoords,
     StorylineLanceStore,
@@ -23,13 +23,23 @@ pub enum QuerySource {
 }
 
 #[derive(Debug, Args)]
+#[command(
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true,
+    group(
+        ArgGroup::new("legacy_sql_input")
+            .required(true)
+            .multiple(false)
+            .args(["sql", "sql_file"])
+    )
+)]
 pub struct QueryArgs {
     /// Explicit query mode. Omit for compatibility with `query INPUT --sql ...`.
     #[command(subcommand)]
     pub command: Option<QueryCommand>,
 
     /// Legacy SQL input: Lance store path/S3 URI, or ATIF JSON/JSONL.
-    #[arg(value_name = "INPUT")]
+    #[arg(value_name = "INPUT", required = true)]
     pub input: Option<String>,
 
     /// Legacy SQL input representation.

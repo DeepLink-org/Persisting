@@ -3,6 +3,11 @@ set -euo pipefail
 
 export PATH="../../../target/release:$PATH"
 
+if ! command -v persisting >/dev/null 2>&1; then
+    cargo build --release -q --manifest-path ../../../Cargo.toml \
+        -p persisting-cli --bin persisting
+fi
+
 rm -rf .work
 mkdir .work
 

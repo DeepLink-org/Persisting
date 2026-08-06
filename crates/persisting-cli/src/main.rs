@@ -1825,6 +1825,27 @@ mod tests {
 
     #[tokio::test]
     async fn follow_waits_for_first_dataset_and_emits_jsonl() {
+        struct VisibleOutput {
+            bytes: Vec<u8>,
+            first_write: Option<tokio::sync::oneshot::Sender<()>>,
+        }
+
+        impl Write for VisibleOutput {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.bytes.extend_from_slice(buf);
+                if !buf.is_empty() {
+                    if let Some(first_write) = self.first_write.take() {
+                        let _ = first_write.send(());
+                    }
+                }
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let loc = TrajLocation::new(
             dir.path().to_string_lossy().into_owned(),
@@ -1834,8 +1855,12 @@ mod tests {
         );
         let follow_loc = loc.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (visible_tx, visible_rx) = tokio::sync::oneshot::channel::<()>();
         let follower = tokio::spawn(async move {
-            let mut output = Vec::new();
+            let mut output = VisibleOutput {
+                bytes: Vec::new(),
+                first_write: Some(visible_tx),
+            };
             follow_trajectory_jsonl(
                 &follow_loc,
                 0,
@@ -1849,7 +1874,7 @@ mod tests {
             )
             .await
             .unwrap();
-            output
+            output.bytes
         });
 
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1857,7 +1882,10 @@ mod tests {
             .append_event_batch(&[(loc, capture_record("note"))])
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(5), visible_rx)
+            .await
+            .expect("follow should observe the committed event")
+            .expect("follow output task should notify before exiting");
         shutdown_tx.send(()).unwrap();
         let output = tokio::time::timeout(Duration::from_secs(5), follower)
             .await
