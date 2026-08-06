@@ -2,9 +2,9 @@
 
 use crate::agent_abi::AgentAbiClient;
 use anyhow::{bail, Context};
-use persisting_proto::{
+use persisting_pvisor::{
     AgentCheckpointQuiesced, AgentDirective, AgentEffectBegin, AgentEffectComplete,
-    AgentEffectOutcome, AgentHeartbeat, AgentLifecycleState, AgentProcessRegistration,
+    AgentEffectOutcome, AgentLifecycleState, AgentProcessRegistration,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -21,7 +21,6 @@ struct BridgeState {
     directive_seq: u64,
     quiesced_checkpoint_id: Option<String>,
     quiesce_deadline_unix_ms: Option<u64>,
-    last_effect_seq: Option<u64>,
     open_effects: BTreeSet<String>,
     warnings: Vec<String>,
 }
@@ -36,7 +35,6 @@ impl BridgeState {
             directive_seq,
             quiesced_checkpoint_id: None,
             quiesce_deadline_unix_ms: None,
-            last_effect_seq: None,
             open_effects: BTreeSet::new(),
             warnings: Vec::new(),
         }
@@ -136,22 +134,20 @@ impl PilotRuntimeBridge {
         if state.open_effects.contains(&effect_id) {
             bail!("effect {effect_id} is already open");
         }
-        let accepted = lock(&self.inner.client).begin_effect(AgentEffectBegin {
+        let sequence = lock(&self.inner.client).begin_effect(AgentEffectBegin {
             effect_id: effect_id.clone(),
             kind: kind.into(),
             request_digest: request_digest.into(),
             idempotency_key,
         })?;
-        state.last_effect_seq = Some(accepted.sequence);
         state.open_effects.insert(effect_id);
-        Ok(accepted.sequence)
+        Ok(sequence)
     }
 
     pub fn complete_effect(
         &self,
         effect_id: &str,
         outcome: AgentEffectOutcome,
-        response_ref: Option<String>,
     ) -> anyhow::Result<()> {
         let mut state = lock(&self.inner.state);
         if !state.open_effects.contains(effect_id) {
@@ -160,7 +156,6 @@ impl PilotRuntimeBridge {
         lock(&self.inner.client).complete_effect(AgentEffectComplete {
             effect_id: effect_id.to_owned(),
             outcome,
-            response_ref,
         })?;
         state.open_effects.remove(effect_id);
         self.inner.changed.notify_waiters();
@@ -246,10 +241,7 @@ impl Drop for PilotRuntimeBridge {
 
 fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
     let lifecycle = lock(&inner.state).lifecycle;
-    let ack = lock(&inner.client).heartbeat(AgentHeartbeat {
-        state: lifecycle,
-        message: None,
-    })?;
+    let ack = lock(&inner.client).heartbeat(lifecycle)?;
 
     let checkpoint = {
         let mut state = lock(&inner.state);
@@ -285,8 +277,6 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
                     Some(AgentCheckpointQuiesced {
                         checkpoint_id,
                         directive_seq: ack.directive_seq,
-                        last_effect_seq: state.last_effect_seq,
-                        open_effect_ids: Vec::new(),
                     })
                 } else {
                     None
@@ -319,8 +309,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::agent_abi::AgentAbiClientConfig;
-    use persisting_proto::{AgentCapability, AgentClientRole, AttemptId, RunId};
-    use persisting_pvisor::AgentAbiServer;
+    use persisting_control::{AttemptId, RunId};
+    use persisting_pvisor::{AgentAbiServer, AgentClientRole};
 
     #[tokio::test]
     async fn quiesce_waits_for_open_effect_then_acknowledges_safe_point() {
@@ -331,12 +321,6 @@ mod tests {
             "pilot-1",
             AgentClientRole::Pilot,
             "ppilot",
-            vec![
-                AgentCapability::Heartbeat,
-                AgentCapability::ProcessRegistry,
-                AgentCapability::CheckpointQuiesce,
-                AgentCapability::EffectJournal,
-            ],
         )
         .unwrap()
         .unwrap();
@@ -344,7 +328,6 @@ mod tests {
             AgentAbiClient::new(config),
             AgentProcessRegistration {
                 pid: std::process::id(),
-                parent_pid: None,
                 role: "ppilot-worker".into(),
                 executable: None,
             },
@@ -369,7 +352,7 @@ mod tests {
             .is_none());
 
         bridge
-            .complete_effect("task-1", AgentEffectOutcome::Committed, None)
+            .complete_effect("task-1", AgentEffectOutcome::Committed)
             .unwrap();
         bridge.set_lifecycle(AgentLifecycleState::Idle);
         heartbeat_once(&bridge.inner).unwrap();
@@ -393,7 +376,6 @@ mod tests {
             "pilot-2",
             AgentClientRole::Pilot,
             "ppilot",
-            vec![AgentCapability::Heartbeat, AgentCapability::ProcessRegistry],
         )
         .unwrap()
         .unwrap();
@@ -402,7 +384,6 @@ mod tests {
             AgentAbiClient::new(config),
             AgentProcessRegistration {
                 pid: std::process::id(),
-                parent_pid: None,
                 role: "ppilot-worker".into(),
                 executable: None,
             },

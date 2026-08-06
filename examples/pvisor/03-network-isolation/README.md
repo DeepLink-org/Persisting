@@ -1,13 +1,47 @@
-# 1.3 pVisor 的网络系统隔离
+# 1.3 pVisor 网络边界
 
-问题：pVisor 的 OverlayNet policy 是否会控制它截获到的 HTTP 请求？
-
-脚本启动一个本地 HTTP server。一个 Run 显式 allow 该地址，另一个 Run 显式 deny；
-两个客户端都强制经过注入的 HTTP proxy。最后读取两个 Run Bundle 的 policy counters。
+这个例子只回答一个问题：pVisor 当前控制的是哪些网络流量？
 
 ```bash
 ./run.sh
 ```
 
-预期：`policy_allowed=1`、`policy_denied=1`。Bundle 同时报告
-`network_non_bypassable=false`，因为直接 socket 不在这个 cooperative proxy 实验内。
+脚本启动一个本地 HTTP server，然后平铺执行三个场景：
+
+1. `--overlaynet-allow` 允许经过代理访问声明的目标；
+2. `--overlaynet-deny-all` 拒绝经过代理的请求；
+3. `curl --noproxy "*"` 直接连接同一目标，证明 direct socket 可以绕过代理。
+
+核心命令就是普通的 pVisor CLI：
+
+```bash
+pvisor run --workspace .work/allow \
+  --overlaynet-allow 127.0.0.1:19111 -- \
+  agent-command
+
+pvisor run --workspace .work/deny \
+  --overlaynet-deny-all -- \
+  agent-command
+```
+
+`run.sh` 中的短 `bash -c` 只用于让 curl 显式读取 pVisor 注入的 `$HTTP_PROXY`，没有额外
+测试框架或隐藏的辅助脚本。每条命令后紧跟对应断言，失败会立即以非零状态退出。
+
+预期结论：
+
+```text
+Conclusion: OverlayNet controls cooperative proxy traffic; it is not a network sandbox.
+RESULT example=network-isolation allowed=true denied=true direct_bypass=true
+```
+
+## 安全边界
+
+当前 OverlayNet 是显式 HTTP/HTTPS proxy，不是透明 network namespace：
+
+- 遵守 `HTTP_PROXY` / `HTTPS_PROXY` 的客户端会经过策略；
+- 删除代理设置、配置 `NO_PROXY` 或直接创建 socket 可以绕过；
+- DNS/UDP 不在当前驱动覆盖范围内；
+- Run Bundle 的 `network_non_bypassable` 因此为 `false`。
+
+需要不可绕过的网络隔离时，应使用 container/KVM 网络边界，而不是把 cooperative proxy
+的 allowlist 或 deny-all 当作安全沙箱。

@@ -1,7 +1,8 @@
 //! ATIF (Agent Trajectory Interchange Format) document types.
 //!
 //! Compatible with Harbor RFC 0001 (ATIF-v1.x). This is the **interchange**
-//! document shape. Canonical storage uses the normalized tables in [`crate::schema`].
+//! document shape. Query storage converts it through Storyline into the shared
+//! `runs` / `steps` / `tool_calls` schema.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

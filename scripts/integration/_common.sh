@@ -10,14 +10,6 @@ capture_cargo_target_dir() {
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 }
 
-capture_engine_lib_name() {
-  case "$(uname -s)" in
-    Darwin) echo "libpersisting_engine.dylib" ;;
-    MINGW*|MSYS*|CYGWIN*) echo "persisting_engine.dll" ;;
-    *) echo "libpersisting_engine.so" ;;
-  esac
-}
-
 capture_pick_port() {
   python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
 }
@@ -33,23 +25,16 @@ capture_read_run_session() {
   tr -d '[:space:]' <"$f"
 }
 
-# Sets CLI and optionally PERSISTING_ENGINE_LIB. Args: skip_build need_engine
+# Sets CLI. The second argument is accepted temporarily for script compatibility.
 capture_resolve_binaries() {
   local skip_build="${1:-0}"
-  local need_engine="${2:-0}"
   local profile="${PERSISTING_BUILD_PROFILE:-debug}"
 
   TARGET_DIR="${CARGO_TARGET_DIR:-$(capture_cargo_target_dir)}"
-  ENGINE_NAME="$(capture_engine_lib_name)"
 
   if [[ "$skip_build" != "1" ]]; then
-    if [[ "$need_engine" == "1" ]]; then
-      echo "==> cargo build -p persisting-cli -p persisting-engine"
-      (cd "$REPO_ROOT" && cargo build -p persisting-cli -p persisting-engine)
-    else
-      echo "==> cargo build -p persisting-cli"
-      (cd "$REPO_ROOT" && cargo build -p persisting-cli)
-    fi
+    echo "==> cargo build -p persisting-cli"
+    (cd "$REPO_ROOT" && cargo build -p persisting-cli)
   fi
 
   if [[ -n "${PERSISTING_CLI:-}" ]]; then
@@ -58,14 +43,6 @@ capture_resolve_binaries() {
     CLI="$TARGET_DIR/$profile/persisting"
   fi
   [[ -x "$CLI" ]] || capture_die "not executable: $CLI"
-
-  if [[ -n "${PERSISTING_ENGINE_LIB:-}" ]]; then
-    export PERSISTING_ENGINE_LIB
-  elif [[ "$need_engine" == "1" ]]; then
-    local lib="$TARGET_DIR/$profile/$ENGINE_NAME"
-    [[ -f "$lib" ]] || capture_die "missing $lib (build persisting-engine or set PERSISTING_ENGINE_LIB)"
-    export PERSISTING_ENGINE_LIB="$lib"
-  fi
 }
 
 capture_wait_http() {

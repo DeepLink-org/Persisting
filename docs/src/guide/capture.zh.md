@@ -9,9 +9,8 @@ Gateway 时，才使用 `persisting gateway serve`。
 ## 构建
 
 ```bash
-cargo build --release -p persisting-pvisor -p persisting-cli -p persisting-engine
+cargo build --release -p persisting-pvisor -p persisting-cli
 export PATH="$(pwd)/target/release:$PATH"
-export PERSISTING_ENGINE_LIB="$(pwd)/target/release/libpersisting_engine.dylib" # Linux 使用 .so
 ```
 
 ## 本地示例
@@ -86,7 +85,6 @@ persisting history stats ./store/<agent-id> --detail
 
 # 回放一个 Run 目录。
 persisting history replay ./store/<agent-id>/<run-id>
-persisting history replay ./store/<agent-id>/<run-id> --storage-format markdown
 
 # 从 canonical Lance events 生成可读视图。
 persisting history materialize ./store \
@@ -110,7 +108,8 @@ store/
         └── agent-<id>.md     # 可选 subagent Story
 ```
 
-AgenticMD 只接受按 session 命名且使用 canonical 块头的 Markdown 文件。
+系统生成的 AgenticMD 使用按 session 命名的文件和接近 Storyline 的块字段。读取器也兼容
+旧块头及普通 Markdown，因为它是调试视图而不是存储协议。
 
 ## 常见问题
 

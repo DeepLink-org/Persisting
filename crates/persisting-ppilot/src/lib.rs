@@ -20,6 +20,8 @@ pub mod batch;
 pub mod blocks;
 pub(crate) mod check;
 pub(crate) mod checkpoint;
+#[cfg(feature = "query")]
+pub mod chronicle_cli;
 pub mod cli;
 pub mod coordination;
 pub mod dist;
@@ -62,10 +64,14 @@ pub use batch::{
 };
 pub use check::{run_check, run_self_test, CheckOptions, CheckReport};
 pub use checkpoint::CheckpointLedger;
+#[cfg(feature = "query")]
+pub use chronicle_cli::{
+    run_chronicle, ChronicleArgs, ChronicleCommand, ChronicleImportArgs, ChronicleMaintainArgs,
+};
 pub use cli::{init_tracing, init_tracing_with_verbose, run_ppilot, PPilotArgs, ResultsFormat};
 pub use coordination::{
-    AttemptObservation, AttemptObserver, ProcessLocalAttemptObserver, ReconcileReport,
-    RunCoordinator,
+    AttemptObservation, AttemptObserver, DurableAttemptObserver, ProcessLocalAttemptObserver,
+    ReconcileReport, RunCoordinator,
 };
 pub use dist::DistEnv;
 pub use driver::{Driver, RunOptions};

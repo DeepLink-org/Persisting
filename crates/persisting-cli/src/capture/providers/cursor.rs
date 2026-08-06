@@ -171,6 +171,7 @@ fn parse_file(path: &Path, file_order: u64, out: &mut Vec<PendingRecord>) -> Res
             agent_id,
             parent_uuid: None,
             trace_id: None,
+            call_id: None,
             payload: v,
         });
     }

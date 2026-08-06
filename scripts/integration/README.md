@@ -4,8 +4,7 @@
 
 | 脚本 | 说明 |
 |------|------|
-| [`search_traj_e2e.sh`](search_traj_e2e.sh) | **search + traj CLI 全链路**：generate → search → trajectory（`QUICK=1` 冒烟） |
-| [`traj_e2e.sh`](traj_e2e.sh) | **`traj` 读写链路**：gateway `import` → `stats` → `judge --score` → `stats` / `judge-stats` |
+| [`traj_e2e.sh`](traj_e2e.sh) | **轨迹读写链路**：`history import/stats` → `eval judge/stats` |
 | [`capture_integration.sh`](capture_integration.sh) | `persisting traj`：proxy 守护进程、admin/list、mock 代理、`traj import` |
 | [`capture_stress.sh`](capture_stress.sh) | 实时写入压测：并发请求、延迟分位、Lance 行数、append 失败日志 |
 | [`capture_run_e2e.sh`](capture_run_e2e.sh) | **`traj capture -f lance`**（或 `bin`）：mock LLM + 多轮 agent，Lance drain → materialize → lance replay |
@@ -38,10 +37,10 @@ just capture-all
 
 ```bash
 ./scripts/integration/capture_integration.sh
-QUICK=1 ./scripts/integration/search_traj_e2e.sh
+./scripts/integration/traj_e2e.sh
 ```
 
-环境变量：`PERSISTING_CLI`、`PERSISTING_ENGINE_LIB`、`SKIP_BUILD=1`、`PERSISTING_BUILD_PROFILE=release`。
+环境变量：`PERSISTING_CLI`、`SKIP_BUILD=1`、`PERSISTING_BUILD_PROFILE=release`。
 
 `capture_run_e2e.sh` 额外变量：`TURNS`、`DRAIN_SEC`、`CAPTURE_FORMAT`（`lance` 或 legacy 别名 `bin`）。
 

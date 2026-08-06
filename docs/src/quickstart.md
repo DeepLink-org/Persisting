@@ -81,7 +81,7 @@ From a Persisting source checkout, query the bundled ATIF trajectory fixtures
 directly:
 
 ```bash
-ppilot query crates/persisting-pchronicle/tests/fixtures/atif --source atif \
+ppilot query crates/persisting-pchronicle/tests/fixtures/atif \
   --sql 'SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
 ```
 

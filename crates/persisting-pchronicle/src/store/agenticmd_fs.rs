@@ -1,4 +1,4 @@
-//! Filesystem store for agenticmd session markdown (append + call_id upsert).
+//! Filesystem helpers for the non-authoritative AgenticMD debug view.
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
@@ -18,7 +18,7 @@ use crate::formats::agenticmd_validate::{
 };
 use crate::mapping::agenticmd_block_to_replay_json;
 
-/// Storage-level index of one AgenticMD document.
+/// Diagnostic index of one AgenticMD document.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgenticmdFileIndex {
     pub block_count: usize,
@@ -40,7 +40,7 @@ fn default_document_preamble() -> Result<String> {
     .map_err(|e| anyhow::anyhow!("agenticmd preamble: {e}"))
 }
 
-/// Encode one block after speaker/type validation (sets `header.length`).
+/// Encode one generated block after minimal comment-safety validation.
 pub fn encode_agenticmd_block_validated(block: &AgenticmdBlock) -> Result<String> {
     validate_type_name(&block.header.type_name)?;
     validate_speaker(block_speaker(&block.header))?;
@@ -49,7 +49,7 @@ pub fn encode_agenticmd_block_validated(block: &AgenticmdBlock) -> Result<String
     encode_agenticmd_block(&block).map_err(|e| anyhow::anyhow!("agenticmd encode: {e}"))
 }
 
-/// Strict parse with speaker/type checks.
+/// Tolerant parse plus minimal safety checks for fields used in generated comments.
 pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<AgenticmdBlock>> {
     parse_agenticmd_document(input)
         .map_err(|e| anyhow::anyhow!("agenticmd parse: {e}"))?
@@ -63,7 +63,7 @@ pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<AgenticmdBl
         .collect()
 }
 
-/// Strict parse with absolute byte spans (upsert rewrite ranges).
+/// Tolerant parse with absolute byte spans for live-view upsert ranges.
 pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(AgenticmdBlock, usize, usize)>> {
     let spans = parse_agenticmd_blocks_with_spans(input)
         .map_err(|e| anyhow::anyhow!("agenticmd span parse: {e}"))?;
@@ -220,7 +220,7 @@ pub fn count_agenticmd_role(path: &Path, role: &str) -> Result<u64> {
         .count() as u64)
 }
 
-/// Replace the block whose header `call_id` and `role` match, or append when missing.
+/// Replace the block whose header `call_id` and presentation role match, or append when missing.
 ///
 /// Returns `true` when an existing block was rewritten.
 pub fn upsert_block_by_call_id(path: &Path, call_id: &str, block: AgenticmdBlock) -> Result<bool> {
@@ -262,7 +262,18 @@ pub fn find_block_by_call_id_and_role(
 
 fn block_matches_upsert_key(header: &AgenticmdHeader, call_id: &str, role: &str) -> bool {
     header.fields.get("call_id").and_then(|v| v.as_str()) == Some(call_id)
-        && header.fields.get("role").and_then(|v| v.as_str()) == Some(role)
+        && header_role(header) == role
+}
+
+fn header_role(header: &AgenticmdHeader) -> &str {
+    if let Some(role) = header.fields.get("role").and_then(|v| v.as_str()) {
+        return role;
+    }
+    match header.fields.get("source").and_then(|v| v.as_str()) {
+        Some("agent") => "assistant",
+        Some("user") => "user",
+        _ => "note",
+    }
 }
 
 pub fn rewrite_block_range(path: &Path, start: usize, end: usize, new_block: &[u8]) -> Result<()> {
@@ -530,9 +541,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_noncanonical_block_marker_and_hash_preamble() {
+    fn accepts_marker_without_speaker_but_rejects_unframed_prefix() {
         let marker_without_speaker = "<!-- persisting:block {\"type\":\"markdown\",\"length\":2,\"role\":\"assistant\"} -->\nok\n";
-        assert!(parse_agenticmd_document_validated(marker_without_speaker).is_err());
+        let parsed = parse_agenticmd_document_validated(marker_without_speaker).unwrap();
+        assert_eq!(parsed[0].body, "ok");
+        assert_eq!(parsed[0].source(), Some("agent"));
 
         let hash_preamble = format!(
             "# old preamble\n{}",
@@ -634,13 +647,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_block_marker_after_frontmatter_returns_error() {
+    fn plain_markdown_after_frontmatter_becomes_debug_block() {
         let doc = format!("{}not a block\n", baseline_preamble());
-        let err = parse_agenticmd_document_validated(&doc).unwrap_err();
-        assert!(
-            err.to_string().contains("expected `<!-- persisting:block"),
-            "{err:#}"
-        );
+        let parsed = parse_agenticmd_document_validated(&doc).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].body, "not a block");
+        assert_eq!(parsed[0].source(), Some("system"));
     }
 
     #[test]

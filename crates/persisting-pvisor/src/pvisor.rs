@@ -3,7 +3,7 @@
 //! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. There is no
 //! separate control plane: CLI / pPilot talk to this API directly.
 
-use crate::agent_abi::AgentAbiServer;
+use crate::agent_abi::{AgentAbiServer, AGENT_ABI_VERSION};
 use crate::config::{GatewayDriverConfig, PVisorConfig};
 use crate::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::executor::{AttemptContext, RunExecutor};
@@ -15,11 +15,11 @@ use crate::runtime::{
 use crate::util::unix_now_ms;
 use crate::TrajectoryEventSink;
 use persisting_control::ControlController;
-use persisting_proto::{
-    AgentCapability, AttemptId, AttemptInfo, EventEnvelope, PolicyMode, RunFailure, RunFailureKind,
-    RunInvocation, RunResult, RunSpec, RunState, RunStatus, AGENT_ABI_VERSION,
-    RUNTIME_SCHEMA_VERSION,
+use persisting_control::{
+    AttemptId, AttemptInfo, PolicyMode, RunFailure, RunFailureKind, RunInvocation, RunResult,
+    RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
 };
+use persisting_pchronicle::{AttemptRegistry, EventRecord};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
@@ -40,11 +40,13 @@ pub enum PVisorError {
     UnsupportedPolicy(String),
     #[error("event sink rejected run creation: {0}")]
     EventSink(#[source] anyhow::Error),
+    #[error("durable Attempt registration failed: {0}")]
+    AttemptRegistry(#[source] anyhow::Error),
     #[error("run task failed to join: {0}")]
     Join(#[from] tokio::task::JoinError),
 }
 
-pub type RunEventStream = broadcast::Receiver<EventEnvelope>;
+pub type RunEventStream = broadcast::Receiver<EventRecord>;
 
 /// Cloneable, provider-independent cancellation capability for an in-flight Run.
 #[derive(Clone)]
@@ -64,7 +66,7 @@ impl RunCancellation {
 
 /// Handle for one in-flight Run: status, cancel, wait, event subscribe.
 pub struct RunHandle {
-    run_id: persisting_proto::RunId,
+    run_id: persisting_control::RunId,
     attempt_id: AttemptId,
     status: watch::Receiver<RunStatus>,
     cancellation: CancellationToken,
@@ -75,7 +77,7 @@ pub struct RunHandle {
 }
 
 impl RunHandle {
-    pub fn run_id(&self) -> &persisting_proto::RunId {
+    pub fn run_id(&self) -> &persisting_control::RunId {
         &self.run_id
     }
 
@@ -163,12 +165,10 @@ impl RunHandle {
 
 fn checkpoint_barrier_satisfied(snapshot: &crate::AgentAbiSnapshot, checkpoint_id: &str) -> bool {
     !snapshot.clients.is_empty()
-        && snapshot.clients.iter().all(|client| {
-            client
-                .capabilities
-                .contains(&AgentCapability::CheckpointQuiesce)
-                && client.quiesced_checkpoint_id.as_deref() == Some(checkpoint_id)
-        })
+        && snapshot
+            .clients
+            .iter()
+            .all(|client| client.quiesced_checkpoint_id.as_deref() == Some(checkpoint_id))
         && snapshot
             .effects
             .iter()
@@ -406,6 +406,98 @@ impl PVisor {
             .await
             .map_err(PVisorError::EventSink)?;
 
+        let attempt_ttl_ms = spec
+            .supervisor
+            .as_ref()
+            .map(|bootstrap| bootstrap.attempt_ttl_ms.max(1_000))
+            .unwrap_or(15_000);
+        let attempt_registry = match spec
+            .supervisor
+            .as_ref()
+            .and_then(|bootstrap| bootstrap.attempt_registry_uri.as_deref())
+        {
+            Some(root) => {
+                let registry = Arc::new(
+                    AttemptRegistry::open(root)
+                        .await
+                        .map_err(PVisorError::AttemptRegistry)?,
+                );
+                let registered = registry
+                    .publish_active(
+                        run_id.as_str(),
+                        attempt_id.as_str(),
+                        spec.lease_epoch,
+                        attempt_ttl_ms,
+                    )
+                    .await
+                    .map_err(PVisorError::AttemptRegistry)?;
+                if !registered {
+                    return Err(PVisorError::AttemptRegistry(anyhow::anyhow!(
+                        "Run {} lease epoch {} was fenced before execution",
+                        run_id,
+                        spec.lease_epoch
+                    )));
+                }
+                Some(registry)
+            }
+            None => None,
+        };
+        let attempt_heartbeat_stop = CancellationToken::new();
+        if let Some(registry) = attempt_registry.as_ref().map(Arc::clone) {
+            let heartbeat_run_id = run_id.to_string();
+            let heartbeat_attempt_id = attempt_id.to_string();
+            let heartbeat_epoch = spec.lease_epoch;
+            let heartbeat_stop = attempt_heartbeat_stop.clone();
+            let heartbeat_cancel = cancellation.clone();
+            tokio::spawn(async move {
+                let period_ms = (attempt_ttl_ms / 3).max(250);
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_millis(period_ms));
+                let mut last_success = tokio::time::Instant::now();
+                loop {
+                    tokio::select! {
+                        _ = heartbeat_stop.cancelled() => break,
+                        _ = interval.tick() => {
+                            match registry
+                                .heartbeat(
+                                    &heartbeat_run_id,
+                                    &heartbeat_attempt_id,
+                                    heartbeat_epoch,
+                                    attempt_ttl_ms,
+                                )
+                                .await
+                            {
+                                Ok(true) => last_success = tokio::time::Instant::now(),
+                                Ok(false) => {
+                                    tracing::warn!(
+                                        run_id = %heartbeat_run_id,
+                                        attempt_id = %heartbeat_attempt_id,
+                                        "durable Attempt was fenced; cancelling workload"
+                                    );
+                                    heartbeat_cancel.cancel();
+                                    break;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        run_id = %heartbeat_run_id,
+                                        attempt_id = %heartbeat_attempt_id,
+                                        %error,
+                                        "durable Attempt heartbeat failed"
+                                    );
+                                    if last_success.elapsed()
+                                        >= std::time::Duration::from_millis(attempt_ttl_ms)
+                                    {
+                                        heartbeat_cancel.cancel();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         let context = AttemptContext::new(
             Arc::new(spec),
             attempt_id.clone(),
@@ -530,6 +622,31 @@ impl PVisor {
                 result.state,
                 result.failure.as_ref().map(|f| f.message.clone()),
             );
+            if let Some(registry) = attempt_registry {
+                match serde_json::to_value(&result) {
+                    Ok(value) => match registry
+                        .publish_terminal(
+                            result.run_id.as_str(),
+                            result.attempt_id.as_str(),
+                            result.lease_epoch,
+                            value,
+                        )
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => result
+                            .warnings
+                            .push("durable Attempt terminal result was fenced".into()),
+                        Err(error) => result.warnings.push(format!(
+                            "publish durable Attempt terminal result failed: {error:#}"
+                        )),
+                    },
+                    Err(error) => result.warnings.push(format!(
+                        "encode durable Attempt terminal result failed: {error}"
+                    )),
+                }
+            }
+            attempt_heartbeat_stop.cancel();
             result
         });
 
@@ -622,13 +739,13 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
             "agent.name must not be empty".into(),
         ));
     }
-    let persisting_proto::RunInvocation::Process(process) = &spec.invocation;
+    let persisting_control::RunInvocation::Process(process) = &spec.invocation;
     if process.program.trim().is_empty() {
         return Err(PVisorError::InvalidSpec(
             "process program must not be empty".into(),
         ));
     }
-    if process.stdin == persisting_proto::StdioMode::Capture {
+    if process.stdin == persisting_control::StdioMode::Capture {
         return Err(PVisorError::InvalidSpec(
             "captured stdin is not supported in pVisor v1".into(),
         ));
@@ -646,16 +763,18 @@ mod tests {
     use super::*;
     use crate::{EventSink, MemoryEventSink};
     use async_trait::async_trait;
-    use persisting_proto::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
+    use persisting_control::{
+        NetworkCapability, RunFailureKind, RunInvocation, StdioMode, SupervisorBootstrap,
+    };
     use std::sync::Mutex;
 
     #[test]
-    fn logical_checkpoint_barrier_requires_capable_quiesced_clients_and_closed_effects() {
+    fn logical_checkpoint_barrier_requires_quiesced_clients_and_closed_effects() {
         let mut snapshot = crate::AgentAbiSnapshot {
             run_id: "run".into(),
             attempt_id: "attempt".into(),
             directive_seq: 1,
-            directive: persisting_proto::AgentDirective::Quiesce {
+            directive: crate::AgentDirective::Quiesce {
                 checkpoint_id: "cp".into(),
                 deadline_unix_ms: None,
             },
@@ -667,9 +786,8 @@ mod tests {
         snapshot.clients.push(crate::AgentClientSnapshot {
             client_id: "agent".into(),
             agent_name: "agent".into(),
-            role: persisting_proto::AgentClientRole::Agent,
-            capabilities: vec![AgentCapability::CheckpointQuiesce],
-            lifecycle: persisting_proto::AgentLifecycleState::Quiesced,
+            role: crate::AgentClientRole::Agent,
+            lifecycle: crate::AgentLifecycleState::Quiesced,
             last_heartbeat_unix_ms: Some(1),
             quiesced_checkpoint_id: Some("cp".into()),
         });
@@ -677,7 +795,7 @@ mod tests {
         snapshot.effects.push(crate::AgentEffectSnapshot {
             session_id: "session".into(),
             sequence: 1,
-            begin: persisting_proto::AgentEffectBegin {
+            begin: crate::AgentEffectBegin {
                 effect_id: "effect".into(),
                 kind: "write".into(),
                 request_digest: "digest".into(),
@@ -695,7 +813,7 @@ mod tests {
 
     #[async_trait]
     impl EventSink for RejectCompletedSink {
-        async fn append(&self, event: &EventEnvelope) -> anyhow::Result<()> {
+        async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
             if event.kind == "run.completed" {
                 anyhow::bail!("simulated terminal commit failure");
             }
@@ -715,7 +833,7 @@ mod tests {
 
     #[async_trait]
     impl EventSink for CommitThenLoseAcknowledgementSink {
-        async fn append(&self, event: &EventEnvelope) -> anyhow::Result<()> {
+        async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
             self.kinds.lock().unwrap().push(event.kind.clone());
             if event.kind == "run.completed" {
                 anyhow::bail!("simulated acknowledgement loss after commit");
@@ -728,7 +846,7 @@ mod tests {
 
     #[async_trait]
     impl EventSink for RejectAllTerminalEventsSink {
-        async fn append(&self, event: &EventEnvelope) -> anyhow::Result<()> {
+        async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
             if matches!(
                 event.kind.as_str(),
                 "run.completed" | "run.cancelled" | "run.failed"
@@ -760,10 +878,52 @@ mod tests {
         assert_eq!(result.state, RunState::Completed);
         assert_eq!(result.output.stdout.as_deref(), Some("pvisor"));
 
-        let kinds: Vec<_> = sink.events().into_iter().map(|event| event.kind).collect();
+        let emitted = sink.events();
+        assert!(emitted.iter().all(|event| {
+            event.identity.schema_version == persisting_pchronicle::EVENT_SCHEMA_VERSION
+                && event.identity.event_id.is_some()
+                && event.identity.run_id.as_deref() == Some("run-success")
+                && event.identity.attempt_id.is_some()
+                && event.identity.producer.as_deref() == Some("persisting-pvisor")
+        }));
+        let kinds: Vec<_> = emitted.into_iter().map(|event| event.kind).collect();
         assert_eq!(kinds.first().map(String::as_str), Some("run.created"));
         assert_eq!(kinds.last().map(String::as_str), Some("run.completed"));
         assert!(kinds.iter().any(|kind| kind == "run.state_changed"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn durable_attempt_registry_receives_terminal_run_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = RunSpec::process("run-durable-registry", "test-agent", "/bin/sh");
+        spec.lease_epoch = 7;
+        spec.supervisor = Some(SupervisorBootstrap {
+            endpoint: "tcp://127.0.0.1:9".into(),
+            token: "unavailable".into(),
+            controller_epoch: 1,
+            connect_timeout_ms: 25,
+            attempt_registry_uri: Some(dir.path().display().to_string()),
+            attempt_ttl_ms: 1_000,
+        });
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "printf durable".into()];
+        process.stdout = StdioMode::Capture;
+
+        let result = PVisor::new().run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Completed);
+        let registry = AttemptRegistry::open(dir.path().display().to_string())
+            .await
+            .unwrap();
+        let record = registry.get("run-durable-registry").await.unwrap().unwrap();
+        assert_eq!(
+            record.state,
+            persisting_pchronicle::AttemptRecordState::Terminal
+        );
+        assert_eq!(record.lease_epoch, 7);
+        let recovered: RunResult = serde_json::from_value(record.terminal_result.unwrap()).unwrap();
+        assert_eq!(recovered.attempt_id, result.attempt_id);
+        assert_eq!(recovered.state, RunState::Completed);
     }
 
     #[cfg(unix)]
@@ -776,7 +936,7 @@ mod tests {
             "-c".into(),
             "test -S \"$PERSISTING_AGENT_ABI_ENDPOINT\" && \
              test -n \"$PERSISTING_AGENT_ABI_TOKEN\" && \
-             test \"$PERSISTING_AGENT_ABI_VERSION\" = 1 && \
+             test \"$PERSISTING_AGENT_ABI_VERSION\" = 2 && \
              test \"$PERSISTING_AGENT_ABI_TRANSPORT\" = unix"
                 .into(),
         ];

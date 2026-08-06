@@ -4,13 +4,13 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use clap::{Args, ValueEnum};
+use persisting_control::{PolicyMode, RunInvocation, RunSpec, RunState, StdioMode};
 use persisting_gateway::config::{
     CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, OverlayBackend, OverlayConfig,
     ProxyConfig,
 };
 use persisting_gateway::sink::SeqOnlySink;
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
-use persisting_proto::{PolicyMode, RunInvocation, RunSpec, RunState, StdioMode};
 use serde::Deserialize;
 
 use crate::config::{
@@ -244,19 +244,33 @@ impl FromStr for OverlayFsStage {
 struct OverlayNetOverrides {
     #[arg(long, value_enum, hide = true)]
     overlaynet_mode: Option<OverlayNetMode>,
+    /// Explicit proxy listen address; supplying it enables OverlayNet and requires --workspace.
     #[arg(long, value_name = "ADDR")]
     overlaynet_listen: Option<String>,
     #[arg(long, value_enum, hide = true)]
     overlaynet_policy: Option<OverlayNetPolicy>,
-    /// Allowed HOST[:PORT] or CIDR[:PORT]; repeat for multiple grants.
+    /// Allowed HOST[:PORT] or CIDR[:PORT]; enables the cooperative proxy and requires --workspace.
     #[arg(long, value_name = "TARGET")]
     overlaynet_allow: Vec<OverlayNetTargetArg>,
-    /// Denied HOST[:PORT] or CIDR[:PORT]; repeat for multiple deny rules.
+    /// Denied HOST[:PORT] or CIDR[:PORT]; enables the cooperative proxy and requires --workspace.
     #[arg(long, value_name = "TARGET")]
     overlaynet_deny: Vec<OverlayNetTargetArg>,
-    /// Aggregate bandwidth limit: RATE or TARGET=RATE; repeat for multiple limits.
+    /// Aggregate bandwidth limit; enables the cooperative proxy and requires --workspace.
     #[arg(long, value_name = "[TARGET=]RATE")]
     overlaynet_limit: Vec<OverlayNetLimitArg>,
+    /// Deny all forward-proxy egress and enable OverlayNet; requires --workspace.
+    /// Direct sockets and local Gateway routes remain outside this rule.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "overlaynet_allow",
+            "overlaynet_deny",
+            "overlaynet_limit",
+            "overlaynet_rule",
+            "overlaynet_policy"
+        ]
+    )]
+    overlaynet_deny_all: bool,
     /// TOML inline-table fields for one structured rule; repeat to replace configured rules.
     #[arg(long, value_name = "RULE", hide = true)]
     overlaynet_rule: Vec<OverlayNetRuleArg>,
@@ -634,6 +648,12 @@ async fn execute_config(
 ) -> anyhow::Result<i32> {
     validate(&config)?;
 
+    if config.overlaynet.mode == OverlayNetMode::Proxy {
+        eprintln!(
+            "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
+        );
+    }
+
     let workspace = config
         .run
         .workspace
@@ -664,15 +684,22 @@ async fn execute_config(
         .dir
         .clone()
         .or_else(|| workspace.as_ref().map(|path| path.join("chronicle")));
-    let (sink, writer): (Arc<dyn TrajectoryEventSink>, Option<ChronicleWriter>) =
-        match config.chronicle.mode {
-            ChronicleMode::Off => (Arc::new(SeqOnlySink::new()), None),
-            ChronicleMode::Lance => {
-                let dir = chronicle_dir.context("pChronicle requires a storage location")?;
-                let (sink, writer) = chronicle_sink(&dir, &config.run.agent);
-                (sink, Some(writer))
-            }
-        };
+    let (sink, event_sink, writer): (
+        Arc<dyn TrajectoryEventSink>,
+        Arc<dyn crate::EventSink>,
+        Option<ChronicleWriter>,
+    ) = match config.chronicle.mode {
+        ChronicleMode::Off => (
+            Arc::new(SeqOnlySink::new()),
+            Arc::new(crate::NoopEventSink),
+            None,
+        ),
+        ChronicleMode::Lance => {
+            let dir = chronicle_dir.context("pChronicle requires a storage location")?;
+            let (sink, event_sink, writer) = chronicle_sink(&dir, &config.run.agent, &run_id);
+            (sink, event_sink, Some(writer))
+        }
+    };
 
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         RunExecutorKind::Host => Arc::new(ProcessExecutor),
@@ -682,6 +709,7 @@ async fn execute_config(
     let mut builder = PVisor::builder()
         .storage(&storage)
         .trajectory_sink(sink)
+        .event_sink(event_sink)
         .executors(vec![executor]);
     if let Some(proxy) = proxy {
         builder = builder.gateway(
@@ -993,6 +1021,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
         || !args.overlaynet.overlaynet_deny.is_empty()
         || !args.overlaynet.overlaynet_limit.is_empty()
         || !args.overlaynet.overlaynet_rule.is_empty()
+        || args.overlaynet.overlaynet_deny_all
         || args.overlaynet.overlaynet_listen.is_some();
     if let Some(value) = args.overlaynet.overlaynet_mode {
         config.overlaynet.mode = value;
@@ -1002,6 +1031,13 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
     }
     if let Some(value) = args.overlaynet.overlaynet_policy {
         config.overlaynet.policy = value;
+    }
+    if args.overlaynet.overlaynet_deny_all {
+        config.overlaynet.policy = OverlayNetPolicy::Deny;
+        config.overlaynet.allow.clear();
+        config.overlaynet.rules.clear();
+        config.overlaynet.deny.clear();
+        config.overlaynet.limits.clear();
     }
     if !args.overlaynet.overlaynet_allow.is_empty() {
         config.overlaynet.policy = OverlayNetPolicy::Allowlist;
@@ -1536,8 +1572,43 @@ mod tests {
         assert!(help.contains("--overlaynet-allow"));
         assert!(help.contains("--overlaynet-deny"));
         assert!(help.contains("--overlaynet-limit"));
+        assert!(help.contains("--overlaynet-deny-all"));
+        assert!(help.to_ascii_lowercase().contains("direct sockets"));
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
+    }
+
+    #[test]
+    fn deny_all_is_discoverable_and_replaces_configured_policy_details() {
+        let crate::cli::Command::Run(args) =
+            Cli::try_parse_from(["pvisor", "run", "--overlaynet-deny-all", "--", "true"])
+                .unwrap()
+                .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        config.overlaynet.allow = vec!["old.example".into()];
+        config.overlaynet.deny = vec![NetworkAccessRule {
+            host: "blocked.example".into(),
+            ports: Vec::new(),
+            transports: Vec::new(),
+            allow_private_ips: false,
+        }];
+        config.overlaynet.limits = vec![NetworkBandwidthLimit {
+            host: None,
+            port: None,
+            bytes_per_second: 1_000,
+        }];
+
+        apply_cli(&mut config, *args);
+
+        assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
+        assert!(config.overlaynet.allow.is_empty());
+        assert!(config.overlaynet.rules.is_empty());
+        assert!(config.overlaynet.deny.is_empty());
+        assert!(config.overlaynet.limits.is_empty());
     }
 
     #[test]

@@ -73,12 +73,20 @@ pub fn story_tool_calls_arrow_schema() -> Arc<ArrowSchema> {
     ]))
 }
 
-fn req_utf8(values: Vec<String>) -> StringArray {
-    StringArray::from(values.iter().map(String::as_str).collect::<Vec<_>>())
+fn req_utf8<'a>(values: impl IntoIterator<Item = &'a str>) -> StringArray {
+    StringArray::from_iter_values(values)
 }
 
-fn opt_utf8(values: Vec<Option<String>>) -> StringArray {
-    StringArray::from(values.iter().map(Option::as_deref).collect::<Vec<_>>())
+fn opt_utf8<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> StringArray {
+    StringArray::from_iter(values)
+}
+
+fn req_utf8_owned(values: Vec<String>) -> StringArray {
+    req_utf8(values.iter().map(String::as_str))
+}
+
+fn opt_utf8_owned(values: Vec<Option<String>>) -> StringArray {
+    opt_utf8(values.iter().map(Option::as_deref))
 }
 
 fn json<T: Serialize>(value: &T) -> Result<String> {
@@ -93,58 +101,46 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         story_runs_arrow_schema(),
         vec![
-            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.clone()).collect())),
+            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.as_str()))),
             Arc::new(BooleanArray::from(
                 rows.iter().map(|r| r.run_id_explicit).collect::<Vec<_>>(),
             )),
-            Arc::new(req_utf8(
-                rows.iter().map(|r| r.session_id.clone()).collect(),
-            )),
-            Arc::new(req_utf8(
-                rows.iter().map(|r| r.schema_version.clone()).collect(),
-            )),
-            Arc::new(req_utf8(rows.iter().map(|r| r.agent_id.clone()).collect())),
-            Arc::new(opt_utf8(
-                rows.iter().map(|r| r.agent_name.clone()).collect(),
-            )),
-            Arc::new(opt_utf8(
-                rows.iter().map(|r| r.agent_version.clone()).collect(),
-            )),
-            Arc::new(opt_utf8(
-                rows.iter().map(|r| r.agent_model_name.clone()).collect(),
-            )),
-            Arc::new(opt_utf8(
+            Arc::new(req_utf8(rows.iter().map(|r| r.session_id.as_str()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.schema_version.as_str()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.agent_id.as_str()))),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.agent_name.as_deref()))),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.agent_version.as_deref()))),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.agent_model_name.as_deref()))),
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.agent_tool_definitions))
                     .collect::<Result<Vec<_>>>()?,
             )),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.agent_extra))
                     .collect::<Result<Vec<_>>>()?,
             )),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.parent))
                     .collect::<Result<Vec<_>>>()?,
             )),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.child_session_ids))
                     .collect::<Result<Vec<_>>>()?,
             )),
-            Arc::new(opt_utf8(rows.iter().map(|r| r.notes.clone()).collect())),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8(rows.iter().map(|r| r.notes.as_deref()))),
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.final_metrics))
                     .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(opt_utf8(
-                rows.iter()
-                    .map(|r| r.continued_trajectory_ref.clone())
-                    .collect(),
+                rows.iter().map(|r| r.continued_trajectory_ref.as_deref()),
             )),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.extra))
                     .collect::<Result<Vec<_>>>()?,
@@ -158,40 +154,34 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         story_steps_arrow_schema(),
         vec![
-            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.clone()).collect())),
-            Arc::new(req_utf8(
-                rows.iter().map(|r| r.session_id.clone()).collect(),
-            )),
+            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.as_str()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.session_id.as_str()))),
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.step_id).collect::<Vec<_>>(),
             )),
-            Arc::new(opt_utf8(rows.iter().map(|r| r.kind.clone()).collect())),
-            Arc::new(req_utf8(
-                rows.iter().map(|r| r.effective_kind.clone()).collect(),
-            )),
-            Arc::new(opt_utf8(rows.iter().map(|r| r.timestamp.clone()).collect())),
-            Arc::new(req_utf8(rows.iter().map(|r| r.source.clone()).collect())),
-            Arc::new(req_utf8(
+            Arc::new(opt_utf8(rows.iter().map(|r| r.kind.as_deref()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.effective_kind.as_str()))),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.timestamp.as_deref()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.source.as_str()))),
+            Arc::new(req_utf8_owned(
                 rows.iter()
                     .map(|r| json(&r.message))
                     .collect::<Result<_>>()?,
             )),
             Arc::new(opt_utf8(
-                rows.iter().map(|r| r.reasoning_content.clone()).collect(),
+                rows.iter().map(|r| r.reasoning_content.as_deref()),
             )),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.reasoning_effort))
                     .collect::<Result<_>>()?,
             )),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.metrics))
                     .collect::<Result<_>>()?,
             )),
-            Arc::new(opt_utf8(
-                rows.iter().map(|r| r.model_name.clone()).collect(),
-            )),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.model_name.as_deref()))),
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.llm_call_count).collect::<Vec<_>>(),
             )),
@@ -207,7 +197,7 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
             Arc::new(BooleanArray::from(
                 rows.iter().map(|r| r.had_observation).collect::<Vec<_>>(),
             )),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.extra))
                     .collect::<Result<_>>()?,
@@ -221,28 +211,22 @@ pub fn story_tool_calls_to_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatc
     RecordBatch::try_new(
         story_tool_calls_arrow_schema(),
         vec![
-            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.clone()).collect())),
-            Arc::new(req_utf8(
-                rows.iter().map(|r| r.session_id.clone()).collect(),
-            )),
+            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.as_str()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.session_id.as_str()))),
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.step_id).collect::<Vec<_>>(),
             )),
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.call_index).collect::<Vec<_>>(),
             )),
-            Arc::new(req_utf8(
-                rows.iter().map(|r| r.tool_call_id.clone()).collect(),
-            )),
-            Arc::new(req_utf8(
-                rows.iter().map(|r| r.function_name.clone()).collect(),
-            )),
-            Arc::new(req_utf8(
+            Arc::new(req_utf8(rows.iter().map(|r| r.tool_call_id.as_str()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.function_name.as_str()))),
+            Arc::new(req_utf8_owned(
                 rows.iter()
                     .map(|r| json(&r.arguments))
                     .collect::<Result<_>>()?,
             )),
-            Arc::new(req_utf8(
+            Arc::new(req_utf8_owned(
                 rows.iter()
                     .map(|r| json(&r.results))
                     .collect::<Result<_>>()?,
@@ -250,7 +234,7 @@ pub fn story_tool_calls_to_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatc
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.duration_ms).collect::<Vec<_>>(),
             )),
-            Arc::new(opt_utf8(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
                     .map(|r| opt_json(&r.extra))
                     .collect::<Result<_>>()?,

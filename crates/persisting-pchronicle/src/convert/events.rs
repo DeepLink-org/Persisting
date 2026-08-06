@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde_json::json;
 
 use crate::convert::message_text;
-use crate::formats::events::{EventRecord, EventsDocument};
+use crate::formats::events::{EventIdentity, EventRecord, EventsDocument};
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineTurn, STORYLINE_SCHEMA_VERSION,
 };
@@ -250,6 +250,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
         if turn.effective_kind() == "internal" {
             let seq = take_seq(turn.extra.as_ref(), &mut next_seq);
             events.push(EventRecord {
+                identity: EventIdentity::default(),
                 seq,
                 source: "pchronicle".into(),
                 kind: "note".into(),
@@ -309,6 +310,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                     .filter(|k| k.starts_with("llm.") || k.starts_with("http."))
                     .unwrap_or("llm.request");
                 events.push(EventRecord {
+                    identity: EventIdentity::default(),
                     seq,
                     source: "pchronicle".into(),
                     kind: req_kind.into(),
@@ -337,6 +339,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                         .filter(|k| k.starts_with("llm.") || k.starts_with("http."))
                         .unwrap_or("llm.response");
                     events.push(EventRecord {
+                        identity: EventIdentity::default(),
                         seq,
                         source: "pchronicle".into(),
                         kind: resp_kind.into(),
@@ -370,6 +373,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                 {
                     let seq = take_seq(None, &mut next_seq);
                     events.push(EventRecord {
+                        identity: EventIdentity::default(),
                         seq,
                         source: "pchronicle".into(),
                         kind: "llm.request".into(),
@@ -396,6 +400,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                     .filter(|k| k.starts_with("llm.") || k.starts_with("http."))
                     .unwrap_or("llm.response");
                 events.push(EventRecord {
+                    identity: EventIdentity::default(),
                     seq,
                     source: "pchronicle".into(),
                     kind: resp_kind.into(),

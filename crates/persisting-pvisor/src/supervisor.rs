@@ -1,10 +1,7 @@
 //! Optional pPilot Supervisor client. The Run data plane never depends on it.
 
-use persisting_proto::{
-    AttemptId, NetworkBandwidthLimit, RunId, SupervisorBootstrap, SupervisorClientMessage,
-    SupervisorDirective, SupervisorDirectiveAck, SupervisorDirectiveEnvelope, SupervisorHeartbeat,
-    SupervisorRegistration, SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
-};
+use persisting_control::{AttemptId, NetworkBandwidthLimit, RunId, SupervisorBootstrap};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -15,6 +12,79 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+
+pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 1;
+
+fn supervisor_protocol_version() -> u32 {
+    SUPERVISOR_PROTOCOL_VERSION
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorRegistration {
+    #[serde(default = "supervisor_protocol_version")]
+    pub protocol_version: u32,
+    pub token: String,
+    pub run_id: RunId,
+    pub attempt_id: AttemptId,
+    pub lease_epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorHeartbeat {
+    pub last_applied_directive_seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorDirectiveAck {
+    pub directive_seq: u64,
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SupervisorClientMessage {
+    Register(SupervisorRegistration),
+    Heartbeat(SupervisorHeartbeat),
+    Ack(SupervisorDirectiveAck),
+}
+
+/// A time-bounded rate grant. pVisor enforces it locally on intercepted proxy
+/// traffic, so consuming bytes never performs a synchronous control-plane RPC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorNetworkQuotaGrant {
+    pub grant_id: String,
+    pub quota_epoch: u64,
+    pub valid_until_unix_ms: u64,
+    pub limit: NetworkBandwidthLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SupervisorDirective {
+    GrantNetworkQuota(SupervisorNetworkQuotaGrant),
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorDirectiveEnvelope {
+    pub controller_epoch: u64,
+    pub lease_epoch: u64,
+    pub directive_seq: u64,
+    pub directive: SupervisorDirective,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SupervisorServerMessage {
+    Registered {
+        controller_epoch: u64,
+        directives: Vec<SupervisorDirectiveEnvelope>,
+    },
+    Directive(SupervisorDirectiveEnvelope),
+    Error {
+        message: String,
+    },
+}
 
 pub(crate) struct SupervisorConnectOutcome {
     pub(crate) connected: Option<bool>,
@@ -91,11 +161,6 @@ async fn connect(
         run_id: run_id.clone(),
         attempt_id: attempt_id.clone(),
         lease_epoch,
-        capabilities: vec![
-            "cancel-v1".into(),
-            "heartbeat-v1".into(),
-            "network-quota-v1".into(),
-        ],
     });
     write_client_message(&mut write, &registration).await?;
     let mut lines = BufReader::new(read).lines();
@@ -139,7 +204,6 @@ async fn connect(
                     &SupervisorClientMessage::Ack(SupervisorDirectiveAck {
                         directive_seq: directive.directive_seq,
                         applied: true,
-                        message: None,
                     }),
                 )
                 .await?;
@@ -149,8 +213,6 @@ async fn connect(
 
     let stop = CancellationToken::new();
     let task_stop = stop.clone();
-    let task_run_id = run_id.clone();
-    let task_attempt_id = attempt_id.clone();
     let last_applied = Arc::new(Mutex::new(last_applied));
     let task_last_applied = Arc::clone(&last_applied);
     let join = tokio::spawn(async move {
@@ -164,9 +226,6 @@ async fn connect(
                     write_client_message(
                         &mut write,
                         &SupervisorClientMessage::Heartbeat(SupervisorHeartbeat {
-                            run_id: task_run_id.clone(),
-                            attempt_id: task_attempt_id.clone(),
-                            lease_epoch,
                             last_applied_directive_seq: seq,
                         }),
                     ).await
@@ -192,7 +251,6 @@ async fn connect(
                                         &SupervisorClientMessage::Ack(SupervisorDirectiveAck {
                                             directive_seq: directive.directive_seq,
                                             applied: result.0,
-                                            message: result.1,
                                         }),
                                     ).await
                                 }
@@ -282,4 +340,31 @@ fn unix_now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u64::MAX as u128) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_messages_roundtrip_as_json() {
+        let message = SupervisorServerMessage::Directive(SupervisorDirectiveEnvelope {
+            controller_epoch: 4,
+            lease_epoch: 9,
+            directive_seq: 2,
+            directive: SupervisorDirective::GrantNetworkQuota(SupervisorNetworkQuotaGrant {
+                grant_id: "grant-1".into(),
+                quota_epoch: 3,
+                valid_until_unix_ms: 100,
+                limit: NetworkBandwidthLimit {
+                    host: None,
+                    port: None,
+                    bytes_per_second: 32_768,
+                },
+            }),
+        });
+        let encoded = serde_json::to_vec(&message).unwrap();
+        let decoded: SupervisorServerMessage = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
 }

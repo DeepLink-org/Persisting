@@ -6,7 +6,7 @@ for your workflow:
 | Distribution | Contents | Use case |
 |---|---|---|
 | Python package | `persisting` wheel | Python APIs for Tensor Memory, Queue, and Search |
-| Unified CLI | `persisting`, `pvisor`, `ppilot`, and `libpersisting_engine` | `execute`, `env`, `batch`, `query`, `history`, `eval`, and `gateway` commands |
+| Unified CLI | `persisting`, `pvisor`, and `ppilot` | `execute`, `env`, `batch`, `query`, `history`, `eval`, and `gateway` commands |
 | Guest runtime | Static Linux `pvisor` for `linux-amd64` or `linux-arm64` | Injection into Container and KVM executors |
 
 ## Requirements
@@ -46,7 +46,7 @@ pip install -e ".[lance]"
 
 The CLI is a matched component set. `persisting` delegates execution and
 environment commands to `pvisor`, batch and query commands to `ppilot`, and
-dynamically loads `libpersisting_engine` for Search, History, and Eval.
+calls pChronicle directly for History and Eval.
 
 ### From source (recommended for development)
 
@@ -56,8 +56,8 @@ cd Persisting
 just install-cli
 ```
 
-This installs matching builds of `persisting`, `pvisor`, `ppilot`, and the
-engine library into the Cargo binary directory.
+This installs matching builds of `persisting`, `pvisor`, and `ppilot` into the
+Cargo binary directory.
 
 ### Nightly binaries (no Rust toolchain required)
 
@@ -71,8 +71,8 @@ Every release archive has a matching `.sha256` checksum.
 
 ### Component overrides
 
-Set `PERSISTING_PVISOR_BIN`, `PERSISTING_PPILOT_BIN`, or
-`PERSISTING_ENGINE_LIB` to select an explicit binary or engine library.
+Set `PERSISTING_PVISOR_BIN` or `PERSISTING_PPILOT_BIN` to select an explicit
+component binary.
 
 ## Guest runtime for Container and KVM executors
 

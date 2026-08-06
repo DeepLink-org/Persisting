@@ -1,9 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/persisting-proto",
     "crates/persisting-control",
-    "crates/persisting-engine",
     "crates/persisting-core",
     "crates/persisting-gateway",
     "crates/persisting-cli",
@@ -16,9 +14,7 @@ members = [
 ]
 
 default-members = [
-    "crates/persisting-proto",
     "crates/persisting-control",
-    "crates/persisting-engine",
     "crates/persisting-core",
     "crates/persisting-gateway",
     "crates/persisting-cli",

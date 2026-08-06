@@ -6,7 +6,7 @@ use crate::{
     build_llm_judge_prompt, dry_run_judge_rows, evaluation_units, judgment_dataset_path,
     layer_field_name, manual_few_shot_examples, manual_judge_rows, parse_llm_judge_rows,
     pending_evaluation_units, read_judge_rows, write_judge_rows, JudgeRow, JudgmentScope,
-    LanceEventStore, ManualJudgmentInput, StoryCoords, StructuredStore,
+    ManualJudgmentInput, RawEventLanceStore, StoryCoords, StructuredStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +48,7 @@ pub async fn judge_trajectory(request: JudgeTrajectoryRequest) -> Result<JudgeTr
         .cloned()
         .unwrap_or_else(|| "default".into());
 
-    let store = LanceEventStore;
+    let store = RawEventLanceStore;
     if !store.exists(&request.session).await? {
         anyhow::bail!(
             "Lance event log missing for session {}; judge requires events.lance",
@@ -215,10 +215,11 @@ async fn call_openai_chat(model: &str, user_prompt: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventRecord, LanceEventStore};
+    use crate::{EventRecord, RawEventLanceStore};
 
     fn event(kind: &str, content_key: &str, content: &str) -> EventRecord {
         EventRecord {
+            identity: crate::EventIdentity::default(),
             seq: 0,
             source: "test".into(),
             kind: kind.into(),
@@ -240,7 +241,7 @@ mod tests {
     async fn manual_judge_writes_native_columns() {
         let dir = tempfile::tempdir().unwrap();
         let session = StoryCoords::new(dir.path().to_string_lossy(), "agent", "session", None);
-        LanceEventStore
+        RawEventLanceStore
             .append_events(
                 &session,
                 &[

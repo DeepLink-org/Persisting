@@ -171,10 +171,11 @@ jobs:
 
       # The pVisor filesystem examples need macFUSE/FUSE3 and are not run here;
       # they stay covered by local `just examples-pvisor`. The quantitative
-      # pPilot/pChronicle examples below compile their own binaries from source.
+      # pPilot/pChronicle examples below use the release product binary built
+      # from this checkout.
       - name: Run pPilot examples
         run: |
-          cargo build -q -p persisting-ppilot --features cli --bin ppilot
+          cargo build --release -q -p persisting-ppilot --features cli --bin ppilot
           for example in examples/ppilot/*; do
             [ -f "$example/run.sh" ] || continue
             echo "==> ${example}/run.sh"

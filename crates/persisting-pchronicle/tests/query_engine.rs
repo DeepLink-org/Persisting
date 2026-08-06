@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
 use persisting_pchronicle::{
-    into_storyline, AtifDataSource, AtifDataSourceOptions, AtifTrajectory, ChronicleFormat,
-    ChronicleQueryBackend, ChronicleQueryEngine, ExternalTableFormat, ExternalTableSpec,
-    LanceStorylineStore, StorylineDataFusionTableNames,
+    into_storyline, AtifDataSource, AtifDataSourceOptions, AtifReader, AtifTrajectory,
+    ChronicleFormat, ChronicleQueryBackend, ChronicleQueryEngine, ExternalTableFormat,
+    ExternalTableSpec, StorylineDataFusionTableNames, StorylineLanceStore,
 };
 
 const SHARED_SQL: &str =
@@ -73,6 +73,58 @@ fn atif_datasource_accepts_json_array_jsonl_and_directory() -> Result<()> {
 }
 
 #[tokio::test]
+async fn default_atif_file_datasource_uses_repeatable_streaming_plan() -> Result<()> {
+    let source = AtifDataSource::open(fixture_root())?;
+    let context = source.session_context()?;
+    let dataframe = context.sql("SELECT COUNT(*) AS steps FROM steps").await?;
+    let plan = dataframe.clone().create_physical_plan().await?;
+    let plan_text = datafusion::physical_plan::displayable(plan.as_ref())
+        .indent(true)
+        .to_string();
+    assert!(plan_text.contains("StreamingTableExec"), "{plan_text}");
+    assert!(!plan_text.contains("MemoryExec"), "{plan_text}");
+
+    for _ in 0..2 {
+        let output = dataframe.clone().collect().await?;
+        assert_eq!(
+            output.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            1
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn atif_reader_streams_ndjson_and_directories_in_path_order() -> Result<()> {
+    let mut trajectories = load_trajectories()?;
+    let mut first = trajectories.remove(0);
+    first.session_id = Some("first-file".into());
+    let mut second = trajectories.remove(0);
+    second.session_id = Some("second-file".into());
+    let dir = tempfile::tempdir()?;
+    write_ndjson(&dir.path().join("02.ndjson"), &[second])?;
+    write_ndjson(&dir.path().join("01.ndjson"), &[first])?;
+
+    let ids = AtifReader::open(dir.path())?
+        .map(|trajectory| {
+            trajectory.map(|trajectory| trajectory.session_id.expect("fixture session_id"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(ids, ["first-file", "second-file"]);
+
+    let invalid = dir.path().join("03.ndjson");
+    let mut valid = serde_json::to_string(&load_trajectories()?[0])?;
+    valid.push_str("\nnot-json\n");
+    std::fs::write(&invalid, valid)?;
+    let error = AtifReader::open(&invalid)?
+        .nth(1)
+        .expect("second line")
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("line 2"), "{error:#}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()> {
     assert!(AtifDataSource::from_json("").is_err());
     assert!(AtifDataSource::from_json("[]").is_err());
@@ -92,6 +144,16 @@ async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()>
 
     let dir = tempfile::tempdir()?;
     assert!(AtifDataSource::open(dir.path()).is_err());
+    let duplicate_jsonl = dir.path().join("duplicate.ndjson");
+    let duplicate_line = serde_json::to_string(&trajectories[0])?;
+    std::fs::write(
+        &duplicate_jsonl,
+        format!("{duplicate_line}\n{duplicate_line}\n"),
+    )?;
+    assert!(AtifDataSource::open(&duplicate_jsonl)
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate ATIF session_id"));
     let invalid_jsonl = dir.path().join("invalid.jsonl");
     std::fs::write(&invalid_jsonl, "{}\nnot-json\n")?;
     let invalid_error = AtifDataSource::open(&invalid_jsonl).unwrap_err();
@@ -157,7 +219,7 @@ async fn same_sql_returns_identical_results_for_lance_and_atif() -> Result<()> {
     ));
 
     let dir = tempfile::tempdir()?;
-    let store = LanceStorylineStore::open(dir.path()).await?;
+    let store = StorylineLanceStore::open(dir.path()).await?;
     let stories = trajectories
         .iter()
         .map(|trajectory| {
@@ -290,7 +352,7 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
             )
         })
         .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
-    LanceStorylineStore::open_uri(&uri)
+    StorylineLanceStore::open_uri(&uri)
         .await?
         .replace_storylines(&stories)
         .await?;
@@ -304,10 +366,10 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
         2
     );
 
-    // An engine pins one immutable generation. Moving CURRENT must not change
+    // An engine pins one immutable version tuple. Moving CURRENT must not change
     // the result of an already planned federated/long-running query.
     let pinned_generation = engine.backend().clone();
-    LanceStorylineStore::open_uri(&uri)
+    StorylineLanceStore::open_uri(&uri)
         .await?
         .replace_storyline(&into_storyline(
             ChronicleFormat::Atif,

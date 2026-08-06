@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Use the pPilot binary built from this checkout.
-export PATH="../../../target/debug:$PATH"
+export PATH="../../../target/release:$PATH"
 
 # Remove mapper output from the previous run.
 rm -rf .work

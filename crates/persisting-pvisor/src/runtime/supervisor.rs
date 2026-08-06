@@ -6,8 +6,8 @@ use super::implant::{ImplantPlan, OverlayHint};
 use crate::GatewayDriverConfig;
 use crate::TrajectoryEventSink;
 use persisting_control::{ControlController, PolicyControlController};
+use persisting_control::{NetworkCapability, RunSpec};
 use persisting_gateway::config::ProxyConfig;
-use persisting_proto::{NetworkCapability, RunSpec};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -147,7 +147,7 @@ impl RuntimeSupervisor {
     pub fn prepare(
         &self,
         spec: &mut RunSpec,
-        supervisor_limits: &[persisting_proto::NetworkBandwidthLimit],
+        supervisor_limits: &[persisting_control::NetworkBandwidthLimit],
     ) -> anyhow::Result<Option<AttemptSession>> {
         if let Some(proxy) = &self.proxy {
             let mut proxy = proxy.clone();
@@ -203,7 +203,7 @@ impl RuntimeSupervisor {
     /// Build the implant plan and merge it into a process RunSpec (env markers only).
     pub fn enrich_spec(&self, spec: &mut RunSpec) -> ImplantPlan {
         let plan = self.plan_for(spec);
-        let persisting_proto::RunInvocation::Process(ref mut process) = spec.invocation;
+        let persisting_control::RunInvocation::Process(ref mut process) = spec.invocation;
         apply_implant(process, &plan);
         spec.metadata
             .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
@@ -280,8 +280,8 @@ impl RuntimeSupervisor {
                 plan.env.insert(
                     "PERSISTING_NETWORK_POLICY".into(),
                     match default_action {
-                        persisting_proto::NetworkDefaultAction::Allow => "default-allow",
-                        persisting_proto::NetworkDefaultAction::Deny => "default-deny",
+                        persisting_control::NetworkDefaultAction::Allow => "default-allow",
+                        persisting_control::NetworkDefaultAction::Deny => "default-deny",
                     }
                     .into(),
                 );

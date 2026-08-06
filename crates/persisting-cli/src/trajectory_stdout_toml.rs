@@ -1,7 +1,7 @@
 //! `trajectory` 子命令成功响应在 CLI **stdout** 上以 **TOML** 打印（与默认写入格式一致）。
 
 use anyhow::{Context, Result};
-use persisting_proto::{
+use persisting_pchronicle::{
     JudgeMethod, JudgeScope, SessionJudgeStats, TrajectoryAppendResponse,
     TrajectoryExtractResponse, TrajectoryJudgeResponse, TrajectoryJudgeStatsResponse,
     TrajectoryMaterializeResponse, TrajectoryReplayResponse, TrajectoryStatsResponse,
@@ -469,7 +469,7 @@ pub fn print_trajectory_judge_stats_as_toml(resp: &TrajectoryJudgeStatsResponse)
     emit_root(&root, "judge stats")
 }
 
-fn judge_stats_session_to_toml(s: &persisting_proto::JudgeStatsSession) -> toml::Value {
+fn judge_stats_session_to_toml(s: &persisting_pchronicle::JudgeStatsSession) -> toml::Value {
     let mut m = toml::map::Map::new();
     m.insert("storage".into(), toml::Value::String(s.storage.clone()));
     m.insert("agent_id".into(), toml::Value::String(s.agent_id.clone()));
@@ -528,7 +528,7 @@ fn judge_stats_session_to_toml(s: &persisting_proto::JudgeStatsSession) -> toml:
     toml::Value::Table(m)
 }
 
-fn judge_rubric_summary_to_toml(r: &persisting_proto::JudgeRubricSummary) -> toml::Value {
+fn judge_rubric_summary_to_toml(r: &persisting_pchronicle::JudgeRubricSummary) -> toml::Value {
     let mut m = toml::map::Map::new();
     m.insert("rubric_id".into(), toml::Value::String(r.rubric_id.clone()));
     m.insert(

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::http::HeaderMap;
 use bytes::Bytes;
-use persisting_proto::ModelAccessPolicy;
+use persisting_control::ModelAccessPolicy;
 use serde_json::Value;
 
 use super::state::GatewayState;

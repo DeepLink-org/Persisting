@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use persisting_pchronicle::{
     decode_event_lines, encode_event_lines, event_record_to_event_row, event_row_to_event_record,
-    event_rows_from_batch, event_rows_to_batch, trajectory_arrow_schema, EventRecord,
-    LanceEventStore, StoryCoords, StructuredStore,
+    event_rows_from_batch, event_rows_to_batch, raw_event_arrow_schema, EventRecord,
+    RawEventLanceStore, StoryCoords, StructuredStore,
 };
 use serde_json::{json, Value};
 
@@ -73,6 +73,7 @@ fn capture_payload_records() -> Result<(Vec<EventRecord>, usize, usize)> {
                 .to_string_lossy()
                 .replace('\\', "/");
             Ok(EventRecord {
+                identity: persisting_pchronicle::EventIdentity::default(),
                 seq: index as u64,
                 source: "persisting-gateway-fixture".into(),
                 kind: "fixture.capture_payload".into(),
@@ -125,7 +126,7 @@ fn capture_payload_corpus_roundtrips_through_wire_and_arrow() -> Result<()> {
         assert_eq!(event_row_to_event_record(row)?, *expected);
     }
 
-    let batch = event_rows_to_batch(trajectory_arrow_schema(), &rows)?;
+    let batch = event_rows_to_batch(raw_event_arrow_schema(), &rows)?;
     let restored_rows = event_rows_from_batch(&batch)?;
     assert_eq!(restored_rows, rows);
     let restored_records = restored_rows
@@ -146,11 +147,21 @@ async fn capture_payload_corpus_roundtrips_through_lance() -> Result<()> {
         "capture-fixture-corpus",
         None,
     );
-    let outcome = LanceEventStore.append_events(&session, &records).await?;
+    let outcome = RawEventLanceStore.append_events(&session, &records).await?;
     assert_eq!(outcome.accepted_records, records.len());
     assert_eq!(outcome.persisted_units, records.len());
 
-    let restored = LanceEventStore.read_events(&session, 0, None).await?;
+    let mut restored = RawEventLanceStore.read_events(&session, 0, None).await?;
+    assert!(restored.iter().all(|record| {
+        record.identity.event_id.is_some()
+            && record.identity.run_id.as_deref() == Some("capture-fixture-corpus")
+            && record.identity.storyline_id.as_deref() == Some("capture-fixture-corpus")
+            && record.identity.timestamp_unix_ms.is_some()
+            && record.identity.producer.as_deref() == Some("persisting-gateway-fixture")
+    }));
+    for record in &mut restored {
+        record.identity = persisting_pchronicle::EventIdentity::default();
+    }
     assert_eq!(restored, records);
     Ok(())
 }

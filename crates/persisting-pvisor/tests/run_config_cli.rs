@@ -283,10 +283,10 @@ exit 0
     );
 
     let bundle = RunBundle::read(&workspace).unwrap();
-    assert_eq!(bundle.run.state, persisting_proto::RunState::Failed);
+    assert_eq!(bundle.run.state, persisting_control::RunState::Failed);
     assert_eq!(
         bundle.run.failure.as_ref().map(|failure| failure.kind),
-        Some(persisting_proto::RunFailureKind::DeadlineExceeded)
+        Some(persisting_control::RunFailureKind::DeadlineExceeded)
     );
     assert!(!bundle.safety.host_process);
 }

@@ -6,9 +6,10 @@ use anyhow::{Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_ppilot::{
     init_tracing_with_verbose, process_federated_count, process_script, process_trajectories,
-    produce_from_planner, produce_trajectories, run_ppilot, run_query, run_self_test,
-    AnalysisOutputFormat, BatchAnalysisOptions, BatchProductionManifest, BatchProductionOptions,
-    CountTable, FederatedCountOptions, PPilotArgs, ProcessScriptOptions, QueryArgs,
+    produce_from_planner, produce_trajectories, run_chronicle, run_ppilot, run_query,
+    run_self_test, AnalysisOutputFormat, BatchAnalysisOptions, BatchProductionManifest,
+    BatchProductionOptions, ChronicleArgs, CountTable, FederatedCountOptions, PPilotArgs,
+    ProcessScriptOptions, QueryArgs,
 };
 
 #[derive(Debug, Parser)]
@@ -28,6 +29,8 @@ enum Command {
     Run(Box<PPilotArgs>),
     /// Run read-only SQL against Storyline Lance or ATIF JSON/JSONL.
     Query(QueryArgs),
+    /// Import and operate pChronicle trajectory stores.
+    Chronicle(ChronicleArgs),
     /// Stream Runs from a Python planner into independent pVisor workspaces.
     Produce(ProduceArgs),
     /// Run read-only SQL over automatically sharded ATIF trajectories.
@@ -164,7 +167,10 @@ async fn main() -> ExitCode {
         Command::Run(args) => args.verbose,
         Command::SelfTest(args) => args.verbose,
         Command::Query(_) => false,
-        Command::Produce(_) | Command::Analysis(_) | Command::Process(_) => false,
+        Command::Chronicle(_)
+        | Command::Produce(_)
+        | Command::Analysis(_)
+        | Command::Process(_) => false,
     };
     init_tracing_with_verbose(verbose);
 
@@ -182,6 +188,10 @@ async fn dispatch(command: Command) -> Result<ExitCode> {
         Command::Run(args) => run_ppilot(*args).await,
         Command::Query(args) => {
             run_query(args).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Chronicle(args) => {
+            run_chronicle(args).await?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Produce(args) => {
@@ -348,6 +358,15 @@ mod tests {
             "SELECT 1",
         ]);
         assert!(matches!(query.unwrap().command, Command::Query(_)));
+
+        let chronicle = Cli::try_parse_from([
+            "ppilot",
+            "chronicle",
+            "import",
+            "input.ndjson",
+            "storyline-store",
+        ]);
+        assert!(matches!(chronicle.unwrap().command, Command::Chronicle(_)));
 
         let run = Cli::try_parse_from(["ppilot", "run", "plan.py", "--workers", "2"]);
         assert!(matches!(run.unwrap().command, Command::Run(_)));

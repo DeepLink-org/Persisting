@@ -96,10 +96,10 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
             .as_ref()
             .map(|executor| executor.isolation)
         {
-            Some(persisting_proto::IsolationKind::Container) => {
+            Some(persisting_control::IsolationKind::Container) => {
                 "OCI container with injected pVisor"
             }
-            Some(persisting_proto::IsolationKind::VirtualMachine) => {
+            Some(persisting_control::IsolationKind::VirtualMachine) => {
                 "KVM virtual machine with injected pVisor"
             }
             _ => "host process (not a host-isolation boundary)",

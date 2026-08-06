@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use persisting_pchronicle::{
     from_storyline, into_storyline, AtifDataSource, AtifTrajectory, ChronicleFormat,
-    LanceStorylineStore, StorylineDataSource, StorylineDocument,
+    StorylineDataSource, StorylineDocument, StorylineLanceStore,
 };
 
 const ANALYTICAL_SQL: &str =
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
         result.documents, result.steps, scale
     );
     println!(
-        "storage: JSON={} bytes, Lance+indexes={} bytes ({:.3}x)",
+        "storage: JSON={} bytes, Lance store={} bytes ({:.3}x)",
         result.json_bytes,
         result.lance_bytes,
         result.lance_bytes as f64 / result.json_bytes as f64
@@ -35,6 +35,25 @@ fn main() -> Result<()> {
     println!(
         "build/open: JSON write {:?}, ATIF datasource {:?}, Lance+indexes {:?}, Lance datasource {:?}",
         result.json_write, result.atif_open, result.lance_write, result.lance_open
+    );
+    let cold_query_mean = mean_duration(result.lance_cold_query, result.iterations);
+    let get_storyline_mean = mean_duration(result.get_storyline, result.iterations);
+    println!("pChronicle lifecycle:");
+    println!(
+        "  cold open+plan+query: {:?} total ({:?}/query)",
+        result.lance_cold_query, cold_query_mean
+    );
+    println!(
+        "  get_storyline:       {:?} total ({:?}/lookup)",
+        result.get_storyline, get_storyline_mean
+    );
+    println!("  single-story replace: {:?}", result.incremental_replace);
+    println!(
+        "RESULT benchmark=lifecycle iterations={} cold_query_ms={:.3} get_storyline_ms={:.3} replace_storyline_ms={:.3}",
+        result.iterations,
+        milliseconds(cold_query_mean),
+        milliseconds(get_storyline_mean),
+        milliseconds(result.incremental_replace),
     );
     print_comparison(
         "selective",
@@ -48,6 +67,7 @@ fn main() -> Result<()> {
         iterations,
         &result.analytical,
     );
+    print_conclusion(&result);
     Ok(())
 }
 
@@ -59,6 +79,7 @@ struct Comparison {
 }
 
 struct BenchmarkResult {
+    iterations: usize,
     documents: usize,
     steps: usize,
     json_bytes: u64,
@@ -67,13 +88,28 @@ struct BenchmarkResult {
     atif_open: Duration,
     lance_write: Duration,
     lance_open: Duration,
+    lance_cold_query: Duration,
+    get_storyline: Duration,
+    incremental_replace: Duration,
     selective: Comparison,
     analytical: Comparison,
 }
 
 async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
-    let base = load_base_stories()?;
-    let stories = expand_stories(&base, scale);
+    anyhow::ensure!(
+        scale > 0,
+        "PCHRONICLE_BENCH_SCALE must be greater than zero"
+    );
+    anyhow::ensure!(
+        iterations > 0,
+        "PCHRONICLE_BENCH_ITERS must be greater than zero"
+    );
+    let stories = if let Some(input) = std::env::var_os("PCHRONICLE_BENCH_ATIF_INPUT") {
+        load_atif_stories(Path::new(&input))?
+    } else {
+        let base = load_base_stories()?;
+        expand_stories(&base, scale)
+    };
     let documents = stories.len();
     let steps = stories.iter().map(|story| story.turns.len()).sum();
     let atif_lines = stories
@@ -99,7 +135,7 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
         .map(|line| AtifTrajectory::from_json_str(line))
         .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
 
-    let store = LanceStorylineStore::open(dir.path().join("storyline-lance")).await?;
+    let store = StorylineLanceStore::open(dir.path().join("storyline-lance")).await?;
     let lance_write_started = Instant::now();
     store.replace_storylines(&stories).await?;
     let lance_write = lance_write_started.elapsed();
@@ -107,9 +143,14 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     let source = StorylineDataSource::from_store(&store).await?;
     let lance_open = lance_open_started.elapsed();
     let context = source.session_context()?;
-    // Pick a session near the end so the in-memory JSON baseline cannot win by
-    // finding the target in the first few documents.
-    let target_session = format!("bench-{:04}-long_context_20", scale - 1);
+    // Pick the last longest Storyline so the in-memory JSON baseline cannot win
+    // by finding the target in the first few documents.
+    let target_session = stories
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, story)| (story.turns.len(), *index))
+        .map(|(_, story)| story.session_id.clone())
+        .context("benchmark corpus is empty")?;
     let selective_sql = format!(
         "SELECT step_id, source, message_json FROM steps \
          WHERE session_id = '{target_session}' AND step_id BETWEEN 5 AND 15 \
@@ -164,11 +205,24 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
         json_scan: time_sync(iterations, || json_analysis(&json_path))?,
         json_memory: time_sync(iterations, || Ok(json_memory_analysis(&parsed)))?,
     };
-    let paths = source.paths();
-    let lance_bytes = directory_size(&paths.runs)?
-        + directory_size(&paths.steps)?
-        + directory_size(&paths.tool_calls)?;
+    let lance_cold_query = time_lance_cold_query(&store, &selective_sql, iterations).await?;
+    let get_storyline_started = Instant::now();
+    for _ in 0..iterations {
+        black_box(store.get_storyline(&target_session).await?);
+    }
+    let get_storyline = get_storyline_started.elapsed();
+    let lance_bytes = directory_size(store.root())?;
+    let mut updated = stories
+        .iter()
+        .find(|story| story.session_id == target_session)
+        .context("benchmark target Storyline is missing")?
+        .clone();
+    updated.notes = Some("incremental benchmark replacement".into());
+    let incremental_replace_started = Instant::now();
+    store.replace_storyline(&updated).await?;
+    let incremental_replace = incremental_replace_started.elapsed();
     Ok(BenchmarkResult {
+        iterations,
         documents,
         steps,
         json_bytes: std::fs::metadata(json_path)?.len(),
@@ -177,9 +231,34 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
         atif_open,
         lance_write,
         lance_open,
+        lance_cold_query,
+        get_storyline,
+        incremental_replace,
         selective,
         analytical,
     })
+}
+
+fn mean_duration(total: Duration, iterations: usize) -> Duration {
+    total.div_f64(iterations as f64)
+}
+
+fn milliseconds(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
+async fn time_lance_cold_query(
+    store: &StorylineLanceStore,
+    sql: &str,
+    iterations: usize,
+) -> Result<Duration> {
+    let started = Instant::now();
+    for _ in 0..iterations {
+        let source = StorylineDataSource::from_store(store).await?;
+        let context = source.session_context()?;
+        black_box(context.sql(sql).await?.collect().await?);
+    }
+    Ok(started.elapsed())
 }
 
 fn load_base_stories() -> Result<Vec<StorylineDocument>> {
@@ -196,6 +275,15 @@ fn load_base_stories() -> Result<Vec<StorylineDocument>> {
                 .with_context(|| format!("read {}", path.display()))?;
             into_storyline(ChronicleFormat::Atif, &raw).map_err(anyhow::Error::from)
         })
+        .collect()
+}
+
+fn load_atif_stories(path: &Path) -> Result<Vec<StorylineDocument>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("read benchmark ATIF input {}", path.display()))?;
+    raw.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| into_storyline(ChronicleFormat::Atif, line).map_err(anyhow::Error::from))
         .collect()
 }
 
@@ -299,7 +387,7 @@ fn print_comparison(id: &str, name: &str, iterations: usize, comparison: &Compar
         comparison.lance, lance_qps
     );
     println!(
-        "  ATIF/DataFusion memory:   {:?} ({:.1} queries/s, Lance speed ratio {:.2}x)",
+        "  ATIF/DataFusion stream:   {:?} ({:.1} queries/s, Lance speed ratio {:.2}x)",
         comparison.atif_datafusion, atif_qps, atif_over_lance_time
     );
     println!(
@@ -317,6 +405,43 @@ fn print_comparison(id: &str, name: &str, iterations: usize, comparison: &Compar
     println!(
         "RESULT benchmark={id} iterations={iterations} lance_qps={lance_qps:.1} \
          atif_qps={atif_qps:.1} atif_over_lance_time={atif_over_lance_time:.3}"
+    );
+}
+
+fn print_conclusion(result: &BenchmarkResult) {
+    let lance_over_json = result.lance_bytes as f64 / result.json_bytes as f64;
+    let open_speedup = result.atif_open.as_secs_f64() / result.lance_open.as_secs_f64();
+    let selective_disk_speedup =
+        result.selective.json_scan.as_secs_f64() / result.selective.lance.as_secs_f64();
+    let group_disk_speedup =
+        result.analytical.json_scan.as_secs_f64() / result.analytical.lance.as_secs_f64();
+    let selective_memory_ratio =
+        result.selective.atif_datafusion.as_secs_f64() / result.selective.lance.as_secs_f64();
+    let group_memory_ratio =
+        result.analytical.atif_datafusion.as_secs_f64() / result.analytical.lance.as_secs_f64();
+    println!("Conclusion:");
+    println!(
+        "  Storage: Lance uses {:.2}% of JSON space, saving {:.2}%.",
+        lance_over_json * 100.0,
+        (1.0 - lance_over_json) * 100.0
+    );
+    println!(
+        "  Open: Lance datasource open is {open_speedup:.2}x faster than ATIF streaming validation/count scan."
+    );
+    println!(
+        "  On-disk query: Lance is {selective_disk_speedup:.2}x faster for the selective query and {group_disk_speedup:.2}x faster for GROUP BY than JSON read+Serde."
+    );
+    println!(
+        "  Streaming boundary: ATIF stream/Lance time ratio is {selective_memory_ratio:.2}x for the selective query and {group_memory_ratio:.2}x for GROUP BY."
+    );
+    println!(
+        "  Lifecycle: cold query {:.3} ms, point lookup {:.3} ms, single-story replace {:.3} ms.",
+        milliseconds(mean_duration(result.lance_cold_query, result.iterations)),
+        milliseconds(mean_duration(result.get_storyline, result.iterations)),
+        milliseconds(result.incremental_replace),
+    );
+    println!(
+        "RESULT benchmark=summary lance_over_json={lance_over_json:.4} open_speedup={open_speedup:.2} selective_disk_speedup={selective_disk_speedup:.2} group_disk_speedup={group_disk_speedup:.2} selective_memory_over_lance_time={selective_memory_ratio:.3} group_memory_over_lance_time={group_memory_ratio:.3}"
     );
 }
 

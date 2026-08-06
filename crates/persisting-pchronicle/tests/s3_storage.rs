@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use lance::io::ObjectStore;
 use persisting_pchronicle::{
     into_storyline, AtifTrajectory, ChronicleFormat, ChronicleQueryEngine, EventRecord,
-    LanceEventStore, LanceStorylineStore, StoryCoords, StructuredStore,
+    RawEventLanceStore, StoryCoords, StorylineLanceStore, StructuredStore,
 };
 
 fn unique_root() -> Result<String> {
@@ -35,6 +35,7 @@ fn fixture_storyline() -> Result<persisting_pchronicle::StorylineDocument> {
 
 fn event(content: &str) -> EventRecord {
     EventRecord {
+        identity: persisting_pchronicle::EventIdentity::default(),
         seq: 0,
         source: "s3-contract".into(),
         kind: "note".into(),
@@ -66,29 +67,38 @@ async fn run_contract(root: &str) -> Result<()> {
         "contract-child",
         Some("contract-run".into()),
     );
-    LanceEventStore
+    RawEventLanceStore
         .append_events(&main, &[event("main-1")])
         .await?;
-    LanceEventStore
+    RawEventLanceStore
         .append_events(&main, &[event("main-2")])
         .await?;
-    LanceEventStore
+    RawEventLanceStore
         .append_events(&child, &[event("child-1")])
         .await?;
-    assert_eq!(LanceEventStore.read_events(&main, 0, None).await?.len(), 2);
-    assert_eq!(LanceEventStore.read_events(&child, 0, None).await?.len(), 1);
-    assert_eq!(LanceEventStore.stats(&main).await?.row_count, 2);
+    assert_eq!(
+        RawEventLanceStore.read_events(&main, 0, None).await?.len(),
+        2
+    );
+    assert_eq!(
+        RawEventLanceStore.read_events(&child, 0, None).await?.len(),
+        1
+    );
+    assert_eq!(RawEventLanceStore.stats(&main).await?.row_count, 2);
 
     // Decoding fails before a write, so an invalid append cannot corrupt the
     // already committed S3 dataset.
-    assert!(LanceEventStore
+    assert!(RawEventLanceStore
         .append(&main, &["invalid RON".into()])
         .await
         .is_err());
-    assert_eq!(LanceEventStore.read_events(&main, 0, None).await?.len(), 2);
+    assert_eq!(
+        RawEventLanceStore.read_events(&main, 0, None).await?.len(),
+        2
+    );
 
     let storyline_root = format!("{root}/storylines");
-    let store = LanceStorylineStore::open_uri(&storyline_root).await?;
+    let store = StorylineLanceStore::open_uri(&storyline_root).await?;
     let first = fixture_storyline()?;
     store.replace_storyline(&first).await?;
     let pinned = ChronicleQueryEngine::open_lance_uri(&storyline_root).await?;
@@ -105,7 +115,7 @@ async fn run_contract(root: &str) -> Result<()> {
         serde_json::from_str::<serde_json::Value>(pinned_output.trim())?["runs"],
         1
     );
-    let reopened = LanceStorylineStore::open_uri(&storyline_root).await?;
+    let reopened = StorylineLanceStore::open_uri(&storyline_root).await?;
     assert_eq!(reopened.list_runs().await?.len(), 2);
     let engine = ChronicleQueryEngine::open_lance_uri(&storyline_root).await?;
     let output = engine

@@ -26,7 +26,7 @@ h.put(data)                          → None
 | `params/llama-70b` | `(param_id, shard)` | 模型权重 |
 | `kvcache/v1` | `(session, layer, head, time)` | KV cache |
 
-轨迹采集目前使用独立的 Lance/Markdown 存储模型，尚未通过此 API 暴露 tensor namespace。
+轨迹采集使用 canonical Lance events 和可选 Markdown 调试视图，尚未通过此 API 暴露 tensor namespace。
 
 → [Tensor Memory API](tensor-memory.md)
 

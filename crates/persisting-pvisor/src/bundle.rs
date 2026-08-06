@@ -3,10 +3,10 @@
 use crate::runtime::{overlay_status, OverlayState, RunLineage, RunRecord};
 use crate::util::{atomic_write, sync_directory};
 use crate::{unix_now_ms, AgentAbiSnapshot};
-use persisting_overlaynet::{InterceptionProfile, InterceptionSnapshot};
-use persisting_proto::{
+use persisting_control::{
     ArtifactRef, ExecutorDescriptor, IsolationKind, ProcessOutput, RunFailure, RunResult, RunState,
 };
+use persisting_overlaynet::{InterceptionProfile, InterceptionSnapshot};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -255,7 +255,7 @@ impl RunBundle {
 mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper};
-    use persisting_proto::{AttemptId, RunId};
+    use persisting_control::{AttemptId, RunId};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -324,7 +324,7 @@ mod tests {
             run_id: "run-1".into(),
             attempt_id: "attempt-1".into(),
             directive_seq: 0,
-            directive: persisting_proto::AgentDirective::Continue,
+            directive: crate::AgentDirective::Continue,
             clients: vec![],
             processes: vec![],
             effects: vec![],

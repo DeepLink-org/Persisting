@@ -20,7 +20,7 @@ use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use lance::Dataset;
 
 use crate::{
-    session_lance_path, TrajectorySession, TRAJECTORY_CALL_ID_COL, TRAJECTORY_SEQ_COL,
+    raw_event_lance_path, TrajectorySession, TRAJECTORY_CALL_ID_COL, TRAJECTORY_SEQ_COL,
     TRAJECTORY_SESSION_ID_COL,
 };
 
@@ -415,12 +415,14 @@ pub fn has_judgment(rows: &[JudgeRow], session_id: &str, call_id: &str, rubric_i
 }
 
 pub async fn dataset_path(session: &TrajectorySession) -> Result<String> {
-    Ok(session_lance_path(session)?.to_string_lossy().into_owned())
+    Ok(raw_event_lance_path(session)?
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// Read distinct judge rows from `events.lance` (deduped by session/unit/rubric).
 pub async fn read_judge_rows(session: &TrajectorySession) -> Result<Vec<JudgeRow>> {
-    let path = session_lance_path(session)?;
+    let path = raw_event_lance_path(session)?;
     let uri = path.to_string_lossy().into_owned();
     let ds = match Dataset::open(&uri).await {
         Ok(ds) => ds,
@@ -558,7 +560,7 @@ pub async fn write_judge_rows(session: &TrajectorySession, rows: &[JudgeRow]) ->
     if rows.is_empty() {
         return dataset_path(session).await;
     }
-    let path = session_lance_path(session)?;
+    let path = raw_event_lance_path(session)?;
     let uri = path.to_string_lossy().into_owned();
     let mut ds = Dataset::open(&uri)
         .await
@@ -726,6 +728,7 @@ mod tests {
     fn dialogue_units_pair_canonical_events_by_call_id() {
         let records = vec![
             crate::EventRecord {
+                identity: crate::EventIdentity::default(),
                 seq: 0,
                 source: "test".into(),
                 kind: "llm.request".into(),
@@ -742,6 +745,7 @@ mod tests {
                 payload: serde_json::json!({"user_content": "hello"}),
             },
             crate::EventRecord {
+                identity: crate::EventIdentity::default(),
                 seq: 1,
                 source: "test".into(),
                 kind: "llm.response".into(),

@@ -1,10 +1,10 @@
 //! pPilot Supervisor -> pVisor -> OverlayNet integration.
 
+use persisting_control::{RunInvocation, RunSpec, RunState, StdioMode, SupervisorBootstrap};
 use persisting_gateway::config::{
     CaptureLevel, NetworkConfig, NetworkMode, OverlayConfig, ProxyConfig,
 };
 use persisting_ppilot::{EmbeddedSupervisor, EmbeddedSupervisorConfig};
-use persisting_proto::{RunInvocation, RunSpec, RunState, StdioMode, SupervisorBootstrap};
 use persisting_pvisor::{GatewayDriverConfig, PVisor};
 use std::net::TcpListener as StdTcpListener;
 use std::time::{Duration, Instant};
@@ -131,6 +131,8 @@ async fn unavailable_supervisor_never_prevents_standalone_execution() {
         token: "unavailable".into(),
         controller_epoch: 1,
         connect_timeout_ms: 50,
+        attempt_registry_uri: None,
+        attempt_ttl_ms: 15_000,
     });
     let RunInvocation::Process(process) = &mut spec.invocation;
     process.args = vec!["-c".into(), "printf standalone".into()];
@@ -170,7 +172,7 @@ async fn supervisor_cancel_reaches_the_live_pvisor_attempt() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     supervisor
-        .cancel(&persisting_proto::RunId::new("supervisor-cancelled"))
+        .cancel(&persisting_control::RunId::new("supervisor-cancelled"))
         .await
         .unwrap();
     let result = tokio::time::timeout(Duration::from_secs(3), handle.wait())

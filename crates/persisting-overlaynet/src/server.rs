@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use persisting_control::ControlController;
-use persisting_proto::{NetworkAccessRequest, NetworkTransport, RunId, StorylineId};
+use persisting_control::{NetworkAccessRequest, NetworkTransport, RunId, StorylineId};
 
 use crate::bandwidth::{throttle_body, BandwidthRegistry, BandwidthSession};
 use crate::forward::{
@@ -20,7 +20,7 @@ use crate::forward::{
 };
 use crate::interception::InterceptionMetrics;
 use crate::policy::{forbidden_response, DenyReason, NetworkPolicy};
-use crate::resolver::{authorize_target, TargetAuthorizationError};
+use crate::resolver::{authorize_target, AuthorizedTarget, TargetAuthorizationError};
 #[derive(Clone)]
 pub struct OverlayRequestContext<T> {
     pub policy: NetworkPolicy,
@@ -189,7 +189,8 @@ where
         };
         state.interception_metrics.policy_allowed();
         state.sink.on_dispatch(&context, &request, "connect");
-        let bandwidth = bandwidth_session(state, &context, &host, Some(target.port)).await;
+        let bandwidth =
+            bandwidth_session(state, &context, &host, Some(target.port), Some(&authorized)).await;
         return handle_connect_authorized(request, target, &authorized, bandwidth).await;
     }
 
@@ -217,7 +218,7 @@ where
             Err(TargetAuthorizationError::Resolve(error)) => return Err(error),
         };
         state.interception_metrics.policy_allowed();
-        let bandwidth = bandwidth_session(state, &context, &host, port).await;
+        let bandwidth = bandwidth_session(state, &context, &host, port, Some(&authorized)).await;
         if state.sink.accepts(&request) {
             state.interception_metrics.sink_request();
             state.sink.on_dispatch(&context, &request, "sink");
@@ -233,7 +234,7 @@ where
 
     state.interception_metrics.sink_request();
     state.sink.on_dispatch(&context, &request, "sink");
-    let bandwidth = bandwidth_session(state, &context, "", None).await;
+    let bandwidth = bandwidth_session(state, &context, "", None, None).await;
     let request = throttle_request(request, bandwidth.clone());
     let response = state.sink.handle(request, peer, &context).await?;
     Ok(throttle_response(response, bandwidth))
@@ -244,13 +245,18 @@ async fn bandwidth_session<S>(
     context: &OverlayRequestContext<S::RequestContext>,
     host: &str,
     port: Option<u16>,
+    authorized: Option<&AuthorizedTarget>,
 ) -> BandwidthSession
 where
     S: OverlaySink,
 {
     state
         .bandwidth_registry
-        .session(context.policy.matching_limits(host, port))
+        .session(context.policy.matching_limits(
+            host,
+            port,
+            authorized.map_or(&[], |target| target.addresses.as_slice()),
+        ))
         .await
 }
 

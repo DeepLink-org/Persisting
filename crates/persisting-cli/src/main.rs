@@ -1,5 +1,4 @@
-//! CLI loads `libpersisting_engine` lazily and calls **`persisting_engine_submit`** / **`job_poll`** /
-//! **`job_take_result`**（异步 job + 进度；见 `persisting_proto::invoke_abi`）。
+//! Unified CLI backed directly by pChronicle for durable history and evaluation.
 
 mod capture;
 mod judge_manual;
@@ -18,18 +17,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use libloading::{Library, Symbol};
-use persisting_proto::{
-    JudgeMethod, JudgeSampleMode, JudgeScope, RequestBody, ResponseBody, RpcRequest, RpcResponse,
-    SearchAddBatchRequest, SearchAddRequest, SearchImportLanceRequest, SearchIndexDeleteRequest,
-    SearchIndexListRequest, SearchIndexRebuildRequest, SearchIndexReorderRequest,
-    SearchIndexRequest, SearchQueryRequest, TrajectoryAppendRequest, TrajectoryExtractRequest,
-    TrajectoryJudgeRequest, TrajectoryJudgeResponse, TrajectoryJudgeStatsRequest,
-    TrajectoryJudgeStatsResponse, TrajectoryMaterializeRequest, TrajectoryReplayRequest,
-    TrajectoryReplayResponse, TrajectoryStatsRequest, TrajectoryStatsResponse,
-    TrajectoryStorageFormat, TrajectoryTruncateRequest, PROTOCOL_VERSION, RON_ABI_VERSION,
+use persisting_pchronicle::{
+    JudgeMethod, JudgeSampleMode, JudgeScope, RequestBody, ResponseBody, TrajectoryAppendRequest,
+    TrajectoryExtractRequest, TrajectoryJudgeRequest, TrajectoryJudgeResponse,
+    TrajectoryJudgeStatsRequest, TrajectoryJudgeStatsResponse, TrajectoryMaterializeRequest,
+    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
+    TrajectoryStatsResponse, TrajectoryStorageFormat, TrajectoryTruncateRequest,
 };
-use serde::{Deserialize, Serialize};
 
 use persisting_gateway::engine::TurnKind;
 use persisting_pchronicle::{
@@ -50,140 +44,38 @@ use trajectory_stdout_toml::{
     print_trajectory_stats_as_toml, print_trajectory_truncate_as_toml,
 };
 
-type RonAbiVersionFn = unsafe extern "C" fn() -> u32;
+#[derive(Clone, Copy)]
+struct Chronicle;
 
-fn ron_request_pretty<T: Serialize>(v: &T) -> Result<String> {
-    ron::ser::to_string_pretty(
-        v,
-        ron::ser::PrettyConfig::new().indentor("    ".to_string()),
-    )
-    .context("encode request RON")
+struct ChronicleClient {
+    chronicle: Chronicle,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireError {
-    error: String,
-}
-
-struct Engine {
-    lib: Library,
-}
-
-/// Resolves path and opens the engine on first call that needs it.
-struct LazyEngine {
-    core_lib: Option<PathBuf>,
-    engine: Option<Engine>,
-}
-
-impl LazyEngine {
-    fn new(core_lib: Option<PathBuf>) -> Self {
+impl ChronicleClient {
+    fn new() -> Self {
         Self {
-            core_lib,
-            engine: None,
+            chronicle: Chronicle,
         }
     }
 
-    fn engine_mut(&mut self) -> Result<&Engine> {
-        if self.engine.is_none() {
-            let path = resolve_engine_path(self.core_lib.as_deref())?;
-            self.engine = Some(Engine::load(&path)?);
-        }
-        Ok(self.engine.as_ref().unwrap())
+    fn invoke(&mut self, request: &RequestBody) -> Result<()> {
+        let response = self.chronicle.invoke(request)?;
+        print_chronicle_response(&response)
     }
 
-    /// `payload` must be full `RpcRequest` RON (callers serialize **before** calling so bad rows skip `dlopen`).
-    fn invoke_engine_ron(&mut self, payload: &str) -> Result<()> {
-        let eng = self.engine_mut()?;
-        let out = eng.invoke_engine_ron(payload)?;
-        print_engine_ron_response(&out)
-    }
-
-    /// 调用引擎并校验响应，不打印（用于大批量 `SearchAdd` 的中间行）。
-    fn invoke_engine_ron_silent(&mut self, payload: &str) -> Result<String> {
-        let eng = self.engine_mut()?;
-        let out = eng.invoke_engine_ron(payload)?;
-        parse_engine_ron_response(&out)?;
-        Ok(out)
+    fn invoke_silent(&mut self, request: &RequestBody) -> Result<ResponseBody> {
+        self.chronicle.invoke(request)
     }
 }
 
-impl Engine {
-    fn load(path: &Path) -> Result<Self> {
-        let lib = unsafe { Library::new(path) }
-            .with_context(|| format!("failed to load engine library from {}", path.display()))?;
-        let ron_abi: Symbol<RonAbiVersionFn> = unsafe {
-            lib.get(b"persisting_engine_ron_abi_version\0")
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "engine library missing persisting_engine_ron_abi_version ({}); rebuild persisting-engine",
-                        e
-                    )
-                })?
-        };
-        let v = unsafe { ron_abi() };
-        if v != RON_ABI_VERSION {
-            anyhow::bail!(
-                "engine RON ABI version {} does not match CLI ({})",
-                v,
-                RON_ABI_VERSION
-            );
-        }
-        Ok(Self { lib })
-    }
-
-    fn invoke_engine_ron(&self, payload: &str) -> Result<String> {
-        let submit: Symbol<persisting_proto::PersistingEngineSubmitFn> = unsafe {
-            self.lib
-                .get(b"persisting_engine_submit\0")
-                .with_context(|| {
-                    "missing engine export persisting_engine_submit; rebuild persisting-engine"
-                })?
-        };
-        let poll: Symbol<persisting_proto::PersistingEngineJobPollFn> =
-            unsafe {
-                self.lib.get(b"persisting_engine_job_poll\0").with_context(|| {
-                "missing engine export persisting_engine_job_poll; rebuild persisting-engine"
-            })?
-            };
-        let take: Symbol<persisting_proto::PersistingEngineJobTakeResultFn> = unsafe {
-            self.lib.get(b"persisting_engine_job_take_result\0").with_context(|| {
-                "missing engine export persisting_engine_job_take_result; rebuild persisting-engine"
-            })?
-        };
-        let release: Symbol<persisting_proto::PersistingEngineJobReleaseFn> =
-            unsafe {
-                self.lib.get(b"persisting_engine_job_release\0").with_context(|| {
-                "missing engine export persisting_engine_job_release; rebuild persisting-engine"
-            })?
-            };
-        let syms = persisting_proto::PersistingEngineJobSyms {
-            submit: *submit,
-            poll: *poll,
-            take_result: *take,
-            release: *release,
-        };
-        let raw =
-            unsafe { persisting_proto::invoke_ron_utf8_via_jobs_sync(syms, payload.as_bytes())? };
-        persisting_proto::response_utf8_to_string(&raw).context("engine response UTF-8")
+impl Chronicle {
+    fn invoke(&self, request: &RequestBody) -> Result<ResponseBody> {
+        persisting_pchronicle::invoke_request_body(request.clone()).context("pChronicle request")
     }
 }
 
-fn parse_engine_ron_response(raw: &str) -> Result<RpcResponse> {
-    if let Ok(w) = ron::from_str::<WireError>(raw) {
-        anyhow::bail!("{}", w.error);
-    }
-    let resp: RpcResponse =
-        ron::from_str(raw).context("engine returned invalid RON RpcResponse")?;
-    if let ResponseBody::Error { message, .. } = &resp.body {
-        anyhow::bail!("{}", message);
-    }
-    Ok(resp)
-}
-
-fn print_engine_ron_response(raw: &str) -> Result<()> {
-    let resp = parse_engine_ron_response(raw)?;
-    match &resp.body {
+fn print_chronicle_response(response: &ResponseBody) -> Result<()> {
+    match response {
         // trajectory 成功响应统一用 TOML stdout（与默认写入格式一致）。
         ResponseBody::TrajectoryAppend(tr) => print_trajectory_append_as_toml(tr),
         ResponseBody::TrajectoryStats(tr) => print_trajectory_stats_as_toml(tr),
@@ -196,67 +88,11 @@ fn print_engine_ron_response(raw: &str) -> Result<()> {
         _ => {
             println!(
                 "{}",
-                ron::ser::to_string(&resp.body)
-                    .map_err(|e| anyhow::anyhow!("RON serialize: {e}"))?
+                ron::ser::to_string(response).map_err(|e| anyhow::anyhow!("RON serialize: {e}"))?
             );
             Ok(())
         }
     }
-}
-
-/// 多行 JSONL/CSV：按批 `SearchAddBatch` 写入 Lance（每批一次 `InsertBuilder`，远快于逐行 `SearchAdd`）。
-fn search_add_batch(lazy: &mut LazyEngine, mut rows: Vec<SearchAddRequest>) -> Result<()> {
-    const CHUNK: usize = 256;
-    let total = rows.len();
-    if total == 0 {
-        anyhow::bail!("import contained no rows");
-    }
-    let dataset = rows[0].dataset.clone();
-    let mut processed = 0usize;
-    while !rows.is_empty() {
-        let n = CHUNK.min(rows.len());
-        let chunk: Vec<SearchAddRequest> = rows.drain(0..n).collect();
-        let payload = rpc_request_pretty(RequestBody::SearchAddBatch(SearchAddBatchRequest {
-            rows: chunk,
-        }))
-        .with_context(|| {
-            format!(
-                "encode SearchAddBatch RON (rows {}..={})",
-                processed + 1,
-                processed + n
-            )
-        })?;
-        let is_last = rows.is_empty();
-        if is_last {
-            lazy.invoke_engine_ron(&payload).with_context(|| {
-                format!(
-                    "SearchAddBatch final chunk (through row {}/{})",
-                    processed + n,
-                    total
-                )
-            })?;
-        } else {
-            lazy.invoke_engine_ron_silent(&payload).with_context(|| {
-                format!(
-                    "SearchAddBatch rows {}..={} of {}",
-                    processed + 1,
-                    processed + n,
-                    total
-                )
-            })?;
-        }
-        processed += n;
-        eprintln!("[persisting-cli] search create: {processed}/{total} rows -> {dataset}");
-    }
-    eprintln!("[persisting-cli] search create: done {total} rows -> {dataset}");
-    Ok(())
-}
-
-fn rpc_request_pretty(body: RequestBody) -> Result<String> {
-    ron_request_pretty(&RpcRequest {
-        version: PROTOCOL_VERSION,
-        body,
-    })
 }
 
 #[derive(Debug, Parser)]
@@ -266,10 +102,6 @@ fn rpc_request_pretty(body: RequestBody) -> Result<String> {
     about = "Unified CLI for Agent execution, environments, orchestration, and durable history"
 )]
 struct Cli {
-    /// Engine library used by search, history, evaluation, and Gateway commands.
-    #[arg(long, env = "PERSISTING_ENGINE_LIB")]
-    core_lib: Option<PathBuf>,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -290,8 +122,6 @@ enum Command {
     History(HistoryArgs),
     /// Evaluate trajectory quality.
     Eval(EvalArgs),
-    /// Manage Search data and indexes.
-    Search(SearchArgs),
     /// Run or manage the long-lived Gateway capture service.
     Gateway(GatewayArgs),
 }
@@ -432,215 +262,9 @@ struct CaptureImportArgs {
     /// agentgateway export JSONL (`-` = stdin). Required for `gateway` / `all`.
     #[arg(long, default_value = "-")]
     gateway_input: String,
-    /// Print counts only; do not call the engine.
+    /// Print counts only; do not write through pChronicle.
     #[arg(long)]
     dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-struct SearchArgs {
-    #[command(subcommand)]
-    command: SearchCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum SearchCommand {
-    /// Import rows from JSONL, CSV, or an existing Lance dataset (`--input` required; stdin needs `--format jsonl|csv`).
-    Create(SearchCreateArgs),
-    /// Index maintenance: `list` / `delete` / `rebuild` / `build` (IVF-PQ + FTS), `reorder` (IVF layout via lance-tools).
-    Index(SearchIndexMaintenanceArgs),
-    Query(SearchQueryArgs),
-}
-
-#[derive(Debug, Args)]
-struct SearchCreateArgs {
-    /// Target Lance dataset path or URI root.
-    #[arg(value_name = "DATASET")]
-    dataset: String,
-    /// File path or `-` for stdin.
-    #[arg(long)]
-    input: String,
-    /// `auto`: infer from path (see help). Stdin `-` must use `jsonl` or `csv` (not `lance`).
-    #[arg(long, value_enum, default_value_t = ImportFormat::Auto)]
-    format: ImportFormat,
-    #[arg(long, default_value_t = 384)]
-    embedding_dim: usize,
-    /// Text column on the **source** Lance table (`--format lance`; default `text`).
-    #[arg(long, default_value = "text")]
-    lance_text_column: String,
-    /// Optional id column on the source Lance table (must be Utf8 / LargeUtf8 for now).
-    #[arg(long)]
-    lance_id_column: Option<String>,
-    /// Optional cap on rows to import in a future implementation (reported in RPC for now).
-    #[arg(long)]
-    import_limit: Option<usize>,
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum ImportFormat {
-    #[default]
-    Auto,
-    Jsonl,
-    Csv,
-    /// Existing Lance dataset directory (contains `data.lance/`) or path understood by `Dataset::open`.
-    Lance,
-}
-
-#[derive(Debug, Args)]
-struct SearchIndexMaintenanceArgs {
-    #[command(subcommand)]
-    command: SearchIndexCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum SearchIndexCommand {
-    /// List index segments (excludes Lance system indices).
-    List(SearchIndexListArgs),
-    Build(SearchIndexBuildArgs),
-    /// Drop an index by logical name (`DatasetIndexExt::drop_index`).
-    Delete(SearchIndexDeleteArgs),
-    /// Merge / retrain index segments (`DatasetIndexExt::optimize_indices`).
-    Rebuild(SearchIndexRebuildArgs),
-    Reorder(SearchReorderArgs),
-}
-
-#[derive(Debug, Args)]
-struct SearchIndexListArgs {
-    #[arg(value_name = "DATASET")]
-    dataset: String,
-}
-
-#[derive(Debug, Args)]
-struct SearchIndexDeleteArgs {
-    #[arg(value_name = "DATASET")]
-    dataset: String,
-    #[arg(value_name = "INDEX_NAME")]
-    index_name: String,
-}
-
-#[derive(Debug, Args)]
-struct SearchIndexRebuildArgs {
-    #[arg(value_name = "DATASET")]
-    dataset: String,
-    /// When omitted, all non-system indices are considered (Lance `OptimizeOptions::index_names = None`).
-    #[arg(long)]
-    index_name: Option<String>,
-    /// Use merge-style optimize instead of full retrain (v3 vector `retrain` in Lance).
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    no_retrain: bool,
-    /// When `--no-retrain` is set: passed to `OptimizeOptions::num_indices_to_merge`.
-    #[arg(long)]
-    merge_num_indices: Option<usize>,
-}
-
-#[derive(Debug, Args)]
-struct SearchIndexBuildArgs {
-    #[arg(value_name = "DATASET")]
-    dataset: String,
-    #[arg(long, default_value = "embedding")]
-    vector_column: String,
-    #[arg(long, default_value = "text")]
-    text_column: String,
-    #[arg(long, default_value = "cosine")]
-    metric: String,
-    /// IVF partition count (maps to Lance `IvfBuildParams::num_partitions`).
-    #[arg(long, value_name = "N")]
-    num_partitions: Option<usize>,
-    /// Max k-means iterations for IVF centroid training (Lance `IvfBuildParams::max_iters`, default 50).
-    #[arg(long, value_name = "N")]
-    ivf_max_iters: Option<usize>,
-    /// IVF k-means balance loss weight (`IvfBuildParams::balance_factor`; `lance-tools reorder` uses 0.0).
-    #[arg(long)]
-    ivf_balance_factor: Option<f32>,
-    /// Enable IVF oversized-cluster split postprocess (same idea as `lance-tools index reorder --ivf-balance-postprocess`).
-    #[arg(long = "ivf-balance-postprocess", action = clap::ArgAction::SetTrue)]
-    ivf_balance_postprocess: bool,
-    /// Postprocess cluster size ratio threshold (reorder default 2.5 when postprocess is on).
-    #[arg(long)]
-    ivf_postprocess_max_cluster_ratio: Option<f32>,
-    /// IVF training sample rate (`IvfBuildParams::sample_rate`, Lance default 256).
-    #[arg(long)]
-    ivf_sample_rate: Option<usize>,
-    /// Target rows per IVF partition; if set, partition count is derived (`IvfBuildParams::target_partition_size`).
-    #[arg(long)]
-    ivf_target_partition_size: Option<usize>,
-    /// IVF shuffle rows per batch (`IvfBuildParams::shuffle_partition_batches`, Lance default large).
-    #[arg(long)]
-    ivf_shuffle_partition_batches: Option<usize>,
-    /// IVF shuffle task concurrency (`IvfBuildParams::shuffle_partition_concurrency`).
-    #[arg(long)]
-    ivf_shuffle_partition_concurrency: Option<usize>,
-    /// PQ sub-vector count (`PQBuildParams::num_sub_vectors`, Lance default 16).
-    #[arg(long, value_name = "M")]
-    pq_num_sub_vectors: Option<usize>,
-    /// Bits per PQ code (`PQBuildParams::num_bits`, Lance default 8).
-    #[arg(long, value_name = "BITS")]
-    pq_num_bits: Option<u8>,
-    /// Max k-means iterations for PQ codebook (`PQBuildParams::max_iters`; reorder uses 50).
-    #[arg(long, value_name = "N")]
-    pq_max_iters: Option<usize>,
-    /// PQ k-means restarts (`PQBuildParams::kmeans_redos`, default 1).
-    #[arg(long)]
-    pq_kmeans_redos: Option<usize>,
-    /// PQ codebook training sample rate (`PQBuildParams::sample_rate`, default 256).
-    #[arg(long)]
-    pq_sample_rate: Option<usize>,
-}
-
-#[derive(Debug, Args)]
-struct SearchQueryArgs {
-    #[arg(value_name = "DATASET")]
-    dataset: String,
-    #[arg(value_name = "QUERY")]
-    query: String,
-    #[arg(long, value_enum, default_value_t = SearchMode::Hybrid)]
-    mode: SearchMode,
-    #[arg(long, default_value_t = 10)]
-    k: usize,
-    #[arg(long, default_value_t = 384)]
-    embedding_dim: usize,
-    /// FTS / hybrid：全文检索列名（须已建 inverted / FTS 索引，见 `search index build`）。
-    #[arg(long, default_value = "text")]
-    text_column: String,
-    #[arg(long)]
-    filter: Option<String>,
-    #[arg(long)]
-    nprobes: Option<usize>,
-    #[arg(long)]
-    minimum_nprobes: Option<usize>,
-    #[arg(long)]
-    maximum_nprobes: Option<usize>,
-    #[arg(long)]
-    adaptive_nprobes_margin: Option<f32>,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-enum SearchMode {
-    Vector,
-    Fts,
-    Hybrid,
-}
-
-impl std::fmt::Display for SearchMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            SearchMode::Vector => "vector",
-            SearchMode::Fts => "fts",
-            SearchMode::Hybrid => "hybrid",
-        })
-    }
-}
-
-#[derive(Debug, Args)]
-struct SearchReorderArgs {
-    #[arg(value_name = "DATASET")]
-    dataset: String,
-    #[arg(value_name = "PIVOT_INDEX")]
-    pivot_index: String,
-    #[arg(long)]
-    target: Option<String>,
-    #[arg(long)]
-    in_place: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -750,7 +374,7 @@ struct TrajectoryReplayArgs {
     offset: usize,
     #[arg(long)]
     limit: Option<usize>,
-    /// 读取层覆盖（`auto`：有 Lance 读 Lance，否则 Markdown；两层并存时默认 Lance）。
+    /// Canonical 存储选择；`auto` 与 `lance` 当前都读取 Lance。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
 }
@@ -767,7 +391,7 @@ struct TrajectoryStatsArgs {
     /// 嵌套 subagent session 时指定父 session（路径 `{root}/subagents/{session_id}/`）。
     #[arg(long, value_name = "SEG")]
     root_session_id: Option<String>,
-    /// 统计层覆盖（`auto`：两层并存时同时报告 Lance 行数与 Markdown 块数）。
+    /// Canonical 存储选择；统计以 Lance 为准，并附带 Markdown 调试视图信息。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
     /// 逐轮一行摘要：用户/模型字符数、TTFT、TPOT。
@@ -959,57 +583,9 @@ fn resolve_traj_ids_for_read(
     resolve_traj_read_location(op, path_arg, agent_id, session_id, root_session_id)
 }
 
-fn resolve_engine_path(core_lib: Option<&Path>) -> Result<PathBuf> {
-    if let Some(p) = core_lib {
-        return Ok(p.to_path_buf());
-    }
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf));
-    let names = engine_lib_names();
-    if let Some(dir) = exe_dir {
-        for name in &names {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
-    }
-    anyhow::bail!(
-        "set --core-lib or PERSISTING_ENGINE_LIB to the path of libpersisting_engine (e.g. target/debug/libpersisting_engine.dylib)"
-    )
-}
-
-fn engine_lib_names() -> [&'static str; 3] {
-    #[cfg(target_os = "macos")]
-    {
-        [
-            "libpersisting_engine.dylib",
-            "libpersisting_engine.so",
-            "persisting_engine.dll",
-        ]
-    }
-    #[cfg(target_os = "linux")]
-    {
-        [
-            "libpersisting_engine.so",
-            "libpersisting_engine.dylib",
-            "persisting_engine.dll",
-        ]
-    }
-    #[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
-    {
-        [
-            "persisting_engine.dll",
-            "libpersisting_engine.so",
-            "libpersisting_engine.dylib",
-        ]
-    }
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut lazy = LazyEngine::new(cli.core_lib);
+    let mut lazy = ChronicleClient::new();
     match cli.command {
         Command::Execute(args) => dispatch_component("pvisor", &["run"], args)?,
         Command::Env(args) => dispatch_component("pvisor", &["env"], args)?,
@@ -1017,7 +593,6 @@ fn main() -> Result<()> {
         Command::Query(args) => dispatch_component("ppilot", &["query"], args)?,
         Command::History(args) => run_history(&mut lazy, args)?,
         Command::Eval(args) => run_eval(&mut lazy, args)?,
-        Command::Search(args) => run_search(&mut lazy, &args)?,
         Command::Gateway(args) => run_gateway(&mut lazy, args)?,
     }
     Ok(())
@@ -1054,14 +629,14 @@ fn dispatch_component(component: &str, prefix: &[&str], forwarded: ForwardArgs) 
     Ok(())
 }
 
-fn run_eval(lazy: &mut LazyEngine, args: EvalArgs) -> Result<()> {
+fn run_eval(lazy: &mut ChronicleClient, args: EvalArgs) -> Result<()> {
     match &args.command {
         EvalCommand::Judge(args) => run_eval_judge(lazy, args),
         EvalCommand::Stats(args) => run_eval_stats(lazy, args),
     }
 }
 
-fn run_gateway(lazy: &mut LazyEngine, args: GatewayArgs) -> Result<()> {
+fn run_gateway(lazy: &mut ChronicleClient, args: GatewayArgs) -> Result<()> {
     match args.command {
         GatewayCommand::Serve(args) => match args.backend {
             GatewayBackend::Capture => run_capture_gateway(lazy, &args),
@@ -1087,7 +662,7 @@ fn run_gateway(lazy: &mut LazyEngine, args: GatewayArgs) -> Result<()> {
     }
 }
 
-fn run_history_import(lazy: &mut LazyEngine, args: &CaptureImportArgs) -> Result<()> {
+fn run_history_import(lazy: &mut ChronicleClient, args: &CaptureImportArgs) -> Result<()> {
     let merged = merge_traj_location(
         args.storage.clone(),
         args.agent_id.clone(),
@@ -1111,7 +686,7 @@ fn run_history_import(lazy: &mut LazyEngine, args: &CaptureImportArgs) -> Result
         gateway_input,
         dry_run: args.dry_run,
     };
-    let summary = capture::import_to_trajectory_with_engine(
+    let summary = capture::import_to_trajectory(
         &merged.storage,
         &opts,
         |storage, agent_id, session_id, records_ronl| {
@@ -1122,17 +697,15 @@ fn run_history_import(lazy: &mut LazyEngine, args: &CaptureImportArgs) -> Result
                 agent_id = agent_id,
                 session_id = session_id,
             );
-            let payload =
-                rpc_request_pretty(RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
-                    storage: storage.to_string(),
-                    agent_id: agent_id.to_string(),
-                    session_id: session_id.to_string(),
-                    root_session_id: None,
-                    records_ronl: records_ronl.to_string(),
-                    storage_format: TrajectoryStorageFormat::Auto,
-                }))
-                .context("encode TrajectoryAppend RpcRequest RON")?;
-            lazy.invoke_engine_ron(&payload)
+            let payload = RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
+                storage: storage.to_string(),
+                agent_id: agent_id.to_string(),
+                session_id: session_id.to_string(),
+                root_session_id: None,
+                records_ronl: records_ronl.to_string(),
+                storage_format: TrajectoryStorageFormat::Auto,
+            });
+            lazy.invoke(&payload)
         },
     )?;
     print_capture_summary(&summary, args.dry_run);
@@ -1145,7 +718,7 @@ fn capture_output_dir(args: &GatewayServeArgs) -> Option<String> {
         .or_else(|| std::env::var("PERSISTING_CAPTURE_STORAGE").ok())
 }
 
-fn run_capture_gateway(lazy: &mut LazyEngine, args: &GatewayServeArgs) -> Result<()> {
+fn run_capture_gateway(lazy: &mut ChronicleClient, args: &GatewayServeArgs) -> Result<()> {
     let format = args.format.unwrap_or(capture::CaptureFormat::Markdown);
     let capture_output_dir = capture_output_dir(args);
     let output_dir = capture_output_dir
@@ -1263,21 +836,21 @@ fn write_trajectory_dead_letter(key: &TrajectoryBatchKey, lines: &[String], erro
 }
 
 fn flush_capture_trajectory_batch_or_dead_letter(
-    engine: &Engine,
+    chronicle: &Chronicle,
     key: &TrajectoryBatchKey,
     lines: &[String],
 ) {
     if lines.is_empty() {
         return;
     }
-    if let Err(e) = flush_capture_trajectory_batch(engine, key, lines) {
+    if let Err(e) = flush_capture_trajectory_batch(chronicle, key, lines) {
         write_trajectory_dead_letter(key, lines, &format!("{e:#}"));
         eprintln!("[persisting-cli] capture trajectory append failed: {e:#}");
     }
 }
 
 fn flush_capture_trajectory_batch(
-    engine: &Engine,
+    chronicle: &Chronicle,
     key: &TrajectoryBatchKey,
     lines: &[String],
 ) -> Result<()> {
@@ -1285,33 +858,28 @@ fn flush_capture_trajectory_batch(
         return Ok(());
     }
     let records_ronl = records_ronl_from_lines(lines);
-    let payload = rpc_request_pretty(RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
+    let payload = RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
         storage: key.storage.clone(),
         agent_id: key.agent_id.clone(),
         session_id: key.session_id.clone(),
         root_session_id: key.root_session_id.clone(),
         records_ronl,
         storage_format: TrajectoryStorageFormat::Lance,
-    }))?;
-    let raw = engine.invoke_engine_ron(&payload)?;
-    parse_engine_ron_response(&raw)?;
+    });
+    let response = chronicle.invoke(&payload)?;
+    if !matches!(response, ResponseBody::TrajectoryAppend(_)) {
+        anyhow::bail!("unexpected pChronicle response: {response:?}");
+    }
     Ok(())
 }
 
 fn build_capture_trajectory_sink(
-    core_lib: Option<PathBuf>,
     storage: String,
     agent_id: String,
-    format: capture::CaptureFormat,
 ) -> Result<(
     std::sync::Arc<dyn persisting_gateway::sink::CaptureEventSink>,
     TrajectoryAppendWorker,
 )> {
-    if !format.writes_lance() {
-        let sink = std::sync::Arc::new(persisting_gateway::sink::SeqOnlySink::new());
-        return Ok((sink, TrajectoryAppendWorker::noop()));
-    }
-    let engine_path = resolve_engine_path(core_lib.as_deref())?;
     let storage = std::path::PathBuf::from(&storage)
         .canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(&storage))
@@ -1324,13 +892,7 @@ fn build_capture_trajectory_sink(
     let join = std::thread::spawn(move || {
         use std::collections::HashMap;
 
-        let engine = match Engine::load(&engine_path) {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("[persisting-cli] capture trajectory engine load failed: {e:#}");
-                return;
-            }
-        };
+        let chronicle = Chronicle;
         let mut batches: HashMap<TrajectoryBatchKey, Vec<String>> = HashMap::new();
 
         while let Ok(job) = job_rx.recv() {
@@ -1351,7 +913,7 @@ fn build_capture_trajectory_sink(
                 batch.push(line);
                 if batch.len() >= CAPTURE_TRAJECTORY_BATCH || flush_now {
                     let lines = batches.remove(&key).unwrap_or_default();
-                    flush_capture_trajectory_batch_or_dead_letter(&engine, &key, &lines);
+                    flush_capture_trajectory_batch_or_dead_letter(&chronicle, &key, &lines);
                 }
                 Ok(())
             })();
@@ -1361,7 +923,7 @@ fn build_capture_trajectory_sink(
         }
 
         for (key, lines) in batches {
-            flush_capture_trajectory_batch_or_dead_letter(&engine, &key, &lines);
+            flush_capture_trajectory_batch_or_dead_letter(&chronicle, &key, &lines);
         }
     });
 
@@ -1376,7 +938,7 @@ fn build_capture_trajectory_sink(
                 root_session_id: route.append_root_session(),
                 record,
             })
-            .map_err(|e| anyhow::anyhow!("engine append channel closed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("pChronicle append channel closed: {e}"))?;
             Ok(())
         },
     ));
@@ -1410,16 +972,15 @@ fn load_storage_agent_id(storage: &Path) -> String {
     "capture".into()
 }
 
-fn run_replay_dead_letter(lazy: &mut LazyEngine, args: &CaptureReplayDeadLetterArgs) -> Result<()> {
+fn run_replay_dead_letter(
+    _chronicle: &mut ChronicleClient,
+    args: &CaptureReplayDeadLetterArgs,
+) -> Result<()> {
     let storage = PathBuf::from(&args.output_dir);
     let storage = storage.canonicalize().unwrap_or(storage);
     let agent_id = load_storage_agent_id(&storage);
-    let (sink, mut worker) = build_capture_trajectory_sink(
-        lazy.core_lib.clone(),
-        storage.display().to_string(),
-        agent_id,
-        args.format,
-    )?;
+    let (sink, mut worker) =
+        build_capture_trajectory_sink(storage.display().to_string(), agent_id)?;
     capture::replay_dead_letter::cmd_replay_dead_letter(
         capture::replay_dead_letter::ReplayDeadLetterOptions {
             output_dir: storage,
@@ -1437,13 +998,6 @@ struct TrajectoryAppendWorker {
 }
 
 impl TrajectoryAppendWorker {
-    fn noop() -> Self {
-        Self {
-            job_tx: None,
-            join: None,
-        }
-    }
-
     fn shutdown(&mut self) {
         if let Some(tx) = self.job_tx.take() {
             drop(tx);
@@ -1462,7 +1016,7 @@ impl Drop for TrajectoryAppendWorker {
     }
 }
 
-fn run_capture_serve(lazy: &mut LazyEngine, args: &CaptureServeConfig) -> Result<()> {
+fn run_capture_serve(_chronicle: &mut ChronicleClient, args: &CaptureServeConfig) -> Result<()> {
     let storage_path = PathBuf::from(&args.output_dir);
     let _run_session =
         persisting_gateway::runtime::run_env::ensure_serve_run_session(&storage_path)
@@ -1502,12 +1056,8 @@ fn run_capture_serve(lazy: &mut LazyEngine, args: &CaptureServeConfig) -> Result
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let (sink, mut worker) = build_capture_trajectory_sink(
-        lazy.core_lib.clone(),
-        args.output_dir.clone(),
-        config.agent_id.clone(),
-        args.format,
-    )?;
+    let (sink, mut worker) =
+        build_capture_trajectory_sink(args.output_dir.clone(), config.agent_id.clone())?;
 
     let rt = tokio::runtime::Runtime::new().context("tokio runtime")?;
     rt.block_on(persisting_gateway::serve(
@@ -1531,370 +1081,52 @@ fn print_capture_summary(summary: &capture::CaptureImportSummary, dry_run: bool)
     }
 }
 
-fn run_search(lazy: &mut LazyEngine, args: &SearchArgs) -> Result<()> {
-    match &args.command {
-        SearchCommand::Create(args) => {
-            let fmt = resolve_import_format(&args.input, args.format)?;
-            match fmt {
-                ImportFormat::Lance => {
-                    if args.input.trim() == "-" {
-                        anyhow::bail!(
-                            "Lance import cannot use stdin; pass a Lance dataset path as --input"
-                        );
-                    }
-                    let payload = rpc_request_pretty(RequestBody::SearchImportLance(
-                        SearchImportLanceRequest {
-                            target_dataset: args.dataset.clone(),
-                            source_lance: args.input.clone(),
-                            source_text_column: args.lance_text_column.clone(),
-                            source_id_column: args.lance_id_column.clone(),
-                            embedding_dim: args.embedding_dim,
-                            limit: args.import_limit,
-                        },
-                    ))
-                    .context("encode SearchImportLance RpcRequest RON")?;
-                    eprintln!(
-                        "[persisting-cli] search create: Lance import from {:?} -> dataset {:?} (engine may take a while)…",
-                        args.input, args.dataset
-                    );
-                    lazy.invoke_engine_ron(&payload)?;
-                }
-                ImportFormat::Jsonl | ImportFormat::Csv => {
-                    let content = read_input(&args.input)?;
-                    eprintln!(
-                        "[persisting-cli] search create: read {} bytes from {:?}, parsing…",
-                        content.len(),
-                        args.input
-                    );
-                    let rows = match fmt {
-                        ImportFormat::Jsonl => {
-                            parse_jsonl_import(&content, &args.dataset, args.embedding_dim)?
-                        }
-                        ImportFormat::Csv => {
-                            parse_csv_import(&content, &args.dataset, args.embedding_dim)?
-                        }
-                        ImportFormat::Auto | ImportFormat::Lance => unreachable!(),
-                    };
-                    eprintln!(
-                        "[persisting-cli] search create: parsed {} rows, sending to engine…",
-                        rows.len()
-                    );
-                    search_add_batch(lazy, rows)?;
-                }
-                ImportFormat::Auto => unreachable!(),
-            }
-        }
-        SearchCommand::Index(idx) => match &idx.command {
-            SearchIndexCommand::List(args) => {
-                let payload =
-                    rpc_request_pretty(RequestBody::SearchIndexList(SearchIndexListRequest {
-                        dataset: args.dataset.clone(),
-                    }))
-                    .context("encode SearchIndexList RpcRequest RON")?;
-                lazy.invoke_engine_ron(&payload)?;
-            }
-            SearchIndexCommand::Build(args) => {
-                let ivf_balance_postprocess = if args.ivf_balance_postprocess {
-                    Some(true)
-                } else {
-                    None
-                };
-                let payload = rpc_request_pretty(RequestBody::SearchIndex(SearchIndexRequest {
-                    dataset: args.dataset.clone(),
-                    vector_column: args.vector_column.clone(),
-                    text_column: args.text_column.clone(),
-                    metric: args.metric.clone(),
-                    num_partitions: args.num_partitions,
-                    ivf_max_iters: args.ivf_max_iters,
-                    ivf_balance_factor: args.ivf_balance_factor,
-                    ivf_balance_postprocess,
-                    ivf_postprocess_max_cluster_ratio: args.ivf_postprocess_max_cluster_ratio,
-                    ivf_sample_rate: args.ivf_sample_rate,
-                    ivf_target_partition_size: args.ivf_target_partition_size,
-                    ivf_shuffle_partition_batches: args.ivf_shuffle_partition_batches,
-                    ivf_shuffle_partition_concurrency: args.ivf_shuffle_partition_concurrency,
-                    pq_num_sub_vectors: args.pq_num_sub_vectors,
-                    pq_num_bits: args.pq_num_bits,
-                    pq_max_iters: args.pq_max_iters,
-                    pq_kmeans_redos: args.pq_kmeans_redos,
-                    pq_sample_rate: args.pq_sample_rate,
-                }))
-                .context("encode SearchIndex RpcRequest RON")?;
-                eprintln!(
-                    "[persisting-cli] search index build: dataset {:?} (IVF/PQ 训练可能需数分钟，期间无 stdout 输出)…",
-                    args.dataset
-                );
-                lazy.invoke_engine_ron(&payload)?;
-                eprintln!(
-                    "[persisting-cli] search index build: finished {:?}",
-                    args.dataset
-                );
-            }
-            SearchIndexCommand::Delete(args) => {
-                let payload =
-                    rpc_request_pretty(RequestBody::SearchIndexDelete(SearchIndexDeleteRequest {
-                        dataset: args.dataset.clone(),
-                        index_name: args.index_name.clone(),
-                    }))
-                    .context("encode SearchIndexDelete RpcRequest RON")?;
-                lazy.invoke_engine_ron(&payload)?;
-            }
-            SearchIndexCommand::Rebuild(args) => {
-                let payload = rpc_request_pretty(RequestBody::SearchIndexRebuild(
-                    SearchIndexRebuildRequest {
-                        dataset: args.dataset.clone(),
-                        index_name: args.index_name.clone(),
-                        retrain: !args.no_retrain,
-                        merge_num_indices: args.merge_num_indices,
-                    },
-                ))
-                .context("encode SearchIndexRebuild RpcRequest RON")?;
-                eprintln!(
-                    "[persisting-cli] search index rebuild: dataset {:?} index {:?} (可能较慢)…",
-                    args.dataset, args.index_name
-                );
-                lazy.invoke_engine_ron(&payload)?;
-                eprintln!("[persisting-cli] search index rebuild: finished");
-            }
-            SearchIndexCommand::Reorder(args) => {
-                let payload = rpc_request_pretty(RequestBody::SearchIndexReorder(
-                    SearchIndexReorderRequest {
-                        dataset: args.dataset.clone(),
-                        pivot_index: args.pivot_index.clone(),
-                        target: args.target.clone(),
-                        in_place: args.in_place,
-                    },
-                ))
-                .context("encode SearchIndexReorder RpcRequest RON")?;
-                eprintln!(
-                    "[persisting-cli] search index reorder: dataset {:?} (可能较慢)…",
-                    args.dataset
-                );
-                lazy.invoke_engine_ron(&payload)?;
-                eprintln!("[persisting-cli] search index reorder: finished");
-            }
-        },
-        SearchCommand::Query(args) => {
-            let payload = rpc_request_pretty(RequestBody::SearchQuery(SearchQueryRequest {
-                dataset: args.dataset.clone(),
-                query: args.query.clone(),
-                mode: args.mode.to_string(),
-                k: args.k,
-                embedding_dim: args.embedding_dim,
-                text_column: args.text_column.clone(),
-                filter: args.filter.clone(),
-                nprobes: args.nprobes,
-                minimum_nprobes: args.minimum_nprobes,
-                maximum_nprobes: args.maximum_nprobes,
-                adaptive_nprobes_margin: args.adaptive_nprobes_margin,
-            }))
-            .context("encode SearchQuery RpcRequest RON")?;
-            eprintln!(
-                "[persisting-cli] search query: dataset {:?} mode {:?}…",
-                args.dataset, args.mode
-            );
-            lazy.invoke_engine_ron(&payload)?;
-        }
-    }
-    Ok(())
-}
-
-fn resolve_import_format(input_path: &str, explicit: ImportFormat) -> Result<ImportFormat> {
-    match explicit {
-        ImportFormat::Auto => infer_import_format_from_path(input_path),
-        f => Ok(f),
-    }
-}
-
-fn infer_import_format_from_path(input_path: &str) -> Result<ImportFormat> {
-    if input_path == "-" {
-        anyhow::bail!("when --input is '-' (stdin), set --format to jsonl or csv");
-    }
-    let p = Path::new(input_path);
-    if p.join("data.lance").exists() {
-        return Ok(ImportFormat::Lance);
-    }
-    let lower = input_path.to_ascii_lowercase();
-    if lower.ends_with(".csv") {
-        return Ok(ImportFormat::Csv);
-    }
-    if lower.ends_with(".jsonl") || lower.ends_with(".json") {
-        return Ok(ImportFormat::Jsonl);
-    }
-    anyhow::bail!(
-        "cannot infer --format from path '{}'; use --format jsonl, csv, or lance (or point --input at a directory that contains data.lance/)",
-        input_path
-    )
-}
-
-fn parse_jsonl_import(
-    content: &str,
-    dataset: &str,
-    embedding_dim: usize,
-) -> Result<Vec<SearchAddRequest>> {
-    let mut rows = Vec::new();
-    for (line_no, line) in content.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut value: serde_json::Value = serde_json::from_str(line)
-            .with_context(|| format!("invalid JSON on line {} of JSONL import", line_no + 1))?;
-        let text = value
-            .get("text")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "line {}: JSON object must contain string field 'text'",
-                    line_no + 1
-                )
-            })?
-            .to_string();
-        let id = value
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned);
-        let metadata = value
-            .as_object_mut()
-            .and_then(|object| object.remove("metadata"));
-        rows.push(SearchAddRequest {
-            dataset: dataset.to_string(),
-            id,
-            text,
-            metadata,
-            embedding_dim,
-        });
-        let n = rows.len();
-        if n == 1 || n % 2000 == 0 {
-            eprintln!("[persisting-cli] search create: parsed {n} jsonl rows…");
-        }
-    }
-    if rows.is_empty() {
-        anyhow::bail!("JSONL import contained no non-empty lines");
-    }
-    Ok(rows)
-}
-
-fn parse_csv_import(
-    content: &str,
-    dataset: &str,
-    embedding_dim: usize,
-) -> Result<Vec<SearchAddRequest>> {
-    let mut rdr = csv::ReaderBuilder::new()
-        .flexible(true)
-        .trim(csv::Trim::All)
-        .from_reader(content.as_bytes());
-    let headers = rdr.headers().context("CSV headers")?.clone();
-    let pos_text = headers
-        .iter()
-        .position(|h| h.eq_ignore_ascii_case("text"))
-        .ok_or_else(|| {
-            anyhow::anyhow!("CSV must include a column named 'text' (case-insensitive)")
-        })?;
-    let pos_id = headers.iter().position(|h| h.eq_ignore_ascii_case("id"));
-    let mut out = Vec::new();
-    for (row_idx, result) in rdr.records().enumerate() {
-        let rec = result.with_context(|| format!("CSV parse error at data row {}", row_idx + 1))?;
-        let text = rec
-            .get(pos_text)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("row {}: missing or empty 'text'", row_idx + 2))?
-            .to_string();
-        let id = pos_id
-            .and_then(|p| rec.get(p))
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned);
-        let mut meta = serde_json::Map::new();
-        for (i, col_name) in headers.iter().enumerate() {
-            if i == pos_text || pos_id == Some(i) {
-                continue;
-            }
-            if let Some(val) = rec.get(i) {
-                if val.is_empty() {
-                    continue;
-                }
-                meta.insert(
-                    col_name.to_string(),
-                    serde_json::Value::String(val.to_string()),
-                );
-            }
-        }
-        let metadata = if meta.is_empty() {
-            None
-        } else {
-            Some(serde_json::Value::Object(meta))
-        };
-        out.push(SearchAddRequest {
-            dataset: dataset.to_string(),
-            id,
-            text,
-            metadata,
-            embedding_dim,
-        });
-        let n = out.len();
-        if n == 1 || n % 2000 == 0 {
-            eprintln!("[persisting-cli] search create: parsed {n} csv rows…");
-        }
-    }
-    if out.is_empty() {
-        anyhow::bail!("CSV contained no data rows");
-    }
-    Ok(out)
-}
-
 fn invoke_trajectory_stats(
-    lazy: &mut LazyEngine,
+    lazy: &mut ChronicleClient,
     req: TrajectoryStatsRequest,
 ) -> Result<TrajectoryStatsResponse> {
-    let payload =
-        rpc_request_pretty(RequestBody::TrajectoryStats(req)).context("encode TrajectoryStats")?;
-    let raw = lazy.invoke_engine_ron_silent(&payload)?;
-    match parse_engine_ron_response(&raw)?.body {
+    let payload = RequestBody::TrajectoryStats(req);
+    match lazy.invoke_silent(&payload)? {
         ResponseBody::TrajectoryStats(r) => Ok(r),
-        other => anyhow::bail!("unexpected engine response: {other:?}"),
+        other => anyhow::bail!("unexpected pChronicle response: {other:?}"),
     }
 }
 
 fn invoke_trajectory_judge(
-    lazy: &mut LazyEngine,
+    lazy: &mut ChronicleClient,
     req: TrajectoryJudgeRequest,
 ) -> Result<TrajectoryJudgeResponse> {
-    let payload =
-        rpc_request_pretty(RequestBody::TrajectoryJudge(req)).context("encode TrajectoryJudge")?;
-    let raw = lazy.invoke_engine_ron_silent(&payload)?;
-    match parse_engine_ron_response(&raw)?.body {
+    let payload = RequestBody::TrajectoryJudge(req);
+    match lazy.invoke_silent(&payload)? {
         ResponseBody::TrajectoryJudge(r) => Ok(r),
-        other => anyhow::bail!("unexpected engine response: {other:?}"),
+        other => anyhow::bail!("unexpected pChronicle response: {other:?}"),
     }
 }
 
 fn invoke_trajectory_judge_stats(
-    lazy: &mut LazyEngine,
+    lazy: &mut ChronicleClient,
     req: TrajectoryJudgeStatsRequest,
 ) -> Result<TrajectoryJudgeStatsResponse> {
-    let payload = rpc_request_pretty(RequestBody::TrajectoryJudgeStats(req))
-        .context("encode TrajectoryJudgeStats")?;
-    let raw = lazy.invoke_engine_ron_silent(&payload)?;
-    match parse_engine_ron_response(&raw)?.body {
+    let payload = RequestBody::TrajectoryJudgeStats(req);
+    match lazy.invoke_silent(&payload)? {
         ResponseBody::TrajectoryJudgeStats(r) => Ok(r),
-        other => anyhow::bail!("unexpected engine response: {other:?}"),
+        other => anyhow::bail!("unexpected pChronicle response: {other:?}"),
     }
 }
 
 fn invoke_trajectory_replay(
-    lazy: &mut LazyEngine,
+    lazy: &mut ChronicleClient,
     req: TrajectoryReplayRequest,
 ) -> Result<TrajectoryReplayResponse> {
-    let payload = rpc_request_pretty(RequestBody::TrajectoryReplay(req))
-        .context("encode TrajectoryReplay")?;
-    let raw = lazy.invoke_engine_ron_silent(&payload)?;
-    match parse_engine_ron_response(&raw)?.body {
+    let payload = RequestBody::TrajectoryReplay(req);
+    match lazy.invoke_silent(&payload)? {
         ResponseBody::TrajectoryReplay(r) => Ok(r),
-        other => anyhow::bail!("unexpected engine response: {other:?}"),
+        other => anyhow::bail!("unexpected pChronicle response: {other:?}"),
     }
 }
 
 fn run_trajectory_stats_detail(
-    lazy: &mut LazyEngine,
+    lazy: &mut ChronicleClient,
     loc: &TrajLocation,
     storage_format: TrajectoryStorageCli,
     backend: ResolvedStatsOutputBackend,
@@ -1967,7 +1199,7 @@ fn stats_detail_section_label(loc: &TrajLocation) -> String {
     }
 }
 
-fn run_history(lazy: &mut LazyEngine, args: HistoryArgs) -> Result<()> {
+fn run_history(lazy: &mut ChronicleClient, args: HistoryArgs) -> Result<()> {
     match &args.command {
         HistoryCommand::Import(args) => run_history_import(lazy, args)?,
         HistoryCommand::ReplayDeadLetter(args) => run_replay_dead_letter(lazy, args)?,
@@ -1995,25 +1227,20 @@ fn run_history(lazy: &mut LazyEngine, args: HistoryArgs) -> Result<()> {
             let records_ronl = TrajectoryFormatManager::prepare_append_batch(input_format, &raw)
                 .context("normalize trajectory add input")?;
             eprintln!(
-                "[persisting-cli] trajectory add: {} bytes internal payload, building RpcRequest…",
+                "[persisting-cli] trajectory add: {} bytes internal payload…",
                 records_ronl.len()
             );
-            let payload =
-                rpc_request_pretty(RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
-                    storage: args.storage.clone(),
-                    agent_id,
-                    session_id,
-                    root_session_id: None,
-                    records_ronl,
-                    storage_format,
-                }))
-                .context("encode TrajectoryAppend RpcRequest RON")?;
-            eprintln!(
-                "[persisting-cli] trajectory add: request {} bytes, calling engine (大轨迹可能较慢)…",
-                payload.len()
-            );
-            lazy.invoke_engine_ron(&payload)?;
-            eprintln!("[persisting-cli] trajectory add: engine returned");
+            let payload = RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
+                storage: args.storage.clone(),
+                agent_id,
+                session_id,
+                root_session_id: None,
+                records_ronl,
+                storage_format,
+            });
+            eprintln!("[persisting-cli] trajectory add: writing through pChronicle…");
+            lazy.invoke(&payload)?;
+            eprintln!("[persisting-cli] trajectory add: pChronicle returned");
         }
         HistoryCommand::Truncate(args) => {
             let loc = resolve_traj_ids_for_read(
@@ -2023,16 +1250,14 @@ fn run_history(lazy: &mut LazyEngine, args: HistoryArgs) -> Result<()> {
                 args.session_id.clone(),
                 args.root_session_id.clone(),
             )?;
-            let payload =
-                rpc_request_pretty(RequestBody::TrajectoryTruncate(TrajectoryTruncateRequest {
-                    storage: loc.storage,
-                    agent_id: loc.agent_id,
-                    session_id: loc.session_id,
-                    root_session_id: loc.root_session_id,
-                    keep_rows: args.keep_rows,
-                }))
-                .context("encode TrajectoryTruncate RpcRequest RON")?;
-            lazy.invoke_engine_ron(&payload)?;
+            let payload = RequestBody::TrajectoryTruncate(TrajectoryTruncateRequest {
+                storage: loc.storage,
+                agent_id: loc.agent_id,
+                session_id: loc.session_id,
+                root_session_id: loc.root_session_id,
+                keep_rows: args.keep_rows,
+            });
+            lazy.invoke(&payload)?;
         }
         HistoryCommand::Extract(args) => {
             let loc = resolve_traj_ids_for_read(
@@ -2042,17 +1267,15 @@ fn run_history(lazy: &mut LazyEngine, args: HistoryArgs) -> Result<()> {
                 args.session_id.clone(),
                 args.root_session_id.clone(),
             )?;
-            let payload =
-                rpc_request_pretty(RequestBody::TrajectoryExtract(TrajectoryExtractRequest {
-                    storage: loc.storage,
-                    agent_id: loc.agent_id,
-                    session_id: loc.session_id,
-                    root_session_id: loc.root_session_id,
-                    out_dir: args.out_dir.clone(),
-                    include_subagents: args.include_subagents,
-                }))
-                .context("encode TrajectoryExtract RpcRequest RON")?;
-            lazy.invoke_engine_ron(&payload)?;
+            let payload = RequestBody::TrajectoryExtract(TrajectoryExtractRequest {
+                storage: loc.storage,
+                agent_id: loc.agent_id,
+                session_id: loc.session_id,
+                root_session_id: loc.root_session_id,
+                out_dir: args.out_dir.clone(),
+                include_subagents: args.include_subagents,
+            });
+            lazy.invoke(&payload)?;
         }
         HistoryCommand::Replay(args) => {
             let loc = resolve_traj_ids_for_read(
@@ -2062,18 +1285,16 @@ fn run_history(lazy: &mut LazyEngine, args: HistoryArgs) -> Result<()> {
                 args.session_id.clone(),
                 args.root_session_id.clone(),
             )?;
-            let payload =
-                rpc_request_pretty(RequestBody::TrajectoryReplay(TrajectoryReplayRequest {
-                    storage: loc.storage,
-                    agent_id: loc.agent_id,
-                    session_id: loc.session_id,
-                    offset: args.offset,
-                    limit: args.limit,
-                    storage_format: args.storage_format.into(),
-                    root_session_id: loc.root_session_id,
-                }))
-                .context("encode TrajectoryReplay RpcRequest RON")?;
-            lazy.invoke_engine_ron(&payload)?;
+            let payload = RequestBody::TrajectoryReplay(TrajectoryReplayRequest {
+                storage: loc.storage,
+                agent_id: loc.agent_id,
+                session_id: loc.session_id,
+                offset: args.offset,
+                limit: args.limit,
+                storage_format: args.storage_format.into(),
+                root_session_id: loc.root_session_id,
+            });
+            lazy.invoke(&payload)?;
         }
         HistoryCommand::Stats(args) => {
             let path_arg = resolve_traj_storage_arg(args.storage.clone())?;
@@ -2156,23 +1377,20 @@ fn run_history(lazy: &mut LazyEngine, args: HistoryArgs) -> Result<()> {
             let storage = resolve_traj_storage_arg(args.storage.clone())?;
             let (agent_id, session_id) =
                 resolve_traj_ids_for_write(args.agent_id.clone(), args.session_id.clone())?;
-            let payload = rpc_request_pretty(RequestBody::TrajectoryMaterialize(
-                TrajectoryMaterializeRequest {
-                    storage,
-                    agent_id,
-                    session_id,
-                    root_session_id: args.root_session_id.clone(),
-                },
-            ))
-            .context("encode TrajectoryMaterialize RpcRequest RON")?;
-            lazy.invoke_engine_ron(&payload)?;
+            let payload = RequestBody::TrajectoryMaterialize(TrajectoryMaterializeRequest {
+                storage,
+                agent_id,
+                session_id,
+                root_session_id: args.root_session_id.clone(),
+            });
+            lazy.invoke(&payload)?;
         }
         HistoryCommand::Convert(args) => trajectory_convert::run_traj_convert(args)?,
     }
     Ok(())
 }
 
-fn run_eval_stats(lazy: &mut LazyEngine, args: &TrajectoryJudgeStatsArgs) -> Result<()> {
+fn run_eval_stats(lazy: &mut ChronicleClient, args: &TrajectoryJudgeStatsArgs) -> Result<()> {
     let storage = resolve_traj_storage_arg(args.storage.clone())?;
     let req = TrajectoryJudgeStatsRequest {
         storage,
@@ -2180,9 +1398,8 @@ fn run_eval_stats(lazy: &mut LazyEngine, args: &TrajectoryJudgeStatsArgs) -> Res
         session_id: args.session_id.clone(),
         root_session_id: args.root_session_id.clone(),
     };
-    let payload = rpc_request_pretty(RequestBody::TrajectoryJudgeStats(req))
-        .context("encode TrajectoryJudgeStats RpcRequest RON")?;
-    lazy.invoke_engine_ron(&payload)?;
+    let payload = RequestBody::TrajectoryJudgeStats(req);
+    lazy.invoke(&payload)?;
     Ok(())
 }
 
@@ -2245,7 +1462,7 @@ fn resolve_judge_locations(
     Ok(judge_manual::sample_locations(locs, mode, limit))
 }
 
-fn run_eval_judge(lazy: &mut LazyEngine, args: &TrajectoryJudgeArgs) -> Result<()> {
+fn run_eval_judge(lazy: &mut ChronicleClient, args: &TrajectoryJudgeArgs) -> Result<()> {
     let rubric_ids = resolve_judge_rubrics(args);
     let scope: JudgeScope = args.scope.into();
     let method: JudgeMethod = if args.score.is_some() {
@@ -2347,7 +1564,7 @@ fn dialogue_turn_count(story: &persisting_gateway::engine::Story) -> usize {
 }
 
 fn manual_judge_incomplete(
-    lazy: &mut LazyEngine,
+    lazy: &mut ChronicleClient,
     loc: &TrajLocation,
     scope: JudgeScope,
     rubrics: &[String],
@@ -2380,7 +1597,7 @@ fn manual_judge_incomplete(
 }
 
 fn run_eval_judge_one(
-    lazy: &mut LazyEngine,
+    lazy: &mut ChronicleClient,
     loc: &TrajLocation,
     args: &TrajectoryJudgeArgs,
     rubric_ids: &[String],
@@ -2483,8 +1700,14 @@ mod tests {
         assert!(Cli::try_parse_from(["persisting", "trajectory", "stats", "./store"]).is_err());
     }
 
+    #[test]
+    fn removed_search_command_is_rejected() {
+        assert!(Cli::try_parse_from(["persisting", "search", "query", "./store", "text"]).is_err());
+    }
+
     fn capture_record(kind: &str) -> persisting_gateway::record::CaptureRecord {
         persisting_gateway::record::CaptureRecord {
+            identity: Default::default(),
             seq: 0,
             source: "test".to_string(),
             kind: kind.to_string(),

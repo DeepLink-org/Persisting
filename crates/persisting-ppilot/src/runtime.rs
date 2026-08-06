@@ -65,7 +65,15 @@ pub async fn run_local_fleet(
     })
     .await
     .context("start embedded pPilot Supervisor")?;
-    let supervisor_bootstrap = supervisor.bootstrap();
+    let mut supervisor_bootstrap = supervisor.bootstrap();
+    if let Some(coordinator) = &opts.coordinator {
+        supervisor_bootstrap.attempt_registry_uri =
+            Some(coordinator.control().root_uri().to_string());
+        supervisor_bootstrap.attempt_ttl_ms = opts
+            .coordinator
+            .as_ref()
+            .map_or(15_000, |coordinator| coordinator.lease_ttl_ms());
+    }
     let pythonpath = apply_pythonpath(&opts);
     let system: Arc<ActorSystem> = ActorSystem::builder()
         .mailbox_capacity(256)
@@ -129,7 +137,12 @@ async fn run_driver_rank(
     })
     .await
     .context("start rank-local pPilot Supervisor")?;
-    let supervisor_bootstrap = supervisor.bootstrap();
+    let mut supervisor_bootstrap = supervisor.bootstrap();
+    if let Some(coordinator) = &opts.coordinator {
+        supervisor_bootstrap.attempt_registry_uri =
+            Some(coordinator.control().root_uri().to_string());
+        supervisor_bootstrap.attempt_ttl_ms = coordinator.lease_ttl_ms();
+    }
     let bind = format!("0.0.0.0:{}", dist.pulsing_seed.port());
     let system: Arc<ActorSystem> = ActorSystem::builder()
         .mailbox_capacity(256)
@@ -222,7 +235,12 @@ async fn run_worker_rank(dist: DistEnv, opts: &RunOptions, pythonpath: Vec<PathB
     })
     .await
     .context("start worker-local pPilot Supervisor")?;
-    let supervisor_bootstrap = supervisor.bootstrap();
+    let mut supervisor_bootstrap = supervisor.bootstrap();
+    if let Some(coordinator) = &opts.coordinator {
+        supervisor_bootstrap.attempt_registry_uri =
+            Some(coordinator.control().root_uri().to_string());
+        supervisor_bootstrap.attempt_ttl_ms = coordinator.lease_ttl_ms();
+    }
     let seed = dist.pulsing_seed.to_string();
     let mut last = None;
     let system = {
@@ -336,7 +354,7 @@ async fn spawn_one_slot(
     opts: &RunOptions,
     pythonpath: &[PathBuf],
     gate: Option<Arc<ShutdownGate>>,
-    supervisor: Option<persisting_proto::SupervisorBootstrap>,
+    supervisor: Option<persisting_control::SupervisorBootstrap>,
 ) -> Result<(ActorRef, usize)> {
     let SlotPlacement {
         worker,
@@ -376,7 +394,7 @@ async fn spawn_rank_slots(
     opts: &RunOptions,
     pythonpath: &[PathBuf],
     gate: Option<Arc<ShutdownGate>>,
-    supervisor: Option<persisting_proto::SupervisorBootstrap>,
+    supervisor: Option<persisting_control::SupervisorBootstrap>,
 ) -> Result<Vec<(ActorRef, usize)>> {
     let RankPlacement {
         rank,
@@ -412,7 +430,7 @@ async fn spawn_local_fleet_slots(
     per_worker: usize,
     opts: &RunOptions,
     pythonpath: &[PathBuf],
-    supervisor: Option<persisting_proto::SupervisorBootstrap>,
+    supervisor: Option<persisting_control::SupervisorBootstrap>,
 ) -> Result<Vec<(ActorRef, usize)>> {
     let mut out = Vec::with_capacity(n_workers.saturating_mul(per_worker));
     for slot in 0..per_worker {

@@ -121,12 +121,21 @@ Persisting Gateway 的主入口是代理流量。`events` 应对齐这一现实�
 
 ## Schema：逻辑事件 `EventRecord`
 
-编码：UTF-8 JSON object。一行事件 MUST 包含 `seq`、`source`、`kind`、`payload`。
+编码：UTF-8 JSON object。`EventRecord` 由 pChronicle 唯一定义；Gateway 的
+`CaptureRecord` 只是该类型的兼容别名，pVisor 生命周期事件也直接使用同一类型。
+一行事件 MUST 包含 `seq`、`source`、`kind`、`payload`。
 
 ### 关联信封（顶栏）
 
 | Field | Type | Status | Description |
 |---|---|---|---|
+| `schema_version` | integer | Required for new writes | pChronicle event schema version |
+| `event_id` | string | Required for new writes | append 边界生成的稳定事件身份 |
+| `run_id` | string | Required for new writes | 事件所属逻辑 Run；旧 capture row 读取时可缺省 |
+| `attempt_id` | string | Optional | 生命周期事件所属 Attempt |
+| `storyline_id` / `turn_id` | string | Optional | narrative 维度，与 Attempt 正交 |
+| `timestamp_unix_ms` | integer | Required for new writes | 机器可比较的观测时间 |
+| `producer` | string | Required for new writes | 产生该记录的组件 |
 | `seq` | integer | Required | dataset / 会话内单调序号 |
 | `source` | string | Required | 如 `persisting-proxy`、`persisting-gateway` |
 | `kind` | string | Required | 见 kind 节；HTTP 方向优先 |

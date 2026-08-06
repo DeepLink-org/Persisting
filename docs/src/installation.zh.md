@@ -5,7 +5,7 @@ Persisting 拆成三个安装物，按用途选择：
 | 安装物 | 内容 | 用途 |
 |---|---|---|
 | Python 包 | `persisting`（wheel） | Python API：tensor memory、queue、search |
-| 统一 CLI | `persisting`、`pvisor`、`ppilot` + `libpersisting_engine` | `execute` / `env` / `batch` / `query` / `history` / `eval` / `gateway` |
+| 统一 CLI | `persisting`、`pvisor`、`ppilot` | `execute` / `env` / `batch` / `query` / `history` / `eval` / `gateway` |
 | Guest runtime | 静态 Linux `pvisor`（`linux-amd64` / `linux-arm64`） | Container/KVM executor 注入 guest 用 |
 
 ## 环境要求
@@ -43,7 +43,7 @@ pip install -e ".[lance]"
 ## 统一 CLI
 
 CLI 是匹配的组件集：`persisting` 把执行/环境命令转发给 `pvisor`，批量/查询命令转发给
-`ppilot`，search/history/eval 等动态加载 `libpersisting_engine`。三种安装方式：
+`ppilot`，history/eval 直接调用 pChronicle。三种安装方式：
 
 ### 从源码（推荐开发）
 
@@ -53,7 +53,7 @@ cd Persisting
 just install-cli
 ```
 
-会安装与仓库版本匹配的 `persisting`、`pvisor`、`ppilot` 和引擎库到 Cargo bin 目录。
+会安装与仓库版本匹配的 `persisting`、`pvisor` 和 `ppilot` 到 Cargo bin 目录。
 
 ### Nightly 二进制（无需 Rust 工具链）
 
@@ -66,8 +66,7 @@ curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/script
 
 ### 组件覆盖
 
-`PERSISTING_PVISOR_BIN`、`PERSISTING_PPILOT_BIN`、`PERSISTING_ENGINE_LIB` 可显式指定
-二进制或引擎库路径。
+`PERSISTING_PVISOR_BIN`、`PERSISTING_PPILOT_BIN` 可显式指定组件二进制路径。
 
 ## Guest runtime（Container/KVM executor）
 

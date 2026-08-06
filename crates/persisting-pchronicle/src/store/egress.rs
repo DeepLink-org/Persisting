@@ -15,8 +15,8 @@ pub struct ExportOutcome {
     pub note: String,
 }
 
-/// Parse newline-separated RON engine lines for append (validates each line).
-pub fn parse_engine_records(records_ronl: &str) -> Result<Vec<String>> {
+/// Validate newline-separated RON event values before append.
+pub fn validate_event_lines(records_ronl: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for (line_number, line) in records_ronl.lines().enumerate() {
         let line = line.trim();
@@ -126,8 +126,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_engine_records_skips_blanks() {
-        let v = parse_engine_records("(a:1)\n\n(b:2)\n").unwrap();
+    fn validate_event_lines_skips_blanks() {
+        let v = validate_event_lines("(a:1)\n\n(b:2)\n").unwrap();
         assert_eq!(v.len(), 2);
     }
 

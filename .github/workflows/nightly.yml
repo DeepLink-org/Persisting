@@ -192,19 +192,13 @@ jobs:
           cargo build --release --locked \
             -p persisting-cli --bin persisting \
             -p persisting-pvisor --bin pvisor \
-            -p persisting-ppilot --features cli --bin ppilot \
-            -p persisting-engine
+            -p persisting-ppilot --features cli --bin ppilot
 
       - name: Assemble CLI archive
         run: |
           version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
           mkdir -p cli/bin
           cp target/release/persisting target/release/pvisor target/release/ppilot cli/bin/
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            cp target/release/libpersisting_engine.dylib cli/bin/
-          else
-            cp target/release/libpersisting_engine.so cli/bin/
-          fi
           tar -czf "persisting-cli-${version}-${{ matrix.target }}.tar.gz" cli/
           archive="persisting-cli-${version}-${{ matrix.target }}.tar.gz"
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -285,7 +279,7 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash
             ```
 
-            **Unified CLI component set** (`persisting`, `pvisor`, `ppilot`, `libpersisting_engine`):
+            **Unified CLI component set** (`persisting`, `pvisor`, `ppilot`):
 
             ```bash
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-cli-nightly.sh | bash

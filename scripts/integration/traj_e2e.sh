@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Trajectory CLI E2E: import → stats → judge → stats / judge-stats
+# Trajectory CLI E2E: history import/stats → eval judge/stats
 #
 # Usage:
 #   PERSISTING_CLI=target/debug/persisting \
-#   PERSISTING_ENGINE_LIB=target/debug/libpersisting_engine.dylib \
-#     ./scripts/integration/traj_e2e.sh
+#   PERSISTING_CLI=target/debug/persisting ./scripts/integration/traj_e2e.sh
 #
 # Or: just traj-e2e
 
@@ -68,25 +67,25 @@ echo "    CLI=$CLI"
 echo "    WORKDIR=$WORKDIR"
 
 # --- 1. import (gateway JSONL → Lance) ------------------------------------
-section "traj import (gateway JSONL)"
+section "history import (gateway JSONL)"
 
-IMPORT_OUT="$(run_cli traj import "$STORAGE" \
+IMPORT_OUT="$(run_cli history import "$STORAGE" \
   --provider gateway \
   --gateway-input "$FIXTURE" \
   --session-id "$SESSION_ID" \
   --agent-id "$AGENT_ID")"
 grep -qE 'traj-it-agent|traj-it-session|import' <<<"$IMPORT_OUT" \
   || { echo "$IMPORT_OUT"; die "import output unexpected"; }
-pass "traj import wrote session"
+pass "history import wrote session"
 
 [[ -d "$STORAGE/$AGENT_ID/$SESSION_ID/events.lance" ]] \
   || die "missing events.lance after import"
 pass "events.lance exists"
 
 # --- 2. stats (pre-judge) ---------------------------------------------------
-section "traj stats (before judge)"
+section "history stats (before judge)"
 
-run_cli traj stats "$STORAGE" \
+run_cli history stats "$STORAGE" \
   --agent-id "$AGENT_ID" \
   --session-id "$SESSION_ID" \
   --storage-format lance >"$STATS_TOML"
@@ -94,7 +93,7 @@ ROW_COUNT="$(parse_toml_field "$STATS_TOML" row_count)"
 [[ -n "$ROW_COUNT" && "$ROW_COUNT" -gt 0 ]] || die "expected row_count > 0, got '$ROW_COUNT'"
 pass "stats row_count=$ROW_COUNT"
 
-run_cli traj stats "$STORAGE" --output plain >"$STATS_PLAIN"
+run_cli history stats "$STORAGE" --output plain >"$STATS_PLAIN"
 if grep -q 'judgment_count:' "$STATS_PLAIN"; then
   PRE_JUDGE="$(parse_plain_field judgment_count "$STATS_PLAIN")"
   [[ "${PRE_JUDGE:-0}" == "0" ]] || die "expected judgment_count=0 before judge, got $PRE_JUDGE"
@@ -104,9 +103,9 @@ else
 fi
 
 # --- 3. judge (non-interactive fixed score) ---------------------------------
-section "traj judge (--score, story scope)"
+section "eval judge (--score, story scope)"
 
-JUDGE_OUT="$(run_cli traj judge "$STORAGE" \
+JUDGE_OUT="$(run_cli eval judge "$STORAGE" \
   --agent-id "$AGENT_ID" \
   --session-id "$SESSION_ID" \
   --scope story \
@@ -114,7 +113,7 @@ JUDGE_OUT="$(run_cli traj judge "$STORAGE" \
   --force)"
 grep -qE 'judged_calls\s*=\s*[1-9]|judged_calls: [1-9]' <<<"$JUDGE_OUT" \
   || { echo "$JUDGE_OUT"; die "judge did not score any units"; }
-pass "traj judge wrote native columns"
+pass "eval judge wrote native columns"
 
 # Judge columns live on events.lance (no layers/ sidecar).
 [[ -d "$STORAGE/$AGENT_ID/$SESSION_ID/events.lance" ]] \
@@ -124,9 +123,9 @@ pass "traj judge wrote native columns"
 pass "judge columns on events.lance (no layers/)"
 
 # --- 4. stats + judge-stats (post-judge) ------------------------------------
-section "traj stats (after judge)"
+section "history stats (after judge)"
 
-run_cli traj stats "$STORAGE" \
+run_cli history stats "$STORAGE" \
   --agent-id "$AGENT_ID" \
   --session-id "$SESSION_ID" \
   --storage-format lance >"$STATS_TOML"
@@ -134,14 +133,14 @@ grep -qE 'judgment_count\s*=\s*[1-9]|judgment_count: [1-9]' "$STATS_TOML" \
   || die "stats missing judgment_count after judge"
 pass "stats shows judgment_count after judge"
 
-run_cli traj stats "$STORAGE" --output plain >"$STATS_PLAIN"
+run_cli history stats "$STORAGE" --output plain >"$STATS_PLAIN"
 POST_JUDGE="$(parse_plain_field judgment_count "$STATS_PLAIN")"
 [[ -n "$POST_JUDGE" && "$POST_JUDGE" -ge 1 ]] || die "plain stats judgment_count=$POST_JUDGE"
 pass "plain stats judgment_count=$POST_JUDGE"
 
-section "traj judge-stats"
+section "eval stats"
 
-run_cli traj judge-stats "$STORAGE" >"$JUDGE_STATS_TOML"
+run_cli eval stats "$STORAGE" >"$JUDGE_STATS_TOML"
 JUDGED_SESSIONS="$(parse_toml_field "$JUDGE_STATS_TOML" judged_session_count)"
 JUDGMENT_COUNT="$(parse_toml_field "$JUDGE_STATS_TOML" judgment_count)"
 [[ "$JUDGED_SESSIONS" == "1" ]] || die "judged_session_count=$JUDGED_SESSIONS (want 1)"

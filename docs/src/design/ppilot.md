@@ -41,7 +41,7 @@ durable result journal → RunCommit CAS → JSONL / optional Lance
 | Rust Pulsing 做发现与投递 | Python 侧 Actor 编程模型 |
 | 通过 provider 扩展执行位置 | 定义 Agent 会话格式或物理存储 |
 
-`persisting` 对 batch/query 做薄转发，不让 pPilot 经过 Engine RON ABI。
+`persisting` 对 batch/query 做薄转发；pPilot 直接调用 pChronicle。
 `ppilot query` 直接调用 pChronicle library；落盘若走 Lance，由 sink adapter 写入
 pChronicle；编排状态仍由本 crate 管理。
 
@@ -49,6 +49,7 @@ pChronicle；编排状态仍由本 crate 管理。
 
 ```text
 ppilot run <SCRIPT> [OPTIONS]
+ppilot chronicle import <INPUT> <STORE>
 ppilot query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
 ppilot produce <PLANNER.py> --output <DIR> [--parallelism N] [-- <PLANNER_ARGS>...]
 ppilot analysis <INPUT> [--output <DIR>] [--fmt jsonl|json|toml] [--parallelism N] (--sql <SQL> | --sql-file <FILE>)
@@ -67,6 +68,8 @@ Supervisor per rank, so supervision is rank-local rather than one strict
 cross-rank token ledger.
 
 `run` 收纳原有 `PPilotArgs`；`self-test` 是无需用户脚本的环境与执行链路验证。
+`chronicle import` 将 ATIF JSON、数组、JSONL/NDJSON 或目录通过 pChronicle 规范化后，
+按 `session_id` 原子写入本地或对象存储 Storyline Lance store。
 `query` 对三表 Storyline Lance store、ATIF JSON/数组/JSONL/目录注册同名的 `runs`、
 `steps`、`tool_calls` 表；可通过可重复的 `--table NAME=FORMAT:PATH` 注册 CSV、JSON
 对象数组或 JSONL 外部表，随后执行一条只读 DataFusion SQL，并把 JSONL 写到 stdout。
@@ -93,11 +96,11 @@ cargo build -p persisting-ppilot --features cli --bin ppilot
 | durable checkpoint | result journal + Run control record；JSONL/checkpoint 是用户视图 | **基本对齐** |
 | lease 与 stale worker fencing | 持久 epoch 贯穿 Driver/Worker/pVisor/TaskResult；在途 heartbeat 续租；CAS 拒绝旧 epoch | **已对齐** |
 | pPilot 只操作 RunFuture | Worker 将 TaskExpr 转成 RunSpec，Python host 实现 pVisor RunExecutor | **部分对齐**；Driver transport 仍是 Worker ask |
-| reconcile | 启动时核对 result journal、pVisor Attempt observer 与 pChronicle control record | **已对齐**；远端 pVisor observer 待接入 |
+| reconcile | 启动时核对 result journal、pChronicle Attempt registry 与 Run control record | **已对齐**；active/pending Attempt 会进入 defer 集合，terminal RunResult 可恢复提交 |
 | pChronicle terminal facts | 每个 Run 只有一个 CAS terminal RunCommit | **已对齐**；Event 高水位字段已预留 |
 
 下一步不需要推翻现有调度器：重点是让 Driver 直接观察远端 pVisor RunFuture，
-并把当前 `AttemptObserver` 的 process-local 实现换成跨机 Run registry provider。
+并把当前“嵌入式 Worker 创建 pVisor”的 placement provider 替换为可独立部署的远端 fleet。
 
 ---
 
@@ -282,6 +285,9 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 | RunCommit 后、用户 sink append 前崩溃 | reconciler 重放幂等 sink append |
 | 旧 worker 晚到 | `lease_epoch` fencing 拒绝旧结果；不会覆盖 canonical commit |
 | 未提交 lease 且 pVisor attempt 不存在 | reconciler 标记 retry，下一次派发显式 takeover 并递增 epoch |
+| 未提交 lease 仍有效但 Attempt 尚未注册 | reconciler defer 该 task，不猜测 orphan、不重新派发 |
+| pPilot 重启时 Attempt 心跳仍有效 | 从 pChronicle registry 识别为 active 并加入 SkipSet |
+| pPilot 重启时 registry 已有 terminal RunResult | 恢复 TaskResult，完成 RunCommit CAS 与幂等 sink append |
 | terminal RunCommit 已存在 | 稳定 `task_id` 加入 SkipSet，不再派发 |
 | JSONL append 返回成功但机器随后掉电 | 当前仅 `flush`、未逐条 `fsync`；不能视为断电级 durability |
 | 用户取消在途任务 | kill 对应 Python host 并记录 cancelled；外部副作用是否已发生不可由控制面回滚 |
@@ -335,7 +341,7 @@ pPilot 不承诺 exactly-once。用户应根据下表判断 `execute()` 是否�
 | DeathWatch | 仅本地；远端死槽靠 ask 失败路径 |
 | Run contract | adapter 已落地；Driver 尚不能直接观察 RunHandle/Attempt 状态 |
 | pVisor boundary | Python host 已实现 RunExecutor，但 provider 代码仍在 pPilot crate |
-| reconcile provider | 协议与收敛逻辑已落地；当前启动实现知道 process-local pVisor 不跨进程存活，远端 registry observer 待接 |
+| reconcile provider | pChronicle Attempt registry、心跳、终态恢复已接入；当前默认 placement 仍是嵌入式 pVisor，独立远端 fleet 尚未提供 |
 
 ### 设计原则（摘要）
 

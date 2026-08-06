@@ -21,7 +21,7 @@ This exclusion covers, in particular:
 - `persisting/store/` and TTAS-specific code in `persisting/core.py` and
   `crates/persisting-core/`
 - `persisting/queue/`, `persisting/sampler/`, and their tests and docs
-- `persisting/search/`, `crates/persisting-engine/src/search/`, Search CLI
+- `persisting/search/`, `crates/persisting-pchronicle/src/search/`, Search CLI
   surfaces, and their tests and docs
 - `crates/persisting-dlcapt/` and dlcapt-specific scripts, tests, features, and
   workflows

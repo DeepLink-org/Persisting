@@ -9,12 +9,13 @@
 
 - `EventRecord` 逻辑事件和 Lance `EventRow` schema；
 - Run / Story 坐标、目录布局和发现规则；
-- Lance 与 AgenticMD 的读写、统计和维护；
+- Lance canonical events 的读写、统计和维护；
+- AgenticMD 人读/调试视图的生成与宽松解析；
 - events、Storyline、ATIF、OpenAI messages、AgenticMD 之间的格式转换；
 - materialize、judgment 和标准查询视图。
 
-Gateway 负责把协议流量解释为事件；Engine 只提供动态 ABI 和 RPC 适配；CLI 只
-解析参数与展示结果。三者都不定义第二套轨迹落盘格式。
+Gateway 负责把协议流量解释为事件；CLI 只解析参数与展示结果，
+并在进程内直接调用 pChronicle。它们都不定义第二套轨迹落盘格式。
 
 ## 2. 逻辑坐标
 
@@ -47,23 +48,24 @@ Run
 
 ### AgenticMD
 
-AgenticMD 是面向人的结构化 Markdown。它保存可见对话块和会话摘要，适合实时查看、
-代码审阅与人工分析。它会省略协议噪声，因此不是原始 HTTP 事件的无损替代。
+AgenticMD 是面向人的 Markdown 调试视图。它保存可见对话块和会话摘要，适合实时查看、
+代码审阅与人工分析。它会省略协议噪声，字段也允许缺失或扩展，因此不是存储格式或
+原始 HTTP 事件的无损替代。
 
-两者不是要求同步双写的两份事实源：
+所有采集与 history 写入都落到 Lance：
 
-- `persisting execute --chronicle-mode lance` 写 Lance；
-- `persisting execute --gateway-stream-markdown` 直接维护 AgenticMD，适合轻量本地使用；
+- `persisting execute -f md` 写 Lance，并额外维护 live AgenticMD；
+- `persisting execute -f lance` 只写 Lance；
 - `persisting history materialize` 从 Lance 重建 AgenticMD；
-- `persisting history add` 根据显式选择或已有层写入一个存储层；
-- `persisting history replay --storage-format auto` 优先读取 Lance，只有 Markdown 时读取 Markdown。
+- `persisting history add --format markdown` 将外部 Markdown 显式解析后导入 Lance；
+- `persisting history replay` 和 `stats` 只读取 Lance，现存 Markdown 仅作为诊断信息。
 
 ### Storyline 三表 Lance
 
-`LanceStorylineStore` 提供面向分析和 ATIF 互操作的规范化物理表示：
+`StorylineLanceStore` 提供面向分析和 ATIF 互操作的规范化物理表示：
 `runs.lance`、`steps.lance`、`tool_calls.lance`。它按 `source_call_id` 将 observation
-result 归并到 tool call 行，并通过 generation 指针保证三表原子切换。详细 schema
-与目录布局见 [Storyline 三表 Lance 存储](storyline-lance.md)。
+result 归并到 tool call 行，并通过 `CURRENT` 中的三表版本元组保证原子切换。详细
+schema 与目录布局见 [Storyline 三表 Lance 存储](storyline-lance.md)。
 
 ## 4. 目录布局
 
@@ -88,15 +90,16 @@ storage/
         └── agent-<id>.md
 ```
 
-AgenticMD 只接受 canonical `{session_id}.md` 文件名和带 speaker 的
-`<!-- persisting:block:{speaker} … -->` 块结构。
+系统生成的 AgenticMD 使用 `{session_id}.md` 文件名和
+`<!-- persisting:block:{source} … -->` 块结构；读取器同时接受无 speaker 的块、旧
+`role/seq/session/agent` 字段和普通 Markdown 正文。
 
 ## 5. 写入与一致性
 
 1. `EventRecord` 进入 Lance 前转换为稳定 Arrow 行。
 2. 同一 dataset 内分配单调 `seq`；当前进程内写入串行化。
 3. Run bucket 中不同 Story 共享 dataset，但 replay/stats 按 `session_id` 隔离。
-4. live Markdown 以 `call_id + speaker` 定位块，允许流式 assistant 原地更新。
+4. live Markdown 以 `call_id + source`（兼容旧 role）定位块，允许流式 agent 原地更新。
 5. canonical append 与派生投影分别报告结果；投影失败不能伪装成事件已持久化。
 
 跨进程多 writer 仍需要上层单 writer/租约约束；当前实现不宣称提供分布式 CAS。
@@ -119,8 +122,7 @@ OpenAI msg ┘
 | 组件 | 负责 | 不负责 |
 |---|---|---|
 | Gateway | 协议解析、调用生命周期、采集顺序、live projection 策略 | 通用 store、格式 schema、离线转换 |
-| pChronicle | 格式、路径、落盘、读取、转换、judgment | 网络转发、Agent 生命周期 |
-| Engine | Search 实现、稳定 ABI、trajectory RPC 适配 | 轨迹领域实现 |
+| pChronicle | 格式、路径、落盘、读取、转换、judgment、Search | 网络转发、Agent 生命周期 |
 | pVisor | Run 生命周期及 Gateway/OverlayNet/OverlayFS 装配 | 长期轨迹 schema |
 
 ## 8. 相关文档

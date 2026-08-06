@@ -5,7 +5,7 @@
 
 use crate::check::{run_check, run_self_test, CheckOptions};
 use crate::checkpoint::{CheckpointLedger, CheckpointTracker};
-use crate::coordination::{ProcessLocalAttemptObserver, RunCoordinator};
+use crate::coordination::RunCoordinator;
 use crate::observe::{Observer, ObserverOptions};
 use crate::runtime::{run_fleet, RunOptions};
 use crate::sink::{JsonlFileSink, ResultSink, TeeSink};
@@ -336,8 +336,9 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
                 .await
                 .context("open pPilot Run coordinator")?,
         );
+        let observer = coordinator.durable_attempt_observer();
         let report = coordinator
-            .reconcile(sink.as_ref(), &ProcessLocalAttemptObserver)
+            .reconcile(sink.as_ref(), &observer)
             .await
             .context("reconcile pPilot Runs")?;
         for task_id in &report.committed_task_ids {
@@ -345,6 +346,9 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
         }
         for task_id in &report.retry_task_ids {
             skip_task_ids.remove(task_id);
+        }
+        for task_id in &report.deferred_task_ids {
+            skip_task_ids.insert(task_id.clone());
         }
         if report.recovered_commits > 0
             || report.recovered_sink_appends > 0

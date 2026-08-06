@@ -103,7 +103,7 @@ Agent 客户端
                │ events / 派生产物
                ▼
 ┌─────────────────────────────────────┐
-│  Persisting Engine / 分析 / 检索     │
+│  pChronicle / 分析 / 检索          │
 └─────────────────────────────────────┘
 ```
 
@@ -470,7 +470,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 | pVisor 生命周期 / Run 头 | `run-{uuid}`（与目录名一致） |
 | Claude Code 对话 HTTP | header 注入的 UUID（与 run id 不同） |
 
-因此 **`history stats` 扫描 agent 目录时**，对 run bucket（`session_id == root_session_id`）会先读 Lance 中 distinct `session_id`，再**逐分区统计**，避免「第二个 session 显示 0 turns」。实现位于 `persisting-pchronicle::expand_story_locations`；Engine 仅在 `rpc::trajectory` 中做协议适配。详见 [轨迹存储](trajectory.md) 的 run bucket 分区说明。
+因此 **`history stats` 扫描 agent 目录时**，对 run bucket（`session_id == root_session_id`）会先读 Lance 中 distinct `session_id`，再**逐分区统计**，避免「第二个 session 显示 0 turns」。实现位于 `persisting-pchronicle::expand_story_locations`。详见 [轨迹存储](trajectory.md) 的 run bucket 分区说明。
 
 ---
 

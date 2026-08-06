@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use persisting_pchronicle::{
     from_storyline, into_storyline, split_storyline, AtifTrajectory, ChronicleFormat,
-    LanceStorylineStore, StorylineDataFusionTableNames, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineTableKind,
+    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
+    StorylineLanceStore, StorylineTableKind,
 };
 
 fn fixture_root() -> PathBuf {
@@ -104,7 +104,7 @@ fn corpus_converts_to_all_text_formats() -> Result<()> {
 #[tokio::test]
 async fn corpus_round_trips_through_three_lance_tables() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let store = LanceStorylineStore::open(dir.path()).await?;
+    let store = StorylineLanceStore::open(dir.path()).await?;
     let mut expected = Vec::new();
     for path in fixture_paths()? {
         let (raw, _) = load(&path)?;
@@ -129,7 +129,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     use lance::index::DatasetIndexExt;
 
     let dir = tempfile::tempdir()?;
-    let store = LanceStorylineStore::open(dir.path()).await?;
+    let store = StorylineLanceStore::open(dir.path()).await?;
     for path in fixture_paths()? {
         let (raw, _) = load(&path)?;
         store
@@ -165,16 +165,16 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     let plan_text = datafusion::physical_plan::displayable(physical_plan.as_ref())
         .indent(true)
         .to_string();
-    assert!(plan_text.contains("projection=[step_id]"), "{plan_text}");
+    assert!(
+        plan_text.contains("projection=[session_id, step_id]"),
+        "{plan_text}"
+    );
     assert!(plan_text.contains("ScalarIndexQuery"), "{plan_text}");
     assert!(
         plan_text.contains("pchronicle_session_id_idx(BTree)"),
         "{plan_text}"
     );
-    assert!(
-        plan_text.contains("pchronicle_step_id_idx(BTree)"),
-        "{plan_text}"
-    );
+    assert!(!plan_text.contains("pchronicle_step_id_idx"), "{plan_text}");
     let full_scan_context = StorylineDataSource::from_store_with_options(
         &store,
         StorylineDataSourceOptions {
@@ -223,7 +223,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
         .map(|index| index.name.as_str())
         .collect::<Vec<_>>();
     assert!(names.contains(&"pchronicle_session_id_idx"));
-    assert!(names.contains(&"pchronicle_step_id_idx"));
+    assert!(!names.contains(&"pchronicle_step_id_idx"));
     assert!(names.contains(&"pchronicle_effective_kind_idx"));
 
     // A registered datasource remains a consistent snapshot after CURRENT moves.
@@ -263,7 +263,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
 #[tokio::test]
 async fn lance_datasource_validates_store_state_and_custom_names() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let store = LanceStorylineStore::open(dir.path()).await?;
+    let store = StorylineLanceStore::open(dir.path()).await?;
     assert!(StorylineDataSource::from_store(&store).await.is_err());
 
     let (raw, _) = load(&fixture_root().join("dialogue_10.json"))?;

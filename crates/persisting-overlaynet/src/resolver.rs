@@ -6,11 +6,11 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use persisting_control::ControlController;
-use persisting_proto::NetworkAccessRequest;
+use persisting_control::NetworkAccessRequest;
 use tokio::net::lookup_host;
 use tokio::time::timeout;
 
-use crate::policy::{authorize_egress, DenyReason, NetworkPolicy};
+use crate::policy::{DenyReason, NetworkPolicy};
 
 const DNS_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -33,7 +33,7 @@ pub(crate) async fn authorize_target(
 ) -> Result<AuthorizedTarget, TargetAuthorizationError> {
     request.resolved_ip = None;
     policy
-        .preflight(&request)
+        .authorize(controller, &request)
         .map_err(TargetAuthorizationError::Denied)?;
 
     let port = request.port.ok_or_else(|| {
@@ -77,7 +77,7 @@ fn authorize_resolved_target(
             continue;
         }
         request.resolved_ip = Some(address.ip());
-        match authorize_egress(controller, policy, &request) {
+        match policy.authorize(controller, &request) {
             Ok(()) => addresses.push(address),
             Err(reason) => denied = reason,
         }
@@ -104,7 +104,7 @@ mod tests {
     use persisting_control::{
         ControlReason, ControlRequest, ControlTransition, PolicyControlController,
     };
-    use persisting_proto::{NetworkAccessRule, NetworkTransport};
+    use persisting_control::{NetworkAccessRule, NetworkTransport};
 
     fn request(host: &str) -> NetworkAccessRequest {
         NetworkAccessRequest {
@@ -228,6 +228,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(target.addresses, [retained]);
+    }
+
+    struct DenyHostController;
+
+    impl ControlController for DenyHostController {
+        fn authorize(&self, request: ControlRequest<'_>) -> ControlTransition {
+            if let ControlRequest::Network { request, .. } = request {
+                if request.host == "controller-denied.invalid" {
+                    return ControlTransition::denied(ControlReason::ExplicitlyDenied);
+                }
+            }
+            ControlTransition::allowed(ControlReason::AmbientNetwork)
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_controller_denies_before_dns_resolution() {
+        let policy = NetworkPolicy::compile(&NetworkConfig::default()).unwrap();
+        let result = authorize_target(
+            &DenyHostController,
+            &policy,
+            request("controller-denied.invalid"),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(TargetAuthorizationError::Denied(DenyReason::ExplicitDeny))
+        ));
+    }
+
+    struct AllowEverythingController;
+
+    impl ControlController for AllowEverythingController {
+        fn authorize(&self, _request: ControlRequest<'_>) -> ControlTransition {
+            ControlTransition::allowed(ControlReason::AmbientNetwork)
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_controller_cannot_widen_compiled_policy() {
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::NoNetwork,
+            ..NetworkConfig::default()
+        })
+        .unwrap();
+        let result = authorize_target(
+            &AllowEverythingController,
+            &policy,
+            request("must-not-resolve.invalid"),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(TargetAuthorizationError::Denied(DenyReason::NoNetwork))
+        ));
     }
 
     #[tokio::test]

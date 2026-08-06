@@ -36,9 +36,9 @@ Subagent：`{run}/subagents/{session_id}/`。路径可传 session 目录，CLI �
 
 | 命令 | 说明 |
 |------|------|
-| **add** | TOML/JSONL/Markdown → `CaptureRecord` → **写入单一层** |
+| **add** | TOML/JSONL/Markdown → `EventRecord` → canonical Lance |
 | **truncate** | 保留 Lance 前 N 行（按 `seq`） |
-| **stats** | 双层摘要；`--detail` 逐轮树；未指定 `--session-id` 时扫描 agent 下全部 run，并对 run bucket **展开** Lance 内 distinct `session_id` 后逐分区统计（见[轨迹存储](trajectory.md)的 run bucket 分区说明） |
+| **stats** | canonical Lance 摘要，并附带 Markdown 调试视图信息；`--detail` 逐轮树；未指定 `--session-id` 时扫描 agent 下全部 run，并对 run bucket **展开** Lance 内 distinct `session_id` 后逐分区统计 |
 | **replay** | 分页输出事件 JSON |
 | **extract** | 拷贝 Story/Run 目录树 |
 | **materialize** | Lance → Markdown 全量物化 |
@@ -55,23 +55,25 @@ persisting history extract     <STORAGE> <OUT_DIR> [OPTIONS]
 persisting history materialize <STORAGE> [OPTIONS]
 ```
 
-实现：`persisting-pchronicle` 拥有格式、路径、Lance/Markdown store 与领域服务；`persisting-engine` 只保留 CLI 动态 ABI 的 RPC 适配。
+实现：`persisting-pchronicle` 拥有格式、路径、canonical Lance store、AgenticMD 视图生成与领域服务；CLI 进程内直接调用 pChronicle。
 
 ---
 
-## 3. 存储层（`--storage-format`）
+## 3. Canonical 存储（`--storage-format`）
 
-两种物理层：**Lance**（canonical）、**Markdown**（视图）。**写命令每次只动一层**；读命令可 `auto` 探测。
+当前只有 **Lance** 是存储层。`auto` 与 `lance` 均选择 canonical Lance；Markdown 是
+旁路调试视图，不参与自动探测或回退。
 
 | 命令 | `auto` 写入 | 显式 `--storage-format` |
 |------|-------------|-------------------------|
-| add | 无层 → Lance；仅 md → Markdown；仅 Lance → Lance；两层都有 → Lance | `lance` / `markdown` 强制单层 |
+| add | Lance | `lance` |
 | truncate | — | 仅 Lance（按 `seq` 截断） |
-| replay | 有 Lance 读 Lance；仅 md 读 md；都有 → Lance | 可强制 `markdown` |
-| stats | 两层都有 → **同时摘要** | 可强制单层 |
+| replay | Lance | `lance` |
+| stats | Lance 行数为准；附带 Markdown 块数 | `lance` |
 | materialize | — | Lance → Markdown 全量导出 |
 
-两层对齐：先 `add`（Lance）或采集，再 `materialize`；**不会**在 `add`/`truncate` 时自动双写。
+AgenticMD 可删除后重新 materialize。修改 `.md` 不会改变 canonical events；如需导入
+外部 Markdown，显式使用 `history add --format markdown`，解析结果仍写入 Lance。
 
 ---
 

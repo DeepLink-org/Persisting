@@ -1,6 +1,8 @@
-//! `agenticmd` format — persisting-gateway TLV markdown dialogue view.
+//! `agenticmd` — best-effort Markdown view for humans and debugging.
 //!
-//! On-disk layout matches capture `{session_id}.md`:
+//! It is intentionally not a canonical storage format. New writers use
+//! Storyline-like identity fields (`session_id`, `agent_id`, `source`,
+//! `step_id`); readers retain aliases for older capture documents.
 //! ```text
 //! ---
 //! format: persisting:1.0   # logical name in pChronicle: agenticmd
@@ -29,8 +31,9 @@ pub const AGENTICMD_BLOCK_LAYOUT: &str =
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgenticmdHeader {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default = "default_block_type")]
     pub type_name: String,
+    #[serde(default)]
     pub length: usize,
     #[serde(flatten)]
     pub fields: BTreeMap<String, Value>,
@@ -43,8 +46,36 @@ pub struct AgenticmdBlock {
 }
 
 impl AgenticmdBlock {
+    /// Legacy presentation role, derived from Storyline `source` when absent.
     pub fn role(&self) -> Option<&str> {
-        self.header.fields.get("role").and_then(|v| v.as_str())
+        if let Some(role) = self.header.fields.get("role").and_then(|v| v.as_str()) {
+            return Some(role);
+        }
+        match self.source()? {
+            "agent" => Some("assistant"),
+            "system" => Some("note"),
+            source => Some(source),
+        }
+    }
+
+    /// Storyline-compatible source (`user`, `agent`, or `system`).
+    pub fn source(&self) -> Option<&str> {
+        if let Some(source @ ("user" | "agent" | "system")) =
+            self.header.fields.get("source").and_then(|v| v.as_str())
+        {
+            return Some(source);
+        }
+        match self.header.fields.get("role").and_then(|v| v.as_str())? {
+            "user" => Some("user"),
+            "assistant" | "agent" => Some("agent"),
+            _ => Some("system"),
+        }
+    }
+
+    pub fn step_id(&self) -> Option<i64> {
+        ["step_id", "id", "seq"]
+            .iter()
+            .find_map(|key| self.header.fields.get(*key).and_then(|v| v.as_i64()))
     }
 
     pub fn kind(&self) -> Option<&str> {
@@ -63,7 +94,7 @@ pub struct AgenticmdDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(default)]
-    pub frontmatter: BTreeMap<String, String>,
+    pub frontmatter: BTreeMap<String, Value>,
     pub blocks: Vec<AgenticmdBlock>,
 }
 
@@ -85,19 +116,28 @@ pub fn parse_agenticmd_document(input: &str) -> Result<AgenticmdDocument> {
     let spans = parse_agenticmd_blocks_with_spans(input)?;
     let mut doc = AgenticmdDocument::new(spans.into_iter().map(|s| s.block).collect());
     doc.frontmatter = frontmatter;
-    if let Some(fmt) = doc.frontmatter.get("format") {
-        doc.frontmatter_format = fmt.clone();
+    if let Some(fmt) = doc.frontmatter.get("format").and_then(Value::as_str) {
+        doc.frontmatter_format = fmt.to_string();
     }
     doc.session_id = doc
         .frontmatter
-        .get("session")
-        .cloned()
-        .or_else(|| doc.frontmatter.get("session_id").cloned());
+        .get("session_id")
+        .or_else(|| doc.frontmatter.get("session"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     doc.agent_id = doc
         .frontmatter
-        .get("agent")
-        .cloned()
-        .or_else(|| doc.frontmatter.get("agent_id").cloned());
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .or_else(|| doc.frontmatter.get("agent").and_then(Value::as_str))
+        .or_else(|| {
+            doc.frontmatter
+                .get("agent")
+                .and_then(Value::as_object)
+                .and_then(|agent| agent.get("id"))
+                .and_then(Value::as_str)
+        })
+        .map(str::to_string);
     Ok(doc)
 }
 
@@ -140,24 +180,18 @@ pub fn encode_agenticmd_preamble<T: Serialize>(frontmatter: &T) -> Result<String
 }
 
 pub fn encode_agenticmd_document(doc: &AgenticmdDocument) -> Result<String> {
-    let mut out = String::from("---\n");
-    out.push_str(&format!("format: {}\n", doc.frontmatter_format));
+    let mut frontmatter = doc.frontmatter.clone();
+    frontmatter.insert(
+        "format".into(),
+        Value::String(doc.frontmatter_format.clone()),
+    );
     if let Some(session) = &doc.session_id {
-        out.push_str(&format!("session: {session}\n"));
+        frontmatter.insert("session_id".into(), Value::String(session.clone()));
     }
     if let Some(agent) = &doc.agent_id {
-        out.push_str(&format!("agent: {agent}\n"));
+        frontmatter.insert("agent_id".into(), Value::String(agent.clone()));
     }
-    for (k, v) in &doc.frontmatter {
-        if matches!(
-            k.as_str(),
-            "format" | "session" | "session_id" | "agent" | "agent_id"
-        ) {
-            continue;
-        }
-        out.push_str(&format!("{k}: {v}\n"));
-    }
-    out.push_str("---\n\n");
+    let mut out = encode_agenticmd_preamble(&frontmatter)?;
     for block in &doc.blocks {
         out.push_str(&encode_agenticmd_block(block)?);
     }
@@ -173,11 +207,7 @@ pub fn encode_agenticmd_block(block: &AgenticmdBlock) -> Result<String> {
         length: block.body.len(),
         fields: block.header.fields.clone(),
     };
-    let speaker = header
-        .fields
-        .get("role")
-        .and_then(|v| v.as_str())
-        .unwrap_or("note");
+    let speaker = block.source().unwrap_or("system");
     let json = serde_json::to_string(&header)?;
     Ok(format!(
         "{BLOCK_MARKER}:{speaker} {json} -->\n\n{}\n\n",
@@ -185,7 +215,7 @@ pub fn encode_agenticmd_block(block: &AgenticmdBlock) -> Result<String> {
     ))
 }
 
-fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, String>, &str, usize)> {
+fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, Value>, &str, usize)> {
     if !input.starts_with("---") {
         return Ok((BTreeMap::new(), input, 0));
     }
@@ -199,21 +229,31 @@ fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, String
     let yaml = &rest[..end];
     let after = &rest[end + "\n---".len()..];
     let body = after.strip_prefix('\n').unwrap_or(after);
-    let mut map = BTreeMap::new();
-    for line in yaml.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = line.split_once(':') {
-            map.insert(k.trim().to_string(), v.trim().to_string());
-        }
-    }
+    let map = serde_yaml::from_str::<BTreeMap<String, Value>>(yaml).unwrap_or_default();
     let body_offset = input.len() - body.len();
     Ok((map, body, body_offset))
 }
 
 fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<AgenticmdBlockSpan>> {
+    if input.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    if !input.contains(BLOCK_MARKER) {
+        let body = input.trim().to_string();
+        let fields = BTreeMap::from([("source".into(), Value::String("system".into()))]);
+        return Ok(vec![AgenticmdBlockSpan {
+            block: AgenticmdBlock {
+                header: AgenticmdHeader {
+                    type_name: default_block_type(),
+                    length: body.len(),
+                    fields,
+                },
+                body,
+            },
+            start: base_offset,
+            end: base_offset + input.len(),
+        }]);
+    }
     let bytes = input.as_bytes();
     let mut pos = 0usize;
     let mut blocks = Vec::new();
@@ -236,23 +276,35 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Agenti
             )));
         }
         let start = base_offset + pos;
-        let header: AgenticmdHeader = parse_block_comment(line.trim())?;
+        let (mut header, declared_length) = parse_block_comment(line.trim())?;
         let mut next = if line_end < bytes.len() {
             line_end + 1
         } else {
             line_end
         };
         next = skip_blank_lines(bytes, next);
-        let body_end = next + header.length;
+        let body_end = declared_length
+            .map(|length| next + length)
+            .unwrap_or_else(|| {
+                input[next..]
+                    .find(BLOCK_MARKER)
+                    .map(|offset| next + offset)
+                    .unwrap_or(bytes.len())
+            });
         if body_end > bytes.len() {
             return Err(Error::Other(format!(
                 "agenticmd block body past EOF (need {} bytes)",
-                header.length
+                declared_length.unwrap_or_default()
             )));
         }
-        let body = std::str::from_utf8(&bytes[next..body_end])
-            .map_err(|e| Error::Other(format!("agenticmd body utf8: {e}")))?
-            .to_string();
+        let raw_body = std::str::from_utf8(&bytes[next..body_end])
+            .map_err(|e| Error::Other(format!("agenticmd body utf8: {e}")))?;
+        let body = if declared_length.is_some() {
+            raw_body.to_string()
+        } else {
+            raw_body.trim_end_matches(['\r', '\n']).to_string()
+        };
+        header.length = body.len();
         let end = base_offset + skip_blank_lines(bytes, body_end);
         blocks.push(AgenticmdBlockSpan {
             block: AgenticmdBlock { header, body },
@@ -264,19 +316,32 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Agenti
     Ok(blocks)
 }
 
-fn parse_block_comment(line: &str) -> Result<AgenticmdHeader> {
+fn parse_block_comment(line: &str) -> Result<(AgenticmdHeader, Option<usize>)> {
     let after = line
         .strip_prefix(BLOCK_MARKER)
-        .ok_or_else(|| Error::Other("missing persisting:block marker".into()))?
-        .strip_prefix(':')
-        .ok_or_else(|| Error::Other("block marker must include a speaker".into()))?;
-    let json_start = after
-        .find('{')
-        .ok_or_else(|| Error::Other("block JSON object missing".into()))?;
-    let speaker = after[..json_start].trim();
-    if speaker.is_empty() {
-        return Err(Error::Other("block speaker is empty".into()));
-    }
+        .ok_or_else(|| Error::Other("missing persisting:block marker".into()))?;
+    let after = after.strip_prefix(':').unwrap_or(after).trim_start();
+    let json_start = after.find('{');
+    let speaker = json_start
+        .map(|i| after[..i].trim())
+        .unwrap_or_else(|| after.strip_suffix("-->").unwrap_or(after).trim());
+    let Some(json_start) = json_start else {
+        let mut fields = BTreeMap::new();
+        if !speaker.is_empty() {
+            fields.insert(
+                "source".into(),
+                Value::String(normalize_source(speaker).into()),
+            );
+        }
+        return Ok((
+            AgenticmdHeader {
+                type_name: default_block_type(),
+                length: 0,
+                fields,
+            },
+            None,
+        ));
+    };
     let after = &after[json_start..];
     let json_part = after
         .strip_suffix("-->")
@@ -286,13 +351,34 @@ fn parse_block_comment(line: &str) -> Result<AgenticmdHeader> {
         .find('{')
         .ok_or_else(|| Error::Other("block JSON object missing".into()))?;
     let json_str = extract_json_object(&json_part[json_start..])?;
-    let header: AgenticmdHeader = serde_json::from_str(json_str)?;
-    if header.fields.get("role").and_then(Value::as_str) != Some(speaker) {
-        return Err(Error::Other(format!(
-            "block speaker '{speaker}' does not match header role"
-        )));
+    let raw: Value = serde_json::from_str(json_str)?;
+    let declared_length = raw
+        .get("length")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
+    let mut header: AgenticmdHeader = serde_json::from_value(raw)?;
+    if !speaker.is_empty()
+        && !header.fields.contains_key("source")
+        && !header.fields.contains_key("role")
+    {
+        header.fields.insert(
+            "source".into(),
+            Value::String(normalize_source(speaker).into()),
+        );
     }
-    Ok(header)
+    Ok((header, declared_length))
+}
+
+fn default_block_type() -> String {
+    "text".into()
+}
+
+fn normalize_source(speaker: &str) -> &str {
+    match speaker {
+        "assistant" | "agent" => "agent",
+        "user" => "user",
+        _ => "system",
+    }
 }
 
 fn extract_json_object(s: &str) -> Result<&str> {

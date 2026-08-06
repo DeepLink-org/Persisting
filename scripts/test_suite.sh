@@ -40,9 +40,9 @@ SUITE_NAMES=(
 )
 
 SUITE_DESCS=(
-  "search + traj CLI 冒烟（QUICK=1）"
-  "search + traj CLI 全量基准"
-  "traj import → stats → judge → stats"
+  "traj CLI 冒烟"
+  "traj CLI 集成"
+  "history import/stats → eval judge/stats"
   "proxy / import / daemon 集成"
   "capture 写入压测"
   "traj capture -f lance 全链路"
@@ -64,10 +64,10 @@ suite_desc() {
 run_suite() {
   case "$1" in
     smoke)
-      QUICK=1 run_sh search_traj_e2e.sh
+      run_sh traj_e2e.sh
       ;;
-    integration|search-traj-full|search-traj-e2e)
-      run_sh search_traj_e2e.sh
+    integration)
+      run_sh traj_e2e.sh
       ;;
     traj-e2e)
       run_sh traj_e2e.sh
@@ -88,7 +88,6 @@ run_suite() {
       run_sh capture_run_e2e.sh
       ;;
     all-integration|all-regression)
-      QUICK=1 run_sh search_traj_e2e.sh
       run_sh traj_e2e.sh
       run_sh capture_integration.sh
       run_sh capture_stress.sh

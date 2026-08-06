@@ -505,14 +505,14 @@ pPilot library
 | 目标概念 | 当前实现 | 差距 |
 |---|---|---|
 | canonical record | `persisting-pchronicle::EventRecord`（Gateway 内部称 `CaptureRecord`） | 将 `run_id` 升为跨路径一等身份 |
-| canonical Lance events | `persisting-pchronicle::{EventRow, LanceEventStore}` | 统一 canonical-first，Markdown 降为 view |
+| canonical Lance events | `persisting-pchronicle::{EventRow, RawEventLanceStore}` | 统一 canonical-first，Markdown 降为 view |
 | Storyline / replay view | story actor、TLV Markdown、materialize、replay | 将 session 对齐为 Storyline，并补充因果关系 |
 | pVisor proxy drivers | `persisting-overlaynet` 独占显式 HTTP/HTTPS proxy 数据面；Gateway 是 LLM/轨迹 `OverlaySink`；另有 `persisting-dlcapt` | 可配置其他 sink；当前不宣称透明网络隔离。Linux 透明截获已定稿设计（主方案：非特权 netns + 进程内用户态协议栈；备选：seccomp user-notify + ADDFD），见 [OverlayNet interception](overlaynet.md) |
 | pVisor executor | Local ProcessExecutor；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；尚缺 WASM/Container/Remote |
 | pPilot batch control | Driver、Scheduler、Sink、Checkpoint；TaskExpr ↔ RunSpec/RunResult adapter | 将 Run/Attempt 写入 durable checkpoint 并增加 reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |
 | distributed providers | Pulsing actors、torchrun integration | 只承担发现、投递和 worker 生命周期 |
-| pChronicle consumers | Engine trajectory/search、Judge | 改为 canonical history 的消费者 |
+| pChronicle consumers | CLI、pPilot sink、Python Search、Judge | 直接消费 canonical history/Search API |
 
 ## 12. 技术路线
 

@@ -12,6 +12,7 @@ pub struct PendingRecord {
     pub agent_id: Option<String>,
     pub parent_uuid: Option<String>,
     pub trace_id: Option<String>,
+    pub call_id: Option<String>,
     pub payload: serde_json::Value,
 }
 
@@ -25,6 +26,7 @@ pub struct SortKey {
 impl PendingRecord {
     pub fn into_capture(self, seq: u64) -> CaptureRecord {
         CaptureRecord {
+            identity: persisting_pchronicle::EventIdentity::default(),
             seq,
             source: self.source,
             kind: self.kind,
@@ -33,7 +35,7 @@ impl PendingRecord {
             agent_id: self.agent_id,
             parent_uuid: self.parent_uuid,
             trace_id: self.trace_id,
-            call_id: None,
+            call_id: self.call_id,
             subagent_id: None,
             parent_agent_id: None,
             branch: None,

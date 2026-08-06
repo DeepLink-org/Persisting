@@ -108,7 +108,6 @@ plugins:
             CLI Architecture: CLI 整体架构
             History / Eval / Gateway CLI: History / Eval / Gateway 命令
             Capture CLI: Capture 子命令
-            Search CLI: Search 命令
             pPilot Architecture: pPilot 架构
             References: 参考
             Similar Systems: 类似系统
@@ -147,7 +146,6 @@ nav:
       - pVisor command reference: design/cli-pvisor.md
       - pPilot command reference: design/cli-ppilot.md
       - history, eval, and gateway command reference: design/cli-history.md
-      - search command reference: design/cli-search.md
   - Architecture & Internals:
       - Overview and maturity: design/index.md
       - Agent infrastructure: design/agent-infrastructure.md

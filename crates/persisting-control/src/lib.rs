@@ -6,12 +6,11 @@
 //! failed. The crate decides policy but does not perform network, model, or
 //! filesystem operations itself.
 
+mod runtime;
+
 use ipnet::IpNet;
-pub use persisting_proto::{AccessEffect as ControlEffect, AccessReason as ControlReason};
-use persisting_proto::{
-    ModelAccessPolicy, ModelCallRequest, NetworkAccessRequest, NetworkAccessRule,
-    NetworkCapability, NetworkDefaultAction, NetworkTransport,
-};
+pub use runtime::*;
+pub use runtime::{AccessEffect as ControlEffect, AccessReason as ControlReason};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -615,7 +614,7 @@ fn model_matches(pattern: &str, model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_proto::NetworkTransport;
+    use crate::NetworkTransport;
 
     fn network_request(host: &str) -> NetworkAccessRequest {
         NetworkAccessRequest {

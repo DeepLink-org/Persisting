@@ -86,7 +86,7 @@ def execute(item):
     assert!(result.ok);
     assert!(result.lease_epoch > 0);
     assert!(result.attempt_id.is_some());
-    let run_id = persisting_proto::RunId::new(result.run_id.as_deref().unwrap());
+    let run_id = persisting_control::RunId::new(result.run_id.as_deref().unwrap());
     let control = coordinator.control().get(&run_id).await.unwrap().unwrap();
     let commit = control.commit.expect("terminal RunCommit");
     assert_eq!(commit.request.lease_epoch, result.lease_epoch);

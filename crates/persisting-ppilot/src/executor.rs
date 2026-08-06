@@ -16,12 +16,14 @@ use crate::runtime_bridge::PilotRuntimeBridge;
 use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use persisting_proto::{
-    AgentCapability, AgentClientRole, AgentEffectOutcome, AgentProcessRegistration, ArtifactRef,
-    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
-    RunInvocation, RunResult, RunSpec, RunState,
+use persisting_control::{
+    ArtifactRef, ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure,
+    RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
 };
-use persisting_pvisor::{AttemptContext, PVisor, RunExecutor};
+use persisting_pvisor::{
+    AgentClientRole, AgentEffectOutcome, AgentProcessRegistration, AttemptContext, PVisor,
+    RunExecutor,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -420,10 +422,9 @@ impl RunExecutor for PlanExecuteExecutor {
         } else {
             AgentEffectOutcome::Unknown
         };
-        let response_ref = Some(format!("ppilot://task/{}", task_result.task_id));
         let mut result = task_result_to_run_result(spec, context.attempt_id().clone(), task_result);
         if let Some(bridge) = agent_abi {
-            if let Err(error) = bridge.complete_effect(&effect_id, effect_outcome, response_ref) {
+            if let Err(error) = bridge.complete_effect(&effect_id, effect_outcome) {
                 result.state = RunState::Failed;
                 result.exit_code = None;
                 result.failure = Some(RunFailure {
@@ -449,12 +450,6 @@ fn connect_agent_abi(
         format!("{worker_id}:{}", context.attempt_id()),
         AgentClientRole::Pilot,
         spec.agent.name.clone(),
-        vec![
-            AgentCapability::Heartbeat,
-            AgentCapability::ProcessRegistry,
-            AgentCapability::CheckpointQuiesce,
-            AgentCapability::EffectJournal,
-        ],
     )?
     else {
         return Ok(None);
@@ -463,7 +458,6 @@ fn connect_agent_abi(
         AgentAbiClient::new(config),
         AgentProcessRegistration {
             pid: std::process::id(),
-            parent_pid: None,
             role: "ppilot-worker".into(),
             executable: std::env::current_exe()
                 .ok()
@@ -477,7 +471,7 @@ fn connect_agent_abi(
 pub struct ExecutorRouter {
     host: Arc<PlanHostExecutor>,
     pvisor: PVisor,
-    supervisor: Option<persisting_proto::SupervisorBootstrap>,
+    supervisor: Option<persisting_control::SupervisorBootstrap>,
 }
 
 impl ExecutorRouter {
@@ -488,7 +482,7 @@ impl ExecutorRouter {
         plan_script: PathBuf,
         script_args: Vec<String>,
         worker_context: Value,
-        supervisor: Option<persisting_proto::SupervisorBootstrap>,
+        supervisor: Option<persisting_control::SupervisorBootstrap>,
     ) -> Self {
         let host = Arc::new(PlanHostExecutor::new(
             python,
@@ -605,7 +599,7 @@ pub(crate) fn task_run_spec(task: &TaskExpr, worker_id: &str, lease_epoch: u64) 
     let mut spec = RunSpec::process(run_id, "ppilot", "ppilot-plan-host");
     spec.lease_epoch = lease_epoch;
     spec.task_id = Some(task.id.clone());
-    spec.parent_run_id = Some(persisting_proto::RunId::new(format!(
+    spec.parent_run_id = Some(persisting_control::RunId::new(format!(
         "ppilot-job-{}",
         encode_run_id_part(&job_id)
     )));
@@ -633,9 +627,9 @@ fn encode_run_id_part(value: &str) -> String {
     encoded
 }
 
-fn task_result_to_run_result(
+pub(crate) fn task_result_to_run_result(
     spec: RunSpec,
-    attempt_id: persisting_proto::AttemptId,
+    attempt_id: persisting_control::AttemptId,
     task: TaskResult,
 ) -> RunResult {
     let output = ProcessOutput {
@@ -691,7 +685,7 @@ fn task_result_to_run_result(
     }
 }
 
-fn run_result_to_task_result(
+pub(crate) fn run_result_to_task_result(
     result: RunResult,
     task_id: &str,
     worker_id: &str,

@@ -7,7 +7,7 @@
 |---|---|
 | [01-filesystem-isolation](01-filesystem-isolation/) | Agent 写入 upper，lower 在 apply 前保持不变 |
 | [02-changeset-management](02-changeset-management/) | changeset 可 review，并可分别 apply 或 drop |
-| [03-network-isolation](03-network-isolation/) | 经过显式代理的 HTTP 请求服从 allow/deny policy |
+| [03-network-isolation](03-network-isolation/) | 三条平铺命令展示 allowlist、deny-all 与 cooperative proxy 的 direct-socket 边界 |
 | [04-gateway-llm-control](04-gateway-llm-control/) | Gateway 路由并捕获两次 OpenAI-compatible 调用 |
 
 文件系统示例需要 macOS 的 macFUSE 或 Linux 的 FUSE3。这里的“轻量级隔离”特指

@@ -10,7 +10,7 @@ use futures::TryStreamExt;
 use lance::io::ObjectStore;
 use object_store::path::Path as ObjectPath;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
-use persisting_proto::{
+use persisting_control::{
     AttemptId, RunCommit, RunCommitRequest, RunControlRecord, RunId, RunLeaseRecord,
     RUN_CONTROL_SCHEMA_VERSION,
 };
@@ -531,7 +531,7 @@ fn unix_now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_proto::RunState;
+    use persisting_control::RunState;
 
     fn commit(run: &str, attempt: &str, epoch: u64, digest: &str) -> RunCommitRequest {
         RunCommitRequest {

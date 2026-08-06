@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use persisting_proto::ExecutorDescriptor;
+use persisting_control::ExecutorDescriptor;
 
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";

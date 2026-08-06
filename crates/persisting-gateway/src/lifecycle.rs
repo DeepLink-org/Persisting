@@ -138,6 +138,7 @@ fn lifecycle_record(
     payload: SessionLifecyclePayload,
 ) -> CaptureRecord {
     CaptureRecord {
+        identity: persisting_pchronicle::EventIdentity::default(),
         seq: 0,
         source: "persisting-gateway".into(),
         kind: kind.into(),

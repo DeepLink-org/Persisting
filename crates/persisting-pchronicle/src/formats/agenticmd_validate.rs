@@ -1,4 +1,7 @@
-//! Speaker / type validation for live agenticmd documents (strict capture semantics).
+//! Minimal safety validation for generated AgenticMD comments.
+//!
+//! Field presence and semantic combinations are deliberately not validated:
+//! AgenticMD is a debugging view, not a protocol boundary.
 
 use anyhow::{bail, Result};
 
@@ -7,9 +10,10 @@ use super::agenticmd::{AgenticmdBlock, AgenticmdHeader};
 pub fn block_speaker(header: &AgenticmdHeader) -> &str {
     header
         .fields
-        .get("role")
+        .get("source")
         .and_then(|v| v.as_str())
-        .unwrap_or("note")
+        .or_else(|| header.fields.get("role").and_then(|v| v.as_str()))
+        .unwrap_or("system")
 }
 
 pub fn validate_speaker(speaker: &str) -> Result<()> {

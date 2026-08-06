@@ -45,7 +45,7 @@ pPilot ── RunSpec ──► pVisor ── EventRecord ──► pChronicle
 │   Tiering:  GPU (L0)  ↔  Host (L1)  ↔  SSD (L3)                │
 │   Route:    Pulsing actor runtime                                │
 ├─────────────────────────────────────────────────────────────────┤
-│                     Storage Engine                               │
+│                     pChronicle Store                            │
 │                                                                  │
 │   Lance (columnar)  ·  Lance (trajectory)  ·  Numpy (memory)  │
 └─────────────────────────────────────────────────────────────────┘
@@ -66,7 +66,8 @@ just install-cli
 ```
 
 `install-cli` installs the matching `persisting`, `pvisor`, and `ppilot`
-binaries plus the lazily loaded engine library into the same Cargo bin directory.
+binaries into the same Cargo bin directory. Trajectory and Search operations are
+provided directly by pChronicle; no separate Engine library is installed.
 The Python package is installed separately with `pip install persisting[lance]`.
 
 Run `just examples` to execute the small quantitative experiments under
@@ -235,7 +236,7 @@ pip install persisting[lance]        # Full
 pip install persisting               # Minimal
 ```
 
-For the unified CLI (`execute/env/batch/query/history/eval/search/gateway`):
+For the unified CLI (`execute/env/batch/query/history/eval/gateway`):
 
 ```bash
 git clone https://github.com/DeepLink-org/Persisting.git
@@ -245,8 +246,8 @@ just install-cli
 
 The unified command deliberately ships as a matched component set. `persisting`
 dispatches execution/environment commands to the sibling `pvisor` binary and
-batch/query commands to the sibling `ppilot` binary. `PERSISTING_PVISOR_BIN`,
-`PERSISTING_PPILOT_BIN`, and `PERSISTING_ENGINE_LIB` remain explicit overrides.
+batch/query commands to the sibling `ppilot` binary. `PERSISTING_PVISOR_BIN`
+and `PERSISTING_PPILOT_BIN` remain explicit overrides.
 
 ### Binary nightlies (no Rust toolchain needed)
 
@@ -254,7 +255,7 @@ Nightly builds publish the CLI component set and the guest pVisor runtimes used
 by the Container/KVM executors, each with a `.sha256` checksum:
 
 ```bash
-# Unified CLI + engine (persisting / pvisor / ppilot / libpersisting_engine)
+# Unified CLI component set (persisting / pvisor / ppilot)
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-cli-nightly.sh | bash
 
 # Guest pVisor runtime for Container/KVM executors (repeat for linux-arm64)

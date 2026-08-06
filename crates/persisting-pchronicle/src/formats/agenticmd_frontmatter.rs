@@ -16,26 +16,46 @@ pub struct AgenticmdClientMeta {
     pub machine_fp: Option<String>,
 }
 
-/// Canonical session rollup fields embedded in trajectory frontmatter.
+/// Best-effort session rollup using Storyline-compatible field names.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgenticmdSessionFrontmatter {
+    #[serde(rename = "session_id", alias = "session")]
     pub session: String,
+    #[serde(rename = "agent_id", alias = "agent")]
     pub agent: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "model_name",
+        alias = "model",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "started_at",
+        alias = "started",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub started: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<String>,
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(
+        rename = "turn_count",
+        alias = "turns",
+        default,
+        skip_serializing_if = "is_zero"
+    )]
     pub turns: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub total_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_cost_usd: Option<f64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "child_session_ids",
+        alias = "subagents",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub subagents: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<AgenticmdClientMeta>,
@@ -84,8 +104,8 @@ mod tests {
         })
         .unwrap();
         assert!(encoded.contains("format: persisting:1.0"));
-        assert!(encoded.contains("session: s1"));
-        assert!(encoded.contains("turns: 2"));
+        assert!(encoded.contains("session_id: s1"));
+        assert!(encoded.contains("turn_count: 2"));
         assert!(encoded.contains("client:"));
         assert!(!encoded.contains("total_tokens:"));
     }
