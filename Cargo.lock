@@ -4861,6 +4861,7 @@ dependencies = [
  "pin-project",
  "prost",
  "prost-build",
+ "protobuf-src",
  "tokio",
  "tracing",
 ]
@@ -6515,6 +6516,7 @@ dependencies = [
  "futures",
  "lance",
  "lance-core",
+ "lance-datafusion",
  "lance-index",
  "lance-linalg",
  "lance-table",

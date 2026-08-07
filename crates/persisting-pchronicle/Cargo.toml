@@ -16,6 +16,8 @@ futures.workspace = true
 fs2.workspace = true
 lance.workspace = true
 lance-core.workspace = true
+# Lance 9.0.1 does not forward `lance/protoc` to lance-datafusion.
+lance-datafusion.workspace = true
 lance-index.workspace = true
 lance-linalg.workspace = true
 lance-table.workspace = true

@@ -94,6 +94,7 @@ ipnet = "2"
 jj-lib = "0.43.0"
 lance = { version = "9.0.1", default-features = false, features = ["aws", "oss", "protoc"] }
 lance-core = "9.0.1"
+lance-datafusion = { version = "9.0.1", features = ["protoc"] }
 lance-index = "9.0.1"
 lance-linalg = "9.0.1"
 lance-table = "9.0.1"
