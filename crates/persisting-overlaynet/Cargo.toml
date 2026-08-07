@@ -7,18 +7,18 @@ license.workspace = true
 description = "Lightweight HTTP proxy network overlay for pVisor"
 
 [dependencies]
-anyhow = "1"
-async-trait = "0.1"
-axum = "0.8"
-futures-util = "0.3"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
-persisting-control = { path = "../persisting-control" }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["net", "io-util", "rt", "sync", "time"] }
-tracing = "0.1"
+anyhow.workspace = true
+async-trait.workspace = true
+axum = { workspace = true, features = ["http1", "tokio"] }
+futures-util = { workspace = true, features = ["async-await", "std"] }
+hyper.workspace = true
+hyper-util = { workspace = true, features = ["tokio"] }
+persisting-control.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "time"] }
+tracing.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "test-util"] }
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

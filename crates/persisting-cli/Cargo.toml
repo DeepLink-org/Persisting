@@ -15,26 +15,25 @@ default = []
 dlcapt = ["dep:persisting-dlcapt"]
 
 [dependencies]
-anyhow = "1"
-chrono = "0.4"
-clap = { version = "4", features = ["derive", "env"] }
-dirs = "6"
-persisting-gateway = { path = "../persisting-gateway" }
+anyhow.workspace = true
+chrono.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+dirs.workspace = true
+persisting-gateway.workspace = true
 persisting-dlcapt = { path = "../persisting-dlcapt", optional = true }
-persisting-pchronicle = { path = "../persisting-pchronicle" }
-ron = "0.8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
-uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
-termimad = "0.34"
-toml = "0.8"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+persisting-pchronicle.workspace = true
+ron.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+uuid = { workspace = true, features = ["v4"] }
+reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 
 [[test]]
 name = "dlcapt_backend_e2e"

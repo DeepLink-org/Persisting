@@ -5,7 +5,6 @@
 //! filter, limit and scalar-index pushdown, plus unordered fragment reads for
 //! parallel query execution (ordered queries should use SQL `ORDER BY`).
 
-use std::any::Any;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -106,10 +105,6 @@ impl StorylineTableProvider {
 
 #[async_trait]
 impl TableProvider for StorylineTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }

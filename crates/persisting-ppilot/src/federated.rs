@@ -8,6 +8,7 @@
 use crate::batch::{
     balanced_shards, load_analysis_trajectories, write_bytes_atomic, write_json_atomic,
 };
+use crate::digest::sha256_hex;
 use crate::dist::DistEnv;
 use crate::pulsing_ext::{ask_timeout, resolve_actor};
 use anyhow::{bail, Context};
@@ -15,7 +16,6 @@ use futures::{stream, StreamExt, TryStreamExt};
 use persisting_pchronicle::{AtifDataSource, AtifTrajectory, ChronicleQueryEngine};
 use pulsing_actor::prelude::*;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -488,7 +488,7 @@ pub async fn process_script_with_workers(
         .and_then(|name| name.to_str())
         .context("process script requires a UTF-8 filename")?
         .to_owned();
-    let script_sha256 = format!("{:x}", Sha256::digest(&script_bytes));
+    let script_sha256 = sha256_hex(&script_bytes);
     let trajectories = load_analysis_trajectories(&options.input).await?;
     let shard_indices = balanced_shards(trajectories.len(), options.mappers);
     let worker_count = workers.len();

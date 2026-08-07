@@ -11,6 +11,7 @@
 //! ```
 
 use crate::agent_abi::{AgentAbiClient, AgentAbiClientConfig};
+use crate::digest::sha256_hex;
 use crate::python_env;
 use crate::runtime_bridge::PilotRuntimeBridge;
 use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
@@ -25,7 +26,6 @@ use persisting_pvisor::{
     RunExecutor,
 };
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -385,8 +385,8 @@ impl RunExecutor for PlanExecuteExecutor {
         let effect_id = format!("task:{}", task.id);
         if let Some(bridge) = agent_abi.as_ref() {
             let digest = format!(
-                "sha256:{:x}",
-                Sha256::digest(serde_json::to_vec(&task).unwrap_or_default())
+                "sha256:{}",
+                sha256_hex(serde_json::to_vec(&task).unwrap_or_default())
             );
             let job_id = spec
                 .metadata

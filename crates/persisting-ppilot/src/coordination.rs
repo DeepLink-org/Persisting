@@ -4,6 +4,7 @@
 //! after a crash, the reconciler can replay either the CAS commit or the sink
 //! append without executing the workload again.
 
+use crate::digest::sha256_hex;
 use crate::sink::{persist_terminal, ResultSink};
 use crate::task::TaskResult;
 use anyhow::{bail, Context, Result};
@@ -14,7 +15,6 @@ use persisting_pchronicle::{
     LeaseAcquireOutcome, RunControlStore,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::future::Future;
@@ -616,7 +616,7 @@ impl RunCoordinator {
     }
 
     fn record_path(&self, task_id: &str) -> PathBuf {
-        let name = format!("{:x}.json", Sha256::digest(task_id.as_bytes()));
+        let name = format!("{}.json", sha256_hex(task_id));
         self.journal_root.join(name)
     }
 
@@ -686,8 +686,8 @@ fn result_digest(result: &TaskResult) -> Result<String> {
     // makes HashMap insertion order irrelevant across a crash/reload boundary.
     let canonical = serde_json::to_value(result)?;
     Ok(format!(
-        "sha256:{:x}",
-        Sha256::digest(serde_json::to_vec(&canonical)?)
+        "sha256:{}",
+        sha256_hex(serde_json::to_vec(&canonical)?)
     ))
 }
 

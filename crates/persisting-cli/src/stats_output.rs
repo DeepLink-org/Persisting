@@ -3,7 +3,7 @@
 //! | Backend | Role |
 //! |---------|------|
 //! | **plain** | Stable plain text; works everywhere (logs, pipes, CI). |
-//! | **md** | Markdown for reading; TTY uses termimad, pipe emits raw `.md`. |
+//! | **md** | Raw Markdown for reading, redirection, or further rendering. |
 //! | **toml** / **json** | Structured output for scripts and other tools. |
 //! | **auto** | TTY → md, pipe → toml. |
 

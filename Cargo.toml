@@ -71,7 +71,60 @@ strip = "symbols"
 codegen-units = 1
 
 [workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false }
+blake3 = "1"
+bytes = "1"
+chrono = "0.4"
+clap = "4"
+dashmap = "6"
+datafusion = { version = "54.1.0", default-features = false }
+dirs = "6"
+env_logger = "0.11"
+fs2 = "0.4"
+fuser = { version = "0.15", default-features = false }
+futures = "0.3"
+futures-util = { version = "0.3", default-features = false }
+hostname = "0.4"
+http-body-util = "0.1"
+hyper = "1"
+hyper-util = { version = "0.1", default-features = false }
+ipnet = "2"
+jj-lib = "0.43.0"
+lance = { version = "9.0.1", default-features = false, features = ["aws", "oss"] }
+lance-core = "9.0.1"
+lance-index = "9.0.1"
+lance-linalg = "9.0.1"
+lance-table = "9.0.1"
+libc = "0.2"
+log = "0.4"
+object_store = "0.13.2"
+persisting-control = { path = "crates/persisting-control" }
+persisting-gateway = { path = "crates/persisting-gateway" }
+persisting-overlayfs = { path = "crates/persisting-overlayfs" }
+persisting-overlaynet = { path = "crates/persisting-overlaynet" }
+persisting-pchronicle = { path = "crates/persisting-pchronicle" }
+persisting-pvisor = { path = "crates/persisting-pvisor" }
+pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }
+regex = "1"
+reqwest = { version = "0.12", default-features = false }
+ron = "0.8"
+serde = "1"
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.11"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", default-features = false }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", default-features = false }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2"
+uuid = "1"
 
 [patch.crates-io]
 fuser = { path = "vendor/fuser" }

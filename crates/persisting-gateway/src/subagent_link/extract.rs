@@ -1,27 +1,29 @@
 //! Extract subagent ids and spawn hints from Claude traffic.
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
-use lazy_static::lazy_static;
 use regex::Regex;
 use serde_json::Value;
 
 use super::types::SpawnHint;
 
-lazy_static! {
-    static ref AGENT_ID_JSON: Regex =
-        Regex::new(r#"(?i)"agentId"\s*:\s*"([a-zA-Z0-9_-]{4,})""#).expect("agentId json");
-    /// Claude Code tool_result line: `agentId: a583b6c00c3d06436` (not CLI `--agent-id`).
-    static ref AGENT_ID_TOOL_RESULT: Regex =
-        Regex::new(r"(?m)(?:^|\n)\s*agentId:\s*([a-zA-Z0-9_-]{4,})").expect("agentId tool result");
-    static ref TOOL_AGENT_BLOCK: Regex =
-        Regex::new(r"```tool:(?:Agent|Task)\s*\n([\s\S]*?)```").expect("tool agent block");
-    /// Design-doc paths in prompts (`*.md` or legacy `*.zh.md` under docs/src/design/).
-    static ref DOC_TARGET: Regex =
-        Regex::new(r"docs/src/design/[^\s\)\]]+\.md").expect("doc target path");
-    static ref TASK_ID_XML: Regex =
-        Regex::new(r"(?i)<task-id>\s*([a-zA-Z0-9_-]{4,})\s*</task-id>").expect("task-id xml");
-}
+static AGENT_ID_JSON: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)"agentId"\s*:\s*"([a-zA-Z0-9_-]{4,})""#).expect("agentId json")
+});
+/// Claude Code tool_result line: `agentId: a583b6c00c3d06436` (not CLI `--agent-id`).
+static AGENT_ID_TOOL_RESULT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)(?:^|\n)\s*agentId:\s*([a-zA-Z0-9_-]{4,})").expect("agentId tool result")
+});
+static TOOL_AGENT_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"```tool:(?:Agent|Task)\s*\n([\s\S]*?)```").expect("tool agent block")
+});
+/// Design-doc paths in prompts (`*.md` or legacy `*.zh.md` under docs/src/design/).
+static DOC_TARGET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"docs/src/design/[^\s\)\]]+\.md").expect("doc target path"));
+static TASK_ID_XML: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)<task-id>\s*([a-zA-Z0-9_-]{4,})\s*</task-id>").expect("task-id xml")
+});
 
 pub(crate) fn extract_doc_target(text: &str) -> Option<String> {
     DOC_TARGET.find(text).map(|m| m.as_str().to_string())

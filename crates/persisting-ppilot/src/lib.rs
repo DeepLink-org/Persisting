@@ -24,6 +24,7 @@ pub(crate) mod checkpoint;
 pub mod chronicle_cli;
 pub mod cli;
 pub mod coordination;
+pub(crate) mod digest;
 pub mod dist;
 pub mod driver;
 pub(crate) mod executor;
