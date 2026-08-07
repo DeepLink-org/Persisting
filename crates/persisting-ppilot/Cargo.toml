@@ -17,27 +17,27 @@ name = "integration_pulsing_cluster"
 required-features = ["query"]
 
 [dependencies]
-anyhow = "1"
-async-trait = "0.1"
-chrono = { version = "0.4", optional = true }
-clap = { version = "4", features = ["derive", "env"] }
-futures = "0.3"
-persisting-gateway = { path = "../persisting-gateway" }
-persisting-pchronicle = { path = "../persisting-pchronicle" }
-persisting-control = { path = "../persisting-control" }
-persisting-pvisor = { path = "../persisting-pvisor", default-features = false }
+anyhow.workspace = true
+async-trait.workspace = true
+chrono = { workspace = true, optional = true }
+clap = { workspace = true, features = ["derive", "env"] }
+futures.workspace = true
+persisting-gateway.workspace = true
+persisting-pchronicle.workspace = true
+persisting-control.workspace = true
+persisting-pvisor.workspace = true
 pulsing-actor = { workspace = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-tempfile = { version = "3", optional = true }
-toml = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "sync", "time", "signal", "fs", "net"] }
-tokio-stream = "0.1"
-tokio-util = { version = "0.7", features = ["rt"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "sync", "time", "signal", "fs", "net"] }
+tokio-stream.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [features]
 default = []
@@ -49,5 +49,4 @@ query = ["dep:tempfile", "dep:toml"]
 traj-sink = ["dep:chrono"]
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile.workspace = true

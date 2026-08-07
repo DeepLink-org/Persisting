@@ -8,31 +8,30 @@ description = "pChronicle: Persisting's structured storage layer for Agent traje
 readme = "README.md"
 
 [dependencies]
-anyhow = "1"
-async-trait = "0.1"
-chrono = "0.4"
-datafusion = { version = "53.1.0", default-features = false, features = ["sql"] }
-futures = "0.3"
-fs2 = "0.4"
-lance = { version = "7.0.0", features = ["aws", "azure", "gcp"] }
-lance-core = "7.0.0"
-lance-index = "7.0.0"
-lance-linalg = "7.0.0"
-lance-table = "7.0.0"
-object_store = "0.13.2"
-persisting-control = { path = "../persisting-control" }
-ron = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
-uuid = { version = "1", features = ["v4"] }
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+datafusion = { workspace = true, features = ["sql"] }
+futures.workspace = true
+fs2.workspace = true
+lance.workspace = true
+lance-core.workspace = true
+lance-index.workspace = true
+lance-linalg.workspace = true
+lance-table.workspace = true
+object_store.workspace = true
+persisting-control.workspace = true
+ron.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile.workspace = true
 
 [[bench]]
 name = "atif_storyline_lance"

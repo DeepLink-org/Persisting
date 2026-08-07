@@ -29,6 +29,7 @@ use lance::index::DatasetIndexExt;
 use lance::Dataset;
 use lance_core::datatypes::Schema as LanceSchema;
 use lance_core::utils::address::RowAddress;
+use lance_core::utils::row_addr_remap::RowAddrRemap;
 use lance_core::{Error, Result};
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 use lance_table::format::Fragment;
@@ -445,7 +446,7 @@ async fn remap_indices(
     let remapper_opts = DatasetIndexRemapperOptions::default();
     let remapper = remapper_opts.create_remapper(working)?;
     let remapped: Vec<RemappedIndex> = remapper
-        .remap_indices(row_id_map.clone(), old_frag_ids)
+        .remap_indices(RowAddrRemap::Direct(row_id_map.clone()), old_frag_ids)
         .await?;
 
     let rewritten: Vec<RewrittenIndex> = remapped

@@ -7,37 +7,35 @@ license.workspace = true
 description = "Agent protocol gateway for forwarding and trajectory capture"
 
 [dependencies]
-anyhow = "1"
-async-trait = "0.1"
-axum = "0.8"
-bytes = "1"
-chrono = { version = "0.4", features = ["serde"] }
-http-body-util = "0.1"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-serde_yaml = "0.9"
-dirs = "6"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net", "io-util"] }
-tokio-stream = "0.1"
-tracing = "0.1"
-url = "2"
-regex = "1"
-lazy_static = "1"
+anyhow.workspace = true
+async-trait.workspace = true
+axum = { workspace = true, features = ["http1", "json", "tokio"] }
+bytes.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+http-body-util.workspace = true
+futures-util = { workspace = true, features = ["std"] }
+reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+toml.workspace = true
+serde_yaml.workspace = true
+dirs.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net"] }
+tokio-stream.workspace = true
+tracing.workspace = true
+url.workspace = true
+regex.workspace = true
 pulsing-actor = { workspace = true }
-dashmap = "6"
-blake3 = "1"
-hostname = "0.4"
-persisting-control = { path = "../persisting-control" }
-persisting-overlaynet = { path = "../persisting-overlaynet" }
-persisting-pchronicle = { path = "../persisting-pchronicle" }
+dashmap.workspace = true
+blake3.workspace = true
+hostname.workspace = true
+persisting-control.workspace = true
+persisting-overlaynet.workspace = true
+persisting-pchronicle.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros"] }
 
 [[test]]
 name = "llm_fixtures"

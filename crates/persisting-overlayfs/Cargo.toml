@@ -12,22 +12,22 @@ name = "persisting-overlayfs"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
-libc = "0.2"
-log = "0.4"
-env_logger = "0.11"
-clap = { version = "4", features = ["derive"] }
-jj-lib = "0.43.0"
-pollster = "0.4"
+anyhow.workspace = true
+libc.workspace = true
+log.workspace = true
+env_logger.workspace = true
+clap = { workspace = true, features = ["derive"] }
+jj-lib.workspace = true
+pollster.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-fuser = { version = "0.15", features = ["abi-7-19", "libfuse", "macfuse-5"] }
+fuser = { workspace = true, features = ["abi-7-19", "libfuse", "macfuse-5"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-fuser = { version = "0.15", default-features = false, features = ["abi-7-31"] }
+fuser = { workspace = true, default-features = false, features = ["abi-7-31"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "linux")))'.dependencies]
-fuser = { version = "0.15", features = ["abi-7-19", "libfuse"] }
+fuser = { workspace = true, features = ["abi-7-19", "libfuse"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
