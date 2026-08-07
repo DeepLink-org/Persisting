@@ -92,7 +92,7 @@ hyper = "1"
 hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
 jj-lib = "0.43.0"
-lance = { version = "9.0.1", default-features = false, features = ["aws", "oss"] }
+lance = { version = "9.0.1", default-features = false, features = ["aws", "oss", "protoc"] }
 lance-core = "9.0.1"
 lance-index = "9.0.1"
 lance-linalg = "9.0.1"
