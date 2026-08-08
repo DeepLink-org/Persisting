@@ -888,11 +888,8 @@ fn like_tokens(pattern: &str, escape: Option<char>) -> Option<Vec<LikeToken>> {
     let mut tokens = Vec::new();
     while let Some(character) = characters.next() {
         if Some(character) == escape {
-            if let Some(literal) = characters.next() {
-                tokens.push(LikeToken::Literal(literal));
-            } else {
-                return None;
-            }
+            let literal = characters.next()?;
+            tokens.push(LikeToken::Literal(literal));
         } else {
             tokens.push(match character {
                 '%' => LikeToken::AnySequence,
