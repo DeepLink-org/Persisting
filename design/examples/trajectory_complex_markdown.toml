@@ -1,0 +1,163 @@
+# 示例：Persisting `trajectory add <STORAGE> --format toml`（可选 `--agent-id` / `--session-id`）可用的复杂 Markdown 正文
+# 说明：`records` 为数组；每段 `[[records]]` 为一条 JSON 记录。大段 Markdown 放在 `'''` 字面多行串里，减少 `\"` 转义。
+# 预览：可用任意 Markdown 预览器打开本文件中非 TOML 部分，或只看各 `body_md` 块内正文。
+
+[[records]]
+step = 0
+kind = "system"
+summary = "会话元数据（短字段仍用普通字符串）"
+meta = { model = "example-model", temperature = "0.7" }
+
+[[records]]
+step = 1
+role = "user"
+body_md = '''
+## 需求摘要（ATX 标题）
+
+请在下文中处理 **粗体**、*斜体*、***组合强调***、~~删除线~~，以及行内 `代码片段` 与 ``含 ` 反引号的行内代码``。
+
+### 列表示例
+
+- 无序一级
+  - 嵌套无序
+  - 另一项，含 [链接](https://toml.io)、[带标题链接](https://example.com "hover title")
+- 第二组
+
+1. 有序步骤一
+2. 步骤二：注意行首 `1.` 在 Markdown 与 TOML 中均安全（本段整体位于 **TOML 字面多行串** 中，`#` 在此串内不是 TOML 注释）。
+
+### 任务列表（GFM）
+
+- [ ] 未完成项
+- [x] 已完成项
+
+### 引用与嵌套引用
+
+> 单层引用：包含 **Markdown** 与 `code`。
+>
+> > 嵌套引用：可含 ---（在引用内不会变成 HR，除非独立成段）
+
+---
+
+### 水平线（上为 `---`）
+
+下面是 **表格**（对齐随意，渲染器会规整）：
+
+| 列 A | 列 B（含 `反引号`） | 列 C |
+|------|---------------------|------|
+| 普通 | `inline` | 中文 |
+| `\\` 两个反斜杠在单元格里 | **粗** | *斜* |
+
+### 脚注式写法（部分渲染器支持）
+
+这里演示脚注引用标记，若渲染器不支持会显示为普通文本：[^note]
+
+[^note]: 脚注正文可很长，含 **Markdown**。
+
+### 图片（占位 URL）
+
+![占位图](https://example.com/favicon.ico "title 属性")
+
+### HTML 片段（若策略允许原始 HTML）
+
+<details>
+<summary>点击展开（HTML）</summary>
+
+<p>段落内可含 <strong>HTML 粗体</strong> 与 <code>code</code>。</p>
+
+</details>
+
+### 含多种字符的段落
+
+Unicode：中文、日本語、한국어、العربية、emoji 🚀、数学 ∀x∈ℝ.
+
+特殊字符：`$`、`{`、`}`、`[`、`]`、`|`、`\`、`"`、`'`（在 **TOML 字面多行串**里，字面单引号须写成 **两个连续单引号** 表示一个 `'`；且正文里**不能**出现与定界符相同的 **三个连续 ASCII 单引号**，否则会提前结束字符串——故本示例用说明文字代替该定界符字面量）。
+
+### 代码块：JSON
+
+```json
+{
+  "tool": "grep",
+  "pattern": "foo\"bar",
+  "path": "C:\\\\Users\\\\demo\\\\repo"
+}
+```
+
+### 代码块：含 Markdown 围栏「冲突」时用更长围栏（Markdown 规则）
+
+````markdown
+外层用四个反引号，内层可以写三个：
+
+```python
+print("hello")
+```
+````
+
+### 代码块：YAML 块标量（仅作正文演示，不是本文件语法）
+
+```yaml
+records:
+  - step: 1
+    body: |
+      line1
+      line2 with "quotes"
+```
+
+### 代码块：TOML 片段（嵌套引用，仍只是字符串内容）
+
+```toml
+title = "nested"
+[[items]]
+id = 42
+```
+
+### 结尾列表（密集符号）
+
+- `反引号`、**星号**、_下划线_、[brackets](url)
+- 行尾两个空格强制换行（下面演示）  
+  第二行（上一行末有两个空格）
+'''
+
+[[records]]
+step = 2
+role = "assistant"
+body_md = '''
+### 助手回复（第二段记录）
+
+上文已覆盖常见 GFM。若还需 **更刁** 的用例，可在同文件追加更多 `[[records]]`。
+
+#### 行内组合
+
+请比较：`cmd.exe /c "echo ^<tag^>"` 与 *斜体中的 `code`*。
+
+#### 无序列表里夹代码
+
+- 项 A
+  ```
+  multi
+  line
+  fence inside list indent
+  ```
+- 项 B
+
+> 引用里也可以有代码：
+>
+> ```rust
+> fn main() {
+>     let s = r#"raw "string"#;
+>     println!("{}", s);
+> }
+> ```
+'''
+
+[[records]]
+step = 3
+role = "tool"
+tool_name = "bash"
+exit_code = 0
+# 短输出仍可用基本字符串；长输出同样可用 '''
+stdout_excerpt = '''
+total 42
+drwxr-xr-x  3 user  staff   96 Jan  1 00:00 .
+-rw-r--r--  1 user  staff  123 Jan  1 00:00 README.md
+'''
