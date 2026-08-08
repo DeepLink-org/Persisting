@@ -25,7 +25,7 @@ fn session_to_proto(summary: JudgmentSessionSummary) -> JudgeStatsSession {
         verdict_partial: summary.verdict_partial,
         verdict_fail: summary.verdict_fail,
         manual_count: summary.manual_count,
-        layers_path: summary.layers_path,
+        judgments_path: summary.judgments_path,
         status: summary.status,
     }
 }

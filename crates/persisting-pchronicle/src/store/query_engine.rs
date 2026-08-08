@@ -18,13 +18,16 @@ use futures::TryStreamExt;
 use super::{
     AtifDataSource, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
     FileTrajectoryFormat, FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot,
-    LocalQueryManifest, StorylineDataSource, SOURCE_FILE_COLUMN,
+    LocalQueryManifest, RawEventDataSource, StorylineDataSource, SOURCE_FILE_COLUMN,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChronicleQueryBackend {
     Lance {
         generation: String,
+    },
+    Events {
+        version: u64,
     },
     Atif {
         files: usize,
@@ -116,6 +119,24 @@ impl ChronicleQueryEngine {
         Self::from_lance_source_with_options(source, options)
     }
 
+    /// Open one canonical fenced `events.lance` manifest as the SQL table `events`.
+    pub async fn open_events(path: impl AsRef<Path>) -> Result<Self> {
+        let source = RawEventDataSource::open(path).await?;
+        Self::from_events_source(source)
+    }
+
+    pub async fn open_events_uri(uri: impl AsRef<str>) -> Result<Self> {
+        Self::open_events_uri_with_options(uri, ChronicleQueryExecutionOptions::default()).await
+    }
+
+    pub async fn open_events_uri_with_options(
+        uri: impl AsRef<str>,
+        options: ChronicleQueryExecutionOptions,
+    ) -> Result<Self> {
+        let source = RawEventDataSource::open_uri(uri).await?;
+        Self::from_events_source_with_options(source, options)
+    }
+
     pub fn open_atif(path: impl AsRef<Path>) -> Result<Self> {
         Self::from_file_trajectory_source(FileTrajectoryDataSource::open_atif(path)?)
     }
@@ -168,6 +189,25 @@ impl ChronicleQueryEngine {
         Ok(Self {
             context,
             backend: ChronicleQueryBackend::Lance { generation },
+            require_file_join_key: false,
+            local_file_metrics: None,
+        })
+    }
+
+    pub fn from_events_source(source: RawEventDataSource) -> Result<Self> {
+        Self::from_events_source_with_options(source, ChronicleQueryExecutionOptions::default())
+    }
+
+    pub fn from_events_source_with_options(
+        source: RawEventDataSource,
+        options: ChronicleQueryExecutionOptions,
+    ) -> Result<Self> {
+        let version = source.version();
+        let context = query_session_context(&options)?;
+        source.register(&context)?;
+        Ok(Self {
+            context,
+            backend: ChronicleQueryBackend::Events { version },
             require_file_join_key: false,
             local_file_metrics: None,
         })

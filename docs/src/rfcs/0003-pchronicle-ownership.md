@@ -30,11 +30,16 @@ schema；Gateway 内部名称 `CaptureRecord` 必须直接指向 `EventRecord`�
 | canonical event log | `StructuredStore`, `RawEventLanceStore` | append、replay、stats；同一 run 按 `session_id` 分区 |
 | 人读/调试视图 | `materialize_lance_to_markdown`, AgenticMD 文件 helpers | 从 canonical events 单向生成，可随时删除和重建 |
 | 发现 | `expand_story_locations` | 发现 canonical Run/Story 分区；Markdown 不参与存储层选择 |
-| 数据维护 | `truncate_lance_session` | session 分区级维护，不经 Gateway 转码 |
-| judgment 持久化 | `JudgeRow`, `read_judge_rows`, `write_judge_rows` | judgment schema evolution、列读写及 judge unit 投影 |
+| 数据维护 | `RawEventLanceStore::maintain` | 显式离线 compaction、session 索引和 vacuum；事实层不支持 truncate/overwrite |
+| judgment 持久化 | `JudgeRow`, `read_judge_rows`, `write_judge_rows` | 独立 `judgments.lance` 的规范化 upsert 及 judge unit 投影 |
 | Storyline 三表 | `StorylineLanceStore`, `StorylineDataSource` | 原子提交并查询 `runs` / `steps` / `tool_calls` |
 
 `events.lance` 是事实源。AgenticMD 和 Storyline 三表均可重建，不可被当作协议级审计或回放的事实源；ATIF 是互操作文档格式，不是独立存储模型。append、replay、stats 不得回退到 AgenticMD。
+
+canonical event 写路径 MUST 是 at-least-once append-only：不得在 append 前扫描旧行或
+`event_id`，不得将 ID 唯一性、重试去重、truncate 或 overwrite 作为存储语义。一个微批
+只允许执行规范化、Arrow 编码、一次私有 Lance segment append 和一次 fencing manifest
+CAS。索引、compaction 与 vacuum 必须由显式维护路径执行。
 
 ### 3. 格式层
 
@@ -70,10 +75,14 @@ Gateway 的 live Markdown 行为可以保留 producer-specific 策略，例如�
 1. canonical append 成功后，派生投影失败不得回滚或伪装成 canonical 写入失败；应报告或记录 projection failure。
 2. 状态机只能在 canonical append 成功后提交。
 3. WAL 重启后序号 MUST 单调延续；replay 成功后 MUST ack 原 WAL entry。
-4. 同一进程内 Lance 的 count-and-append MUST 串行，避免并发分配重复 `seq`。
+4. `seq` 由 producer 定义；存储不得读取 row count 分配全局序号。writer epoch 的可见性
+   必须由 manifest CAS 串行化。
 5. Storyline 三表替换 MUST 对读者呈现单一提交点；`CURRENT` 指向的不可变 generation 是权威快照。ATIF 输入 MUST 先转换为 Storyline，不得维护第二套 normalized schema。
 
-跨进程并发写 Lance 尚未由进程内锁解决。部署在允许多个 writer 的拓扑中时，MUST 在更高层提供单 writer/租约，或引入支持 compare-and-swap 的提交协议。
+Run lease epoch MUST 通过 `EventWriterFence` 进入 canonical event 提交协议。新 epoch MUST
+先以 compare-and-swap 激活 manifest；reader MUST 只读取 manifest 固定的 segment version，
+不得直接打开某个 segment 的 latest version。失效 writer 的后续 Lance version 不得进入
+可见快照。相同 epoch、不同 writer_id 的激活 MUST 被拒绝。
 
 ## 收敛结果
 

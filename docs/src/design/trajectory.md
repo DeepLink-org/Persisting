@@ -43,8 +43,13 @@ Run
 
 ### Lance events
 
-`events.lance/` 是完整事件表示，保留 HTTP/模型调用、时间、身份、payload 和顺序，
-适合回放、统计、评测和派生数据。需要审计保真度的工作流应使用这一层。
+`events.lance/` 是完整事件表示的 Run 级容器：`_manifest.json` 保存 active writer fence
+和可见 segment version，每个 writer epoch 使用独立 Lance segment。它保留 HTTP/模型调用、
+时间、身份、payload 和顺序。
+物理 schema 把 `event_id` 提升为独立业务列，但事实层不检查唯一性，也不为它维护索引；
+重复 ID 和重试行是合法事实。完整 `EventRecord` 仍保存在 `payload_json`，因此回放不丢字段。评测结果写入同 Run 的
+`judgments.lance/`，不会随 rubric 增加而演化事实表 schema。需要审计保真度的工作流应
+使用 canonical events 层。
 
 ### AgenticMD
 
@@ -76,6 +81,8 @@ storage/
 └── agent_id/
     └── session_id/
         ├── events.lance/
+        │   ├── _manifest.json
+        │   └── segments/<epoch-writer>.lance/
         └── session_id.md
 ```
 
@@ -85,7 +92,7 @@ storage/
 storage/
 └── agent_id/
     └── root_session_id/
-        ├── events.lance/          # 按 session_id 分区
+        ├── events.lance/          # manifest + writer segments，按 session_id 过滤
         ├── root_session_id.md
         └── agent-<id>.md
 ```
@@ -96,13 +103,22 @@ storage/
 
 ## 5. 写入与一致性
 
-1. `EventRecord` 进入 Lance 前转换为稳定 Arrow 行。
-2. 同一 dataset 内分配单调 `seq`；当前进程内写入串行化。
-3. Run bucket 中不同 Story 共享 dataset，但 replay/stats 按 `session_id` 隔离。
-4. live Markdown 以 `call_id + source`（兼容旧 role）定位块，允许流式 agent 原地更新。
-5. canonical append 与派生投影分别报告结果；投影失败不能伪装成事件已持久化。
+1. `EventRecord` 进入 Lance 前转换为 Arrow 行，一个有界微批对应当前 epoch segment 的一次
+   Lance append，随后以 manifest CAS 发布精确 version。
+2. 热路径不读取旧行、row count 或 `event_id`，不执行查重、索引、压缩或 vacuum。
+3. `seq` 是 producer 定义的 Storyline 序号；replay cursor 使用不可变的物理 append 顺序。
+4. Run bucket 中不同 Story 共享 manifest 和 epoch segment，但 replay/stats 按 `session_id` 隔离。
+5. live Markdown 以 `call_id + source`（兼容旧 role）定位块，允许流式 agent 原地更新。
+6. canonical append 与派生投影分别报告结果；投影失败不能伪装成事件已持久化。
 
-跨进程多 writer 仍需要上层单 writer/租约约束；当前实现不宣称提供分布式 CAS。
+事件事实层提供 at-least-once append，不提供 exactly-once 或 ID 唯一性。truncate、overwrite
+和 retry dedup 不属于事实写路径；转换到已有 Run 会失败，裁剪应创建新 Run 或在派生
+Storyline 上完成。compaction、`session_id` 索引和 vacuum 是显式离线维护。
+
+上层 Run lease 产生单调 epoch；`EventWriterFence(epoch, writer_id)` 在新 writer 写数据前
+激活。reader 只读取 manifest 固定的 segment version，因此旧 writer 在 takeover 后完成的
+底层 append 不可见。相同 epoch 的另一个 writer_id 会被拒绝。该协议提供 writer fencing，
+不把并发多 writer 合并定义为支持的写入模式。
 
 ## 6. 格式转换
 

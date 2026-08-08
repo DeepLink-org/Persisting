@@ -369,9 +369,9 @@ pub struct SessionJudgeStats {
     pub verdict_partial: usize,
     pub verdict_fail: usize,
     pub manual_count: usize,
-    /// Path to `events.lance` holding judge columns (field name kept for compatibility).
+    /// Path to the normalized judgment dataset.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub layers_path: String,
+    pub judgments_path: String,
     pub status: String,
 }
 
@@ -521,10 +521,8 @@ pub struct TrajectoryJudgeResponse {
     pub rubric_ids: Vec<String>,
     pub scope: JudgeScope,
     pub method: JudgeMethod,
-    pub layer_name: String,
-    /// Path to the Lance dataset that holds judge columns (`events.lance`).
-    /// Field name kept for ABI compatibility with older clients.
-    pub sidecar_path: String,
+    /// Path to the normalized `judgments.lance` dataset.
+    pub judgments_path: String,
     /// Units scored this run (turns or one story).
     pub judged_calls: usize,
     pub skipped_calls: usize,
@@ -560,7 +558,7 @@ pub struct JudgeStatsSession {
     pub verdict_partial: usize,
     pub verdict_fail: usize,
     pub manual_count: usize,
-    pub layers_path: String,
+    pub judgments_path: String,
     pub status: String,
 }
 
@@ -576,7 +574,7 @@ impl From<&JudgeStatsSession> for SessionJudgeStats {
             verdict_partial: s.verdict_partial,
             verdict_fail: s.verdict_fail,
             manual_count: s.manual_count,
-            layers_path: s.layers_path.clone(),
+            judgments_path: s.judgments_path.clone(),
             status: s.status.clone(),
         }
     }

@@ -7,7 +7,10 @@ use crate::formats::events::EventRecord;
 /// One row in the Lance event log (canonical trajectory store).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRow {
+    /// Producer-defined Storyline sequence. Replay uses physical append order.
     pub seq: i64,
+    /// Opaque business identity. Duplicates are valid appended facts.
+    pub event_id: Option<String>,
     pub timestamp: Option<String>,
     pub kind: String,
     pub source: String,
@@ -28,9 +31,10 @@ fn index_model(rec: &EventRecord) -> Option<String> {
         .map(str::to_string)
 }
 
-pub fn event_record_to_event_row(rec: &EventRecord, seq: i64) -> Result<EventRow> {
+pub fn event_record_to_event_row(rec: &EventRecord) -> Result<EventRow> {
     Ok(EventRow {
-        seq,
+        seq: i64::try_from(rec.seq).context("EventRecord seq exceeds i64")?,
+        event_id: rec.identity.event_id.clone(),
         timestamp: rec.timestamp.clone(),
         kind: rec.kind.clone(),
         source: rec.source.clone(),
@@ -45,10 +49,13 @@ pub fn event_record_to_event_row(rec: &EventRecord, seq: i64) -> Result<EventRow
 }
 
 pub fn event_row_to_event_record(row: &EventRow) -> Result<EventRecord> {
-    let mut rec: EventRecord =
+    let record: EventRecord =
         serde_json::from_str(&row.payload_json).context("decode EventRecord JSON")?;
-    rec.seq = u64::try_from(row.seq).context("seq out of range for EventRecord")?;
-    Ok(rec)
+    anyhow::ensure!(
+        record.identity.event_id == row.event_id,
+        "event_id mismatch between physical column and payload_json"
+    );
+    Ok(record)
 }
 
 pub fn event_row_to_replay_json(row: &EventRow) -> Result<String> {

@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use lance::io::ObjectStore;
 use persisting_pchronicle::{
     into_storyline, AtifTrajectory, ChronicleFormat, ChronicleQueryEngine, EventRecord,
-    RawEventLanceStore, StoryCoords, StorylineLanceStore, StructuredStore,
+    LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore, StoryCoords,
+    StorylineLanceStore, StructuredStore,
 };
 
 fn unique_root() -> Result<String> {
@@ -128,6 +129,95 @@ async fn run_contract(root: &str) -> Result<()> {
     Ok(())
 }
 
+async fn run_append_scale_contract(root: &str) -> Result<()> {
+    const BATCHES: usize = 8;
+    const ROWS_PER_BATCH: usize = 32;
+
+    let event_root = format!("{root}/event-scale");
+    let session = StoryCoords::new(
+        &event_root,
+        "contract-agent",
+        "scale-story",
+        Some("scale-run".into()),
+    );
+    let mut writer = RawEventLanceAppender::default();
+    let mut pinned = None;
+    for batch_index in 0..BATCHES {
+        let entries = (0..ROWS_PER_BATCH)
+            .map(|row_index| {
+                let sequence = batch_index * ROWS_PER_BATCH + row_index;
+                let mut record = event(&format!("event-{sequence}"));
+                record.seq = sequence as u64;
+                (session.clone(), record)
+            })
+            .collect::<Vec<_>>();
+        writer.append_event_batch(&entries).await?;
+        if batch_index + 1 == BATCHES / 2 {
+            pinned = Some(
+                ChronicleQueryEngine::open_events_uri(
+                    persisting_pchronicle::raw_event_lance_path(&session)?.to_string_lossy(),
+                )
+                .await?,
+            );
+        }
+    }
+    writer.finish();
+
+    let pinned_output = pinned
+        .context("pinned event query engine was not opened")?
+        .query_jsonl("SELECT COUNT(*) AS rows FROM events")
+        .await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(pinned_output.trim())?["rows"],
+        (BATCHES * ROWS_PER_BATCH / 2) as u64
+    );
+
+    let current = ChronicleQueryEngine::open_events_uri(
+        persisting_pchronicle::raw_event_lance_path(&session)?.to_string_lossy(),
+    )
+    .await?;
+    let current_output = current
+        .query_jsonl("SELECT COUNT(*) AS rows FROM events")
+        .await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(current_output.trim())?["rows"],
+        (BATCHES * ROWS_PER_BATCH) as u64
+    );
+
+    let report = RawEventLanceStore
+        .maintain(
+            &session,
+            &LanceMaintenanceOptions {
+                vacuum_older_than: None,
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(report.fragments_removed >= BATCHES);
+    assert_eq!(
+        RawEventLanceStore.stats(&session).await?.row_count,
+        BATCHES * ROWS_PER_BATCH
+    );
+
+    let mut continuation = event("after-maintenance");
+    continuation.seq = (BATCHES * ROWS_PER_BATCH) as u64;
+    RawEventLanceStore
+        .append_events(&session, std::slice::from_ref(&continuation))
+        .await?;
+    let tail = RawEventLanceStore
+        .read_events(&session, BATCHES * ROWS_PER_BATCH, Some(1))
+        .await?;
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail[0].seq, continuation.seq);
+    assert_eq!(tail[0].payload, continuation.payload);
+    assert_eq!(tail[0].identity.run_id.as_deref(), Some("scale-run"));
+    assert_eq!(
+        tail[0].identity.storyline_id.as_deref(),
+        Some("scale-story")
+    );
+    Ok(())
+}
+
 async fn cleanup(root: &str) -> Result<()> {
     let (store, path) = ObjectStore::from_uri(root).await?;
     store.remove_dir_all(path).await?;
@@ -146,6 +236,22 @@ async fn s3_event_storyline_and_query_contract() -> Result<()> {
         (Ok(()), Err(error)) => Err(error).context("S3 contract passed but cleanup failed"),
         (Err(error), Err(cleanup_error)) => Err(error).context(format!(
             "S3 contract cleanup also failed: {cleanup_error:#}"
+        )),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires PCHRONICLE_S3_TEST_URI and writable S3 credentials"]
+async fn s3_append_scale_snapshot_and_maintenance_contract() -> Result<()> {
+    let root = unique_root()?;
+    let contract_result = run_append_scale_contract(&root).await;
+    let cleanup_result = cleanup(&root).await;
+    match (contract_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error).context("S3 scale contract passed but cleanup failed"),
+        (Err(error), Err(cleanup_error)) => Err(error).context(format!(
+            "S3 scale contract cleanup also failed: {cleanup_error:#}"
         )),
     }
 }

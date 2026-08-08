@@ -7,9 +7,7 @@ use async_trait::async_trait;
 use persisting_gateway::record::CaptureRecord;
 use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::sink::CallbackSink;
-use persisting_pchronicle::{
-    EventRecord, LanceMaintenanceOptions, RawEventLanceAppender, StoryCoords,
-};
+use persisting_pchronicle::{EventRecord, RawEventLanceAppender, StoryCoords};
 
 use crate::{EventSink, TrajectoryEventSink};
 
@@ -103,9 +101,9 @@ pub fn chronicle_sink(
                 .block_on(appender.append_event_batch(&entries))
                 .context("append Gateway event batch to pChronicle")?;
         }
-        runtime
-            .block_on(appender.finish(&LanceMaintenanceOptions::default()))
-            .context("maintain pChronicle event datasets")?;
+        // Closing an append-only writer never runs indexing, compaction, or
+        // vacuum. Operators invoke maintenance explicitly outside capture.
+        let _reports = appender.finish();
         Ok(())
     });
 

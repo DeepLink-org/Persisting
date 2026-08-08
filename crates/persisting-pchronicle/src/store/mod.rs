@@ -7,13 +7,18 @@
 mod agenticmd_fs;
 mod atif_datafusion;
 mod attempt_registry;
+pub(crate) mod dataset_write_lock;
 mod egress;
 mod event_row;
 mod file_trajectory_datafusion;
+mod index_build_gate;
 mod local_query_manifest;
 mod query_engine;
+mod raw_event_datafusion;
 mod raw_event_lance;
 mod raw_event_lance_rows;
+mod raw_event_manifest;
+mod root_write_lock;
 mod run_control;
 mod storyline_datafusion;
 mod storyline_lance;
@@ -53,9 +58,12 @@ pub use query_engine::{
     ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions,
     ExternalTableFormat, ExternalTableSpec,
 };
+pub use raw_event_datafusion::{
+    RawEventDataSource, RawEventDataSourceOptions, RawEventTableProvider, DATAFUSION_EVENTS_TABLE,
+};
 pub use raw_event_lance::{
-    distinct_session_ids_in_run, overwrite_session_events, overwrite_session_lines,
-    LanceMaintenanceOptions, LanceMaintenanceReport, RawEventLanceAppender,
+    distinct_session_ids_in_run, EventLogLayoutStats, EventWriterFence, LanceMaintenanceOptions,
+    LanceMaintenanceReport, RawEventLanceAppender,
 };
 pub use raw_event_lance_rows::{
     event_row_from_batch, event_rows_from_batch, event_rows_to_batch, raw_event_arrow_schema,
@@ -82,7 +90,10 @@ use std::path::PathBuf;
 
 use crate::{story_lance_event_path, EventRecord, StoryCoords};
 
+/// Producer-defined Storyline sequence. Physical replay order is the immutable
+/// Lance append order and does not require a read-before-write counter.
 pub const TRAJECTORY_SEQ_COL: &str = "seq";
+pub const TRAJECTORY_EVENT_ID_COL: &str = "event_id";
 pub const TRAJECTORY_TIMESTAMP_COL: &str = "timestamp";
 pub const TRAJECTORY_SOURCE_COL: &str = "source";
 pub const TRAJECTORY_KIND_COL: &str = "kind";
@@ -94,9 +105,10 @@ pub const TRAJECTORY_MODEL_COL: &str = "model";
 pub const TRAJECTORY_TRACE_ID_COL: &str = "trace_id";
 pub const TRAJECTORY_PAYLOAD_JSON_COL: &str = "payload_json";
 
-/// Stable physical schema for the canonical Lance event log.
-pub const TRAJECTORY_V1_COLS: &[&str] = &[
+/// Canonical physical schema for the Lance event log.
+pub const TRAJECTORY_COLS: &[&str] = &[
     TRAJECTORY_SEQ_COL,
+    TRAJECTORY_EVENT_ID_COL,
     TRAJECTORY_TIMESTAMP_COL,
     TRAJECTORY_KIND_COL,
     TRAJECTORY_SOURCE_COL,
@@ -117,9 +129,6 @@ fn canonicalize_event(session: &TrajectorySession, mut record: EventRecord) -> E
         .root_session_id
         .as_deref()
         .unwrap_or(&session.session_id);
-    if record.identity.event_id.is_none() {
-        record.identity.event_id = Some(format!("event-{}", uuid::Uuid::new_v4()));
-    }
     record
         .identity
         .run_id
@@ -133,12 +142,14 @@ fn canonicalize_event(session: &TrajectorySession, mut record: EventRecord) -> E
         .producer
         .get_or_insert_with(|| record.source.clone());
     record
+        .agent_id
+        .get_or_insert_with(|| session.agent_id.clone());
+    // `event_id` is optional opaque producer/business data. pChronicle neither
+    // generates nor checks it and accepts duplicate IDs as appended facts.
+    record
         .identity
         .timestamp_unix_ms
         .get_or_insert_with(attempt_registry_now_ms);
-    record
-        .agent_id
-        .get_or_insert_with(|| session.agent_id.clone());
     record
 }
 
@@ -267,6 +278,13 @@ impl RawEventLanceStore {
         raw_event_lance::maintain(session, options).await
     }
 
+    pub async fn layout_stats(
+        &self,
+        session: &TrajectorySession,
+    ) -> anyhow::Result<EventLogLayoutStats> {
+        raw_event_lance::layout_stats(session).await
+    }
+
     /// Read the latest committed page for an append-only follow loop.
     ///
     /// `None` means the run-level dataset has not been created yet. Once it
@@ -307,6 +325,14 @@ impl StructuredStore for RawEventLanceStore {
         records_ron: &[String],
     ) -> anyhow::Result<AppendOutcome> {
         raw_event_lance::append(session, records_ron).await
+    }
+
+    async fn append_events(
+        &self,
+        session: &TrajectorySession,
+        records: &[EventRecord],
+    ) -> anyhow::Result<AppendOutcome> {
+        raw_event_lance::append_events(session, records).await
     }
 
     async fn replay(

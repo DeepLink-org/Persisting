@@ -28,7 +28,7 @@ enum Command {
     /// Run a pPilot plan with bounded concurrency and durable resume.
     Run(Box<PPilotArgs>),
     /// Query pChronicle by SQL, point, batch, or live follow mode.
-    Query(QueryArgs),
+    Query(Box<QueryArgs>),
     /// Import and operate pChronicle trajectory stores.
     Chronicle(ChronicleArgs),
     /// Convert trajectory corpora between pChronicle formats.
@@ -190,7 +190,7 @@ async fn dispatch(command: Command) -> Result<ExitCode> {
     match command {
         Command::Run(args) => run_ppilot(*args).await,
         Command::Query(args) => {
-            run_query(args).await?;
+            run_query(*args).await?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Chronicle(args) => {
@@ -395,25 +395,25 @@ mod tests {
             "SELECT 1",
         ])
         .unwrap();
+        let Command::Query(sql) = sql.command else {
+            panic!("expected query command");
+        };
         assert!(matches!(
             sql.command,
-            Command::Query(QueryArgs {
-                command: Some(persisting_ppilot::QueryCommand::Sql(
-                    persisting_ppilot::SqlQueryArgs {
-                        max_files: 100,
-                        max_entries: 200,
-                        max_file_bytes: 1_048_576,
-                        max_concurrent_files: Some(2),
-                        memory_limit_bytes: Some(67_108_864),
-                        max_spill_bytes: Some(134_217_728),
-                        timeout_seconds: Some(30),
-                        max_output_rows: Some(1000),
-                        query_metrics: true,
-                        ..
-                    }
-                )),
-                ..
-            })
+            Some(persisting_ppilot::QueryCommand::Sql(
+                persisting_ppilot::SqlQueryArgs {
+                    max_files: 100,
+                    max_entries: 200,
+                    max_file_bytes: 1_048_576,
+                    max_concurrent_files: Some(2),
+                    memory_limit_bytes: Some(67_108_864),
+                    max_spill_bytes: Some(134_217_728),
+                    timeout_seconds: Some(30),
+                    max_output_rows: Some(1000),
+                    query_metrics: true,
+                    ..
+                }
+            ))
         ));
 
         let point = Cli::try_parse_from([
@@ -427,12 +427,12 @@ mod tests {
             "3",
         ])
         .unwrap();
+        let Command::Query(point) = point.command else {
+            panic!("expected query command");
+        };
         assert!(matches!(
             point.command,
-            Command::Query(QueryArgs {
-                command: Some(persisting_ppilot::QueryCommand::Point(_)),
-                ..
-            })
+            Some(persisting_ppilot::QueryCommand::Point(_))
         ));
 
         let batch = Cli::try_parse_from([
@@ -444,12 +444,12 @@ mod tests {
             "run-a,run-b",
         ])
         .unwrap();
+        let Command::Query(batch) = batch.command else {
+            panic!("expected query command");
+        };
         assert!(matches!(
             batch.command,
-            Command::Query(QueryArgs {
-                command: Some(persisting_ppilot::QueryCommand::Batch(_)),
-                ..
-            })
+            Some(persisting_ppilot::QueryCommand::Batch(_))
         ));
 
         let follow = Cli::try_parse_from([
@@ -463,12 +463,12 @@ mod tests {
             "run-a",
         ])
         .unwrap();
+        let Command::Query(follow) = follow.command else {
+            panic!("expected query command");
+        };
         assert!(matches!(
             follow.command,
-            Command::Query(QueryArgs {
-                command: Some(persisting_ppilot::QueryCommand::Follow(_)),
-                ..
-            })
+            Some(persisting_ppilot::QueryCommand::Follow(_))
         ));
 
         let chronicle = Cli::try_parse_from([

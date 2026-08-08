@@ -15,11 +15,15 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use futures::TryStreamExt;
 use lance::dataset::optimize::{compact_files, CompactionOptions};
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
@@ -32,6 +36,7 @@ use lance_index::optimize::OptimizeOptions;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::IndexType;
 use object_store::path::Path as ObjectPath;
+use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
 use crate::storyline_schema::{
@@ -46,7 +51,7 @@ use super::storyline_lance_rows::{
     story_steps_from_batch, story_steps_to_batch, story_tool_calls_arrow_schema,
     story_tool_calls_from_batch, story_tool_calls_to_batch,
 };
-use super::{LanceMaintenanceOptions, LanceMaintenanceReport};
+use super::{root_write_lock, LanceMaintenanceOptions, LanceMaintenanceReport};
 
 const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
@@ -71,11 +76,6 @@ const TOOL_CALL_INDEXES: [(&str, IndexType); 3] = [
     ("function_name", IndexType::Bitmap),
 ];
 
-fn write_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorylineTablePaths {
     /// Logical three-table snapshot id. Changes after every committed replace.
@@ -93,6 +93,8 @@ pub struct StorylineTablePaths {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StorylineSnapshotPointer {
     generation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_generation: Option<String>,
     table_generation: String,
     runs_version: u64,
     steps_version: u64,
@@ -105,6 +107,25 @@ pub struct StorylineLanceStore {
     root_uri: String,
     object_store: std::sync::Arc<ObjectStore>,
     object_root: ObjectPath,
+    write_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+struct StoreWriteGuard {
+    _process: tokio::sync::OwnedMutexGuard<()>,
+    local_file: Option<File>,
+}
+
+impl Drop for StoreWriteGuard {
+    fn drop(&mut self) {
+        if let Some(file) = &self.local_file {
+            let _ = FileExt::unlock(file);
+        }
+    }
+}
+
+struct CurrentPointerState {
+    pointer: Option<StorylineSnapshotPointer>,
+    version: Option<UpdateVersion>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -155,6 +176,7 @@ impl StorylineLanceStore {
             .with_context(|| format!("open Storyline object store {root_uri}"))?;
         Ok(Self {
             root: PathBuf::from(&root_uri),
+            write_lock: root_write_lock::for_root(&root_uri),
             root_uri,
             object_store,
             object_root,
@@ -172,6 +194,43 @@ impl StorylineLanceStore {
 
     pub fn storage_scheme(&self) -> &str {
         self.object_store.scheme()
+    }
+
+    async fn acquire_write_guard(&self) -> Result<StoreWriteGuard> {
+        let process = self.write_lock.clone().lock_owned().await;
+        let local_file = if matches!(self.storage_scheme(), "file" | "file+uring") {
+            let lock_path = self.root.join(".storyline-write.lock");
+            Some(
+                tokio::task::spawn_blocking(move || -> Result<File> {
+                    if let Some(parent) = lock_path.parent() {
+                        std::fs::create_dir_all(parent).with_context(|| {
+                            format!("create Storyline lock root {}", parent.display())
+                        })?;
+                    }
+                    let file = OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .read(true)
+                        .write(true)
+                        .open(&lock_path)
+                        .with_context(|| {
+                            format!("open Storyline write lock {}", lock_path.display())
+                        })?;
+                    file.lock_exclusive().with_context(|| {
+                        format!("lock Storyline write root {}", lock_path.display())
+                    })?;
+                    Ok(file)
+                })
+                .await
+                .context("join Storyline write-lock task")??,
+            )
+        } else {
+            None
+        };
+        Ok(StoreWriteGuard {
+            _process: process,
+            local_file,
+        })
     }
 
     /// Paths and exact versions for the committed snapshot, or `None` for an empty store.
@@ -192,18 +251,39 @@ impl StorylineLanceStore {
     }
 
     pub(crate) async fn resolve_current_table_paths(&self) -> Result<Option<StorylineTablePaths>> {
-        let pointer = self.object_root.clone().join(CURRENT_FILE);
-        if !self
-            .object_store
-            .exists(&pointer)
-            .await
-            .with_context(|| format!("check Storyline commit pointer {}/CURRENT", self.root_uri))?
-        {
+        let Some(pointer) = self.read_current_pointer().await?.pointer else {
             return Ok(None);
-        }
-        let contents = self
-            .object_store
-            .read_one_all(&pointer)
+        };
+        let mut paths = self.paths_for_generation(&pointer.table_generation);
+        paths.generation = pointer.generation;
+        paths.runs_version = pointer.runs_version;
+        paths.steps_version = pointer.steps_version;
+        paths.tool_calls_version = pointer.tool_calls_version;
+        Ok(Some(paths))
+    }
+
+    async fn read_current_pointer(&self) -> Result<CurrentPointerState> {
+        let pointer = self.object_root.clone().join(CURRENT_FILE);
+        let result = match self.object_store.inner.get(&pointer).await {
+            Ok(result) => result,
+            Err(ObjectStoreError::NotFound { .. }) => {
+                return Ok(CurrentPointerState {
+                    pointer: None,
+                    version: None,
+                });
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("read Storyline commit pointer {}/CURRENT", self.root_uri)
+                });
+            }
+        };
+        let version = UpdateVersion {
+            e_tag: result.meta.e_tag.clone(),
+            version: result.meta.version.clone(),
+        };
+        let contents = result
+            .bytes()
             .await
             .with_context(|| format!("read Storyline commit pointer {}/CURRENT", self.root_uri))?;
         let contents = std::str::from_utf8(&contents)
@@ -226,6 +306,7 @@ impl StorylineLanceStore {
             .with_context(|| format!("Storyline generation '{contents}' is incomplete"))?;
             StorylineSnapshotPointer {
                 generation: contents.to_string(),
+                parent_generation: None,
                 table_generation: contents.to_string(),
                 runs_version,
                 steps_version,
@@ -233,13 +314,14 @@ impl StorylineLanceStore {
             }
         };
         validate_generation_name(&pointer.generation)?;
+        if let Some(parent) = &pointer.parent_generation {
+            validate_generation_name(parent)?;
+        }
         validate_generation_name(&pointer.table_generation)?;
-        let mut paths = self.paths_for_generation(&pointer.table_generation);
-        paths.generation = pointer.generation;
-        paths.runs_version = pointer.runs_version;
-        paths.steps_version = pointer.steps_version;
-        paths.tool_calls_version = pointer.tool_calls_version;
-        Ok(Some(paths))
+        Ok(CurrentPointerState {
+            pointer: Some(pointer),
+            version: Some(version),
+        })
     }
 
     pub async fn replace_storyline(&self, story: &StorylineDocument) -> Result<()> {
@@ -255,7 +337,7 @@ impl StorylineLanceStore {
         &self,
         input: impl AsRef<Path>,
     ) -> Result<StorylineStreamImportReport> {
-        let _guard = write_lock().lock().await;
+        let _guard = self.acquire_write_guard().await?;
         anyhow::ensure!(
             self.resolve_current_table_paths().await?.is_none(),
             "streaming ATIF create requires an empty Storyline store"
@@ -280,13 +362,17 @@ impl StorylineLanceStore {
             let (runs_version, steps_version, tool_calls_version) = writes?;
             let stats = produced?;
             let snapshot = next_generation();
-            self.commit_snapshot(&StorylineSnapshotPointer {
-                generation: snapshot.clone(),
-                table_generation: generation.clone(),
-                runs_version,
-                steps_version,
-                tool_calls_version,
-            })
+            self.commit_snapshot(
+                &StorylineSnapshotPointer {
+                    generation: snapshot.clone(),
+                    parent_generation: None,
+                    table_generation: generation.clone(),
+                    runs_version,
+                    steps_version,
+                    tool_calls_version,
+                },
+                None,
+            )
             .await?;
             Ok(StorylineStreamImportReport {
                 generation: snapshot,
@@ -320,8 +406,9 @@ impl StorylineLanceStore {
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
-        let _guard = write_lock().lock().await;
+        let _guard = self.acquire_write_guard().await?;
         let original = self.resolve_current_table_paths().await?;
+        let expected_generation = original.as_ref().map(|paths| paths.generation.clone());
         let mut paths = original.clone();
         let mut new_table_generation = None;
         let mut iterator = stories.into_iter();
@@ -460,13 +547,17 @@ impl StorylineLanceStore {
                     )
                 };
             let generation = next_generation();
-            self.commit_snapshot(&StorylineSnapshotPointer {
-                generation: generation.clone(),
-                table_generation: current.table_generation.clone(),
-                runs_version,
-                steps_version,
-                tool_calls_version,
-            })
+            self.commit_snapshot(
+                &StorylineSnapshotPointer {
+                    generation: generation.clone(),
+                    parent_generation: expected_generation.clone(),
+                    table_generation: current.table_generation.clone(),
+                    runs_version,
+                    steps_version,
+                    tool_calls_version,
+                },
+                expected_generation.as_deref(),
+            )
             .await?;
             report.generation = generation;
             Ok(report)
@@ -491,7 +582,7 @@ impl StorylineLanceStore {
         &self,
         options: &LanceMaintenanceOptions,
     ) -> Result<StorylineMaintenanceReport> {
-        let _guard = write_lock().lock().await;
+        let _guard = self.acquire_write_guard().await?;
         let Some(paths) = self.resolve_current_table_paths().await? else {
             return Ok(StorylineMaintenanceReport::default());
         };
@@ -506,19 +597,23 @@ impl StorylineLanceStore {
             ),
         )?;
         let generation = next_generation();
-        self.commit_snapshot(&StorylineSnapshotPointer {
-            generation: generation.clone(),
-            table_generation: paths.table_generation.clone(),
-            runs_version: runs
-                .final_version
-                .context("missing maintained runs version")?,
-            steps_version: steps
-                .final_version
-                .context("missing maintained steps version")?,
-            tool_calls_version: tool_calls
-                .final_version
-                .context("missing maintained tool_calls version")?,
-        })
+        self.commit_snapshot(
+            &StorylineSnapshotPointer {
+                generation: generation.clone(),
+                parent_generation: Some(paths.generation.clone()),
+                table_generation: paths.table_generation.clone(),
+                runs_version: runs
+                    .final_version
+                    .context("missing maintained runs version")?,
+                steps_version: steps
+                    .final_version
+                    .context("missing maintained steps version")?,
+                tool_calls_version: tool_calls
+                    .final_version
+                    .context("missing maintained tool_calls version")?,
+            },
+            Some(&paths.generation),
+        )
         .await?;
 
         let (runs_vacuum, steps_vacuum, tool_calls_vacuum) = tokio::try_join!(
@@ -559,7 +654,7 @@ impl StorylineLanceStore {
                 );
             }
         }
-        let _guard = write_lock().lock().await;
+        let _guard = self.acquire_write_guard().await?;
 
         let mut runs = Vec::with_capacity(replacements.len());
         let mut steps = Vec::new();
@@ -714,13 +809,17 @@ impl StorylineLanceStore {
                     &TOOL_CALL_INDEXES,
                 ),
             )?;
-            self.commit_snapshot(&StorylineSnapshotPointer {
-                generation: generation.clone(),
-                table_generation: generation.clone(),
-                runs_version,
-                steps_version,
-                tool_calls_version,
-            })
+            self.commit_snapshot(
+                &StorylineSnapshotPointer {
+                    generation: generation.clone(),
+                    parent_generation: None,
+                    table_generation: generation.clone(),
+                    runs_version,
+                    steps_version,
+                    tool_calls_version,
+                },
+                None,
+            )
             .await
         }
         .await;
@@ -768,13 +867,17 @@ impl StorylineLanceStore {
                 story_tool_calls_to_batch,
             ),
         )?;
-        self.commit_snapshot(&StorylineSnapshotPointer {
-            generation: next_generation(),
-            table_generation: paths.table_generation.clone(),
-            runs_version,
-            steps_version,
-            tool_calls_version,
-        })
+        self.commit_snapshot(
+            &StorylineSnapshotPointer {
+                generation: next_generation(),
+                parent_generation: Some(paths.generation.clone()),
+                table_generation: paths.table_generation.clone(),
+                runs_version,
+                steps_version,
+                tool_calls_version,
+            },
+            Some(&paths.generation),
+        )
         .await
     }
 
@@ -825,15 +928,82 @@ impl StorylineLanceStore {
         Ok((runs, steps, tool_calls))
     }
 
-    async fn commit_snapshot(&self, snapshot: &StorylineSnapshotPointer) -> Result<()> {
+    async fn commit_snapshot(
+        &self,
+        snapshot: &StorylineSnapshotPointer,
+        expected_generation: Option<&str>,
+    ) -> Result<()> {
         let pointer = self.object_root.clone().join(CURRENT_FILE);
         let contents = serde_json::to_vec(snapshot).context("encode Storyline snapshot pointer")?;
-        self.object_store
-            .put(&pointer, &contents)
+        let current = self.read_current_pointer().await?;
+        let actual_generation = current
+            .pointer
+            .as_ref()
+            .map(|pointer| pointer.generation.as_str());
+        anyhow::ensure!(
+            actual_generation == expected_generation,
+            "Storyline commit conflict: expected CURRENT generation {:?}, found {:?}",
+            expected_generation,
+            actual_generation
+        );
+
+        if matches!(self.storage_scheme(), "file" | "file+uring") {
+            write_local_current(self.root.join(CURRENT_FILE), contents).await?;
+            return Ok(());
+        }
+
+        let mode = match current.version {
+            None => PutMode::Create,
+            Some(version) => PutMode::Update(version),
+        };
+        match self
+            .object_store
+            .inner
+            .put_opts(&pointer, contents.into(), mode.into())
             .await
-            .with_context(|| format!("commit Storyline generation {}", snapshot.generation))?;
-        Ok(())
+        {
+            Ok(_) => Ok(()),
+            Err(ObjectStoreError::AlreadyExists { .. })
+            | Err(ObjectStoreError::Precondition { .. }) => anyhow::bail!(
+                "Storyline commit conflict while publishing generation {}",
+                snapshot.generation
+            ),
+            Err(error) => Err(error)
+                .with_context(|| format!("commit Storyline generation {}", snapshot.generation)),
+        }
     }
+}
+
+async fn write_local_current(path: PathBuf, contents: Vec<u8>) -> Result<()> {
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let parent = path
+            .parent()
+            .context("Storyline CURRENT path has no parent")?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create Storyline root {}", parent.display()))?;
+        let temporary = path.with_extension(format!(
+            "tmp-{}-{}",
+            std::process::id(),
+            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .with_context(|| format!("create Storyline CURRENT temp {}", temporary.display()))?;
+        file.write_all(&contents)
+            .with_context(|| format!("write Storyline CURRENT temp {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("sync Storyline CURRENT temp {}", temporary.display()))?;
+        std::fs::rename(&temporary, &path)
+            .with_context(|| format!("publish Storyline CURRENT {}", path.display()))?;
+        if let Ok(directory) = File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })
+    .await
+    .context("join Storyline CURRENT commit task")?
 }
 
 async fn validate_table(generation: &str, path: &Path, version: u64) -> Result<()> {
@@ -1036,6 +1206,7 @@ async fn write_rows<T: Send + Sync + 'static>(
                 IndexType::Bitmap => BuiltinIndexType::Bitmap,
                 _ => BuiltinIndexType::BTree,
             };
+            let _admission = super::index_build_gate::acquire().await;
             dataset
                 .create_index(
                     &[*column],
@@ -1078,6 +1249,7 @@ async fn write_record_batch_reader(
                 IndexType::Bitmap => BuiltinIndexType::Bitmap,
                 _ => BuiltinIndexType::BTree,
             };
+            let _admission = super::index_build_gate::acquire().await;
             dataset
                 .create_index(
                     &[*column],
@@ -1163,6 +1335,7 @@ async fn ensure_table_indexes(dataset: &mut Dataset, indexes: &[(&str, IndexType
             IndexType::Bitmap => BuiltinIndexType::Bitmap,
             _ => BuiltinIndexType::BTree,
         };
+        let _admission = super::index_build_gate::acquire().await;
         dataset
             .create_index(
                 &[*column],
@@ -1829,6 +2002,37 @@ mod tests {
                 .map(|index| format!("session-{index}"))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn stale_current_commit_is_rejected_without_moving_snapshot() {
+        let uri = remote_uri("stale-current");
+        let store = StorylineLanceStore::open_uri(&uri).await.unwrap();
+        store.replace_storyline(&story("first")).await.unwrap();
+        let stale = store.current_table_paths().await.unwrap().unwrap();
+
+        store.replace_storyline(&story("second")).await.unwrap();
+        let committed = store.current_table_paths().await.unwrap().unwrap();
+        let attempted_generation = next_generation();
+        let error = store
+            .commit_snapshot(
+                &StorylineSnapshotPointer {
+                    generation: attempted_generation,
+                    parent_generation: Some(stale.generation.clone()),
+                    table_generation: stale.table_generation.clone(),
+                    runs_version: stale.runs_version,
+                    steps_version: stale.steps_version,
+                    tool_calls_version: stale.tool_calls_version,
+                },
+                Some(&stale.generation),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("commit conflict"), "{error:#}");
+
+        let after = store.current_table_paths().await.unwrap().unwrap();
+        assert_eq!(after.generation, committed.generation);
+        assert!(store.get_storyline("second").await.unwrap().is_some());
     }
 
     #[test]
