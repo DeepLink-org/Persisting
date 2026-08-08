@@ -29,6 +29,10 @@ ppilot run plan.py --workers 8 --sink ./results \
 ppilot self-test
 
 ppilot chronicle import ./trajectories.ndjson ./storyline-store
+ppilot convert ./openai-data ./storyline-store --to lance
+ppilot convert ./storyline-store ./recovered --from lance --to openai_msg
+ppilot convert ./task.actf.json ./actf-store --to lance
+ppilot convert ./actf-store ./recovered-actf --from lance --to actf
 ppilot query point ./storyline-store --session-id run-001 --step-id 7
 ppilot query point ./storyline-store --session-id run-001
 ppilot query batch ./storyline-store --session-id run-001,run-002 --step-id 7
@@ -38,6 +42,17 @@ ppilot query sql ./storyline-store \
 ppilot query sql s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
 ppilot query sql ./trajectories.ndjson --sql-file analysis.sql
+ppilot query sql ./openai-data \
+  --sql "SELECT _file_, COUNT(*) FROM steps WHERE _file_ LIKE 'cybergym_%' GROUP BY _file_"
+ppilot query sql ./actf-data --source actf \
+  --sql "SELECT session_id, _file_ FROM runs WHERE _file_ LIKE 'bench/%'"
+ppilot query sql ./openai-data --max-files 200000 --max-entries 400000 \
+  --max-file-bytes 67108864 \
+  --max-concurrent-files 4 --cache-bytes 536870912 \
+  --memory-limit-bytes 2147483648 --spill-path /var/tmp/ppilot \
+  --max-spill-bytes 10737418240 --timeout-seconds 600 \
+  --max-output-rows 10000000 --query-metrics \
+  --sql "SELECT COUNT(*) FROM runs"
 ppilot query sql ./storyline-store \
   --table labels=csv:./labels.csv \
   --table metadata=json:./metadata.json \
@@ -70,8 +85,11 @@ re-dispatched, and an uncommitted terminal record is recovered into RunCommit
 and the user sink. A lease that has not yet produced an Attempt record is also
 deferred until its TTL proves it orphaned.
 
-`ppilot chronicle import` validates ATIF JSON, arrays, JSONL/NDJSON, or a directory and
+`ppilot chronicle import` validates ATIF, ACTF, OpenAI-message JSON, or a directory and
 atomically replaces the corresponding Storylines in a local or object-store Lance store.
+`ppilot convert` is the dedicated conversion entry point for ATIF, ACTF, OpenAI messages,
+Storyline JSON, AgenticMD, and the three-table Lance representation. Document outputs are
+directories; losslessly imported OpenAI corpora recover their original file grouping.
 `ppilot query` exposes `sql`, `point`, `batch`, and `follow` modes backed by
 pChronicle and writes JSONL to stdout. Point and batch operate on normalized
 Storyline Lance data; follow continuously reads committed canonical events.

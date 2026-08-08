@@ -1,0 +1,44 @@
+[
+  {
+    "dataset_type": "TEST",
+    "dt": "2026-07-28",
+    "id": "evt-cyber-a-1",
+    "session_id": "cyber-a",
+    "created_at": 1785243276,
+    "step_id": 1,
+    "is_terminal": false,
+    "env_id": "cyber-a",
+    "job_id": "cybergym_07270003",
+    "is_truncated": false,
+    "step_reward": 0.0,
+    "reward": 0.0,
+    "messages": [
+      {
+        "role": "user",
+        "content": [{"type": "text", "text": "Inspect the test service."}]
+      },
+      {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Inspection complete."}]
+      }
+    ],
+    "response": {
+      "role": "assistant",
+      "content": [{"type": "text", "text": "Inspection complete."}],
+      "name": null,
+      "refusal": null,
+      "tool_calls": null,
+      "tool_call_id": null
+    },
+    "chosen_response": null,
+    "rejected_response": null,
+    "ground_truth_answer": null,
+    "reference_answer": null,
+    "agent_model": "fixture-model-a",
+    "env_name": "cybergym",
+    "is_session_completed": false,
+    "is_trainable": false,
+    "meta_json": "{\"source\":\"trimmed-fixture\",\"env_state\":\"{\\\"total_tokens\\\":12}\"}",
+    "blob_manifest": []
+  }
+]

@@ -131,6 +131,10 @@ fn chronicle_format_names_are_canonical_only() {
         ChronicleFormat::from_str("atif").unwrap(),
         ChronicleFormat::Atif
     );
+    assert_eq!(
+        ChronicleFormat::from_str("actf").unwrap(),
+        ChronicleFormat::Actf
+    );
 }
 
 #[test]
@@ -516,6 +520,10 @@ fn detect_format_from_content_and_path() {
         detect_format_from_path(Path::new("/tmp/x/storyline.json")),
         Some(ChronicleFormat::Storyline)
     );
+    assert_eq!(
+        detect_format_from_path(Path::new("/tmp/x/task.actf.json")),
+        Some(ChronicleFormat::Actf)
+    );
     let atif = r#"{"schema_version":"ATIF-v1.7","session_id":"s","agent":{"name":"a","version":"1"},"steps":[]}"#;
     assert_eq!(
         detect_format(None, Some(atif)).unwrap(),
@@ -525,6 +533,17 @@ fn detect_format_from_content_and_path() {
     assert_eq!(
         detect_format(None, Some(story)).unwrap(),
         Some(ChronicleFormat::Storyline)
+    );
+    let actf = r#"{"task_id":"t","category":"test","k":1,"correct":false,"attempts_tried":1,"solved_at":null,"attempts":{"1":{"trajectory":{"schema_version":"ACTF_v1.0","steps":[]}}}}"#;
+    assert_eq!(
+        detect_format(None, Some(actf)).unwrap(),
+        Some(ChronicleFormat::Actf)
+    );
+    let response_only =
+        r#"[{"session_id":"s","step_id":1,"response":{"role":"assistant","content":"ok"}}]"#;
+    assert_eq!(
+        detect_format(None, Some(response_only)).unwrap(),
+        Some(ChronicleFormat::OpenaiMsg)
     );
 }
 

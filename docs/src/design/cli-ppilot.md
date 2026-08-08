@@ -9,7 +9,9 @@ Lance/ATIF datasource 与 SQL 执行继续由 pChronicle library 提供。
 ```text
 ppilot run <SCRIPT> [OPTIONS]
 ppilot chronicle import <INPUT> <STORE>
-ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
+ppilot chronicle export <STORE> <OUTPUT_DIR> --format openai_msg
+ppilot convert <INPUT> <OUTPUT> [--from auto|atif|actf|openai_msg|storyline|agenticmd|lance] --to atif|actf|openai_msg|storyline|agenticmd|lance
+ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--table NAME=FORMAT:PATH]... [--max-files N] [--max-entries N] [--max-file-bytes N] [--max-concurrent-files N] [--cache-bytes N] [--cache-files N] [--batch-size N] [--memory-limit-bytes N] [--spill-path DIR] [--max-spill-bytes N] [--timeout-seconds N] [--max-output-rows N] [--query-metrics]
 ppilot query point <STORE> --session-id <ID> [--step-id <N>]
 ppilot query batch <STORE> --session-id <ID[,ID]...> [--step-id <N>]
 ppilot query follow <STORAGE> --agent-id <ID> --session-id <ID> [--offset <N>] [--limit <N>] [--poll-interval-ms <MS>]
@@ -23,7 +25,7 @@ ppilot self-test [OPTIONS]
 
 ```bash
 persisting batch <SCRIPT> [OPTIONS]
-persisting query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
+persisting query <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--table NAME=FORMAT:PATH]...
 ```
 
 ### `run`
@@ -46,14 +48,52 @@ ppilot run plan.py --sink ./results \
 
 ### `chronicle import`
 
-把 ATIF JSON 对象、数组、JSONL/NDJSON 文件或目录校验并规范化为 Storyline，然后按
-`session_id` 原子写入三表 Lance store。已存在的 session 被替换，其他 session 保留。
-`STORE` 可以是本地路径或 pChronicle 支持的对象存储 URI。
+把 ATIF JSON/JSONL、ACTF JSON 或 OpenAI-message JSON 校验并规范化为 Storyline，然后按
+`session_id` 原子写入三表 Lance store。OpenAI 输入可为现有 `session_steps` 信封或包含
+多个 session 的裸 step 数组。已存在的 session 被替换，其他 session 保留；Lance 三表
+schema 不因输入格式而变化。`STORE` 可以是本地路径或 pChronicle 支持的对象存储 URI。
 
 ```bash
 ppilot chronicle import ./trajectories.ndjson ./storyline-store
+ppilot chronicle import ./openai-data ./storyline-store --format openai_msg
+ppilot chronicle import ./task.actf.json ./storyline-store --format actf
 ppilot chronicle import ./atif-directory s3://trajectory-bucket/storylines
 ```
+
+OpenAI corpus 的完整原 row、源文件分组和 row ordinal 保存在既有 JSON 扩展列中，可按
+原文件分组执行 JSON 数据模型级无损恢复：
+
+```bash
+ppilot chronicle export ./storyline-store ./recovered --format openai_msg
+```
+
+恢复不承诺空白和对象键顺序逐字节一致；不是由保真 OpenAI 导入产生的 Storyline 会被
+拒绝，而不会自动降级成近似输出。
+
+### `convert`
+
+`convert` 是 pPilot 的独立格式转换入口，通过 Storyline hub 在 ATIF、ACTF、OpenAI messages、
+Storyline JSON、AgenticMD 和三表 Lance 之间转换。文档格式的 `OUTPUT` 始终是目录，每条
+trajectory 写一个文件；OpenAI 保真输入会恢复原文件分组。`lance` 输出使用现有
+`StorylineLanceStore` 的原子 session 替换语义。
+
+```bash
+# 自动识别 OpenAI corpus 并写入三表 Lance
+ppilot convert ./openai-data ./storyline-store --to lance
+
+# 从三表恢复 OpenAI 原始文件分组
+ppilot convert ./storyline-store ./recovered --from lance --to openai_msg
+
+# 将 ATIF corpus 转为逐 session 的 Storyline JSON
+ppilot convert ./atif-data ./storylines --from atif --to storyline
+
+# ACTF 经三表 Lance 后按原 task/attempt 结构恢复
+ppilot convert ./task.actf.json ./actf-store --to lance
+ppilot convert ./actf-store ./recovered-actf --from lance --to actf
+```
+
+文档输出默认拒绝覆盖已有文件，可通过 `--force` 显式覆盖。对象存储 URI 仅用于 Lance
+输入或输出；Lance-to-Lance 不属于格式转换，会被拒绝。
 
 ### `query`
 
@@ -76,6 +116,25 @@ ppilot query sql s3://trajectory-bucket/persisting/storylines \
 ppilot query sql ./trajectories.ndjson --sql-file analysis.sql
 cat analysis.sql | ppilot query sql ./storyline-store --sql-file -
 
+# ATIF/OpenAI/ACTF 文件或目录会自动识别；_file_ 是相对输入目录的虚拟列
+ppilot query sql ./openai-data \
+  --sql "SELECT _file_, COUNT(*) AS steps
+         FROM steps WHERE _file_ LIKE 'cybergym_0729%'
+         GROUP BY _file_ ORDER BY _file_"
+
+ppilot query sql ./actf-data \
+  --source actf \
+  --sql "SELECT session_id, _file_ FROM runs WHERE _file_ LIKE 'bench/%'"
+
+# 限制 manifest、单文件大小、解析并发和缓存，并把计数器输出到 stderr
+ppilot query sql ./openai-data \
+  --max-files 200000 --max-entries 400000 --max-file-bytes 67108864 \
+  --max-concurrent-files 4 --cache-bytes 536870912 --cache-files 256 \
+  --memory-limit-bytes 2147483648 --spill-path /var/tmp/ppilot \
+  --max-spill-bytes 10737418240 \
+  --timeout-seconds 600 --max-output-rows 10000000 \
+  --query-metrics --sql "SELECT COUNT(*) FROM runs"
+
 # 将带表头的 CSV 和 JSON 对象数组注册为外部表并联查
 ppilot query sql ./storyline-store \
   --table labels=csv:./labels.csv \
@@ -93,6 +152,46 @@ N 次点查：step 批查生成一次 `IN` 查询，完整轨迹批查则对三�
 `--table` 可重复。支持 `csv`、`json`、`jsonl`（别名 `ndjson`）；`csv` 默认把首行
 作为列名，`json` 表示一个 JSON 对象数组，`jsonl`/`ndjson` 表示每行一个 JSON 对象。
 表名必须匹配 `[A-Za-z_][A-Za-z0-9_]*`，且不能覆盖内建表或先前注册的外部表。
+
+直接查询 ATIF、OpenAI JSON 或 ACTF 时，`runs`、`steps`、`tool_calls` 都额外暴露只存在于
+查询期的 `_file_` UTF-8 列。单文件输入的值是文件名；目录输入是使用 `/` 分隔的相对
+路径，因此可用 SQL `LIKE` 的 `%`、`_` 通配符筛选。该列不会写入 Lance，也不会改变
+三表物理 schema。`auto` 会按稳定路径顺序冻结递归发现的文件 manifest，并从第一份文件
+推断格式；执行时只有匹配可下推 `_file_ =`、`IN` 或 `LIKE` 条件的文件才会被打开和
+规范化。被实际扫描的混合格式、损坏或无法识别文件会报错，未命中的文件不会被读取。
+
+manifest 会记录文件大小、修改时间和文件身份；首次读取前后都会校验，通常的替换或修改
+会失败，而不是把不同版本静默混入结果。该检查不是内容哈希，能保留相同文件身份、大小
+和修改时间的对抗性原地改写不在保证范围内。`--max-files`、`--max-entries`、
+`--max-file-bytes` 和 `--max-concurrent-files` 分别限制候选文件数、目录遍历项、单文件输入
+体积和并发解析；
+三张虚拟表共享按 Arrow 实际内存计量的 LRU 缓存和同文件 single-flight。`--cache-bytes 0`
+或 `--cache-files 0` 可关闭保留缓存，`--query-metrics` 会把 cache hit/miss、eviction、解析
+文件数和源字节数以 JSON 写到 stderr，不污染 stdout 的查询结果。
+
+pPilot 以 Arrow batch 将 JSONL 结果直接流式写到 stdout，不再把完整结果集收集到内存；
+`--timeout-seconds` 给异步规划和执行设置墙钟上限，`--max-output-rows` 限制输出行数。
+同步 stdout 写入被操作系统阻塞时，异步 timeout 不能抢占该系统调用。超时、超行数或
+后续分区失败前已经写出的 stdout 不会回滚，需要原子结果文件时应由调用方先写临时文件
+并在成功后 rename。
+
+`--memory-limit-bytes` 对 Lance 和直接文件查询使用同一个 DataFusion `FairSpillPool`，限制
+join、sort、aggregate 等支持内存预留的执行算子；`--spill-path` 必须是已存在目录，
+`--max-spill-bytes` 限制临时目录用量。DataFusion 并非所有分配都经过 memory pool，因此
+它不是进程 RSS 的硬上限；容器/作业级 cgroup 限制仍是生产部署的最后一道边界。
+
+多文件直接查询中，`session_id` 只保证在单个源文件内唯一。两个内建轨迹表 join 时必须
+同时包含 `left._file_ = right._file_`，否则查询会在执行前拒绝，以避免同名 session 的
+跨文件错误匹配。单表查询和与外部维表的 join 不受此限制。
+
+直接 JSON 查询面向临时分析和受控批次，单个文件仍需完整解析。超大规模、反复查询或
+对象存储数据应先用 `ppilot convert ... --to lance` 导入三表 Lance，再依赖 generation
+快照、列裁剪、谓词下推和索引；本地 manifest 不是分布式 catalog。
+
+完整可执行演示见
+[`examples/pchronicle/06-query-openai-actf-directly`](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly)：
+它同时验证目录自动识别、嵌套相对路径、`LIKE` 筛选，以及转换为 Lance 后物理 schema
+仍不包含 `_file_`。
 
 只允许单条 `SELECT`、`VALUES`、`DESCRIBE` 或 `EXPLAIN`；拒绝 DDL、DML、`COPY` 和
 多语句。未显式 `ORDER BY` 时不保证结果顺序。

@@ -50,7 +50,8 @@ pChronicle；编排状态仍由本 crate 管理。
 ```text
 ppilot run <SCRIPT> [OPTIONS]
 ppilot chronicle import <INPUT> <STORE>
-ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif] [--table NAME=FORMAT:PATH]...
+ppilot convert <INPUT> <OUTPUT> [--from auto|atif|actf|openai_msg|storyline|agenticmd|lance] --to atif|actf|openai_msg|storyline|agenticmd|lance
+ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--table NAME=FORMAT:PATH]...
 ppilot query point <STORE> --session-id <ID> [--step-id <N>]
 ppilot query batch <STORE> --session-id <ID[,ID]...> [--step-id <N>]
 ppilot query follow <STORAGE> --agent-id <ID> --session-id <ID> [OPTIONS]
@@ -73,6 +74,8 @@ cross-rank token ledger.
 `run` 收纳原有 `PPilotArgs`；`self-test` 是无需用户脚本的环境与执行链路验证。
 `chronicle import` 将 ATIF JSON、数组、JSONL/NDJSON 或目录通过 pChronicle 规范化后，
 按 `session_id` 原子写入本地或对象存储 Storyline Lance store。
+`convert` 通过 Storyline hub 在 ATIF、ACTF、OpenAI messages、Storyline JSON、AgenticMD 与
+三表 Lance 间转换；OpenAI 保真输入恢复原文件分组，普通文档输出按 session 写入目录。
 `query` 是 SQL、点查、批查和实时 follow 的统一入口，执行和存储语义仍归 pChronicle。
 SQL 对三表 Storyline Lance store、ATIF JSON/数组/JSONL/目录注册同名的 `runs`、
 `steps`、`tool_calls` 表；点查与批查读取 normalized Storyline，follow 持续读取运行中

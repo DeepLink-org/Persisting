@@ -9,6 +9,8 @@ mod atif_datafusion;
 mod attempt_registry;
 mod egress;
 mod event_row;
+mod file_trajectory_datafusion;
+mod local_query_manifest;
 mod query_engine;
 mod raw_event_lance;
 mod raw_event_lance_rows;
@@ -36,8 +38,20 @@ pub use egress::{export_source_dirs, export_story_bundle, validate_event_lines, 
 pub use event_row::{
     event_record_to_event_row, event_row_to_event_record, event_row_to_replay_json, EventRow,
 };
+pub use file_trajectory_datafusion::{
+    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryFormat,
+    FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot, DEFAULT_LOCAL_QUERY_BATCH_SIZE,
+    DEFAULT_LOCAL_QUERY_CACHE_BYTES, DEFAULT_LOCAL_QUERY_CACHE_FILES,
+    DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, SOURCE_FILE_COLUMN,
+};
+pub use local_query_manifest::{
+    detect_local_query_format, detect_local_query_manifest, LocalQueryInputFile,
+    LocalQueryManifest, LocalQueryManifestOptions, DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES,
+    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES,
+};
 pub use query_engine::{
-    ChronicleQueryBackend, ChronicleQueryEngine, ExternalTableFormat, ExternalTableSpec,
+    ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions,
+    ExternalTableFormat, ExternalTableSpec,
 };
 pub use raw_event_lance::{
     distinct_session_ids_in_run, overwrite_session_events, overwrite_session_lines,

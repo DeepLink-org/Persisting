@@ -6,10 +6,10 @@ use anyhow::{Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_ppilot::{
     init_tracing_with_verbose, process_federated_count, process_script, process_trajectories,
-    produce_from_planner, produce_trajectories, run_chronicle, run_ppilot, run_query,
+    produce_from_planner, produce_trajectories, run_chronicle, run_convert, run_ppilot, run_query,
     run_self_test, AnalysisOutputFormat, BatchAnalysisOptions, BatchProductionManifest,
-    BatchProductionOptions, ChronicleArgs, CountTable, FederatedCountOptions, PPilotArgs,
-    ProcessScriptOptions, QueryArgs,
+    BatchProductionOptions, ChronicleArgs, ConvertArgs, CountTable, FederatedCountOptions,
+    PPilotArgs, ProcessScriptOptions, QueryArgs,
 };
 
 #[derive(Debug, Parser)]
@@ -31,6 +31,8 @@ enum Command {
     Query(QueryArgs),
     /// Import and operate pChronicle trajectory stores.
     Chronicle(ChronicleArgs),
+    /// Convert trajectory corpora between pChronicle formats.
+    Convert(ConvertArgs),
     /// Stream Runs from a Python planner into independent pVisor workspaces.
     Produce(ProduceArgs),
     /// Run read-only SQL over automatically sharded ATIF trajectories.
@@ -168,6 +170,7 @@ async fn main() -> ExitCode {
         Command::SelfTest(args) => args.verbose,
         Command::Query(_) => false,
         Command::Chronicle(_)
+        | Command::Convert(_)
         | Command::Produce(_)
         | Command::Analysis(_)
         | Command::Process(_) => false,
@@ -192,6 +195,10 @@ async fn dispatch(command: Command) -> Result<ExitCode> {
         }
         Command::Chronicle(args) => {
             run_chronicle(args).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Convert(args) => {
+            run_convert(args).await?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Produce(args) => {
@@ -367,6 +374,23 @@ mod tests {
             "input.jsonl",
             "--source",
             "atif",
+            "--max-files",
+            "100",
+            "--max-entries",
+            "200",
+            "--max-file-bytes",
+            "1048576",
+            "--max-concurrent-files",
+            "2",
+            "--memory-limit-bytes",
+            "67108864",
+            "--max-spill-bytes",
+            "134217728",
+            "--timeout-seconds",
+            "30",
+            "--max-output-rows",
+            "1000",
+            "--query-metrics",
             "--sql",
             "SELECT 1",
         ])
@@ -374,7 +398,20 @@ mod tests {
         assert!(matches!(
             sql.command,
             Command::Query(QueryArgs {
-                command: Some(persisting_ppilot::QueryCommand::Sql(_)),
+                command: Some(persisting_ppilot::QueryCommand::Sql(
+                    persisting_ppilot::SqlQueryArgs {
+                        max_files: 100,
+                        max_entries: 200,
+                        max_file_bytes: 1_048_576,
+                        max_concurrent_files: Some(2),
+                        memory_limit_bytes: Some(67_108_864),
+                        max_spill_bytes: Some(134_217_728),
+                        timeout_seconds: Some(30),
+                        max_output_rows: Some(1000),
+                        query_metrics: true,
+                        ..
+                    }
+                )),
                 ..
             })
         ));
@@ -442,6 +479,18 @@ mod tests {
             "storyline-store",
         ]);
         assert!(matches!(chronicle.unwrap().command, Command::Chronicle(_)));
+
+        let convert = Cli::try_parse_from([
+            "ppilot",
+            "convert",
+            "input",
+            "output",
+            "--from",
+            "openai_msg",
+            "--to",
+            "lance",
+        ]);
+        assert!(matches!(convert.unwrap().command, Command::Convert(_)));
 
         let run = Cli::try_parse_from(["ppilot", "run", "plan.py", "--workers", "2"]);
         assert!(matches!(run.unwrap().command, Command::Run(_)));

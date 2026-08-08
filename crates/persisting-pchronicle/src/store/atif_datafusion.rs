@@ -8,31 +8,32 @@
 //! Explicit in-memory constructors retain `MemTable` behavior because their
 //! callers have already materialized the complete input.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
+#[cfg(test)]
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Lines};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use datafusion::catalog::streaming::StreamingTable;
 use datafusion::datasource::{MemTable, TableProvider};
-use datafusion::error::DataFusionError;
-use datafusion::execution::TaskContext;
-use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
-use datafusion::physical_plan::streaming::PartitionStream;
-use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::SessionContext;
 use lance::deps::arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use lance::deps::arrow_schema::{ArrowError, SchemaRef};
 
 use crate::convert::atif_to_storyline;
-use crate::{AtifTrajectory, StoryRunRow, StoryStepRow, StoryToolCallRow};
+use crate::{AtifTrajectory, ChronicleFormat};
+#[cfg(test)]
+use crate::{StoryRunRow, StoryStepRow, StoryToolCallRow};
 
+#[cfg(test)]
+use super::StorylineTableKind;
 use super::{
     story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema, story_steps_to_batch,
-    story_tool_calls_arrow_schema, story_tool_calls_to_batch, StorylineDataFusionTableNames,
-    StorylineTableKind,
+    story_tool_calls_arrow_schema, story_tool_calls_to_batch, FileTrajectoryDataSource,
+    FileTrajectoryDataSourceOptions, LocalQueryInputFile, LocalQueryManifest,
+    StorylineDataFusionTableNames,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,9 +53,8 @@ pub struct AtifDataSource {
     runs: Arc<dyn TableProvider>,
     steps: Arc<dyn TableProvider>,
     tool_calls: Arc<dyn TableProvider>,
-    document_count: usize,
-    step_count: usize,
-    tool_call_count: usize,
+    known_stats: Option<AtifInputStats>,
+    file_count: usize,
 }
 
 impl AtifDataSource {
@@ -68,16 +68,37 @@ impl AtifDataSource {
         path: impl AsRef<Path>,
         options: AtifDataSourceOptions,
     ) -> Result<Self> {
+        let manifest = LocalQueryManifest::for_format(path, ChronicleFormat::Atif)?;
+        Self::from_manifest_with_options(manifest, options)
+    }
+
+    pub fn from_manifest(manifest: LocalQueryManifest) -> Result<Self> {
+        Self::from_manifest_with_options(manifest, AtifDataSourceOptions::default())
+    }
+
+    pub fn from_manifest_with_options(
+        manifest: LocalQueryManifest,
+        options: AtifDataSourceOptions,
+    ) -> Result<Self> {
         validate_options(options)?;
-        let path = path.as_ref().to_path_buf();
-        let stats = inspect_atif_input(&path)?;
+        anyhow::ensure!(
+            manifest.format() == ChronicleFormat::Atif,
+            "ATIF datasource requires an ATIF manifest"
+        );
+        let source = FileTrajectoryDataSource::from_manifest_with_options(
+            manifest,
+            FileTrajectoryDataSourceOptions {
+                batch_size: options.batch_size,
+                ..FileTrajectoryDataSourceOptions::default()
+            },
+        )?;
+        let (runs, steps, tool_calls, file_count, _metrics) = source.into_providers();
         Ok(Self {
-            runs: streaming_table(&path, StorylineTableKind::Runs, options.batch_size)?,
-            steps: streaming_table(&path, StorylineTableKind::Steps, options.batch_size)?,
-            tool_calls: streaming_table(&path, StorylineTableKind::ToolCalls, options.batch_size)?,
-            document_count: stats.document_count,
-            step_count: stats.step_count,
-            tool_call_count: stats.tool_call_count,
+            runs,
+            steps,
+            tool_calls,
+            known_stats: None,
+            file_count,
         })
     }
 
@@ -133,9 +154,11 @@ impl AtifDataSource {
                 .then(a.call_index.cmp(&b.call_index))
         });
 
-        let document_count = runs.len();
-        let step_count = steps.len();
-        let tool_call_count = tool_calls.len();
+        let known_stats = AtifInputStats {
+            document_count: runs.len(),
+            step_count: steps.len(),
+            tool_call_count: tool_calls.len(),
+        };
         Ok(Self {
             runs: Arc::new(mem_table(
                 story_runs_arrow_schema(),
@@ -155,22 +178,26 @@ impl AtifDataSource {
                 options.batch_size,
                 story_tool_calls_to_batch,
             )?),
-            document_count,
-            step_count,
-            tool_call_count,
+            known_stats: Some(known_stats),
+            file_count: 0,
         })
     }
 
-    pub fn document_count(&self) -> usize {
-        self.document_count
+    /// Counts are known without I/O only for explicitly in-memory inputs.
+    pub fn document_count(&self) -> Option<usize> {
+        self.known_stats.as_ref().map(|stats| stats.document_count)
     }
 
-    pub fn step_count(&self) -> usize {
-        self.step_count
+    pub fn step_count(&self) -> Option<usize> {
+        self.known_stats.as_ref().map(|stats| stats.step_count)
     }
 
-    pub fn tool_call_count(&self) -> usize {
-        self.tool_call_count
+    pub fn tool_call_count(&self) -> Option<usize> {
+        self.known_stats.as_ref().map(|stats| stats.tool_call_count)
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.file_count
     }
 
     pub fn register(&self, context: &SessionContext) -> Result<()> {
@@ -218,34 +245,19 @@ enum AtifFileReader {
 
 impl AtifReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let files = if path.is_file() {
-            vec![path.to_path_buf()]
-        } else if path.is_dir() {
-            let mut files = std::fs::read_dir(path)?
-                .map(|entry| entry.map(|entry| entry.path()))
-                .collect::<std::io::Result<Vec<_>>>()?;
-            files.retain(|path| {
-                matches!(
-                    path.extension().and_then(|value| value.to_str()),
-                    Some("json" | "jsonl" | "ndjson")
-                )
-            });
-            files.sort();
-            if files.is_empty() {
-                anyhow::bail!(
-                    "ATIF datasource directory contains no JSON files: {}",
-                    path.display()
-                );
-            }
-            files
-        } else {
-            anyhow::bail!("ATIF datasource path does not exist: {}", path.display());
-        };
-        Ok(Self {
-            files: files.into_iter(),
+        let manifest = LocalQueryManifest::for_format(path, ChronicleFormat::Atif)?;
+        Ok(Self::from_files(manifest.files()))
+    }
+
+    fn from_files(files: &[LocalQueryInputFile]) -> Self {
+        Self {
+            files: files
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .collect::<Vec<_>>()
+                .into_iter(),
             current: None,
-        })
+        }
     }
 
     fn open_file(path: PathBuf) -> Result<AtifFileReader> {
@@ -344,62 +356,7 @@ pub(crate) struct AtifTableStreams {
     pub completion: std::thread::JoinHandle<Result<AtifInputStats>>,
 }
 
-pub(crate) fn inspect_atif_input(path: &Path) -> Result<AtifInputStats> {
-    let mut stats = AtifInputStats::default();
-    // Retain only logical keys, not trajectory payloads. This preserves the
-    // three-table uniqueness contract while keeping message/tool content out
-    // of memory for file-backed inputs.
-    let mut session_ids = HashSet::new();
-    for trajectory in AtifReader::open(path)? {
-        let trajectory = trajectory?;
-        trajectory.validate().map_err(anyhow::Error::from)?;
-        let story = atif_to_storyline(&trajectory).map_err(anyhow::Error::from)?;
-        let tables = crate::split_storyline(&story).map_err(anyhow::Error::from)?;
-        if !session_ids.insert(tables.run.session_id.clone()) {
-            anyhow::bail!("duplicate ATIF session_id '{}'", tables.run.session_id);
-        }
-        stats.document_count += 1;
-        stats.step_count += tables.steps.len();
-        stats.tool_call_count += tables.tool_calls.len();
-    }
-    if stats.document_count == 0 {
-        anyhow::bail!("ATIF datasource requires at least one trajectory");
-    }
-    Ok(stats)
-}
-
-#[derive(Debug)]
-struct AtifPartitionStream {
-    path: PathBuf,
-    kind: StorylineTableKind,
-    schema: SchemaRef,
-    batch_size: usize,
-}
-
-impl PartitionStream for AtifPartitionStream {
-    fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
-
-    fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
-        let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema.clone(), 2);
-        let tx = builder.tx();
-        let path = self.path.clone();
-        let kind = self.kind;
-        let batch_size = self.batch_size;
-        builder.spawn_blocking(move || {
-            let reader = AtifReader::open(path).map_err(datafusion_error)?;
-            for batch in AtifBatchIterator::new(reader, kind, batch_size) {
-                if tx.blocking_send(batch.map_err(datafusion_error)).is_err() {
-                    break;
-                }
-            }
-            Ok(())
-        });
-        builder.build()
-    }
-}
-
+#[cfg(test)]
 struct AtifBatchIterator {
     reader: AtifReader,
     kind: StorylineTableKind,
@@ -507,6 +464,7 @@ fn flush_rows<T>(
     Ok(())
 }
 
+#[cfg(test)]
 impl AtifBatchIterator {
     fn new(reader: AtifReader, kind: StorylineTableKind, batch_size: usize) -> Self {
         Self {
@@ -558,6 +516,7 @@ impl AtifBatchIterator {
     }
 }
 
+#[cfg(test)]
 impl Iterator for AtifBatchIterator {
     type Item = Result<RecordBatch>;
 
@@ -583,32 +542,6 @@ impl Iterator for AtifBatchIterator {
             None
         }
     }
-}
-
-fn streaming_table(
-    path: &Path,
-    kind: StorylineTableKind,
-    batch_size: usize,
-) -> Result<Arc<dyn TableProvider>> {
-    let schema = match kind {
-        StorylineTableKind::Runs => story_runs_arrow_schema(),
-        StorylineTableKind::Steps => story_steps_arrow_schema(),
-        StorylineTableKind::ToolCalls => story_tool_calls_arrow_schema(),
-    };
-    let partition: Arc<dyn PartitionStream> = Arc::new(AtifPartitionStream {
-        path: path.to_path_buf(),
-        kind,
-        schema: schema.clone(),
-        batch_size,
-    });
-    Ok(Arc::new(
-        StreamingTable::try_new(schema, vec![partition])
-            .context("build streaming ATIF DataFusion table")?,
-    ))
-}
-
-fn datafusion_error(error: anyhow::Error) -> DataFusionError {
-    DataFusionError::Execution(format!("{error:#}"))
 }
 
 fn validate_options(options: AtifDataSourceOptions) -> Result<()> {
@@ -661,7 +594,7 @@ pub fn load_atif_trajectories(path: impl AsRef<Path>) -> Result<Vec<AtifTrajecto
     AtifReader::open(path)?.collect()
 }
 
-fn parse_documents(input: &str) -> Result<Vec<AtifTrajectory>> {
+pub(crate) fn parse_documents(input: &str) -> Result<Vec<AtifTrajectory>> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         anyhow::bail!("ATIF input is empty");

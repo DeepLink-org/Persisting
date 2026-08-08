@@ -4,18 +4,23 @@
 //! events.lance (in-memory EventRecord) ──┐
 //! agenticmd ─────────────────────────────┼──► storyline ──► …
 //! openai_msg ────────────────────────────┤
-//! atif ──────────────────────────────────┘
+//! atif ──────────────────────────────────┤
+//! actf ──────────────────────────────────┘
 //! ```
 //!
 //! [`ChronicleFormat::Events`] has **no string wire form**: `into_storyline` /
 //! `from_storyline` / `convert` return an error. Use [`events_to_storyline`] /
 //! [`storyline_to_events`] after loading Lance rows into [`EventsDocument`].
 
+mod actf;
 mod agenticmd;
 mod atif;
 mod events;
 mod openai_msg;
 
+pub use actf::{
+    actf_to_storyline, actf_to_storylines, is_actf_storyline, storyline_to_actf, storylines_to_actf,
+};
 pub use agenticmd::{agenticmd_to_storyline, storyline_to_agenticmd};
 pub use atif::{atif_to_storyline, storyline_to_atif};
 pub use events::{events_to_storyline, storyline_to_events};
@@ -23,6 +28,7 @@ pub use openai_msg::{openai_msg_to_storyline, storyline_to_openai_msg};
 
 use crate::atif::AtifTrajectory;
 use crate::format::ChronicleFormat;
+use crate::formats::actf::ActfDocument;
 use crate::formats::events::events_lance_only_error;
 use crate::formats::storyline::StorylineDocument;
 use crate::formats::{
@@ -40,6 +46,10 @@ pub fn into_storyline(format: ChronicleFormat, input: &str) -> Result<StorylineD
         ChronicleFormat::Atif => {
             let traj = AtifTrajectory::from_json_str(input)?;
             atif_to_storyline(&traj)
+        }
+        ChronicleFormat::Actf => {
+            let document = ActfDocument::from_json_str(input)?;
+            actf_to_storyline(&document)
         }
         ChronicleFormat::Events => Err(events_lance_only_error()),
         ChronicleFormat::Agenticmd => {
@@ -61,6 +71,7 @@ pub fn from_storyline(format: ChronicleFormat, story: &StorylineDocument) -> Res
     match format {
         ChronicleFormat::Storyline => story.to_json_string_pretty(),
         ChronicleFormat::Atif => Ok(serde_json::to_string_pretty(&storyline_to_atif(story)?)?),
+        ChronicleFormat::Actf => storyline_to_actf(story)?.to_json_string_pretty(),
         ChronicleFormat::Events => Err(events_lance_only_error()),
         ChronicleFormat::Agenticmd => {
             let doc = storyline_to_agenticmd(story)?;

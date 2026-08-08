@@ -4,7 +4,8 @@ The [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
 directory is organized around product questions. Each `run.sh` is deliberately
 linear: it clears `.work/`, runs pVisor or pPilot commands, and prints the
 generated files, bundles, reports, or query results. The pChronicle examples
-enter through `ppilot chronicle` and `ppilot query`, not internal Rust examples.
+enter through `ppilot chronicle`, `ppilot convert`, and `ppilot query`, not
+internal Rust examples.
 
 ## Run the examples
 
@@ -54,10 +55,11 @@ The command is named `produce`, for producing a batch of trajectory Runs.
 
 ## pChronicle: trajectory storage and analysis
 
-These examples use the same deterministic ATIF corpus to compare physical
-size, analysis speed, and SQL results across formats. Size and speed numbers
-apply only to the printed dataset, query, and machine; they are not universal
-claims about Lance or ATIF.
+These examples use deterministic ATIF corpora and trimmed format fixtures to
+compare physical size, analysis speed, SQL results, lossless peripheral format
+recovery, and direct directory queries. Size and speed numbers apply only to
+the printed dataset, query, and machine; they are not universal claims about
+Lance or ATIF.
 
 | Example | What it demonstrates | Related guide |
 |---|---|---|
@@ -65,6 +67,8 @@ claims about Lance or ATIF.
 | [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | End-to-end pPilot CLI import, replacement, and cold Lance/ATIF query latency | [Trajectory storage](../design/trajectory.md) |
 | [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | pPilot explicitly reports cross-backend SQL equivalence | [pPilot CLI](../design/cli-ppilot.md) |
 | [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | Point-step, full-trajectory, 64-key batch, and live canonical-event follow latency | [History CLI](../design/cli-history.md) |
+| [05-format-roundtrip](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/05-format-roundtrip) | pPilot imports OpenAI/ACTF into three-table Lance and verifies lossless JSON-model recovery | [pPilot CLI](../design/cli-ppilot.md) |
+| [06-query-openai-actf-directly](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly) | Direct OpenAI/ACTF directory SQL with `_file_ LIKE`, plus proof that Lance schemas stay unchanged | [pPilot CLI](../design/cli-ppilot.md) |
 
 ## Prerequisites
 

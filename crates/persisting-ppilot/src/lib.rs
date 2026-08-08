@@ -23,6 +23,8 @@ pub(crate) mod checkpoint;
 #[cfg(feature = "query")]
 pub mod chronicle_cli;
 pub mod cli;
+#[cfg(feature = "query")]
+pub mod convert_cli;
 pub mod coordination;
 pub(crate) mod digest;
 pub mod dist;
@@ -67,9 +69,12 @@ pub use check::{run_check, run_self_test, CheckOptions, CheckReport};
 pub use checkpoint::CheckpointLedger;
 #[cfg(feature = "query")]
 pub use chronicle_cli::{
-    run_chronicle, ChronicleArgs, ChronicleCommand, ChronicleImportArgs, ChronicleMaintainArgs,
+    run_chronicle, ChronicleArgs, ChronicleCommand, ChronicleExportArgs, ChronicleExportFormat,
+    ChronicleImportArgs, ChronicleImportFormat, ChronicleMaintainArgs,
 };
 pub use cli::{init_tracing, init_tracing_with_verbose, run_ppilot, PPilotArgs, ResultsFormat};
+#[cfg(feature = "query")]
+pub use convert_cli::{run_convert, ConvertArgs, ConvertInputFormat, ConvertOutputFormat};
 pub use coordination::{
     AttemptObservation, AttemptObserver, DurableAttemptObserver, ProcessLocalAttemptObserver,
     ReconcileReport, RunCoordinator,

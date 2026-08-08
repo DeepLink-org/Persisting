@@ -24,6 +24,9 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<ChronicleFormat
     if name == "session_steps.json" || name == "session_steps.lance" {
         return Some(ChronicleFormat::OpenaiMsg);
     }
+    if name.ends_with(".actf.json") {
+        return Some(ChronicleFormat::Actf);
+    }
     if name.ends_with(".md") {
         return Some(ChronicleFormat::Agenticmd);
     }
@@ -41,8 +44,33 @@ pub fn detect_format_from_content(input: &str) -> Result<Option<ChronicleFormat>
     if trimmed.contains("<!-- persisting:block") {
         return Ok(Some(ChronicleFormat::Agenticmd));
     }
-    if trimmed.starts_with('{') {
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let candidate = v.as_array().and_then(|values| values.first()).unwrap_or(&v);
+            let is_actf_document = v
+                .get("attempts")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|attempts| {
+                    !attempts.is_empty()
+                        && attempts.values().all(|attempt| {
+                            attempt
+                                .get("trajectory")
+                                .and_then(|trajectory| trajectory.get("schema_version"))
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|version| version.starts_with("ACTF_"))
+                        })
+                });
+            if is_actf_document {
+                return Ok(Some(ChronicleFormat::Actf));
+            }
+            if candidate.get("session_id").is_some()
+                && candidate.get("step_id").is_some()
+                && ["messages", "messages_json", "response", "response_json"]
+                    .iter()
+                    .any(|field| candidate.get(*field).is_some())
+            {
+                return Ok(Some(ChronicleFormat::OpenaiMsg));
+            }
             let spec = v
                 .get("spec")
                 .or_else(|| v.get("sv"))
@@ -70,6 +98,14 @@ pub fn detect_format_from_content(input: &str) -> Result<Option<ChronicleFormat>
                 return Ok(Some(ChronicleFormat::Storyline));
             }
             if v.get("steps").is_some() && v.get("agent").is_some() {
+                return Ok(Some(ChronicleFormat::Atif));
+            }
+            if candidate
+                .get("schema_version")
+                .and_then(|x| x.as_str())
+                .is_some_and(|s| s.starts_with("ATIF"))
+                || (candidate.get("steps").is_some() && candidate.get("agent").is_some())
+            {
                 return Ok(Some(ChronicleFormat::Atif));
             }
         }

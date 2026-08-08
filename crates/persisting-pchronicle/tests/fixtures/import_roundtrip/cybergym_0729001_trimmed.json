@@ -1,0 +1,100 @@
+[
+  {
+    "dataset_type": "TEST",
+    "dt": "2026-07-29",
+    "id": "evt-cyber-b-2",
+    "session_id": "cyber-b",
+    "created_at": 1785329602,
+    "step_id": 2,
+    "is_terminal": true,
+    "env_id": "cyber-b",
+    "job_id": "cybergym_0729001",
+    "is_truncated": false,
+    "step_reward": 1.0,
+    "reward": 1.0,
+    "messages": [
+      {"role": "user", "content": "Continue."},
+      {"role": "assistant", "content": "Finished."}
+    ],
+    "response": {"role": "assistant", "content": ""},
+    "chosen_response": null,
+    "rejected_response": null,
+    "ground_truth_answer": null,
+    "reference_answer": null,
+    "agent_model": "fixture-model-b",
+    "env_name": "cybergym",
+    "is_session_completed": true,
+    "is_trainable": true,
+    "meta_json": "{\"source\":\"trimmed-fixture\"}",
+    "blob_manifest": [{"name": "summary.txt", "size": 12}]
+  },
+  {
+    "dataset_type": "TEST",
+    "dt": "2026-07-29",
+    "id": "evt-cyber-c-1",
+    "session_id": "cyber-c",
+    "created_at": 1785329601.25,
+    "step_id": 1,
+    "is_terminal": true,
+    "env_id": "cyber-c",
+    "job_id": "cybergym_0729001",
+    "is_truncated": false,
+    "step_reward": 0.0,
+    "reward": 0.0,
+    "messages": [
+      {"role": "user", "content": "Read the status."},
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call-status",
+            "type": "function",
+            "function": {"name": "read_status", "arguments": "{\"verbose\":true}"}
+          }
+        ]
+      }
+    ],
+    "response": {"role": "assistant", "content": null},
+    "chosen_response": null,
+    "rejected_response": null,
+    "ground_truth_answer": null,
+    "reference_answer": null,
+    "agent_model": "fixture-model-c",
+    "env_name": "cybergym",
+    "is_session_completed": true,
+    "is_trainable": false,
+    "meta_json": "{\"source\":\"trimmed-fixture\",\"env_state\":{\"total_latency_ms\":7}}",
+    "blob_manifest": []
+  },
+  {
+    "dataset_type": "TEST",
+    "dt": "2026-07-29",
+    "id": "evt-cyber-b-1",
+    "session_id": "cyber-b",
+    "created_at": 1785329600,
+    "step_id": 1,
+    "is_terminal": false,
+    "env_id": "cyber-b",
+    "job_id": "cybergym_0729001",
+    "is_truncated": false,
+    "step_reward": 0.0,
+    "reward": 0.0,
+    "messages": [
+      {"role": "system", "content": "You are a test agent."},
+      {"role": "user", "content": "Begin."},
+      {"role": "assistant", "content": "Started."}
+    ],
+    "response": {"role": "assistant", "content": "Started."},
+    "chosen_response": null,
+    "rejected_response": null,
+    "ground_truth_answer": null,
+    "reference_answer": null,
+    "agent_model": "fixture-model-b",
+    "env_name": "cybergym",
+    "is_session_completed": false,
+    "is_trainable": true,
+    "meta_json": "{\"source\":\"trimmed-fixture\"}",
+    "blob_manifest": []
+  }
+]

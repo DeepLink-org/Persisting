@@ -24,6 +24,7 @@ pub enum ChronicleFormatCli {
     #[value(name = "openai_msg")]
     OpenaiMsg,
     Atif,
+    Actf,
 }
 
 impl From<ChronicleFormatCli> for ChronicleFormat {
@@ -34,6 +35,7 @@ impl From<ChronicleFormatCli> for ChronicleFormat {
             ChronicleFormatCli::Agenticmd => ChronicleFormat::Agenticmd,
             ChronicleFormatCli::OpenaiMsg => ChronicleFormat::OpenaiMsg,
             ChronicleFormatCli::Atif => ChronicleFormat::Atif,
+            ChronicleFormatCli::Actf => ChronicleFormat::Actf,
         }
     }
 }
@@ -97,7 +99,7 @@ fn resolve_from_format(args: &TrajectoryConvertArgs) -> Result<ChronicleFormat> 
     if args.input == "-" {
         bail!(
             "when INPUT is '-' (stdin), set --from explicitly \
-             (storyline|atif|openai_msg|agenticmd)"
+             (storyline|atif|actf|openai_msg|agenticmd)"
         );
     }
 
@@ -122,7 +124,7 @@ fn resolve_from_format(args: &TrajectoryConvertArgs) -> Result<ChronicleFormat> 
 
     bail!(
         "cannot auto-detect input format for {}; set --from explicitly \
-         (storyline|atif|openai_msg|agenticmd|events)",
+         (storyline|atif|actf|openai_msg|agenticmd|events)",
         display_io(&args.input)
     );
 }

@@ -11,9 +11,10 @@
 //!
 //! ```text
 //! events ──┐
-//! agenticmd ┼──► storyline ──► events / agenticmd / openai_msg / atif
+//! agenticmd ┼──► storyline ──► events / agenticmd / openai_msg / atif / actf
 //! openai_msg┤
-//! atif ─────┘
+//! atif ─────┤
+//! actf ─────┘
 //! ```
 //!
 //! Use [`convert::into_storyline`] / [`convert::from_storyline`] / [`convert::convert`].
@@ -38,7 +39,10 @@ pub mod store;
 pub mod storyline_schema;
 
 pub use atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
-pub use convert::{convert, from_storyline, into_storyline};
+pub use convert::{
+    actf_to_storyline, actf_to_storylines, convert, from_storyline, into_storyline,
+    is_actf_storyline, storyline_to_actf, storylines_to_actf,
+};
 pub use discovery::{
     drop_lifecycle_run_partitions, expand_story_locations, expand_story_locations_blocking,
 };
@@ -54,10 +58,17 @@ pub use formats::{
     strip_subagent_footer_from_body, validate_agenticmd_block, validate_speaker,
     validate_type_name, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdClientMeta, AgenticmdDocument,
     AgenticmdHeader, AgenticmdSessionFrontmatter, EventIdentity, EventRecord, EventsDocument,
-    OpenaiMsgDocument, OpenaiMsgStep, StoryLink, StorylineAgent, StorylineDocument,
-    StorylineToolCall, StorylineTurn, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FORMAT_NAME,
-    AGENTICMD_FRONTMATTER_FORMAT, BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION, BLOCK_MARKER,
-    OPENAI_MSG_FORMAT_VERSION, STORYLINE_SCHEMA_VERSION,
+    OpenaiMsgCorpusReader, OpenaiMsgDocument, OpenaiMsgStep, RecoveredOpenaiMsgFile, StoryLink,
+    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn, AGENTICMD_BLOCK_LAYOUT,
+    AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT, BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION,
+    BLOCK_MARKER, OPENAI_MSG_FORMAT_VERSION, STORYLINE_SCHEMA_VERSION,
+};
+pub use formats::{
+    is_lossless_openai_storyline, parse_openai_msg_corpus_value, recover_openai_msg_files,
+};
+pub use formats::{
+    parse_actf_document, ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric,
+    ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
 };
 pub use judge_service::{
     judge_trajectory, JudgeTrajectoryOutcome, JudgeTrajectoryRequest, JudgingMethod,
@@ -118,18 +129,26 @@ pub use store::{
     rewrite_agenticmd_preamble, rewrite_block_range, upsert_block_by_call_id, validate_event_lines,
     write_agenticmd_document, AgenticmdFileIndex, AppendOutcome, AtifDataSource,
     AtifDataSourceOptions, AtifReader, AttemptRecord, AttemptRecordState, AttemptRegistry,
-    ChronicleQueryBackend, ChronicleQueryEngine, CommitRunOutcome, EventRow, ExportOutcome,
-    ExternalTableFormat, ExternalTableSpec, LanceMaintenanceOptions, LanceMaintenanceReport,
-    LeaseAcquireOutcome, RawEventLanceAppender, RawEventLanceStore, ReplayOutcome, RunControlStore,
+    ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions, CommitRunOutcome,
+    EventRow, ExportOutcome, ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
+    FileTrajectoryDataSourceOptions, FileTrajectoryFormat, FileTrajectoryQueryMetrics,
+    FileTrajectoryQueryMetricsSnapshot, LanceMaintenanceOptions, LanceMaintenanceReport,
+    LeaseAcquireOutcome, LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
+    RawEventLanceAppender, RawEventLanceStore, ReplayOutcome, RunControlStore,
     StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
     StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,
     StorylineTableKind, StorylineTablePaths, StorylineTableProvider, StructuredStore,
     TrajectorySession, TrajectoryStats, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
-    DATAFUSION_TOOL_CALLS_TABLE, TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL,
-    TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL,
-    TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
-    TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL, TRAJECTORY_V1_COLS,
+    DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
+    DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+    DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES, DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
+    DEFAULT_MAX_LOCAL_QUERY_FILES, SOURCE_FILE_COLUMN, TRAJECTORY_AGENT_ID_COL,
+    TRAJECTORY_CALL_ID_COL, TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL,
+    TRAJECTORY_PARENT_CALL_ID_COL, TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL,
+    TRAJECTORY_SESSION_ID_COL, TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL,
+    TRAJECTORY_TRACE_ID_COL, TRAJECTORY_V1_COLS,
 };
+pub use store::{detect_local_query_format, detect_local_query_manifest};
 pub use storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,

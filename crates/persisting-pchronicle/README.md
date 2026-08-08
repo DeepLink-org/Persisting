@@ -39,9 +39,14 @@ events.lance                  canonical、append-only、可回放
 - `StorylineLanceStore::get_storylines` 对三张表各读取一次同一 generation 快照，支持
   pPilot 批量重建多条 Storyline，并保持请求顺序。
 - `StorylineDataSource` 将同一 generation 的三张表注册到 DataFusion，并下推列裁剪、谓词、limit 和标量索引查询。
-- `AtifDataSource::open` 以 DataFusion `StreamingTable` 逐行/逐文件扫描 ATIF，使用有界
-  Arrow batch；只有显式传入完整内存值的 `from_json` / `from_trajectories` 保留 `MemTable`。
-- `ChronicleQueryEngine` 对 Lance 与 ATIF 暴露同一套 `runs`、`steps`、`tool_calls` SQL 和 Arrow/JSONL 结果 API。
+- `AtifDataSource::open` 与 OpenAI/ACTF 共用按文件 lazy 的 DataFusion datasource；文件由
+  manifest 大小/身份校验、并发闸门和共享有界 LRU 管理。显式传入完整内存值的
+  `from_json` / `from_trajectories` 保留 `MemTable`。
+- `ChronicleQueryEngine` 对 Lance、ATIF、OpenAI JSON 与 ACTF 暴露同一套 `runs`、`steps`、
+  `tool_calls` SQL 和 Arrow/JSONL 结果 API。三种文件输入的临时查询表额外带
+  `_file_` 相对路径列，支持 `=`、`IN`、`LIKE` 文件级裁剪；每个命中文件作为一个 lazy
+  streaming partition 打开，该列不属于 Lance 三表 schema。多文件内建表 join 必须把
+  `_file_` 纳入 join key。
 - `RunControlStore` 以单个 CAS record 管理 Run lease epoch 与 immutable terminal `RunCommit`。
 - `AttemptRegistry` 以 lease epoch fence pVisor Attempt 的注册、心跳和完整终态结果，供 pPilot 重启后收敛。
 - `AgenticmdSessionFrontmatter`、`write_agenticmd_document`、`rewrite_agenticmd_preamble` 和 `index_agenticmd_path` 负责宽松的 AgenticMD 可视化与调试文件操作。
@@ -69,11 +74,33 @@ ppilot chronicle maintain ./storyline-store --vacuum-retention-hours 168
 该命令补齐并刷新标量索引、合并小 fragment，并在新三表版本已经通过 `CURRENT` 原子
 可见后回收超过保留期的旧版本。
 
-`ppilot chronicle import` 默认使用 `AtifReader`：NDJSON 逐行解析，目录按稳定顺序逐文件
-消费。空 store 只规范化每条 trajectory 一次，再通过三条有界 Arrow channel 并行创建
-`runs`、`steps`、`tool_calls`；已有 store 以最多 256 个 Storyline 为一批执行增量替换。
-两条路径都只在全部输入成功后更新一次 `CURRENT`，因此后半段解析失败不会暴露半导入
-快照。兼容的 `.json` 对象/数组输入按单个文件缓冲；大规模输入应使用 NDJSON。
+`ppilot chronicle import` 默认自动识别 ATIF、ACTF 与 OpenAI-message 输入。ATIF 的 NDJSON
+逐行解析，目录按稳定顺序逐文件消费；OpenAI-message 输入额外支持包含多个 session 的
+裸 step 数组。空 ATIF store 只规范化每条 trajectory 一次，再通过三条有界 Arrow
+channel 并行创建 `runs`、`steps`、`tool_calls`；其它导入以最多 256 个 Storyline 为一批
+执行增量替换。所有路径都只在全部输入成功后更新一次 `CURRENT`。
+
+OpenAI corpus 导入会在现有 `extra_json` 列保留带版本的原 row、源文件分组和 ordinal，
+因此可在不改变三表 schema 的前提下恢复 JSON 数据模型：
+
+```bash
+ppilot chronicle import ./openai-data ./storyline-store --format openai_msg
+ppilot chronicle export ./storyline-store ./recovered --format openai_msg
+ppilot convert ./openai-data ./storyline-store --to lance
+ppilot convert ./storyline-store ./recovered --from lance --to openai_msg
+```
+
+恢复保证键值、null、嵌套值和数组顺序，不保证原文件空白或对象键顺序。缺失保真元数据
+时 export 会失败，而不会静默输出有损近似值。
+
+ACTF v1.0 同样不修改三表 schema：每个 attempt 映射为一条 Storyline，根、attempt、
+trajectory 和原始 step 保存在现有 `extra_json` 中。经三表 Lance 恢复后可保持 JSON
+数据模型级无损：
+
+```bash
+ppilot convert ./task.actf.json ./storyline-store --to lance
+ppilot convert ./storyline-store ./recovered --from lance --to actf
+```
 
 ### S3 对象存储
 
@@ -130,9 +157,10 @@ PCHRONICLE_S3_TEST_URI=s3://bucket/test-prefix \
 
 ```text
 events ──┐
-agenticmd ┼──► storyline ──► events / agenticmd / openai_msg / atif
+agenticmd ┼──► storyline ──► events / agenticmd / openai_msg / atif / actf
 openai_msg┤
-atif ─────┘
+atif ─────┤
+actf ─────┘
 ```
 
 | 名称 | 角色 | 典型产物 |
@@ -142,6 +170,7 @@ atif ─────┘
 | `agenticmd` | 宽松的人读/调试 Markdown 视图 | `{session}.md` |
 | `openai_msg` | OpenAI messages 外围格式 | JSON |
 | `atif` | Harbor ATIF 外围格式及规范化视图 | JSON / JSONL |
+| `actf` | ACTF v1.0 task/attempt 外围格式 | JSON |
 
 字符串格式转换使用 `into_storyline`、`from_storyline`、`convert`。`events` 的 JSON/JSONL 只用于调试导出，不是正式存储格式。
 
@@ -172,3 +201,4 @@ just examples-pchronicle  # 包含 point / batch / live follow 的可复现产�
 - [RFC-0001: Storyline Format](../../docs/src/rfcs/0001-storyline-format.md)
 - [RFC-0002: Events Format](../../docs/src/rfcs/0002-events-format.md)
 - [RFC-0003: pChronicle Ownership](../../docs/src/rfcs/0003-pchronicle-ownership.md)
+- [RFC-0004: ACTF v1.0](../../docs/src/rfcs/0004-actf-format.md)
