@@ -3,7 +3,8 @@
 仓库里的 [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
 按产品问题组织。每个 `run.sh` 都是平铺直叙的产品命令：先清理 `.work/`，再运行
 pVisor 或 pPilot，最后直接打印生成的文件、Bundle、报告或查询结果。pChronicle 示例
-统一通过 `ppilot chronicle` / `ppilot query` 进入，不调用内部 Rust example。
+统一通过 `ppilot chronicle` / `ppilot convert` / `ppilot query` 进入，不调用内部 Rust
+example。
 
 ## 运行方式
 
@@ -51,9 +52,10 @@ CLI 的正式命令名是 `produce`；它对应"生产一批轨迹 Run"的模式
 
 ## pChronicle：轨迹存储与分析
 
-这组示例使用同一套确定性 ATIF corpus，分别测量物理体积、分析速度和跨格式 SQL
-结果一致性。体积和速度结论都限定在脚本打印的数据规模、查询与当前机器；示例不会
-宣称 Lance 在任意数据分布和任意查询上必然更小或更快。
+这组示例使用确定性 ATIF corpus 和裁剪格式 fixture，分别测量物理体积、分析速度、
+跨格式 SQL 结果一致性、外围格式恢复保真度和直接目录查询。体积和速度结论都限定在
+脚本打印的数据规模、查询与当前机器；示例不会宣称 Lance 在任意数据分布和任意查询上
+必然更小或更快。
 
 | 示例 | 可复现结论 | 相关指南 |
 |---|---|---|
@@ -61,6 +63,8 @@ CLI 的正式命令名是 `produce`；它对应"生产一批轨迹 Run"的模式
 | [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | 量化 pPilot CLI 导入、替换及 Lance/ATIF 冷查询延迟 | [轨迹存储](../design/trajectory.md) |
 | [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | pPilot 明确报告同一 SQL 的跨后端一致性 | [pPilot CLI](../design/cli-ppilot.md) |
 | [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | 对比单 step、完整轨迹、64-key 批查与实时 canonical event follow 延迟 | [History CLI](../design/cli-history.md) |
+| [05-format-roundtrip](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/05-format-roundtrip) | pPilot 将 OpenAI/ACTF 导入三表 Lance，并验证 JSON 数据模型无损恢复 | [pPilot CLI](../design/cli-ppilot.md) |
+| [06-query-openai-actf-directly](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly) | 直接查询 OpenAI/ACTF 目录，以 `_file_ LIKE` 筛选路径，并验证 Lance schema 不变 | [pPilot CLI](../design/cli-ppilot.md) |
 
 ## 前置条件
 

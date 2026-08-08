@@ -1,0 +1,93 @@
+{
+  "task_id": "make-doom-for-mips-trimmed",
+  "category": "software-engineering",
+  "k": 1,
+  "correct": false,
+  "attempts_tried": 1,
+  "solved_at": null,
+  "attempts": {
+    "1": {
+      "correct": false,
+      "final_answer": null,
+      "ground_truth": "Build output must satisfy the fixture checks.",
+      "trajectory": {
+        "schema_version": "ACTF_v1.0",
+        "steps": [
+          {
+            "step_id": 1,
+            "assistant_content": {
+              "content": "",
+              "reasoning_content": "Inspect the workspace.",
+              "tool_calls": [
+                {
+                  "type": "tool_use",
+                  "id": "call-list",
+                  "name": "Bash",
+                  "input": {"command": "find . -maxdepth 2 -type f"}
+                }
+              ]
+            },
+            "metric": {
+              "prompt_tokens_len": 20,
+              "completion_tokens_len": 8,
+              "llm_infer_ms": null,
+              "env_action_ms": null,
+              "stop_reason": null
+            },
+            "system_prompt": "",
+            "user_content": "Prepare the trimmed build fixture.",
+            "tools": [
+              {
+                "type": "tool_use",
+                "id": "call-list",
+                "name": "Bash",
+                "input": {"command": "find . -maxdepth 2 -type f"}
+              }
+            ],
+            "observation": [
+              {
+                "tool_use_id": "call-list",
+                "type": "tool_result",
+                "content": "./Makefile\n./src/main.c",
+                "is_error": false
+              }
+            ],
+            "started_at": "2026-08-01 00:00:00+00:00",
+            "finished_at": "2026-08-01 00:00:01+00:00"
+          },
+          {
+            "step_id": 2,
+            "assistant_content": {
+              "content": "Inspection complete.",
+              "reasoning_content": "The expected source files are present.",
+              "tool_calls": []
+            },
+            "metric": {
+              "prompt_tokens_len": 28,
+              "completion_tokens_len": 10,
+              "llm_infer_ms": 12.5,
+              "env_action_ms": null,
+              "stop_reason": "stop"
+            },
+            "system_prompt": "",
+            "user_content": "",
+            "tools": [],
+            "observation": [],
+            "started_at": "2026-08-01 00:00:01+00:00",
+            "finished_at": "2026-08-01 00:00:02+00:00",
+            "fixture_extension": {"preserve": true}
+          }
+        ],
+        "started_at": "2026-08-01 00:00:00+00:00",
+        "finished_at": "2026-08-01 00:00:02+00:00"
+      },
+      "status": "completed",
+      "score": null,
+      "error": "",
+      "artifacts": {},
+      "extra": {},
+      "analysis_result": {},
+      "meta": {"fixture": "trimmed"}
+    }
+  }
+}

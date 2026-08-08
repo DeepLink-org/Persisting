@@ -159,6 +159,10 @@ ppilot query sql ./trajectories.ndjson \
 # 含 CURRENT 的三表 store 根目录会被 auto 识别为 Lance
 ppilot query sql ./storyline-store \
   --sql 'SELECT step_id, source FROM steps WHERE session_id = '\''s-1'\'' ORDER BY step_id'
+
+# OpenAI/ACTF 目录直接查询；_file_ 为查询期相对路径列，不写入 Lance
+ppilot query sql ./openai-data \
+  --sql "SELECT _file_, COUNT(*) FROM steps WHERE _file_ LIKE 'batch/%' GROUP BY _file_"
 ```
 
 查询是只读的；SQL 可以使用 SELECT、CTE、JOIN、聚合和 DataFusion 内置函数，但不通过

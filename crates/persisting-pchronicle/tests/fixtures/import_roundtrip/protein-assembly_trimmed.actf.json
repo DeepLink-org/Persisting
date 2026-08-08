@@ -1,0 +1,100 @@
+{
+  "task_id": "protein-assembly-trimmed",
+  "category": "scientific-computing",
+  "k": 1,
+  "correct": false,
+  "attempts_tried": 1,
+  "solved_at": null,
+  "retry_count": 0,
+  "retry_counts": {"environment": 0},
+  "attempts": {
+    "1": {
+      "correct": false,
+      "final_answer": null,
+      "ground_truth": "Produce the requested scientific report.",
+      "trajectory": {
+        "schema_version": "ACTF_v1.0",
+        "steps": [
+          {
+            "step_id": 1,
+            "assistant_content": {
+              "content": "",
+              "reasoning_content": "Review the available inputs.",
+              "tool_calls": []
+            },
+            "metric": {
+              "prompt_tokens_len": null,
+              "completion_tokens_len": null,
+              "llm_infer_ms": null,
+              "env_action_ms": null,
+              "stop_reason": null
+            },
+            "system_prompt": "",
+            "user_content": "Analyze the trimmed scientific inputs.",
+            "tools": [],
+            "observation": [],
+            "started_at": "2026-08-02T00:00:00Z",
+            "finished_at": "2026-08-02T00:00:01Z"
+          },
+          {
+            "step_id": 2,
+            "assistant_content": {
+              "content": "",
+              "reasoning_content": "List the fixture files.",
+              "tool_calls": [
+                {
+                  "id": "item-2",
+                  "type": "command_execution",
+                  "command": "/bin/sh -lc 'ls -1 /app'",
+                  "aggregated_output": "input-a.txt\ninput-b.txt\n",
+                  "exit_code": 0,
+                  "status": "completed"
+                }
+              ]
+            },
+            "metric": {
+              "prompt_tokens_len": null,
+              "completion_tokens_len": null,
+              "llm_infer_ms": null,
+              "env_action_ms": null,
+              "stop_reason": null
+            },
+            "system_prompt": "",
+            "user_content": "",
+            "tools": [
+              {
+                "id": "item-2",
+                "type": "command_execution",
+                "command": "/bin/sh -lc 'ls -1 /app'",
+                "aggregated_output": "input-a.txt\ninput-b.txt\n",
+                "exit_code": 0,
+                "status": "completed"
+              }
+            ],
+            "observation": [
+              {
+                "id": "item-2",
+                "type": "command_execution",
+                "command": "/bin/sh -lc 'ls -1 /app'",
+                "aggregated_output": "input-a.txt\ninput-b.txt\n",
+                "exit_code": 0,
+                "status": "completed"
+              }
+            ],
+            "started_at": "2026-08-02T00:00:01Z",
+            "finished_at": "2026-08-02T00:00:02Z"
+          }
+        ],
+        "started_at": "2026-08-02T00:00:00Z",
+        "finished_at": "2026-08-02T00:00:02Z"
+      },
+      "status": "completed",
+      "score": null,
+      "error": "",
+      "artifacts": {},
+      "extra": {},
+      "analysis_result": {},
+      "meta": {"fixture": "trimmed-command-execution"}
+    }
+  }
+}

@@ -10,8 +10,12 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use persisting_pchronicle::{
-    ChronicleQueryEngine, ExternalTableFormat, ExternalTableSpec, RawEventLanceStore, StoryCoords,
-    StorylineLanceStore,
+    ChronicleFormat, ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat,
+    ExternalTableSpec, FileTrajectoryDataSourceOptions, LocalQueryManifest,
+    LocalQueryManifestOptions, RawEventLanceStore, StoryCoords, StorylineLanceStore,
+    DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
+    DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES,
 };
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
@@ -20,6 +24,9 @@ pub enum QuerySource {
     Auto,
     Lance,
     Atif,
+    #[value(name = "openai_msg", alias = "openai-msg")]
+    OpenaiMsg,
+    Actf,
 }
 
 #[derive(Debug, Args)]
@@ -38,7 +45,7 @@ pub struct QueryArgs {
     #[command(subcommand)]
     pub command: Option<QueryCommand>,
 
-    /// Legacy SQL input: Lance store path/S3 URI, or ATIF JSON/JSONL.
+    /// Legacy SQL input: Lance store path/S3 URI, or a supported trajectory file/directory.
     #[arg(value_name = "INPUT", required = true)]
     pub input: Option<String>,
 
@@ -61,7 +68,7 @@ pub struct QueryArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum QueryCommand {
-    /// Run one read-only SQL statement against Storyline Lance or ATIF.
+    /// Run one read-only SQL statement against Lance, ATIF, OpenAI JSON, or ACTF.
     Sql(SqlQueryArgs),
     /// Fetch one normalized step or one complete Storyline.
     Point(PointQueryArgs),
@@ -73,11 +80,11 @@ pub enum QueryCommand {
 
 #[derive(Debug, Args)]
 pub struct SqlQueryArgs {
-    /// Lance store path/S3 URI, or an ATIF JSON/JSONL file or directory.
+    /// Lance store path/S3 URI, or a supported trajectory file or directory.
     #[arg(value_name = "INPUT")]
     pub input: String,
 
-    /// Input representation. `auto` treats a directory containing CURRENT as Lance.
+    /// Input representation. `auto` detects Lance, ATIF, OpenAI JSON, or ACTF.
     #[arg(long, value_enum, default_value_t = QuerySource::Auto)]
     pub source: QuerySource,
 
@@ -104,6 +111,58 @@ pub struct SqlQueryArgs {
         conflicts_with = "sql"
     )]
     pub sql_file: Option<PathBuf>,
+
+    /// Maximum files admitted to a recursively expanded local manifest.
+    #[arg(long, default_value_t = DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    pub max_files: usize,
+
+    /// Maximum recursive directory entries visited while building a local manifest.
+    #[arg(long, default_value_t = DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    pub max_entries: usize,
+
+    /// Maximum bytes accepted for one local trajectory file.
+    #[arg(long, default_value_t = DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES)]
+    pub max_file_bytes: u64,
+
+    /// Maximum local files parsed concurrently. Defaults to at most 8 CPUs.
+    #[arg(long, value_name = "COUNT")]
+    pub max_concurrent_files: Option<usize>,
+
+    /// Maximum Arrow bytes retained by the shared parsed-file cache; 0 disables it.
+    #[arg(long, default_value_t = DEFAULT_LOCAL_QUERY_CACHE_BYTES)]
+    pub cache_bytes: usize,
+
+    /// Maximum files retained by the shared parsed-file cache; 0 disables it.
+    #[arg(long, default_value_t = DEFAULT_LOCAL_QUERY_CACHE_FILES)]
+    pub cache_files: usize,
+
+    /// Maximum normalized rows per Arrow batch.
+    #[arg(long, default_value_t = DEFAULT_LOCAL_QUERY_BATCH_SIZE)]
+    pub batch_size: usize,
+
+    /// Emit local-file cache and parsing metrics as JSON to stderr.
+    #[arg(long)]
+    pub query_metrics: bool,
+
+    /// Abort SQL execution after this many seconds.
+    #[arg(long, value_name = "SECONDS")]
+    pub timeout_seconds: Option<u64>,
+
+    /// DataFusion operator memory pool size; spillable operators use disk after pressure.
+    #[arg(long, value_name = "BYTES")]
+    pub memory_limit_bytes: Option<usize>,
+
+    /// Existing directory used for DataFusion spill files.
+    #[arg(long, value_name = "DIR")]
+    pub spill_path: Option<PathBuf>,
+
+    /// Maximum bytes DataFusion may use in its spill directory.
+    #[arg(long, value_name = "BYTES")]
+    pub max_spill_bytes: Option<u64>,
+
+    /// Abort after the result exceeds this many rows.
+    #[arg(long, value_name = "ROWS")]
+    pub max_output_rows: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -161,16 +220,54 @@ pub struct FollowQueryArgs {
 }
 
 impl QuerySource {
-    fn resolve(self, input: &str) -> Result<Self> {
+    #[cfg(test)]
+    fn resolve(self, input: &str) -> Result<ResolvedQuerySource> {
+        self.resolve_with_options(input, LocalQueryManifestOptions::default())
+    }
+
+    fn resolve_with_options(
+        self,
+        input: &str,
+        manifest_options: LocalQueryManifestOptions,
+    ) -> Result<ResolvedQuerySource> {
         let path = Path::new(input);
         match self {
-            Self::Auto if is_lance_object_store_uri(input) => Ok(Self::Lance),
-            Self::Auto if path.join("CURRENT").is_file() => Ok(Self::Lance),
-            Self::Auto if path.exists() => Ok(Self::Atif),
+            Self::Auto if is_lance_object_store_uri(input) => Ok(ResolvedQuerySource::Lance),
+            Self::Auto if path.join("CURRENT").is_file() => Ok(ResolvedQuerySource::Lance),
+            Self::Auto if path.exists() => Ok(ResolvedQuerySource::Local(
+                LocalQueryManifest::detect_with_options(path, manifest_options)?,
+            )),
             Self::Auto => bail!("query input does not exist: {input}"),
-            explicit => Ok(explicit),
+            Self::Lance => Ok(ResolvedQuerySource::Lance),
+            Self::Atif => Ok(ResolvedQuerySource::Local(
+                LocalQueryManifest::for_format_with_options(
+                    path,
+                    ChronicleFormat::Atif,
+                    manifest_options,
+                )?,
+            )),
+            Self::OpenaiMsg => Ok(ResolvedQuerySource::Local(
+                LocalQueryManifest::for_format_with_options(
+                    path,
+                    ChronicleFormat::OpenaiMsg,
+                    manifest_options,
+                )?,
+            )),
+            Self::Actf => Ok(ResolvedQuerySource::Local(
+                LocalQueryManifest::for_format_with_options(
+                    path,
+                    ChronicleFormat::Actf,
+                    manifest_options,
+                )?,
+            )),
         }
     }
+}
+
+#[derive(Debug)]
+enum ResolvedQuerySource {
+    Lance,
+    Local(LocalQueryManifest),
 }
 
 fn is_lance_object_store_uri(input: &str) -> bool {
@@ -208,6 +305,19 @@ pub async fn run_query(args: QueryArgs) -> Result<()> {
                 tables,
                 sql,
                 sql_file,
+                max_files: DEFAULT_MAX_LOCAL_QUERY_FILES,
+                max_entries: DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
+                max_file_bytes: DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+                max_concurrent_files: None,
+                cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
+                cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
+                batch_size: DEFAULT_LOCAL_QUERY_BATCH_SIZE,
+                query_metrics: false,
+                timeout_seconds: None,
+                memory_limit_bytes: None,
+                spill_path: None,
+                max_spill_bytes: None,
+                max_output_rows: None,
             })
             .await
         }
@@ -215,21 +325,85 @@ pub async fn run_query(args: QueryArgs) -> Result<()> {
 }
 
 async fn run_sql_query(args: SqlQueryArgs) -> Result<()> {
+    anyhow::ensure!(
+        args.timeout_seconds != Some(0),
+        "--timeout-seconds must be greater than zero"
+    );
+    anyhow::ensure!(
+        args.max_output_rows != Some(0),
+        "--max-output-rows must be greater than zero"
+    );
     let sql = read_sql(&args)?;
     let external_tables = parse_external_tables(&args.tables)?;
-    let engine = match args.source.resolve(&args.input)? {
-        QuerySource::Lance => ChronicleQueryEngine::open_lance_uri(&args.input)
-            .await
-            .with_context(|| format!("open Lance store {}", args.input))?,
-        QuerySource::Atif => ChronicleQueryEngine::open_atif(Path::new(&args.input))
-            .with_context(|| format!("open ATIF input {}", args.input))?,
-        QuerySource::Auto => unreachable!("auto source is resolved above"),
+    let manifest_options = LocalQueryManifestOptions {
+        max_files: args.max_files,
+        max_entries: args.max_entries,
+        max_detection_bytes: args.max_file_bytes,
+    };
+    let mut file_options = FileTrajectoryDataSourceOptions {
+        batch_size: args.batch_size,
+        max_file_bytes: args.max_file_bytes,
+        cache_bytes: args.cache_bytes,
+        cache_files: args.cache_files,
+        ..FileTrajectoryDataSourceOptions::default()
+    };
+    if let Some(max_concurrent_files) = args.max_concurrent_files {
+        file_options.max_concurrent_files = max_concurrent_files;
+    }
+    let execution_options = ChronicleQueryExecutionOptions {
+        memory_limit_bytes: args.memory_limit_bytes,
+        spill_path: args.spill_path.clone(),
+        max_spill_bytes: args.max_spill_bytes,
+    };
+    let engine = match args
+        .source
+        .resolve_with_options(&args.input, manifest_options)?
+    {
+        ResolvedQuerySource::Lance => ChronicleQueryEngine::open_lance_uri_with_options(
+            &args.input,
+            execution_options.clone(),
+        )
+        .await
+        .with_context(|| format!("open Lance store {}", args.input))?,
+        ResolvedQuerySource::Local(manifest) => {
+            ChronicleQueryEngine::open_local_manifest_with_execution_options(
+                manifest,
+                file_options,
+                execution_options,
+            )
+            .with_context(|| format!("open local trajectory input {}", args.input))?
+        }
     };
     for table in &external_tables {
         engine.register_external_table(table).await?;
     }
-    let output = engine.query_jsonl(&sql).await?;
-    write_stdout(output.as_bytes())
+    let stdout = io::stdout();
+    let execution =
+        engine.write_query_jsonl_with_max_rows(&sql, stdout.lock(), args.max_output_rows);
+    let execution_result = if let Some(seconds) = args.timeout_seconds {
+        tokio::time::timeout(Duration::from_secs(seconds), execution)
+            .await
+            .with_context(|| format!("SQL query timed out after {seconds} seconds"))?
+    } else {
+        execution.await
+    };
+    if let Err(error) = execution_result {
+        if error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<io::Error>())
+            .any(|error| error.kind() == io::ErrorKind::BrokenPipe)
+        {
+            return Ok(());
+        }
+        return Err(error);
+    }
+    if args.query_metrics {
+        if let Some(metrics) = engine.local_file_metrics() {
+            writeln!(io::stderr().lock(), "{}", serde_json::to_string(&metrics)?)
+                .context("write local query metrics to stderr")?;
+        }
+    }
+    Ok(())
 }
 
 async fn run_point_query(args: PointQueryArgs) -> Result<()> {
@@ -500,22 +674,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_detects_lance_root_and_atif_file() -> Result<()> {
+    fn auto_detects_lance_and_supported_json_sources() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let lance = temp.path().join("lance");
         fs::create_dir(&lance)?;
         fs::write(lance.join("CURRENT"), "gen-test\n")?;
         let atif = temp.path().join("input.jsonl");
-        fs::write(&atif, "{}\n")?;
+        fs::write(
+            &atif,
+            r#"{"schema_version":"ATIF-v1.4","steps":[],"agent":{}}"#,
+        )?;
+        let openai = temp.path().join("openai.json");
+        fs::write(
+            &openai,
+            r#"[{"session_id":"s1","step_id":0,"messages":[]}]"#,
+        )?;
+        let actf = temp.path().join("task.json");
+        fs::write(
+            &actf,
+            r#"{"attempts":{"a":{"trajectory":{"schema_version":"ACTF_1.0"}}}}"#,
+        )?;
 
         assert!(matches!(
             QuerySource::Auto.resolve(lance.to_str().unwrap())?,
-            QuerySource::Lance
+            ResolvedQuerySource::Lance
         ));
-        assert!(matches!(
-            QuerySource::Auto.resolve(atif.to_str().unwrap())?,
-            QuerySource::Atif
-        ));
+        assert_eq!(
+            resolved_format(QuerySource::Auto.resolve(atif.to_str().unwrap())?),
+            Some(ChronicleFormat::Atif)
+        );
+        assert_eq!(
+            resolved_format(QuerySource::Auto.resolve(openai.to_str().unwrap())?),
+            Some(ChronicleFormat::OpenaiMsg)
+        );
+        assert_eq!(
+            resolved_format(QuerySource::Auto.resolve(actf.to_str().unwrap())?),
+            Some(ChronicleFormat::Actf)
+        );
         for uri in [
             "s3://trajectory-bucket/storylines",
             "S3://trajectory-bucket/storylines",
@@ -526,10 +721,36 @@ mod tests {
             "file:///tmp/storylines",
         ] {
             assert!(
-                matches!(QuerySource::Auto.resolve(uri)?, QuerySource::Lance),
+                matches!(QuerySource::Auto.resolve(uri)?, ResolvedQuerySource::Lance),
                 "expected Lance auto-detection for {uri}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn auto_freezes_recursive_manifest_and_defers_file_validation() -> Result<()> {
+        let openai = tempfile::tempdir()?;
+        fs::write(
+            openai.path().join("01.json"),
+            r#"[{"session_id":"s1","step_id":0,"messages":[]}]"#,
+        )?;
+        fs::create_dir(openai.path().join("nested"))?;
+        fs::write(
+            openai.path().join("nested/02.json"),
+            r#"[{"session_id":"s2","step_id":0,"messages":[]}]"#,
+        )?;
+        assert_eq!(
+            resolved_format(QuerySource::Auto.resolve(openai.path().to_str().unwrap())?),
+            Some(ChronicleFormat::OpenaiMsg)
+        );
+
+        fs::write(
+            openai.path().join("task.actf.json"),
+            r#"{"attempts":{"a":{"trajectory":{"schema_version":"ACTF_1.0"}}}}"#,
+        )?;
+        let resolved = QuerySource::Auto.resolve(openai.path().to_str().unwrap())?;
+        assert_eq!(resolved_format(resolved), Some(ChronicleFormat::OpenaiMsg));
         Ok(())
     }
 
@@ -546,8 +767,15 @@ mod tests {
             QuerySource::Lance
                 .resolve("https://example.com/explicit")
                 .unwrap(),
-            QuerySource::Lance
+            ResolvedQuerySource::Lance
         ));
+    }
+
+    fn resolved_format(source: ResolvedQuerySource) -> Option<ChronicleFormat> {
+        match source {
+            ResolvedQuerySource::Lance => None,
+            ResolvedQuerySource::Local(manifest) => Some(manifest.format()),
+        }
     }
 
     #[test]
@@ -558,6 +786,19 @@ mod tests {
             tables: Vec::new(),
             sql: Some("SELECT 1".into()),
             sql_file: None,
+            max_files: DEFAULT_MAX_LOCAL_QUERY_FILES,
+            max_entries: DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
+            max_file_bytes: DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+            max_concurrent_files: None,
+            cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
+            cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
+            batch_size: DEFAULT_LOCAL_QUERY_BATCH_SIZE,
+            query_metrics: false,
+            timeout_seconds: None,
+            memory_limit_bytes: None,
+            spill_path: None,
+            max_spill_bytes: None,
+            max_output_rows: None,
         };
         assert_eq!(read_sql(&inline)?, "SELECT 1");
 
@@ -569,6 +810,19 @@ mod tests {
             tables: Vec::new(),
             sql: None,
             sql_file: Some(temp.path().to_owned()),
+            max_files: DEFAULT_MAX_LOCAL_QUERY_FILES,
+            max_entries: DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
+            max_file_bytes: DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+            max_concurrent_files: None,
+            cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
+            cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
+            batch_size: DEFAULT_LOCAL_QUERY_BATCH_SIZE,
+            query_metrics: false,
+            timeout_seconds: None,
+            memory_limit_bytes: None,
+            spill_path: None,
+            max_spill_bytes: None,
+            max_output_rows: None,
         };
         assert_eq!(read_sql(&file)?, "SELECT * FROM steps");
         Ok(())
@@ -625,6 +879,8 @@ mod tests {
         let help = command.render_long_help().to_string();
         assert!(help.contains("--table <NAME=FORMAT:PATH>"), "{help}");
         assert!(help.contains("NAME=jsonl:PATH"), "{help}");
+        assert!(help.contains("openai_msg"), "{help}");
+        assert!(help.contains("actf"), "{help}");
     }
 
     #[test]

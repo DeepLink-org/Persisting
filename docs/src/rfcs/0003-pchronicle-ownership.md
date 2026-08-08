@@ -40,7 +40,7 @@ schema；Gateway 内部名称 `CaptureRecord` 必须直接指向 `EventRecord`�
 
 pChronicle MUST 统一拥有：
 
-- `events`、`storyline`、`agenticmd`、`openai_msg`、`atif` 的 Rust 数据结构；
+- `events`、`storyline`、`agenticmd`、`openai_msg`、`atif`、`actf` 的 Rust 数据结构；
 - 格式识别、校验及转换；
 - event 与物理行、Markdown block、Storyline turn 之间的映射；
 - AgenticMD 的宽松解析、可视化生成、preamble 更新和调试索引；

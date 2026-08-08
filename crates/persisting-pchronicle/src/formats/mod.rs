@@ -1,14 +1,20 @@
 //! Codecs for each [`crate::ChronicleFormat`].
 
+pub mod actf;
 pub mod agenticmd;
 pub mod agenticmd_body;
 pub mod agenticmd_frontmatter;
 pub mod agenticmd_validate;
 pub mod detect;
 pub mod events;
+pub mod openai_corpus;
 pub mod openai_msg;
 pub mod storyline;
 
+pub use actf::{
+    parse_actf_document, ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric,
+    ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
+};
 pub use agenticmd::{
     agenticmd_body_byte_offset, encode_agenticmd_block, encode_agenticmd_document,
     encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans, parse_agenticmd_document,
@@ -29,6 +35,10 @@ pub use detect::detect_format;
 pub use events::{
     events_lance_only_error, events_lance_only_message, export_events_json_pretty,
     export_events_jsonl, EventIdentity, EventRecord, EventsDocument,
+};
+pub use openai_corpus::{
+    is_lossless_openai_storyline, parse_openai_msg_corpus_value, recover_openai_msg_files,
+    OpenaiMsgCorpusReader, RecoveredOpenaiMsgFile,
 };
 pub use openai_msg::{
     parse_openai_msg_document, OpenaiMsgDocument, OpenaiMsgStep, OPENAI_MSG_FORMAT_VERSION,

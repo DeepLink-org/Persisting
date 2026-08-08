@@ -11,7 +11,7 @@
 - Run / Story 坐标、目录布局和发现规则；
 - Lance canonical events 的读写、统计和维护；
 - AgenticMD 人读/调试视图的生成与宽松解析；
-- events、Storyline、ATIF、OpenAI messages、AgenticMD 之间的格式转换；
+- events、Storyline、ATIF、ACTF、OpenAI messages、AgenticMD 之间的格式转换；
 - materialize、judgment 和标准查询视图。
 
 Gateway 负责把协议流量解释为事件；CLI 只解析参数与展示结果，
@@ -110,7 +110,8 @@ storage/
 
 ```text
 AgenticMD ─┐
-ATIF ──────┼── Storyline ── events / AgenticMD / ATIF / OpenAI messages
+ATIF ──────┼── Storyline ── events / AgenticMD / ATIF / ACTF / OpenAI messages
+ACTF ──────┤
 OpenAI msg ┘
 ```
 

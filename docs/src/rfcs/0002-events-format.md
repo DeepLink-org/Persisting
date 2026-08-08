@@ -25,7 +25,7 @@
 |---|---|---|
 | **`events`** | 原始交换日志（HTTP-first） | **SoT，目标可回放** |
 | **`storyline`** | Normal / 互操作枢纽 | 可有损投影 |
-| `agenticmd` / `openai_msg` / `atif` | 外围视图 / 训练交换 | 可有损 |
+| `agenticmd` / `openai_msg` / `atif` / `actf` | 外围视图 / 训练交换 | 可有损；带 ACTF provenance 时可无损恢复 ACTF 数据模型 |
 
 `events` 进出其它 chronicle 格式时仍 **只经 storyline**；但 **回放、重放、审计、协议级恢复 MUST 读 events**，MUST NOT 依赖 storyline roundtrip。
 

@@ -22,6 +22,15 @@ release_version = _load_script("check_release_version")
 release_artifacts = _load_script("check_release_artifacts")
 
 
+@pytest.mark.parametrize("workflow", ["nightly.yml", "release.yml"])
+def test_manylinux_tag_is_configured_only_by_maturin_action(workflow: str) -> None:
+    contents = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+
+    assert "manylinux: 2014" in contents
+    assert "--compatibility manylinux2014" not in contents
+    assert "--manylinux 2014" not in contents
+
+
 def _write_version_tree(root: Path, *, pyproject: str, cargo: str, package: str) -> None:
     (root / "persisting").mkdir()
     (root / "pyproject.toml").write_text(

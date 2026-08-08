@@ -15,7 +15,7 @@
 
 **Storyline** 是 pChronicle 的**枢纽 interchange**：以 Harbor **ATIF-v1.7** 的 Trajectory / Step 折叠语义为基准，加上少量 hub 便利字段（短名 wire、性能顶栏、可选子会话外链）。
 
-捕获侧：`HTTP → events 流`（可 **记录** 到 `events.lance`，也可 **触发** handler）；handler 经 storyline 做格式转换与落盘。外围格式（`agenticmd` / `openai_msg` / `atif`）**只与 storyline 互转**。
+捕获侧：`HTTP → events 流`（可 **记录** 到 `events.lance`，也可 **触发** handler）；handler 经 storyline 做格式转换与落盘。外围格式（`agenticmd` / `openai_msg` / `atif` / `actf`）**只与 storyline 互转**。
 
 Storyline **不是**事实源。Canonical 事实仍是 `events.lance`。
 
