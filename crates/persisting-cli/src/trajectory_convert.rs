@@ -10,9 +10,8 @@ use persisting_pchronicle::convert::{
     events_to_storyline, from_storyline, into_storyline, storyline_to_events,
 };
 use persisting_pchronicle::{
-    detect_format, overwrite_session_events, resolve_traj_read_location, ChronicleFormat,
-    EventsDocument, RawEventLanceStore, StoryCoords as TrajectorySession, StorylineDocument,
-    StructuredStore,
+    detect_format, resolve_traj_read_location, ChronicleFormat, EventsDocument, RawEventLanceStore,
+    StoryCoords as TrajectorySession, StorylineDocument, StructuredStore,
 };
 
 /// CLI mirror of [`ChronicleFormat`].
@@ -320,16 +319,15 @@ fn write_events_lance(
     rt.block_on(async {
         let lance = RawEventLanceStore;
         if lance.exists(session).await? {
-            if !force {
-                bail!(
-                    "Lance event log already exists at {}; pass --force to overwrite",
-                    lance.display_path(session)?
-                );
-            }
-            overwrite_session_events(session, &doc.events)
-                .await
-                .context("overwrite existing Lance events")?;
-            return Ok(());
+            let force_note = if force {
+                "; --force cannot overwrite an append-only event log"
+            } else {
+                ""
+            };
+            bail!(
+                "Lance event log already exists at {}{force_note}; choose an empty output Run",
+                lance.display_path(session)?
+            );
         }
         if doc.events.is_empty() {
             // Ensure run dir exists even for empty conversion.
@@ -637,7 +635,7 @@ mod tests {
         })
         .unwrap();
 
-        // Second write without --force must fail.
+        // Event facts are append-only; conversion requires an empty output Run.
         let err = run_traj_convert(&TrajectoryConvertArgs {
             input: input.to_string_lossy().into(),
             output: store.to_string_lossy().into(),
@@ -649,7 +647,7 @@ mod tests {
             force: false,
         })
         .unwrap_err();
-        assert!(err.to_string().contains("--force"), "{err}");
+        assert!(err.to_string().contains("empty output Run"), "{err}");
 
         run_traj_convert(&TrajectoryConvertArgs {
             input: store.to_string_lossy().into(),

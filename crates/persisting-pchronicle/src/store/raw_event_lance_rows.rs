@@ -1,4 +1,4 @@
-//! Shared Arrow row helpers for trajectory event log backends (schema v1).
+//! Shared Arrow row helpers for the canonical trajectory event log schema.
 
 use std::sync::Arc;
 
@@ -6,10 +6,10 @@ use std::sync::Arc;
 use crate::decode_event_lines;
 use crate::{
     event_record_to_event_row, event_row_to_replay_json, EventRecord, EventRow,
-    TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL,
-    TRAJECTORY_PARENT_CALL_ID_COL, TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL,
-    TRAJECTORY_SESSION_ID_COL, TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL,
-    TRAJECTORY_TRACE_ID_COL, TRAJECTORY_V1_COLS,
+    TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_COLS, TRAJECTORY_EVENT_ID_COL,
+    TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL,
+    TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
+    TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL,
 };
 use anyhow::{Context, Result};
 use lance::deps::arrow_array::{Array, Int64Array, RecordBatch, StringArray};
@@ -18,6 +18,7 @@ use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
 pub fn raw_event_arrow_schema() -> Arc<ArrowSchema> {
     Arc::new(ArrowSchema::new(vec![
         Field::new(TRAJECTORY_SEQ_COL, DataType::Int64, false),
+        Field::new(TRAJECTORY_EVENT_ID_COL, DataType::Utf8, true),
         Field::new(TRAJECTORY_TIMESTAMP_COL, DataType::Utf8, true),
         Field::new(TRAJECTORY_KIND_COL, DataType::Utf8, false),
         Field::new(TRAJECTORY_SOURCE_COL, DataType::Utf8, false),
@@ -45,6 +46,9 @@ pub fn event_rows_to_batch(schema: Arc<ArrowSchema>, rows: &[EventRow]) -> Resul
         vec![
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            )),
+            Arc::new(opt_utf8(
+                &rows.iter().map(|r| r.event_id.clone()).collect::<Vec<_>>(),
             )),
             Arc::new(opt_utf8(
                 &rows.iter().map(|r| r.timestamp.clone()).collect::<Vec<_>>(),
@@ -91,25 +95,16 @@ pub fn event_rows_to_batch(schema: Arc<ArrowSchema>, rows: &[EventRow]) -> Resul
 }
 
 #[cfg(test)]
-pub fn rows_for_lines(
-    storage_session_id: &str,
-    start_seq: i64,
-    lines: &[String],
-) -> Result<Vec<EventRow>> {
-    rows_for_events(storage_session_id, start_seq, &decode_event_lines(lines)?)
+pub fn rows_for_lines(storage_session_id: &str, lines: &[String]) -> Result<Vec<EventRow>> {
+    rows_for_events(storage_session_id, &decode_event_lines(lines)?)
 }
 
-pub fn rows_for_events(
-    storage_session_id: &str,
-    mut start_seq: i64,
-    records: &[EventRecord],
-) -> Result<Vec<EventRow>> {
+pub fn rows_for_events(storage_session_id: &str, records: &[EventRecord]) -> Result<Vec<EventRow>> {
     let mut rows = Vec::with_capacity(records.len());
     for record in records {
-        let mut row = event_record_to_event_row(record, start_seq)?;
+        let mut row = event_record_to_event_row(record)?;
         row.session_id = Some(storage_session_id.to_string());
         rows.push(row);
-        start_seq += 1;
     }
     Ok(rows)
 }
@@ -151,8 +146,11 @@ pub fn seq_at(batch: &RecordBatch, row: usize) -> Result<i64> {
 }
 
 pub fn event_row_from_batch(batch: &RecordBatch, index: usize) -> Result<EventRow> {
+    let payload_json = req_utf8_at(batch, TRAJECTORY_PAYLOAD_JSON_COL, index)?;
+    let event_id = utf8_at(batch, TRAJECTORY_EVENT_ID_COL, index)?;
     Ok(EventRow {
         seq: seq_at(batch, index)?,
+        event_id,
         timestamp: utf8_at(batch, TRAJECTORY_TIMESTAMP_COL, index)?,
         kind: req_utf8_at(batch, TRAJECTORY_KIND_COL, index)?,
         source: req_utf8_at(batch, TRAJECTORY_SOURCE_COL, index)?,
@@ -162,7 +160,7 @@ pub fn event_row_from_batch(batch: &RecordBatch, index: usize) -> Result<EventRo
         trace_id: utf8_at(batch, TRAJECTORY_TRACE_ID_COL, index)?,
         parent_call_id: utf8_at(batch, TRAJECTORY_PARENT_CALL_ID_COL, index)?,
         model: utf8_at(batch, TRAJECTORY_MODEL_COL, index)?,
-        payload_json: req_utf8_at(batch, TRAJECTORY_PAYLOAD_JSON_COL, index)?,
+        payload_json,
     })
 }
 
@@ -181,14 +179,8 @@ pub fn event_rows_from_batch(batch: &RecordBatch) -> Result<Vec<EventRow>> {
         .collect()
 }
 
-pub fn reassign_global_seq(rows: &mut [EventRow]) {
-    for (seq, row) in rows.iter_mut().enumerate() {
-        row.seq = seq as i64;
-    }
-}
-
 pub fn schema_columns_note() -> String {
-    TRAJECTORY_V1_COLS.join(", ")
+    TRAJECTORY_COLS.join(", ")
 }
 
 #[cfg(test)]
@@ -211,6 +203,7 @@ mod tests {
     fn mk_row(seq: i64, session: &str, content: &str) -> EventRow {
         EventRow {
             seq,
+            event_id: Some(format!("event-{seq}")),
             timestamp: None,
             kind: "note".into(),
             source: "test".into(),
@@ -225,23 +218,12 @@ mod tests {
     }
 
     #[test]
-    fn reassign_global_seq_renumbers_contiguously() {
-        let mut rows = vec![
-            mk_row(99, "a", "x"),
-            mk_row(5, "b", "y"),
-            mk_row(42, "a", "z"),
-        ];
-        reassign_global_seq(&mut rows);
-        assert_eq!(
-            rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
-            vec![0, 1, 2]
-        );
-    }
-
-    #[test]
-    fn rows_for_lines_stamps_session_and_monotonic_seq() {
+    fn rows_for_lines_stamps_session_and_preserves_producer_seq() {
         let record = EventRecord {
-            identity: crate::EventIdentity::default(),
+            identity: crate::EventIdentity {
+                event_id: Some("event-a".into()),
+                ..Default::default()
+            },
             seq: 0,
             source: "test".into(),
             kind: "note".into(),
@@ -258,16 +240,19 @@ mod tests {
             payload: serde_json::json!({"content":"a"}),
         };
         let line = ron::to_string(&serde_json::to_value(record).unwrap()).unwrap();
-        let rows = rows_for_lines("sess-a", 10, std::slice::from_ref(&line)).unwrap();
+        let rows = rows_for_lines("sess-a", std::slice::from_ref(&line)).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].seq, 10);
+        assert_eq!(rows[0].seq, 0);
         assert_eq!(rows[0].session_id.as_deref(), Some("sess-a"));
     }
 
     #[test]
     fn event_line_to_event_row_preserves_call_id() {
         let resp = EventRecord {
-            identity: crate::EventIdentity::default(),
+            identity: crate::EventIdentity {
+                event_id: Some("event-response".into()),
+                ..Default::default()
+            },
             seq: 0,
             source: "test".into(),
             kind: "llm.response".into(),
@@ -287,14 +272,41 @@ mod tests {
             }),
         };
         let line = ron::to_string(&serde_json::to_value(resp).unwrap()).unwrap();
-        let row = rows_for_lines("sess", 2, &[line]).unwrap().remove(0);
+        let row = rows_for_lines("sess", &[line]).unwrap().remove(0);
         assert_eq!(row.call_id.as_deref(), Some("call-a"));
         assert_eq!(row.trace_id.as_deref(), Some("trace-a"));
-        assert_eq!(row.seq, 2);
+        assert_eq!(row.seq, 0);
 
         let back = crate::event_row_to_event_record(&row).unwrap();
         assert_eq!(back.call_id.as_deref(), Some("call-a"));
-        assert_eq!(back.seq, 2);
+        assert_eq!(back.seq, 0);
+    }
+
+    #[test]
+    fn physical_seq_column_is_the_producer_storyline_seq() {
+        let record = EventRecord {
+            identity: crate::EventIdentity {
+                event_id: Some("event-storyline-seq".into()),
+                ..Default::default()
+            },
+            seq: 42,
+            source: "test".into(),
+            kind: "note".into(),
+            timestamp: None,
+            session_id: Some("story".into()),
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: serde_json::json!({"content":"preserve me"}),
+        };
+        let row = event_record_to_event_row(&record).unwrap();
+        assert_eq!(row.seq, 42);
+        assert_eq!(crate::event_row_to_event_record(&row).unwrap().seq, 42);
     }
 
     #[test]

@@ -25,7 +25,7 @@ pub struct JudgmentSessionSummary {
     pub verdict_partial: usize,
     pub verdict_fail: usize,
     pub manual_count: usize,
-    pub layers_path: String,
+    pub judgments_path: String,
     pub status: String,
 }
 
@@ -168,7 +168,7 @@ pub async fn aggregate_judgments(
         rubrics,
         status: if judgment_count > 0 { "ok" } else { "empty" }.into(),
         note: format!(
-            "Judge stats: {judged_session_count}/{session_count} session(s) with judge columns, \
+            "Judge stats: {judged_session_count}/{session_count} session(s) with judgments, \
              {judgment_count} judgment(s), {rubric_count} rubric(s)"
         ),
     })
@@ -202,7 +202,7 @@ async fn session_entry(
         verdict_partial,
         verdict_fail,
         manual_count,
-        layers_path: judgment_dataset_path(&run_coords(run))
+        judgments_path: judgment_dataset_path(&run_coords(run))
             .await
             .unwrap_or_default(),
         status: if rows.is_empty() { "empty" } else { "ok" }.into(),

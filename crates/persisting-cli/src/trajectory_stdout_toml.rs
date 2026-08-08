@@ -107,10 +107,10 @@ fn insert_session_judge_fields(m: &mut toml::map::Map<String, toml::Value>, j: &
         "manual_count".into(),
         toml::Value::Integer(i64::try_from(j.manual_count).unwrap_or(i64::MAX)),
     );
-    if !j.layers_path.is_empty() {
+    if !j.judgments_path.is_empty() {
         m.insert(
-            "layers_path".into(),
-            toml::Value::String(j.layers_path.clone()),
+            "judgments_path".into(),
+            toml::Value::String(j.judgments_path.clone()),
         );
     }
     m.insert("judge_status".into(), toml::Value::String(j.status.clone()));
@@ -410,12 +410,8 @@ pub fn print_trajectory_judge_as_toml(resp: &TrajectoryJudgeResponse) -> Result<
         ),
     );
     root.insert(
-        "layer_name".into(),
-        toml::Value::String(resp.layer_name.clone()),
-    );
-    root.insert(
-        "sidecar_path".into(),
-        toml::Value::String(resp.sidecar_path.clone()),
+        "judgments_path".into(),
+        toml::Value::String(resp.judgments_path.clone()),
     );
     root.insert(
         "judged_calls".into(),
@@ -521,8 +517,8 @@ fn judge_stats_session_to_toml(s: &persisting_pchronicle::JudgeStatsSession) -> 
         toml::Value::Integer(i64::try_from(s.manual_count).unwrap_or(i64::MAX)),
     );
     m.insert(
-        "layers_path".into(),
-        toml::Value::String(s.layers_path.clone()),
+        "judgments_path".into(),
+        toml::Value::String(s.judgments_path.clone()),
     );
     m.insert("status".into(), toml::Value::String(s.status.clone()));
     toml::Value::Table(m)

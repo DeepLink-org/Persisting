@@ -217,21 +217,14 @@ pub async fn layer_stats(session: &TrajectorySession) -> Result<LayerStats> {
     })
 }
 
-/// Keep the first `keep_rows` events in one logical Lance session partition.
+/// Legacy command surface: canonical event logs reject destructive truncation.
 pub async fn truncate_lance_session(
     session: &TrajectorySession,
     keep_rows: usize,
 ) -> Result<TruncateOutcome> {
-    let store = RawEventLanceStore;
-    let event_log_path = store.display_path(session)?;
-    let events = store.read_events(session, 0, None).await?;
-    let total = events.len();
-    let keep = keep_rows.min(total);
-    let persisted = crate::overwrite_session_events(session, &events[..keep]).await?;
-    Ok(TruncateOutcome {
-        event_log_path: event_log_path.clone(),
-        kept_rows: persisted,
-        removed_rows: total.saturating_sub(persisted),
-        note: format!("truncated Lance: kept {persisted}/{total} row(s) at {event_log_path}"),
-    })
+    let event_log_path = RawEventLanceStore.display_path(session)?;
+    anyhow::bail!(
+        "pChronicle event logs are append-only; cannot truncate {event_log_path} to {keep_rows} \
+         row(s). Create a new Run or apply truncation in a derived Storyline projection"
+    )
 }

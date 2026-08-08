@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 
 use crate::{
     build_llm_judge_prompt, dry_run_judge_rows, evaluation_units, judgment_dataset_path,
-    layer_field_name, manual_few_shot_examples, manual_judge_rows, parse_llm_judge_rows,
-    pending_evaluation_units, read_judge_rows, write_judge_rows, JudgeRow, JudgmentScope,
-    ManualJudgmentInput, RawEventLanceStore, StoryCoords, StructuredStore,
+    manual_few_shot_examples, manual_judge_rows, parse_llm_judge_rows, pending_evaluation_units,
+    read_judge_rows, write_judge_rows, JudgeRow, JudgmentScope, ManualJudgmentInput,
+    RawEventLanceStore, StoryCoords, StructuredStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,6 @@ pub struct JudgeTrajectoryRequest {
 pub struct JudgeTrajectoryOutcome {
     pub primary_rubric: String,
     pub rubric_ids: Vec<String>,
-    pub layer_name: String,
     pub dataset: String,
     pub judged_units: usize,
     pub skipped_units: usize,
@@ -68,7 +67,6 @@ pub async fn judge_trajectory(request: JudgeTrajectoryRequest) -> Result<JudgeTr
     let existing = read_judge_rows(&request.session).await?;
     let mut judged_units = 0;
     let mut skipped_units = 0;
-    let mut layer_name = String::new();
     let mut incoming = Vec::new();
 
     for rubric_id in &rubric_ids {
@@ -80,7 +78,6 @@ pub async fn judge_trajectory(request: JudgeTrajectoryRequest) -> Result<JudgeTr
             request.force,
         );
         skipped_units += skipped;
-        layer_name = layer_field_name(rubric_id);
         if pending.is_empty() {
             continue;
         }
@@ -121,13 +118,12 @@ pub async fn judge_trajectory(request: JudgeTrajectoryRequest) -> Result<JudgeTr
     Ok(JudgeTrajectoryOutcome {
         primary_rubric,
         rubric_ids: rubric_ids.clone(),
-        layer_name,
         dataset: dataset.clone(),
         judged_units,
         skipped_units,
         status: "ok".into(),
         note: format!(
-            "Judge {:?}/{:?}: {} rubric(s), {} unit(s) scored, {} skipped. Native columns on {}.",
+            "Judge {:?}/{:?}: {} rubric(s), {} unit(s) scored, {} skipped. Judgments stored in {}.",
             request.method,
             request.scope,
             rubric_ids.len(),
@@ -238,7 +234,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_judge_writes_native_columns() {
+    async fn manual_judge_isolated_from_append_only_events() {
         let dir = tempfile::tempdir().unwrap();
         let session = StoryCoords::new(dir.path().to_string_lossy(), "agent", "session", None);
         RawEventLanceStore
@@ -280,5 +276,32 @@ mod tests {
         assert!(rows[0]
             .rationale
             .starts_with(crate::MANUAL_RATIONALE_PREFIX));
+
+        let event_layout = RawEventLanceStore.layout_stats(&session).await.unwrap();
+        assert_eq!(event_layout.visible_rows, 2);
+        assert!(crate::raw_event_arrow_schema()
+            .fields
+            .iter()
+            .all(|field| !field.name().starts_with("judge_")));
+        assert!(crate::judgment_dataset_path(&session)
+            .await
+            .unwrap()
+            .ends_with("judgments.lance"));
+
+        RawEventLanceStore
+            .append_events(&session, &[event("note", "content", "after judgment")])
+            .await
+            .unwrap();
+        RawEventLanceStore
+            .append_events(
+                &session,
+                &[
+                    event("llm.request", "user_content", "hello again"),
+                    event("llm.response", "assistant_content", "world again"),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(crate::read_judge_rows(&session).await.unwrap().len(), 1);
     }
 }

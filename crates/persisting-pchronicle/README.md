@@ -25,15 +25,26 @@ events.lance                  canonical、append-only、可回放
       │
       ├──► AgenticMD          可重建的人读投影
       └──► Storyline          ATIF-aligned 互操作 hub / 三表 Lance
+
+judgments.lance               规范化派生评测，不修改 canonical event schema
 ```
 
 - `StructuredStore` 是 canonical event log 的异步存储接口。
 - `RawEventLanceStore` 是 canonical event log 后端。
-- `RawEventLanceAppender` 为在线 capture 缓存已打开的 Dataset；pVisor writer 用 2 ms / 256
-  条的有界窗口合并 Lance append，并在结束时执行 fragment/index/vacuum 维护。
-- `RawEventLanceStore::replay_available` 每次读取最新的 Lance MVCC 版本；数据集尚未创建时
-  返回 `None`，供 `persisting query follow` 从 offset 连续消费运行中已提交的
-  event micro-batch。
+- `RawEventLanceAppender` 为在线 capture 缓存当前 writer epoch 的私有 Lance segment；pVisor
+  writer 用 2 ms / 256 条的有界窗口合并为一次 Lance append，再通过一个小型 manifest CAS
+  发布该 segment 的精确 version。热路径不查旧行、不查重、不建索引、不压缩，writer 结束
+  也不会同步执行 fragment/index/vacuum 维护。
+- canonical event log 是 at-least-once、严格 append-only 的事实层。`event_id` 是原样保留的
+  业务字段，不具备存储唯一性；重复 ID 和重试产生的重复行都会持久化，由下游业务投影
+  决定是否去重。未提供 ID 时物理列写入 `NULL`，pChronicle 不生成业务身份。
+- `RawEventLanceAppender::fenced(EventWriterFence)` 将 Run lease epoch 带入存储提交协议。
+  新 epoch 先通过 conditional manifest update 激活；旧 writer 后续 Lance commit 只能形成
+  不可见版本，无法更新 manifest。自动 writer 也会原子领取递增 epoch。
+- compaction、`session_id` 索引和 vacuum 仅由显式 `maintain` 执行，不阻塞 capture 关闭。
+- `RawEventLanceStore::replay_available` 每次读取一个原子 manifest revision，并 checkout
+  其中固定的 segment versions；manifest 尚未创建时返回 `None`，供
+  `persisting query follow` 从 offset 连续消费已发布的 event micro-batch。
 - AgenticMD 是从 canonical events 或 Storyline 生成的可丢弃人读/调试视图，不是存储后端。
 - `StorylineLanceStore` 将 Storyline 原子提交为 `runs.lance`、`steps.lance`、`tool_calls.lance` 三张规范化表。
 - `StorylineLanceStore::get_storylines` 对三张表各读取一次同一 generation 快照，支持
@@ -51,8 +62,10 @@ events.lance                  canonical、append-only、可回放
 - `AttemptRegistry` 以 lease epoch fence pVisor Attempt 的注册、心跳和完整终态结果，供 pPilot 重启后收敛。
 - `AgenticmdSessionFrontmatter`、`write_agenticmd_document`、`rewrite_agenticmd_preamble` 和 `index_agenticmd_path` 负责宽松的 AgenticMD 可视化与调试文件操作。
 - `materialize_lance_to_markdown` 单向重建 AgenticMD；`layer_stats` 仅把 Markdown 块数作为诊断信息。
-- `expand_story_locations` 与 `truncate_lance_session` 负责 canonical 存储发现和维护。
-- `judge_trajectory`、`JudgeRow` 及 judgment API 统一负责评测规划、provider 调用和结构化持久化。
+- `expand_story_locations` 负责 canonical 存储发现。事实层拒绝 truncate/overwrite；需要裁剪
+  时创建新 Run 或在 Storyline 派生层表达。
+- `judge_trajectory`、`JudgeRow` 及 judgment API 统一负责评测规划、provider 调用，并按
+  `(session_id, call_id, rubric_id)` upsert 到独立的 `judgments.lance`。
 - `search` 模块统一负责 Lance 文档写入、IVF-PQ/FTS 索引与检索。
 
 Storyline 的 `runs`、`steps`、`tool_calls` 是唯一的规范化三表 schema。旧的 ATIF
@@ -114,7 +127,7 @@ object，避免“检查旧 lease 后、写 commit 前”被新 epoch 穿透的 
 不同 attempt/digest 返回 conflict。
 
 canonical `RawEventLanceStore` 和规范化 `StorylineLanceStore` 都接受
-`s3://bucket/prefix`。前者把每个 Run 写到
+`s3://bucket/prefix`。前者把每个 Run 的 fencing manifest 和 writer segments 写到
 `<prefix>/<agent>/<run>/events.lance`；后者把版本化三表 dataset 与原子可见的
 `CURRENT` 快照版本元组放在同一个对象存储前缀下。本地路径 API 保持兼容：
 
@@ -140,9 +153,10 @@ export AWS_SECRET_ACCESS_KEY=...
 ```
 
 MinIO 等 S3-compatible 服务另外设置 `AWS_ENDPOINT`、`AWS_DEFAULT_REGION`；HTTP
-端点还需 `AWS_ALLOW_HTTP=true`。同一个 Storyline root 目前要求单 writer；不同
-pVisor Run 使用独立 `events.lance` 前缀，可以并行生产。建议为 bucket 配置生命周期
-规则，以回收提交失败后遗留的不可达 generation。
+端点还需 `AWS_ALLOW_HTTP=true`。同一 Run 的 writer ownership 由 manifest 中的
+`(epoch, writer_id)` fencing token 和 ETag/version conditional update 强制执行；不同 Run
+使用独立 `events.lance` 前缀并行生产。底层提交失败或失效 writer 可能留下不可达 Lance
+version，显式 maintenance 和 bucket 生命周期规则负责回收。
 
 真实 S3/MinIO 契约测试默认忽略，可在有隔离测试前缀的环境中显式运行：
 

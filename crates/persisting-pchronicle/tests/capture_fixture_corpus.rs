@@ -100,7 +100,10 @@ fn capture_payload_records() -> Result<(Vec<EventRecord>, usize, usize)> {
 
 #[test]
 fn capture_payload_corpus_roundtrips_through_wire_and_arrow() -> Result<()> {
-    let (records, json_documents, raw_streams) = capture_payload_records()?;
+    let (mut records, json_documents, raw_streams) = capture_payload_records()?;
+    for (index, record) in records.iter_mut().enumerate() {
+        record.identity.event_id = Some(format!("fixture-event-{index}"));
+    }
     assert!(
         records.len() >= 170,
         "expected the full Capture request/response/snapshot/SSE corpus"
@@ -119,8 +122,7 @@ fn capture_payload_corpus_roundtrips_through_wire_and_arrow() -> Result<()> {
 
     let rows = records
         .iter()
-        .enumerate()
-        .map(|(index, record)| event_record_to_event_row(record, index as i64))
+        .map(event_record_to_event_row)
         .collect::<Result<Vec<_>>>()?;
     for (row, expected) in rows.iter().zip(&records) {
         assert_eq!(event_row_to_event_record(row)?, *expected);
@@ -153,8 +155,7 @@ async fn capture_payload_corpus_roundtrips_through_lance() -> Result<()> {
 
     let mut restored = RawEventLanceStore.read_events(&session, 0, None).await?;
     assert!(restored.iter().all(|record| {
-        record.identity.event_id.is_some()
-            && record.identity.run_id.as_deref() == Some("capture-fixture-corpus")
+        record.identity.run_id.as_deref() == Some("capture-fixture-corpus")
             && record.identity.storyline_id.as_deref() == Some("capture-fixture-corpus")
             && record.identity.timestamp_unix_ms.is_some()
             && record.identity.producer.as_deref() == Some("persisting-gateway-fixture")

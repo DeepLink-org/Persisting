@@ -23,6 +23,8 @@ pub enum QuerySource {
     #[default]
     Auto,
     Lance,
+    /// Canonical append-only `events.lance` dataset.
+    Events,
     Atif,
     #[value(name = "openai_msg", alias = "openai-msg")]
     OpenaiMsg,
@@ -234,11 +236,13 @@ impl QuerySource {
         match self {
             Self::Auto if is_lance_object_store_uri(input) => Ok(ResolvedQuerySource::Lance),
             Self::Auto if path.join("CURRENT").is_file() => Ok(ResolvedQuerySource::Lance),
+            Self::Auto if is_local_event_dataset(path) => Ok(ResolvedQuerySource::Events),
             Self::Auto if path.exists() => Ok(ResolvedQuerySource::Local(
                 LocalQueryManifest::detect_with_options(path, manifest_options)?,
             )),
             Self::Auto => bail!("query input does not exist: {input}"),
             Self::Lance => Ok(ResolvedQuerySource::Lance),
+            Self::Events => Ok(ResolvedQuerySource::Events),
             Self::Atif => Ok(ResolvedQuerySource::Local(
                 LocalQueryManifest::for_format_with_options(
                     path,
@@ -267,7 +271,12 @@ impl QuerySource {
 #[derive(Debug)]
 enum ResolvedQuerySource {
     Lance,
+    Events,
     Local(LocalQueryManifest),
+}
+
+fn is_local_event_dataset(path: &Path) -> bool {
+    path.is_dir() && path.file_name().is_some_and(|name| name == "events.lance")
 }
 
 fn is_lance_object_store_uri(input: &str) -> bool {
@@ -365,6 +374,12 @@ async fn run_sql_query(args: SqlQueryArgs) -> Result<()> {
         )
         .await
         .with_context(|| format!("open Lance store {}", args.input))?,
+        ResolvedQuerySource::Events => ChronicleQueryEngine::open_events_uri_with_options(
+            &args.input,
+            execution_options.clone(),
+        )
+        .await
+        .with_context(|| format!("open canonical event dataset {}", args.input))?,
         ResolvedQuerySource::Local(manifest) => {
             ChronicleQueryEngine::open_local_manifest_with_execution_options(
                 manifest,
@@ -679,6 +694,8 @@ mod tests {
         let lance = temp.path().join("lance");
         fs::create_dir(&lance)?;
         fs::write(lance.join("CURRENT"), "gen-test\n")?;
+        let events = temp.path().join("events.lance");
+        fs::create_dir(&events)?;
         let atif = temp.path().join("input.jsonl");
         fs::write(
             &atif,
@@ -698,6 +715,10 @@ mod tests {
         assert!(matches!(
             QuerySource::Auto.resolve(lance.to_str().unwrap())?,
             ResolvedQuerySource::Lance
+        ));
+        assert!(matches!(
+            QuerySource::Auto.resolve(events.to_str().unwrap())?,
+            ResolvedQuerySource::Events
         ));
         assert_eq!(
             resolved_format(QuerySource::Auto.resolve(atif.to_str().unwrap())?),
@@ -769,11 +790,17 @@ mod tests {
                 .unwrap(),
             ResolvedQuerySource::Lance
         ));
+        assert!(matches!(
+            QuerySource::Events
+                .resolve("s3://bucket/run/events.lance")
+                .unwrap(),
+            ResolvedQuerySource::Events
+        ));
     }
 
     fn resolved_format(source: ResolvedQuerySource) -> Option<ChronicleFormat> {
         match source {
-            ResolvedQuerySource::Lance => None,
+            ResolvedQuerySource::Lance | ResolvedQuerySource::Events => None,
             ResolvedQuerySource::Local(manifest) => Some(manifest.format()),
         }
     }

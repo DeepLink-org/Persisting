@@ -348,7 +348,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(append.accepted_records, 2);
-        assert!(append.note.contains("Lance v1"));
+        assert!(append.note.contains("Lance:"));
         let lance_path = trajectory_event_log_path(&storage_s, "agent_a", "sess_1", None).unwrap();
         assert!(lance_path.is_dir(), "expected {}", lance_path.display());
 
@@ -897,7 +897,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn truncate_keeps_first_n_event_rows() {
+    async fn truncate_is_rejected_for_append_only_event_logs() {
         let dir = tempfile::tempdir().unwrap();
         let storage_s = dir.path().join("store").to_string_lossy().to_string();
         std::fs::create_dir_all(&storage_s).unwrap();
@@ -913,7 +913,7 @@ mod tests {
         .await
         .unwrap();
 
-        let tr = truncate_async(TrajectoryTruncateRequest {
+        let error = truncate_async(TrajectoryTruncateRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
@@ -921,10 +921,8 @@ mod tests {
             keep_rows: 1,
         })
         .await
-        .unwrap();
-        assert_eq!(tr.kept_rows, 1);
-        assert_eq!(tr.removed_rows, 2);
-        assert_eq!(tr.status, "ok");
+        .unwrap_err();
+        assert!(error.to_string().contains("append-only"));
 
         let replay = replay_async(TrajectoryReplayRequest {
             storage: storage_s,
@@ -937,7 +935,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(replay.records.len(), 1);
+        assert_eq!(replay.records.len(), 3);
         let row: serde_json::Value = serde_json::from_str(&replay.records[0]).unwrap();
         assert_eq!(row["kind"], "note");
         assert_eq!(row["payload"]["content"], "line-0");
@@ -994,7 +992,7 @@ mod tests {
         );
         let blocks_before = agenticmd_block_count(&md_path).unwrap();
 
-        truncate_async(TrajectoryTruncateRequest {
+        let error = truncate_async(TrajectoryTruncateRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
@@ -1002,7 +1000,8 @@ mod tests {
             keep_rows: 1,
         })
         .await
-        .unwrap();
+        .unwrap_err();
+        assert!(error.to_string().contains("append-only"));
 
         assert_eq!(agenticmd_block_count(&md_path).unwrap(), blocks_before);
         let replay = replay_async(TrajectoryReplayRequest {
@@ -1016,7 +1015,7 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(replay.records.len(), 1);
+        assert_eq!(replay.records.len(), 2);
     }
 
     #[tokio::test]

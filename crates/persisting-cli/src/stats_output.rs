@@ -195,8 +195,8 @@ fn print_judge_plain(j: &SessionJudgeStats) {
     if j.manual_count > 0 {
         println!("manual_count: {}", j.manual_count);
     }
-    if !j.layers_path.is_empty() {
-        println!("layers_path: {}", j.layers_path);
+    if !j.judgments_path.is_empty() {
+        println!("judgments_path: {}", j.judgments_path);
     }
 }
 
@@ -378,8 +378,8 @@ fn format_judge_block(j: &SessionJudgeStats) -> String {
     if j.manual_count > 0 {
         md.push_str(&format!("- Manual: **{}**\n", j.manual_count));
     }
-    if !j.layers_path.is_empty() {
-        md.push_str(&format!("- Layers: `{}`\n", j.layers_path));
+    if !j.judgments_path.is_empty() {
+        md.push_str(&format!("- Judgments: `{}`\n", j.judgments_path));
     }
     md
 }
