@@ -41,86 +41,93 @@ pub fn detect_format_from_content(input: &str) -> Result<Option<ChronicleFormat>
     if trimmed.starts_with("---") && trimmed.contains("format: persisting:1.0") {
         return Ok(Some(ChronicleFormat::Agenticmd));
     }
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return Ok(detect_json_format(&v));
+        }
+
+        // A JSONL/NDJSON corpus is not one JSON value. Inspect its first row
+        // structurally before looking for text markers that may legitimately
+        // occur inside a message payload.
+        if let Some(line) = trimmed.lines().find(|line| !line.trim().is_empty()) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                return Ok(detect_json_format(&v));
+            }
+        }
+    }
     if trimmed.contains("<!-- persisting:block") {
         return Ok(Some(ChronicleFormat::Agenticmd));
     }
-    if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            let candidate = v.as_array().and_then(|values| values.first()).unwrap_or(&v);
-            let is_actf_document = v
-                .get("attempts")
-                .and_then(serde_json::Value::as_object)
-                .is_some_and(|attempts| {
-                    !attempts.is_empty()
-                        && attempts.values().all(|attempt| {
-                            attempt
-                                .get("trajectory")
-                                .and_then(|trajectory| trajectory.get("schema_version"))
-                                .and_then(serde_json::Value::as_str)
-                                .is_some_and(|version| version.starts_with("ACTF_"))
-                        })
-                });
-            if is_actf_document {
-                return Ok(Some(ChronicleFormat::Actf));
-            }
-            if candidate.get("session_id").is_some()
-                && candidate.get("step_id").is_some()
-                && ["messages", "messages_json", "response", "response_json"]
-                    .iter()
-                    .any(|field| candidate.get(*field).is_some())
-            {
-                return Ok(Some(ChronicleFormat::OpenaiMsg));
-            }
-            let spec = v
-                .get("spec")
-                .or_else(|| v.get("sv"))
-                .or_else(|| v.get("schema_version"));
-            if spec
-                .and_then(|x| x.as_str())
-                .is_some_and(|s| s.starts_with("storyline/"))
-            {
-                return Ok(Some(ChronicleFormat::Storyline));
-            }
-            if v.get("schema_version")
-                .and_then(|x| x.as_str())
-                .is_some_and(|s| s.starts_with("ATIF"))
-            {
-                return Ok(Some(ChronicleFormat::Atif));
-            }
-            if v.get("session_steps").is_some() || v.get("format_version").is_some() {
-                return Ok(Some(ChronicleFormat::OpenaiMsg));
-            }
-            if v.get("turns").is_some()
-                && (v.get("session").is_some()
-                    || v.get("session_id").is_some()
-                    || v.get("story_id").is_some())
-            {
-                return Ok(Some(ChronicleFormat::Storyline));
-            }
-            if v.get("steps").is_some() && v.get("agent").is_some() {
-                return Ok(Some(ChronicleFormat::Atif));
-            }
-            if candidate
-                .get("schema_version")
-                .and_then(|x| x.as_str())
-                .is_some_and(|s| s.starts_with("ATIF"))
-                || (candidate.get("steps").is_some() && candidate.get("agent").is_some())
-            {
-                return Ok(Some(ChronicleFormat::Atif));
-            }
-        }
-    }
-    if let Some(line) = trimmed.lines().find(|l| !l.trim().is_empty()) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if v.get("session_id").is_some()
-                && v.get("step_id").is_some()
-                && v.get("agent_name").is_some()
-            {
-                return Ok(Some(ChronicleFormat::Atif));
-            }
-        }
-    }
     Ok(None)
+}
+
+fn detect_json_format(v: &serde_json::Value) -> Option<ChronicleFormat> {
+    let candidate = v.as_array().and_then(|values| values.first()).unwrap_or(v);
+    let is_actf_document = v
+        .get("attempts")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|attempts| {
+            !attempts.is_empty()
+                && attempts.values().all(|attempt| {
+                    attempt
+                        .get("trajectory")
+                        .and_then(|trajectory| trajectory.get("schema_version"))
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|version| version.starts_with("ACTF_"))
+                })
+        });
+    if is_actf_document {
+        return Some(ChronicleFormat::Actf);
+    }
+    if candidate.get("session_id").is_some()
+        && candidate.get("step_id").is_some()
+        && ["messages", "messages_json", "response", "response_json"]
+            .iter()
+            .any(|field| candidate.get(*field).is_some())
+    {
+        return Some(ChronicleFormat::OpenaiMsg);
+    }
+    let spec = v
+        .get("spec")
+        .or_else(|| v.get("sv"))
+        .or_else(|| v.get("schema_version"));
+    if spec
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.starts_with("storyline/"))
+    {
+        return Some(ChronicleFormat::Storyline);
+    }
+    if v.get("schema_version")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.starts_with("ATIF"))
+    {
+        return Some(ChronicleFormat::Atif);
+    }
+    if v.get("session_steps").is_some() || v.get("format_version").is_some() {
+        return Some(ChronicleFormat::OpenaiMsg);
+    }
+    if v.get("turns").is_some()
+        && (v.get("session").is_some()
+            || v.get("session_id").is_some()
+            || v.get("story_id").is_some())
+    {
+        return Some(ChronicleFormat::Storyline);
+    }
+    if v.get("steps").is_some() && v.get("agent").is_some() {
+        return Some(ChronicleFormat::Atif);
+    }
+    if candidate
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.starts_with("ATIF"))
+        || (candidate.get("steps").is_some() && candidate.get("agent").is_some())
+        || (candidate.get("session_id").is_some()
+            && candidate.get("step_id").is_some()
+            && candidate.get("agent_name").is_some())
+    {
+        return Some(ChronicleFormat::Atif);
+    }
+    None
 }
 
 /// Prefer path detection; fall back to content.

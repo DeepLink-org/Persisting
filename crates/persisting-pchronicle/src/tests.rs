@@ -529,6 +529,16 @@ fn detect_format_from_content_and_path() {
         detect_format(None, Some(atif)).unwrap(),
         Some(ChronicleFormat::Atif)
     );
+    let atif_with_agenticmd_marker = r#"{"schema_version":"ATIF-v1.7","session_id":"s","agent":{"name":"a","version":"1"},"steps":[{"step_id":1,"source":"user","message":"source contains <!-- persisting:block but remains ATIF"}]}"#;
+    assert_eq!(
+        detect_format(None, Some(atif_with_agenticmd_marker)).unwrap(),
+        Some(ChronicleFormat::Atif)
+    );
+    let atif_ndjson = format!("{atif_with_agenticmd_marker}\n{atif}");
+    assert_eq!(
+        detect_format(None, Some(&atif_ndjson)).unwrap(),
+        Some(ChronicleFormat::Atif)
+    );
     let story = r#"{"spec":"storyline/v1","session":"s","agent":{"id":"a"},"turns":[]}"#;
     assert_eq!(
         detect_format(None, Some(story)).unwrap(),
