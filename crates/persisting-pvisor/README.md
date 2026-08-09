@@ -23,10 +23,15 @@ tree to the staged workspace, a read-only host runtime, and explicit
 capabilities; unprojected host files and pathname Unix sockets are absent. It
 fails closed instead of falling back to an ordinary host process. A deny-all
 network request additionally creates a private network namespace; public and
-allowlist proxy modes remain cooperative. macOS retains
-review-only staging and reports that weaker boundary. Docker and KVM remain
-stronger placement choices, and every Run Bundle records the effective
-executor and controls.
+allowlist proxy modes remain cooperative. On macOS, the host path wraps the
+Agent in a generated Seatbelt profile: writes are kernel-confined to the staged
+workspace, explicit read-write capabilities, exact device handles, and a
+Run-owned temporary directory. Full-disk reads remain ambient for local
+toolchain compatibility; `--overlaynet-deny-all` additionally blocks IP and
+ambient host Unix sockets while retaining the exact Agent ABI and Run-local
+IPC. Seatbelt setup is attested by the hidden launcher and fails closed.
+Docker and KVM remain stronger placement choices, and every Run Bundle records
+read, write, and network enforcement separately.
 
 The default pVisor build is deliberately lightweight: directory OverlayFS and
 the compact pChronicle event model do not link Lance, DataFusion, Jujutsu,

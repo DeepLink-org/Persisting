@@ -50,8 +50,9 @@ use crate::StorylineDocument;
 
 use super::atif_datafusion::AtifReader;
 use super::storyline_content::{
-    commit_pending_content, externalize_batches, hydrate_batches, open_objects, PendingContent,
-    StorylineContentOptions, STORYLINE_OBJECTS_DATASET,
+    collect_content_ids, commit_pending_content, externalize_batches, hydrate_batches,
+    open_objects, prune_unreferenced_objects, PendingContent, StorylineContentOptions,
+    STORYLINE_OBJECTS_DATASET,
 };
 use super::storyline_datafusion::StorylineTableKind;
 use super::storyline_lance_rows::{
@@ -146,6 +147,7 @@ pub struct StorylineMaintenanceReport {
     pub runs: LanceMaintenanceReport,
     pub steps: LanceMaintenanceReport,
     pub tool_calls: LanceMaintenanceReport,
+    pub objects_removed: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -595,22 +597,42 @@ impl StorylineLanceStore {
                 options,
             ),
         )?;
+        let runs_version = runs
+            .final_version
+            .context("missing maintained runs version")?;
+        let steps_version = steps
+            .final_version
+            .context("missing maintained steps version")?;
+        let tool_calls_version = tool_calls
+            .final_version
+            .context("missing maintained tool_calls version")?;
+        let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
+            read_batches(&paths.runs, runs_version),
+            read_batches(&paths.steps, steps_version),
+            read_batches(&paths.tool_calls, tool_calls_version),
+        )?;
+        let mut live_objects = collect_content_ids(&run_batches, StorylineTableKind::Runs)?;
+        live_objects.extend(collect_content_ids(
+            &step_batches,
+            StorylineTableKind::Steps,
+        )?);
+        live_objects.extend(collect_content_ids(
+            &tool_call_batches,
+            StorylineTableKind::ToolCalls,
+        )?);
+        let (objects_version, objects_removed) =
+            prune_unreferenced_objects(&paths.objects, paths.objects_version, &live_objects)
+                .await?;
         let generation = next_generation();
         self.commit_snapshot(
             &StorylineSnapshotPointer {
                 generation: generation.clone(),
                 parent_generation: Some(paths.generation.clone()),
                 table_generation: paths.table_generation.clone(),
-                runs_version: runs
-                    .final_version
-                    .context("missing maintained runs version")?,
-                steps_version: steps
-                    .final_version
-                    .context("missing maintained steps version")?,
-                tool_calls_version: tool_calls
-                    .final_version
-                    .context("missing maintained tool_calls version")?,
-                objects_version: paths.objects_version,
+                runs_version,
+                steps_version,
+                tool_calls_version,
+                objects_version,
             },
             Some(&paths.generation),
         )
@@ -626,6 +648,7 @@ impl StorylineLanceStore {
             runs: merge_maintenance_reports(runs, runs_vacuum),
             steps: merge_maintenance_reports(steps, steps_vacuum),
             tool_calls: merge_maintenance_reports(tool_calls, tool_calls_vacuum),
+            objects_removed,
         })
     }
 
@@ -1798,6 +1821,48 @@ mod tests {
                 .contains("content predicates require full"),
             "{preview_filter_error}"
         );
+    }
+
+    #[tokio::test]
+    async fn maintenance_prunes_objects_unreachable_from_current_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = StorylineContentOptions {
+            offload_threshold: 32,
+            ..Default::default()
+        };
+        let store = StorylineLanceStore::open_with_content_options(dir.path(), options)
+            .await
+            .unwrap();
+        let mut document = story("gc");
+        document.notes = Some("old unreachable content ".repeat(64));
+        store.replace_storyline(&document).await.unwrap();
+        document.notes = Some("new live content ".repeat(64));
+        store.replace_storyline(&document).await.unwrap();
+
+        let before = store.current_table_paths().await.unwrap().unwrap();
+        let before_objects = open_objects(&before.objects, before.objects_version)
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap();
+        let report = store
+            .maintain(&LanceMaintenanceOptions {
+                vacuum_older_than: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(report.objects_removed, 1);
+        let after = store.current_table_paths().await.unwrap().unwrap();
+        let after_objects = open_objects(&after.objects, after.objects_version)
+            .await
+            .unwrap()
+            .count_rows(None)
+            .await
+            .unwrap();
+        assert_eq!(after_objects + 1, before_objects);
+        assert_eq!(store.get_storyline("gc").await.unwrap(), Some(document));
     }
 
     #[tokio::test]

@@ -34,9 +34,13 @@ minimal bind-projected root plus `chroot`, Landlock ABI v3 policy, closed
 inherited descriptors, `no_new_privs`, and an empty capability set make
 workspace containment non-bypassable for the Agent process tree.
 `--overlaynet-deny-all` adds a private network namespace; the
-public/allowlist proxy modes remain cooperative. macOS remains review-only and
-is labeled as such. Docker and KVM transports retain the same outer Run,
-OverlayFS, Agent ABI observation, and pChronicle control plane.
+public/allowlist proxy modes remain cooperative. On macOS the default safe
+host executor installs a generated Seatbelt policy that makes staged writes
+non-bypassable. For deny-all Runs it blocks IP and ambient host Unix sockets,
+while retaining the exact Agent ABI and Run-local IPC. Reads and selective
+network policy remain ambient/cooperative and are labeled separately in the
+Bundle. Docker and KVM transports retain the same outer Run, OverlayFS, Agent
+ABI observation, and pChronicle control plane.
 
 After completion:
 

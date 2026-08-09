@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use persisting_pchronicle::TrajectoryStorageFormat;
 use persisting_pchronicle::{
-    encode_event_lines, is_trajectory_markdown_path, markdown_document_to_event_lines, EventRecord,
+    decode_event_lines, is_trajectory_markdown_path, markdown_document_to_event_lines, EventRecord,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -62,11 +62,16 @@ impl TrajectoryFormatManager {
         }
     }
 
-    pub fn prepare_append_batch(format: TrajectoryAddFormat, raw: &str) -> Result<String> {
+    pub fn prepare_append_batch(
+        format: TrajectoryAddFormat,
+        raw: &str,
+    ) -> Result<Vec<EventRecord>> {
         match format {
-            TrajectoryAddFormat::Markdown => Ok(markdown_document_to_event_lines(raw)?.join("\n")),
-            TrajectoryAddFormat::Jsonl => lines_from_jsonl(raw),
-            TrajectoryAddFormat::Toml => lines_from_toml(raw),
+            TrajectoryAddFormat::Markdown => {
+                decode_event_lines(&markdown_document_to_event_lines(raw)?)
+            }
+            TrajectoryAddFormat::Jsonl => records_from_jsonl(raw),
+            TrajectoryAddFormat::Toml => records_from_toml(raw),
             TrajectoryAddFormat::Auto => {
                 bail!("internal error: resolve add format before prepare_append_batch")
             }
@@ -110,20 +115,19 @@ fn infer_add_format_from_path(input_path: &str) -> Result<TrajectoryAddFormat> {
     Ok(TrajectoryAddFormat::Toml)
 }
 
-fn lines_from_jsonl(src: &str) -> Result<String> {
+fn records_from_jsonl(src: &str) -> Result<Vec<EventRecord>> {
     src.lines()
         .filter(|l| !l.trim().is_empty())
         .enumerate()
         .map(|(i, line)| {
             let v: serde_json::Value = serde_json::from_str(line.trim())
                 .with_context(|| format!("jsonl line {}", i + 1))?;
-            event_value_to_event_line(v).with_context(|| format!("jsonl line {}", i + 1))
+            serde_json::from_value(v).with_context(|| format!("jsonl line {}", i + 1))
         })
-        .collect::<Result<Vec<_>>>()
-        .map(|lines| lines.join("\n"))
+        .collect()
 }
 
-fn lines_from_toml(src: &str) -> Result<String> {
+fn records_from_toml(src: &str) -> Result<Vec<EventRecord>> {
     let root: toml::Value = toml::from_str(src).context("parse trajectory TOML")?;
     let arr = root
         .get("records")
@@ -134,18 +138,9 @@ fn lines_from_toml(src: &str) -> Result<String> {
         .enumerate()
         .map(|(i, item)| {
             let v = serde_json::to_value(item).with_context(|| format!("toml records[{i}]"))?;
-            event_value_to_event_line(v).with_context(|| format!("toml records[{i}]"))
+            serde_json::from_value(v).with_context(|| format!("toml records[{i}]"))
         })
-        .collect::<Result<Vec<_>>>()
-        .map(|lines| lines.join("\n"))
-}
-
-fn event_value_to_event_line(value: serde_json::Value) -> Result<String> {
-    let event: EventRecord = serde_json::from_value(value).context("decode EventRecord")?;
-    encode_event_lines(&[event])?
-        .into_iter()
-        .next()
-        .context("encode EventRecord produced no line")
+        .collect()
 }
 
 #[cfg(test)]
@@ -202,8 +197,8 @@ mod tests {
         let raw = r#"{"seq":0,"source":"test","kind":"note","timestamp":null,"session_id":null,"agent_id":null,"parent_uuid":null,"trace_id":null,"call_id":null,"subagent_id":null,"parent_agent_id":null,"branch":null,"parent_call_id":null,"payload":{"content":"x"}}"#;
         let out =
             TrajectoryFormatManager::prepare_append_batch(TrajectoryAddFormat::Jsonl, raw).unwrap();
-        assert!(out.contains("kind"));
-        assert!(out.lines().count() >= 1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, "note");
     }
 
     #[test]

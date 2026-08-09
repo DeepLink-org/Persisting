@@ -2,10 +2,11 @@
 
 > Status: implementation plus roadmap. Linux `pvisor run --safe` implements the
 > FUSE + synthetic root + rootless user/mount namespace + Landlock path
-> described in section 2.
+> described in section 2. macOS `--safe` implements Seatbelt-enforced staged
+> writes and deny-all socket confinement; filesystem reads remain ambient and
+> are reported separately.
 > Docker and QEMU/KVM transports also exist. Seccomp/resource enforcement,
-> LiteBox VFS, and Firecracker remain roadmap work unless stated otherwise;
-> macOS local execution remains review-only.
+> LiteBox VFS, and Firecracker remain roadmap work unless stated otherwise.
 
 pVisor needs more than one isolation backend. A local coding Agent values fast
 startup and an exact view of the developer's workspace; an untrusted tenant
@@ -46,7 +47,8 @@ RunSpec / capability policy
             |     review / checkpoint / apply / drop
             |
             +-- IsolationBackend
-                  workspace-landlock | litebox | container | microvm
+                  workspace-landlock | workspace-seatbelt
+                  litebox | container | microvm
             |
             v
        Agent process tree (untrusted)
@@ -61,7 +63,10 @@ surface, namespace, host paths, file descriptors, and network paths the Agent
 can reach. Every backend consumes the same logical workspace and must return a
 changeset with the same review/apply/drop semantics.
 
-The following invariants apply to all enforcing backends:
+The following invariants apply to backends that claim complete capability
+enforcement. A partial native backend may enforce a smaller dimension only
+when the Run Bundle identifies that dimension explicitly and records the
+remaining ambient access:
 
 1. Deny by default; every host file, socket, credential, device, and endpoint is
    an explicit capability.
@@ -77,9 +82,9 @@ The following invariants apply to all enforcing backends:
    workspace digest, effective UID/capabilities, kernel feature probes,
    network mode, resource limits, image/rootfs digest, and downgrade reasons.
 
-## 2. Path A: FUSE + Workspace + Landlock
+## 2. Native host paths
 
-### 2.1 Positioning
+### 2.1 Linux: FUSE + Workspace + Landlock
 
 This is the preferred lightweight Linux host path. It keeps today's embedded
 FUSE OverlayFS and adds a kernel-enforced, unprivileged filesystem policy to
@@ -193,13 +198,53 @@ post-fork closure of the multithreaded supervisor.
 - Runtime allowlists are difficult for dynamic language stacks unless pVisor
   builds a minimal runtime bundle.
 - FUSE context switches remain on the hot path for workspace I/O.
-- Linux only. macOS FUSE keeps review semantics but cannot claim this boundary.
+- Linux only. The macOS sibling path has a different, explicitly narrower
+  Seatbelt boundary.
 
 The implementation already combines Landlock with an empty capability set,
 `no_new_privs`, rootless user/mount namespaces, and a network namespace for
 deny-all Runs. Seccomp, PID namespaces, `rlimit`/cgroup limits, and transparent
 enforcement for selective egress remain necessary hardening without changing
 the workspace contract.
+
+### 2.4 macOS: FUSE + Seatbelt
+
+The native macOS safe path is operational for ordinary local executables. It
+keeps the same staged macFUSE workspace while adding a kernel-enforced Seatbelt
+policy around the complete Agent descendant process tree:
+
+- pVisor invokes only the fixed system `/usr/bin/sandbox-exec`, never a PATH
+  lookup or a project-supplied wrapper;
+- the generated SBPL uses `-D` parameters for every writable path, so a
+  workspace name cannot inject policy text;
+- path-parameterized `file-write*` rules admit only the mounted staged
+  workspace, explicit read-write filesystem capabilities, exact
+  terminal/device handles, a Run-owned temporary directory, and a one-time
+  setup attestation;
+- the hidden launcher writes and unlinks that attestation before `exec` of the
+  Agent. A profile compile/apply failure therefore cannot be mistaken for an
+  Agent exit and terminates the Run as an infrastructure failure;
+- `NetworkCapability::Deny` starts from a deny-by-default profile, blocks IP
+  sockets and outbound ambient host Unix sockets, and retains only the exact
+  Run-scoped Agent ABI plus Unix IPC rooted in Run-owned directories;
+- public and selective proxy modes remain cooperative because the first
+  implementation does not yet constrain direct sockets to only the in-process
+  proxy endpoint.
+
+The compatibility profile deliberately leaves filesystem reads ambient. This
+avoids hard-coding a brittle closure of Homebrew, Xcode, Python, Node, Rustup,
+SDK, framework, and user-installed runtime paths. Consequently the Run Bundle
+sets `filesystem_write_non_bypassable=true` but keeps
+`filesystem_read_non_bypassable=false` and the aggregate
+`filesystem_non_bypassable=false`. A future measured runtime-closure mode may
+make reads deny-by-default without changing the workspace contract.
+
+Seatbelt improves the local macOS boundary materially, but it is not a VM or a
+complete process sandbox: the host kernel, PID namespace, syscall surface, and
+resource accounting remain shared. The `sandbox-exec` interface is deprecated
+by Apple even though it remains shipped, so pVisor probes the fixed binary and
+fails closed instead of promising indefinite platform availability. macFUSE is
+still required for transactional staging until an FSKit backend is available.
 
 ## 3. Path B: LiteBox + OverlayFS semantics in the VFS
 
@@ -436,18 +481,18 @@ present in the repository. Performance is deliberately relative until a common
 benchmark has measured cold/warm startup, RSS, syscall-heavy and data-heavy
 workloads, and teardown.
 
-| Dimension | FUSE + Landlock | LiteBox VFS | Docker/OCI | Firecracker |
-|---|---|---|---|---|
-| Primary goal | fastest local least privilege | dense libOS isolation | compatibility and deployment | hostile multi-tenant isolation |
-| Security boundary | synthetic root + host LSM/namespace policy | libOS plus outer host policy | namespaces/cgroups/LSM, shared kernel | guest kernel + KVM + jailed VMM |
-| Host root required | no | no | no in rootless mode | host provisioning normally required |
-| Guest compatibility | native host ABI | constrained Linux ABI | broad Linux userspace | full guest Linux |
-| Workspace fidelity | highest | requires semantic adapter | high through mount/volume | explicit block/delta conversion |
-| Startup cost | lowest | low target | medium, image dependent | highest cold; warm snapshot target |
-| Per-Run memory | lowest | low target | medium | highest |
-| Kernel escape blast radius | host | host, after outer escape | host | guest first, then VMM/KVM boundary |
-| Portability | Linux enforcement; macOS review-only | platform/ABI dependent | broad OCI hosts | Linux + KVM |
-| Current pVisor status | Linux default implemented; seccomp/limits pending | planned | implemented with hardening gaps | QEMU/KVM exists; Firecracker planned |
+| Dimension | FUSE + Landlock | FUSE + Seatbelt | LiteBox VFS | Docker/OCI | Firecracker |
+|---|---|---|---|---|---|
+| Primary goal | fastest Linux least privilege | zero-config macOS write confinement | dense libOS isolation | compatibility and deployment | hostile multi-tenant isolation |
+| Security boundary | synthetic root + host LSM/namespace policy | Seatbelt write/socket policy on host process | libOS plus outer host policy | namespaces/cgroups/LSM, shared kernel | guest kernel + KVM + jailed VMM |
+| Host root required | no | no | no | no in rootless mode | host provisioning normally required |
+| Guest compatibility | native Linux ABI | native macOS ABI; ambient reads | constrained Linux ABI | broad Linux userspace | full guest Linux |
+| Workspace fidelity | highest | highest with macFUSE | requires semantic adapter | high through mount/volume | explicit block/delta conversion |
+| Startup cost | lowest | lowest | low target | medium, image dependent | highest cold; warm snapshot target |
+| Per-Run memory | lowest | lowest | low target | medium | highest |
+| Kernel escape blast radius | host | host | host, after outer escape | host | guest first, then VMM/KVM boundary |
+| Portability | Linux | macOS; deprecated launcher dependency | platform/ABI dependent | broad OCI hosts | Linux + KVM |
+| Current pVisor status | implemented; seccomp/limits pending | write confinement and deny-all socket policy implemented | planned | implemented with hardening gaps | QEMU/KVM exists; Firecracker planned |
 
 ### Recommended portfolio
 
@@ -466,9 +511,10 @@ The selection belongs to pVisor and the placement control plane:
 4. A fleet configured for hostile multi-tenant execution places the Run on a
    Firecracker worker. Kernel images, snapshots, networking, and jailer setup
    are operator-owned fleet infrastructure, not per-user configuration.
-5. macOS keeps the same command. If only review-grade FUSE is available,
-   pVisor labels that result honestly; a policy requiring enforcement routes to
-   an available container/remote Linux placement or fails with one remediation.
+5. macOS keeps the same command and automatically installs Seatbelt write
+   confinement. The Bundle reports ambient reads and cooperative selective
+   networking separately; a policy requiring complete capability enforcement
+   routes to an available VM/container placement or fails with one remediation.
 
 The four paths are a portfolio, not a mandatory migration ladder. A customer
 states workload intent and, where necessary, a minimum security requirement;

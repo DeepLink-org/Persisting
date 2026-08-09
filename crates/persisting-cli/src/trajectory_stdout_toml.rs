@@ -5,7 +5,6 @@ use persisting_pchronicle::{
     JudgeMethod, JudgeScope, SessionJudgeStats, TrajectoryAppendResponse,
     TrajectoryExtractResponse, TrajectoryJudgeResponse, TrajectoryJudgeStatsResponse,
     TrajectoryMaterializeResponse, TrajectoryReplayResponse, TrajectoryStatsResponse,
-    TrajectoryTruncateResponse,
 };
 use serde_json::Value as Json;
 
@@ -286,30 +285,6 @@ fn insert_judge_aggregate_from_sessions(
         toml::Value::Integer(i64::try_from(rubric_ids.len()).unwrap_or(i64::MAX)),
     );
     root.insert("judge_status".into(), toml::Value::String("ok".into()));
-}
-
-pub fn print_trajectory_truncate_as_toml(resp: &TrajectoryTruncateResponse) -> Result<()> {
-    let mut root = toml::map::Map::new();
-    root.insert("storage".into(), toml::Value::String(resp.storage.clone()));
-    root.insert(
-        "agent_id".into(),
-        toml::Value::String(resp.agent_id.clone()),
-    );
-    root.insert(
-        "session_id".into(),
-        toml::Value::String(resp.session_id.clone()),
-    );
-    root.insert(
-        "kept_rows".into(),
-        toml::Value::Integer(i64::try_from(resp.kept_rows).unwrap_or(i64::MAX)),
-    );
-    root.insert(
-        "removed_rows".into(),
-        toml::Value::Integer(i64::try_from(resp.removed_rows).unwrap_or(i64::MAX)),
-    );
-    root.insert("status".into(), toml::Value::String(resp.status.clone()));
-    root.insert("note".into(), toml::Value::String(resp.note.clone()));
-    emit_root(&root, "truncate")
 }
 
 pub fn print_trajectory_extract_as_toml(resp: &TrajectoryExtractResponse) -> Result<()> {
@@ -719,6 +694,7 @@ mod tests {
             dataset: "/p".into(),
             row_count: 10,
             manifest_version: Some(7),
+            duplicate_event_ids: 0,
             judge: None,
             status: "ok".into(),
             note: "n".into(),

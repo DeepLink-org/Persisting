@@ -9,26 +9,12 @@ from typing import Any, Iterable, Iterator
 from persisting import _core
 
 __all__ = [
-    "append_engine_lines",
     "append_records",
     "iter_replay_pages",
     "parse_replay_record",
     "replay",
     "stats",
 ]
-
-
-def append_engine_lines(
-    storage: str,
-    engine_lines: str,
-    *,
-    agent_id: str | None = None,
-    session_id: str | None = None,
-) -> dict[str, Any]:
-    """Append a newline-separated engine record batch (RON lines). Prefer :func:`append_records`."""
-    a = agent_id or f"a{uuid.uuid4().hex}"
-    s = session_id or f"s{uuid.uuid4().hex}"
-    return _core.trajectory_append(storage, a, s, engine_lines)
 
 
 def append_records(

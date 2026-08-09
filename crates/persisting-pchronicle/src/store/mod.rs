@@ -91,8 +91,8 @@ pub use raw_event_datafusion::{
 };
 #[cfg(feature = "lance-store")]
 pub use raw_event_lance::{
-    distinct_session_ids_in_run, EventLogLayoutStats, EventWriterFence, LanceMaintenanceOptions,
-    LanceMaintenanceReport, RawEventLanceAppender,
+    distinct_session_ids_in_run, maintain as maintain_raw_events, EventLogLayoutStats,
+    EventWriterFence, LanceMaintenanceOptions, LanceMaintenanceReport, RawEventLanceAppender,
 };
 #[cfg(feature = "lance-store")]
 pub use raw_event_lance_rows::{

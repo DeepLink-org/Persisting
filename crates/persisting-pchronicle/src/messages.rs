@@ -301,8 +301,9 @@ pub struct TrajectoryAppendRequest {
     /// When set, nested subagent sessions live under `{root_session_id}/subagents/{session_id}/`.
     #[serde(default)]
     pub root_session_id: Option<String>,
-    /// Newline-separated RON event values for event-log append.
-    pub records_ronl: String,
+    /// Typed canonical records. Serialization at process boundaries is the
+    /// caller's responsibility; pChronicle never uses RON as an internal RPC.
+    pub records: Vec<crate::EventRecord>,
     #[serde(default)]
     pub storage_format: TrajectoryStorageFormat,
 }
@@ -385,6 +386,10 @@ pub struct TrajectoryStatsResponse {
     pub row_count: usize,
     /// Reserved for future versioning metadata (`None` for Lance).
     pub manifest_version: Option<u64>,
+    /// Extra physical rows sharing a non-null event_id. This is diagnostic
+    /// only; canonical events remain at-least-once and are never hidden.
+    #[serde(default)]
+    pub duplicate_event_ids: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<SessionJudgeStats>,
     pub status: String,
@@ -409,28 +414,6 @@ pub struct TrajectoryMaterializeResponse {
     pub event_rows: usize,
     pub markdown_blocks: usize,
     pub skipped_events: usize,
-    pub status: String,
-    pub note: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrajectoryTruncateRequest {
-    pub storage: String,
-    pub agent_id: String,
-    pub session_id: String,
-    #[serde(default)]
-    pub root_session_id: Option<String>,
-    /// Keep the first N event log rows (ordered by `seq`).
-    pub keep_rows: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrajectoryTruncateResponse {
-    pub storage: String,
-    pub agent_id: String,
-    pub session_id: String,
-    pub kept_rows: usize,
-    pub removed_rows: usize,
     pub status: String,
     pub note: String,
 }
@@ -647,7 +630,6 @@ pub enum RequestBody {
     TrajectoryReplay(TrajectoryReplayRequest),
     TrajectoryStats(TrajectoryStatsRequest),
     TrajectoryMaterialize(TrajectoryMaterializeRequest),
-    TrajectoryTruncate(TrajectoryTruncateRequest),
     TrajectoryExtract(TrajectoryExtractRequest),
     TrajectoryJudge(TrajectoryJudgeRequest),
     TrajectoryJudgeStats(TrajectoryJudgeStatsRequest),
@@ -668,7 +650,6 @@ pub enum ResponseBody {
     TrajectoryReplay(TrajectoryReplayResponse),
     TrajectoryStats(TrajectoryStatsResponse),
     TrajectoryMaterialize(TrajectoryMaterializeResponse),
-    TrajectoryTruncate(TrajectoryTruncateResponse),
     TrajectoryExtract(TrajectoryExtractResponse),
     TrajectoryJudge(TrajectoryJudgeResponse),
     TrajectoryJudgeStats(TrajectoryJudgeStatsResponse),

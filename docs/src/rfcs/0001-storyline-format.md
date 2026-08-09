@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted |
 | **Schema** | `storyline/v1` |
 | **Date** | 2026-07-30 |
 | **Component** | pChronicle (`persisting-pchronicle`) |

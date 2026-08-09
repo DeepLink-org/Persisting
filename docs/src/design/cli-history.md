@@ -37,7 +37,6 @@ Subagent：`{run}/subagents/{session_id}/`。路径可传 session 目录，CLI �
 | 命令 | 说明 |
 |------|------|
 | **add** | TOML/JSONL/Markdown → `EventRecord` → canonical Lance |
-| **truncate** | 保留 Lance 前 N 行（按 `seq`） |
 | **stats** | canonical Lance 摘要，并附带 Markdown 调试视图信息；`--detail` 逐轮树；未指定 `--session-id` 时扫描 agent 下全部 run，并对 run bucket **展开** Lance 内 distinct `session_id` 后逐分区统计 |
 | **replay** | 按 `--offset` / `--limit` 分页输出已有事件 |
 | **extract** | 拷贝 Story/Run 目录树 |
@@ -48,7 +47,6 @@ persisting execute             [OPTIONS] -- <CMD>
 persisting gateway serve       -o DIR -c FILE [OPTIONS]
 persisting gateway start       -o DIR -c FILE [OPTIONS]
 persisting history add         <STORAGE> [OPTIONS]
-persisting history truncate    <STORAGE> [OPTIONS]
 persisting history stats       <STORAGE> [OPTIONS]
 persisting history replay      <STORAGE> [OPTIONS]
 persisting history extract     <STORAGE> <OUT_DIR> [OPTIONS]
@@ -67,7 +65,6 @@ persisting history materialize <STORAGE> [OPTIONS]
 | 命令 | `auto` 写入 | 显式 `--storage-format` |
 |------|-------------|-------------------------|
 | add | Lance | `lance` |
-| truncate | — | 仅 Lance（按 `seq` 截断） |
 | replay | Lance | `lance` |
 | stats | Lance 行数为准；附带 Markdown 块数 | `lance` |
 | materialize | — | Lance → Markdown 全量导出 |
@@ -82,9 +79,6 @@ AgenticMD 可删除后重新 materialize。修改 `.md` 不会改变 canonical e
 ```bash
 # 追加 JSONL 到 Lance
 persisting history add ./store --agent-id a --session-id s --format jsonl --input batch.jsonl --storage-format lance
-
-# 截断 Lance（Markdown 需单独 materialize）
-persisting history truncate ./store --agent-id a --session-id s --keep-rows 100
 
 # 双层统计（只读；省略 --session-id 时扫描 agent 下所有 run / session 分区）
 persisting history stats ./store --agent-id a --detail
@@ -113,3 +107,12 @@ event micro-batch 时，使用 `persisting query follow`。
 | 离线运维 | `persisting history stats` / `replay` / `materialize` / … |
 
 实时查询统一使用 pPilot 所有的 `persisting query follow` 入口。
+
+## 6. 本地 Web 分析
+
+```bash
+persisting chronicle serve ./store
+```
+
+该命令只监听 `127.0.0.1`，提供 Run/Event/Storyline 浏览、只读 SQL、HAR/OTLP 导出、
+judgment、revision catalog 和显式 maintain。它没有认证能力，因此拒绝绑定非 loopback 地址。

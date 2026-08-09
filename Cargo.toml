@@ -9,6 +9,7 @@ members = [
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
+    "crates/persisting-pchronicle-server",
     "crates/persisting-overlayfs",
     "crates/persisting-overlaynet",
 ]
@@ -22,6 +23,7 @@ default-members = [
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
+    "crates/persisting-pchronicle-server",
     "crates/persisting-overlaynet",
 ]
 
@@ -108,6 +110,7 @@ persisting-gateway = { path = "crates/persisting-gateway" }
 persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
 persisting-overlaynet = { path = "crates/persisting-overlaynet" }
 persisting-pchronicle = { path = "crates/persisting-pchronicle", default-features = false }
+persisting-pchronicle-server = { path = "crates/persisting-pchronicle-server" }
 persisting-pvisor = { path = "crates/persisting-pvisor" }
 pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }

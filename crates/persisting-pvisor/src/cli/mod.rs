@@ -15,9 +15,10 @@ const ROOT_ABOUT: &str =
 const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn Linux, `pvisor run --safe` automatically runs host executables inside a fail-closed rootless boundary: user and mount namespaces, a minimal synthetic root with chroot, Landlock, no_new_privs, and dropped capabilities. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
 
 #[cfg(target_os = "macos")]
-const ROOT_ABOUT: &str = "Foreground Agent Run manager with macFUSE-staged reviewable workspaces";
+const ROOT_ABOUT: &str =
+    "Foreground Agent Run manager with Seatbelt isolation and reviewable workspaces";
 #[cfg(target_os = "macos")]
-const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, `pvisor run --safe` stages workspace writes through macFUSE for review, apply, or drop. The executable remains a host process because macOS does not provide the Linux namespace and Landlock boundary; pVisor records that limitation in the Run Bundle.";
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, `pvisor run --safe` confines filesystem writes to the macFUSE-staged workspace and Run-scoped scratch directory with a fail-closed Seatbelt profile. Full-disk reads remain available for local toolchain compatibility. `--overlaynet-deny-all` also blocks IP and ambient host Unix sockets while retaining Run-local IPC.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const ROOT_ABOUT: &str = "Foreground Agent Run manager with staged, reviewable workspaces";
@@ -177,7 +178,8 @@ mod tests {
         #[cfg(target_os = "macos")]
         {
             assert!(help.contains("macFUSE"));
-            assert!(help.contains("host process"));
+            assert!(help.contains("Seatbelt"));
+            assert!(help.contains("Full-disk reads remain available"));
         }
     }
 }

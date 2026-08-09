@@ -7,7 +7,7 @@ use crate::sink::ResultSink;
 use crate::task::TaskResult;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use persisting_pchronicle::{encode_event_lines, EventIdentity, EventRecord, EVENT_SCHEMA_VERSION};
+use persisting_pchronicle::{EventIdentity, EventRecord, EVENT_SCHEMA_VERSION};
 use persisting_pchronicle::{TrajectoryAppendRequest, TrajectoryStorageFormat};
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -99,24 +99,17 @@ impl LanceResultSink {
         }
         let write = async {
             let rec = self.to_record(result)?;
-            let line = encode_event_lines(&[rec])?
-                .into_iter()
-                .next()
-                .context("encode EventRecord produced no line")?;
             let req = TrajectoryAppendRequest {
                 storage: self.storage.clone(),
                 agent_id: self.agent_id.clone(),
                 session_id: self.session_id.clone(),
                 root_session_id: None,
-                records_ronl: line,
+                records: vec![rec],
                 storage_format: TrajectoryStorageFormat::Lance,
             };
-            // The pChronicle bridge is synchronous; isolate it from the async worker.
-            let resp =
-                tokio::task::spawn_blocking(move || persisting_pchronicle::trajectory_append(req))
-                    .await
-                    .context("join trajectory_append")?
-                    .context("trajectory_append")?;
+            let resp = persisting_pchronicle::operations::trajectory::append_async(req)
+                .await
+                .context("trajectory_append")?;
             tracing::debug!(
                 task_id = %result.task_id,
                 accepted = resp.accepted_records,

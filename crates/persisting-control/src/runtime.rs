@@ -481,6 +481,8 @@ pub enum IsolationKind {
     HostProcess,
     /// Unprivileged process isolated by a user namespace and host-kernel policy.
     RootlessProcess,
+    /// Host process constrained by a platform sandbox such as macOS Seatbelt.
+    SandboxedProcess,
     Container,
     VirtualMachine,
     Wasm,

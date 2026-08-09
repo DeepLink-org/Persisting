@@ -930,27 +930,22 @@ fn trajectory_append(
     session_id: String,
     records: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    let records_ronl: String = if let Ok(s) = records.extract::<String>() {
-        s
-    } else if let Ok(list) = records.downcast::<PyList>() {
-        let mut s = String::new();
-        for item in list.iter() {
-            let v: serde_json::Value = pythonize::depythonize(item.as_any())?;
-            s.push_str(&ron::to_string(&v).map_err(|e| PyRuntimeError::new_err(e.to_string()))?);
-            s.push('\n');
-        }
-        s
-    } else {
-        return Err(PyTypeError::new_err(
-            "records must be str (RONL body) or list of dict-like objects",
-        ));
-    };
+    let list = records
+        .downcast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("records must be a list of EventRecord mappings"))?;
+    let records = list
+        .iter()
+        .map(|item| {
+            pythonize::depythonize::<persisting_pchronicle::EventRecord>(item.as_any())
+                .map_err(|error| PyTypeError::new_err(error.to_string()))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     let req = TrajectoryAppendRequest {
         storage,
         agent_id,
         session_id,
         root_session_id: None,
-        records_ronl,
+        records,
         storage_format: TrajectoryStorageFormat::Auto,
     };
     let resp = persisting_pchronicle::trajectory_append(req).map_err(py_runtime_error)?;

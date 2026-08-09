@@ -564,6 +564,63 @@ pub(crate) async fn open_objects(path: &Path, version: u64) -> Result<Dataset> {
     })
 }
 
+pub(crate) fn collect_content_ids(
+    batches: &[RecordBatch],
+    kind: StorylineTableKind,
+) -> Result<HashSet<String>> {
+    let mut ids = HashSet::new();
+    for batch in batches {
+        for (name, _) in content_columns(kind) {
+            let Some(column) = batch.column_by_name(name) else {
+                continue;
+            };
+            let values = column
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .with_context(|| format!("Storyline content column '{name}' is not Utf8"))?;
+            for value in values.iter().flatten() {
+                if let Some(reference) = ContentRef::parse(value)? {
+                    ids.insert(reference.content_id);
+                }
+            }
+        }
+    }
+    Ok(ids)
+}
+
+pub(crate) async fn prune_unreferenced_objects(
+    path: &Path,
+    snapshot_version: u64,
+    live: &HashSet<String>,
+) -> Result<(u64, usize)> {
+    let mut dataset = open_objects(path, snapshot_version).await?;
+    let mut scan = dataset.scan();
+    scan.project(&[CONTENT_ID_COLUMN])?;
+    let batches: Vec<RecordBatch> = scan.try_into_stream().await?.try_collect().await?;
+    let mut unreachable = Vec::new();
+    for batch in batches {
+        let ids = batch
+            .column_by_name(CONTENT_ID_COLUMN)
+            .context("objects missing content_id")?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .context("content_id is not Utf8")?;
+        unreachable.extend(
+            ids.iter()
+                .flatten()
+                .filter(|id| !live.contains(*id))
+                .map(str::to_string),
+        );
+    }
+    let removed = unreachable.len();
+    for chunk in unreachable.chunks(LOOKUP_CHUNK_SIZE) {
+        dataset
+            .delete(&content_id_predicate(chunk.iter().map(String::as_str)))
+            .await?;
+    }
+    Ok((dataset.version_id(), removed))
+}
+
 pub(crate) async fn hydrate_batches(
     dataset: &Arc<Dataset>,
     batches: Vec<RecordBatch>,

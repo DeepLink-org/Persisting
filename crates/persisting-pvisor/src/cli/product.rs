@@ -73,7 +73,9 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     println!(
         "  filesystem: {}",
         if bundle.safety.filesystem_non_bypassable {
-            "kernel-enforced staged workspace"
+            "kernel-enforced read/write roots with staged workspace"
+        } else if bundle.safety.filesystem_write_non_bypassable {
+            "kernel-enforced staged writes; reads remain ambient"
         } else if bundle.safety.filesystem_changes_staged {
             "changes staged for review"
         } else {
@@ -100,6 +102,9 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
         {
             Some(persisting_control::IsolationKind::RootlessProcess) => {
                 "rootless user namespace + Landlock"
+            }
+            Some(persisting_control::IsolationKind::SandboxedProcess) => {
+                "macOS Seatbelt process sandbox"
             }
             Some(persisting_control::IsolationKind::Container) => {
                 "OCI container with injected pVisor"

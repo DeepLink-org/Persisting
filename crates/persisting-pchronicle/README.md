@@ -4,6 +4,17 @@
 
 pChronicle 统一拥有轨迹的逻辑格式、物理 schema、落盘、读取、格式转换、检索和可重建视图。其它 crate 可以生产或消费轨迹，但不应再实现自己的轨迹格式或持久化后端。
 
+## 本地 Web UI
+
+```bash
+persisting chronicle serve ./store
+# http://127.0.0.1:9877
+```
+
+服务只允许绑定 loopback，首版不提供公网认证。UI 和 `/api/v1` 提供 Run/Event/Storyline
+浏览、只读 DataFusion SQL、HAR/OTLP 导出、judgment、revision lineage 与显式维护；浏览器
+不会重发捕获到的 HTTP 请求。
+
 ## 组件边界
 
 | 组件 | 负责 | 不负责 |
@@ -47,6 +58,8 @@ judgments.lance               规范化派生评测，不修改 canonical event 
   `persisting query follow` 从 offset 连续消费已发布的 event micro-batch。
 - AgenticMD 是从 canonical events 或 Storyline 生成的可丢弃人读/调试视图，不是存储后端。
 - `StorylineLanceStore` 将 Storyline 原子提交为 `runs.lance`、`steps.lance`、`tool_calls.lance` 三张规范化表；超过阈值的 JSON/UTF-8 单元按 BLAKE3 寻址、跨轨迹去重并写入共享 `objects.lance` 的 Lance Blob v2，三表 schema 不变。
+- Storyline `maintain` 从待发布的三表快照标记内容引用，删除 `objects.lance` 中不可达对象，
+  并把新对象版本与三表版本一起原子发布到 `CURRENT`。
 - `StorylineLanceStore::get_storylines` 对三张表各读取一次同一 generation 快照，支持
   pPilot 批量重建多条 Storyline，并保持请求顺序。
 - `StorylineDataSource` 将同一 generation 的三张表注册到 DataFusion，并下推列裁剪、谓词、limit 和标量索引查询；只有查询实际引用内容列时才读取并恢复 Blob，内部引用不会出现在 SQL 结果中。
@@ -75,6 +88,8 @@ judgments.lance               规范化派生评测，不修改 canonical event 
   时创建新 Run 或在 Storyline 派生层表达。
 - `judge_trajectory`、`JudgeRow` 及 judgment API 统一负责评测规划、provider 调用，并按
   `(session_id, call_id, rubric_id)` upsert 到独立的 `judgments.lance`。
+- `RevisionRow` 及 `revisions.lance` 记录 clean/judge/augment/export 派生物的父 revision、
+  canonical snapshot、recipe、状态和产物引用，不修改 canonical events。
 - `search` 模块统一负责 Lance 文档写入、IVF-PQ/FTS 索引与检索。
 
 Storyline 的 `runs`、`steps`、`tool_calls` 是唯一的规范化三表 schema。旧的 ATIF
