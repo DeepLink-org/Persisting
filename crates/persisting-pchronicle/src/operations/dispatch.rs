@@ -1,6 +1,7 @@
 //! In-process dispatch for pChronicle request values.
 
 use std::future::Future;
+use std::sync::OnceLock;
 
 use crate::{RequestBody, ResponseBody};
 use anyhow::Result;
@@ -9,10 +10,15 @@ fn block_on<F, T>(future: F) -> Result<T>
 where
     F: Future<Output = Result<T>>,
 {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(future)
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let runtime = RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("pchronicle-blocking")
+            .build()
+            .expect("build shared pChronicle runtime")
+    });
+    runtime.block_on(future)
 }
 
 fn dispatch_inner(body: RequestBody) -> Result<ResponseBody> {
@@ -55,9 +61,6 @@ fn dispatch_inner(body: RequestBody) -> Result<ResponseBody> {
         )?)),
         RequestBody::TrajectoryMaterialize(r) => Ok(ResponseBody::TrajectoryMaterialize(block_on(
             super::trajectory::materialize_async(r),
-        )?)),
-        RequestBody::TrajectoryTruncate(r) => Ok(ResponseBody::TrajectoryTruncate(block_on(
-            super::trajectory::truncate_async(r),
         )?)),
         RequestBody::TrajectoryExtract(r) => Ok(ResponseBody::TrajectoryExtract(block_on(
             super::trajectory::extract_async(r),

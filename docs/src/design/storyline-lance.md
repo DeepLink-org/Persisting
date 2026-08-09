@@ -143,7 +143,9 @@ compaction、补齐/刷新索引和按保留期 vacuum。维护产生的三个�
 `CURRENT`，之后才回收旧版本。`CURRENT` 必须是包含全部精确版本的 JSON 指针，不读取旧的
 纯文本 generation 指针。
 
-当前写入在进程内串行化。跨进程 writer 仍需由上层提供单 writer 或租约约束。
+本地写入通过进程内锁和文件锁串行化；对象存储通过 `CURRENT` 的 ETag/version 条件更新
+执行 optimistic CAS。冲突 writer 重新读取最新 snapshot、合并目标 session 后重试，stale
+commit 不能移动 `CURRENT`。上层 lease 仍可减少无效工作，但不是防止 lost update 的正确性前提。
 
 ## Rust API
 

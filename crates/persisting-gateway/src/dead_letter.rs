@@ -160,16 +160,53 @@ pub fn trajectory_dead_letter_path(storage: &Path) -> PathBuf {
         .join(TRAJECTORY_DEAD_LETTER_FILENAME)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrajectoryDeadLetterEntry {
+    #[serde(default = "legacy_trajectory_dead_letter_schema_version")]
+    pub schema_version: u32,
     pub timestamp: String,
     pub storage: String,
     pub agent_id: String,
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session: Option<String>,
-    pub records_ronl: String,
+    #[serde(default)]
+    pub records: Vec<persisting_pchronicle::EventRecord>,
+    /// Read-only compatibility for pre-v2 recovery entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_ronl: Option<String>,
     pub error: String,
+}
+
+fn legacy_trajectory_dead_letter_schema_version() -> u32 {
+    1
+}
+fn trajectory_dead_letter_schema_version() -> u32 {
+    2
+}
+
+impl TrajectoryDeadLetterEntry {
+    pub fn decoded_records(&self) -> Result<Vec<persisting_pchronicle::EventRecord>> {
+        if !self.records.is_empty() {
+            return Ok(self.records.clone());
+        }
+        let Some(legacy) = &self.records_ronl else {
+            return Ok(Vec::new());
+        };
+        let lines = legacy
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        lines
+            .iter()
+            .map(|line| {
+                let value: serde_json::Value =
+                    ron::from_str(line).context("decode legacy RON dead letter")?;
+                serde_json::from_value(value).context("decode legacy EventRecord")
+            })
+            .collect()
+    }
 }
 
 pub fn append_trajectory_dead_letter(
@@ -177,16 +214,18 @@ pub fn append_trajectory_dead_letter(
     agent_id: &str,
     session_id: &str,
     root_session: Option<&str>,
-    records_ronl: &str,
+    records: &[persisting_pchronicle::EventRecord],
     error: &str,
 ) -> Result<()> {
     let entry = TrajectoryDeadLetterEntry {
+        schema_version: trajectory_dead_letter_schema_version(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         storage: storage.display().to_string(),
         agent_id: agent_id.to_string(),
         session_id: session_id.to_string(),
         root_session: root_session.map(str::to_string),
-        records_ronl: records_ronl.to_string(),
+        records: records.to_vec(),
+        records_ronl: None,
         error: error.to_string(),
     };
     let path = trajectory_dead_letter_path(storage);
@@ -518,14 +557,31 @@ mod tests {
             "agent",
             "sess",
             Some("run-1"),
-            "record line\n",
+            &[persisting_pchronicle::EventRecord {
+                identity: Default::default(),
+                seq: 1,
+                source: "test".into(),
+                kind: "note".into(),
+                timestamp: None,
+                session_id: Some("sess".into()),
+                agent_id: Some("agent".into()),
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: serde_json::json!({"content":"retry"}),
+            }],
             "engine invoke failed",
         )
         .unwrap();
         let entries = read_trajectory_dead_letter_entries(dir.path()).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].error, "engine invoke failed");
-        assert_eq!(entries[0].records_ronl, "record line\n");
+        assert_eq!(entries[0].schema_version, 2);
+        assert_eq!(entries[0].decoded_records().unwrap().len(), 1);
     }
 
     #[test]

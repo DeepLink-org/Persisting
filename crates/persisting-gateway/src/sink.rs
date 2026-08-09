@@ -206,6 +206,11 @@ pub fn attach_connection_and_client(
     if let Some(v) = upgrade {
         connection.insert("upgrade".into(), Value::String(v));
     }
+    if let Some(peer) = client_peer {
+        // The accepted socket's peer address is stable for the lifetime of a
+        // keep-alive connection and does not expose credentials.
+        connection.insert("id".into(), Value::String(format!("client:{peer}")));
+    }
     let Some(obj) = payload.as_object_mut() else {
         return;
     };
@@ -275,7 +280,7 @@ pub fn attach_http_wire_request(
             http_obj.insert("url".into(), Value::String(u.to_string()));
         }
         if let Some(b) = body {
-            http_obj.insert("request_body".into(), b.clone());
+            http_obj.insert("request_body".into(), redact_sensitive_body(b));
             http_obj.insert("body_encoding".into(), Value::String("json".into()));
         }
     }
@@ -310,13 +315,49 @@ pub fn attach_http_wire_response(
         }
         http_obj.insert("streaming".into(), Value::Bool(streaming));
         if let Some(b) = body {
-            http_obj.insert("response_body".into(), b.clone());
+            http_obj.insert("response_body".into(), redact_sensitive_body(b));
             let enc = if streaming { "sse-wire" } else { "json" };
             http_obj.insert("body_encoding".into(), Value::String(enc.into()));
         }
     }
     if !body_present || !headers_present {
         obj.insert("degraded".into(), Value::Bool(true));
+    }
+}
+
+/// Redact common credential fields recursively before a JSON body reaches the
+/// canonical store. Provider-specific policies can pre-redact additional
+/// fields; this is the non-disableable safety floor.
+pub fn redact_sensitive_body(value: &Value) -> Value {
+    const SECRET_FIELDS: &[&str] = &[
+        "api_key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "authorization",
+        "password",
+        "secret",
+        "client_secret",
+        "cookie",
+        "set_cookie",
+    ];
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    let normalized = key.to_ascii_lowercase().replace('-', "_");
+                    let value = if SECRET_FIELDS.contains(&normalized.as_str()) {
+                        Value::String("<redacted>".into())
+                    } else {
+                        redact_sensitive_body(value)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(redact_sensitive_body).collect()),
+        _ => value.clone(),
     }
 }
 
@@ -590,6 +631,14 @@ mod header_tests {
         let mut payload = json!({});
         super::attach_http_wire_request(&mut payload, "GET", "/v1/models", None, None, false);
         assert_eq!(payload["degraded"], true);
+    }
+
+    #[test]
+    fn nested_body_credentials_are_redacted() {
+        let body = serde_json::json!({"request":{"api_key":"sk-live","safe":"x"}});
+        let redacted = super::redact_sensitive_body(&body);
+        assert_eq!(redacted["request"]["api_key"], "<redacted>");
+        assert_eq!(redacted["request"]["safe"], "x");
     }
 
     #[test]

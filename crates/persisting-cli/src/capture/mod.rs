@@ -178,7 +178,7 @@ pub struct CaptureImportSummary {
 pub fn import_to_trajectory(
     storage: &str,
     opts: &CaptureImportOptions,
-    append_event_lines: impl FnOnce(&str, &str, &str, &str) -> Result<()>,
+    append_records: impl FnOnce(&str, &str, &str, Vec<record::CaptureRecord>) -> Result<()>,
 ) -> Result<CaptureImportSummary> {
     let pending = collect_pending(opts)?;
     if pending.is_empty() {
@@ -214,8 +214,7 @@ pub fn import_to_trajectory(
         return Ok(summary);
     }
 
-    let event_lines = persisting_pchronicle::encode_event_lines(&records)?.join("\n");
-    append_event_lines(storage, &agent_id, &session_id, &event_lines)?;
+    append_records(storage, &agent_id, &session_id, records)?;
     Ok(summary)
 }
 

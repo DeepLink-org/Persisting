@@ -35,14 +35,6 @@ pub struct LayerStats {
     pub note: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TruncateOutcome {
-    pub event_log_path: String,
-    pub kept_rows: usize,
-    pub removed_rows: usize,
-    pub note: String,
-}
-
 #[derive(serde::Serialize)]
 struct ProjectionPreamble {
     format: &'static str,
@@ -215,16 +207,4 @@ pub async fn layer_stats(session: &TrajectorySession) -> Result<LayerStats> {
         markdown_path: markdown_path.map(|path| path.display().to_string()),
         note,
     })
-}
-
-/// Legacy command surface: canonical event logs reject destructive truncation.
-pub async fn truncate_lance_session(
-    session: &TrajectorySession,
-    keep_rows: usize,
-) -> Result<TruncateOutcome> {
-    let event_log_path = RawEventLanceStore.display_path(session)?;
-    anyhow::bail!(
-        "pChronicle event logs are append-only; cannot truncate {event_log_path} to {keep_rows} \
-         row(s). Create a new Run or apply truncation in a derived Storyline projection"
-    )
 }

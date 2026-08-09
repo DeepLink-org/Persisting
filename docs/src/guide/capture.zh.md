@@ -95,8 +95,8 @@ persisting history materialize ./store \
   --session-id <session-id>
 ```
 
-执行过 `gateway start` 或设置 `PERSISTING_CAPTURE_STORAGE` 后，`stats`、`replay`、
-`materialize` 和 `truncate` 可以省略 storage 参数。
+执行过 `gateway start` 或设置 `PERSISTING_CAPTURE_STORAGE` 后，`stats`、`replay`
+和 `materialize` 可以省略 storage 参数。
 
 ## 目录布局
 

@@ -22,7 +22,7 @@ use persisting_pchronicle::{
     TrajectoryExtractRequest, TrajectoryJudgeRequest, TrajectoryJudgeResponse,
     TrajectoryJudgeStatsRequest, TrajectoryJudgeStatsResponse, TrajectoryMaterializeRequest,
     TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
-    TrajectoryStatsResponse, TrajectoryStorageFormat, TrajectoryTruncateRequest,
+    TrajectoryStatsResponse, TrajectoryStorageFormat,
 };
 
 use persisting_gateway::engine::TurnKind;
@@ -41,7 +41,7 @@ use trajectory_stdout_toml::{
     print_trajectory_append_as_toml, print_trajectory_extract_as_toml,
     print_trajectory_judge_as_toml, print_trajectory_judge_stats_as_toml,
     print_trajectory_materialize_as_toml, print_trajectory_replay_as_toml,
-    print_trajectory_stats_as_toml, print_trajectory_truncate_as_toml,
+    print_trajectory_stats_as_toml,
 };
 
 #[derive(Clone, Copy)]
@@ -81,7 +81,6 @@ fn print_chronicle_response(response: &ResponseBody) -> Result<()> {
         ResponseBody::TrajectoryStats(tr) => print_trajectory_stats_as_toml(tr),
         ResponseBody::TrajectoryReplay(tr) => print_trajectory_replay_as_toml(tr),
         ResponseBody::TrajectoryMaterialize(tr) => print_trajectory_materialize_as_toml(tr),
-        ResponseBody::TrajectoryTruncate(tr) => print_trajectory_truncate_as_toml(tr),
         ResponseBody::TrajectoryExtract(tr) => print_trajectory_extract_as_toml(tr),
         ResponseBody::TrajectoryJudge(tr) => print_trajectory_judge_as_toml(tr),
         ResponseBody::TrajectoryJudgeStats(tr) => print_trajectory_judge_stats_as_toml(tr),
@@ -120,6 +119,8 @@ enum Command {
     Query(ForwardArgs),
     /// Import, replay, convert, and maintain trajectory history.
     History(HistoryArgs),
+    /// Browse and analyze pChronicle through a local Web UI.
+    Chronicle(ChronicleArgs),
     /// Evaluate trajectory quality.
     Eval(EvalArgs),
     /// Run or manage the long-lived Gateway capture service.
@@ -149,8 +150,6 @@ enum HistoryCommand {
     ReplayDeadLetter(CaptureReplayDeadLetterArgs),
     /// Append normalized events to a trajectory store.
     Add(TrajectoryAddArgs),
-    /// Keep only the first N Lance events.
-    Truncate(TrajectoryTruncateArgs),
     /// Summarize one or more runs and stories.
     Stats(TrajectoryStatsArgs),
     /// Page through stored events in sequence order.
@@ -161,6 +160,25 @@ enum HistoryCommand {
     Materialize(TrajectoryMaterializeArgs),
     /// Convert between Storyline, ATIF, OpenAI messages, AgenticMD, and events.
     Convert(trajectory_convert::TrajectoryConvertArgs),
+}
+
+#[derive(Debug, Args)]
+struct ChronicleArgs {
+    #[command(subcommand)]
+    command: ChronicleCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ChronicleCommand {
+    /// Serve the loopback-only local Web UI.
+    Serve {
+        /// Trajectory storage root.
+        #[arg(value_name = "STORAGE")]
+        storage: String,
+        /// Loopback listen address.
+        #[arg(long, default_value = "127.0.0.1:9877")]
+        listen: std::net::SocketAddr,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -322,22 +340,6 @@ struct TrajectoryAddArgs {
     /// 写入层：`lance` / `markdown` / `auto`（`auto` 按已有层探测，默认新建 Lance）。
     #[arg(long, value_enum, default_value_t = TrajectoryStorageCli::Auto)]
     storage_format: TrajectoryStorageCli,
-}
-
-#[derive(Debug, Args)]
-struct TrajectoryTruncateArgs {
-    /// Storage root or session directory; omit to use `PERSISTING_CAPTURE_STORAGE` / last proxy start.
-    #[arg(value_name = "STORAGE")]
-    storage: Option<String>,
-    #[arg(long, value_name = "SEG")]
-    agent_id: Option<String>,
-    #[arg(long, value_name = "SEG")]
-    session_id: Option<String>,
-    #[arg(long, value_name = "SEG")]
-    root_session_id: Option<String>,
-    /// 保留按 `seq` 排序的前 N 条 Lance 行（仅 Lance 层；需更新 md 请单独 `materialize`）。
-    #[arg(long)]
-    keep_rows: usize,
 }
 
 #[derive(Debug, Args)]
@@ -592,6 +594,14 @@ fn main() -> Result<()> {
         Command::Batch(args) => dispatch_component("ppilot", &["run"], args)?,
         Command::Query(args) => dispatch_component("ppilot", &["query"], args)?,
         Command::History(args) => run_history(&mut lazy, args)?,
+        Command::Chronicle(args) => match args.command {
+            ChronicleCommand::Serve { storage, listen } => {
+                eprintln!("[persisting-cli] pChronicle UI: http://{listen}");
+                tokio::runtime::Runtime::new()
+                    .context("pChronicle Web runtime")?
+                    .block_on(persisting_pchronicle_server::serve(storage, listen))?;
+            }
+        },
         Command::Eval(args) => run_eval(&mut lazy, args)?,
         Command::Gateway(args) => run_gateway(&mut lazy, args)?,
     }
@@ -689,10 +699,10 @@ fn run_history_import(lazy: &mut ChronicleClient, args: &CaptureImportArgs) -> R
     let summary = capture::import_to_trajectory(
         &merged.storage,
         &opts,
-        |storage, agent_id, session_id, records_ronl| {
+        |storage, agent_id, session_id, records| {
             eprintln!(
                 "[persisting-cli] history import: {record_count} records -> {storage}/{agent_id}/{session_id}",
-                record_count = records_ronl.lines().filter(|l| !l.trim().is_empty()).count(),
+                record_count = records.len(),
                 storage = storage,
                 agent_id = agent_id,
                 session_id = session_id,
@@ -702,7 +712,7 @@ fn run_history_import(lazy: &mut ChronicleClient, args: &CaptureImportArgs) -> R
                 agent_id: agent_id.to_string(),
                 session_id: session_id.to_string(),
                 root_session_id: None,
-                records_ronl: records_ronl.to_string(),
+                records,
                 storage_format: TrajectoryStorageFormat::Auto,
             });
             lazy.invoke(&payload)
@@ -812,23 +822,18 @@ fn should_flush_capture_record(record: &persisting_gateway::record::CaptureRecor
     )
 }
 
-fn records_ronl_from_lines(lines: &[String]) -> String {
-    if lines.len() == 1 {
-        format!("{}\n", lines[0])
-    } else {
-        format!("{}\n", lines.join("\n"))
-    }
-}
-
-fn write_trajectory_dead_letter(key: &TrajectoryBatchKey, lines: &[String], error: &str) {
+fn write_trajectory_dead_letter(
+    key: &TrajectoryBatchKey,
+    records: &[persisting_pchronicle::EventRecord],
+    error: &str,
+) {
     let storage_path = std::path::Path::new(&key.storage);
-    let records_ronl = records_ronl_from_lines(lines);
     if let Err(dl) = persisting_gateway::dead_letter::append_trajectory_dead_letter(
         storage_path,
         &key.agent_id,
         &key.session_id,
         key.root_session_id.as_deref(),
-        &records_ronl,
+        records,
         error,
     ) {
         eprintln!("[persisting-cli] trajectory dead letter write failed: {dl:#}");
@@ -838,13 +843,13 @@ fn write_trajectory_dead_letter(key: &TrajectoryBatchKey, lines: &[String], erro
 fn flush_capture_trajectory_batch_or_dead_letter(
     chronicle: &Chronicle,
     key: &TrajectoryBatchKey,
-    lines: &[String],
+    records: &[persisting_pchronicle::EventRecord],
 ) {
-    if lines.is_empty() {
+    if records.is_empty() {
         return;
     }
-    if let Err(e) = flush_capture_trajectory_batch(chronicle, key, lines) {
-        write_trajectory_dead_letter(key, lines, &format!("{e:#}"));
+    if let Err(e) = flush_capture_trajectory_batch(chronicle, key, records) {
+        write_trajectory_dead_letter(key, records, &format!("{e:#}"));
         eprintln!("[persisting-cli] capture trajectory append failed: {e:#}");
     }
 }
@@ -852,18 +857,17 @@ fn flush_capture_trajectory_batch_or_dead_letter(
 fn flush_capture_trajectory_batch(
     chronicle: &Chronicle,
     key: &TrajectoryBatchKey,
-    lines: &[String],
+    records: &[persisting_pchronicle::EventRecord],
 ) -> Result<()> {
-    if lines.is_empty() {
+    if records.is_empty() {
         return Ok(());
     }
-    let records_ronl = records_ronl_from_lines(lines);
     let payload = RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
         storage: key.storage.clone(),
         agent_id: key.agent_id.clone(),
         session_id: key.session_id.clone(),
         root_session_id: key.root_session_id.clone(),
-        records_ronl,
+        records: records.to_vec(),
         storage_format: TrajectoryStorageFormat::Lance,
     });
     let response = chronicle.invoke(&payload)?;
@@ -893,37 +897,27 @@ fn build_capture_trajectory_sink(
         use std::collections::HashMap;
 
         let chronicle = Chronicle;
-        let mut batches: HashMap<TrajectoryBatchKey, Vec<String>> = HashMap::new();
+        let mut batches: HashMap<TrajectoryBatchKey, Vec<persisting_pchronicle::EventRecord>> =
+            HashMap::new();
 
         while let Ok(job) = job_rx.recv() {
-            let result = (|| -> Result<(), anyhow::Error> {
-                let key = TrajectoryBatchKey {
-                    storage: job.storage.clone(),
-                    agent_id: job.agent_id,
-                    session_id: job.session_id,
-                    root_session_id: job.root_session_id,
-                };
-                let line =
-                    persisting_pchronicle::encode_event_lines(std::slice::from_ref(&job.record))?
-                        .into_iter()
-                        .next()
-                        .context("encode capture event produced no line")?;
-                let flush_now = should_flush_capture_record(&job.record);
-                let batch = batches.entry(key.clone()).or_default();
-                batch.push(line);
-                if batch.len() >= CAPTURE_TRAJECTORY_BATCH || flush_now {
-                    let lines = batches.remove(&key).unwrap_or_default();
-                    flush_capture_trajectory_batch_or_dead_letter(&chronicle, &key, &lines);
-                }
-                Ok(())
-            })();
-            if let Err(e) = result {
-                eprintln!("[persisting-cli] capture trajectory append failed: {e:#}");
+            let key = TrajectoryBatchKey {
+                storage: job.storage.clone(),
+                agent_id: job.agent_id,
+                session_id: job.session_id,
+                root_session_id: job.root_session_id,
+            };
+            let flush_now = should_flush_capture_record(&job.record);
+            let batch = batches.entry(key.clone()).or_default();
+            batch.push(job.record);
+            if batch.len() >= CAPTURE_TRAJECTORY_BATCH || flush_now {
+                let records = batches.remove(&key).unwrap_or_default();
+                flush_capture_trajectory_batch_or_dead_letter(&chronicle, &key, &records);
             }
         }
 
-        for (key, lines) in batches {
-            flush_capture_trajectory_batch_or_dead_letter(&chronicle, &key, &lines);
+        for (key, records) in batches {
+            flush_capture_trajectory_batch_or_dead_letter(&chronicle, &key, &records);
         }
     });
 
@@ -1224,40 +1218,23 @@ fn run_history(lazy: &mut ChronicleClient, args: HistoryArgs) -> Result<()> {
                 raw.len(),
                 args.input,
             );
-            let records_ronl = TrajectoryFormatManager::prepare_append_batch(input_format, &raw)
+            let records = TrajectoryFormatManager::prepare_append_batch(input_format, &raw)
                 .context("normalize trajectory add input")?;
             eprintln!(
-                "[persisting-cli] trajectory add: {} bytes internal payload…",
-                records_ronl.len()
+                "[persisting-cli] trajectory add: {} typed record(s)…",
+                records.len()
             );
             let payload = RequestBody::TrajectoryAppend(TrajectoryAppendRequest {
                 storage: args.storage.clone(),
                 agent_id,
                 session_id,
                 root_session_id: None,
-                records_ronl,
+                records,
                 storage_format,
             });
             eprintln!("[persisting-cli] trajectory add: writing through pChronicle…");
             lazy.invoke(&payload)?;
             eprintln!("[persisting-cli] trajectory add: pChronicle returned");
-        }
-        HistoryCommand::Truncate(args) => {
-            let loc = resolve_traj_ids_for_read(
-                "trajectory truncate",
-                args.storage.clone(),
-                args.agent_id.clone(),
-                args.session_id.clone(),
-                args.root_session_id.clone(),
-            )?;
-            let payload = RequestBody::TrajectoryTruncate(TrajectoryTruncateRequest {
-                storage: loc.storage,
-                agent_id: loc.agent_id,
-                session_id: loc.session_id,
-                root_session_id: loc.root_session_id,
-                keep_rows: args.keep_rows,
-            });
-            lazy.invoke(&payload)?;
         }
         HistoryCommand::Extract(args) => {
             let loc = resolve_traj_ids_for_read(

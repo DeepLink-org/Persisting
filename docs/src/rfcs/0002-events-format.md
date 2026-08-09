@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Draft |
+| **Status** | Accepted |
 | **Schema / format name** | `events`（逻辑文档）；物理存储常为 `events.lance` |
 | **Date** | 2026-07-30 |
 | **Component** | Gateway + pChronicle |
@@ -549,14 +549,14 @@ key = events 字段，value = 在 Storyline 上求值的 JSONPath。
 
 ---
 
-## 未决问题
+## 已裁定的演进约束
 
-1. **强制 `payload.http` 嵌套 vs 长期扁平键**：迁移窗口与双写策略。
-2. **流式 SSE**：存聚合字符串、原始帧数组，还是外置 blob + hash。
-3. **seq 作用域**：per-session vs per-run-dataset。
-4. **非 HTTP 传输**（WebSocket / gRPC）：是否用 `http.*` 类比的 `transport.*` 扩展。
-5. **默认 `capture_level`**：是否默认 `full` wire 才能称为生产 SoT。
-6. **连接 ID**：是否在代理层分配稳定 `connection.id` 以跨越多次 keep-alive 请求关联（超出现有 peer 粒度）。
+1. 新 writer 使用嵌套 `payload.http`；reader 在磁盘迁移期继续接受历史扁平键。
+2. SSE 原始帧写为按 `seq` 排序的 `http.stream.frame` 事件，携带相对时间与原始字节；聚合文本只是投影。
+3. `seq` 由 producer 在 session 内单调分配，不是唯一键；at-least-once 重试可产生重复行。
+4. WebSocket、gRPC 等非 HTTP 传输使用独立 `transport.*` kind，不伪装成 HTTP。
+5. 默认 `capture_level` 为 `dialogue`。缺少完整 wire 的记录必须标记 `degraded`；只有 `full` capture 可声明 wire-replayable。
+6. Gateway 为客户端和 upstream 连接分配稳定 `connection.id`，用于关联 keep-alive 上的多次交换。
 
 ---
 
@@ -569,3 +569,4 @@ key = events 字段，value = 在 Storyline 上求值的 JSONPath。
 | Draft | 2026-07-30 | **headers 与 body 同为记录 MUST**；缺 headers 亦为 degraded |
 | Draft | 2026-07-30 | 增补 **长连接 `connection.*` + 客户端 `client.*`（peer/pid/command）** 记录要求 |
 | Draft | 2026-07-30 | **events 仅 Lance**：JSON/JSONL 降为调试导出，非一等 wire |
+| Accepted | 2026-08-09 | 裁定 payload、SSE、seq、非 HTTP、capture 默认值与 connection identity；保持 at-least-once append-only。 |

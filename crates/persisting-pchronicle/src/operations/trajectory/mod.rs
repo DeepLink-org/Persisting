@@ -13,7 +13,6 @@ pub use crate::{
     TrajectoryJudgeStatsRequest, TrajectoryJudgeStatsResponse, TrajectoryMaterializeRequest,
     TrajectoryMaterializeResponse, TrajectoryReplayRequest, TrajectoryReplayResponse,
     TrajectoryStatsRequest, TrajectoryStatsResponse, TrajectoryStorageFormat,
-    TrajectoryTruncateRequest, TrajectoryTruncateResponse,
 };
 use anyhow::Result;
 
@@ -66,7 +65,7 @@ pub async fn append_async(request: TrajectoryAppendRequest) -> Result<Trajectory
         root_session_id,
     );
     let outcome =
-        crate::append_trajectory(&session, request.storage_format, &request.records_ronl).await?;
+        crate::append_trajectory(&session, request.storage_format, &request.records).await?;
 
     Ok(TrajectoryAppendResponse {
         dataset: outcome.dataset,
@@ -116,6 +115,7 @@ pub async fn stats_async(request: TrajectoryStatsRequest) -> Result<TrajectorySt
     );
 
     let outcome = crate::trajectory_stats(&session, request.storage_format).await?;
+    let duplicate_event_ids = duplicate_event_id_count(&session).await?;
     Ok(stats_response_with_judge(
         TrajectoryStatsResponse {
             dataset: outcome.dataset,
@@ -124,6 +124,7 @@ pub async fn stats_async(request: TrajectoryStatsRequest) -> Result<TrajectorySt
             session_id: request.session_id,
             row_count: outcome.row_count,
             manifest_version: outcome.manifest_version,
+            duplicate_event_ids,
             judge: None,
             status: outcome.status,
             note: outcome.note,
@@ -133,36 +134,27 @@ pub async fn stats_async(request: TrajectoryStatsRequest) -> Result<TrajectorySt
     .await)
 }
 
+async fn duplicate_event_id_count(session: &StoryCoords) -> Result<usize> {
+    use crate::StructuredStore;
+    let records = crate::RawEventLanceStore
+        .read_events(session, 0, None)
+        .await?;
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for event_id in records
+        .into_iter()
+        .filter_map(|record| record.identity.event_id)
+    {
+        *counts.entry(event_id).or_default() += 1;
+    }
+    Ok(counts.values().map(|count| count.saturating_sub(1)).sum())
+}
+
 async fn stats_response_with_judge(
     mut response: TrajectoryStatsResponse,
     session: &StoryCoords,
 ) -> TrajectoryStatsResponse {
     response.judge = Some(judge_stats::session_judge_stats(session).await);
     response
-}
-
-pub async fn truncate_async(
-    request: TrajectoryTruncateRequest,
-) -> Result<TrajectoryTruncateResponse> {
-    let root_session_id = request.root_session_id.as_deref();
-    let session = session_from_request(
-        &request.storage,
-        &request.agent_id,
-        &request.session_id,
-        root_session_id,
-    );
-
-    let outcome = crate::truncate_lance_session(&session, request.keep_rows).await?;
-
-    Ok(TrajectoryTruncateResponse {
-        storage: request.storage,
-        agent_id: request.agent_id,
-        session_id: request.session_id,
-        kept_rows: outcome.kept_rows,
-        removed_rows: outcome.removed_rows,
-        status: "ok".to_string(),
-        note: outcome.note,
-    })
 }
 
 pub async fn judge_async(request: TrajectoryJudgeRequest) -> Result<TrajectoryJudgeResponse> {
@@ -201,7 +193,7 @@ pub async fn extract_async(request: TrajectoryExtractRequest) -> Result<Trajecto
 mod tests {
     use super::*;
     use crate::{
-        agenticmd_block_count, expand_story_locations, layer_stats, resolve_traj_read_location,
+        expand_story_locations, layer_stats, resolve_traj_read_location,
         session_markdown_write_path_for_key, story_lance_event_path as trajectory_event_log_path,
         story_run_dir as trajectory_run_dir, EventRecord,
     };
@@ -342,7 +334,7 @@ mod tests {
             agent_id: "agent_a".into(),
             session_id: "sess_1".into(),
             root_session_id: None,
-            records_ronl: format!("{line1}\n{line2}\n"),
+            records: decode_test_records(&format!("{line1}\n{line2}\n")),
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -411,7 +403,7 @@ mod tests {
             agent_id: "agent_a".into(),
             session_id: "sub-1".into(),
             root_session_id: Some("root-1".into()),
-            records_ronl: format!("{}\n{}\n{}\n", mk("a"), mk("b"), mk("c")),
+            records: decode_test_records(&format!("{}\n{}\n{}\n", mk("a"), mk("b"), mk("c"))),
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -423,7 +415,7 @@ mod tests {
             agent_id: "agent_a".into(),
             session_id: "sub-2".into(),
             root_session_id: Some("root-1".into()),
-            records_ronl: format!("{}\n{}\n", mk("x"), mk("y")),
+            records: decode_test_records(&format!("{}\n{}\n", mk("x"), mk("y"))),
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -496,18 +488,18 @@ mod tests {
             false,
             &call,
         );
-        let records_ronl = format!(
+        let records = decode_test_records(&format!(
             "{}\n{}\n",
             record_to_event_line(&req).unwrap(),
             record_to_event_line(&resp).unwrap()
-        );
+        ));
 
         append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl: records_ronl.clone(),
+            records: records.clone(),
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -564,14 +556,14 @@ mod tests {
             "/v1",
             &serde_json::json!({"messages":[{"role":"user","content":"hi"}]}),
         );
-        let records_ronl = format!("{}\n", record_to_event_line(&req).unwrap());
+        let records = decode_test_records(&format!("{}\n", record_to_event_line(&req).unwrap()));
 
         append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl,
+            records,
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -605,14 +597,14 @@ mod tests {
             "/v1",
             &serde_json::json!({"messages":[{"role":"user","content":"new"}]}),
         );
-        let records_ronl = format!("{}\n", record_to_event_line(&req).unwrap());
+        let records = decode_test_records(&format!("{}\n", record_to_event_line(&req).unwrap()));
 
         append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl,
+            records,
             storage_format: TrajectoryStorageFormat::Auto,
         })
         .await
@@ -650,18 +642,18 @@ mod tests {
             false,
             &call,
         );
-        let records_ronl = format!(
+        let records = decode_test_records(&format!(
             "{}\n{}\n",
             record_to_event_line(&req).unwrap(),
             record_to_event_line(&resp).unwrap()
-        );
+        ));
 
         append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl,
+            records,
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -712,18 +704,18 @@ mod tests {
             false,
             &call,
         );
-        let records_ronl = format!(
+        let records = decode_test_records(&format!(
             "{}\n{}\n",
             record_to_event_line(&req).unwrap(),
             record_to_event_line(&resp).unwrap()
-        );
+        ));
 
         append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl,
+            records,
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -777,18 +769,18 @@ mod tests {
             false,
             &call,
         );
-        let records_ronl = format!(
+        let records = decode_test_records(&format!(
             "{}\n{}\n",
             record_to_event_line(&req).unwrap(),
             record_to_event_line(&resp).unwrap()
-        );
+        ));
 
         append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl,
+            records,
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -841,18 +833,18 @@ mod tests {
             false,
             &call,
         );
-        let records_ronl = format!(
+        let records = decode_test_records(&format!(
             "{}\n{}\n",
             record_to_event_line(&req).unwrap(),
             record_to_event_line(&resp).unwrap()
-        );
+        ));
 
         append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl,
+            records,
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -869,153 +861,13 @@ mod tests {
         assert_eq!(layers.markdown_blocks, 2);
     }
 
-    fn note_lines(n: usize) -> String {
-        (0..n)
-            .map(|i| {
-                record_to_event_line(&EventRecord {
-                    identity: Default::default(),
-                    seq: 0,
-                    source: "test".into(),
-                    kind: "note".into(),
-                    timestamp: None,
-                    session_id: None,
-                    agent_id: None,
-                    parent_uuid: None,
-                    trace_id: None,
-                    call_id: None,
-                    subagent_id: None,
-                    parent_agent_id: None,
-                    branch: None,
-                    parent_call_id: None,
-                    payload: serde_json::json!({ "content": format!("line-{i}") }),
-                })
-                .unwrap()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n"
-    }
-
-    #[tokio::test]
-    async fn truncate_is_rejected_for_append_only_event_logs() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage_s = dir.path().join("store").to_string_lossy().to_string();
-        std::fs::create_dir_all(&storage_s).unwrap();
-
-        append_async(TrajectoryAppendRequest {
-            storage: storage_s.clone(),
-            agent_id: "a".into(),
-            session_id: "s".into(),
-            root_session_id: None,
-            records_ronl: note_lines(3),
-            storage_format: TrajectoryStorageFormat::Lance,
-        })
-        .await
-        .unwrap();
-
-        let error = truncate_async(TrajectoryTruncateRequest {
-            storage: storage_s.clone(),
-            agent_id: "a".into(),
-            session_id: "s".into(),
-            root_session_id: None,
-            keep_rows: 1,
-        })
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("append-only"));
-
-        let replay = replay_async(TrajectoryReplayRequest {
-            storage: storage_s,
-            agent_id: "a".into(),
-            session_id: "s".into(),
-            offset: 0,
-            limit: None,
-            storage_format: TrajectoryStorageFormat::Lance,
-            root_session_id: None,
-        })
-        .await
-        .unwrap();
-        assert_eq!(replay.records.len(), 3);
-        let row: serde_json::Value = serde_json::from_str(&replay.records[0]).unwrap();
-        assert_eq!(row["kind"], "note");
-        assert_eq!(row["payload"]["content"], "line-0");
-    }
-
-    #[tokio::test]
-    async fn truncate_does_not_modify_markdown_layer() {
-        let call = Call {
-            call_id: "c".into(),
-            trace_id: "t".into(),
-            started_at: "2026-01-01T00:00:00Z".into(),
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let storage_s = dir.path().to_string_lossy().to_string();
-        std::fs::create_dir_all(&storage_s).unwrap();
-
-        let req = llm_request_record(
-            Some("s".into()),
-            None,
-            "m",
-            "/v1",
-            &serde_json::json!({"messages":[{"role":"user","content":"u"}]}),
-        );
-        let resp = llm_response_record(
-            Some("s".into()),
-            None,
-            200,
-            &serde_json::json!({"choices":[{"message":{"role":"assistant","content":"a"}}]}),
-            false,
-            &call,
-        );
-        let records_ronl = format!(
-            "{}\n{}\n",
-            record_to_event_line(&req).unwrap(),
-            record_to_event_line(&resp).unwrap()
-        );
-
-        append_async(TrajectoryAppendRequest {
-            storage: storage_s.clone(),
-            agent_id: "a".into(),
-            session_id: "s".into(),
-            root_session_id: None,
-            records_ronl,
-            storage_format: TrajectoryStorageFormat::Lance,
-        })
-        .await
-        .unwrap();
-
-        let session = StoryCoords::new(storage_s.clone(), "a", "s", None);
-        materialize_lance_to_markdown(&session).await.unwrap();
-        let md_path = session_markdown_write_path_for_key(
-            &trajectory_run_dir(&storage_s, "a", "s", None).unwrap(),
-            "s",
-        );
-        let blocks_before = agenticmd_block_count(&md_path).unwrap();
-
-        let error = truncate_async(TrajectoryTruncateRequest {
-            storage: storage_s.clone(),
-            agent_id: "a".into(),
-            session_id: "s".into(),
-            root_session_id: None,
-            keep_rows: 1,
-        })
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("append-only"));
-
-        assert_eq!(agenticmd_block_count(&md_path).unwrap(), blocks_before);
-        let replay = replay_async(TrajectoryReplayRequest {
-            storage: storage_s,
-            agent_id: "a".into(),
-            session_id: "s".into(),
-            offset: 0,
-            limit: None,
-            storage_format: TrajectoryStorageFormat::Lance,
-            root_session_id: None,
-        })
-        .await
-        .unwrap();
-        assert_eq!(replay.records.len(), 2);
+    fn decode_test_records(body: &str) -> Vec<EventRecord> {
+        let lines = body
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        crate::decode_event_lines(&lines).unwrap()
     }
 
     #[tokio::test]
@@ -1105,18 +957,18 @@ mod tests {
             false,
             &call,
         );
-        let records_ronl = format!(
+        let records = decode_test_records(&format!(
             "{}\n{}\n",
             record_to_event_line(&req).unwrap(),
             record_to_event_line(&resp).unwrap()
-        );
+        ));
 
         append_async(TrajectoryAppendRequest {
             storage: storage_s.clone(),
             agent_id: "a".into(),
             session_id: "s".into(),
             root_session_id: None,
-            records_ronl,
+            records,
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -1188,7 +1040,7 @@ mod tests {
             agent_id: agent.into(),
             session_id: run.into(),
             root_session_id: Some(run.into()),
-            records_ronl: format!("{}\n", record_to_event_line(&started).unwrap()),
+            records: vec![started],
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await
@@ -1198,11 +1050,7 @@ mod tests {
             agent_id: agent.into(),
             session_id: header_session.into(),
             root_session_id: Some(run.into()),
-            records_ronl: format!(
-                "{}\n{}\n",
-                record_to_event_line(&req).unwrap(),
-                record_to_event_line(&resp).unwrap(),
-            ),
+            records: vec![req, resp],
             storage_format: TrajectoryStorageFormat::Lance,
         })
         .await

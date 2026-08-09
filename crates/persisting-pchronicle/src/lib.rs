@@ -19,6 +19,8 @@
 //!
 //! Use [`convert::into_storyline`] / [`convert::from_storyline`] / [`convert::convert`].
 
+#[cfg(feature = "lance-store")]
+pub mod api;
 pub mod atif;
 pub mod convert;
 #[cfg(feature = "lance-store")]
@@ -26,6 +28,7 @@ pub mod discovery;
 pub mod error;
 pub mod format;
 pub mod formats;
+pub mod interop;
 #[cfg(feature = "lance-store")]
 pub mod judge_service;
 #[cfg(feature = "lance-store")]
@@ -40,22 +43,26 @@ pub mod operations;
 #[cfg(feature = "lance-store")]
 pub mod projection;
 #[cfg(feature = "lance-store")]
+pub mod revision;
+#[cfg(feature = "lance-store")]
 pub mod search;
 #[cfg(feature = "lance-store")]
 pub mod service;
 pub mod store;
 pub mod storyline_schema;
 
+#[cfg(feature = "lance-store")]
+pub use api::Chronicle;
 pub use atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 pub use convert::{
-    actf_to_storyline, actf_to_storylines, convert, from_storyline, into_storyline,
-    is_actf_storyline, storyline_to_actf, storylines_to_actf,
+    actf_to_storyline, actf_to_storylines, convert, events_to_storyline, from_storyline,
+    into_storyline, is_actf_storyline, storyline_to_actf, storylines_to_actf,
 };
 #[cfg(feature = "lance-store")]
 pub use discovery::{
     drop_lifecycle_run_partitions, expand_story_locations, expand_story_locations_blocking,
 };
-pub use error::{Error, Result};
+pub use error::{classify_error, Error, ErrorCode, Result};
 pub use format::ChronicleFormat;
 pub use formats::events::EVENT_SCHEMA_VERSION;
 pub use formats::{
@@ -79,6 +86,7 @@ pub use formats::{
     parse_actf_document, ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric,
     ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
 };
+pub use interop::{events_to_har, events_to_otlp_json, otlp_json_to_events};
 #[cfg(feature = "lance-store")]
 pub use judge_service::{
     judge_trajectory, JudgeTrajectoryOutcome, JudgeTrajectoryRequest, JudgingMethod,
@@ -123,9 +131,11 @@ pub use operations::dispatch::invoke_request_body;
 #[cfg(feature = "lance-store")]
 pub use projection::{
     event_records_to_markdown_blocks, layer_stats, markdown_document_to_event_lines,
-    materialize_lance_to_markdown, materialize_markdown_path, truncate_lance_session,
-    write_markdown_projection, LayerStats, MaterializeOutcome, MaterializeStats, TruncateOutcome,
+    materialize_lance_to_markdown, materialize_markdown_path, write_markdown_projection,
+    LayerStats, MaterializeOutcome, MaterializeStats,
 };
+#[cfg(feature = "lance-store")]
+pub use revision::{read_revisions, revision_dataset_path, write_revisions, RevisionRow};
 #[cfg(feature = "lance-store")]
 pub use search::agent as agent_search;
 #[cfg(feature = "lance-store")]
@@ -133,6 +143,8 @@ pub use service::{
     append_trajectory, replay_trajectory, trajectory_stats, AppendServiceOutcome,
     ReplayServiceOutcome, StatsServiceOutcome,
 };
+#[cfg(feature = "lance-store")]
+pub use store::maintain_raw_events;
 pub use store::{
     agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
     append_agenticmd_blocks, count_agenticmd_role, encode_agenticmd_block_validated,

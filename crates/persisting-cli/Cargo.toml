@@ -22,6 +22,7 @@ dirs.workspace = true
 persisting-gateway.workspace = true
 persisting-dlcapt = { path = "../persisting-dlcapt", optional = true }
 persisting-pchronicle = { workspace = true, features = ["lance-store"] }
+persisting-pchronicle-server.workspace = true
 ron.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

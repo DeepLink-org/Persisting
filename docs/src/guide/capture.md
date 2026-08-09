@@ -99,7 +99,7 @@ persisting history materialize ./store \
   --session-id <session-id>
 ```
 
-`stats`, `replay`, `materialize`, and `truncate` may omit the storage argument
+`stats`, `replay`, and `materialize` may omit the storage argument
 after `gateway start`, or when `PERSISTING_CAPTURE_STORAGE` is set.
 
 ## Layout

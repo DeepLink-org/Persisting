@@ -3,8 +3,8 @@
 use anyhow::Result;
 
 use crate::{
-    layer_stats, validate_event_lines, AppendOutcome, RawEventLanceStore, ReplayOutcome,
-    StoryCoords, StructuredStore, TrajectoryStorageFormat,
+    layer_stats, AppendOutcome, EventRecord, RawEventLanceStore, ReplayOutcome, StoryCoords,
+    StructuredStore, TrajectoryStorageFormat,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,11 +34,10 @@ pub struct StatsServiceOutcome {
 pub async fn append_trajectory(
     session: &StoryCoords,
     _requested: TrajectoryStorageFormat,
-    records_ronl: &str,
+    records: &[EventRecord],
 ) -> Result<AppendServiceOutcome> {
     let store = RawEventLanceStore;
-    let lines = validate_event_lines(records_ronl)?;
-    let accepted_records = lines.len();
+    let accepted_records = records.len();
     if accepted_records == 0 {
         return Ok(AppendServiceOutcome {
             dataset: store.display_path(session)?,
@@ -48,7 +47,7 @@ pub async fn append_trajectory(
         });
     }
 
-    let AppendOutcome { note, .. } = store.append(session, &lines).await?;
+    let AppendOutcome { note, .. } = store.append_events(session, records).await?;
     Ok(AppendServiceOutcome {
         dataset: store.display_path(session)?,
         accepted_records,

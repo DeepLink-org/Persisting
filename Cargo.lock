@@ -6378,6 +6378,7 @@ dependencies = [
  "persisting-dlcapt",
  "persisting-gateway",
  "persisting-pchronicle",
+ "persisting-pchronicle-server",
  "reqwest 0.12.28",
  "ron",
  "serde",
@@ -6460,6 +6461,7 @@ dependencies = [
  "pulsing-actor",
  "regex",
  "reqwest 0.12.28",
+ "ron",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -6536,6 +6538,21 @@ dependencies = [
  "tokio",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "persisting-pchronicle-server"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "http-body-util",
+ "persisting-pchronicle",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tower",
 ]
 
 [[package]]
