@@ -92,7 +92,7 @@ pub use observe::{Observer, ObserverOptions};
 #[cfg(feature = "query")]
 pub use query_cli::{
     run_query, BatchQueryArgs, FollowQueryArgs, PointQueryArgs, QueryArgs, QueryCommand,
-    QuerySource, SqlQueryArgs,
+    QueryContentReadMode, QuerySource, SqlQueryArgs,
 };
 pub use runtime::{run_fleet, run_local_fleet};
 pub use runtime_bridge::PilotRuntimeBridge;

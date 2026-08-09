@@ -18,6 +18,7 @@ Lance 存储、跨格式 SQL、外围格式恢复和直接目录查询。
 | [04-point-batch-live-query](04-point-batch-live-query/) | pChronicle 产品 API 的单查、批查摊销和 event follow 延迟 |
 | [05-format-roundtrip](05-format-roundtrip/) | 用 pPilot 将 OpenAI/ACTF 导入三表 Lance，再恢复并验证 JSON 数据模型相等 |
 | [06-query-openai-actf-directly](06-query-openai-actf-directly/) | 直接查询 OpenAI/ACTF 目录，以 `_file_ LIKE` 缩小路径范围，并验证 Lance schema 不变 |
+| [07-objects-lance-blob-offload](07-objects-lance-blob-offload/) | 大内容跨轨迹/跨列复用时，`objects.lance` 相对 inline 的存储、压缩和分析性能 |
 
 查询计时都包含独立进程启动，以及各自的 JSON 解析或 store open、计划和执行。体积和
 速度结论限定在脚本打印的数据规模、查询与当前机器；API 摊销、导入成本和存储空间不与

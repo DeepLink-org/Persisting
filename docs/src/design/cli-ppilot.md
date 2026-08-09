@@ -8,10 +8,10 @@ Lance/ATIF datasource 与 SQL 执行继续由 pChronicle library 提供。
 
 ```text
 ppilot run <SCRIPT> [OPTIONS]
-ppilot chronicle import <INPUT> <STORE>
+ppilot chronicle import <INPUT> <STORE> [--content-offload-threshold BYTES] [--content-preview-bytes BYTES] [--content-zstd-level LEVEL]
 ppilot chronicle export <STORE> <OUTPUT_DIR> --format openai_msg
 ppilot convert <INPUT> <OUTPUT> [--from auto|atif|actf|openai_msg|storyline|agenticmd|lance] --to atif|actf|openai_msg|storyline|agenticmd|lance
-ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--table NAME=FORMAT:PATH]... [--max-files N] [--max-entries N] [--max-file-bytes N] [--max-record-bytes N] [--max-concurrent-files N] [--cache-bytes N] [--cache-files N] [--batch-size N] [--memory-limit-bytes N] [--spill-path DIR] [--max-spill-bytes N] [--timeout-seconds N] [--max-output-rows N] [--query-metrics]
+ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--content-read-mode full|preview] [--table NAME=FORMAT:PATH]... [--max-files N] [--max-entries N] [--max-file-bytes N] [--max-record-bytes N] [--max-concurrent-files N] [--cache-bytes N] [--cache-files N] [--batch-size N] [--memory-limit-bytes N] [--spill-path DIR] [--max-spill-bytes N] [--timeout-seconds N] [--max-output-rows N] [--query-metrics]
 ppilot query point <STORE> --session-id <ID> [--step-id <N>]
 ppilot query batch <STORE> --session-id <ID[,ID]...> [--step-id <N>]
 ppilot query follow <STORAGE> --agent-id <ID> --session-id <ID> [--offset <N>] [--limit <N>] [--poll-interval-ms <MS>]
@@ -58,6 +58,17 @@ ppilot chronicle import ./trajectories.ndjson ./storyline-store
 ppilot chronicle import ./openai-data ./storyline-store --format openai_msg
 ppilot chronicle import ./task.actf.json ./storyline-store --format actf
 ppilot chronicle import ./atif-directory s3://trajectory-bucket/storylines
+```
+
+超过阈值的内容列值会以内容地址写入共享 `objects.lance`，三表中保留带类型、长度、摘要和
+头部 preview 的 descriptor。默认 threshold 为 64 KiB、preview 为 256 bytes、zstd level
+为 3；可在导入时显式调整。例如以下命令让 4 KiB 以上的内容进入对象表：
+
+```bash
+ppilot chronicle import ./trajectories.ndjson ./storyline-store \
+  --content-offload-threshold 4096 \
+  --content-preview-bytes 256 \
+  --content-zstd-level 3
 ```
 
 OpenAI corpus 的完整原 row、源文件分组和 row ordinal 保存在既有 JSON 扩展列中，可按
@@ -110,6 +121,10 @@ ppilot query follow ./capture --agent-id agent-001 --session-id run-001
 ppilot query sql ./storyline-store \
   --sql "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source"
 
+# 只读取 descriptor 中的内容头部，不访问 objects.lance 的完整 payload
+ppilot query sql ./storyline-store --content-read-mode preview \
+  --sql "SELECT session_id, message_json FROM steps LIMIT 20"
+
 ppilot query sql s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
 
@@ -153,6 +168,12 @@ N 次点查：step 批查生成一次 `IN` 查询，完整轨迹批查则对三�
 `--table` 可重复。支持 `csv`、`json`、`jsonl`（别名 `ndjson`）；`csv` 默认把首行
 作为列名，`json` 表示一个 JSON 对象数组，`jsonl`/`ndjson` 表示每行一个 JSON 对象。
 表名必须匹配 `[A-Za-z_][A-Za-z0-9_]*`，且不能覆盖内建表或先前注册的外部表。
+
+Lance 输入默认使用 `--content-read-mode full`：投影到内容列时透明解析 descriptor、读取
+`objects.lance`、解压并校验 hash/length，用户不会看到占位符。无需内容列的查询不会访问
+对象 payload。`preview` 模式仍不暴露 descriptor，只把其中内嵌的有界头部作为内容列值，
+适用于列表、抽样和人工预览；它会改变内容字段的值，不能用于要求完整 payload 的计算。
+该选项只支持 Lance 输入，直接 JSON 输入必须读取原始文件里的实际内容。
 
 直接查询 ATIF、OpenAI JSON 或 ACTF 时，`runs`、`steps`、`tool_calls` 都额外暴露只存在于
 查询期的 `_file_` UTF-8 列。单文件输入的值是文件名；目录输入是使用 `/` 分隔的相对
@@ -202,6 +223,9 @@ join、sort、aggregate 等支持内存预留的执行算子；`--spill-path` �
 [`examples/pchronicle/06-query-openai-actf-directly`](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly)：
 它同时验证目录自动识别、嵌套相对路径、`LIKE` 筛选，以及转换为 Lance 后物理 schema
 仍不包含 `_file_`。
+
+大对象 inline/offload 的精确物理体积、完整展开成本和 preview 分析路径见
+[`examples/pchronicle/07-objects-lance-blob-offload`](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/07-objects-lance-blob-offload)。
 
 只允许单条 `SELECT`、`VALUES`、`DESCRIBE` 或 `EXPLAIN`；拒绝 DDL、DML、`COPY` 和
 多语句。未显式 `ORDER BY` 时不保证结果顺序。
