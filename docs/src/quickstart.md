@@ -40,8 +40,13 @@ a read-only runtime, and explicitly granted paths. Setup
 requires no root helper and fails closed if the kernel does not provide the
 required controls. The default public proxy is still cooperative; pass
 `--overlaynet-deny-all` when the Run must have no network namespace access.
-On macOS, `--safe` remains review-only because Landlock is unavailable. The Run
-Bundle reports these effective boundaries.
+On macOS, `--safe` installs a generated Seatbelt profile before Agent code
+starts. Filesystem writes are confined to the staged workspace, explicit
+read-write capabilities, and a Run-owned temporary directory; reads remain
+ambient for local toolchain compatibility. `--overlaynet-deny-all` also blocks
+IP and ambient host Unix sockets while retaining the Agent ABI and Run-local
+IPC. Profile compilation or installation failure stops the Run, and the Run
+Bundle reports read, write, and network enforcement separately.
 
 ```bash
 pvisor review last     # inspect file changes, network counters, and warnings

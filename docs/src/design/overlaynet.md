@@ -1,7 +1,9 @@
 # OverlayNet transparent interception
 
-> Status: accepted design, not yet implemented. Scope is Linux only. macOS and
-> other hosts keep today's explicit-proxy, observe-grade behavior.
+> Status: accepted design, not yet implemented. Transparent selective
+> interception remains Linux-only. macOS selective policy is still an explicit
+> proxy, while `--safe --overlaynet-deny-all` now uses Seatbelt to block IP and
+> ambient host Unix sockets.
 
 ## Problem
 
@@ -176,8 +178,9 @@ can report the real enforcement level of a finished Run.
 
 ## Non-goals
 
-- macOS transparent interception (Network Extension, pf-based UID routing).
-  macOS remains observe-grade; the capability report says so.
+- macOS transparent *selective* interception (Network Extension, pf-based UID
+  routing). Selective policy remains observe-grade; deny-all is a separate
+  Seatbelt-enforced boundary and is reported as such.
 - An eBPF (`cgroup/connect4`) driver. Elegant, but requires CAP_BPF/root and a
   setup-host deployment model; out of scope for now.
 - TLS decryption by default. MITM stays an explicit opt-in, if ever.

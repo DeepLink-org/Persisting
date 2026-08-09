@@ -22,7 +22,7 @@ for supported workflows.
 |---|---|---|
 | pVisor, pPilot, pChronicle | Implemented | Peer Agent execution, orchestration, and history components |
 | Gateway, OverlayNet, OverlayFS | Implemented | pVisor runtime drivers; Gateway supplies capture semantics |
-| pVisor enforced isolation | Implemented / partial | Linux FUSE + synthetic root + rootless namespaces + Landlock is the local default; Docker/QEMU transports exist; seccomp, resource controls, LiteBox VFS, and Firecracker remain on the [isolation roadmap](pvisor-isolation.md) |
+| pVisor enforced isolation | Implemented / partial | Linux uses FUSE + synthetic root + rootless namespaces + Landlock; macOS uses Seatbelt-enforced staged writes and deny-all socket confinement while reads remain ambient; Docker/QEMU transports exist; seccomp, resource controls, LiteBox VFS, and Firecracker remain on the [isolation roadmap](pvisor-isolation.md) |
 | OverlayNet transparent interception | Planned | Linux netns / seccomp drivers; see [design](overlaynet.md) |
 | TTAS / tiered tensor memory | Experimental | Host/SSD work exists; GPU and cross-node data paths remain planned |
 | Research comparisons | Reference | Input to future design, not a product commitment |

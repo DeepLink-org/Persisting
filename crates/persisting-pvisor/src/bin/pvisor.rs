@@ -3,7 +3,7 @@ fn main() -> anyhow::Result<()> {
         Ok(true) => return Ok(()),
         Ok(false) => {}
         Err(error) => {
-            eprintln!("pVisor rootless sandbox setup failed: {error:#}");
+            eprintln!("pVisor local sandbox setup failed: {error:#}");
             std::process::exit(persisting_pvisor::sandbox::SANDBOX_SETUP_EXIT_CODE);
         }
     }

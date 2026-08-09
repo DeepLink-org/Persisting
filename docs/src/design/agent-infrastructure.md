@@ -297,6 +297,14 @@ deny-all 网络策略还会创建独立 network namespace。当前仍未把
 seccomp、PID namespace 和 cgroup/rlimit 资源配额纳入完整 enforcement，因此 bundle
 会分别记录已生效与仍为协作式的边界，不把“启用了 OverlayFS”误报成完整 sandbox。
 
+macOS 本地 `--safe` 复用同一 staged workspace 契约，并在 Agent 启动前通过系统
+`sandbox-exec` 安装参数化 Seatbelt profile。它强制所有路径写入只能落到 merged
+workspace、显式读写 capability、精确设备句柄或 Run 独占临时目录；deny-all 策略还会
+阻断 IP 与宿主 ambient Unix socket，只保留精确的 Agent ABI 和 Run 私有目录内 IPC。
+为保持 Homebrew、Xcode 和动态语言工具链兼容，读取暂时仍为 ambient，因此 bundle 将
+read/write enforcement 分开记录，并把 aggregate filesystem 边界保持为 partial。
+profile 安装由一次性 launcher attestation 验证，失败时不会执行 Agent。
+
 ## 7. pPilot：Durable Run Orchestrator
 
 pPilot 的操作对象是许多 `RunFuture`，不是 Agent 会话。它解决“如何可靠而高效地生产许多独立 Run”。

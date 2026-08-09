@@ -34,7 +34,11 @@ pvisor run --safe codex
 staged workspace、只读运行时和显式授权路径；未投影的宿主文件和 Unix socket 不可见，
 不需要 root helper，内核能力不足时会 fail closed。默认 public proxy 仍是协作式边界；
 需要彻底断网时使用 `--overlaynet-deny-all`，它会额外创建私有 network namespace。
-macOS 因没有 Landlock，仍提供 review-only 路径。bundle 会如实记录这些有效边界。
+macOS 的 `--safe` 会在执行 Agent 前安装动态生成的 Seatbelt profile，把所有文件写入约束到
+staged workspace、显式读写 capability 和 Run 独占临时目录；为兼容本地工具链，文件读取
+暂时仍是 ambient。`--overlaynet-deny-all` 会同时阻断 IP 与宿主 ambient Unix socket，只保留
+Agent ABI 和 Run 私有目录内 IPC。profile 编译或安装失败时 Run 会 fail closed，bundle 会分别
+记录读取、写入和网络边界，避免把写隔离误报成完整隔离。
 
 ```bash
 pvisor review last     # 查看 bundle：文件变更、网络拦截、安全警告

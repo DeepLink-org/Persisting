@@ -1,17 +1,19 @@
 use crate::executor::{AttemptContext, RunExecutor};
 #[cfg(target_os = "linux")]
 use crate::sandbox::SandboxPlan;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::sandbox::INTERNAL_SANDBOX_ARG;
+#[cfg(target_os = "macos")]
+use crate::sandbox::{seatbelt_profile, SeatbeltPlan, MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION};
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_EXIT_CODE, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
 use persisting_control::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessInvocation, ProcessOutput, RunFailure,
     RunFailureKind, RunInvocation, RunResult, RunSpec, RunState, StdioMode,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use persisting_control::{FilesystemAccess, NetworkCapability};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -86,23 +88,30 @@ fn set_terminal_pgrp(fd: libc::c_int, pgrp: libc::pid_t) -> std::io::Result<()> 
 
 #[derive(Debug, Clone, Default)]
 pub struct ProcessExecutor {
-    /// `Some` selects the hidden self-exec rootless launcher.  The normal
-    /// library default intentionally remains the compatibility host process.
+    /// `Some` selects the platform sandbox launcher. The normal library
+    /// default intentionally remains the compatibility host process.
     sandbox_launcher: Option<PathBuf>,
 }
 
 struct PreparedCommand {
     command: Command,
-    // The launcher mounts a private tmpfs here.  Once its process tree exits,
-    // only this empty host-side mountpoint remains and the guard removes it.
-    _sandbox_root: SandboxRoot,
+    resources: SandboxResources,
 }
 
-struct SandboxRoot(Option<PathBuf>);
+enum SandboxResources {
+    None,
+    #[cfg(target_os = "linux")]
+    LinuxRoot(PathBuf),
+    #[cfg(target_os = "macos")]
+    MacOS {
+        scratch: tempfile::TempDir,
+        attestation: tempfile::NamedTempFile,
+    },
+}
 
-impl SandboxRoot {
+impl SandboxResources {
     fn none() -> Self {
-        Self(None)
+        Self::None
     }
 
     #[cfg(target_os = "linux")]
@@ -116,18 +125,72 @@ impl SandboxRoot {
         ));
         std::fs::create_dir(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-        Ok(Self(Some(path)))
+        Ok(Self::LinuxRoot(path))
     }
 
     #[cfg(target_os = "linux")]
     fn path(&self) -> Option<&std::path::Path> {
-        self.0.as_deref()
+        match self {
+            Self::LinuxRoot(path) => Some(path),
+            Self::None => None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn create() -> std::io::Result<Self> {
+        let scratch = tempfile::Builder::new()
+            .prefix("pvisor-seatbelt-scratch-")
+            .tempdir()?;
+        let attestation = tempfile::Builder::new()
+            .prefix("pvisor-seatbelt-attestation-")
+            .tempfile()?;
+        Ok(Self::MacOS {
+            scratch,
+            attestation,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn scratch_path(&self) -> Option<&Path> {
+        match self {
+            Self::MacOS { scratch, .. } => Some(scratch.path()),
+            Self::None => None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn attestation_path(&self) -> Option<&Path> {
+        match self {
+            Self::MacOS { attestation, .. } => Some(attestation.path()),
+            Self::None => None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn setup_attested(&mut self) -> bool {
+        use std::io::{Read, Seek};
+
+        let Self::MacOS { attestation, .. } = self else {
+            return true;
+        };
+        let file = attestation.as_file_mut();
+        if file.rewind().is_err() {
+            return false;
+        }
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).is_ok() && contents == SEATBELT_ATTESTATION
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn setup_attested(&mut self) -> bool {
+        true
     }
 }
 
-impl Drop for SandboxRoot {
+impl Drop for SandboxResources {
     fn drop(&mut self) {
-        if let Some(path) = &self.0 {
+        #[cfg(target_os = "linux")]
+        if let Self::LinuxRoot(path) = self {
             // Never recurse over a security-sensitive path.  A successful
             // launcher leaves an empty mountpoint; a non-empty directory is
             // retained for diagnosis instead of being removed destructively.
@@ -231,7 +294,49 @@ impl ProcessExecutor {
         ))
     }
 
+    /// Build a macOS executor that installs a generated Seatbelt profile
+    /// before entering the hidden launcher and executing Agent code.
+    #[cfg(target_os = "macos")]
+    pub fn seatbelt_with_launcher(launcher: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let launcher = launcher.into().canonicalize()?;
+        if !is_executable(&launcher) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "Seatbelt sandbox launcher is not executable: {}",
+                    launcher.display()
+                ),
+            ));
+        }
+        if !is_executable(Path::new(MACOS_SANDBOX_EXEC)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("required Seatbelt launcher is unavailable: {MACOS_SANDBOX_EXEC}"),
+            ));
+        }
+        Ok(Self {
+            sandbox_launcher: Some(launcher),
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn seatbelt_with_launcher(launcher: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let _ = launcher.into();
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the Seatbelt local process sandbox is only available on macOS",
+        ))
+    }
+
     pub fn is_rootless(&self) -> bool {
+        cfg!(target_os = "linux") && self.sandbox_launcher.is_some()
+    }
+
+    pub fn is_seatbelt(&self) -> bool {
+        cfg!(target_os = "macos") && self.sandbox_launcher.is_some()
+    }
+
+    pub fn is_sandboxed(&self) -> bool {
         self.sandbox_launcher.is_some()
     }
 
@@ -244,14 +349,14 @@ impl ProcessExecutor {
         // an OverlayFS merged root. The executable belongs to the host-process
         // executor and need not exist inside the projected lower filesystem.
         let program = resolve_host_program(&invocation.program);
-        let (mut command, sandbox_plan, sandbox_root) =
-            if let Some(launcher) = &self.sandbox_launcher {
-                rootless_launcher_command(launcher, spec, invocation, &program)?
-            } else {
-                let mut command = Command::new(program);
-                command.args(&invocation.args);
-                (command, None, SandboxRoot::none())
-            };
+        let (mut command, sandbox_plan, resources) = if let Some(launcher) = &self.sandbox_launcher
+        {
+            platform_launcher_command(launcher, spec, invocation, &program)?
+        } else {
+            let mut command = Command::new(program);
+            command.args(&invocation.args);
+            (command, None, SandboxResources::none())
+        };
         command
             .stdin(stdio(invocation.stdin))
             .stdout(stdio(invocation.stdout))
@@ -274,27 +379,30 @@ impl ProcessExecutor {
         if let Some(sandbox_plan) = sandbox_plan {
             command.env(SANDBOX_PLAN_ENV, sandbox_plan);
         }
-        Ok(PreparedCommand {
-            command,
-            _sandbox_root: sandbox_root,
-        })
+        #[cfg(target_os = "macos")]
+        if let Some(scratch) = resources.scratch_path() {
+            // A Run-owned temporary directory avoids granting the Agent the
+            // shared /tmp or per-user Darwin temporary hierarchy.
+            command.env("TMPDIR", scratch);
+        }
+        Ok(PreparedCommand { command, resources })
     }
 }
 
 #[cfg(target_os = "linux")]
-fn rootless_launcher_command(
+fn platform_launcher_command(
     launcher: &Path,
     spec: &RunSpec,
     invocation: &ProcessInvocation,
     program: &Path,
-) -> std::io::Result<(Command, Option<String>, SandboxRoot)> {
+) -> std::io::Result<(Command, Option<String>, SandboxResources)> {
     let program = program.canonicalize().map_err(|error| {
         std::io::Error::new(
             error.kind(),
             format!("resolve Agent executable {}: {error}", program.display()),
         )
     })?;
-    let sandbox_root = SandboxRoot::create()?;
+    let sandbox_root = SandboxResources::create()?;
     let plan = rootless_plan(
         spec,
         invocation,
@@ -314,16 +422,132 @@ fn rootless_launcher_command(
     Ok((command, Some(encoded), sandbox_root))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn rootless_launcher_command(
+#[cfg(target_os = "macos")]
+fn platform_launcher_command(
+    launcher: &Path,
+    spec: &RunSpec,
+    invocation: &ProcessInvocation,
+    program: &Path,
+) -> std::io::Result<(Command, Option<String>, SandboxResources)> {
+    let program = program.canonicalize().map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("resolve Agent executable {}: {error}", program.display()),
+        )
+    })?;
+    let resources = SandboxResources::create()?;
+    let cwd = invocation
+        .cwd
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+    let cwd = cwd.canonicalize()?;
+    let mut writable_paths = vec![
+        cwd.clone(),
+        resources
+            .scratch_path()
+            .expect("created Seatbelt scratch directory")
+            .to_owned(),
+        resources
+            .attestation_path()
+            .expect("created Seatbelt attestation")
+            .to_owned(),
+    ];
+    for path in ["/dev/null", "/dev/zero", "/dev/tty", "/dev/fd"] {
+        push_existing(&mut writable_paths, Path::new(path));
+    }
+    for capability in &spec.capabilities.filesystem {
+        if capability.access != FilesystemAccess::ReadWrite {
+            continue;
+        }
+        let path = PathBuf::from(&capability.path);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        };
+        if !path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "filesystem capability path does not exist: {}",
+                    path.display()
+                ),
+            ));
+        }
+        writable_paths.push(path);
+    }
+
+    let deny_network = matches!(spec.capabilities.network, NetworkCapability::Deny);
+    let (allowed_unix_sockets, local_socket_roots) = if deny_network {
+        (
+            invocation
+                .env
+                .get(crate::AGENT_ABI_ENDPOINT_ENV)
+                .map(PathBuf::from)
+                .filter(|path| path.exists())
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![
+                cwd,
+                resources
+                    .scratch_path()
+                    .expect("created Seatbelt scratch directory")
+                    .to_owned(),
+            ],
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let (profile, parameters) = seatbelt_profile(
+        &writable_paths,
+        &allowed_unix_sockets,
+        &local_socket_roots,
+        deny_network,
+    )?;
+    let plan = SeatbeltPlan {
+        attestation: resources
+            .attestation_path()
+            .expect("created Seatbelt attestation")
+            .to_owned(),
+        deny_network,
+    };
+    let encoded = serde_json::to_string(&plan).map_err(std::io::Error::other)?;
+
+    let mut command = Command::new(MACOS_SANDBOX_EXEC);
+    command.arg("-p").arg(profile);
+    for (key, path) in parameters {
+        let path = path.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Seatbelt parameter path is not valid UTF-8: {}",
+                    path.display()
+                ),
+            )
+        })?;
+        command.arg(format!("-D{key}={path}"));
+    }
+    command
+        .arg("--")
+        .arg(launcher)
+        .arg(INTERNAL_SANDBOX_ARG)
+        .arg("--")
+        .arg(program)
+        .args(&invocation.args);
+    Ok((command, Some(encoded), resources))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn platform_launcher_command(
     _launcher: &std::path::Path,
     _spec: &RunSpec,
     _invocation: &ProcessInvocation,
     _program: &std::path::Path,
-) -> std::io::Result<(Command, Option<String>, SandboxRoot)> {
+) -> std::io::Result<(Command, Option<String>, SandboxResources)> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "the rootless local process executor is only available on Linux",
+        "the local process sandbox is not available on this platform",
     ))
 }
 
@@ -414,7 +638,7 @@ fn rootless_plan(
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn push_existing(paths: &mut Vec<PathBuf>, path: &Path) {
     if let Ok(path) = path.canonicalize() {
         paths.push(path);
@@ -451,19 +675,17 @@ async fn terminate_process_tree(child: &mut Child, grace_ms: u64) {
 #[async_trait]
 impl RunExecutor for ProcessExecutor {
     fn descriptor(&self) -> ExecutorDescriptor {
+        let (name, isolation) = if self.is_rootless() {
+            ("local-rootless-v1", IsolationKind::RootlessProcess)
+        } else if self.is_seatbelt() {
+            ("local-seatbelt-v1", IsolationKind::SandboxedProcess)
+        } else {
+            ("local-process-v1", IsolationKind::HostProcess)
+        };
         ExecutorDescriptor {
-            name: if self.is_rootless() {
-                "local-rootless-v1"
-            } else {
-                "local-process-v1"
-            }
-            .into(),
+            name: name.into(),
             kind: ExecutorKind::Process,
-            isolation: if self.is_rootless() {
-                IsolationKind::RootlessProcess
-            } else {
-                IsolationKind::HostProcess
-            },
+            isolation,
             enforces_capabilities: false,
             supports_checkpoint: false,
             supports_migration: false,
@@ -484,7 +706,7 @@ impl RunExecutor for ProcessExecutor {
 
         let PreparedCommand {
             mut command,
-            _sandbox_root,
+            mut resources,
         } = match self.spawn_command(&spec, invocation) {
             Ok(command) => command,
             Err(error) => {
@@ -621,58 +843,65 @@ impl RunExecutor for ProcessExecutor {
         }
 
         let finished_at = crate::util::unix_now_ms();
-        let sandbox_setup_failed = matches!(
-            &end,
-            End::Exited(Ok(status))
-                if self.is_rootless() && status.code() == Some(SANDBOX_SETUP_EXIT_CODE)
-        );
-        let (state, exit_code, failure) = match end {
-            End::Exited(Ok(status)) if status.success() => {
-                (RunState::Completed, status.code(), None)
+        let sandbox_attested = resources.setup_attested();
+        let sandbox_setup_failed = self.is_sandboxed()
+            && (!sandbox_attested
+                || matches!(
+                    &end,
+                    End::Exited(Ok(status))
+                        if self.is_rootless()
+                            && status.code() == Some(SANDBOX_SETUP_EXIT_CODE)
+                ));
+        let (state, exit_code, failure) = if sandbox_setup_failed {
+            (
+                RunState::Failed,
+                None,
+                Some(RunFailure {
+                    kind: RunFailureKind::Infrastructure,
+                    message: "local sandbox setup failed before Agent execution".into(),
+                    retryable: false,
+                }),
+            )
+        } else {
+            match end {
+                End::Exited(Ok(status)) if status.success() => {
+                    (RunState::Completed, status.code(), None)
+                }
+                End::Exited(Ok(status)) => (
+                    RunState::Failed,
+                    status.code(),
+                    Some(RunFailure {
+                        kind: RunFailureKind::ProcessExit,
+                        message: match status.code() {
+                            Some(code) => format!("process exited with code {code}"),
+                            None => "process terminated without an exit code".into(),
+                        },
+                        retryable: false,
+                    }),
+                ),
+                End::Exited(Err(error)) => (
+                    RunState::Failed,
+                    None,
+                    Some(RunFailure {
+                        kind: RunFailureKind::Infrastructure,
+                        message: error.to_string(),
+                        retryable: true,
+                    }),
+                ),
+                End::Cancelled => (RunState::Cancelled, None, None),
+                End::Deadline => (
+                    RunState::Failed,
+                    None,
+                    Some(RunFailure {
+                        kind: RunFailureKind::DeadlineExceeded,
+                        message: format!(
+                            "attempt exceeded {} ms deadline",
+                            spec.runtime.timeout_ms.unwrap_or_default()
+                        ),
+                        retryable: false,
+                    }),
+                ),
             }
-            End::Exited(Ok(_)) if sandbox_setup_failed => (
-                RunState::Failed,
-                None,
-                Some(RunFailure {
-                    kind: RunFailureKind::Infrastructure,
-                    message: "rootless sandbox setup failed before Agent execution".into(),
-                    retryable: false,
-                }),
-            ),
-            End::Exited(Ok(status)) => (
-                RunState::Failed,
-                status.code(),
-                Some(RunFailure {
-                    kind: RunFailureKind::ProcessExit,
-                    message: match status.code() {
-                        Some(code) => format!("process exited with code {code}"),
-                        None => "process terminated without an exit code".into(),
-                    },
-                    retryable: false,
-                }),
-            ),
-            End::Exited(Err(error)) => (
-                RunState::Failed,
-                None,
-                Some(RunFailure {
-                    kind: RunFailureKind::Infrastructure,
-                    message: error.to_string(),
-                    retryable: true,
-                }),
-            ),
-            End::Cancelled => (RunState::Cancelled, None, None),
-            End::Deadline => (
-                RunState::Failed,
-                None,
-                Some(RunFailure {
-                    kind: RunFailureKind::DeadlineExceeded,
-                    message: format!(
-                        "attempt exceeded {} ms deadline",
-                        spec.runtime.timeout_ms.unwrap_or_default()
-                    ),
-                    retryable: false,
-                }),
-            ),
         };
 
         RunResult {
@@ -713,6 +942,55 @@ mod tests {
         // Filesystem containment is recorded separately in the Run Bundle;
         // network allowlists and subprocess capabilities are not all enforced.
         assert!(!descriptor.enforces_capabilities);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_executor_reports_write_confinement_without_overclaiming_capabilities() {
+        let executor =
+            ProcessExecutor::seatbelt_with_launcher(std::env::current_exe().unwrap()).unwrap();
+        let descriptor = executor.descriptor();
+        assert_eq!(descriptor.name, "local-seatbelt-v1");
+        assert_eq!(descriptor.isolation, IsolationKind::SandboxedProcess);
+        // Reads and selective network policies are still not all enforced.
+        assert!(!descriptor.enforces_capabilities);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_plan_and_scratch_override_an_untrusted_environment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut spec = RunSpec::process("run", "agent", "/usr/bin/true");
+        {
+            let RunInvocation::Process(invocation) = &mut spec.invocation;
+            invocation.cwd = Some(temporary.path().display().to_string());
+            invocation.inherit_env = false;
+            invocation
+                .env
+                .insert(SANDBOX_PLAN_ENV.into(), r#"{"attestation":"/"}"#.into());
+            invocation.env.insert("TMPDIR".into(), "/".into());
+        }
+
+        let executor =
+            ProcessExecutor::seatbelt_with_launcher(std::env::current_exe().unwrap()).unwrap();
+        let RunInvocation::Process(invocation) = &spec.invocation;
+        let prepared = executor.spawn_command(&spec, invocation).unwrap();
+        let environment = prepared
+            .command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.unwrap().to_string_lossy().into_owned(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let plan: SeatbeltPlan =
+            serde_json::from_str(environment.get(SANDBOX_PLAN_ENV).unwrap()).unwrap();
+        assert_ne!(plan.attestation, PathBuf::from("/"));
+        assert_ne!(environment.get("TMPDIR").map(String::as_str), Some("/"));
+        assert!(prepared.resources.scratch_path().unwrap().is_dir());
     }
 
     #[cfg(target_os = "linux")]

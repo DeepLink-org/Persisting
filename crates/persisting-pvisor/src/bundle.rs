@@ -72,7 +72,14 @@ pub struct SafetySummary {
     pub safe_profile_requested: bool,
     pub host_process: bool,
     pub filesystem_changes_staged: bool,
+    /// Both filesystem reads and writes are confined to declared roots.
     pub filesystem_non_bypassable: bool,
+    /// Filesystem reads outside declared roots are blocked by the executor.
+    #[serde(default)]
+    pub filesystem_read_non_bypassable: bool,
+    /// Filesystem writes outside the staged workspace/capabilities are blocked.
+    #[serde(default)]
+    pub filesystem_write_non_bypassable: bool,
     pub network_non_bypassable: bool,
     #[serde(default)]
     pub warnings: Vec<String>,
@@ -138,6 +145,10 @@ impl RunBundle {
             .executor
             .as_ref()
             .is_some_and(|executor| executor.isolation == IsolationKind::RootlessProcess);
+        let seatbelt_process = record
+            .executor
+            .as_ref()
+            .is_some_and(|executor| executor.isolation == IsolationKind::SandboxedProcess);
         let sandbox_setup_failed = result
             .warnings
             .iter()
@@ -146,13 +157,22 @@ impl RunBundle {
             && !sandbox_setup_failed
             && serde_json::from_value::<NetworkCapability>(record.network.clone())
                 .is_ok_and(|capability| capability == NetworkCapability::Deny);
+        let seatbelt_network_denied = seatbelt_process
+            && !sandbox_setup_failed
+            && serde_json::from_value::<NetworkCapability>(record.network.clone())
+                .is_ok_and(|capability| capability == NetworkCapability::Deny);
         let network_non_bypassable = rootless_network_denied
+            || seatbelt_network_denied
             || record
                 .network_interception
                 .as_ref()
                 .is_some_and(InterceptionProfile::is_enforcing);
-        let filesystem_non_bypassable =
+        let filesystem_read_non_bypassable =
             filesystem.is_some() && rootless_process && !sandbox_setup_failed;
+        let filesystem_write_non_bypassable =
+            filesystem.is_some() && (rootless_process || seatbelt_process) && !sandbox_setup_failed;
+        let filesystem_non_bypassable =
+            filesystem_read_non_bypassable && filesystem_write_non_bypassable;
         let mut safety_warnings = Vec::new();
         if safe_profile_requested {
             if host_process {
@@ -173,9 +193,16 @@ impl RunBundle {
                         .into(),
                 );
             }
+            if seatbelt_process && !sandbox_setup_failed {
+                safety_warnings.push(
+                    "filesystem writes are Seatbelt-enforced; reads, the host PID namespace, syscall surface, and resource limits remain shared"
+                        .into(),
+                );
+            }
             if sandbox_setup_failed {
                 safety_warnings.push(
-                    "the rootless boundary failed before the Agent executable was started".into(),
+                    "the local sandbox boundary failed before the Agent executable was started"
+                        .into(),
                 );
             }
         }
@@ -229,6 +256,8 @@ impl RunBundle {
                 host_process,
                 filesystem_changes_staged,
                 filesystem_non_bypassable,
+                filesystem_read_non_bypassable,
+                filesystem_write_non_bypassable,
                 network_non_bypassable,
                 warnings: safety_warnings,
             },
@@ -380,12 +409,31 @@ mod tests {
             supports_migration: false,
         });
         record.network = serde_json::to_value(NetworkCapability::Deny).unwrap();
-        let denied = RunBundle::capture(&record, &result, abi, true).unwrap();
+        let denied = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
         assert!(denied.safety.network_non_bypassable);
         assert!(denied
             .safety
             .warnings
             .iter()
             .all(|warning| !warning.contains("direct sockets may bypass")));
+
+        record.executor = Some(ExecutorDescriptor {
+            name: "local-seatbelt-v1".into(),
+            kind: persisting_control::ExecutorKind::Process,
+            isolation: IsolationKind::SandboxedProcess,
+            enforces_capabilities: false,
+            supports_checkpoint: false,
+            supports_migration: false,
+        });
+        let seatbelt = RunBundle::capture(&record, &result, abi, true).unwrap();
+        assert!(!seatbelt.safety.filesystem_non_bypassable);
+        assert!(!seatbelt.safety.filesystem_read_non_bypassable);
+        assert!(seatbelt.safety.filesystem_write_non_bypassable);
+        assert!(seatbelt.safety.network_non_bypassable);
+        assert!(seatbelt
+            .safety
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("reads")));
     }
 }

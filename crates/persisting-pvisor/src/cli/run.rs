@@ -36,9 +36,9 @@ pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVi
 
 #[cfg(target_os = "macos")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
-    "Execute one Agent Run; --safe selects macFUSE-backed review mode";
+    "Execute one Agent Run; --safe selects the macOS Seatbelt sandbox";
 #[cfg(target_os = "macos")]
-pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management.\n\nFor a local executable, `--safe` stages workspace writes through macFUSE so they can be reviewed, applied, or dropped. The executable remains a host process; host paths and direct sockets are not sandboxed.";
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management.\n\nFor a local executable, `--safe` stages workspace writes through macFUSE and installs a fail-closed macOS Seatbelt policy before Agent code starts. Writes are limited to the staged workspace, explicit read-write capabilities, and a Run-owned temporary directory. Reads remain ambient for toolchain compatibility.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) const RUN_COMMAND_ABOUT: &str = "Execute one Agent Run under pVisor management";
@@ -53,9 +53,9 @@ const SAFE_LONG_HELP: &str = "Stage workspace writes for review and, with `--exe
 
 #[cfg(target_os = "macos")]
 const SAFE_HELP: &str =
-    "Stage writes through macFUSE for review; local execution remains a host process";
+    "Stage writes and run a local executable in the fail-closed macOS Seatbelt sandbox";
 #[cfg(target_os = "macos")]
-const SAFE_LONG_HELP: &str = "Stage workspace writes through macFUSE so they can be reviewed, applied, or dropped. macOS has no Linux namespace or Landlock boundary, so a local executable remains a host process with ambient host-path and direct-socket access. pVisor records this review-only boundary in the Run Bundle and fails closed if staging cannot be mounted.";
+const SAFE_LONG_HELP: &str = "Stage workspace writes through macFUSE and enforce write confinement with macOS Seatbelt. The generated policy admits only the staged workspace, explicit read-write capabilities, device handles, and a Run-owned temporary directory. Full-disk reads remain ambient. `--overlaynet-deny-all` additionally blocks IP and ambient host Unix sockets while retaining Run-local IPC. Missing or rejected Seatbelt controls fail before Agent execution.";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const SAFE_HELP: &str = "Stage workspace writes for review before apply or drop";
@@ -65,13 +65,15 @@ const SAFE_LONG_HELP: &str = SAFE_HELP;
 #[cfg(target_os = "linux")]
 const EXECUTOR_HELP: &str = "Execution provider. `host` plus `--safe` automatically selects the rootless Linux sandbox; `host` without `--safe` is an ordinary host process";
 #[cfg(target_os = "macos")]
-const EXECUTOR_HELP: &str = "Execution provider. `host` plus `--safe` uses macFUSE staging but remains a review-only host process";
+const EXECUTOR_HELP: &str = "Execution provider. `host` plus `--safe` selects macFUSE staging with macOS Seatbelt write confinement";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const EXECUTOR_HELP: &str = "Execution provider for the Agent command";
 
 #[cfg(target_os = "linux")]
 const DENY_ALL_HELP: &str = "Deny all proxy egress. With `--safe --executor host`, also create a private network namespace so direct sockets cannot bypass the denial";
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+const DENY_ALL_HELP: &str = "Deny all proxy egress. With `--safe --executor host`, Seatbelt also blocks IP and ambient host Unix sockets while retaining Run-local IPC";
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const DENY_ALL_HELP: &str =
     "Deny all forward-proxy egress; direct sockets remain outside this cooperative rule";
 
@@ -713,7 +715,12 @@ async fn execute_config(
             ProcessExecutor::rootless_with_launcher(std::env::current_exe()?)
                 .context("initialize rootless local process executor")?,
         ),
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        RunExecutorKind::Host if safe_profile_requested => Arc::new(
+            ProcessExecutor::seatbelt_with_launcher(std::env::current_exe()?)
+                .context("initialize macOS Seatbelt process executor")?,
+        ),
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         RunExecutorKind::Host if safe_profile_requested => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
@@ -772,11 +779,15 @@ async fn execute_config(
     }
 
     if safe_profile_requested {
-        let network_boundary = if cfg!(target_os = "linux")
+        let network_boundary = if cfg!(any(target_os = "linux", target_os = "macos"))
             && config.run.executor == RunExecutorKind::Host
             && config.overlaynet.policy == OverlayNetPolicy::Deny
         {
-            "private deny-all network namespace"
+            if cfg!(target_os = "linux") {
+                "private deny-all network namespace"
+            } else {
+                "Seatbelt deny-all socket policy"
+            }
         } else {
             "cooperative network review"
         };
@@ -789,10 +800,12 @@ async fn execute_config(
                 eprintln!(
                     "boundary: rootless namespace + synthetic root + Landlock filesystem; network remains cooperative unless explicitly denied"
                 );
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
                 eprintln!(
-                    "boundary: review-only host process; host paths and direct sockets remain ambient"
+                    "boundary: Seatbelt-enforced staged writes; reads and selective network policies remain ambient/cooperative"
                 );
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                eprintln!("boundary: review-only host process");
             }
             RunExecutorKind::Container => eprintln!(
                 "boundary: OCI container process; direct sockets remain outside proxy enforcement"
@@ -1645,9 +1658,13 @@ mod tests {
         assert!(help.contains("--overlaynet-deny"));
         assert!(help.contains("--overlaynet-limit"));
         assert!(help.contains("--overlaynet-deny-all"));
-        assert!(help.to_ascii_lowercase().contains("direct sockets"));
         #[cfg(target_os = "linux")]
-        assert!(help.contains("private network namespace"));
+        {
+            assert!(help.to_ascii_lowercase().contains("direct sockets"));
+            assert!(help.contains("private network namespace"));
+        }
+        #[cfg(target_os = "macos")]
+        assert!(help.contains("ambient host Unix sockets"));
         assert!(!help.contains("requires --workspace"));
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
@@ -1669,8 +1686,9 @@ mod tests {
         #[cfg(target_os = "macos")]
         {
             assert!(help.contains("macFUSE"));
-            assert!(help.contains("review-only host process"));
-            assert!(help.contains("ambient host-path"));
+            assert!(help.contains("Seatbelt"));
+            assert!(help.contains("Full-disk reads remain ambient"));
+            assert!(help.contains("fail before Agent execution"));
         }
     }
 

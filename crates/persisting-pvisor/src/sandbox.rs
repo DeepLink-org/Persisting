@@ -1,12 +1,14 @@
-//! Linux rootless launcher used by the local process executor.
+//! Platform sandbox launchers used by the local process executor.
 //!
-//! The launcher is a hidden self-exec mode of the `pvisor` binary.  Keeping
-//! namespace and Landlock setup before the Tokio runtime starts avoids doing
-//! allocation-heavy work in a post-fork `pre_exec` closure.
+//! The launcher is a hidden self-exec mode of the `pvisor` binary. On Linux it
+//! installs namespaces and Landlock before Agent code starts. On macOS it is
+//! entered only after `/usr/bin/sandbox-exec` has installed a generated
+//! Seatbelt profile and records an attestation before replacing itself with
+//! the Agent.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 
 pub(crate) const INTERNAL_SANDBOX_ARG: &str = "__pvisor-sandbox-exec";
@@ -15,6 +17,11 @@ pub(crate) const SANDBOX_PLAN_ENV: &str = "PERSISTING_INTERNAL_SANDBOX_PLAN";
 #[doc(hidden)]
 pub const SANDBOX_SETUP_EXIT_CODE: i32 = 125;
 pub(crate) const SANDBOX_SETUP_FAILED_WARNING: &str = "pvisor.sandbox.setup_failed";
+
+#[cfg(target_os = "macos")]
+pub(crate) const MACOS_SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+#[cfg(target_os = "macos")]
+pub(crate) const SEATBELT_ATTESTATION: &[u8] = b"pvisor-seatbelt-ready-v1\n";
 
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_EXECUTE: u64 = 1 << 0;
@@ -39,6 +46,13 @@ pub(crate) struct SandboxPlan {
     pub cwd: PathBuf,
     pub read_only: Vec<PathBuf>,
     pub read_write: Vec<PathBuf>,
+    pub deny_network: bool,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SeatbeltPlan {
+    pub attestation: PathBuf,
     pub deny_network: bool,
 }
 
@@ -88,6 +102,63 @@ fn run_internal() -> anyhow::Result<()> {
     std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "landlock");
     std::env::set_var("PERSISTING_SANDBOX_LANDLOCK_ABI", landlock_abi.to_string());
     std::env::set_var("PERSISTING_SANDBOX_USER_NAMESPACE", "1");
+    std::env::set_var(
+        "PERSISTING_SANDBOX_NETWORK",
+        if plan.deny_network { "deny" } else { "ambient" },
+    );
+
+    Err(std::process::Command::new(program)
+        .args(arguments)
+        .exec()
+        .into())
+}
+
+#[cfg(target_os = "macos")]
+fn run_internal() -> anyhow::Result<()> {
+    use anyhow::{bail, Context};
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+
+    let encoded = std::env::var(SANDBOX_PLAN_ENV).context("missing Seatbelt sandbox plan")?;
+    let plan: SeatbeltPlan =
+        serde_json::from_str(&encoded).context("decode Seatbelt sandbox plan")?;
+    let mut arguments = std::env::args_os().skip(2);
+    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
+        bail!("invalid internal Seatbelt sandbox invocation");
+    }
+    let program = arguments
+        .next()
+        .context("Seatbelt sandbox invocation is missing the Agent executable")?;
+    let arguments = arguments.collect::<Vec<_>>();
+
+    // The parent keeps the already-open inode and checks these bytes after the
+    // process exits. Unlinking before Agent execution keeps the random path and
+    // its narrow write grant out of the Agent-visible filesystem namespace.
+    let mut attestation = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&plan.attestation)
+        .with_context(|| {
+            format!(
+                "open Seatbelt setup attestation {}",
+                plan.attestation.display()
+            )
+        })?;
+    attestation
+        .write_all(SEATBELT_ATTESTATION)
+        .context("write Seatbelt setup attestation")?;
+    attestation
+        .sync_data()
+        .context("sync Seatbelt setup attestation")?;
+    drop(attestation);
+    std::fs::remove_file(&plan.attestation).with_context(|| {
+        format!(
+            "unlink Seatbelt setup attestation {}",
+            plan.attestation.display()
+        )
+    })?;
+
+    std::env::remove_var(SANDBOX_PLAN_ENV);
+    std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "seatbelt-write");
     std::env::set_var(
         "PERSISTING_SANDBOX_NETWORK",
         if plan.deny_network { "deny" } else { "ambient" },
@@ -249,9 +320,167 @@ impl Drop for OwnedFd {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn run_internal() -> anyhow::Result<()> {
-    anyhow::bail!("the rootless local sandbox is only available on Linux")
+    anyhow::bail!("the local process sandbox is not available on this platform")
+}
+
+/// Generate a compatibility-oriented Seatbelt profile.
+///
+/// Reads remain ambient so ordinary developer toolchains keep working. Every
+/// pathname write outside `writable_paths` is denied by Seatbelt. A deny-all
+/// network Run instead starts from `deny default` and admits only the exact
+/// Run-scoped Unix sockets plus sockets rooted in Run-owned directories.
+#[cfg(target_os = "macos")]
+pub(crate) fn seatbelt_profile(
+    writable_paths: &[PathBuf],
+    allowed_unix_sockets: &[PathBuf],
+    local_socket_roots: &[PathBuf],
+    deny_network: bool,
+) -> std::io::Result<(String, Vec<(String, PathBuf)>)> {
+    use std::io::{Error, ErrorKind};
+
+    let writable_paths = canonical_seatbelt_paths(writable_paths, "writable")?;
+    if writable_paths.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "Seatbelt requires at least one writable path",
+        ));
+    }
+    if writable_paths
+        .iter()
+        .any(|path| path == std::path::Path::new("/"))
+    {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "the host root cannot be granted as a Seatbelt writable path",
+        ));
+    }
+    let mut parameters = Vec::with_capacity(writable_paths.len());
+    for (index, path) in writable_paths.iter().enumerate() {
+        let key = format!("PVISOR_WRITABLE_{index}");
+        parameters.push((key, path.clone()));
+    }
+
+    if deny_network {
+        let allowed_unix_sockets = canonical_seatbelt_paths(allowed_unix_sockets, "Unix socket")?;
+        let local_socket_roots = canonical_seatbelt_paths(local_socket_roots, "local socket root")?;
+        parameters.reserve(allowed_unix_sockets.len() + local_socket_roots.len());
+        for (index, path) in allowed_unix_sockets.iter().enumerate() {
+            parameters.push((format!("PVISOR_UNIX_SOCKET_{index}"), path.clone()));
+        }
+        for (index, path) in local_socket_roots.iter().enumerate() {
+            parameters.push((format!("PVISOR_SOCKET_ROOT_{index}"), path.clone()));
+        }
+
+        // Deny by default for a genuine no-network Run. The allowlist below is
+        // intentionally small and mirrors the system services required by
+        // shells, language runtimes, PTYs, and read-only preferences. Socket
+        // operations are admitted only so the filtered denies below can retain
+        // Run-local Unix IPC while rejecting IP and ambient host Unix sockets.
+        let mut profile = String::from(
+            "(version 1)\n\
+             (deny default)\n\
+             (allow process-exec)\n\
+             (allow process-fork)\n\
+             (allow signal (target same-sandbox))\n\
+             (allow process-info* (target same-sandbox))\n\
+             (allow file-read* file-test-existence file-map-executable)\n\
+             (allow sysctl-read)\n\
+             (allow system-mac-syscall (mac-policy-name \"vnguard\"))\n\
+             (allow system-mac-syscall\n\
+               (require-all (mac-policy-name \"Sandbox\") (mac-syscall-number 67)))\n\
+             (allow system-fsctl)\n\
+             (allow iokit-open (iokit-registry-entry-class \"RootDomainUserClient\"))\n\
+             (allow ipc-posix-sem)\n\
+             (allow ipc-posix-shm-read*)\n\
+             (allow pseudo-tty)\n\
+             (allow user-preference-read)\n\
+             (allow mach-lookup\n\
+               (global-name \"com.apple.system.opendirectoryd.libinfo\")\n\
+               (global-name \"com.apple.system.opendirectoryd.membership\")\n\
+               (global-name \"com.apple.cfprefsd.daemon\")\n\
+               (global-name \"com.apple.cfprefsd.agent\")\n\
+               (local-name \"com.apple.cfprefsd.agent\")\n\
+               (global-name \"com.apple.PowerManagement.control\"))\n\
+             (allow file-ioctl (regex #\"^/dev/ttys[0-9]+$\"))\n\
+             (allow system-socket (socket-domain AF_UNIX))\n\
+             (allow network*)\n\
+             (deny network-bind (local ip))\n\
+             (deny network-inbound (local ip))\n\
+             (deny network-outbound (remote ip))\n",
+        );
+        profile.push_str("(allow file-write*\n");
+        for index in 0..writable_paths.len() {
+            profile.push_str(&format!(
+                "  (literal (param \"PVISOR_WRITABLE_{index}\"))\n\
+                 (subpath (param \"PVISOR_WRITABLE_{index}\"))\n"
+            ));
+        }
+        profile.push_str(")\n");
+        profile.push_str("(deny network-outbound\n  (require-all\n    (remote unix-socket)\n");
+        for index in 0..allowed_unix_sockets.len() {
+            profile.push_str(&format!(
+                "    (require-not (remote unix-socket\n\
+                       (literal (param \"PVISOR_UNIX_SOCKET_{index}\"))))\n"
+            ));
+        }
+        for index in 0..local_socket_roots.len() {
+            profile.push_str(&format!(
+                "    (require-not (remote unix-socket\n\
+                       (subpath (param \"PVISOR_SOCKET_ROOT_{index}\"))))\n"
+            ));
+        }
+        profile.push_str("  )\n)\n");
+        return Ok((profile, parameters));
+    }
+
+    // Starting from `allow default` preserves compatibility with local macOS
+    // toolchains. The filtered deny is fail-closed for writes: it matches only
+    // when a target is neither an exact writable root nor beneath one.
+    let mut profile = String::from(
+        "(version 1)\n\
+         (allow default)\n\
+         (deny file-write*\n\
+           (require-all\n",
+    );
+    for index in 0..writable_paths.len() {
+        profile.push_str(&format!(
+            "    (require-not (literal (param \"PVISOR_WRITABLE_{index}\")))\n\
+             (require-not (subpath (param \"PVISOR_WRITABLE_{index}\")))\n"
+        ));
+    }
+    profile.push_str("  )\n)\n");
+    Ok((profile, parameters))
+}
+
+#[cfg(target_os = "macos")]
+fn canonical_seatbelt_paths(paths: &[PathBuf], kind: &str) -> std::io::Result<Vec<PathBuf>> {
+    use std::io::{Error, ErrorKind};
+
+    let mut canonical = paths
+        .iter()
+        .map(|path| {
+            path.canonicalize().map_err(|error| {
+                Error::new(
+                    error.kind(),
+                    format!(
+                        "canonicalize Seatbelt {kind} path {}: {error}",
+                        path.display()
+                    ),
+                )
+            })
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    canonical.sort_unstable();
+    canonical.dedup();
+    if canonical.iter().any(|path| path.to_str().is_none()) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("Seatbelt {kind} paths must be valid UTF-8"),
+        ));
+    }
+    Ok(canonical)
 }
 
 #[cfg(target_os = "linux")]
@@ -499,4 +728,28 @@ fn close_unexpected_file_descriptors() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seatbelt_profile_uses_parameters_and_rejects_a_writable_host_root() {
+        let temporary = tempfile::Builder::new()
+            .prefix("pvisor-\")-(deny-default-")
+            .tempdir()
+            .unwrap();
+        let canonical = temporary.path().canonicalize().unwrap();
+        let (profile, parameters) =
+            seatbelt_profile(&[temporary.path().to_owned()], &[], &[], true).unwrap();
+
+        assert!(!profile.contains(canonical.to_str().unwrap()));
+        assert_eq!(parameters, [("PVISOR_WRITABLE_0".into(), canonical)]);
+        assert!(profile.contains("(deny default)"));
+        assert!(!profile.contains("(allow network-outbound"));
+
+        let error = seatbelt_profile(&[PathBuf::from("/")], &[], &[], false).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
 }
