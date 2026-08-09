@@ -12,6 +12,17 @@ and its matched CLI component set:
 - Python 3.10+
 - Pulsing, installed automatically as a dependency
 - macOS or Linux for the CLI
+- macOS: macFUSE 5 for `pvisor run --safe` staged workspaces
+
+Install the macOS filesystem runtime once before the first safe Run:
+
+```bash
+brew install --cask macfuse
+```
+
+On Apple Silicon, enable the macFUSE system extension when macOS prompts for
+approval. Plain non-staged host Runs remain available without macFUSE, but
+`--safe` fails closed rather than writing directly to the project workspace.
 
 ## Python package
 

@@ -7,24 +7,39 @@ license.workspace = true
 description = "pChronicle: Persisting's structured storage layer for Agent trajectories"
 readme = "README.md"
 
+[features]
+default = ["lance-store"]
+lance-store = [
+    "dep:datafusion",
+    "dep:futures",
+    "dep:lance",
+    "dep:lance-core",
+    "dep:lance-file",
+    "dep:lance-datafusion",
+    "dep:lance-index",
+    "dep:lance-linalg",
+    "dep:lance-table",
+    "dep:object_store",
+]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 blake3.workspace = true
 chrono.workspace = true
-datafusion = { workspace = true, features = ["sql"] }
-futures.workspace = true
+datafusion = { workspace = true, features = ["sql"], optional = true }
+futures = { workspace = true, optional = true }
 fs2.workspace = true
-lance.workspace = true
-lance-core.workspace = true
-lance-file.workspace = true
+lance = { workspace = true, optional = true }
+lance-core = { workspace = true, optional = true }
+lance-file = { workspace = true, optional = true }
 # Lance 9.0.1 does not forward `lance/protoc` to lance-datafusion.
-lance-datafusion.workspace = true
-lance-index.workspace = true
-lance-linalg.workspace = true
-lance-table.workspace = true
-object_store.workspace = true
+lance-datafusion = { workspace = true, optional = true }
+lance-index = { workspace = true, optional = true }
+lance-linalg = { workspace = true, optional = true }
+lance-table = { workspace = true, optional = true }
+object_store = { workspace = true, optional = true }
 persisting-control.workspace = true
 ron.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }

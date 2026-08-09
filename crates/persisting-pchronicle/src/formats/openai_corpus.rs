@@ -648,6 +648,7 @@ fn validate_version(metadata: &Map<String, Value>, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "lance-store")]
     use crate::StorylineLanceStore;
 
     fn corpus() -> Value {
@@ -733,6 +734,7 @@ mod tests {
         assert!(error.to_string().contains("unsafe"));
     }
 
+    #[cfg(feature = "lance-store")]
     #[tokio::test]
     async fn corpus_import_and_recovery_roundtrip_through_lance() {
         let input = corpus();

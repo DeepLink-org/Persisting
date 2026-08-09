@@ -1,10 +1,12 @@
 //! Durable, versioned summary of one pVisor Run.
 
 use crate::runtime::{overlay_status, OverlayState, RunLineage, RunRecord};
+use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::util::{atomic_write, sync_directory};
 use crate::{unix_now_ms, AgentAbiSnapshot};
 use persisting_control::{
-    ArtifactRef, ExecutorDescriptor, IsolationKind, ProcessOutput, RunFailure, RunResult, RunState,
+    ArtifactRef, ExecutorDescriptor, IsolationKind, NetworkCapability, ProcessOutput, RunFailure,
+    RunResult, RunState,
 };
 use persisting_overlaynet::{InterceptionProfile, InterceptionSnapshot};
 use serde::{Deserialize, Serialize};
@@ -128,14 +130,29 @@ impl RunBundle {
         let filesystem_changes_staged = filesystem
             .as_ref()
             .is_some_and(|fs| fs.state == OverlayState::Staged);
-        let network_non_bypassable = record
-            .network_interception
-            .as_ref()
-            .is_some_and(InterceptionProfile::is_enforcing);
         let host_process = record
             .executor
             .as_ref()
             .is_none_or(|executor| executor.isolation == IsolationKind::HostProcess);
+        let rootless_process = record
+            .executor
+            .as_ref()
+            .is_some_and(|executor| executor.isolation == IsolationKind::RootlessProcess);
+        let sandbox_setup_failed = result
+            .warnings
+            .iter()
+            .any(|warning| warning == SANDBOX_SETUP_FAILED_WARNING);
+        let rootless_network_denied = rootless_process
+            && !sandbox_setup_failed
+            && serde_json::from_value::<NetworkCapability>(record.network.clone())
+                .is_ok_and(|capability| capability == NetworkCapability::Deny);
+        let network_non_bypassable = rootless_network_denied
+            || record
+                .network_interception
+                .as_ref()
+                .is_some_and(InterceptionProfile::is_enforcing);
+        let filesystem_non_bypassable =
+            filesystem.is_some() && rootless_process && !sandbox_setup_failed;
         let mut safety_warnings = Vec::new();
         if safe_profile_requested {
             if host_process {
@@ -148,6 +165,17 @@ impl RunBundle {
                 safety_warnings.push(
                     "network policy covers cooperative proxy traffic; direct sockets may bypass it"
                         .into(),
+                );
+            }
+            if rootless_process && !sandbox_setup_failed {
+                safety_warnings.push(
+                    "filesystem access is kernel-enforced; the host PID namespace, syscall surface, and resource limits remain shared"
+                        .into(),
+                );
+            }
+            if sandbox_setup_failed {
+                safety_warnings.push(
+                    "the rootless boundary failed before the Agent executable was started".into(),
                 );
             }
         }
@@ -200,7 +228,7 @@ impl RunBundle {
                 safe_profile_requested,
                 host_process,
                 filesystem_changes_staged,
-                filesystem_non_bypassable: false,
+                filesystem_non_bypassable,
                 network_non_bypassable,
                 warnings: safety_warnings,
             },
@@ -264,7 +292,7 @@ mod tests {
         let upper = temp.path().join("upper");
         fs::create_dir(&upper).unwrap();
         fs::write(upper.join("changed.txt"), b"changed").unwrap();
-        let record = RunRecord {
+        let mut record = RunRecord {
             schema_version: 1,
             run_id: "run-1".into(),
             parent_run_id: Some("job-1".into()),
@@ -330,7 +358,7 @@ mod tests {
             processes: vec![],
             effects: vec![],
         };
-        let bundle = RunBundle::capture(&record, &result, abi, true).unwrap();
+        let bundle = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
         let path = bundle.write(temp.path()).unwrap();
         assert_eq!(RunBundle::read(temp.path()).unwrap().run.run_id, "run-1");
         assert_eq!(
@@ -342,5 +370,22 @@ mod tests {
         assert_eq!(bundle.run.parent_run_id.as_deref(), Some("job-1"));
         assert_eq!(bundle.run.task_id.as_deref(), Some("task-1"));
         assert_eq!(bundle.orchestration["ppilot.job_id"], "job-1");
+
+        record.executor = Some(ExecutorDescriptor {
+            name: "local-rootless-v1".into(),
+            kind: persisting_control::ExecutorKind::Process,
+            isolation: IsolationKind::RootlessProcess,
+            enforces_capabilities: false,
+            supports_checkpoint: false,
+            supports_migration: false,
+        });
+        record.network = serde_json::to_value(NetworkCapability::Deny).unwrap();
+        let denied = RunBundle::capture(&record, &result, abi, true).unwrap();
+        assert!(denied.safety.network_non_bypassable);
+        assert!(denied
+            .safety
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("direct sockets may bypass")));
     }
 }

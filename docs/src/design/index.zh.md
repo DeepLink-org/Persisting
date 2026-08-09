@@ -7,7 +7,7 @@
 
 | 子系统 | 先读 | 再读 |
 |---|---|---|
-| pVisor | [Agent 基础设施](agent-infrastructure.md) | 独立 `pvisor` CLI → [Gateway 驱动](gateway.md) |
+| pVisor | [Agent 基础设施](agent-infrastructure.md) | [隔离后端](pvisor-isolation.md) → 独立 `pvisor` CLI → [Gateway 驱动](gateway.md) |
 | pChronicle | [Agent 基础设施](agent-infrastructure.md) | [轨迹存储](trajectory.md) → [Storyline 三表 Lance](storyline-lance.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
 | pPilot | [pPilot 控制面](ppilot.md) | 独立 `ppilot` CLI → Run 编排与 pChronicle SQL 分析 |
 | Queue | [队列持久化](architecture.zh.md) | [自定义后端指南](../guide/custom-backends.md) |
@@ -21,6 +21,7 @@
 |---|---|---|
 | pVisor、pPilot、pChronicle | 已实现 | 并列的 Agent 执行、编排与历史组件 |
 | Gateway、OverlayNet、OverlayFS | 已实现 | pVisor 运行时驱动；Gateway 提供 capture 语义 |
+| pVisor 强制隔离 | 已实现 / 部分完成 | Linux 本地默认路径已有 FUSE + 最小 synthetic root + rootless namespace + Landlock；Docker/QEMU transport 已有，seccomp、资源控制、LiteBox VFS 与 Firecracker 仍在[隔离路线图](pvisor-isolation.md)中 |
 | TTAS / 分层张量内存 | 实验性 | 已有 host/SSD 工作；GPU 与跨节点数据路径仍在规划 |
 | 竞品与系统比较 | 参考 | 为后续设计提供输入，不构成产品承诺 |
 

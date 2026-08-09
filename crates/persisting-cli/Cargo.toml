@@ -21,7 +21,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 dirs.workspace = true
 persisting-gateway.workspace = true
 persisting-dlcapt = { path = "../persisting-dlcapt", optional = true }
-persisting-pchronicle.workspace = true
+persisting-pchronicle = { workspace = true, features = ["lance-store"] }
 ron.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

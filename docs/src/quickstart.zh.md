@@ -3,6 +3,12 @@
 五分钟走完一条主链路：装 CLI → 安全地跑一个 Agent → 批量编排 → 用 SQL 查轨迹。
 假设你有 macOS 或 Linux。
 
+macOS 使用 staged `--safe` Run 前需安装一次 macFUSE：
+
+```bash
+brew install --cask macfuse
+```
+
 ## 1. 安装 CLI
 
 ```bash
@@ -23,9 +29,12 @@ pvisor run --safe codex
 
 `--safe` 把当前目录作为可复用 workspace 和 OverlayFS base，Agent 的修改写入每个 Run
 独立的 stage，同时启用显式网络代理；结束后 Run 和 `run-bundle.json` 保存在
-`PERSISTING_RUN_HOME`。默认 host executor 的隔离是
-进程级的——它不阻止 Agent 访问项目目录外的宿主路径，代理也可以被直接 socket 绕过，
-这些边界都会如实记录在 bundle 里。
+`PERSISTING_RUN_HOME`。Linux 默认 host executor 会进入无特权 user/mount namespace，
+构造只投影必要路径的最小 root 并进入 `chroot`，再用 Landlock 把整个 Agent 进程树约束到
+staged workspace、只读运行时和显式授权路径；未投影的宿主文件和 Unix socket 不可见，
+不需要 root helper，内核能力不足时会 fail closed。默认 public proxy 仍是协作式边界；
+需要彻底断网时使用 `--overlaynet-deny-all`，它会额外创建私有 network namespace。
+macOS 因没有 Landlock，仍提供 review-only 路径。bundle 会如实记录这些有效边界。
 
 ```bash
 pvisor review last     # 查看 bundle：文件变更、网络拦截、安全警告

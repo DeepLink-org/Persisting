@@ -28,6 +28,53 @@ use crate::{
 
 use super::trajectory::{chronicle_sink, ChronicleWriter};
 
+#[cfg(target_os = "linux")]
+pub(super) const RUN_COMMAND_ABOUT: &str =
+    "Execute one Agent Run; --safe selects the rootless Linux sandbox";
+#[cfg(target_os = "linux")]
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management.\n\nFor a local executable, `--safe` stages workspace writes and automatically enforces the Linux rootless boundary. No root daemon, setuid helper, container image, or sandbox policy file is required. The command fails closed if a required namespace, mount, chroot, or Landlock control cannot be installed.";
+
+#[cfg(target_os = "macos")]
+pub(super) const RUN_COMMAND_ABOUT: &str =
+    "Execute one Agent Run; --safe selects macFUSE-backed review mode";
+#[cfg(target_os = "macos")]
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = "Execute one Agent Run under pVisor management.\n\nFor a local executable, `--safe` stages workspace writes through macFUSE so they can be reviewed, applied, or dropped. The executable remains a host process; host paths and direct sockets are not sandboxed.";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) const RUN_COMMAND_ABOUT: &str = "Execute one Agent Run under pVisor management";
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) const RUN_COMMAND_LONG_ABOUT: &str = RUN_COMMAND_ABOUT;
+
+#[cfg(target_os = "linux")]
+const SAFE_HELP: &str =
+    "Stage writes and run a host executable in the fail-closed Linux rootless sandbox";
+#[cfg(target_os = "linux")]
+const SAFE_LONG_HELP: &str = "Stage workspace writes for review and, with `--executor host`, enforce a rootless Linux boundary using user and mount namespaces, a minimal synthetic root with chroot, Landlock ABI v3, no_new_privs, closed inherited file descriptors, and an empty capability set. Public or allowlisted networking remains cooperative; `--overlaynet-deny-all` adds a private network namespace.";
+
+#[cfg(target_os = "macos")]
+const SAFE_HELP: &str =
+    "Stage writes through macFUSE for review; local execution remains a host process";
+#[cfg(target_os = "macos")]
+const SAFE_LONG_HELP: &str = "Stage workspace writes through macFUSE so they can be reviewed, applied, or dropped. macOS has no Linux namespace or Landlock boundary, so a local executable remains a host process with ambient host-path and direct-socket access. pVisor records this review-only boundary in the Run Bundle and fails closed if staging cannot be mounted.";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const SAFE_HELP: &str = "Stage workspace writes for review before apply or drop";
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const SAFE_LONG_HELP: &str = SAFE_HELP;
+
+#[cfg(target_os = "linux")]
+const EXECUTOR_HELP: &str = "Execution provider. `host` plus `--safe` automatically selects the rootless Linux sandbox; `host` without `--safe` is an ordinary host process";
+#[cfg(target_os = "macos")]
+const EXECUTOR_HELP: &str = "Execution provider. `host` plus `--safe` uses macFUSE staging but remains a review-only host process";
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const EXECUTOR_HELP: &str = "Execution provider for the Agent command";
+
+#[cfg(target_os = "linux")]
+const DENY_ALL_HELP: &str = "Deny all proxy egress. With `--safe --executor host`, also create a private network namespace so direct sockets cannot bypass the denial";
+#[cfg(not(target_os = "linux"))]
+const DENY_ALL_HELP: &str =
+    "Deny all forward-proxy egress; direct sockets remain outside this cooperative rule";
+
 #[derive(Debug, Clone, Args)]
 pub struct RunArgs {
     /// Optional complete pVisor Run configuration; explicit CLI values replace matching fields.
@@ -42,8 +89,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE", requires = "run_spec")]
     result_file: Option<PathBuf>,
 
-    /// Stage workspace changes and enable best-available low-privilege network review controls.
-    #[arg(long)]
+    #[arg(long, help = SAFE_HELP, long_help = SAFE_LONG_HELP)]
     safe: bool,
 
     #[command(flatten, next_help_heading = "Run options")]
@@ -90,8 +136,7 @@ struct RunOverrides {
     workspace: Option<PathBuf>,
     #[arg(long)]
     agent: Option<String>,
-    /// Execution provider for the Agent command.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = EXECUTOR_HELP)]
     executor: Option<RunExecutorKind>,
     #[arg(long)]
     timeout_ms: Option<u64>,
@@ -222,10 +267,9 @@ struct OverlayNetOverrides {
     /// Aggregate bandwidth limit; enables the cooperative proxy.
     #[arg(long, value_name = "[TARGET=]RATE")]
     overlaynet_limit: Vec<OverlayNetLimitArg>,
-    /// Deny all forward-proxy egress and enable OverlayNet.
-    /// Direct sockets and local Gateway routes remain outside this rule.
     #[arg(
         long,
+        help = DENY_ALL_HELP,
         conflicts_with_all = [
             "overlaynet_allow",
             "overlaynet_deny",
@@ -481,7 +525,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     )
     .context("decode delegated RunSpec")?;
     let pvisor = PVisor::builder()
-        .executors(vec![Arc::new(ProcessExecutor)])
+        .executors(vec![Arc::new(ProcessExecutor::default())])
         .build();
     let handle = pvisor.run(spec).await?;
     let agent_abi = handle.agent_abi();
@@ -658,13 +702,20 @@ async fn execute_config(
         ),
         ChronicleMode::Lance => {
             let dir = chronicle_dir.context("pChronicle requires a storage location")?;
-            let (sink, event_sink, writer) = chronicle_sink(&dir, &config.run.agent, &run_id);
+            let (sink, event_sink, writer) = chronicle_sink(&dir, &config.run.agent, &run_id)?;
             (sink, event_sink, Some(writer))
         }
     };
 
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
-        RunExecutorKind::Host => Arc::new(ProcessExecutor),
+        #[cfg(target_os = "linux")]
+        RunExecutorKind::Host if safe_profile_requested => Arc::new(
+            ProcessExecutor::rootless_with_launcher(std::env::current_exe()?)
+                .context("initialize rootless local process executor")?,
+        ),
+        #[cfg(not(target_os = "linux"))]
+        RunExecutorKind::Host if safe_profile_requested => Arc::new(ProcessExecutor::default()),
+        RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Kvm => Arc::new(KvmExecutor::new(config.kvm.clone())?),
     };
@@ -721,19 +772,34 @@ async fn execute_config(
     }
 
     if safe_profile_requested {
-        eprintln!("pVisor safe profile: staged workspace + cooperative network review");
+        let network_boundary = if cfg!(target_os = "linux")
+            && config.run.executor == RunExecutorKind::Host
+            && config.overlaynet.policy == OverlayNetPolicy::Deny
+        {
+            "private deny-all network namespace"
+        } else {
+            "cooperative network review"
+        };
+        eprintln!("pVisor safe profile: staged workspace + {network_boundary}");
         eprintln!("workspace: {}", workspace.display());
         eprintln!("Run storage: {}", storage.display());
         match config.run.executor {
-            RunExecutorKind::Host => eprintln!(
-                "boundary: host process and direct sockets remain outside non-bypassable enforcement"
-            ),
+            RunExecutorKind::Host => {
+                #[cfg(target_os = "linux")]
+                eprintln!(
+                    "boundary: rootless namespace + synthetic root + Landlock filesystem; network remains cooperative unless explicitly denied"
+                );
+                #[cfg(not(target_os = "linux"))]
+                eprintln!(
+                    "boundary: review-only host process; host paths and direct sockets remain ambient"
+                );
+            }
             RunExecutorKind::Container => eprintln!(
                 "boundary: OCI container process; direct sockets remain outside proxy enforcement"
             ),
-            RunExecutorKind::Kvm => eprintln!(
-                "boundary: KVM virtual machine; host Gateway integration is disabled"
-            ),
+            RunExecutorKind::Kvm => {
+                eprintln!("boundary: KVM virtual machine; host Gateway integration is disabled")
+            }
         }
     }
     let handle = pvisor.run(spec).await?;
@@ -1580,9 +1646,32 @@ mod tests {
         assert!(help.contains("--overlaynet-limit"));
         assert!(help.contains("--overlaynet-deny-all"));
         assert!(help.to_ascii_lowercase().contains("direct sockets"));
+        #[cfg(target_os = "linux")]
+        assert!(help.contains("private network namespace"));
         assert!(!help.contains("requires --workspace"));
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
+    }
+
+    #[test]
+    fn safe_help_describes_the_effective_platform_boundary() {
+        let help = Cli::try_parse_from(["pvisor", "run", "--help"])
+            .unwrap_err()
+            .to_string();
+
+        #[cfg(target_os = "linux")]
+        {
+            assert!(help.contains("rootless Linux sandbox"));
+            assert!(help.contains("synthetic root"));
+            assert!(help.contains("Landlock ABI v3"));
+            assert!(help.contains("fails closed"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(help.contains("macFUSE"));
+            assert!(help.contains("review-only host process"));
+            assert!(help.contains("ambient host-path"));
+        }
     }
 
     #[test]

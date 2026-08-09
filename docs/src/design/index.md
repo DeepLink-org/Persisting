@@ -8,7 +8,7 @@ for supported workflows.
 
 | Subsystem | Start here | Then read |
 |---|---|---|
-| pVisor | [Agent infrastructure](agent-infrastructure.md) | standalone `pvisor` CLI → [Gateway driver](gateway.md) → [OverlayNet interception](overlaynet.md) |
+| pVisor | [Agent infrastructure](agent-infrastructure.md) | [Isolation backends](pvisor-isolation.md) → standalone `pvisor` CLI → [Gateway driver](gateway.md) → [OverlayNet interception](overlaynet.md) |
 | pChronicle | [Agent infrastructure](agent-infrastructure.md) | [Trajectory storage](trajectory.md) → [Storyline 三表 Lance](storyline-lance.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
 | pPilot | [pPilot control plane](ppilot.md) | standalone `ppilot` CLI → run orchestration and pChronicle SQL analysis |
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
@@ -22,6 +22,7 @@ for supported workflows.
 |---|---|---|
 | pVisor, pPilot, pChronicle | Implemented | Peer Agent execution, orchestration, and history components |
 | Gateway, OverlayNet, OverlayFS | Implemented | pVisor runtime drivers; Gateway supplies capture semantics |
+| pVisor enforced isolation | Implemented / partial | Linux FUSE + synthetic root + rootless namespaces + Landlock is the local default; Docker/QEMU transports exist; seccomp, resource controls, LiteBox VFS, and Firecracker remain on the [isolation roadmap](pvisor-isolation.md) |
 | OverlayNet transparent interception | Planned | Linux netns / seccomp drivers; see [design](overlaynet.md) |
 | TTAS / tiered tensor memory | Experimental | Host/SSD work exists; GPU and cross-node data paths remain planned |
 | Research comparisons | Reference | Input to future design, not a product commitment |

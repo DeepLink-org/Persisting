@@ -11,6 +11,17 @@ Persisting 通过 Python wheel 发布，wheel 同时包含 Python 包和版本�
 - Python 3.10+
 - Pulsing（作为依赖自动安装）
 - CLI 需要 macOS 或 Linux
+- macOS：`pvisor run --safe` 的 staged workspace 需要 macFUSE 5
+
+首次执行 safe Run 前安装一次 macOS 文件系统运行时：
+
+```bash
+brew install --cask macfuse
+```
+
+Apple Silicon 需要在 macOS 提示时允许 macFUSE system extension。普通非 staged 的
+host Run 不依赖 macFUSE；`--safe` 在挂载能力不可用时会 fail closed，不会退化为直接
+写项目目录。
 
 ## Python 包
 

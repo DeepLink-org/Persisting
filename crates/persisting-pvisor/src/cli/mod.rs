@@ -8,11 +8,29 @@ mod trajectory;
 
 use clap::{Parser, Subcommand};
 
+#[cfg(target_os = "linux")]
+const ROOT_ABOUT: &str =
+    "Foreground Agent Run manager with rootless Linux sandboxing and reviewable workspaces";
+#[cfg(target_os = "linux")]
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn Linux, `pvisor run --safe` automatically runs host executables inside a fail-closed rootless boundary: user and mount namespaces, a minimal synthetic root with chroot, Landlock, no_new_privs, and dropped capabilities. Add `--overlaynet-deny-all` to isolate direct network sockets in a private network namespace.";
+
+#[cfg(target_os = "macos")]
+const ROOT_ABOUT: &str = "Foreground Agent Run manager with macFUSE-staged reviewable workspaces";
+#[cfg(target_os = "macos")]
+const ROOT_LONG_ABOUT: &str = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.\n\nOn macOS, `pvisor run --safe` stages workspace writes through macFUSE for review, apply, or drop. The executable remains a host process because macOS does not provide the Linux namespace and Landlock boundary; pVisor records that limitation in the Run Bundle.";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const ROOT_ABOUT: &str = "Foreground Agent Run manager with staged, reviewable workspaces";
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const ROOT_LONG_ABOUT: &str =
+    "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS.";
+
 #[derive(Debug, Parser)]
 #[command(
     name = "pvisor",
     version,
-    about = "Foreground Agent Run manager: execute, control, Gateway, and OverlayFS"
+    about = ROOT_ABOUT,
+    long_about = ROOT_LONG_ABOUT
 )]
 struct Cli {
     #[command(subcommand)]
@@ -21,7 +39,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Execute one Agent Run under pVisor management (default command).
+    #[command(
+        about = run::RUN_COMMAND_ABOUT,
+        long_about = run::RUN_COMMAND_LONG_ABOUT
+    )]
     Run(Box<run::RunArgs>),
     /// Manage durable reusable execution environments.
     Env(env::EnvArgs),
@@ -139,5 +160,24 @@ mod tests {
     fn unknown_first_token_becomes_default_run() {
         let args = normalize_default_run(vec!["pvisor".into(), "/bin/true".into()]);
         assert_eq!(args[1], "run");
+    }
+
+    #[test]
+    fn root_help_names_the_effective_platform_boundary() {
+        let help = Cli::try_parse_from(["pvisor", "--help"])
+            .unwrap_err()
+            .to_string();
+
+        #[cfg(target_os = "linux")]
+        {
+            assert!(help.contains("rootless boundary"));
+            assert!(help.contains("namespace"));
+            assert!(help.contains("Landlock"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(help.contains("macFUSE"));
+            assert!(help.contains("host process"));
+        }
     }
 }

@@ -496,6 +496,7 @@ fn validate_provenance(metadata: &Map<String, Value>) -> Result<()> {
 mod tests {
     use super::*;
     use crate::parse_actf_document;
+    #[cfg(feature = "lance-store")]
     use crate::StorylineLanceStore;
 
     const FIXTURE: &str = r#"{
@@ -543,6 +544,7 @@ mod tests {
         assert_eq!(storylines_to_actf(&stories).unwrap(), document);
     }
 
+    #[cfg(feature = "lance-store")]
     #[tokio::test]
     async fn actf_lance_import_and_restore_is_lossless() {
         let document = parse_actf_document(FIXTURE).unwrap();

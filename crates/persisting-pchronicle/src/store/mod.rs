@@ -5,24 +5,43 @@
 //! - `search`: document retrieval storage lives outside this module.
 
 mod agenticmd_fs;
+#[cfg(feature = "lance-store")]
 mod atif_datafusion;
+#[cfg(feature = "lance-store")]
 mod attempt_registry;
+#[cfg(feature = "lance-store")]
 pub(crate) mod dataset_write_lock;
+#[cfg(feature = "lance-store")]
 mod egress;
+#[cfg(feature = "lance-store")]
 mod event_row;
+#[cfg(feature = "lance-store")]
 mod file_trajectory_datafusion;
+#[cfg(feature = "lance-store")]
 mod index_build_gate;
+#[cfg(feature = "lance-store")]
 mod local_query_manifest;
+#[cfg(feature = "lance-store")]
 mod query_engine;
+#[cfg(feature = "lance-store")]
 mod raw_event_datafusion;
+#[cfg(feature = "lance-store")]
 mod raw_event_lance;
+#[cfg(feature = "lance-store")]
 mod raw_event_lance_rows;
+#[cfg(feature = "lance-store")]
 mod raw_event_manifest;
+#[cfg(feature = "lance-store")]
 mod root_write_lock;
+#[cfg(feature = "lance-store")]
 mod run_control;
+#[cfg(feature = "lance-store")]
 mod storyline_content;
+#[cfg(feature = "lance-store")]
 mod storyline_datafusion;
+#[cfg(feature = "lance-store")]
 mod storyline_lance;
+#[cfg(feature = "lance-store")]
 mod storyline_lance_rows;
 
 pub use agenticmd_fs::{
@@ -33,83 +52,115 @@ pub use agenticmd_fs::{
     read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
     upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
 };
+#[cfg(feature = "lance-store")]
 pub use atif_datafusion::{
     load_atif_trajectories, AtifDataSource, AtifDataSourceOptions, AtifReader,
 };
+#[cfg(feature = "lance-store")]
 pub use attempt_registry::{
     unix_now_ms as attempt_registry_now_ms, AttemptRecord, AttemptRecordState, AttemptRegistry,
     ATTEMPT_RECORD_SCHEMA_VERSION,
 };
+#[cfg(feature = "lance-store")]
 pub use egress::{export_source_dirs, export_story_bundle, validate_event_lines, ExportOutcome};
+#[cfg(feature = "lance-store")]
 pub use event_row::{
     event_record_to_event_row, event_row_to_event_record, event_row_to_replay_json, EventRow,
 };
+#[cfg(feature = "lance-store")]
 pub use file_trajectory_datafusion::{
     FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryFormat,
     FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot, DEFAULT_LOCAL_QUERY_BATCH_SIZE,
     DEFAULT_LOCAL_QUERY_CACHE_BYTES, DEFAULT_LOCAL_QUERY_CACHE_FILES,
     DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, SOURCE_FILE_COLUMN,
 };
+#[cfg(feature = "lance-store")]
 pub use local_query_manifest::{
     detect_local_query_format, detect_local_query_manifest, LocalQueryInputFile,
     LocalQueryManifest, LocalQueryManifestOptions, DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES,
     DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES,
 };
+#[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions,
     ExternalTableFormat, ExternalTableSpec,
 };
+#[cfg(feature = "lance-store")]
 pub use raw_event_datafusion::{
     RawEventDataSource, RawEventDataSourceOptions, RawEventTableProvider, DATAFUSION_EVENTS_TABLE,
 };
+#[cfg(feature = "lance-store")]
 pub use raw_event_lance::{
     distinct_session_ids_in_run, EventLogLayoutStats, EventWriterFence, LanceMaintenanceOptions,
     LanceMaintenanceReport, RawEventLanceAppender,
 };
+#[cfg(feature = "lance-store")]
 pub use raw_event_lance_rows::{
     event_row_from_batch, event_rows_from_batch, event_rows_to_batch, raw_event_arrow_schema,
 };
+#[cfg(feature = "lance-store")]
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
+#[cfg(feature = "lance-store")]
 pub use storyline_content::{
     StorylineContentOptions, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
 };
+#[cfg(feature = "lance-store")]
 pub use storyline_datafusion::{
     StorylineContentReadMode, StorylineDataFusionTableNames, StorylineDataSource,
     StorylineDataSourceOptions, StorylineTableKind, StorylineTableProvider, DATAFUSION_RUNS_TABLE,
     DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
 };
+#[cfg(feature = "lance-store")]
 pub use storyline_lance::{
     StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,
     StorylineTablePaths,
 };
+#[cfg(feature = "lance-store")]
 pub use storyline_lance_rows::{
     story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
     story_steps_from_batch, story_steps_to_batch, story_tool_calls_arrow_schema,
     story_tool_calls_from_batch, story_tool_calls_to_batch,
 };
 
+#[cfg(feature = "lance-store")]
 use anyhow::Context;
+#[cfg(feature = "lance-store")]
 use async_trait::async_trait;
+#[cfg(feature = "lance-store")]
 use std::path::PathBuf;
 
+#[cfg(feature = "lance-store")]
 use crate::{story_lance_event_path, EventRecord, StoryCoords};
 
 /// Producer-defined Storyline sequence. Physical replay order is the immutable
 /// Lance append order and does not require a read-before-write counter.
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_SEQ_COL: &str = "seq";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_EVENT_ID_COL: &str = "event_id";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_TIMESTAMP_COL: &str = "timestamp";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_SOURCE_COL: &str = "source";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_KIND_COL: &str = "kind";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_SESSION_ID_COL: &str = "session_id";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_AGENT_ID_COL: &str = "agent_id";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_CALL_ID_COL: &str = "call_id";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_PARENT_CALL_ID_COL: &str = "parent_call_id";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_MODEL_COL: &str = "model";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_TRACE_ID_COL: &str = "trace_id";
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_PAYLOAD_JSON_COL: &str = "payload_json";
 
 /// Canonical physical schema for the Lance event log.
+#[cfg(feature = "lance-store")]
 pub const TRAJECTORY_COLS: &[&str] = &[
     TRAJECTORY_SEQ_COL,
     TRAJECTORY_EVENT_ID_COL,
@@ -126,8 +177,10 @@ pub const TRAJECTORY_COLS: &[&str] = &[
 ];
 
 /// Story coordinates accepted by every pChronicle physical backend.
+#[cfg(feature = "lance-store")]
 pub type TrajectorySession = StoryCoords;
 
+#[cfg(feature = "lance-store")]
 fn canonicalize_event(session: &TrajectorySession, mut record: EventRecord) -> EventRecord {
     let run_id = session
         .root_session_id
@@ -157,6 +210,7 @@ fn canonicalize_event(session: &TrajectorySession, mut record: EventRecord) -> E
     record
 }
 
+#[cfg(feature = "lance-store")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppendOutcome {
     pub accepted_records: usize,
@@ -164,12 +218,14 @@ pub struct AppendOutcome {
     pub note: String,
 }
 
+#[cfg(feature = "lance-store")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayOutcome {
     pub records: Vec<String>,
     pub note: String,
 }
 
+#[cfg(feature = "lance-store")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrajectoryStats {
     pub dataset: String,
@@ -180,6 +236,7 @@ pub struct TrajectoryStats {
 }
 
 /// Decode newline-delimited RON event values into typed events.
+#[cfg(feature = "lance-store")]
 pub fn decode_event_lines(lines: &[String]) -> anyhow::Result<Vec<EventRecord>> {
     lines
         .iter()
@@ -194,6 +251,7 @@ pub fn decode_event_lines(lines: &[String]) -> anyhow::Result<Vec<EventRecord>> 
 }
 
 /// Encode typed records as newline-delimited RON event values.
+#[cfg(feature = "lance-store")]
 pub fn encode_event_lines(records: &[EventRecord]) -> anyhow::Result<Vec<String>> {
     records
         .iter()
@@ -207,6 +265,7 @@ pub fn encode_event_lines(records: &[EventRecord]) -> anyhow::Result<Vec<String>
 }
 
 /// Unified async API for canonical event storage and rebuildable projections.
+#[cfg(feature = "lance-store")]
 #[async_trait]
 pub trait StructuredStore: Send + Sync {
     fn display_path(&self, session: &TrajectorySession) -> anyhow::Result<String>;
@@ -258,9 +317,11 @@ pub trait StructuredStore: Send + Sync {
     }
 }
 
+#[cfg(feature = "lance-store")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RawEventLanceStore;
 
+#[cfg(feature = "lance-store")]
 impl RawEventLanceStore {
     /// Append a channel-sized batch while preserving the Storyline identity of
     /// each event. Entries sharing a run-level `events.lance` dataset are
@@ -304,6 +365,7 @@ impl RawEventLanceStore {
     }
 }
 
+#[cfg(feature = "lance-store")]
 pub fn raw_event_lance_path(session: &TrajectorySession) -> anyhow::Result<PathBuf> {
     story_lance_event_path(
         &session.storage,
@@ -313,6 +375,7 @@ pub fn raw_event_lance_path(session: &TrajectorySession) -> anyhow::Result<PathB
     )
 }
 
+#[cfg(feature = "lance-store")]
 #[async_trait]
 impl StructuredStore for RawEventLanceStore {
     fn display_path(&self, session: &TrajectorySession) -> anyhow::Result<String> {

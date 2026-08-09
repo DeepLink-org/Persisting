@@ -23,9 +23,9 @@ chrono = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive", "env"] }
 futures.workspace = true
 persisting-gateway.workspace = true
-persisting-pchronicle.workspace = true
+persisting-pchronicle = { workspace = true, features = ["lance-store"] }
 persisting-control.workspace = true
-persisting-pvisor.workspace = true
+persisting-pvisor = { workspace = true, features = ["lance-chronicle"] }
 pulsing-actor = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

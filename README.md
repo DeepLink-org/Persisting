@@ -110,11 +110,15 @@ processing writes typed partial aggregates and their checked global reduction.
 See the [pPilot component guide](crates/persisting-ppilot/README.md).
 
 The low-privilege `--safe` profile stages workspace writes and observes
-cooperative proxy traffic. With the default host executor it reports that host
-paths and direct sockets remain ambient. The same pVisor control plane can run
-inside Docker/Podman or a QEMU/KVM guest. Those executors inject the matching
-static Linux pVisor and run the normal ProcessExecutor inside the isolation
-boundary; the Run Bundle records which placement was actually used.
+cooperative proxy traffic. On Linux, the default host executor now enters an
+unprivileged user/mount namespace, builds a minimal bind-projected root,
+applies Landlock to the complete Agent process tree, drops capabilities, and
+fails closed when that boundary cannot be installed. `--overlaynet-deny-all`
+also places the process in a private network namespace; allowlist/public proxy
+modes remain cooperative. macOS keeps the
+review-only host path and labels it accordingly. Docker/Podman and QEMU/KVM
+remain stronger placement options, and the Run Bundle records the effective
+boundary rather than inferring it from the requested mode.
 
 ### Agent Trajectories
 

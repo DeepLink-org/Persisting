@@ -28,11 +28,14 @@ OverlayFS base, creates an independent Run and writable stage under
 `PERSISTING_RUN_HOME` (default `~/.persisting/runs`), retains changes for
 manual review, enables the explicit OverlayNet proxy on ephemeral loopback
 ports, and writes `run-bundle.json` with mode `0600`.
-With the default host executor, the profile is deliberately described as
-review-safe rather than sandboxed: filesystem access outside the project is
-not contained, and direct sockets can bypass the cooperative proxy. Docker and
-KVM transports inject a target-specific static pVisor and execute the same
-ProcessExecutor inside their placement boundary while retaining the outer Run,
+On Linux, the default host executor self-executes through pVisor's rootless
+launcher before the async runtime reaches the Agent. A user/mount namespace,
+minimal bind-projected root plus `chroot`, Landlock ABI v3 policy, closed
+inherited descriptors, `no_new_privs`, and an empty capability set make
+workspace containment non-bypassable for the Agent process tree.
+`--overlaynet-deny-all` adds a private network namespace; the
+public/allowlist proxy modes remain cooperative. macOS remains review-only and
+is labeled as such. Docker and KVM transports retain the same outer Run,
 OverlayFS, Agent ABI observation, and pChronicle control plane.
 
 After completion:

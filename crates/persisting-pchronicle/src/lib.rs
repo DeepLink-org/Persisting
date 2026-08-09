@@ -21,19 +21,27 @@
 
 pub mod atif;
 pub mod convert;
+#[cfg(feature = "lance-store")]
 pub mod discovery;
 pub mod error;
 pub mod format;
 pub mod formats;
+#[cfg(feature = "lance-store")]
 pub mod judge_service;
+#[cfg(feature = "lance-store")]
 pub mod judgment;
+#[cfg(feature = "lance-store")]
 pub mod judgment_summary;
 pub mod layout;
 pub mod mapping;
 mod messages;
+#[cfg(feature = "lance-store")]
 pub mod operations;
+#[cfg(feature = "lance-store")]
 pub mod projection;
+#[cfg(feature = "lance-store")]
 pub mod search;
+#[cfg(feature = "lance-store")]
 pub mod service;
 pub mod store;
 pub mod storyline_schema;
@@ -43,6 +51,7 @@ pub use convert::{
     actf_to_storyline, actf_to_storylines, convert, from_storyline, into_storyline,
     is_actf_storyline, storyline_to_actf, storylines_to_actf,
 };
+#[cfg(feature = "lance-store")]
 pub use discovery::{
     drop_lifecycle_run_partitions, expand_story_locations, expand_story_locations_blocking,
 };
@@ -70,9 +79,11 @@ pub use formats::{
     parse_actf_document, ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric,
     ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
 };
+#[cfg(feature = "lance-store")]
 pub use judge_service::{
     judge_trajectory, JudgeTrajectoryOutcome, JudgeTrajectoryRequest, JudgingMethod,
 };
+#[cfg(feature = "lance-store")]
 pub use judgment::{
     build_llm_judge_prompt, dataset_path as judgment_dataset_path, dialogue_judge_units,
     dry_run_judge_rows, evaluation_units, has_judgment, manual_few_shot_examples,
@@ -80,6 +91,7 @@ pub use judgment::{
     story_judge_body, write_judge_rows, EvaluationUnit, JudgeDialogueUnit, JudgeRow, JudgmentScope,
     ManualJudgmentInput, MANUAL_RATIONALE_PREFIX, STORY_CALL_ID,
 };
+#[cfg(feature = "lance-store")]
 pub use judgment_summary::{
     aggregate_judgments, session_judgment_summary, JudgmentAggregate, JudgmentRubricSummary,
     JudgmentSessionSummary,
@@ -100,37 +112,45 @@ pub use mapping::{
     markdown_document_to_event_records,
 };
 pub use messages::*;
+#[cfg(feature = "lance-store")]
 pub use operations::bridge::{
     search_add, search_add_batch, search_import_lance, search_index, search_index_delete,
     search_index_list, search_index_rebuild, search_index_reorder, search_query, trajectory_append,
     trajectory_replay, trajectory_stats as trajectory_stats_request,
 };
+#[cfg(feature = "lance-store")]
 pub use operations::dispatch::invoke_request_body;
+#[cfg(feature = "lance-store")]
 pub use projection::{
     event_records_to_markdown_blocks, layer_stats, markdown_document_to_event_lines,
     materialize_lance_to_markdown, materialize_markdown_path, truncate_lance_session,
     write_markdown_projection, LayerStats, MaterializeOutcome, MaterializeStats, TruncateOutcome,
 };
+#[cfg(feature = "lance-store")]
 pub use search::agent as agent_search;
+#[cfg(feature = "lance-store")]
 pub use service::{
     append_trajectory, replay_trajectory, trajectory_stats, AppendServiceOutcome,
     ReplayServiceOutcome, StatsServiceOutcome,
 };
 pub use store::{
     agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
-    append_agenticmd_blocks, attempt_registry_now_ms, count_agenticmd_role, decode_event_lines,
-    distinct_session_ids_in_run, encode_agenticmd_block_validated, encode_event_lines,
+    append_agenticmd_blocks, count_agenticmd_role, encode_agenticmd_block_validated,
+    find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,
+    parse_agenticmd_document_validated, parse_agenticmd_spans_validated,
+    read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
+    upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
+};
+#[cfg(feature = "lance-store")]
+pub use store::{
+    attempt_registry_now_ms, decode_event_lines, distinct_session_ids_in_run, encode_event_lines,
     event_record_to_event_row, event_row_from_batch, event_row_to_event_record,
     event_row_to_replay_json, event_rows_from_batch, event_rows_to_batch, export_source_dirs,
-    export_story_bundle, find_block_by_call_id_and_role, index_agenticmd_path,
-    list_agenticmd_paths, load_atif_trajectories, parse_agenticmd_document_validated,
-    parse_agenticmd_spans_validated, raw_event_arrow_schema, raw_event_lance_path,
-    read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
-    upsert_block_by_call_id, validate_event_lines, write_agenticmd_document, AgenticmdFileIndex,
-    AppendOutcome, AtifDataSource, AtifDataSourceOptions, AtifReader, AttemptRecord,
-    AttemptRecordState, AttemptRegistry, ChronicleQueryBackend, ChronicleQueryEngine,
-    ChronicleQueryExecutionOptions, CommitRunOutcome, EventLogLayoutStats, EventRow,
-    EventWriterFence, ExportOutcome, ExternalTableFormat, ExternalTableSpec,
+    export_story_bundle, load_atif_trajectories, raw_event_arrow_schema, raw_event_lance_path,
+    validate_event_lines, AppendOutcome, AtifDataSource, AtifDataSourceOptions, AtifReader,
+    AttemptRecord, AttemptRecordState, AttemptRegistry, ChronicleQueryBackend,
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, CommitRunOutcome, EventLogLayoutStats,
+    EventRow, EventWriterFence, ExportOutcome, ExternalTableFormat, ExternalTableSpec,
     FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryFormat,
     FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot, LanceMaintenanceOptions,
     LanceMaintenanceReport, LeaseAcquireOutcome, LocalQueryInputFile, LocalQueryManifest,
@@ -151,14 +171,17 @@ pub use store::{
     TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
     TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL,
 };
+#[cfg(feature = "lance-store")]
 pub use store::{detect_local_query_format, detect_local_query_manifest};
 pub use storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
 
+#[cfg(feature = "lance-store")]
 pub const PERSISTING_VECTOR_INDEX_NAME: &str = search::search_lance::PERSISTING_VECTOR_INDEX_NAME;
+#[cfg(feature = "lance-store")]
 pub const PERSISTING_FTS_INDEX_NAME: &str = search::search_lance::PERSISTING_FTS_INDEX_NAME;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lance-store"))]
 mod tests;

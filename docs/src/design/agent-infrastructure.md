@@ -283,6 +283,20 @@ RunFuture.terminal() -> RunResult | RunFailure
 
 策略决策和实际 enforcement 都在 pVisor runtime boundary 内完成；provider 只实现稳定 driver 接口。
 
+文件工作区与执行边界是正交能力：OverlayFS 负责 copy-on-write、review、checkpoint、
+apply 和 drop，不单独构成 sandbox。pVisor 以同一 workspace 契约支持四类隔离路径：
+FUSE + Landlock、LiteBox VFS、Docker/OCI 和 Firecracker microVM。它们的安全边界、
+最低权限模型、数据路径、适用场景与成熟度见
+[pVisor isolation architecture](pvisor-isolation.md)。这些后端由 pVisor 自动探测和选择，
+不是要求普通用户理解并逐项配置的产品表面。
+
+其中 Linux 本地 `pvisor run --safe` 已实现第一条路径：FUSE staged workspace 外层由
+只投影运行时、workspace 和显式 capability 的最小 synthetic root、无特权 user/mount
+namespace、Landlock ABI v3、`no_new_privs`、空 capability 集合和继承 FD 清理共同约束；
+deny-all 网络策略还会创建独立 network namespace。当前仍未把
+seccomp、PID namespace 和 cgroup/rlimit 资源配额纳入完整 enforcement，因此 bundle
+会分别记录已生效与仍为协作式的边界，不把“启用了 OverlayFS”误报成完整 sandbox。
+
 ## 7. pPilot：Durable Run Orchestrator
 
 pPilot 的操作对象是许多 `RunFuture`，不是 Agent 会话。它解决“如何可靠而高效地生产许多独立 Run”。
@@ -508,7 +522,7 @@ pPilot library
 | canonical Lance events | `persisting-pchronicle::{EventRow, RawEventLanceStore}` | 统一 canonical-first，Markdown 降为 view |
 | Storyline / replay view | story actor、TLV Markdown、materialize、replay | 将 session 对齐为 Storyline，并补充因果关系 |
 | pVisor proxy drivers | `persisting-overlaynet` 独占显式 HTTP/HTTPS proxy 数据面；Gateway 是 LLM/轨迹 `OverlaySink`；另有 `persisting-dlcapt` | 可配置其他 sink；当前不宣称透明网络隔离。Linux 透明截获已定稿设计（主方案：非特权 netns + 进程内用户态协议栈；备选：seccomp user-notify + ADDFD），见 [OverlayNet interception](overlaynet.md) |
-| pVisor executor | Local ProcessExecutor；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；尚缺 WASM/Container/Remote |
+| pVisor executor | Local ProcessExecutor、Docker/Podman transport、QEMU/KVM transport；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；Docker/KVM 仍有 capability enforcement 差距，尚缺 WASM/Remote，见 [pVisor isolation architecture](pvisor-isolation.md) |
 | pPilot batch control | Driver、Scheduler、Sink、Checkpoint；TaskExpr ↔ RunSpec/RunResult adapter | 将 Run/Attempt 写入 durable checkpoint 并增加 reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |
 | distributed providers | Pulsing actors、torchrun integration | 只承担发现、投递和 worker 生命周期 |

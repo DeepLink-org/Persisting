@@ -19,12 +19,54 @@ use persisting_control::{
     AttemptId, AttemptInfo, PolicyMode, RunFailure, RunFailureKind, RunInvocation, RunResult,
     RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
 };
-use persisting_pchronicle::{AttemptRegistry, EventRecord};
+#[cfg(feature = "lance-chronicle")]
+use persisting_pchronicle::AttemptRegistry;
+use persisting_pchronicle::EventRecord;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+#[cfg(not(feature = "lance-chronicle"))]
+struct AttemptRegistry;
+
+#[cfg(not(feature = "lance-chronicle"))]
+impl AttemptRegistry {
+    async fn open(_root: impl AsRef<str>) -> anyhow::Result<Self> {
+        anyhow::bail!("durable remote Attempt registration requires the `lance-chronicle` feature")
+    }
+
+    async fn publish_active(
+        &self,
+        _run_id: &str,
+        _attempt_id: &str,
+        _lease_epoch: u64,
+        _ttl_ms: u64,
+    ) -> anyhow::Result<bool> {
+        anyhow::bail!("durable Attempt registry is unavailable")
+    }
+
+    async fn heartbeat(
+        &self,
+        _run_id: &str,
+        _attempt_id: &str,
+        _lease_epoch: u64,
+        _ttl_ms: u64,
+    ) -> anyhow::Result<bool> {
+        anyhow::bail!("durable Attempt registry is unavailable")
+    }
+
+    async fn publish_terminal(
+        &self,
+        _run_id: &str,
+        _attempt_id: &str,
+        _lease_epoch: u64,
+        _result: serde_json::Value,
+    ) -> anyhow::Result<bool> {
+        anyhow::bail!("durable Attempt registry is unavailable")
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PVisorError {
@@ -250,10 +292,9 @@ impl PVisorBuilder {
 
     pub fn build(self) -> PVisor {
         PVisor {
-            executors: Arc::new(
-                self.executors
-                    .unwrap_or_else(|| vec![Arc::new(ProcessExecutor) as Arc<dyn RunExecutor>]),
-            ),
+            executors: Arc::new(self.executors.unwrap_or_else(|| {
+                vec![Arc::new(ProcessExecutor::default()) as Arc<dyn RunExecutor>]
+            })),
             event_sink: self
                 .event_sink
                 .unwrap_or_else(|| Arc::new(NoopEventSink) as Arc<dyn EventSink>),
@@ -758,9 +799,9 @@ mod tests {
     use super::*;
     use crate::{EventSink, MemoryEventSink};
     use async_trait::async_trait;
-    use persisting_control::{
-        NetworkCapability, RunFailureKind, RunInvocation, StdioMode, SupervisorBootstrap,
-    };
+    #[cfg(feature = "lance-chronicle")]
+    use persisting_control::SupervisorBootstrap;
+    use persisting_control::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
     use std::sync::Mutex;
 
     #[test]
@@ -887,7 +928,7 @@ mod tests {
         assert!(kinds.iter().any(|kind| kind == "run.state_changed"));
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, feature = "lance-chronicle"))]
     #[tokio::test]
     async fn durable_attempt_registry_receives_terminal_run_result() {
         let dir = tempfile::tempdir().unwrap();

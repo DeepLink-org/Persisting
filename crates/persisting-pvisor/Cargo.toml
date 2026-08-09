@@ -7,6 +7,11 @@ license.workspace = true
 description = "pVisor foreground Agent Run manager and portable execution runtime"
 readme = "README.md"
 
+[features]
+default = []
+lance-chronicle = ["persisting-pchronicle/lance-store"]
+jujutsu-overlay = ["persisting-overlayfs/jujutsu"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
@@ -15,8 +20,8 @@ libc.workspace = true
 persisting-control.workspace = true
 persisting-gateway.workspace = true
 persisting-overlaynet.workspace = true
-persisting-overlayfs.workspace = true
-persisting-pchronicle.workspace = true
+persisting-overlayfs = { workspace = true, default-features = false }
+persisting-pchronicle = { workspace = true, default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
