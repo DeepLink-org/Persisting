@@ -54,17 +54,27 @@ def print_query(name: str, metrics: dict) -> None:
     print(f"  {name}:")
     print(
         f"    Python JSON baseline: {python['median_ms']:.3f} ms median, "
-        f"p95={python['p95_ms']:.3f} ms"
+        f"p95={python['p95_ms']:.3f} ms, {python['rows_per_second']:.0f} rows/s, "
+        f"peak RSS={python['peak_rss_mib']:.1f} MiB"
     )
     print(
         f"    pChronicle JSON:      {direct['median_ms']:.3f} ms median, "
         f"p95={direct['p95_ms']:.3f} ms, "
+        f"{direct['rows_per_second']:.0f} rows/s, peak RSS={direct['peak_rss_mib']:.1f} MiB, "
         f"{direct['speedup_vs_python']:.3f}x vs baseline"
     )
     print(
         f"    pChronicle Lance:     {lance['median_ms']:.3f} ms median, "
         f"p95={lance['p95_ms']:.3f} ms, "
+        f"{lance['rows_per_second']:.0f} rows/s, peak RSS={lance['peak_rss_mib']:.1f} MiB, "
         f"{lance['speedup_vs_python']:.3f}x vs baseline"
+    )
+    direct_engine = metrics["engine_metrics"]["pchronicle_json"]
+    print(
+        "    JSON reader:            "
+        f"source={direct_engine['source_bytes_read']} bytes, "
+        f"input-buffer-peak={direct_engine['streaming_buffer_peak_bytes']} bytes, "
+        f"projected-arrow={direct_engine['projected_arrow_bytes']} bytes"
     )
 
 
@@ -160,5 +170,13 @@ print(
     f"group_pchronicle_lance_ms={group['pchronicle_lance']['median_ms']:.3f} "
     f"group_pchronicle_lance_p95_ms={group['pchronicle_lance']['p95_ms']:.3f} "
     f"group_json_vs_python={group['pchronicle_json']['speedup_vs_python']:.3f} "
-    f"group_lance_vs_python={group['pchronicle_lance']['speedup_vs_python']:.3f} equal=true"
+    f"group_lance_vs_python={group['pchronicle_lance']['speedup_vs_python']:.3f} "
+    f"group_python_rows_s={group['python_json']['rows_per_second']:.0f} "
+    f"group_json_rows_s={group['pchronicle_json']['rows_per_second']:.0f} "
+    f"group_lance_rows_s={group['pchronicle_lance']['rows_per_second']:.0f} "
+    f"group_python_peak_rss_mib={group['python_json']['peak_rss_mib']:.3f} "
+    f"group_json_peak_rss_mib={group['pchronicle_json']['peak_rss_mib']:.3f} "
+    f"group_lance_peak_rss_mib={group['pchronicle_lance']['peak_rss_mib']:.3f} "
+    f"group_json_input_buffer_peak_bytes="
+    f"{group['engine_metrics']['pchronicle_json']['streaming_buffer_peak_bytes']} equal=true"
 )

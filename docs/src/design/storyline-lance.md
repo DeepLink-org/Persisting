@@ -255,34 +255,42 @@ SQL / DataFrame
       ├─ session_id：trajectory 裁剪
       ├─ step_id / source：step 裁剪
       └─ projected column set
-  → borrowed serde decoder (&RawValue)
+  → BufRead / serde streaming decoder
+      └─ DeserializeSeed + Visitor + IgnoredAny
   → 只为命中行解码被引用字段
   → projected Arrow RecordBatch
   → DataFusion 保留 inexact filter 再次校验
 ```
 
-当前 fast path 的适用范围是 ATIF compact 单对象 JSON，以及每行一个对象的 JSONL/NDJSON，
+当前 fast path 的适用范围是 ATIF 单对象 JSON、JSON 数组（包括 pretty JSON），以及每行一个对象的 JSONL/NDJSON，
 目标表为 `steps`，并且物理计划存在严格列裁剪。它有意保持保守：
 
 | 输入/查询 | 执行路径 |
 |---|---|
-| compact ATIF JSON/JSONL + projected `steps` | borrowed projected decoder |
+| ATIF object/pretty object + projected `steps` | reader-backed seeded projected decoder |
+| ATIF array/pretty array + projected `steps` | `fill_buf` 结构扫描 + 有界 element buffer + seeded `from_slice` |
+| ATIF JSONL/NDJSON + projected `steps` | `BufRead` 逐记录、有界 record buffer |
 | `_file_`、`session_id`、`step_id`、`source` 的安全简单谓词 | 可提前裁剪，DataFusion 仍复核 |
-| `SELECT *`、pretty JSON、JSON 数组 | 完整规范化 fallback |
+| `SELECT *` | 完整规范化 fallback |
 | `runs` / `tool_calls` | 完整规范化 fallback |
 | OpenAI-message / ACTF | 完整规范化 fallback |
 | 无法证明安全的表达式、OR/函数/跨列条件 | 不预裁剪，由 DataFusion 求值 |
 
-借用结构只把计划需要的 JSON 字段转成拥有值；未引用字段由 serde 做语法扫描但不构造
-`Value`/Storyline。Arrow encoder 也只创建投影列，`COUNT(*)` 使用合法的零列 batch。轻量路径
+`DeserializeSeed` 把查询 projection 和安全谓词传入 `Visitor`；未引用字段交给
+`IgnoredAny` 做语法扫描，不构造 `Value`/Storyline。JSONL/NDJSON 以 `BufRead` 逐记录读取；
+JSON array 的结构扫描器识别字符串和转义，在不构造 DOM 的情况下提取单个 trajectory，
+再通过 slice decoder 执行投影解析。单条 JSONL 记录或 array element 由
+`max_record_bytes` 限制；单对象直接从 reader 解码。三种路径都不先复制整文件。
+Arrow encoder 也只创建投影列，`COUNT(*)` 使用合法的零列 batch。轻量路径
 校验 JSON、必需字段、重复 session、命中文档内的重复 step 和当前表内约束；跨表引用
 完整性仍由导入路径或完整 fallback 负责。这一边界使临时查询不承担导入语义，同时不降低
 SQL 结果正确性。
 
-查询指标额外报告 `projected_files`、scanned/pruned documents、scanned/pruned/emitted rows
-和 `projected_arrow_bytes`，用来区分“源字节扫描”“JSON 对象物化”和“Arrow 输出”三个成本。
-在本地 512 条轨迹、7552 steps 的统一基准中，选择性查询由约 58.68 ms 降至 17.17 ms，
-GROUP BY 由约 58.93 ms 降至 31.48 ms；这是特定机器上的回归基线，不是跨环境 SLA。
+查询指标额外报告 `projected_files`、`streamed_records`、`streaming_buffer_peak_bytes`、
+scanned/pruned documents、scanned/pruned/emitted rows 和 `projected_arrow_bytes`，用来区分
+“源字节扫描”“输入缓冲”“JSON 字段物化”和“Arrow 输出”四个成本。仓库 benchmark 报告
+median/P95、rows/s、独立进程峰值 RSS，以及计数 allocator 观测到的 allocation calls/bytes；
+这些是指定 corpus、查询和机器的回归数据，不是跨环境 SLA。
 
 该路径仍需顺序扫描命中文件的全部 JSON 字节，不是文件内索引。一次性或受控批次查询可
 直接使用 JSON；超大、远端或反复查询的数据应先转换为 Lance，利用 snapshot、列裁剪、
@@ -321,12 +329,21 @@ cargo bench -p persisting-pchronicle --bench atif_storyline_lance
 # 导入、冷查询、点查、增量替换，以及 warm SQL 对比
 PCHRONICLE_BENCH_SCALE=128 PCHRONICLE_BENCH_ITERS=30 \
   cargo bench -p persisting-pchronicle --bench lance_vs_json
+
+# 冷 datasource open + projected JSON SQL 的 allocation、rows/s、P95、进程 RSS 与输入缓冲上界
+PCHRONICLE_BENCH_SCALE=128 PCHRONICLE_BENCH_ITERS=30 \
+  cargo bench -p persisting-pchronicle --bench json_streaming
+
+# 同一基准切换为 pretty array，单独观察 element scanner + slice decoder
+PCHRONICLE_BENCH_JSON_SHAPE=array PCHRONICLE_BENCH_SCALE=128 \
+  PCHRONICLE_BENCH_ITERS=30 cargo bench -p persisting-pchronicle --bench json_streaming
 ```
 
 JSON 对照使用单个 NDJSON 文件，避免大量小文件打开开销。ATIF `steps` 直接查询会把
 DataFusion projection 和可安全预裁剪的 `session_id`、`step_id`、`source` 谓词传给
 projected decoder：未引用 JSON 字段只做语法扫描，不构造 Storyline/三表对象，Arrow
-batch 也只包含执行计划需要的列。`SELECT *`、兼容 JSON shape 和其他格式仍走完整规范化
+batch 也只包含执行计划需要的列。object、array、pretty JSON 和 JSONL/NDJSON 共用流式
+projection decoder；`SELECT *` 和其他格式仍走完整规范化
 fallback。轻量路径执行 JSON、必需字段和表内约束校验，跨表引用完整性由导入或完整
 fallback 校验。预解析内存 JSON 对照只计算查询逻辑，用来区分产品工作流与纯内存遍历成本。
 benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline` 点查和单 Storyline

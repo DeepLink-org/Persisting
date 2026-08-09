@@ -58,12 +58,15 @@ judgments.lance               规范化派生评测，不修改 canonical event 
   `_file_` 相对路径列，支持 `=`、`IN`、`LIKE` 文件级裁剪；每个命中文件作为一个 lazy
   streaming partition 打开，该列不属于 Lance 三表 schema。多文件内建表 join 必须把
   `_file_` 纳入 join key。
-- ATIF compact JSON/JSONL 的 `steps` 查询在 `TableProvider::scan` 边界接收 DataFusion
+- ATIF object、array、pretty JSON 与 JSONL/NDJSON 的 `steps` 查询在 `TableProvider::scan` 边界接收 DataFusion
   projection 和安全谓词，直接跳过未引用的大字段、按 `session_id`/`step_id`/`source`
-  提前裁剪并生成 projected Arrow batch，不经过 Storyline 导入和三表全量构造。
+  提前裁剪并生成 projected Arrow batch，不经过 Storyline 导入和三表全量构造。NDJSON 用
+  `BufRead` 逐记录读取；array 通过结构扫描器提取有界 element，再用 `from_slice` 解码；
+  单 object 保持 reader 流式反序列化。`DeserializeSeed + Visitor` 只构造投影字段，其他
+  合法 JSON 值由 `IgnoredAny` 消费。
   该路径校验 JSON、必需字段和当前表内约束；跨表引用完整性仍由导入路径或完整规范化
   fallback 校验。
-  `SELECT *`、JSON 数组/pretty JSON、其他表和 OpenAI/ACTF 保留完整规范化 fallback。
+  `SELECT *`、其他表和 OpenAI/ACTF 保留完整规范化 fallback。
 - `RunControlStore` 以单个 CAS record 管理 Run lease epoch 与 immutable terminal `RunCommit`。
 - `AttemptRegistry` 以 lease epoch fence pVisor Attempt 的注册、心跳和完整终态结果，供 pPilot 重启后收敛。
 - `AgenticmdSessionFrontmatter`、`write_agenticmd_document`、`rewrite_agenticmd_preamble` 和 `index_agenticmd_path` 负责宽松的 AgenticMD 可视化与调试文件操作。
@@ -211,6 +214,9 @@ pChronicle 的测试直接复用 `persisting-gateway/tests/fixtures`，而不是
 cargo test -p persisting-pchronicle --test atif_lance_corpus
 cargo bench -p persisting-pchronicle --bench atif_storyline_lance
 PCHRONICLE_BENCH_SCALE=128 cargo bench -p persisting-pchronicle --bench lance_vs_json
+PCHRONICLE_BENCH_SCALE=128 cargo bench -p persisting-pchronicle --bench json_streaming
+PCHRONICLE_BENCH_JSON_SHAPE=array PCHRONICLE_BENCH_SCALE=128 \
+  cargo bench -p persisting-pchronicle --bench json_streaming
 just examples-pchronicle  # 包含 point / batch / live follow 的可复现产品 CLI 对比
 ```
 

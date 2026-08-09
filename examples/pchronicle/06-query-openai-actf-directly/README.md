@@ -41,12 +41,13 @@ FROM steps s JOIN tool_calls t
 ```
 
 这是功能和结果正确性示例，不把不同格式的小型 fixture 用作性能结论。生产任务可以用
-`--max-files`、`--max-entries`、`--max-file-bytes`、`--max-concurrent-files`、
+`--max-files`、`--max-entries`、`--max-file-bytes`、`--max-record-bytes`、`--max-concurrent-files`、
 `--cache-bytes`、`--cache-files` 和 `--batch-size` 设置资源边界；`--query-metrics` 把运行
 计数器写到 stderr，`--memory-limit-bytes`、`--spill-path`、`--max-spill-bytes` 限制
 DataFusion 中间算子，`--timeout-seconds` 限制墙钟时间。查询结果按 Arrow batch 流式写出；
 `--max-output-rows` 限制结果规模。这个示例的 OpenAI/ACTF 兼容格式仍按命中文件完成规范化；
-ATIF compact JSON/JSONL 的 `steps` 查询另有字段/简单谓词下推 fast path。两者都没有文件内
+ATIF object/array/pretty JSON 和 JSONL/NDJSON 的 `steps` 查询另有流式字段/简单谓词下推
+fast path。两者都没有文件内
 索引，超大、重复查询的数据集应先转换为 Lance。
 
 核心查询与普通 SQL 相同：

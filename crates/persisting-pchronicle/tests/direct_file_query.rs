@@ -377,3 +377,163 @@ async fn atif_steps_projection_matches_full_normalization_and_prunes_rows() -> R
     assert!(metrics.projected_arrow_bytes > 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn projected_atif_streams_ndjson_pretty_object_and_pretty_array() -> Result<()> {
+    let first: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        atif_fixtures().join("dialogue_10.json"),
+    )?)?;
+    let mut second_template: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        atif_fixtures().join("long_context_20.json"),
+    )?)?;
+    second_template["unselected_root_payload"] = serde_json::Value::String("z".repeat(128 * 1024));
+    second_template["scanner_escape_fixture"] =
+        serde_json::Value::String(r#"quoted: " } ], { [ \\"#.into());
+    let mut documents = vec![first.clone()];
+    for copy in 0..8 {
+        let mut second = second_template.clone();
+        let session_id = format!("streaming-second-{copy}");
+        second["session_id"] = serde_json::Value::String(session_id.clone());
+        second["trajectory_id"] = serde_json::Value::String(session_id);
+        documents.push(second);
+    }
+
+    let temp = tempfile::tempdir()?;
+    let ndjson = temp.path().join("input.ndjson");
+    let ndjson_content = documents
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .join("\n");
+    fs::write(&ndjson, format!("{ndjson_content}\n"))?;
+    let object = temp.path().join("input-object.json");
+    fs::write(&object, serde_json::to_vec_pretty(&first)?)?;
+    let array = temp.path().join("input-array.json");
+    fs::write(&array, serde_json::to_vec_pretty(&documents)?)?;
+
+    let sql = "SELECT session_id, step_id, source FROM steps ORDER BY session_id, step_id";
+    let ndjson_engine = ChronicleQueryEngine::open_atif(&ndjson)?;
+    let ndjson_rows = ndjson_engine.query_jsonl(sql).await?;
+    let array_engine = ChronicleQueryEngine::open_atif(&array)?;
+    assert_eq!(array_engine.query_jsonl(sql).await?, ndjson_rows);
+
+    let object_engine = ChronicleQueryEngine::open_atif(&object)?;
+    let object_rows = object_engine.query_jsonl(sql).await?;
+    assert_eq!(json_rows(&object_rows)?.len(), 10);
+    assert_eq!(json_rows(&ndjson_rows)?.len(), 170);
+
+    let ndjson_metrics = ndjson_engine.local_file_metrics().expect("NDJSON metrics");
+    assert_eq!(ndjson_metrics.projected_files, 1);
+    assert_eq!(ndjson_metrics.streamed_records, 9);
+    assert!(ndjson_metrics.source_bytes_read > 64 * 1024);
+    assert!(
+        ndjson_metrics.streaming_buffer_peak_bytes < ndjson_metrics.source_bytes_read,
+        "input buffering must stay bounded below the source size: {ndjson_metrics:?}"
+    );
+    let array_metrics = array_engine.local_file_metrics().expect("array metrics");
+    assert_eq!(array_metrics.projected_files, 1);
+    assert_eq!(array_metrics.streamed_records, 9);
+    assert!(array_metrics.source_bytes_read > 1024 * 1024);
+    assert!(array_metrics.streaming_buffer_peak_bytes < array_metrics.source_bytes_read);
+    let object_metrics = object_engine.local_file_metrics().expect("object metrics");
+    assert_eq!(object_metrics.projected_files, 1);
+    assert_eq!(object_metrics.streamed_records, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn projected_atif_ignores_unselected_large_values_without_materializing_the_file(
+) -> Result<()> {
+    let mut trajectory: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        atif_fixtures().join("dialogue_10.json"),
+    )?)?;
+    trajectory["steps"][0]["message"] = serde_json::Value::String("x".repeat(2 * 1024 * 1024));
+    trajectory["unselected_root_payload"] =
+        serde_json::json!({"nested": "y".repeat(2 * 1024 * 1024)});
+    let temp = tempfile::NamedTempFile::with_suffix(".json")?;
+    fs::write(temp.path(), serde_json::to_vec_pretty(&trajectory)?)?;
+
+    let engine = ChronicleQueryEngine::open_atif(temp.path())?;
+    let rows = json_rows(
+        &engine
+            .query_jsonl("SELECT step_id FROM steps ORDER BY step_id")
+            .await?,
+    )?;
+    assert_eq!(rows.len(), 10);
+    let metrics = engine.local_file_metrics().expect("local metrics");
+    assert!(metrics.source_bytes_read > 4 * 1024 * 1024);
+    assert!(metrics.streaming_buffer_peak_bytes <= 64 * 1024);
+    assert!(metrics.projected_arrow_bytes < 16 * 1024);
+    Ok(())
+}
+
+#[tokio::test]
+async fn projected_ndjson_rejects_a_record_above_the_configured_bound() -> Result<()> {
+    let trajectory = fs::read_to_string(atif_fixtures().join("dialogue_10.json"))?;
+    let value: serde_json::Value = serde_json::from_str(&trajectory)?;
+    let temp = tempfile::NamedTempFile::with_suffix(".ndjson")?;
+    fs::write(temp.path(), format!("{}\n", serde_json::to_string(&value)?))?;
+    let manifest = LocalQueryManifest::for_format(temp.path(), ChronicleFormat::Atif)?;
+    let engine = ChronicleQueryEngine::open_local_manifest_with_options(
+        manifest,
+        FileTrajectoryDataSourceOptions {
+            max_record_bytes: 512,
+            ..FileTrajectoryDataSourceOptions::default()
+        },
+    )?;
+    let error = engine
+        .query("SELECT COUNT(*) FROM steps")
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("max_record_bytes 512"),
+        "{error:#}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn projected_array_enforces_record_bounds_and_json_separators() -> Result<()> {
+    let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        atif_fixtures().join("dialogue_10.json"),
+    )?)?;
+    let record = serde_json::to_string(&value)?;
+
+    let oversized = tempfile::NamedTempFile::with_suffix(".json")?;
+    fs::write(oversized.path(), format!("[{record}]"))?;
+    let manifest = LocalQueryManifest::for_format(oversized.path(), ChronicleFormat::Atif)?;
+    let engine = ChronicleQueryEngine::open_local_manifest_with_options(
+        manifest,
+        FileTrajectoryDataSourceOptions {
+            max_record_bytes: 512,
+            ..FileTrajectoryDataSourceOptions::default()
+        },
+    )?;
+    let error = engine
+        .query("SELECT COUNT(*) FROM steps")
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("max_record_bytes 512"),
+        "{error:#}"
+    );
+
+    let missing_comma = tempfile::NamedTempFile::with_suffix(".json")?;
+    fs::write(missing_comma.path(), format!("[{record} {record}]"))?;
+    let engine = ChronicleQueryEngine::open_atif(missing_comma.path())?;
+    let error = engine
+        .query("SELECT COUNT(*) FROM steps")
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("expected ',' or ']'"));
+
+    let trailing_comma = tempfile::NamedTempFile::with_suffix(".json")?;
+    fs::write(trailing_comma.path(), format!("[{record},]"))?;
+    let engine = ChronicleQueryEngine::open_atif(trailing_comma.path())?;
+    let error = engine
+        .query("SELECT COUNT(*) FROM steps")
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("element must be an object"));
+    Ok(())
+}

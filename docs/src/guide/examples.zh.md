@@ -55,8 +55,9 @@ CLI 的正式命令名是 `produce`；它对应"生产一批轨迹 Run"的模式
 这组示例使用确定性 ATIF corpus 和裁剪格式 fixture，分别展示物理体积、分析速度、
 跨格式 SQL 结果一致性、外围格式恢复保真度和直接目录查询。查询性能统一以 Python
 标准库 `json.loads` 加等价手写循环为 raw JSON 基线；pChronicle 直接 JSON 查询和
-pChronicle Lance 查询分别相对该基线报告。体积和速度结论都限定在脚本打印的数据规模、
-查询与当前机器。
+pChronicle Lance 查询分别相对该基线报告 median/P95、输入 rows/s 和独立进程峰值 RSS；
+projected JSON reader 另有 allocation traffic 和输入 buffer 基准。体积和速度结论都限定
+在脚本打印的数据规模、查询与当前机器。
 
 | 示例 | 可复现结论 | 相关指南 |
 |---|---|---|

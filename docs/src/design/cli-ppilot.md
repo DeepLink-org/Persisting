@@ -11,7 +11,7 @@ ppilot run <SCRIPT> [OPTIONS]
 ppilot chronicle import <INPUT> <STORE>
 ppilot chronicle export <STORE> <OUTPUT_DIR> --format openai_msg
 ppilot convert <INPUT> <OUTPUT> [--from auto|atif|actf|openai_msg|storyline|agenticmd|lance] --to atif|actf|openai_msg|storyline|agenticmd|lance
-ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--table NAME=FORMAT:PATH]... [--max-files N] [--max-entries N] [--max-file-bytes N] [--max-concurrent-files N] [--cache-bytes N] [--cache-files N] [--batch-size N] [--memory-limit-bytes N] [--spill-path DIR] [--max-spill-bytes N] [--timeout-seconds N] [--max-output-rows N] [--query-metrics]
+ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--table NAME=FORMAT:PATH]... [--max-files N] [--max-entries N] [--max-file-bytes N] [--max-record-bytes N] [--max-concurrent-files N] [--cache-bytes N] [--cache-files N] [--batch-size N] [--memory-limit-bytes N] [--spill-path DIR] [--max-spill-bytes N] [--timeout-seconds N] [--max-output-rows N] [--query-metrics]
 ppilot query point <STORE> --session-id <ID> [--step-id <N>]
 ppilot query batch <STORE> --session-id <ID[,ID]...> [--step-id <N>]
 ppilot query follow <STORAGE> --agent-id <ID> --session-id <ID> [--offset <N>] [--limit <N>] [--poll-interval-ms <MS>]
@@ -129,6 +129,7 @@ ppilot query sql ./actf-data \
 # 限制 manifest、单文件大小、解析并发和缓存，并把计数器输出到 stderr
 ppilot query sql ./openai-data \
   --max-files 200000 --max-entries 400000 --max-file-bytes 67108864 \
+  --max-record-bytes 16777216 \
   --max-concurrent-files 4 --cache-bytes 536870912 --cache-files 256 \
   --memory-limit-bytes 2147483648 --spill-path /var/tmp/ppilot \
   --max-spill-bytes 10737418240 \
@@ -163,16 +164,19 @@ N 次点查：step 批查生成一次 `IN` 查询，完整轨迹批查则对三�
 manifest 会记录文件大小、修改时间和文件身份；首次读取前后都会校验，通常的替换或修改
 会失败，而不是把不同版本静默混入结果。该检查不是内容哈希，能保留相同文件身份、大小
 和修改时间的对抗性原地改写不在保证范围内。`--max-files`、`--max-entries`、
-`--max-file-bytes` 和 `--max-concurrent-files` 分别限制候选文件数、目录遍历项、单文件输入
-体积和并发解析；
-三张虚拟表共享按 Arrow 实际内存计量的 LRU 缓存和同文件 single-flight。ATIF compact
-JSON/JSONL 的 `steps` 投影查询会绕开完整缓存：只解码计划需要的字段，并用
+`--max-file-bytes`、`--max-record-bytes` 和 `--max-concurrent-files` 分别限制候选文件数、
+目录遍历项、单文件输入体积、projected JSONL/NDJSON 单记录或 JSON array element 缓冲，
+以及并发解析；
+三张虚拟表共享按 Arrow 实际内存计量的 LRU 缓存和同文件 single-flight。ATIF
+object/array/pretty JSON 与 JSONL/NDJSON 的 `steps` 投影查询会绕开完整缓存：NDJSON 逐记录
+`BufRead`，array 逐 element 做结构扫描并经 slice decoder 解码，单 object 从 reader 解码；
+三者都只构造计划需要的字段，并用
 `session_id`、`step_id`、`source` 简单谓词提前裁剪；DataFusion 保留谓词再次校验。
 该轻量路径校验 JSON、必需字段和当前表内约束；跨表引用完整性仍由导入路径或完整规范化
 fallback 负责。
 `--cache-bytes 0` 或 `--cache-files 0` 可关闭保留缓存。`--query-metrics` 除 cache 和源字节
-外，还报告 projected files、scanned/pruned documents/rows、emitted rows 和 projected
-Arrow bytes，不污染 stdout 的查询结果。
+外，还报告 projected files、streamed records、输入 buffer 峰值、scanned/pruned
+documents/rows、emitted rows 和 projected Arrow bytes，不污染 stdout 的查询结果。
 
 pPilot 以 Arrow batch 将 JSONL 结果直接流式写到 stdout，不再把完整结果集收集到内存；
 `--timeout-seconds` 给异步规划和执行设置墙钟上限，`--max-output-rows` 限制输出行数。

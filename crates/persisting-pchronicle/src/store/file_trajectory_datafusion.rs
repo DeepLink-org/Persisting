@@ -3,9 +3,10 @@
 //! Each source file is one streaming partition. Query-only `_file_` predicates
 //! are evaluated against the frozen manifest before partitions are opened.
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs;
+use std::fmt;
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -26,9 +27,8 @@ use lance::deps::arrow_array::{
     ArrayRef, BooleanArray, Int64Array, RecordBatch, RecordBatchOptions, StringArray,
 };
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRef};
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use tokio::sync::mpsc::Sender;
-
-use serde_json::value::RawValue;
 
 use crate::convert::atif_to_storyline;
 use crate::{
@@ -47,6 +47,7 @@ pub const SOURCE_FILE_COLUMN: &str = "_file_";
 
 pub const DEFAULT_LOCAL_QUERY_BATCH_SIZE: usize = 8192;
 pub const DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+pub const DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_LOCAL_QUERY_CACHE_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_LOCAL_QUERY_CACHE_FILES: usize = 128;
 
@@ -55,6 +56,8 @@ pub struct FileTrajectoryDataSourceOptions {
     pub batch_size: usize,
     /// Hard limit for one source file. The limit is checked before and after reading.
     pub max_file_bytes: u64,
+    /// Hard limit for one buffered JSONL/NDJSON record or JSON array element.
+    pub max_record_bytes: usize,
     /// Maximum source files parsed concurrently by one datasource.
     pub max_concurrent_files: usize,
     /// Maximum Arrow bytes retained in the shared parsed-file LRU cache.
@@ -72,6 +75,7 @@ impl Default for FileTrajectoryDataSourceOptions {
         Self {
             batch_size: DEFAULT_LOCAL_QUERY_BATCH_SIZE,
             max_file_bytes: DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+            max_record_bytes: DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
             max_concurrent_files: concurrency,
             cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
             cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
@@ -93,6 +97,8 @@ pub struct FileTrajectoryQueryMetricsSnapshot {
     pub rows_pruned: u64,
     pub rows_emitted: u64,
     pub projected_arrow_bytes: u64,
+    pub streamed_records: u64,
+    pub streaming_buffer_peak_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -115,6 +121,11 @@ impl FileTrajectoryQueryMetrics {
             rows_pruned: self.inner.rows_pruned.load(Ordering::Relaxed),
             rows_emitted: self.inner.rows_emitted.load(Ordering::Relaxed),
             projected_arrow_bytes: self.inner.projected_arrow_bytes.load(Ordering::Relaxed),
+            streamed_records: self.inner.streamed_records.load(Ordering::Relaxed),
+            streaming_buffer_peak_bytes: self
+                .inner
+                .streaming_buffer_peak_bytes
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -133,6 +144,8 @@ struct FileTrajectoryQueryMetricCounters {
     rows_pruned: AtomicU64,
     rows_emitted: AtomicU64,
     projected_arrow_bytes: AtomicU64,
+    streamed_records: AtomicU64,
+    streaming_buffer_peak_bytes: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -582,8 +595,8 @@ fn stream_file(
     if format == FileTrajectoryFormat::Atif
         && kind == StorylineTableKind::Steps
         && scan.can_project_atif_steps(&source_schema)
-        && stream_projected_atif_steps(file, runtime, &schema, batch_size, scan, tx)?
     {
+        stream_projected_atif_steps(file, runtime, &schema, batch_size, scan, tx)?;
         return Ok(());
     }
     let parsed = load_file(file, runtime, format)?;
@@ -602,28 +615,22 @@ fn stream_file(
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct ProjectedAtifAgent<'a> {
-    #[serde(borrow)]
-    name: Cow<'a, str>,
-    #[serde(borrow)]
-    version: Cow<'a, str>,
+struct ProjectedAtifAgent {
+    name: String,
+    version: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct ProjectedAtifTrajectory<'a> {
-    #[serde(borrow)]
-    schema_version: Cow<'a, str>,
-    #[serde(default, borrow)]
-    session_id: Option<Cow<'a, str>>,
-    #[serde(default, borrow)]
-    trajectory_id: Option<Cow<'a, str>>,
-    #[serde(borrow)]
-    agent: ProjectedAtifAgent<'a>,
-    #[serde(borrow)]
-    steps: Vec<&'a RawValue>,
+#[derive(Debug)]
+struct ProjectedAtifTrajectory {
+    schema_version: String,
+    session_id: Option<String>,
+    trajectory_id: Option<String>,
+    agent: ProjectedAtifAgent,
+    steps: Vec<ProjectedAtifStep>,
+    skipped_steps: usize,
 }
 
-impl ProjectedAtifTrajectory<'_> {
+impl ProjectedAtifTrajectory {
     fn effective_session_id(&self) -> Result<&str> {
         self.session_id
             .as_deref()
@@ -635,35 +642,740 @@ impl ProjectedAtifTrajectory<'_> {
             })
             .context("ATIF trajectory requires session_id or trajectory_id")
     }
+
+    fn step_count(&self) -> usize {
+        self.steps.len() + self.skipped_steps
+    }
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct ProjectedAtifStep<'a> {
+#[derive(Debug)]
+struct ProjectedAtifStep {
     step_id: i64,
-    #[serde(default, borrow)]
-    timestamp: Option<Cow<'a, str>>,
-    #[serde(borrow)]
-    source: Cow<'a, str>,
-    #[serde(default, borrow)]
-    model_name: Option<Cow<'a, str>>,
-    #[serde(default, borrow)]
-    reasoning_effort: Option<&'a RawValue>,
-    #[serde(borrow)]
-    message: &'a RawValue,
-    #[serde(default, borrow)]
-    reasoning_content: Option<Cow<'a, str>>,
-    #[serde(default, borrow)]
-    tool_calls: Option<&'a RawValue>,
-    #[serde(default, borrow)]
-    observation: Option<&'a RawValue>,
-    #[serde(default, borrow)]
-    metrics: Option<&'a RawValue>,
-    #[serde(default, borrow)]
-    extra: Option<&'a RawValue>,
-    #[serde(default)]
+    timestamp: Option<String>,
+    source: String,
+    model_name: Option<String>,
+    reasoning_effort: Option<serde_json::Value>,
+    message: serde_json::Value,
+    reasoning_content: Option<String>,
+    tool_calls_nonempty: bool,
+    observation_present: bool,
+    metrics: Option<serde_json::Value>,
+    extra: Option<serde_json::Value>,
     llm_call_count: Option<i64>,
-    #[serde(default)]
     is_copied_context: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum ProjectedAtifTrajectoryField {
+    SchemaVersion,
+    SessionId,
+    TrajectoryId,
+    Agent,
+    Steps,
+    #[serde(other)]
+    Other,
+}
+
+impl ProjectedAtifTrajectoryField {
+    fn name(self) -> &'static str {
+        match self {
+            Self::SchemaVersion => "schema_version",
+            Self::SessionId => "session_id",
+            Self::TrajectoryId => "trajectory_id",
+            Self::Agent => "agent",
+            Self::Steps => "steps",
+            Self::Other => "<unknown>",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum ProjectedAtifStepField {
+    StepId,
+    Timestamp,
+    Source,
+    ModelName,
+    ReasoningEffort,
+    Message,
+    ReasoningContent,
+    ToolCalls,
+    Observation,
+    Metrics,
+    Extra,
+    LlmCallCount,
+    IsCopiedContext,
+    #[serde(other)]
+    Other,
+}
+
+impl ProjectedAtifStepField {
+    fn name(self) -> &'static str {
+        match self {
+            Self::StepId => "step_id",
+            Self::Timestamp => "timestamp",
+            Self::Source => "source",
+            Self::ModelName => "model_name",
+            Self::ReasoningEffort => "reasoning_effort",
+            Self::Message => "message",
+            Self::ReasoningContent => "reasoning_content",
+            Self::ToolCalls => "tool_calls",
+            Self::Observation => "observation",
+            Self::Metrics => "metrics",
+            Self::Extra => "extra",
+            Self::LlmCallCount => "llm_call_count",
+            Self::IsCopiedContext => "is_copied_context",
+            Self::Other => "<unknown>",
+        }
+    }
+}
+
+struct ProjectedAtifTrajectorySeed<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> DeserializeSeed<'de> for ProjectedAtifTrajectorySeed<'_> {
+    type Value = ProjectedAtifTrajectory;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ProjectedAtifTrajectoryVisitor { scan: self.scan })
+    }
+}
+
+struct ProjectedAtifTrajectoryVisitor<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> Visitor<'de> for ProjectedAtifTrajectoryVisitor<'_> {
+    type Value = ProjectedAtifTrajectory;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an ATIF trajectory object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut seen = HashSet::new();
+        let mut schema_version = None;
+        let mut session_id = None;
+        let mut trajectory_id = None;
+        let mut agent = None;
+        let mut steps = None;
+        let mut skipped_steps = 0;
+
+        while let Some(field) = map.next_key::<ProjectedAtifTrajectoryField>()? {
+            if field != ProjectedAtifTrajectoryField::Other && !seen.insert(field) {
+                return Err(de::Error::duplicate_field(field.name()));
+            }
+            match field {
+                ProjectedAtifTrajectoryField::SchemaVersion => {
+                    schema_version = Some(map.next_value::<String>()?);
+                }
+                ProjectedAtifTrajectoryField::SessionId => {
+                    session_id = map.next_value::<Option<String>>()?;
+                }
+                ProjectedAtifTrajectoryField::TrajectoryId => {
+                    trajectory_id = map.next_value::<Option<String>>()?;
+                }
+                ProjectedAtifTrajectoryField::Agent => {
+                    agent = Some(map.next_value::<ProjectedAtifAgent>()?);
+                }
+                ProjectedAtifTrajectoryField::Steps => {
+                    let known_session = session_id
+                        .as_deref()
+                        .filter(|value| !value.is_empty())
+                        .or_else(|| trajectory_id.as_deref().filter(|value| !value.is_empty()));
+                    if known_session.is_some_and(|value| !self.scan.matches_document(value)) {
+                        skipped_steps = map.next_value_seed(CountSequenceSeed)?;
+                        steps = Some(Vec::new());
+                    } else {
+                        steps =
+                            Some(map.next_value_seed(ProjectedAtifStepsSeed { scan: self.scan })?);
+                    }
+                }
+                ProjectedAtifTrajectoryField::Other => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+
+        Ok(ProjectedAtifTrajectory {
+            schema_version: schema_version
+                .ok_or_else(|| de::Error::missing_field("schema_version"))?,
+            session_id,
+            trajectory_id,
+            agent: agent.ok_or_else(|| de::Error::missing_field("agent"))?,
+            steps: steps.ok_or_else(|| de::Error::missing_field("steps"))?,
+            skipped_steps,
+        })
+    }
+}
+
+struct ProjectedAtifStepsSeed<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> DeserializeSeed<'de> for ProjectedAtifStepsSeed<'_> {
+    type Value = Vec<ProjectedAtifStep>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ProjectedAtifStepsVisitor { scan: self.scan })
+    }
+}
+
+struct ProjectedAtifStepsVisitor<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> Visitor<'de> for ProjectedAtifStepsVisitor<'_> {
+    type Value = Vec<ProjectedAtifStep>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an ATIF steps array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut steps = Vec::with_capacity(sequence.size_hint().unwrap_or_default().min(8192));
+        while let Some(step) =
+            sequence.next_element_seed(ProjectedAtifStepSeed { scan: self.scan })?
+        {
+            steps.push(step);
+        }
+        Ok(steps)
+    }
+}
+
+struct ProjectedAtifStepSeed<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> DeserializeSeed<'de> for ProjectedAtifStepSeed<'_> {
+    type Value = ProjectedAtifStep;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ProjectedAtifStepVisitor { scan: self.scan })
+    }
+}
+
+struct ProjectedAtifStepVisitor<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> Visitor<'de> for ProjectedAtifStepVisitor<'_> {
+    type Value = ProjectedAtifStep;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an ATIF step object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut seen = HashSet::new();
+        let mut step_id = None;
+        let mut timestamp = None;
+        let mut source = None;
+        let mut model_name = None;
+        let mut reasoning_effort = None;
+        let mut message = serde_json::Value::Null;
+        let mut message_seen = false;
+        let mut reasoning_content = None;
+        let mut tool_calls_nonempty = false;
+        let mut observation_present = false;
+        let mut metrics = None;
+        let mut extra = None;
+        let mut llm_call_count = None;
+        let mut is_copied_context = None;
+
+        while let Some(field) = map.next_key::<ProjectedAtifStepField>()? {
+            if field != ProjectedAtifStepField::Other && !seen.insert(field) {
+                return Err(de::Error::duplicate_field(field.name()));
+            }
+            match field {
+                ProjectedAtifStepField::StepId => step_id = Some(map.next_value::<i64>()?),
+                ProjectedAtifStepField::Timestamp => {
+                    if self.scan.wants("timestamp") {
+                        timestamp = map.next_value::<Option<String>>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::Source => source = Some(map.next_value::<String>()?),
+                ProjectedAtifStepField::ModelName => {
+                    if self.scan.wants("model_name") {
+                        model_name = map.next_value::<Option<String>>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::ReasoningEffort => {
+                    if self.scan.wants("reasoning_effort_json") {
+                        reasoning_effort = map.next_value::<Option<serde_json::Value>>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::Message => {
+                    message_seen = true;
+                    if self.scan.wants("message_json") {
+                        message = map.next_value::<serde_json::Value>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::ReasoningContent => {
+                    if self.scan.wants("reasoning_content") {
+                        reasoning_content = map.next_value::<Option<String>>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::ToolCalls => {
+                    if self.scan.wants("kind") || self.scan.wants("effective_kind") {
+                        tool_calls_nonempty = map
+                            .next_value::<Option<Vec<IgnoredAny>>>()?
+                            .is_some_and(|calls| !calls.is_empty());
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::Observation => {
+                    if self.scan.wants("had_observation") {
+                        observation_present = map.next_value::<Option<IgnoredAny>>()?.is_some();
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::Metrics => {
+                    if self.scan.wants("metrics_json")
+                        || self.scan.wants("latency_ms")
+                        || self.scan.wants("ttft_ms")
+                    {
+                        metrics = map.next_value::<Option<serde_json::Value>>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::Extra => {
+                    if self.scan.wants("extra_json") {
+                        extra = map.next_value::<Option<serde_json::Value>>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::LlmCallCount => {
+                    if self.scan.wants("llm_call_count") {
+                        llm_call_count = map.next_value::<Option<i64>>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::IsCopiedContext => {
+                    if self.scan.wants("is_copied_context") {
+                        is_copied_context = map.next_value::<Option<bool>>()?;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                ProjectedAtifStepField::Other => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        if !message_seen {
+            return Err(de::Error::missing_field("message"));
+        }
+        Ok(ProjectedAtifStep {
+            step_id: step_id.ok_or_else(|| de::Error::missing_field("step_id"))?,
+            timestamp,
+            source: source.ok_or_else(|| de::Error::missing_field("source"))?,
+            model_name,
+            reasoning_effort,
+            message,
+            reasoning_content,
+            tool_calls_nonempty,
+            observation_present,
+            metrics,
+            extra,
+            llm_call_count,
+            is_copied_context,
+        })
+    }
+}
+
+struct CountSequenceSeed;
+
+impl<'de> DeserializeSeed<'de> for CountSequenceSeed {
+    type Value = usize;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(CountSequenceVisitor)
+    }
+}
+
+struct CountSequenceVisitor;
+
+impl<'de> Visitor<'de> for CountSequenceVisitor {
+    type Value = usize;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut count = 0;
+        while sequence.next_element::<IgnoredAny>()?.is_some() {
+            count += 1;
+        }
+        Ok(count)
+    }
+}
+
+const PROJECTED_QUERY_CANCELLED: &str = "pChronicle projected query receiver closed";
+
+struct ProjectedAtifStream<'a> {
+    file: &'a Arc<FileState>,
+    runtime: &'a Arc<FileTrajectoryRuntime>,
+    schema: &'a SchemaRef,
+    batch_size: usize,
+    scan: &'a FileScanSpec,
+    tx: &'a Sender<datafusion::common::Result<RecordBatch>>,
+    pending: Vec<StoryStepRow>,
+    session_ids: HashSet<String>,
+    cancelled: bool,
+}
+
+impl<'a> ProjectedAtifStream<'a> {
+    fn new(
+        file: &'a Arc<FileState>,
+        runtime: &'a Arc<FileTrajectoryRuntime>,
+        schema: &'a SchemaRef,
+        batch_size: usize,
+        scan: &'a FileScanSpec,
+        tx: &'a Sender<datafusion::common::Result<RecordBatch>>,
+    ) -> Self {
+        Self {
+            file,
+            runtime,
+            schema,
+            batch_size,
+            scan,
+            tx,
+            pending: Vec::with_capacity(batch_size),
+            session_ids: HashSet::new(),
+            cancelled: false,
+        }
+    }
+
+    fn consume(&mut self, trajectory: ProjectedAtifTrajectory) -> Result<()> {
+        self.runtime
+            .metrics
+            .inner
+            .streamed_records
+            .fetch_add(1, Ordering::Relaxed);
+        if !project_atif_trajectory(
+            trajectory,
+            self.file,
+            self.runtime,
+            self.schema,
+            self.batch_size,
+            self.scan,
+            self.tx,
+            &mut self.pending,
+            &mut self.session_ids,
+        )? {
+            self.cancelled = true;
+            anyhow::bail!(PROJECTED_QUERY_CANCELLED);
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        if !self.cancelled {
+            let _ = emit_projected_step_batch(
+                &mut self.pending,
+                self.file,
+                self.runtime,
+                self.schema,
+                self.tx,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+struct BoundedCountingReader<R> {
+    inner: R,
+    bytes_read: u64,
+    maximum: u64,
+}
+
+impl<R> BoundedCountingReader<R> {
+    fn new(inner: R, maximum: u64) -> Self {
+        Self {
+            inner,
+            bytes_read: 0,
+            maximum,
+        }
+    }
+
+    fn bytes_read(&self) -> u64 {
+        self.bytes_read
+    }
+}
+
+impl<R: Read> Read for BoundedCountingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.maximum.saturating_sub(self.bytes_read);
+        if remaining == 0 {
+            let mut probe = [0_u8; 1];
+            if self.inner.read(&mut probe)? == 0 {
+                return Ok(0);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("trajectory input exceeded {} bytes", self.maximum),
+            ));
+        }
+        let maximum = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        let read = self.inner.read(&mut buffer[..maximum])?;
+        self.bytes_read += read as u64;
+        Ok(read)
+    }
+}
+
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+    maximum: usize,
+) -> io::Result<usize> {
+    buffer.clear();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(buffer.len());
+        }
+        let end = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if buffer.len().saturating_add(end) > maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("JSONL record exceeded max_record_bytes {maximum}"),
+            ));
+        }
+        buffer.extend_from_slice(&available[..end]);
+        let ended = available[end - 1] == b'\n';
+        reader.consume(end);
+        if ended {
+            return Ok(buffer.len());
+        }
+    }
+}
+
+/// Copy one complete top-level JSON object out of a buffered stream.
+///
+/// This scanner only discovers the record boundary; serde remains the source
+/// of truth for JSON syntax and ATIF validation. Strings and escapes are
+/// tracked so braces inside message text do not terminate the record.
+fn read_bounded_json_object<R: BufRead>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+    maximum: usize,
+) -> io::Result<usize> {
+    buffer.clear();
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "unterminated JSON object in array",
+            ));
+        }
+        let mut end = available.len();
+        let mut finished = false;
+        for (index, byte) in available.iter().copied().enumerate() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'{' | b'[' => {
+                    depth = depth.checked_add(1).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "JSON nesting depth overflow")
+                    })?;
+                }
+                b'}' | b']' => {
+                    if depth == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unexpected JSON closing delimiter",
+                        ));
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        if byte != b'}' {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "ATIF array element must be a JSON object",
+                            ));
+                        }
+                        end = index + 1;
+                        finished = true;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if buffer.len().saturating_add(end) > maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("JSON array record exceeded max_record_bytes {maximum}"),
+            ));
+        }
+        buffer.extend_from_slice(&available[..end]);
+        reader.consume(end);
+        if finished {
+            return Ok(buffer.len());
+        }
+    }
+}
+
+fn trim_ascii_whitespace(mut input: &[u8]) -> &[u8] {
+    while input.first().is_some_and(u8::is_ascii_whitespace) {
+        input = &input[1..];
+    }
+    while input.last().is_some_and(u8::is_ascii_whitespace) {
+        input = &input[..input.len() - 1];
+    }
+    input
+}
+
+fn first_non_whitespace<R: BufRead>(reader: &mut R) -> io::Result<Option<u8>> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(None);
+        }
+        if let Some(index) = available
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+        {
+            let first = available[index];
+            reader.consume(index);
+            return Ok(Some(first));
+        }
+        let length = available.len();
+        reader.consume(length);
+    }
+}
+
+fn is_ndjson(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "jsonl" | "ndjson"))
+}
+
+fn stream_projected_atif_array<R: BufRead>(
+    reader: &mut R,
+    reader_capacity: usize,
+    stream: &mut ProjectedAtifStream<'_>,
+    maximum_record_bytes: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        first_non_whitespace(reader)? == Some(b'['),
+        "projected ATIF array must start with '['"
+    );
+    reader.consume(1);
+
+    let mut first = true;
+    let mut ordinal = 0_usize;
+    let mut record = Vec::new();
+    loop {
+        if !first {
+            match first_non_whitespace(reader)? {
+                Some(b']') => {
+                    reader.consume(1);
+                    anyhow::ensure!(
+                        first_non_whitespace(reader)?.is_none(),
+                        "trailing content after ATIF JSON array"
+                    );
+                    return Ok(());
+                }
+                Some(b',') => reader.consume(1),
+                Some(other) => {
+                    anyhow::bail!("ATIF JSON array expected ',' or ']', found byte 0x{other:02x}")
+                }
+                None => anyhow::bail!("unterminated ATIF JSON array"),
+            }
+        }
+
+        match first_non_whitespace(reader)? {
+            Some(b']') if first => anyhow::bail!("ATIF input contains no trajectories"),
+            Some(b'{') => {}
+            Some(other) => {
+                anyhow::bail!("ATIF JSON array element must be an object, found byte 0x{other:02x}")
+            }
+            None => anyhow::bail!("unterminated ATIF JSON array"),
+        }
+
+        ordinal += 1;
+        read_bounded_json_object(reader, &mut record, maximum_record_bytes)
+            .with_context(|| format!("read projected ATIF array element {ordinal}"))?;
+        stream
+            .runtime
+            .metrics
+            .inner
+            .streaming_buffer_peak_bytes
+            .fetch_max(
+                reader_capacity.saturating_add(record.capacity()) as u64,
+                Ordering::Relaxed,
+            );
+        let mut deserializer = serde_json::Deserializer::from_slice(&record);
+        let trajectory = ProjectedAtifTrajectorySeed { scan: stream.scan }
+            .deserialize(&mut deserializer)
+            .with_context(|| format!("parse projected ATIF array element {ordinal}"))?;
+        deserializer
+            .end()
+            .with_context(|| format!("finish projected ATIF array element {ordinal}"))?;
+        stream.consume(trajectory)?;
+        first = false;
+    }
 }
 
 fn stream_projected_atif_steps(
@@ -673,7 +1385,7 @@ fn stream_projected_atif_steps(
     batch_size: usize,
     scan: &FileScanSpec,
     tx: &Sender<datafusion::common::Result<RecordBatch>>,
-) -> Result<bool> {
+) -> Result<()> {
     let _permit = runtime.limiter.acquire()?;
     file.file.validate_unchanged()?;
     anyhow::ensure!(
@@ -683,41 +1395,114 @@ fn stream_projected_atif_steps(
         file.file.size_bytes(),
         runtime.options.max_file_bytes
     );
-    let content = fs::read_to_string(file.file.path())
-        .with_context(|| format!("read ATIF input {}", file.file.path().display()))?;
-    anyhow::ensure!(
-        content.len() as u64 <= runtime.options.max_file_bytes,
-        "ATIF input {} exceeded max_file_bytes {} while reading",
-        file.file.path().display(),
-        runtime.options.max_file_bytes
+    let input = File::open(file.file.path())
+        .with_context(|| format!("open ATIF input {}", file.file.path().display()))?;
+    let mut reader = BufReader::with_capacity(
+        64 * 1024,
+        BoundedCountingReader::new(input, runtime.options.max_file_bytes),
     );
-    file.file.validate_unchanged()?;
+    runtime
+        .metrics
+        .inner
+        .streaming_buffer_peak_bytes
+        .fetch_max(reader.capacity() as u64, Ordering::Relaxed);
+    let mut stream = ProjectedAtifStream::new(file, runtime, schema, batch_size, scan, tx);
 
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("ATIF input is empty: {}", file.file.path().display());
+    if is_ndjson(file.file.path()) {
+        let mut record = Vec::new();
+        let mut line_number = 0_usize;
+        let mut parsed_records = 0_usize;
+        loop {
+            let read =
+                read_bounded_line(&mut reader, &mut record, runtime.options.max_record_bytes)
+                    .with_context(|| {
+                        format!("read projected ATIF JSONL {}", file.file.path().display())
+                    })?;
+            if read == 0 {
+                break;
+            }
+            line_number += 1;
+            runtime.metrics.inner.streaming_buffer_peak_bytes.fetch_max(
+                reader.capacity().saturating_add(record.capacity()) as u64,
+                Ordering::Relaxed,
+            );
+            let record = trim_ascii_whitespace(&record);
+            if record.is_empty() {
+                continue;
+            }
+            let mut deserializer = serde_json::Deserializer::from_slice(record);
+            let trajectory = ProjectedAtifTrajectorySeed { scan }
+                .deserialize(&mut deserializer)
+                .with_context(|| {
+                    format!(
+                        "parse projected ATIF JSONL {} line {line_number}",
+                        file.file.path().display()
+                    )
+                })?;
+            deserializer.end().with_context(|| {
+                format!(
+                    "finish projected ATIF JSONL {} line {line_number}",
+                    file.file.path().display()
+                )
+            })?;
+            if let Err(error) = stream.consume(trajectory) {
+                if stream.cancelled {
+                    break;
+                }
+                return Err(error);
+            }
+            parsed_records += 1;
+        }
+        anyhow::ensure!(
+            parsed_records > 0 || stream.cancelled,
+            "ATIF input contains no trajectories: {}",
+            file.file.path().display()
+        );
+    } else {
+        let shape = first_non_whitespace(&mut reader)
+            .with_context(|| format!("inspect ATIF input {}", file.file.path().display()))?
+            .with_context(|| format!("ATIF input is empty: {}", file.file.path().display()))?;
+        let result = match shape {
+            b'{' => {
+                let mut deserializer = serde_json::Deserializer::from_reader(&mut reader);
+                let result = ProjectedAtifTrajectorySeed { scan }
+                    .deserialize(&mut deserializer)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|trajectory| stream.consume(trajectory));
+                match result {
+                    Ok(()) => deserializer.end().map_err(anyhow::Error::from),
+                    Err(error) => Err(error),
+                }
+            }
+            b'[' => {
+                let reader_capacity = reader.capacity();
+                stream_projected_atif_array(
+                    &mut reader,
+                    reader_capacity,
+                    &mut stream,
+                    runtime.options.max_record_bytes,
+                )
+            }
+            _ => anyhow::bail!(
+                "ATIF input {} must contain an object, array, JSONL, or NDJSON",
+                file.file.path().display()
+            ),
+        };
+        if let Err(error) = result {
+            if !stream.cancelled {
+                return Err(error).with_context(|| {
+                    format!("parse projected ATIF input {}", file.file.path().display())
+                });
+            }
+        }
     }
-    // Arrays and pretty-printed/envelope documents retain the compatibility
-    // parser. The fast path targets single compact objects and JSONL/NDJSON,
-    // which are the scalable direct-query representations.
-    if trimmed.starts_with('[') || trimmed.starts_with("{\n") || trimmed.starts_with("{\r\n") {
-        return Ok(false);
-    }
-
-    let is_jsonl = trimmed
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count()
-        > 1;
-    if !is_jsonl && serde_json::from_str::<ProjectedAtifTrajectory<'_>>(trimmed).is_err() {
-        return Ok(false);
-    }
-
+    stream.finish()?;
+    let bytes_read = reader.get_ref().bytes_read();
     runtime
         .metrics
         .inner
         .source_bytes_read
-        .fetch_add(content.len() as u64, Ordering::Relaxed);
+        .fetch_add(bytes_read, Ordering::Relaxed);
     runtime
         .metrics
         .inner
@@ -728,55 +1513,15 @@ fn stream_projected_atif_steps(
         .inner
         .projected_files
         .fetch_add(1, Ordering::Relaxed);
-
-    let mut pending = Vec::<StoryStepRow>::with_capacity(batch_size);
-    let mut session_ids = HashSet::new();
-    if is_jsonl {
-        for (index, line) in trimmed
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| !line.trim().is_empty())
-        {
-            let trajectory: ProjectedAtifTrajectory<'_> = serde_json::from_str(line.trim())
-                .with_context(|| format!("parse projected ATIF JSONL line {}", index + 1))?;
-            if !project_atif_trajectory(
-                trajectory,
-                file,
-                runtime,
-                schema,
-                batch_size,
-                scan,
-                tx,
-                &mut pending,
-                &mut session_ids,
-            )? {
-                return Ok(true);
-            }
-        }
-    } else {
-        let trajectory: ProjectedAtifTrajectory<'_> =
-            serde_json::from_str(trimmed).with_context(|| {
-                format!("parse projected ATIF input {}", file.file.path().display())
-            })?;
-        let _ = project_atif_trajectory(
-            trajectory,
-            file,
-            runtime,
-            schema,
-            batch_size,
-            scan,
-            tx,
-            &mut pending,
-            &mut session_ids,
-        )?;
+    if !stream.cancelled {
+        file.file.validate_unchanged()?;
     }
-    emit_projected_step_batch(&mut pending, file, runtime, schema, tx)?;
-    Ok(true)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn project_atif_trajectory(
-    trajectory: ProjectedAtifTrajectory<'_>,
+    trajectory: ProjectedAtifTrajectory,
     file: &Arc<FileState>,
     runtime: &Arc<FileTrajectoryRuntime>,
     schema: &SchemaRef,
@@ -786,7 +1531,12 @@ fn project_atif_trajectory(
     pending: &mut Vec<StoryStepRow>,
     session_ids: &mut HashSet<String>,
 ) -> Result<bool> {
-    let session_id = trajectory.effective_session_id()?;
+    let session_id = trajectory.effective_session_id()?.to_string();
+    let run_id = trajectory
+        .trajectory_id
+        .as_deref()
+        .unwrap_or(&session_id)
+        .to_string();
     anyhow::ensure!(
         !trajectory.agent.name.is_empty(),
         "ATIF agent.name is required"
@@ -795,9 +1545,9 @@ fn project_atif_trajectory(
         !trajectory.agent.version.is_empty(),
         "ATIF agent.version is required"
     );
-    let _ = trajectory.schema_version;
+    let _ = &trajectory.schema_version;
     anyhow::ensure!(
-        session_ids.insert(session_id.to_string()),
+        session_ids.insert(session_id.clone()),
         "duplicate ATIF session_id '{}' in {}",
         session_id,
         file.file.path().display()
@@ -811,8 +1561,8 @@ fn project_atif_trajectory(
         .metrics
         .inner
         .rows_scanned
-        .fetch_add(trajectory.steps.len() as u64, Ordering::Relaxed);
-    if !scan.matches_document(session_id) {
+        .fetch_add(trajectory.step_count() as u64, Ordering::Relaxed);
+    if !scan.matches_document(&session_id) {
         runtime
             .metrics
             .inner
@@ -822,15 +1572,13 @@ fn project_atif_trajectory(
             .metrics
             .inner
             .rows_pruned
-            .fetch_add(trajectory.steps.len() as u64, Ordering::Relaxed);
+            .fetch_add(trajectory.step_count() as u64, Ordering::Relaxed);
         return Ok(true);
     }
 
     let mut rows = Vec::with_capacity(trajectory.steps.len());
     let mut step_ids = HashSet::with_capacity(trajectory.steps.len());
-    for raw_step in &trajectory.steps {
-        let step: ProjectedAtifStep<'_> = serde_json::from_str(raw_step.get())
-            .with_context(|| format!("parse projected ATIF step in session {session_id}"))?;
+    for step in trajectory.steps {
         anyhow::ensure!(step.step_id >= 1, "ATIF step_id must start from 1");
         anyhow::ensure!(
             step_ids.insert(step.step_id),
@@ -846,7 +1594,7 @@ fn project_atif_trajectory(
                 .fetch_add(1, Ordering::Relaxed);
             continue;
         }
-        rows.push(project_atif_step(&trajectory, session_id, step, scan)?);
+        rows.push(project_atif_step(&run_id, &session_id, step, scan));
     }
     rows.sort_by_key(|row| row.step_id);
     runtime
@@ -866,30 +1614,21 @@ fn project_atif_trajectory(
 }
 
 fn project_atif_step(
-    trajectory: &ProjectedAtifTrajectory<'_>,
+    run_id: &str,
     session_id: &str,
-    step: ProjectedAtifStep<'_>,
+    step: ProjectedAtifStep,
     scan: &FileScanSpec,
-) -> Result<StoryStepRow> {
+) -> StoryStepRow {
     let wants_kind = scan.wants("kind");
     let wants_effective_kind = scan.wants("effective_kind");
-    let tool_calls_nonempty = if wants_kind || wants_effective_kind {
-        step.tool_calls
-            .map(|raw| serde_json::from_str::<Vec<&RawValue>>(raw.get()))
-            .transpose()
-            .context("parse ATIF tool_calls for projected kind")?
-            .is_some_and(|calls| !calls.is_empty())
-    } else {
-        false
-    };
-    let effective_kind = match step.source.as_ref() {
+    let effective_kind = match step.source.as_str() {
         "user" => "dialogue",
         "system" => "internal",
-        "agent" if tool_calls_nonempty => "autonomous",
+        "agent" if step.tool_calls_nonempty => "autonomous",
         _ => "dialogue",
     };
     let kind = if matches!(
-        (step.source.as_ref(), effective_kind),
+        (step.source.as_str(), effective_kind),
         ("user", "dialogue") | ("system", "internal") | ("agent", "dialogue")
     ) {
         None
@@ -897,20 +1636,8 @@ fn project_atif_step(
         Some(effective_kind.to_string())
     };
 
-    let needs_metrics =
-        scan.wants("metrics_json") || scan.wants("latency_ms") || scan.wants("ttft_ms");
-    let metrics = if needs_metrics {
-        step.metrics
-            .map(|raw| serde_json::from_str(raw.get()))
-            .transpose()
-            .context("parse projected ATIF metrics")?
-    } else {
-        None
-    };
-    let (latency_ms, ttft_ms) = projected_timing_from_metrics(metrics.as_ref());
-    let run_id = trajectory.trajectory_id.as_deref().unwrap_or(session_id);
-
-    Ok(StoryStepRow {
+    let (latency_ms, ttft_ms) = projected_timing_from_metrics(step.metrics.as_ref());
+    StoryStepRow {
         run_id: if scan.wants("run_id") {
             run_id.to_string()
         } else {
@@ -928,32 +1655,29 @@ fn project_atif_step(
         } else {
             String::new()
         },
-        timestamp: scan
-            .wants("timestamp")
-            .then_some(step.timestamp.map(Cow::into_owned))
-            .flatten(),
+        timestamp: scan.wants("timestamp").then_some(step.timestamp).flatten(),
         source: if scan.wants("source") {
-            step.source.into_owned()
+            step.source
         } else {
             String::new()
         },
         message: if scan.wants("message_json") {
-            serde_json::from_str(step.message.get()).context("parse projected ATIF message")?
+            step.message
         } else {
             serde_json::Value::Null
         },
         reasoning_content: scan
             .wants("reasoning_content")
-            .then_some(step.reasoning_content.map(Cow::into_owned))
+            .then_some(step.reasoning_content)
             .flatten(),
-        reasoning_effort: projected_json_value(
-            step.reasoning_effort,
-            scan.wants("reasoning_effort_json"),
-        )?,
-        metrics: scan.wants("metrics_json").then_some(metrics).flatten(),
+        reasoning_effort: scan
+            .wants("reasoning_effort_json")
+            .then_some(step.reasoning_effort)
+            .flatten(),
+        metrics: scan.wants("metrics_json").then_some(step.metrics).flatten(),
         model_name: scan
             .wants("model_name")
-            .then_some(step.model_name.map(Cow::into_owned))
+            .then_some(step.model_name)
             .flatten(),
         llm_call_count: scan
             .wants("llm_call_count")
@@ -965,17 +1689,9 @@ fn project_atif_step(
             .flatten(),
         latency_ms: scan.wants("latency_ms").then_some(latency_ms).flatten(),
         ttft_ms: scan.wants("ttft_ms").then_some(ttft_ms).flatten(),
-        had_observation: scan.wants("had_observation") && step.observation.is_some(),
-        extra: projected_json_value(step.extra, scan.wants("extra_json"))?,
-    })
-}
-
-fn projected_json_value(raw: Option<&RawValue>, wanted: bool) -> Result<Option<serde_json::Value>> {
-    if !wanted {
-        return Ok(None);
+        had_observation: scan.wants("had_observation") && step.observation_present,
+        extra: scan.wants("extra_json").then_some(step.extra).flatten(),
     }
-    raw.map(|value| serde_json::from_str(value.get()).map_err(anyhow::Error::from))
-        .transpose()
 }
 
 fn projected_timing_from_metrics(
@@ -1765,6 +2481,10 @@ fn validate_options(options: FileTrajectoryDataSourceOptions) -> Result<()> {
     anyhow::ensure!(
         options.max_file_bytes > 0,
         "local query max_file_bytes must be greater than zero"
+    );
+    anyhow::ensure!(
+        options.max_record_bytes > 0,
+        "local query max_record_bytes must be greater than zero"
     );
     anyhow::ensure!(
         options.max_concurrent_files > 0,
