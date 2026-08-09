@@ -1,13 +1,15 @@
 //! Storyline-native normalized Lance store.
 //!
-//! `CURRENT` pins one exact MVCC version from each of the three Lance datasets.
+//! `CURRENT` pins one exact MVCC version from each normalized Lance dataset and
+//! the shared content-addressed object dataset.
 //! A replacement deletes and appends rows for only the requested sessions,
 //! then moves `CURRENT` after all table versions are durable. Readers therefore
 //! never observe a partially updated Storyline.
 //!
 //! ```text
 //! root/
-//!   CURRENT  # logical snapshot id + three Lance version ids
+//!   CURRENT  # logical snapshot id + exact table/object version ids
+//!   objects.lance/
 //!   generations/<table-generation>/
 //!     runs.lance/
 //!     steps.lance/
@@ -39,13 +41,19 @@ use object_store::path::Path as ObjectPath;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
+use crate::convert::atif_to_storyline;
 use crate::storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
 use crate::StorylineDocument;
 
-use super::atif_datafusion::atif_table_streams;
+use super::atif_datafusion::AtifReader;
+use super::storyline_content::{
+    commit_pending_content, externalize_batches, hydrate_batches, open_objects, PendingContent,
+    StorylineContentOptions, STORYLINE_OBJECTS_DATASET,
+};
+use super::storyline_datafusion::StorylineTableKind;
 use super::storyline_lance_rows::{
     story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
     story_steps_from_batch, story_steps_to_batch, story_tool_calls_arrow_schema,
@@ -85,9 +93,11 @@ pub struct StorylineTablePaths {
     pub runs: PathBuf,
     pub steps: PathBuf,
     pub tool_calls: PathBuf,
+    pub objects: PathBuf,
     pub runs_version: u64,
     pub steps_version: u64,
     pub tool_calls_version: u64,
+    pub objects_version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +109,7 @@ struct StorylineSnapshotPointer {
     runs_version: u64,
     steps_version: u64,
     tool_calls_version: u64,
+    objects_version: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +119,7 @@ pub struct StorylineLanceStore {
     object_store: std::sync::Arc<ObjectStore>,
     object_root: ObjectPath,
     write_lock: Arc<tokio::sync::Mutex<()>>,
+    content_options: StorylineContentOptions,
 }
 
 struct StoreWriteGuard {
@@ -156,6 +168,21 @@ impl StorylineLanceStore {
         Self::open_uri(root_uri).await
     }
 
+    pub async fn open_with_content_options(
+        root: impl AsRef<Path>,
+        content_options: StorylineContentOptions,
+    ) -> Result<Self> {
+        let content_options = content_options.validate()?;
+        let root = root.as_ref().to_path_buf();
+        tokio::fs::create_dir_all(root.join(GENERATIONS_DIR))
+            .await
+            .with_context(|| format!("create Storyline Lance root {}", root.display()))?;
+        let root_uri = root
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Storyline Lance root is not valid UTF-8"))?;
+        Self::open_uri_with_content_options(root_uri, content_options).await
+    }
+
     /// Open a Storyline store at a local path or object-store URI.
     ///
     /// `s3://`, `az://`, and `gs://` use Lance's standard credential and
@@ -165,6 +192,17 @@ impl StorylineLanceStore {
         let store = Self::open_uri_unchecked(root).await?;
         // Fail early on a malformed or dangling commit pointer for callers
         // opening the store directly.
+        let _ = store.current_table_paths().await?;
+        Ok(store)
+    }
+
+    pub async fn open_uri_with_content_options(
+        root: impl AsRef<str>,
+        content_options: StorylineContentOptions,
+    ) -> Result<Self> {
+        let content_options = content_options.validate()?;
+        let mut store = Self::open_uri_unchecked(root).await?;
+        store.content_options = content_options;
         let _ = store.current_table_paths().await?;
         Ok(store)
     }
@@ -180,6 +218,7 @@ impl StorylineLanceStore {
             root_uri,
             object_store,
             object_root,
+            content_options: StorylineContentOptions::default(),
         })
     }
 
@@ -246,6 +285,7 @@ impl StorylineLanceStore {
                 &paths.tool_calls,
                 paths.tool_calls_version
             ),
+            validate_table(&paths.generation, &paths.objects, paths.objects_version),
         )?;
         Ok(Some(paths))
     }
@@ -259,6 +299,7 @@ impl StorylineLanceStore {
         paths.runs_version = pointer.runs_version;
         paths.steps_version = pointer.steps_version;
         paths.tool_calls_version = pointer.tool_calls_version;
+        paths.objects_version = pointer.objects_version;
         Ok(Some(paths))
     }
 
@@ -289,30 +330,14 @@ impl StorylineLanceStore {
         let contents = std::str::from_utf8(&contents)
             .context("Storyline commit pointer is not valid UTF-8")?
             .trim();
-        let pointer = if contents.starts_with('{') {
-            serde_json::from_str::<StorylineSnapshotPointer>(contents)
-                .context("decode Storyline snapshot pointer")?
-        } else {
-            // Compatibility with the original pointer, which contained only a
-            // generation name and implicitly selected each dataset's latest
-            // version.
+        if !contents.starts_with('{') {
             validate_generation_name(contents)?;
-            let paths = self.paths_for_generation(contents);
-            let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
-                latest_table_version(&paths.runs),
-                latest_table_version(&paths.steps),
-                latest_table_version(&paths.tool_calls),
-            )
-            .with_context(|| format!("Storyline generation '{contents}' is incomplete"))?;
-            StorylineSnapshotPointer {
-                generation: contents.to_string(),
-                parent_generation: None,
-                table_generation: contents.to_string(),
-                runs_version,
-                steps_version,
-                tool_calls_version,
-            }
-        };
+            anyhow::bail!(
+                "Storyline generation '{contents}' is incomplete: CURRENT must pin all table and object versions"
+            );
+        }
+        let pointer = serde_json::from_str::<StorylineSnapshotPointer>(contents)
+            .context("decode Storyline snapshot pointer")?;
         validate_generation_name(&pointer.generation)?;
         if let Some(parent) = &pointer.parent_generation {
             validate_generation_name(parent)?;
@@ -337,58 +362,15 @@ impl StorylineLanceStore {
         &self,
         input: impl AsRef<Path>,
     ) -> Result<StorylineStreamImportReport> {
-        let _guard = self.acquire_write_guard().await?;
         anyhow::ensure!(
             self.resolve_current_table_paths().await?.is_none(),
             "streaming ATIF create requires an empty Storyline store"
         );
-        let streams = atif_table_streams(input.as_ref(), WRITE_BATCH_ROWS)?;
-        let run_reader = streams.runs;
-        let step_reader = streams.steps;
-        let tool_call_reader = streams.tool_calls;
-        let completion = streams.completion;
-
-        let generation = next_generation();
-        let paths = self.paths_for_generation(&generation);
-        let write_result = async {
-            let writes = tokio::try_join!(
-                write_record_batch_reader(&paths.runs, run_reader, &RUN_INDEXES),
-                write_record_batch_reader(&paths.steps, step_reader, &STEP_INDEXES),
-                write_record_batch_reader(&paths.tool_calls, tool_call_reader, &TOOL_CALL_INDEXES,),
-            );
-            let produced = completion
-                .join()
-                .map_err(|_| anyhow::anyhow!("ATIF streaming producer panicked"))?;
-            let (runs_version, steps_version, tool_calls_version) = writes?;
-            let stats = produced?;
-            let snapshot = next_generation();
-            self.commit_snapshot(
-                &StorylineSnapshotPointer {
-                    generation: snapshot.clone(),
-                    parent_generation: None,
-                    table_generation: generation.clone(),
-                    runs_version,
-                    steps_version,
-                    tool_calls_version,
-                },
-                None,
-            )
-            .await?;
-            Ok(StorylineStreamImportReport {
-                generation: snapshot,
-                storylines: stats.document_count,
-                steps: stats.step_count,
-                tool_calls: stats.tool_call_count,
-            })
-        }
-        .await;
-        if write_result.is_err() {
-            let _ = self
-                .object_store
-                .remove_dir_all(self.generation_object_path(&generation))
-                .await;
-        }
-        write_result
+        let stories = AtifReader::open(input.as_ref())?.map(|trajectory| {
+            let trajectory = trajectory?;
+            atif_to_storyline(&trajectory).map_err(anyhow::Error::from)
+        });
+        self.replace_storyline_stream(stories).await
     }
 
     /// Atomically replace a stream of Storylines without retaining the whole
@@ -424,71 +406,87 @@ impl StorylineLanceStore {
                 report.storylines += chunk.runs.len();
                 report.steps += chunk.steps.len();
                 report.tool_calls += chunk.tool_calls.len();
+                let externalized = externalize_rows(
+                    chunk.runs,
+                    chunk.steps,
+                    chunk.tool_calls,
+                    self.content_options,
+                )?;
+                let ExternalizedStorylineBatches {
+                    runs: run_batches,
+                    steps: step_batches,
+                    tool_calls: tool_call_batches,
+                    pending,
+                } = externalized;
 
                 paths = Some(match paths {
                     None => {
                         let generation = next_generation();
                         let mut created = self.paths_for_generation(&generation);
+                        let objects_version =
+                            commit_pending_content(&created.objects, None, pending).await?;
                         let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
-                            write_rows(
+                            write_batches(
                                 &created.runs,
-                                chunk.runs,
+                                run_batches,
                                 story_runs_arrow_schema(),
-                                story_runs_to_batch,
                                 &RUN_INDEXES,
                             ),
-                            write_rows(
+                            write_batches(
                                 &created.steps,
-                                chunk.steps,
+                                step_batches,
                                 story_steps_arrow_schema(),
-                                story_steps_to_batch,
                                 &STEP_INDEXES,
                             ),
-                            write_rows(
+                            write_batches(
                                 &created.tool_calls,
-                                chunk.tool_calls,
+                                tool_call_batches,
                                 story_tool_calls_arrow_schema(),
-                                story_tool_calls_to_batch,
                                 &TOOL_CALL_INDEXES,
                             ),
                         )?;
                         created.runs_version = runs_version;
                         created.steps_version = steps_version;
                         created.tool_calls_version = tool_calls_version;
+                        created.objects_version = objects_version;
                         new_table_generation = Some(generation);
                         created
                     }
                     Some(mut current) => {
                         let predicate = session_set_predicate(&chunk.session_ids);
+                        let objects_version = commit_pending_content(
+                            &current.objects,
+                            Some(current.objects_version),
+                            pending,
+                        )
+                        .await?;
                         let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
-                            replace_table_rows(
+                            replace_table_batches(
                                 &current.runs,
                                 current.runs_version,
                                 &predicate,
-                                chunk.runs,
+                                run_batches,
                                 story_runs_arrow_schema(),
-                                story_runs_to_batch,
                             ),
-                            replace_table_rows(
+                            replace_table_batches(
                                 &current.steps,
                                 current.steps_version,
                                 &predicate,
-                                chunk.steps,
+                                step_batches,
                                 story_steps_arrow_schema(),
-                                story_steps_to_batch,
                             ),
-                            replace_table_rows(
+                            replace_table_batches(
                                 &current.tool_calls,
                                 current.tool_calls_version,
                                 &predicate,
-                                chunk.tool_calls,
+                                tool_call_batches,
                                 story_tool_calls_arrow_schema(),
-                                story_tool_calls_to_batch,
                             ),
                         )?;
                         current.runs_version = runs_version;
                         current.steps_version = steps_version;
                         current.tool_calls_version = tool_calls_version;
+                        current.objects_version = objects_version;
                         current
                     }
                 });
@@ -555,6 +553,7 @@ impl StorylineLanceStore {
                     runs_version,
                     steps_version,
                     tool_calls_version,
+                    objects_version: current.objects_version,
                 },
                 expected_generation.as_deref(),
             )
@@ -611,6 +610,7 @@ impl StorylineLanceStore {
                 tool_calls_version: tool_calls
                     .final_version
                     .context("missing maintained tool_calls version")?,
+                objects_version: paths.objects_version,
             },
             Some(&paths.generation),
         )
@@ -709,6 +709,12 @@ impl StorylineLanceStore {
             read_filtered_batches(&paths.steps, paths.steps_version, &predicate),
             read_filtered_batches(&paths.tool_calls, paths.tool_calls_version, &predicate),
         )?;
+        let objects = Arc::new(open_objects(&paths.objects, paths.objects_version).await?);
+        let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
+            hydrate_batches(&objects, run_batches, StorylineTableKind::Runs),
+            hydrate_batches(&objects, step_batches, StorylineTableKind::Steps),
+            hydrate_batches(&objects, tool_call_batches, StorylineTableKind::ToolCalls,),
+        )?;
         let mut runs = HashMap::with_capacity(session_ids.len());
         for run in decode_run_batches(&run_batches)? {
             let session_id = run.session_id.clone();
@@ -753,28 +759,30 @@ impl StorylineLanceStore {
         let Some(paths) = self.resolve_current_table_paths().await? else {
             return Ok(Vec::new());
         };
-        decode_step_batches(
-            &read_filtered_batches(
-                &paths.steps,
-                paths.steps_version,
-                &session_predicate(session_id),
-            )
-            .await?,
+        let batches = read_filtered_batches(
+            &paths.steps,
+            paths.steps_version,
+            &session_predicate(session_id),
         )
+        .await?;
+        let objects = Arc::new(open_objects(&paths.objects, paths.objects_version).await?);
+        let batches = hydrate_batches(&objects, batches, StorylineTableKind::Steps).await?;
+        decode_step_batches(&batches)
     }
 
     pub async fn list_tool_calls(&self, session_id: &str) -> Result<Vec<StoryToolCallRow>> {
         let Some(paths) = self.resolve_current_table_paths().await? else {
             return Ok(Vec::new());
         };
-        decode_tool_call_batches(
-            &read_filtered_batches(
-                &paths.tool_calls,
-                paths.tool_calls_version,
-                &session_predicate(session_id),
-            )
-            .await?,
+        let batches = read_filtered_batches(
+            &paths.tool_calls,
+            paths.tool_calls_version,
+            &session_predicate(session_id),
         )
+        .await?;
+        let objects = Arc::new(open_objects(&paths.objects, paths.objects_version).await?);
+        let batches = hydrate_batches(&objects, batches, StorylineTableKind::ToolCalls).await?;
+        decode_tool_call_batches(&batches)
     }
 
     async fn create_initial_snapshot(
@@ -785,27 +793,33 @@ impl StorylineLanceStore {
     ) -> Result<()> {
         let generation = next_generation();
         let paths = self.paths_for_generation(&generation);
+        let ExternalizedStorylineBatches {
+            runs: run_batches,
+            steps: step_batches,
+            tool_calls: tool_call_batches,
+            pending,
+        } = externalize_rows(runs, steps, tool_calls, self.content_options)?;
         let write_result = async {
+            // Objects become durable before any descriptor can become visible.
+            // A later failure can leave unreachable objects, never dangling refs.
+            let objects_version = commit_pending_content(&paths.objects, None, pending).await?;
             let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
-                write_rows(
+                write_batches(
                     &paths.runs,
-                    runs,
+                    run_batches,
                     story_runs_arrow_schema(),
-                    story_runs_to_batch,
                     &RUN_INDEXES,
                 ),
-                write_rows(
+                write_batches(
                     &paths.steps,
-                    steps,
+                    step_batches,
                     story_steps_arrow_schema(),
-                    story_steps_to_batch,
                     &STEP_INDEXES,
                 ),
-                write_rows(
+                write_batches(
                     &paths.tool_calls,
-                    tool_calls,
+                    tool_call_batches,
                     story_tool_calls_arrow_schema(),
-                    story_tool_calls_to_batch,
                     &TOOL_CALL_INDEXES,
                 ),
             )?;
@@ -817,6 +831,7 @@ impl StorylineLanceStore {
                     runs_version,
                     steps_version,
                     tool_calls_version,
+                    objects_version,
                 },
                 None,
             )
@@ -841,30 +856,35 @@ impl StorylineLanceStore {
         tool_calls: Vec<StoryToolCallRow>,
     ) -> Result<()> {
         let predicate = session_set_predicate(session_ids);
+        let ExternalizedStorylineBatches {
+            runs: run_batches,
+            steps: step_batches,
+            tool_calls: tool_call_batches,
+            pending,
+        } = externalize_rows(runs, steps, tool_calls, self.content_options)?;
+        let objects_version =
+            commit_pending_content(&paths.objects, Some(paths.objects_version), pending).await?;
         let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
-            replace_table_rows(
+            replace_table_batches(
                 &paths.runs,
                 paths.runs_version,
                 &predicate,
-                runs,
+                run_batches,
                 story_runs_arrow_schema(),
-                story_runs_to_batch,
             ),
-            replace_table_rows(
+            replace_table_batches(
                 &paths.steps,
                 paths.steps_version,
                 &predicate,
-                steps,
+                step_batches,
                 story_steps_arrow_schema(),
-                story_steps_to_batch,
             ),
-            replace_table_rows(
+            replace_table_batches(
                 &paths.tool_calls,
                 paths.tool_calls_version,
                 &predicate,
-                tool_calls,
+                tool_call_batches,
                 story_tool_calls_arrow_schema(),
-                story_tool_calls_to_batch,
             ),
         )?;
         self.commit_snapshot(
@@ -875,6 +895,7 @@ impl StorylineLanceStore {
                 runs_version,
                 steps_version,
                 tool_calls_version,
+                objects_version,
             },
             Some(&paths.generation),
         )
@@ -898,9 +919,11 @@ impl StorylineLanceStore {
                 &base,
                 &[&format!("{STORY_TOOL_CALLS_TABLE}.lance")],
             )),
+            objects: PathBuf::from(join_location(&self.root_uri, &[STORYLINE_OBJECTS_DATASET])),
             runs_version: 0,
             steps_version: 0,
             tool_calls_version: 0,
+            objects_version: 0,
         }
     }
 
@@ -921,6 +944,12 @@ impl StorylineLanceStore {
             read_batches(&paths.runs, paths.runs_version),
             read_batches(&paths.steps, paths.steps_version),
             read_batches(&paths.tool_calls, paths.tool_calls_version),
+        )?;
+        let objects = Arc::new(open_objects(&paths.objects, paths.objects_version).await?);
+        let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
+            hydrate_batches(&objects, run_batches, StorylineTableKind::Runs),
+            hydrate_batches(&objects, step_batches, StorylineTableKind::Steps),
+            hydrate_batches(&objects, tool_call_batches, StorylineTableKind::ToolCalls,),
         )?;
         let runs = decode_run_batches(&run_batches)?;
         let steps = decode_step_batches(&step_batches)?;
@@ -1175,56 +1204,112 @@ impl<T> Iterator for EncodedBatchIterator<T> {
     }
 }
 
-fn encoded_batch_reader<T: Send + Sync + 'static>(
+fn encode_rows<T>(
     rows: Vec<T>,
-    schema: SchemaRef,
     encode: fn(&[T]) -> Result<RecordBatch>,
-) -> RecordBatchIterator<EncodedBatchIterator<T>> {
-    RecordBatchIterator::new(EncodedBatchIterator::new(rows, encode), schema)
+) -> Result<Vec<RecordBatch>> {
+    EncodedBatchIterator::new(rows, encode)
+        .map(|batch| batch.map_err(anyhow::Error::from))
+        .collect()
 }
 
-async fn write_rows<T: Send + Sync + 'static>(
-    path: &Path,
-    rows: Vec<T>,
+struct ExternalizedStorylineBatches {
+    runs: Vec<RecordBatch>,
+    steps: Vec<RecordBatch>,
+    tool_calls: Vec<RecordBatch>,
+    pending: PendingContent,
+}
+
+fn externalize_rows(
+    runs: Vec<StoryRunRow>,
+    steps: Vec<StoryStepRow>,
+    tool_calls: Vec<StoryToolCallRow>,
+    options: StorylineContentOptions,
+) -> Result<ExternalizedStorylineBatches> {
+    let mut pending = PendingContent::default();
+    let runs = externalize_batches(
+        encode_rows(runs, story_runs_to_batch)?,
+        StorylineTableKind::Runs,
+        options,
+        &mut pending,
+    )?;
+    let steps = externalize_batches(
+        encode_rows(steps, story_steps_to_batch)?,
+        StorylineTableKind::Steps,
+        options,
+        &mut pending,
+    )?;
+    let tool_calls = externalize_batches(
+        encode_rows(tool_calls, story_tool_calls_to_batch)?,
+        StorylineTableKind::ToolCalls,
+        options,
+        &mut pending,
+    )?;
+    Ok(ExternalizedStorylineBatches {
+        runs,
+        steps,
+        tool_calls,
+        pending,
+    })
+}
+
+fn batch_reader(
+    batches: Vec<RecordBatch>,
     schema: SchemaRef,
-    encode: fn(&[T]) -> Result<RecordBatch>,
+) -> RecordBatchIterator<impl Iterator<Item = std::result::Result<RecordBatch, ArrowError>>> {
+    RecordBatchIterator::new(batches.into_iter().map(Ok), schema)
+}
+
+async fn write_batches(
+    path: &Path,
+    batches: Vec<RecordBatch>,
+    schema: SchemaRef,
     indexes: &[(&str, IndexType)],
 ) -> Result<u64> {
-    let uri = path.to_string_lossy().into_owned();
-    let row_count = rows.len();
-    let mut dataset = InsertBuilder::new(&uri)
-        .with_params(&WriteParams {
-            mode: WriteMode::Create,
-            ..Default::default()
-        })
-        .execute_stream(encoded_batch_reader(rows, schema, encode))
+    write_record_batch_reader(path, Box::new(batch_reader(batches, schema)), indexes).await
+}
+
+async fn replace_table_batches(
+    path: &Path,
+    snapshot_version: u64,
+    predicate: &str,
+    batches: Vec<RecordBatch>,
+    schema: SchemaRef,
+) -> Result<u64> {
+    let mut dataset = open_table_version(path, snapshot_version).await?;
+    let latest_version = latest_table_version(path).await?;
+    if latest_version != snapshot_version {
+        dataset.restore().await.with_context(|| {
+            format!(
+                "restore committed Storyline table version {} for {}",
+                snapshot_version,
+                path.display()
+            )
+        })?;
+    }
+    dataset
+        .delete(predicate)
         .await
-        .with_context(|| format!("write Storyline Lance table {}", path.display()))?;
-    if row_count > 0 {
-        for (column, index_type) in indexes {
-            let builtin = match index_type {
-                IndexType::Bitmap => BuiltinIndexType::Bitmap,
-                _ => BuiltinIndexType::BTree,
-            };
-            let _admission = super::index_build_gate::acquire().await;
-            dataset
-                .create_index(
-                    &[*column],
-                    *index_type,
-                    Some(format!("pchronicle_{column}_idx")),
-                    &ScalarIndexParams::for_builtin(builtin),
-                    false,
-                )
-                .await
-                .with_context(|| {
-                    format!(
-                        "create {:?} index on {}.{}",
-                        index_type,
-                        path.display(),
-                        column
-                    )
-                })?;
-        }
+        .with_context(|| format!("replace rows in Storyline table {}", path.display()))?;
+    let has_rows = batches.iter().any(|batch| batch.num_rows() > 0);
+    if has_rows {
+        dataset = InsertBuilder::new(Arc::new(dataset))
+            .with_params(&WriteParams {
+                mode: WriteMode::Append,
+                ..Default::default()
+            })
+            .execute_stream(batch_reader(batches, schema))
+            .await
+            .with_context(|| format!("append replacement rows to {}", path.display()))?;
+    }
+    if dataset.get_fragments().len() >= AUTO_COMPACT_FRAGMENT_COUNT {
+        dataset
+            .optimize_indices(&OptimizeOptions::append())
+            .await
+            .with_context(|| format!("extend indices before compacting {}", path.display()))?;
+        compact_files(&mut dataset, CompactionOptions::default(), None)
+            .await
+            .with_context(|| format!("compact Storyline table {}", path.display()))?;
     }
     Ok(dataset.version_id())
 }
@@ -1268,56 +1353,6 @@ async fn write_record_batch_reader(
                     )
                 })?;
         }
-    }
-    Ok(dataset.version_id())
-}
-
-async fn replace_table_rows<T: Send + Sync + 'static>(
-    path: &Path,
-    snapshot_version: u64,
-    predicate: &str,
-    rows: Vec<T>,
-    schema: SchemaRef,
-    encode: fn(&[T]) -> Result<RecordBatch>,
-) -> Result<u64> {
-    let mut dataset = open_table_version(path, snapshot_version).await?;
-    // A previous interrupted multi-table update may have advanced this Lance
-    // dataset without advancing CURRENT. Restore the committed version before
-    // deriving the next snapshot so uncommitted rows never leak forward.
-    let latest_version = latest_table_version(path).await?;
-    if latest_version != snapshot_version {
-        dataset.restore().await.with_context(|| {
-            format!(
-                "restore committed Storyline table version {} for {}",
-                snapshot_version,
-                path.display()
-            )
-        })?;
-    }
-    dataset
-        .delete(predicate)
-        .await
-        .with_context(|| format!("replace rows in Storyline table {}", path.display()))?;
-    if !rows.is_empty() {
-        dataset = InsertBuilder::new(std::sync::Arc::new(dataset))
-            .with_params(&WriteParams {
-                mode: WriteMode::Append,
-                ..Default::default()
-            })
-            .execute_stream(encoded_batch_reader(rows, schema, encode))
-            .await
-            .with_context(|| format!("append replacement rows to {}", path.display()))?;
-    }
-    if dataset.get_fragments().len() >= AUTO_COMPACT_FRAGMENT_COUNT {
-        // Cover appended fragments before compaction so indexed and unindexed
-        // fragments can be planned together.
-        dataset
-            .optimize_indices(&OptimizeOptions::append())
-            .await
-            .with_context(|| format!("extend indices before compacting {}", path.display()))?;
-        compact_files(&mut dataset, CompactionOptions::default(), None)
-            .await
-            .with_context(|| format!("compact Storyline table {}", path.display()))?;
     }
     Ok(dataset.version_id())
 }
@@ -1519,6 +1554,7 @@ fn decode_tool_call_batches(batches: &[RecordBatch]) -> Result<Vec<StoryToolCall
 
 #[cfg(test)]
 mod tests {
+    use super::super::storyline_content::CONTENT_REF_MAGIC;
     use super::*;
     use crate::{StorylineAgent, StorylineToolCall, StorylineTurn, STORYLINE_SCHEMA_VERSION};
 
@@ -1618,6 +1654,169 @@ mod tests {
             store.get_storyline("session-1").await.unwrap(),
             Some(expected)
         );
+    }
+
+    #[tokio::test]
+    async fn large_content_is_lossless_deduplicated_and_never_exposed_as_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = StorylineContentOptions {
+            offload_threshold: 64,
+            preview_bytes: 24,
+            ..Default::default()
+        };
+        let store = StorylineLanceStore::open_with_content_options(dir.path(), options)
+            .await
+            .unwrap();
+        let large = "shared large content ".repeat(128);
+        let mut first = story("large-a");
+        first.notes = Some(large.clone());
+        let mut second = story("large-b");
+        second.notes = Some(large.clone());
+        store
+            .replace_storylines(&[first.clone(), second.clone()])
+            .await
+            .unwrap();
+
+        let paths = store.current_table_paths().await.unwrap().unwrap();
+        let objects = open_objects(&paths.objects, paths.objects_version)
+            .await
+            .unwrap();
+        assert_eq!(objects.count_rows(None).await.unwrap(), 1);
+
+        let raw_runs = read_batches(&paths.runs, paths.runs_version).await.unwrap();
+        let raw_notes = raw_runs[0]
+            .column_by_name("notes")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<lance::deps::arrow_array::StringArray>()
+            .unwrap();
+        assert!(raw_notes.value(0).starts_with(CONTENT_REF_MAGIC));
+        assert_eq!(store.get_storyline("large-a").await.unwrap(), Some(first));
+        assert_eq!(store.get_storyline("large-b").await.unwrap(), Some(second));
+
+        let source = super::super::storyline_datafusion::StorylineDataSource::open(dir.path())
+            .await
+            .unwrap();
+        let context = source.session_context().unwrap();
+        let metadata = context
+            .sql("SELECT session_id FROM runs ORDER BY session_id")
+            .await
+            .unwrap();
+        let metadata_plan = metadata.clone().create_physical_plan().await.unwrap();
+        let metadata_plan = datafusion::physical_plan::displayable(metadata_plan.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(
+            !metadata_plan.contains("ContentHydrationExec"),
+            "{metadata_plan}"
+        );
+
+        let escaped = large.replace('\'', "''");
+        let filtered = context
+            .sql(&format!(
+                "SELECT notes FROM runs WHERE notes = '{escaped}' ORDER BY session_id"
+            ))
+            .await
+            .unwrap();
+        let filtered_plan = filtered.clone().create_physical_plan().await.unwrap();
+        let filtered_plan = datafusion::physical_plan::displayable(filtered_plan.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(
+            filtered_plan.contains("ContentHydrationExec"),
+            "{filtered_plan}"
+        );
+        let batches = filtered.collect().await.unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        for batch in batches {
+            let notes = batch
+                .column_by_name("notes")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<lance::deps::arrow_array::StringArray>()
+                .unwrap();
+            assert!(notes.iter().flatten().all(|value| value == large));
+        }
+        let count = context
+            .sql(&format!(
+                "SELECT COUNT(*) AS matches FROM runs WHERE notes = '{escaped}'"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let matches = count[0]
+            .column_by_name("matches")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<lance::deps::arrow_array::Int64Array>()
+            .unwrap();
+        assert_eq!(matches.value(0), 2);
+
+        let preview_source =
+            super::super::storyline_datafusion::StorylineDataSource::open_with_options(
+                dir.path(),
+                super::super::storyline_datafusion::StorylineDataSourceOptions {
+                    content_read_mode:
+                        super::super::storyline_datafusion::StorylineContentReadMode::Preview,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let preview_context = preview_source.session_context().unwrap();
+        let preview = preview_context
+            .sql("SELECT notes FROM runs WHERE session_id = 'large-a'")
+            .await
+            .unwrap();
+        let preview_plan = preview.clone().create_physical_plan().await.unwrap();
+        let preview_plan = datafusion::physical_plan::displayable(preview_plan.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(preview_plan.contains("mode=preview"), "{preview_plan}");
+        let preview = preview.collect().await.unwrap();
+        let notes = preview[0]
+            .column_by_name("notes")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<lance::deps::arrow_array::StringArray>()
+            .unwrap();
+        assert_eq!(notes.value(0), &large[..24]);
+        let preview_filter_error = preview_context
+            .sql(&format!(
+                "SELECT session_id FROM runs WHERE notes = '{escaped}'"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap_err();
+        assert!(
+            preview_filter_error
+                .to_string()
+                .contains("content predicates require full"),
+            "{preview_filter_error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn content_descriptor_magic_in_user_text_round_trips_as_literal() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StorylineLanceStore::open_with_content_options(
+            dir.path(),
+            StorylineContentOptions {
+                offload_threshold: usize::MAX,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let literal = format!("{CONTENT_REF_MAGIC}user-controlled-not-a-descriptor");
+        let mut expected = story("magic");
+        expected.notes = Some(literal);
+        store.replace_storyline(&expected).await.unwrap();
+        assert_eq!(store.get_storyline("magic").await.unwrap(), Some(expected));
     }
 
     #[tokio::test]
@@ -2023,6 +2222,7 @@ mod tests {
                     runs_version: stale.runs_version,
                     steps_version: stale.steps_version,
                     tool_calls_version: stale.tool_calls_version,
+                    objects_version: stale.objects_version,
                 },
                 Some(&stale.generation),
             )

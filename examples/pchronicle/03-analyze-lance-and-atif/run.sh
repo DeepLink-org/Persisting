@@ -7,13 +7,14 @@ export PATH="../../../target/release:$PATH"
 rm -rf .work
 mkdir .work
 
-# Build equivalent, source-text-diversified ATIF and Lance inputs.
+# Build equivalent, source-text-diversified raw JSON and Lance inputs.
 example_scale="${PCHRONICLE_EXAMPLE_SCALE:-64}"
 python3 ../common/generate_atif.py ../../../crates/persisting-pchronicle/tests/fixtures/atif \
   .work/trajectories.ndjson "$example_scale"
 ppilot chronicle import .work/trajectories.ndjson .work/lance
 
-# Run and time the same cold CLI queries against both storage formats.
+# Run the same logical queries through the raw Python baseline and both
+# pChronicle paths. Each measured invocation starts a fresh process.
 query_iterations="${PCHRONICLE_QUERY_ITERS:-10}"
 group_sql='SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
 target_session=$(python3 - .work/trajectories.ndjson <<'PY'
@@ -29,47 +30,63 @@ selective_sql="SELECT step_id, source FROM steps WHERE session_id = '${target_se
 
 group_metrics=$(python3 ../common/compare_ppilot_query.py \
   .work/trajectories.ndjson .work/lance \
-  .work/atif-group.jsonl .work/lance-group.jsonl \
-  "$query_iterations" "$group_sql")
+  .work/python-group.jsonl .work/pchronicle-json-group.jsonl \
+  .work/pchronicle-lance-group.jsonl \
+  "$query_iterations" group "$group_sql")
 selective_metrics=$(python3 ../common/compare_ppilot_query.py \
   .work/trajectories.ndjson .work/lance \
-  .work/atif-selective.jsonl .work/lance-selective.jsonl \
-  "$query_iterations" "$selective_sql")
+  .work/python-selective.jsonl .work/pchronicle-json-selective.jsonl \
+  .work/pchronicle-lance-selective.jsonl \
+  "$query_iterations" selective "$selective_sql" "$target_session")
 
-# Print both result sets and show that they are identical.
-echo 'ATIF GROUP BY result:'
-cat .work/atif-group.jsonl
+# Print all result sets and show that they are semantically identical.
+echo 'Python json.loads GROUP BY baseline:'
+cat .work/python-group.jsonl
 
-echo 'Lance GROUP BY result:'
-cat .work/lance-group.jsonl
+echo 'pChronicle direct-JSON GROUP BY result:'
+cat .work/pchronicle-json-group.jsonl
+
+echo 'pChronicle Lance GROUP BY result:'
+cat .work/pchronicle-lance-group.jsonl
 
 echo "Selective result for ${target_session}:"
-cat .work/lance-selective.jsonl
+cat .work/pchronicle-lance-selective.jsonl
 
 group_equal=$(jq -r .equal <<<"$group_metrics")
 selective_equal=$(jq -r .equal <<<"$selective_metrics")
 if [[ "$group_equal" == true && "$selective_equal" == true ]]; then
-  result_rows=$(wc -l < .work/lance-group.jsonl | tr -d ' ')
-  total_steps=$(jq -s 'map(.steps) | add // 0' .work/lance-group.jsonl)
-  selective_rows=$(wc -l < .work/lance-selective.jsonl | tr -d ' ')
-  group_atif_ms=$(jq -r .atif_ms <<<"$group_metrics")
-  group_lance_ms=$(jq -r .lance_ms <<<"$group_metrics")
-  group_winner=$(jq -r .winner <<<"$group_metrics")
-  group_speedup=$(jq -r .speedup <<<"$group_metrics")
-  selective_atif_ms=$(jq -r .atif_ms <<<"$selective_metrics")
-  selective_lance_ms=$(jq -r .lance_ms <<<"$selective_metrics")
-  selective_winner=$(jq -r .winner <<<"$selective_metrics")
-  selective_speedup=$(jq -r .speedup <<<"$selective_metrics")
-  echo "Cold pPilot query timing (${query_iterations} alternating runs, mean):"
-  echo "  GROUP BY:  ATIF=${group_atif_ms} ms, Lance=${group_lance_ms} ms (${group_winner} ${group_speedup}x faster)"
-  echo "  Selective: ATIF=${selective_atif_ms} ms, Lance=${selective_lance_ms} ms (${selective_winner} ${selective_speedup}x faster)"
-  echo 'Diff: none for both queries'
-  echo "Conclusion: PASS — both backends returned identical GROUP BY and selective results over ${total_steps} steps; Lance benefits are shown separately for full-scan aggregation and selective lookup."
-  echo "RESULT benchmark=query_equivalence equal=true rows=${result_rows} steps=${total_steps} selective_rows=${selective_rows} iterations=${query_iterations} group_atif_ms=${group_atif_ms} group_lance_ms=${group_lance_ms} group_winner=${group_winner} group_speedup=${group_speedup} selective_atif_ms=${selective_atif_ms} selective_lance_ms=${selective_lance_ms} selective_winner=${selective_winner} selective_speedup=${selective_speedup}"
+  result_rows=$(wc -l < .work/pchronicle-lance-group.jsonl | tr -d ' ')
+  total_steps=$(jq -s 'map(.steps) | add // 0' .work/pchronicle-lance-group.jsonl)
+  selective_rows=$(wc -l < .work/pchronicle-lance-selective.jsonl | tr -d ' ')
+  group_python_ms=$(jq -r .python_json.median_ms <<<"$group_metrics")
+  group_python_p95_ms=$(jq -r .python_json.p95_ms <<<"$group_metrics")
+  group_json_ms=$(jq -r .pchronicle_json.median_ms <<<"$group_metrics")
+  group_json_p95_ms=$(jq -r .pchronicle_json.p95_ms <<<"$group_metrics")
+  group_lance_ms=$(jq -r .pchronicle_lance.median_ms <<<"$group_metrics")
+  group_lance_p95_ms=$(jq -r .pchronicle_lance.p95_ms <<<"$group_metrics")
+  group_json_relative=$(jq -r .pchronicle_json.speedup_vs_python <<<"$group_metrics")
+  group_lance_relative=$(jq -r .pchronicle_lance.speedup_vs_python <<<"$group_metrics")
+  selective_python_ms=$(jq -r .python_json.median_ms <<<"$selective_metrics")
+  selective_python_p95_ms=$(jq -r .python_json.p95_ms <<<"$selective_metrics")
+  selective_json_ms=$(jq -r .pchronicle_json.median_ms <<<"$selective_metrics")
+  selective_json_p95_ms=$(jq -r .pchronicle_json.p95_ms <<<"$selective_metrics")
+  selective_lance_ms=$(jq -r .pchronicle_lance.median_ms <<<"$selective_metrics")
+  selective_lance_p95_ms=$(jq -r .pchronicle_lance.p95_ms <<<"$selective_metrics")
+  selective_json_relative=$(jq -r .pchronicle_json.speedup_vs_python <<<"$selective_metrics")
+  selective_lance_relative=$(jq -r .pchronicle_lance.speedup_vs_python <<<"$selective_metrics")
+  echo "Cold-process timing (${query_iterations} rotated runs, median):"
+  echo "  GROUP BY:  Python=${group_python_ms}/${group_python_p95_ms} ms; pChronicle JSON=${group_json_ms}/${group_json_p95_ms} ms (${group_json_relative}x vs baseline); pChronicle Lance=${group_lance_ms}/${group_lance_p95_ms} ms (${group_lance_relative}x vs baseline)"
+  echo "  Selective: Python=${selective_python_ms}/${selective_python_p95_ms} ms; pChronicle JSON=${selective_json_ms}/${selective_json_p95_ms} ms (${selective_json_relative}x vs baseline); pChronicle Lance=${selective_lance_ms}/${selective_lance_p95_ms} ms (${selective_lance_relative}x vs baseline)"
+  echo '  Values are median/p95; relative throughput uses medians.'
+  echo 'Semantic diff: none for both queries'
+  echo "Conclusion: PASS — raw Python parsing and both pChronicle paths returned the same results over ${total_steps} steps. Ratios are always Python median / measured-path median; values above 1 mean the pChronicle path is faster."
+  echo "RESULT benchmark=query_equivalence baseline=python_json equal=true rows=${result_rows} steps=${total_steps} selective_rows=${selective_rows} iterations=${query_iterations} group_python_ms=${group_python_ms} group_python_p95_ms=${group_python_p95_ms} group_pchronicle_json_ms=${group_json_ms} group_pchronicle_json_p95_ms=${group_json_p95_ms} group_pchronicle_lance_ms=${group_lance_ms} group_pchronicle_lance_p95_ms=${group_lance_p95_ms} group_json_vs_python=${group_json_relative} group_lance_vs_python=${group_lance_relative} selective_python_ms=${selective_python_ms} selective_python_p95_ms=${selective_python_p95_ms} selective_pchronicle_json_ms=${selective_json_ms} selective_pchronicle_json_p95_ms=${selective_json_p95_ms} selective_pchronicle_lance_ms=${selective_lance_ms} selective_pchronicle_lance_p95_ms=${selective_lance_p95_ms} selective_json_vs_python=${selective_json_relative} selective_lance_vs_python=${selective_lance_relative}"
 else
-  diff -u .work/atif-group.jsonl .work/lance-group.jsonl || true
-  diff -u .work/atif-selective.jsonl .work/lance-selective.jsonl || true
-  echo 'Conclusion: FAIL — Lance and ATIF returned different results for at least one query.'
-  echo 'RESULT benchmark=query_equivalence equal=false'
+  diff -u .work/python-group.jsonl .work/pchronicle-json-group.jsonl || true
+  diff -u .work/python-group.jsonl .work/pchronicle-lance-group.jsonl || true
+  diff -u .work/python-selective.jsonl .work/pchronicle-json-selective.jsonl || true
+  diff -u .work/python-selective.jsonl .work/pchronicle-lance-selective.jsonl || true
+  echo 'Conclusion: FAIL — at least one pChronicle result differs from the Python JSON baseline.'
+  echo 'RESULT benchmark=query_equivalence baseline=python_json equal=false'
   exit 1
 fi

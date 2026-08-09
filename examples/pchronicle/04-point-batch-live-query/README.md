@@ -50,9 +50,9 @@ assert!(story.is_some());
 ```
 
 性能报告同时给出单 step、完整轨迹、64 次独立冷 CLI 点查、一次批量查询，以及实时
-producer-to-visible 的 p50/p95/max 和 events/s。批量加速包含进程启动、
+producer-to-visible 的 p50/p95/max 和 events/s。这里报告的是 `CLI batching gain`，包含进程启动、
 DataSource 打开、SQL 计划与执行的摊销；实时延迟包含写入命令、Lance commit 和 follow
-轮询等待，因此不同指标不能被解读为相同 payload 下的普适快慢。
+轮询等待，因此它不是相对 Python JSON 基线的引擎加速，也不能与 02/03 的查询比值混用。
 
 可调整规模：
 

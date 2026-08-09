@@ -57,16 +57,18 @@ The command is named `produce`, for producing a batch of trajectory Runs.
 
 These examples use deterministic ATIF corpora and trimmed format fixtures to
 compare physical size, analysis speed, SQL results, lossless peripheral format
-recovery, and direct directory queries. Size and speed numbers apply only to
-the printed dataset, query, and machine; they are not universal claims about
-Lance or ATIF.
+recovery, and direct directory queries. Query performance uses Python's
+standard `json.loads` plus an equivalent native loop as the raw-JSON baseline.
+Direct pChronicle JSON queries and pChronicle Lance queries are independently
+reported against that baseline. Results apply only to the printed dataset,
+query, and machine.
 
 | Example | What it demonstrates | Related guide |
 |---|---|---|
-| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | pPilot reports the size ratio, saved space, and compression factor | [Trajectory format](../design/trajectory-format.md) |
-| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | End-to-end pPilot CLI import, replacement, and cold Lance/ATIF query latency | [Trajectory storage](../design/trajectory.md) |
-| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | pPilot explicitly reports cross-backend SQL equivalence | [pPilot CLI](../design/cli-ppilot.md) |
-| [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | Point-step, full-trajectory, 64-key batch, and live canonical-event follow latency | [History CLI](../design/cli-history.md) |
+| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | Physical size of raw JSON and the complete pChronicle Lance store | [Trajectory format](../design/trajectory-format.md) |
+| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | Cold-process Python JSON baseline, pChronicle JSON, and pChronicle Lance queries | [Trajectory storage](../design/trajectory.md) |
+| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | Semantic equivalence and one performance convention across all three paths | [pPilot CLI](../design/cli-ppilot.md) |
+| [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | Point-step, full-trajectory, CLI batching gain, and live canonical-event follow latency | [History CLI](../design/cli-history.md) |
 | [05-format-roundtrip](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/05-format-roundtrip) | pPilot imports OpenAI/ACTF into three-table Lance and verifies lossless JSON-model recovery | [pPilot CLI](../design/cli-ppilot.md) |
 | [06-query-openai-actf-directly](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly) | Direct OpenAI/ACTF directory SQL with `_file_ LIKE`, plus proof that Lance schemas stay unchanged | [pPilot CLI](../design/cli-ppilot.md) |
 

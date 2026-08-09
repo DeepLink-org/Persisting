@@ -1,6 +1,7 @@
 # 2.6 直接查询 OpenAI JSON 与 ACTF 目录
 
-这个示例使用 `ppilot query sql` 直接分析 OpenAI-message JSON 和 ACTF 文件目录，不需要
+这个示例展示 02/03 中所称的 `pChronicle JSON` 路径：使用 `ppilot query sql` 直接分析
+OpenAI-message JSON 和 ACTF 文件目录，不需要
 先创建 Lance store。pChronicle 会把输入临时规范化为 `runs`、`steps`、`tool_calls`，并在
 三张查询表上增加 `_file_` 列：
 
@@ -39,12 +40,14 @@ FROM steps s JOIN tool_calls t
  AND s.step_id = t.step_id
 ```
 
-生产任务可以用 `--max-files`、`--max-entries`、`--max-file-bytes`、`--max-concurrent-files`、
+这是功能和结果正确性示例，不把不同格式的小型 fixture 用作性能结论。生产任务可以用
+`--max-files`、`--max-entries`、`--max-file-bytes`、`--max-concurrent-files`、
 `--cache-bytes`、`--cache-files` 和 `--batch-size` 设置资源边界；`--query-metrics` 把运行
 计数器写到 stderr，`--memory-limit-bytes`、`--spill-path`、`--max-spill-bytes` 限制
 DataFusion 中间算子，`--timeout-seconds` 限制墙钟时间。查询结果按 Arrow batch 流式写出；
-`--max-output-rows` 限制结果规模。直接 JSON 查询仍按单文件完整解析，超大、重复查询的
-数据集应先转换为 Lance。
+`--max-output-rows` 限制结果规模。这个示例的 OpenAI/ACTF 兼容格式仍按命中文件完成规范化；
+ATIF compact JSON/JSONL 的 `steps` 查询另有字段/简单谓词下推 fast path。两者都没有文件内
+索引，超大、重复查询的数据集应先转换为 Lance。
 
 核心查询与普通 SQL 相同：
 

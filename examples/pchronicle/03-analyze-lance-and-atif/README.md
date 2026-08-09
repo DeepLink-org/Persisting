@@ -1,19 +1,19 @@
-# 2.3 分析 Lance 与 ATIF 格式轨迹
+# 2.3 三条轨迹分析路径的结果与性能口径
 
-问题：用户是否能用同一条 SQL 分析 ATIF JSONL 和 pChronicle Lance？
+问题：raw Python JSON、pChronicle 直接 JSON 和 pChronicle Lance 是否能得到相同结果，
+以及怎样在同一基线上比较它们？
 
 脚本默认生成 64 组、512 条 source-text-diversified ATIF trajectory，通过
-`ppilot chronicle import` 导入 Lance，然后通过 `ppilot query` 对两个 backend 执行两类
-SQL：全表 `GROUP BY source` 和定位到最后一个长 Storyline 的 `session_id + step range`
-选择性查询。只有两类 JSONL 查询结果都逐字相同时才通过；所有 pChronicle 操作都通过
-pPilot 产品 CLI 完成。
+`ppilot chronicle import` 导入 Lance，然后执行两类逻辑查询：全表 `GROUP BY source`
+和定位到最后一个长 Storyline 的 `session_id + step range` 选择性查询。Python 基线用
+`json.loads` 加手写循环；两条 pChronicle 路径用同一条 SQL 分别查询 ATIF 和 Lance。
+只有三条路径的 JSONL 结果在 JSON 语义上都相等时才通过。
 
 ```bash
 ./run.sh
 ```
 
-输出包括两类结果、结果行数与总 step 数，并以明确的 `Conclusion: PASS/FAIL` 和
-`RESULT benchmark=query_equivalence ...` 报告查询是否一致。每类查询默认执行 10 轮，
-且每轮交替 ATIF/Lance 的先后顺序，验证输出稳定并给出平均延迟和速度比。可通过
-`PCHRONICLE_EXAMPLE_SCALE` 和 `PCHRONICLE_QUERY_ITERS` 调整规模与次数。这里包含进程
-启动、DataSource 打开、SQL 计划和执行，不代表常驻服务的 warm query 延迟。
+输出包括结果、总 step 数、median、p95 和相对 Python 的速度。每类查询默认执行 10 轮，
+三条路径轮换先后顺序。比值始终是 `Python median / measured-path median`，大于 1 才表示
+pChronicle 更快。可通过 `PCHRONICLE_EXAMPLE_SCALE` 和 `PCHRONICLE_QUERY_ITERS` 调整
+规模与次数。计时包含独立进程启动以及各自的 parse/open/query，不代表常驻服务延迟。

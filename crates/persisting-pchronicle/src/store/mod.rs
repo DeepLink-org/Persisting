@@ -20,6 +20,7 @@ mod raw_event_lance_rows;
 mod raw_event_manifest;
 mod root_write_lock;
 mod run_control;
+mod storyline_content;
 mod storyline_datafusion;
 mod storyline_lance;
 mod storyline_lance_rows;
@@ -69,10 +70,13 @@ pub use raw_event_lance_rows::{
     event_row_from_batch, event_rows_from_batch, event_rows_to_batch, raw_event_arrow_schema,
 };
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
+pub use storyline_content::{
+    StorylineContentOptions, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
+};
 pub use storyline_datafusion::{
-    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
-    StorylineTableKind, StorylineTableProvider, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
-    DATAFUSION_TOOL_CALLS_TABLE,
+    StorylineContentReadMode, StorylineDataFusionTableNames, StorylineDataSource,
+    StorylineDataSourceOptions, StorylineTableKind, StorylineTableProvider, DATAFUSION_RUNS_TABLE,
+    DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
 };
 pub use storyline_lance::{
     StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,

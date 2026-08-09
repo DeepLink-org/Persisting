@@ -52,17 +52,18 @@ CLI 的正式命令名是 `produce`；它对应"生产一批轨迹 Run"的模式
 
 ## pChronicle：轨迹存储与分析
 
-这组示例使用确定性 ATIF corpus 和裁剪格式 fixture，分别测量物理体积、分析速度、
-跨格式 SQL 结果一致性、外围格式恢复保真度和直接目录查询。体积和速度结论都限定在
-脚本打印的数据规模、查询与当前机器；示例不会宣称 Lance 在任意数据分布和任意查询上
-必然更小或更快。
+这组示例使用确定性 ATIF corpus 和裁剪格式 fixture，分别展示物理体积、分析速度、
+跨格式 SQL 结果一致性、外围格式恢复保真度和直接目录查询。查询性能统一以 Python
+标准库 `json.loads` 加等价手写循环为 raw JSON 基线；pChronicle 直接 JSON 查询和
+pChronicle Lance 查询分别相对该基线报告。体积和速度结论都限定在脚本打印的数据规模、
+查询与当前机器。
 
 | 示例 | 可复现结论 | 相关指南 |
 |---|---|---|
-| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | pPilot 导入后直接报告占用比例、空间节省和压缩倍数 | [轨迹格式](../design/trajectory-format.md) |
-| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | 量化 pPilot CLI 导入、替换及 Lance/ATIF 冷查询延迟 | [轨迹存储](../design/trajectory.md) |
-| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | pPilot 明确报告同一 SQL 的跨后端一致性 | [pPilot CLI](../design/cli-ppilot.md) |
-| [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | 对比单 step、完整轨迹、64-key 批查与实时 canonical event follow 延迟 | [History CLI](../design/cli-history.md) |
+| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | raw JSON 与完整 pChronicle Lance store 的物理体积 | [轨迹格式](../design/trajectory-format.md) |
+| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | Python JSON 基线、pChronicle JSON 与 pChronicle Lance 的冷进程查询 | [轨迹存储](../design/trajectory.md) |
+| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | 三条路径的查询语义一致性和统一性能口径 | [pPilot CLI](../design/cli-ppilot.md) |
+| [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | 单 step、完整轨迹、CLI batching gain 与实时 canonical event follow | [History CLI](../design/cli-history.md) |
 | [05-format-roundtrip](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/05-format-roundtrip) | pPilot 将 OpenAI/ACTF 导入三表 Lance，并验证 JSON 数据模型无损恢复 | [pPilot CLI](../design/cli-ppilot.md) |
 | [06-query-openai-actf-directly](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly) | 直接查询 OpenAI/ACTF 目录，以 `_file_ LIKE` 筛选路径，并验证 Lance schema 不变 | [pPilot CLI](../design/cli-ppilot.md) |
 

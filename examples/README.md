@@ -16,10 +16,10 @@
 
 | 示例 | 指标 |
 |---|---|
-| [2.1 导入 ATIF 并比较压缩比](pchronicle/01-atif-import-compression/) | ATIF/Lance bytes 与压缩比 |
-| [2.2 pChronicle 性能对比](pchronicle/02-lance-vs-atif-speed/) | 构建、冷查询、点查、增量替换和 warm SQL 吞吐 |
-| [2.3 分析 Lance 和 ATIF](pchronicle/03-analyze-lance-and-atif/) | 同 SQL 的结果一致性、行数、step 数 |
-| [2.4 点查、批查与 live follow](pchronicle/04-point-batch-live-query/) | 单 step、整轨迹、批查和运行中 follow 延迟 |
+| [2.1 raw JSON 与 Lance 体积](pchronicle/01-atif-import-compression/) | raw JSON 与完整 pChronicle Lance store bytes |
+| [2.2 Python JSON 与 pChronicle](pchronicle/02-lance-vs-atif-speed/) | Python 基线、pChronicle JSON、pChronicle Lance 的冷进程查询 |
+| [2.3 三路径分析一致性](pchronicle/03-analyze-lance-and-atif/) | 三条路径的语义结果、median/p95 和统一相对值 |
+| [2.4 点查、批查与 live follow](pchronicle/04-point-batch-live-query/) | pChronicle API 延迟、CLI batching gain 和运行中 follow |
 | [2.5 外围格式往返](pchronicle/05-format-roundtrip/) | pPilot 导入/恢复 OpenAI 与 ACTF 后 JSON 数据模型相等 |
 | [2.6 直接查询 OpenAI/ACTF](pchronicle/06-query-openai-actf-directly/) | `_file_` 相对路径、`LIKE` 筛选与 Lance schema 隔离 |
 

@@ -44,23 +44,24 @@ space_saved = (1 - lance_ratio) * 100
 compression_ratio = atif_bytes / lance_bytes
 
 print("Storage comparison (exact file bytes):")
-print(f"  ATIF JSONL:  {atif_bytes:>10} bytes ({human_bytes(atif_bytes)})")
-print(f"  Lance store: {lance_bytes:>10} bytes ({human_bytes(lance_bytes)})")
+print(f"  Raw ATIF JSONL baseline:   {atif_bytes:>10} bytes ({human_bytes(atif_bytes)})")
+print(f"  pChronicle Lance store:    {lance_bytes:>10} bytes ({human_bytes(lance_bytes)})")
 if lance_bytes <= atif_bytes:
     print(
-        f"Conclusion: Lance uses {lance_ratio * 100:.2f}% of the ATIF space, "
-        f"saving {space_saved:.2f}% (ATIF/Lance={compression_ratio:.2f}x)."
+        f"Conclusion: pChronicle Lance uses {lance_ratio * 100:.2f}% of the raw JSON "
+        f"baseline, saving {space_saved:.2f}% (JSON/Lance={compression_ratio:.2f}x)."
     )
 else:
     print(
-        f"Conclusion: Lance uses {lance_ratio * 100:.2f}% of the ATIF space, "
-        f"an increase of {-space_saved:.2f}% (ATIF/Lance={compression_ratio:.2f}x)."
+        f"Conclusion: pChronicle Lance uses {lance_ratio * 100:.2f}% of the raw JSON "
+        f"baseline, an increase of {-space_saved:.2f}% "
+        f"(JSON/Lance={compression_ratio:.2f}x)."
     )
 print(
-    "RESULT benchmark=storage "
-    f"atif_bytes={atif_bytes} lance_bytes={lance_bytes} "
-    f"lance_over_atif={lance_ratio:.4f} "
+    "RESULT benchmark=storage baseline=raw_json "
+    f"baseline_json_bytes={atif_bytes} pchronicle_lance_bytes={lance_bytes} "
+    f"lance_over_json={lance_ratio:.4f} "
     f"space_saved_pct={space_saved:.2f} "
-    f"atif_over_lance={compression_ratio:.2f}"
+    f"json_over_lance={compression_ratio:.2f}"
 )
 PY

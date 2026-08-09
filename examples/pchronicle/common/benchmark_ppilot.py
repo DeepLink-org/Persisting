@@ -14,24 +14,58 @@ def run_ppilot(command: list[str]) -> str:
     return completed.stdout
 
 
-def timed(command: list[str], iterations: int) -> tuple[float, str]:
-    output = ""
-    started = time.perf_counter()
-    for _ in range(iterations):
-        output = run_ppilot(command)
-    return (time.perf_counter() - started) / iterations, output
-
-
 def total_bytes(path: Path) -> int:
     if path.is_file():
         return path.stat().st_size
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def speed_conclusion(lance_seconds: float, atif_seconds: float) -> str:
-    if lance_seconds <= atif_seconds:
-        return f"Lance is {atif_seconds / lance_seconds:.2f}x faster"
-    return f"ATIF is {lance_seconds / atif_seconds:.2f}x faster"
+def compare_query_paths(
+    input_arg: str,
+    store_arg: str,
+    output_dir: Path,
+    iterations: int,
+    query_kind: str,
+    sql: str,
+    session_id: str | None = None,
+) -> dict:
+    script = Path(__file__).with_name("compare_ppilot_query.py")
+    command = [
+        sys.executable,
+        str(script),
+        input_arg,
+        store_arg,
+        str(output_dir / f"{query_kind}-python.jsonl"),
+        str(output_dir / f"{query_kind}-pchronicle-json.jsonl"),
+        str(output_dir / f"{query_kind}-pchronicle-lance.jsonl"),
+        str(iterations),
+        query_kind,
+        sql,
+    ]
+    if session_id is not None:
+        command.append(session_id)
+    return json.loads(run_ppilot(command))
+
+
+def print_query(name: str, metrics: dict) -> None:
+    python = metrics["python_json"]
+    direct = metrics["pchronicle_json"]
+    lance = metrics["pchronicle_lance"]
+    print(f"  {name}:")
+    print(
+        f"    Python JSON baseline: {python['median_ms']:.3f} ms median, "
+        f"p95={python['p95_ms']:.3f} ms"
+    )
+    print(
+        f"    pChronicle JSON:      {direct['median_ms']:.3f} ms median, "
+        f"p95={direct['p95_ms']:.3f} ms, "
+        f"{direct['speedup_vs_python']:.3f}x vs baseline"
+    )
+    print(
+        f"    pChronicle Lance:     {lance['median_ms']:.3f} ms median, "
+        f"p95={lance['p95_ms']:.3f} ms, "
+        f"{lance['speedup_vs_python']:.3f}x vs baseline"
+    )
 
 
 if len(sys.argv) != 4:
@@ -64,62 +98,67 @@ selective_sql = (
 group_sql = "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source"
 
 
-def query_command(input_value: str, sql: str) -> list[str]:
-    return [ppilot, "query", input_value, "--sql", sql]
-
-
-lance_selective, lance_selective_output = timed(query_command(store_arg, selective_sql), iterations)
-atif_selective, atif_selective_output = timed(query_command(input_arg, selective_sql), iterations)
-lance_group, lance_group_output = timed(query_command(store_arg, group_sql), iterations)
-atif_group, atif_group_output = timed(query_command(input_arg, group_sql), iterations)
-if lance_selective_output != atif_selective_output:
-    raise SystemExit("selective query result differs between Lance and ATIF")
-if lance_group_output != atif_group_output:
-    raise SystemExit("GROUP BY result differs between Lance and ATIF")
-
-replacement = dict(target)
-replacement["notes"] = "pPilot CLI incremental replacement benchmark"
-replacement_path = store_path.parent / "replacement.ndjson"
-replacement_path.write_text(json.dumps(replacement, separators=(",", ":")) + "\n")
-replace_started = time.perf_counter()
-run_ppilot([ppilot, "chronicle", "import", str(replacement_path), store_arg])
-replace_seconds = time.perf_counter() - replace_started
+selective = compare_query_paths(
+    input_arg,
+    store_arg,
+    store_path.parent,
+    iterations,
+    "selective",
+    selective_sql,
+    target_session,
+)
+group = compare_query_paths(input_arg, store_arg, store_path.parent, iterations, "group", group_sql)
+if not selective["equal"] or not group["equal"]:
+    raise SystemExit("query result differs across Python, pChronicle JSON, and Lance paths")
 
 atif_bytes = total_bytes(input_path)
 lance_bytes = total_bytes(store_path)
 lance_ratio = lance_bytes / atif_bytes
-selective_ratio = atif_selective / lance_selective
-group_ratio = atif_group / lance_group
 
 print(
     f"dataset: {len(trajectories)} trajectories, {sum(len(t['steps']) for t in trajectories)} steps"
 )
-print(f"storage: ATIF={atif_bytes} bytes, Lance store={lance_bytes} bytes ({lance_ratio:.3f}x)")
-print(f"pPilot CLI import: {import_seconds * 1000:.3f} ms")
-print(f"pPilot CLI single-story replace: {replace_seconds * 1000:.3f} ms")
-print("cold pPilot query (process start + open + plan + execute):")
-print(f"  selective: Lance={lance_selective * 1000:.3f} ms, ATIF={atif_selective * 1000:.3f} ms")
-print(f"  GROUP BY:  Lance={lance_group * 1000:.3f} ms, ATIF={atif_group * 1000:.3f} ms")
+print(
+    f"storage: raw JSON baseline={atif_bytes} bytes, "
+    f"pChronicle Lance={lance_bytes} bytes ({lance_ratio:.3f}x)"
+)
+print(f"pChronicle Lance import: {import_seconds * 1000:.3f} ms")
+print(
+    "cold process query (process start + input parse/open + query; "
+    "speedup = Python median / path median):"
+)
+print_query("selective", selective)
+print_query("GROUP BY", group)
 print("Conclusion:")
 print(
-    f"  Storage: Lance uses {lance_ratio * 100:.2f}% of ATIF space, "
+    f"  Storage: pChronicle Lance uses {lance_ratio * 100:.2f}% of raw JSON space, "
     f"saving {(1 - lance_ratio) * 100:.2f}%."
 )
-print(f"  Selective cold CLI query: {speed_conclusion(lance_selective, atif_selective)}.")
-print(f"  GROUP BY cold CLI query: {speed_conclusion(lance_group, atif_group)}.")
 print(
-    f"  Import took {import_seconds * 1000:.3f} ms; "
-    f"one Storyline replacement took {replace_seconds * 1000:.3f} ms."
+    "  Python json.loads plus a native loop is the raw-file baseline. "
+    "Both pChronicle paths are measured against it, not against each other."
 )
-print("  Query results were identical between the Lance and ATIF pPilot backends.")
+print(f"  Building the reusable pChronicle Lance store took {import_seconds * 1000:.3f} ms.")
+print("  Query results were identical across all three measured paths.")
 print(
-    "RESULT benchmark=ppilot_cli "
-    f"iterations={iterations} lance_over_atif_size={lance_ratio:.4f} "
-    f"import_ms={import_seconds * 1000:.3f} replace_ms={replace_seconds * 1000:.3f} "
-    f"selective_lance_ms={lance_selective * 1000:.3f} "
-    f"selective_atif_ms={atif_selective * 1000:.3f} "
-    f"selective_atif_over_lance={selective_ratio:.3f} "
-    f"group_lance_ms={lance_group * 1000:.3f} "
-    f"group_atif_ms={atif_group * 1000:.3f} "
-    f"group_atif_over_lance={group_ratio:.3f} equal=true"
+    "RESULT benchmark=pchronicle_query_paths query_baseline=python_json "
+    f"storage_baseline=raw_json iterations={iterations} "
+    f"lance_over_json_size={lance_ratio:.4f} "
+    f"import_ms={import_seconds * 1000:.3f} "
+    f"selective_python_ms={selective['python_json']['median_ms']:.3f} "
+    f"selective_python_p95_ms={selective['python_json']['p95_ms']:.3f} "
+    f"selective_pchronicle_json_ms={selective['pchronicle_json']['median_ms']:.3f} "
+    f"selective_pchronicle_json_p95_ms={selective['pchronicle_json']['p95_ms']:.3f} "
+    f"selective_pchronicle_lance_ms={selective['pchronicle_lance']['median_ms']:.3f} "
+    f"selective_pchronicle_lance_p95_ms={selective['pchronicle_lance']['p95_ms']:.3f} "
+    f"selective_json_vs_python={selective['pchronicle_json']['speedup_vs_python']:.3f} "
+    f"selective_lance_vs_python={selective['pchronicle_lance']['speedup_vs_python']:.3f} "
+    f"group_python_ms={group['python_json']['median_ms']:.3f} "
+    f"group_python_p95_ms={group['python_json']['p95_ms']:.3f} "
+    f"group_pchronicle_json_ms={group['pchronicle_json']['median_ms']:.3f} "
+    f"group_pchronicle_json_p95_ms={group['pchronicle_json']['p95_ms']:.3f} "
+    f"group_pchronicle_lance_ms={group['pchronicle_lance']['median_ms']:.3f} "
+    f"group_pchronicle_lance_p95_ms={group['pchronicle_lance']['p95_ms']:.3f} "
+    f"group_json_vs_python={group['pchronicle_json']['speedup_vs_python']:.3f} "
+    f"group_lance_vs_python={group['pchronicle_lance']['speedup_vs_python']:.3f} equal=true"
 )
