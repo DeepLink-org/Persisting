@@ -168,6 +168,7 @@ jobs:
         with:
           python-version: "3.12"
           install-protoc: "true"
+          install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
 
