@@ -392,6 +392,8 @@ mod tests {
             "30",
             "--max-output-rows",
             "1000",
+            "--content-read-mode",
+            "preview",
             "--query-metrics",
             "--sql",
             "SELECT 1",
@@ -413,6 +415,7 @@ mod tests {
                     max_spill_bytes: Some(134_217_728),
                     timeout_seconds: Some(30),
                     max_output_rows: Some(1000),
+                    content_read_mode: persisting_ppilot::QueryContentReadMode::Preview,
                     query_metrics: true,
                     ..
                 }

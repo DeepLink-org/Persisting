@@ -112,6 +112,20 @@ ppilot convert ./openai-data ./storyline-store --to lance
 ppilot convert ./storyline-store ./recovered --from lance --to openai_msg
 ```
 
+大内容默认在 64 KiB 起按内容地址拆到共享 `objects.lance`，可在导入时调整 threshold、
+descriptor preview 和 zstd level。查询默认透明恢复完整内容；列表或抽样可显式只读头部：
+
+```bash
+ppilot chronicle import ./atif-data ./storyline-store \
+  --content-offload-threshold 4096 --content-preview-bytes 256
+ppilot query sql ./storyline-store --content-read-mode preview \
+  --sql "SELECT session_id, message_json FROM steps LIMIT 20"
+```
+
+可复现的 inline/offload 存储体积、有效压缩率、元数据扫描、完整内容展开和 preview 性能
+对比见
+[`examples/pchronicle/07-objects-lance-blob-offload`](../../examples/pchronicle/07-objects-lance-blob-offload)。
+
 恢复保证键值、null、嵌套值和数组顺序，不保证原文件空白或对象键顺序。缺失保真元数据
 时 export 会失败，而不会静默输出有损近似值。
 

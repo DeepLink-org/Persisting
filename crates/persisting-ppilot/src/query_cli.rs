@@ -12,7 +12,8 @@ use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use persisting_pchronicle::{
     ChronicleFormat, ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat,
     ExternalTableSpec, FileTrajectoryDataSourceOptions, LocalQueryManifest,
-    LocalQueryManifestOptions, RawEventLanceStore, StoryCoords, StorylineLanceStore,
+    LocalQueryManifestOptions, RawEventLanceStore, StoryCoords, StorylineContentReadMode,
+    StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
     DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
     DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
@@ -30,6 +31,24 @@ pub enum QuerySource {
     #[value(name = "openai_msg", alias = "openai-msg")]
     OpenaiMsg,
     Actf,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum QueryContentReadMode {
+    /// Return complete content and hydrate objects.lance references on demand.
+    #[default]
+    Full,
+    /// Return descriptor previews without reading objects.lance payloads.
+    Preview,
+}
+
+impl QueryContentReadMode {
+    fn storyline(self) -> StorylineContentReadMode {
+        match self {
+            Self::Full => StorylineContentReadMode::Full,
+            Self::Preview => StorylineContentReadMode::Preview,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -146,6 +165,10 @@ pub struct SqlQueryArgs {
     /// Maximum normalized rows per Arrow batch.
     #[arg(long, default_value_t = DEFAULT_LOCAL_QUERY_BATCH_SIZE)]
     pub batch_size: usize,
+
+    /// Materialize complete content or descriptor previews for Lance queries.
+    #[arg(long, value_enum, default_value_t = QueryContentReadMode::Full)]
+    pub content_read_mode: QueryContentReadMode,
 
     /// Emit local-file cache and parsing metrics as JSON to stderr.
     #[arg(long)]
@@ -327,6 +350,7 @@ pub async fn run_query(args: QueryArgs) -> Result<()> {
                 cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
                 cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
                 batch_size: DEFAULT_LOCAL_QUERY_BATCH_SIZE,
+                content_read_mode: QueryContentReadMode::Full,
                 query_metrics: false,
                 timeout_seconds: None,
                 memory_limit_bytes: None,
@@ -371,16 +395,27 @@ async fn run_sql_query(args: SqlQueryArgs) -> Result<()> {
         spill_path: args.spill_path.clone(),
         max_spill_bytes: args.max_spill_bytes,
     };
-    let engine = match args
+    let resolved = args
         .source
-        .resolve_with_options(&args.input, manifest_options)?
-    {
-        ResolvedQuerySource::Lance => ChronicleQueryEngine::open_lance_uri_with_options(
-            &args.input,
-            execution_options.clone(),
-        )
-        .await
-        .with_context(|| format!("open Lance store {}", args.input))?,
+        .resolve_with_options(&args.input, manifest_options)?;
+    anyhow::ensure!(
+        args.content_read_mode == QueryContentReadMode::Full
+            || matches!(&resolved, ResolvedQuerySource::Lance),
+        "--content-read-mode preview requires a Storyline Lance input"
+    );
+    let engine = match resolved {
+        ResolvedQuerySource::Lance => {
+            let source = StorylineDataSource::open_uri_with_options(
+                &args.input,
+                StorylineDataSourceOptions {
+                    content_read_mode: args.content_read_mode.storyline(),
+                    ..StorylineDataSourceOptions::default()
+                },
+            )
+            .await
+            .with_context(|| format!("open Lance store {}", args.input))?;
+            ChronicleQueryEngine::from_lance_source_with_options(source, execution_options.clone())?
+        }
         ResolvedQuerySource::Events => ChronicleQueryEngine::open_events_uri_with_options(
             &args.input,
             execution_options.clone(),
@@ -828,6 +863,7 @@ mod tests {
             cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
             cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
             batch_size: DEFAULT_LOCAL_QUERY_BATCH_SIZE,
+            content_read_mode: QueryContentReadMode::Full,
             query_metrics: false,
             timeout_seconds: None,
             memory_limit_bytes: None,
@@ -853,6 +889,7 @@ mod tests {
             cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
             cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
             batch_size: DEFAULT_LOCAL_QUERY_BATCH_SIZE,
+            content_read_mode: QueryContentReadMode::Full,
             query_metrics: false,
             timeout_seconds: None,
             memory_limit_bytes: None,

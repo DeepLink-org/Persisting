@@ -9,7 +9,8 @@ use clap::{Args, Subcommand, ValueEnum};
 use persisting_pchronicle::{
     actf_to_storylines, convert::atif_to_storyline, detect_format, recover_openai_msg_files,
     ActfDocument, AtifReader, ChronicleFormat, LanceMaintenanceOptions, OpenaiMsgCorpusReader,
-    StorylineDocument, StorylineLanceStore,
+    StorylineContentOptions, StorylineDocument, StorylineLanceStore,
+    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
 };
 
 #[derive(Debug, Args)]
@@ -56,6 +57,18 @@ pub struct ChronicleImportArgs {
     /// Input format; auto inspects every input file and rejects mixed directories.
     #[arg(long, value_enum, default_value_t = ChronicleImportFormat::Auto)]
     pub format: ChronicleImportFormat,
+
+    /// Serialized content-cell bytes at which payloads move to objects.lance.
+    #[arg(long, default_value_t = DEFAULT_CONTENT_OFFLOAD_THRESHOLD)]
+    pub content_offload_threshold: usize,
+
+    /// UTF-8 bytes retained in an offloaded content descriptor preview.
+    #[arg(long, default_value_t = DEFAULT_CONTENT_PREVIEW_BYTES)]
+    pub content_preview_bytes: usize,
+
+    /// Zstd compression level for objects.lance payloads.
+    #[arg(long, default_value_t = 3)]
+    pub content_zstd_level: i32,
 }
 
 #[derive(Debug, Args)]
@@ -113,9 +126,16 @@ async fn import_trajectories(args: ChronicleImportArgs) -> Result<()> {
         ChronicleImportFormat::Auto => detect_import_format(&args.input)?,
         format => format,
     };
-    let store = StorylineLanceStore::open_uri(&args.store)
-        .await
-        .with_context(|| format!("open Storyline Lance store {}", args.store))?;
+    let store = StorylineLanceStore::open_uri_with_content_options(
+        &args.store,
+        StorylineContentOptions {
+            offload_threshold: args.content_offload_threshold,
+            preview_bytes: args.content_preview_bytes,
+            zstd_level: args.content_zstd_level,
+        },
+    )
+    .await
+    .with_context(|| format!("open Storyline Lance store {}", args.store))?;
     let report = match format {
         ChronicleImportFormat::Atif if store.current_table_paths().await?.is_none() => {
             store.import_atif_stream(&args.input).await?
@@ -352,14 +372,28 @@ mod tests {
 
     #[test]
     fn parses_import_arguments() {
-        let parsed = TestCli::try_parse_from(["test", "import", "input.ndjson", "store"])
-            .expect("chronicle import should parse");
+        let parsed = TestCli::try_parse_from([
+            "test",
+            "import",
+            "input.ndjson",
+            "store",
+            "--content-offload-threshold",
+            "4096",
+            "--content-preview-bytes",
+            "128",
+            "--content-zstd-level",
+            "7",
+        ])
+        .expect("chronicle import should parse");
         let ChronicleCommand::Import(args) = parsed.args.command else {
             panic!("expected import command");
         };
         assert_eq!(args.input, PathBuf::from("input.ndjson"));
         assert_eq!(args.store, "store");
         assert_eq!(args.format, ChronicleImportFormat::Auto);
+        assert_eq!(args.content_offload_threshold, 4096);
+        assert_eq!(args.content_preview_bytes, 128);
+        assert_eq!(args.content_zstd_level, 7);
     }
 
     #[test]
@@ -414,6 +448,9 @@ mod tests {
                 input,
                 store: store_path.to_string_lossy().into_owned(),
                 format: ChronicleImportFormat::Auto,
+                content_offload_threshold: DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
+                content_preview_bytes: DEFAULT_CONTENT_PREVIEW_BYTES,
+                content_zstd_level: 3,
             }),
         })
         .await
@@ -472,6 +509,9 @@ mod tests {
                 input: input_dir,
                 store: store_path.to_string_lossy().into_owned(),
                 format: ChronicleImportFormat::Auto,
+                content_offload_threshold: DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
+                content_preview_bytes: DEFAULT_CONTENT_PREVIEW_BYTES,
+                content_zstd_level: 3,
             }),
         })
         .await

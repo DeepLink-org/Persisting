@@ -67,6 +67,7 @@ projected JSON reader 另有 allocation traffic 和输入 buffer 基准。体积
 | [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | 单 step、完整轨迹、CLI batching gain 与实时 canonical event follow | [History CLI](../design/cli-history.md) |
 | [05-format-roundtrip](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/05-format-roundtrip) | pPilot 将 OpenAI/ACTF 导入三表 Lance，并验证 JSON 数据模型无损恢复 | [pPilot CLI](../design/cli-ppilot.md) |
 | [06-query-openai-actf-directly](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly) | 直接查询 OpenAI/ACTF 目录，以 `_file_ LIKE` 筛选路径，并验证 Lance schema 不变 | [pPilot CLI](../design/cli-ppilot.md) |
+| [07-objects-lance-blob-offload](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/07-objects-lance-blob-offload) | 同一 corpus 强制 inline/offload，比较共享 `objects.lance` 的存储、压缩与分析性能 | [轨迹存储](../design/trajectory.md) |
 
 ## 前置条件
 
