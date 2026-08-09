@@ -1,9 +1,19 @@
 use crate::executor::{AttemptContext, RunExecutor};
+#[cfg(target_os = "linux")]
+use crate::sandbox::SandboxPlan;
+#[cfg(target_os = "linux")]
+use crate::sandbox::INTERNAL_SANDBOX_ARG;
+use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_EXIT_CODE, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
 use persisting_control::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessInvocation, ProcessOutput, RunFailure,
-    RunFailureKind, RunInvocation, RunResult, RunState, StdioMode,
+    RunFailureKind, RunInvocation, RunResult, RunSpec, RunState, StdioMode,
 };
+#[cfg(target_os = "linux")]
+use persisting_control::{FilesystemAccess, NetworkCapability};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
@@ -74,8 +84,57 @@ fn set_terminal_pgrp(fd: libc::c_int, pgrp: libc::pid_t) -> std::io::Result<()> 
     }
 }
 
-#[derive(Debug, Default)]
-pub struct ProcessExecutor;
+#[derive(Debug, Clone, Default)]
+pub struct ProcessExecutor {
+    /// `Some` selects the hidden self-exec rootless launcher.  The normal
+    /// library default intentionally remains the compatibility host process.
+    sandbox_launcher: Option<PathBuf>,
+}
+
+struct PreparedCommand {
+    command: Command,
+    // The launcher mounts a private tmpfs here.  Once its process tree exits,
+    // only this empty host-side mountpoint remains and the guard removes it.
+    _sandbox_root: SandboxRoot,
+}
+
+struct SandboxRoot(Option<PathBuf>);
+
+impl SandboxRoot {
+    fn none() -> Self {
+        Self(None)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn create() -> std::io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            ".pvisor-rootfs-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        Ok(Self(Some(path)))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn path(&self) -> Option<&std::path::Path> {
+        self.0.as_deref()
+    }
+}
+
+impl Drop for SandboxRoot {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            // Never recurse over a security-sensitive path.  A successful
+            // launcher leaves an empty mountpoint; a non-empty directory is
+            // retained for diagnosis instead of being removed destructively.
+            let _ = std::fs::remove_dir(path);
+        }
+    }
+}
 
 #[derive(Debug)]
 struct Captured {
@@ -140,13 +199,60 @@ fn is_executable(path: &std::path::Path) -> bool {
 }
 
 impl ProcessExecutor {
-    fn spawn_command(invocation: &ProcessInvocation) -> Command {
+    /// Build a Linux rootless executor using `launcher` for the trusted
+    /// namespace/Landlock setup stage.
+    ///
+    /// The launcher must dispatch [`crate::sandbox::run_internal_if_requested`]
+    /// before starting threads or an async runtime.  The `pvisor` binary is the
+    /// canonical launcher and uses this path automatically for `--safe` Runs.
+    #[cfg(target_os = "linux")]
+    pub fn rootless_with_launcher(launcher: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let launcher = launcher.into().canonicalize()?;
+        if !is_executable(&launcher) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "rootless sandbox launcher is not executable: {}",
+                    launcher.display()
+                ),
+            ));
+        }
+        Ok(Self {
+            sandbox_launcher: Some(launcher),
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn rootless_with_launcher(launcher: impl Into<PathBuf>) -> std::io::Result<Self> {
+        let _ = launcher.into();
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the rootless local process executor is only available on Linux",
+        ))
+    }
+
+    pub fn is_rootless(&self) -> bool {
+        self.sandbox_launcher.is_some()
+    }
+
+    fn spawn_command(
+        &self,
+        spec: &RunSpec,
+        invocation: &ProcessInvocation,
+    ) -> std::io::Result<PreparedCommand> {
         // Resolve a bare command against the host PATH before changing cwd to
         // an OverlayFS merged root. The executable belongs to the host-process
         // executor and need not exist inside the projected lower filesystem.
-        let mut command = Command::new(resolve_host_program(&invocation.program));
+        let program = resolve_host_program(&invocation.program);
+        let (mut command, sandbox_plan, sandbox_root) =
+            if let Some(launcher) = &self.sandbox_launcher {
+                rootless_launcher_command(launcher, spec, invocation, &program)?
+            } else {
+                let mut command = Command::new(program);
+                command.args(&invocation.args);
+                (command, None, SandboxRoot::none())
+            };
         command
-            .args(&invocation.args)
             .stdin(stdio(invocation.stdin))
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
@@ -163,7 +269,155 @@ impl ProcessExecutor {
             command.env_clear();
         }
         command.envs(&invocation.env);
-        command
+        // This is a reserved supervisor-to-launcher capability. Apply it last
+        // so an untrusted Run environment cannot remove or replace the policy.
+        if let Some(sandbox_plan) = sandbox_plan {
+            command.env(SANDBOX_PLAN_ENV, sandbox_plan);
+        }
+        Ok(PreparedCommand {
+            command,
+            _sandbox_root: sandbox_root,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn rootless_launcher_command(
+    launcher: &Path,
+    spec: &RunSpec,
+    invocation: &ProcessInvocation,
+    program: &Path,
+) -> std::io::Result<(Command, Option<String>, SandboxRoot)> {
+    let program = program.canonicalize().map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("resolve Agent executable {}: {error}", program.display()),
+        )
+    })?;
+    let sandbox_root = SandboxRoot::create()?;
+    let plan = rootless_plan(
+        spec,
+        invocation,
+        &program,
+        sandbox_root
+            .path()
+            .expect("created sandbox root")
+            .to_owned(),
+    )?;
+    let encoded = serde_json::to_string(&plan).map_err(std::io::Error::other)?;
+    let mut command = Command::new(launcher);
+    command
+        .arg(INTERNAL_SANDBOX_ARG)
+        .arg("--")
+        .arg(&program)
+        .args(&invocation.args);
+    Ok((command, Some(encoded), sandbox_root))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rootless_launcher_command(
+    _launcher: &std::path::Path,
+    _spec: &RunSpec,
+    _invocation: &ProcessInvocation,
+    _program: &std::path::Path,
+) -> std::io::Result<(Command, Option<String>, SandboxRoot)> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "the rootless local process executor is only available on Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn rootless_plan(
+    spec: &RunSpec,
+    invocation: &ProcessInvocation,
+    program: &Path,
+    root: PathBuf,
+) -> std::io::Result<SandboxPlan> {
+    let cwd = invocation
+        .cwd
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+    let cwd = cwd.canonicalize()?;
+    let mut read_only = Vec::new();
+    let mut read_write = vec![cwd.clone()];
+
+    // A broad but immutable OS runtime keeps arbitrary local executables and
+    // dynamic language runtimes working while excluding user data by default.
+    for path in ["/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc"] {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            // Preserve compatibility aliases such as /bin and /lib64 inside
+            // the synthetic root. Canonicalizing them would project only
+            // /usr/bin or /usr/lib and break ELF interpreter paths.
+            read_only.push(path);
+        }
+    }
+    // On systemd-resolved hosts this follows /etc/resolv.conf into /run,
+    // whose containing hierarchy is intentionally not otherwise projected.
+    push_existing(&mut read_only, Path::new("/etc/resolv.conf"));
+    read_only.push(program.to_path_buf());
+    for path in [
+        "/dev/null",
+        "/dev/zero",
+        "/dev/full",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/tty",
+    ] {
+        push_existing(&mut read_write, Path::new(path));
+    }
+
+    // The Run-scoped Agent ABI and an explicitly supplied SSH agent are
+    // capabilities represented by their exact socket inode, not by /tmp.
+    // Merely inheriting the host environment must not project signing
+    // authority into a safe Run.
+    for key in [crate::AGENT_ABI_ENDPOINT_ENV, "SSH_AUTH_SOCK"] {
+        if let Some(path) = invocation.env.get(key) {
+            push_existing(&mut read_write, Path::new(path));
+        }
+    }
+
+    for capability in &spec.capabilities.filesystem {
+        let path = PathBuf::from(&capability.path);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        };
+        if !path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "filesystem capability path does not exist: {}",
+                    path.display()
+                ),
+            ));
+        }
+        match capability.access {
+            FilesystemAccess::Read => push_existing(&mut read_only, &path),
+            FilesystemAccess::ReadWrite => push_existing(&mut read_write, &path),
+        }
+    }
+
+    read_only.sort_unstable();
+    read_only.dedup();
+    read_write.sort_unstable();
+    read_write.dedup();
+    Ok(SandboxPlan {
+        root,
+        cwd,
+        read_only,
+        read_write,
+        deny_network: matches!(spec.capabilities.network, NetworkCapability::Deny),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn push_existing(paths: &mut Vec<PathBuf>, path: &Path) {
+    if let Ok(path) = path.canonicalize() {
+        paths.push(path);
     }
 }
 
@@ -198,9 +452,18 @@ async fn terminate_process_tree(child: &mut Child, grace_ms: u64) {
 impl RunExecutor for ProcessExecutor {
     fn descriptor(&self) -> ExecutorDescriptor {
         ExecutorDescriptor {
-            name: "local-process-v1".into(),
+            name: if self.is_rootless() {
+                "local-rootless-v1"
+            } else {
+                "local-process-v1"
+            }
+            .into(),
             kind: ExecutorKind::Process,
-            isolation: IsolationKind::HostProcess,
+            isolation: if self.is_rootless() {
+                IsolationKind::RootlessProcess
+            } else {
+                IsolationKind::HostProcess
+            },
             enforces_capabilities: false,
             supports_checkpoint: false,
             supports_migration: false,
@@ -219,7 +482,35 @@ impl RunExecutor for ProcessExecutor {
             .transition(RunState::Starting, Some("spawning local process".into()))
             .await;
 
-        let mut child = match Self::spawn_command(invocation).spawn() {
+        let PreparedCommand {
+            mut command,
+            _sandbox_root,
+        } = match self.spawn_command(&spec, invocation) {
+            Ok(command) => command,
+            Err(error) => {
+                return RunResult {
+                    run_id: spec.run_id,
+                    attempt_id: context.attempt_id().clone(),
+                    lease_epoch: spec.lease_epoch,
+                    state: RunState::Failed,
+                    started_at_unix_ms: started_at,
+                    finished_at_unix_ms: crate::util::unix_now_ms(),
+                    exit_code: None,
+                    failure: Some(RunFailure {
+                        kind: RunFailureKind::Spawn,
+                        message: error.to_string(),
+                        retryable: false,
+                    }),
+                    output: ProcessOutput::default(),
+                    value: None,
+                    metrics: Default::default(),
+                    artifacts: Vec::new(),
+                    event_stream_ref: None,
+                    warnings: Vec::new(),
+                };
+            }
+        };
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
                 return RunResult {
@@ -330,10 +621,24 @@ impl RunExecutor for ProcessExecutor {
         }
 
         let finished_at = crate::util::unix_now_ms();
+        let sandbox_setup_failed = matches!(
+            &end,
+            End::Exited(Ok(status))
+                if self.is_rootless() && status.code() == Some(SANDBOX_SETUP_EXIT_CODE)
+        );
         let (state, exit_code, failure) = match end {
             End::Exited(Ok(status)) if status.success() => {
                 (RunState::Completed, status.code(), None)
             }
+            End::Exited(Ok(_)) if sandbox_setup_failed => (
+                RunState::Failed,
+                None,
+                Some(RunFailure {
+                    kind: RunFailureKind::Infrastructure,
+                    message: "rootless sandbox setup failed before Agent execution".into(),
+                    retryable: false,
+                }),
+            ),
             End::Exited(Ok(status)) => (
                 RunState::Failed,
                 status.code(),
@@ -384,7 +689,11 @@ impl RunExecutor for ProcessExecutor {
             metrics: Default::default(),
             artifacts: Vec::new(),
             event_stream_ref: None,
-            warnings: Vec::new(),
+            warnings: if sandbox_setup_failed {
+                vec![SANDBOX_SETUP_FAILED_WARNING.into()]
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -392,6 +701,57 @@ impl RunExecutor for ProcessExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rootless_executor_reports_an_honest_partial_boundary() {
+        let executor =
+            ProcessExecutor::rootless_with_launcher(std::env::current_exe().unwrap()).unwrap();
+        let descriptor = executor.descriptor();
+        assert_eq!(descriptor.name, "local-rootless-v1");
+        assert_eq!(descriptor.isolation, IsolationKind::RootlessProcess);
+        // Filesystem containment is recorded separately in the Run Bundle;
+        // network allowlists and subprocess capabilities are not all enforced.
+        assert!(!descriptor.enforces_capabilities);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rootless_plan_is_reserved_even_when_the_run_clears_or_poisons_its_environment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut spec = RunSpec::process("run", "agent", "/bin/true");
+        {
+            let RunInvocation::Process(invocation) = &mut spec.invocation;
+            invocation.cwd = Some(temporary.path().display().to_string());
+            invocation.inherit_env = false;
+            invocation
+                .env
+                .insert(SANDBOX_PLAN_ENV.into(), r#"{"read_write":["/"]}"#.into());
+        }
+
+        let executor =
+            ProcessExecutor::rootless_with_launcher(std::env::current_exe().unwrap()).unwrap();
+        let RunInvocation::Process(invocation) = &spec.invocation;
+        let command = executor.spawn_command(&spec, invocation).unwrap();
+        let encoded = command
+            .command
+            .as_std()
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == SANDBOX_PLAN_ENV).then(|| value.unwrap().to_string_lossy().into_owned())
+            })
+            .expect("trusted sandbox plan must survive env_clear");
+        let plan: SandboxPlan = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(plan.cwd, temporary.path().canonicalize().unwrap());
+        assert_ne!(encoded, r#"{"read_write":["/"]}"#);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn rootless_executor_fails_closed_off_linux() {
+        let error = ProcessExecutor::rootless_with_launcher("pvisor").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    }
 
     #[cfg(unix)]
     #[test]

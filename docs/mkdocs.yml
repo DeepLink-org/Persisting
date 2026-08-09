@@ -110,6 +110,7 @@ plugins:
             History / Eval / Gateway CLI: History / Eval / Gateway 命令
             Capture CLI: Capture 子命令
             pPilot Architecture: pPilot 架构
+            Isolation backends: 隔离后端
             References: 参考
             Similar Systems: 类似系统
             TransferQueue Comparison: TransferQueue 对比
@@ -152,6 +153,7 @@ nav:
       - Overview and maturity: design/index.md
       - Agent infrastructure: design/agent-infrastructure.md
       - pVisor execution runtime:
+          - Isolation backends: design/pvisor-isolation.md
           - Gateway capture driver: design/gateway.md
           - OverlayNet transparent interception: design/overlaynet.md
           - CLI and runtime boundary: design/cli.md

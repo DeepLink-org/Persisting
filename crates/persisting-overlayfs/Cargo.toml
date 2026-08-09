@@ -7,6 +7,10 @@ license.workspace = true
 description = "Cross-platform FUSE overlay (macFUSE / libfuse) for pVisor staging"
 readme = "README.md"
 
+[features]
+default = ["jujutsu"]
+jujutsu = ["dep:jj-lib", "dep:pollster"]
+
 [[bin]]
 name = "persisting-overlayfs"
 path = "src/main.rs"
@@ -17,8 +21,8 @@ libc.workspace = true
 log.workspace = true
 env_logger.workspace = true
 clap = { workspace = true, features = ["derive"] }
-jj-lib.workspace = true
-pollster.workspace = true
+jj-lib = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 fuser = { workspace = true, features = ["abi-7-19", "libfuse", "macfuse-5"] }

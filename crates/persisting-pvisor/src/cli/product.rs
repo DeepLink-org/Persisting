@@ -72,7 +72,9 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     println!("\nSafety boundary");
     println!(
         "  filesystem: {}",
-        if bundle.safety.filesystem_changes_staged {
+        if bundle.safety.filesystem_non_bypassable {
+            "kernel-enforced staged workspace"
+        } else if bundle.safety.filesystem_changes_staged {
             "changes staged for review"
         } else {
             "no staged change set"
@@ -96,6 +98,9 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
             .as_ref()
             .map(|executor| executor.isolation)
         {
+            Some(persisting_control::IsolationKind::RootlessProcess) => {
+                "rootless user namespace + Landlock"
+            }
             Some(persisting_control::IsolationKind::Container) => {
                 "OCI container with injected pVisor"
             }

@@ -1,16 +1,32 @@
 use std::path::Path;
-use std::sync::{mpsc, Arc};
+#[cfg(feature = "lance-chronicle")]
+use std::sync::mpsc;
+use std::sync::Arc;
+#[cfg(feature = "lance-chronicle")]
 use std::time::Duration;
 
+#[cfg(feature = "lance-chronicle")]
 use anyhow::Context;
+#[cfg(feature = "lance-chronicle")]
 use async_trait::async_trait;
+#[cfg(feature = "lance-chronicle")]
 use persisting_gateway::record::CaptureRecord;
+#[cfg(feature = "lance-chronicle")]
 use persisting_gateway::session::storage::CaptureRoute;
+#[cfg(feature = "lance-chronicle")]
 use persisting_gateway::sink::CallbackSink;
+#[cfg(feature = "lance-chronicle")]
 use persisting_pchronicle::{EventRecord, RawEventLanceAppender, StoryCoords};
 
 use crate::{EventSink, TrajectoryEventSink};
 
+type ChronicleSinks = (
+    Arc<dyn TrajectoryEventSink>,
+    Arc<dyn EventSink>,
+    ChronicleWriter,
+);
+
+#[cfg(feature = "lance-chronicle")]
 struct AppendJob {
     storage_session_id: String,
     root_session_id: Option<String>,
@@ -18,15 +34,19 @@ struct AppendJob {
     record: EventRecord,
 }
 
+#[cfg(feature = "lance-chronicle")]
 const CHRONICLE_APPEND_BATCH_SIZE: usize = 256;
+#[cfg(feature = "lance-chronicle")]
 const CHRONICLE_APPEND_BATCH_DELAY: Duration = Duration::from_millis(2);
 
+#[cfg(feature = "lance-chronicle")]
 struct ChronicleEventSink {
     tx: mpsc::SyncSender<AppendJob>,
     run_id: String,
     agent_id: String,
 }
 
+#[cfg(feature = "lance-chronicle")]
 #[async_trait]
 impl EventSink for ChronicleEventSink {
     async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
@@ -41,10 +61,12 @@ impl EventSink for ChronicleEventSink {
     }
 }
 
+#[cfg(feature = "lance-chronicle")]
 pub struct ChronicleWriter {
     join: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
 }
 
+#[cfg(feature = "lance-chronicle")]
 impl ChronicleWriter {
     pub fn finish(mut self) -> anyhow::Result<()> {
         let Some(join) = self.join.take() else {
@@ -56,15 +78,22 @@ impl ChronicleWriter {
     }
 }
 
+#[cfg(not(feature = "lance-chronicle"))]
+pub struct ChronicleWriter;
+
+#[cfg(not(feature = "lance-chronicle"))]
+impl ChronicleWriter {
+    pub fn finish(self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "lance-chronicle")]
 pub fn chronicle_sink(
     storage: &Path,
     default_agent_id: &str,
     run_id: &str,
-) -> (
-    Arc<dyn TrajectoryEventSink>,
-    Arc<dyn EventSink>,
-    ChronicleWriter,
-) {
+) -> anyhow::Result<ChronicleSinks> {
     let storage = storage.to_path_buf();
     let (tx, rx) = mpsc::sync_channel::<AppendJob>(256);
     let join = std::thread::spawn(move || -> anyhow::Result<()> {
@@ -126,9 +155,20 @@ pub fn chronicle_sink(
         run_id: run_id.to_string(),
         agent_id: default_agent_id.to_string(),
     };
-    (
+    Ok((
         Arc::new(callback),
         Arc::new(lifecycle),
         ChronicleWriter { join: Some(join) },
+    ))
+}
+
+#[cfg(not(feature = "lance-chronicle"))]
+pub fn chronicle_sink(
+    _storage: &Path,
+    _default_agent_id: &str,
+    _run_id: &str,
+) -> anyhow::Result<ChronicleSinks> {
+    anyhow::bail!(
+        "Lance trajectory capture is not part of the lightweight pVisor build; rebuild with `--features lance-chronicle`"
     )
 }

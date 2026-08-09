@@ -23,6 +23,8 @@ mod executor;
 mod kvm;
 mod process;
 mod pvisor;
+#[doc(hidden)]
+pub mod sandbox;
 mod supervisor;
 mod util;
 

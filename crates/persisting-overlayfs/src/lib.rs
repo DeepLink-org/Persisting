@@ -6,6 +6,10 @@
 
 mod core;
 mod fs;
+#[cfg(feature = "jujutsu")]
+mod jj_backend;
+#[cfg(not(feature = "jujutsu"))]
+#[path = "jj_disabled.rs"]
 mod jj_backend;
 mod sys;
 

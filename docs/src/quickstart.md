@@ -4,6 +4,12 @@ Follow one main path in five minutes: install the CLI, run an Agent safely,
 orchestrate a batch, and query trajectory data with SQL. This guide assumes
 macOS or Linux.
 
+On macOS, install macFUSE once before using staged `--safe` Runs:
+
+```bash
+brew install --cask macfuse
+```
+
 ## 1. Install the CLI
 
 ```bash
@@ -27,9 +33,15 @@ pvisor run --safe codex
 base, writes Agent changes to a per-Run stage, and enables the explicit network
 proxy. The Run and its `run-bundle.json` remain under `PERSISTING_RUN_HOME`.
 
-The default Host executor provides process-level isolation. It does not stop
-the Agent from accessing host paths outside the project, and a direct socket
-can bypass the explicit proxy. The Run Bundle reports these boundaries.
+On Linux, the default Host executor uses a rootless user/mount namespace, a
+minimal bind-projected root, and Landlock. Absolute paths, symlink escapes,
+pathname Unix sockets, and descendants are confined to the staged workspace,
+a read-only runtime, and explicitly granted paths. Setup
+requires no root helper and fails closed if the kernel does not provide the
+required controls. The default public proxy is still cooperative; pass
+`--overlaynet-deny-all` when the Run must have no network namespace access.
+On macOS, `--safe` remains review-only because Landlock is unavailable. The Run
+Bundle reports these effective boundaries.
 
 ```bash
 pvisor review last     # inspect file changes, network counters, and warnings

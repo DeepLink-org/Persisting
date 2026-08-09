@@ -392,8 +392,7 @@ pub fn mount_overlay_record(
         ),
     };
     config.fsname = format!("pvisor-{}", record.id);
-    let session =
-        mount_embedded_overlay(config).map_err(|error| OverlayError::Mount(error.to_string()))?;
+    let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)?;
 
     let mut record = record.clone();
@@ -441,13 +440,25 @@ pub fn mount_overlay_record_read_only(
     };
     config.fsname = format!("pvisor-inspect-{}", record.id);
     config.read_only = true;
-    let session =
-        mount_embedded_overlay(config).map_err(|error| OverlayError::Mount(error.to_string()))?;
+    let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(mountpoint, &session)?;
     Ok(ReadOnlyOverlayMount {
         session: Some(session),
         mountpoint: mountpoint.to_path_buf(),
     })
+}
+
+fn embedded_mount_error(error: anyhow::Error) -> OverlayError {
+    #[cfg(target_os = "macos")]
+    {
+        OverlayError::Mount(format!(
+            "{error}; macOS staged workspaces require macFUSE 5 to be installed and enabled (brew install --cask macfuse)"
+        ))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        OverlayError::Mount(error.to_string())
+    }
 }
 
 pub fn overlay_meta_path(stage_dir: &Path) -> PathBuf {

@@ -70,9 +70,7 @@ def peak_rss_bytes(raw_rss: int) -> int:
 def run_measured(command: list[str]) -> tuple[int, bytes, bytes, int, float]:
     """Run one isolated process and return output plus that child's peak RSS."""
     if not hasattr(os, "wait4"):
-        raise SystemExit(
-            "this benchmark requires os.wait4 for per-process peak RSS measurement"
-        )
+        raise SystemExit("this benchmark requires os.wait4 for per-process peak RSS measurement")
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         started = time.perf_counter()
         process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
@@ -98,7 +96,10 @@ def parse_engine_metrics(stderr: bytes) -> dict:
             continue
         if isinstance(value, dict) and "source_bytes_read" in value:
             return value
-    raise SystemExit(f"pChronicle JSON query did not emit metrics: {stderr.decode(errors='replace')}")
+    raise SystemExit(
+        f"pChronicle JSON query did not emit metrics: {stderr.decode(errors='replace')}"
+    )
+
 
 for iteration in range(iterations):
     # Rotate all three paths so process warm-up and filesystem cache effects are
@@ -136,9 +137,7 @@ Path(direct_output_arg).write_bytes(outputs["pchronicle_json"])
 Path(lance_output_arg).write_bytes(outputs["pchronicle_lance"])
 
 with Path(json_input).open(encoding="utf-8") as source:
-    input_rows = sum(
-        len(json.loads(line).get("steps", [])) for line in source if line.strip()
-    )
+    input_rows = sum(len(json.loads(line).get("steps", [])) for line in source if line.strip())
 
 metrics = {
     name: {

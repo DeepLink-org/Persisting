@@ -479,6 +479,8 @@ pub enum ExecutorKind {
 #[serde(rename_all = "snake_case")]
 pub enum IsolationKind {
     HostProcess,
+    /// Unprivileged process isolated by a user namespace and host-kernel policy.
+    RootlessProcess,
     Container,
     VirtualMachine,
     Wasm,

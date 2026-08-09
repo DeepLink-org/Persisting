@@ -83,7 +83,7 @@ def execute(item):
     writer.join().await.unwrap();
     assert_eq!(results.len(), 1);
     let result = &results[0];
-    assert!(result.ok);
+    assert!(result.ok, "unexpected pVisor result: {result:#?}");
     assert!(result.lease_epoch > 0);
     assert!(result.attempt_id.is_some());
     let run_id = persisting_control::RunId::new(result.run_id.as_deref().unwrap());

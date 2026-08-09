@@ -15,12 +15,23 @@ pvisor drop last
 `--safe` uses the current directory as a reusable project workspace, creates
 an independent durable Run under `PERSISTING_RUN_HOME`, stages changes through
 OverlayFS, enables the cooperative OverlayNet proxy, and writes a private
-versioned `run-bundle.json`. With the default host executor it is a
-review-oriented low-privilege profile, not a VM boundary: the Agent can still
-reach host paths outside the staged workspace and bypass the proxy with direct
-sockets. Docker and KVM executors inject the matching static Linux pVisor and
-run the same ProcessExecutor inside a stronger placement boundary. pVisor
-records the selected executor and its actual boundary in the Run Bundle.
+versioned `run-bundle.json`. On Linux, the host path self-executes through a
+small launcher that installs an unprivileged user/mount namespace, constructs
+a minimal bind-projected root, enters it with `chroot`, and applies Landlock
+before running the Agent. The policy confines the complete descendant process
+tree to the staged workspace, a read-only host runtime, and explicit
+capabilities; unprojected host files and pathname Unix sockets are absent. It
+fails closed instead of falling back to an ordinary host process. A deny-all
+network request additionally creates a private network namespace; public and
+allowlist proxy modes remain cooperative. macOS retains
+review-only staging and reports that weaker boundary. Docker and KVM remain
+stronger placement choices, and every Run Bundle records the effective
+executor and controls.
+
+The default pVisor build is deliberately lightweight: directory OverlayFS and
+the compact pChronicle event model do not link Lance, DataFusion, Jujutsu,
+`prost`, or a protobuf toolchain. Full local Lance history and the Jujutsu
+upper backend are explicit `lance-chronicle` and `jujutsu-overlay` features.
 
 pVisor is a first-class Persisting component alongside pPilot and pChronicle:
 
@@ -61,7 +72,7 @@ owner-mediated read-only inspection.
 | `config` | canonical `RunConfig` plus programmatic driver configuration |
 | `runtime` | Attempt preparation and driver ownership |
 | `control` | Re-export of the shared `persisting-control` state protocol |
-| `process` | Host process executor |
+| `process` | Host process and Linux rootless executor |
 | `artifact` | target-specific static pVisor runtime discovery |
 | `delegated` | RunSpec/RunResult hand-off between pVisor placements |
 | `container` | Docker/Podman transport that injects pVisor |
