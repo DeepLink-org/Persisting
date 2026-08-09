@@ -29,7 +29,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Rust formatting
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path pchronicle-web/Cargo.toml -- --check
 
       - name: Rust clippy
         # Match local `just clippy` for now; tighten to `-D warnings` once the
@@ -53,11 +55,17 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           install-protoc: "true"
+          install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --workspace --all-targets --locked
+        run: |
+          python3 scripts/packaging/stage_wheel_binaries.py --web-only
+          cargo build --workspace --all-targets --locked
+
+      - name: Test pChronicle Web
+        run: cargo test --manifest-path pchronicle-web/Cargo.toml --locked
 
       - name: Build Agent CLI component set
         run: |
@@ -160,6 +168,7 @@ jobs:
         with:
           python-version: "3.12"
           install-protoc: "true"
+          install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
 

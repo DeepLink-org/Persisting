@@ -1,0 +1,28 @@
+[package]
+name = "pchronicle-web"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+dioxus = { version = "=0.7.9", features = ["web"] }
+dioxus-web = "=0.7.9"
+futures-util = "0.3"
+gloo-net = { version = "0.6", features = ["eventsource", "http"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+urlencoding = "2"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["History", "Location", "MessageEvent", "UrlSearchParams", "Window"] }
+
+[profile.dev]
+debug = 0
+incremental = true
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 16
+debug = false

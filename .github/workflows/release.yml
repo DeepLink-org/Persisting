@@ -55,8 +55,12 @@ jobs:
         with:
           python-version: "3.12"
           install-protoc: "false"
+          install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Build pChronicle Web assets
+        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
       - name: Build manylinux wheel
         uses: PyO3/maturin-action@v1
@@ -109,8 +113,12 @@ jobs:
         with:
           python-version: "3.12"
           install-protoc: "false"
+          install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Build pChronicle Web assets
+        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
       - name: Stage wheel CLI component set
         run: >-

@@ -102,7 +102,7 @@ pub fn parse_openai_msg_corpus_value(
         _ => {
             return Err(Error::Other(
                 "OpenAI corpus must be a JSON array or session_steps object".to_string(),
-            ))
+            ));
         }
     };
 
@@ -351,7 +351,8 @@ fn rows_to_storyline(
                 relative_path, ordinal
             ))
         })?;
-        let tool_calls = parse_tool_calls(output.get("tool_calls"));
+        let tool_calls = parse_tool_calls(output.get("tool_calls"))
+            .or_else(|| parse_embedded_tool_call(output.get("content"), step_id));
         let message = output.get("content").cloned().unwrap_or(Value::Null);
         let metrics = normalized_metrics(row, env_state.as_ref());
         let timestamp = env_state
@@ -580,6 +581,67 @@ fn parse_tool_calls(value: Option<&Value>) -> Option<Vec<StorylineToolCall>> {
     (!parsed.is_empty()).then_some(parsed)
 }
 
+fn parse_embedded_tool_call(
+    content: Option<&Value>,
+    step_id: i64,
+) -> Option<Vec<StorylineToolCall>> {
+    let text = message_text(content?)?;
+    let name = text
+        .split_once("<tool_call>")
+        .map(|(_, value)| value)
+        .or_else(|| text.split_once("<function=").map(|(_, value)| value))?;
+    let name = name.trim().split(['>', '\n', '<']).next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut arguments = serde_json::Map::new();
+    let mut remaining = text.as_str();
+    while let Some((_, after_marker)) = remaining.split_once("<parameter=") {
+        let Some((key, after_opening)) = after_marker.split_once('>') else {
+            break;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            remaining = after_opening;
+            continue;
+        }
+        let (value, rest) = after_opening
+            .split_once("</parameter>")
+            .unwrap_or((after_opening, ""));
+        arguments.insert(key.to_string(), Value::String(value.trim().to_string()));
+        remaining = rest;
+    }
+    Some(vec![StorylineToolCall {
+        tool_call_id: format!("embedded-{step_id}-{name}"),
+        function_name: name.to_string(),
+        arguments: Value::Object(arguments),
+        duration_ms: None,
+        extra: Some(json!({"encoding":"embedded_text"})),
+    }])
+}
+
+fn message_text(content: &Value) -> Option<String> {
+    match content {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| {
+                    part.as_str()
+                        .or_else(|| part.get("text").and_then(Value::as_str))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(object) => object
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
 fn normalized_metrics(row: &Map<String, Value>, env_state: Option<&Value>) -> Option<Value> {
     const ROW_FIELDS: &[&str] = &[
         "reward",
@@ -732,6 +794,21 @@ mod tests {
     fn recovery_rejects_unsafe_paths() {
         let error = parse_openai_msg_corpus_value(&corpus(), "../escape.json").unwrap_err();
         assert!(error.to_string().contains("unsafe"));
+    }
+
+    #[test]
+    fn embedded_text_tool_calls_are_normalized() {
+        let calls = parse_embedded_tool_call(
+            Some(&json!([{
+                "type":"text",
+                "text":"<tool_call>execute_ipython_cell\n<parameter=code>print('ok')</parameter>"
+            }])),
+            7,
+        )
+        .unwrap();
+        assert_eq!(calls[0].function_name, "execute_ipython_cell");
+        assert_eq!(calls[0].tool_call_id, "embedded-7-execute_ipython_cell");
+        assert_eq!(calls[0].arguments["code"], "print('ok')");
     }
 
     #[cfg(feature = "lance-store")]

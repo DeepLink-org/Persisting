@@ -93,6 +93,29 @@ persisting history materialize ./store \
   --agent-id <agent-id> \
   --root-session-id <run-id> \
   --session-id <session-id>
+
+# 打开本地轨迹工作台。
+persisting chronicle serve ./store
+
+# 也可以直接打开包含 probing JSON 导出的目录。
+persisting chronicle serve ./data
+```
+
+工作台只监听 loopback，以实时 Storyline 时间线展示轨迹，并可下钻对应的 canonical event
+JSON；同时提供 HAR/OTLP 导出和面向整个目录的只读 SQL 工作区。
+
+在只读查看模式下，工作台会自动识别所选目录中的 probing gateway step 数组和 ACTF
+任务文档（`*.json`），无需先导入为 Lance 数据。
+
+所选目录会成为与目录同名的 SQL schema。例如目录名为 `data` 时，可查询
+`data.runs`、`data.steps`、`data.tool_calls` 和 `data.trajectories` 四张虚拟表。
+每张表都包含虚拟字段 `_file_`，既可精确匹配相对路径，也可用 `LIKE` 跨目录过滤：
+
+```sql
+SELECT _file_, COUNT(*) AS steps
+FROM data.steps
+WHERE _file_ LIKE 'cybergym_%.json'
+GROUP BY _file_;
 ```
 
 执行过 `gateway start` 或设置 `PERSISTING_CAPTURE_STORAGE` 后，`stats`、`replay`

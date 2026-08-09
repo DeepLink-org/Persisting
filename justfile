@@ -120,6 +120,14 @@ regression profile="debug":
 
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 
+# Build the Dioxus trajectory workbench for compile-time embedding.
+chronicle-web-build:
+    python3 scripts/packaging/stage_wheel_binaries.py --web-only
+
+# Start the Web frontend against a separately running pChronicle server.
+chronicle-web-dev:
+    cd pchronicle-web && dx serve
+
 build profile="debug":
     cargo build -p persisting-cli {{ if profile == "release" { "--release" } else { "" } }}
     cargo build -p persisting-pvisor --bin pvisor {{ if profile == "release" { "--release" } else { "" } }}

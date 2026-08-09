@@ -97,6 +97,33 @@ persisting history materialize ./store \
   --agent-id <agent-id> \
   --root-session-id <run-id> \
   --session-id <session-id>
+
+# Open the local trajectory workbench.
+persisting chronicle serve ./store
+
+# Probing exports can be opened directly as a directory of JSON files.
+persisting chronicle serve ./data
+```
+
+The loopback-only workbench presents a live Storyline timeline linked back to
+canonical event JSON, plus HAR/OTLP export and a directory-wide read-only SQL
+workspace.
+
+For read-only inspection, the workbench auto-detects probing gateway step
+arrays and ACTF task documents (`*.json`) in the selected directory. These
+files do not need to be imported into Lance first.
+
+The selected directory becomes a SQL schema named after the directory. For a
+directory named `data`, the virtual tables are `data.runs`, `data.steps`,
+`data.tool_calls`, and `data.trajectories`. Every table includes a virtual
+`_file_` column, so queries can select an exact relative path or use `LIKE`
+patterns across the directory:
+
+```sql
+SELECT _file_, COUNT(*) AS steps
+FROM data.steps
+WHERE _file_ LIKE 'cybergym_%.json'
+GROUP BY _file_;
 ```
 
 `stats`, `replay`, and `materialize` may omit the storage argument

@@ -287,7 +287,15 @@ impl FileTrajectoryDataSource {
     }
 
     pub fn register(&self, context: &SessionContext) -> Result<()> {
-        let names = StorylineDataFusionTableNames::default();
+        self.register_as(context, &StorylineDataFusionTableNames::default())
+    }
+
+    pub fn register_as(
+        &self,
+        context: &SessionContext,
+        names: &StorylineDataFusionTableNames,
+    ) -> Result<()> {
+        validate_table_names(names)?;
         context
             .register_table(&names.runs, self.runs.clone())
             .context("register file-backed runs query table")?;
@@ -2471,6 +2479,26 @@ fn like_tokens(pattern: &str, escape: Option<char>) -> Option<Vec<LikeToken>> {
 
 fn datafusion_error(error: anyhow::Error) -> DataFusionError {
     DataFusionError::Execution(format!("{error:#}"))
+}
+
+fn validate_table_names(names: &StorylineDataFusionTableNames) -> Result<()> {
+    let values = [&names.runs, &names.steps, &names.tool_calls];
+    for name in values {
+        anyhow::ensure!(
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|character| character == '_' || character.is_ascii_alphanumeric()),
+            "invalid DataFusion table name: {name}"
+        );
+    }
+    anyhow::ensure!(
+        names.runs != names.steps
+            && names.runs != names.tool_calls
+            && names.steps != names.tool_calls,
+        "DataFusion table names must be distinct"
+    );
+    Ok(())
 }
 
 fn validate_options(options: FileTrajectoryDataSourceOptions) -> Result<()> {
