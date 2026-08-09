@@ -1,0 +1,17 @@
+[application]
+name = "pchronicle-web"
+out_dir = "../crates/persisting-pchronicle-server/web-assets"
+
+[web]
+pre_compress = true
+
+[web.app]
+title = "pChronicle · Trajectory Workbench"
+base_path = "/"
+
+[web.dev]
+hot_reload = true
+
+[bundle]
+public_url = "/"
+base_path = "/"

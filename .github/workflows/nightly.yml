@@ -49,8 +49,12 @@ jobs:
         with:
           python-version: "3.12"
           install-protoc: "true"
+          install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Build pChronicle Web assets
+        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
       - name: Apply nightly local version (PEP 440)
         run: |
@@ -106,8 +110,12 @@ jobs:
         with:
           python-version: "3.12"
           install-protoc: "true"
+          install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Build pChronicle Web assets
+        run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
       - name: Apply nightly local version (PEP 440)
         run: |

@@ -17,6 +17,10 @@ inputs:
     description: "Rust components (comma-separated)"
     required: false
     default: "rustfmt, clippy"
+  install-dioxus:
+    description: "Install the pinned Dioxus CLI and wasm target"
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
@@ -36,6 +40,14 @@ runs:
       uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
+
+    - name: Install Dioxus Web toolchain
+      if: inputs.install-dioxus == 'true'
+      shell: bash
+      run: |
+        rustup target add wasm32-unknown-unknown
+        cargo install dioxus-cli --version 0.7.9 --locked
+        dx --version
 
     - name: Install protoc
       if: inputs.install-protoc == 'true' && runner.os == 'Linux'

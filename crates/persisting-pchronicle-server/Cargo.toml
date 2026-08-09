@@ -5,10 +5,13 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Loopback-only local Web UI and API for pChronicle"
+build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
 axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
+bytes.workspace = true
+include_dir = "=0.7.4"
 persisting-pchronicle = { workspace = true, features = ["lance-store"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

@@ -18,6 +18,9 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
+WEB_ROOT = ROOT / "pchronicle-web"
+WEB_PUBLIC = ROOT / "crates" / "persisting-pchronicle-server" / "web-assets" / "public"
+DX_PUBLIC = WEB_ROOT / "target" / "dx" / "pchronicle-web" / "release" / "web" / "public"
 EXPECTED_BINARIES = ("persisting", "pvisor", "ppilot")
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-gnu",
@@ -201,8 +204,37 @@ def _build(options: BuildOptions) -> dict[str, Path]:
     return artifacts
 
 
+def _build_web_assets() -> None:
+    """Build the target-independent Dioxus bundle before compiling native CLIs."""
+    manifest = WEB_PUBLIC / "embedded.manifest"
+    if shutil.which("dx") is None and manifest.is_file():
+        print(f"Using prebuilt pChronicle Web assets: {WEB_PUBLIC}", file=sys.stderr)
+        return
+    command = ["dx", "bundle", "--release", "--debug-symbols", "false"]
+    print(f"Building pChronicle Web assets: {shlex.join(command)}", file=sys.stderr)
+    try:
+        shutil.rmtree(WEB_PUBLIC.parent, ignore_errors=True)
+        shutil.rmtree(DX_PUBLIC, ignore_errors=True)
+        subprocess.run(command, cwd=WEB_ROOT, check=True)
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            "Dioxus CLI is required for wheel builds; install dioxus-cli 0.7.9"
+        ) from error
+    index = WEB_PUBLIC / "index.html"
+    if not index.is_file():
+        raise RuntimeError(f"Dioxus did not produce {index}")
+    assets = WEB_PUBLIC / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    for stylesheet in sorted((WEB_ROOT / "assets").glob("*.css")):
+        shutil.copy2(stylesheet, assets / stylesheet.name)
+    manifest.write_text(
+        "__PCHRONICLE_EMBEDDED_WEB_ASSETS_V1__\n", encoding="utf-8"
+    )
+
+
 def stage_wheel_binaries(options: BuildOptions) -> Path:
     """Build all host CLIs and atomically replace the wheel scripts directory."""
+    _build_web_assets()
     artifacts = _build(options)
     ensure_wheel_data_directory()
     staged = WHEEL_DATA / f".scripts-{os.getpid()}"
@@ -245,7 +277,11 @@ def main() -> None:
     parser.add_argument("--frozen", action="store_true")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--jobs")
+    parser.add_argument("--web-only", action="store_true")
     args = parser.parse_args()
+    if args.web_only:
+        _build_web_assets()
+        return
     options = BuildOptions(
         target=_normalize_target(args.target),
         profile=args.profile,
