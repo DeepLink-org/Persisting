@@ -17,6 +17,10 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/import_roundtrip")
 }
 
+fn atif_fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif")
+}
+
 fn json_rows(output: &str) -> Result<Vec<serde_json::Value>> {
     output
         .lines()
@@ -315,5 +319,61 @@ async fn multi_file_joins_require_the_file_key() -> Result<()> {
              AND s.session_id = t.session_id AND s.step_id = t.step_id",
         )
         .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn atif_steps_projection_matches_full_normalization_and_prunes_rows() -> Result<()> {
+    let first: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        atif_fixtures().join("dialogue_10.json"),
+    )?)?;
+    let second: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+        atif_fixtures().join("long_context_20.json"),
+    )?)?;
+    let temp = tempfile::tempdir()?;
+    let ndjson = temp.path().join("input.ndjson");
+    fs::write(
+        &ndjson,
+        format!(
+            "{}\n{}\n",
+            serde_json::to_string(&first)?,
+            serde_json::to_string(&second)?
+        ),
+    )?;
+    let compatibility = temp.path().join("input-array.json");
+    fs::write(
+        &compatibility,
+        serde_json::to_vec_pretty(&vec![first, second])?,
+    )?;
+
+    let projected = ChronicleQueryEngine::open_atif(&ndjson)?;
+    let full = ChronicleQueryEngine::open_atif(&compatibility)?;
+    let queries = [
+        "SELECT COUNT(*) AS steps FROM steps",
+        "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source",
+        "SELECT step_id, source FROM steps \
+         WHERE session_id = 'fixture-long_context_20' AND step_id BETWEEN 5 AND 15 \
+         ORDER BY step_id",
+        "SELECT step_id FROM steps WHERE source = 'agent' ORDER BY session_id, step_id",
+        "SELECT run_id, session_id, step_id, kind, effective_kind, timestamp, source, \
+                message_json, reasoning_content, reasoning_effort_json, metrics_json, \
+                model_name, llm_call_count, is_copied_context, latency_ms, ttft_ms, \
+                had_observation, extra_json \
+         FROM steps WHERE session_id = 'fixture-dialogue_10' AND step_id = 5",
+    ];
+    for query in queries {
+        assert_eq!(
+            projected.query_jsonl(query).await?,
+            full.query_jsonl(query).await?
+        );
+    }
+
+    let metrics = projected.local_file_metrics().expect("local metrics");
+    assert_eq!(metrics.projected_files, 5);
+    assert_eq!(metrics.files_parsed, 5);
+    assert!(metrics.documents_pruned >= 2);
+    assert!(metrics.rows_pruned > 0);
+    assert!(metrics.rows_emitted > 0);
+    assert!(metrics.projected_arrow_bytes > 0);
     Ok(())
 }

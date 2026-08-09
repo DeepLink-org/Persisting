@@ -46,10 +46,10 @@ judgments.lance               规范化派生评测，不修改 canonical event 
   其中固定的 segment versions；manifest 尚未创建时返回 `None`，供
   `persisting query follow` 从 offset 连续消费已发布的 event micro-batch。
 - AgenticMD 是从 canonical events 或 Storyline 生成的可丢弃人读/调试视图，不是存储后端。
-- `StorylineLanceStore` 将 Storyline 原子提交为 `runs.lance`、`steps.lance`、`tool_calls.lance` 三张规范化表。
+- `StorylineLanceStore` 将 Storyline 原子提交为 `runs.lance`、`steps.lance`、`tool_calls.lance` 三张规范化表；超过阈值的 JSON/UTF-8 单元按 BLAKE3 寻址、跨轨迹去重并写入共享 `objects.lance` 的 Lance Blob v2，三表 schema 不变。
 - `StorylineLanceStore::get_storylines` 对三张表各读取一次同一 generation 快照，支持
   pPilot 批量重建多条 Storyline，并保持请求顺序。
-- `StorylineDataSource` 将同一 generation 的三张表注册到 DataFusion，并下推列裁剪、谓词、limit 和标量索引查询。
+- `StorylineDataSource` 将同一 generation 的三张表注册到 DataFusion，并下推列裁剪、谓词、limit 和标量索引查询；只有查询实际引用内容列时才读取并恢复 Blob，内部引用不会出现在 SQL 结果中。
 - `AtifDataSource::open` 与 OpenAI/ACTF 共用按文件 lazy 的 DataFusion datasource；文件由
   manifest 大小/身份校验、并发闸门和共享有界 LRU 管理。显式传入完整内存值的
   `from_json` / `from_trajectories` 保留 `MemTable`。
@@ -58,6 +58,12 @@ judgments.lance               规范化派生评测，不修改 canonical event 
   `_file_` 相对路径列，支持 `=`、`IN`、`LIKE` 文件级裁剪；每个命中文件作为一个 lazy
   streaming partition 打开，该列不属于 Lance 三表 schema。多文件内建表 join 必须把
   `_file_` 纳入 join key。
+- ATIF compact JSON/JSONL 的 `steps` 查询在 `TableProvider::scan` 边界接收 DataFusion
+  projection 和安全谓词，直接跳过未引用的大字段、按 `session_id`/`step_id`/`source`
+  提前裁剪并生成 projected Arrow batch，不经过 Storyline 导入和三表全量构造。
+  该路径校验 JSON、必需字段和当前表内约束；跨表引用完整性仍由导入路径或完整规范化
+  fallback 校验。
+  `SELECT *`、JSON 数组/pretty JSON、其他表和 OpenAI/ACTF 保留完整规范化 fallback。
 - `RunControlStore` 以单个 CAS record 管理 Run lease epoch 与 immutable terminal `RunCommit`。
 - `AttemptRegistry` 以 lease epoch fence pVisor Attempt 的注册、心跳和完整终态结果，供 pPilot 重启后收敛。
 - `AgenticmdSessionFrontmatter`、`write_agenticmd_document`、`rewrite_agenticmd_preamble` 和 `index_agenticmd_path` 负责宽松的 AgenticMD 可视化与调试文件操作。
@@ -76,8 +82,8 @@ Storyline，再进入相同的 Arrow/DataFusion 查询模型。
 解析后写入 canonical Lance；系统不会把已有 `.md` 自动选作存储层，也不会从调试视图
 反向 compact 覆盖事实事件。
 
-Storyline 导入和替换会并行推进三张表，并以最多 8192 行的 Arrow batch 流式写入；读取
-`CURRENT` 后每张 dataset 只打开一次。频繁替换达到 fragment 阈值会自动 compact，长期
+Storyline 导入和替换以最多 256 条轨迹为一个有界批次推进三张表和共享内容表；读取
+`CURRENT` 后每张 dataset 固定到同一版本元组。频繁替换达到 fragment 阈值会自动 compact，长期
 维护可显式运行：
 
 ```bash

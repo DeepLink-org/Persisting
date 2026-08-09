@@ -74,6 +74,7 @@ codegen-units = 1
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
+base64 = "0.22"
 blake3 = "1"
 bytes = "1"
 chrono = "0.4"
@@ -94,6 +95,7 @@ ipnet = "2"
 jj-lib = "0.43.0"
 lance = { version = "9.0.1", default-features = false, features = ["aws", "oss", "protoc"] }
 lance-core = "9.0.1"
+lance-file = "9.0.1"
 lance-datafusion = { version = "9.0.1", features = ["protoc"] }
 lance-index = "9.0.1"
 lance-linalg = "9.0.1"
@@ -126,6 +128,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 url = "2"
 uuid = "1"
+zstd = "0.13"
 
 [patch.crates-io]
 fuser = { path = "vendor/fuser" }

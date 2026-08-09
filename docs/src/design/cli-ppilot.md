@@ -165,9 +165,14 @@ manifest 会记录文件大小、修改时间和文件身份；首次读取前�
 和修改时间的对抗性原地改写不在保证范围内。`--max-files`、`--max-entries`、
 `--max-file-bytes` 和 `--max-concurrent-files` 分别限制候选文件数、目录遍历项、单文件输入
 体积和并发解析；
-三张虚拟表共享按 Arrow 实际内存计量的 LRU 缓存和同文件 single-flight。`--cache-bytes 0`
-或 `--cache-files 0` 可关闭保留缓存，`--query-metrics` 会把 cache hit/miss、eviction、解析
-文件数和源字节数以 JSON 写到 stderr，不污染 stdout 的查询结果。
+三张虚拟表共享按 Arrow 实际内存计量的 LRU 缓存和同文件 single-flight。ATIF compact
+JSON/JSONL 的 `steps` 投影查询会绕开完整缓存：只解码计划需要的字段，并用
+`session_id`、`step_id`、`source` 简单谓词提前裁剪；DataFusion 保留谓词再次校验。
+该轻量路径校验 JSON、必需字段和当前表内约束；跨表引用完整性仍由导入路径或完整规范化
+fallback 负责。
+`--cache-bytes 0` 或 `--cache-files 0` 可关闭保留缓存。`--query-metrics` 除 cache 和源字节
+外，还报告 projected files、scanned/pruned documents/rows、emitted rows 和 projected
+Arrow bytes，不污染 stdout 的查询结果。
 
 pPilot 以 Arrow batch 将 JSONL 结果直接流式写到 stdout，不再把完整结果集收集到内存；
 `--timeout-seconds` 给异步规划和执行设置墙钟上限，`--max-output-rows` 限制输出行数。
@@ -184,9 +189,10 @@ join、sort、aggregate 等支持内存预留的执行算子；`--spill-path` �
 同时包含 `left._file_ = right._file_`，否则查询会在执行前拒绝，以避免同名 session 的
 跨文件错误匹配。单表查询和与外部维表的 join 不受此限制。
 
-直接 JSON 查询面向临时分析和受控批次，单个文件仍需完整解析。超大规模、反复查询或
-对象存储数据应先用 `ppilot convert ... --to lance` 导入三表 Lance，再依赖 generation
-快照、列裁剪、谓词下推和索引；本地 manifest 不是分布式 catalog。
+直接 JSON 查询面向临时分析和受控批次。ATIF projected decoder 仍必须扫描源 JSON 字节，
+但不会物化未引用字段；它不是文件内索引。超大规模、反复查询或对象存储数据应先用
+`ppilot convert ... --to lance` 导入三表 Lance，再依赖 generation 快照、列裁剪、谓词
+下推和索引；本地 manifest 不是分布式 catalog。
 
 完整可执行演示见
 [`examples/pchronicle/06-query-openai-actf-directly`](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly)：

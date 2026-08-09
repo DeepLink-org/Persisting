@@ -69,8 +69,14 @@ AgenticMD 是面向人的 Markdown 调试视图。它保存可见对话块和会
 
 `StorylineLanceStore` 提供面向分析和 ATIF 互操作的规范化物理表示：
 `runs.lance`、`steps.lance`、`tool_calls.lance`。它按 `source_call_id` 将 observation
-result 归并到 tool call 行，并通过 `CURRENT` 中的三表版本元组保证原子切换。详细
-schema 与目录布局见 [Storyline 三表 Lance 存储](storyline-lance.md)。
+result 归并到 tool call 行，并通过 `CURRENT` 中的三表版本元组保证原子切换。超过阈值的
+UTF-8/JSON cell 以 BLAKE3 内容地址外置到共享 `objects.lance`，跨轨迹复用；公开 schema
+和 SQL 结果保持不变，查询只在真正引用内容列时延迟恢复 Blob。
+
+ATIF compact JSON/JSONL 的 `steps` 临时查询还支持 projection-aware 快路径：DataFusion
+先传递所需列和安全谓词，reader 使用借用 JSON 值跳过未引用大字段并直接构造窄 Arrow
+batch；其他 shape、表和格式回退到完整 Storyline 规范化。详细协议、发布顺序和执行边界见
+[Storyline 三表 Lance 存储](storyline-lance.md)。
 
 ## 4. 目录布局
 
@@ -96,6 +102,9 @@ storage/
         ├── root_session_id.md
         └── agent-<id>.md
 ```
+
+独立的 Storyline 分析 store 使用 `CURRENT`、`generations/<id>/{runs,steps,tool_calls}.lance`
+和根级共享 `objects.lance`；它不改变上面的 canonical event 目录。
 
 系统生成的 AgenticMD 使用 `{session_id}.md` 文件名和
 `<!-- persisting:block:{source} … -->` 块结构；读取器同时接受无 speaker 的块、旧

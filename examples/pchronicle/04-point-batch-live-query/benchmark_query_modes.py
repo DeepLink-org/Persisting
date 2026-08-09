@@ -257,7 +257,7 @@ point_ms = point_seconds * 1000
 trajectory_ms = trajectory_seconds * 1000
 individual_ms = individual_seconds * 1000
 batch_ms = batch_seconds * 1000
-batch_speedup = individual_seconds / batch_seconds
+cli_batching_gain = individual_seconds / batch_seconds
 live_p50 = percentile(live_latencies_ms, 0.50)
 live_p95 = percentile(live_latencies_ms, 0.95)
 live_max = max(live_latencies_ms)
@@ -272,7 +272,8 @@ print(
 )
 print(
     f"batch {batch_size}: {batch_ms:.3f} ms in one IN query vs "
-    f"{individual_ms:.3f} ms for {batch_size} point CLI calls ({batch_speedup:.2f}x total-time speedup)"
+    f"{individual_ms:.3f} ms for {batch_size} point CLI calls "
+    f"({cli_batching_gain:.2f}x CLI batching gain)"
 )
 print(
     f"live follow: events={len(live_latencies_ms)} poll_ms={poll_ms} "
@@ -297,7 +298,7 @@ print(
     f"iterations={iterations} batch_ids={batch_size} "
     f"point_step_ms={point_ms:.3f} trajectory_ms={trajectory_ms:.3f} "
     f"individual_batch_ms={individual_ms:.3f} batch_ms={batch_ms:.3f} "
-    f"batch_speedup={batch_speedup:.3f} live_events={len(live_latencies_ms)} "
+    f"cli_batching_gain={cli_batching_gain:.3f} live_events={len(live_latencies_ms)} "
     f"follow_poll_ms={poll_ms} live_p50_ms={live_p50:.3f} "
     f"live_p95_ms={live_p95:.3f} live_max_ms={live_max:.3f} "
     f"live_events_per_second={live_events_per_second:.1f} equal=true"

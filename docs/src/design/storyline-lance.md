@@ -27,11 +27,99 @@ tool result 不再留在 step 的 observation JSON 中。写入时根据
 `observation.results[].source_call_id` 关联到对应 tool call，并保存到该行的
 `results_json`。缺失或错误的关联会拒绝整次写入。
 
+## 大块内容层
+
+### 设计目标与边界
+
+Agent 轨迹中的长 reasoning、工具输出、源代码、日志和多模态载荷会让列式表出现少量超大
+cell。若把它们与身份、顺序、类型和指标一起内联，常规过滤与聚合也要承受更大的 fragment、
+page cache 和解码开销。pChronicle 因此在三表之外增加共享内容层，但保持三个约束：
+
+1. `runs` / `steps` / `tool_calls` 的 Arrow schema 和 SQL 结果不变；内容层是内部物理优化。
+2. 小值继续内联，只有达到阈值的 UTF-8/JSON cell 才外置，避免所有读取都退化成 KV lookup。
+3. 内容按原始字节寻址并跨 Storyline 复用；不把轨迹主键、生命周期或业务去重混入内容层。
+
+当前实现没有定制 Lance 文件格式或私有索引类型，而是组合 Lance Blob v2、普通 BTree
+scalar index 和 DataFusion execution node。这样可以得到需要的延迟物化能力，同时把维护
+面限制在 pChronicle 自己的协议与执行计划中。
+
+### 内部描述符协议
+
+超过默认 64 KiB 的内容列在三表中暂时编码为：
+
+```text
+<RS>PCHRONICLE-CONTENT-1:<type>:<codec>:<blake3-256>:<raw_length>:<preview-base64url>
+```
+
+| 字段 | 当前编码 | 作用 |
+|---|---|---|
+| magic/version | `PCHRONICLE-CONTENT-1` | 严格识别内部引用并允许协议演进 |
+| logical type | `u` / `j` / `b` | UTF-8、JSON；binary 标签已保留给后续二进制列 |
+| codec | `i` / `z` | identity 或 Zstd |
+| content id | 64 位十六进制 BLAKE3-256 | 对未压缩原始字节寻址、校验和跨轨迹复用 |
+| raw length | `u64` | 解压后长度校验，也允许无 payload 的代价判断 |
+| preview | URL-safe Base64 | 默认最多 256 个 UTF-8 字节的安全前缀 |
+
+描述符只允许存在于内部物理列。用户原文若恰好以 magic 开头，也会被强制外置，读取时再
+恢复为原文，从而消除“用户字符串被误认为引用”的歧义。公开的读取、SQL、转换和导出 API
+必须返回完整值或显式 preview，不能泄露描述符。
+
+`objects.lance` 使用以下物理列：
+
+| 列 | 作用 |
+|---|---|
+| `content_id` | BLAKE3 内容地址；建立 BTree index |
+| `logical_type`, `media_type` | 逻辑类型和 MIME 提示 |
+| `raw_length`, `stored_length`, `codec` | 完整性检查和存储代价 |
+| `preview` | 无 Blob I/O 的安全预览 |
+| `payload` | Lance Blob v2，保存 identity/Zstd 字节 |
+| `created_at_ms` | 对象创建时间 |
+
+### 写入、复用与发布
+
+写入端对候选 cell 依次执行：
+
+```text
+原始 UTF-8/JSON
+  ├─ 小于阈值 ───────────────────────────────► 原值内联
+  └─ 达到阈值 / 命中 magic
+       ├─ BLAKE3(raw bytes) + UTF-8 preview
+       ├─ Zstd；没有净收益则保留 identity
+       ├─ batch 内按 content_id 合并并检查碰撞
+       ├─ BTree 批量查询 objects.lance，跳过已存在对象
+       └─ 先提交对象 version，再写三表 descriptor，最后发布 CURRENT
+```
+
+对象必须先于引用持久化；`CURRENT` 同时固定三张业务表和对象表的精确 Lance version。
+任一步骤失败都不会发布新快照：允许留下不可达对象，但不会发布悬空引用或跨表半提交。
+跨轨迹复用只依赖内容地址，不依赖 session 生命周期，因此同一长文本在不同 Run 中只保存
+一次。同一写入批次内若 content id 相同但 codec、原始长度或存储字节不一致，会拒绝写入。
+
+对象层当前保持 append-only；三表维护不会主动计算引用可达性并回收 payload。生产环境需要
+把对象增长率和不可达字节纳入指标，在确有容量压力后再增加离线 mark-and-sweep，而不是让
+GC 进入写入热路径。
+
+### 查询期延迟物化
+
+`StorylineDataSource` 先让 Lance 完成业务表的 projection、可安全谓词、scalar index、limit
+和并行扫描，再在计划中插入 `ContentHydrationExec`：
+
+- 查询不引用内容列时，不打开 `objects.lance` payload；
+- 只收集投影中实际出现的 content id，以最多 512 个为一组走 BTree lookup；
+- 根据 row address 批量读取 Blob，解压后验证长度与 BLAKE3，再恢复原 Utf8 列；
+- 内容列谓词不能作用于描述符，必须保留在 hydration 之后由 DataFusion 计算；
+- `Preview` 模式只返回描述符中的 UTF-8 前缀，零 payload I/O，并拒绝内容列谓词，避免把
+  preview 错当成完整值。
+
+因此大内容的成本只由真正读取这些内容的查询承担；身份过滤、计数、分组和指标分析仍沿用
+紧凑的三表列式路径。
+
 ## 提交布局
 
 ```text
 root/
 ├── CURRENT
+├── objects.lance/
 └── generations/
     └── <table-generation>/
         ├── runs.lance/
@@ -39,18 +127,21 @@ root/
         └── tool_calls.lance/
 ```
 
-首次导入创建三张 Lance dataset 和标量索引。后续 `replace_storyline` 不再读取或重写
-全库，而是按 `session_id` 删除旧行、追加新行。每次替换会产生一个新的逻辑 snapshot；
-`CURRENT` 是一段 JSON，记录逻辑 snapshot id、物理 `table_generation`，以及三张表各自
-精确的 Lance version id。三张表的新版本全部持久化后才更新 `CURRENT`，所以读者只会
-看到完整的旧版本元组或新版本元组，不会看到跨表半提交。
+首次导入创建三张规范化 Lance dataset、共享的 `objects.lance` 和标量索引。后续
+`replace_storyline` 不再读取或重写全库，而是按 `session_id` 删除旧行、追加新行。每次替换
+会产生一个新的逻辑 snapshot；
+`CURRENT` 是一段 JSON，记录逻辑 snapshot id、物理 `table_generation`、三张表以及对象表
+各自精确的 Lance version id。对象先持久化，三张业务表随后写入，最后才更新 `CURRENT`；
+因此失败最多留下不可达对象，不会发布悬空引用或跨表半提交。
+
+阈值、preview 长度和 Zstd level 可通过 `StorylineContentOptions` 配置；三表 schema 不变。
 
 Lance MVCC 的旧版本默认保留，便于已打开的 reader 固定快照及故障恢复。频繁增量更新
 会积累 fragment、delete file 和未合并的索引增量。在线替换达到 32 个 fragment 时会做
 一次自动 index refresh 与 compaction；长期运行再通过 `maintain` 显式执行三表并行
 compaction、补齐/刷新索引和按保留期 vacuum。维护产生的三个新 version 仍先原子更新
-`CURRENT`，之后才回收旧版本。旧版仅包含 generation 名称的纯文本 `CURRENT` 仍可读取，
-下一次成功写入会升级为版本元组。
+`CURRENT`，之后才回收旧版本。`CURRENT` 必须是包含全部精确版本的 JSON 指针，不读取旧的
+纯文本 generation 指针。
 
 当前写入在进程内串行化。跨进程 writer 仍需由上层提供单 writer 或租约约束。
 
@@ -80,7 +171,7 @@ ppilot chronicle maintain ./storyline-store \
 
 ## DataFusion datasource
 
-`StorylineDataSource` 在打开时固定 `CURRENT` 中的三个精确 Lance version，并把三张
+`StorylineDataSource` 在打开时固定 `CURRENT` 中的三个业务表 version 和对象表 version，并把三张
 dataset 注册为 `runs`、`steps`、`tool_calls`。即使写入端随后切换 `CURRENT`，已经打开
 的查询仍使用同一份三表快照。
 
@@ -96,7 +187,15 @@ let rows = ctx
 
 Datasource 使用 Lance 原生 DataFusion execution plan，支持列裁剪、谓词和 limit 下推，
 并采用 unordered physical scan 允许并行读取；有顺序要求的查询必须显式使用
-`ORDER BY step_id, call_index`。
+`ORDER BY step_id, call_index`。未引用大内容列的查询不会打开 Blob；引用内容列时在
+Lance 投影/安全谓词/limit 之后批量恢复。针对内容列的谓词不下推到内部引用，而是在恢复
+后由 DataFusion 求值，确保 SQL 语义不变。内部引用不会由 pChronicle 的读取、查询、导出
+API 返回；直接绕过 pChronicle 扫描底层 Lance 文件属于诊断接口，不在该保证内。
+
+预览 UI 可把 `StorylineDataSourceOptions::content_read_mode` 设为
+`StorylineContentReadMode::Preview`。该模式直接从描述符返回 UTF-8 安全的短 preview，零
+Blob payload I/O；为避免把 preview 当成完整值产生错误结果，内容列谓词在 preview 模式
+下会被明确拒绝。
 
 首次创建 table generation 时建立以下标量索引：
 
@@ -137,13 +236,57 @@ let jsonl = atif.query_jsonl(
 `context()` 取得 `SessionContext` 注册 UDF 或额外表。
 
 `AtifDataSource` 接受单个 ATIF JSON 对象、JSON 数组、每行一个完整 trajectory 的
-JSONL/NDJSON，以及包含这些 ATIF 文档的目录。文件路径默认注册为 DataFusion
-`StreamingTable`：打开时以有界内存遍历一次完成全量校验和计数；每次 scan 重新打开
-输入，NDJSON 逐行解析，目录按稳定顺序逐文件消费，并以固定大小 Arrow batch 提供背压。
-它不会把完整 ATIF corpus 常驻内存；为维持 `session_id` 唯一性约束，只保留已见过的
-session key 集合。显式 `from_json` / `from_trajectories` 因为调用者已经持有完整输入，
-仍使用 `MemTable`。`.json` 对象和数组用于格式兼容，会按单个文件缓冲；超大数据集应写成
-NDJSON，才能保持内容内存有界。
+JSONL/NDJSON，以及包含这些 ATIF 文档的目录。文件路径默认注册为按文件 lazy 的
+`StreamingTable`：manifest 在打开时冻结路径和文件身份，scan 才读取命中文件；目录按
+稳定顺序发现，每个文件是独立 partition，并以固定大小 Arrow batch 提供背压。显式
+`from_json` / `from_trajectories` 因为调用者已经持有完整输入，仍使用 `MemTable`。
+
+### pChronicle + JSON 投影查询快路径
+
+旧路径把每份 JSON 完整解析为格式对象，再执行 `ATIF → Storyline → 三表行 → 全宽 Arrow`
+后交给 SQL。即使查询只需要 `source` 或 `COUNT(*)`，也会构造 message、reasoning、metrics、
+tool calls 等未使用的大字段。新路径把优化边界前移到 `TableProvider::scan`：
+
+```text
+SQL / DataFrame
+  → DataFusion projection + filters
+  → FileScanSpec
+      ├─ _file_ = / IN / LIKE：manifest 文件裁剪
+      ├─ session_id：trajectory 裁剪
+      ├─ step_id / source：step 裁剪
+      └─ projected column set
+  → borrowed serde decoder (&RawValue)
+  → 只为命中行解码被引用字段
+  → projected Arrow RecordBatch
+  → DataFusion 保留 inexact filter 再次校验
+```
+
+当前 fast path 的适用范围是 ATIF compact 单对象 JSON，以及每行一个对象的 JSONL/NDJSON，
+目标表为 `steps`，并且物理计划存在严格列裁剪。它有意保持保守：
+
+| 输入/查询 | 执行路径 |
+|---|---|
+| compact ATIF JSON/JSONL + projected `steps` | borrowed projected decoder |
+| `_file_`、`session_id`、`step_id`、`source` 的安全简单谓词 | 可提前裁剪，DataFusion 仍复核 |
+| `SELECT *`、pretty JSON、JSON 数组 | 完整规范化 fallback |
+| `runs` / `tool_calls` | 完整规范化 fallback |
+| OpenAI-message / ACTF | 完整规范化 fallback |
+| 无法证明安全的表达式、OR/函数/跨列条件 | 不预裁剪，由 DataFusion 求值 |
+
+借用结构只把计划需要的 JSON 字段转成拥有值；未引用字段由 serde 做语法扫描但不构造
+`Value`/Storyline。Arrow encoder 也只创建投影列，`COUNT(*)` 使用合法的零列 batch。轻量路径
+校验 JSON、必需字段、重复 session、命中文档内的重复 step 和当前表内约束；跨表引用
+完整性仍由导入路径或完整 fallback 负责。这一边界使临时查询不承担导入语义，同时不降低
+SQL 结果正确性。
+
+查询指标额外报告 `projected_files`、scanned/pruned documents、scanned/pruned/emitted rows
+和 `projected_arrow_bytes`，用来区分“源字节扫描”“JSON 对象物化”和“Arrow 输出”三个成本。
+在本地 512 条轨迹、7552 steps 的统一基准中，选择性查询由约 58.68 ms 降至 17.17 ms，
+GROUP BY 由约 58.93 ms 降至 31.48 ms；这是特定机器上的回归基线，不是跨环境 SLA。
+
+该路径仍需顺序扫描命中文件的全部 JSON 字节，不是文件内索引。一次性或受控批次查询可
+直接使用 JSON；超大、远端或反复查询的数据应先转换为 Lance，利用 snapshot、列裁剪、
+并行 fragment scan 和 scalar index。
 
 `ppilot chronicle import` 同样默认走 `AtifReader`。空 store 使用一个 producer 单遍完成
 校验、Storyline 规范化和三表拆分，再经三条有界 Arrow channel 并行创建三个 Lance
@@ -180,10 +323,12 @@ PCHRONICLE_BENCH_SCALE=128 PCHRONICLE_BENCH_ITERS=30 \
   cargo bench -p persisting-pchronicle --bench lance_vs_json
 ```
 
-JSON 对照使用单个 NDJSON 文件，避免大量小文件打开开销。ATIF/DataFusion streaming
-对照在每次 scan 中包含文件读取、Serde 解析、Storyline 规范化和查询计算；预解析内存
-JSON 对照只计算查询逻辑，用来区分存储引擎收益与纯内存遍历成本。Datasource open 还会
-单独执行一次有界校验/计数扫描，因此冷打开与实际 SQL scan 是两个明确阶段。
+JSON 对照使用单个 NDJSON 文件，避免大量小文件打开开销。ATIF `steps` 直接查询会把
+DataFusion projection 和可安全预裁剪的 `session_id`、`step_id`、`source` 谓词传给
+projected decoder：未引用 JSON 字段只做语法扫描，不构造 Storyline/三表对象，Arrow
+batch 也只包含执行计划需要的列。`SELECT *`、兼容 JSON shape 和其他格式仍走完整规范化
+fallback。轻量路径执行 JSON、必需字段和表内约束校验，跨表引用完整性由导入或完整
+fallback 校验。预解析内存 JSON 对照只计算查询逻辑，用来区分产品工作流与纯内存遍历成本。
 benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline` 点查和单 Storyline
 替换的延迟，避免 warm SQL 吞吐掩盖在线读写路径的写放大。
 

@@ -19,8 +19,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::prelude::SessionContext;
-use lance::deps::arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
-use lance::deps::arrow_schema::{ArrowError, SchemaRef};
+use lance::deps::arrow_array::RecordBatch;
+use lance::deps::arrow_schema::SchemaRef;
 
 use crate::convert::atif_to_storyline;
 use crate::{AtifTrajectory, ChronicleFormat};
@@ -349,13 +349,6 @@ pub(crate) struct AtifInputStats {
     pub tool_call_count: usize,
 }
 
-pub(crate) struct AtifTableStreams {
-    pub runs: Box<dyn RecordBatchReader + Send>,
-    pub steps: Box<dyn RecordBatchReader + Send>,
-    pub tool_calls: Box<dyn RecordBatchReader + Send>,
-    pub completion: std::thread::JoinHandle<Result<AtifInputStats>>,
-}
-
 #[cfg(test)]
 struct AtifBatchIterator {
     reader: AtifReader,
@@ -365,103 +358,6 @@ struct AtifBatchIterator {
     steps: VecDeque<StoryStepRow>,
     tool_calls: VecDeque<StoryToolCallRow>,
     finished: bool,
-}
-
-pub(crate) fn atif_table_streams(path: &Path, batch_size: usize) -> Result<AtifTableStreams> {
-    let reader = AtifReader::open(path)?;
-    let (run_tx, run_rx) = std::sync::mpsc::sync_channel(2);
-    let (step_tx, step_rx) = std::sync::mpsc::sync_channel(2);
-    let (tool_call_tx, tool_call_rx) = std::sync::mpsc::sync_channel(2);
-    let completion = std::thread::spawn(move || {
-        let mut stats = AtifInputStats::default();
-        let mut session_ids = HashSet::new();
-        let mut runs = Vec::with_capacity(batch_size);
-        let mut steps = Vec::with_capacity(batch_size);
-        let mut tool_calls = Vec::with_capacity(batch_size);
-        for trajectory in reader {
-            let trajectory = trajectory?;
-            let story = atif_to_storyline(&trajectory).map_err(anyhow::Error::from)?;
-            let tables = crate::split_storyline(&story).map_err(anyhow::Error::from)?;
-            if !session_ids.insert(tables.run.session_id.clone()) {
-                anyhow::bail!("duplicate ATIF session_id '{}'", tables.run.session_id);
-            }
-            stats.document_count += 1;
-            stats.step_count += tables.steps.len();
-            stats.tool_call_count += tables.tool_calls.len();
-            runs.push(tables.run);
-            steps.extend(tables.steps);
-            tool_calls.extend(tables.tool_calls);
-            flush_rows(&mut runs, batch_size, false, story_runs_to_batch, &run_tx)?;
-            flush_rows(
-                &mut steps,
-                batch_size,
-                false,
-                story_steps_to_batch,
-                &step_tx,
-            )?;
-            flush_rows(
-                &mut tool_calls,
-                batch_size,
-                false,
-                story_tool_calls_to_batch,
-                &tool_call_tx,
-            )?;
-        }
-        anyhow::ensure!(
-            stats.document_count > 0,
-            "ATIF datasource requires at least one trajectory"
-        );
-        flush_rows(&mut runs, batch_size, true, story_runs_to_batch, &run_tx)?;
-        flush_rows(&mut steps, batch_size, true, story_steps_to_batch, &step_tx)?;
-        flush_rows(
-            &mut tool_calls,
-            batch_size,
-            true,
-            story_tool_calls_to_batch,
-            &tool_call_tx,
-        )?;
-        if stats.step_count == 0 {
-            step_tx
-                .send(Ok(story_steps_to_batch(&[])?))
-                .map_err(|_| anyhow::anyhow!("ATIF steps stream consumer closed"))?;
-        }
-        if stats.tool_call_count == 0 {
-            tool_call_tx
-                .send(Ok(story_tool_calls_to_batch(&[])?))
-                .map_err(|_| anyhow::anyhow!("ATIF tool_calls stream consumer closed"))?;
-        }
-        Ok(stats)
-    });
-    Ok(AtifTableStreams {
-        runs: Box::new(RecordBatchIterator::new(run_rx, story_runs_arrow_schema())),
-        steps: Box::new(RecordBatchIterator::new(
-            step_rx,
-            story_steps_arrow_schema(),
-        )),
-        tool_calls: Box::new(RecordBatchIterator::new(
-            tool_call_rx,
-            story_tool_calls_arrow_schema(),
-        )),
-        completion,
-    })
-}
-
-fn flush_rows<T>(
-    rows: &mut Vec<T>,
-    batch_size: usize,
-    flush_remainder: bool,
-    encode: fn(&[T]) -> Result<RecordBatch>,
-    sender: &std::sync::mpsc::SyncSender<std::result::Result<RecordBatch, ArrowError>>,
-) -> Result<()> {
-    while rows.len() >= batch_size || (flush_remainder && !rows.is_empty()) {
-        let count = rows.len().min(batch_size);
-        let remainder = rows.split_off(count);
-        let batch_rows = std::mem::replace(rows, remainder);
-        sender
-            .send(Ok(encode(&batch_rows)?))
-            .map_err(|_| anyhow::anyhow!("ATIF table stream consumer closed"))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

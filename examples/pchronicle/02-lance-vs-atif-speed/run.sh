@@ -13,7 +13,7 @@ bench_iters="${PCHRONICLE_BENCH_ITERS:-20}"
 python3 ../common/generate_atif.py ../../../crates/persisting-pchronicle/tests/fixtures/atif \
   .work/trajectories.ndjson "$bench_scale"
 
-# Measure the installed/built pPilot product CLI end to end.
+# Compare raw Python parsing with direct-JSON and Lance-backed pChronicle paths.
 python3 ../common/benchmark_ppilot.py \
   .work/trajectories.ndjson .work/lance "$bench_iters" \
   | tee .work/output.txt

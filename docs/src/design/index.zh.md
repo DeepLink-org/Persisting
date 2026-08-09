@@ -8,7 +8,7 @@
 | 子系统 | 先读 | 再读 |
 |---|---|---|
 | pVisor | [Agent 基础设施](agent-infrastructure.md) | 独立 `pvisor` CLI → [Gateway 驱动](gateway.md) |
-| pChronicle | [Agent 基础设施](agent-infrastructure.md) | [轨迹存储](trajectory.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
+| pChronicle | [Agent 基础设施](agent-infrastructure.md) | [轨迹存储](trajectory.md) → [Storyline 三表 Lance](storyline-lance.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
 | pPilot | [pPilot 控制面](ppilot.md) | 独立 `ppilot` CLI → Run 编排与 pChronicle SQL 分析 |
 | Queue | [队列持久化](architecture.zh.md) | [自定义后端指南](../guide/custom-backends.md) |
 | Gateway 采集驱动 | [Gateway 管线](gateway.md) | [Markdown 格式](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |

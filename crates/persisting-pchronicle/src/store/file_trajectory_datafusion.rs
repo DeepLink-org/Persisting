@@ -3,6 +3,7 @@
 //! Each source file is one streaming partition. Query-only `_file_` predicates
 //! are evaluated against the frozen manifest before partitions are opened.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,9 +22,13 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use datafusion::prelude::SessionContext;
-use lance::deps::arrow_array::{RecordBatch, StringArray};
+use lance::deps::arrow_array::{
+    ArrayRef, BooleanArray, Int64Array, RecordBatch, RecordBatchOptions, StringArray,
+};
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use tokio::sync::mpsc::Sender;
+
+use serde_json::value::RawValue;
 
 use crate::convert::atif_to_storyline;
 use crate::{
@@ -81,6 +86,13 @@ pub struct FileTrajectoryQueryMetricsSnapshot {
     pub cache_evictions: u64,
     pub files_parsed: u64,
     pub source_bytes_read: u64,
+    pub projected_files: u64,
+    pub documents_scanned: u64,
+    pub documents_pruned: u64,
+    pub rows_scanned: u64,
+    pub rows_pruned: u64,
+    pub rows_emitted: u64,
+    pub projected_arrow_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -96,6 +108,13 @@ impl FileTrajectoryQueryMetrics {
             cache_evictions: self.inner.cache_evictions.load(Ordering::Relaxed),
             files_parsed: self.inner.files_parsed.load(Ordering::Relaxed),
             source_bytes_read: self.inner.source_bytes_read.load(Ordering::Relaxed),
+            projected_files: self.inner.projected_files.load(Ordering::Relaxed),
+            documents_scanned: self.inner.documents_scanned.load(Ordering::Relaxed),
+            documents_pruned: self.inner.documents_pruned.load(Ordering::Relaxed),
+            rows_scanned: self.inner.rows_scanned.load(Ordering::Relaxed),
+            rows_pruned: self.inner.rows_pruned.load(Ordering::Relaxed),
+            rows_emitted: self.inner.rows_emitted.load(Ordering::Relaxed),
+            projected_arrow_bytes: self.inner.projected_arrow_bytes.load(Ordering::Relaxed),
         }
     }
 }
@@ -107,6 +126,13 @@ struct FileTrajectoryQueryMetricCounters {
     cache_evictions: AtomicU64,
     files_parsed: AtomicU64,
     source_bytes_read: AtomicU64,
+    projected_files: AtomicU64,
+    documents_scanned: AtomicU64,
+    documents_pruned: AtomicU64,
+    rows_scanned: AtomicU64,
+    rows_pruned: AtomicU64,
+    rows_emitted: AtomicU64,
+    projected_arrow_bytes: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +294,128 @@ impl FileTrajectoryDataSource {
     }
 }
 
+#[derive(Debug, Clone)]
+struct FileScanSpec {
+    projection: Option<Arc<[usize]>>,
+    projected_names: Arc<HashSet<String>>,
+    step_filters: Arc<[AtifStepFilter]>,
+}
+
+impl FileScanSpec {
+    fn new(projection: Option<&Vec<usize>>, filters: &[Expr], schema: &SchemaRef) -> Self {
+        let step_filters = filters
+            .iter()
+            .filter_map(atif_step_filters)
+            .flatten()
+            .collect::<Arc<[_]>>();
+        Self {
+            projection: projection.map(|values| Arc::from(values.clone())),
+            projected_names: Arc::new(match projection {
+                Some(projection) => projection
+                    .iter()
+                    .map(|index| schema.field(*index).name().clone())
+                    .collect(),
+                None => schema
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect(),
+            }),
+            step_filters,
+        }
+    }
+
+    fn can_project_atif_steps(&self, schema: &SchemaRef) -> bool {
+        self.projection
+            .as_ref()
+            .is_some_and(|projection| projection.len() < schema.fields().len())
+    }
+
+    fn wants(&self, name: &str) -> bool {
+        self.projected_names.contains(name)
+    }
+
+    fn matches_document(&self, session_id: &str) -> bool {
+        self.step_filters
+            .iter()
+            .all(|filter| filter.matches_document(session_id))
+    }
+
+    fn matches_step(&self, step_id: i64, source: &str) -> bool {
+        self.step_filters
+            .iter()
+            .all(|filter| filter.matches_step(step_id, source))
+    }
+}
+
+#[derive(Debug, Clone)]
+enum AtifStepFilter {
+    SessionId(StringPredicate),
+    Source(StringPredicate),
+    StepId(IntPredicate),
+}
+
+impl AtifStepFilter {
+    fn matches_document(&self, session_id: &str) -> bool {
+        match self {
+            Self::SessionId(predicate) => predicate.matches(session_id),
+            Self::Source(_) | Self::StepId(_) => true,
+        }
+    }
+
+    fn matches_step(&self, step_id: i64, source: &str) -> bool {
+        match self {
+            Self::SessionId(_) => true,
+            Self::Source(predicate) => predicate.matches(source),
+            Self::StepId(predicate) => predicate.matches(step_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum StringPredicate {
+    Equal(String),
+    NotEqual(String),
+    In { values: Vec<String>, negated: bool },
+}
+
+impl StringPredicate {
+    fn matches(&self, value: &str) -> bool {
+        match self {
+            Self::Equal(expected) => value == expected,
+            Self::NotEqual(expected) => value != expected,
+            Self::In { values, negated } => values.iter().any(|item| item == value) != *negated,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum IntPredicate {
+    Compare { op: Operator, value: i64 },
+    Between { low: i64, high: i64, negated: bool },
+    In { values: Vec<i64>, negated: bool },
+}
+
+impl IntPredicate {
+    fn matches(&self, candidate: i64) -> bool {
+        match self {
+            Self::Compare { op, value } => match op {
+                Operator::Eq => candidate == *value,
+                Operator::NotEq => candidate != *value,
+                Operator::Lt => candidate < *value,
+                Operator::LtEq => candidate <= *value,
+                Operator::Gt => candidate > *value,
+                Operator::GtEq => candidate >= *value,
+                _ => true,
+            },
+            Self::Between { low, high, negated } => {
+                (candidate >= *low && candidate <= *high) != *negated
+            }
+            Self::In { values, negated } => values.contains(&candidate) != *negated,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct FileTrajectoryTableProvider {
     files: Arc<[Arc<FileState>]>,
@@ -326,6 +474,8 @@ impl TableProvider for FileTrajectoryTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let scan = Arc::new(FileScanSpec::new(projection, filters, &self.schema));
+        let output_schema = projected_schema(&self.schema, projection)?;
         let partitions = self
             .selected_files(filters)
             .into_iter()
@@ -335,13 +485,15 @@ impl TableProvider for FileTrajectoryTableProvider {
                     runtime: self.runtime.clone(),
                     format: self.format,
                     kind: self.kind,
-                    schema: self.schema.clone(),
+                    source_schema: self.schema.clone(),
+                    schema: output_schema.clone(),
                     batch_size: self.batch_size,
+                    scan: scan.clone(),
                 }) as Arc<dyn PartitionStream>
             })
             .collect::<Vec<_>>();
-        let table = StreamingTable::try_new(self.schema.clone(), partitions)?;
-        table.scan(state, projection, &[], limit).await
+        let table = StreamingTable::try_new(output_schema, partitions)?;
+        table.scan(state, None, &[], limit).await
     }
 
     fn supports_filters_pushdown(
@@ -353,6 +505,14 @@ impl TableProvider for FileTrajectoryTableProvider {
             .map(|filter| {
                 if matches_file_filter(filter, "").is_some() {
                     TableProviderFilterPushDown::Exact
+                } else if self.format == FileTrajectoryFormat::Atif
+                    && self.kind == StorylineTableKind::Steps
+                    && atif_step_filters(filter).is_some()
+                {
+                    // The projected decoder applies these filters to reduce
+                    // materialization, while DataFusion retains the filter to
+                    // guarantee SQL semantics on the compatibility fallback.
+                    TableProviderFilterPushDown::Inexact
                 } else {
                     TableProviderFilterPushDown::Unsupported
                 }
@@ -367,8 +527,10 @@ struct FileTrajectoryPartition {
     runtime: Arc<FileTrajectoryRuntime>,
     format: FileTrajectoryFormat,
     kind: StorylineTableKind,
+    source_schema: SchemaRef,
     schema: SchemaRef,
     batch_size: usize,
+    scan: Arc<FileScanSpec>,
 }
 
 impl PartitionStream for FileTrajectoryPartition {
@@ -383,32 +545,576 @@ impl PartitionStream for FileTrajectoryPartition {
         let runtime = self.runtime.clone();
         let format = self.format;
         let kind = self.kind;
+        let source_schema = self.source_schema.clone();
         let schema = self.schema.clone();
         let batch_size = self.batch_size;
+        let scan = self.scan.clone();
         builder.spawn_blocking(move || {
-            stream_file(&file, &runtime, format, kind, schema, batch_size, &tx)
-                .map_err(datafusion_error)
+            stream_file(
+                &file,
+                &runtime,
+                format,
+                kind,
+                source_schema,
+                schema,
+                batch_size,
+                &scan,
+                &tx,
+            )
+            .map_err(datafusion_error)
         });
         builder.build()
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_file(
     file: &Arc<FileState>,
     runtime: &Arc<FileTrajectoryRuntime>,
     format: FileTrajectoryFormat,
     kind: StorylineTableKind,
-    _schema: SchemaRef,
-    _batch_size: usize,
+    source_schema: SchemaRef,
+    schema: SchemaRef,
+    batch_size: usize,
+    scan: &FileScanSpec,
     tx: &Sender<datafusion::common::Result<RecordBatch>>,
 ) -> Result<()> {
+    if format == FileTrajectoryFormat::Atif
+        && kind == StorylineTableKind::Steps
+        && scan.can_project_atif_steps(&source_schema)
+        && stream_projected_atif_steps(file, runtime, &schema, batch_size, scan, tx)?
+    {
+        return Ok(());
+    }
     let parsed = load_file(file, runtime, format)?;
     for batch in parsed.batches(kind) {
-        if tx.blocking_send(Ok(batch.clone())).is_err() {
+        let batch = match &scan.projection {
+            Some(projection) => batch
+                .project(projection)
+                .context("project fallback JSON batch")?,
+            None => batch.clone(),
+        };
+        if tx.blocking_send(Ok(batch)).is_err() {
             break;
         }
     }
     Ok(())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProjectedAtifAgent<'a> {
+    #[serde(borrow)]
+    name: Cow<'a, str>,
+    #[serde(borrow)]
+    version: Cow<'a, str>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProjectedAtifTrajectory<'a> {
+    #[serde(borrow)]
+    schema_version: Cow<'a, str>,
+    #[serde(default, borrow)]
+    session_id: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    trajectory_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    agent: ProjectedAtifAgent<'a>,
+    #[serde(borrow)]
+    steps: Vec<&'a RawValue>,
+}
+
+impl ProjectedAtifTrajectory<'_> {
+    fn effective_session_id(&self) -> Result<&str> {
+        self.session_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                self.trajectory_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+            })
+            .context("ATIF trajectory requires session_id or trajectory_id")
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProjectedAtifStep<'a> {
+    step_id: i64,
+    #[serde(default, borrow)]
+    timestamp: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    source: Cow<'a, str>,
+    #[serde(default, borrow)]
+    model_name: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    reasoning_effort: Option<&'a RawValue>,
+    #[serde(borrow)]
+    message: &'a RawValue,
+    #[serde(default, borrow)]
+    reasoning_content: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    tool_calls: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    observation: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    metrics: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    extra: Option<&'a RawValue>,
+    #[serde(default)]
+    llm_call_count: Option<i64>,
+    #[serde(default)]
+    is_copied_context: Option<bool>,
+}
+
+fn stream_projected_atif_steps(
+    file: &Arc<FileState>,
+    runtime: &Arc<FileTrajectoryRuntime>,
+    schema: &SchemaRef,
+    batch_size: usize,
+    scan: &FileScanSpec,
+    tx: &Sender<datafusion::common::Result<RecordBatch>>,
+) -> Result<bool> {
+    let _permit = runtime.limiter.acquire()?;
+    file.file.validate_unchanged()?;
+    anyhow::ensure!(
+        file.file.size_bytes() <= runtime.options.max_file_bytes,
+        "ATIF input {} is {} bytes, exceeding max_file_bytes {}",
+        file.file.path().display(),
+        file.file.size_bytes(),
+        runtime.options.max_file_bytes
+    );
+    let content = fs::read_to_string(file.file.path())
+        .with_context(|| format!("read ATIF input {}", file.file.path().display()))?;
+    anyhow::ensure!(
+        content.len() as u64 <= runtime.options.max_file_bytes,
+        "ATIF input {} exceeded max_file_bytes {} while reading",
+        file.file.path().display(),
+        runtime.options.max_file_bytes
+    );
+    file.file.validate_unchanged()?;
+
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("ATIF input is empty: {}", file.file.path().display());
+    }
+    // Arrays and pretty-printed/envelope documents retain the compatibility
+    // parser. The fast path targets single compact objects and JSONL/NDJSON,
+    // which are the scalable direct-query representations.
+    if trimmed.starts_with('[') || trimmed.starts_with("{\n") || trimmed.starts_with("{\r\n") {
+        return Ok(false);
+    }
+
+    let is_jsonl = trimmed
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+        > 1;
+    if !is_jsonl && serde_json::from_str::<ProjectedAtifTrajectory<'_>>(trimmed).is_err() {
+        return Ok(false);
+    }
+
+    runtime
+        .metrics
+        .inner
+        .source_bytes_read
+        .fetch_add(content.len() as u64, Ordering::Relaxed);
+    runtime
+        .metrics
+        .inner
+        .files_parsed
+        .fetch_add(1, Ordering::Relaxed);
+    runtime
+        .metrics
+        .inner
+        .projected_files
+        .fetch_add(1, Ordering::Relaxed);
+
+    let mut pending = Vec::<StoryStepRow>::with_capacity(batch_size);
+    let mut session_ids = HashSet::new();
+    if is_jsonl {
+        for (index, line) in trimmed
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| !line.trim().is_empty())
+        {
+            let trajectory: ProjectedAtifTrajectory<'_> = serde_json::from_str(line.trim())
+                .with_context(|| format!("parse projected ATIF JSONL line {}", index + 1))?;
+            if !project_atif_trajectory(
+                trajectory,
+                file,
+                runtime,
+                schema,
+                batch_size,
+                scan,
+                tx,
+                &mut pending,
+                &mut session_ids,
+            )? {
+                return Ok(true);
+            }
+        }
+    } else {
+        let trajectory: ProjectedAtifTrajectory<'_> =
+            serde_json::from_str(trimmed).with_context(|| {
+                format!("parse projected ATIF input {}", file.file.path().display())
+            })?;
+        let _ = project_atif_trajectory(
+            trajectory,
+            file,
+            runtime,
+            schema,
+            batch_size,
+            scan,
+            tx,
+            &mut pending,
+            &mut session_ids,
+        )?;
+    }
+    emit_projected_step_batch(&mut pending, file, runtime, schema, tx)?;
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_atif_trajectory(
+    trajectory: ProjectedAtifTrajectory<'_>,
+    file: &Arc<FileState>,
+    runtime: &Arc<FileTrajectoryRuntime>,
+    schema: &SchemaRef,
+    batch_size: usize,
+    scan: &FileScanSpec,
+    tx: &Sender<datafusion::common::Result<RecordBatch>>,
+    pending: &mut Vec<StoryStepRow>,
+    session_ids: &mut HashSet<String>,
+) -> Result<bool> {
+    let session_id = trajectory.effective_session_id()?;
+    anyhow::ensure!(
+        !trajectory.agent.name.is_empty(),
+        "ATIF agent.name is required"
+    );
+    anyhow::ensure!(
+        !trajectory.agent.version.is_empty(),
+        "ATIF agent.version is required"
+    );
+    let _ = trajectory.schema_version;
+    anyhow::ensure!(
+        session_ids.insert(session_id.to_string()),
+        "duplicate ATIF session_id '{}' in {}",
+        session_id,
+        file.file.path().display()
+    );
+    runtime
+        .metrics
+        .inner
+        .documents_scanned
+        .fetch_add(1, Ordering::Relaxed);
+    runtime
+        .metrics
+        .inner
+        .rows_scanned
+        .fetch_add(trajectory.steps.len() as u64, Ordering::Relaxed);
+    if !scan.matches_document(session_id) {
+        runtime
+            .metrics
+            .inner
+            .documents_pruned
+            .fetch_add(1, Ordering::Relaxed);
+        runtime
+            .metrics
+            .inner
+            .rows_pruned
+            .fetch_add(trajectory.steps.len() as u64, Ordering::Relaxed);
+        return Ok(true);
+    }
+
+    let mut rows = Vec::with_capacity(trajectory.steps.len());
+    let mut step_ids = HashSet::with_capacity(trajectory.steps.len());
+    for raw_step in &trajectory.steps {
+        let step: ProjectedAtifStep<'_> = serde_json::from_str(raw_step.get())
+            .with_context(|| format!("parse projected ATIF step in session {session_id}"))?;
+        anyhow::ensure!(step.step_id >= 1, "ATIF step_id must start from 1");
+        anyhow::ensure!(
+            step_ids.insert(step.step_id),
+            "duplicate ATIF step_id {} in session {}",
+            step.step_id,
+            session_id
+        );
+        if !scan.matches_step(step.step_id, &step.source) {
+            runtime
+                .metrics
+                .inner
+                .rows_pruned
+                .fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        rows.push(project_atif_step(&trajectory, session_id, step, scan)?);
+    }
+    rows.sort_by_key(|row| row.step_id);
+    runtime
+        .metrics
+        .inner
+        .rows_emitted
+        .fetch_add(rows.len() as u64, Ordering::Relaxed);
+    for row in rows {
+        pending.push(row);
+        if pending.len() == batch_size
+            && !emit_projected_step_batch(pending, file, runtime, schema, tx)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn project_atif_step(
+    trajectory: &ProjectedAtifTrajectory<'_>,
+    session_id: &str,
+    step: ProjectedAtifStep<'_>,
+    scan: &FileScanSpec,
+) -> Result<StoryStepRow> {
+    let wants_kind = scan.wants("kind");
+    let wants_effective_kind = scan.wants("effective_kind");
+    let tool_calls_nonempty = if wants_kind || wants_effective_kind {
+        step.tool_calls
+            .map(|raw| serde_json::from_str::<Vec<&RawValue>>(raw.get()))
+            .transpose()
+            .context("parse ATIF tool_calls for projected kind")?
+            .is_some_and(|calls| !calls.is_empty())
+    } else {
+        false
+    };
+    let effective_kind = match step.source.as_ref() {
+        "user" => "dialogue",
+        "system" => "internal",
+        "agent" if tool_calls_nonempty => "autonomous",
+        _ => "dialogue",
+    };
+    let kind = if matches!(
+        (step.source.as_ref(), effective_kind),
+        ("user", "dialogue") | ("system", "internal") | ("agent", "dialogue")
+    ) {
+        None
+    } else {
+        Some(effective_kind.to_string())
+    };
+
+    let needs_metrics =
+        scan.wants("metrics_json") || scan.wants("latency_ms") || scan.wants("ttft_ms");
+    let metrics = if needs_metrics {
+        step.metrics
+            .map(|raw| serde_json::from_str(raw.get()))
+            .transpose()
+            .context("parse projected ATIF metrics")?
+    } else {
+        None
+    };
+    let (latency_ms, ttft_ms) = projected_timing_from_metrics(metrics.as_ref());
+    let run_id = trajectory.trajectory_id.as_deref().unwrap_or(session_id);
+
+    Ok(StoryStepRow {
+        run_id: if scan.wants("run_id") {
+            run_id.to_string()
+        } else {
+            String::new()
+        },
+        session_id: if scan.wants("session_id") {
+            session_id.to_string()
+        } else {
+            String::new()
+        },
+        step_id: step.step_id,
+        kind: wants_kind.then_some(kind).flatten(),
+        effective_kind: if wants_effective_kind {
+            effective_kind.to_string()
+        } else {
+            String::new()
+        },
+        timestamp: scan
+            .wants("timestamp")
+            .then_some(step.timestamp.map(Cow::into_owned))
+            .flatten(),
+        source: if scan.wants("source") {
+            step.source.into_owned()
+        } else {
+            String::new()
+        },
+        message: if scan.wants("message_json") {
+            serde_json::from_str(step.message.get()).context("parse projected ATIF message")?
+        } else {
+            serde_json::Value::Null
+        },
+        reasoning_content: scan
+            .wants("reasoning_content")
+            .then_some(step.reasoning_content.map(Cow::into_owned))
+            .flatten(),
+        reasoning_effort: projected_json_value(
+            step.reasoning_effort,
+            scan.wants("reasoning_effort_json"),
+        )?,
+        metrics: scan.wants("metrics_json").then_some(metrics).flatten(),
+        model_name: scan
+            .wants("model_name")
+            .then_some(step.model_name.map(Cow::into_owned))
+            .flatten(),
+        llm_call_count: scan
+            .wants("llm_call_count")
+            .then_some(step.llm_call_count)
+            .flatten(),
+        is_copied_context: scan
+            .wants("is_copied_context")
+            .then_some(step.is_copied_context)
+            .flatten(),
+        latency_ms: scan.wants("latency_ms").then_some(latency_ms).flatten(),
+        ttft_ms: scan.wants("ttft_ms").then_some(ttft_ms).flatten(),
+        had_observation: scan.wants("had_observation") && step.observation.is_some(),
+        extra: projected_json_value(step.extra, scan.wants("extra_json"))?,
+    })
+}
+
+fn projected_json_value(raw: Option<&RawValue>, wanted: bool) -> Result<Option<serde_json::Value>> {
+    if !wanted {
+        return Ok(None);
+    }
+    raw.map(|value| serde_json::from_str(value.get()).map_err(anyhow::Error::from))
+        .transpose()
+}
+
+fn projected_timing_from_metrics(
+    metrics: Option<&serde_json::Value>,
+) -> (Option<i64>, Option<i64>) {
+    let Some(metrics) = metrics else {
+        return (None, None);
+    };
+    let latency_ms = metrics
+        .get("latency_ms")
+        .or_else(|| metrics.get("elapsed_ms"))
+        .or_else(|| metrics.get("duration_ms"))
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_f64().map(|value| value as i64))
+        });
+    let ttft_ms = metrics.get("ttft_ms").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_f64().map(|value| value as i64))
+    });
+    (latency_ms, ttft_ms)
+}
+
+fn emit_projected_step_batch(
+    rows: &mut Vec<StoryStepRow>,
+    file: &Arc<FileState>,
+    runtime: &Arc<FileTrajectoryRuntime>,
+    schema: &SchemaRef,
+    tx: &Sender<datafusion::common::Result<RecordBatch>>,
+) -> Result<bool> {
+    if rows.is_empty() {
+        return Ok(true);
+    }
+    let batch = projected_step_rows_to_batch(rows, file.file.relative_path(), schema.clone())?;
+    rows.clear();
+    runtime
+        .metrics
+        .inner
+        .projected_arrow_bytes
+        .fetch_add(batch.get_array_memory_size() as u64, Ordering::Relaxed);
+    Ok(tx.blocking_send(Ok(batch)).is_ok())
+}
+
+fn projected_step_rows_to_batch(
+    rows: &[StoryStepRow],
+    relative_path: &str,
+    schema: SchemaRef,
+) -> Result<RecordBatch> {
+    let mut columns = Vec::<ArrayRef>::with_capacity(schema.fields().len());
+    for field in schema.fields() {
+        let column: ArrayRef = match field.name().as_str() {
+            "run_id" => Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|row| row.run_id.as_str()),
+            )),
+            "session_id" => Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|row| row.session_id.as_str()),
+            )),
+            "step_id" => Arc::new(Int64Array::from(
+                rows.iter().map(|row| row.step_id).collect::<Vec<_>>(),
+            )),
+            "kind" => Arc::new(StringArray::from_iter(
+                rows.iter().map(|row| row.kind.as_deref()),
+            )),
+            "effective_kind" => Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|row| row.effective_kind.as_str()),
+            )),
+            "timestamp" => Arc::new(StringArray::from_iter(
+                rows.iter().map(|row| row.timestamp.as_deref()),
+            )),
+            "source" => Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|row| row.source.as_str()),
+            )),
+            "message_json" => Arc::new(StringArray::from_iter_values(
+                rows.iter()
+                    .map(|row| serde_json::to_string(&row.message))
+                    .collect::<serde_json::Result<Vec<_>>>()?
+                    .iter()
+                    .map(String::as_str),
+            )),
+            "reasoning_content" => Arc::new(StringArray::from_iter(
+                rows.iter().map(|row| row.reasoning_content.as_deref()),
+            )),
+            "reasoning_effort_json" => Arc::new(optional_json_array(
+                rows.iter().map(|row| row.reasoning_effort.as_ref()),
+            )?),
+            "metrics_json" => Arc::new(optional_json_array(
+                rows.iter().map(|row| row.metrics.as_ref()),
+            )?),
+            "model_name" => Arc::new(StringArray::from_iter(
+                rows.iter().map(|row| row.model_name.as_deref()),
+            )),
+            "llm_call_count" => Arc::new(Int64Array::from(
+                rows.iter()
+                    .map(|row| row.llm_call_count)
+                    .collect::<Vec<_>>(),
+            )),
+            "is_copied_context" => Arc::new(BooleanArray::from(
+                rows.iter()
+                    .map(|row| row.is_copied_context)
+                    .collect::<Vec<_>>(),
+            )),
+            "latency_ms" => Arc::new(Int64Array::from(
+                rows.iter().map(|row| row.latency_ms).collect::<Vec<_>>(),
+            )),
+            "ttft_ms" => Arc::new(Int64Array::from(
+                rows.iter().map(|row| row.ttft_ms).collect::<Vec<_>>(),
+            )),
+            "had_observation" => Arc::new(BooleanArray::from(
+                rows.iter()
+                    .map(|row| row.had_observation)
+                    .collect::<Vec<_>>(),
+            )),
+            "extra_json" => Arc::new(optional_json_array(
+                rows.iter().map(|row| row.extra.as_ref()),
+            )?),
+            SOURCE_FILE_COLUMN => Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                relative_path,
+                rows.len(),
+            ))),
+            name => anyhow::bail!("unsupported projected ATIF steps column '{name}'"),
+        };
+        columns.push(column);
+    }
+    let options = RecordBatchOptions::new().with_row_count(Some(rows.len()));
+    RecordBatch::try_new_with_options(schema, columns, &options)
+        .context("build projected ATIF steps batch")
+}
+
+fn optional_json_array<'a>(
+    values: impl IntoIterator<Item = Option<&'a serde_json::Value>>,
+) -> Result<StringArray> {
+    Ok(StringArray::from(
+        values
+            .into_iter()
+            .map(|value| value.map(serde_json::to_string).transpose())
+            .collect::<serde_json::Result<Vec<_>>>()?,
+    ))
 }
 
 #[derive(Debug)]
@@ -792,11 +1498,157 @@ fn query_schema(base: &SchemaRef) -> SchemaRef {
     ))
 }
 
+fn projected_schema(
+    schema: &SchemaRef,
+    projection: Option<&Vec<usize>>,
+) -> datafusion::common::Result<SchemaRef> {
+    let Some(projection) = projection else {
+        return Ok(schema.clone());
+    };
+    let fields = projection
+        .iter()
+        .map(|index| {
+            schema.fields().get(*index).cloned().ok_or_else(|| {
+                DataFusionError::Plan(format!(
+                    "trajectory projection index {index} exceeds schema width {}",
+                    schema.fields().len()
+                ))
+            })
+        })
+        .collect::<datafusion::common::Result<Vec<_>>>()?;
+    Ok(Arc::new(ArrowSchema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    )))
+}
+
 fn base_schema(kind: StorylineTableKind) -> SchemaRef {
     match kind {
         StorylineTableKind::Runs => story_runs_arrow_schema(),
         StorylineTableKind::Steps => story_steps_arrow_schema(),
         StorylineTableKind::ToolCalls => story_tool_calls_arrow_schema(),
+    }
+}
+
+fn atif_step_filters(expr: &Expr) -> Option<Vec<AtifStepFilter>> {
+    match expr {
+        Expr::BinaryExpr(binary) if binary.op == Operator::And => {
+            let mut left = atif_step_filters(&binary.left)?;
+            left.extend(atif_step_filters(&binary.right)?);
+            Some(left)
+        }
+        Expr::BinaryExpr(binary) => {
+            if let Some(column) = column_name(&binary.left) {
+                return predicate_for_column(column, binary.op, &binary.right)
+                    .map(|item| vec![item]);
+            }
+            let column = column_name(&binary.right)?;
+            predicate_for_column(column, reverse_operator(binary.op)?, &binary.left)
+                .map(|item| vec![item])
+        }
+        Expr::Between(between) if column_name(&between.expr) == Some("step_id") => {
+            Some(vec![AtifStepFilter::StepId(IntPredicate::Between {
+                low: int_literal(&between.low)?,
+                high: int_literal(&between.high)?,
+                negated: between.negated,
+            })])
+        }
+        Expr::InList(list) => {
+            let column = column_name(&list.expr)?;
+            match column {
+                "session_id" | "source" => {
+                    let values = list
+                        .list
+                        .iter()
+                        .map(string_literal)
+                        .map(|value| value.map(str::to_string))
+                        .collect::<Option<Vec<_>>>()?;
+                    let predicate = StringPredicate::In {
+                        values,
+                        negated: list.negated,
+                    };
+                    Some(vec![if column == "session_id" {
+                        AtifStepFilter::SessionId(predicate)
+                    } else {
+                        AtifStepFilter::Source(predicate)
+                    }])
+                }
+                "step_id" => Some(vec![AtifStepFilter::StepId(IntPredicate::In {
+                    values: list
+                        .list
+                        .iter()
+                        .map(int_literal)
+                        .collect::<Option<Vec<_>>>()?,
+                    negated: list.negated,
+                })]),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn predicate_for_column(column: &str, op: Operator, literal: &Expr) -> Option<AtifStepFilter> {
+    match column {
+        "session_id" | "source" if matches!(op, Operator::Eq | Operator::NotEq) => {
+            let value = string_literal(literal)?.to_string();
+            let predicate = if op == Operator::Eq {
+                StringPredicate::Equal(value)
+            } else {
+                StringPredicate::NotEqual(value)
+            };
+            Some(if column == "session_id" {
+                AtifStepFilter::SessionId(predicate)
+            } else {
+                AtifStepFilter::Source(predicate)
+            })
+        }
+        "step_id"
+            if matches!(
+                op,
+                Operator::Eq
+                    | Operator::NotEq
+                    | Operator::Lt
+                    | Operator::LtEq
+                    | Operator::Gt
+                    | Operator::GtEq
+            ) =>
+        {
+            Some(AtifStepFilter::StepId(IntPredicate::Compare {
+                op,
+                value: int_literal(literal)?,
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn reverse_operator(op: Operator) -> Option<Operator> {
+    Some(match op {
+        Operator::Eq => Operator::Eq,
+        Operator::NotEq => Operator::NotEq,
+        Operator::Lt => Operator::Gt,
+        Operator::LtEq => Operator::GtEq,
+        Operator::Gt => Operator::Lt,
+        Operator::GtEq => Operator::LtEq,
+        _ => return None,
+    })
+}
+
+fn column_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Column(column) => Some(&column.name),
+        _ => None,
+    }
+}
+
+fn int_literal(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Literal(ScalarValue::Int64(Some(value)), _) => Some(*value),
+        Expr::Literal(ScalarValue::Int32(Some(value)), _) => Some(i64::from(*value)),
+        Expr::Literal(ScalarValue::UInt64(Some(value)), _) => i64::try_from(*value).ok(),
+        Expr::Literal(ScalarValue::UInt32(Some(value)), _) => Some(i64::from(*value)),
+        _ => None,
     }
 }
 
@@ -945,5 +1797,31 @@ mod tests {
         assert_eq!(matches_file_filter(&exact, "one.json"), Some(true));
         assert_eq!(matches_file_filter(&exact, "two.json"), Some(false));
         assert_eq!(matches_file_filter(&col("session_id"), "one.json"), None);
+    }
+
+    #[test]
+    fn atif_step_filter_compilation_is_conservative() {
+        let filter = col("session_id")
+            .eq(lit("run-a"))
+            .and(col("step_id").gt_eq(lit(5_i64)))
+            .and(col("step_id").lt_eq(lit(15_i64)));
+        let compiled = atif_step_filters(&filter).expect("supported conjunction");
+        let scan = FileScanSpec {
+            projection: Some(Arc::from(vec![1, 2, 6])),
+            projected_names: Arc::new(
+                ["session_id", "step_id", "source"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            step_filters: Arc::from(compiled),
+        };
+        assert!(scan.matches_document("run-a"));
+        assert!(!scan.matches_document("run-b"));
+        assert!(scan.matches_step(5, "agent"));
+        assert!(scan.matches_step(15, "agent"));
+        assert!(!scan.matches_step(4, "agent"));
+        assert!(!scan.matches_step(16, "agent"));
+        assert!(atif_step_filters(&col("message_json").eq(lit("x"))).is_none());
     }
 }

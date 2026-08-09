@@ -6510,6 +6510,8 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
+ "blake3",
  "chrono",
  "datafusion",
  "fs2",
@@ -6517,6 +6519,7 @@ dependencies = [
  "lance",
  "lance-core",
  "lance-datafusion",
+ "lance-file",
  "lance-index",
  "lance-linalg",
  "lance-table",
@@ -6531,6 +6534,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

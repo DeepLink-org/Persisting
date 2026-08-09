@@ -10,12 +10,15 @@ readme = "README.md"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
+blake3.workspace = true
 chrono.workspace = true
 datafusion = { workspace = true, features = ["sql"] }
 futures.workspace = true
 fs2.workspace = true
 lance.workspace = true
 lance-core.workspace = true
+lance-file.workspace = true
 # Lance 9.0.1 does not forward `lance/protoc` to lance-datafusion.
 lance-datafusion.workspace = true
 lance-index.workspace = true
@@ -26,11 +29,12 @@ persisting-control.workspace = true
 ron.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 serde_yaml.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
 uuid = { workspace = true, features = ["v4", "v5"] }
+zstd.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -5,6 +5,7 @@
 //! filter, limit and scalar-index pushdown, plus unordered fragment reads for
 //! parallel query execution (ordered queries should use SQL `ORDER BY`).
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -13,12 +14,21 @@ use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
+use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::execution_plan::PlanProperties;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, SendableRecordBatchStream,
+};
 use datafusion::prelude::SessionContext;
+use futures::StreamExt;
 use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 
+use super::storyline_content::{
+    content_columns, hydrate_selected_batches, open_objects, preview_selected_batches,
+};
 use super::{StorylineLanceStore, StorylineTablePaths};
 
 pub const DATAFUSION_RUNS_TABLE: &str = "runs";
@@ -33,11 +43,21 @@ pub enum StorylineTableKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorylineContentReadMode {
+    /// Return complete content and perform Blob reads only for referenced columns.
+    Full,
+    /// Return descriptor previews without reading Blob payloads.
+    Preview,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorylineDataSourceOptions {
     /// Use Lance scalar indices for pushed-down filters.
     pub use_scalar_indexes: bool,
     /// Preserve physical fragment order. Disabled by default for parallelism.
     pub scan_in_order: bool,
+    /// Choose full late materialization or metadata-only preview output.
+    pub content_read_mode: StorylineContentReadMode,
 }
 
 impl Default for StorylineDataSourceOptions {
@@ -45,6 +65,7 @@ impl Default for StorylineDataSourceOptions {
         Self {
             use_scalar_indexes: true,
             scan_in_order: false,
+            content_read_mode: StorylineContentReadMode::Full,
         }
     }
 }
@@ -75,6 +96,7 @@ impl Default for StorylineDataFusionTableNames {
 pub struct StorylineTableProvider {
     kind: StorylineTableKind,
     dataset: Arc<Dataset>,
+    objects: Arc<Dataset>,
     schema: SchemaRef,
     options: StorylineDataSourceOptions,
 }
@@ -83,12 +105,14 @@ impl StorylineTableProvider {
     fn new(
         kind: StorylineTableKind,
         dataset: Arc<Dataset>,
+        objects: Arc<Dataset>,
         options: StorylineDataSourceOptions,
     ) -> Self {
         let schema = Arc::new(ArrowSchema::from(dataset.schema()));
         Self {
             kind,
             dataset,
+            objects,
             schema,
             options,
         }
@@ -134,14 +158,49 @@ impl TableProvider for StorylineTableProvider {
             }
             None => {}
         }
-        if let Some(filter) = combine_filters(filters) {
+        let safe_filters = filters
+            .iter()
+            .filter(|filter| !filter_uses_content(self.kind, filter))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(filter) = combine_filters(&safe_filters) {
             scan.filter_expr(filter);
         }
-        scan.limit(limit.map(|value| value as i64), None)
-            .map_err(DataFusionError::from)?;
+        let has_content_filter = filters
+            .iter()
+            .any(|filter| filter_uses_content(self.kind, filter));
+        if has_content_filter && self.options.content_read_mode == StorylineContentReadMode::Preview
+        {
+            return Err(DataFusionError::Plan(
+                "content predicates require full Storyline content mode".into(),
+            ));
+        }
+        scan.limit(
+            (!has_content_filter)
+                .then_some(limit)
+                .flatten()
+                .map(|value| value as i64),
+            None,
+        )
+        .map_err(DataFusionError::from)?;
         scan.scan_in_order(self.options.scan_in_order);
         scan.use_scalar_index(self.options.use_scalar_indexes);
-        scan.create_plan().await.map_err(DataFusionError::from)
+        let plan = scan.create_plan().await.map_err(DataFusionError::from)?;
+        let selected = selected_content_columns(self.kind, projection, &self.schema);
+        if selected.is_empty() {
+            Ok(plan)
+        } else {
+            Ok(Arc::new(ContentHydrationExec::new(
+                plan,
+                selected,
+                match self.options.content_read_mode {
+                    StorylineContentReadMode::Full => {
+                        ContentMaterializationMode::Full(self.objects.clone())
+                    }
+                    StorylineContentReadMode::Preview => ContentMaterializationMode::Preview,
+                },
+            )))
+        }
     }
 
     fn supports_filters_pushdown(
@@ -150,8 +209,167 @@ impl TableProvider for StorylineTableProvider {
     ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
         Ok(filters
             .iter()
-            .map(|_| TableProviderFilterPushDown::Exact)
+            .map(|filter| {
+                if filter_uses_content(self.kind, filter) {
+                    match self.options.content_read_mode {
+                        StorylineContentReadMode::Full => TableProviderFilterPushDown::Unsupported,
+                        // Preview mode deliberately accepts the predicate into
+                        // `scan` so it can fail closed instead of evaluating it
+                        // against truncated values above the provider.
+                        StorylineContentReadMode::Preview => TableProviderFilterPushDown::Exact,
+                    }
+                } else {
+                    TableProviderFilterPushDown::Exact
+                }
+            })
             .collect())
+    }
+}
+
+fn filter_uses_content(kind: StorylineTableKind, filter: &Expr) -> bool {
+    let content = content_columns(kind)
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<HashSet<_>>();
+    filter
+        .column_refs()
+        .iter()
+        .any(|column| content.contains(column.name.as_str()))
+}
+
+fn selected_content_columns(
+    kind: StorylineTableKind,
+    projection: Option<&Vec<usize>>,
+    schema: &SchemaRef,
+) -> HashSet<&'static str> {
+    let projected = projection.map(|projection| {
+        projection
+            .iter()
+            .map(|index| schema.field(*index).name().as_str())
+            .collect::<HashSet<_>>()
+    });
+    content_columns(kind)
+        .iter()
+        .filter_map(|(name, _)| {
+            projected
+                .as_ref()
+                .is_none_or(|projected| projected.contains(name))
+                .then_some(*name)
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct ContentHydrationExec {
+    input: Arc<dyn ExecutionPlan>,
+    selected: HashSet<&'static str>,
+    mode: ContentMaterializationMode,
+    properties: Arc<PlanProperties>,
+}
+
+#[derive(Debug, Clone)]
+enum ContentMaterializationMode {
+    Full(Arc<Dataset>),
+    Preview,
+}
+
+impl ContentHydrationExec {
+    fn new(
+        input: Arc<dyn ExecutionPlan>,
+        selected: HashSet<&'static str>,
+        mode: ContentMaterializationMode,
+    ) -> Self {
+        let properties = input.properties().clone();
+        Self {
+            input,
+            selected,
+            mode,
+            properties,
+        }
+    }
+}
+
+impl DisplayAs for ContentHydrationExec {
+    fn fmt_as(
+        &self,
+        _display_type: DisplayFormatType,
+        formatter: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        let mut selected = self.selected.iter().copied().collect::<Vec<_>>();
+        selected.sort_unstable();
+        let mode = match self.mode {
+            ContentMaterializationMode::Full(_) => "full",
+            ContentMaterializationMode::Preview => "preview",
+        };
+        write!(
+            formatter,
+            "ContentHydrationExec: mode={mode}, columns=[{}]",
+            selected.join(",")
+        )
+    }
+}
+
+impl ExecutionPlan for ContentHydrationExec {
+    fn name(&self) -> &str {
+        "ContentHydrationExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(DataFusionError::Internal(format!(
+                "ContentHydrationExec expected one child, got {}",
+                children.len()
+            )));
+        }
+        Ok(Arc::new(Self::new(
+            children.swap_remove(0),
+            self.selected.clone(),
+            self.mode.clone(),
+        )))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        let input = self.input.execute(partition, context)?;
+        let mode = self.mode.clone();
+        let selected = self.selected.clone();
+        let stream = input.then(move |batch| {
+            let mode = mode.clone();
+            let selected = selected.clone();
+            async move {
+                let batch = batch?;
+                let mut batches = match mode {
+                    ContentMaterializationMode::Full(objects) => {
+                        hydrate_selected_batches(&objects, vec![batch], &selected).await
+                    }
+                    ContentMaterializationMode::Preview => {
+                        preview_selected_batches(vec![batch], &selected)
+                    }
+                }
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                batches.pop().ok_or_else(|| {
+                    DataFusionError::Internal("content hydration returned no batch".into())
+                })
+            }
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.input.schema(),
+            stream,
+        )))
     }
 }
 
@@ -211,26 +429,31 @@ impl StorylineDataSource {
             .resolve_current_table_paths()
             .await?
             .ok_or_else(|| anyhow::anyhow!("Storyline Lance store has no committed generation"))?;
-        let (runs, steps, tool_calls) = tokio::try_join!(
+        let (runs, steps, tool_calls, objects) = tokio::try_join!(
             open_dataset(&paths.runs, paths.runs_version),
             open_dataset(&paths.steps, paths.steps_version),
-            open_dataset(&paths.tool_calls, paths.tool_calls_version)
+            open_dataset(&paths.tool_calls, paths.tool_calls_version),
+            open_objects(&paths.objects, paths.objects_version),
         )?;
+        let objects = Arc::new(objects);
         Ok(Self {
             paths,
             runs: Arc::new(StorylineTableProvider::new(
                 StorylineTableKind::Runs,
                 Arc::new(runs),
+                objects.clone(),
                 options,
             )),
             steps: Arc::new(StorylineTableProvider::new(
                 StorylineTableKind::Steps,
                 Arc::new(steps),
+                objects.clone(),
                 options,
             )),
             tool_calls: Arc::new(StorylineTableProvider::new(
                 StorylineTableKind::ToolCalls,
                 Arc::new(tool_calls),
+                objects,
                 options,
             )),
         })
