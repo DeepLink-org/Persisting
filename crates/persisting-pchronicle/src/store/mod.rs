@@ -48,7 +48,7 @@ pub use file_trajectory_datafusion::{
     FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryFormat,
     FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot, DEFAULT_LOCAL_QUERY_BATCH_SIZE,
     DEFAULT_LOCAL_QUERY_CACHE_BYTES, DEFAULT_LOCAL_QUERY_CACHE_FILES,
-    DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, SOURCE_FILE_COLUMN,
+    DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, SOURCE_FILE_COLUMN,
 };
 pub use local_query_manifest::{
     detect_local_query_format, detect_local_query_manifest, LocalQueryInputFile,

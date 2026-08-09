@@ -15,7 +15,8 @@ use persisting_pchronicle::{
     LocalQueryManifestOptions, RawEventLanceStore, StoryCoords, StorylineLanceStore,
     DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
     DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
-    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES,
+    DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
+    DEFAULT_MAX_LOCAL_QUERY_FILES,
 };
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
@@ -125,6 +126,10 @@ pub struct SqlQueryArgs {
     /// Maximum bytes accepted for one local trajectory file.
     #[arg(long, default_value_t = DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES)]
     pub max_file_bytes: u64,
+
+    /// Maximum bytes buffered for one projected JSONL record or JSON array element.
+    #[arg(long, default_value_t = DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES)]
+    pub max_record_bytes: usize,
 
     /// Maximum local files parsed concurrently. Defaults to at most 8 CPUs.
     #[arg(long, value_name = "COUNT")]
@@ -317,6 +322,7 @@ pub async fn run_query(args: QueryArgs) -> Result<()> {
                 max_files: DEFAULT_MAX_LOCAL_QUERY_FILES,
                 max_entries: DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
                 max_file_bytes: DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+                max_record_bytes: DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
                 max_concurrent_files: None,
                 cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
                 cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
@@ -352,6 +358,7 @@ async fn run_sql_query(args: SqlQueryArgs) -> Result<()> {
     let mut file_options = FileTrajectoryDataSourceOptions {
         batch_size: args.batch_size,
         max_file_bytes: args.max_file_bytes,
+        max_record_bytes: args.max_record_bytes,
         cache_bytes: args.cache_bytes,
         cache_files: args.cache_files,
         ..FileTrajectoryDataSourceOptions::default()
@@ -816,6 +823,7 @@ mod tests {
             max_files: DEFAULT_MAX_LOCAL_QUERY_FILES,
             max_entries: DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
             max_file_bytes: DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+            max_record_bytes: DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
             max_concurrent_files: None,
             cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
             cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,
@@ -840,6 +848,7 @@ mod tests {
             max_files: DEFAULT_MAX_LOCAL_QUERY_FILES,
             max_entries: DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
             max_file_bytes: DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+            max_record_bytes: DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
             max_concurrent_files: None,
             cache_bytes: DEFAULT_LOCAL_QUERY_CACHE_BYTES,
             cache_files: DEFAULT_LOCAL_QUERY_CACHE_FILES,

@@ -6523,6 +6523,7 @@ dependencies = [
  "lance-index",
  "lance-linalg",
  "lance-table",
+ "libc",
  "object_store",
  "persisting-control",
  "reqwest 0.12.28",
