@@ -79,7 +79,8 @@ Container executor 仍需显式配置兼容的 Linux guest pVisor。`vm` executo
 libkrun 和 Linux guest init 静态链接进宿主 `pvisor`；发行 wheel 还会把 libkrunfw
 安装在 `pvisor` 同目录。源码构建会自动下载固定版本的官方 release，校验 SHA-256
 后放入用户缓存；macOS 使用 `/usr/bin/cc` 把其中的 kernel bundle 编译成 dylib。
-仍可用 `--vm-library-dir` 显式指向系统 libkrunfw。
+仍可用 `--vm-library-dir` 显式指向系统 libkrunfw。在 macOS 上从源码构建 pVisor
+还需安装 Zig（`brew install zig`），用于交叉编译 libkrun 内嵌的 Linux guest init。
 
 `pvisor run --image ubuntu:latest -- COMMAND` 可在不安装 Docker 或 Podman 的情况下
 直接拉取并运行公开 OCI 镜像；`--executor vm` 未指定 rootfs 时也默认使用

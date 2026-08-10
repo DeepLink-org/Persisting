@@ -4,6 +4,9 @@
 # project virtual environment. An explicitly exported PYO3_PYTHON still wins.
 [env]
 PYO3_PYTHON = { value = "scripts/pyo3-python", relative = true }
+# libkrun embeds a Linux guest init. Native Linux builds use cc; macOS builds
+# cross-compile that init with Zig instead of accidentally using Apple clang.
+CC_LINUX = { value = "scripts/libkrun-linux-cc", relative = true }
 
 # `maturin develop` requires a recognizable virtual environment. Use either:
 #    - 在仓库根创建并激活：python -m venv .venv && source .venv/bin/activate

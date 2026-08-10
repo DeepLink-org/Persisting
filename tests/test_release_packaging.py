@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +22,20 @@ def _load_script(name: str):
 
 release_version = _load_script("check_release_version")
 release_artifacts = _load_script("check_release_artifacts")
+
+
+def _load_wheel_stage():
+    name = "stage_wheel_binaries_test"
+    path = ROOT / "scripts" / "packaging" / "stage_wheel_binaries.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+wheel_stage = _load_wheel_stage()
 
 
 @pytest.mark.parametrize("workflow", ["nightly.yml", "release.yml"])
@@ -123,3 +139,53 @@ def test_release_artifacts_reject_oversized_wheel(tmp_path: Path) -> None:
 
     with pytest.raises(release_artifacts.ArtifactValidationError, match="exceeds"):
         release_artifacts.validate_artifacts(tmp_path, version, max_bytes=1)
+
+
+@pytest.mark.parametrize(
+    ("editable", "bundle_firmware"),
+    [(True, False), (False, True)],
+)
+def test_maturin_options_only_skip_firmware_for_editable_builds(
+    monkeypatch: pytest.MonkeyPatch,
+    editable: bool,
+    bundle_firmware: bool,
+) -> None:
+    maturin = SimpleNamespace(
+        get_maturin_pep517_args=lambda _settings: [],
+        get_config=lambda: {"profile": "release", "editable-profile": "dev"},
+    )
+    monkeypatch.setitem(sys.modules, "maturin", maturin)
+
+    options = wheel_stage.options_from_maturin(None, editable=editable)
+
+    assert options.bundle_firmware is bundle_firmware
+
+
+def test_editable_staging_does_not_resolve_firmware(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifacts = {}
+    for name in wheel_stage.EXPECTED_BINARIES:
+        artifact = tmp_path / "artifacts" / name
+        artifact.parent.mkdir(exist_ok=True)
+        artifact.write_text(name, encoding="utf-8")
+        artifacts[name] = artifact
+
+    monkeypatch.setattr(wheel_stage, "WHEEL_DATA", tmp_path / "wheel-data")
+    monkeypatch.setattr(wheel_stage, "_build_web_assets", lambda: None)
+    monkeypatch.setattr(wheel_stage, "_build", lambda _options: artifacts)
+    monkeypatch.setattr(wheel_stage, "_is_macos", lambda _options: False)
+
+    def unexpected_firmware(_options):
+        raise AssertionError("editable staging must not resolve wheel firmware")
+
+    monkeypatch.setattr(wheel_stage, "_firmware_source", unexpected_firmware)
+
+    scripts = wheel_stage.stage_wheel_binaries(
+        wheel_stage.BuildOptions(bundle_firmware=False)
+    )
+
+    assert {path.name for path in scripts.iterdir()} == set(
+        wheel_stage.EXPECTED_BINARIES
+    )

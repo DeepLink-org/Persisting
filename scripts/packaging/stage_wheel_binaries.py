@@ -49,6 +49,7 @@ class BuildOptions:
     frozen: bool = False
     offline: bool = False
     jobs: str | None = None
+    bundle_firmware: bool = True
 
 
 def ensure_wheel_data_directory() -> Path:
@@ -137,6 +138,7 @@ def options_from_maturin(
         frozen=_has_flag(args, "--frozen") or bool(config.get("frozen", False)),
         offline=_has_flag(args, "--offline") or bool(config.get("offline", False)),
         jobs=_jobs(args),
+        bundle_firmware=not editable,
     )
 
 
@@ -322,7 +324,6 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
     """Build all host CLIs and atomically replace the wheel scripts directory."""
     _build_web_assets()
     artifacts = _build(options)
-    firmware_source, firmware_name = _firmware_source(options)
     ensure_wheel_data_directory()
     staged = WHEEL_DATA / f".scripts-{os.getpid()}"
     backup = WHEEL_DATA / f".scripts-old-{os.getpid()}"
@@ -340,18 +341,20 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
             )
             print(f"Staged {name}: {source} -> {destination}", file=sys.stderr)
 
-        firmware_destination = staged / firmware_name
-        shutil.copy2(firmware_source, firmware_destination)
-        (staged / "libkrunfw.SOURCE").write_text(
-            f"libkrunfw {LIBKRUNFW_VERSION}\n"
-            f"source: {LIBKRUNFW_RELEASE}/libkrunfw-<architecture>.tgz\n"
-            "licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)\n",
-            encoding="utf-8",
-        )
-        print(
-            f"Staged libkrunfw: {firmware_source} -> {firmware_destination}",
-            file=sys.stderr,
-        )
+        if options.bundle_firmware:
+            firmware_source, firmware_name = _firmware_source(options)
+            firmware_destination = staged / firmware_name
+            shutil.copy2(firmware_source, firmware_destination)
+            (staged / "libkrunfw.SOURCE").write_text(
+                f"libkrunfw {LIBKRUNFW_VERSION}\n"
+                f"source: {LIBKRUNFW_RELEASE}/libkrunfw-<architecture>.tgz\n"
+                "licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)\n",
+                encoding="utf-8",
+            )
+            print(
+                f"Staged libkrunfw: {firmware_source} -> {firmware_destination}",
+                file=sys.stderr,
+            )
         if _is_macos(options):
             _sign_macos_pvisor(staged / "pvisor")
 

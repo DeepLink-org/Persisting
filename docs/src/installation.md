@@ -86,7 +86,8 @@ its Linux guest init in the host `pvisor` binary. Release wheels also install
 libkrunfw beside `pvisor`. Source builds automatically download the pinned
 official release into the user cache and verify its SHA-256; macOS compiles the
 downloaded kernel bundle with `/usr/bin/cc`. `--vm-library-dir` may still point
-at a system installation.
+at a system installation. Building pVisor from source on macOS also requires
+Zig (`brew install zig`) to cross-compile libkrun's embedded Linux guest init.
 
 Use `pvisor run --image ubuntu:latest -- COMMAND` to pull and run a public OCI
 image without Docker or Podman. `ubuntu:latest` is also the default for

@@ -268,7 +268,9 @@ builds. libkrunfw remains a runtime payload: wheels install it beside `pvisor`,
 while source builds automatically download the pinned official release into the
 platform cache and verify its SHA-256. On macOS the downloaded kernel bundle is
 compiled with `/usr/bin/cc`; `--vm-library-dir` can still select a system copy.
-After a local `cargo build`, sign the development binary before using HVF:
+Building from source on macOS requires Zig (`brew install zig`) to cross-compile
+libkrun's embedded Linux guest init. After a local `cargo build`, sign the
+development binary before using HVF:
 
 ```bash
 codesign --force --sign - \
