@@ -574,6 +574,28 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
                 fs::Permissions::from_mode(sanitized_mode),
             )?;
         }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let path = rootfs.join(&relative);
+            let metadata = fs::symlink_metadata(&path)?;
+            let mode = metadata.mode();
+            let temporarily_writable = !metadata.file_type().is_symlink() && mode & 0o200 == 0;
+            if temporarily_writable {
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode | 0o200))?;
+            }
+            let override_stat = format!("{}:{}:0{:o}", linux_owner.0, linux_owner.1, mode);
+            let xattr_result = persisting_overlay_core::sys::set_xattr(
+                &path,
+                std::ffi::OsStr::new("user.containers.override_stat"),
+                override_stat.as_bytes(),
+                0,
+            );
+            if temporarily_writable {
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+            }
+            xattr_result?;
+        }
         #[cfg(unix)]
         if let Some(mode) = directory_mode {
             use std::os::unix::fs::PermissionsExt;
@@ -581,20 +603,6 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
             fs::set_permissions(
                 rootfs.join(&relative),
                 fs::Permissions::from_mode(mode | 0o700),
-            )?;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let path = rootfs.join(&relative);
-            let metadata = fs::symlink_metadata(&path)?;
-            let override_stat =
-                format!("{}:{}:0{:o}", linux_owner.0, linux_owner.1, metadata.mode());
-            persisting_overlay_core::sys::set_xattr(
-                &path,
-                std::ffi::OsStr::new("user.containers.override_stat"),
-                override_stat.as_bytes(),
-                0,
             )?;
         }
     }
