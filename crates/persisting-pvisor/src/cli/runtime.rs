@@ -286,6 +286,12 @@ fn mutate(args: SelectArgs, apply: bool, target: Option<&Path>) -> anyhow::Resul
         return Ok(());
     }
     if apply {
+        if overlay.target == Path::new("/") {
+            bail!(
+                "Run {} is a full-root libkrun changeset; checkpoint/fork it or drop it instead of applying it to the host root",
+                record.run_id
+            );
+        }
         if let Some(target) = target {
             let target = resolve_apply_target(target, &record.stage_dir())?;
             overlay.target = target.clone();

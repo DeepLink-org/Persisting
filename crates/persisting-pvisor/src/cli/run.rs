@@ -15,9 +15,8 @@ use serde::Deserialize;
 
 use crate::config::{
     ChronicleMode, ContainerMount, ContainerNetwork, ContainerPlatform, GatewayMode,
-    KvmArchitecture, KvmImageFormat, OverlayFsBackend, OverlayFsCommit, OverlayFsSettings,
-    OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy,
-    RunStdio,
+    OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
+    OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
 use crate::runtime::{default_run_home, resolve_run, RunLineage};
 use crate::{
@@ -181,39 +180,15 @@ struct ContainerOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct KvmOverrides {
-    /// QEMU system emulator executable.
+    /// Directory containing libkrun, libkrun_init, and libkrunfw.
     #[arg(long, value_name = "PATH")]
-    kvm_qemu: Option<PathBuf>,
-    /// Bootable Linux qcow2/raw guest image; supplying it selects the KVM executor.
-    #[arg(long, value_name = "PATH")]
-    kvm_image: Option<PathBuf>,
-    #[arg(long, value_enum)]
-    kvm_image_format: Option<KvmImageFormat>,
-    #[arg(long, value_enum)]
-    kvm_architecture: Option<KvmArchitecture>,
-    /// Matching statically linked Linux pVisor copied into the guest.
-    #[arg(long, value_name = "PATH")]
-    kvm_pvisor_binary: Option<PathBuf>,
+    kvm_library_dir: Option<PathBuf>,
     #[arg(long, value_name = "MIB")]
     kvm_memory_mib: Option<u32>,
     #[arg(long, value_name = "COUNT")]
     kvm_cpus: Option<u16>,
-    #[arg(long, value_name = "PATH")]
-    kvm_ssh: Option<PathBuf>,
-    #[arg(long, value_name = "PATH")]
-    kvm_scp: Option<PathBuf>,
-    #[arg(long, value_name = "USER")]
-    kvm_ssh_user: Option<String>,
-    #[arg(long, value_name = "PATH")]
-    kvm_ssh_key: Option<PathBuf>,
     #[arg(long, value_name = "PORT")]
-    kvm_ssh_port: Option<u16>,
-    #[arg(long, value_name = "MS")]
-    kvm_boot_timeout_ms: Option<u64>,
-    #[arg(long, value_name = "PATH")]
-    kvm_firmware: Option<PathBuf>,
-    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
-    kvm_snapshot: Option<bool>,
+    kvm_proxy_vsock_port: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -604,6 +579,11 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     let fork_workspace = resolve_workspace(&fork_workspace)?;
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = RunConfig::default();
+    if source.executor.as_ref().is_some_and(|executor| {
+        executor.isolation == persisting_control::IsolationKind::VirtualMachine
+    }) {
+        config.run.executor = RunExecutorKind::Kvm;
+    }
     config.run.workspace = Some(fork_workspace.clone());
     let (agent, command) = fork_command(&source.agent, &source.command, args.command);
     config.run.agent = agent;
@@ -658,17 +638,30 @@ fn fork_command(
 }
 
 async fn execute_config(
-    config: RunConfig,
+    mut config: RunConfig,
     run_id: String,
     safe_profile_requested: bool,
     lineage: Option<RunLineage>,
 ) -> anyhow::Result<i32> {
+    if config.run.executor == RunExecutorKind::Kvm {
+        let overlay = config
+            .overlayfs
+            .get_or_insert_with(OverlayFsSettings::default);
+        overlay.base = Some(PathBuf::from("/"));
+        overlay.commit = OverlayFsCommit::Manual;
+    }
     validate(&config)?;
 
     if config.overlaynet.mode == OverlayNetMode::Proxy {
-        eprintln!(
-            "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
-        );
+        if config.run.executor == RunExecutorKind::Kvm {
+            eprintln!(
+                "pVisor OverlayNet boundary: guest direct sockets are disabled; proxy traffic crosses an explicit vsock relay"
+            );
+        } else {
+            eprintln!(
+                "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
+            );
+        }
     }
 
     let workspace = config
@@ -957,35 +950,12 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
         config.run.executor = RunExecutorKind::Container;
     }
 
-    let enables_kvm = args.kvm.kvm_qemu.is_some()
-        || args.kvm.kvm_image.is_some()
-        || args.kvm.kvm_image_format.is_some()
-        || args.kvm.kvm_architecture.is_some()
-        || args.kvm.kvm_pvisor_binary.is_some()
+    let enables_kvm = args.kvm.kvm_library_dir.is_some()
         || args.kvm.kvm_memory_mib.is_some()
         || args.kvm.kvm_cpus.is_some()
-        || args.kvm.kvm_ssh.is_some()
-        || args.kvm.kvm_scp.is_some()
-        || args.kvm.kvm_ssh_user.is_some()
-        || args.kvm.kvm_ssh_key.is_some()
-        || args.kvm.kvm_ssh_port.is_some()
-        || args.kvm.kvm_boot_timeout_ms.is_some()
-        || args.kvm.kvm_firmware.is_some()
-        || args.kvm.kvm_snapshot.is_some();
-    if let Some(value) = args.kvm.kvm_qemu {
-        config.kvm.qemu = value;
-    }
-    if let Some(value) = args.kvm.kvm_image {
-        config.kvm.image = Some(value);
-    }
-    if let Some(value) = args.kvm.kvm_image_format {
-        config.kvm.image_format = value;
-    }
-    if let Some(value) = args.kvm.kvm_architecture {
-        config.kvm.architecture = value;
-    }
-    if let Some(value) = args.kvm.kvm_pvisor_binary {
-        config.kvm.pvisor_binary = Some(value);
+        || args.kvm.kvm_proxy_vsock_port.is_some();
+    if let Some(value) = args.kvm.kvm_library_dir {
+        config.kvm.library_dir = Some(value);
     }
     if let Some(value) = args.kvm.kvm_memory_mib {
         config.kvm.memory_mib = value;
@@ -993,29 +963,8 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
     if let Some(value) = args.kvm.kvm_cpus {
         config.kvm.cpus = value;
     }
-    if let Some(value) = args.kvm.kvm_ssh {
-        config.kvm.ssh = value;
-    }
-    if let Some(value) = args.kvm.kvm_scp {
-        config.kvm.scp = value;
-    }
-    if let Some(value) = args.kvm.kvm_ssh_user {
-        config.kvm.ssh_user = value;
-    }
-    if let Some(value) = args.kvm.kvm_ssh_key {
-        config.kvm.ssh_key = Some(value);
-    }
-    if let Some(value) = args.kvm.kvm_ssh_port {
-        config.kvm.ssh_port = Some(value);
-    }
-    if let Some(value) = args.kvm.kvm_boot_timeout_ms {
-        config.kvm.boot_timeout_ms = value;
-    }
-    if let Some(value) = args.kvm.kvm_firmware {
-        config.kvm.firmware = Some(value);
-    }
-    if let Some(value) = args.kvm.kvm_snapshot {
-        config.kvm.snapshot = value;
+    if let Some(value) = args.kvm.kvm_proxy_vsock_port {
+        config.kvm.proxy_vsock_port = value;
     }
     if enables_kvm && explicit_executor.is_none() {
         config.run.executor = RunExecutorKind::Kvm;
@@ -1159,11 +1108,14 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
     }
     if config.run.executor == RunExecutorKind::Kvm {
         KvmExecutor::new(config.kvm.clone())?;
-        if config.overlaynet.mode == OverlayNetMode::Proxy
-            || config.gateway.mode == GatewayMode::Capture
-        {
-            bail!("KVM executor does not yet expose the host Gateway/OverlayNet endpoint to the guest");
-        }
+        anyhow::ensure!(
+            config
+                .overlayfs
+                .as_ref()
+                .and_then(|overlay| overlay.base.as_deref())
+                == Some(Path::new("/")),
+            "libkrun KVM execution requires the host root as OverlayFS base"
+        );
     }
     if let Some(overlayfs) = &config.overlayfs {
         if overlayfs.commit == OverlayFsCommit::Apply && !overlayfs.compose.is_empty() {
@@ -1307,7 +1259,7 @@ fn resolve_overlay(
             .with_context(|| format!("resolve OverlayFS stage {}", stage.display()))?
     };
     anyhow::ensure!(
-        !paths_overlap(&base, &stage),
+        base == Path::new("/") || !paths_overlap(&base, &stage),
         "OverlayFS base and stage must not overlap: base={}, stage={}",
         base.display(),
         stage.display()
@@ -1316,7 +1268,7 @@ fn resolve_overlay(
     for layer in &overlayfs.compose {
         let layer = resolve_directory(layer, "OverlayFS compose layer")?;
         anyhow::ensure!(
-            !paths_overlap(&layer, &stage),
+            base == Path::new("/") || !paths_overlap(&layer, &stage),
             "OverlayFS compose layer and stage must not overlap: compose={}, stage={}",
             layer.display(),
             stage.display()
@@ -1524,27 +1476,19 @@ mod tests {
     #[test]
     fn cli_selects_and_configures_kvm_executor() {
         let temporary = tempfile::tempdir().unwrap();
-        let image = temporary.path().join("guest.qcow2");
-        let key = temporary.path().join("id_ed25519");
-        let firmware = temporary.path().join("edk2-aarch64-code.fd");
-        std::fs::write(&image, b"image").unwrap();
-        std::fs::write(&key, b"key").unwrap();
-        std::fs::write(&firmware, b"firmware").unwrap();
+        let libraries = temporary.path().join("lib");
+        std::fs::create_dir(&libraries).unwrap();
         let crate::cli::Command::Run(args) = Cli::try_parse_from([
             "pvisor",
             "run",
-            "--kvm-image",
-            image.to_str().unwrap(),
-            "--kvm-ssh-key",
-            key.to_str().unwrap(),
-            "--kvm-architecture",
-            "aarch64",
-            "--kvm-firmware",
-            firmware.to_str().unwrap(),
+            "--kvm-library-dir",
+            libraries.to_str().unwrap(),
             "--kvm-memory-mib",
             "4096",
             "--kvm-cpus",
             "4",
+            "--kvm-proxy-vsock-port",
+            "19100",
             "--",
             "agent",
         ])
@@ -1556,28 +1500,25 @@ mod tests {
         let mut config = RunConfig::default();
         apply_cli(&mut config, *args);
         assert_eq!(config.run.executor, RunExecutorKind::Kvm);
-        assert_eq!(config.kvm.image.as_deref(), Some(image.as_path()));
-        assert_eq!(config.kvm.architecture, KvmArchitecture::Aarch64);
+        assert_eq!(config.kvm.library_dir.as_deref(), Some(libraries.as_path()));
         assert_eq!(config.kvm.memory_mib, 4096);
         assert_eq!(config.kvm.cpus, 4);
-        validate(&config).unwrap();
+        assert_eq!(config.kvm.proxy_vsock_port, 19100);
     }
 
     #[test]
-    fn kvm_rejects_host_loopback_gateway_transport() {
+    fn kvm_accepts_overlaynet_transport_over_vsock() {
         let temporary = tempfile::tempdir().unwrap();
-        let image = temporary.path().join("guest.qcow2");
-        let key = temporary.path().join("id_ed25519");
-        std::fs::write(&image, b"image").unwrap();
-        std::fs::write(&key, b"key").unwrap();
         let mut config = RunConfig::default();
         config.run.command = vec!["agent".into()];
         config.run.executor = RunExecutorKind::Kvm;
-        config.kvm.image = Some(image);
-        config.kvm.ssh_key = Some(key);
-        config.gateway.mode = GatewayMode::Capture;
-        let error = validate(&config).unwrap_err();
-        assert!(error.to_string().contains("does not yet expose"));
+        config.kvm.library_dir = Some(temporary.path().to_path_buf());
+        config.overlayfs = Some(OverlayFsSettings {
+            base: Some("/".into()),
+            ..OverlayFsSettings::default()
+        });
+        config.overlaynet.mode = OverlayNetMode::Proxy;
+        validate(&config).unwrap();
     }
 
     #[test]

@@ -140,73 +140,25 @@ impl std::str::FromStr for ContainerPlatform {
     }
 }
 
-/// QEMU/KVM virtual-machine placement. The guest image must provide SSH and
-/// the Agent executable; pVisor itself is copied in for every Attempt.
+/// libkrun/KVM process isolation over pVisor's full-root OverlayFS.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct KvmSettings {
-    pub qemu: PathBuf,
-    pub image: Option<PathBuf>,
-    pub image_format: KvmImageFormat,
-    pub architecture: KvmArchitecture,
-    pub pvisor_binary: Option<PathBuf>,
+    /// Optional directory containing libkrun, libkrun_init, and libkrunfw.
+    pub library_dir: Option<PathBuf>,
     pub memory_mib: u32,
     pub cpus: u16,
-    pub ssh: PathBuf,
-    pub scp: PathBuf,
-    pub ssh_user: String,
-    pub ssh_key: Option<PathBuf>,
-    pub ssh_port: Option<u16>,
-    pub boot_timeout_ms: u64,
-    pub firmware: Option<PathBuf>,
-    pub snapshot: bool,
-    pub extra_args: Vec<String>,
+    /// Guest vsock port reserved for the pVisor OverlayNet relay.
+    pub proxy_vsock_port: u32,
 }
 
 impl Default for KvmSettings {
     fn default() -> Self {
         Self {
-            qemu: PathBuf::from("qemu-system-x86_64"),
-            image: None,
-            image_format: KvmImageFormat::Qcow2,
-            architecture: KvmArchitecture::X86_64,
-            pvisor_binary: None,
+            library_dir: None,
             memory_mib: 2048,
             cpus: 2,
-            ssh: PathBuf::from("ssh"),
-            scp: PathBuf::from("scp"),
-            ssh_user: "root".into(),
-            ssh_key: None,
-            ssh_port: None,
-            boot_timeout_ms: 60_000,
-            firmware: None,
-            snapshot: true,
-            extra_args: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum KvmArchitecture {
-    #[default]
-    X86_64,
-    Aarch64,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum KvmImageFormat {
-    #[default]
-    Qcow2,
-    Raw,
-}
-
-impl KvmImageFormat {
-    pub(crate) const fn as_qemu_value(self) -> &'static str {
-        match self {
-            Self::Qcow2 => "qcow2",
-            Self::Raw => "raw",
+            proxy_vsock_port: 19081,
         }
     }
 }
@@ -529,20 +481,21 @@ executor = "kvm"
 command = ["agent"]
 
 [kvm]
-image = "/var/lib/persisting/guest.qcow2"
-architecture = "aarch64"
-pvisor_binary = "/opt/persisting/pvisor-linux-arm64"
-ssh_key = "/run/secrets/kvm-key"
+library_dir = "/opt/libkrun/lib"
 memory_mib = 4096
 cpus = 4
-snapshot = true
+proxy_vsock_port = 19100
 "#,
         )
         .unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Kvm);
-        assert_eq!(config.kvm.architecture, KvmArchitecture::Aarch64);
+        assert_eq!(
+            config.kvm.library_dir.as_deref(),
+            Some(Path::new("/opt/libkrun/lib"))
+        );
         assert_eq!(config.kvm.memory_mib, 4096);
         assert_eq!(config.kvm.cpus, 4);
+        assert_eq!(config.kvm.proxy_vsock_port, 19100);
         let encoded = toml::to_string_pretty(&config).unwrap();
         let decoded: RunConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.kvm, config.kvm);

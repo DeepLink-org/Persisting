@@ -66,6 +66,10 @@ pub struct OverlayRecord {
     pub upper: OverlayUpper,
     pub merged_dir: PathBuf,
     pub stage_dir: PathBuf,
+    /// Paths relative to the overlay root that are inaccessible through the
+    /// merged view. Root overlays use this to hide their own backing state.
+    #[serde(default)]
+    pub excluded_paths: Vec<PathBuf>,
     pub auto_apply: bool,
     #[serde(default)]
     pub auto_discard: bool,
@@ -276,12 +280,32 @@ pub fn resolve_overlay_workspace(
         .map(resolve)
         .unwrap_or_else(|| stage_dir.join("merged"));
 
+    let excluded_paths = if target == Path::new("/") {
+        let mut backing_paths = vec![stage_dir.clone()];
+        backing_paths.extend(cfg.lower_dirs.iter().map(PathBuf::from));
+        backing_paths
+            .iter()
+            .filter(|path| path.as_path() != Path::new("/"))
+            .map(|path| {
+                path.strip_prefix("/").map(Path::to_path_buf).map_err(|_| {
+                    OverlayError::InvalidConfig(format!(
+                        "root overlay backing path must be absolute: {}",
+                        path.display()
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
     Ok(Some(OverlayRecord {
         id: session_id.to_string(),
         target,
         upper,
         merged_dir: merged,
         stage_dir,
+        excluded_paths,
         auto_apply: cfg.auto_apply,
         auto_discard: cfg.auto_discard,
         state: OverlayState::Active,
@@ -392,6 +416,7 @@ pub fn mount_overlay_record(
         ),
     };
     config.fsname = format!("pvisor-{}", record.id);
+    config.excluded_paths = record.excluded_paths.clone();
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)?;
 
@@ -439,6 +464,7 @@ pub fn mount_overlay_record_read_only(
         ),
     };
     config.fsname = format!("pvisor-inspect-{}", record.id);
+    config.excluded_paths = record.excluded_paths.clone();
     config.read_only = true;
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(mountpoint, &session)?;
@@ -1179,6 +1205,28 @@ mod tests {
     }
 
     #[test]
+    fn root_overlay_hides_its_stage_and_compose_backing_paths() {
+        let cfg = OverlayConfig {
+            enabled: true,
+            target: Some("/".into()),
+            stage_dir: Some("/tmp/persisting-runs/run-one".into()),
+            lower_dirs: vec!["/var/lib/persisting/layers/base".into()],
+            ..OverlayConfig::default()
+        };
+        let record = resolve_overlay_workspace(&cfg, Path::new("/unused"), "run-one")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.target, Path::new("/"));
+        assert_eq!(
+            record.excluded_paths,
+            [
+                PathBuf::from("tmp/persisting-runs/run-one"),
+                PathBuf::from("var/lib/persisting/layers/base"),
+            ]
+        );
+    }
+
+    #[test]
     fn jujutsu_sessions_share_store_but_get_distinct_workspaces() {
         let storage = Path::new("/tmp/store");
         let cfg = OverlayConfig {
@@ -1254,6 +1302,7 @@ mod tests {
             },
             merged_dir: merged.clone(),
             stage_dir: stage.clone(),
+            excluded_paths: Vec::new(),
             auto_apply: false,
             auto_discard: false,
             state: OverlayState::Staged,
@@ -1322,6 +1371,7 @@ mod tests {
             },
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
+            excluded_paths: Vec::new(),
             auto_apply: false,
             auto_discard: false,
             state: OverlayState::Staged,
@@ -1386,6 +1436,7 @@ mod tests {
             },
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
+            excluded_paths: Vec::new(),
             auto_apply: false,
             auto_discard: false,
             state: OverlayState::Staged,
@@ -1409,6 +1460,7 @@ mod tests {
             },
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
+            excluded_paths: Vec::new(),
             auto_apply: false,
             auto_discard: false,
             state: OverlayState::Staged,

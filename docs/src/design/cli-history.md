@@ -115,4 +115,6 @@ persisting chronicle serve ./store
 ```
 
 该命令只监听 `127.0.0.1`，提供 Run/Event/Storyline 浏览、只读 SQL、HAR/OTLP 导出、
-judgment、revision catalog 和显式 maintain。它没有认证能力，因此拒绝绑定非 loopback 地址。
+judgment、revision catalog 和显式 maintain。主视图使用 Storyline 阅读投影，Inspector 始终
+回链 canonical event 的 `seq` / `event_id` / `call_id` 与原始 JSON；增长中的 Run 通过 SSE
+提示并可自动跟随。它没有认证能力，因此拒绝绑定非 loopback 地址。

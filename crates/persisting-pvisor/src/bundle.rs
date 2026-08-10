@@ -11,6 +11,7 @@ use persisting_control::{
 use persisting_overlaynet::{InterceptionProfile, InterceptionSnapshot};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 1;
@@ -93,6 +94,20 @@ pub struct FilesystemSummary {
     pub changed_files: usize,
     pub whiteouts: usize,
     #[serde(default)]
+    pub root_overlay: bool,
+    #[serde(default)]
+    pub excluded_paths: Vec<PathBuf>,
+    /// Identity of the host root used as the immutable lower view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_root_device: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_root_inode: Option<u64>,
+    /// Host credentials intentionally mirrored into a full-root guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_uid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_gid: Option<u32>,
+    #[serde(default)]
     pub sample_paths: Vec<String>,
 }
 
@@ -124,12 +139,20 @@ impl RunBundle {
             .as_ref()
             .map(|overlay| {
                 let status = overlay_status(overlay)?;
+                let root_overlay = overlay.target == Path::new("/");
+                let root_metadata = root_overlay.then(|| fs::metadata("/")).transpose()?;
                 Ok::<_, anyhow::Error>(FilesystemSummary {
                     state: overlay.state,
                     target: overlay.target.clone(),
                     upper: overlay.upper.path().to_path_buf(),
                     changed_files: status.changed_files,
                     whiteouts: status.whiteouts,
+                    root_overlay,
+                    excluded_paths: overlay.excluded_paths.clone(),
+                    host_root_device: root_metadata.as_ref().map(MetadataExt::dev),
+                    host_root_inode: root_metadata.as_ref().map(MetadataExt::ino),
+                    host_uid: root_overlay.then(|| unsafe { libc::geteuid() }),
+                    host_gid: root_overlay.then(|| unsafe { libc::getegid() }),
                     sample_paths: status.sample_paths,
                 })
             })
@@ -149,6 +172,10 @@ impl RunBundle {
             .executor
             .as_ref()
             .is_some_and(|executor| executor.isolation == IsolationKind::SandboxedProcess);
+        let virtual_machine = record
+            .executor
+            .as_ref()
+            .is_some_and(|executor| executor.isolation == IsolationKind::VirtualMachine);
         let sandbox_setup_failed = result
             .warnings
             .iter()
@@ -163,14 +190,16 @@ impl RunBundle {
                 .is_ok_and(|capability| capability == NetworkCapability::Deny);
         let network_non_bypassable = rootless_network_denied
             || seatbelt_network_denied
+            || (virtual_machine && record.network_interception.is_some())
             || record
                 .network_interception
                 .as_ref()
                 .is_some_and(InterceptionProfile::is_enforcing);
         let filesystem_read_non_bypassable =
-            filesystem.is_some() && rootless_process && !sandbox_setup_failed;
-        let filesystem_write_non_bypassable =
-            filesystem.is_some() && (rootless_process || seatbelt_process) && !sandbox_setup_failed;
+            filesystem.is_some() && (rootless_process || virtual_machine) && !sandbox_setup_failed;
+        let filesystem_write_non_bypassable = filesystem.is_some()
+            && (rootless_process || seatbelt_process || virtual_machine)
+            && !sandbox_setup_failed;
         let filesystem_non_bypassable =
             filesystem_read_non_bypassable && filesystem_write_non_bypassable;
         let mut safety_warnings = Vec::new();
@@ -196,6 +225,12 @@ impl RunBundle {
             if seatbelt_process && !sandbox_setup_failed {
                 safety_warnings.push(
                     "filesystem writes are Seatbelt-enforced; reads, the host PID namespace, syscall surface, and resource limits remain shared"
+                        .into(),
+                );
+            }
+            if virtual_machine {
+                safety_warnings.push(
+                    "the libkrun guest receives the complete host root view allowed to the invoking UID; credentials are not hidden"
                         .into(),
                 );
             }
@@ -351,6 +386,7 @@ mod tests {
                 },
                 merged_dir: temp.path().join("merged"),
                 stage_dir: temp.path().to_path_buf(),
+                excluded_paths: Vec::new(),
                 auto_apply: false,
                 auto_discard: false,
                 state: OverlayState::Staged,

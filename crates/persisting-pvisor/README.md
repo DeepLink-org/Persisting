@@ -81,7 +81,7 @@ owner-mediated read-only inspection.
 | `artifact` | target-specific static pVisor runtime discovery |
 | `delegated` | RunSpec/RunResult hand-off between pVisor placements |
 | `container` | Docker/Podman transport that injects pVisor |
-| `kvm` | QEMU/KVM transport that copies pVisor over SSH |
+| `kvm` | libkrun/KVM guest over pVisor's full-root OverlayFS |
 
 ## Agent ABI
 
@@ -222,28 +222,34 @@ Persisting capability is translated into an OCI runtime restriction.
 
 ### KVM executor
 
-The KVM executor boots a Linux qcow2/raw image with QEMU `-enable-kvm`, forwards
-a loopback host port to guest SSH, copies the matching static pVisor and
-prepared RunSpec into the guest, and runs the same `pvisor run --executor host`
-path. A host cwd is exposed through QEMU 9p and mounted at
-`/run/persisting/workspace`; the VM disk defaults to snapshot mode.
+The KVM executor uses `libkrun`, `libkrunfw`, and `libkrun_init` to boot a
+minimal Linux guest without a disk image or SSH. pVisor mounts an OverlayFS
+whose lower layer is the host `/`, exposes that merged mount as the guest root
+through virtio-fs, and runs the command with the invoking host UID, GID, and
+supplementary groups. Writes and whiteouts stay in the Run upper layer.
 
 ```bash
 pvisor run \
   --executor kvm \
-  --kvm-image /var/lib/persisting/agent.qcow2 \
-  --kvm-ssh-key ~/.ssh/persisting-kvm \
-  --kvm-pvisor-binary ./dist/pvisor-linux-amd64 \
+  --kvm-library-dir /opt/libkrun/lib \
   --kvm-memory-mib 4096 \
   --kvm-cpus 4 \
   -- agent --help
 ```
 
-The image must boot with SSH enabled and accept the configured key (root is the
-default because mounting the 9p workspace requires privilege). KVM execution
-requires a Linux host and `/dev/kvm`; Gateway/OverlayNet host-loopback injection
-is rejected until a guest-visible transport is implemented. Cancellation or a
-transport watchdog tears down the entire VM.
+KVM execution requires a Linux host, `/dev/kvm`, and compatible libkrun
+libraries. OverlayNet and the Agent ABI cross the VM boundary through explicit
+vsock-to-Unix-socket relays; the VMM runs in private user, mount, and network
+namespaces with Landlock restrictions, so the guest has no ambient host
+network path. Guest `/proc`, `/sys`, `/dev`, `/run`, and `/tmp` are guest-local
+mounts. The complete host root remains readable wherever the invoking UID can
+read it, including credentials; this mode isolates the kernel, not identity or
+secrets.
+
+Full-root upper layers are review/checkpoint/fork artifacts. `pvisor apply`
+refuses to replay them onto host `/`; use `pvisor checkpoint`, `pvisor fork`, or
+`pvisor drop` instead. The Run Bundle records the root device/inode, host
+UID/GID, excluded pVisor backing paths, and the staged change summary.
 
 ### Overlay model
 
@@ -359,7 +365,7 @@ timestamps and xattrs, and processes opaque markers before staged children.
 
 - `pvisor run --safe <agent> [ARGS...]`
 - `pvisor run --executor container --container-image IMAGE --container-pvisor-binary BIN -- <agent>`
-- `pvisor run --executor kvm --kvm-image IMAGE --kvm-ssh-key KEY -- <agent>`
+- `pvisor run --executor kvm [--kvm-library-dir DIR] -- <agent>`
 - `pvisor run --workspace DIR [DRIVER OPTIONS] -- <agent>`
 - `pvisor run --config run.toml [OVERRIDES] [-- <agent>]`
 - `pvisor review [RUN|WORKSPACE] [--json]`

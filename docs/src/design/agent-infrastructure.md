@@ -305,6 +305,73 @@ workspace、显式读写 capability、精确设备句柄或 Run 独占临时目�
 read/write enforcement 分开记录，并把 aggregate filesystem 边界保持为 partial。
 profile 安装由一次性 launcher attestation 验证，失败时不会执行 Agent。
 
+### 6.6 libkrun/KVM full-root executor
+
+当前工作区的 `KvmExecutor` 已从“磁盘镜像 + QEMU + SSH + guest pVisor”迁移为
+`libkrun` full-root 路径。外层 pVisor 仍然拥有 Run、Attempt、runtime drivers 和
+最终化协议；KVM 只替换 `RunExecutor`，不会在 guest 内建立第二套 Run 控制面。
+
+```mermaid
+flowchart LR
+  subgraph HOST["Host pVisor"]
+    RC["Run controller<br/>RunId · AttemptId · lease_epoch"]
+    OFS["Full-root OverlayFS<br/>lower = host /<br/>upper = Run stage"]
+    KEX["KvmExecutor<br/>RunnerSpec + GuestSpec"]
+    ABI["Agent ABI Unix socket"]
+    NET["OverlayNet / Gateway proxy"]
+    RR["self-exec pVisor runner<br/>rootless namespaces + Landlock"]
+  end
+
+  subgraph VMM["libkrun VMM"]
+    KRUN["libkrun + libkrun_init<br/>vCPU / RAM / OCI init"]
+    VFS["virtio-fs guest root"]
+    VSOCK["explicit vsock ports"]
+  end
+
+  subgraph GUEST["Minimal Linux guest"]
+    INIT["__pvisor-krun-guest<br/>guest-local /proc /sys /dev /run /tmp"]
+    RELAY["TCP↔vsock / Unix↔vsock relays"]
+    AGENT["Agent process<br/>host UID/GID + supplementary groups"]
+  end
+
+  RC --> OFS --> KEX --> RR --> KRUN
+  OFS --> VFS --> INIT --> AGENT
+  ABI --> VSOCK
+  NET --> VSOCK
+  VSOCK --> RELAY --> AGENT
+  AGENT -->|"exit / cancel / watchdog"| RC
+```
+
+执行路径按以下顺序建立：
+
+1. `RuntimeSupervisor` 先准备 full-root OverlayFS、Gateway/OverlayNet、Run record 和
+   Agent ABI；`KvmExecutor` 要求 `invocation.cwd` 已指向 merged root。
+2. `KvmExecutor` 固化 `RunnerSpec`：merged root、CPU/内存、动态库目录、guest
+   program/env/cwd/identity，以及 OverlayNet 与 Agent ABI 的 vsock 映射。
+3. pVisor self-exec 进入 runner 模式，动态加载 `libkrun`、`libkrun_init` 和
+   `libkrunfw`，创建 VM context，并把 merged root 通过 `krun_add_virtiofs3`
+   暴露为 guest `/`。该路径不需要磁盘镜像、SSH 或复制 guest runtime。
+4. runner 在启动 VMM 前进入私有 user/mount/network namespace，使用 Landlock 只开放
+   virtio-fs root、KVM device 和必要 runtime library，然后清空 namespace capability。
+5. guest 通过 OCI init 启动当前 pVisor 二进制的内部 guest mode；它只负责建立
+   vsock relay 并以原调用者 UID/GID 执行 Agent，不重新执行 `PVisor::run`。
+6. Agent 退出、取消或 watchdog 结束后，外层 `KvmExecutor` 返回 `RunResult`；外层
+   pVisor 继续执行 driver teardown、RunRecord/Run Bundle、terminal event 和终态发布。
+
+| 边界 | 当前语义 |
+|---|---|
+| Filesystem | host `/` 是只读 lower，所有写入与 whiteout 留在 Run upper；guest 的伪文件系统和临时目录独立挂载 |
+| Network | VMM 位于私有 network namespace；只有显式配置的 OverlayNet proxy 通过 vsock relay 可达 |
+| Agent control | host Agent ABI Unix socket 映射为 guest `/run/persisting/agent-abi.sock`，quiesce/effect 语义不变 |
+| Identity | guest 保留 host effective UID/GID 和 supplementary groups；这是 kernel isolation，不是 credential 隔离 |
+| Checkpoint | checkpoint/fork 固化 full-root upper；不保存 guest memory，`supports_migration = false` |
+| Apply | full-root upper 可以 inspect、checkpoint、fork 或 drop，但不能 replay 到 host `/` |
+
+因此 libkrun 路径解决的是“在不维护 guest image 的情况下获得独立 guest kernel 与完整
+Linux 用户空间兼容性”。它不会隐藏当前 UID 可读的 host root 内容，也不等价于面向恶意
+多租户的 Firecracker/image boundary。Run Bundle 必须继续如实记录 root identity、
+backing-path exclusion、host identity 和实际 enforcement。
+
 ## 7. pPilot：Durable Run Orchestrator
 
 pPilot 的操作对象是许多 `RunFuture`，不是 Agent 会话。它解决“如何可靠而高效地生产许多独立 Run”。
@@ -463,6 +530,86 @@ RunResult 不内嵌全量轨迹，只保存状态、指标、错误、artifact �
 
 每个 revision 必须记录输入事件范围、`parent_revision_id`、transform 版本、schema 版本和生成时间，不得覆盖原始事件。
 
+### 8.5 Dioxus trajectory workbench
+
+当前工作区新增了独立的 `pchronicle-web` Cargo workspace。它使用 Dioxus 0.7 编译为
+WASM/JavaScript/CSS，由 `persisting-pchronicle-server` 的 Axum 进程在 loopback 上与
+`/api/v1` 同源提供。Web 应用是 pChronicle 的消费与操作界面，不是新的事实源或存储后端。
+
+```mermaid
+flowchart TB
+  subgraph BUILD["Build and package"]
+    WEB["pchronicle-web<br/>Dioxus Rust components"]
+    DX["dx bundle --release<br/>pre-compressed web bundle"]
+    ASSETS["web-assets/public<br/>WASM · JS · CSS · index.html"]
+    BUILD_RS["server build.rs<br/>copy generated or fallback assets"]
+    EMBED["include_dir!<br/>assets embedded in native binary"]
+    WEB --> DX --> ASSETS --> BUILD_RS --> EMBED
+  end
+
+  subgraph RUNTIME["Loopback runtime"]
+    BROWSER["Dioxus application<br/>Run list · span timeline · turn inspector · tools"]
+    API["Axum /api/v1<br/>REST + SSE"]
+    STATE["AppState<br/>Chronicle + optional DatasetStore"]
+    LANCE["Canonical pChronicle<br/>events.lance / Storyline / revisions"]
+    DATASET["Dataset compatibility adapter<br/>Gateway JSON / ACTF JSON"]
+    QUERY["ChronicleQueryEngine<br/>read-only DataFusion SQL"]
+
+    BROWSER -->|"runs / trajectory-view / events"| API
+    API -->|"1 s snapshot SSE"| BROWSER
+    API --> STATE
+    STATE --> LANCE
+    STATE --> DATASET
+    API --> QUERY --> LANCE
+  end
+
+  EMBED --> API
+```
+
+#### 浏览器应用
+
+`App` 持有 Run 列表、当前 Run、`TrajectoryView`、分页事件、过滤器、follow 状态和
+inspector 状态。选择 Run 时，前端并行读取 `trajectory-view` 与完整分页 events；开启
+follow 后通过 `EventSource` 订阅 `/api/v1/stream`，检测 row count 变化并刷新视图。
+URL query 保存 Run identity、页面、source filter 和文本过滤条件，因此本地审查链接可以
+稳定回到同一视图。
+
+主要 UI 投影为：
+
+- Run sidebar 与状态/事件计数；
+- 按 call/tool 关系分组的 span timeline；
+- Storyline turn、wire tool call 和 raw event inspector；
+- read-only SQL、HAR/OTLP 导出、judgment、revision 和显式 maintenance 工具。
+
+#### Axum 服务与数据适配
+
+| 路径 | 后端语义 |
+|---|---|
+| `/api/v1/runs` | 发现 canonical Run，或读取 `DatasetStore` 的 Gateway/ACTF catalog |
+| `/api/v1/events` | 返回带 `offset / next_offset / total / has_more` 的稳定分页快照 |
+| `/api/v1/trajectory-view` | 将 events 或 dataset adapter 投影为 turns、call refs、event seq 与 tool calls |
+| `/api/v1/stream` | 每秒发布 row count/status snapshot；用于变化检测，不传输完整 event stream |
+| `/api/v1/query` | 通过 `ChronicleQueryEngine` 执行 read-only SQL，返回 NDJSON |
+| export / judgments / revisions / maintain | 复用 pChronicle 既有 HAR、OTLP、评测、血缘和显式维护 API |
+
+`DatasetStore` 只是在本地目录中识别 Gateway JSON 数组或 ACTF object，并按需转换为
+`EventRecord`/Storyline turn 供 UI 浏览；它不把这些文件声明为 canonical store，也不会
+回写原文件。正常 Lance storage 仍通过 `Chronicle`、`RawEventLanceStore` 和
+`ChronicleQueryEngine` 访问。
+
+#### 发布与安全边界
+
+- `pchronicle-web` 使用独立 lockfile 和 `wasm32-unknown-unknown` target；CI 固定
+  Dioxus CLI 0.7.9，并分别执行 format、test 和 release bundle。
+- `Dioxus.toml` 开启预压缩；native server 优先返回 Brotli asset。hash asset 使用长期
+  immutable cache，HTML 与非 hash asset 使用 `no-cache`。
+- 构建时若存在生成 bundle，`build.rs` 将其嵌入 server binary；否则嵌入最小 fallback
+  页面，保证 native crate 仍可独立构建。
+- server 拒绝非 loopback bind，因为当前没有 authentication/authorization；未知
+  `/api/` 路径固定返回 404，SPA fallback 只处理非 API 路由。
+- 浏览器只读取或调用显式 pChronicle operation；它不会重放捕获的 HTTP 请求。maintenance
+  在 UI 中要求确认，但真正的安全边界仍是 loopback-only server，而不是前端确认框。
+
 ## 9. 端到端关键路径
 
 ### 9.1 单 Run
@@ -530,9 +677,10 @@ pPilot library
 | canonical Lance events | `persisting-pchronicle::{EventRow, RawEventLanceStore}` | 统一 canonical-first，Markdown 降为 view |
 | Storyline / replay view | story actor、TLV Markdown、materialize、replay | 将 session 对齐为 Storyline，并补充因果关系 |
 | pVisor proxy drivers | `persisting-overlaynet` 独占显式 HTTP/HTTPS proxy 数据面；Gateway 是 LLM/轨迹 `OverlaySink`；另有 `persisting-dlcapt` | 可配置其他 sink；当前不宣称透明网络隔离。Linux 透明截获已定稿设计（主方案：非特权 netns + 进程内用户态协议栈；备选：seccomp user-notify + ADDFD），见 [OverlayNet interception](overlaynet.md) |
-| pVisor executor | Local ProcessExecutor、Docker/Podman transport、QEMU/KVM transport；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；Docker/KVM 仍有 capability enforcement 差距，尚缺 WASM/Remote，见 [pVisor isolation architecture](pvisor-isolation.md) |
+| pVisor executor | Local ProcessExecutor、Docker/Podman transport、libkrun/KVM full-root transport；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；Docker/KVM 仍有 capability enforcement 差距，尚缺 WASM/Remote，见 [pVisor isolation architecture](pvisor-isolation.md) |
 | pPilot batch control | Driver、Scheduler、Sink、Checkpoint；TaskExpr ↔ RunSpec/RunResult adapter | 将 Run/Attempt 写入 durable checkpoint 并增加 reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |
+| pChronicle Web | `pchronicle-web` Dioxus/WASM 应用；`persisting-pchronicle-server` Axum REST/SSE、embedded assets 与 `DatasetStore` | 当前仅 loopback、无认证；dataset adapter 是审查兼容层，不替代 canonical Lance |
 | distributed providers | Pulsing actors、torchrun integration | 只承担发现、投递和 worker 生命周期 |
 | pChronicle consumers | CLI、pPilot sink、Python Search、Judge | 直接消费 canonical history/Search API |
 

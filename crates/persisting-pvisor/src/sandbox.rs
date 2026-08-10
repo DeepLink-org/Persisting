@@ -248,6 +248,50 @@ fn install_landlock(plan: &SandboxPlan) -> std::io::Result<u32> {
     Ok(abi as u32)
 }
 
+/// Confine the libkrun VMM process while leaving the pVisor FUSE server in the
+/// trusted parent. The VMM gets a private network and mount namespace, may
+/// access only its virtio-fs root plus KVM/runtime files, and retains no
+/// namespace capabilities after setup.
+#[cfg(target_os = "linux")]
+pub(crate) fn restrict_krun_runner(
+    root: PathBuf,
+    library_dir: Option<PathBuf>,
+) -> anyhow::Result<u32> {
+    use anyhow::Context;
+
+    enter_rootless_namespaces(true)
+        .context("initialize libkrun user, mount, and network namespaces")?;
+    let mut read_only = [
+        "/usr/lib",
+        "/usr/lib64",
+        "/lib",
+        "/lib64",
+        "/proc/self",
+        "/dev/urandom",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .filter(|path| path.exists())
+    .collect::<Vec<_>>();
+    if let Some(directory) = library_dir {
+        read_only.push(directory);
+    }
+    let mut read_write = vec![root];
+    if PathBuf::from("/dev/kvm").exists() {
+        read_write.push(PathBuf::from("/dev/kvm"));
+    }
+    let plan = SandboxPlan {
+        root: PathBuf::from("/"),
+        cwd: PathBuf::from("/"),
+        read_only,
+        read_write,
+        deny_network: true,
+    };
+    let abi = install_landlock(&plan).context("install libkrun Landlock policy")?;
+    drop_process_capabilities().context("drop libkrun namespace capabilities")?;
+    Ok(abi)
+}
+
 #[cfg(target_os = "linux")]
 fn add_landlock_path_rule(
     ruleset_fd: libc::c_int,

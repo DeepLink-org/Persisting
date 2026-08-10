@@ -1,26 +1,36 @@
-//! QEMU/KVM transport that boots a Linux guest, copies in the matching static
-//! pVisor over SSH, and executes the prepared Run through ProcessExecutor.
+//! libkrun/KVM process isolation over a pVisor-provided root OverlayFS.
 
-use crate::artifact::resolve_pvisor_binary;
-use crate::config::{KvmArchitecture, KvmSettings};
-use crate::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
+use crate::config::KvmSettings;
 use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
 use persisting_control::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunState, StdioMode,
 };
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::ffi::{c_char, c_void, CString};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::{Child, Command};
+use std::process::{Command as StdCommand, Stdio};
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
 
-const REMOTE_DIR: &str = "/run/persisting";
-const REMOTE_PVISOR: &str = "/run/persisting/pvisor";
-const WORKSPACE_TAG: &str = "persisting-workspace";
-const REMOTE_WORKSPACE: &str = "/run/persisting/workspace";
-const CAPTURE_CONFIG_ENV: &str = "PERSISTING_CAPTURE_CONFIG";
+const RUNNER_SPEC_ENV: &str = "PERSISTING_KRUN_RUNNER_SPEC";
+const GUEST_SPEC_ENV: &str = "PERSISTING_KRUN_GUEST_SPEC";
+const GUEST_INTERNAL_ARG: &str = "__pvisor-krun-guest";
+#[cfg(target_os = "linux")]
+const ROOT_TAG: &str = "/dev/root";
+const AGENT_ABI_GUEST_PATH: &str = "/tmp/persisting-agent-abi.sock";
+const AGENT_ABI_VSOCK_PORT_OFFSET: u32 = 1;
+#[cfg(target_os = "linux")]
+const VMADDR_CID_HOST: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct KvmExecutor {
@@ -33,49 +43,65 @@ struct Captured {
     truncated: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct RunnerSpec {
+    root: PathBuf,
+    guest_executable: PathBuf,
+    guest: GuestSpec,
+    cpus: u8,
+    memory_mib: u32,
+    library_dir: Option<PathBuf>,
+    vsock_mappings: Vec<VsockMapping>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct VsockMapping {
+    port: u32,
+    host_socket: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GuestSpec {
+    program: String,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+    cwd: PathBuf,
+    uid: u32,
+    gid: u32,
+    additional_gids: Vec<u32>,
+    proxy: Option<TcpVsockBridge>,
+    agent_abi: Option<UnixVsockBridge>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TcpVsockBridge {
+    listen: SocketAddr,
+    port: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UnixVsockBridge {
+    listen: PathBuf,
+    port: u32,
+}
+
 impl KvmExecutor {
-    pub fn new(mut settings: KvmSettings) -> anyhow::Result<Self> {
-        let image = settings
-            .image
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("kvm.image is required"))?;
-        anyhow::ensure!(
-            image.is_file(),
-            "KVM image is not a file: {}",
-            image.display()
-        );
+    pub fn new(settings: KvmSettings) -> anyhow::Result<Self> {
         anyhow::ensure!(settings.memory_mib > 0, "kvm.memory_mib must be positive");
         anyhow::ensure!(settings.cpus > 0, "kvm.cpus must be positive");
+        anyhow::ensure!(settings.cpus <= 8, "libkrunfw supports at most 8 vCPUs");
         anyhow::ensure!(
-            !settings.ssh_user.trim().is_empty(),
-            "kvm.ssh_user must not be empty"
+            settings.proxy_vsock_port > 1024
+                && settings.proxy_vsock_port < u32::MAX - AGENT_ABI_VSOCK_PORT_OFFSET,
+            "kvm.proxy_vsock_port must be between 1025 and {}",
+            u32::MAX - AGENT_ABI_VSOCK_PORT_OFFSET
         );
-        let key = settings
-            .ssh_key
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("kvm.ssh_key is required"))?;
-        anyhow::ensure!(
-            key.is_file(),
-            "KVM SSH key is not a file: {}",
-            key.display()
-        );
-        validate_qemu_path(image)?;
-        if let Some(firmware) = &settings.firmware {
+        if let Some(directory) = &settings.library_dir {
             anyhow::ensure!(
-                firmware.is_file(),
-                "KVM firmware is not a file: {}",
-                firmware.display()
+                directory.is_dir(),
+                "kvm.library_dir is not a directory: {}",
+                directory.display()
             );
-            validate_qemu_path(firmware)?;
-        }
-        anyhow::ensure!(
-            settings.architecture != KvmArchitecture::Aarch64 || settings.firmware.is_some(),
-            "kvm.firmware is required for the QEMU aarch64 virt machine"
-        );
-        if settings.architecture == KvmArchitecture::Aarch64
-            && settings.qemu == Path::new("qemu-system-x86_64")
-        {
-            settings.qemu = "qemu-system-aarch64".into();
         }
         Ok(Self { settings })
     }
@@ -83,188 +109,17 @@ impl KvmExecutor {
     pub fn settings(&self) -> &KvmSettings {
         &self.settings
     }
-
-    fn build_qemu_command(
-        &self,
-        ssh_port: u16,
-        shared_cwd: Option<&Path>,
-    ) -> anyhow::Result<Command> {
-        let image = self.settings.image.as_deref().expect("validated image");
-        let mut command = Command::new(&self.settings.qemu);
-        command
-            .arg("-enable-kvm")
-            .arg("-machine")
-            .arg(match self.settings.architecture {
-                KvmArchitecture::X86_64 => "q35,accel=kvm",
-                KvmArchitecture::Aarch64 => "virt,accel=kvm",
-            })
-            .arg("-cpu")
-            .arg("host")
-            .arg("-m")
-            .arg(self.settings.memory_mib.to_string())
-            .arg("-smp")
-            .arg(self.settings.cpus.to_string())
-            .arg("-drive")
-            .arg(format!(
-                "file={},if=virtio,format={}",
-                image.display(),
-                self.settings.image_format.as_qemu_value()
-            ))
-            .arg("-netdev")
-            .arg(format!(
-                "user,id=persisting-net,hostfwd=tcp:127.0.0.1:{ssh_port}-:22"
-            ))
-            .arg("-device")
-            .arg("virtio-net-pci,netdev=persisting-net")
-            .arg("-display")
-            .arg("none")
-            .arg("-serial")
-            .arg("none")
-            .arg("-monitor")
-            .arg("none");
-        if self.settings.snapshot {
-            command.arg("-snapshot");
-        }
-        if let Some(firmware) = &self.settings.firmware {
-            command.arg("-bios").arg(firmware);
-        }
-        if let Some(cwd) = shared_cwd {
-            validate_qemu_path(cwd)?;
-            command
-                .arg("-fsdev")
-                .arg(format!(
-                    "local,id=persisting-fs,path={},security_model=none",
-                    cwd.display()
-                ))
-                .arg("-device")
-                .arg(format!(
-                    "virtio-9p-pci,fsdev=persisting-fs,mount_tag={WORKSPACE_TAG}"
-                ));
-        }
-        command
-            .args(&self.settings.extra_args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        Ok(command)
-    }
-
-    fn ssh_command(&self, port: u16) -> Command {
-        let mut command = Command::new(&self.settings.ssh);
-        self.add_ssh_options(&mut command, port);
-        command.arg(self.ssh_destination());
-        command
-    }
-
-    fn scp_command(&self, port: u16) -> Command {
-        let mut command = Command::new(&self.settings.scp);
-        command
-            .arg("-P")
-            .arg(port.to_string())
-            .arg("-i")
-            .arg(self.settings.ssh_key.as_deref().expect("validated key"))
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-o")
-            .arg("StrictHostKeyChecking=no")
-            .arg("-o")
-            .arg("UserKnownHostsFile=/dev/null");
-        command
-    }
-
-    fn add_ssh_options(&self, command: &mut Command, port: u16) {
-        command
-            .arg("-p")
-            .arg(port.to_string())
-            .arg("-i")
-            .arg(self.settings.ssh_key.as_deref().expect("validated key"))
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-o")
-            .arg("StrictHostKeyChecking=no")
-            .arg("-o")
-            .arg("UserKnownHostsFile=/dev/null")
-            .arg("-o")
-            .arg("ConnectTimeout=2");
-    }
-
-    fn ssh_destination(&self) -> String {
-        format!("{}@127.0.0.1", self.settings.ssh_user)
-    }
-
-    async fn wait_for_ssh(&self, qemu: &mut Child, port: u16) -> anyhow::Result<()> {
-        let deadline = Instant::now() + Duration::from_millis(self.settings.boot_timeout_ms);
-        loop {
-            if let Some(status) = qemu.try_wait()? {
-                anyhow::bail!("QEMU exited before SSH became ready: {status}");
-            }
-            let status = self
-                .ssh_command(port)
-                .arg("true")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await;
-            if status.is_ok_and(|status| status.success()) {
-                return Ok(());
-            }
-            anyhow::ensure!(Instant::now() < deadline, "KVM guest SSH boot timeout");
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
-    async fn copy_to_guest(&self, port: u16, source: &Path, target: &str) -> anyhow::Result<()> {
-        let status = self
-            .scp_command(port)
-            .arg(source)
-            .arg(format!("{}:{target}", self.ssh_destination()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await?;
-        anyhow::ensure!(
-            status.success(),
-            "copy {} into KVM guest failed",
-            source.display()
-        );
-        Ok(())
-    }
-
-    async fn copy_from_guest(&self, port: u16, source: &str, target: &Path) -> anyhow::Result<()> {
-        let status = self
-            .scp_command(port)
-            .arg(format!("{}:{source}", self.ssh_destination()))
-            .arg(target)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await?;
-        anyhow::ensure!(
-            status.success(),
-            "copy delegated RunResult from KVM guest failed"
-        );
-        Ok(())
-    }
-
-    async fn stop_vm(&self, qemu: &mut Child) {
-        let _ = qemu.kill().await;
-        let _ = qemu.wait().await;
-    }
 }
 
 #[async_trait]
 impl RunExecutor for KvmExecutor {
     fn descriptor(&self) -> ExecutorDescriptor {
         ExecutorDescriptor {
-            name: "qemu-kvm-pvisor-v1".into(),
+            name: "libkrun-root-overlay-v1".into(),
             kind: ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
             enforces_capabilities: false,
-            supports_checkpoint: false,
+            supports_checkpoint: true,
             supports_migration: false,
         }
     }
@@ -279,7 +134,7 @@ impl RunExecutor for KvmExecutor {
         context
             .transition(
                 RunState::Starting,
-                Some("booting KVM guest for injected pVisor".into()),
+                Some("starting libkrun guest over pVisor root OverlayFS".into()),
             )
             .await;
         if !cfg!(target_os = "linux") {
@@ -287,110 +142,159 @@ impl RunExecutor for KvmExecutor {
                 &spec,
                 context.attempt_id(),
                 started_at,
-                "KVM execution requires a Linux host".into(),
+                "libkrun host-root execution requires Linux/KVM".into(),
             );
         }
 
-        let RunInvocation::Process(process) = &mut spec.invocation;
-        let shared_cwd = process
-            .cwd
-            .as_deref()
-            .map(PathBuf::from)
-            .filter(|path| path.exists());
-        if shared_cwd.is_some() {
-            process.cwd = Some(REMOTE_WORKSPACE.into());
-        }
-        let capture_source = process
-            .env
-            .get(CAPTURE_CONFIG_ENV)
-            .map(PathBuf::from)
-            .filter(|path| path.is_file());
-        if capture_source.is_some() {
-            process.env.insert(
-                CAPTURE_CONFIG_ENV.into(),
-                format!("{REMOTE_DIR}/capture-config.toml"),
+        let RunInvocation::Process(invocation) = &mut spec.invocation;
+        let Some(root) = invocation.cwd.as_deref().map(PathBuf::from) else {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                "libkrun executor requires the prepared root OverlayFS mount".into(),
+            );
+        };
+        if !root.is_dir() {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                format!("prepared root OverlayFS is not mounted: {}", root.display()),
             );
         }
+        let guest_cwd = spec
+            .metadata
+            .get("pvisor.workspace")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let mut env = if invocation.inherit_env {
+            std::env::vars().collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::new()
+        };
+        env.extend(invocation.env.clone());
 
-        let prepared = (|| {
-            let binary = resolve_pvisor_binary(self.settings.pvisor_binary.as_deref())?;
-            let files = DelegatedRunFiles::new(&spec)?;
-            let port = match self.settings.ssh_port {
-                Some(port) => port,
-                None => reserve_loopback_port()?,
-            };
-            let qemu = self.build_qemu_command(port, shared_cwd.as_deref())?;
-            Ok::<_, anyhow::Error>((binary, files, port, qemu))
-        })();
-        let (binary, files, port, mut qemu_command) = match prepared {
-            Ok(prepared) => prepared,
+        let temporary = match tempfile::Builder::new().prefix("pvisor-krun-").tempdir() {
+            Ok(value) => value,
             Err(error) => {
                 return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
             }
         };
-        let mut qemu = match qemu_command.spawn() {
-            Ok(child) => child,
+        let mut mappings = Vec::new();
+        let mut proxy_relay = None;
+        let proxy = match proxy_address(&env) {
+            Some(target) => {
+                let socket = temporary.path().join("overlaynet.sock");
+                match spawn_unix_tcp_relay(&socket, target) {
+                    Ok(task) => {
+                        proxy_relay = Some(task);
+                        mappings.push(VsockMapping {
+                            port: self.settings.proxy_vsock_port,
+                            host_socket: socket,
+                        });
+                        Some(TcpVsockBridge {
+                            listen: target,
+                            port: self.settings.proxy_vsock_port,
+                        })
+                    }
+                    Err(error) => {
+                        return failed_to_start(
+                            &spec,
+                            context.attempt_id(),
+                            started_at,
+                            format!("failed to establish the OverlayNet VM relay: {error}"),
+                        );
+                    }
+                }
+            }
+            None => None,
+        };
+        let agent_abi = env
+            .get(crate::AGENT_ABI_ENDPOINT_ENV)
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .map(|host_socket| {
+                let port = self.settings.proxy_vsock_port + AGENT_ABI_VSOCK_PORT_OFFSET;
+                mappings.push(VsockMapping { port, host_socket });
+                env.insert(
+                    crate::AGENT_ABI_ENDPOINT_ENV.into(),
+                    AGENT_ABI_GUEST_PATH.into(),
+                );
+                UnixVsockBridge {
+                    listen: AGENT_ABI_GUEST_PATH.into(),
+                    port,
+                }
+            });
+
+        let executable = match std::env::current_exe() {
+            Ok(path) if path.is_absolute() => path,
+            Ok(path) => {
+                return failed_to_start(
+                    &spec,
+                    context.attempt_id(),
+                    started_at,
+                    format!("pVisor executable is not absolute: {}", path.display()),
+                );
+            }
             Err(error) => {
                 return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
             }
         };
-        let bootstrap = async {
-            self.wait_for_ssh(&mut qemu, port).await?;
-            let status = self
-                .ssh_command(port)
-                .arg(format!("mkdir -p {REMOTE_DIR}"))
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await?;
-            anyhow::ensure!(status.success(), "create pVisor directory in KVM guest failed");
-            if shared_cwd.is_some() {
-                let mount = self
-                    .ssh_command(port)
-                    .arg(format!(
-                        "mkdir -p {REMOTE_WORKSPACE} && mount -t 9p -o trans=virtio,version=9p2000.L {WORKSPACE_TAG} {REMOTE_WORKSPACE}"
-                    ))
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .await?;
-                anyhow::ensure!(mount.success(), "mount shared Run cwd in KVM guest failed");
-            }
-            self.copy_to_guest(port, &binary, REMOTE_PVISOR).await?;
-            self.copy_to_guest(
-                port,
-                &files.spec_path,
-                &format!("{REMOTE_DIR}/{SPEC_FILENAME}"),
-            )
-            .await?;
-            if let Some(source) = &capture_source {
-                self.copy_to_guest(port, source, &format!("{REMOTE_DIR}/capture-config.toml"))
-                    .await?;
-            }
-            Ok::<_, anyhow::Error>(())
+        let guest_executable = executable
+            .strip_prefix(Path::new("/"))
+            .map(|relative| root.join(relative))
+            .unwrap_or_else(|_| root.join(&executable));
+        if !guest_executable.is_file() {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                format!(
+                    "the running pVisor binary is not visible in the guest root: {}",
+                    executable.display()
+                ),
+            );
         }
-        .await;
-        if let Err(error) = bootstrap {
-            self.stop_vm(&mut qemu).await;
+        let guest = GuestSpec {
+            program: invocation.program.clone(),
+            args: invocation.args.clone(),
+            env,
+            cwd: guest_cwd,
+            uid: unsafe { libc::geteuid() },
+            gid: unsafe { libc::getegid() },
+            additional_gids: supplementary_groups(),
+            proxy,
+            agent_abi,
+        };
+        let runner = RunnerSpec {
+            root,
+            guest_executable: executable.clone(),
+            guest,
+            cpus: self.settings.cpus as u8,
+            memory_mib: self.settings.memory_mib,
+            library_dir: self.settings.library_dir.clone(),
+            vsock_mappings: mappings,
+        };
+        let runner_path = temporary.path().join("runner.json");
+        if let Err(error) = write_private_json(&runner_path, &runner) {
             return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
         }
 
-        let RunInvocation::Process(invocation) = &spec.invocation;
-        let mut remote = self.ssh_command(port);
-        remote
-            .arg(format!(
-                "chmod 0755 {REMOTE_PVISOR} && exec {REMOTE_PVISOR} run --executor host --run-spec {REMOTE_DIR}/{SPEC_FILENAME} --result-file {REMOTE_DIR}/{RESULT_FILENAME}"
-            ))
+        let mut command = Command::new(executable);
+        command
+            .env(RUNNER_SPEC_ENV, &runner_path)
             .stdin(stdio(invocation.stdin))
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
             .kill_on_drop(true);
-        let mut child = match remote.spawn() {
+        if let Some(directory) = &self.settings.library_dir {
+            command.env("LD_LIBRARY_PATH", directory);
+        }
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                self.stop_vm(&mut qemu).await;
                 return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
             }
         };
@@ -429,38 +333,20 @@ impl RunExecutor for KvmExecutor {
                 _ = cancellation.cancelled() => End::Cancelled,
             }
         };
-        if matches!(end, End::Cancelled) {
-            context
-                .transition(RunState::Cancelling, Some("cancellation requested".into()))
-                .await;
-        }
         if matches!(end, End::Cancelled | End::Watchdog) {
+            if matches!(end, End::Cancelled) {
+                context
+                    .transition(RunState::Cancelling, Some("cancellation requested".into()))
+                    .await;
+            }
             let _ = child.kill().await;
             let _ = child.wait().await;
         }
+        if let Some(task) = proxy_relay {
+            task.abort();
+        }
         let transport_stdout = join_capture(stdout_task).await;
         let transport_stderr = join_capture(stderr_task).await;
-
-        if matches!(end, End::Exited(_)) {
-            let copied = self
-                .copy_from_guest(
-                    port,
-                    &format!("{REMOTE_DIR}/{RESULT_FILENAME}"),
-                    &files.result_path,
-                )
-                .await;
-            if copied.is_ok() {
-                if let Ok(output) =
-                    files.read_result(&spec.run_id, context.attempt_id(), spec.lease_epoch)
-                {
-                    context.import_delegated_agent_abi(output.agent_abi);
-                    self.stop_vm(&mut qemu).await;
-                    return output.result;
-                }
-            }
-        }
-        self.stop_vm(&mut qemu).await;
-
         let mut output = ProcessOutput::default();
         if let Some(captured) = transport_stdout {
             output.stdout = Some(captured.text);
@@ -477,30 +363,31 @@ impl RunExecutor for KvmExecutor {
                 None,
                 Some(RunFailure {
                     kind: RunFailureKind::DeadlineExceeded,
-                    message: "KVM delegated pVisor exceeded the transport watchdog".into(),
+                    message: "libkrun guest exceeded the transport watchdog".into(),
                     retryable: false,
                 }),
             ),
-            End::Exited(status) => match status {
-                Ok(status) => (
-                    RunState::Failed,
-                    status.code(),
-                    Some(RunFailure {
-                        kind: RunFailureKind::Infrastructure,
-                        message: "KVM delegated pVisor exited without a valid RunResult".into(),
-                        retryable: false,
-                    }),
-                ),
-                Err(error) => (
-                    RunState::Failed,
-                    None,
-                    Some(RunFailure {
-                        kind: RunFailureKind::Infrastructure,
-                        message: error.to_string(),
-                        retryable: true,
-                    }),
-                ),
-            },
+            End::Exited(Ok(status)) if status.code().is_some() => {
+                (RunState::Completed, status.code(), None)
+            }
+            End::Exited(Ok(status)) => (
+                RunState::Failed,
+                None,
+                Some(RunFailure {
+                    kind: RunFailureKind::Infrastructure,
+                    message: format!("libkrun runner terminated by {status}"),
+                    retryable: false,
+                }),
+            ),
+            End::Exited(Err(error)) => (
+                RunState::Failed,
+                None,
+                Some(RunFailure {
+                    kind: RunFailureKind::Infrastructure,
+                    message: error.to_string(),
+                    retryable: true,
+                }),
+            ),
         };
         RunResult {
             run_id: spec.run_id,
@@ -521,21 +408,323 @@ impl RunExecutor for KvmExecutor {
     }
 }
 
-fn validate_qemu_path(path: &Path) -> anyhow::Result<()> {
-    let value = path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("QEMU path is not UTF-8: {}", path.display()))?;
-    anyhow::ensure!(
-        !value.contains([',', '\n', '\r']),
-        "QEMU path contains an unsupported delimiter: {}",
-        path.display()
-    );
+/// Handle the self-exec libkrun runner or the guest-side process supervisor.
+/// Returns `true` when the current process was consumed by an internal mode.
+pub fn run_internal_if_requested() -> anyhow::Result<bool> {
+    if let Some(path) = std::env::var_os(RUNNER_SPEC_ENV) {
+        let spec: RunnerSpec = serde_json::from_slice(&std::fs::read(&path)?)?;
+        run_runner(spec)?;
+        return Ok(true);
+    }
+    if std::env::args().nth(1).as_deref() == Some(GUEST_INTERNAL_ARG) {
+        let encoded = std::env::var(GUEST_SPEC_ENV)
+            .map_err(|_| anyhow::anyhow!("missing {GUEST_SPEC_ENV}"))?;
+        let spec: GuestSpec = serde_json::from_str(&encoded)?;
+        let code = run_guest(spec)?;
+        std::process::exit(code);
+    }
+    Ok(false)
+}
+
+fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = spec;
+        anyhow::bail!("libkrun runner is only supported on Linux");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let krun =
+            DynamicLibrary::open(spec.library_dir.as_deref(), &["libkrun.so.2", "libkrun.so"])?;
+        let init = DynamicLibrary::open(
+            spec.library_dir.as_deref(),
+            &["libkrun_init.so.0", "libkrun_init.so"],
+        )?;
+        crate::sandbox::restrict_krun_runner(spec.root.clone(), spec.library_dir.clone())?;
+        unsafe {
+            let create: unsafe extern "C" fn() -> i32 = krun.symbol(b"krun_create_ctx\0")?;
+            let set_vm: unsafe extern "C" fn(u32, u8, u32) -> i32 =
+                krun.symbol(b"krun_set_vm_config\0")?;
+            let console: unsafe extern "C" fn(u32, i32, i32, i32) -> i32 =
+                krun.symbol(b"krun_add_virtio_console_default\0")?;
+            let rootfs: unsafe extern "C" fn(u32, *const c_char, *const c_char, u64, bool) -> i32 =
+                krun.symbol(b"krun_add_virtiofs3\0")?;
+            let add_vsock: unsafe extern "C" fn(u32, u32) -> i32 =
+                krun.symbol(b"krun_add_vsock\0")?;
+            let add_vsock_port: unsafe extern "C" fn(u32, u32, *const c_char) -> i32 =
+                krun.symbol(b"krun_add_vsock_port\0")?;
+            let start: unsafe extern "C" fn(u32) -> i32 = krun.symbol(b"krun_start_enter\0")?;
+            let ctx = check_ctx(create(), "krun_create_ctx")?;
+            check_krun(
+                set_vm(ctx, spec.cpus, spec.memory_mib),
+                "krun_set_vm_config",
+            )?;
+            check_krun(console(ctx, 0, 1, 2), "krun_add_virtio_console_default")?;
+            let root_tag = CString::new(ROOT_TAG)?;
+            let root = path_cstring(&spec.root)?;
+            check_krun(
+                rootfs(ctx, root_tag.as_ptr(), root.as_ptr(), 0, false),
+                "krun_add_virtiofs3",
+            )?;
+            check_krun(add_vsock(ctx, 0), "krun_add_vsock")?;
+            for mapping in &spec.vsock_mappings {
+                let path = path_cstring(&mapping.host_socket)?;
+                check_krun(
+                    add_vsock_port(ctx, mapping.port, path.as_ptr()),
+                    "krun_add_vsock_port",
+                )?;
+            }
+
+            let from_oci: unsafe extern "C" fn(KrunStr, *mut *mut c_void) -> *mut c_void =
+                init.symbol(b"krun_init_builder_from_oci_json\0")?;
+            let build: unsafe extern "C" fn(*mut *mut c_void) -> *mut c_void =
+                init.symbol(b"krun_init_builder_build\0")?;
+            let apply: unsafe extern "C" fn(
+                *mut c_void,
+                *mut c_void,
+                u32,
+                KrunStr,
+                *mut *mut c_void,
+            ) -> u64 = init.symbol(b"krun_init_config_apply\0")?;
+
+            let guest_json = serde_json::to_string(&spec.guest)?;
+            let guest_env = format!("{GUEST_SPEC_ENV}={guest_json}");
+            let oci = init_oci_spec(&spec, guest_env, libc::isatty(0) == 1);
+            let oci = serde_json::to_vec(&oci)?;
+            let mut init_error: *mut c_void = std::ptr::null_mut();
+            let mut builder = from_oci(KrunStr::from_bytes(&oci), &mut init_error);
+            anyhow::ensure!(
+                !builder.is_null() && init_error.is_null(),
+                "libkrun-init rejected the OCI process configuration"
+            );
+            let config = build(&mut builder);
+            anyhow::ensure!(!config.is_null(), "libkrun-init returned an empty config");
+            let result = apply(
+                config,
+                krun.handle,
+                ctx,
+                KrunStr::from_bytes(ROOT_TAG.as_bytes()),
+                &mut init_error,
+            );
+            anyhow::ensure!(
+                result == 0 && init_error.is_null(),
+                "libkrun-init apply failed with result {result}"
+            );
+            check_krun(start(ctx), "krun_start_enter")?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn init_oci_spec(spec: &RunnerSpec, guest_env: String, terminal: bool) -> serde_json::Value {
+    serde_json::json!({
+        "ociVersion": "1.1.0",
+        "mounts": [
+            { "destination": "/proc", "type": "proc", "source": "proc" },
+            { "destination": "/sys", "type": "sysfs", "source": "sysfs", "options": ["nosuid", "noexec", "nodev", "ro"] },
+            { "destination": "/dev", "type": "devtmpfs", "source": "devtmpfs", "options": ["nosuid", "mode=755"] },
+            { "destination": "/dev/pts", "type": "devpts", "source": "devpts", "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"] },
+            { "destination": "/dev/shm", "type": "tmpfs", "source": "shm", "options": ["nosuid", "noexec", "nodev", "mode=1777"] },
+            { "destination": "/run", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "mode=755"] },
+            { "destination": "/tmp", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "mode=1777"] }
+        ],
+        "process": {
+            "terminal": terminal,
+            "user": {
+                "uid": spec.guest.uid,
+                "gid": spec.guest.gid,
+                "additionalGids": spec.guest.additional_gids,
+            },
+            "args": [
+                spec.guest_executable.display().to_string(),
+                GUEST_INTERNAL_ARG,
+            ],
+            "env": [guest_env],
+            "cwd": "/",
+            "noNewPrivileges": true,
+        }
+    })
+}
+
+fn run_guest(spec: GuestSpec) -> anyhow::Result<i32> {
+    if let Some(proxy) = spec.proxy {
+        spawn_tcp_vsock_bridge(proxy)?;
+    }
+    if let Some(agent_abi) = spec.agent_abi {
+        spawn_unix_vsock_bridge(agent_abi)?;
+    }
+    let status = StdCommand::new(&spec.program)
+        .args(&spec.args)
+        .env_clear()
+        .envs(&spec.env)
+        .current_dir(&spec.cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+    Ok(status.code().unwrap_or(128))
+}
+
+fn spawn_tcp_vsock_bridge(bridge: TcpVsockBridge) -> anyhow::Result<()> {
+    let listener = TcpListener::bind(bridge.listen)?;
+    std::thread::Builder::new()
+        .name("pvisor-krun-proxy".into())
+        .spawn(move || {
+            for stream in listener.incoming().flatten() {
+                spawn_stream_bridge(stream, bridge.port);
+            }
+        })?;
     Ok(())
 }
 
-fn reserve_loopback_port() -> anyhow::Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
+fn spawn_unix_vsock_bridge(bridge: UnixVsockBridge) -> anyhow::Result<()> {
+    if bridge.listen.exists() {
+        std::fs::remove_file(&bridge.listen)?;
+    }
+    if let Some(parent) = bridge.listen.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = UnixListener::bind(&bridge.listen)?;
+    std::thread::Builder::new()
+        .name("pvisor-krun-agent-abi".into())
+        .spawn(move || {
+            for stream in listener.incoming().flatten() {
+                spawn_stream_bridge(stream, bridge.port);
+            }
+        })?;
+    Ok(())
+}
+
+fn spawn_stream_bridge<S>(stream: S, port: u32)
+where
+    S: CloneStream + Send + 'static,
+{
+    std::thread::spawn(move || {
+        if let Ok(vsock) = connect_host_vsock(port) {
+            let _ = copy_bidirectional_blocking(stream, vsock);
+        }
+    });
+}
+
+fn connect_host_vsock(port: u32) -> std::io::Result<UnixStream> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = port;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "AF_VSOCK requires Linux",
+        ))
+    }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let fd = libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let address = SockAddrVm {
+            family: libc::AF_VSOCK as libc::sa_family_t,
+            reserved: 0,
+            port,
+            cid: VMADDR_CID_HOST,
+            zero: [0; 4],
+        };
+        let result = libc::connect(
+            fd,
+            &address as *const SockAddrVm as *const libc::sockaddr,
+            std::mem::size_of::<SockAddrVm>() as libc::socklen_t,
+        );
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            libc::close(fd);
+            return Err(error);
+        }
+        Ok(UnixStream::from_raw_fd(fd))
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct SockAddrVm {
+    family: libc::sa_family_t,
+    reserved: u16,
+    port: u32,
+    cid: u32,
+    zero: [u8; 4],
+}
+
+fn copy_bidirectional_blocking<A, B>(mut left: A, mut right: B) -> std::io::Result<()>
+where
+    A: CloneStream + Send + 'static,
+    B: CloneStream + Send + 'static,
+{
+    let mut left_reader = left.try_clone_stream()?;
+    let mut right_writer = right.try_clone_stream()?;
+    let forward = std::thread::spawn(move || std::io::copy(&mut left_reader, &mut right_writer));
+    let _ = std::io::copy(&mut right, &mut left);
+    let _ = forward.join();
+    Ok(())
+}
+
+trait CloneStream: Read + Write + Sized {
+    fn try_clone_stream(&self) -> std::io::Result<Self>;
+}
+
+impl CloneStream for TcpStream {
+    fn try_clone_stream(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
+}
+
+impl CloneStream for UnixStream {
+    fn try_clone_stream(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
+}
+
+fn spawn_unix_tcp_relay(
+    socket: &Path,
+    target: SocketAddr,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    Ok(tokio::spawn(async move {
+        while let Ok((mut local, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                if let Ok(mut remote) = tokio::net::TcpStream::connect(target).await {
+                    let _ = tokio::io::copy_bidirectional(&mut local, &mut remote).await;
+                    let _ = local.shutdown().await;
+                    let _ = remote.shutdown().await;
+                }
+            });
+        }
+    }))
+}
+
+fn proxy_address(env: &BTreeMap<String, String>) -> Option<SocketAddr> {
+    ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"]
+        .iter()
+        .filter_map(|key| env.get(*key))
+        .find_map(|value| value.strip_prefix("http://").unwrap_or(value).parse().ok())
+}
+
+fn supplementary_groups() -> Vec<u32> {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let count = libc::getgroups(0, std::ptr::null_mut());
+        if count <= 0 {
+            return Vec::new();
+        }
+        let mut groups = vec![0; count as usize];
+        let read = libc::getgroups(count, groups.as_mut_ptr());
+        if read < 0 {
+            Vec::new()
+        } else {
+            groups.truncate(read as usize);
+            groups
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    Vec::new()
 }
 
 fn stdio(mode: StdioMode) -> Stdio {
@@ -577,6 +766,13 @@ async fn join_capture(
     }
 }
 
+fn write_private_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, serde_json::to_vec(value)?)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
 fn failed_to_start(
     spec: &persisting_control::RunSpec,
     attempt_id: &persisting_control::AttemptId,
@@ -605,54 +801,157 @@ fn failed_to_start(
     }
 }
 
+#[cfg(target_os = "linux")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KrunStr {
+    data: *const c_char,
+    len: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl KrunStr {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            data: bytes.as_ptr() as *const c_char,
+            len: bytes.len(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct DynamicLibrary {
+    handle: *mut c_void,
+}
+
+#[cfg(target_os = "linux")]
+impl DynamicLibrary {
+    fn open(directory: Option<&Path>, names: &[&str]) -> anyhow::Result<Self> {
+        let mut errors = Vec::new();
+        for name in names {
+            let candidate = directory
+                .map(|directory| directory.join(name))
+                .unwrap_or_else(|| PathBuf::from(name));
+            let encoded = path_cstring(&candidate)?;
+            let handle =
+                unsafe { libc::dlopen(encoded.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+            if !handle.is_null() {
+                return Ok(Self { handle });
+            }
+            errors.push(format!("{}: {}", candidate.display(), dlerror()));
+        }
+        anyhow::bail!("load libkrun dependency failed: {}", errors.join("; "))
+    }
+
+    unsafe fn symbol<T: Copy>(&self, name: &[u8]) -> anyhow::Result<T> {
+        let symbol = unsafe { libc::dlsym(self.handle, name.as_ptr() as *const c_char) };
+        anyhow::ensure!(
+            !symbol.is_null(),
+            "missing libkrun symbol {}: {}",
+            String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]),
+            dlerror()
+        );
+        Ok(unsafe { std::mem::transmute_copy(&symbol) })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DynamicLibrary {
+    fn drop(&mut self) {
+        unsafe { libc::dlclose(self.handle) };
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn path_cstring(path: &Path) -> anyhow::Result<CString> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(CString::new(path.as_os_str().as_bytes())?)
+}
+
+#[cfg(target_os = "linux")]
+fn dlerror() -> String {
+    let error = unsafe { libc::dlerror() };
+    if error.is_null() {
+        "unknown loader error".into()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(error) }
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn check_ctx(value: i32, operation: &str) -> anyhow::Result<u32> {
+    if value < 0 {
+        anyhow::bail!("{operation} failed with errno {}", -value);
+    }
+    Ok(value as u32)
+}
+
+#[cfg(target_os = "linux")]
+fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
+    if value < 0 {
+        anyhow::bail!("{operation} failed with errno {}", -value);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
-    fn fixture_settings(temporary: &tempfile::TempDir) -> KvmSettings {
-        use std::os::unix::fs::PermissionsExt;
-        let image = temporary.path().join("guest.qcow2");
-        let key = temporary.path().join("id_ed25519");
-        let pvisor = temporary.path().join("pvisor");
-        std::fs::write(&image, b"image").unwrap();
-        std::fs::write(&key, b"key").unwrap();
-        std::fs::write(&pvisor, b"runtime").unwrap();
-        std::fs::set_permissions(&pvisor, std::fs::Permissions::from_mode(0o755)).unwrap();
-        KvmSettings {
-            image: Some(image),
-            ssh_key: Some(key),
-            pvisor_binary: Some(pvisor),
+    #[test]
+    fn settings_validate_resource_limits() {
+        assert!(KvmExecutor::new(KvmSettings::default()).is_ok());
+        assert!(KvmExecutor::new(KvmSettings {
+            cpus: 9,
             ..KvmSettings::default()
-        }
+        })
+        .is_err());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn qemu_command_enables_kvm_ssh_forwarding_and_snapshot() {
-        let temporary = tempfile::tempdir().unwrap();
-        let executor = KvmExecutor::new(fixture_settings(&temporary)).unwrap();
-        let command = executor.build_qemu_command(22022, None).unwrap();
-        let args = command
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert!(args.iter().any(|arg| arg == "-enable-kvm"));
-        assert!(args
+    fn proxy_address_accepts_injected_loopback_proxy() {
+        let env = BTreeMap::from([("HTTP_PROXY".into(), "http://127.0.0.1:19081".into())]);
+        assert_eq!(
+            proxy_address(&env),
+            Some("127.0.0.1:19081".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn init_oci_spec_preserves_identity_and_masks_host_pseudo_filesystems() {
+        let runner = RunnerSpec {
+            root: "/merged".into(),
+            guest_executable: "/usr/bin/pvisor".into(),
+            guest: GuestSpec {
+                program: "/bin/true".into(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: "/workspace".into(),
+                uid: 1000,
+                gid: 100,
+                additional_gids: vec![10, 20],
+                proxy: None,
+                agent_abi: None,
+            },
+            cpus: 2,
+            memory_mib: 2048,
+            library_dir: None,
+            vsock_mappings: Vec::new(),
+        };
+        let oci = init_oci_spec(&runner, "PERSISTING_KRUN_GUEST_SPEC={}".into(), false);
+        assert_eq!(oci["process"]["user"]["uid"], 1000);
+        assert_eq!(oci["process"]["user"]["additionalGids"][1], 20);
+        let destinations = oci["mounts"]
+            .as_array()
+            .unwrap()
             .iter()
-            .any(|arg| arg.contains("hostfwd=tcp:127.0.0.1:22022-:22")));
-        assert!(args.iter().any(|arg| arg == "-snapshot"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn descriptor_reports_virtual_machine_isolation() {
-        let temporary = tempfile::tempdir().unwrap();
-        let executor = KvmExecutor::new(fixture_settings(&temporary)).unwrap();
-        let descriptor = executor.descriptor();
-        assert_eq!(descriptor.kind, ExecutorKind::VirtualMachine);
-        assert_eq!(descriptor.isolation, IsolationKind::VirtualMachine);
-        assert!(!descriptor.enforces_capabilities);
+            .map(|mount| mount["destination"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            destinations,
+            ["/proc", "/sys", "/dev", "/dev/pts", "/dev/shm", "/run", "/tmp"]
+        );
     }
 }

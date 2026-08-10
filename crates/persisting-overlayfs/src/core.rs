@@ -32,6 +32,7 @@ pub struct OverlayCore {
     lowers: Vec<PathBuf>,
     upper: PathBuf,
     work: Option<PathBuf>,
+    excluded: BTreeSet<PathBuf>,
     copied_hard_links: Mutex<HashMap<(u64, u64), PathBuf>>,
 }
 
@@ -52,6 +53,15 @@ fn ignorable_metadata_error(err: &io::Error) -> bool {
 
 impl OverlayCore {
     pub fn new(lowers: Vec<PathBuf>, upper: PathBuf, work: Option<PathBuf>) -> io::Result<Self> {
+        Self::new_with_exclusions(lowers, upper, work, Vec::new())
+    }
+
+    pub fn new_with_exclusions(
+        lowers: Vec<PathBuf>,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+    ) -> io::Result<Self> {
         if lowers.is_empty() {
             return Err(error(libc::EINVAL));
         }
@@ -85,10 +95,21 @@ impl OverlayCore {
                 }
             }
         }
+        let excluded = excluded
+            .into_iter()
+            .map(|path| {
+                Self::validate_rel(&path)?;
+                if path.as_os_str().is_empty() {
+                    return Err(error(libc::EINVAL));
+                }
+                Ok(path)
+            })
+            .collect::<io::Result<BTreeSet<_>>>()?;
         let core = Self {
             lowers,
             upper,
             work,
+            excluded,
             copied_hard_links: Mutex::new(HashMap::new()),
         };
         if fs::read_dir(&core.upper)?.next().is_none() {
@@ -102,6 +123,20 @@ impl OverlayCore {
 
     pub fn upper(&self) -> &Path {
         &self.upper
+    }
+
+    fn is_excluded(&self, rel: &Path) -> bool {
+        self.excluded
+            .iter()
+            .any(|prefix| rel == prefix || rel.starts_with(prefix))
+    }
+
+    fn require_visible(&self, rel: &Path) -> io::Result<()> {
+        Self::validate_rel(rel)?;
+        if self.is_excluded(rel) {
+            return Err(error(libc::ENOENT));
+        }
+        Ok(())
     }
 
     pub fn validate_rel(rel: &Path) -> io::Result<()> {
@@ -191,7 +226,7 @@ impl OverlayCore {
     }
 
     pub fn resolve(&self, rel: &Path) -> Option<Resolved> {
-        if Self::validate_rel(rel).is_err() {
+        if self.require_visible(rel).is_err() {
             return None;
         }
         if rel.as_os_str().is_empty() {
@@ -218,11 +253,15 @@ impl OverlayCore {
     }
 
     pub fn metadata(&self, rel: &Path) -> io::Result<Metadata> {
+        self.require_visible(rel)?;
         let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
         fs::symlink_metadata(resolved.path)
     }
 
     pub fn exists_in_lower(&self, rel: &Path) -> bool {
+        if self.require_visible(rel).is_err() {
+            return false;
+        }
         self.lowers.iter().any(|lower| exists(&lower.join(rel)))
     }
 
@@ -262,6 +301,7 @@ impl OverlayCore {
     }
 
     pub fn ensure_upper_parents(&self, rel: &Path) -> io::Result<()> {
+        self.require_visible(rel)?;
         Self::validate_rel(rel)?;
         let Some(parent) = rel.parent() else {
             return Ok(());
@@ -296,6 +336,7 @@ impl OverlayCore {
     }
 
     pub fn copy_up(&self, rel: &Path) -> io::Result<PathBuf> {
+        self.require_visible(rel)?;
         Self::validate_rel(rel)?;
         let upper = self.upper_path(rel);
         if exists(&upper) {
@@ -361,6 +402,7 @@ impl OverlayCore {
     }
 
     pub fn list_names(&self, rel: &Path) -> io::Result<Vec<OsString>> {
+        self.require_visible(rel)?;
         let metadata = self.metadata(rel)?;
         if !metadata.is_dir() {
             return Err(error(libc::ENOTDIR));
@@ -388,7 +430,10 @@ impl OverlayCore {
                 }
             }
         }
-        names.retain(|name| !self.is_whiteouted(rel, name));
+        names.retain(|name| {
+            !self.is_whiteouted(rel, name)
+                && Self::child(rel, name).is_ok_and(|child| !self.is_excluded(&child))
+        });
         Ok(names.into_iter().collect())
     }
 
@@ -428,6 +473,7 @@ impl OverlayCore {
     }
 
     pub fn clear_whiteout(&self, rel: &Path) -> io::Result<()> {
+        self.require_visible(rel)?;
         let name = rel.file_name().ok_or_else(|| error(libc::EINVAL))?;
         let parent = rel.parent().unwrap_or_else(|| Path::new(""));
         let marker = self.whiteout_path(parent, name);
@@ -439,6 +485,7 @@ impl OverlayCore {
     }
 
     pub fn create_file(&self, rel: &Path, mode: u32, flags: i32) -> io::Result<File> {
+        self.require_visible(rel)?;
         Self::validate_rel(rel)?;
         if self.resolve(rel).is_some() {
             return Err(error(libc::EEXIST));
@@ -459,6 +506,7 @@ impl OverlayCore {
     }
 
     pub fn create_dir(&self, rel: &Path, mode: u32) -> io::Result<()> {
+        self.require_visible(rel)?;
         if self.resolve(rel).is_some() {
             return Err(error(libc::EEXIST));
         }
@@ -475,6 +523,7 @@ impl OverlayCore {
     }
 
     pub fn create_symlink(&self, rel: &Path, target: &Path) -> io::Result<()> {
+        self.require_visible(rel)?;
         if self.resolve(rel).is_some() {
             return Err(error(libc::EEXIST));
         }
@@ -484,6 +533,7 @@ impl OverlayCore {
     }
 
     pub fn create_node(&self, rel: &Path, mode: u32, rdev: u32) -> io::Result<()> {
+        self.require_visible(rel)?;
         if self.resolve(rel).is_some() {
             return Err(error(libc::EEXIST));
         }
@@ -493,6 +543,7 @@ impl OverlayCore {
     }
 
     pub fn remove(&self, rel: &Path, directory: bool) -> io::Result<()> {
+        self.require_visible(rel)?;
         let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
         let metadata = fs::symlink_metadata(&resolved.path)?;
         if directory {
@@ -524,6 +575,7 @@ impl OverlayCore {
     /// This is required before renaming a lower-backed directory: a single-node
     /// copy-up would otherwise lose every child when the upper directory moves.
     pub fn materialize_tree(&self, rel: &Path) -> io::Result<PathBuf> {
+        self.require_visible(rel)?;
         let metadata = self.metadata(rel)?;
         if !metadata.is_dir() {
             return self.copy_up(rel);
@@ -618,6 +670,8 @@ impl OverlayCore {
     }
 
     pub fn rename(&self, old: &Path, new: &Path, no_replace: bool) -> io::Result<()> {
+        self.require_visible(old)?;
+        self.require_visible(new)?;
         Self::validate_rel(old)?;
         Self::validate_rel(new)?;
         if old == new {
@@ -672,6 +726,8 @@ impl OverlayCore {
     }
 
     pub fn hard_link(&self, source: &Path, destination: &Path) -> io::Result<()> {
+        self.require_visible(source)?;
+        self.require_visible(destination)?;
         let metadata = self.metadata(source)?;
         if metadata.is_dir() {
             return Err(error(libc::EPERM));
@@ -686,6 +742,8 @@ impl OverlayCore {
     }
 
     pub fn exchange(&self, first: &Path, second: &Path) -> io::Result<()> {
+        self.require_visible(first)?;
+        self.require_visible(second)?;
         Self::validate_rel(first)?;
         Self::validate_rel(second)?;
         if first == second {
@@ -933,6 +991,47 @@ mod tests {
             )
             .expect("read"),
             b"b"
+        );
+    }
+
+    #[test]
+    fn excluded_subtree_is_absent_and_cannot_be_recreated() {
+        let temporary = tempfile::tempdir().unwrap();
+        let lower = temporary.path().join("lower");
+        let upper = temporary.path().join("upper");
+        let work = temporary.path().join("work");
+        fs::create_dir_all(lower.join("visible")).unwrap();
+        fs::create_dir_all(lower.join("internal/nested")).unwrap();
+        fs::write(lower.join("internal/nested/control"), b"secret").unwrap();
+        let core = OverlayCore::new_with_exclusions(
+            vec![lower],
+            upper,
+            Some(work),
+            vec![PathBuf::from("internal")],
+        )
+        .unwrap();
+
+        assert!(core.resolve(Path::new("internal")).is_none());
+        assert!(core.resolve(Path::new("internal/nested/control")).is_none());
+        assert!(!core
+            .list_names(Path::new(""))
+            .unwrap()
+            .contains(&OsString::from("internal")));
+        assert_eq!(
+            core.create_dir(Path::new("internal"), 0o755)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        assert_eq!(
+            core.rename(
+                Path::new("visible"),
+                Path::new("internal/replacement"),
+                false
+            )
+            .unwrap_err()
+            .raw_os_error(),
+            Some(libc::ENOENT)
         );
     }
 
