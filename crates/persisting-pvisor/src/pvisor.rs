@@ -3,7 +3,6 @@
 //! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. There is no
 //! separate control plane: CLI / pPilot talk to this API directly.
 
-use crate::agent_abi::{AgentAbiServer, AGENT_ABI_VERSION};
 use crate::config::{GatewayDriverConfig, PVisorConfig};
 use crate::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::executor::{AttemptContext, RunExecutor};
@@ -16,8 +15,8 @@ use crate::util::unix_now_ms;
 use crate::TrajectoryEventSink;
 use persisting_control::ControlController;
 use persisting_control::{
-    AttemptId, AttemptInfo, PolicyMode, RunFailure, RunFailureKind, RunInvocation, RunResult,
-    RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
+    AttemptId, AttemptInfo, PolicyMode, RunFailure, RunFailureKind, RunResult, RunSpec, RunState,
+    RunStatus, RUNTIME_SCHEMA_VERSION,
 };
 #[cfg(feature = "lance-chronicle")]
 use persisting_pchronicle::AttemptRegistry;
@@ -74,8 +73,6 @@ pub enum PVisorError {
     InvalidSpec(String),
     #[error("runtime prepare failed: {0}")]
     Prepare(#[source] anyhow::Error),
-    #[error("Agent ABI setup failed: {0}")]
-    AgentAbi(#[source] anyhow::Error),
     #[error("no executor supports this invocation")]
     UnsupportedInvocation,
     #[error("executor `{0}` cannot enforce the requested capability policy")]
@@ -113,8 +110,6 @@ pub struct RunHandle {
     status: watch::Receiver<RunStatus>,
     cancellation: CancellationToken,
     events: RunEventPublisher,
-    agent_abi: crate::AgentAbiControl,
-    checkpoint_record: Option<crate::runtime::RunRecord>,
     join: JoinHandle<RunResult>,
 }
 
@@ -140,55 +135,6 @@ impl RunHandle {
         self.events.subscribe()
     }
 
-    /// Run-scoped Agent ABI desired-state and observation surface.
-    pub fn agent_abi(&self) -> crate::AgentAbiControl {
-        self.agent_abi.clone()
-    }
-
-    /// Cooperatively quiesce every connected ABI client, verify that no
-    /// external effects are open, and snapshot the live OverlayFS upper.
-    pub async fn checkpoint(
-        &self,
-        checkpoint_id: &str,
-        timeout: std::time::Duration,
-    ) -> anyhow::Result<crate::LogicalCheckpoint> {
-        anyhow::ensure!(
-            !checkpoint_id.trim().is_empty()
-                && checkpoint_id != "."
-                && checkpoint_id != ".."
-                && !checkpoint_id.contains('/')
-                && !checkpoint_id.contains('\\'),
-            "checkpoint id must be one non-empty path-safe segment"
-        );
-        let record = self
-            .checkpoint_record
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Run {} has no OverlayFS stage", self.run_id))?;
-        let deadline = crate::unix_now_ms().saturating_add(timeout.as_millis() as u64);
-        self.agent_abi
-            .request_quiesce(checkpoint_id.to_owned(), Some(deadline));
-        let outcome = async {
-            loop {
-                let snapshot = self.agent_abi.snapshot();
-                if checkpoint_barrier_satisfied(&snapshot, checkpoint_id) {
-                    return crate::checkpoint::create_agent_quiesced_checkpoint(
-                        record,
-                        checkpoint_id,
-                    );
-                }
-                if crate::unix_now_ms() >= deadline {
-                    anyhow::bail!(
-                        "checkpoint {checkpoint_id} timed out waiting for all Agent ABI clients to quiesce with no open effects"
-                    );
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        }
-        .await;
-        self.agent_abi.continue_execution();
-        outcome
-    }
-
     /// Cooperative cancel followed by executor-specific termination.
     pub fn cancel(&self) {
         self.cancellation.cancel();
@@ -203,18 +149,6 @@ impl RunHandle {
     pub async fn wait(self) -> Result<RunResult, PVisorError> {
         Ok(self.join.await?)
     }
-}
-
-fn checkpoint_barrier_satisfied(snapshot: &crate::AgentAbiSnapshot, checkpoint_id: &str) -> bool {
-    !snapshot.clients.is_empty()
-        && snapshot
-            .clients
-            .iter()
-            .all(|client| client.quiesced_checkpoint_id.as_deref() == Some(checkpoint_id))
-        && snapshot
-            .effects
-            .iter()
-            .all(|effect| effect.completion.is_some())
 }
 
 /// Builder for a configured [`PVisor`].
@@ -383,24 +317,6 @@ impl PVisor {
             .runtime
             .prepare(&mut spec, &supervisor.initial_limits)
             .map_err(PVisorError::Prepare)?;
-        let checkpoint_record = session
-            .as_ref()
-            .and_then(|session| session.checkpoint_record());
-        let agent_abi_server =
-            AgentAbiServer::start(&spec.run_id, &attempt_id).map_err(PVisorError::AgentAbi)?;
-        let agent_abi = agent_abi_server.control();
-        let bundle_agent_abi = agent_abi.clone();
-        let RunInvocation::Process(process) = &mut spec.invocation;
-        process.env.extend(agent_abi_server.environment());
-        spec.metadata.insert(
-            "pvisor.agent_abi".into(),
-            json!({
-                "version": AGENT_ABI_VERSION,
-                "transport": "unix",
-                "endpoint": agent_abi.endpoint(),
-            }),
-        );
-
         let run_id = spec.run_id.clone();
         let now = unix_now_ms();
         let initial = RunStatus {
@@ -436,7 +352,6 @@ impl PVisor {
                     "executor": descriptor,
                     "policy_mode": spec.runtime.policy_mode,
                     "capture_session": session.as_ref().map(|s| s.root_session.clone()),
-                    "agent_abi_version": AGENT_ABI_VERSION,
                 }),
             )
             .await
@@ -540,13 +455,10 @@ impl PVisor {
             cancellation.clone(),
             status_tx,
             events.clone(),
-            agent_abi.clone(),
         );
         let supervisor_warning = supervisor.warning;
         let supervisor_session = supervisor.session;
         let join = tokio::spawn(async move {
-            // Keep the Run-scoped endpoint alive until executor finalization finishes.
-            let _agent_abi_server = agent_abi_server;
             let _supervisor_session = supervisor_session;
             let mut result = executor.execute(context.clone()).await;
             if let Some(warning) = supervisor_warning {
@@ -585,7 +497,6 @@ impl PVisor {
                 let bundle_result = crate::RunBundle::capture(
                     teardown.run_record(),
                     &result,
-                    bundle_agent_abi.snapshot(),
                     safe_profile_requested,
                 )
                 .and_then(|bundle| bundle.write(&teardown.run_record().stage_dir()));
@@ -597,7 +508,6 @@ impl PVisor {
                     persist_failed_local_state(
                         teardown,
                         &mut result,
-                        &bundle_agent_abi,
                         safe_profile_requested,
                         false,
                     );
@@ -625,13 +535,7 @@ impl PVisor {
                     );
                 }
                 if let Some(teardown) = teardown.as_mut() {
-                    persist_failed_local_state(
-                        teardown,
-                        &mut result,
-                        &bundle_agent_abi,
-                        safe_profile_requested,
-                        true,
-                    );
+                    persist_failed_local_state(teardown, &mut result, safe_profile_requested, true);
                 }
                 if append_error_kind == crate::EventAppendErrorKind::Rejected {
                     if let Err(error) = context
@@ -646,7 +550,6 @@ impl PVisor {
                             persist_failed_local_state(
                                 teardown,
                                 &mut result,
-                                &bundle_agent_abi,
                                 safe_profile_requested,
                                 true,
                             );
@@ -692,8 +595,6 @@ impl PVisor {
             status: status_rx,
             cancellation,
             events,
-            agent_abi,
-            checkpoint_record,
             join,
         })
     }
@@ -713,7 +614,6 @@ fn terminal_payload(result: &RunResult) -> serde_json::Value {
 fn persist_failed_local_state(
     teardown: &mut AttemptTeardown,
     result: &mut RunResult,
-    agent_abi: &crate::AgentAbiControl,
     safe_profile_requested: bool,
     invalidate_stale_bundle: bool,
 ) {
@@ -722,13 +622,9 @@ fn persist_failed_local_state(
             .warnings
             .push(format!("commit failed Run record: {error:#}"));
     }
-    let bundle_result = crate::RunBundle::capture(
-        teardown.run_record(),
-        result,
-        agent_abi.snapshot(),
-        safe_profile_requested,
-    )
-    .and_then(|bundle| bundle.write(&teardown.run_record().stage_dir()));
+    let bundle_result =
+        crate::RunBundle::capture(teardown.run_record(), result, safe_profile_requested)
+            .and_then(|bundle| bundle.write(&teardown.run_record().stage_dir()));
     if let Err(error) = bundle_result {
         result
             .warnings
@@ -803,44 +699,6 @@ mod tests {
     use persisting_control::SupervisorBootstrap;
     use persisting_control::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
     use std::sync::Mutex;
-
-    #[test]
-    fn logical_checkpoint_barrier_requires_quiesced_clients_and_closed_effects() {
-        let mut snapshot = crate::AgentAbiSnapshot {
-            run_id: "run".into(),
-            attempt_id: "attempt".into(),
-            directive_seq: 1,
-            directive: crate::AgentDirective::Quiesce {
-                checkpoint_id: "cp".into(),
-                deadline_unix_ms: None,
-            },
-            clients: vec![],
-            processes: vec![],
-            effects: vec![],
-        };
-        assert!(!checkpoint_barrier_satisfied(&snapshot, "cp"));
-        snapshot.clients.push(crate::AgentClientSnapshot {
-            client_id: "agent".into(),
-            agent_name: "agent".into(),
-            role: crate::AgentClientRole::Agent,
-            lifecycle: crate::AgentLifecycleState::Quiesced,
-            last_heartbeat_unix_ms: Some(1),
-            quiesced_checkpoint_id: Some("cp".into()),
-        });
-        assert!(checkpoint_barrier_satisfied(&snapshot, "cp"));
-        snapshot.effects.push(crate::AgentEffectSnapshot {
-            session_id: "session".into(),
-            sequence: 1,
-            begin: crate::AgentEffectBegin {
-                effect_id: "effect".into(),
-                kind: "write".into(),
-                request_digest: "digest".into(),
-                idempotency_key: None,
-            },
-            completion: None,
-        });
-        assert!(!checkpoint_barrier_satisfied(&snapshot, "cp"));
-    }
 
     #[derive(Default)]
     struct RejectCompletedSink {
@@ -960,27 +818,6 @@ mod tests {
         let recovered: RunResult = serde_json::from_value(record.terminal_result.unwrap()).unwrap();
         assert_eq!(recovered.attempt_id, result.attempt_id);
         assert_eq!(recovered.state, RunState::Completed);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn process_receives_live_agent_abi_endpoint() {
-        let runtime = PVisor::new();
-        let mut spec = RunSpec::process("run-agent-abi", "test-agent", "/bin/sh");
-        let RunInvocation::Process(process) = &mut spec.invocation;
-        process.args = vec![
-            "-c".into(),
-            "test -S \"$PERSISTING_AGENT_ABI_ENDPOINT\" && \
-             test -n \"$PERSISTING_AGENT_ABI_TOKEN\" && \
-             test \"$PERSISTING_AGENT_ABI_VERSION\" = 2 && \
-             test \"$PERSISTING_AGENT_ABI_TRANSPORT\" = unix"
-                .into(),
-        ];
-
-        let handle = runtime.run(spec).await.unwrap();
-        assert_eq!(handle.agent_abi().snapshot().run_id, "run-agent-abi");
-        let result = handle.wait().await.unwrap();
-        assert_eq!(result.state, RunState::Completed);
     }
 
     #[cfg(unix)]

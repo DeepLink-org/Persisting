@@ -10,7 +10,6 @@
 pub mod cli;
 mod runtime;
 
-mod agent_abi;
 mod artifact;
 mod bundle;
 mod checkpoint;
@@ -28,14 +27,6 @@ pub mod sandbox;
 mod supervisor;
 mod util;
 
-pub use agent_abi::{
-    AgentAbiControl, AgentAbiServer, AgentAbiSnapshot, AgentCheckpointQuiesced, AgentClientRole,
-    AgentClientSnapshot, AgentDirective, AgentEffectBegin, AgentEffectComplete, AgentEffectOutcome,
-    AgentEffectSnapshot, AgentHeartbeatAck, AgentHello, AgentLifecycleState,
-    AgentProcessRegistration, AgentProcessSnapshot, AgentRequest, AgentRequestBody, AgentResponse,
-    AgentResponseBody, AgentWelcome, AGENT_ABI_ENDPOINT_ENV, AGENT_ABI_MAX_FRAME_BYTES,
-    AGENT_ABI_TOKEN_ENV, AGENT_ABI_TRANSPORT_ENV, AGENT_ABI_VERSION, AGENT_ABI_VERSION_ENV,
-};
 pub use bundle::{
     BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, RunBundle, SafetySummary,
     RUN_BUNDLE_FILENAME, RUN_BUNDLE_SCHEMA_VERSION,

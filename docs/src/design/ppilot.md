@@ -226,11 +226,9 @@ Worker **不**解释业务；Driver **不**碰 Python。每个 Task 先转换为
 Python host 实现 pVisor `RunExecutor`；取消和终态经 RunHandle/RunResult 返回，再由唯一
 adapter 转为 TaskResult。provider 代码目前仍位于 pPilot crate，后续可独立成部署 provider。
 
-每个 Task Run 同时启动长驻 `PilotRuntimeBridge`：按 pVisor 下发的间隔 heartbeat，
-注册 worker 进程，监听 Shutdown/Quiesce，并把 Task 包装为带稳定 idempotency key 的
-`ppilot.task` effect。Quiesce 到达后停止接收新 effect；当前 Python 调用完成、effect
-journal 清空并进入 Idle 后才确认 checkpoint。pVisor 在确认后建立逻辑 OverlayFS 快照，
-再通过 Continue 恢复 pPilot。
+每个 Task Run 通过 `RunHandle` 接收取消并返回终态。pPilot 不要求 Python provider 或
+黑盒 Agent 实现额外的运行时协议；任务所有权、结果持久化、条件确认和恢复仍由 Driver
+与 ResultCache 的持久化契约完成。运行中的 Python 调用不支持应用一致性 checkpoint。
 
 RunSpec 使用 `parent_run_id` 表达 Job/Batch → Task Run 层级；pVisor 的 RunRecord 与
 Run Bundle 持久化 `parent_run_id`、`task_id` 和经过筛选的 `ppilot.*` 编排元数据。

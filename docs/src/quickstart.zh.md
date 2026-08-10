@@ -37,7 +37,7 @@ staged workspace、只读运行时和显式授权路径；未投影的宿主文�
 macOS 的 `--safe` 会在执行 Agent 前安装动态生成的 Seatbelt profile，把所有文件写入约束到
 staged workspace、显式读写 capability 和 Run 独占临时目录；为兼容本地工具链，文件读取
 暂时仍是 ambient。`--overlaynet-deny-all` 会同时阻断 IP 与宿主 ambient Unix socket，只保留
-Agent ABI 和 Run 私有目录内 IPC。profile 编译或安装失败时 Run 会 fail closed，bundle 会分别
+Run 私有目录内 IPC。profile 编译或安装失败时 Run 会 fail closed，bundle 会分别
 记录读取、写入和网络边界，避免把写隔离误报成完整隔离。
 
 ```bash

@@ -186,7 +186,7 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 
 | Capability | Status | Description |
 |------------|--------|-------------|
-| **pVisor agent runtime** | ✅ Implemented | One Run: execution, control, Agent ABI, transactional workspace |
+| **pVisor agent runtime** | ✅ Implemented | One Run: execution, cancellation, placement, transactional workspace |
 | **pPilot orchestration** | ✅ Implemented | `plan()` + `execute()` with lease fencing and durable recovery (Phase-1) |
 | **pChronicle history** | ✅ Implemented | Canonical events, Storyline/ATIF views, local + S3, read-only SQL |
 | **Gateway capture** | ✅ Implemented | LLM/Agent HTTP capture as Lance + Markdown trajectories |

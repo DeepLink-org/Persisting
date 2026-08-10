@@ -37,10 +37,10 @@ workspace containment non-bypassable for the Agent process tree.
 public/allowlist proxy modes remain cooperative. On macOS the default safe
 host executor installs a generated Seatbelt policy that makes staged writes
 non-bypassable. For deny-all Runs it blocks IP and ambient host Unix sockets,
-while retaining the exact Agent ABI and Run-local IPC. Reads and selective
+while retaining Run-local IPC. Reads and selective
 network policy remain ambient/cooperative and are labeled separately in the
-Bundle. Docker and KVM transports retain the same outer Run, OverlayFS, Agent
-ABI observation, and pChronicle control plane.
+Bundle. Docker and KVM transports retain the same outer Run, OverlayFS, and
+pChronicle control plane.
 
 After completion:
 
@@ -51,12 +51,9 @@ pvisor fork last --checkpoint before-experiment -- codex
 pvisor apply last       # or: pvisor drop last
 ```
 
-The CLI checkpoint is stopped-consistent. Embedded hosts can call
-`RunHandle::checkpoint`: pVisor publishes an Agent ABI quiesce directive,
-requires every connected client to acknowledge the checkpoint with no open
-effects, snapshots the raw upper, then publishes `continue`. Logical
-checkpoints preserve filesystem and Agent/effect boundaries, not process
-memory.
+The CLI checkpoint is stopped-consistent: pVisor copies the raw upper only
+after the Run is no longer live. Logical checkpoints preserve filesystem
+changes, not process memory or application-level state.
 
 持久环境拥有稳定名称和可复用 OverlayFS upper：
 
@@ -159,7 +156,7 @@ matching static `linux-amd64`/`linux-arm64` pVisor, mounts it into the image,
 overrides the entrypoint, and invokes the normal
 `pvisor run --executor host --run-spec ...` path. The Agent command is carried
 inside the RunSpec rather than exposed in Docker/Podman argv. The injected
-pVisor creates its own Agent ABI and returns a typed RunResult. The final
+pVisor returns a typed RunResult. The final
 OverlayFS cwd and session Gateway configuration are mounted at stable paths.
 User mounts are repeatable TOML inline tables, for example:
 
@@ -184,8 +181,8 @@ capability enforcement.
 host `/` is the immutable lower layer of a pVisor OverlayFS; its merged mount is
 the guest root over virtio-fs, while all writes remain in the Run upper layer.
 The guest command uses the host effective UID/GID and supplementary groups.
-OverlayNet and Agent ABI endpoints cross the boundary through explicit vsock
-relays. KVM requires Linux, `/dev/kvm`, `libkrun`, `libkrunfw`, and
+OverlayNet crosses the boundary through an explicit vsock relay. KVM requires
+Linux, `/dev/kvm`, `libkrun`, `libkrunfw`, and
 `libkrun_init`; `--kvm-library-dir` selects a non-system library directory.
 Full-root changesets can be inspected, checkpointed, forked, or dropped, but
 cannot be applied to host `/`.

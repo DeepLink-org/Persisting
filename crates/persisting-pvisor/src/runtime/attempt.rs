@@ -39,12 +39,6 @@ pub struct AttemptSession {
 }
 
 impl AttemptSession {
-    pub(crate) fn checkpoint_record(&self) -> Option<RunRecord> {
-        self.overlay_record
-            .as_ref()
-            .map(|_| self.run_record.clone())
-    }
-
     pub(crate) fn teardown(mut self, exit_code: Option<i32>) -> AttemptTeardown {
         let mut errors = Vec::new();
         let duration_ms = self.started_at.elapsed().as_millis() as u64;

@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 #[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
@@ -27,8 +27,6 @@ const GUEST_SPEC_ENV: &str = "PERSISTING_KRUN_GUEST_SPEC";
 const GUEST_INTERNAL_ARG: &str = "__pvisor-krun-guest";
 #[cfg(target_os = "linux")]
 const ROOT_TAG: &str = "/dev/root";
-const AGENT_ABI_GUEST_PATH: &str = "/tmp/persisting-agent-abi.sock";
-const AGENT_ABI_VSOCK_PORT_OFFSET: u32 = 1;
 #[cfg(target_os = "linux")]
 const VMADDR_CID_HOST: u32 = 2;
 
@@ -70,18 +68,11 @@ struct GuestSpec {
     gid: u32,
     additional_gids: Vec<u32>,
     proxy: Option<TcpVsockBridge>,
-    agent_abi: Option<UnixVsockBridge>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct TcpVsockBridge {
     listen: SocketAddr,
-    port: u32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct UnixVsockBridge {
-    listen: PathBuf,
     port: u32,
 }
 
@@ -91,10 +82,8 @@ impl KvmExecutor {
         anyhow::ensure!(settings.cpus > 0, "kvm.cpus must be positive");
         anyhow::ensure!(settings.cpus <= 8, "libkrunfw supports at most 8 vCPUs");
         anyhow::ensure!(
-            settings.proxy_vsock_port > 1024
-                && settings.proxy_vsock_port < u32::MAX - AGENT_ABI_VSOCK_PORT_OFFSET,
-            "kvm.proxy_vsock_port must be between 1025 and {}",
-            u32::MAX - AGENT_ABI_VSOCK_PORT_OFFSET
+            settings.proxy_vsock_port > 1024,
+            "kvm.proxy_vsock_port must be greater than 1024"
         );
         if let Some(directory) = &settings.library_dir {
             anyhow::ensure!(
@@ -119,7 +108,7 @@ impl RunExecutor for KvmExecutor {
             kind: ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
             enforces_capabilities: false,
-            supports_checkpoint: true,
+            supports_checkpoint: false,
             supports_migration: false,
         }
     }
@@ -211,23 +200,6 @@ impl RunExecutor for KvmExecutor {
             }
             None => None,
         };
-        let agent_abi = env
-            .get(crate::AGENT_ABI_ENDPOINT_ENV)
-            .map(PathBuf::from)
-            .filter(|path| path.exists())
-            .map(|host_socket| {
-                let port = self.settings.proxy_vsock_port + AGENT_ABI_VSOCK_PORT_OFFSET;
-                mappings.push(VsockMapping { port, host_socket });
-                env.insert(
-                    crate::AGENT_ABI_ENDPOINT_ENV.into(),
-                    AGENT_ABI_GUEST_PATH.into(),
-                );
-                UnixVsockBridge {
-                    listen: AGENT_ABI_GUEST_PATH.into(),
-                    port,
-                }
-            });
-
         let executable = match std::env::current_exe() {
             Ok(path) if path.is_absolute() => path,
             Ok(path) => {
@@ -266,7 +238,6 @@ impl RunExecutor for KvmExecutor {
             gid: unsafe { libc::getegid() },
             additional_gids: supplementary_groups(),
             proxy,
-            agent_abi,
         };
         let runner = RunnerSpec {
             root,
@@ -551,9 +522,6 @@ fn run_guest(spec: GuestSpec) -> anyhow::Result<i32> {
     if let Some(proxy) = spec.proxy {
         spawn_tcp_vsock_bridge(proxy)?;
     }
-    if let Some(agent_abi) = spec.agent_abi {
-        spawn_unix_vsock_bridge(agent_abi)?;
-    }
     let status = StdCommand::new(&spec.program)
         .args(&spec.args)
         .env_clear()
@@ -570,24 +538,6 @@ fn spawn_tcp_vsock_bridge(bridge: TcpVsockBridge) -> anyhow::Result<()> {
     let listener = TcpListener::bind(bridge.listen)?;
     std::thread::Builder::new()
         .name("pvisor-krun-proxy".into())
-        .spawn(move || {
-            for stream in listener.incoming().flatten() {
-                spawn_stream_bridge(stream, bridge.port);
-            }
-        })?;
-    Ok(())
-}
-
-fn spawn_unix_vsock_bridge(bridge: UnixVsockBridge) -> anyhow::Result<()> {
-    if bridge.listen.exists() {
-        std::fs::remove_file(&bridge.listen)?;
-    }
-    if let Some(parent) = bridge.listen.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let listener = UnixListener::bind(&bridge.listen)?;
-    std::thread::Builder::new()
-        .name("pvisor-krun-agent-abi".into())
         .spawn(move || {
             for stream in listener.incoming().flatten() {
                 spawn_stream_bridge(stream, bridge.port);
@@ -933,7 +883,6 @@ mod tests {
                 gid: 100,
                 additional_gids: vec![10, 20],
                 proxy: None,
-                agent_abi: None,
             },
             cpus: 2,
             memory_mib: 2048,

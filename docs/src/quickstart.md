@@ -44,8 +44,8 @@ On macOS, `--safe` installs a generated Seatbelt profile before Agent code
 starts. Filesystem writes are confined to the staged workspace, explicit
 read-write capabilities, and a Run-owned temporary directory; reads remain
 ambient for local toolchain compatibility. `--overlaynet-deny-all` also blocks
-IP and ambient host Unix sockets while retaining the Agent ABI and Run-local
-IPC. Profile compilation or installation failure stops the Run, and the Run
+IP and ambient host Unix sockets while retaining Run-local IPC. Profile
+compilation or installation failure stops the Run, and the Run
 Bundle reports read, write, and network enforcement separately.
 
 ```bash
