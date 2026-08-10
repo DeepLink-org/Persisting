@@ -2,6 +2,8 @@
 
 面向用户的入口是 `persisting execute` 和 `persisting env`；它们分别转发到组件命令
 `pvisor run` 和 `pvisor env`。直接使用 `pvisor` 适合组件部署与调试。
+Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
+[使用 pVisor 运行工作负载](../guide/pvisor-execution.md)。
 
 ```text
 pvisor
@@ -187,6 +189,15 @@ and layer digests are verified, the host architecture selects `linux/arm64` or
 pVisor OverlayFS. `--image-store` overrides the platform cache directory.
 OCI cache targets are marked immutable, and this protection survives logical
 checkpoint/fork, so `pvisor apply` cannot mutate a rootfs shared by other Runs.
+
+On Linux, `--host-rootfs` selects the host `/` as the VM rootfs lower and
+selects the VM executor when `--executor` is omitted. It is mutually exclusive
+with `--image` and `--vm-rootfs`, and is rejected on macOS. This is a distinct
+semantic option rather than a CLI alias: `--overlayfs-base` and
+`--overlayfs-target` continue to select the project workspace independently.
+With a guest workspace target, writes outside that workspace use a temporary
+root upper and are discarded when the VM exits; workspace changes use the
+durable OverlayFS stage.
 
 The merged rootfs is guest `/`, and `/workspace` becomes the guest cwd. On both
 Linux and macOS, a vendored libkrun serves pVisor's rootfs and workspace

@@ -70,9 +70,9 @@ pub struct OverlayFs {
     core: OverlayCore,
     roots: Vec<PathBuf>,
     layers: Vec<PassthroughFs>,
+    inode_alloc: Arc<InodeAllocator>,
     nodes: Mutex<Nodes>,
     handles: Mutex<HashMap<u64, Handle>>,
-    next_inode: AtomicU64,
     next_handle: AtomicU64,
 }
 
@@ -112,9 +112,9 @@ impl OverlayFs {
             core,
             roots,
             layers,
+            inode_alloc,
             nodes: Mutex::new(nodes),
             handles: Mutex::new(HashMap::new()),
-            next_inode: AtomicU64::new(fuse::ROOT_ID + 1),
             next_handle: AtomicU64::new(1),
         })
     }
@@ -138,7 +138,7 @@ impl OverlayFs {
         if let Some(inode) = nodes.by_path.get(&path) {
             return *inode;
         }
-        let inode = self.next_inode.fetch_add(1, Ordering::Relaxed);
+        let inode = self.inode_alloc.next();
         nodes.by_path.insert(path.clone(), inode);
         nodes.by_inode.insert(inode, path);
         inode
@@ -436,7 +436,7 @@ impl FileSystem for OverlayFs {
         if flags == RENAME_EXCHANGE {
             let marker = PathBuf::from(format!(
                 ".pvisor-exchange-{}",
-                self.next_inode.load(Ordering::Relaxed)
+                self.inode_alloc.next()
             ));
             self.remap_path(&old, &marker);
             self.remap_path(&new, &old);
@@ -843,5 +843,44 @@ mod tests {
         .unwrap();
         assert!(upper.join("created").is_file());
         assert!(!lower.join("created").exists());
+    }
+
+    #[test]
+    fn shares_inode_allocator_with_virtual_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        std::fs::create_dir_all(&lower).unwrap();
+        std::fs::write(lower.join("real"), b"data").unwrap();
+        let inode_alloc = Arc::new(InodeAllocator::new());
+        let fs = OverlayFs::new(
+            Config {
+                lower_dirs: vec![lower.to_string_lossy().into_owned()],
+                upper_dir: upper.to_string_lossy().into_owned(),
+                work_dir: None,
+                excluded_paths: Vec::new(),
+                semantics: passthrough::PermissionSemantics::LinuxComplete,
+            },
+            inode_alloc.clone(),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+
+        // AugmentFs registers /init.krun after constructing its inner
+        // filesystem. Simulate that allocation and verify the first real
+        // lookup cannot reuse the virtual inode number.
+        let virtual_inode = inode_alloc.next();
+        let entry = fs
+            .lookup(
+                Context {
+                    uid: 0,
+                    gid: 0,
+                    pid: 1,
+                },
+                fuse::ROOT_ID,
+                c"real",
+            )
+            .unwrap();
+        assert_ne!(entry.inode, virtual_inode);
     }
 }

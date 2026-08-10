@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Use the pVisor binary built from this checkout.
-export PATH="../../../target/release:$PATH"
+# Use the pVisor binary built from this checkout, even after the example enters
+# its isolated base directory below.
+example_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$example_dir/../../.." && pwd)"
+export PATH="$repo_root/target/release:$PATH"
 
 # Create the host directory shared by the apply and drop examples.
 rm -rf .work

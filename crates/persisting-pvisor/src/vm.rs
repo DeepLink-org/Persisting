@@ -295,7 +295,6 @@ impl RunExecutor for VmExecutor {
         } else {
             root_overlay
         };
-        let mut mount_helper_guest = None;
         if let Some(workspace) = &workspace {
             if workspace.lowers.is_empty()
                 || workspace.lowers.iter().any(|lower| !lower.is_dir())
@@ -357,17 +356,6 @@ impl RunExecutor for VmExecutor {
                     );
                 }
             }
-            let helper_name = format!(".pvisor-mount-{}.sh", uuid::Uuid::new_v4().simple());
-            let helper_host = root_upper.join(&helper_name);
-            if let Err(error) = write_guest_helper(&helper_host) {
-                return failed_to_start(
-                    &spec,
-                    context.attempt_id(),
-                    started_at,
-                    format!("create guest overlay helper: {error:#}"),
-                );
-            }
-            mount_helper_guest = Some(Path::new("/").join(helper_name));
         }
         let guest = GuestSpec {
             program: invocation.program.clone(),
@@ -375,11 +363,56 @@ impl RunExecutor for VmExecutor {
             env,
             cwd: guest_cwd,
         };
+        let mount_helper_guest = if workspace_target.is_some() {
+            let source = match guest_mount_program(&root) {
+                Some(path) => path,
+                None => {
+                    return failed_to_start(
+                        &spec,
+                        context.attempt_id(),
+                        started_at,
+                        format!(
+                            "libkrun guest rootfs does not contain mount: {}",
+                            root.display()
+                        ),
+                    );
+                }
+            };
+            let name = format!(".pvisor-mount-{}", uuid::Uuid::new_v4().simple());
+            let host = root_overlay.upper.join(&name);
+            if let Err(error) = copy_guest_mount_program(&source, &host) {
+                return failed_to_start(
+                    &spec,
+                    context.attempt_id(),
+                    started_at,
+                    format!("prepare guest mount helper: {error:#}"),
+                );
+            }
+            Some(Path::new("/").join(name))
+        } else {
+            None
+        };
+        let helper_name = format!(".pvisor-exec-{}.sh", uuid::Uuid::new_v4().simple());
+        let helper_host = root_overlay.upper.join(&helper_name);
+        if let Err(error) = write_guest_helper(
+            &helper_host,
+            workspace_target.as_deref(),
+            mount_helper_guest.as_deref(),
+            &guest,
+        ) {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                format!("create guest execution helper: {error:#}"),
+            );
+        }
+        let helper_guest = Path::new("/").join(helper_name);
         let runner = RunnerSpec {
             root: root_overlay,
             workspace,
             workspace_target: workspace_target.clone(),
-            mount_helper: mount_helper_guest.clone(),
+            mount_helper: Some(helper_guest),
             guest,
             cpus: self.settings.cpus as u8,
             memory_mib: self.settings.memory_mib,
@@ -397,6 +430,13 @@ impl RunExecutor for VmExecutor {
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
             .kill_on_drop(true);
+        // libkrun's x86_64 KVM path can otherwise race guest workqueue
+        // creation and halt before init runs. The upstream compatibility
+        // switch is still required on the Fedora 43 / Linux 6.17 host used by
+        // pVisor's Linux validation, not only the older kernels named in the
+        // vendored libkrun comment.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        command.env("KRUN_ENOMEM_WORKAROUND", "1");
         if let Some(directory) = &self.settings.library_dir {
             #[cfg(target_os = "linux")]
             command.env("LD_LIBRARY_PATH", directory);
@@ -547,37 +587,19 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
         check_krun(krun::krun_set_log_level(5), "krun_set_log_level")?;
     }
     let workspace_tag = CString::new(WORKSPACE_TAG)?;
-    let (program, workdir, argv) = if let Some(helper) = &spec.mount_helper {
-        let target = spec
-            .workspace_target
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("libkrun mount helper is missing its guest target"))?;
-        let mut argv = Vec::with_capacity(spec.guest.args.len() + 2);
-        argv.push(path_cstring(target)?);
-        argv.push(CString::new(spec.guest.program.as_str())?);
-        for argument in &spec.guest.args {
-            argv.push(CString::new(argument.as_str())?);
-        }
-        (path_cstring(helper)?, CString::new("/")?, argv)
-    } else {
-        let mut argv = Vec::with_capacity(spec.guest.args.len());
-        for argument in &spec.guest.args {
-            argv.push(CString::new(argument.as_str())?);
-        }
-        (
-            CString::new(spec.guest.program.as_str())?,
-            path_cstring(&spec.guest.cwd)?,
-            argv,
-        )
-    };
+    let helper = spec
+        .mount_helper
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("libkrun guest execution helper is missing"))?;
+    let program = path_cstring(helper)?;
+    let workdir = CString::new("/")?;
+    // libkrun 1.19 serializes argv and env through the kernel command line
+    // without escaping embedded quotes. The helper contains the exact
+    // invocation instead, so only its quote-free path crosses that boundary.
+    let argv = Vec::<CString>::new();
     let mut argv_ptrs = argv.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
     argv_ptrs.push(std::ptr::null());
-    let env = spec
-        .guest
-        .env
-        .iter()
-        .map(|(key, value)| CString::new(format!("{key}={value}")))
-        .collect::<Result<Vec<_>, _>>()?;
+    let env = Vec::<CString>::new();
     let mut env_ptrs = env.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
     env_ptrs.push(std::ptr::null());
 
@@ -666,22 +688,72 @@ fn add_krun_overlay(
     )
 }
 
-fn write_guest_helper(path: &Path) -> anyhow::Result<()> {
+fn write_guest_helper(
+    path: &Path,
+    workspace_target: Option<&Path>,
+    mount_helper: Option<&Path>,
+    guest: &GuestSpec,
+) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    let script = concat!(
-        "#!/bin/sh\n",
-        "set -eu\n",
-        "target=$1\n",
-        "shift\n",
-        "mount -t virtiofs pvisor-workspace \"$target\"\n",
-        "rm -f /init.krun \"$0\"\n",
-        "cd \"$target\"\n",
-        "exec \"$@\"\n"
-    );
+    let mut script = String::from("#!/bin/sh\nset -eu\n");
+    if let Some(target) = workspace_target {
+        let mount_helper =
+            mount_helper.ok_or_else(|| anyhow::anyhow!("workspace mount helper is missing"))?;
+        script.push_str(&shell_quote(&mount_helper.to_string_lossy())?);
+        script.push_str(" -t virtiofs pvisor-workspace ");
+        script.push_str(&shell_quote(&target.to_string_lossy())?);
+        script.push('\n');
+    }
+    script.push_str("rm -f /init.krun \"$0\"");
+    if let Some(mount_helper) = mount_helper {
+        script.push(' ');
+        script.push_str(&shell_quote(&mount_helper.to_string_lossy())?);
+    }
+    script.push_str("\ncd ");
+    script.push_str(&shell_quote(&guest.cwd.to_string_lossy())?);
+    script.push_str("\nexec env -i");
+    for (key, value) in &guest.env {
+        script.push(' ');
+        script.push_str(&shell_quote(&format!("{key}={value}"))?);
+    }
+    script.push(' ');
+    script.push_str(&shell_quote(&guest.program)?);
+    for argument in &guest.args {
+        script.push(' ');
+        script.push_str(&shell_quote(argument)?);
+    }
+    script.push('\n');
     std::fs::write(path, script)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
     Ok(())
+}
+
+fn guest_mount_program(root: &Path) -> Option<PathBuf> {
+    ["bin/mount", "usr/bin/mount", "sbin/mount", "usr/sbin/mount"]
+        .into_iter()
+        .map(|relative| root.join(relative))
+        .find(|path| path.is_file())
+}
+
+fn copy_guest_mount_program(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::copy(source, destination)?;
+    // Host distributions commonly install mount setuid-root. The rootless
+    // passthrough cannot preserve its owner, so executing that file would
+    // switch guest root to the mapped host uid. A private non-setuid copy
+    // keeps the already-root guest credentials and can perform the mount.
+    std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+fn shell_quote(value: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        !value.as_bytes().contains(&0),
+        "guest command and environment cannot contain NUL bytes"
+    );
+    Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
 }
 
 fn stdio(mode: StdioMode) -> Stdio {
@@ -826,5 +898,49 @@ mod tests {
             ..settings
         })
         .is_err());
+    }
+
+    #[test]
+    fn guest_helper_preserves_quoted_arguments_and_environment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let helper = temporary.path().join("guest-helper.sh");
+        let environment_value = "space ' single \" double\nnewline";
+        let argument_value = "argument ' with \" quotes";
+        let guest = GuestSpec {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf '%s\\n%s' \"$COMPLEX\" \"$0\" > result".into(),
+                argument_value.into(),
+            ],
+            env: BTreeMap::from([("COMPLEX".into(), environment_value.into())]),
+            cwd: temporary.path().to_path_buf(),
+        };
+        write_guest_helper(&helper, None, None, &guest).unwrap();
+
+        let status = std::process::Command::new(&helper).status().unwrap();
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string(temporary.path().join("result")).unwrap(),
+            format!("{environment_value}\n{argument_value}")
+        );
+    }
+
+    #[test]
+    fn guest_mount_copy_strips_privilege_bits() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("mount");
+        let destination = temporary.path().join("mount-helper");
+        std::fs::write(&source, b"mount").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o4755)).unwrap();
+
+        copy_guest_mount_program(&source, &destination).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(destination).unwrap().mode() & 0o7777,
+            0o700
+        );
     }
 }

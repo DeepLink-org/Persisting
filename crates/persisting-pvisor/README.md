@@ -228,6 +228,24 @@ registry, without Docker, Podman, or Buildah, and cache its verified layers as
 an immutable rootfs. The default image is `ubuntu:latest` when neither
 `vm.rootfs` nor `--vm-rootfs` is supplied.
 
+Linux can instead reuse the host userland while changing kernels:
+
+```bash
+pvisor run \
+  --executor vm \
+  --host-rootfs \
+  --overlayfs-base /home/reiase/workspace \
+  --overlayfs-target /home/workspace \
+  --overlayfs-stage /tmp/pvisor-host-rootfs-stage \
+  --overlayfs-commit manual \
+  -- /bin/bash
+```
+
+`--host-rootfs` is Linux-only and mutually exclusive with `--image` and
+`--vm-rootfs`. It serves host `/` as the guest rootfs lower through virtio-fs;
+rootfs writes use a temporary upper, while the separately targeted workspace
+uses the durable stage.
+
 ```bash
 pvisor run \
   --image ubuntu:latest \
@@ -273,6 +291,10 @@ libkrun's embedded Linux guest init. After a local `cargo build`, sign the
 development binary before using HVF:
 
 ```bash
+just pvisor          # release build + macOS signing
+just pvisor debug    # debug build + macOS signing
+
+# Equivalent manual signing:
 codesign --force --sign - \
   --entitlements crates/persisting-pvisor/macos-hypervisor.entitlements \
   target/debug/pvisor
@@ -414,6 +436,7 @@ timestamps and xattrs, and processes opaque markers before staged children.
 - `pvisor run --safe <agent> [ARGS...]`
 - `pvisor run --executor container --container-image IMAGE --container-pvisor-binary BIN -- <agent>`
 - `pvisor run --image IMAGE [--image-store DIR] -- <agent>`
+- `pvisor run --host-rootfs [--overlayfs-target GUEST_PATH] -- <agent>` (Linux only)
 - `pvisor run --executor vm [--vm-rootfs DIR] [--vm-library-dir DIR] -- <agent>`
 - `pvisor run --overlayfs-base DIR [DRIVER OPTIONS] -- <agent>`
 - `pvisor run --config run.toml [OVERRIDES] [-- <agent>]`

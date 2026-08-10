@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export PATH="../../../target/release:$PATH"
+example_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$example_dir/../../.." && pwd)"
+export PATH="$repo_root/target/release:$PATH"
 
 work_dir="${WORK_ROOT:-.work}/network-isolation"
 server_port=19111

@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # Use the pVisor binary built from this checkout.
-export PATH="../../../target/release:$PATH"
+example_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$example_dir/../../.." && pwd)"
+export PATH="$repo_root/target/release:$PATH"
 
 # Start a local OpenAI-compatible endpoint for the example agent.
 rm -rf .work
