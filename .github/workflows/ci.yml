@@ -66,6 +66,11 @@ jobs:
           cargo build -p persisting-ppilot --features cli --bin ppilot --locked
 
       - name: Test
+        # GitHub-hosted Linux runners may disable unprivileged user namespaces.
+        # The rootless integration tests only skip for that exact EPERM setup
+        # failure; all other sandbox failures remain test failures.
+        env:
+          PERSISTING_TEST_ALLOW_NO_USERNS: "1"
         run: cargo test --workspace --locked
 
       - name: Test pPilot CLI feature
