@@ -46,10 +46,9 @@ pub use checkpoint::{
 };
 pub use config::{
     ChronicleMode, ChronicleSettings, ContainerMount, ContainerNetwork, ContainerPlatform,
-    ContainerSettings, GatewayDriverConfig, GatewayMode, GatewaySettings, KvmArchitecture,
-    KvmImageFormat, KvmSettings, OverlayFsBackend, OverlayFsCommit, OverlayFsSettings,
-    OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig, RunConfig, RunExecutorKind,
-    RunPolicy, RunSettings, RunStdio,
+    ContainerSettings, GatewayDriverConfig, GatewayMode, GatewaySettings, KvmSettings,
+    OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
+    OverlayNetSettings, PVisorConfig, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
 };
 pub use container::ContainerExecutor;
 pub use control::{
@@ -61,6 +60,7 @@ pub use event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
 };
 pub use executor::{AttemptContext, RunExecutor};
+pub use kvm::run_internal_if_requested as run_krun_internal_if_requested;
 pub use kvm::KvmExecutor;
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;

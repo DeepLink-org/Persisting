@@ -189,6 +189,7 @@ fn create(args: CreateArgs) -> Result<i32> {
         },
         merged_dir: stage.join("merged"),
         stage_dir: stage.clone(),
+        excluded_paths: Vec::new(),
         auto_apply: false,
         auto_discard: false,
         state: OverlayState::Staged,

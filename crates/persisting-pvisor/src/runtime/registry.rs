@@ -655,6 +655,7 @@ mod tests {
                 },
                 merged_dir: stage.join("merged"),
                 stage_dir: stage.to_path_buf(),
+                excluded_paths: Vec::new(),
                 auto_apply: false,
                 auto_discard: false,
                 state: super::super::overlay::OverlayState::Staged,

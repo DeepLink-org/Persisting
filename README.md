@@ -116,7 +116,7 @@ applies Landlock to the complete Agent process tree, drops capabilities, and
 fails closed when that boundary cannot be installed. `--overlaynet-deny-all`
 also places the process in a private network namespace; allowlist/public proxy
 modes remain cooperative. macOS keeps the
-review-only host path and labels it accordingly. Docker/Podman and QEMU/KVM
+review-only host path and labels it accordingly. Docker/Podman and libkrun/KVM
 remain stronger placement options, and the Run Bundle records the effective
 boundary rather than inferring it from the requested mode.
 
@@ -190,7 +190,7 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 | **pPilot orchestration** | ✅ Implemented | `plan()` + `execute()` with lease fencing and durable recovery (Phase-1) |
 | **pChronicle history** | ✅ Implemented | Canonical events, Storyline/ATIF views, local + S3, read-only SQL |
 | **Gateway capture** | ✅ Implemented | LLM/Agent HTTP capture as Lance + Markdown trajectories |
-| **Container / KVM executors** | 🧪 Nightly runtimes | Inject a static pVisor into Docker/Podman or QEMU/KVM |
+| **Container / KVM executors** | 🧪 Nightly runtimes | Docker/Podman delegation or a libkrun guest rooted at pVisor OverlayFS |
 | **Streaming Queue** | ✅ Stable | Lance-backed append/consume, KV API, samplers |
 | **Agent Search** | ✅ Stable | Document indexing, IVF-PQ, hybrid search |
 | **Tensor Memory (TTAS)** | 🧪 Experimental | Multi-dim tensor subscript, tiered backends |

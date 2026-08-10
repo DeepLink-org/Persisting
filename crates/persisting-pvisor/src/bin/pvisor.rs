@@ -1,4 +1,7 @@
 fn main() -> anyhow::Result<()> {
+    if persisting_pvisor::run_krun_internal_if_requested()? {
+        return Ok(());
+    }
     match persisting_pvisor::sandbox::run_internal_if_requested() {
         Ok(true) => return Ok(()),
         Ok(false) => {}

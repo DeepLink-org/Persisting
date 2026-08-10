@@ -85,7 +85,21 @@ impl OverlayFs {
         upper: PathBuf,
         work: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        let core = OverlayCore::new(lowers, upper, work)?;
+        Self::from_core(OverlayCore::new(lowers, upper, work)?)
+    }
+
+    pub fn new_with_exclusions(
+        lowers: Vec<PathBuf>,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        Self::from_core(OverlayCore::new_with_exclusions(
+            lowers, upper, work, excluded,
+        )?)
+    }
+
+    fn from_core(core: OverlayCore) -> anyhow::Result<Self> {
         let mut root_paths = BTreeSet::new();
         root_paths.insert(PathBuf::new());
         let mut nodes = HashMap::new();

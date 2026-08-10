@@ -110,7 +110,7 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
                 "OCI container with injected pVisor"
             }
             Some(persisting_control::IsolationKind::VirtualMachine) => {
-                "KVM virtual machine with injected pVisor"
+                "libkrun/KVM guest over the pVisor root OverlayFS"
             }
             _ => "host process (not a host-isolation boundary)",
         }

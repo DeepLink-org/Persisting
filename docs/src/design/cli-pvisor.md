@@ -180,12 +180,15 @@ loopback endpoints. Bridge and no-network modes are valid when these drivers
 are off. The executor records container isolation but does not claim full
 capability enforcement.
 
-`--executor kvm` uses the same delegation protocol through QEMU/KVM. It boots
-a qcow2/raw Linux guest, forwards SSH over loopback, copies the static pVisor
-and RunSpec, shares a host cwd through QEMU 9p, and retrieves the RunResult
-before destroying the VM. The guest must have SSH enabled and accept the
-configured key. KVM requires a Linux host; host Gateway/OverlayNet endpoints
-are rejected until a guest-visible transport is available.
+`--executor kvm` uses libkrun and libkrunfw to boot a minimal Linux guest. The
+host `/` is the immutable lower layer of a pVisor OverlayFS; its merged mount is
+the guest root over virtio-fs, while all writes remain in the Run upper layer.
+The guest command uses the host effective UID/GID and supplementary groups.
+OverlayNet and Agent ABI endpoints cross the boundary through explicit vsock
+relays. KVM requires Linux, `/dev/kvm`, `libkrun`, `libkrunfw`, and
+`libkrun_init`; `--kvm-library-dir` selects a non-system library directory.
+Full-root changesets can be inspected, checkpointed, forked, or dropped, but
+cannot be applied to host `/`.
 
 The four visible OverlayNet policy flags and Gateway capture automatically enable the
 proxy driver. Any `--overlayfs-base`, `--overlayfs-compose`,

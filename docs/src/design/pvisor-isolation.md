@@ -5,8 +5,10 @@
 > described in section 2. macOS `--safe` implements Seatbelt-enforced staged
 > writes and deny-all socket confinement; filesystem reads remain ambient and
 > are reported separately.
-> Docker and QEMU/KVM transports also exist. Seccomp/resource enforcement,
-> LiteBox VFS, and Firecracker remain roadmap work unless stated otherwise.
+> Docker and libkrun/KVM transports also exist. A Virtualization.framework
+> backend for transparent macOS executable isolation is a researched design,
+> not an implemented backend. Seccomp/resource enforcement, LiteBox VFS, and
+> Firecracker remain roadmap work unless stated otherwise.
 
 pVisor needs more than one isolation backend. A local coding Agent values fast
 startup and an exact view of the developer's workspace; an untrusted tenant
@@ -186,8 +188,8 @@ post-fork closure of the multithreaded supervisor.
 - No host root or persistent privileged daemon is required.
 - Startup and steady-state overhead are small; file contents still use the
   existing FUSE/OverlayFS path.
-- Workspace fidelity remains the best of the four paths, including current
-  review, checkpoint, apply, and drop behavior.
+- Workspace fidelity remains the best of the native host paths, including
+  current review, checkpoint, apply, and drop behavior.
 - A child can no longer escape merely by using `..` or an absolute host path.
 
 **Limits**
@@ -245,6 +247,182 @@ resource accounting remain shared. The `sandbox-exec` interface is deprecated
 by Apple even though it remains shipped, so pVisor probes the fixed binary and
 fails closed instead of promising indefinite platform availability. macFUSE is
 still required for transactional staging until an FSKit backend is available.
+
+### 2.5 macOS: Virtualization.framework + host-root overlay
+
+This is the proposed macOS kernel-isolation path for native Mach-O workloads.
+It is the macOS analogue of the implemented Linux libkrun full-root executor,
+but it cannot use libkrun: a macOS guest must be booted by Apple's
+Virtualization.framework on Apple Silicon. The objective is that an executable
+sees the invoking host's root filesystem, with all writes captured by the
+pVisor upper layer, while executing behind a separate macOS kernel boundary.
+
+The guest's boot disk is not the Agent's logical root. It contains only a
+compatible macOS installation and a privileged pVisor guest supervisor. The
+host constructs `host / + Run upper` through OverlayFS/macFUSE, exports the
+merged view with VirtioFS, and asks the guest supervisor to enter that view
+before executing the target:
+
+```text
+host pVisor (Rust)
+  +-- host / (lower, access still limited by the invoking host identity)
+  +-- per-Run upper
+  +-- merged pVisor root (macFUSE / future FSKit)
+  +-- MacVmExecutor
+          |
+          | private Unix socket / framed control protocol
+          v
+     pvisor-vz-helper (Swift, one helper process per active VM)
+       Virtualization.framework
+       +-- compatible macOS boot disk
+       +-- stable VirtioFS share tag -> merged pVisor root
+       +-- VZVirtioSocket control and Agent ABI transports
+                    |
+                    v
+          pvisor-guestd (root LaunchDaemon)
+            mount VirtioFS at a private path
+            chroot into the pVisor root
+            setgroups / setgid / setuid
+            set cwd, environment, limits, and stdio
+            execve host Mach-O
+```
+
+The Swift helper is deliberately outside the Rust supervisor. It owns only the
+Objective-C/Swift Virtualization.framework lifecycle and converts it into a
+small versioned protocol. The existing `RunExecutor` contract remains the
+product boundary, so selection, cancellation, evidence, review, checkpoint,
+apply, and drop keep the same semantics as other pVisor executors.
+
+#### GhostVM research
+
+[GhostVM](https://github.com/groundwater/GhostVM) is the closest examined
+reference implementation. At commit
+[`fe88d586`](https://github.com/groundwater/GhostVM/tree/fe88d5862f74ddb05ce79e04028b84c7f70482f6)
+it demonstrates the required control-plane primitives:
+
+- `VZMacOSBootLoader`, Mac platform identity, a macOS disk, headless display
+  configuration, VirtioFS, and a virtio socket are assembled in one
+  [configuration builder](https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVMKit/Configuration/VMConfigurationBuilder.swift);
+- one helper process owns an active VM and exposes a host Unix-socket API;
+- host requests cross `VZVirtioSocket` to a guest agent, which can execute
+  native macOS programs;
+- a running VirtioFS device can receive a rebuilt directory share through
+  [FolderShareService](https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVM/Services/FolderShareService.swift);
+- VM suspend/resume uses `saveMachineStateTo` and `restoreMachineStateFrom`;
+  APFS `clonefile()` creates copy-on-write VM clones in
+  [VMController](https://github.com/groundwater/GhostVM/blob/fe88d5862f74ddb05ce79e04028b84c7f70482f6/macOS/GhostVMKit/Operations/VMController.swift#L519).
+
+These are architectural references, not a filesystem-execution solution.
+GhostVM boots and executes against its private `disk.img`; VirtioFS directories
+remain shares mounted under the normal guest root. Its guest `exec` endpoint is
+a user LaunchAgent calling Swift `Process.run()` with buffered stdout and
+stderr. It does not chroot, reproduce credentials, stream stdio, forward
+signals, control a process group, or expose a pVisor changeset. The pVisor guest
+supervisor must therefore be an independently implemented root LaunchDaemon.
+
+The following split is intentional:
+
+| GhostVM mechanism | pVisor decision |
+|---|---|
+| VM configuration builder | reproduce the minimal headless subset in `pvisor-vz-helper` |
+| one helper process per VM | retain for VMM crash and lifecycle isolation |
+| host Unix socket plus vsock | retain the topology; use a bounded, versioned, streaming protocol |
+| runtime VirtioFS replacement | adapt to one stable pVisor-root tag |
+| VM suspend/resume | use to amortize boot, with strict template compatibility |
+| APFS VM clone | optionally use for creation of a clean boot template |
+| GhostTools command execution | replace with privileged `pvisor-guestd` |
+| NAT, bridge, clipboard, audio, GUI automation | omit from the default process-isolation VM |
+| private guest root as workload root | reject; the exported pVisor merged root is the workload root |
+
+GhostVM's README currently says its source-code license has not been
+determined. pVisor may study the public behavior and architecture but must not
+copy its implementation unless a compatible license is published. The helper
+and guest supervisor are clean independent implementations against Apple's
+public API.
+
+#### Filesystem and identity semantics
+
+"Use the host UID and permissions" means preservation of ordinary POSIX file
+semantics, not inheritance of every macOS security identity. The host pVisor
+opens and serves lower files under the invoking host identity; the guest
+supervisor then installs matching numeric UID, GID, and supplementary groups
+before `execve`. The implementation must prove how VirtioFS represents owner,
+mode, ACL, symlink, hard-link, xattr, device, and rename semantics rather than
+assuming numeric identity is sufficient.
+
+The following host facilities do not become transparent merely because the
+numeric UID matches:
+
+- TCC decisions, Keychain access groups, code-signing identity and entitlements;
+- the host login/GUI bootstrap session, launchd services, Mach ports, Apple
+  Events, and host Unix sockets;
+- host kernel state, devices, mounted volumes not visible through the exported
+  root, and credentials held only by host processes.
+
+Modern macOS also presents `/` through a sealed system volume, a writable data
+volume, and firmlinks. pVisor must verify that exporting the host root presents
+one coherent namespace and that whiteout/copy-up behavior remains correct
+across `/System/Volumes/Data`. Access to privacy-protected host files may
+require Full Disk Access for the trusted host component; pVisor must report
+that requirement rather than silently returning a partial root.
+
+Host and guest should initially require the same architecture and exact macOS
+build. A host executable can depend on the matching dyld shared cache,
+framework ABI, code-signing policy, and kernel behavior. Cross-build execution
+is unsupported until a compatibility matrix proves otherwise.
+
+#### Lifecycle and security profile
+
+Cold-installing macOS per Run is infeasible. The intended lifecycle is:
+
+1. provision and attest one minimal, matching macOS boot template;
+2. boot it once, install `pvisor-guestd`, and save a clean suspended state;
+3. restore a warm VM or acquire one from a small version-matched pool;
+4. attach only the Run's VirtioFS root and per-Run vsock endpoints;
+5. rotate Run identity, authentication material, entropy, IPC, and network
+   state before guest execution;
+6. execute exactly one untrusted process tree, export the upper through the
+   normal pVisor review path, then destroy or return a scrubbed VM to the pool.
+
+The default VM has no NAT or bridged network device. Network access crosses an
+explicit vsock relay owned by OverlayNet. Clipboard, host audio, GUI devices,
+arbitrary shared folders, port forwarding, and ambient host sockets are absent.
+The host VMM helper receives access only to the prepared merged root, VM
+template, its private control socket, and required Virtualization.framework
+resources; it must not inherit pChronicle, source credentials, or unrelated
+descriptors.
+
+VirtioFS is the largest feasibility risk. GhostVM has an open report of
+[empty mounts and unreadable files](https://github.com/groundwater/GhostVM/issues/255)
+under macOS guests. pVisor's design puts dyld, frameworks, SDKs, package
+managers, and metadata-heavy toolchains on that path, which is more demanding
+than sharing a project directory. VM startup success is therefore not evidence
+that the backend is usable or safe.
+
+#### Feasibility gate
+
+This backend remains experimental until one focused prototype passes all of
+the following on a supported host/guest build pair:
+
+1. export a pVisor merged root with a stable VirtioFS tag and mount it without
+   Finder or login-session automation;
+2. run `/usr/bin/true`, `/bin/zsh`, and representative `xcrun`/compiler tools
+   after `chroot`, with correct cwd, environment, UID, GID, groups, exit status,
+   streaming stdio, signals, cancellation, and descendant cleanup;
+3. prove lower files do not change and all creates, modifications, renames,
+   deletions, whiteouts, xattrs, ACLs, symlinks, and hard links enter the Run
+   upper and survive review/checkpoint/apply/drop;
+4. exercise dyld/framework loading, code signatures, the sealed-system/data
+   firmlink layout, large output, large files, many small files, concurrent
+   mutation, crash recovery, and warm-restore attachment changes;
+5. demonstrate that no network, clipboard, arbitrary share, stale vsock token,
+   prior-Run upper, or unrelated host descriptor is reachable;
+6. publish cold/warm latency and RSS and compare them with Seatbelt and Linux
+   libkrun Runs.
+
+Passing this gate establishes transparent CLI and development-tool execution.
+GUI applications and host-session services require separate evidence and are
+not implied by success of the process-level backend.
 
 ## 3. Path B: LiteBox + OverlayFS semantics in the VFS
 
@@ -418,10 +596,13 @@ separate guest kernel under KVM. Firecracker intentionally exposes a small
 device model and provides a jailer that adds host-side namespace/cgroup
 isolation and drops VMM privileges.
 
-The existing pVisor `kvm` executor uses QEMU, SSH, and a host workspace shared
-through 9p. It proves the delegated Run protocol, but it is not a Firecracker
-implementation. The target Firecracker data path should avoid a writable host
-filesystem share:
+The existing pVisor `kvm` executor uses libkrun with a pVisor full-root
+OverlayFS exported through virtio-fs. It preserves host credentials and makes
+the host root readable according to those credentials, while guest writes stay
+in a reviewable upper layer. The VMM is confined with user/mount/network
+namespaces and Landlock, and explicit vsock relays carry OverlayNet and Agent
+ABI traffic. This is not the hostile multi-tenant Firecracker design below;
+that path should avoid a writable host filesystem share:
 
 ```text
 host pVisor / microVM manager
@@ -481,18 +662,18 @@ present in the repository. Performance is deliberately relative until a common
 benchmark has measured cold/warm startup, RSS, syscall-heavy and data-heavy
 workloads, and teardown.
 
-| Dimension | FUSE + Landlock | FUSE + Seatbelt | LiteBox VFS | Docker/OCI | Firecracker |
-|---|---|---|---|---|---|
-| Primary goal | fastest Linux least privilege | zero-config macOS write confinement | dense libOS isolation | compatibility and deployment | hostile multi-tenant isolation |
-| Security boundary | synthetic root + host LSM/namespace policy | Seatbelt write/socket policy on host process | libOS plus outer host policy | namespaces/cgroups/LSM, shared kernel | guest kernel + KVM + jailed VMM |
-| Host root required | no | no | no | no in rootless mode | host provisioning normally required |
-| Guest compatibility | native Linux ABI | native macOS ABI; ambient reads | constrained Linux ABI | broad Linux userspace | full guest Linux |
-| Workspace fidelity | highest | highest with macFUSE | requires semantic adapter | high through mount/volume | explicit block/delta conversion |
-| Startup cost | lowest | lowest | low target | medium, image dependent | highest cold; warm snapshot target |
-| Per-Run memory | lowest | lowest | low target | medium | highest |
-| Kernel escape blast radius | host | host | host, after outer escape | host | guest first, then VMM/KVM boundary |
-| Portability | Linux | macOS; deprecated launcher dependency | platform/ABI dependent | broad OCI hosts | Linux + KVM |
-| Current pVisor status | implemented; seccomp/limits pending | write confinement and deny-all socket policy implemented | planned | implemented with hardening gaps | QEMU/KVM exists; Firecracker planned |
+| Dimension | FUSE + Landlock | FUSE + Seatbelt | macOS VM + VirtioFS | LiteBox VFS | Docker/OCI | Firecracker |
+|---|---|---|---|---|---|---|
+| Primary goal | fastest Linux least privilege | zero-config macOS write confinement | transparent Mach-O execution with a guest-kernel boundary | dense libOS isolation | compatibility and deployment | hostile multi-tenant isolation |
+| Security boundary | synthetic root + host LSM/namespace policy | Seatbelt write/socket policy on host process | macOS guest kernel + Virtualization.framework VMM | libOS plus outer host policy | namespaces/cgroups/LSM, shared kernel | guest kernel + KVM + jailed VMM |
+| Host root required | no | no | exported as a pVisor merged root | no | no in rootless mode | host provisioning normally required |
+| Guest compatibility | native Linux ABI | native macOS ABI; ambient reads | native Mach-O, initially exact host/guest build only | constrained Linux ABI | broad Linux userspace | full guest Linux |
+| Workspace fidelity | highest | highest with macFUSE | target is full-root fidelity; unproven over VirtioFS | requires semantic adapter | high through mount/volume | explicit block/delta conversion |
+| Startup cost | lowest | lowest | high cold; warm restore/pool target | low target | medium, image dependent | highest cold; warm snapshot target |
+| Per-Run memory | lowest | lowest | high | low target | medium | highest |
+| Kernel escape blast radius | host | host | guest first, then VMM boundary | host, after outer escape | host | guest first, then VMM/KVM boundary |
+| Portability | Linux | macOS; deprecated launcher dependency | Apple Silicon Mac with supported macOS virtualization | platform/ABI dependent | broad OCI hosts | Linux + KVM |
+| Current pVisor status | implemented; seccomp/limits pending | write confinement and deny-all socket policy implemented | researched design; feasibility prototype required | planned | implemented with hardening gaps | libkrun full-root mode exists; Firecracker planned |
 
 ### Recommended portfolio
 
@@ -511,12 +692,15 @@ The selection belongs to pVisor and the placement control plane:
 4. A fleet configured for hostile multi-tenant execution places the Run on a
    Firecracker worker. Kernel images, snapshots, networking, and jailer setup
    are operator-owned fleet infrastructure, not per-user configuration.
-5. macOS keeps the same command and automatically installs Seatbelt write
-   confinement. The Bundle reports ambient reads and cooperative selective
-   networking separately; a policy requiring complete capability enforcement
-   routes to an available VM/container placement or fails with one remediation.
+5. macOS keeps the same command and uses Seatbelt write confinement for the
+   implemented low-latency local path. After the feasibility gate passes,
+   policy requiring a guest-kernel boundary may select the
+   Virtualization.framework backend automatically. Until then, the Bundle
+   reports ambient reads and cooperative selective networking separately and a
+   stricter request routes to another capable placement or fails with one
+   remediation.
 
-The four paths are a portfolio, not a mandatory migration ladder. A customer
+These paths are a portfolio, not a mandatory migration ladder. A customer
 states workload intent and, where necessary, a minimum security requirement;
 placement chooses only a backend whose measured capabilities satisfy it. The
 customer does not select kernel mechanisms.
@@ -615,6 +799,10 @@ repeatable measurements and pass that matrix on every supported host/kernel.
 
 ## References
 
+- [Apple: Running macOS in a virtual machine on Apple silicon](https://developer.apple.com/documentation/virtualization/running-macos-in-a-virtual-machine-on-apple-silicon)
+- [Apple: VZVirtioFileSystemDeviceConfiguration](https://developer.apple.com/documentation/virtualization/vzvirtiofilesystemdeviceconfiguration)
+- [GhostVM](https://github.com/groundwater/GhostVM)
+- [GhostVM VirtioFS instability report](https://github.com/groundwater/GhostVM/issues/255)
 - [Linux Landlock userspace API](https://docs.kernel.org/userspace-api/landlock.html)
 - [Docker rootless mode](https://docs.docker.com/engine/security/rootless/)
 - [Docker default seccomp profile](https://docs.docker.com/engine/security/seccomp/)

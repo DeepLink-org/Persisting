@@ -47,6 +47,10 @@ pub struct OverlayMountConfig {
     /// macFUSE backend (`kernel` or `fskit`). Ignored on non-macOS hosts.
     pub backend: Option<String>,
     pub debug: bool,
+    /// Paths relative to the overlay root that are absent from the mounted
+    /// namespace. Exclusions apply to every lower and the writable upper and
+    /// cannot be recreated from inside the mount.
+    pub excluded_paths: Vec<PathBuf>,
 }
 
 impl OverlayMountConfig {
@@ -70,6 +74,7 @@ impl OverlayMountConfig {
             fsname: "persisting-overlayfs".into(),
             backend: None,
             debug: false,
+            excluded_paths: Vec::new(),
         }
     }
 
@@ -249,19 +254,33 @@ fn prepare(
         bail!("macFUSE FSKit mountpoints must be under /Volumes");
     }
 
+    let hidden_from_lower = |lower: &Path, candidate: &Path| {
+        candidate.strip_prefix(lower).is_ok_and(|relative| {
+            !relative.as_os_str().is_empty()
+                && config
+                    .excluded_paths
+                    .iter()
+                    .any(|hidden| relative == hidden || relative.starts_with(hidden))
+        })
+    };
     for lower in &config.lower_dirs {
         if !lower.is_dir() {
             bail!("lowerdir is not a directory: {}", lower.display());
         }
         let upper_overlaps = match &config.upper {
             UpperBackend::Directory { upper_dir, .. } => {
-                upper_dir.starts_with(lower) || lower.starts_with(upper_dir)
+                (upper_dir.starts_with(lower) && !hidden_from_lower(lower, upper_dir))
+                    || lower.starts_with(upper_dir)
             }
             UpperBackend::Jujutsu { store_path, .. } => {
-                store_path.starts_with(lower) || lower.starts_with(store_path)
+                (store_path.starts_with(lower) && !hidden_from_lower(lower, store_path))
+                    || lower.starts_with(store_path)
             }
         };
-        if upper_overlaps || mountpoint.starts_with(lower) || lower.starts_with(&mountpoint) {
+        let mount_overlaps = (mountpoint.starts_with(lower)
+            && !hidden_from_lower(lower, &mountpoint))
+            || lower.starts_with(&mountpoint);
+        if upper_overlaps || mount_overlaps {
             bail!(
                 "lowerdir must not overlap upperdir or mountpoint: {}",
                 lower.display()
@@ -289,10 +308,10 @@ fn prepare(
             }
             if mountpoint.starts_with(work)
                 || work.starts_with(&mountpoint)
-                || config
-                    .lower_dirs
-                    .iter()
-                    .any(|lower| work.starts_with(lower) || lower.starts_with(work))
+                || config.lower_dirs.iter().any(|lower| {
+                    (work.starts_with(lower) && !hidden_from_lower(lower, work))
+                        || lower.starts_with(work)
+                })
             {
                 bail!("workdir must not overlap lowerdir or mountpoint");
             }
@@ -304,14 +323,34 @@ fn prepare(
         UpperBackend::Directory {
             upper_dir,
             work_dir,
-        } => OverlayFs::new(config.lower_dirs, upper_dir, work_dir)?,
+        } => {
+            if config.excluded_paths.is_empty() {
+                OverlayFs::new(config.lower_dirs, upper_dir, work_dir)?
+            } else {
+                OverlayFs::new_with_exclusions(
+                    config.lower_dirs,
+                    upper_dir,
+                    work_dir,
+                    config.excluded_paths,
+                )?
+            }
+        }
         UpperBackend::Jujutsu {
             store_path,
             workspace,
         } => {
             let workspace = JujutsuWorkspace::open(store_path, workspace, config.read_only)?;
             let upper_dir = workspace.upper_dir().to_path_buf();
-            let filesystem = OverlayFs::new(config.lower_dirs, upper_dir, None)?;
+            let filesystem = if config.excluded_paths.is_empty() {
+                OverlayFs::new(config.lower_dirs, upper_dir, None)?
+            } else {
+                OverlayFs::new_with_exclusions(
+                    config.lower_dirs,
+                    upper_dir,
+                    None,
+                    config.excluded_paths,
+                )?
+            };
             if !config.read_only {
                 jujutsu = Some(workspace);
             }
