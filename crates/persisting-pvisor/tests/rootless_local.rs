@@ -28,11 +28,7 @@ fn setup_failure(root: &Path) -> Option<String> {
         .map(|entry| entry.path())
         .find(|path| path.join("run-bundle.json").is_file())?;
     let bundle = RunBundle::read(&run).ok()?;
-    bundle
-        .run
-        .output
-        .stderr
-        .filter(|stderr| stderr.contains("rootless sandbox setup failed"))
+    bundle.run.output.stderr
 }
 
 fn skip_if_user_namespaces_are_explicitly_optional(
@@ -46,6 +42,7 @@ fn skip_if_user_namespaces_are_explicitly_optional(
         return false;
     };
     if !stderr.contains("initialize rootless user and mount namespaces: Operation not permitted") {
+        eprintln!("rootless sandbox failure was not skippable: {stderr}");
         return false;
     }
     eprintln!("skipping: the test host disables unprivileged user namespaces: {stderr}");

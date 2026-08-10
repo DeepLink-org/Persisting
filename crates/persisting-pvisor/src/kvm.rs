@@ -489,7 +489,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
 
             let guest_json = serde_json::to_string(&spec.guest)?;
             let guest_env = format!("{GUEST_SPEC_ENV}={guest_json}");
-            let oci = init_oci_spec(&spec, guest_env, unsafe { libc::isatty(0) } == 1);
+            let oci = init_oci_spec(&spec, guest_env, libc::isatty(0) == 1);
             let oci = serde_json::to_vec(&oci)?;
             let mut init_error: *mut c_void = std::ptr::null_mut();
             let mut builder = from_oci(KrunStr::from_bytes(&oci), &mut init_error);
