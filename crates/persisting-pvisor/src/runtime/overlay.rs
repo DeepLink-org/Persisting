@@ -53,6 +53,12 @@ pub enum OverlayError {
     NotReady(String),
     #[error("overlay apply failed: {0}")]
     Apply(String),
+    #[error("{0}")]
+    InvalidState(String),
+    #[error("overlay metadata update failed: {0}")]
+    Persist(String),
+    #[error("overlay finalization failed: {0}")]
+    Finalize(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -73,6 +79,9 @@ pub struct OverlayRecord {
     pub auto_apply: bool,
     #[serde(default)]
     pub auto_discard: bool,
+    /// Immutable lower targets (for example OCI cache entries) reject apply.
+    #[serde(default)]
+    pub protect_target: bool,
     pub state: OverlayState,
 }
 
@@ -180,6 +189,14 @@ impl OverlayMount {
         if let Some(session) = self.session.take() {
             session.unmount()?;
         }
+        if !self.record.merged_dir.starts_with(&self.record.stage_dir)
+            && self.record.merged_dir.is_dir()
+        {
+            fs::remove_dir(&self.record.merged_dir)?;
+            if let Some(parent) = self.record.merged_dir.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
         Ok(())
     }
 }
@@ -274,30 +291,58 @@ pub fn resolve_overlay_workspace(
             }
         }
     };
-    let merged = cfg
-        .merged_dir
-        .as_deref()
-        .map(resolve)
-        .unwrap_or_else(|| stage_dir.join("merged"));
+    let resolved_lowers = cfg
+        .lower_dirs
+        .iter()
+        .map(|path| resolve(path))
+        .collect::<Vec<_>>();
+    let stage_is_nested = target != Path::new("/")
+        && std::iter::once(&target)
+            .chain(resolved_lowers.iter())
+            .any(|lower| stage_dir.as_path() != lower.as_path() && stage_dir.starts_with(lower));
+    let merged = cfg.merged_dir.as_deref().map(resolve).unwrap_or_else(|| {
+        if stage_is_nested {
+            storage
+                .join(".overlay-mounts")
+                .join(session_id)
+                .join("merged")
+        } else {
+            stage_dir.join("merged")
+        }
+    });
 
-    let excluded_paths = if target == Path::new("/") {
-        let mut backing_paths = vec![stage_dir.clone()];
-        backing_paths.extend(cfg.lower_dirs.iter().map(PathBuf::from));
-        backing_paths
+    let mut backing_paths = vec![stage_dir.clone(), merged.clone()];
+    match &upper {
+        OverlayUpper::Directory {
+            upper_dir,
+            work_dir,
+        } => {
+            backing_paths.push(upper_dir.clone());
+            backing_paths.push(work_dir.clone());
+        }
+        OverlayUpper::Jujutsu { store_path, .. } => backing_paths.push(store_path.clone()),
+    }
+    backing_paths.extend(resolved_lowers);
+    let mut excluded_paths = backing_paths
+        .into_iter()
+        .filter_map(|path| {
+            path.strip_prefix(&target)
+                .ok()
+                .filter(|relative| !relative.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+        })
+        .collect::<Vec<_>>();
+    excluded_paths.sort_by_key(|path| path.components().count());
+    let mut minimal_exclusions = Vec::<PathBuf>::new();
+    for path in excluded_paths {
+        if !minimal_exclusions
             .iter()
-            .filter(|path| path.as_path() != Path::new("/"))
-            .map(|path| {
-                path.strip_prefix("/").map(Path::to_path_buf).map_err(|_| {
-                    OverlayError::InvalidConfig(format!(
-                        "root overlay backing path must be absolute: {}",
-                        path.display()
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
+            .any(|parent| path.starts_with(parent))
+        {
+            minimal_exclusions.push(path);
+        }
+    }
+    let excluded_paths = minimal_exclusions;
 
     Ok(Some(OverlayRecord {
         id: session_id.to_string(),
@@ -308,6 +353,7 @@ pub fn resolve_overlay_workspace(
         excluded_paths,
         auto_apply: cfg.auto_apply,
         auto_discard: cfg.auto_discard,
+        protect_target: cfg.protect_target,
         state: OverlayState::Active,
     }))
 }
@@ -344,6 +390,7 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
         },
         auto_apply: record.auto_apply,
         auto_discard: record.auto_discard,
+        protect_target: record.protect_target,
     }
 }
 
@@ -430,6 +477,64 @@ pub fn mount_overlay_record(
     })
 }
 
+/// Prepare durable overlay backing directories for a consumer that serves the
+/// union itself (currently libkrun virtio-fs), without creating a host mount.
+pub(crate) fn prepare_overlay_record_mountless(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+) -> Result<OverlayRecord, OverlayError> {
+    if lower_dirs.is_empty() {
+        return Err(OverlayError::MissingTarget);
+    }
+    for dir in lower_dirs.iter().chain([&record.stage_dir]) {
+        create_dir_all_durable(dir)
+            .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+    }
+    match &record.upper {
+        OverlayUpper::Directory {
+            upper_dir,
+            work_dir,
+        } => {
+            create_dir_all_durable(upper_dir)
+                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+            create_dir_all_durable(work_dir)
+                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+        }
+        OverlayUpper::Jujutsu {
+            store_path,
+            workspace,
+            upper_dir,
+        } => {
+            create_dir_all_durable(store_path)
+                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+            persisting_overlayfs::prepare_jujutsu_upper(store_path, workspace)
+                .map_err(OverlayError::Prepare)?;
+            create_dir_all_durable(upper_dir)
+                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+        }
+    }
+    let mut record = record.clone();
+    record.state = OverlayState::Active;
+    write_overlay_record(&record)?;
+    Ok(record)
+}
+
+pub(crate) fn stage_overlay_record(record: &mut OverlayRecord) -> anyhow::Result<()> {
+    if record.state == OverlayState::Active {
+        record.state = OverlayState::Staged;
+        if let OverlayUpper::Jujutsu {
+            store_path,
+            workspace,
+            ..
+        } = &record.upper
+        {
+            snapshot_jujutsu_upper(store_path, workspace)?;
+        }
+        write_overlay_record(record)?;
+    }
+    Ok(())
+}
+
 /// Mount the same lower/upper projection without permitting any mutation.
 /// The kernel's read-only FUSE mount rejects writes before they reach the
 /// writable overlay implementation.
@@ -494,9 +599,9 @@ pub fn overlay_meta_path(stage_dir: &Path) -> PathBuf {
 pub fn write_overlay_record(record: &OverlayRecord) -> Result<(), OverlayError> {
     let path = overlay_meta_path(&record.stage_dir);
     let body = serde_json::to_string_pretty(record)
-        .map_err(|e| OverlayError::Apply(format!("serialize meta: {e}")))?;
+        .map_err(|e| OverlayError::Persist(format!("serialize meta: {e}")))?;
     atomic_write(&path, body.as_bytes(), 0o600)
-        .map_err(|error| OverlayError::Apply(format!("persist meta: {error:#}")))?;
+        .map_err(|error| OverlayError::Persist(format!("{}: {error:#}", path.display())))?;
     Ok(())
 }
 
@@ -555,27 +660,32 @@ pub fn restore_overlay_upper(source: &Path, destination: &Path) -> Result<(), Ov
         return Ok(());
     }
     let mut hard_links = HashMap::new();
-    snapshot_directory_raw(source, destination, &mut hard_links)?;
+    snapshot_directory_raw(source, destination, &mut hard_links, &|| false)?;
     Ok(())
 }
 
 /// Merge staging upper onto `target` (handles portable `.wh.` whiteouts).
 pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
-    if matches!(
-        record.state,
-        OverlayState::Applied | OverlayState::Discarded
-    ) {
+    match record.state {
+        OverlayState::Applied => return Ok(()),
+        OverlayState::Discarded => {
+            return Err(OverlayError::InvalidState(format!(
+                "overlay {} was already dropped; apply cannot recover discarded changes",
+                record.id
+            )));
+        }
+        OverlayState::Active | OverlayState::Staged => {}
+    }
+    if record.protect_target {
         return Err(OverlayError::Apply(format!(
-            "overlay {} is already {:?}",
-            record.id, record.state
+            "target is an immutable image rootfs: {}",
+            record.target.display()
         )));
     }
     match &record.upper {
         OverlayUpper::Directory { upper_dir, .. } => {
             if upper_dir.is_dir() {
                 apply_upper_onto_target(upper_dir, &record.target)?;
-                fs::remove_dir_all(upper_dir)?;
-                fs::create_dir_all(upper_dir)?;
             }
         }
         OverlayUpper::Jujutsu {
@@ -585,13 +695,16 @@ pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
         } => {
             if upper_dir.is_dir() {
                 apply_upper_onto_target(upper_dir, &record.target)?;
-                fs::remove_dir_all(upper_dir)?;
-                fs::create_dir_all(upper_dir)?;
             }
+            clear_path(upper_dir)?;
             snapshot_jujutsu_upper(store_path, workspace)
-                .map_err(|error| OverlayError::Apply(error.to_string()))?;
+                .map_err(|error| OverlayError::Finalize(error.to_string()))?;
+            // Snapshotting initializes an empty working-copy directory. It is
+            // no longer needed after this Run reaches its terminal state.
+            clear_path(upper_dir)?;
         }
     }
+    cleanup_terminal_overlay_data(record)?;
     record.state = OverlayState::Applied;
     write_overlay_record(record)?;
     Ok(())
@@ -599,38 +712,68 @@ pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
 
 /// Drop staging upper (and optionally the whole stage dir contents except meta).
 pub fn discard_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
-    if record.state == OverlayState::Applied {
-        return Err(OverlayError::Apply(format!(
-            "overlay {} already applied; nothing to discard",
-            record.id
-        )));
+    match record.state {
+        OverlayState::Discarded => return Ok(()),
+        OverlayState::Applied => {
+            return Err(OverlayError::InvalidState(format!(
+                "overlay {} was already applied; drop cannot undo applied changes",
+                record.id
+            )));
+        }
+        OverlayState::Active | OverlayState::Staged => {}
     }
     match &record.upper {
-        OverlayUpper::Directory {
-            upper_dir,
-            work_dir,
-        } => {
-            if upper_dir.exists() {
-                fs::remove_dir_all(upper_dir)?;
-            }
-            if work_dir.exists() {
-                let _ = fs::remove_dir_all(work_dir);
-            }
-        }
+        OverlayUpper::Directory { .. } => {}
         OverlayUpper::Jujutsu {
             store_path,
             workspace,
             upper_dir,
         } => {
-            if upper_dir.exists() {
-                fs::remove_dir_all(upper_dir)?;
-            }
+            clear_path(upper_dir)?;
             snapshot_jujutsu_upper(store_path, workspace)
-                .map_err(|error| OverlayError::Apply(error.to_string()))?;
+                .map_err(|error| OverlayError::Finalize(error.to_string()))?;
+            clear_path(upper_dir)?;
         }
     }
+    cleanup_terminal_overlay_data(record)?;
     record.state = OverlayState::Discarded;
     write_overlay_record(record)?;
+    Ok(())
+}
+
+fn cleanup_terminal_overlay_data(record: &OverlayRecord) -> Result<(), OverlayError> {
+    match &record.upper {
+        OverlayUpper::Directory {
+            upper_dir,
+            work_dir,
+        } => {
+            clear_path(upper_dir)?;
+            clear_path(work_dir)?;
+        }
+        OverlayUpper::Jujutsu { upper_dir, .. } => clear_path(upper_dir)?,
+    }
+
+    // Never recursively remove a mountpoint: after a clean teardown this is
+    // either absent or an empty placeholder. A non-empty directory is retained
+    // for inspection instead of risking traversal into a stale mount.
+    if record.merged_dir.starts_with(&record.stage_dir) {
+        match fs::remove_dir(&record.merged_dir) {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn clear_path(path: &Path) -> Result<(), OverlayError> {
+    if path_exists(path) {
+        remove_path(path)?;
+    }
     Ok(())
 }
 
@@ -762,14 +905,24 @@ fn snapshot_directory_raw(
     source: &Path,
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(), OverlayError> {
+    if cancelled() {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "materialization cancelled").into());
+    }
     ensure_directory(destination)?;
     for entry in fs::read_dir(source)? {
+        if cancelled() {
+            return Err(
+                io::Error::new(io::ErrorKind::Interrupted, "materialization cancelled").into(),
+            );
+        }
         let entry = entry?;
         snapshot_entry_raw(
             &entry.path(),
             &destination.join(entry.file_name()),
             hard_links,
+            cancelled,
         )?;
     }
     copy_snapshot_metadata(source, destination)?;
@@ -780,11 +933,15 @@ fn snapshot_entry_raw(
     source: &Path,
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(), OverlayError> {
+    if cancelled() {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "materialization cancelled").into());
+    }
     let metadata = fs::symlink_metadata(source)?;
     let kind = metadata.file_type();
     if kind.is_dir() {
-        return snapshot_directory_raw(source, destination, hard_links);
+        return snapshot_directory_raw(source, destination, hard_links, cancelled);
     }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
@@ -1227,6 +1384,56 @@ mod tests {
     }
 
     #[test]
+    fn nested_stage_is_hidden_from_a_non_root_overlay() {
+        let cfg = OverlayConfig {
+            enabled: true,
+            target: Some("/Users/example/workspace".into()),
+            stage_dir: Some("/Users/example/workspace/project/tmp".into()),
+            ..OverlayConfig::default()
+        };
+        let record = resolve_overlay_workspace(&cfg, Path::new("/unused"), "run-one")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.excluded_paths, [PathBuf::from("project/tmp")]);
+        assert_eq!(
+            record.merged_dir,
+            PathBuf::from("/unused/.overlay-mounts/run-one/merged")
+        );
+        assert!(!record.merged_dir.starts_with(&record.target));
+    }
+
+    #[test]
+    fn mountless_preparation_creates_backing_state_without_a_merged_mount() {
+        let tmp = tempdir().unwrap();
+        let lower = tmp.path().join("lower");
+        let stage = tmp.path().join("stage");
+        fs::create_dir_all(&lower).unwrap();
+        let record = OverlayRecord {
+            id: "mountless".into(),
+            target: lower.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: stage.join("upper"),
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage.clone(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Active,
+        };
+        let prepared = prepare_overlay_record_mountless(&record, &[lower]).unwrap();
+        assert!(prepared.upper.path().is_dir());
+        assert!(stage.join("work").is_dir());
+        assert!(!prepared.merged_dir.exists());
+        assert_eq!(
+            load_overlay_record(&stage).unwrap().state,
+            OverlayState::Active
+        );
+    }
+
+    #[test]
     fn jujutsu_sessions_share_store_but_get_distinct_workspaces() {
         let storage = Path::new("/tmp/store");
         let cfg = OverlayConfig {
@@ -1305,6 +1512,7 @@ mod tests {
             excluded_paths: Vec::new(),
             auto_apply: false,
             auto_discard: false,
+            protect_target: false,
             state: OverlayState::Staged,
         };
 
@@ -1346,7 +1554,9 @@ mod tests {
             fs::metadata(lower.join("created")).unwrap().ino(),
             fs::metadata(lower.join("created-link")).unwrap().ino()
         );
-        assert!(upper.is_dir());
+        assert!(!upper.exists());
+        assert!(!stage.join("work").exists());
+        assert!(stage.join(META_FILENAME).is_file());
     }
 
     #[test]
@@ -1362,18 +1572,22 @@ mod tests {
         fs::write(upper.join("keep/b.txt"), b"added").unwrap();
         fs::write(upper.join(".wh.gone.txt"), b"").unwrap();
 
+        let work = tmp.path().join("work");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("scratch"), b"temporary").unwrap();
         let mut rec = OverlayRecord {
             id: "t".into(),
             target: target.clone(),
             upper: OverlayUpper::Directory {
-                upper_dir: upper,
-                work_dir: tmp.path().join("work"),
+                upper_dir: upper.clone(),
+                work_dir: work.clone(),
             },
             merged_dir: tmp.path().join("merged"),
             stage_dir: tmp.path().to_path_buf(),
             excluded_paths: Vec::new(),
             auto_apply: false,
             auto_discard: false,
+            protect_target: false,
             state: OverlayState::Staged,
         };
         apply_overlay(&mut rec).unwrap();
@@ -1387,6 +1601,39 @@ mod tests {
         );
         assert!(!target.join("gone.txt").exists());
         assert_eq!(rec.state, OverlayState::Applied);
+        assert!(!upper.exists());
+        assert!(!work.exists());
+        assert!(tmp.path().join(META_FILENAME).is_file());
+    }
+
+    #[test]
+    fn apply_rejects_an_immutable_image_target() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&upper).unwrap();
+        fs::write(target.join("system"), b"cached").unwrap();
+        fs::write(upper.join("system"), b"changed").unwrap();
+        let mut record = OverlayRecord {
+            id: "immutable".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper,
+                work_dir: tmp.path().join("work"),
+            },
+            merged_dir: tmp.path().join("merged"),
+            stage_dir: tmp.path().to_path_buf(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: true,
+            state: OverlayState::Staged,
+        };
+        let error = apply_overlay(&mut record).unwrap_err();
+        assert!(error.to_string().contains("immutable image rootfs"));
+        assert_eq!(fs::read(target.join("system")).unwrap(), b"cached");
+        assert_eq!(record.state, OverlayState::Staged);
     }
 
     #[test]
@@ -1439,6 +1686,7 @@ mod tests {
             excluded_paths: Vec::new(),
             auto_apply: false,
             auto_discard: false,
+            protect_target: false,
             state: OverlayState::Staged,
         };
         let status = overlay_status(&record).unwrap();
@@ -1463,10 +1711,72 @@ mod tests {
             excluded_paths: Vec::new(),
             auto_apply: false,
             auto_discard: false,
+            protect_target: false,
             state: OverlayState::Staged,
         };
         discard_overlay(&mut rec).unwrap();
         assert!(!upper.exists());
         assert_eq!(rec.state, OverlayState::Discarded);
+    }
+
+    #[test]
+    fn terminal_decisions_are_idempotent_but_cannot_be_reversed() {
+        let applied_root = tempdir().unwrap();
+        let applied_target = applied_root.path().join("target");
+        let applied_upper = applied_root.path().join("upper");
+        fs::create_dir_all(&applied_target).unwrap();
+        fs::create_dir_all(&applied_upper).unwrap();
+        fs::write(applied_upper.join("value"), b"applied").unwrap();
+        let mut applied = OverlayRecord {
+            id: "applied-run".into(),
+            target: applied_target,
+            upper: OverlayUpper::Directory {
+                upper_dir: applied_upper,
+                work_dir: applied_root.path().join("work"),
+            },
+            merged_dir: applied_root.path().join("merged"),
+            stage_dir: applied_root.path().to_path_buf(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        apply_overlay(&mut applied).unwrap();
+        apply_overlay(&mut applied).unwrap();
+        let error = discard_overlay(&mut applied).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "overlay applied-run was already applied; drop cannot undo applied changes"
+        );
+        assert_eq!(applied.state, OverlayState::Applied);
+
+        let dropped_root = tempdir().unwrap();
+        let dropped_upper = dropped_root.path().join("upper");
+        fs::create_dir_all(&dropped_upper).unwrap();
+        fs::write(dropped_upper.join("value"), b"discarded").unwrap();
+        let mut dropped = OverlayRecord {
+            id: "dropped-run".into(),
+            target: dropped_root.path().join("target"),
+            upper: OverlayUpper::Directory {
+                upper_dir: dropped_upper,
+                work_dir: dropped_root.path().join("work"),
+            },
+            merged_dir: dropped_root.path().join("merged"),
+            stage_dir: dropped_root.path().to_path_buf(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        discard_overlay(&mut dropped).unwrap();
+        discard_overlay(&mut dropped).unwrap();
+        let error = apply_overlay(&mut dropped).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "overlay dropped-run was already dropped; apply cannot recover discarded changes"
+        );
+        assert_eq!(dropped.state, OverlayState::Discarded);
     }
 }

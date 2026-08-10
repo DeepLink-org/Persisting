@@ -9,11 +9,15 @@ rm -rf .work
 mkdir -p .work/base
 printf 'original\n' > .work/base/existing.txt
 export PERSISTING_RUN_HOME="$PWD/.work/runs"
+base="$PWD/.work/base"
 
 # Review and apply the first Run, making its staged files visible on the host.
-pvisor run --workspace .work/base --overlayfs-base .work/base \
-  --overlayfs-commit manual --stdio capture -- \
-  /bin/sh -c 'printf "accepted\n" > existing.txt; printf "accepted\n" > accepted.txt'
+(
+  cd "$base"
+  pvisor run --overlayfs-base "$base" \
+    --overlayfs-commit manual --stdio capture -- \
+    /bin/sh -c 'printf "accepted\n" > existing.txt; printf "accepted\n" > accepted.txt'
+)
 pvisor review --json .work/base | jq '{run, filesystem}'
 pvisor apply .work/base >/dev/null
 
@@ -22,9 +26,12 @@ cat .work/base/existing.txt
 cat .work/base/accepted.txt
 
 # Review and drop the second Run, leaving the host directory unchanged.
-pvisor run --workspace .work/base --overlayfs-base .work/base \
-  --overlayfs-commit manual --stdio capture -- \
-  /bin/sh -c 'printf "rejected\n" > rejected.txt'
+(
+  cd "$base"
+  pvisor run --overlayfs-base "$base" \
+    --overlayfs-commit manual --stdio capture -- \
+    /bin/sh -c 'printf "rejected\n" > rejected.txt'
+)
 pvisor review --json .work/base | jq '{run, filesystem}'
 pvisor drop .work/base >/dev/null
 

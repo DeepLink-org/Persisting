@@ -13,7 +13,6 @@ from pathlib import Path
 DEFAULT_MAX_BYTES = 100_000_000
 PLATFORM_PATTERNS = {
     "linux-x86_64": re.compile(r"^manylinux.*_x86_64$"),
-    "macos-x86_64": re.compile(r"^macosx.*_x86_64$"),
     "macos-arm64": re.compile(r"^macosx.*_arm64$"),
 }
 

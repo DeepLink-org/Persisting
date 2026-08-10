@@ -58,3 +58,7 @@ pub fn jujutsu_upper_dir(store_path: &Path, fork: &str) -> io::Result<PathBuf> {
     validate_fork(fork)?;
     Ok(store_path.join(WORKSPACES_DIR).join(fork).join(UPPER_DIR))
 }
+
+pub fn prepare_jujutsu_upper(_store_path: &Path, _fork: &str) -> io::Result<PathBuf> {
+    Err(unsupported())
+}

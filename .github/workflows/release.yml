@@ -69,7 +69,8 @@ jobs:
           args: >-
             --release --locked --out dist --auditwheel repair
           before-script-linux: >-
-            env -u RUSTC_WRAPPER
+            yum install -y glibc-static &&
+            env -u RUSTC_WRAPPER PERSISTING_FETCH_LIBKRUNFW=1
             /opt/python/cp312-cp312/bin/python scripts/packaging/stage_wheel_binaries.py
             --target x86_64-unknown-linux-gnu --profile release --locked
           sccache: "true"
@@ -92,19 +93,9 @@ jobs:
           retention-days: 30
 
   macos:
-    name: Wheel (${{ matrix.target }})
+    name: Wheel (macOS aarch64)
     needs: validate
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15-intel
-            target: x86_64
-            rust-target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64
-            rust-target: aarch64-apple-darwin
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -117,18 +108,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install libkrunfw
+        run: |
+          brew tap slp/krun
+          brew install libkrunfw
+          echo "PERSISTING_LIBKRUNFW_PATH=$(brew --prefix libkrunfw)/lib/libkrunfw.5.dylib" >> "$GITHUB_ENV"
+
       - name: Build pChronicle Web assets
         run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
       - name: Stage wheel CLI component set
         run: >-
           python3 scripts/packaging/stage_wheel_binaries.py
-          --target ${{ matrix.rust-target }} --profile release --locked
+          --target aarch64-apple-darwin --profile release --locked
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
+          target: aarch64
           args: >-
             --release --locked --out dist --find-interpreter
           sccache: "true"
@@ -144,7 +141,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: release-wheel-macos-${{ matrix.target }}
+          name: release-wheel-macos-aarch64
           path: dist/*.whl
           if-no-files-found: error
           retention-days: 30

@@ -273,17 +273,33 @@ fn mutate(args: SelectArgs, apply: bool, target: Option<&Path>) -> anyhow::Resul
             record.run_id
         );
     }
-    if apply && overlay.state == OverlayState::Applied {
-        println!(
-            "already applied {} → {}",
-            record.run_id,
-            overlay.target.display()
-        );
-        return Ok(());
-    }
-    if !apply && overlay.state == OverlayState::Discarded {
-        println!("already dropped {} (target untouched)", record.run_id);
-        return Ok(());
+    match (apply, overlay.state) {
+        (true, OverlayState::Applied) => {
+            println!(
+                "already applied {} → {}",
+                record.run_id,
+                overlay.target.display()
+            );
+            return Ok(());
+        }
+        (false, OverlayState::Discarded) => {
+            println!("already dropped {} (target untouched)", record.run_id);
+            return Ok(());
+        }
+        (false, OverlayState::Applied) => {
+            bail!(
+                "Run {} was already applied; drop cannot undo changes written to {}",
+                record.run_id,
+                overlay.target.display()
+            );
+        }
+        (true, OverlayState::Discarded) => {
+            bail!(
+                "Run {} was already dropped; apply cannot recover discarded changes",
+                record.run_id
+            );
+        }
+        _ => {}
     }
     if apply {
         if overlay.target == Path::new("/") {

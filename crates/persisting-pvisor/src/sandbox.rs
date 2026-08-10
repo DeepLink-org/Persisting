@@ -254,7 +254,8 @@ fn install_landlock(plan: &SandboxPlan) -> std::io::Result<u32> {
 /// namespace capabilities after setup.
 #[cfg(target_os = "linux")]
 pub(crate) fn restrict_krun_runner(
-    root: PathBuf,
+    overlay_read_only: Vec<PathBuf>,
+    overlay_read_write: Vec<PathBuf>,
     library_dir: Option<PathBuf>,
 ) -> anyhow::Result<u32> {
     use anyhow::Context;
@@ -276,7 +277,8 @@ pub(crate) fn restrict_krun_runner(
     if let Some(directory) = library_dir {
         read_only.push(directory);
     }
-    let mut read_write = vec![root];
+    read_only.extend(overlay_read_only);
+    let mut read_write = overlay_read_write;
     if PathBuf::from("/dev/kvm").exists() {
         read_write.push(PathBuf::from("/dev/kvm"));
     }

@@ -14,7 +14,7 @@ trap 'kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
 sleep 0.3
 
 # Run the agent through pVisor's configured Gateway.
-pvisor run --config run.toml --workspace . --stdio capture -- \
+pvisor run --config run.toml --stdio capture -- \
   env PYTHONDONTWRITEBYTECODE=1 python3 agent.py
 run_dir="$(find "$PERSISTING_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | head -n 1)"
 

@@ -84,7 +84,6 @@ pVisor does not discover a hidden project configuration file.
 
 ```bash
 pvisor run \
-  --workspace /path/to/project \
   --agent codex \
   --overlayfs-base /path/to/project \
   --overlayfs-backend directory \
@@ -104,7 +103,6 @@ The equivalent TOML is:
 
 ```toml
 [run]
-workspace = "/path/to/project"
 agent = "codex"
 executor = "container"
 command = ["codex"]
@@ -180,22 +178,41 @@ loopback endpoints. Bridge and no-network modes are valid when these drivers
 are off. The executor records container isolation but does not claim full
 capability enforcement.
 
-`--executor kvm` uses libkrun and libkrunfw to boot a minimal Linux guest. The
-host `/` is the immutable lower layer of a pVisor OverlayFS; its merged mount is
-the guest root over virtio-fs, while all writes remain in the Run upper layer.
-The guest command uses the host effective UID/GID and supplementary groups.
-OverlayNet and Agent ABI endpoints cross the boundary through explicit vsock
-relays. KVM requires Linux, `/dev/kvm`, `libkrun`, `libkrunfw`, and
-`libkrun_init`; `--kvm-library-dir` selects a non-system library directory.
-Full-root changesets can be inspected, checkpointed, forked, or dropped, but
-cannot be applied to host `/`.
+`--executor vm` uses statically linked libkrun and its embedded init to boot a
+minimal Linux guest. `--image IMAGE` selects this executor and pulls an
+OCI/Docker image directly, without invoking Docker, Podman, or Buildah. When no
+explicit `--vm-rootfs` is supplied, the default is `ubuntu:latest`. Manifests
+and layer digests are verified, the host architecture selects `linux/arm64` or
+`linux/amd64`, and the unpacked rootfs becomes the immutable lower layer of a
+pVisor OverlayFS. `--image-store` overrides the platform cache directory.
+OCI cache targets are marked immutable, and this protection survives logical
+checkpoint/fork, so `pvisor apply` cannot mutate a rootfs shared by other Runs.
+
+The merged rootfs is guest `/`, and `/workspace` becomes the guest cwd. On both
+Linux and macOS, a vendored libkrun serves pVisor's rootfs and workspace
+copy-on-write unions directly over virtio-fs. The VMM never re-exports a host
+FUSE mount and does not materialize or reconcile either tree. Linux uses
+KVM and Apple Silicon macOS uses HVF through the same executor. libkrunfw is
+installed beside pVisor in wheels. Source builds otherwise download the pinned
+official release into a SHA-256-verified platform cache; on macOS `/usr/bin/cc`
+turns its prebuilt kernel bundle into the required dylib. A system directory can
+still be selected with `--vm-library-dir`. OverlayNet/Gateway is rejected for
+this executor until a cross-platform guest relay is available. Linux additionally confines the VMM
+with namespaces and Landlock. The macOS VMM still has the invoking user's host
+permissions, so the first OCI-image version must not be treated as a hostile
+multi-tenant boundary despite the guest-kernel isolation.
 
 The four visible OverlayNet policy flags and Gateway capture automatically enable the
 proxy driver. Any `--overlayfs-base`, `--overlayfs-compose`,
 `--overlayfs-stage`, `--overlayfs-backend`, or `--overlayfs-commit` option
 automatically enables OverlayFS; no separate mode switch exists. The base
 defaults to the workspace, and the stage defaults to the generated Run
-directory. Both `commit=apply` and the later `pvisor apply` command are rejected
+directory. When a stage is nested inside a base or compose layer, pVisor hides
+that subtree from the merged view and rejects guest attempts to recreate it.
+libkrun Runs create no live host mountpoint, preventing host indexers from
+recursively entering `<stage>/merged`. The reverse topology, where a
+stage contains a lower layer, is rejected. Both
+`commit=apply` and the later `pvisor apply` command are rejected
 for composed Runs until pVisor can materialize a complete merged-vs-base diff
 safely.
 OverlayNet policy applies to traffic routed through the explicit proxy and does
@@ -204,10 +221,10 @@ not claim non-bypassable host network isolation.
 forward-proxy egress. Direct sockets remain ambient, and relative local Gateway
 routes remain available for configured model traffic.
 
-## Run workspace and discovery
+## Run project discovery
 
-`--workspace` is a reusable project directory and defaults to the current
-directory. Multiple Runs may use the same workspace. Each Run receives an
+The current directory is the default project association. When OverlayFS is
+enabled, `--overlayfs-base` identifies the reusable project directory. Each Run receives an
 independent directory under `PERSISTING_RUN_HOME`. If that root would be inside
 the selected OverlayFS base or a compose layer, pVisor instead uses the system
 temporary Run root to keep the writable stage disjoint:
@@ -241,5 +258,8 @@ pvisor drop /path/to/project
 ```
 
 `inspect` creates a separate kernel-read-only view. `apply` and `drop` refuse
-to mutate a live Run. `drop` affects only the staged filesystem upper and never
-deletes pChronicle history.
+to mutate a live Run. They are mutually exclusive terminal decisions: repeating
+the same decision is idempotent, while `drop` cannot undo an applied Run and
+`apply` cannot recover a dropped Run. Either decision removes `upper`, `work`,
+and other disposable staging data but retains the compact Run/Overlay metadata
+and pChronicle history for status, review, and audit.

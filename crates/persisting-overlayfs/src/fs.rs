@@ -1,5 +1,3 @@
-use crate::core::OverlayCore;
-use crate::sys;
 #[cfg(target_os = "macos")]
 use fuser::ReplyXTimes;
 use fuser::{
@@ -7,6 +5,7 @@ use fuser::{
     ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs, ReplyWrite,
     ReplyXattr, Request, TimeOrNow, FUSE_ROOT_ID,
 };
+use persisting_overlay_core::{sys, OverlayCore};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
@@ -51,6 +50,23 @@ pub struct OverlayFs {
 
 fn errno(error: &io::Error) -> i32 {
     error.raw_os_error().unwrap_or(libc::EIO)
+}
+
+fn setattr_requires_copy_up(
+    mode: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    size: Option<u64>,
+    _atime: Option<TimeOrNow>,
+    mtime: Option<TimeOrNow>,
+    flags: Option<u32>,
+) -> bool {
+    mode.is_some()
+        || uid.is_some()
+        || gid.is_some()
+        || size.is_some()
+        || mtime.is_some()
+        || flags.is_some()
 }
 
 fn file_type(metadata: &fs::Metadata) -> FileType {
@@ -398,7 +414,14 @@ impl Filesystem for OverlayFs {
         reply: ReplyAttr,
     ) {
         let result = (|| {
-            let path = self.copy_up_inode(ino)?;
+            let path = self.node_path(ino)?;
+            // macFUSE can report a read-induced atime update through SETATTR.
+            // Overlay views are mounted noatime, and an atime-only request must
+            // not turn every file read into a full lower-to-upper copy-up.
+            if !setattr_requires_copy_up(mode, uid, gid, size, atime, mtime, flags) {
+                return self.attr(ino, &path);
+            }
+            self.copy_up_inode(ino)?;
             let upper = self.core.copy_up(&path)?;
             if let Some(size) = size {
                 OpenOptions::new().write(true).open(&upper)?.set_len(size)?;
@@ -1133,5 +1156,32 @@ impl Filesystem for OverlayFs {
             }
             Err(error) => reply.error(errno(&error)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atime_only_setattr_does_not_require_copy_up() {
+        assert!(!setattr_requires_copy_up(
+            None,
+            None,
+            None,
+            None,
+            Some(TimeOrNow::Now),
+            None,
+            None
+        ));
+        assert!(setattr_requires_copy_up(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(TimeOrNow::Now),
+            None
+        ));
     }
 }

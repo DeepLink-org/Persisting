@@ -81,7 +81,7 @@ owner-mediated read-only inspection.
 | `artifact` | target-specific static pVisor runtime discovery |
 | `delegated` | RunSpec/RunResult hand-off between pVisor placements |
 | `container` | Docker/Podman transport that injects pVisor |
-| `kvm` | libkrun/KVM guest over pVisor's full-root OverlayFS |
+| `vm` | libkrun VM backend over pVisor's full-root OverlayFS |
 
 ## Agent ABI
 
@@ -97,7 +97,7 @@ PERSISTING_AGENT_ABI_TRANSPORT=unix
 
 The token is intentionally not written to Run metadata. The socket is mode
 `0600`, exists only for the Attempt lifetime, and accepts bounded JSON frames.
-Docker and KVM placements start a complete pVisor inside the isolation
+Docker and VM placements start a complete pVisor inside the isolation
 boundary. That injected pVisor creates the Agent ABI locally and executes the
 Agent through the same ProcessExecutor used by a native Run; the host ABI token
 is deliberately removed from the delegated RunSpec.
@@ -119,7 +119,6 @@ re-read a Gateway-specific file:
 
 ```toml
 [run]
-workspace = "/path/to/project"
 executor = "container"
 command = ["codex"]
 
@@ -167,7 +166,7 @@ CLI form keeps the reusable project workspace local while offloading the canonic
 
 ```bash
 AWS_REGION=us-east-1 pvisor run \
-  --workspace /path/to/project \
+  --overlayfs-base /path/to/project \
   --chronicle-mode lance \
   --chronicle-dir s3://trajectory-bucket/persisting/runs \
   -- codex
@@ -204,8 +203,8 @@ command never appears in the Docker/Podman argument list. The injected pVisor
 returns a typed RunResult through a private mounted control directory. The
 transport maps cancellation to `stop` followed by `kill` when necessary.
 
-Container and KVM runtimes must be configured explicitly with
-`--container-pvisor-binary` or `--kvm-pvisor-binary`, respectively.
+Container runtimes use `--container-pvisor-binary`; libkrun uses an explicit
+`--vm-rootfs` and does not require a second pVisor binary in that rootfs.
 The final OverlayFS cwd and per-session Gateway configuration are mounted at
 their existing paths. Additional mounts use `--container-mount
 'source="/host/path", target="/container/path", read_only=true'`.
@@ -220,36 +219,78 @@ available when those drivers are disabled. Container placement is reported as
 real isolation, but `PolicyMode::Enforce` remains unavailable until every
 Persisting capability is translated into an OCI runtime restriction.
 
-### KVM executor
+### VM executor
 
-The KVM executor uses `libkrun`, `libkrunfw`, and `libkrun_init` to boot a
-minimal Linux guest without a disk image or SSH. pVisor mounts an OverlayFS
-whose lower layer is the host `/`, exposes that merged mount as the guest root
-through virtio-fs, and runs the command with the invoking host UID, GID, and
-supplementary groups. Writes and whiteouts stay in the Run upper layer.
+The `vm` executor statically links libkrun and its guest init into pVisor. The
+same implementation boots a minimal Linux guest through KVM on Linux and HVF
+on Apple Silicon macOS. pVisor can pull an OCI/Docker image directly from its
+registry, without Docker, Podman, or Buildah, and cache its verified layers as
+an immutable rootfs. The default image is `ubuntu:latest` when neither
+`vm.rootfs` nor `--vm-rootfs` is supplied.
 
 ```bash
 pvisor run \
-  --executor kvm \
-  --kvm-library-dir /opt/libkrun/lib \
-  --kvm-memory-mib 4096 \
-  --kvm-cpus 4 \
-  -- agent --help
+  --image ubuntu:latest \
+  --overlayfs-base . \
+  --overlayfs-target /workspace \
+  --overlayfs-stage /tmp/pvisor-stage \
+  --overlayfs-commit manual \
+  -- /bin/bash -lc 'uname -a'
 ```
 
-KVM execution requires a Linux host, `/dev/kvm`, and compatible libkrun
-libraries. OverlayNet and the Agent ABI cross the VM boundary through explicit
-vsock-to-Unix-socket relays; the VMM runs in private user, mount, and network
-namespaces with Landlock restrictions, so the guest has no ambient host
-network path. Guest `/proc`, `/sys`, `/dev`, `/run`, and `/tmp` are guest-local
-mounts. The complete host root remains readable wherever the invoking UID can
-read it, including credentials; this mode isolates the kernel, not identity or
-secrets.
+The staged view of `--overlayfs-base` appears at `--overlayfs-target`, which is
+also the guest cwd. On Linux and macOS, libkrun serves pVisor's copy-on-write
+union directly over virtio-fs; no host FUSE mount, full-tree snapshot, or exit
+reconciliation is involved. With
+`--overlayfs-commit manual`, the host base remains unchanged and guest writes
+remain under the configured stage. The image rootfs uses its own copy-on-write
+upper, so system writes never modify the cached image. `--image-store` selects an
+explicit content-addressed cache; otherwise pVisor uses the platform cache
+directory. Apple Silicon automatically selects `linux/arm64`, while x86-64
+Linux selects `linux/amd64`.
 
-Full-root upper layers are review/checkpoint/fork artifacts. `pvisor apply`
-refuses to replay them onto host `/`; use `pvisor checkpoint`, `pvisor fork`, or
-`pvisor drop` instead. The Run Bundle records the root device/inode, host
-UID/GID, excluded pVisor backing paths, and the staged change summary.
+An already prepared directory remains supported:
+
+```bash
+pvisor run \
+  --executor vm \
+  --vm-rootfs /opt/persisting/rootfs \
+  --vm-memory-mib 4096 \
+  --vm-cpus 4 \
+  --overlayfs-base ./project \
+  --overlayfs-target /workspace \
+  -- /usr/bin/agent --help
+```
+
+Linux requires `/dev/kvm`; macOS requires Apple
+Silicon, macOS 14 or newer, and the Hypervisor entitlement included in packaged
+builds. libkrunfw remains a runtime payload: wheels install it beside `pvisor`,
+while source builds automatically download the pinned official release into the
+platform cache and verify its SHA-256. On macOS the downloaded kernel bundle is
+compiled with `/usr/bin/cc`; `--vm-library-dir` can still select a system copy.
+Building from source on macOS requires Zig (`brew install zig`) to cross-compile
+libkrun's embedded Linux guest init. After a local `cargo build`, sign the
+development binary before using HVF:
+
+```bash
+codesign --force --sign - \
+  --entitlements crates/persisting-pvisor/macos-hypervisor.entitlements \
+  target/debug/pvisor
+```
+
+The guest has no ambient network path. OverlayNet/Gateway and the host Agent
+ABI are rejected or omitted until their cross-platform guest transport is
+implemented. On Linux the self-exec VMM runner additionally enters pVisor's
+namespace/Landlock confinement. On macOS the VM provides a guest-kernel
+boundary, but the VMM still runs with the invoking user's host permissions;
+because libkrun's virtio-fs security model requires host-side confinement, this
+first version is not a hostile multi-tenant boundary on macOS.
+
+Rootfs upper layers remain normal review/checkpoint/fork/drop artifacts.
+Explicit prepared rootfs targets may also be applied; OCI cache targets are
+persistently marked immutable, including across checkpoint/fork, so `apply`
+cannot corrupt a rootfs shared by later Runs. The Run Bundle records the rootfs
+target and staged change summary.
 
 ### Overlay model
 
@@ -259,13 +300,20 @@ compose layers (optional) ────┼─► merged (Agent cwd)
 stage/upper (deltas) ─────────┘
 
 Attempt ends → unmount, keep upper/
-  → pvisor status|inspect|apply|drop
+  → pvisor status|inspect
+  → apply or drop (terminal; clean upper/work, retain audit metadata)
 ```
 
 Any OverlayFS option enables the driver. `base` defaults to the project
 workspace, `stage` defaults to the generated per-Run directory, and repeated
 `compose` paths form read-only layers above the base. Directory is the default
-backend. With `backend = "jujutsu"`, pVisor creates a Run-named Jujutsu
+backend. A stage nested inside `base` or a compose layer is automatically
+excluded from the merged view, so the guest cannot observe or recreate it. A
+stage that contains a lower layer remains invalid. For a nested stage, the live
+merged mountpoint is placed in the Run storage outside the lower tree, avoiding
+recursive traversal by host indexers and file watchers.
+
+With `backend = "jujutsu"`, pVisor creates a Run-named Jujutsu
 workspace in `<stage>/jujutsu`. Reusable environments can use the same backend
 directly:
 
@@ -279,9 +327,9 @@ working-copy commits and directory uppers.
 
 ### Embedded overlay runtime
 
-pVisor links the `persisting-overlayfs` crate and owns its background FUSE
-session directly. The pVisor process is the userspace filesystem server and
-does not spawn a separate overlay process.
+pVisor links the `persisting-overlayfs` crate for host-process Runs and owns its
+background FUSE session directly. libkrun Runs instead use the same portable
+overlay core inside libkrun's virtio-fs server and do not require macFUSE.
 
 ```bash
 # macOS
@@ -336,8 +384,8 @@ pvisor run \
   -- codex
 ```
 
-`--workspace` defaults to the current directory and can be shared by any
-number of Runs. Run records and Bundles normally remain independent under
+The current directory is the default project association. An explicit
+`--overlayfs-base` can be shared by any number of Runs. Run records and Bundles normally remain independent under
 `PERSISTING_RUN_HOME` (default `~/.persisting/runs`). If that Run Home would
 sit inside an OverlayFS base or compose layer, pVisor uses the system temporary
 Run root instead so the writable stage cannot overlap a read-only layer.
@@ -365,12 +413,13 @@ timestamps and xattrs, and processes opaque markers before staged children.
 
 - `pvisor run --safe <agent> [ARGS...]`
 - `pvisor run --executor container --container-image IMAGE --container-pvisor-binary BIN -- <agent>`
-- `pvisor run --executor kvm [--kvm-library-dir DIR] -- <agent>`
-- `pvisor run --workspace DIR [DRIVER OPTIONS] -- <agent>`
+- `pvisor run --image IMAGE [--image-store DIR] -- <agent>`
+- `pvisor run --executor vm [--vm-rootfs DIR] [--vm-library-dir DIR] -- <agent>`
+- `pvisor run --overlayfs-base DIR [DRIVER OPTIONS] -- <agent>`
 - `pvisor run --config run.toml [OVERRIDES] [-- <agent>]`
 - `pvisor review [RUN|WORKSPACE] [--json]`
 - `pvisor checkpoint [RUN|WORKSPACE] [--name NAME]`
-- `pvisor fork RUN --checkpoint NAME [--workspace PROJECT] -- <agent>`
+- `pvisor fork RUN --checkpoint NAME -- <agent>`
 - `pvisor status [RUN|STAGE|UPPER]`
 - `pvisor inspect [RUN|STAGE|UPPER] [-- COMMAND...]`
 - `pvisor apply|drop [RUN|STAGE|UPPER]`

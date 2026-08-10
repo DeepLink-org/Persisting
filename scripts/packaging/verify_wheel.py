@@ -14,9 +14,12 @@ from email.parser import BytesParser
 from pathlib import Path
 
 EXPECTED_BINARIES = ("persisting", "pvisor", "ppilot")
+FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 
-def _wheel_contents(wheel: Path) -> tuple[str, dict[str, zipfile.ZipInfo]]:
+def _wheel_contents(
+    wheel: Path,
+) -> tuple[str, dict[str, zipfile.ZipInfo], zipfile.ZipInfo]:
     with zipfile.ZipFile(wheel) as archive:
         metadata_names = [
             name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
@@ -41,7 +44,15 @@ def _wheel_contents(wheel: Path) -> tuple[str, dict[str, zipfile.ZipInfo]]:
             if mode & 0o111 == 0:
                 raise RuntimeError(f"wheel script {name!r} is not executable (mode {mode:o})")
             scripts[name] = matches[0]
-        return version, scripts
+        firmware = [
+            info
+            for info in archive.infolist()
+            if ".data/scripts/" in info.filename
+            and info.filename.rsplit("/", 1)[-1] in FIRMWARE_NAMES
+        ]
+        if len(firmware) != 1:
+            raise RuntimeError(f"expected one libkrunfw payload, found {len(firmware)}")
+        return version, scripts, firmware[0]
 
 
 def _run(command: list[str], *, env: dict[str, str] | None = None) -> str:
@@ -61,7 +72,11 @@ def _installed_script_dir(environment: Path) -> Path:
     return environment / ("Scripts" if os.name == "nt" else "bin")
 
 
-def verify_native_payloads(wheel: Path, scripts: dict[str, zipfile.ZipInfo]) -> None:
+def verify_native_payloads(
+    wheel: Path,
+    scripts: dict[str, zipfile.ZipInfo],
+    firmware: zipfile.ZipInfo,
+) -> None:
     wheel_name = wheel.name.lower()
     expected_arches: tuple[str, ...]
     if "arm64" in wheel_name or "aarch64" in wheel_name:
@@ -74,6 +89,14 @@ def verify_native_payloads(wheel: Path, scripts: dict[str, zipfile.ZipInfo]) -> 
     with tempfile.TemporaryDirectory(prefix="persisting-wheel-native-") as temporary:
         root = Path(temporary)
         with zipfile.ZipFile(wheel) as archive:
+            firmware_path = root / Path(firmware.filename).name
+            firmware_path.write_bytes(archive.read(firmware))
+            firmware_description = _run(["file", str(firmware_path)]).lower()
+            if not any(arch in firmware_description for arch in expected_arches):
+                raise RuntimeError(
+                    f"libkrunfw architecture does not match {wheel.name}: "
+                    f"{firmware_description.strip()}"
+                )
             for name, info in scripts.items():
                 executable = root / name
                 executable.write_bytes(archive.read(info))
@@ -90,10 +113,16 @@ def verify_native_payloads(wheel: Path, scripts: dict[str, zipfile.ZipInfo]) -> 
                         dependency = line.strip().split(" ", 1)[0]
                         if not dependency.startswith(("/usr/lib/", "/System/Library/")):
                             raise RuntimeError(f"{name} has non-system dependency {dependency!r}")
+                    if name == "pvisor":
+                        entitlements = _run(["codesign", "-d", "--entitlements", ":-", str(executable)])
+                        if "com.apple.security.hypervisor" not in entitlements:
+                            raise RuntimeError("pvisor is missing the Hypervisor.framework entitlement")
                 elif sys.platform == "linux" and "linux" in wheel_name:
                     dependencies = _run(["ldd", str(executable)])
                     if "not found" in dependencies:
                         raise RuntimeError(f"{name} has unresolved dependencies:\n{dependencies}")
+                    if name == "pvisor" and "libkrun" in dependencies:
+                        raise RuntimeError("pvisor dynamically links libkrun")
 
 
 def install_smoke(wheel: Path, version: str) -> None:
@@ -134,8 +163,8 @@ def main() -> None:
     if not wheel.is_file():
         raise SystemExit(f"wheel does not exist: {wheel}")
 
-    version, scripts = _wheel_contents(wheel)
-    verify_native_payloads(wheel, scripts)
+    version, scripts, firmware = _wheel_contents(wheel)
+    verify_native_payloads(wheel, scripts, firmware)
     print(f"wheel={wheel.name} version={version} scripts={','.join(sorted(scripts))} static=PASS")
     if args.install_smoke:
         install_smoke(wheel, version)

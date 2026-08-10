@@ -41,6 +41,13 @@ runs:
       with:
         enable-cache: true
 
+    - name: Install Linux guest init cross-compiler
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install zig
+        zig version
+
     - name: Add Dioxus Web target
       if: inputs.install-dioxus == 'true'
       shell: bash

@@ -2,7 +2,7 @@
 
 Stable releases are built by GitHub Actions from version tags and published to
 PyPI with Trusted Publishing. The release contains CPython 3.10+ ABI3 wheels for
-Linux x86_64, macOS x86_64, and macOS arm64. Source distributions and the
+Linux x86_64 and Apple Silicon macOS. Source distributions and the
 standalone `dldb` package are not part of this workflow.
 
 ## One-time setup
@@ -43,6 +43,6 @@ advance.
    ```
 
 The workflow validates the version contract and lockfile before compiling. It
-then publishes the three verified wheels to PyPI and creates a GitHub Release
+then publishes the two verified wheels to PyPI and creates a GitHub Release
 from the same artifacts. Re-running a partially completed release skips files
 that PyPI already accepted and repairs missing GitHub Release assets.

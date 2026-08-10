@@ -19,6 +19,18 @@ https://github.com/cberner/fuser
 Copyright its authors and contributors. It is distributed under the MIT
 License; see `vendor/fuser/LICENSE.md`.
 
+libkrun, krun-vmm, and krun-devices
+-----------------------------------
+
+`vendor/libkrun`, `vendor/krun-vmm`, and `vendor/krun-devices` contain pinned,
+modified copies of libkrun 1.19.3 and its VMM/device crates:
+
+https://github.com/containers/libkrun
+
+Copyright Red Hat, Inc. and the upstream authors and contributors. They are
+distributed under the Apache License, Version 2.0. Persisting's modifications
+add the mountless copy-on-write virtio-fs backend used by pVisor.
+
 agentgateway test fixtures
 --------------------------
 

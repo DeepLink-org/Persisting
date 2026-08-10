@@ -80,16 +80,18 @@ export CAPTURE_AGENT_TURNS="$TURNS"
 export CAPTURE_AGENT_MANIFEST="$MANIFEST"
 
 set +e
-RUN_OUT="$(PERSISTING_RUN_HOME="$RUN_HOME" "$CLI" execute \
-  --workspace "$WORKSPACE" \
-  --agent "$AGENT_ID" \
-  --overlaynet-listen "127.0.0.1:${PROXY_PORT}" \
-  --gateway-mode capture \
-  --gateway-admin-listen "127.0.0.1:${ADMIN_PORT}" \
-  --gateway-session-header x-persisting-session-id \
-  --gateway-route "name=\"*\", upstream=\"http://127.0.0.1:${MOCK_PORT}/v1\"" \
-  --chronicle-mode lance \
-  -- python3 "$AGENT_PY" 2>&1)"
+RUN_OUT="$(
+  cd "$WORKSPACE"
+  PERSISTING_RUN_HOME="$RUN_HOME" "$CLI" execute \
+    --agent "$AGENT_ID" \
+    --overlaynet-listen "127.0.0.1:${PROXY_PORT}" \
+    --gateway-mode capture \
+    --gateway-admin-listen "127.0.0.1:${ADMIN_PORT}" \
+    --gateway-session-header x-persisting-session-id \
+    --gateway-route "name=\"*\", upstream=\"http://127.0.0.1:${MOCK_PORT}/v1\"" \
+    --chronicle-mode lance \
+    -- python3 "$AGENT_PY" 2>&1
+)"
 RUN_CODE=$?
 set -e
 echo "$RUN_OUT"

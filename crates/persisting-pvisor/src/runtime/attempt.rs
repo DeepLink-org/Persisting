@@ -3,7 +3,8 @@
 use super::implant::{ImplantPlan, OverlayHint};
 use super::overlay::{
     apply_overlay, discard_overlay, hint_from_record, lower_stack_from_config,
-    mount_overlay_record, resolve_overlay_workspace, OverlayMount, OverlayRecord,
+    mount_overlay_record, prepare_overlay_record_mountless, resolve_overlay_workspace,
+    stage_overlay_record, OverlayMount, OverlayRecord,
 };
 use super::registry::{RunControlServer, RunLease, RunLineage, RunRecord};
 use crate::TrajectoryEventSink;
@@ -76,7 +77,13 @@ impl AttemptSession {
                 }
             }
         } else {
-            self.overlay_record.take()
+            let mut record = self.overlay_record.take();
+            if let Some(record) = record.as_mut() {
+                if let Err(err) = stage_overlay_record(record) {
+                    errors.push(format!("stage OverlayFS: {err:#}"));
+                }
+            }
+            record
         };
 
         if let Some(ref mut rec) = record {
@@ -215,7 +222,12 @@ pub fn prepare_attempt(
     let mut overlay_cfg = config.overlay.clone();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay_override);
 
-    let prepared_overlay = prepare_overlay(&overlay_cfg, &storage, &root_session)?;
+    let prepared_overlay = prepare_overlay(
+        &overlay_cfg,
+        &storage,
+        &root_session,
+        uses_krun_executor(spec),
+    )?;
     let PreparedOverlay {
         mount: overlay_mount,
         hint: overlay_hint,
@@ -288,6 +300,7 @@ pub fn prepare_attempt(
             gateway_enabled: opts.gateway_enabled,
         },
     )?;
+    inject_krun_overlay_metadata(spec, &overlay_hint, overlay_record.as_ref());
 
     Ok(AttemptSession {
         root_session,
@@ -315,7 +328,12 @@ pub fn prepare_overlay_attempt(
     let root_session = spec.run_id.as_str().to_string();
     let mut overlay_cfg = persisting_gateway::config::OverlayConfig::default();
     apply_overlay_override(&mut overlay_cfg, &opts.overlay);
-    let prepared_overlay = prepare_overlay(&overlay_cfg, &storage, &root_session)?;
+    let prepared_overlay = prepare_overlay(
+        &overlay_cfg,
+        &storage,
+        &root_session,
+        uses_krun_executor(spec),
+    )?;
     let PreparedOverlay {
         mount: overlay_mount,
         hint: overlay_hint,
@@ -417,6 +435,7 @@ pub fn prepare_overlay_attempt(
     apply_implant(process, &plan);
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
+    inject_krun_overlay_metadata(spec, &plan.overlay, Some(&overlay_record));
 
     Ok(AttemptSession {
         root_session,
@@ -545,6 +564,7 @@ fn apply_overlay_override(
     overlay_cfg.backend = overlay_override.backend;
     overlay_cfg.auto_apply = overlay_override.auto_apply;
     overlay_cfg.auto_discard = overlay_override.auto_discard;
+    overlay_cfg.protect_target = overlay_override.protect_target;
     if let Some(stage) = &overlay_override.stage_dir {
         overlay_cfg.stage_dir = Some(stage.display().to_string());
         overlay_cfg.enabled = true;
@@ -599,6 +619,7 @@ fn prepare_overlay(
     overlay_cfg: &persisting_gateway::config::OverlayConfig,
     storage: &Path,
     root_session: &str,
+    mountless: bool,
 ) -> anyhow::Result<PreparedOverlay> {
     if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
         return Ok(PreparedOverlay {
@@ -618,11 +639,19 @@ fn prepare_overlay(
                 );
             }
             let lowers = lower_stack_from_config(overlay_cfg, storage, &record.target);
-            let mount = mount_overlay_record(&record, &lowers)?;
-            let record = mount.record().clone();
-            let hint = hint_from_record(&record, lowers.clone());
+            let (mount, record) = if mountless {
+                (None, prepare_overlay_record_mountless(&record, &lowers)?)
+            } else {
+                let mount = mount_overlay_record(&record, &lowers)?;
+                let record = mount.record().clone();
+                (Some(mount), record)
+            };
+            let mut hint = hint_from_record(&record, lowers.clone());
+            if mountless {
+                hint.merged_dir = None;
+            }
             Ok(PreparedOverlay {
-                mount: Some(mount),
+                mount,
                 hint,
                 record: Some(record),
                 lowers,
@@ -635,6 +664,39 @@ fn prepare_overlay(
             lowers: Vec::new(),
         }),
     }
+}
+
+fn uses_krun_executor(spec: &RunSpec) -> bool {
+    executor_from_spec(spec).is_some_and(|executor| executor.name.starts_with("libkrun-"))
+}
+
+fn inject_krun_overlay_metadata(
+    spec: &mut RunSpec,
+    hint: &OverlayHint,
+    record: Option<&OverlayRecord>,
+) {
+    if !uses_krun_executor(spec) {
+        return;
+    }
+    let Some(record) = record else {
+        return;
+    };
+    let (upper, work) = match &record.upper {
+        super::overlay::OverlayUpper::Directory {
+            upper_dir,
+            work_dir,
+        } => (upper_dir.clone(), Some(work_dir.clone())),
+        super::overlay::OverlayUpper::Jujutsu { upper_dir, .. } => (upper_dir.clone(), None),
+    };
+    spec.metadata.insert(
+        "pvisor.vm.workspace_overlay".into(),
+        serde_json::json!({
+            "lowers": hint.lower_dirs,
+            "upper": upper,
+            "work": work,
+            "excluded": record.excluded_paths,
+        }),
+    );
 }
 
 struct SessionImplantOpts<'a> {

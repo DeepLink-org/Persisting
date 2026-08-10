@@ -220,15 +220,17 @@ while [[ "$RUN_PROXY_PORT" == "$RUN_ADMIN_PORT" || "$RUN_PROXY_PORT" == "$MOCK_P
   RUN_PROXY_PORT="$(pick_port)"
   RUN_ADMIN_PORT="$(pick_port)"
 done
-RUN_OUT="$(PERSISTING_RUN_HOME="$RUN_HOME" run_cli execute \
-  --workspace "$RUN_WORKSPACE" \
-  --agent capture-it-agent \
-  --overlaynet-listen "127.0.0.1:${RUN_PROXY_PORT}" \
-  --gateway-mode capture \
-  --gateway-admin-listen "127.0.0.1:${RUN_ADMIN_PORT}" \
-  --gateway-route "name=\"*\", upstream=\"http://127.0.0.1:${MOCK_PORT}/v1\"" \
-  --chronicle-mode lance \
-  -- true)"
+RUN_OUT="$(
+  cd "$RUN_WORKSPACE"
+  PERSISTING_RUN_HOME="$RUN_HOME" run_cli execute \
+    --agent capture-it-agent \
+    --overlaynet-listen "127.0.0.1:${RUN_PROXY_PORT}" \
+    --gateway-mode capture \
+    --gateway-admin-listen "127.0.0.1:${RUN_ADMIN_PORT}" \
+    --gateway-route "name=\"*\", upstream=\"http://127.0.0.1:${MOCK_PORT}/v1\"" \
+    --chronicle-mode lance \
+    -- true
+)"
 pass "execute completed with an in-process Gateway"
 
 RUN_STORAGE="$(find "$RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | head -n 1)"

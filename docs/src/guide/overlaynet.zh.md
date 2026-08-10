@@ -139,7 +139,7 @@ pVisor 会向 Agent 进程注入 `HTTP_PROXY`、`HTTPS_PROXY`、对应的小写�
 彻底阻止直接联网，使用 `pvisor run --safe --overlaynet-deny-all`：Linux 会创建私有
 network namespace；macOS 会用 Seatbelt 阻断 IP 与宿主 ambient Unix socket，只保留精确的
 Agent ABI 和 Run 私有目录内 IPC。Container Run 也可以使用 `--container-network none`。
-两种本地 host 路径上的 selective allow/deny 仍是协作式。当前 KVM executor 还不能使用
+两种本地 host 路径上的 selective allow/deny 仍是协作式。当前 VM executor 还不能使用
 宿主机的 OverlayNet endpoint；container executor 使用进程内代理时要求
 `--container-network host`。
 

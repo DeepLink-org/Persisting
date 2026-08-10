@@ -52,6 +52,9 @@ pub struct OverlayConfig {
     /// Prefer this over listing the same path in `lower_dirs`.
     #[serde(default)]
     pub target: Option<String>,
+    /// Prevent explicit or automatic apply from modifying the lower target.
+    #[serde(default)]
+    pub protect_target: bool,
     /// Read-only compose layers stacked above `target`, highest priority first.
     #[serde(default)]
     pub lower_dirs: Vec<String>,

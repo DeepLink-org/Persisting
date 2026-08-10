@@ -17,7 +17,8 @@ use crate::runtime::OverlayHint;
 pub struct RunConfig {
     pub run: RunSettings,
     pub container: ContainerSettings,
-    pub kvm: KvmSettings,
+    #[serde(alias = "kvm")]
+    pub vm: VmSettings,
     /// Transactional filesystem configuration. Absence means host filesystem access.
     pub overlayfs: Option<OverlayFsSettings>,
     pub overlaynet: OverlayNetSettings,
@@ -35,6 +36,8 @@ impl RunConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunSettings {
+    /// Internally resolved project association; not a user-facing configuration parameter.
+    #[serde(skip)]
     pub workspace: Option<PathBuf>,
     pub agent: String,
     pub executor: RunExecutorKind,
@@ -64,7 +67,8 @@ pub enum RunExecutorKind {
     #[default]
     Host,
     Container,
-    Kvm,
+    #[serde(alias = "kvm")]
+    Vm,
 }
 
 /// OCI CLI configuration used by [`crate::ContainerExecutor`].
@@ -140,25 +144,35 @@ impl std::str::FromStr for ContainerPlatform {
     }
 }
 
-/// libkrun/KVM process isolation over pVisor's full-root OverlayFS.
+/// libkrun process isolation over a pVisor-provided Linux rootfs OverlayFS.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub struct KvmSettings {
-    /// Optional directory containing libkrun, libkrun_init, and libkrunfw.
+pub struct VmSettings {
+    /// Linux root filesystem exported to the libkrun guest.
+    pub rootfs: Option<PathBuf>,
+    /// OCI image used when no explicit rootfs is supplied.
+    pub image: Option<String>,
+    /// Content-addressed OCI cache. The platform cache directory is used when omitted.
+    pub image_store: Option<PathBuf>,
+    /// Reject apply operations that would mutate the configured rootfs lower.
+    pub rootfs_immutable: bool,
+    /// Optional directory containing libkrunfw. Packaged builds discover it
+    /// next to pVisor; source builds use a verified per-user download cache.
     pub library_dir: Option<PathBuf>,
     pub memory_mib: u32,
     pub cpus: u16,
-    /// Guest vsock port reserved for the pVisor OverlayNet relay.
-    pub proxy_vsock_port: u32,
 }
 
-impl Default for KvmSettings {
+impl Default for VmSettings {
     fn default() -> Self {
         Self {
+            rootfs: None,
+            image: Some(crate::oci::DEFAULT_IMAGE.into()),
+            image_store: None,
+            rootfs_immutable: false,
             library_dir: None,
             memory_mib: 2048,
             cpus: 2,
-            proxy_vsock_port: 19081,
         }
     }
 }
@@ -212,8 +226,10 @@ pub enum RunPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayFsSettings {
-    /// Bottom read-only layer and default apply destination. Defaults to the Run workspace.
+    /// Bottom host layer and default apply destination.
     pub base: Option<PathBuf>,
+    /// Absolute path where the staged overlay is exposed inside a libkrun guest.
+    pub target: Option<PathBuf>,
     /// Additional read-only layers composed above `base`, in command-line order.
     pub compose: Vec<PathBuf>,
     /// Durable writable stage root. Defaults to the generated per-Run storage directory.
@@ -226,6 +242,7 @@ impl Default for OverlayFsSettings {
     fn default() -> Self {
         Self {
             base: None,
+            target: None,
             compose: Vec::new(),
             stage: None,
             backend: OverlayFsBackend::Directory,
@@ -416,7 +433,6 @@ mod tests {
         let config: RunConfig = toml::from_str(
             r#"
 [run]
-workspace = "/tmp/project"
 executor = "container"
 command = ["codex"]
 
@@ -473,7 +489,36 @@ upstream = "https://api.openai.com/v1"
     }
 
     #[test]
-    fn kvm_config_toml_roundtrip() {
+    fn vm_config_toml_roundtrip() {
+        let config: RunConfig = toml::from_str(
+            r#"
+[run]
+executor = "vm"
+command = ["agent"]
+
+[vm]
+rootfs = "/opt/rootfs"
+library_dir = "/opt/libkrun/lib"
+memory_mib = 4096
+cpus = 4
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(config.vm.rootfs.as_deref(), Some(Path::new("/opt/rootfs")));
+        assert_eq!(
+            config.vm.library_dir.as_deref(),
+            Some(Path::new("/opt/libkrun/lib"))
+        );
+        assert_eq!(config.vm.memory_mib, 4096);
+        assert_eq!(config.vm.cpus, 4);
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        let decoded: RunConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[test]
+    fn legacy_kvm_config_deserializes_as_vm() {
         let config: RunConfig = toml::from_str(
             r#"
 [run]
@@ -481,23 +526,11 @@ executor = "kvm"
 command = ["agent"]
 
 [kvm]
-library_dir = "/opt/libkrun/lib"
-memory_mib = 4096
-cpus = 4
-proxy_vsock_port = 19100
+rootfs = "/opt/rootfs"
 "#,
         )
         .unwrap();
-        assert_eq!(config.run.executor, RunExecutorKind::Kvm);
-        assert_eq!(
-            config.kvm.library_dir.as_deref(),
-            Some(Path::new("/opt/libkrun/lib"))
-        );
-        assert_eq!(config.kvm.memory_mib, 4096);
-        assert_eq!(config.kvm.cpus, 4);
-        assert_eq!(config.kvm.proxy_vsock_port, 19100);
-        let encoded = toml::to_string_pretty(&config).unwrap();
-        let decoded: RunConfig = toml::from_str(&encoded).unwrap();
-        assert_eq!(decoded.kvm, config.kvm);
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(config.vm.rootfs.as_deref(), Some(Path::new("/opt/rootfs")));
     }
 }

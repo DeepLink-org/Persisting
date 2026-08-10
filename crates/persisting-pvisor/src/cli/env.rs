@@ -192,6 +192,7 @@ fn create(args: CreateArgs) -> Result<i32> {
         excluded_paths: Vec::new(),
         auto_apply: false,
         auto_discard: false,
+        protect_target: false,
         state: OverlayState::Staged,
     };
     let now = crate::unix_now_ms();

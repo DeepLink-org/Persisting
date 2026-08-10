@@ -75,8 +75,8 @@ jobs:
 
       - name: Test
         # GitHub-hosted Linux runners may disable unprivileged user namespaces.
-        # The rootless integration tests only skip for that exact EPERM setup
-        # failure; all other sandbox failures remain test failures.
+        # The rootless integration tests only skip permission-denied failures
+        # from that exact namespace setup boundary; other failures remain fatal.
         env:
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
         run: cargo test --workspace --locked

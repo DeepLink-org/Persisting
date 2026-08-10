@@ -12,7 +12,7 @@ and its matched CLI component set:
 - Python 3.10+
 - Pulsing, installed automatically as a dependency
 - macOS or Linux for the CLI
-- macOS: macFUSE 5 for `pvisor run --safe` staged workspaces
+- macOS: macFUSE 5 for host-process `pvisor run --safe` (not required by libkrun Runs)
 
 Install the macOS filesystem runtime once before the first safe Run:
 
@@ -23,6 +23,8 @@ brew install --cask macfuse
 On Apple Silicon, enable the macFUSE system extension when macOS prompts for
 approval. Plain non-staged host Runs remain available without macFUSE, but
 `--safe` fails closed rather than writing directly to the project workspace.
+The libkrun OCI-image executor keeps its cached rootfs immutable through its
+built-in Overlay virtio-fs backend and does not require macFUSE.
 
 ## Python package
 
@@ -76,12 +78,23 @@ This alternative installs matching builds of `persisting`, `pvisor`, and
 Set `PERSISTING_PVISOR_BIN` or `PERSISTING_PPILOT_BIN` to select an explicit
 component binary.
 
-## Container and KVM executors
+## Container and libkrun executors
 
-`pvisor run --executor container|kvm` requires a compatible Linux pVisor for
-the guest platform. Supply it explicitly through the executor's `pvisor_binary`
-setting. Nightly releases do not publish a separate guest runtime. Host
-execution does not need this additional artifact.
+Container execution still requires an explicitly configured compatible Linux
+pVisor guest binary. The `vm` executor instead statically includes libkrun and
+its Linux guest init in the host `pvisor` binary. Release wheels also install
+libkrunfw beside `pvisor`. Source builds automatically download the pinned
+official release into the user cache and verify its SHA-256; macOS compiles the
+downloaded kernel bundle with `/usr/bin/cc`. `--vm-library-dir` may still point
+at a system installation. Building pVisor from source on macOS also requires
+Zig (`brew install zig`) to cross-compile libkrun's embedded Linux guest init.
+
+Use `pvisor run --image ubuntu:latest -- COMMAND` to pull and run a public OCI
+image without Docker or Podman. `ubuntu:latest` is also the default for
+`--executor vm`; `--image-store DIR` overrides the local content-addressed
+cache. `--overlayfs-target` selects the guest workspace path. `--vm-rootfs DIR`
+remains available for an explicit prepared Linux rootfs. Linux hosts use KVM;
+Apple Silicon macOS hosts use HVF through the same executor and configuration.
 
 ## Verify the installation
 

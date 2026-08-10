@@ -11,7 +11,7 @@ Persisting 通过 Python wheel 发布，wheel 同时包含 Python 包和版本�
 - Python 3.10+
 - Pulsing（作为依赖自动安装）
 - CLI 需要 macOS 或 Linux
-- macOS：`pvisor run --safe` 的 staged workspace 需要 macFUSE 5
+- macOS：宿主进程模式的 `pvisor run --safe` 需要 macFUSE 5（libkrun Run 不需要）
 
 首次执行 safe Run 前安装一次 macOS 文件系统运行时：
 
@@ -21,7 +21,8 @@ brew install --cask macfuse
 
 Apple Silicon 需要在 macOS 提示时允许 macFUSE system extension。普通非 staged 的
 host Run 不依赖 macFUSE；`--safe` 在挂载能力不可用时会 fail closed，不会退化为直接
-写项目目录。
+写项目目录。libkrun OCI 镜像 executor 使用内置 Overlay virtio-fs 保证缓存 rootfs
+不被修改，不依赖 macFUSE。
 
 ## Python 包
 
@@ -72,11 +73,20 @@ just install-cli
 
 `PERSISTING_PVISOR_BIN`、`PERSISTING_PPILOT_BIN` 可显式指定组件二进制路径。
 
-## Container/KVM executor
+## Container/libkrun executor
 
-`pvisor run --executor container|kvm` 需要与目标平台兼容的 Linux pVisor。请通过 executor
-的 `pvisor_binary` 配置显式提供。Nightly 不再发布单独的 guest runtime；host executor
-不需要这个额外产物。
+Container executor 仍需显式配置兼容的 Linux guest pVisor。`vm` executor 则把
+libkrun 和 Linux guest init 静态链接进宿主 `pvisor`；发行 wheel 还会把 libkrunfw
+安装在 `pvisor` 同目录。源码构建会自动下载固定版本的官方 release，校验 SHA-256
+后放入用户缓存；macOS 使用 `/usr/bin/cc` 把其中的 kernel bundle 编译成 dylib。
+仍可用 `--vm-library-dir` 显式指向系统 libkrunfw。在 macOS 上从源码构建 pVisor
+还需安装 Zig（`brew install zig`），用于交叉编译 libkrun 内嵌的 Linux guest init。
+
+`pvisor run --image ubuntu:latest -- COMMAND` 可在不安装 Docker 或 Podman 的情况下
+直接拉取并运行公开 OCI 镜像；`--executor vm` 未指定 rootfs 时也默认使用
+`ubuntu:latest`。`--image-store DIR` 可覆盖本地内容寻址缓存目录，
+`--overlayfs-target` 用于指定 guest 工作路径。`--vm-rootfs DIR` 仍可指定预先准备的 Linux 根文件
+系统。Linux 宿主使用 KVM，Apple Silicon macOS 宿主使用 HVF。
 
 ## 验证
 

@@ -21,8 +21,8 @@ use crate::config::{
 use crate::runtime::{default_run_home, resolve_run, RunLineage};
 use crate::{
     latest_logical_checkpoint, restore_logical_checkpoint, ContainerExecutor, GatewayDriverConfig,
-    KvmExecutor, LogicalCheckpoint, OverlayHint, PVisor, ProcessExecutor, RunBundle, RunExecutor,
-    TrajectoryEventSink,
+    LogicalCheckpoint, OverlayHint, PVisor, ProcessExecutor, RunBundle, RunExecutor,
+    TrajectoryEventSink, VmExecutor,
 };
 
 use super::trajectory::{chronicle_sink, ChronicleWriter};
@@ -62,9 +62,9 @@ const SAFE_HELP: &str = "Stage workspace writes for review before apply or drop"
 const SAFE_LONG_HELP: &str = SAFE_HELP;
 
 #[cfg(target_os = "linux")]
-const EXECUTOR_HELP: &str = "Execution provider. `host` plus `--safe` automatically selects the rootless Linux sandbox; `host` without `--safe` is an ordinary host process";
+const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; `host` plus `--safe` selects the rootless Linux sandbox";
 #[cfg(target_os = "macos")]
-const EXECUTOR_HELP: &str = "Execution provider. `host` plus `--safe` selects macFUSE staging with macOS Seatbelt write confinement";
+const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; `host` plus `--safe` selects macOS Seatbelt confinement";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const EXECUTOR_HELP: &str = "Execution provider for the Agent command";
 
@@ -97,8 +97,8 @@ pub struct RunArgs {
     run: RunOverrides,
     #[command(flatten, next_help_heading = "Container executor options")]
     container: ContainerOverrides,
-    #[command(flatten, next_help_heading = "KVM executor options")]
-    kvm: KvmOverrides,
+    #[command(flatten, next_help_heading = "VM executor options")]
+    vm: VmOverrides,
     #[command(flatten, next_help_heading = "OverlayFS options")]
     overlayfs: OverlayFsOverrides,
     #[command(flatten, next_help_heading = "OverlayNet options")]
@@ -120,9 +120,6 @@ pub struct ForkArgs {
     /// Logical checkpoint id; the latest checkpoint is used when omitted.
     #[arg(long, value_name = "ID")]
     checkpoint: Option<String>,
-    /// Reusable project workspace for the child Run; defaults to the source workspace.
-    #[arg(long, value_name = "DIR")]
-    workspace: Option<PathBuf>,
     #[arg(long, short = 'o', default_value = ".persisting/capture")]
     output_dir: PathBuf,
     /// Agent command; defaults to the source Run command.
@@ -132,9 +129,6 @@ pub struct ForkArgs {
 
 #[derive(Debug, Clone, Default, Args)]
 struct RunOverrides {
-    /// Reusable project workspace. Defaults to the current directory.
-    #[arg(long, value_name = "DIR")]
-    workspace: Option<PathBuf>,
     #[arg(long)]
     agent: Option<String>,
     #[arg(long, value_enum, help = EXECUTOR_HELP)]
@@ -179,16 +173,27 @@ struct ContainerOverrides {
 }
 
 #[derive(Debug, Clone, Default, Args)]
-struct KvmOverrides {
-    /// Directory containing libkrun, libkrun_init, and libkrunfw.
-    #[arg(long, value_name = "PATH")]
-    kvm_library_dir: Option<PathBuf>,
-    #[arg(long, value_name = "MIB")]
-    kvm_memory_mib: Option<u32>,
-    #[arg(long, value_name = "COUNT")]
-    kvm_cpus: Option<u16>,
-    #[arg(long, value_name = "PORT")]
-    kvm_proxy_vsock_port: Option<u32>,
+struct VmOverrides {
+    /// Linux root filesystem exported to the libkrun guest.
+    #[arg(long = "vm-rootfs", value_name = "DIR")]
+    vm_rootfs: Option<PathBuf>,
+    /// OCI image used as the libkrun guest rootfs. No Docker or Podman daemon is required.
+    #[arg(long = "image", visible_alias = "vm-image", value_name = "IMAGE")]
+    vm_image: Option<String>,
+    /// Content-addressed OCI image cache directory.
+    #[arg(
+        long = "image-store",
+        visible_alias = "vm-image-store",
+        value_name = "DIR"
+    )]
+    vm_image_store: Option<PathBuf>,
+    /// Directory containing libkrunfw; packaged builds discover it automatically.
+    #[arg(long = "vm-library-dir", value_name = "PATH")]
+    vm_library_dir: Option<PathBuf>,
+    #[arg(long = "vm-memory-mib", value_name = "MIB")]
+    vm_memory_mib: Option<u32>,
+    #[arg(long = "vm-cpus", value_name = "COUNT")]
+    vm_cpus: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,9 +216,12 @@ impl FromStr for ContainerMountArg {
 
 #[derive(Debug, Clone, Default, Args)]
 struct OverlayFsOverrides {
-    /// Bottom read-only layer and default apply destination. Defaults to the Run workspace.
+    /// Bottom host layer and default apply destination.
     #[arg(long, value_name = "DIR")]
     overlayfs_base: Option<PathBuf>,
+    /// Absolute path where the staged overlay is mounted inside a libkrun guest.
+    #[arg(long, value_name = "GUEST_PATH")]
+    overlayfs_target: Option<PathBuf>,
     /// Read-only layer composed above the base; repeat to add multiple layers.
     #[arg(long, value_name = "DIR")]
     overlayfs_compose: Vec<PathBuf>,
@@ -572,9 +580,9 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         checkpoint.run_id,
         source.run_id
     );
-    let fork_workspace = args
+    let fork_workspace = source
         .workspace
-        .or_else(|| source.workspace.clone())
+        .clone()
         .unwrap_or_else(|| checkpoint.target.clone());
     let fork_workspace = resolve_workspace(&fork_workspace)?;
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
@@ -582,7 +590,9 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     if source.executor.as_ref().is_some_and(|executor| {
         executor.isolation == persisting_control::IsolationKind::VirtualMachine
     }) {
-        config.run.executor = RunExecutorKind::Kvm;
+        config.run.executor = RunExecutorKind::Vm;
+        config.vm.rootfs = Some(checkpoint.target.clone());
+        config.vm.rootfs_immutable = checkpoint.protect_target;
     }
     config.run.workspace = Some(fork_workspace.clone());
     let (agent, command) = fork_command(&source.agent, &source.command, args.command);
@@ -590,6 +600,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     config.run.command = command;
     config.overlayfs = Some(OverlayFsSettings {
         base: Some(checkpoint.target.clone()),
+        target: None,
         compose: checkpoint
             .lower_dirs
             .iter()
@@ -643,25 +654,78 @@ async fn execute_config(
     safe_profile_requested: bool,
     lineage: Option<RunLineage>,
 ) -> anyhow::Result<i32> {
-    if config.run.executor == RunExecutorKind::Kvm {
-        let overlay = config
+    let prepared_image = if config.run.executor == RunExecutorKind::Vm && config.vm.rootfs.is_none()
+    {
+        let image = config
+            .vm
+            .image
+            .clone()
+            .unwrap_or_else(|| crate::oci::DEFAULT_IMAGE.into());
+        let store = config.vm.image_store.clone();
+        eprintln!("pVisor image: resolving {image}");
+        let prepared = tokio::task::spawn_blocking(move || {
+            crate::oci::ImageStore::new(store)?.prepare(&image)
+        })
+        .await
+        .context("OCI image preparation task failed")??;
+        eprintln!(
+            "pVisor image: {} ({})",
+            prepared.digest,
+            prepared.rootfs.display()
+        );
+        config.vm.rootfs = Some(prepared.rootfs.clone());
+        config.vm.rootfs_immutable = true;
+        if config.run.command.is_empty() {
+            config.run.command = prepared.entrypoint.clone();
+            config.run.command.extend(prepared.cmd.clone());
+        }
+        Some(prepared)
+    } else {
+        None
+    };
+    if config.run.executor == RunExecutorKind::Vm {
+        let (rootfs, workspace) = resolve_vm_layout(&config)?;
+        config.vm.rootfs = Some(rootfs.clone());
+        config.run.workspace = Some(workspace);
+        let has_guest_overlay = config
             .overlayfs
-            .get_or_insert_with(OverlayFsSettings::default);
-        overlay.base = Some(PathBuf::from("/"));
-        overlay.commit = OverlayFsCommit::Manual;
+            .as_ref()
+            .and_then(|overlay| overlay.target.as_ref())
+            .is_some();
+        if !has_guest_overlay {
+            let overlay = config
+                .overlayfs
+                .get_or_insert_with(OverlayFsSettings::default);
+            overlay.base = Some(rootfs);
+            overlay.commit = OverlayFsCommit::Manual;
+        }
+        if config.vm.library_dir.is_none() && crate::vm::bundled_firmware_dir().is_none() {
+            eprintln!(
+                "pVisor firmware: resolving libkrunfw {}",
+                crate::firmware::VERSION
+            );
+            let directory =
+                tokio::task::spawn_blocking(|| crate::firmware::FirmwareStore::new()?.prepare())
+                    .await
+                    .context("libkrunfw preparation task failed")??;
+            eprintln!("pVisor firmware: {}", directory.display());
+            config.vm.library_dir = Some(directory);
+        }
+    } else if let Some(base) = config
+        .overlayfs
+        .as_ref()
+        .and_then(|overlay| overlay.base.as_ref())
+    {
+        // The OverlayFS base is the project association for host and container
+        // runs now that the ambiguous --workspace option is gone.
+        config.run.workspace = Some(base.clone());
     }
     validate(&config)?;
 
     if config.overlaynet.mode == OverlayNetMode::Proxy {
-        if config.run.executor == RunExecutorKind::Kvm {
-            eprintln!(
-                "pVisor OverlayNet boundary: guest direct sockets are disabled; proxy traffic crosses an explicit vsock relay"
-            );
-        } else {
-            eprintln!(
-                "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
-            );
-        }
+        eprintln!(
+            "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
+        );
     }
 
     let workspace = config
@@ -672,7 +736,19 @@ async fn execute_config(
         .unwrap_or(std::env::current_dir()?);
     let workspace = resolve_workspace(&workspace)?;
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
-    let overlay = resolve_overlay(&config, &workspace, &storage, &run_id)?;
+    let mut overlay = resolve_overlay(&config, &workspace, &storage, &run_id)?;
+    if config.run.executor == RunExecutorKind::Vm
+        && config.vm.rootfs_immutable
+        && config
+            .overlayfs
+            .as_ref()
+            .and_then(|overlay| overlay.target.as_ref())
+            .is_none()
+    {
+        if let Some(overlay) = &mut overlay {
+            overlay.protect_target = true;
+        }
+    }
     let overlay_enabled = overlay.is_some();
     let proxy = resolve_proxy(&config)?;
 
@@ -717,7 +793,7 @@ async fn execute_config(
         RunExecutorKind::Host if safe_profile_requested => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
-        RunExecutorKind::Kvm => Arc::new(KvmExecutor::new(config.kvm.clone())?),
+        RunExecutorKind::Vm => Arc::new(VmExecutor::new(config.vm.clone())?),
     };
     let mut builder = PVisor::builder()
         .storage(&storage)
@@ -751,6 +827,10 @@ async fn execute_config(
         RunStdio::Capture => StdioMode::Capture,
     };
     process.stderr = process.stdout;
+    if let Some(image) = &prepared_image {
+        process.inherit_env = false;
+        process.env.extend(image.env.clone());
+    }
     if !overlay_enabled {
         process.cwd = Some(workspace.display().to_string());
     }
@@ -759,6 +839,33 @@ async fn execute_config(
         "pvisor.workspace".into(),
         serde_json::Value::String(workspace.display().to_string()),
     );
+    if config.run.executor == RunExecutorKind::Vm {
+        if let Some(target) = config
+            .overlayfs
+            .as_ref()
+            .and_then(|overlay| overlay.target.as_ref())
+        {
+            spec.metadata.insert(
+                "pvisor.vm.overlay_target".into(),
+                serde_json::Value::String(target.display().to_string()),
+            );
+            spec.metadata.insert(
+                "pvisor.vm.guest_cwd".into(),
+                serde_json::Value::String(target.display().to_string()),
+            );
+        } else {
+            spec.metadata.insert(
+                "pvisor.vm.guest_cwd".into(),
+                serde_json::Value::String("/".into()),
+            );
+        }
+        if let Some(image) = &prepared_image {
+            spec.metadata.insert(
+                "pvisor.vm.image_digest".into(),
+                serde_json::Value::String(image.digest.clone()),
+            );
+        }
+    }
     if config.run.policy == RunPolicy::Enforce {
         spec.runtime.policy_mode = PolicyMode::Enforce;
     }
@@ -803,13 +910,24 @@ async fn execute_config(
             RunExecutorKind::Container => eprintln!(
                 "boundary: OCI container process; direct sockets remain outside proxy enforcement"
             ),
-            RunExecutorKind::Kvm => {
-                eprintln!("boundary: KVM virtual machine; host Gateway integration is disabled")
+            RunExecutorKind::Vm => {
+                eprintln!(
+                    "boundary: libkrun Linux virtual machine (KVM/HVF); host Gateway integration is disabled"
+                )
             }
         }
     }
     let handle = pvisor.run(spec).await?;
-    let result = handle.wait().await?;
+    let cancellation = handle.cancellation();
+    let wait = handle.wait();
+    tokio::pin!(wait);
+    let result = tokio::select! {
+        result = &mut wait => result?,
+        _ = delegated_shutdown_signal() => {
+            cancellation.cancel();
+            wait.await?
+        }
+    };
     drop(pvisor);
     if let Some(writer) = writer {
         writer.finish()?;
@@ -883,9 +1001,6 @@ fn free_loopback_address() -> anyhow::Result<String> {
 
 fn apply_cli(config: &mut RunConfig, args: RunArgs) {
     let explicit_executor = args.run.executor;
-    if let Some(value) = args.run.workspace {
-        config.run.workspace = Some(value);
-    }
     if let Some(value) = args.run.agent {
         config.run.agent = value;
     }
@@ -950,27 +1065,38 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
         config.run.executor = RunExecutorKind::Container;
     }
 
-    let enables_kvm = args.kvm.kvm_library_dir.is_some()
-        || args.kvm.kvm_memory_mib.is_some()
-        || args.kvm.kvm_cpus.is_some()
-        || args.kvm.kvm_proxy_vsock_port.is_some();
-    if let Some(value) = args.kvm.kvm_library_dir {
-        config.kvm.library_dir = Some(value);
+    let enables_vm = args.vm.vm_rootfs.is_some()
+        || args.vm.vm_image.is_some()
+        || args.vm.vm_image_store.is_some()
+        || args.vm.vm_library_dir.is_some()
+        || args.vm.vm_memory_mib.is_some()
+        || args.vm.vm_cpus.is_some()
+        || args.overlayfs.overlayfs_target.is_some();
+    if let Some(value) = args.vm.vm_rootfs {
+        config.vm.rootfs = Some(value);
     }
-    if let Some(value) = args.kvm.kvm_memory_mib {
-        config.kvm.memory_mib = value;
+    if let Some(value) = args.vm.vm_image {
+        config.vm.image = Some(value);
+        config.vm.rootfs = None;
     }
-    if let Some(value) = args.kvm.kvm_cpus {
-        config.kvm.cpus = value;
+    if let Some(value) = args.vm.vm_image_store {
+        config.vm.image_store = Some(value);
     }
-    if let Some(value) = args.kvm.kvm_proxy_vsock_port {
-        config.kvm.proxy_vsock_port = value;
+    if let Some(value) = args.vm.vm_library_dir {
+        config.vm.library_dir = Some(value);
     }
-    if enables_kvm && explicit_executor.is_none() {
-        config.run.executor = RunExecutorKind::Kvm;
+    if let Some(value) = args.vm.vm_memory_mib {
+        config.vm.memory_mib = value;
+    }
+    if let Some(value) = args.vm.vm_cpus {
+        config.vm.cpus = value;
+    }
+    if enables_vm && explicit_executor.is_none() {
+        config.run.executor = RunExecutorKind::Vm;
     }
 
     let enables_overlayfs = args.overlayfs.overlayfs_base.is_some()
+        || args.overlayfs.overlayfs_target.is_some()
         || !args.overlayfs.overlayfs_compose.is_empty()
         || args.overlayfs.overlayfs_stage.is_some()
         || args.overlayfs.overlayfs_backend.is_some()
@@ -981,6 +1107,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
             .get_or_insert_with(OverlayFsSettings::default);
         if let Some(value) = args.overlayfs.overlayfs_base {
             overlayfs.base = Some(value);
+        }
+        if let Some(value) = args.overlayfs.overlayfs_target {
+            overlayfs.target = Some(value);
         }
         if !args.overlayfs.overlayfs_compose.is_empty() {
             overlayfs.compose = args.overlayfs.overlayfs_compose;
@@ -1098,6 +1227,34 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
     if config.run.command.is_empty() {
         bail!("missing Agent command; pass it after `--` or set run.command");
     }
+    let overlay_target = config
+        .overlayfs
+        .as_ref()
+        .and_then(|overlay| overlay.target.as_deref());
+    if let Some(target) = overlay_target {
+        anyhow::ensure!(
+            config.run.executor == RunExecutorKind::Vm,
+            "--overlayfs-target is only supported by --executor vm"
+        );
+        anyhow::ensure!(
+            config
+                .overlayfs
+                .as_ref()
+                .and_then(|overlay| overlay.base.as_ref())
+                .is_some(),
+            "--overlayfs-target requires --overlayfs-base"
+        );
+        anyhow::ensure!(
+            target.is_absolute() && target != Path::new("/"),
+            "--overlayfs-target must be an absolute guest path other than /"
+        );
+        anyhow::ensure!(
+            !target
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir)),
+            "--overlayfs-target must not contain .."
+        );
+    }
     if config.run.executor == RunExecutorKind::Container {
         ContainerExecutor::new(config.container.clone())?;
         if config.overlaynet.mode == OverlayNetMode::Proxy
@@ -1106,15 +1263,27 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
             bail!("the in-process OverlayNet/Gateway requires container.network = \"host\"");
         }
     }
-    if config.run.executor == RunExecutorKind::Kvm {
-        KvmExecutor::new(config.kvm.clone())?;
+    if config.run.executor == RunExecutorKind::Vm {
+        VmExecutor::new(config.vm.clone())?;
+        let rootfs = config
+            .vm
+            .rootfs
+            .as_deref()
+            .context("VM execution requires vm.rootfs or --vm-rootfs")?;
+        if overlay_target.is_none() {
+            anyhow::ensure!(
+                config
+                    .overlayfs
+                    .as_ref()
+                    .and_then(|overlay| overlay.base.as_deref())
+                    == Some(rootfs),
+                "VM execution requires vm.rootfs as its OverlayFS base"
+            );
+        }
         anyhow::ensure!(
-            config
-                .overlayfs
-                .as_ref()
-                .and_then(|overlay| overlay.base.as_deref())
-                == Some(Path::new("/")),
-            "libkrun KVM execution requires the host root as OverlayFS base"
+            config.overlaynet.mode == OverlayNetMode::Off
+                && config.gateway.mode == GatewayMode::Off,
+            "libkrun execution does not yet expose the host OverlayNet/Gateway to the guest"
         );
     }
     if let Some(overlayfs) = &config.overlayfs {
@@ -1175,6 +1344,24 @@ fn resolve_workspace(workspace: &Path) -> anyhow::Result<PathBuf> {
         workspace.display()
     );
     Ok(workspace)
+}
+
+fn resolve_vm_layout(config: &RunConfig) -> anyhow::Result<(PathBuf, PathBuf)> {
+    let rootfs = config
+        .vm
+        .rootfs
+        .as_deref()
+        .context("VM execution requires vm.rootfs or --vm-rootfs")?;
+    let rootfs = resolve_directory(rootfs, "libkrun rootfs")?;
+    let workspace = config
+        .overlayfs
+        .as_ref()
+        .filter(|overlay| overlay.target.is_some())
+        .and_then(|overlay| overlay.base.clone())
+        .or_else(|| config.run.workspace.clone())
+        .unwrap_or(std::env::current_dir()?);
+    let workspace = resolve_workspace(&workspace)?;
+    Ok((rootfs, workspace))
 }
 
 fn resolve_run_storage(storage: &Path) -> anyhow::Result<PathBuf> {
@@ -1259,8 +1446,8 @@ fn resolve_overlay(
             .with_context(|| format!("resolve OverlayFS stage {}", stage.display()))?
     };
     anyhow::ensure!(
-        base == Path::new("/") || !paths_overlap(&base, &stage),
-        "OverlayFS base and stage must not overlap: base={}, stage={}",
+        base != stage && !base.starts_with(&stage),
+        "OverlayFS stage must not contain its base: base={}, stage={}",
         base.display(),
         stage.display()
     );
@@ -1268,8 +1455,8 @@ fn resolve_overlay(
     for layer in &overlayfs.compose {
         let layer = resolve_directory(layer, "OverlayFS compose layer")?;
         anyhow::ensure!(
-            base == Path::new("/") || !paths_overlap(&layer, &stage),
-            "OverlayFS compose layer and stage must not overlap: compose={}, stage={}",
+            layer != stage && !layer.starts_with(&stage),
+            "OverlayFS stage must not contain a compose layer: compose={}, stage={}",
             layer.display(),
             stage.display()
         );
@@ -1340,17 +1527,10 @@ mod tests {
 
     #[test]
     fn safe_profile_builds_a_reviewable_default_run() {
-        let crate::cli::Command::Run(args) = Cli::try_parse_from([
-            "pvisor",
-            "run",
-            "--safe",
-            "--workspace",
-            "/tmp/pvisor-safe-test",
-            "--",
-            "/usr/bin/true",
-        ])
-        .unwrap()
-        .command
+        let crate::cli::Command::Run(args) =
+            Cli::try_parse_from(["pvisor", "run", "--safe", "--", "/usr/bin/true"])
+                .unwrap()
+                .command
         else {
             unreachable!()
         };
@@ -1388,8 +1568,6 @@ mod tests {
         Cli::try_parse_from([
             "pvisor",
             "run",
-            "--workspace",
-            "/tmp/run",
             "--overlayfs-base",
             "/tmp/lower",
             "--overlaynet-mode",
@@ -1474,21 +1652,21 @@ mod tests {
     }
 
     #[test]
-    fn cli_selects_and_configures_kvm_executor() {
+    fn cli_selects_and_configures_vm_executor() {
         let temporary = tempfile::tempdir().unwrap();
         let libraries = temporary.path().join("lib");
         std::fs::create_dir(&libraries).unwrap();
         let crate::cli::Command::Run(args) = Cli::try_parse_from([
             "pvisor",
             "run",
-            "--kvm-library-dir",
+            "--vm-rootfs",
+            temporary.path().to_str().unwrap(),
+            "--vm-library-dir",
             libraries.to_str().unwrap(),
-            "--kvm-memory-mib",
+            "--vm-memory-mib",
             "4096",
-            "--kvm-cpus",
+            "--vm-cpus",
             "4",
-            "--kvm-proxy-vsock-port",
-            "19100",
             "--",
             "agent",
         ])
@@ -1499,26 +1677,120 @@ mod tests {
         };
         let mut config = RunConfig::default();
         apply_cli(&mut config, *args);
-        assert_eq!(config.run.executor, RunExecutorKind::Kvm);
-        assert_eq!(config.kvm.library_dir.as_deref(), Some(libraries.as_path()));
-        assert_eq!(config.kvm.memory_mib, 4096);
-        assert_eq!(config.kvm.cpus, 4);
-        assert_eq!(config.kvm.proxy_vsock_port, 19100);
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(config.vm.rootfs.as_deref(), Some(temporary.path()));
+        assert_eq!(config.vm.library_dir.as_deref(), Some(libraries.as_path()));
+        assert_eq!(config.vm.memory_mib, 4096);
+        assert_eq!(config.vm.cpus, 4);
     }
 
     #[test]
-    fn kvm_accepts_overlaynet_transport_over_vsock() {
+    fn vm_rejects_unimplemented_overlaynet_transport() {
         let temporary = tempfile::tempdir().unwrap();
         let mut config = RunConfig::default();
         config.run.command = vec!["agent".into()];
-        config.run.executor = RunExecutorKind::Kvm;
-        config.kvm.library_dir = Some(temporary.path().to_path_buf());
+        config.run.executor = RunExecutorKind::Vm;
+        config.vm.rootfs = Some(temporary.path().to_path_buf());
+        config.vm.library_dir = Some(temporary.path().to_path_buf());
+        std::fs::write(temporary.path().join(crate::vm::firmware_name()), []).unwrap();
         config.overlayfs = Some(OverlayFsSettings {
-            base: Some("/".into()),
+            base: Some(temporary.path().to_path_buf()),
             ..OverlayFsSettings::default()
         });
         config.overlaynet.mode = OverlayNetMode::Proxy;
-        validate(&config).unwrap();
+        let error = validate(&config).unwrap_err();
+        assert!(error.to_string().contains("does not yet expose"));
+    }
+
+    #[test]
+    fn vm_resolves_a_guest_overlay_separate_from_the_rootfs() {
+        let temporary = tempfile::tempdir().unwrap();
+        let rootfs = temporary.path().join("rootfs");
+        let project = temporary.path().join("project");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::create_dir(&project).unwrap();
+        let mut config = RunConfig::default();
+        config.vm.rootfs = Some(rootfs.clone());
+        config.overlayfs = Some(OverlayFsSettings {
+            base: Some(project.clone()),
+            target: Some("/work/project".into()),
+            ..OverlayFsSettings::default()
+        });
+        let (resolved_rootfs, resolved_workspace) = resolve_vm_layout(&config).unwrap();
+        assert_eq!(resolved_rootfs, rootfs.canonicalize().unwrap());
+        assert_eq!(resolved_workspace, project.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn overlayfs_target_selects_vm_executor() {
+        let mut config = RunConfig::default();
+        config.run.command = vec!["true".into()];
+        config.overlayfs = Some(OverlayFsSettings {
+            base: Some("/tmp/project".into()),
+            target: Some("/workspace".into()),
+            ..OverlayFsSettings::default()
+        });
+        config.vm.rootfs = Some(tempfile::tempdir().unwrap().keep());
+        config.run.executor = RunExecutorKind::Vm;
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn cli_exposes_guest_overlay_target_and_removes_workspace() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--image",
+            "ubuntu:latest",
+            "--overlayfs-base",
+            "/tmp/project",
+            "--overlayfs-target",
+            "/work/project",
+            "--overlayfs-stage",
+            "/tmp/stage",
+            "--",
+            "/bin/true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args);
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        let overlay = config.overlayfs.unwrap();
+        assert_eq!(overlay.base.as_deref(), Some(Path::new("/tmp/project")));
+        assert_eq!(overlay.target.as_deref(), Some(Path::new("/work/project")));
+        assert_eq!(overlay.stage.as_deref(), Some(Path::new("/tmp/stage")));
+    }
+
+    #[test]
+    fn image_selects_the_daemonless_vm_executor() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--image",
+            "ubuntu:24.04",
+            "--image-store",
+            "/tmp/pvisor-images",
+            "--",
+            "/bin/true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args);
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(config.vm.image.as_deref(), Some("ubuntu:24.04"));
+        assert_eq!(
+            config.vm.image_store.as_deref(),
+            Some(Path::new("/tmp/pvisor-images"))
+        );
+        assert!(config.vm.rootfs.is_none());
     }
 
     #[test]
@@ -1606,7 +1878,8 @@ mod tests {
         }
         #[cfg(target_os = "macos")]
         assert!(help.contains("ambient host Unix sockets"));
-        assert!(!help.contains("requires --workspace"));
+        assert!(help.contains("--overlayfs-target"));
+        assert!(!help.contains("--workspace"));
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
     }
@@ -1639,6 +1912,7 @@ mod tests {
         let help = error.to_string();
         for option in [
             "--overlayfs-base",
+            "--overlayfs-target",
             "--overlayfs-compose",
             "--overlayfs-stage",
             "--overlayfs-backend",
@@ -1646,11 +1920,7 @@ mod tests {
         ] {
             assert!(help.contains(option), "missing {option}");
         }
-        for obsolete in [
-            "--overlayfs-mode",
-            "--overlayfs-target",
-            "--overlayfs-lower",
-        ] {
+        for obsolete in ["--overlayfs-mode", "--overlayfs-lower"] {
             assert!(!help.contains(obsolete), "obsolete option {obsolete}");
         }
     }
@@ -1854,7 +2124,7 @@ mod tests {
     }
 
     #[test]
-    fn overlayfs_rejects_stage_nested_inside_base_or_compose() {
+    fn overlayfs_allows_hidden_stage_inside_base_or_compose() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");
         let compose = temporary.path().join("compose");
@@ -1880,8 +2150,18 @@ mod tests {
                 }),
                 ..RunConfig::default()
             };
-            assert!(resolve_overlay(&config, &workspace, &storage, "run-test").is_err());
+            assert!(resolve_overlay(&config, &workspace, &storage, "run-test").is_ok());
         }
+
+        let config = RunConfig {
+            overlayfs: Some(OverlayFsSettings {
+                base: Some(workspace.clone()),
+                stage: Some(temporary.path().to_path_buf()),
+                ..OverlayFsSettings::default()
+            }),
+            ..RunConfig::default()
+        };
+        assert!(resolve_overlay(&config, &workspace, &storage, "run-test").is_err());
     }
 
     #[test]

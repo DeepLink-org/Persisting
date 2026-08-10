@@ -35,6 +35,8 @@ pub struct LogicalCheckpoint {
     pub target: PathBuf,
     #[serde(default)]
     pub lower_dirs: Vec<PathBuf>,
+    #[serde(default)]
+    pub protect_target: bool,
 }
 
 impl LogicalCheckpoint {
@@ -140,6 +142,7 @@ fn create_checkpoint(
         } else {
             record.overlay_lowers.clone()
         },
+        protect_target: overlay.protect_target,
     };
     atomic_write(
         &root.join(CHECKPOINT_FILENAME),
@@ -261,6 +264,7 @@ mod tests {
                 excluded_paths: Vec::new(),
                 auto_apply: false,
                 auto_discard: false,
+                protect_target: false,
                 state: OverlayState::Staged,
             }),
             overlay_lowers: vec![target],
@@ -275,13 +279,15 @@ mod tests {
     #[test]
     fn stopped_checkpoint_preserves_links_and_can_seed_a_fork() {
         let temp = tempfile::tempdir().unwrap();
-        let record = stopped_record(temp.path());
+        let mut record = stopped_record(temp.path());
+        record.overlay.as_mut().unwrap().protect_target = true;
         let upper = record.overlay.as_ref().unwrap().upper.path();
         fs::write(upper.join("one"), b"value").unwrap();
         fs::hard_link(upper.join("one"), upper.join("two")).unwrap();
         std::os::unix::fs::symlink("one", upper.join("link")).unwrap();
 
         let checkpoint = create_logical_checkpoint(&record, Some("before-refactor")).unwrap();
+        assert!(checkpoint.protect_target);
         let restored = temp.path().join("restored");
         restore_logical_checkpoint(&checkpoint, &restored).unwrap();
 

@@ -185,7 +185,7 @@ pub fn checkpoint(args: CheckpointArgs) -> anyhow::Result<()> {
         );
         println!("manifest: {}", checkpoint.manifest_path().display());
         println!(
-            "fork: pvisor fork {} --checkpoint {} [--workspace <PROJECT>] -- <agent>",
+            "fork: pvisor fork {} --checkpoint {} -- <agent>",
             record.stage_dir().display(),
             checkpoint.checkpoint_id
         );
