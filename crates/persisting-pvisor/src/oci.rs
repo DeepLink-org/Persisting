@@ -115,7 +115,7 @@ impl ImageStore {
             None => default_store_dir()?,
         };
         fs::create_dir_all(root.join("blobs/sha256"))?;
-        fs::create_dir_all(root.join("rootfs-v2/sha256"))?;
+        fs::create_dir_all(root.join("rootfs-v3/sha256"))?;
         fs::create_dir_all(root.join("metadata/sha256"))?;
         fs::create_dir_all(root.join("locks"))?;
         let client = Client::builder()
@@ -146,7 +146,7 @@ impl ImageStore {
             .with_context(|| format!("decode image configuration for {image}"))?;
 
         let digest_hex = digest_hex(&manifest_digest)?;
-        let rootfs = self.root.join("rootfs-v2/sha256").join(digest_hex);
+        let rootfs = self.root.join("rootfs-v3/sha256").join(digest_hex);
         let lock_path = self.root.join("locks").join(format!("{digest_hex}.lock"));
         let lock = OpenOptions::new()
             .create(true)
@@ -158,7 +158,7 @@ impl ImageStore {
         if !rootfs.is_dir() {
             let partial = self
                 .root
-                .join("rootfs-v2/sha256")
+                .join("rootfs-v3/sha256")
                 .join(format!(".{digest_hex}.partial-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&partial)?;
             let extraction = (|| -> anyhow::Result<()> {
@@ -523,12 +523,38 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
 
     let mut archive = tar::Archive::new(tar_file.reopen()?);
     archive.set_preserve_permissions(true);
+    #[cfg(unix)]
+    let mut deferred_directory_modes = BTreeMap::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
         let relative = clean_relative(&entry.path()?)?;
         if whiteout(&relative).is_some() {
             continue;
         }
+        #[cfg(unix)]
+        make_ancestor_directories_writable(rootfs, &relative, &mut deferred_directory_modes)?;
+        // A rootless extractor cannot preserve an OCI entry's uid/gid. On
+        // Linux, retaining setuid/setgid would therefore grant the host
+        // user's identity inside the guest instead of the image owner. pVisor
+        // VM workloads currently start as guest root, so stripping the bits
+        // preserves execution while avoiding that incorrect privilege shift.
+        #[cfg(target_os = "linux")]
+        let sanitized_mode = entry.header().mode()? & !0o6000;
+        #[cfg(unix)]
+        let directory_mode = if entry.header().entry_type().is_dir() {
+            Some({
+                #[cfg(target_os = "linux")]
+                {
+                    sanitized_mode
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    entry.header().mode()?
+                }
+            })
+        } else {
+            None
+        };
         #[cfg(target_os = "macos")]
         let linux_owner = (
             entry.header().uid().unwrap_or(0),
@@ -540,19 +566,106 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
             "OCI layer entry escaped rootfs: {}",
             relative.display()
         );
+        #[cfg(target_os = "linux")]
+        if !entry.header().entry_type().is_dir() && !entry.header().entry_type().is_symlink() {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                rootfs.join(&relative),
+                fs::Permissions::from_mode(sanitized_mode),
+            )?;
+        }
         #[cfg(target_os = "macos")]
         {
-            use std::os::unix::fs::MetadataExt;
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
             let path = rootfs.join(&relative);
             let metadata = fs::symlink_metadata(&path)?;
-            let override_stat =
-                format!("{}:{}:0{:o}", linux_owner.0, linux_owner.1, metadata.mode());
-            persisting_overlay_core::sys::set_xattr(
+            let mode = metadata.mode();
+            let temporarily_writable = !metadata.file_type().is_symlink() && mode & 0o200 == 0;
+            if temporarily_writable {
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode | 0o200))?;
+            }
+            let override_stat = format!("{}:{}:0{:o}", linux_owner.0, linux_owner.1, mode);
+            let xattr_result = persisting_overlay_core::sys::set_xattr(
                 &path,
                 std::ffi::OsStr::new("user.containers.override_stat"),
                 override_stat.as_bytes(),
                 0,
+            );
+            if temporarily_writable {
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+            }
+            xattr_result?;
+        }
+        #[cfg(unix)]
+        if let Some(mode) = directory_mode {
+            use std::os::unix::fs::PermissionsExt;
+            deferred_directory_modes.insert(relative.clone(), mode);
+            fs::set_permissions(
+                rootfs.join(&relative),
+                fs::Permissions::from_mode(mode | 0o700),
             )?;
+        }
+    }
+    #[cfg(unix)]
+    restore_directory_modes(rootfs, deferred_directory_modes)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_ancestor_directories_writable(
+    rootfs: &Path,
+    relative: &Path,
+    deferred_modes: &mut BTreeMap<PathBuf, u32>,
+) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut relative_directory = PathBuf::new();
+    for component in relative
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .components()
+    {
+        relative_directory.push(component.as_os_str());
+        let directory = rootfs.join(&relative_directory);
+        let metadata = match fs::symlink_metadata(&directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        };
+        anyhow::ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "OCI layer entry traverses non-directory {}",
+            directory.display()
+        );
+        let mode = metadata.permissions().mode() & 0o7777;
+        deferred_modes
+            .entry(relative_directory.clone())
+            .or_insert(mode);
+        if mode & 0o700 != 0o700 {
+            fs::set_permissions(&directory, fs::Permissions::from_mode(mode | 0o700))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restore_directory_modes(
+    rootfs: &Path,
+    deferred_modes: BTreeMap<PathBuf, u32>,
+) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut directories = deferred_modes.into_iter().collect::<Vec<_>>();
+    directories.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+    for (relative, mode) in directories {
+        let directory = rootfs.join(relative);
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                fs::set_permissions(directory, fs::Permissions::from_mode(mode))?;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
     }
     Ok(())
@@ -741,6 +854,101 @@ mod tests {
         .unwrap();
         assert!(!root.path().join("etc/old").exists());
         assert_eq!(fs::read(root.path().join("etc/new")).unwrap(), b"new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn layer_can_populate_a_read_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let layer = tempfile::NamedTempFile::new().unwrap();
+        {
+            let mut archive = tar::Builder::new(layer.reopen().unwrap());
+            let mut directory = tar::Header::new_gnu();
+            directory.set_entry_type(tar::EntryType::Directory);
+            directory.set_mode(0o555);
+            directory.set_size(0);
+            directory.set_cksum();
+            archive
+                .append_data(&mut directory, "certs", std::io::empty())
+                .unwrap();
+
+            let body = b"certificate";
+            let mut file = tar::Header::new_gnu();
+            file.set_mode(0o444);
+            file.set_size(body.len() as u64);
+            file.set_cksum();
+            archive
+                .append_data(&mut file, "certs/root.pem", body.as_slice())
+                .unwrap();
+
+            let mut symlink = tar::Header::new_gnu();
+            symlink.set_entry_type(tar::EntryType::Symlink);
+            symlink.set_mode(0o777);
+            symlink.set_size(0);
+            archive
+                .append_link(&mut symlink, "certs/hash.0", "root.pem")
+                .unwrap();
+            archive.finish().unwrap();
+        }
+
+        apply_layer(
+            layer.path(),
+            "application/vnd.oci.image.layer.v1.tar",
+            root.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_link(root.path().join("certs/hash.0")).unwrap(),
+            Path::new("root.pem")
+        );
+        assert_eq!(
+            fs::metadata(root.path().join("certs"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o555
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rootless_layer_strips_setuid_and_setgid_bits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let layer = tempfile::NamedTempFile::new().unwrap();
+        {
+            let mut archive = tar::Builder::new(layer.reopen().unwrap());
+            let body = b"executable";
+            let mut file = tar::Header::new_gnu();
+            file.set_mode(0o6755);
+            file.set_size(body.len() as u64);
+            file.set_cksum();
+            archive
+                .append_data(&mut file, "bin/tool", body.as_slice())
+                .unwrap();
+            archive.finish().unwrap();
+        }
+
+        apply_layer(
+            layer.path(),
+            "application/vnd.oci.image.layer.v1.tar",
+            root.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::metadata(root.path().join("bin/tool"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755
+        );
     }
 
     #[test]

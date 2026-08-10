@@ -174,6 +174,12 @@ struct ContainerOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct VmOverrides {
+    /// Use the Linux host's root filesystem as the libkrun guest rootfs.
+    #[arg(
+        long = "host-rootfs",
+        conflicts_with_all = ["vm_rootfs", "vm_image"]
+    )]
+    host_rootfs: bool,
     /// Linux root filesystem exported to the libkrun guest.
     #[arg(long = "vm-rootfs", value_name = "DIR")]
     vm_rootfs: Option<PathBuf>,
@@ -481,7 +487,7 @@ pub async fn run(args: RunArgs) -> anyhow::Result<i32> {
         .transpose()
         .context("load pVisor Run config")?
         .unwrap_or_default();
-    apply_cli(&mut config, args);
+    apply_cli(&mut config, args)?;
     if safe {
         apply_safe_defaults(&mut config)?;
     }
@@ -654,6 +660,7 @@ async fn execute_config(
     safe_profile_requested: bool,
     lineage: Option<RunLineage>,
 ) -> anyhow::Result<i32> {
+    validate_vm_rootfs_platform(&config)?;
     let prepared_image = if config.run.executor == RunExecutorKind::Vm && config.vm.rootfs.is_none()
     {
         let image = config
@@ -999,8 +1006,19 @@ fn free_loopback_address() -> anyhow::Result<String> {
     Ok(listener.local_addr()?.to_string())
 }
 
-fn apply_cli(config: &mut RunConfig, args: RunArgs) {
+fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     let explicit_executor = args.run.executor;
+    let host_rootfs = args.vm.host_rootfs;
+    if host_rootfs {
+        anyhow::ensure!(
+            cfg!(target_os = "linux"),
+            "--host-rootfs is only supported on Linux"
+        );
+        anyhow::ensure!(
+            explicit_executor.is_none_or(|executor| executor == RunExecutorKind::Vm),
+            "--host-rootfs requires --executor vm (or no explicit executor)"
+        );
+    }
     if let Some(value) = args.run.agent {
         config.run.agent = value;
     }
@@ -1065,19 +1083,28 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
         config.run.executor = RunExecutorKind::Container;
     }
 
-    let enables_vm = args.vm.vm_rootfs.is_some()
+    let enables_vm = host_rootfs
+        || args.vm.vm_rootfs.is_some()
         || args.vm.vm_image.is_some()
         || args.vm.vm_image_store.is_some()
         || args.vm.vm_library_dir.is_some()
         || args.vm.vm_memory_mib.is_some()
         || args.vm.vm_cpus.is_some()
         || args.overlayfs.overlayfs_target.is_some();
+    if host_rootfs {
+        config.vm.rootfs = Some(PathBuf::from("/"));
+        config.vm.image = None;
+        config.vm.rootfs_immutable = false;
+    }
     if let Some(value) = args.vm.vm_rootfs {
         config.vm.rootfs = Some(value);
+        config.vm.image = None;
+        config.vm.rootfs_immutable = false;
     }
     if let Some(value) = args.vm.vm_image {
         config.vm.image = Some(value);
         config.vm.rootfs = None;
+        config.vm.rootfs_immutable = false;
     }
     if let Some(value) = args.vm.vm_image_store {
         config.vm.image_store = Some(value);
@@ -1221,9 +1248,23 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) {
     if let Some(value) = args.chronicle.chronicle_dir {
         config.chronicle.dir = Some(value);
     }
+    Ok(())
+}
+
+fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
+    if config.run.executor == RunExecutorKind::Vm
+        && config.vm.rootfs.as_deref() == Some(Path::new("/"))
+    {
+        anyhow::ensure!(
+            cfg!(target_os = "linux"),
+            "the host root filesystem can only be used as a VM rootfs on Linux; use --image or --vm-rootfs DIR with a prepared Linux rootfs"
+        );
+    }
+    Ok(())
 }
 
 fn validate(config: &RunConfig) -> anyhow::Result<()> {
+    validate_vm_rootfs_platform(config)?;
     if config.run.command.is_empty() {
         bail!("missing Agent command; pass it after `--` or set run.command");
     }
@@ -1536,7 +1577,7 @@ mod tests {
         };
         assert!(args.safe);
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         apply_safe_defaults(&mut config).unwrap();
         let overlayfs = config.overlayfs.as_ref().expect("safe enables OverlayFS");
         assert_eq!(overlayfs.commit, OverlayFsCommit::Manual);
@@ -1619,7 +1660,7 @@ mod tests {
             unreachable!()
         };
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Container);
         assert_eq!(config.container.runtime, Path::new("podman"));
         assert_eq!(config.container.image, "example/agent:latest");
@@ -1676,12 +1717,77 @@ mod tests {
             unreachable!()
         };
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         assert_eq!(config.vm.rootfs.as_deref(), Some(temporary.path()));
         assert_eq!(config.vm.library_dir.as_deref(), Some(libraries.as_path()));
         assert_eq!(config.vm.memory_mib, 4096);
         assert_eq!(config.vm.cpus, 4);
+    }
+
+    #[test]
+    fn host_rootfs_obeys_the_linux_vm_boundary() {
+        let crate::cli::Command::Run(args) =
+            Cli::try_parse_from(["pvisor", "run", "--host-rootfs", "--", "/bin/true"])
+                .unwrap()
+                .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        let result = apply_cli(&mut config, *args);
+
+        #[cfg(target_os = "linux")]
+        {
+            result.unwrap();
+            assert_eq!(config.run.executor, RunExecutorKind::Vm);
+            assert_eq!(config.vm.rootfs.as_deref(), Some(Path::new("/")));
+            assert!(config.vm.image.is_none());
+            assert!(!config.vm.rootfs_immutable);
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("only supported on Linux"));
+    }
+
+    #[test]
+    fn host_rootfs_conflicts_with_other_vm_rootfs_sources() {
+        for rootfs_option in ["--image", "--vm-rootfs"] {
+            let error = Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--host-rootfs",
+                rootfs_option,
+                "/tmp/rootfs",
+                "--",
+                "/bin/true",
+            ])
+            .unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_rootfs_rejects_an_explicit_non_vm_executor() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--executor",
+            "host",
+            "--host-rootfs",
+            "--",
+            "/bin/true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let error = apply_cli(&mut RunConfig::default(), *args).unwrap_err();
+        assert!(error.to_string().contains("requires --executor vm"));
     }
 
     #[test]
@@ -1757,7 +1863,7 @@ mod tests {
             unreachable!()
         };
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         let overlay = config.overlayfs.unwrap();
         assert_eq!(overlay.base.as_deref(), Some(Path::new("/tmp/project")));
@@ -1783,7 +1889,7 @@ mod tests {
             unreachable!()
         };
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         assert_eq!(config.run.executor, RunExecutorKind::Vm);
         assert_eq!(config.vm.image.as_deref(), Some("ubuntu:24.04"));
         assert_eq!(
@@ -1810,7 +1916,7 @@ mod tests {
         else {
             unreachable!()
         };
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         assert!(config.overlaynet.allow.is_empty());
         assert_eq!(config.overlaynet.rules.len(), 1);
         assert_eq!(config.overlaynet.rules[0].host, "new.example");
@@ -1844,7 +1950,7 @@ mod tests {
             unreachable!()
         };
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
 
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
@@ -1879,6 +1985,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert!(help.contains("ambient host Unix sockets"));
         assert!(help.contains("--overlayfs-target"));
+        assert!(help.contains("--host-rootfs"));
         assert!(!help.contains("--workspace"));
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
@@ -1948,7 +2055,7 @@ mod tests {
             bytes_per_second: 1_000,
         }];
 
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
 
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
@@ -1976,7 +2083,7 @@ mod tests {
             unreachable!()
         };
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         assert_eq!(config.gateway.mode, GatewayMode::Capture);
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
     }
@@ -2057,7 +2164,7 @@ mod tests {
         else {
             unreachable!()
         };
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         assert_eq!(config.overlaynet.rules.len(), 1);
         assert_eq!(config.overlaynet.rules[0].host, "new.example");
         assert_eq!(config.overlaynet.rules[0].ports, [443]);
@@ -2081,7 +2188,7 @@ mod tests {
             unreachable!()
         };
         let mut config = RunConfig::default();
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         let overlayfs = config.overlayfs.expect("OverlayFS should be enabled");
         assert_eq!(overlayfs.backend, OverlayFsBackend::Jujutsu);
         assert_eq!(
@@ -2208,7 +2315,7 @@ mod tests {
             }),
             ..RunConfig::default()
         };
-        apply_cli(&mut config, *args);
+        apply_cli(&mut config, *args).unwrap();
         assert_eq!(
             config.overlayfs.unwrap().compose,
             [PathBuf::from("/tmp/first"), PathBuf::from("/tmp/second")]

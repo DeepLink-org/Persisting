@@ -27,6 +27,7 @@ default:
     @echo "  just ci                  # CI 近似全量"
     @echo "  just py-dev              # maturin develop（Python 扩展）"
     @echo "  just install-cli         # 安装统一 CLI、pvisor 和 ppilot"
+    @echo "  just pvisor              # 构建 release pVisor；macOS 自动签名"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just capture-all         # 全部 capture 集成"
     @echo "  just docs-serve          # 本地文档"
@@ -135,6 +136,42 @@ build profile="debug":
 
 build-release:
     just build profile=release
+
+# Build pVisor and add the Hypervisor entitlement required by macOS/HVF.
+# Usage: `just pvisor` (release) or `just pvisor debug`.
+[group('build')]
+pvisor profile="release":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile="{{ profile }}"
+    case "$profile" in
+      release)
+        cargo_args=(--release)
+        binary="{{ repo }}/target/release/pvisor"
+        ;;
+      debug)
+        cargo_args=()
+        binary="{{ repo }}/target/debug/pvisor"
+        ;;
+      *)
+        echo "unsupported pVisor profile: $profile (expected release or debug)" >&2
+        exit 2
+        ;;
+    esac
+
+    cargo build --locked -p persisting-pvisor --bin pvisor "${cargo_args[@]}"
+
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        entitlements="{{ repo }}/crates/persisting-pvisor/macos-hypervisor.entitlements"
+        command -v codesign >/dev/null
+        codesign --force --sign - --entitlements "$entitlements" "$binary"
+        codesign --verify --strict --verbose=2 "$binary"
+        codesign -d --entitlements :- "$binary" 2>&1 \
+          | grep -q 'com.apple.security.hypervisor'
+        echo "Built and signed pVisor: $binary"
+    else
+        echo "Built pVisor: $binary"
+    fi
 
 # Install the complete component set expected by the unified `persisting` CLI.
 install-cli:

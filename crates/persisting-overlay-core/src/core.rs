@@ -51,6 +51,12 @@ fn ignorable_metadata_error(err: &io::Error) -> bool {
     )
 }
 
+fn ignorable_ownership_error(err: &io::Error) -> bool {
+    // A uid or gid outside the current user namespace is reported as EINVAL.
+    // Ownership is best-effort for an unprivileged overlay, just like EPERM.
+    ignorable_metadata_error(err) || err.raw_os_error() == Some(libc::EINVAL)
+}
+
 impl OverlayCore {
     pub fn new(lowers: Vec<PathBuf>, upper: PathBuf, work: Option<PathBuf>) -> io::Result<Self> {
         Self::new_with_exclusions(lowers, upper, work, Vec::new())
@@ -273,7 +279,7 @@ impl OverlayCore {
     ) -> io::Result<()> {
         let nofollow = metadata.file_type().is_symlink();
         if let Err(err) = sys::chown(destination, metadata.uid(), metadata.gid(), nofollow) {
-            if !ignorable_metadata_error(&err) {
+            if !ignorable_ownership_error(&err) {
                 return Err(err);
             }
         }
@@ -785,6 +791,13 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use tempfile::TempDir;
+
+    #[test]
+    fn unmapped_ownership_is_ignorable_but_other_invalid_metadata_is_not() {
+        let invalid = io::Error::from_raw_os_error(libc::EINVAL);
+        assert!(ignorable_ownership_error(&invalid));
+        assert!(!ignorable_metadata_error(&invalid));
+    }
 
     struct Fixture {
         _temp: TempDir,

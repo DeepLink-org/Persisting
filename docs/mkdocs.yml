@@ -86,6 +86,7 @@ plugins:
             Choose a Capability: 选择能力
             User Guide: 用户指南
             Guides: 使用指南
+            Run workloads with pVisor: 使用 pVisor 运行工作负载
             Capture: 轨迹采集
             Control network access with OverlayNet: 使用 OverlayNet 控制网络访问
             Queue: 队列
@@ -133,6 +134,7 @@ nav:
       - Choose a Capability: guide/index.md
   - Guides:
       - Capture agent trajectories: guide/capture.md
+      - Run workloads with pVisor: guide/pvisor-execution.md
       - Control network access with OverlayNet: guide/overlaynet.md
       - Reproducible examples: guide/examples.md
       - Index and search documents: guide/search.md
