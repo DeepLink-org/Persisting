@@ -125,11 +125,14 @@ boundary rather than inferring it from the requested mode.
 Execute an Agent through the unified CLI and record its LLM calls:
 
 ```bash
-persisting execute --workspace ./run \
-  --gateway-mode capture \
-  --gateway-route 'name="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
-  --gateway-stream-markdown \
-  -- claude
+(
+  cd ./run
+  persisting execute \
+    --gateway-mode capture \
+    --gateway-route 'name="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
+    --gateway-stream-markdown \
+    -- claude
+)
 ```
 
 Trajectories are stored as `(agent_id, run_id, time)` — the same TTAS model used for KV cache and parameters.

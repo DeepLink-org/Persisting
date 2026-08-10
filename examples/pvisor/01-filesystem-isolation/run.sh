@@ -9,11 +9,15 @@ rm -rf .work
 mkdir -p .work/base
 printf 'original\n' > .work/base/existing.txt
 export PERSISTING_RUN_HOME="$PWD/.work/runs"
+base="$PWD/.work/base"
 
 # The project workspace is reusable; pVisor creates an independent stage for this Run.
-pvisor run --workspace .work/base --overlayfs-base .work/base \
-  --overlayfs-commit manual --stdio capture -- \
-  /bin/sh -c 'printf "changed\n" > existing.txt; printf "new\n" > new.txt'
+(
+  cd "$base"
+  pvisor run --overlayfs-base "$base" \
+    --overlayfs-commit manual --stdio capture -- \
+    /bin/sh -c 'printf "changed\n" > existing.txt; printf "new\n" > new.txt'
+)
 run_dir="$(find "$PERSISTING_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | head -n 1)"
 
 # Print the unchanged host file and the two staged files.
