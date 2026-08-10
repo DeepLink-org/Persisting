@@ -516,10 +516,10 @@
           <span class="feature-icon">🔌</span>
           {% if config.theme.language == "zh" %}
           <h3>pVisor · 单个 Run</h3>
-          <p>执行一个 Agent workload：进程级控制、Agent ABI、取消、checkpoint，以及可注入 Docker/Podman 或 KVM 的 placement。</p>
+          <p>执行一个 Agent workload：进程级控制、取消、停止后一致的文件系统 checkpoint，以及可注入 Docker/Podman 或 KVM 的 placement。</p>
           {% else %}
           <h3>pVisor · one Run</h3>
-          <p>Executes one Agent workload with process-level control, an Agent ABI, cancellation, and checkpoint, deployable inside Docker/Podman or KVM.</p>
+          <p>Executes one Agent workload with process-level control, cancellation, stopped-consistent filesystem checkpoints, and Docker/Podman or KVM placement.</p>
           {% endif %}
         </div>
         <div class="feature-card">

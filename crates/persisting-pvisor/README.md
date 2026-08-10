@@ -28,8 +28,8 @@ Agent in a generated Seatbelt profile: writes are kernel-confined to the staged
 workspace, explicit read-write capabilities, exact device handles, and a
 Run-owned temporary directory. Full-disk reads remain ambient for local
 toolchain compatibility; `--overlaynet-deny-all` additionally blocks IP and
-ambient host Unix sockets while retaining the exact Agent ABI and Run-local
-IPC. Seatbelt setup is attested by the hidden launcher and fails closed.
+ambient host Unix sockets while retaining Run-local IPC. Seatbelt setup is
+attested by the hidden launcher and fails closed.
 Docker and KVM remain stronger placement choices, and every Run Bundle records
 read, write, and network enforcement separately.
 
@@ -64,16 +64,14 @@ failure rather than a successful Run with warnings.
 
 There is no network control daemon. Hosts call the crate API directly;
 `persisting-control` is the shared state/transition protocol used by runtime
-drivers. Each live Run also gets a versioned, owner-only Agent ABI Unix socket.
-The separate OverlayFS control socket remains limited to discovery and
-owner-mediated read-only inspection.
+drivers. The separate OverlayFS control socket remains limited to discovery
+and owner-mediated read-only inspection.
 
 ## Modules
 
 | Module | Role |
 |--------|------|
 | `pvisor` | [`PVisor`] / [`PVisorBuilder`] / [`RunHandle`] |
-| `agent_abi` | Run-scoped Agent ABI server, desired state, and observations |
 | `config` | canonical `RunConfig` plus programmatic driver configuration |
 | `runtime` | Attempt preparation and driver ownership |
 | `control` | Re-export of the shared `persisting-control` state protocol |
@@ -82,34 +80,6 @@ owner-mediated read-only inspection.
 | `delegated` | RunSpec/RunResult hand-off between pVisor placements |
 | `container` | Docker/Podman transport that injects pVisor |
 | `kvm` | libkrun/KVM guest over pVisor's full-root OverlayFS |
-
-## Agent ABI
-
-pVisor injects a Run-scoped endpoint and bearer token into every process
-invocation:
-
-```text
-PERSISTING_AGENT_ABI_ENDPOINT=/tmp/pvisor-agent-….sock
-PERSISTING_AGENT_ABI_TOKEN=…
-PERSISTING_AGENT_ABI_VERSION=2
-PERSISTING_AGENT_ABI_TRANSPORT=unix
-```
-
-The token is intentionally not written to Run metadata. The socket is mode
-`0600`, exists only for the Attempt lifetime, and accepts bounded JSON frames.
-Docker and KVM placements start a complete pVisor inside the isolation
-boundary. That injected pVisor creates the Agent ABI locally and executes the
-Agent through the same ProcessExecutor used by a native Run; the host ABI token
-is deliberately removed from the delegated RunSpec.
-The compact protocol is owned by pVisor and currently uses the injected Unix
-socket directly. The v2 handshake authenticates the client and opens a session.
-Heartbeats return pVisor's current desired state (`continue`, `quiesce`, or
-`shutdown`). Quiesce acknowledgements must match the active directive
-generation and the server's open-effect view.
-
-Hosts use `RunHandle::agent_abi()` to publish desired state and inspect the
-registered clients, processes, and effects. pPilot exposes `AgentAbiClient` for
-the client side.
 
 ## Runtime configuration
 
@@ -212,7 +182,7 @@ their existing paths. Additional mounts use `--container-mount
 The injected pVisor currently runs as container root; `container.user` is
 rejected until Agent identity can be applied after pVisor bootstrap rather than
 to the control process itself. A read-only rootfs receives a private `/tmp`
-tmpfs for the inner Agent ABI socket.
+tmpfs for the Agent process.
 
 `network = "host"` is the default because Gateway and OverlayNet currently run
 inside pVisor and advertise loopback endpoints. Bridge or no-network modes are
@@ -238,8 +208,8 @@ pvisor run \
 ```
 
 KVM execution requires a Linux host, `/dev/kvm`, and compatible libkrun
-libraries. OverlayNet and the Agent ABI cross the VM boundary through explicit
-vsock-to-Unix-socket relays; the VMM runs in private user, mount, and network
+libraries. OverlayNet crosses the VM boundary through an explicit
+vsock-to-Unix-socket relay; the VMM runs in private user, mount, and network
 namespaces with Landlock restrictions, so the guest has no ambient host
 network path. Guest `/proc`, `/sys`, `/dev`, `/run`, and `/tmp` are guest-local
 mounts. The complete host root remains readable wherever the invoking UID can
@@ -378,15 +348,13 @@ timestamps and xattrs, and processes opaque markers before staged children.
 Each Run writes `run.json`, `lease.lock`, and (while live) `control.sock` next
 to `overlay.json`. Completed CLI Runs also write a mode-`0600`
 `run-bundle.json` containing outcome, safety boundary, filesystem summary,
-network profile, Agent ABI clients/processes/effects, output, metrics, and
-artifact references. `review` presents this bundle as an approval-oriented
+network profile, output, metrics, and artifact references. `review` presents
+this bundle as an approval-oriented
 summary. `status` remains the lower-level live diagnostic view.
 
 `checkpoint` copies the raw upper into `checkpoints/<id>/` only after a Run is
-stopped. `RunHandle::checkpoint` is the live API: it requests Agent ABI
-quiescence, waits for every connected client to acknowledge the same directive
-generation with no open effects, snapshots the upper, and resumes clients.
-Both are logical Agent checkpoints; neither claims to preserve process memory.
+stopped. It is a stopped-consistent filesystem checkpoint and does not preserve
+process memory or claim application-level consistency.
 `fork` restores one of these checkpoints into a new directory upper and starts
 a new safe Run whose `run.json` and Run Bundle record the parent Run and
 checkpoint.

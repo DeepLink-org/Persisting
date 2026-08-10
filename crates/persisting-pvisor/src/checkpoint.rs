@@ -19,8 +19,6 @@ const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub enum CheckpointConsistency {
     /// The process tree was no longer running when the filesystem was copied.
     Stopped,
-    /// Reserved for a live Agent ABI quiesce + effect-journal barrier.
-    AgentQuiesced,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,17 +72,6 @@ pub fn create_logical_checkpoint(
     create_checkpoint(record, requested_id, CheckpointConsistency::Stopped)
 }
 
-pub(crate) fn create_agent_quiesced_checkpoint(
-    record: &RunRecord,
-    checkpoint_id: &str,
-) -> anyhow::Result<LogicalCheckpoint> {
-    create_checkpoint(
-        record,
-        Some(checkpoint_id),
-        CheckpointConsistency::AgentQuiesced,
-    )
-}
-
 fn create_checkpoint(
     record: &RunRecord,
     requested_id: Option<&str>,
@@ -94,10 +81,7 @@ fn create_checkpoint(
         .overlay
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Run {} has no OverlayFS stage", record.run_id))?;
-    let expected_state = match consistency {
-        CheckpointConsistency::Stopped => OverlayState::Staged,
-        CheckpointConsistency::AgentQuiesced => OverlayState::Active,
-    };
+    let expected_state = OverlayState::Staged;
     anyhow::ensure!(
         overlay.state == expected_state,
         "Run {} filesystem is {:?}; {:?} checkpoint requires {:?}",

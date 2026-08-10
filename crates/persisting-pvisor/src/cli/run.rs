@@ -505,7 +505,6 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         .executors(vec![Arc::new(ProcessExecutor::default())])
         .build();
     let handle = pvisor.run(spec).await?;
-    let agent_abi = handle.agent_abi();
     let cancellation = handle.cancellation();
     let wait = handle.wait();
     tokio::pin!(wait);
@@ -516,10 +515,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             wait.await?
         }
     };
-    let output = crate::delegated::DelegatedRunOutput {
-        agent_abi: agent_abi.snapshot(),
-        result,
-    };
+    let output = crate::delegated::DelegatedRunOutput { result };
     crate::delegated::write_result(&result_path, &output)
         .with_context(|| format!("write delegated RunResult to {}", result_path.display()))?;
     Ok(match output.result.state {

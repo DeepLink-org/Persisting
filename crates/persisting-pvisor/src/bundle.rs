@@ -2,8 +2,8 @@
 
 use crate::runtime::{overlay_status, OverlayState, RunLineage, RunRecord};
 use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
+use crate::unix_now_ms;
 use crate::util::{atomic_write, sync_directory};
-use crate::{unix_now_ms, AgentAbiSnapshot};
 use persisting_control::{
     ArtifactRef, ExecutorDescriptor, IsolationKind, NetworkCapability, ProcessOutput, RunFailure,
     RunResult, RunState,
@@ -14,7 +14,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 2;
 pub const RUN_BUNDLE_FILENAME: &str = "run-bundle.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +28,6 @@ pub struct RunBundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem: Option<FilesystemSummary>,
     pub network: NetworkSummary,
-    pub agent_abi: AgentAbiSnapshot,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -131,7 +130,6 @@ impl RunBundle {
     pub fn capture(
         record: &RunRecord,
         result: &RunResult,
-        agent_abi: AgentAbiSnapshot,
         safe_profile_requested: bool,
     ) -> anyhow::Result<Self> {
         let filesystem = record
@@ -305,7 +303,6 @@ impl RunBundle {
                 interception: record.network_interception.clone(),
                 intercepted: record.network_interception_metrics.clone(),
             },
-            agent_abi,
             orchestration: record.orchestration.clone(),
             artifacts,
         })
@@ -325,8 +322,8 @@ impl RunBundle {
         let path = Self::path(stage_dir);
         let bundle: Self = serde_json::from_slice(&fs::read(&path)?)?;
         anyhow::ensure!(
-            bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION,
-            "unsupported Run Bundle schema {}; expected {}",
+            matches!(bundle.schema_version, 1 | RUN_BUNDLE_SCHEMA_VERSION),
+            "unsupported Run Bundle schema {}; expected 1 or {}",
             bundle.schema_version,
             RUN_BUNDLE_SCHEMA_VERSION
         );
@@ -414,16 +411,7 @@ mod tests {
             event_stream_ref: None,
             warnings: vec![],
         };
-        let abi = AgentAbiSnapshot {
-            run_id: "run-1".into(),
-            attempt_id: "attempt-1".into(),
-            directive_seq: 0,
-            directive: crate::AgentDirective::Continue,
-            clients: vec![],
-            processes: vec![],
-            effects: vec![],
-        };
-        let bundle = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        let bundle = RunBundle::capture(&record, &result, true).unwrap();
         let path = bundle.write(temp.path()).unwrap();
         assert_eq!(RunBundle::read(temp.path()).unwrap().run.run_id, "run-1");
         assert_eq!(
@@ -445,7 +433,7 @@ mod tests {
             supports_migration: false,
         });
         record.network = serde_json::to_value(NetworkCapability::Deny).unwrap();
-        let denied = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        let denied = RunBundle::capture(&record, &result, true).unwrap();
         assert!(denied.safety.network_non_bypassable);
         assert!(denied
             .safety
@@ -461,7 +449,7 @@ mod tests {
             supports_checkpoint: false,
             supports_migration: false,
         });
-        let seatbelt = RunBundle::capture(&record, &result, abi, true).unwrap();
+        let seatbelt = RunBundle::capture(&record, &result, true).unwrap();
         assert!(!seatbelt.safety.filesystem_non_bypassable);
         assert!(!seatbelt.safety.filesystem_read_non_bypassable);
         assert!(seatbelt.safety.filesystem_write_non_bypassable);

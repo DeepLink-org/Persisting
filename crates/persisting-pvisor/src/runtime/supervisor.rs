@@ -17,7 +17,6 @@ use std::sync::Arc;
 /// proxy injection or a staged filesystem projection.
 #[derive(Debug, Clone)]
 pub struct RuntimeCapabilities {
-    pub agent_abi: bool,
     pub gateway: bool,
     pub network: bool,
     pub filesystem: bool,
@@ -27,13 +26,11 @@ pub struct RuntimeCapabilities {
 impl Default for RuntimeCapabilities {
     fn default() -> Self {
         Self {
-            agent_abi: true,
             gateway: true,
             network: false,
             filesystem: false,
             providers: vec![
                 "local-process",
-                "agent-abi-unix-v1",
                 "in-process-capture",
                 "overlaynet-explicit-proxy",
                 "fs-overlay-staging",

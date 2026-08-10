@@ -15,7 +15,6 @@
 //! Most modules are `pub(crate)`; only embedding and integration-test surfaces
 //! are re-exported or left as `pub mod`.
 
-pub mod agent_abi;
 pub mod batch;
 pub mod blocks;
 pub(crate) mod check;
@@ -42,7 +41,6 @@ pub(crate) mod python_env;
 pub mod query_cli;
 pub(crate) mod result_cache;
 pub mod runtime;
-pub mod runtime_bridge;
 pub(crate) mod scheduler;
 pub(crate) mod sink;
 #[cfg(feature = "traj-sink")]
@@ -55,7 +53,6 @@ pub(crate) mod worker;
 
 // ── Public surface (embedding + integration tests) ──────────────────
 
-pub use agent_abi::{checkpoint_directive, AgentAbiClient, AgentAbiClientConfig};
 #[cfg(feature = "query")]
 pub use batch::{
     balanced_shards, process_trajectories, render_analysis_rows, AnalysisOutputFormat,
@@ -95,7 +92,6 @@ pub use query_cli::{
     QueryContentReadMode, QuerySource, SqlQueryArgs,
 };
 pub use runtime::{run_fleet, run_local_fleet};
-pub use runtime_bridge::PilotRuntimeBridge;
 pub use skip::SkipSet;
 pub use supervisor::{
     parse_bandwidth, EmbeddedSupervisor, EmbeddedSupervisorConfig, SupervisorRegistrationSnapshot,

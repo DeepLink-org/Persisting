@@ -269,10 +269,6 @@ fn unix_socket_probe_agent() {
     let error = UnixStream::connect(inherited_ssh_agent)
         .expect_err("ambient SSH signing authority must not be projected");
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-
-    let agent_abi = std::env::var_os(persisting_pvisor::AGENT_ABI_ENDPOINT_ENV)
-        .expect("pVisor must inject its Run-scoped Agent ABI endpoint");
-    UnixStream::connect(agent_abi).expect("the explicitly projected Agent ABI socket must work");
 }
 
 #[test]

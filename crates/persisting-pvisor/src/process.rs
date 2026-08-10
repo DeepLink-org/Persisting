@@ -481,13 +481,7 @@ fn platform_launcher_command(
     let deny_network = matches!(spec.capabilities.network, NetworkCapability::Deny);
     let (allowed_unix_sockets, local_socket_roots) = if deny_network {
         (
-            invocation
-                .env
-                .get(crate::AGENT_ABI_ENDPOINT_ENV)
-                .map(PathBuf::from)
-                .filter(|path| path.exists())
-                .into_iter()
-                .collect::<Vec<_>>(),
+            Vec::new(),
             vec![
                 cwd,
                 resources
@@ -593,14 +587,11 @@ fn rootless_plan(
         push_existing(&mut read_write, Path::new(path));
     }
 
-    // The Run-scoped Agent ABI and an explicitly supplied SSH agent are
-    // capabilities represented by their exact socket inode, not by /tmp.
-    // Merely inheriting the host environment must not project signing
-    // authority into a safe Run.
-    for key in [crate::AGENT_ABI_ENDPOINT_ENV, "SSH_AUTH_SOCK"] {
-        if let Some(path) = invocation.env.get(key) {
-            push_existing(&mut read_write, Path::new(path));
-        }
+    // An explicitly supplied SSH agent is represented by its exact socket
+    // inode, not by /tmp. Merely inheriting the host environment must not
+    // project signing authority into a safe Run.
+    if let Some(path) = invocation.env.get("SSH_AUTH_SOCK") {
+        push_existing(&mut read_write, Path::new(path));
     }
 
     for capability in &spec.capabilities.filesystem {

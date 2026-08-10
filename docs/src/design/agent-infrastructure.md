@@ -245,8 +245,9 @@ RunSpec {
 ```text
 submit(RunSpec) -> RunFuture
 RunFuture.poll() / wait() / cancel()
-RunFuture.checkpoint() / migrate(target)
 RunFuture.terminal() -> RunResult | RunFailure
+checkpoint(stopped_run_ref) -> CheckpointRef
+fork(CheckpointRef, RunSpec) -> RunFuture
 ```
 
 `RunFuture` 必须快速返回，并且不能暴露本地进程、容器 ID 或云任务句柄。底层 provider 句柄由 pVisor 保存和恢复。
@@ -256,8 +257,8 @@ RunFuture.terminal() -> RunResult | RunFailure
 | submit | 使用已签发 RunContext 创建 Attempt；不等待 Agent 完成 |
 | poll / wait | 状态单调、支持 deadline、位置无关 |
 | cancel | 幂等传播，记录原因，进入资源清理 |
-| checkpoint | 返回版本化 checkpoint ref，不内嵌大对象 |
-| migrate | 从 checkpoint 创建新 Attempt，旧 lease 失效 |
+| checkpoint | 仅在 Run 停止后固化文件系统 upper，返回版本化引用，不内嵌大对象 |
+| fork | 从停止后一致的 checkpoint 创建新 Run；不恢复进程内存或 Agent 内部状态 |
 
 ### 6.4 Executor 与 provider
 
@@ -300,7 +301,7 @@ seccomp、PID namespace 和 cgroup/rlimit 资源配额纳入完整 enforcement�
 macOS 本地 `--safe` 复用同一 staged workspace 契约，并在 Agent 启动前通过系统
 `sandbox-exec` 安装参数化 Seatbelt profile。它强制所有路径写入只能落到 merged
 workspace、显式读写 capability、精确设备句柄或 Run 独占临时目录；deny-all 策略还会
-阻断 IP 与宿主 ambient Unix socket，只保留精确的 Agent ABI 和 Run 私有目录内 IPC。
+阻断 IP 与宿主 ambient Unix socket，只保留 Run 私有目录内 IPC。
 为保持 Homebrew、Xcode 和动态语言工具链兼容，读取暂时仍为 ambient，因此 bundle 将
 read/write enforcement 分开记录，并把 aggregate filesystem 边界保持为 partial。
 profile 安装由一次性 launcher attestation 验证，失败时不会执行 Agent。
@@ -317,7 +318,6 @@ flowchart LR
     RC["Run controller<br/>RunId · AttemptId · lease_epoch"]
     OFS["Full-root OverlayFS<br/>lower = host /<br/>upper = Run stage"]
     KEX["KvmExecutor<br/>RunnerSpec + GuestSpec"]
-    ABI["Agent ABI Unix socket"]
     NET["OverlayNet / Gateway proxy"]
     RR["self-exec pVisor runner<br/>rootless namespaces + Landlock"]
   end
@@ -325,18 +325,17 @@ flowchart LR
   subgraph VMM["libkrun VMM"]
     KRUN["libkrun + libkrun_init<br/>vCPU / RAM / OCI init"]
     VFS["virtio-fs guest root"]
-    VSOCK["explicit vsock ports"]
+    VSOCK["explicit proxy vsock port"]
   end
 
   subgraph GUEST["Minimal Linux guest"]
     INIT["__pvisor-krun-guest<br/>guest-local /proc /sys /dev /run /tmp"]
-    RELAY["TCP↔vsock / Unix↔vsock relays"]
+    RELAY["TCP↔vsock proxy relay"]
     AGENT["Agent process<br/>host UID/GID + supplementary groups"]
   end
 
   RC --> OFS --> KEX --> RR --> KRUN
   OFS --> VFS --> INIT --> AGENT
-  ABI --> VSOCK
   NET --> VSOCK
   VSOCK --> RELAY --> AGENT
   AGENT -->|"exit / cancel / watchdog"| RC
@@ -344,17 +343,17 @@ flowchart LR
 
 执行路径按以下顺序建立：
 
-1. `RuntimeSupervisor` 先准备 full-root OverlayFS、Gateway/OverlayNet、Run record 和
-   Agent ABI；`KvmExecutor` 要求 `invocation.cwd` 已指向 merged root。
+1. `RuntimeSupervisor` 先准备 full-root OverlayFS、Gateway/OverlayNet 和 Run record；
+   `KvmExecutor` 要求 `invocation.cwd` 已指向 merged root。
 2. `KvmExecutor` 固化 `RunnerSpec`：merged root、CPU/内存、动态库目录、guest
-   program/env/cwd/identity，以及 OverlayNet 与 Agent ABI 的 vsock 映射。
+   program/env/cwd/identity，以及可选的 OverlayNet proxy vsock 映射。
 3. pVisor self-exec 进入 runner 模式，动态加载 `libkrun`、`libkrun_init` 和
    `libkrunfw`，创建 VM context，并把 merged root 通过 `krun_add_virtiofs3`
    暴露为 guest `/`。该路径不需要磁盘镜像、SSH 或复制 guest runtime。
 4. runner 在启动 VMM 前进入私有 user/mount/network namespace，使用 Landlock 只开放
    virtio-fs root、KVM device 和必要 runtime library，然后清空 namespace capability。
-5. guest 通过 OCI init 启动当前 pVisor 二进制的内部 guest mode；它只负责建立
-   vsock relay 并以原调用者 UID/GID 执行 Agent，不重新执行 `PVisor::run`。
+5. guest 通过 OCI init 启动当前 pVisor 二进制的内部 guest mode；它只负责按需建立
+   OverlayNet proxy relay，并以原调用者 UID/GID 执行 Agent，不重新执行 `PVisor::run`。
 6. Agent 退出、取消或 watchdog 结束后，外层 `KvmExecutor` 返回 `RunResult`；外层
    pVisor 继续执行 driver teardown、RunRecord/Run Bundle、terminal event 和终态发布。
 
@@ -362,9 +361,8 @@ flowchart LR
 |---|---|
 | Filesystem | host `/` 是只读 lower，所有写入与 whiteout 留在 Run upper；guest 的伪文件系统和临时目录独立挂载 |
 | Network | VMM 位于私有 network namespace；只有显式配置的 OverlayNet proxy 通过 vsock relay 可达 |
-| Agent control | host Agent ABI Unix socket 映射为 guest `/run/persisting/agent-abi.sock`，quiesce/effect 语义不变 |
 | Identity | guest 保留 host effective UID/GID 和 supplementary groups；这是 kernel isolation，不是 credential 隔离 |
-| Checkpoint | checkpoint/fork 固化 full-root upper；不保存 guest memory，`supports_migration = false` |
+| Checkpoint | guest 停止后可对 full-root upper 执行 checkpoint/fork；不保存 guest memory，executor 不声明 live checkpoint 或 migration 能力 |
 | Apply | full-root upper 可以 inspect、checkpoint、fork 或 drop，但不能 replay 到 host `/` |
 
 因此 libkrun 路径解决的是“在不维护 guest image 的情况下获得独立 guest kernel 与完整

@@ -15,7 +15,6 @@ pub struct AttemptContext {
     cancel: CancellationToken,
     status: watch::Sender<RunStatus>,
     events: RunEventPublisher,
-    agent_abi: crate::AgentAbiControl,
 }
 
 impl AttemptContext {
@@ -25,7 +24,6 @@ impl AttemptContext {
         cancel: CancellationToken,
         status: watch::Sender<RunStatus>,
         events: RunEventPublisher,
-        agent_abi: crate::AgentAbiControl,
     ) -> Self {
         Self {
             spec,
@@ -33,7 +31,6 @@ impl AttemptContext {
             cancel,
             status,
             events,
-            agent_abi,
         }
     }
 
@@ -51,10 +48,6 @@ impl AttemptContext {
 
     pub fn events(&self) -> &RunEventPublisher {
         &self.events
-    }
-
-    pub(crate) fn import_delegated_agent_abi(&self, snapshot: crate::AgentAbiSnapshot) {
-        self.agent_abi.import_delegated_snapshot(snapshot);
     }
 
     pub async fn transition(&self, state: RunState, message: impl Into<Option<String>>) {

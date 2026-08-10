@@ -139,23 +139,6 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
         println!("  host filesystem; no transactional change set");
     }
 
-    println!("\nObserved Agent state");
-    println!("  clients: {}", bundle.agent_abi.clients.len());
-    println!(
-        "  registered processes: {}",
-        bundle.agent_abi.processes.len()
-    );
-    let open_effects = bundle
-        .agent_abi
-        .effects
-        .iter()
-        .filter(|effect| effect.completion.is_none())
-        .count();
-    println!(
-        "  effects: {} total, {} open",
-        bundle.agent_abi.effects.len(),
-        open_effects
-    );
     if let Some(failure) = &bundle.run.failure {
         println!("\nFailure\n  {:?}: {}", failure.kind, failure.message);
     }

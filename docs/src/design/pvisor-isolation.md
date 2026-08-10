@@ -73,8 +73,8 @@ remaining ambient access:
 1. Deny by default; every host file, socket, credential, device, and endpoint is
    an explicit capability.
 2. The Agent never receives host control-plane credentials or the Docker socket.
-3. Only `stdin`, `stdout`, `stderr`, the Run-scoped Agent ABI transport, and
-   explicitly granted resource handles cross the execution boundary.
+3. Only `stdin`, `stdout`, `stderr`, and explicitly granted resource handles
+   cross the execution boundary.
 4. The writable workspace is separate from the read-only base. A successful
    process exit never implies permission to apply its changes.
 5. Requested and effective enforcement are recorded separately. An enforce
@@ -105,9 +105,9 @@ The native Linux safe path is operational for ordinary local executables:
 - the launcher creates one-ID user and private mount namespaces without
   `/etc/subuid`, `newuidmap`, a setuid binary, or a daemon;
 - a private tmpfs root bind-projects only the runtime, staged workspace, exact
-  device nodes, Run-scoped Agent ABI socket, and explicit capabilities before
-  the launcher enters it with `chroot`; arbitrary host pathname Unix sockets
-  are therefore absent rather than left to Landlock;
+  device nodes, and explicit capabilities before the launcher enters it with
+  `chroot`; arbitrary host pathname Unix sockets are therefore absent rather
+  than left to Landlock;
 - inherited descriptors above stderr are closed, Landlock ABI v3 handles all
   filesystem rights through `TRUNCATE`, `no_new_privs` is set, namespace and
   ambient capabilities are cleared, and the launcher `exec`s the Agent;
@@ -227,8 +227,8 @@ policy around the complete Agent descendant process tree:
   Agent. A profile compile/apply failure therefore cannot be mistaken for an
   Agent exit and terminates the Run as an infrastructure failure;
 - `NetworkCapability::Deny` starts from a deny-by-default profile, blocks IP
-  sockets and outbound ambient host Unix sockets, and retains only the exact
-  Run-scoped Agent ABI plus Unix IPC rooted in Run-owned directories;
+  sockets and outbound ambient host Unix sockets, and retains only Unix IPC
+  rooted in Run-owned directories;
 - public and selective proxy modes remain cooperative because the first
   implementation does not yet constrain direct sockets to only the in-process
   proxy endpoint.
@@ -276,7 +276,7 @@ host pVisor (Rust)
        Virtualization.framework
        +-- compatible macOS boot disk
        +-- stable VirtioFS share tag -> merged pVisor root
-       +-- VZVirtioSocket control and Agent ABI transports
+       +-- explicit VZVirtioSocket service transports
                     |
                     v
           pvisor-guestd (root LaunchDaemon)
@@ -436,7 +436,7 @@ and forwarding guest path strings to host `openat`.
 ```text
 pVisor supervisor
   +-- build content-addressed root/workspace bundle
-  +-- pass sealed bundle FD + policy + Agent ABI FD
+  +-- pass sealed bundle FD + policy
   |
   `-- LiteBox runner process
         LiteBox Linux shim
@@ -609,7 +609,7 @@ host pVisor / microVM manager
   +-- immutable kernel + rootfs image
   +-- read-only workspace/base block image
   +-- per-Run writable delta block image
-  +-- vsock control and Agent ABI transport
+  +-- explicit vsock service transport
   +-- TAP/network broker under policy
           |
           v
@@ -790,8 +790,8 @@ The shared benchmark reports distributions rather than a single demo number:
 
 The implemented Linux suite currently proves staged writes plus denial of
 absolute-path reads/writes, symlink escapes, `/proc/self/root` escapes,
-ungranted pathname Unix sockets, preservation of the exact Agent ABI socket,
-and host-loopback access in deny-all mode. It also proves setup failures are
+ungranted pathname Unix sockets, and host-loopback access in deny-all mode. It
+also proves setup failures are
 reported before Agent execution. This is a useful regression floor, not yet
 the complete adversarial/kernel matrix listed above. No backend becomes a
 production default from architectural expectations alone; it must publish

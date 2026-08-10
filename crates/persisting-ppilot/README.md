@@ -11,13 +11,7 @@ pPilot is a first-class Persisting component alongside pVisor and pChronicle:
 pPilot consumes Run contracts and results and is the user-facing entry point
 for querying trajectory data. It does not own provider protocol adaptation,
 execution drivers, or trajectory storage formats; those query implementations
-remain in pChronicle. It does expose the pPilot-side `AgentAbiClient` used for
-heartbeat, process registration, checkpoint quiescence, and effect journaling
-with the pVisor that owns a Run.
-
-The client discovers the Run-scoped Unix endpoint from pVisor-injected
-environment values. The compact wire types are owned by pVisor alongside the
-Unix transport implementation.
+remain in pChronicle.
 
 ```bash
 # The public binary is feature-gated so library-only builds stay lightweight.
@@ -125,17 +119,10 @@ Run lease epoch, and monotonic directive sequence; the first live directive
 implemented is `Cancel`.
 
 Every pPilot task is a child `RunSpec` with a stable `task_id`, a logical
-`parent_run_id`, and `ppilot.job_id` orchestration metadata. While the task is
-running, `PilotRuntimeBridge` keeps the pVisor Agent ABI session alive, handles
-shutdown directives, registers the worker process, and journals the task as a
-semantic effect with a stable idempotency key.
-
-For a live logical checkpoint, pVisor first publishes `Quiesce`. pPilot stops
-admitting new effects, waits until the current opaque Python `execute(item)`
-reaches its terminal safe point, completes its effect, and acknowledges the
-checkpoint. pVisor then snapshots OverlayFS and publishes `Continue`. Arbitrary
-Python code is not preemptively snapshotted; checkpoint latency therefore
-includes the remaining duration of the active task.
+`parent_run_id`, and `ppilot.job_id` orchestration metadata. Cancellation and
+terminal state flow through the owning `RunHandle`; result persistence and
+ownership fencing remain the durable coordination boundary. Arbitrary Python
+code is not snapshotted mid-call.
 
 ## Batch trajectory production
 

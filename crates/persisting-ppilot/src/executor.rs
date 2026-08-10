@@ -10,10 +10,7 @@
 //! Driver --ask--> WorkerActor -- RunSpec --> pVisor --> plan.py::execute(item)
 //! ```
 
-use crate::agent_abi::{AgentAbiClient, AgentAbiClientConfig};
-use crate::digest::sha256_hex;
 use crate::python_env;
-use crate::runtime_bridge::PilotRuntimeBridge;
 use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -21,10 +18,7 @@ use persisting_control::{
     ArtifactRef, ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure,
     RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
 };
-use persisting_pvisor::{
-    AgentClientRole, AgentEffectOutcome, AgentProcessRegistration, AttemptContext, PVisor,
-    RunExecutor,
-};
+use persisting_pvisor::{AttemptContext, PVisor, RunExecutor};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -334,7 +328,7 @@ impl RunExecutor for PlanExecuteExecutor {
             kind: ExecutorKind::Process,
             isolation: IsolationKind::HostProcess,
             enforces_capabilities: false,
-            supports_checkpoint: true,
+            supports_checkpoint: false,
             supports_migration: false,
         }
     }
@@ -368,100 +362,12 @@ impl RunExecutor for PlanExecuteExecutor {
             .and_then(Value::as_str)
             .unwrap_or("ppilot-worker")
             .to_string();
-        let agent_abi = match connect_agent_abi(&spec, &context, &worker_id) {
-            Ok(client) => client,
-            Err(error) => {
-                return failed_run_result(
-                    &spec,
-                    &context,
-                    started_at_unix_ms,
-                    RunFailureKind::Infrastructure,
-                    format!("connect pPilot to pVisor Agent ABI: {error:#}"),
-                    true,
-                );
-            }
-        };
         context.transition(RunState::Running, None).await;
-        let effect_id = format!("task:{}", task.id);
-        if let Some(bridge) = agent_abi.as_ref() {
-            let digest = format!(
-                "sha256:{}",
-                sha256_hex(serde_json::to_vec(&task).unwrap_or_default())
-            );
-            let job_id = spec
-                .metadata
-                .get("ppilot.job_id")
-                .and_then(Value::as_str)
-                .unwrap_or("local");
-            if let Err(error) = bridge.begin_effect(
-                &effect_id,
-                "ppilot.task",
-                digest,
-                Some(format!("{job_id}/{}", task.id)),
-            ) {
-                return failed_run_result(
-                    &spec,
-                    &context,
-                    started_at_unix_ms,
-                    RunFailureKind::Infrastructure,
-                    format!("begin pPilot task effect: {error:#}"),
-                    true,
-                );
-            }
-        }
         let task_result = self
             .run_with_cancel(task, &worker_id, context.cancellation())
             .await;
-        let effect_outcome = if task_result.ok {
-            AgentEffectOutcome::Committed
-        } else if task_result.cancelled {
-            AgentEffectOutcome::Aborted
-        } else {
-            AgentEffectOutcome::Unknown
-        };
-        let mut result = task_result_to_run_result(spec, context.attempt_id().clone(), task_result);
-        if let Some(bridge) = agent_abi {
-            if let Err(error) = bridge.complete_effect(&effect_id, effect_outcome) {
-                result.state = RunState::Failed;
-                result.exit_code = None;
-                result.failure = Some(RunFailure {
-                    kind: RunFailureKind::Infrastructure,
-                    message: format!("complete pPilot task effect: {error:#}"),
-                    retryable: true,
-                });
-            }
-            result.warnings.extend(bridge.finish().await);
-        }
-        result
+        task_result_to_run_result(spec, context.attempt_id().clone(), task_result)
     }
-}
-
-fn connect_agent_abi(
-    spec: &RunSpec,
-    context: &AttemptContext,
-    worker_id: &str,
-) -> Result<Option<PilotRuntimeBridge>> {
-    let RunInvocation::Process(process) = &spec.invocation;
-    let Some(config) = AgentAbiClientConfig::from_environment(
-        &process.env,
-        format!("{worker_id}:{}", context.attempt_id()),
-        AgentClientRole::Pilot,
-        spec.agent.name.clone(),
-    )?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(PilotRuntimeBridge::start(
-        AgentAbiClient::new(config),
-        AgentProcessRegistration {
-            pid: std::process::id(),
-            role: "ppilot-worker".into(),
-            executable: std::env::current_exe()
-                .ok()
-                .map(|path| path.display().to_string()),
-        },
-        context.cancellation(),
-    )?))
 }
 
 /// Routes `op=execute` to [`PlanExecuteExecutor`]. Unknown ops fail clearly.
