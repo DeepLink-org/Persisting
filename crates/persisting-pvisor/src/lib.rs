@@ -20,13 +20,15 @@ mod control;
 mod delegated;
 mod event;
 mod executor;
-mod kvm;
+mod firmware;
+mod oci;
 mod process;
 mod pvisor;
 #[doc(hidden)]
 pub mod sandbox;
 mod supervisor;
 mod util;
+mod vm;
 
 pub use agent_abi::{
     AgentAbiControl, AgentAbiServer, AgentAbiSnapshot, AgentCheckpointQuiesced, AgentClientRole,
@@ -46,9 +48,9 @@ pub use checkpoint::{
 };
 pub use config::{
     ChronicleMode, ChronicleSettings, ContainerMount, ContainerNetwork, ContainerPlatform,
-    ContainerSettings, GatewayDriverConfig, GatewayMode, GatewaySettings, KvmSettings,
-    OverlayFsBackend, OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy,
-    OverlayNetSettings, PVisorConfig, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio,
+    ContainerSettings, GatewayDriverConfig, GatewayMode, GatewaySettings, OverlayFsBackend,
+    OverlayFsCommit, OverlayFsSettings, OverlayNetMode, OverlayNetPolicy, OverlayNetSettings,
+    PVisorConfig, RunConfig, RunExecutorKind, RunPolicy, RunSettings, RunStdio, VmSettings,
 };
 pub use container::ContainerExecutor;
 pub use control::{
@@ -60,8 +62,6 @@ pub use event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
 };
 pub use executor::{AttemptContext, RunExecutor};
-pub use kvm::run_internal_if_requested as run_krun_internal_if_requested;
-pub use kvm::KvmExecutor;
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;
 pub use pvisor::{PVisor, PVisorBuilder, PVisorError, RunCancellation, RunEventStream, RunHandle};
@@ -72,3 +72,5 @@ pub use supervisor::{
     SupervisorRegistration, SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
 };
 pub use util::unix_now_ms;
+pub use vm::run_internal_if_requested as run_krun_internal_if_requested;
+pub use vm::VmExecutor;

@@ -658,6 +658,7 @@ mod tests {
                 excluded_paths: Vec::new(),
                 auto_apply: false,
                 auto_discard: false,
+                protect_target: false,
                 state: super::super::overlay::OverlayState::Staged,
             }),
             overlay_lowers: vec![storage.join("target")],

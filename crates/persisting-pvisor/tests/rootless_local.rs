@@ -89,7 +89,7 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("OUTSIDE_SECRET", outside.join("secret.txt"))
         .env("OUTSIDE_WRITE", outside.join("escaped.txt"))
-        .args(["run", "--safe", "--stdio", "capture", "--workspace"])
+        .args(["run", "--safe", "--stdio", "capture", "--overlayfs-base"])
         .arg(&workspace)
         .args(["--", "/bin/sh", "-c", script])
         .output()
@@ -175,7 +175,7 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
             "--stdio",
             "capture",
             "--overlaynet-deny-all",
-            "--workspace",
+            "--overlayfs-base",
         ])
         .arg(&workspace)
         .args(["--", "/bin/bash", "-c", script])
@@ -229,7 +229,7 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("PERSISTING_SOCKET_PROBE", &host_socket)
         .env("SSH_AUTH_SOCK", &host_socket)
-        .args(["run", "--safe", "--stdio", "capture", "--workspace"])
+        .args(["run", "--safe", "--stdio", "capture", "--overlayfs-base"])
         .arg(&workspace)
         .arg("--")
         .arg(std::env::current_exe().unwrap())

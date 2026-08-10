@@ -230,7 +230,7 @@ impl RunBundle {
             }
             if virtual_machine {
                 safety_warnings.push(
-                    "the libkrun guest receives the complete host root view allowed to the invoking UID; credentials are not hidden"
+                    "the libkrun guest can read the complete configured rootfs and currently runs its workload as guest root"
                         .into(),
                 );
             }
@@ -389,6 +389,7 @@ mod tests {
                 excluded_paths: Vec::new(),
                 auto_apply: false,
                 auto_discard: false,
+                protect_target: false,
                 state: OverlayState::Staged,
             }),
             overlay_lowers: vec![],

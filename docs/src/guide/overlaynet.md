@@ -153,7 +153,7 @@ blocked, use `pvisor run --safe --overlaynet-deny-all`: Linux adds a private
 network namespace; macOS blocks IP and ambient host Unix sockets with Seatbelt,
 retaining only the exact Agent ABI and Run-local IPC. Container Runs can instead
 use `--container-network none`. Selective allow/deny rules remain cooperative
-on both native host paths. The current KVM executor cannot use the host
+on both native host paths. The current VM executor cannot use the host
 OverlayNet endpoint, while the container executor requires
 `--container-network host` when using the in-process proxy.
 

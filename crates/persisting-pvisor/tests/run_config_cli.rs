@@ -64,7 +64,6 @@ fn toml_and_cli_share_one_run_configuration() {
     let config_path = temporary.path().join("run.toml");
 
     let mut config = RunConfig::default();
-    config.run.workspace = Some(workspace.clone());
     config.run.agent = "from-toml".into();
     config.run.command = vec!["/usr/bin/false".into()];
     std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
@@ -73,6 +72,7 @@ fn toml_and_cli_share_one_run_configuration() {
         .args(["run", "--config"])
         .arg(&config_path)
         .args(["--agent", "from-cli", "--", "/usr/bin/true"])
+        .current_dir(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
         .output()
         .expect("execute pvisor from TOML plus CLI overrides");
@@ -123,7 +123,7 @@ fn one_workspace_accepts_multiple_independent_runs() {
 
     for _ in 0..2 {
         let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .args(["run", "--workspace"])
+            .args(["run", "--overlayfs-base"])
             .arg(&workspace)
             .args(["--", "/usr/bin/true"])
             .env("PERSISTING_RUN_HOME", &run_home)
@@ -169,16 +169,15 @@ fn one_workspace_accepts_multiple_independent_runs() {
 }
 
 #[test]
-fn workspace_selects_the_host_process_working_directory() {
+fn current_directory_selects_the_host_process_working_directory() {
     let temporary = tempfile::tempdir().expect("create CLI fixture");
     let workspace = temporary.path().join("workspace");
     let run_home = temporary.path().join("runs");
     std::fs::create_dir(&workspace).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--workspace"])
-        .arg(&workspace)
-        .args(["--", "/bin/pwd"])
+        .args(["run", "--", "/bin/pwd"])
+        .current_dir(&workspace)
         .env("PERSISTING_RUN_HOME", &run_home)
         .output()
         .expect("execute pVisor in selected workspace");
@@ -221,7 +220,7 @@ fn run_accepts_portable_object_store_chronicle_sink() {
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--workspace"])
+        .args(["run", "--overlayfs-base"])
         .arg(&workspace)
         .args(["--chronicle-mode", "lance", "--chronicle-dir", &uri])
         .args(["--", "/usr/bin/true"])
@@ -280,7 +279,7 @@ exit 0
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--workspace"])
+        .args(["run", "--overlayfs-base"])
         .arg(&workspace)
         .args(["--executor", "container", "--container-runtime"])
         .arg(&runtime)
@@ -363,7 +362,7 @@ exit 0
 
     let started = std::time::Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--workspace"])
+        .args(["run", "--overlayfs-base"])
         .arg(&workspace)
         .args(["--timeout-ms", "20", "--container-runtime"])
         .arg(&runtime)

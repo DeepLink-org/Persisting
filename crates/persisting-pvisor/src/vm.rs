@@ -1,0 +1,830 @@
+//! libkrun VM process isolation over a pVisor-provided root OverlayFS.
+
+use crate::config::VmSettings;
+use crate::executor::{AttemptContext, RunExecutor};
+use async_trait::async_trait;
+use persisting_control::{
+    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
+    RunInvocation, RunResult, RunState, StdioMode,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::ffi::CString;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Command;
+
+const RUNNER_SPEC_ENV: &str = "PERSISTING_KRUN_RUNNER_SPEC";
+const WORKSPACE_TAG: &str = "pvisor-workspace";
+
+#[derive(Debug, Clone)]
+pub struct VmExecutor {
+    settings: VmSettings,
+}
+
+#[derive(Debug)]
+struct Captured {
+    text: String,
+    truncated: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RunnerSpec {
+    root: OverlayDeviceSpec,
+    workspace: Option<OverlayDeviceSpec>,
+    workspace_target: Option<PathBuf>,
+    mount_helper: Option<PathBuf>,
+    guest: GuestSpec,
+    cpus: u8,
+    memory_mib: u32,
+    library_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OverlayDeviceSpec {
+    lowers: Vec<PathBuf>,
+    upper: PathBuf,
+    work: Option<PathBuf>,
+    #[serde(default)]
+    excluded: Vec<PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GuestSpec {
+    program: String,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+    cwd: PathBuf,
+}
+
+impl VmExecutor {
+    pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+        anyhow::ensure!(settings.memory_mib > 0, "vm.memory_mib must be positive");
+        anyhow::ensure!(settings.cpus > 0, "vm.cpus must be positive");
+        anyhow::ensure!(settings.cpus <= 8, "libkrunfw supports at most 8 vCPUs");
+        let rootfs = settings
+            .rootfs
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("vm.rootfs must be configured"))?;
+        anyhow::ensure!(
+            rootfs.is_dir(),
+            "vm.rootfs is not a directory: {}",
+            rootfs.display()
+        );
+        if let Some(directory) = &settings.library_dir {
+            anyhow::ensure!(
+                directory.is_dir(),
+                "vm.library_dir is not a directory: {}",
+                directory.display()
+            );
+            anyhow::ensure!(
+                directory.join(firmware_name()).is_file(),
+                "vm.library_dir does not contain {}: {}",
+                firmware_name(),
+                directory.display()
+            );
+        } else if let Some(directory) = bundled_firmware_dir() {
+            settings.library_dir = Some(directory);
+        }
+        Ok(Self { settings })
+    }
+
+    pub fn settings(&self) -> &VmSettings {
+        &self.settings
+    }
+}
+
+pub(crate) fn bundled_firmware_dir() -> Option<PathBuf> {
+    let directory = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    directory
+        .join(firmware_name())
+        .is_file()
+        .then_some(directory)
+}
+
+pub(crate) const fn firmware_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "libkrunfw.5.dylib"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "libkrunfw.so.5"
+    }
+}
+
+#[async_trait]
+impl RunExecutor for VmExecutor {
+    fn descriptor(&self) -> ExecutorDescriptor {
+        ExecutorDescriptor {
+            name: "libkrun-root-overlay-v1".into(),
+            kind: ExecutorKind::VirtualMachine,
+            isolation: IsolationKind::VirtualMachine,
+            enforces_capabilities: false,
+            supports_checkpoint: true,
+            supports_migration: false,
+        }
+    }
+
+    fn supports(&self, invocation: &RunInvocation) -> bool {
+        matches!(invocation, RunInvocation::Process(_))
+    }
+
+    async fn execute(&self, context: AttemptContext) -> RunResult {
+        let mut spec = context.spec().clone();
+        let started_at = crate::util::unix_now_ms();
+        let cancellation = context.cancellation();
+        context
+            .transition(
+                RunState::Starting,
+                Some("starting libkrun guest over pVisor root OverlayFS".into()),
+            )
+            .await;
+        if !cfg!(any(
+            target_os = "linux",
+            all(target_os = "macos", target_arch = "aarch64")
+        )) {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                "libkrun execution requires Linux/KVM or Apple Silicon macOS/HVF".into(),
+            );
+        }
+
+        let RunInvocation::Process(invocation) = &mut spec.invocation;
+        let overlay_target = spec
+            .metadata
+            .get("pvisor.vm.overlay_target")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from);
+        let root = self
+            .settings
+            .rootfs
+            .clone()
+            .expect("validated by VmExecutor::new");
+        if !root.is_dir() {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                format!("prepared root OverlayFS is not mounted: {}", root.display()),
+            );
+        }
+        let guest_cwd = spec
+            .metadata
+            .get("pvisor.vm.guest_cwd")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let workspace = spec
+            .metadata
+            .get("pvisor.vm.workspace_overlay")
+            .cloned()
+            .map(serde_json::from_value::<OverlayDeviceSpec>)
+            .transpose();
+        let configured_overlay = match workspace {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                return failed_to_start(
+                    &spec,
+                    context.attempt_id(),
+                    started_at,
+                    format!("invalid libkrun workspace overlay metadata: {error}"),
+                );
+            }
+        };
+        let (root_overlay, workspace) = if overlay_target.is_none() {
+            (
+                configured_overlay.unwrap_or_else(|| OverlayDeviceSpec {
+                    lowers: vec![root.clone()],
+                    upper: PathBuf::new(),
+                    work: None,
+                    excluded: Vec::new(),
+                }),
+                None,
+            )
+        } else {
+            (
+                OverlayDeviceSpec {
+                    lowers: vec![root.clone()],
+                    upper: PathBuf::new(),
+                    work: None,
+                    excluded: Vec::new(),
+                },
+                configured_overlay,
+            )
+        };
+        let workspace_target = workspace.as_ref().and(overlay_target.clone());
+        let mut env = if invocation.inherit_env {
+            std::env::vars().collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::new()
+        };
+        for key in [
+            crate::AGENT_ABI_ENDPOINT_ENV,
+            crate::AGENT_ABI_TOKEN_ENV,
+            crate::AGENT_ABI_TRANSPORT_ENV,
+            crate::AGENT_ABI_VERSION_ENV,
+        ] {
+            env.remove(key);
+        }
+        for key in [
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FALLBACK_LIBRARY_PATH",
+            "LD_LIBRARY_PATH",
+        ] {
+            env.remove(key);
+        }
+        if !invocation.env.contains_key("PATH") {
+            env.insert(
+                "PATH".into(),
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
+            );
+        }
+        if !invocation.env.contains_key("HOME") {
+            env.insert("HOME".into(), "/root".into());
+        }
+        if !invocation.env.contains_key("TMPDIR") {
+            env.insert("TMPDIR".into(), "/tmp".into());
+        }
+        env.extend(invocation.env.clone());
+
+        let temporary = match tempfile::Builder::new().prefix("pvisor-krun-").tempdir() {
+            Ok(value) => value,
+            Err(error) => {
+                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            }
+        };
+        let executable = match std::env::current_exe() {
+            Ok(path) if path.is_absolute() => path,
+            Ok(path) => {
+                return failed_to_start(
+                    &spec,
+                    context.attempt_id(),
+                    started_at,
+                    format!("pVisor executable is not absolute: {}", path.display()),
+                );
+            }
+            Err(error) => {
+                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            }
+        };
+        let runner_root = root.clone();
+        let root_upper = temporary.path().join("root-upper");
+        let root_work = temporary.path().join("root-work");
+        if let Err(error) =
+            std::fs::create_dir_all(&root_upper).and_then(|()| std::fs::create_dir_all(&root_work))
+        {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                format!("prepare libkrun root overlay: {error}"),
+            );
+        }
+        let root_overlay = if root_overlay.upper.as_os_str().is_empty() {
+            OverlayDeviceSpec {
+                lowers: root_overlay.lowers,
+                upper: root_upper.clone(),
+                work: Some(root_work.clone()),
+                excluded: root_overlay.excluded,
+            }
+        } else {
+            root_overlay
+        };
+        let mut mount_helper_guest = None;
+        if let Some(workspace) = &workspace {
+            if workspace.lowers.is_empty()
+                || workspace.lowers.iter().any(|lower| !lower.is_dir())
+                || !workspace.upper.is_dir()
+                || workspace.work.as_ref().is_some_and(|work| !work.is_dir())
+            {
+                return failed_to_start(
+                    &spec,
+                    context.attempt_id(),
+                    started_at,
+                    "libkrun workspace overlay contains a missing backing directory".into(),
+                );
+            }
+            let target = workspace_target
+                .as_deref()
+                .expect("workspace is only configured with an overlay target");
+            let mountpoint = match guest_path_in_root(&runner_root, target) {
+                Ok(path) => path,
+                Err(error) => {
+                    return failed_to_start(
+                        &spec,
+                        context.attempt_id(),
+                        started_at,
+                        error.to_string(),
+                    );
+                }
+            };
+            match std::fs::symlink_metadata(&mountpoint) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return failed_to_start(
+                        &spec,
+                        context.attempt_id(),
+                        started_at,
+                        format!(
+                            "guest overlay target must be a directory: {}",
+                            target.display()
+                        ),
+                    );
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let upper_mountpoint =
+                        guest_path_in_root(&root_upper, target).expect("validated guest target");
+                    if let Err(error) = std::fs::create_dir_all(&upper_mountpoint) {
+                        return failed_to_start(
+                            &spec,
+                            context.attempt_id(),
+                            started_at,
+                            format!("create guest overlay target: {error}"),
+                        );
+                    }
+                }
+                Err(error) => {
+                    return failed_to_start(
+                        &spec,
+                        context.attempt_id(),
+                        started_at,
+                        error.to_string(),
+                    );
+                }
+            }
+            let helper_name = format!(".pvisor-mount-{}.sh", uuid::Uuid::new_v4().simple());
+            let helper_host = root_upper.join(&helper_name);
+            if let Err(error) = write_guest_helper(&helper_host) {
+                return failed_to_start(
+                    &spec,
+                    context.attempt_id(),
+                    started_at,
+                    format!("create guest overlay helper: {error:#}"),
+                );
+            }
+            mount_helper_guest = Some(Path::new("/").join(helper_name));
+        }
+        let guest = GuestSpec {
+            program: invocation.program.clone(),
+            args: invocation.args.clone(),
+            env,
+            cwd: guest_cwd,
+        };
+        let runner = RunnerSpec {
+            root: root_overlay,
+            workspace,
+            workspace_target: workspace_target.clone(),
+            mount_helper: mount_helper_guest.clone(),
+            guest,
+            cpus: self.settings.cpus as u8,
+            memory_mib: self.settings.memory_mib,
+            library_dir: self.settings.library_dir.clone(),
+        };
+        let runner_path = temporary.path().join("runner.json");
+        if let Err(error) = write_private_json(&runner_path, &runner) {
+            return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+        }
+
+        let mut command = Command::new(executable);
+        command
+            .env(RUNNER_SPEC_ENV, &runner_path)
+            .stdin(stdio(invocation.stdin))
+            .stdout(stdio(invocation.stdout))
+            .stderr(stdio(invocation.stderr))
+            .kill_on_drop(true);
+        if let Some(directory) = &self.settings.library_dir {
+            #[cfg(target_os = "linux")]
+            command.env("LD_LIBRARY_PATH", directory);
+            #[cfg(target_os = "macos")]
+            command.env("DYLD_LIBRARY_PATH", directory);
+        }
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            }
+        };
+        let stdout_task = child.stdout.take().map(|stdout| {
+            let limit = spec.runtime.max_output_bytes;
+            tokio::spawn(async move { read_limited(stdout, limit).await })
+        });
+        let stderr_task = child.stderr.take().map(|stderr| {
+            let limit = spec.runtime.max_output_bytes;
+            tokio::spawn(async move { read_limited(stderr, limit).await })
+        });
+        context.transition(RunState::Running, None).await;
+
+        enum End {
+            Exited(std::io::Result<std::process::ExitStatus>),
+            Cancelled,
+            Watchdog,
+        }
+        let watchdog_ms = spec.runtime.timeout_ms.map(|timeout| {
+            timeout
+                .saturating_add(spec.runtime.termination_grace_ms)
+                .saturating_add(10_000)
+        });
+        let end = if let Some(watchdog_ms) = watchdog_ms {
+            tokio::select! {
+                biased;
+                status = child.wait() => End::Exited(status),
+                _ = cancellation.cancelled() => End::Cancelled,
+                _ = tokio::time::sleep(Duration::from_millis(watchdog_ms)) => End::Watchdog,
+            }
+        } else {
+            tokio::select! {
+                biased;
+                status = child.wait() => End::Exited(status),
+                _ = cancellation.cancelled() => End::Cancelled,
+            }
+        };
+        if matches!(end, End::Cancelled | End::Watchdog) {
+            if matches!(end, End::Cancelled) {
+                context
+                    .transition(RunState::Cancelling, Some("cancellation requested".into()))
+                    .await;
+            }
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        let transport_stdout = join_capture(stdout_task).await;
+        let transport_stderr = join_capture(stderr_task).await;
+        let mut output = ProcessOutput::default();
+        if let Some(captured) = transport_stdout {
+            output.stdout = Some(captured.text);
+            output.stdout_truncated = captured.truncated;
+        }
+        if let Some(captured) = transport_stderr {
+            output.stderr = Some(captured.text);
+            output.stderr_truncated = captured.truncated;
+        }
+        let (state, exit_code, failure) = match end {
+            End::Cancelled => (RunState::Cancelled, None, None),
+            End::Watchdog => (
+                RunState::Failed,
+                None,
+                Some(RunFailure {
+                    kind: RunFailureKind::DeadlineExceeded,
+                    message: "libkrun guest exceeded the transport watchdog".into(),
+                    retryable: false,
+                }),
+            ),
+            End::Exited(Ok(status)) if status.code().is_some() => {
+                (RunState::Completed, status.code(), None)
+            }
+            End::Exited(Ok(status)) => (
+                RunState::Failed,
+                None,
+                Some(RunFailure {
+                    kind: RunFailureKind::Infrastructure,
+                    message: format!("libkrun runner terminated by {status}"),
+                    retryable: false,
+                }),
+            ),
+            End::Exited(Err(error)) => (
+                RunState::Failed,
+                None,
+                Some(RunFailure {
+                    kind: RunFailureKind::Infrastructure,
+                    message: error.to_string(),
+                    retryable: true,
+                }),
+            ),
+        };
+        RunResult {
+            run_id: spec.run_id,
+            attempt_id: context.attempt_id().clone(),
+            lease_epoch: spec.lease_epoch,
+            state,
+            started_at_unix_ms: started_at,
+            finished_at_unix_ms: crate::util::unix_now_ms(),
+            exit_code,
+            failure,
+            output,
+            value: None,
+            metrics: Default::default(),
+            artifacts: Vec::new(),
+            event_stream_ref: None,
+            warnings: Vec::new(),
+        }
+    }
+}
+
+/// Handle the self-exec libkrun runner.
+/// Returns `true` when the current process was consumed by an internal mode.
+pub fn run_internal_if_requested() -> anyhow::Result<bool> {
+    if let Some(path) = std::env::var_os(RUNNER_SPEC_ENV) {
+        let spec: RunnerSpec = serde_json::from_slice(&std::fs::read(&path)?)?;
+        run_runner(spec)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut read_only = spec.root.lowers.clone();
+        let mut read_write = vec![spec.root.upper.clone()];
+        read_write.extend(spec.root.work.iter().cloned());
+        if let Some(workspace) = &spec.workspace {
+            read_only.extend(workspace.lowers.iter().cloned());
+            read_write.push(workspace.upper.clone());
+            read_write.extend(workspace.work.iter().cloned());
+        }
+        crate::sandbox::restrict_krun_runner(read_only, read_write, spec.library_dir.clone())?;
+    }
+    run_linked_krun(spec)
+}
+
+fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
+    if std::env::var_os("PERSISTING_KRUN_LOG").is_some() {
+        check_krun(krun::krun_set_log_level(5), "krun_set_log_level")?;
+    }
+    let workspace_tag = CString::new(WORKSPACE_TAG)?;
+    let (program, workdir, argv) = if let Some(helper) = &spec.mount_helper {
+        let target = spec
+            .workspace_target
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("libkrun mount helper is missing its guest target"))?;
+        let mut argv = Vec::with_capacity(spec.guest.args.len() + 2);
+        argv.push(path_cstring(target)?);
+        argv.push(CString::new(spec.guest.program.as_str())?);
+        for argument in &spec.guest.args {
+            argv.push(CString::new(argument.as_str())?);
+        }
+        (path_cstring(helper)?, CString::new("/")?, argv)
+    } else {
+        let mut argv = Vec::with_capacity(spec.guest.args.len());
+        for argument in &spec.guest.args {
+            argv.push(CString::new(argument.as_str())?);
+        }
+        (
+            CString::new(spec.guest.program.as_str())?,
+            path_cstring(&spec.guest.cwd)?,
+            argv,
+        )
+    };
+    let mut argv_ptrs = argv.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
+    argv_ptrs.push(std::ptr::null());
+    let env = spec
+        .guest
+        .env
+        .iter()
+        .map(|(key, value)| CString::new(format!("{key}={value}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut env_ptrs = env.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
+    env_ptrs.push(std::ptr::null());
+
+    let ctx = check_ctx(krun::krun_create_ctx(), "krun_create_ctx")?;
+    check_krun(
+        krun::krun_set_vm_config(ctx, spec.cpus, spec.memory_mib),
+        "krun_set_vm_config",
+    )?;
+    add_krun_overlay(ctx, "/dev/root", &spec.root, 1 << 29)?;
+    if let Some(workspace) = &spec.workspace {
+        add_krun_overlay(ctx, workspace_tag.to_str()?, workspace, 0)?;
+    }
+    // Contexts start with an implicit vsock whose heuristic enables TSI when
+    // there is no virtio-net device. Replace it with an explicit zero-feature
+    // device so ordinary guest sockets cannot escape through the host stack.
+    check_krun(
+        krun::krun_disable_implicit_vsock(ctx),
+        "krun_disable_implicit_vsock",
+    )?;
+    check_krun(krun::krun_add_vsock(ctx, 0), "krun_add_vsock")?;
+    check_krun(
+        unsafe { krun::krun_set_workdir(ctx, workdir.as_ptr()) },
+        "krun_set_workdir",
+    )?;
+    check_krun(
+        unsafe {
+            krun::krun_set_exec(ctx, program.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr())
+        },
+        "krun_set_exec",
+    )?;
+    let started = krun::krun_start_enter(ctx);
+    #[cfg(target_os = "macos")]
+    if started == -libc::EINVAL {
+        anyhow::bail!(
+            "krun_start_enter failed with errno 22; source-built macOS binaries must be signed \
+             with crates/persisting-pvisor/macos-hypervisor.entitlements"
+        );
+    }
+    check_krun(started, "krun_start_enter")?;
+    Ok(())
+}
+
+fn add_krun_overlay(
+    ctx: u32,
+    tag: &str,
+    overlay: &OverlayDeviceSpec,
+    shm_size: u64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !overlay.lowers.is_empty(),
+        "libkrun overlay requires a lower directory"
+    );
+    let tag = CString::new(tag)?;
+    let lowers = overlay
+        .lowers
+        .iter()
+        .map(|path| path_cstring(path))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let lower_ptrs = lowers.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
+    let upper = path_cstring(&overlay.upper)?;
+    let work = overlay.work.as_deref().map(path_cstring).transpose()?;
+    let excluded = overlay
+        .excluded
+        .iter()
+        .map(|path| path_cstring(path))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let excluded_ptrs = excluded
+        .iter()
+        .map(|path| path.as_ptr())
+        .collect::<Vec<_>>();
+    check_krun(
+        unsafe {
+            krun::krun_add_virtiofs_overlay(
+                ctx,
+                tag.as_ptr(),
+                lower_ptrs.as_ptr(),
+                lower_ptrs.len(),
+                upper.as_ptr(),
+                work.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
+                excluded_ptrs.as_ptr(),
+                excluded_ptrs.len(),
+                shm_size,
+            )
+        },
+        "krun_add_virtiofs_overlay",
+    )
+}
+
+fn write_guest_helper(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = concat!(
+        "#!/bin/sh\n",
+        "set -eu\n",
+        "target=$1\n",
+        "shift\n",
+        "mount -t virtiofs pvisor-workspace \"$target\"\n",
+        "rm -f /init.krun \"$0\"\n",
+        "cd \"$target\"\n",
+        "exec \"$@\"\n"
+    );
+    std::fs::write(path, script)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+fn stdio(mode: StdioMode) -> Stdio {
+    match mode {
+        StdioMode::Inherit => Stdio::inherit(),
+        StdioMode::Capture => Stdio::piped(),
+        StdioMode::Null => Stdio::null(),
+    }
+}
+
+async fn read_limited<R: AsyncRead + Unpin>(
+    mut reader: R,
+    limit: usize,
+) -> std::io::Result<Captured> {
+    let mut retained = Vec::with_capacity(limit.min(8192));
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let keep = limit.saturating_sub(retained.len()).min(read);
+        retained.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < read;
+    }
+    Ok(Captured {
+        text: String::from_utf8_lossy(&retained).into_owned(),
+        truncated,
+    })
+}
+
+async fn join_capture(
+    task: Option<tokio::task::JoinHandle<std::io::Result<Captured>>>,
+) -> Option<Captured> {
+    match task {
+        Some(task) => task.await.ok().and_then(Result::ok),
+        None => None,
+    }
+}
+
+fn write_private_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, serde_json::to_vec(value)?)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+fn failed_to_start(
+    spec: &persisting_control::RunSpec,
+    attempt_id: &persisting_control::AttemptId,
+    started_at: u64,
+    message: String,
+) -> RunResult {
+    RunResult {
+        run_id: spec.run_id.clone(),
+        attempt_id: attempt_id.clone(),
+        lease_epoch: spec.lease_epoch,
+        state: RunState::Failed,
+        started_at_unix_ms: started_at,
+        finished_at_unix_ms: crate::util::unix_now_ms(),
+        exit_code: None,
+        failure: Some(RunFailure {
+            kind: RunFailureKind::Spawn,
+            message,
+            retryable: false,
+        }),
+        output: ProcessOutput::default(),
+        value: None,
+        metrics: Default::default(),
+        artifacts: Vec::new(),
+        event_stream_ref: None,
+        warnings: Vec::new(),
+    }
+}
+
+fn path_cstring(path: &Path) -> anyhow::Result<CString> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(CString::new(path.as_os_str().as_bytes())?)
+}
+
+fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(
+        target.is_absolute() && target != Path::new("/"),
+        "libkrun guest overlay target must be an absolute path other than /"
+    );
+    anyhow::ensure!(
+        !target
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir)),
+        "libkrun guest overlay target must not contain .."
+    );
+    let relative = target.strip_prefix(Path::new("/"))?;
+    let mut resolved = root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            continue;
+        };
+        resolved.push(component);
+        match std::fs::symlink_metadata(&resolved) {
+            Ok(metadata) => anyhow::ensure!(
+                !metadata.file_type().is_symlink(),
+                "libkrun guest overlay target traverses a symlink: {}",
+                target.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(resolved)
+}
+
+fn check_ctx(value: i32, operation: &str) -> anyhow::Result<u32> {
+    if value < 0 {
+        anyhow::bail!("{operation} failed with errno {}", -value);
+    }
+    Ok(value as u32)
+}
+
+fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
+    if value < 0 {
+        anyhow::bail!("{operation} failed with errno {}", -value);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_validate_resource_limits() {
+        let rootfs = tempfile::tempdir().unwrap();
+        let settings = VmSettings {
+            rootfs: Some(rootfs.path().to_path_buf()),
+            ..VmSettings::default()
+        };
+        assert!(VmExecutor::new(settings.clone()).is_ok());
+        assert!(VmExecutor::new(VmSettings::default()).is_err());
+        assert!(VmExecutor::new(VmSettings {
+            cpus: 9,
+            ..settings
+        })
+        .is_err());
+    }
+}

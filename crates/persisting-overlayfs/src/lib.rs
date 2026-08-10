@@ -4,20 +4,18 @@
 //! FUSE userspace server. The `persisting-overlayfs` binary is only a debugging
 //! and manual-mount CLI wrapper around this library.
 
-mod core;
 mod fs;
 #[cfg(feature = "jujutsu")]
 mod jj_backend;
 #[cfg(not(feature = "jujutsu"))]
 #[path = "jj_disabled.rs"]
 mod jj_backend;
-mod sys;
 
 use anyhow::{bail, Context, Result};
 use fs::OverlayFs;
 use fuser::{BackgroundSession, MountOption, Session};
 use jj_backend::JujutsuWorkspace;
-pub use jj_backend::{jujutsu_upper_dir, snapshot_jujutsu_upper};
+pub use jj_backend::{jujutsu_upper_dir, prepare_jujutsu_upper, snapshot_jujutsu_upper};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -357,7 +355,10 @@ fn prepare(
             filesystem
         }
     };
-    let mut options = vec![MountOption::FSName(config.fsname)];
+    // Access time is not part of a pVisor changeset. Disabling it also avoids
+    // macFUSE issuing read-induced SETATTR requests that would otherwise force
+    // lower files into the writable upper.
+    let mut options = vec![MountOption::FSName(config.fsname), MountOption::NoAtime];
     if config.debug {
         options.push(MountOption::CUSTOM("debug".into()));
     }

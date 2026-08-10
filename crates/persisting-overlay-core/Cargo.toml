@@ -1,0 +1,14 @@
+[package]
+name = "persisting-overlay-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "FUSE-neutral portable overlay filesystem core for pVisor"
+
+[dependencies]
+libc.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -35,7 +35,6 @@ export DEEPSEEK_API_KEY=sk-...
 export PERSISTING_RUN_HOME=$HOME/.persisting/runs
 
 pvisor run \
-  --workspace . \
   --agent deepseek \
   --gateway-mode capture \
   --gateway-route 'name="deepseek", upstream="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"' \

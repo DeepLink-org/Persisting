@@ -305,72 +305,70 @@ workspace、显式读写 capability、精确设备句柄或 Run 独占临时目�
 read/write enforcement 分开记录，并把 aggregate filesystem 边界保持为 partial。
 profile 安装由一次性 launcher attestation 验证，失败时不会执行 Agent。
 
-### 6.6 libkrun/KVM full-root executor
+### 6.6 libkrun VM full-root executor
 
-当前工作区的 `KvmExecutor` 已从“磁盘镜像 + QEMU + SSH + guest pVisor”迁移为
-`libkrun` full-root 路径。外层 pVisor 仍然拥有 Run、Attempt、runtime drivers 和
-最终化协议；KVM 只替换 `RunExecutor`，不会在 guest 内建立第二套 Run 控制面。
+`VmExecutor` 使用静态链接的 `libkrun` 和内嵌 guest init。Linux 通过 KVM、Apple
+Silicon macOS 通过 HVF 启动同一种最小 Linux guest。外层 pVisor 仍然拥有 Run、
+Attempt、runtime drivers 和最终化协议；虚拟机只替换 `RunExecutor`。
 
 ```mermaid
 flowchart LR
   subgraph HOST["Host pVisor"]
     RC["Run controller<br/>RunId · AttemptId · lease_epoch"]
-    OFS["Full-root OverlayFS<br/>lower = host /<br/>upper = Run stage"]
-    KEX["KvmExecutor<br/>RunnerSpec + GuestSpec"]
-    ABI["Agent ABI Unix socket"]
-    NET["OverlayNet / Gateway proxy"]
-    RR["self-exec pVisor runner<br/>rootless namespaces + Landlock"]
+    OCI["OCI registry/cache<br/>verified image layers"]
+    OFS["Rootfs OverlayFS<br/>lower = OCI or explicit rootfs<br/>upper = Run stage"]
+    WS["Host workspace<br/>separate /workspace mount"]
+    KEX["VmExecutor<br/>RunnerSpec + GuestSpec"]
+    RR["self-exec pVisor runner<br/>Linux confinement / macOS HVF"]
   end
 
   subgraph VMM["libkrun VMM"]
-    KRUN["libkrun + libkrun_init<br/>vCPU / RAM / OCI init"]
+    KRUN["statically linked libkrun + init<br/>vCPU / RAM"]
     VFS["virtio-fs guest root"]
-    VSOCK["explicit vsock ports"]
   end
 
   subgraph GUEST["Minimal Linux guest"]
-    INIT["__pvisor-krun-guest<br/>guest-local /proc /sys /dev /run /tmp"]
-    RELAY["TCP↔vsock / Unix↔vsock relays"]
-    AGENT["Agent process<br/>host UID/GID + supplementary groups"]
+    INIT["embedded libkrun init"]
+    AGENT["Agent process<br/>guest root"]
   end
 
-  RC --> OFS --> KEX --> RR --> KRUN
+  RC --> OCI --> OFS --> KEX --> RR --> KRUN
+  RC --> OFS
+  WS --> KEX
   OFS --> VFS --> INIT --> AGENT
-  ABI --> VSOCK
-  NET --> VSOCK
-  VSOCK --> RELAY --> AGENT
   AGENT -->|"exit / cancel / watchdog"| RC
 ```
 
 执行路径按以下顺序建立：
 
-1. `RuntimeSupervisor` 先准备 full-root OverlayFS、Gateway/OverlayNet、Run record 和
-   Agent ABI；`KvmExecutor` 要求 `invocation.cwd` 已指向 merged root。
-2. `KvmExecutor` 固化 `RunnerSpec`：merged root、CPU/内存、动态库目录、guest
-   program/env/cwd/identity，以及 OverlayNet 与 Agent ABI 的 vsock 映射。
-3. pVisor self-exec 进入 runner 模式，动态加载 `libkrun`、`libkrun_init` 和
-   `libkrunfw`，创建 VM context，并把 merged root 通过 `krun_add_virtiofs3`
-   暴露为 guest `/`。该路径不需要磁盘镜像、SSH 或复制 guest runtime。
-4. runner 在启动 VMM 前进入私有 user/mount/network namespace，使用 Landlock 只开放
-   virtio-fs root、KVM device 和必要 runtime library，然后清空 namespace capability。
-5. guest 通过 OCI init 启动当前 pVisor 二进制的内部 guest mode；它只负责建立
-   vsock relay 并以原调用者 UID/GID 执行 Agent，不重新执行 `PVisor::run`。
-6. Agent 退出、取消或 watchdog 结束后，外层 `KvmExecutor` 返回 `RunResult`；外层
+1. 显式 `kvm.rootfs` 可直接作为 lower；否则 pVisor 直接拉取 OCI manifest/layers、
+   校验 digest、选择 host 对应 Linux 架构并把缓存 rootfs 作为 lower。
+2. `RuntimeSupervisor` 为 rootfs 准备每 Run upper；host workspace 作为独立
+   virtio-fs 设备挂载到 guest `/workspace`。
+3. `VmExecutor` 固化 `RunnerSpec`：merged root、workspace、CPU/内存以及 guest
+   program/env/cwd。
+4. pVisor self-exec 进入 runner 模式，直接调用静态链接的 libkrun，并把 merged
+   root 通过 `krun_add_virtiofs3` 暴露为 guest `/`。libkrunfw 是唯一的动态载荷，
+   wheel 会把它安装在 pVisor 同目录。
+5. Linux runner 在启动 VMM 前进入私有 user/mount/network namespace，使用 Landlock
+   只开放 virtio-fs root、KVM device 和 libkrunfw；macOS runner 使用 HVF。
+6. 内嵌 init 直接启动 Agent，不要求 rootfs 内存在 pVisor。当前阶段禁用普通 guest
+   网络，并拒绝 OverlayNet/Gateway 配置；host Agent ABI endpoint 不注入 guest。
+7. Agent 退出、取消或 watchdog 结束后，外层 `VmExecutor` 返回 `RunResult`；外层
    pVisor 继续执行 driver teardown、RunRecord/Run Bundle、terminal event 和终态发布。
 
 | 边界 | 当前语义 |
 |---|---|
-| Filesystem | host `/` 是只读 lower，所有写入与 whiteout 留在 Run upper；guest 的伪文件系统和临时目录独立挂载 |
-| Network | VMM 位于私有 network namespace；只有显式配置的 OverlayNet proxy 通过 vsock relay 可达 |
-| Agent control | host Agent ABI Unix socket 映射为 guest `/run/persisting/agent-abi.sock`，quiesce/effect 语义不变 |
-| Identity | guest 保留 host effective UID/GID 和 supplementary groups；这是 kernel isolation，不是 credential 隔离 |
+| Filesystem | OCI cache 或显式 rootfs 是只读 lower；system 写入留在 Run upper，workspace 单独挂载 |
+| Network | 显式空 TSI flags 禁止普通 guest socket 通过宿主网络栈 |
+| Agent control | 当前不把 host Agent ABI socket 暴露给 guest |
+| Identity | workload 当前以 guest root 执行；rootfs 不应包含宿主凭据 |
 | Checkpoint | checkpoint/fork 固化 full-root upper；不保存 guest memory，`supports_migration = false` |
-| Apply | full-root upper 可以 inspect、checkpoint、fork 或 drop，但不能 replay 到 host `/` |
+| Apply | 显式 rootfs 可 apply；OCI cache target 在 checkpoint/fork 后仍保持 immutable，只允许 inspect、checkpoint、fork 或 drop |
 
-因此 libkrun 路径解决的是“在不维护 guest image 的情况下获得独立 guest kernel 与完整
-Linux 用户空间兼容性”。它不会隐藏当前 UID 可读的 host root 内容，也不等价于面向恶意
-多租户的 Firecracker/image boundary。Run Bundle 必须继续如实记录 root identity、
-backing-path exclusion、host identity 和实际 enforcement。
+因此 libkrun 路径以 OCI image 或调用者提供的 Linux rootfs 获得独立 guest kernel，
+不会把宿主 `/` 隐式暴露给 guest；它仍不等价于面向恶意多租户的
+Firecracker/image boundary。
 
 ## 7. pPilot：Durable Run Orchestrator
 
@@ -677,7 +675,7 @@ pPilot library
 | canonical Lance events | `persisting-pchronicle::{EventRow, RawEventLanceStore}` | 统一 canonical-first，Markdown 降为 view |
 | Storyline / replay view | story actor、TLV Markdown、materialize、replay | 将 session 对齐为 Storyline，并补充因果关系 |
 | pVisor proxy drivers | `persisting-overlaynet` 独占显式 HTTP/HTTPS proxy 数据面；Gateway 是 LLM/轨迹 `OverlaySink`；另有 `persisting-dlcapt` | 可配置其他 sink；当前不宣称透明网络隔离。Linux 透明截获已定稿设计（主方案：非特权 netns + 进程内用户态协议栈；备选：seccomp user-notify + ADDFD），见 [OverlayNet interception](overlaynet.md) |
-| pVisor executor | Local ProcessExecutor、Docker/Podman transport、libkrun/KVM full-root transport；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；Docker/KVM 仍有 capability enforcement 差距，尚缺 WASM/Remote，见 [pVisor isolation architecture](pvisor-isolation.md) |
+| pVisor executor | Local ProcessExecutor、Docker/Podman transport、libkrun VM full-root transport；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；Container/VM 仍有 capability enforcement 差距，尚缺 WASM/Remote，见 [pVisor isolation architecture](pvisor-isolation.md) |
 | pPilot batch control | Driver、Scheduler、Sink、Checkpoint；TaskExpr ↔ RunSpec/RunResult adapter | 将 Run/Attempt 写入 durable checkpoint 并增加 reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |
 | pChronicle Web | `pchronicle-web` Dioxus/WASM 应用；`persisting-pchronicle-server` Axum REST/SSE、embedded assets 与 `DatasetStore` | 当前仅 loopback、无认证；dataset adapter 是审查兼容层，不替代 canonical Lance |

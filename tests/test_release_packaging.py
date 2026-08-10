@@ -80,14 +80,13 @@ def test_release_artifacts_accept_supported_matrix(tmp_path: Path) -> None:
     version = "1.2.3"
     names = [
         f"persisting-{version}-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
-        f"persisting-{version}-cp310-abi3-macosx_10_12_x86_64.whl",
         f"persisting-{version}-cp310-abi3-macosx_11_0_arm64.whl",
     ]
     for name in names:
         _write_wheel(tmp_path / name, version)
 
     found = release_artifacts.validate_artifacts(tmp_path, version)
-    assert set(found) == {"linux-x86_64", "macos-x86_64", "macos-arm64"}
+    assert set(found) == {"linux-x86_64", "macos-arm64"}
 
 
 def test_release_artifacts_reject_missing_platform(tmp_path: Path) -> None:
@@ -96,7 +95,7 @@ def test_release_artifacts_reject_missing_platform(tmp_path: Path) -> None:
         tmp_path / f"persisting-{version}-cp310-abi3-macosx_11_0_arm64.whl",
         version,
     )
-    with pytest.raises(release_artifacts.ArtifactValidationError, match="expected 3 wheels"):
+    with pytest.raises(release_artifacts.ArtifactValidationError, match="expected 2 wheels"):
         release_artifacts.validate_artifacts(tmp_path, version)
 
 
@@ -104,7 +103,6 @@ def test_release_artifacts_reject_metadata_version_mismatch(tmp_path: Path) -> N
     filename_version = "1.2.3"
     names = [
         f"persisting-{filename_version}-cp310-abi3-manylinux2014_x86_64.whl",
-        f"persisting-{filename_version}-cp310-abi3-macosx_10_12_x86_64.whl",
         f"persisting-{filename_version}-cp310-abi3-macosx_11_0_arm64.whl",
     ]
     for name in names:
@@ -118,7 +116,6 @@ def test_release_artifacts_reject_oversized_wheel(tmp_path: Path) -> None:
     version = "1.2.3"
     names = [
         f"persisting-{version}-cp310-abi3-manylinux2014_x86_64.whl",
-        f"persisting-{version}-cp310-abi3-macosx_10_12_x86_64.whl",
         f"persisting-{version}-cp310-abi3-macosx_11_0_arm64.whl",
     ]
     for name in names:

@@ -596,13 +596,20 @@ separate guest kernel under KVM. Firecracker intentionally exposes a small
 device model and provides a jailer that adds host-side namespace/cgroup
 isolation and drops VMM privileges.
 
-The existing pVisor `kvm` executor uses libkrun with a pVisor full-root
-OverlayFS exported through virtio-fs. It preserves host credentials and makes
-the host root readable according to those credentials, while guest writes stay
-in a reviewable upper layer. The VMM is confined with user/mount/network
-namespaces and Landlock, and explicit vsock relays carry OverlayNet and Agent
-ABI traffic. This is not the hostile multi-tenant Firecracker design below;
-that path should avoid a writable host filesystem share:
+The existing pVisor `vm` executor statically links libkrun and can either use
+an explicit Linux rootfs or pull a public OCI image without a container daemon.
+Verified image layers form an immutable cached lower rootfs, guest system writes
+stay in a reviewable upper layer. Host paths are not implicitly exposed. An
+explicit `--overlayfs-base` plus `--overlayfs-target` mounts a staged view at
+the selected guest path. A vendored libkrun serves both root and workspace
+copy-on-write unions directly over virtio-fs on Linux and macOS, without a
+host FUSE mount, materialization, or reconciliation. It uses KVM on Linux
+and HVF on Apple Silicon macOS. Linux
+additionally confines the VMM with user/mount/network namespaces and Landlock.
+The macOS VMM is not yet wrapped in an equivalent host filesystem sandbox, so
+libkrun's virtio-fs proxy remains in the invoking user's security context.
+OverlayNet and Agent ABI guest relays are not implemented in this phase. This
+is not the hostile multi-tenant Firecracker design below:
 
 ```text
 host pVisor / microVM manager

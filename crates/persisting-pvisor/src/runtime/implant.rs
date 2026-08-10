@@ -27,6 +27,8 @@ pub struct OverlayHint {
     pub auto_apply: bool,
     /// Discard staged changes when the Run exits.
     pub auto_discard: bool,
+    /// Reject apply so an immutable image/cache lower cannot be mutated.
+    pub protect_target: bool,
 }
 
 /// Environment + cwd plan injected beside the Agent process.

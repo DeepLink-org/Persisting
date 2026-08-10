@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -12,6 +13,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -24,8 +27,16 @@ DX_PUBLIC = WEB_ROOT / "target" / "dx" / "pchronicle-web" / "release" / "web" / 
 EXPECTED_BINARIES = ("persisting", "pvisor", "ppilot")
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
     "aarch64-apple-darwin",
+}
+MACOS_ENTITLEMENTS = ROOT / "crates" / "persisting-pvisor" / "macos-hypervisor.entitlements"
+LIBKRUNFW_VERSION = "5.5.0"
+LIBKRUNFW_RELEASE = f"https://github.com/libkrun/libkrunfw/releases/download/v{LIBKRUNFW_VERSION}"
+LIBKRUNFW_ARCHIVES = {
+    "x86_64-unknown-linux-gnu": (
+        "libkrunfw-x86_64.tgz",
+        "c169206b01c89fbe134f1728bf4f988702bc7f73b4cf73e6fdece447d6fceca1",
+    ),
 }
 
 
@@ -78,14 +89,14 @@ def _normalize_target(target: str | None) -> str | None:
         machine = platform.machine().lower()
         if sys.platform == "linux" and machine in {"x86_64", "amd64"}:
             return None
-        if sys.platform == "darwin" and machine in {"x86_64", "amd64", "arm64", "aarch64"}:
+        if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
             return None
         raise RuntimeError(
             f"wheel CLI staging is not supported on host {sys.platform}/{platform.machine()}"
         )
 
     aliases = {
-        "x86_64": "x86_64-apple-darwin" if sys.platform == "darwin" else "x86_64-unknown-linux-gnu",
+        "x86_64": "x86_64-unknown-linux-gnu",
         "aarch64": "aarch64-apple-darwin"
         if sys.platform == "darwin"
         else "aarch64-unknown-linux-gnu",
@@ -204,6 +215,81 @@ def _build(options: BuildOptions) -> dict[str, Path]:
     return artifacts
 
 
+def _is_macos(options: BuildOptions) -> bool:
+    return options.target == "aarch64-apple-darwin" or (
+        options.target is None and sys.platform == "darwin"
+    )
+
+
+def _firmware_source(options: BuildOptions) -> tuple[Path, str]:
+    name = "libkrunfw.5.dylib" if _is_macos(options) else "libkrunfw.so.5"
+    configured = os.getenv("PERSISTING_LIBKRUNFW_PATH")
+    if not configured and os.getenv("PERSISTING_FETCH_LIBKRUNFW") == "1":
+        return _fetch_linux_firmware(options), name
+    if not configured:
+        raise RuntimeError(
+            "PERSISTING_LIBKRUNFW_PATH must point to libkrunfw when building a wheel; "
+            "official Linux builds may set PERSISTING_FETCH_LIBKRUNFW=1"
+        )
+    source = Path(configured).expanduser()
+    if source.is_dir():
+        source = source / name
+    source = source.resolve()
+    if not source.is_file():
+        raise RuntimeError(f"libkrunfw payload does not exist: {source}")
+    return source, name
+
+
+def _fetch_linux_firmware(options: BuildOptions) -> Path:
+    target = options.target or "x86_64-unknown-linux-gnu"
+    try:
+        archive_name, expected_sha256 = LIBKRUNFW_ARCHIVES[target]
+    except KeyError as error:
+        raise RuntimeError(f"no downloadable libkrunfw payload for {target}") from error
+    build_root = ROOT / "target" / "libkrunfw" / f"{LIBKRUNFW_VERSION}-{target}"
+    cached = sorted(build_root.rglob(f"libkrunfw.so.{LIBKRUNFW_VERSION}"))
+    if len(cached) == 1:
+        return cached[0]
+    archive = build_root.parent / archive_name
+    build_root.parent.mkdir(parents=True, exist_ok=True)
+    if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != expected_sha256:
+        archive.unlink(missing_ok=True)
+        urllib.request.urlretrieve(f"{LIBKRUNFW_RELEASE}/{archive_name}", archive)
+    actual_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if actual_sha256 != expected_sha256:
+        archive.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"libkrunfw checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
+        )
+    shutil.rmtree(build_root, ignore_errors=True)
+    build_root.mkdir()
+    with tarfile.open(archive, "r:gz") as source:
+        source.extractall(build_root, filter="data")
+    makefiles = sorted(build_root.rglob("Makefile"))
+    if len(makefiles) != 1:
+        raise RuntimeError(f"expected one libkrunfw Makefile, found {len(makefiles)}")
+    subprocess.run(["make", "-j2"], cwd=makefiles[0].parent, check=True)
+    matches = sorted(build_root.rglob(f"libkrunfw.so.{LIBKRUNFW_VERSION}"))
+    if len(matches) != 1:
+        raise RuntimeError(f"expected one built libkrunfw payload, found {len(matches)}")
+    return matches[0]
+
+
+def _sign_macos_pvisor(path: Path) -> None:
+    subprocess.run(
+        [
+            "codesign",
+            "--force",
+            "--sign",
+            "-",
+            "--entitlements",
+            str(MACOS_ENTITLEMENTS),
+            str(path),
+        ],
+        check=True,
+    )
+
+
 def _build_web_assets() -> None:
     """Build the target-independent Dioxus bundle before compiling native CLIs."""
     manifest = WEB_PUBLIC / "embedded.manifest"
@@ -236,6 +322,7 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
     """Build all host CLIs and atomically replace the wheel scripts directory."""
     _build_web_assets()
     artifacts = _build(options)
+    firmware_source, firmware_name = _firmware_source(options)
     ensure_wheel_data_directory()
     staged = WHEEL_DATA / f".scripts-{os.getpid()}"
     backup = WHEEL_DATA / f".scripts-old-{os.getpid()}"
@@ -252,6 +339,21 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
                 destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
             )
             print(f"Staged {name}: {source} -> {destination}", file=sys.stderr)
+
+        firmware_destination = staged / firmware_name
+        shutil.copy2(firmware_source, firmware_destination)
+        (staged / "libkrunfw.SOURCE").write_text(
+            f"libkrunfw {LIBKRUNFW_VERSION}\n"
+            f"source: {LIBKRUNFW_RELEASE}/libkrunfw-<architecture>.tgz\n"
+            "licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)\n",
+            encoding="utf-8",
+        )
+        print(
+            f"Staged libkrunfw: {firmware_source} -> {firmware_destination}",
+            file=sys.stderr,
+        )
+        if _is_macos(options):
+            _sign_macos_pvisor(staged / "pvisor")
 
         scripts = WHEEL_DATA / "scripts"
         if scripts.exists():

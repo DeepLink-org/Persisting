@@ -25,7 +25,6 @@ case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) platform_re='manylinux.*x86_64' ;;
   Linux-aarch64) platform_re='manylinux.*aarch64' ;;
   Darwin-arm64) platform_re='macosx.*arm64' ;;
-  Darwin-x86_64) platform_re='macosx.*x86_64' ;;
   *)
     echo "error: unsupported platform $(uname -s)-$(uname -m)" >&2
     exit 1

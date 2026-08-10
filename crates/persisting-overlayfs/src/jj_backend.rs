@@ -250,6 +250,12 @@ pub fn jujutsu_upper_dir(store_path: &Path, fork: &str) -> io::Result<PathBuf> {
     Ok(store_path.join(WORKSPACES_DIR).join(fork).join(UPPER_DIR))
 }
 
+/// Initialize a Jujutsu-backed upper for a mountless virtio-fs consumer.
+pub fn prepare_jujutsu_upper(store_path: &Path, fork: &str) -> io::Result<PathBuf> {
+    let workspace = JujutsuWorkspace::open(store_path.to_owned(), fork.to_owned(), false)?;
+    Ok(workspace.upper_dir().to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

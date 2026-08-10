@@ -84,7 +84,7 @@ pvisor run --safe codex
 pvisor review last
 pvisor checkpoint last --name accepted-base
 # choose apply, drop, or explore a branch
-pvisor fork last --checkpoint accepted-base --workspace /tmp/codex-fork -- codex
+pvisor fork last --checkpoint accepted-base -- codex
 ```
 
 ### Batch Trajectory Workflows
@@ -190,7 +190,7 @@ arr = kv["s1", 0, 2, 0:512].tensor()
 | **pPilot orchestration** | ✅ Implemented | `plan()` + `execute()` with lease fencing and durable recovery (Phase-1) |
 | **pChronicle history** | ✅ Implemented | Canonical events, Storyline/ATIF views, local + S3, read-only SQL |
 | **Gateway capture** | ✅ Implemented | LLM/Agent HTTP capture as Lance + Markdown trajectories |
-| **Container / KVM executors** | 🧪 Nightly runtimes | Docker/Podman delegation or a libkrun guest rooted at pVisor OverlayFS |
+| **Container / VM executors** | 🧪 Nightly runtimes | Docker/Podman delegation or a libkrun guest rooted at pVisor OverlayFS |
 | **Streaming Queue** | ✅ Stable | Lance-backed append/consume, KV API, samplers |
 | **Agent Search** | ✅ Stable | Document indexing, IVF-PQ, hybrid search |
 | **Tensor Memory (TTAS)** | 🧪 Experimental | Multi-dim tensor subscript, tiered backends |
@@ -261,9 +261,18 @@ commands and does not require a Rust toolchain:
 curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
 ```
 
-Container/KVM executors require a compatible pVisor runtime supplied explicitly
-through their `pvisor_binary` setting; nightly releases do not publish a separate
-guest runtime.
+Container execution through an external OCI runtime requires a compatible guest
+pVisor supplied explicitly. The libkrun executor instead pulls OCI images
+directly without Docker or Podman:
+
+```bash
+pvisor run --image ubuntu:latest -- /bin/bash -lc 'uname -a'
+```
+
+Its libkrunfw payload is bundled in platform wheels. Verified image layers are
+cached locally, the image rootfs receives a per-Run writable layer, and the
+current workspace appears at `/workspace` (virtio-fs on Linux and a reconciled
+per-Run APFS snapshot on macOS).
 
 ---
 
