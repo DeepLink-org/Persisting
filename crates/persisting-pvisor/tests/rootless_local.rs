@@ -31,6 +31,17 @@ fn setup_failure(root: &Path) -> Option<String> {
     bundle.run.output.stderr
 }
 
+fn user_namespaces_are_unavailable(stderr: &str) -> bool {
+    const CONTEXT: &str = "initialize rootless user and mount namespaces: ";
+    stderr.lines().any(|line| {
+        let Some(error) = line.strip_prefix(CONTEXT) else {
+            return false;
+        };
+        error == "Operation not permitted (os error 1)"
+            || error == "Permission denied (os error 13)"
+    })
+}
+
 fn skip_if_user_namespaces_are_explicitly_optional(
     run_home: &Path,
     output: &std::process::Output,
@@ -41,7 +52,7 @@ fn skip_if_user_namespaces_are_explicitly_optional(
     let Some(stderr) = setup_failure(run_home) else {
         return false;
     };
-    if !stderr.contains("initialize rootless user and mount namespaces: Operation not permitted") {
+    if !user_namespaces_are_unavailable(&stderr) {
         eprintln!("rootless sandbox failure was not skippable: {stderr}");
         return false;
     }
@@ -89,8 +100,8 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("OUTSIDE_SECRET", outside.join("secret.txt"))
         .env("OUTSIDE_WRITE", outside.join("escaped.txt"))
-        .args(["run", "--safe", "--stdio", "capture", "--overlayfs-base"])
-        .arg(&workspace)
+        .args(["run", "--safe", "--stdio", "capture"])
+        .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", script])
         .output()
         .unwrap();
@@ -175,9 +186,8 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
             "--stdio",
             "capture",
             "--overlaynet-deny-all",
-            "--overlayfs-base",
         ])
-        .arg(&workspace)
+        .current_dir(&workspace)
         .args(["--", "/bin/bash", "-c", script])
         .output()
         .unwrap();
@@ -229,8 +239,8 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("PERSISTING_SOCKET_PROBE", &host_socket)
         .env("SSH_AUTH_SOCK", &host_socket)
-        .args(["run", "--safe", "--stdio", "capture", "--overlayfs-base"])
-        .arg(&workspace)
+        .args(["run", "--safe", "--stdio", "capture"])
+        .current_dir(&workspace)
         .arg("--")
         .arg(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", "unix_socket_probe_agent"])
@@ -288,4 +298,20 @@ fn internal_launcher_reports_setup_failure_with_reserved_status() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn namespace_setup_failure_classifier_is_narrow() {
+    assert!(user_namespaces_are_unavailable(
+        "initialize rootless user and mount namespaces: Operation not permitted (os error 1)"
+    ));
+    assert!(user_namespaces_are_unavailable(
+        "initialize rootless user and mount namespaces: Permission denied (os error 13)"
+    ));
+    assert!(!user_namespaces_are_unavailable(
+        "apply Landlock rules: Permission denied (os error 13)"
+    ));
+    assert!(!user_namespaces_are_unavailable(
+        "initialize rootless user and mount namespaces: No such file or directory (os error 2)"
+    ));
 }
