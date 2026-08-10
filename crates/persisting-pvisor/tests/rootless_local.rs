@@ -34,7 +34,7 @@ fn setup_failure(root: &Path) -> Option<String> {
 fn user_namespaces_are_unavailable(stderr: &str) -> bool {
     const CONTEXT: &str = "initialize rootless user and mount namespaces: ";
     stderr.lines().any(|line| {
-        let Some(error) = line.strip_prefix(CONTEXT) else {
+        let Some((_, error)) = line.split_once(CONTEXT) else {
             return false;
         };
         error == "Operation not permitted (os error 1)"
@@ -303,10 +303,10 @@ fn internal_launcher_reports_setup_failure_with_reserved_status() {
 #[test]
 fn namespace_setup_failure_classifier_is_narrow() {
     assert!(user_namespaces_are_unavailable(
-        "initialize rootless user and mount namespaces: Operation not permitted (os error 1)"
+        "pVisor local sandbox setup failed: initialize rootless user and mount namespaces: Operation not permitted (os error 1)"
     ));
     assert!(user_namespaces_are_unavailable(
-        "initialize rootless user and mount namespaces: Permission denied (os error 13)"
+        "pVisor local sandbox setup failed: initialize rootless user and mount namespaces: Permission denied (os error 13)"
     ));
     assert!(!user_namespaces_are_unavailable(
         "apply Landlock rules: Permission denied (os error 13)"
