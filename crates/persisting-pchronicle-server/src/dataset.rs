@@ -125,6 +125,21 @@ impl DatasetStore {
         self.find(query).map(|run| run.summary.clone())
     }
 
+    pub(crate) fn fingerprint(&self, query: &SessionQuery) -> Option<String> {
+        let run = self.find(query)?;
+        let metadata = fs::metadata(&run.path).ok()?;
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |value| value.as_nanos());
+        Some(format!(
+            "{}:{}:{modified}",
+            run.path.display(),
+            metadata.len()
+        ))
+    }
+
     pub(crate) fn load(&self, query: &SessionQuery) -> anyhow::Result<LoadedDatasetRun> {
         let run = self
             .find(query)
@@ -205,11 +220,14 @@ fn discover_gateway_file(
         entry.3 |= row.is_session_completed || row.is_terminal;
     }
     for (session_id, (agent_id, job_id, steps, completed)) in sessions {
+        let logical_path = dataset_run_path(path, &session_id, Some(&job_id));
         runs.push(DatasetRun {
             summary: RunSummary {
+                model_name: Some(agent_id.clone()),
                 agent_id,
                 session_id,
                 root_session_id: Some(job_id),
+                path: logical_path,
                 row_count: steps * 2,
                 duplicate_event_ids: 0,
                 status: if completed { "completed" } else { "active" }.into(),
@@ -232,11 +250,14 @@ fn discover_actf_file(path: &Path, input: &[u8], runs: &mut Vec<DatasetRun>) -> 
         } else {
             document.task_id.clone()
         };
+        let logical_path = dataset_run_path(path, &session_id, None);
         runs.push(DatasetRun {
             summary: RunSummary {
                 agent_id: "actf-agent".into(),
+                model_name: None,
                 session_id,
                 root_session_id: None,
+                path: logical_path,
                 row_count: attempt.trajectory.steps.len(),
                 duplicate_event_ids: 0,
                 status: if attempt.status.is_empty() {
@@ -622,6 +643,17 @@ fn file_stem(path: &Path) -> String {
         .to_string()
 }
 
+fn dataset_run_path(path: &Path, session_id: &str, root_session_id: Option<&str>) -> String {
+    let source = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("dataset");
+    match root_session_id {
+        Some(root) if root != session_id => format!("{source}/{root}/{session_id}"),
+        _ => format!("{source}/{session_id}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,6 +684,7 @@ mod tests {
         let summaries = store.summaries();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].row_count, 2);
+        assert_eq!(summaries[0].path, "gateway.json/job-1/session-1");
         let query = SessionQuery {
             agent_id: "model-1".into(),
             session_id: "session-1".into(),

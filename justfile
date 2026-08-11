@@ -28,6 +28,7 @@ default:
     @echo "  just py-dev              # maturin develop（Python 扩展）"
     @echo "  just install-cli         # 安装统一 CLI、pvisor 和 ppilot"
     @echo "  just pvisor              # 构建 release pVisor；macOS 自动签名"
+    @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just capture-all         # 全部 capture 集成"
     @echo "  just docs-serve          # 本地文档"
@@ -128,6 +129,33 @@ chronicle-web-build:
 # Start the Web frontend against a separately running pChronicle server.
 chronicle-web-dev:
     cd pchronicle-web && dx serve
+
+# Build the embedded Web UI and a directly runnable pChronicle test binary.
+# Usage: `just chronicle-binary` or `just chronicle-binary release`.
+[group('build')]
+chronicle-binary profile="debug": chronicle-web-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile="{{ profile }}"
+    case "$profile" in
+      debug)
+        binary="{{ repo }}/target/debug/persisting"
+        cargo build --locked -p persisting-cli --bin persisting
+        ;;
+      release)
+        binary="{{ repo }}/target/release/persisting"
+        cargo build --locked -p persisting-cli --bin persisting --release
+        ;;
+      *)
+        echo "unsupported pChronicle profile: $profile (expected debug or release)" >&2
+        exit 2
+        ;;
+    esac
+
+    test -x "$binary"
+    "$binary" chronicle serve --help >/dev/null
+    printf 'Built pChronicle test binary: %s\n' "$binary"
+    printf 'Run: %s chronicle serve %s\n' "$binary" "{{ repo }}/data"
 
 build profile="debug":
     cargo build -p persisting-cli {{ if profile == "release" { "--release" } else { "" } }}

@@ -1,0 +1,65 @@
+.pc2-inline-trace {
+  min-height: 0;
+  flex: 1;
+  margin: 0 20px 18px;
+}
+
+.pc2-span-scroll {
+  padding: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.pc2-inline-detail {
+  padding: 10px;
+}
+
+.pc2-inline-detail-head {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.pc2-inline-detail-head strong {
+  color: #344054;
+  font-size: 10px;
+}
+
+.pc2-inline-detail-head .button {
+  min-height: 27px;
+  padding: 0 8px;
+  font-size: 9px;
+}
+
+.pc2-inline-unavailable {
+  padding: 12px;
+  border: 1px dashed #d0d5dd;
+  border-radius: 6px;
+  color: #98a2b3;
+  text-align: center;
+  font-size: 10px;
+}
+
+.pc2-inline-detail .pc2-inspector-facts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pc2-inline-detail .pc2-evidence-block pre {
+  max-height: 420px;
+}
+
+@media (max-width: 1050px) {
+  .pc2-inline-detail .pc2-inspector-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 850px) {
+  .pc2-inline-trace {
+    min-height: 560px;
+    margin: 0 12px 18px;
+  }
+}
