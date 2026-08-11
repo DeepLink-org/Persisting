@@ -6,11 +6,40 @@ use serde_json::Value;
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RunSummary {
     pub agent_id: String,
+    #[serde(default)]
+    pub model_name: Option<String>,
     pub session_id: String,
     pub root_session_id: Option<String>,
+    pub path: String,
     pub row_count: usize,
     pub duplicate_event_ids: usize,
     pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RunExplorerItem {
+    #[serde(flatten)]
+    pub run: RunSummary,
+    pub model: Option<String>,
+    pub judgment_count: usize,
+    pub average_score: Option<f64>,
+    pub verdict: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PageSnapshot {
+    pub offset: usize,
+    pub next_offset: usize,
+    pub total: usize,
+    pub has_more: bool,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RunPage {
+    pub snapshot: PageSnapshot,
+    pub records: Vec<RunExplorerItem>,
+    pub path_index: Vec<RunSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -49,19 +78,9 @@ impl RunSummary {
         }
         out
     }
-
-    pub fn search_text(&self) -> String {
-        format!(
-            "{} {} {}",
-            self.agent_id,
-            self.session_id,
-            self.root_session_id.as_deref().unwrap_or("")
-        )
-        .to_ascii_lowercase()
-    }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct StorylineTurn {
     pub id: i64,
     pub kind: Option<String>,
@@ -90,19 +109,9 @@ impl StorylineTurn {
             value => serde_json::to_string_pretty(value).unwrap_or_default(),
         }
     }
-
-    pub fn searchable_text(&self) -> String {
-        format!(
-            "{} {} {}",
-            self.source,
-            self.kind.as_deref().unwrap_or(""),
-            self.text()
-        )
-        .to_ascii_lowercase()
-    }
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ToolCall {
     #[serde(rename = "tcid", alias = "tool_call_id")]
     pub tool_call_id: String,
@@ -113,28 +122,11 @@ pub struct ToolCall {
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct TurnView {
-    pub turn: StorylineTurn,
-    pub call_id: Option<String>,
-    pub event_seqs: Vec<u64>,
-    #[serde(default)]
-    pub wire_tool_calls: Vec<WireToolCall>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct WireToolCall {
     pub id: Option<String>,
     pub name: String,
     pub arguments: Value,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct TrajectoryView {
-    pub run: RunSummary,
-    pub event_kind_counts: BTreeMap<String, usize>,
-    pub tool_call_count: usize,
-    pub turns: Vec<TurnView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -152,24 +144,132 @@ pub struct EventRecord {
     pub rest: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct EventsPage {
-    pub snapshot: EventsSnapshot,
-    pub records: Vec<EventRecord>,
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct MetricStats {
+    pub sample_count: usize,
+    pub total_count: usize,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub max: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct EventsSnapshot {
-    pub next_offset: usize,
-    pub total: usize,
-    pub has_more: bool,
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ToolAggregate {
+    pub name: String,
+    pub count: usize,
+    pub duration_sample_count: usize,
+    pub total_duration_ms: Option<f64>,
+    pub average_duration_ms: Option<f64>,
+    pub max_duration_ms: Option<f64>,
+    pub error_associated_count: usize,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct StreamSnapshot {
-    pub row_count: Option<usize>,
-    pub status: Option<String>,
-    pub error: Option<String>,
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct DimensionAggregate {
+    pub name: String,
+    pub turn_count: usize,
+    pub error_count: usize,
+    pub latency_sample_count: usize,
+    pub average_latency_ms: Option<f64>,
+    pub total_tokens: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct HistogramBucket {
+    pub label: String,
+    pub lower_bound_ms: f64,
+    pub upper_bound_ms: Option<f64>,
+    pub count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RunAnalysis {
+    pub run: RunSummary,
+    pub event_count: usize,
+    pub turn_count: usize,
+    pub tool_call_count: usize,
+    pub error_count: usize,
+    pub start_timestamp: Option<String>,
+    pub end_timestamp: Option<String>,
+    pub models: Vec<String>,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub latency_ms: MetricStats,
+    pub ttft_ms: MetricStats,
+    pub latency_histogram: Vec<HistogramBucket>,
+    pub source_breakdown: Vec<DimensionAggregate>,
+    pub kind_breakdown: Vec<DimensionAggregate>,
+    pub model_breakdown: Vec<DimensionAggregate>,
+    pub tools: Vec<ToolAggregate>,
+    pub judgment_count: usize,
+    pub average_score: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct TurnSummary {
+    pub id: i64,
+    pub source: String,
+    pub kind: Option<String>,
+    pub timestamp: Option<String>,
+    pub call_id: Option<String>,
+    pub preview: String,
+    pub model_name: Option<String>,
+    pub latency_ms: Option<f64>,
+    pub ttft_ms: Option<f64>,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub tool_names: Vec<String>,
+    pub event_seqs: Vec<u64>,
+    pub has_error: bool,
+    pub judgment_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct TurnPage {
+    pub snapshot: PageSnapshot,
+    pub records: Vec<TurnSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Judgment {
+    pub session_id: String,
+    pub call_id: String,
+    pub rubric_id: String,
+    pub score: i64,
+    pub verdict: String,
+    pub rationale: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct TurnDetail {
+    pub summary: TurnSummary,
+    pub turn: StorylineTurn,
+    pub wire_tool_calls: Vec<WireToolCall>,
+    pub events: Vec<EventRecord>,
+    pub judgments: Vec<Judgment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct QueryEvidence {
+    pub rows: Vec<Value>,
+    pub returned_rows: usize,
+    pub truncated: bool,
+    pub max_rows: usize,
+    pub max_bytes: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct JudgmentWrite {
+    pub agent_id: String,
+    pub session_id: String,
+    pub root_session_id: Option<String>,
+    pub call_id: String,
+    pub rubric_id: String,
+    pub score: i64,
+    pub verdict: String,
+    pub rationale: String,
 }
 
 #[cfg(test)]
@@ -180,8 +280,10 @@ mod tests {
     fn run_query_encodes_coordinates() {
         let run = RunSummary {
             agent_id: "agent one".into(),
+            model_name: None,
             session_id: "s/1".into(),
             root_session_id: Some("root+1".into()),
+            path: "agent one/root+1/subagents/s-1".into(),
             row_count: 2,
             duplicate_event_ids: 0,
             status: "ok".into(),

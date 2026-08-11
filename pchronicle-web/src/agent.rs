@@ -1,0 +1,639 @@
+use std::cmp::Ordering;
+
+use gloo_net::http::Request;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use crate::api;
+use crate::components::{table_fence, trajectory_fence};
+use crate::model::{Judgment, RunAnalysis, RunSummary, TurnDetail, TurnSummary};
+
+const STORAGE_KEY: &str = "pchronicle_llm_config";
+const DEFAULT_CONTEXT_LIMIT: usize = 32 * 1024;
+const FULL_CONTEXT_LIMIT: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmConfig {
+    pub api_base: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            api_base: "https://api.deepseek.com/v1".into(),
+            api_key: String::new(),
+            model: "deepseek-chat".into(),
+        }
+    }
+}
+
+impl LlmConfig {
+    pub fn is_configured(&self) -> bool {
+        !self.api_base.trim().is_empty()
+            && !self.api_key.trim().is_empty()
+            && !self.model.trim().is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentAnswer {
+    pub text: String,
+    pub action: String,
+    pub sql: Option<String>,
+    pub truncated: bool,
+}
+
+pub struct AnswerRequest<'a> {
+    pub config: &'a LlmConfig,
+    pub user_message: &'a str,
+    pub run: &'a RunSummary,
+    pub analysis: &'a RunAnalysis,
+    pub turns: &'a [TurnSummary],
+    pub selected: Option<&'a TurnDetail>,
+    pub judgments: &'a [Judgment],
+    pub include_full_turn: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct Selection {
+    action: String,
+    skill_id: Option<String>,
+    sql: Option<String>,
+    #[serde(default)]
+    reply: String,
+}
+
+pub fn load_config() -> LlmConfig {
+    let Some(window) = web_sys::window() else {
+        return LlmConfig::default();
+    };
+    let Some(storage) = window.local_storage().ok().flatten() else {
+        return LlmConfig::default();
+    };
+    storage
+        .get_item(STORAGE_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_config(config: &LlmConfig) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(storage) = window.local_storage().ok().flatten() else {
+        return;
+    };
+    if let Ok(raw) = serde_json::to_string(config) {
+        let _ = storage.set_item(STORAGE_KEY, &raw);
+    }
+}
+
+pub fn skill_ids() -> &'static [&'static str] {
+    &[
+        "trajectory_summary",
+        "failure_locator",
+        "latency_hotspots",
+        "tool_usage",
+        "cohort_compare",
+        "judgment_review",
+    ]
+}
+
+pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
+    let AnswerRequest {
+        config,
+        user_message,
+        run,
+        analysis,
+        turns,
+        selected,
+        judgments,
+        include_full_turn,
+    } = request;
+    let (base_context, context_truncated) =
+        evidence_context(run, analysis, turns, selected, judgments, include_full_turn);
+    let explicit_skill = resolve_skill(user_message);
+    if !config.is_configured() {
+        let skill = explicit_skill.unwrap_or("trajectory_summary");
+        let (evidence, sql) = run_skill(skill, run, analysis, turns, judgments).await?;
+        let evidence = decorate_skill_evidence(skill, evidence, turns);
+        return Ok(AgentAnswer {
+            text: format!(
+                "**{}**\n\n{}\n\nConfigure an OpenAI-compatible model in Settings for a natural-language interpretation.",
+                skill_title(skill),
+                evidence
+            ),
+            action: skill.into(),
+            sql,
+            truncated: context_truncated,
+        });
+    }
+
+    let selection = if let Some(skill) = explicit_skill {
+        Selection {
+            action: "skill".into(),
+            skill_id: Some(skill.into()),
+            sql: None,
+            reply: String::new(),
+        }
+    } else {
+        select_action(config, user_message, &base_context).await?
+    };
+
+    match selection.action.as_str() {
+        "sql" => {
+            let sql = selection
+                .sql
+                .filter(|sql| !sql.trim().is_empty())
+                .ok_or_else(|| "The model selected SQL without returning a query.".to_string())?;
+            let result = api::query_evidence(&sql).await?;
+            let evidence = format!(
+                "SQL:\n{sql}\n\nreturned_rows={} truncated={}\n{}",
+                result.returned_rows,
+                result.truncated,
+                serde_json::to_string_pretty(&result.rows).unwrap_or_default()
+            );
+            let summary = summarize(config, user_message, &base_context, &evidence).await?;
+            let component = table_fence("SQL query result", result.clone());
+            Ok(AgentAnswer {
+                text: format!("{summary}\n\n{component}"),
+                action: "read-only SQL".into(),
+                sql: Some(sql),
+                truncated: context_truncated || result.truncated,
+            })
+        }
+        "answer" => Ok(AgentAnswer {
+            text: if selection.reply.trim().is_empty() {
+                "I could not map that request to available trajectory evidence.".into()
+            } else {
+                selection.reply
+            },
+            action: "context answer".into(),
+            sql: None,
+            truncated: context_truncated,
+        }),
+        _ => {
+            let skill = selection
+                .skill_id
+                .as_deref()
+                .filter(|skill| skill_ids().contains(skill))
+                .unwrap_or("trajectory_summary");
+            let (evidence, sql) = run_skill(skill, run, analysis, turns, judgments).await?;
+            let evidence = decorate_skill_evidence(skill, evidence, turns);
+            let components = component_fences(&evidence);
+            let summary = summarize(config, user_message, &base_context, &evidence).await?;
+            Ok(AgentAnswer {
+                text: if components.is_empty() {
+                    summary
+                } else {
+                    format!("{summary}\n\n{components}")
+                },
+                action: skill.into(),
+                sql,
+                truncated: context_truncated,
+            })
+        }
+    }
+}
+
+async fn run_skill(
+    skill: &str,
+    run: &RunSummary,
+    analysis: &RunAnalysis,
+    turns: &[TurnSummary],
+    judgments: &[Judgment],
+) -> Result<(String, Option<String>), String> {
+    match skill {
+        "failure_locator" => {
+            let evidence = turns
+                .iter()
+                .filter(|turn| turn.has_error)
+                .take(20)
+                .map(|turn| {
+                    format!(
+                        "- [turn:{}] {} {} — {}",
+                        turn.id,
+                        turn.source,
+                        turn.kind.as_deref().unwrap_or("unknown"),
+                        turn.preview
+                    )
+                })
+                .collect::<Vec<_>>();
+            Ok((
+                if evidence.is_empty() {
+                    "No turns contain an explicit error kind, failing status, non-null error_type, or HTTP status >= 400. This does not prove the run succeeded.".into()
+                } else {
+                    format!("Explicit error evidence:\n{}", evidence.join("\n"))
+                },
+                None,
+            ))
+        }
+        "latency_hotspots" => {
+            let mut ranked = turns
+                .iter()
+                .filter_map(|turn| turn.latency_ms.map(|latency| (turn, latency)))
+                .collect::<Vec<_>>();
+            ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
+            let lines = ranked
+                .into_iter()
+                .take(20)
+                .map(|(turn, latency)| {
+                    format!("- [turn:{}] {:.1} ms — {}", turn.id, latency, turn.preview)
+                })
+                .collect::<Vec<_>>();
+            Ok((
+                format!(
+                    "Latency coverage: {}/{} turns; P50={}; P95={}; max={}\n{}",
+                    analysis.latency_ms.sample_count,
+                    analysis.latency_ms.total_count,
+                    optional_number(analysis.latency_ms.p50),
+                    optional_number(analysis.latency_ms.p95),
+                    optional_number(analysis.latency_ms.max),
+                    if lines.is_empty() {
+                        "No captured latency samples.".into()
+                    } else {
+                        lines.join("\n")
+                    }
+                ),
+                None,
+            ))
+        }
+        "tool_usage" => Ok((
+            if analysis.tools.is_empty() {
+                "No structured tool calls were captured.".into()
+            } else {
+                analysis
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        format!(
+                            "- {}: {} calls, duration coverage {}/{}, total {}, average {}, max {}, error-associated {}",
+                            tool.name,
+                            tool.count,
+                            tool.duration_sample_count,
+                            tool.count,
+                            optional_number(tool.total_duration_ms),
+                            optional_number(tool.average_duration_ms),
+                            optional_number(tool.max_duration_ms),
+                            tool.error_associated_count,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+            None,
+        )),
+        "cohort_compare" => {
+            let catalog = api::query_catalog().await?;
+            let database = catalog.database;
+            let session = sql_literal(&run.session_id);
+            let sql = format!(
+                "SELECT session_id, COUNT(*) AS step_count, AVG(latency_ms) AS avg_latency_ms, MAX(latency_ms) AS max_latency_ms FROM {database}.steps GROUP BY session_id ORDER BY avg_latency_ms DESC NULLS LAST LIMIT 50"
+            );
+            let result = api::query_evidence(&sql).await?;
+            let component = table_fence("Cohort comparison", result.clone());
+            Ok((
+                format!(
+                    "Selected session: {session}\nCohort rows={} truncated={}\n\n{}",
+                    result.returned_rows, result.truncated, component
+                ),
+                Some(sql),
+            ))
+        }
+        "judgment_review" => Ok((
+            if judgments.is_empty() {
+                "No persisted judgments exist for this session.".into()
+            } else {
+                judgments
+                    .iter()
+                    .map(|row| {
+                        format!(
+                            "- target={} rubric={} score={} verdict={} rationale={}",
+                            row.call_id, row.rubric_id, row.score, row.verdict, row.rationale
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+            None,
+        )),
+        _ => Ok((overview_evidence(run, analysis, turns), None)),
+    }
+}
+
+fn decorate_skill_evidence(skill: &str, evidence: String, turns: &[TurnSummary]) -> String {
+    let mut selected = match skill {
+        "failure_locator" => turns
+            .iter()
+            .filter(|turn| turn.has_error)
+            .map(|turn| turn.id)
+            .take(20)
+            .collect::<Vec<_>>(),
+        "latency_hotspots" => {
+            let mut ranked = turns
+                .iter()
+                .filter_map(|turn| turn.latency_ms.map(|latency| (turn.id, latency)))
+                .collect::<Vec<_>>();
+            ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
+            ranked.into_iter().map(|(id, _)| id).take(20).collect()
+        }
+        "tool_usage" => turns
+            .iter()
+            .filter(|turn| !turn.tool_names.is_empty())
+            .map(|turn| turn.id)
+            .take(20)
+            .collect(),
+        "trajectory_summary" => turns.iter().map(|turn| turn.id).take(20).collect(),
+        _ => Vec::new(),
+    };
+    selected.dedup();
+    if selected.is_empty() {
+        evidence
+    } else {
+        format!(
+            "{evidence}\n\n{}",
+            trajectory_fence(skill_title(skill), selected)
+        )
+    }
+}
+
+fn component_fences(value: &str) -> String {
+    let lines = value.lines().collect::<Vec<_>>();
+    let mut fences = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].starts_with("```pchronicle:") {
+            let start = index;
+            index += 1;
+            while index < lines.len() && lines[index] != "```" {
+                index += 1;
+            }
+            if index < lines.len() {
+                fences.push(lines[start..=index].join("\n"));
+            }
+        }
+        index += 1;
+    }
+    fences.join("\n\n")
+}
+
+fn overview_evidence(run: &RunSummary, analysis: &RunAnalysis, turns: &[TurnSummary]) -> String {
+    let top = turns
+        .iter()
+        .take(12)
+        .map(|turn| format!("- [turn:{}] {} — {}", turn.id, turn.source, turn.preview))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Run: agent={} session={} status={}\nEvents={} turns={} tools={} explicit_errors={}\nTokens: prompt={} completion={} total={}\nLatency: samples={}/{} p50={} p95={} max={}\nJudgments={} average_score={}\nTurn evidence:\n{}",
+        run.agent_id,
+        run.session_id,
+        run.status,
+        analysis.event_count,
+        analysis.turn_count,
+        analysis.tool_call_count,
+        analysis.error_count,
+        optional_u64(analysis.prompt_tokens),
+        optional_u64(analysis.completion_tokens),
+        optional_u64(analysis.total_tokens),
+        analysis.latency_ms.sample_count,
+        analysis.latency_ms.total_count,
+        optional_number(analysis.latency_ms.p50),
+        optional_number(analysis.latency_ms.p95),
+        optional_number(analysis.latency_ms.max),
+        analysis.judgment_count,
+        optional_number(analysis.average_score),
+        top
+    )
+}
+
+fn evidence_context(
+    run: &RunSummary,
+    analysis: &RunAnalysis,
+    turns: &[TurnSummary],
+    selected: Option<&TurnDetail>,
+    judgments: &[Judgment],
+    include_full_turn: bool,
+) -> (String, bool) {
+    let mut context = overview_evidence(run, analysis, turns);
+    if !judgments.is_empty() {
+        context.push_str("\n\nPersisted judgments:\n");
+        for row in judgments.iter().take(20) {
+            context.push_str(&format!(
+                "- target={} rubric={} score={} verdict={} rationale={}\n",
+                row.call_id, row.rubric_id, row.score, row.verdict, row.rationale
+            ));
+        }
+    }
+    if let Some(detail) = selected {
+        context.push_str(&format!(
+            "\nSelected [turn:{}]: source={} kind={} model={} latency={} tools={}\n",
+            detail.summary.id,
+            detail.summary.source,
+            detail.summary.kind.as_deref().unwrap_or("unknown"),
+            detail
+                .summary
+                .model_name
+                .as_deref()
+                .unwrap_or("unavailable"),
+            optional_number(detail.summary.latency_ms),
+            detail.summary.tool_names.join(", ")
+        ));
+        if detail.summary.source != "system" {
+            let text = detail.turn.text();
+            let excerpt_limit = if include_full_turn {
+                FULL_CONTEXT_LIMIT
+            } else {
+                4 * 1024
+            };
+            context.push_str("Selected content:\n");
+            context.push_str(&truncate(&text, excerpt_limit).0);
+        } else {
+            context.push_str("System content omitted by the minimal-evidence policy.");
+        }
+        if include_full_turn {
+            context.push_str("\nTool calls:\n");
+            context.push_str(
+                &truncate(
+                    &serde_json::to_string_pretty(&detail.wire_tool_calls).unwrap_or_default(),
+                    12 * 1024,
+                )
+                .0,
+            );
+        }
+    }
+    let limit = if include_full_turn {
+        FULL_CONTEXT_LIMIT
+    } else {
+        DEFAULT_CONTEXT_LIMIT
+    };
+    truncate(&context, limit)
+}
+
+async fn select_action(
+    config: &LlmConfig,
+    user_message: &str,
+    context: &str,
+) -> Result<Selection, String> {
+    let catalog = api::query_catalog().await.ok();
+    let database = catalog
+        .as_ref()
+        .map(|catalog| catalog.database.as_str())
+        .unwrap_or("data");
+    let system = format!(
+        "You are pChronicle Copilot for local agent trajectory debugging. Select exactly one action. Return JSON only: {{\"action\":\"skill|sql|answer\",\"skill_id\":\"trajectory_summary|failure_locator|latency_hotspots|tool_usage|cohort_compare|judgment_review|null\",\"sql\":null,\"reply\":\"\"}}. For SQL, emit exactly one read-only SELECT/WITH/EXPLAIN over {database}.runs, {database}.steps, {database}.tool_calls, or {database}.trajectories. Prefer a built-in skill. Never claim missing data is zero and never infer an error from arbitrary message text.\n\nWorkspace evidence:\n{context}"
+    );
+    let text = chat(config, &system, user_message, true).await?;
+    serde_json::from_str(extract_json(&text))
+        .map_err(|error| format!("The model returned invalid routing JSON: {error}"))
+}
+
+async fn summarize(
+    config: &LlmConfig,
+    question: &str,
+    context: &str,
+    evidence: &str,
+) -> Result<String, String> {
+    let system = "You are pChronicle Copilot. Answer in the user's language in 3-7 concise bullets. Separate captured facts from inference. Cite relevant turns using the exact form [turn:ID]. Mention coverage and truncation when present. Do not invent costs, errors, or missing measurements.";
+    let user = format!(
+        "Question: {question}\n\nMinimal workspace context:\n{context}\n\nExecuted evidence:\n{evidence}"
+    );
+    chat(config, system, &user, false).await
+}
+
+async fn chat(
+    config: &LlmConfig,
+    system: &str,
+    user: &str,
+    json_mode: bool,
+) -> Result<String, String> {
+    let url = format!(
+        "{}/chat/completions",
+        config.api_base.trim().trim_end_matches('/')
+    );
+    let mut body = json!({
+        "model": config.model.trim(),
+        "temperature": if json_mode { 0.1 } else { 0.3 },
+        "messages": [
+            {"role":"system","content":system},
+            {"role":"user","content":user}
+        ]
+    });
+    if json_mode {
+        body["response_format"] = json!({"type":"json_object"});
+    }
+    let response = Request::post(&url)
+        .header(
+            "Authorization",
+            &format!("Bearer {}", config.api_key.trim()),
+        )
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(|error| format!("LLM request failed (check API base, key, and CORS): {error}"))?;
+    let status = response.status();
+    let value: Value = response.json().await.map_err(|error| error.to_string())?;
+    if !(200..300).contains(&status) {
+        return Err(format!("LLM HTTP {status}: {value}"));
+    }
+    value["choices"][0]["message"]["content"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "LLM returned an empty response".into())
+}
+
+fn resolve_skill(message: &str) -> Option<&'static str> {
+    let normalized = message.trim().trim_start_matches('/').to_ascii_lowercase();
+    skill_ids().iter().copied().find(|skill| {
+        normalized == *skill
+            || normalized.starts_with(&format!("{skill} "))
+            || match *skill {
+                "failure_locator" => normalized.contains("fail") || normalized.contains("error"),
+                "latency_hotspots" => normalized.contains("slow") || normalized.contains("latency"),
+                "tool_usage" => normalized.contains("tool"),
+                "cohort_compare" => normalized.contains("compare") || normalized.contains("cohort"),
+                "judgment_review" => {
+                    normalized.contains("judgment") || normalized.contains("score")
+                }
+                _ => false,
+            }
+    })
+}
+
+fn skill_title(skill: &str) -> &'static str {
+    match skill {
+        "failure_locator" => "Failure locator",
+        "latency_hotspots" => "Latency hotspots",
+        "tool_usage" => "Tool usage",
+        "cohort_compare" => "Cohort compare",
+        "judgment_review" => "Judgment review",
+        _ => "Trajectory summary",
+    }
+}
+
+fn extract_json(value: &str) -> &str {
+    let value = value.trim();
+    if value.starts_with('{') {
+        return value;
+    }
+    if let Some(start) = value.find("```") {
+        let rest = &value[start + 3..];
+        let rest = rest.strip_prefix("json").unwrap_or(rest);
+        if let Some(end) = rest.find("```") {
+            return rest[..end].trim();
+        }
+    }
+    value
+}
+
+fn truncate(value: &str, limit: usize) -> (String, bool) {
+    if value.len() <= limit {
+        return (value.to_string(), false);
+    }
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (format!("{}\n[… truncated …]", &value[..end]), true)
+}
+
+fn optional_number(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.1}"))
+        .unwrap_or_else(|| "unavailable".into())
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unavailable".into())
+}
+
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_truncation_stays_on_utf8_boundaries() {
+        let (value, truncated) = truncate(&"轨".repeat(100), 32);
+        assert!(truncated);
+        assert!(value.starts_with("轨轨"));
+    }
+
+    #[test]
+    fn explicit_commands_resolve_to_known_skills() {
+        assert_eq!(resolve_skill("/latency_hotspots"), Some("latency_hotspots"));
+        assert_eq!(resolve_skill("compare this cohort"), Some("cohort_compare"));
+    }
+}

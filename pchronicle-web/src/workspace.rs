@@ -1,0 +1,1525 @@
+use std::collections::BTreeMap;
+
+use dioxus::prelude::*;
+use futures_util::StreamExt;
+use gloo_net::eventsource::futures::EventSource;
+use serde::Deserialize;
+use wasm_bindgen::JsValue;
+
+use crate::agent::{self, AgentAnswer, LlmConfig};
+use crate::api;
+use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
+use crate::model::{
+    DimensionAggregate, HistogramBucket, Judgment, JudgmentWrite, QueryCatalog, RunAnalysis,
+    RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
+};
+
+#[derive(Clone, Debug, PartialEq)]
+struct ChatMessage {
+    user: bool,
+    text: String,
+    action: Option<String>,
+    sql: Option<String>,
+    truncated: bool,
+}
+
+struct RunFilters {
+    query: String,
+    status: String,
+    sort: String,
+    direction: String,
+    path: String,
+    offset: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamSnapshot {
+    row_count: Option<usize>,
+    status: Option<String>,
+    error: Option<String>,
+}
+
+pub fn App() -> Element {
+    let initial_agent = url_param("agent_id");
+    let initial_session = url_param("session_id");
+    let initial_root = url_param("root_session_id");
+    let initial_run = initial_agent
+        .zip(initial_session)
+        .map(|(agent_id, session_id)| RunSummary {
+            agent_id,
+            model_name: None,
+            session_id,
+            root_session_id: initial_root,
+            path: String::new(),
+            row_count: 0,
+            duplicate_event_ids: 0,
+            status: "loading".into(),
+        });
+    let initial_page = if initial_run.is_some() {
+        "detail"
+    } else if url_param("page").as_deref() == Some("tools") {
+        "tools"
+    } else {
+        "runs"
+    };
+    let mut page = use_signal(move || initial_page.to_string());
+    let runs = use_signal(|| None::<RunPage>);
+    let runs_loading = use_signal(|| true);
+    let mut query = use_signal(|| url_param("q").unwrap_or_default());
+    let mut status = use_signal(|| url_param("status").unwrap_or_else(|| "all".into()));
+    let mut sort = use_signal(|| url_param("sort").unwrap_or_else(|| "session".into()));
+    let mut direction = use_signal(|| url_param("direction").unwrap_or_else(|| "asc".into()));
+    let mut run_path = use_signal(|| url_param("path").unwrap_or_default());
+    let mut offset = use_signal(|| 0usize);
+    let mut error = use_signal(|| None::<String>);
+
+    let mut selected_run = use_signal(move || initial_run);
+    let mut analysis = use_signal(|| None::<RunAnalysis>);
+    let mut turns = use_signal(Vec::<TurnSummary>::new);
+    let mut judgments = use_signal(Vec::<Judgment>::new);
+    let mut selected_turn = use_signal(|| None::<TurnDetail>);
+    let mut expanded_turn_id =
+        use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
+    let detail_loading = use_signal(|| false);
+    let turn_loading = use_signal(|| false);
+    let mut detail_mode = use_signal(|| url_param("workspace").unwrap_or_else(|| "trace".into()));
+    let trace_mode = use_signal(|| url_param("view").unwrap_or_else(|| "tree".into()));
+    let mut source = use_signal(|| url_param("source").unwrap_or_else(|| "all".into()));
+    let mut turn_query = use_signal(|| url_param("turn_q").unwrap_or_default());
+
+    let mut catalog = use_signal(|| None::<QueryCatalog>);
+    let mut selected_table = use_signal(String::new);
+    let mut copilot_open = use_signal(|| false);
+    let mut annotation_target = use_signal(|| None::<Option<String>>);
+
+    use_effect(move || {
+        load_runs(
+            RunFilters {
+                query: query(),
+                status: status(),
+                sort: sort(),
+                direction: direction(),
+                path: run_path(),
+                offset: offset(),
+            },
+            runs,
+            runs_loading,
+            error,
+        );
+    });
+
+    use_effect(move || {
+        if analysis().is_none() {
+            if let Some(run) = selected_run() {
+                load_workspace(run, analysis, turns, judgments, detail_loading, error);
+            }
+        }
+    });
+
+    use_effect(move || {
+        if analysis().is_some() && selected_turn().is_none() {
+            if let (Some(run), Some(turn_id)) = (
+                selected_run(),
+                url_param("turn").and_then(|value| value.parse::<i64>().ok()),
+            ) {
+                load_turn(
+                    run,
+                    turn_id,
+                    expanded_turn_id,
+                    selected_turn,
+                    turn_loading,
+                    error,
+                );
+            }
+        }
+    });
+
+    use_effect(move || {
+        sync_workspace_url(
+            &page(),
+            selected_run().as_ref(),
+            &query(),
+            &status(),
+            &sort(),
+            &direction(),
+            &run_path(),
+            &detail_mode(),
+            &trace_mode(),
+            &source(),
+            &turn_query(),
+            expanded_turn_id(),
+        );
+    });
+
+    use_effect(move || {
+        let Some(run) = selected_run() else {
+            return;
+        };
+        spawn(async move {
+            let Ok(mut event_source) = EventSource::new(&format!("/api/v1/stream?{}", run.query()))
+            else {
+                return;
+            };
+            let Ok(mut subscription) = event_source.subscribe("snapshot") else {
+                return;
+            };
+            while let Some(message) = subscription.next().await {
+                if selected_run.read().as_ref().is_none_or(|selected| {
+                    selected.agent_id != run.agent_id || selected.session_id != run.session_id
+                }) {
+                    break;
+                }
+                let Ok((_, message)) = message else { continue };
+                let Some(payload) = message.data().as_string() else {
+                    continue;
+                };
+                let Ok(snapshot) = serde_json::from_str::<StreamSnapshot>(&payload) else {
+                    continue;
+                };
+                if let Some(message) = snapshot.error {
+                    error.set(Some(message));
+                    continue;
+                }
+                let changed_count = snapshot.row_count.is_some_and(|row_count| {
+                    analysis
+                        .read()
+                        .as_ref()
+                        .is_some_and(|value| value.run.row_count != row_count)
+                });
+                let changed_status = snapshot.status.as_deref().is_some_and(|status| {
+                    analysis
+                        .read()
+                        .as_ref()
+                        .is_some_and(|value| value.run.status != status)
+                });
+                if changed_count || changed_status {
+                    load_workspace(
+                        run.clone(),
+                        analysis,
+                        turns,
+                        judgments,
+                        detail_loading,
+                        error,
+                    );
+                }
+            }
+            event_source.close();
+        });
+    });
+
+    use_effect(move || {
+        if page() == "tools" && catalog().is_none() {
+            spawn(async move {
+                match api::query_catalog().await {
+                    Ok(value) => {
+                        if selected_table().is_empty() {
+                            selected_table.set(
+                                value
+                                    .tables
+                                    .first()
+                                    .map(|table| table.name.clone())
+                                    .unwrap_or_default(),
+                            );
+                        }
+                        catalog.set(Some(value));
+                    }
+                    Err(message) => error.set(Some(message)),
+                }
+            });
+        }
+    });
+
+    let root_keydown = move |event: KeyboardEvent| {
+        let key = event.key().to_string().to_ascii_lowercase();
+        if key == "j" && (event.modifiers().meta() || event.modifiers().ctrl()) {
+            event.prevent_default();
+            copilot_open.set(!copilot_open());
+        }
+    };
+
+    rsx! {
+        div { class: "pc2-shell", tabindex: "-1", onkeydown: root_keydown,
+            a { class: "skip-link", href: "#pc2-main", "Skip to trajectory workspace" }
+            nav { class: "rail", aria_label: "pChronicle workspace",
+                div { class: "brand-mark", title: "pChronicle", "pC" }
+                RailButton { active: page() == "runs" || page() == "detail", icon: "◫", label: "Runs", onclick: move |_| page.set("runs".into()) }
+                RailButton { active: page() == "tools", icon: "⌁", label: "Analyze", onclick: move |_| page.set("tools".into()) }
+                div { class: "rail-spacer" }
+                button { class: if copilot_open() { "rail-button active" } else { "rail-button" }, aria_label: "Toggle trajectory Copilot", onclick: move |_| copilot_open.set(!copilot_open()), span { class: "rail-icon", "◇" } span { "Copilot" } }
+                div { class: "rail-status", span { class: "live-dot" } "Local" }
+            }
+
+            main { id: "pc2-main", class: "pc2-main", tabindex: "-1",
+                if let Some(message) = error() {
+                    div { class: "pc2-global-error", role: "alert", strong { "Evidence unavailable" } span { "{message}" } button { aria_label: "Dismiss", onclick: move |_| error.set(None), "×" } }
+                }
+                match page().as_str() {
+                    "tools" => rsx! { crate::tools::ToolsWorkspace { catalog: catalog(), selected_table } },
+                    "detail" => {
+                        let path_runs = runs().map(|page| page.path_index).unwrap_or_default();
+                        let selected_path = analysis().map(|value| value.run.path).or_else(|| selected_run().map(|run| run.path)).unwrap_or_default();
+                        rsx! { div { class: "pc2-detail-layout",
+                            PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
+                                on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
+                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); judgments.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); },
+                            }
+                            if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
+                                RunDetailWorkspace {
+                                    run: value.run.clone(),
+                                    analysis: value,
+                                    turns: turns(),
+                                    judgments: judgments(),
+                                    selected: selected_turn(),
+                                    expanded_turn_id: expanded_turn_id(),
+                                    loading: detail_loading(),
+                                    turn_loading: turn_loading(),
+                                    detail_mode: detail_mode(),
+                                    source: source(),
+                                    query: turn_query(),
+                                    on_back: move |_| page.set("runs".into()),
+                                    on_detail_mode: move |value| detail_mode.set(value),
+                                    on_source: move |value| {
+                                        source.set(value);
+                                        if let Some(run) = selected_run() {
+                                            reload_turns(run, turn_query(), source(), turns, detail_loading, error);
+                                        }
+                                    },
+                                    on_query: move |value| turn_query.set(value),
+                                    on_apply_filter: move |_| {
+                                        if let Some(run) = selected_run() {
+                                            reload_turns(run, turn_query(), source(), turns, detail_loading, error);
+                                        }
+                                    },
+                                    on_turn: move |id| {
+                                        if expanded_turn_id() == Some(id) {
+                                            expanded_turn_id.set(None);
+                                            selected_turn.set(None);
+                                        } else if let Some(run) = selected_run() {
+                                            expanded_turn_id.set(Some(id));
+                                            selected_turn.set(None);
+                                            load_turn(run, id, expanded_turn_id, selected_turn, turn_loading, error);
+                                        }
+                                    },
+                                    on_annotate_story: move |_| annotation_target.set(Some(None)),
+                                    on_annotate_turn: move |call_id| annotation_target.set(Some(Some(call_id))),
+                                    on_open_copilot: move |_| copilot_open.set(true),
+                                }
+                            } else { LoadingWorkspace { label: "Building trajectory evidence…" } }
+                        } }
+                    }
+                    _ => {
+                        let path_runs = runs().map(|value| value.path_index).unwrap_or_default();
+                        rsx! { div { class: "pc2-runs-layout",
+                        PathExplorer { runs: path_runs, selected_path: run_path(), loading: runs_loading(), filter_folders: true,
+                            on_path: move |value| { run_path.set(value); offset.set(0); },
+                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); judgments.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
+                        }
+                        RunsExplorer {
+                            page: runs(),
+                            loading: runs_loading(),
+                            query: query(),
+                            status: status(),
+                            sort: sort(),
+                            direction: direction(),
+                            path: run_path(),
+                            on_query: move |value| query.set(value),
+                            on_status: move |value| status.set(value),
+                            on_sort: move |value| sort.set(value),
+                            on_direction: move |value| direction.set(value),
+                            on_path: move |value| { run_path.set(value); offset.set(0); },
+                            on_refresh: move |_| {
+                                load_runs(
+                                    RunFilters {
+                                        query: query(),
+                                        status: status(),
+                                        sort: sort(),
+                                        direction: direction(),
+                                        path: run_path(),
+                                        offset: offset(),
+                                    },
+                                    runs,
+                                    runs_loading,
+                                    error,
+                                );
+                            },
+                            on_page: move |value| offset.set(value),
+                            on_select: move |run: RunSummary| {
+                                selected_run.set(Some(run.clone()));
+                                analysis.set(None);
+                                turns.set(Vec::new());
+                                judgments.set(Vec::new());
+                                selected_turn.set(None);
+                                expanded_turn_id.set(None);
+                                detail_mode.set("trace".into());
+                                page.set("detail".into());
+                            },
+                        }
+                        } }
+                    },
+                }
+            }
+
+            if copilot_open() {
+                if let (Some(run), Some(value)) = (selected_run(), analysis()) {
+                    CopilotPanel {
+                        run,
+                        analysis: value,
+                        turns: turns(),
+                        selected: selected_turn(),
+                        judgments: judgments(),
+                        on_close: move |_| copilot_open.set(false),
+                        on_turn: move |id| {
+                            if let Some(run) = selected_run() {
+                                expanded_turn_id.set(Some(id));
+                                selected_turn.set(None);
+                                load_turn(run, id, expanded_turn_id, selected_turn, turn_loading, error);
+                                page.set("detail".into());
+                            }
+                        },
+                    }
+                } else {
+                    aside { class: "pc2-copilot",
+                        div { class: "pc2-copilot-head", strong { "Trajectory Copilot" } button { onclick: move |_| copilot_open.set(false), "×" } }
+                        div { class: "pc2-copilot-empty", "Open a trajectory before asking Copilot to analyze evidence." }
+                    }
+                }
+            }
+
+            if let (Some(target), Some(run)) = (annotation_target(), selected_run()) {
+                JudgmentDrawer {
+                    run,
+                    call_id: target,
+                    on_close: move |_| annotation_target.set(None),
+                    on_saved: move |_| {
+                        annotation_target.set(None);
+                        if let Some(run) = selected_run() {
+                            load_workspace(run, analysis, turns, judgments, detail_loading, error);
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+fn load_runs(
+    filters: RunFilters,
+    mut page: Signal<Option<RunPage>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<String>>,
+) {
+    loading.set(true);
+    spawn(async move {
+        match api::explorer_runs(
+            &filters.query,
+            &filters.status,
+            &filters.sort,
+            &filters.direction,
+            &filters.path,
+            filters.offset,
+        )
+        .await
+        {
+            Ok(value) => page.set(Some(value)),
+            Err(message) => error.set(Some(message)),
+        }
+        loading.set(false);
+    });
+}
+
+fn load_workspace(
+    run: RunSummary,
+    mut analysis: Signal<Option<RunAnalysis>>,
+    mut turns: Signal<Vec<TurnSummary>>,
+    mut judgments: Signal<Vec<Judgment>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<String>>,
+) {
+    loading.set(true);
+    spawn(async move {
+        let (next_analysis, next_turns, next_judgments) = futures_util::join!(
+            api::run_analysis(&run),
+            api::turns(&run, "", "all"),
+            api::judgments(&run),
+        );
+        match (next_analysis, next_turns, next_judgments) {
+            (Ok(next_analysis), Ok(next_turns), Ok(next_judgments)) => {
+                analysis.set(Some(next_analysis));
+                turns.set(next_turns.records);
+                judgments.set(
+                    next_judgments
+                        .into_iter()
+                        .filter(|row| row.session_id == run.session_id)
+                        .collect(),
+                );
+            }
+            (Err(message), _, _) | (_, Err(message), _) | (_, _, Err(message)) => {
+                error.set(Some(message));
+            }
+        }
+        loading.set(false);
+    });
+}
+
+fn reload_turns(
+    run: RunSummary,
+    q: String,
+    source: String,
+    mut turns: Signal<Vec<TurnSummary>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<String>>,
+) {
+    loading.set(true);
+    spawn(async move {
+        match api::turns(&run, &q, &source).await {
+            Ok(value) => turns.set(value.records),
+            Err(message) => error.set(Some(message)),
+        }
+        loading.set(false);
+    });
+}
+
+fn load_turn(
+    run: RunSummary,
+    id: i64,
+    active: Signal<Option<i64>>,
+    mut selected: Signal<Option<TurnDetail>>,
+    mut loading: Signal<bool>,
+    mut error: Signal<Option<String>>,
+) {
+    loading.set(true);
+    spawn(async move {
+        match api::turn_detail(&run, id).await {
+            Ok(value) if active() == Some(id) => selected.set(Some(value)),
+            Ok(_) => {}
+            Err(message) if active() == Some(id) => error.set(Some(message)),
+            Err(_) => {}
+        }
+        if active() == Some(id) {
+            loading.set(false);
+        }
+    });
+}
+
+#[component]
+fn RailButton(
+    active: bool,
+    icon: &'static str,
+    label: &'static str,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    rsx! { button { class: if active { "rail-button active" } else { "rail-button" }, aria_current: if active { "page" } else { "false" }, onclick, span { class: "rail-icon", "{icon}" } span { "{label}" } } }
+}
+
+#[component]
+fn LoadingWorkspace(label: &'static str) -> Element {
+    rsx! { div { class: "pc2-loading", span { class: "spinner" } "{label}" } }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct PathTreeNode {
+    name: String,
+    full_path: String,
+    children: BTreeMap<String, PathTreeNode>,
+    runs: Vec<RunSummary>,
+}
+
+fn build_path_tree(runs: &[RunSummary]) -> PathTreeNode {
+    let mut root = PathTreeNode {
+        name: "All runs".into(),
+        ..PathTreeNode::default()
+    };
+    for run in runs {
+        let segments = run
+            .path
+            .split('/')
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        let mut node = &mut root;
+        let mut current = String::new();
+        for segment in segments {
+            if !current.is_empty() {
+                current.push('/');
+            }
+            current.push_str(segment);
+            node = node
+                .children
+                .entry(segment.into())
+                .or_insert_with(|| PathTreeNode {
+                    name: segment.into(),
+                    full_path: current.clone(),
+                    ..PathTreeNode::default()
+                });
+        }
+        node.runs.push(run.clone());
+    }
+    root
+}
+
+fn subtree_run_count(node: &PathTreeNode) -> usize {
+    node.runs.len() + node.children.values().map(subtree_run_count).sum::<usize>()
+}
+
+#[component]
+fn PathExplorer(
+    runs: Vec<RunSummary>,
+    selected_path: String,
+    loading: bool,
+    filter_folders: bool,
+    on_path: EventHandler<String>,
+    on_select: EventHandler<RunSummary>,
+) -> Element {
+    let tree = build_path_tree(&runs);
+    rsx! { aside { class: "pc2-path-explorer",
+        header { div { strong { "Run paths" } span { "Browse trajectories by captured hierarchy" } } span { "{runs.len()}" } }
+        div { class: "pc2-path-tree",
+            button { class: if selected_path.is_empty() { "pc2-path-all active" } else { "pc2-path-all" }, onclick: move |_| on_path.call(String::new()), span { class: "pc2-path-icon root", "⌂" } strong { "All runs" } code { "{runs.len()}" } }
+            if loading && runs.is_empty() { div { class: "pc2-path-loading", span { class: "spinner" } "Loading paths…" } }
+            else if runs.is_empty() { div { class: "pc2-path-empty", "No captured run paths." } }
+            else { for node in tree.children.into_values() { PathNode { key: "{node.full_path}", node, selected_path: selected_path.clone(), filter_folders, on_path, on_select } } }
+        }
+        footer { "Folders follow agent / root / subagent / session coordinates." }
+    } }
+}
+
+#[component]
+fn PathNode(
+    node: PathTreeNode,
+    selected_path: String,
+    filter_folders: bool,
+    on_path: EventHandler<String>,
+    on_select: EventHandler<RunSummary>,
+) -> Element {
+    let count = subtree_run_count(&node);
+    let is_leaf = node.children.is_empty() && node.runs.len() == 1;
+    if is_leaf {
+        let run = node.runs[0].clone();
+        let active = selected_path == run.path;
+        let tone = match run.status.as_str() {
+            "completed" | "ok" => "good",
+            "active" => "live",
+            "failed" | "error" => "bad",
+            _ => "",
+        };
+        return rsx! { button { class: if active { "pc2-path-row active" } else { "pc2-path-row" }, title: "{run.path}", onclick: move |_| on_select.call(run.clone()), span { class: "pc2-path-toggle leaf" } span { class: "pc2-path-name", span { class: "pc2-path-icon run" } span { "{node.name}" } } span { class: "pc2-path-health {tone}" } code { "1" } } };
+    }
+    let folder_path = node.full_path.clone();
+    rsx! { details { open: true,
+        summary { class: if selected_path == node.full_path { "pc2-path-row branch active" } else { "pc2-path-row branch" }, span { class: "pc2-path-toggle", "›" } button { class: "pc2-path-name", onclick: move |event| { if filter_folders { event.prevent_default(); on_path.call(folder_path.clone()); } }, span { class: "pc2-path-icon folder" } span { "{node.name}" } } span {} code { "{count}" } }
+        div { class: "pc2-path-children",
+            for run in node.runs { button { class: if selected_path == run.path { "pc2-path-row active" } else { "pc2-path-row" }, onclick: move |_| on_select.call(run.clone()), span { class: "pc2-path-toggle leaf" } span { class: "pc2-path-name", span { class: "pc2-path-icon run" } span { "{run.session_id}" } } span {} code { "1" } } }
+            for child in node.children.into_values() { PathNode { key: "{child.full_path}", node: child, selected_path: selected_path.clone(), filter_folders, on_path, on_select } }
+        }
+    } }
+}
+
+#[component]
+fn RunsExplorer(
+    page: Option<RunPage>,
+    loading: bool,
+    query: String,
+    status: String,
+    sort: String,
+    direction: String,
+    path: String,
+    on_query: EventHandler<String>,
+    on_status: EventHandler<String>,
+    on_sort: EventHandler<String>,
+    on_direction: EventHandler<String>,
+    on_path: EventHandler<String>,
+    on_refresh: EventHandler<MouseEvent>,
+    on_page: EventHandler<usize>,
+    on_select: EventHandler<RunSummary>,
+) -> Element {
+    let total = page.as_ref().map_or(0, |page| page.snapshot.total);
+    let page_offset = page.as_ref().map_or(0, |page| page.snapshot.offset);
+    let page_limit = page.as_ref().map_or(50, |page| page.snapshot.limit);
+    let page_next = page.as_ref().map_or(0, |page| page.snapshot.next_offset);
+    let page_has_more = page.as_ref().is_some_and(|page| page.snapshot.has_more);
+    rsx! {
+        section { class: "pc2-page",
+            header { class: "pc2-page-head",
+                div { p { class: "eyebrow", "pChronicle" } h1 { "Trajectory runs" } p { "Inspect agent execution, captured latency, explicit failures, and human judgments." } }
+                button { class: "button", onclick: on_refresh, "↻ Refresh" }
+            }
+            div { class: "pc2-filterbar",
+                label { class: "pc2-filter-search", span { "⌕" } input { value: "{query}", placeholder: "Agent, session, root, or status", aria_label: "Search trajectory runs", oninput: move |event| on_query.call(event.value()) } }
+                select { value: "{status}", aria_label: "Filter by run status", onchange: move |event| on_status.call(event.value()), option { value: "all", "All statuses" } option { value: "active", "Active" } option { value: "completed", "Completed" } option { value: "failed", "Failed" } }
+                select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", "Session" } option { value: "events", "Events" } option { value: "score", "Score" } option { value: "status", "Status" } option { value: "agent", "Agent" } }
+                button { class: "pc2-sort", aria_label: "Toggle sort direction", onclick: move |_| on_direction.call(if direction == "asc" { "desc".into() } else { "asc".into() }), if direction == "asc" { "↑ Asc" } else { "↓ Desc" } }
+                if !path.is_empty() { button { class: "pc2-path-filter", title: "{path}", onclick: move |_| on_path.call(String::new()), "⌁ {short(&path, 24)} ×" } }
+                span { class: "pc2-result-count", "{total} runs" }
+            }
+            div { class: "pc2-table-wrap",
+                table { class: "pc2-run-table",
+                    thead { tr { th { "Session" } th { "Agent / model" } th { "Status" } th { "Events" } th { "Judgments" } th { "Score" } th { "Root" } } }
+                    tbody {
+                        if loading && page.is_none() {
+                            for _ in 0..6 { tr { class: "pc2-table-skeleton", td { colspan: "7" } } }
+                        } else if page.as_ref().is_none_or(|page| page.records.is_empty()) {
+                            tr { td { colspan: "7", div { class: "pc2-empty", strong { "No matching trajectories" } span { "Adjust the filters or refresh the local store." } } } }
+                        } else {
+                            for item in page.as_ref().unwrap().records.iter() {
+                                RunTableRow { key: "{item.run.agent_id}/{item.run.session_id}", item: item.clone(), on_select }
+                            }
+                        }
+                    }
+                }
+            }
+            if page.is_some() {
+                footer { class: "pc2-pagination",
+                    button { disabled: page_offset == 0, onclick: move |_| on_page.call(page_offset.saturating_sub(page_limit)), "← Previous" }
+                    span { "{page_offset + usize::from(total > 0)}–{page_next} of {total}" }
+                    button { disabled: !page_has_more, onclick: move |_| on_page.call(page_next), "Next →" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn RunTableRow(item: RunExplorerItem, on_select: EventHandler<RunSummary>) -> Element {
+    let run = item.run.clone();
+    let keyboard_run = item.run.clone();
+    let score_text = item
+        .average_score
+        .map(|value| format!("{value:.1}"))
+        .unwrap_or_else(|| "—".into());
+    let root_text = short(item.run.root_session_id.as_deref().unwrap_or("—"), 18);
+    let model_text = item.model.clone().unwrap_or_else(|| "unavailable".into());
+    rsx! {
+        tr { tabindex: "0", onclick: move |_| on_select.call(run.clone()), onkeydown: move |event| if event.key() == Key::Enter { on_select.call(keyboard_run.clone()) },
+            td { div { class: "pc2-session-cell", strong { "{item.run.session_id}" } span { "{item.run.row_count} captured rows" } } }
+            td { div { class: "pc2-session-cell", strong { "{item.run.agent_id}" } span { "{model_text}" } } }
+            td { StatusBadge { value: item.run.status.clone() } }
+            td { class: "pc2-number", "{item.run.row_count}" }
+            td { class: "pc2-number", "{item.judgment_count}" }
+            td { class: "pc2-number", "{score_text}" }
+            td { code { title: "{item.run.root_session_id.as_deref().unwrap_or_default()}", "{root_text}" } }
+        }
+    }
+}
+
+#[component]
+fn StatusBadge(value: String) -> Element {
+    let tone = match value.as_str() {
+        "completed" | "ok" | "pass" => "good",
+        "failed" | "error" | "fail" => "bad",
+        "active" => "live",
+        _ => "neutral",
+    };
+    rsx! { span { class: "pc2-status {tone}", span {} "{value}" } }
+}
+
+#[component]
+#[allow(clippy::too_many_arguments)]
+fn RunDetailWorkspace(
+    run: RunSummary,
+    analysis: RunAnalysis,
+    turns: Vec<TurnSummary>,
+    judgments: Vec<Judgment>,
+    selected: Option<TurnDetail>,
+    expanded_turn_id: Option<i64>,
+    loading: bool,
+    turn_loading: bool,
+    detail_mode: String,
+    source: String,
+    query: String,
+    on_back: EventHandler<MouseEvent>,
+    on_detail_mode: EventHandler<String>,
+    on_source: EventHandler<String>,
+    on_query: EventHandler<String>,
+    on_apply_filter: EventHandler<()>,
+    on_turn: EventHandler<i64>,
+    on_annotate_story: EventHandler<MouseEvent>,
+    on_annotate_turn: EventHandler<String>,
+    on_open_copilot: EventHandler<MouseEvent>,
+) -> Element {
+    rsx! {
+        section { class: "pc2-detail",
+            header { class: "pc2-detail-head",
+                div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
+                div { class: "pc2-head-actions", button { class: "button", onclick: on_annotate_story, "Annotate run" } button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/v1/export/otlp?{run.query()}", "OTLP" } }
+            }
+            MetricsStrip { analysis: analysis.clone() }
+            nav { class: "pc2-detail-tabs", aria_label: "Trajectory detail view",
+                button { class: if detail_mode == "trace" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("trace".into()), "Trace" }
+                button { class: if detail_mode == "analysis" { "active" } else { "" }, onclick: move |_| on_detail_mode.call("analysis".into()), "Analysis" }
+                span { "{turns.len()} of {analysis.turn_count} turns loaded for interactive charts" }
+            }
+            if detail_mode == "analysis" {
+                AnalysisWorkspace {
+                    analysis: analysis.clone(),
+                    turns: turns.clone(),
+                    judgments,
+                    on_turn: move |id| {
+                        on_turn.call(id);
+                        on_detail_mode.call("trace".into());
+                    },
+                }
+            } else {
+                section { class: "pc2-trace-surface pc2-inline-trace",
+                    div { class: "pc2-trace-toolbar",
+                        div { strong { "Trace hierarchy" } span { "Collapsed rows preserve overview + timeline · expand for full evidence" } }
+                        div { class: "pc2-toolbar-controls",
+                            select { value: "{source}", aria_label: "Filter turns by source", onchange: move |event| on_source.call(event.value()), option { value: "all", "All sources" } option { value: "user", "User" } option { value: "agent", "Agent" } option { value: "system", "System" } }
+                            input { value: "{query}", placeholder: "Filter loaded evidence", aria_label: "Filter turns", oninput: move |event| on_query.call(event.value()), onkeydown: move |event| if event.key() == Key::Enter { on_apply_filter.call(()) } }
+                            button { class: "pc2-icon", aria_label: "Apply turn filter", onclick: move |_| on_apply_filter.call(()), "⌕" }
+                        }
+                    }
+                    div { class: "pc2-turn-list pc2-span-scroll",
+                        if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing evidence…" } }
+                        if turns.is_empty() { div { class: "pc2-empty", strong { "No visible turns" } span { "No compact turn evidence matches this filter." } } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, on_turn, on_annotate: on_annotate_turn } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn MetricsStrip(analysis: RunAnalysis) -> Element {
+    rsx! { div { class: "pc2-metrics",
+        Metric { label: "Turns", value: analysis.turn_count.to_string(), detail: format!("{} events", analysis.event_count) }
+        Metric { label: "Tools", value: analysis.tool_call_count.to_string(), detail: format!("{} tool names", analysis.tools.len()) }
+        Metric { label: "Explicit errors", value: analysis.error_count.to_string(), detail: "Captured signals only" }
+        Metric { label: "Tokens", value: analysis.total_tokens.map(|value| value.to_string()).unwrap_or_else(|| "—".into()), detail: format!("in {} · out {}", optional_u64(analysis.prompt_tokens), optional_u64(analysis.completion_tokens)) }
+        Metric { label: "Latency P95", value: analysis.latency_ms.p95.map(format_ms).unwrap_or_else(|| "—".into()), detail: format!("{}/{} samples", analysis.latency_ms.sample_count, analysis.latency_ms.total_count) }
+        Metric { label: "Score", value: analysis.average_score.map(|value| format!("{value:.1}")).unwrap_or_else(|| "—".into()), detail: format!("{} judgments", analysis.judgment_count) }
+    } }
+}
+
+#[component]
+fn Metric(label: String, value: String, detail: String) -> Element {
+    rsx! { div { class: "pc2-metric", span { "{label}" } strong { "{value}" } small { "{detail}" } } }
+}
+
+#[component]
+fn AnalysisWorkspace(
+    analysis: RunAnalysis,
+    turns: Vec<TurnSummary>,
+    judgments: Vec<Judgment>,
+    on_turn: EventHandler<i64>,
+) -> Element {
+    let mut tab = use_signal(|| "overview".to_string());
+    let active = tab();
+    rsx! { section { class: "pc2-analysis-workspace",
+        nav { class: "pc2-analysis-tabs", aria_label: "Analysis dimension",
+            AnalysisTab { value: "overview", label: "Overview", active: active.clone(), on_select: move |value| tab.set(value) }
+            AnalysisTab { value: "performance", label: "Performance", active: active.clone(), on_select: move |value| tab.set(value) }
+            AnalysisTab { value: "tokens", label: "Tokens", active: active.clone(), on_select: move |value| tab.set(value) }
+            AnalysisTab { value: "tools", label: "Tools", active: active.clone(), on_select: move |value| tab.set(value) }
+            AnalysisTab { value: "quality", label: "Quality", active: active.clone(), on_select: move |value| tab.set(value) }
+        }
+        div { class: "pc2-analysis-scroll",
+            match active.as_str() {
+                "performance" => rsx! { PerformanceAnalysis { analysis: analysis.clone(), turns: turns.clone(), on_turn } },
+                "tokens" => rsx! { TokenAnalysis { analysis: analysis.clone(), turns: turns.clone(), on_turn } },
+                "tools" => rsx! { ToolAnalysis { tools: analysis.tools.clone() } },
+                "quality" => rsx! { QualityAnalysis { analysis: analysis.clone(), judgments } },
+                _ => rsx! { OverviewAnalysis { analysis, turns } },
+            }
+        }
+    } }
+}
+
+#[component]
+fn AnalysisTab(
+    value: &'static str,
+    label: &'static str,
+    active: String,
+    on_select: EventHandler<String>,
+) -> Element {
+    rsx! { button { class: if active == value { "active" } else { "" }, onclick: move |_| on_select.call(value.into()), "{label}" } }
+}
+
+#[component]
+fn OverviewAnalysis(analysis: RunAnalysis, turns: Vec<TurnSummary>) -> Element {
+    let observed = turns.iter().filter(|turn| turn.timestamp.is_some()).count();
+    let elapsed = match (&analysis.start_timestamp, &analysis.end_timestamp) {
+        (Some(start), Some(end)) if start != end => format!("{start} → {end}"),
+        (Some(start), _) => start.clone(),
+        _ => "No captured timestamps".into(),
+    };
+    rsx! { div { class: "pc2-analysis-grid overview",
+        AnalysisCard { title: "Execution composition", subtitle: "Turns grouped by captured source",
+            DimensionBars { items: analysis.source_breakdown.clone(), tone: "blue" }
+        }
+        AnalysisCard { title: "Behavior mix", subtitle: "Effective trajectory turn kinds",
+            DimensionBars { items: analysis.kind_breakdown.clone(), tone: "violet" }
+        }
+        AnalysisCard { title: "Model mix", subtitle: "Per-turn model attribution and coverage",
+            DimensionBars { items: analysis.model_breakdown.clone(), tone: "green" }
+        }
+        AnalysisCard { title: "Evidence coverage", subtitle: "What can be measured without inference",
+            div { class: "pc2-coverage-list",
+                CoverageRow { label: "Latency", observed: analysis.latency_ms.sample_count, total: analysis.latency_ms.total_count }
+                CoverageRow { label: "TTFT", observed: analysis.ttft_ms.sample_count, total: analysis.ttft_ms.total_count }
+                CoverageRow { label: "Timestamp", observed, total: analysis.turn_count }
+                CoverageRow { label: "Token usage", observed: turns.iter().filter(|turn| turn.total_tokens.is_some()).count(), total: analysis.turn_count }
+            }
+        }
+        article { class: "pc2-analysis-card wide pc2-run-span",
+            header { div { h3 { "Captured run span" } p { "Lexically ordered source timestamps; unavailable values remain explicit" } } }
+            code { "{elapsed}" }
+            div { class: "pc2-run-span-meta",
+                span { strong { "{analysis.models.len()}" } " models" }
+                span { strong { "{analysis.event_count}" } " events" }
+                span { strong { "{analysis.error_count}" } " explicit-error turns" }
+                span { strong { "{analysis.judgment_count}" } " judgments" }
+            }
+        }
+    } }
+}
+
+#[component]
+fn PerformanceAnalysis(
+    analysis: RunAnalysis,
+    turns: Vec<TurnSummary>,
+    on_turn: EventHandler<i64>,
+) -> Element {
+    let mut slowest = turns
+        .iter()
+        .filter_map(|turn| turn.latency_ms.map(|latency| (turn.clone(), latency)))
+        .collect::<Vec<_>>();
+    slowest.sort_by(|left, right| right.1.total_cmp(&left.1));
+    slowest.truncate(8);
+    rsx! { div { class: "pc2-analysis-grid performance",
+        AnalysisCard { title: "Latency distribution", subtitle: "Fixed buckets keep runs directly comparable",
+            LatencyHistogram { buckets: analysis.latency_histogram.clone() }
+        }
+        AnalysisCard { title: "Percentile profile", subtitle: "Observed samples only",
+            div { class: "pc2-percentiles",
+                Percentile { label: "P50", value: analysis.latency_ms.p50, max: analysis.latency_ms.max }
+                Percentile { label: "P95", value: analysis.latency_ms.p95, max: analysis.latency_ms.max }
+                Percentile { label: "Max", value: analysis.latency_ms.max, max: analysis.latency_ms.max }
+                div { class: "pc2-percentile-coverage", "Latency {analysis.latency_ms.sample_count}/{analysis.latency_ms.total_count} · TTFT {analysis.ttft_ms.sample_count}/{analysis.ttft_ms.total_count}" }
+            }
+        }
+        article { class: "pc2-analysis-card wide",
+            header { div { h3 { "Latency by turn" } p { "Chronological, normalized to the slowest loaded turn · click a bar for evidence" } } }
+            TurnMetricChart { turns: turns.clone(), metric: "latency", on_turn }
+        }
+        article { class: "pc2-analysis-card wide",
+            header { div { h3 { "Slowest turns" } p { "Highest observed end-to-end latency in the loaded interactive set" } } }
+            div { class: "pc2-ranked-list",
+                if slowest.is_empty() { EmptyAnalysis { label: "No per-turn latency samples" } }
+                for (index, (turn, latency)) in slowest.into_iter().enumerate() {
+                    button { onclick: move |_| on_turn.call(turn.id),
+                        span { class: "pc2-rank", "{index + 1}" }
+                        span { class: "pc2-ranked-copy", strong { "Turn #{turn.id} · {turn.source}" } small { "{short(&turn.preview, 100)}" } }
+                        code { "{format_ms(latency)}" }
+                    }
+                }
+            }
+        }
+    } }
+}
+
+#[component]
+fn TokenAnalysis(
+    analysis: RunAnalysis,
+    turns: Vec<TurnSummary>,
+    on_turn: EventHandler<i64>,
+) -> Element {
+    let prompt = analysis.prompt_tokens.unwrap_or_default();
+    let completion = analysis.completion_tokens.unwrap_or_default();
+    let total = analysis
+        .total_tokens
+        .unwrap_or_default()
+        .max(prompt.saturating_add(completion));
+    let prompt_width = percent(prompt as f64, total as f64);
+    let completion_width = percent(completion as f64, total as f64);
+    rsx! { div { class: "pc2-analysis-grid tokens",
+        article { class: "pc2-analysis-card wide pc2-token-composition",
+            header { div { h3 { "Token composition" } p { "Captured prompt and completion usage across the run" } } strong { "{optional_u64(analysis.total_tokens)} total" } }
+            div { class: "pc2-token-track", title: "Prompt {prompt} · Completion {completion}",
+                i { class: "prompt", style: "width:{prompt_width}%" }
+                i { class: "completion", style: "width:{completion_width}%" }
+            }
+            div { class: "pc2-token-legend", span { i { class: "prompt" } "Prompt {prompt}" } span { i { class: "completion" } "Completion {completion}" } }
+        }
+        article { class: "pc2-analysis-card wide",
+            header { div { h3 { "Tokens by turn" } p { "Prompt + completion stacks · click a bar for full evidence" } } }
+            TurnMetricChart { turns: turns.clone(), metric: "tokens", on_turn }
+        }
+        AnalysisCard { title: "Tokens by source", subtitle: "Full-run aggregate by captured source",
+            TokenDimensionBars { items: analysis.source_breakdown.clone() }
+        }
+        AnalysisCard { title: "Tokens by model", subtitle: "Full-run aggregate by attributed model",
+            TokenDimensionBars { items: analysis.model_breakdown.clone() }
+        }
+    } }
+}
+
+#[component]
+fn ToolAnalysis(tools: Vec<ToolAggregate>) -> Element {
+    let mut tools = tools;
+    tools.sort_by_key(|tool| std::cmp::Reverse(tool.count));
+    let max_count = tools.iter().map(|tool| tool.count).max().unwrap_or(0);
+    rsx! { div { class: "pc2-analysis-grid tools",
+        article { class: "pc2-analysis-card wide",
+            header { div { h3 { "Tool performance" } p { "Frequency, observed duration, and association with explicit-error turns" } } span { "{tools.len()} tools" } }
+            div { class: "pc2-tool-table",
+                div { class: "pc2-tool-head", span { "Tool" } span { "Calls" } span { "Observed duration" } span { "Average" } span { "Max" } span { "Error-linked" } }
+                if tools.is_empty() { EmptyAnalysis { label: "No tool calls captured" } }
+                for tool in tools {
+                    div { class: "pc2-tool-row",
+                        div { strong { "{tool.name}" } span { class: "pc2-mini-track", i { style: format!("width:{}%", percent(tool.count as f64, max_count as f64)) } } }
+                        code { "{tool.count}" }
+                        code { "{tool.duration_sample_count}/{tool.count}" }
+                        code { {tool.average_duration_ms.map(format_ms).unwrap_or_else(|| "—".into())} }
+                        code { {tool.max_duration_ms.map(format_ms).unwrap_or_else(|| "—".into())} }
+                        span { class: if tool.error_associated_count > 0 { "pc2-tool-errors active" } else { "pc2-tool-errors" }, "{tool.error_associated_count}" }
+                    }
+                }
+            }
+        }
+    } }
+}
+
+#[component]
+fn QualityAnalysis(analysis: RunAnalysis, judgments: Vec<Judgment>) -> Element {
+    let verdicts = verdict_counts(&judgments);
+    let rubrics = rubric_summaries(&judgments);
+    rsx! { div { class: "pc2-analysis-grid quality",
+        AnalysisCard { title: "Explicit errors by source", subtitle: "Captured signals only; message text is not guessed",
+            ErrorDimensionBars { items: analysis.source_breakdown.clone() }
+        }
+        AnalysisCard { title: "Judgment verdicts", subtitle: "Run- and turn-level human evaluation",
+            div { class: "pc2-verdict-grid",
+                VerdictCount { label: "Pass", count: verdicts.0, tone: "pass" }
+                VerdictCount { label: "Partial", count: verdicts.1, tone: "partial" }
+                VerdictCount { label: "Fail", count: verdicts.2, tone: "fail" }
+            }
+        }
+        article { class: "pc2-analysis-card wide",
+            header { div { h3 { "Rubric scores" } p { "Average and range across saved judgments" } } }
+            div { class: "pc2-rubric-list",
+                if rubrics.is_empty() { EmptyAnalysis { label: "No judgments have been saved" } }
+                for rubric in rubrics {
+                    div { div { strong { "{rubric.name}" } span { "{rubric.count} judgments · {rubric.min}–{rubric.max}" } } span { class: "pc2-score-track", i { style: format!("width:{}%", rubric.average.clamp(0.0, 100.0)) } } code { "{rubric.average:.1}" } }
+                }
+            }
+        }
+    } }
+}
+
+#[component]
+fn AnalysisCard(title: &'static str, subtitle: &'static str, children: Element) -> Element {
+    rsx! { article { class: "pc2-analysis-card", header { div { h3 { "{title}" } p { "{subtitle}" } } } {children} } }
+}
+
+#[component]
+fn DimensionBars(items: Vec<DimensionAggregate>, tone: &'static str) -> Element {
+    let max = items.iter().map(|item| item.turn_count).max().unwrap_or(0);
+    rsx! { div { class: "pc2-dimension-list {tone}",
+        if items.is_empty() { EmptyAnalysis { label: "No dimension values captured" } }
+        for item in items {
+            div { class: "pc2-dimension-row",
+                div { span { title: "{item.name}", "{item.name}" } code { "{item.turn_count}" } }
+                span { class: "pc2-dimension-track", i { style: format!("width:{}%", percent(item.turn_count as f64, max as f64)) } }
+                small { {format!("{} errors · {}", item.error_count, item.average_latency_ms.map(format_ms).unwrap_or_else(|| "no latency".into()))} }
+            }
+        }
+    } }
+}
+
+#[component]
+fn TokenDimensionBars(items: Vec<DimensionAggregate>) -> Element {
+    let max = items
+        .iter()
+        .filter_map(|item| item.total_tokens)
+        .max()
+        .unwrap_or(0);
+    rsx! { div { class: "pc2-dimension-list amber",
+        if max == 0 { EmptyAnalysis { label: "No token attribution captured" } }
+        for item in items.into_iter().filter(|item| item.total_tokens.is_some()) {
+            div { class: "pc2-dimension-row",
+                div { span { title: "{item.name}", "{item.name}" } code { {item.total_tokens.unwrap_or_default().to_string()} } }
+                span { class: "pc2-dimension-track", i { style: format!("width:{}%", percent(item.total_tokens.unwrap_or_default() as f64, max as f64)) } }
+                small { "Across {item.turn_count} turns" }
+            }
+        }
+    } }
+}
+
+#[component]
+fn ErrorDimensionBars(items: Vec<DimensionAggregate>) -> Element {
+    let max = items.iter().map(|item| item.error_count).max().unwrap_or(0);
+    rsx! { div { class: "pc2-dimension-list red",
+        if max == 0 { EmptyAnalysis { label: "No explicit errors captured" } }
+        for item in items.into_iter().filter(|item| item.error_count > 0) {
+            div { class: "pc2-dimension-row",
+                div { span { "{item.name}" } code { "{item.error_count}" } }
+                span { class: "pc2-dimension-track", i { style: format!("width:{}%", percent(item.error_count as f64, max as f64)) } }
+                small { {format!("{:.1}% of this source", percent(item.error_count as f64, item.turn_count as f64))} }
+            }
+        }
+    } }
+}
+
+#[component]
+fn CoverageRow(label: &'static str, observed: usize, total: usize) -> Element {
+    let coverage = percent(observed as f64, total as f64);
+    rsx! { div { div { span { "{label}" } code { "{observed}/{total}" } } span { class: "pc2-coverage-track", i { style: "width:{coverage}%" } } } }
+}
+
+#[component]
+fn LatencyHistogram(buckets: Vec<HistogramBucket>) -> Element {
+    let max = buckets.iter().map(|bucket| bucket.count).max().unwrap_or(0);
+    rsx! { div { class: "pc2-histogram",
+        for bucket in buckets {
+            div { class: "pc2-histogram-column", title: format!("{}: {} samples", bucket.label, bucket.count),
+                span { "{bucket.count}" }
+                div { i { style: format!("height:{}%", percent(bucket.count as f64, max as f64)) } }
+                small { "{bucket.label}" }
+            }
+        }
+    } }
+}
+
+#[component]
+fn Percentile(label: &'static str, value: Option<f64>, max: Option<f64>) -> Element {
+    let width = percent(value.unwrap_or_default(), max.unwrap_or_default());
+    rsx! { div { class: "pc2-percentile", div { span { "{label}" } code { {value.map(format_ms).unwrap_or_else(|| "—".into())} } } span { i { style: "width:{width}%" } } } }
+}
+
+#[component]
+fn TurnMetricChart(
+    turns: Vec<TurnSummary>,
+    metric: &'static str,
+    on_turn: EventHandler<i64>,
+) -> Element {
+    let visible = sampled_turns(&turns, 120);
+    let max = visible
+        .iter()
+        .filter_map(|turn| turn_metric(turn, metric))
+        .fold(0.0f64, f64::max);
+    rsx! { div { class: "pc2-turn-chart",
+        if max <= 0.0 {
+            if metric == "tokens" { EmptyAnalysis { label: "No per-turn token samples" } }
+            else { EmptyAnalysis { label: "No per-turn latency samples" } }
+        }
+        else { div { class: "pc2-turn-bars",
+            for turn in visible {
+                button { aria_label: "Open turn {turn.id}", title: format!("Turn #{} · {} · {}", turn.id, turn.source, metric_value(&turn, metric)), onclick: move |_| on_turn.call(turn.id),
+                    i { class: "{turn.source}", style: format!("height:{}%", percent(turn_metric(&turn, metric).unwrap_or_default(), max)) }
+                }
+            }
+        } }
+        if turns.len() > 120 { p { class: "pc2-chart-note", "Evenly sampled 120 of {turns.len()} loaded turns" } }
+    } }
+}
+
+#[component]
+fn VerdictCount(label: &'static str, count: usize, tone: &'static str) -> Element {
+    rsx! { div { class: "pc2-verdict {tone}", span {} strong { "{count}" } small { "{label}" } } }
+}
+
+#[component]
+fn EmptyAnalysis(label: &'static str) -> Element {
+    rsx! { div { class: "pc2-analysis-empty", "{label}" } }
+}
+
+#[derive(Clone)]
+struct RubricSummary {
+    name: String,
+    count: usize,
+    average: f64,
+    min: i64,
+    max: i64,
+}
+
+#[component]
+fn JudgmentDrawer(
+    run: RunSummary,
+    call_id: Option<String>,
+    on_close: EventHandler<MouseEvent>,
+    on_saved: EventHandler<()>,
+) -> Element {
+    let mut rubric = use_signal(|| "quality".to_string());
+    let mut score = use_signal(|| "80".to_string());
+    let mut verdict = use_signal(|| "pass".to_string());
+    let mut rationale = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    let target = call_id.clone().unwrap_or_else(|| "__story__".into());
+    rsx! { div { class: "pc2-modal-backdrop",
+        section { class: "pc2-judgment-drawer", role: "dialog", aria_modal: "true", aria_label: "Add trajectory judgment",
+            header { div { p { class: "eyebrow", "Human evaluation" } h2 { if call_id.is_some() { "Annotate turn" } else { "Annotate trajectory" } } code { "{target}" } } button { aria_label: "Close", onclick: on_close, "×" } }
+            div { class: "pc2-form",
+                label { span { "Rubric" } input { value: "{rubric}", oninput: move |event| rubric.set(event.value()), placeholder: "quality" } }
+                label { span { "Score · 0–100" } input { r#type: "number", min: "0", max: "100", value: "{score}", oninput: move |event| score.set(event.value()) } }
+                label { span { "Verdict" } select { value: "{verdict}", onchange: move |event| verdict.set(event.value()), option { value: "pass", "Pass" } option { value: "partial", "Partial" } option { value: "fail", "Fail" } } }
+                label { span { "Rationale" } textarea { value: "{rationale}", oninput: move |event| rationale.set(event.value()), placeholder: "Why did this output receive this score?" } }
+                if let Some(message) = error() { div { class: "pc2-form-error", "{message}" } }
+            }
+            footer { button { class: "button", onclick: on_close, "Cancel" } button { class: "button primary", disabled: saving(), onclick: move |_| {
+                let Ok(parsed_score) = score().parse::<i64>() else { error.set(Some("Score must be an integer from 0 to 100.".into())); return; };
+                if rubric().trim().is_empty() || rationale().trim().is_empty() { error.set(Some("Rubric and rationale are required.".into())); return; }
+                saving.set(true);
+                let request = JudgmentWrite { agent_id: run.agent_id.clone(), session_id: run.session_id.clone(), root_session_id: run.root_session_id.clone(), call_id: target.clone(), rubric_id: rubric(), score: parsed_score, verdict: verdict(), rationale: rationale() };
+                spawn(async move { match api::write_judgment(&request).await { Ok(()) => on_saved.call(()), Err(message) => error.set(Some(message)) } saving.set(false); });
+            }, if saving() { "Saving…" } else { "Save judgment" } } }
+        }
+    } }
+}
+
+#[component]
+fn CopilotPanel(
+    run: RunSummary,
+    analysis: RunAnalysis,
+    turns: Vec<TurnSummary>,
+    selected: Option<TurnDetail>,
+    judgments: Vec<Judgment>,
+    on_close: EventHandler<MouseEvent>,
+    on_turn: EventHandler<i64>,
+) -> Element {
+    let mut messages = use_signal(Vec::<ChatMessage>::new);
+    let mut input = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let mut include_full = use_signal(|| false);
+    let mut settings = use_signal(|| false);
+    let mut config = use_signal(agent::load_config);
+    rsx! { aside { class: "pc2-copilot",
+        div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
+        div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } label { input { r#type: "checkbox", checked: include_full(), disabled: selected.is_none(), onchange: move |event| include_full.set(event.checked()) } "Include selected turn content once (max 64 KiB)" } }
+        div { class: "pc2-skill-chips", for skill in agent::skill_ids() { button { disabled: busy(), onclick: move |_| input.set(format!("/{skill}")), "{skill_label(skill)}" } } }
+        div { class: "pc2-chat",
+            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask from captured evidence" } p { "Copilot can summarize this run, locate explicit failures, rank latency, inspect tool usage, compare cohorts, or review judgments." } } }
+            for (index, message) in messages().iter().enumerate() { ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn } }
+            if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "Selecting one read-only analysis action…" } }
+        }
+        form { class: "pc2-composer", onsubmit: move |event| {
+            event.prevent_default();
+            let question = input().trim().to_string();
+            if question.is_empty() || busy() { return; }
+            messages.write().push(ChatMessage { user: true, text: question.clone(), action: None, sql: None, truncated: false });
+            input.set(String::new());
+            busy.set(true);
+            let config_value = config();
+            let run_value = run.clone();
+            let analysis_value = analysis.clone();
+            let turns_value = turns.clone();
+            let selected_value = selected.clone();
+            let judgments_value = judgments.clone();
+            let include_value = include_full();
+            spawn(async move {
+                let result = agent::answer(agent::AnswerRequest {
+                    config: &config_value,
+                    user_message: &question,
+                    run: &run_value,
+                    analysis: &analysis_value,
+                    turns: &turns_value,
+                    selected: selected_value.as_ref(),
+                    judgments: &judgments_value,
+                    include_full_turn: include_value,
+                }).await;
+                let message = match result {
+                    Ok(AgentAnswer { text, action, sql, truncated }) => ChatMessage { user: false, text, action: Some(action), sql, truncated },
+                    Err(message) => ChatMessage { user: false, text: format!("Unable to complete analysis: {message}"), action: Some("error".into()), sql: None, truncated: false },
+                };
+                messages.write().push(message);
+                include_full.set(false);
+                busy.set(false);
+            });
+        }, textarea { value: "{input}", rows: "3", placeholder: "Ask about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); }, disabled: busy() } button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Analyze" } }
+        if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { agent::save_config(&value); config.set(value); settings.set(false); } } }
+    } }
+}
+
+#[component]
+fn ChatBubble(
+    message: ChatMessage,
+    turns: Vec<TurnSummary>,
+    on_turn: EventHandler<i64>,
+) -> Element {
+    let refs = turn_references(&message.text);
+    let blocks = parse_rich_blocks(&message.text);
+    rsx! { div { class: if message.user { "pc2-message user" } else { "pc2-message assistant" },
+        if let Some(action) = &message.action { span { class: "pc2-action-label", "{action}" } }
+        for (index, block) in blocks.into_iter().enumerate() {
+            match block {
+                RichBlock::Text(text) => rsx! { MessageText { key: "text-{index}", text } },
+                RichBlock::Table(table) => rsx! { DataTable { key: "table-{index}", evidence: table.evidence, title: table.title, embedded: true } },
+                RichBlock::Trajectory(trajectory) => {
+                    let visible = turns.iter().filter(|turn| trajectory.turn_ids.contains(&turn.id)).cloned().collect::<Vec<_>>();
+                    rsx! { div { key: "trajectory-{index}", class: "pc2-chat-component",
+                        if let Some(title) = trajectory.title { strong { class: "pc2-chat-component-title", "{title}" } }
+                        if visible.is_empty() { div { class: "pc2-data-empty", "Referenced turns are outside the loaded evidence window." } }
+                        else { TrajectoryView { turns: visible, expanded_turn_id: None, detail: None, loading: false, embedded: true, annotatable: false, on_turn, on_annotate: move |_: String| {} } }
+                    } }
+                },
+            }
+        }
+        if let Some(sql) = &message.sql { details { class: "pc2-message-sql", summary { "Executed read-only SQL" } pre { "{sql}" } } }
+        if message.truncated { div { class: "pc2-truncated", "Evidence was bounded or truncated; conclusions may be incomplete." } }
+        if !refs.is_empty() { div { class: "pc2-citations", for id in refs { button { onclick: move |_| on_turn.call(id), "Turn #{id}" } } } }
+    } }
+}
+
+#[component]
+fn MessageText(text: String) -> Element {
+    rsx! { div { class: "pc2-message-text", for line in text.lines() { if let Some(item) = line.strip_prefix("- ") { div { class: "pc2-bullet", span { "•" } p { "{clean_markdown(item)}" } } } else if !line.trim().is_empty() { p { "{clean_markdown(line)}" } } } } }
+}
+
+#[component]
+fn LlmSettings(
+    config: LlmConfig,
+    on_close: EventHandler<MouseEvent>,
+    on_save: EventHandler<LlmConfig>,
+) -> Element {
+    let mut api_base = use_signal(|| config.api_base.clone());
+    let mut api_key = use_signal(|| config.api_key.clone());
+    let mut model = use_signal(|| config.model.clone());
+    rsx! { div { class: "pc2-modal-backdrop high", section { class: "pc2-settings", role: "dialog", aria_modal: "true", header { div { p { class: "eyebrow", "Browser BYOK" } h2 { "Copilot model" } } button { onclick: on_close, "×" } } p { class: "pc2-settings-note", "The key stays in this browser's localStorage. Selected evidence is sent directly to this OpenAI-compatible endpoint; pChronicle server never receives the key." } div { class: "pc2-form", label { span { "API base" } input { value: "{api_base}", oninput: move |event| api_base.set(event.value()) } } label { span { "API key" } input { r#type: "password", value: "{api_key}", oninput: move |event| api_key.set(event.value()) } } label { span { "Model" } input { value: "{model}", oninput: move |event| model.set(event.value()) } } } footer { button { class: "button", onclick: on_close, "Cancel" } button { class: "button primary", onclick: move |_| on_save.call(LlmConfig { api_base: api_base(), api_key: api_key(), model: model() }), "Save locally" } } } } }
+}
+
+fn short(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        value.into()
+    } else {
+        format!(
+            "{}…",
+            value
+                .chars()
+                .take(limit.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
+}
+
+fn format_ms(value: f64) -> String {
+    if value >= 1000.0 {
+        format!("{:.2}s", value / 1000.0)
+    } else {
+        format!("{value:.1}ms")
+    }
+}
+fn optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "—".into())
+}
+fn percent(value: f64, total: f64) -> f64 {
+    if !value.is_finite() || !total.is_finite() || total <= 0.0 {
+        0.0
+    } else {
+        (value / total * 100.0).clamp(0.0, 100.0)
+    }
+}
+fn sampled_turns(turns: &[TurnSummary], limit: usize) -> Vec<TurnSummary> {
+    if turns.len() <= limit || limit < 2 {
+        return turns.to_vec();
+    }
+    (0..limit)
+        .map(|index| index * (turns.len() - 1) / (limit - 1))
+        .map(|index| turns[index].clone())
+        .collect()
+}
+fn turn_metric(turn: &TurnSummary, metric: &str) -> Option<f64> {
+    match metric {
+        "tokens" => turn.total_tokens.map(|value| value as f64),
+        _ => turn.latency_ms,
+    }
+}
+fn metric_value(turn: &TurnSummary, metric: &str) -> String {
+    match metric {
+        "tokens" => turn
+            .total_tokens
+            .map(|value| format!("{value} tokens"))
+            .unwrap_or_else(|| "no token sample".into()),
+        _ => turn
+            .latency_ms
+            .map(format_ms)
+            .unwrap_or_else(|| "no latency sample".into()),
+    }
+}
+fn verdict_counts(judgments: &[Judgment]) -> (usize, usize, usize) {
+    judgments.iter().fold((0, 0, 0), |mut counts, row| {
+        match row.verdict.as_str() {
+            "pass" => counts.0 += 1,
+            "partial" => counts.1 += 1,
+            "fail" => counts.2 += 1,
+            _ => {}
+        }
+        counts
+    })
+}
+fn rubric_summaries(judgments: &[Judgment]) -> Vec<RubricSummary> {
+    let mut grouped = BTreeMap::<String, Vec<i64>>::new();
+    for judgment in judgments {
+        grouped
+            .entry(judgment.rubric_id.clone())
+            .or_default()
+            .push(judgment.score);
+    }
+    grouped
+        .into_iter()
+        .map(|(name, scores)| RubricSummary {
+            name,
+            count: scores.len(),
+            average: scores.iter().sum::<i64>() as f64 / scores.len() as f64,
+            min: scores.iter().copied().min().unwrap_or_default(),
+            max: scores.iter().copied().max().unwrap_or_default(),
+        })
+        .collect()
+}
+fn clean_markdown(value: &str) -> String {
+    value.replace("**", "").replace('`', "")
+}
+fn skill_label(value: &str) -> String {
+    value.replace('_', " ")
+}
+
+fn turn_references(value: &str) -> Vec<i64> {
+    let mut ids = Vec::new();
+    let mut rest = value;
+    while let Some((_, next)) = rest.split_once("[turn:") {
+        if let Some((raw, after)) = next.split_once(']') {
+            if let Ok(id) = raw.parse() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            rest = after;
+        } else {
+            break;
+        }
+    }
+    ids
+}
+
+fn url_param(name: &str) -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    web_sys::UrlSearchParams::new_with_str(&search)
+        .ok()?
+        .get(name)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_workspace_url(
+    page: &str,
+    run: Option<&RunSummary>,
+    query: &str,
+    status: &str,
+    sort: &str,
+    direction: &str,
+    path: &str,
+    workspace: &str,
+    view: &str,
+    source: &str,
+    turn_query: &str,
+    turn_id: Option<i64>,
+) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let mut params = vec![format!("page={}", urlencoding::encode(page))];
+    if let Some(run) = run.filter(|_| page == "detail") {
+        params.push(format!("agent_id={}", urlencoding::encode(&run.agent_id)));
+        params.push(format!(
+            "session_id={}",
+            urlencoding::encode(&run.session_id)
+        ));
+        if let Some(root) = &run.root_session_id {
+            params.push(format!("root_session_id={}", urlencoding::encode(root)));
+        }
+        params.push(format!("workspace={}", urlencoding::encode(workspace)));
+        params.push(format!("view={}", urlencoding::encode(view)));
+        params.push(format!("source={}", urlencoding::encode(source)));
+        if !turn_query.is_empty() {
+            params.push(format!("turn_q={}", urlencoding::encode(turn_query)));
+        }
+        if let Some(turn_id) = turn_id {
+            params.push(format!("turn={turn_id}"));
+        }
+    } else if page == "runs" {
+        if !query.is_empty() {
+            params.push(format!("q={}", urlencoding::encode(query)));
+        }
+        params.push(format!("status={}", urlencoding::encode(status)));
+        params.push(format!("sort={}", urlencoding::encode(sort)));
+        params.push(format!("direction={}", urlencoding::encode(direction)));
+        if !path.is_empty() {
+            params.push(format!("path={}", urlencoding::encode(path)));
+        }
+    }
+    let url = format!("/?{}", params.join("&"));
+    let _ = window
+        .history()
+        .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&url)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_at(path: &str) -> RunSummary {
+        RunSummary {
+            agent_id: "agent".into(),
+            model_name: None,
+            session_id: path.rsplit('/').next().unwrap_or_default().into(),
+            root_session_id: Some("root".into()),
+            path: path.into(),
+            row_count: 1,
+            duplicate_event_ids: 0,
+            status: "completed".into(),
+        }
+    }
+
+    #[test]
+    fn citations_are_unique_and_ordered() {
+        assert_eq!(
+            turn_references("see [turn:3], [turn:1], [turn:3]"),
+            vec![3, 1]
+        );
+    }
+
+    #[test]
+    fn path_tree_preserves_hierarchy_and_subtree_counts() {
+        let tree = build_path_tree(&[
+            run_at("agent/root/session-a"),
+            run_at("agent/root/subagents/session-b"),
+        ]);
+        let agent = tree.children.get("agent").unwrap();
+        assert_eq!(subtree_run_count(agent), 2);
+        assert!(agent.children["root"].children.contains_key("subagents"));
+    }
+
+    #[test]
+    fn percent_handles_missing_and_caps_outliers() {
+        assert_eq!(percent(25.0, 100.0), 25.0);
+        assert_eq!(percent(10.0, 0.0), 0.0);
+        assert_eq!(percent(150.0, 100.0), 100.0);
+    }
+
+    #[test]
+    fn judgment_dimensions_preserve_verdicts_and_rubrics() {
+        let judgments = vec![
+            Judgment {
+                session_id: "s".into(),
+                call_id: "a".into(),
+                rubric_id: "quality".into(),
+                score: 80,
+                verdict: "pass".into(),
+                rationale: "ok".into(),
+            },
+            Judgment {
+                session_id: "s".into(),
+                call_id: "b".into(),
+                rubric_id: "quality".into(),
+                score: 40,
+                verdict: "fail".into(),
+                rationale: "bad".into(),
+            },
+        ];
+        assert_eq!(verdict_counts(&judgments), (1, 0, 1));
+        let rubrics = rubric_summaries(&judgments);
+        assert_eq!(rubrics.len(), 1);
+        assert_eq!(rubrics[0].average, 60.0);
+        assert_eq!((rubrics[0].min, rubrics[0].max), (40, 80));
+    }
+}
