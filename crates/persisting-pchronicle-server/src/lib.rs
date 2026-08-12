@@ -1766,7 +1766,11 @@ mod tests {
         assert_eq!(filtered["snapshot"]["total"], 1);
         assert_eq!(filtered["records"][0]["dataset"], "archive");
 
-        std::fs::write(live.join("broken.json"), "{")?;
+        // A malformed peripheral JSON file is intentionally validated only
+        // after `_file_` pruning. Use an invalid Storyline commit descriptor
+        // here so refresh fails while freezing the candidate snapshot.
+        std::fs::create_dir(live.join("broken-store"))?;
+        std::fs::write(live.join("broken-store/CURRENT"), "{")?;
         let failed_refresh = app
             .clone()
             .oneshot(
@@ -1790,7 +1794,7 @@ mod tests {
             serde_json::from_slice(&preserved.into_body().collect().await?.to_bytes())?;
         assert_eq!(preserved["snapshot_id"], initial_snapshot);
 
-        std::fs::remove_file(live.join("broken.json"))?;
+        std::fs::remove_dir_all(live.join("broken-store"))?;
         std::fs::copy(live.join("gateway.json"), live.join("second.json"))?;
         let refreshed = app
             .clone()

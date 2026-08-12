@@ -222,10 +222,10 @@ Catalog 产生四个 source：
 位置参数配合显式 `--source` 时，该值作为默认 Dataset 的格式约束：复合 store 类型或文件
 检测结果不匹配会报错。命名 Dataset 当前使用自动检测。
 
-本地外围文件在冻结候选描述时执行有界格式检测，但不创建 DataFusion datasource，也不
-解析为三张规范化表。远程外围对象不会为了自动检测而在 Catalog 构建期下载；如果没有
-显式格式提示，`sources.format` 可以是 `NULL`，格式在该 source 首次被查询时从固定对象
-版本检测。检测结果与 datasource 解析结果一起缓存在快照的 `LazySource` 中。
+本地和远程外围文件都不会为了自动检测而在 Catalog 构建期读取内容；如果没有显式格式
+提示，`sources.format` 可以是 `NULL`。Catalog 会先冻结本地文件指纹或远程对象版本，等
+`_file_` 裁剪选中该 source 后才做有界格式检测。检测结果与 datasource 解析结果一起缓存
+在快照的 `LazySource` 中。
 
 ## 6. SQL 表模型
 
@@ -399,7 +399,7 @@ CatalogTableProvider source pruning
 
 `--dataset-errors` 提供两种策略：
 
-| 策略 | 单个候选无法固定描述、检测本地格式或通过初始校验 | Dataset 根不存在、listing/遍历失败或超过全局限制 |
+| 策略 | 单个候选无法固定描述或通过初始校验 | Dataset 根不存在、listing/遍历失败或超过全局限制 |
 |---|---|---|
 | `strict` | Catalog 构建失败 | Catalog 构建失败 |
 | `report` | 写入 `<dataset>.sources`，状态为 `error`，跳过数据表注册 | Catalog 构建失败 |

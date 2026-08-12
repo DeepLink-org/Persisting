@@ -73,6 +73,26 @@ pub struct LocalQueryInputFile {
 }
 
 impl LocalQueryInputFile {
+    pub(crate) fn freeze(path: PathBuf, relative_path: String) -> Result<Self> {
+        validate_relative_source_path(&relative_path)?;
+        Ok(Self {
+            fingerprint: FileFingerprint::read(&path)?,
+            path,
+            relative_path,
+        })
+    }
+
+    pub(crate) fn detect_format_with_options(
+        &self,
+        options: LocalQueryManifestOptions,
+    ) -> Result<ChronicleFormat> {
+        validate_options(options)?;
+        self.validate_unchanged()?;
+        let format = detect_query_format(&self.path, options)?;
+        self.validate_unchanged()?;
+        Ok(format)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -122,41 +142,7 @@ impl LocalQueryManifest {
         let first = paths
             .first()
             .with_context(|| format!("query input contains no JSON files: {}", input.display()))?;
-        let format = if let Some(format) =
-            detect_format(Some(first), None).map_err(anyhow::Error::from)?
-        {
-            format
-        } else {
-            let detection_len = fs::metadata(first)
-                .with_context(|| {
-                    format!(
-                        "inspect query input for format detection: {}",
-                        first.display()
-                    )
-                })?
-                .len();
-            anyhow::ensure!(
-                detection_len <= options.max_detection_bytes,
-                "format detection input {} is {detection_len} bytes, exceeding max_detection_bytes {}",
-                first.display(),
-                options.max_detection_bytes
-            );
-            let content = fs::read_to_string(first).with_context(|| {
-                format!("read query input for format detection: {}", first.display())
-            })?;
-            let detection_content = if is_json_lines(first) {
-                content
-                    .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or(content.as_str())
-            } else {
-                content.as_str()
-            };
-            detect_format(None, Some(detection_content))
-                .map_err(anyhow::Error::from)?
-                .with_context(|| format!("cannot detect trajectory format: {}", first.display()))?
-        };
-        validate_query_format(format, first)?;
+        let format = detect_query_format(first, options)?;
         Self::from_paths(input, format, paths)
     }
 
@@ -216,19 +202,27 @@ impl LocalQueryManifest {
         format: ChronicleFormat,
         files: Vec<(PathBuf, String)>,
     ) -> Result<Self> {
-        validate_query_format(format, input.as_ref())?;
-        anyhow::ensure!(!files.is_empty(), "query manifest contains no files");
         let files = files
             .into_iter()
-            .map(|(path, relative_path)| {
-                validate_relative_source_path(&relative_path)?;
-                Ok(LocalQueryInputFile {
-                    fingerprint: FileFingerprint::read(&path)?,
-                    path,
-                    relative_path,
-                })
-            })
+            .map(|(path, relative_path)| LocalQueryInputFile::freeze(path, relative_path))
             .collect::<Result<Vec<_>>>()?;
+        Self::from_frozen_files(input, format, files)
+    }
+
+    /// Build a manifest from file identities frozen by a higher-level catalog.
+    /// This lets the catalog defer content-based format detection until after
+    /// `_file_` pruning without weakening its immutable snapshot boundary.
+    pub(crate) fn from_frozen_files(
+        input: impl AsRef<Path>,
+        format: ChronicleFormat,
+        files: Vec<LocalQueryInputFile>,
+    ) -> Result<Self> {
+        validate_query_format(format, input.as_ref())?;
+        anyhow::ensure!(!files.is_empty(), "query manifest contains no files");
+        for file in &files {
+            validate_relative_source_path(file.relative_path())?;
+            file.validate_unchanged()?;
+        }
         Ok(Self {
             input: input.as_ref().to_path_buf(),
             format,
@@ -272,6 +266,44 @@ fn validate_query_format(format: ChronicleFormat, path: &Path) -> Result<()> {
         path.display()
     );
     Ok(())
+}
+
+fn detect_query_format(path: &Path, options: LocalQueryManifestOptions) -> Result<ChronicleFormat> {
+    let format =
+        if let Some(format) = detect_format(Some(path), None).map_err(anyhow::Error::from)? {
+            format
+        } else {
+            let detection_len = fs::metadata(path)
+                .with_context(|| {
+                    format!(
+                        "inspect query input for format detection: {}",
+                        path.display()
+                    )
+                })?
+                .len();
+            anyhow::ensure!(
+            detection_len <= options.max_detection_bytes,
+            "format detection input {} is {detection_len} bytes, exceeding max_detection_bytes {}",
+            path.display(),
+            options.max_detection_bytes
+        );
+            let content = fs::read_to_string(path).with_context(|| {
+                format!("read query input for format detection: {}", path.display())
+            })?;
+            let detection_content = if is_json_lines(path) {
+                content
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or(content.as_str())
+            } else {
+                content.as_str()
+            };
+            detect_format(None, Some(detection_content))
+                .map_err(anyhow::Error::from)?
+                .with_context(|| format!("cannot detect trajectory format: {}", path.display()))?
+        };
+    validate_query_format(format, path)?;
+    Ok(format)
 }
 
 fn validate_options(options: LocalQueryManifestOptions) -> Result<()> {
@@ -458,6 +490,24 @@ mod tests {
         let manifest = LocalQueryManifest::for_format(&file, ChronicleFormat::OpenaiMsg)?;
         fs::write(&file, "[]")?;
         assert!(manifest.files()[0].validate_unchanged().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_file_detects_format_without_replacing_its_identity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("input.json");
+        fs::write(&path, r#"[{"session_id":"s1","step_id":0,"messages":[]}]"#)?;
+        let file = LocalQueryInputFile::freeze(path.clone(), "input.json".into())?;
+        assert_eq!(
+            file.detect_format_with_options(LocalQueryManifestOptions::default())?,
+            ChronicleFormat::OpenaiMsg
+        );
+
+        fs::write(&path, "[]")?;
+        assert!(file
+            .detect_format_with_options(LocalQueryManifestOptions::default())
+            .is_err());
         Ok(())
     }
 }

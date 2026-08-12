@@ -50,8 +50,9 @@ use super::{
     story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
     story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
     FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryQueryMetrics,
-    LocalQueryManifest, LocalQueryManifestOptions, RawEventDataSource, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths, SOURCE_FILE_COLUMN,
+    LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions, RawEventDataSource,
+    StorylineDataSource, StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths,
+    SOURCE_FILE_COLUMN,
 };
 
 pub const DEFAULT_DATASET_NAME: &str = "dataset";
@@ -502,7 +503,9 @@ enum LazySourceSpec {
         snapshot: RawEventSnapshot,
     },
     LocalFile {
-        manifest: LocalQueryManifest,
+        root: PathBuf,
+        file: LocalQueryInputFile,
+        format_hint: Option<ChronicleFormat>,
     },
     RemoteFile {
         store: Arc<LanceObjectStore>,
@@ -585,12 +588,24 @@ impl LazySource {
                     normalization_count: AtomicUsize::new(0),
                 }))
             }
-            LazySourceSpec::LocalFile { manifest } => Ok(ResolvedSource::File(
-                FileTrajectoryDataSource::from_manifest_with_options(
-                    manifest.clone(),
-                    self.options.files,
-                )?,
-            )),
+            LazySourceSpec::LocalFile {
+                root,
+                file,
+                format_hint,
+            } => {
+                let format = match format_hint {
+                    Some(format) => *format,
+                    None => file.detect_format_with_options(self.options.manifest)?,
+                };
+                let manifest =
+                    LocalQueryManifest::from_frozen_files(root, format, vec![file.clone()])?;
+                Ok(ResolvedSource::File(
+                    FileTrajectoryDataSource::from_manifest_with_options(
+                        manifest,
+                        self.options.files,
+                    )?,
+                ))
+            }
             LazySourceSpec::RemoteFile {
                 store,
                 meta,
@@ -873,18 +888,20 @@ async fn freeze_candidate(
         Candidate::LocalFile {
             file, root, path, ..
         } => {
-            let format = match mount.format_hint {
-                Some(format) => format,
-                None => LocalQueryManifest::detect_with_options(&path, options.manifest)?.format(),
-            };
-            let manifest =
-                LocalQueryManifest::from_explicit_files(root, format, vec![(path, file.clone())])?;
-            source_row.format = Some(format.as_str().to_string());
+            // Keep format detection behind LazySource::resolve so an exact
+            // `_file_` predicate can prune unrelated malformed files before
+            // any of their contents are opened.
+            source_row.format = mount.format_hint.map(|format| format.as_str().to_string());
+            let frozen_file = LocalQueryInputFile::freeze(path, file.clone())?;
             Ok((
                 source_row,
                 Arc::new(LazySource::new(
                     file,
-                    LazySourceSpec::LocalFile { manifest },
+                    LazySourceSpec::LocalFile {
+                        root,
+                        file: frozen_file,
+                        format_hint: mount.format_hint,
+                    },
                     options,
                     temporary_files,
                 )),
@@ -2076,22 +2093,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn report_mode_keeps_invalid_candidate_in_sources() -> Result<()> {
+    async fn report_mode_keeps_late_local_format_errors_lazy() -> Result<()> {
         let temp = tempfile::tempdir()?;
         fs::write(temp.path().join("broken.json"), "{")?;
-        let snapshot = DatasetCatalogSnapshot::discover(
-            vec![DatasetMount::default(temp.path().to_string_lossy())?],
-            Some(DEFAULT_DATASET_NAME.into()),
-            CatalogSnapshotOptions {
-                error_policy: CatalogErrorPolicy::Report,
-                ..CatalogSnapshotOptions::default()
-            },
-        )
-        .await?;
-        assert_eq!(snapshot.datasets()[0].error_source_count(), 1);
+        let snapshot = Arc::new(
+            DatasetCatalogSnapshot::discover(
+                vec![DatasetMount::default(temp.path().to_string_lossy())?],
+                Some(DEFAULT_DATASET_NAME.into()),
+                CatalogSnapshotOptions {
+                    error_policy: CatalogErrorPolicy::Report,
+                    ..CatalogSnapshotOptions::default()
+                },
+            )
+            .await?,
+        );
+        assert_eq!(snapshot.datasets()[0].ready_source_count(), 1);
+        assert_eq!(snapshot.datasets()[0].error_source_count(), 0);
+        assert_eq!(snapshot.datasets()[0].sources[0].format, None);
         assert_eq!(
-            snapshot.datasets()[0].sources[0].status,
-            CatalogSourceStatus::Error
+            snapshot.prepared[0].sources[0]
+                .resolution_count
+                .load(Ordering::Relaxed),
+            0
+        );
+
+        let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+        let error = engine
+            .query("SELECT run_id FROM dataset.runs WHERE _file_ = 'broken.json'")
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("broken.json"));
+        assert_eq!(
+            snapshot.prepared[0].sources[0]
+                .resolution_count
+                .load(Ordering::Relaxed),
+            1
         );
         Ok(())
     }
@@ -2120,7 +2156,7 @@ mod tests {
     async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
         let temp = tempfile::tempdir()?;
         write_openai_source(&temp.path().join("one.json"), "event-1")?;
-        write_openai_source(&temp.path().join("two.json"), "event-2")?;
+        fs::write(temp.path().join("two.json"), "{")?;
         let snapshot = Arc::new(
             DatasetCatalogSnapshot::discover(
                 vec![DatasetMount::default(temp.path().to_string_lossy())?],
@@ -2178,6 +2214,19 @@ mod tests {
             .await?;
         assert!(!explain.contains("UnionExec"));
         assert_eq!(engine.local_file_metrics().unwrap().files_parsed, 1);
+        let error = engine
+            .query("SELECT run_id FROM dataset.runs WHERE _file_ = 'two.json'")
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("two.json"));
+        assert_eq!(
+            snapshot.prepared[0]
+                .sources
+                .iter()
+                .map(|source| source.resolution_count.load(Ordering::Relaxed))
+                .collect::<Vec<_>>(),
+            vec![1, 1]
+        );
         Ok(())
     }
 
