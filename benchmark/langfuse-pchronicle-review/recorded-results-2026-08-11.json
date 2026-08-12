@@ -1,0 +1,146 @@
+{
+  "status": "experimental-local-review",
+  "recorded_at": "2026-08-11",
+  "verdict": "NO-GO_DIRECT_REPLACEMENT",
+  "baselines": {
+    "persisting": "94531cf903e5abc336de347588fb1858e9d52b6a plus local uncommitted catalog/query-engine work",
+    "langfuse": "d18a59ad663ffc7c04afc61354186c141b3ec0f3",
+    "clickhouse": "25.12.11.4"
+  },
+  "environment": {
+    "kernel": "Darwin 25.5.0 arm64",
+    "macos": "26.5",
+    "cpu": "Apple M4",
+    "memory_bytes": 25769803776,
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "python": "3.14.5",
+    "docker_server": "29.6.2"
+  },
+  "fixture": {
+    "sha256": "1b2ef8ed2f51e6d85a9907bbbebbdafbc4c961d8c4368b2a20b737f94cfc4c90",
+    "bytes": 238470862,
+    "rows": 113000,
+    "events": 100000,
+    "event_distinct_logical_ids": 99900,
+    "scores": 10000,
+    "dataset_run_items": 2000,
+    "blob_log_rows": 1000,
+    "projects": 2,
+    "traces": 200,
+    "pchronicle_sources": 210
+  },
+  "pchronicle": {
+    "append": {
+      "acknowledged_rows": 113000,
+      "elapsed_ms": 12053.854958,
+      "rows_per_second": 9374.594301468946,
+      "zero_acknowledged_loss": true
+    },
+    "load_phase": {
+      "rows": 30,
+      "effective_rows_per_second": 10.263871301317753,
+      "ack_p95_ms": 80.864458,
+      "visibility_p95_ms": 4.1275,
+      "concurrent_query_p95_ms": 350.409292,
+      "visible_rows": 30,
+      "zero_acknowledged_loss": true,
+      "pinned_count_after_append": 113000,
+      "refreshed_count": 113030
+    },
+    "query_p95_ms": {
+      "point": 395.870541,
+      "list": 564.816625,
+      "simple_model_aggregate": 806.700875
+    },
+    "catalog": {
+      "cold_start_ms": 2104.038375,
+      "rss_after_bytes": 1117782016,
+      "rss_before_bytes": 308281344
+    },
+    "maintenance_restart": {
+      "fragments_removed": 3,
+      "maintenance_ms": 38.360458,
+      "restart_append_and_catalog_ms": 4160.961459,
+      "restart_row_visible": true
+    },
+    "json_export": {
+      "rows": 50000,
+      "bytes": 96902959,
+      "first_byte_ms": 429.086209,
+      "elapsed_ms": 585.346084
+    },
+    "semantic_results": {
+      "event_physical_rows": 100000,
+      "event_distinct_logical_ids": 99900,
+      "duplicate_versions_remain_physical": true,
+      "cross_project_point_rows": 0,
+      "update_flags": "unsupported",
+      "delete_trace": "unsupported",
+      "delete_project": "unsupported",
+      "delete_retention": "unsupported",
+      "parquet_export": "unsupported"
+    }
+  },
+  "clickhouse": {
+    "append": {
+      "acknowledged_rows": 113000,
+      "elapsed_ms": 1538.472415995784,
+      "rows_per_second": 73449.48068299306
+    },
+    "load_phase": {
+      "rows": 30,
+      "effective_rows_per_second": 9.857884896590003,
+      "ack_p95_ms": 107.69920799066313,
+      "visibility_p95_ms": 6.510250008432195,
+      "concurrent_query_p95_ms": 13.96033400669694,
+      "visible_rows": 30,
+      "zero_acknowledged_loss": true
+    },
+    "query_p95_ms": {
+      "point": 4.826582997338846,
+      "list": 2.9707499779760838,
+      "facet": 3.466208989266306,
+      "dashboard": 4.525625001406297,
+      "full_text": 3.4713750064838678,
+      "scores": 2.282792003825307
+    },
+    "exports": {
+      "json_first_byte_ms": 68.76837500021793,
+      "parquet_first_byte_ms": 28.269458998693153
+    },
+    "mutations_ms": {
+      "update_flags": 25.31504098442383,
+      "delete_trace": 8.981124992715195,
+      "delete_project": 5.9625419962685555,
+      "delete_retention": 7.64183298451826
+    },
+    "semantic_results": {
+      "event_physical_rows": 99900,
+      "event_distinct_logical_ids": 99900,
+      "duplicate_versions_present": false,
+      "cross_project_point_rows": 0
+    },
+    "memory_resident_bytes": 1422721024
+  },
+  "relative_results": {
+    "clickhouse_append_throughput_over_pchronicle": 7.83,
+    "pchronicle_point_p95_over_clickhouse": 82.02,
+    "pchronicle_list_p95_over_clickhouse": 190.13,
+    "pchronicle_simple_aggregate_over_clickhouse_tag_facet_not_semantically_identical": 232.73,
+    "pchronicle_concurrent_query_p95_over_clickhouse": 25.10
+  },
+  "same_fixture_repeat_observations": {
+    "pchronicle_append_rows_per_second": [9374.594301468946, 9594.449551771359],
+    "pchronicle_point_p95_ms": [395.870541, 527.936125],
+    "pchronicle_list_p95_ms": [564.816625, 666.709167],
+    "clickhouse_append_rows_per_second": [73449.48068299306, 73661.05953160369],
+    "clickhouse_point_p95_ms": [4.183750017546117, 4.826582997338846],
+    "clickhouse_list_p95_ms": [2.9707499779760838, 3.9958749839570373]
+  },
+  "tests": {
+    "langfuse_backend_faults": "2 passed; 0 failed",
+    "production_scale": "5 passed; 0 failed; 1 ignored",
+    "query_engine": "14 passed; 0 failed",
+    "store_catalog_filter": "6 passed; 0 failed; 182 filtered"
+  }
+}

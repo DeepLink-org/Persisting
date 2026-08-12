@@ -208,6 +208,34 @@ impl LocalQueryManifest {
         })
     }
 
+    /// Build a frozen manifest from files already selected by a higher-level
+    /// catalog. `relative_path` is the stable, mount-relative source key
+    /// exposed to SQL as `_file_`.
+    pub(crate) fn from_explicit_files(
+        input: impl AsRef<Path>,
+        format: ChronicleFormat,
+        files: Vec<(PathBuf, String)>,
+    ) -> Result<Self> {
+        validate_query_format(format, input.as_ref())?;
+        anyhow::ensure!(!files.is_empty(), "query manifest contains no files");
+        let files = files
+            .into_iter()
+            .map(|(path, relative_path)| {
+                validate_relative_source_path(&relative_path)?;
+                Ok(LocalQueryInputFile {
+                    fingerprint: FileFingerprint::read(&path)?,
+                    path,
+                    relative_path,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            input: input.as_ref().to_path_buf(),
+            format,
+            files: files.into(),
+        })
+    }
+
     pub fn input(&self) -> &Path {
         &self.input
     }
@@ -346,6 +374,21 @@ fn relative_source_path(root: Option<&Path>, file: &Path) -> Result<String> {
         .collect::<Result<Vec<_>>>()?;
     anyhow::ensure!(!components.is_empty(), "trajectory source path is empty");
     Ok(components.join("/"))
+}
+
+fn validate_relative_source_path(path: &str) -> Result<()> {
+    anyhow::ensure!(!path.is_empty(), "trajectory source path is empty");
+    let components = Path::new(path)
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => value
+                .to_str()
+                .context("trajectory source path is not UTF-8"),
+            _ => anyhow::bail!("trajectory source path is not a safe relative path"),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(!components.is_empty(), "trajectory source path is empty");
+    Ok(())
 }
 
 fn is_json_lines(path: &Path) -> bool {

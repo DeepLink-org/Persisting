@@ -102,6 +102,10 @@ persisting chronicle serve ./store
 
 # Probing exports can be opened directly as a directory of JSON files.
 persisting chronicle serve ./data
+
+# Browse several Dataset schemas in one immutable Catalog snapshot.
+persisting chronicle serve --dataset live=./store \
+  --dataset archive=s3://trajectory-bucket/archive
 ```
 
 The loopback-only workbench presents a live Storyline timeline linked back to
@@ -112,15 +116,17 @@ For read-only inspection, the workbench auto-detects probing gateway step
 arrays and ACTF task documents (`*.json`) in the selected directory. These
 files do not need to be imported into Lance first.
 
-The selected directory becomes a SQL schema named after the directory. For a
-directory named `data`, the virtual tables are `data.runs`, `data.steps`,
-`data.tool_calls`, and `data.trajectories`. Every table includes a virtual
-`_file_` column, so queries can select an exact relative path or use `LIKE`
-patterns across the directory:
+A positional directory becomes the default SQL schema named `dataset`,
+regardless of its basename. The stable tables are `sources`, `runs`, `steps`,
+`tool_calls`, `events`, and `trajectories`; unqualified table names remain
+compatible aliases. Repeat `--dataset NAME=URI` for additional, explicitly
+qualified schemas. Every data table includes a virtual `_file_` column, so
+queries can select an exact relative path or use `LIKE` patterns across the
+directory:
 
 ```sql
 SELECT _file_, COUNT(*) AS steps
-FROM data.steps
+FROM dataset.steps
 WHERE _file_ LIKE 'cybergym_%.json'
 GROUP BY _file_;
 ```

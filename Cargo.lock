@@ -6855,13 +6855,15 @@ dependencies = [
  "anyhow",
  "axum",
  "bytes",
+ "datafusion",
+ "futures",
  "http-body-util",
  "include_dir",
  "persisting-pchronicle",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
- "tokio-stream",
  "tower",
 ]
 

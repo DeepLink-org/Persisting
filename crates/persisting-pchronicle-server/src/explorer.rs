@@ -9,6 +9,7 @@ use crate::{RunSummary, TrajectoryTurnView};
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct ExplorerRunsQuery {
     pub(crate) q: Option<String>,
+    pub(crate) dataset: Option<String>,
     pub(crate) status: Option<String>,
     pub(crate) agent: Option<String>,
     pub(crate) model: Option<String>,
@@ -204,6 +205,7 @@ pub(crate) fn run_page(
                 )
                 .to_ascii_lowercase()
                 .contains(&needle))
+                && matches_filter(&item.run.dataset, query.dataset.as_deref())
                 && matches_filter(&item.run.status, query.status.as_deref())
                 && matches_filter(&item.run.agent_id, query.agent.as_deref())
                 && matches_filter(
@@ -484,12 +486,7 @@ pub(crate) fn turn_detail(
 }
 
 pub(crate) fn run_key(run: &RunSummary) -> String {
-    format!(
-        "{}\u{1f}{}\u{1f}{}",
-        run.agent_id,
-        run.session_id,
-        run.root_session_id.as_deref().unwrap_or_default()
-    )
+    format!("{}\u{1f}{}\u{1f}{}", run.dataset, run.file, run.session_id)
 }
 
 fn turn_summary(

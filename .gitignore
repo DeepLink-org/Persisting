@@ -11,6 +11,16 @@ __pycache__/
 *.abi3.so
 crates/persisting-engine/ds/
 
+# Local review, benchmark, and runtime artifacts
+/data/
+/tmp/
+/examples/pvisor/lease.lock
+/examples/pvisor/run.json
+/examples/pvisor/run-bundle.json
+/examples/pvisor/03-network-isolation/lease.lock
+/examples/pvisor/03-network-isolation/run.json
+/examples/pvisor/03-network-isolation/run-bundle.json
+
 # persisting-dlcapt runtime / release artifacts
 crates/persisting-dlcapt/var/
 crates/persisting-dlcapt/.capture/

@@ -546,19 +546,21 @@ flowchart TB
   end
 
   subgraph RUNTIME["Loopback runtime"]
-    BROWSER["Dioxus application<br/>Run list · span timeline · turn inspector · tools"]
-    API["Axum /api/v1<br/>REST + SSE"]
-    STATE["AppState<br/>Chronicle + optional DatasetStore"]
-    LANCE["Canonical pChronicle<br/>events.lance / Storyline / revisions"]
-    DATASET["Dataset compatibility adapter<br/>Gateway JSON / ACTF JSON"]
-    QUERY["ChronicleQueryEngine<br/>read-only DataFusion SQL"]
+    BROWSER["Dioxus application<br/>Dataset selector · Run list · span timeline · tools"]
+    API["Axum /api/v1<br/>REST"]
+    STATE["AppState<br/>mount config + lazy CatalogRuntime"]
+    CATALOG["DatasetCatalogSnapshot<br/>immutable membership + source versions"]
+    ROUTING["ServerAcceleration<br/>generation-scoped source routing"]
+    SOURCES["local / S3 / object prefixes<br/>events · Storyline · ATIF · OpenAI · ACTF"]
+    QUERY["ChronicleQueryEngine<br/>Dataset schemas + read-only SQL"]
 
     BROWSER -->|"runs / trajectory-view / events"| API
-    API -->|"1 s snapshot SSE"| BROWSER
+    API -->|"explicit Catalog refresh"| BROWSER
     API --> STATE
-    STATE --> LANCE
-    STATE --> DATASET
-    API --> QUERY --> LANCE
+    STATE --> CATALOG --> SOURCES
+    STATE --> ROUTING
+    ROUTING -->|"inject _file_ candidates"| QUERY
+    API --> QUERY --> CATALOG
   end
 
   EMBED --> API
@@ -566,9 +568,9 @@ flowchart TB
 
 #### 浏览器应用
 
-`App` 持有 Run 列表、当前 Run、`TrajectoryView`、分页事件、过滤器、follow 状态和
-inspector 状态。选择 Run 时，前端并行读取 `trajectory-view` 与完整分页 events；开启
-follow 后通过 `EventSource` 订阅 `/api/v1/stream`，检测 row count 变化并刷新视图。
+`App` 持有 Dataset 选择、Run 列表、当前 Run、`TrajectoryView`、分页事件和过滤器。
+选择 Run 时，前端并行读取 `trajectory-view` 与完整分页 events；用户显式刷新 Catalog 后
+再读取新快照，避免不可变快照与伪实时状态互相矛盾。
 URL query 保存 Run identity、页面、source filter 和文本过滤条件，因此本地审查链接可以
 稳定回到同一视图。
 
@@ -583,17 +585,23 @@ URL query 保存 Run identity、页面、source filter 和文本过滤条件，�
 
 | 路径 | 后端语义 |
 |---|---|
-| `/api/v1/runs` | 发现 canonical Run，或读取 `DatasetStore` 的 Gateway/ACTF catalog |
+| `/api/v1/catalog` | GET 返回当前 Catalog 快照；POST 完整构建并原子切换，失败保留旧快照 |
+| `/api/v1/runs` | 从同一 Catalog 快照联合读取所有 Dataset 的规范化 `runs` |
 | `/api/v1/events` | 返回带 `offset / next_offset / total / has_more` 的稳定分页快照 |
-| `/api/v1/trajectory-view` | 将 events 或 dataset adapter 投影为 turns、call refs、event seq 与 tool calls |
-| `/api/v1/stream` | 每秒发布 row count/status snapshot；用于变化检测，不传输完整 event stream |
-| `/api/v1/query` | 通过 `ChronicleQueryEngine` 执行 read-only SQL，返回 NDJSON |
+| `/api/v1/trajectory-view` | 按 `(Dataset, _file_, session_id)` 将源投影为 turns、call refs、event seq 与 tool calls |
+| `/api/v1/query` | 通过共享 Catalog 的 `ChronicleQueryEngine` 执行 read-only SQL，返回 NDJSON |
 | export / judgments / revisions / maintain | 复用 pChronicle 既有 HAR、OTLP、评测、血缘和显式维护 API |
 
-`DatasetStore` 只是在本地目录中识别 Gateway JSON 数组或 ACTF object，并按需转换为
-`EventRecord`/Storyline turn 供 UI 浏览；它不把这些文件声明为 canonical store，也不会
-回写原文件。正常 Lance storage 仍通过 `Chronicle`、`RawEventLanceStore` 和
-`ChronicleQueryEngine` 访问。
+[`DatasetCatalogSnapshot`](dataset-catalog.md) 接受重复的 `--dataset NAME=URI` 或 TOML `[datasets]`，递归发现
+Storyline `CURRENT` store、canonical `events.lance` 和 ATIF/OpenAI/ACTF 文件。每个名称是
+SQL schema，提供 `sources/runs/steps/tool_calls/events/trajectories`。直接位置参数仍作为
+名为 `dataset` 的默认 Dataset，并建立无 schema 的兼容 view。快照固定本地文件 identity、
+Lance generation/manifest revision 与对象 version/ETag；Web 第一次读取时惰性构建，刷新
+在锁外构建后原子替换。Dataset 表在 `scan` 边界先按 `_file_` 裁剪 source，再惰性打开命中
+的固定版本；未命中的远程对象不下载，projection 和业务谓词继续交给原生 provider。
+Server 对简单 point/project SQL 惰性构建与该快照同代的内存 routing index，将
+`run/session/agent/event/trace` 条件保守转换为 `_file_` 候选；复杂或不确定查询回退原 SQL。
+Catalog 只是发现和查询命名层，不把外围文件声明为 canonical，也不回写这些文件。
 
 #### 发布与安全边界
 
@@ -678,7 +686,7 @@ pPilot library
 | pVisor executor | Local ProcessExecutor、Docker/Podman transport、libkrun VM full-root transport；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；Container/VM 仍有 capability enforcement 差距，尚缺 WASM/Remote，见 [pVisor isolation architecture](pvisor-isolation.md) |
 | pPilot batch control | Driver、Scheduler、Sink、Checkpoint；TaskExpr ↔ RunSpec/RunResult adapter | 将 Run/Attempt 写入 durable checkpoint 并增加 reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |
-| pChronicle Web | `pchronicle-web` Dioxus/WASM 应用；`persisting-pchronicle-server` Axum REST/SSE、embedded assets 与 `DatasetStore` | 当前仅 loopback、无认证；dataset adapter 是审查兼容层，不替代 canonical Lance |
+| pChronicle Web | `pchronicle-web` Dioxus/WASM 应用；`persisting-pchronicle-server` Axum REST、embedded assets 与惰性 `DatasetCatalogSnapshot` | 当前仅 loopback、无认证；命名 Dataset 默认只读，外围格式不替代 canonical Lance |
 | distributed providers | Pulsing actors、torchrun integration | 只承担发现、投递和 worker 生命周期 |
 | pChronicle consumers | CLI、pPilot sink、Python Search、Judge | 直接消费 canonical history/Search API |
 

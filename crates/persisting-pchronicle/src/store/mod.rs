@@ -10,6 +10,8 @@ mod atif_datafusion;
 #[cfg(feature = "lance-store")]
 mod attempt_registry;
 #[cfg(feature = "lance-store")]
+mod catalog;
+#[cfg(feature = "lance-store")]
 pub(crate) mod dataset_write_lock;
 #[cfg(feature = "lance-store")]
 mod egress;
@@ -60,6 +62,12 @@ pub use atif_datafusion::{
 pub use attempt_registry::{
     unix_now_ms as attempt_registry_now_ms, AttemptRecord, AttemptRecordState, AttemptRegistry,
     ATTEMPT_RECORD_SCHEMA_VERSION,
+};
+#[cfg(feature = "lance-store")]
+pub use catalog::{
+    CatalogDataset, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
+    CatalogSourceStatus, CatalogStorylineKey, DatasetCatalogSnapshot, DatasetMount,
+    DiscoveredSource, CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME,
 };
 #[cfg(feature = "lance-store")]
 pub use egress::{export_source_dirs, export_story_bundle, validate_event_lines, ExportOutcome};

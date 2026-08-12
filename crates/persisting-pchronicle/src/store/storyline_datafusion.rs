@@ -429,6 +429,26 @@ impl StorylineDataSource {
             .resolve_current_table_paths()
             .await?
             .ok_or_else(|| anyhow::anyhow!("Storyline Lance store has no committed generation"))?;
+        Self::from_pinned_paths_with_options(paths, options).await
+    }
+
+    /// Resolve only the immutable `CURRENT` pointer. Opening the referenced
+    /// Lance datasets is deliberately deferred until a catalog query selects
+    /// this source.
+    pub(crate) async fn pin_uri(root: impl AsRef<str>) -> Result<StorylineTablePaths> {
+        let store = StorylineLanceStore::open_uri_unchecked(root).await?;
+        store
+            .resolve_current_table_paths()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Storyline Lance store has no committed generation"))
+    }
+
+    /// Open the exact table versions captured by [`Self::pin_uri`] without
+    /// reading `CURRENT` again.
+    pub(crate) async fn from_pinned_paths_with_options(
+        paths: StorylineTablePaths,
+        options: StorylineDataSourceOptions,
+    ) -> Result<Self> {
         let (runs, steps, tool_calls, objects) = tokio::try_join!(
             open_dataset(&paths.runs, paths.runs_version),
             open_dataset(&paths.steps, paths.steps_version),

@@ -112,9 +112,15 @@ event micro-batch 时，使用 `persisting query follow`。
 
 ```bash
 persisting chronicle serve ./store
+
+# 联合挂载；纯命名多 Dataset 查询使用 schema 限定名
+persisting chronicle serve --dataset live=./store \
+  --dataset archive=s3://trajectory-bucket/archive
 ```
 
-该命令只监听 `127.0.0.1`，提供 Run/Event/Storyline 浏览、只读 SQL、HAR/OTLP 导出、
+该命令只监听 `127.0.0.1`，提供 Dataset/Run/Event/Storyline 浏览、只读 SQL、HAR/OTLP 导出、
 judgment、revision catalog 和显式 maintain。主视图使用 Storyline 阅读投影，Inspector 始终
 回链 canonical event 的 `seq` / `event_id` / `call_id` 与原始 JSON；增长中的 Run 通过 SSE
-提示并可自动跟随。它没有认证能力，因此拒绝绑定非 loopback 地址。
+提示并可自动跟随。位置目录固定挂载为名为 `dataset` 的默认 Dataset；重复
+`--dataset NAME=URI` 可联合本地或对象存储前缀。Refresh 原子切换完整 Catalog 快照。
+它没有认证能力，因此拒绝绑定非 loopback 地址。

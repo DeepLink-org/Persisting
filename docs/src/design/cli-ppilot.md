@@ -11,7 +11,7 @@ ppilot run <SCRIPT> [OPTIONS]
 ppilot chronicle import <INPUT> <STORE> [--content-offload-threshold BYTES] [--content-preview-bytes BYTES] [--content-zstd-level LEVEL]
 ppilot chronicle export <STORE> <OUTPUT_DIR> --format openai_msg
 ppilot convert <INPUT> <OUTPUT> [--from auto|atif|actf|openai_msg|storyline|agenticmd|lance] --to atif|actf|openai_msg|storyline|agenticmd|lance
-ppilot query sql <INPUT> (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--content-read-mode full|preview] [--table NAME=FORMAT:PATH]... [--max-files N] [--max-entries N] [--max-file-bytes N] [--max-record-bytes N] [--max-concurrent-files N] [--cache-bytes N] [--cache-files N] [--batch-size N] [--memory-limit-bytes N] [--spill-path DIR] [--max-spill-bytes N] [--timeout-seconds N] [--max-output-rows N] [--query-metrics]
+ppilot query sql [<INPUT>] [--dataset <NAME=URI>]... [--dataset-file <FILE>] [--dataset-errors strict|report] (--sql <SQL> | --sql-file <FILE|->) [--source auto|lance|atif|openai_msg|actf] [--content-read-mode full|preview] [--table NAME=FORMAT:PATH]... [--max-files N] [--max-entries N] [--max-file-bytes N] [--max-record-bytes N] [--max-concurrent-files N] [--cache-bytes N] [--cache-files N] [--batch-size N] [--memory-limit-bytes N] [--spill-path DIR] [--max-spill-bytes N] [--timeout-seconds N] [--max-output-rows N] [--query-metrics]
 ppilot query point <STORE> --session-id <ID> [--step-id <N>]
 ppilot query batch <STORE> --session-id <ID[,ID]...> [--step-id <N>]
 ppilot query follow <STORAGE> --agent-id <ID> --session-id <ID> [--offset <N>] [--limit <N>] [--poll-interval-ms <MS>]
@@ -128,6 +128,20 @@ ppilot query sql ./storyline-store --content-read-mode preview \
 ppilot query sql s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
 
+# 一个查询快照挂载多个 Dataset；每个名称成为 SQL schema
+ppilot query sql \
+  --dataset current=./capture \
+  --dataset archive=s3://trajectory-bucket/archive \
+  --sql "SELECT dataset_name, runs FROM (
+           SELECT 'current' AS dataset_name, COUNT(*) AS runs FROM current.runs
+           UNION ALL
+           SELECT 'archive', COUNT(*) FROM archive.runs
+         ) ORDER BY dataset_name"
+
+# 位置参数始终是名为 dataset 的默认 Dataset，可与额外挂载共存
+ppilot query sql ./capture --dataset archive=s3://trajectory-bucket/archive \
+  --sql "SELECT COUNT(*) FROM runs"
+
 ppilot query sql ./trajectories.ndjson --sql-file analysis.sql
 cat analysis.sql | ppilot query sql ./storyline-store --sql-file -
 
@@ -164,6 +178,59 @@ ppilot query sql ./storyline-store \
 原有 `ppilot query <INPUT> --sql ...` 仍作为 SQL 兼容语法保留。`batch` 不会循环执行
 N 次点查：step 批查生成一次 `IN` 查询，完整轨迹批查则对三张表各读取一次同一 generation
 快照，并按输入 session 顺序输出每条 Storyline。
+
+#### Dataset Catalog
+
+完整的架构、发现算法、一致性与写入边界见
+[pChronicle Dataset Catalog 设计](dataset-catalog.md)。
+
+`sql` 在查询开始时为所有挂载建立一个不可变的、仅存在于本次查询中的 Catalog 快照。
+快照固定成员和版本描述，但不在构建期打开全部 Lance dataset 或下载全部远程对象。它不是
+需要维护的第二份元数据服务。每个 Dataset 名称是一个 DataFusion schema，并稳定提供
+`sources`、`runs`、`steps`、`tool_calls`、`events` 和 `trajectories`：
+
+- `sources` 每个发现源一行，包含 `_file_`、格式、类型、固定版本/ETag、本地 fingerprint、
+  大小、修改时间、状态和错误；
+- `runs`、`steps`、`tool_calls` 是统一 Storyline 投影，`trajectories` 是聚合视图；
+- `events` 只对 canonical `events.lance` 有行，其他外围格式仍可通过规范化表查询；
+- 所有数据表保留 Dataset 内相对的 `_file_`。一条轨迹的 Catalog 身份为
+  `(Dataset, _file_, run_id)`。
+
+位置参数 `<INPUT>` 始终挂载为 `dataset`，且 `runs` 等不带 schema 的旧 SQL 会解析到
+`dataset.runs` 等兼容视图。它可以与 `--dataset archive=...` 同时使用。没有位置参数时，
+单个命名挂载会成为默认 schema；两个及以上命名挂载没有隐式默认值，SQL 必须写
+`current.runs`、`archive.steps` 这样的限定名。Dataset 名称不区分大小写并规范化为小写，
+且必须匹配 `[A-Za-z_][A-Za-z0-9_]*`；重名会在发现前失败。
+
+`--dataset` 可重复，也可使用 TOML：
+
+```toml
+[datasets]
+current = "./capture"
+archive = "s3://trajectory-bucket/archive"
+```
+
+```bash
+ppilot query sql --dataset-file datasets.toml \
+  --sql "SELECT _file_, run_id FROM current.runs LIMIT 20"
+```
+
+目录/对象前缀会递归发现 Storyline `CURRENT` store、canonical `events.lance`，以及
+ATIF、OpenAI-message、ACTF 的 JSON/JSONL/NDJSON 文件；进入复合 store 后不再把其内部
+文件当成独立源。不同 JSON 文件分别检测格式，因此一个 Dataset 可以混合外围格式。
+默认 `--dataset-errors strict` 遇到快照构建期的坏候选即失败；`report` 会把这类错误写入
+`<dataset>.sources` 并跳过该候选，同时把摘要输出到 stderr。延迟到 SQL 扫描期的打开、
+远程条件读取、格式检测或解析错误始终让查询失败，不会静默漏行。
+
+本地源在发现时冻结文件成员和 identity/size/mtime；Storyline 和 events store 固定到已
+发布 generation/manifest revision；对象存储成员固定到 listing 结果，JSON object 读取使用
+version/ETag precondition。每张 Dataset 数据表由 Catalog-aware provider 提供：它先根据
+`_file_ =`、`IN`、`LIKE` 等条件裁剪 source，再按需打开命中的 Lance/file provider；一个
+source 命中时物理计划不构造 `UnionExec`，多个命中时才组合。命中的远程对象才会以有界流
+写入快照临时文件，未命中对象不会下载。业务列谓词继续下推到各原生 provider。刷新或下一
+条查询才会看到新成员。
+同一 Dataset 内多个源的内建表 join 必须包含 `_file_` 等值；跨 Dataset join 不要求两边
+的 `_file_` 相同。
 
 `--table` 可重复。支持 `csv`、`json`、`jsonl`（别名 `ndjson`）；`csv` 默认把首行
 作为列名，`json` 表示一个 JSON 对象数组，`jsonl`/`ndjson` 表示每行一个 JSON 对象。
@@ -217,7 +284,8 @@ join、sort、aggregate 等支持内存预留的执行算子；`--spill-path` �
 直接 JSON 查询面向临时分析和受控批次。ATIF projected decoder 仍必须扫描源 JSON 字节，
 但不会物化未引用字段；它不是文件内索引。超大规模、反复查询或对象存储数据应先用
 `ppilot convert ... --to lance` 导入三表 Lance，再依赖 generation 快照、列裁剪、谓词
-下推和索引；本地 manifest 不是分布式 catalog。
+下推和索引。Dataset Catalog 统一的是查询命名、发现和快照边界，不会把外围 JSON 变成
+可索引的持久元数据层。
 
 完整可执行演示见
 [`examples/pchronicle/06-query-openai-actf-directly`](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly)：

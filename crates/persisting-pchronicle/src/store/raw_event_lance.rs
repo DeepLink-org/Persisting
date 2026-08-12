@@ -271,15 +271,31 @@ async fn open_visible_segment(root_uri: &str, segment: &EventSegment) -> Result<
 pub(super) async fn open_visible_snapshot(
     root_uri: &str,
 ) -> Result<Option<(EventManifest, Vec<Dataset>)>> {
-    let Some(manifest) = raw_event_manifest::read(root_uri).await? else {
+    let Some(manifest) = pin_visible_snapshot(root_uri).await? else {
         return Ok(None);
     };
+    let datasets = open_pinned_snapshot(root_uri, &manifest).await?;
+    Ok(Some((manifest, datasets)))
+}
+
+/// Read only the small visibility manifest. The returned segment versions are
+/// the immutable catalog descriptor used for later lazy resolution.
+pub(super) async fn pin_visible_snapshot(root_uri: &str) -> Result<Option<EventManifest>> {
+    raw_event_manifest::read(root_uri).await
+}
+
+/// Open exactly the segment versions captured by
+/// [`pin_visible_snapshot`], without consulting the latest manifest again.
+pub(super) async fn open_pinned_snapshot(
+    root_uri: &str,
+    manifest: &EventManifest,
+) -> Result<Vec<Dataset>> {
     let datasets = futures::stream::iter(manifest.segments.iter().cloned())
         .map(|segment| async move { open_visible_segment(root_uri, &segment).await })
         .buffered(MAX_SEGMENT_OPEN_CONCURRENCY)
         .try_collect::<Vec<_>>()
         .await?;
-    Ok(Some((manifest, datasets)))
+    Ok(datasets)
 }
 
 #[cfg(test)]
