@@ -1,0 +1,46 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "support-001",
+  "trajectory_id": "run-support-001",
+  "agent": {
+    "name": "support-agent",
+    "version": "1.0.0",
+    "model_name": "example-model"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-08-01T09:00:00Z",
+      "source": "user",
+      "message": "My deployment is stuck in pending."
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-08-01T09:00:01Z",
+      "source": "agent",
+      "model_name": "example-model",
+      "message": "I will inspect the deployment status.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call-status-001",
+          "function_name": "deployment_status",
+          "arguments": {
+            "deployment_id": "dep-42"
+          },
+          "result": {
+            "state": "pending",
+            "reason": "capacity"
+          }
+        }
+      ]
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-08-01T09:00:02Z",
+      "source": "agent",
+      "model_name": "example-model",
+      "message": "The deployment is waiting for capacity."
+    }
+  ],
+  "notes": "Small deterministic ATIF example for pChronicle CLI tests."
+}

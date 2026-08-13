@@ -14,6 +14,9 @@
 
 ## 2. pChronicle 轨迹存储
 
+[`data/`](data/) 提供可直接传给 `pchronicle` 的 ATIF、OpenAI Messages 和
+ACTF 小型确定性 Dataset，用于手动体验和 CLI 集成测试。
+
 | 示例 | 指标 |
 |---|---|
 | [2.1 raw JSON 与 Lance 体积](pchronicle/01-atif-import-compression/) | raw JSON 与完整 pChronicle Lance store bytes |
