@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Lightweight HTTP proxy network overlay for pVisor"
+description = "Network interception and egress policy drivers for pVisor"
 
 [dependencies]
 anyhow.workspace = true
@@ -16,8 +16,10 @@ hyper-util = { workspace = true, features = ["tokio"] }
 persisting-control.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
 serde = { workspace = true, features = ["derive"] }
+smoltcp = { workspace = true, features = ["std", "log", "medium-ethernet", "proto-ipv4", "proto-dhcpv4", "proto-dns", "socket-tcp", "socket-udp", "socket-tcp-pause-synack"] }
 tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "time"] }
 tracing.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true

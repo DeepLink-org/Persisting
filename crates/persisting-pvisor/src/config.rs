@@ -284,7 +284,7 @@ pub struct OverlayNetSettings {
 impl Default for OverlayNetSettings {
     fn default() -> Self {
         Self {
-            mode: OverlayNetMode::Off,
+            mode: OverlayNetMode::Auto,
             listen: "127.0.0.1:19081".into(),
             policy: OverlayNetPolicy::Public,
             allow: Vec::new(),
@@ -299,6 +299,7 @@ impl Default for OverlayNetSettings {
 #[serde(rename_all = "kebab-case")]
 pub enum OverlayNetMode {
     #[default]
+    Auto,
     Off,
     Proxy,
 }
@@ -379,6 +380,29 @@ pub struct GatewayDriverConfig {
     pub gateway_enabled: bool,
 }
 
+/// Programmatic network-driver configuration. `Auto` selects smoltcp for a
+/// libkrun VM and otherwise remains inactive unless Gateway/proxy is requested.
+#[derive(Debug, Clone)]
+pub struct NetworkDriverConfig {
+    pub mode: OverlayNetMode,
+    pub network: persisting_overlaynet::NetworkConfig,
+}
+
+impl Default for NetworkDriverConfig {
+    fn default() -> Self {
+        Self {
+            mode: OverlayNetMode::Auto,
+            network: persisting_overlaynet::NetworkConfig::default(),
+        }
+    }
+}
+
+impl NetworkDriverConfig {
+    pub fn new(mode: OverlayNetMode, network: persisting_overlaynet::NetworkConfig) -> Self {
+        Self { mode, network }
+    }
+}
+
 impl GatewayDriverConfig {
     pub fn new(proxy: ProxyConfig) -> Self {
         Self {
@@ -409,6 +433,7 @@ impl GatewayDriverConfig {
 #[derive(Debug, Clone, Default)]
 pub struct PVisorConfig {
     pub gateway: Option<GatewayDriverConfig>,
+    pub network: NetworkDriverConfig,
     pub overlay: OverlayHint,
 }
 
@@ -420,6 +445,11 @@ impl PVisorConfig {
 
     pub fn with_overlay(mut self, overlay: OverlayHint) -> Self {
         self.overlay = overlay;
+        self
+    }
+
+    pub fn with_network(mut self, network: NetworkDriverConfig) -> Self {
+        self.network = network;
         self
     }
 }
@@ -515,6 +545,13 @@ cpus = 4
         let encoded = toml::to_string_pretty(&config).unwrap();
         let decoded: RunConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[test]
+    fn overlaynet_defaults_to_auto_for_executor_specific_selection() {
+        let config = RunConfig::default();
+        assert_eq!(config.overlaynet.mode, OverlayNetMode::Auto);
+        assert_eq!(PVisorConfig::default().network.mode, OverlayNetMode::Auto);
     }
 
     #[test]

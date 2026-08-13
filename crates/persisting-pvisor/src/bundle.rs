@@ -190,7 +190,6 @@ impl RunBundle {
                 .is_ok_and(|capability| capability == NetworkCapability::Deny);
         let network_non_bypassable = rootless_network_denied
             || seatbelt_network_denied
-            || (virtual_machine && record.network_interception.is_some())
             || record
                 .network_interception
                 .as_ref()
@@ -436,6 +435,21 @@ mod tests {
         assert_eq!(bundle.run.parent_run_id.as_deref(), Some("job-1"));
         assert_eq!(bundle.run.task_id.as_deref(), Some("task-1"));
         assert_eq!(bundle.orchestration["ppilot.job_id"], "job-1");
+
+        record.executor = Some(ExecutorDescriptor {
+            name: "libkrun-root-overlay-v1".into(),
+            kind: persisting_control::ExecutorKind::VirtualMachine,
+            isolation: IsolationKind::VirtualMachine,
+            enforces_capabilities: false,
+            supports_checkpoint: true,
+            supports_migration: false,
+        });
+        record.network_interception = Some(InterceptionProfile::explicit_proxy());
+        let cooperative_vm = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        assert!(!cooperative_vm.safety.network_non_bypassable);
+        record.network_interception = Some(InterceptionProfile::vm_smoltcp());
+        let intercepted_vm = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        assert!(intercepted_vm.safety.network_non_bypassable);
 
         record.executor = Some(ExecutorDescriptor {
             name: "local-rootless-v1".into(),

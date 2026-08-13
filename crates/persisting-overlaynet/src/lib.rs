@@ -1,16 +1,21 @@
-//! Lightweight proxy-based network overlay for pVisor.
+//! Network interception and egress policy drivers for pVisor.
 //!
-//! The current backend is deliberately limited to explicit HTTP/HTTPS proxy
-//! traffic. It does not claim transparent socket, DNS, UDP, TUN, or network
-//! namespace isolation.
+//! Host/container execution uses the cooperative HTTP proxy. libkrun VM
+//! execution uses a non-bypassable virtio-net/smoltcp IPv4 TCP and DNS data
+//! plane; unsupported protocols fail closed.
 
 mod bandwidth;
+mod egress;
 pub mod forward;
 pub mod headers;
 pub mod interception;
 pub mod policy;
 mod resolver;
 pub mod server;
+pub mod vm;
+
+pub use bandwidth::BandwidthRegistry;
+pub use egress::{EgressContext, EgressRuntime};
 
 pub use interception::{
     InterceptionDriver, InterceptionMetrics, InterceptionProfile, InterceptionSnapshot,

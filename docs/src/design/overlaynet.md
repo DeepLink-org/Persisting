@@ -1,24 +1,50 @@
 # OverlayNet transparent interception
 
-> Status: accepted design, not yet implemented. Transparent selective
-> interception remains Linux-only. macOS selective policy is still an explicit
-> proxy, while `--safe --overlaynet-deny-all` now uses Seatbelt to block IP and
-> ambient host Unix sockets.
+## Implemented VM driver
+
+libkrun VM Attempts now use `vm-smoltcp` when `[overlaynet].mode = "auto"`.
+The guest virtio-net device connects to pVisor over libkrun's length-prefixed
+UnixStream Ethernet transport. pVisor serves DHCP (`192.0.2.1` router,
+`192.0.2.2` guest), synthetic DNS (`198.18.0.0/15`, stable per Attempt), and
+IPv4 TCP. A SYN remains paused in smoltcp until hostname/IP, resolved address
+or scoped host connector alias, port, and injected Control policy all authorize
+and the host connection succeeds. TSI stays disabled, so there is no guest
+path around this data plane.
+
+Some host DNS/TUN connectors return an opaque `198.18.0.0/15` fake IP for an
+authorized hostname. The VM connector accepts that result only after the
+logical hostname and port pass policy and Control authorization; guest IP
+literals in the same range remain blocked. Because the connector hides the
+real final address, IP/CIDR policy cannot inspect the endpoint behind that
+alias. Deployments that require final-address policy should use a resolver
+that exposes concrete addresses.
+
+The MVP intentionally fails closed for general UDP, IPv6, ICMP, QUIC, inbound
+connections, virtual/link-local/multicast/broadcast destinations, and exhausted
+flow/DNS capacity. Explicit Gateway capture is an internal virtual-router route;
+all ordinary egress shares the same policy and bandwidth registry. Host and
+container transparent interception described below remains future work.
+
+> Status: the libkrun VM driver is implemented on Linux and Apple Silicon
+> macOS. The host-process transparent drivers described later in this document
+> remain an accepted design. Host/container selective policy still uses the
+> explicit proxy; host deny-all keeps its existing platform sandbox behavior.
 
 ## Problem
 
-OverlayNet's current data plane is an explicit HTTP/HTTPS proxy. pVisor injects
-proxy environment variables and, for known Agent CLIs, proxy configuration
-arguments. Coverage is therefore opt-in: any child process that ignores proxy
-environment variables — a static Go binary, a raw socket, a subprocess that
-scrubs its environment — talks to the network directly. This is why
-`RuntimeCapabilities.network` reports `false` and the host `ProcessExecutor`
-refuses `PolicyMode::Enforce` for network capabilities.
+OverlayNet's host/container data plane is an explicit HTTP/HTTPS proxy. pVisor
+injects proxy environment variables and, for known Agent CLIs, proxy
+configuration arguments. Coverage is therefore opt-in: any child process that
+ignores proxy environment variables — a static Go binary, a raw socket, a
+subprocess that scrubs its environment — talks to the network directly. This
+is why the host `ProcessExecutor` cannot claim enforcement and refuses
+`PolicyMode::Enforce` for network capabilities.
 
-The goal of this design is **complete interception with a lightweight
-footprint**: every byte the Agent process tree sends must pass through a
-pVisor-owned choke point, regardless of language runtime, linkage, or syscall
-discipline — without a VM, a root daemon, or persistent elevated privileges.
+The goal of this remaining host-driver design is **complete interception with
+a lightweight footprint**: every byte the Agent process tree sends must pass
+through a pVisor-owned choke point, regardless of language runtime, linkage,
+or syscall discipline — without a VM, a root daemon, or persistent elevated
+privileges.
 
 The key move is to relocate the interception point from *convention*
 (environment variables the child may ignore) to *a layer the child cannot
@@ -126,12 +152,13 @@ netns driver unless unsupported channels are denied.
 Transparent interception provides **enforcement** (deny / allowlist) and flow
 accounting. It deliberately does not decrypt:
 
-- Enforcement needs no MITM CA: DNS names, destination addresses, and
-  passively parsed SNI are sufficient for host-level policy.
+- Enforcement needs no MITM CA: mediated DNS names and authorized destination
+  addresses are sufficient for the VM MVP; a future host netns driver may add
+  passive SNI parsing.
 - **Capture** of LLM payloads stays on the existing explicit-proxy path:
   Gateway injects proxy configuration into known Agent CLIs and sees
-  plaintext. Non-cooperating traffic cannot leave the allowlist but is not
-  decrypted.
+  plaintext. Under a non-bypassable driver, non-cooperating traffic cannot
+  leave the allowlist but is not decrypted.
 
 Known erosion: Encrypted ClientHello will eventually hide SNI. When that
 matters, deployments choose between an opt-in MITM CA for capture-grade
@@ -140,11 +167,12 @@ constraint, not specific to either driver.
 
 ## Capability reporting
 
-`RuntimeCapabilities.network` becomes the result of the per-Attempt driver
-probe rather than a constant. Independently, every Run records an
+Per-Attempt selection determines whether a non-bypassable driver is attached;
+the runtime capability catalog separately advertises VM network support.
+Every Run records an
 `InterceptionProfile` describing driver, strength, and protocol coverage:
 
-- `enforce` when the netns or seccomp driver is active (Linux, capable host);
+- `enforce` when VM smoltcp, netns, or seccomp is active;
 - `observe` when only the explicit proxy is available.
 
 The explicit proxy foundation already emits this profile as `cooperative` and
@@ -158,23 +186,25 @@ driver is attached.
 
 ## Configuration
 
-`[overlaynet].mode` grows two values next to the existing `off` / `proxy`:
+The implemented public mode selector has three values:
 
 ```toml
 [overlaynet]
-mode = "auto"        # off | proxy | netns | seccomp | auto
+mode = "auto"        # auto | off | proxy
 policy = "allowlist"
 
 [[overlaynet.rules]]
 host = "api.openai.com"
 ports = [443]
 transports = ["tcp_tunnel"]
-# udp443 = "block"   # block (default) | allow
 ```
 
-`auto` probes `netns → seccomp → proxy`, applying the downgrade rules from
-Design A. `run.json` records the driver actually attached so `pvisor status`
-can report the real enforcement level of a finished Run.
+For a libkrun VM, `auto` selects `vm-smoltcp`; `off` leaves the VM offline and
+`proxy` is rejected because it is a host/container-only cooperative driver.
+For host/container runs, explicit network flags select `proxy`; the accepted
+`netns` and `seccomp` host drivers remain future internal candidates rather
+than exposed configuration values. `run.json` records the driver actually
+attached so `pvisor status` reports the real enforcement level.
 
 ## Non-goals
 
@@ -187,15 +217,19 @@ can report the real enforcement level of a finished Run.
 
 ## Delivery plan and acceptance gates
 
+The VM milestone described at the start of this document is complete. The
+remaining plan below applies to transparent host/container interception.
+
 0. **Explicit proxy foundation (implemented):** honest cooperative profile,
    interception counters, strict CONNECT parsing, connect-before-200,
    streaming forwarding, dynamic hop-header stripping, redirect revalidation,
    no implicit loopback or Gateway-upstream egress trust, structured
    host/IP/CIDR + port + transport rules, post-DNS address authorization, and
    pinned authorized destinations to close policy/connector DNS races.
-1. **Driver probe and selection:** introduce `off | proxy | netns | seccomp |
-   auto`; record the selected profile before child exec. `Enforce` fails closed
-   if no non-bypassable profile is available.
+1. **Driver probe and selection:** extend the implemented public
+   `off | proxy | auto` selector with internal netns/seccomp probes; record the
+   selected profile before child exec. `Enforce` fails closed if no
+   non-bypassable profile is available.
 2. **Netns TCP + DNS minimum:** spawn plumbing, tun handoff, TCP relay,
    mediated resolver, DNS/IP allowlist, process-tree and namespace escape
    tests. Do not claim enforcement until raw syscalls and environment-scrubbed

@@ -21,8 +21,8 @@ use crate::config::{
 use crate::runtime::{default_run_home, resolve_run, RunLineage};
 use crate::{
     latest_logical_checkpoint, restore_logical_checkpoint, ContainerExecutor, GatewayDriverConfig,
-    LogicalCheckpoint, OverlayHint, PVisor, ProcessExecutor, RunBundle, RunExecutor,
-    TrajectoryEventSink, VmExecutor,
+    LogicalCheckpoint, NetworkDriverConfig, OverlayHint, PVisor, ProcessExecutor, RunBundle,
+    RunExecutor, TrajectoryEventSink, VmExecutor,
 };
 
 use super::trajectory::{chronicle_sink, ChronicleWriter};
@@ -69,12 +69,11 @@ const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` us
 const EXECUTOR_HELP: &str = "Execution provider for the Agent command";
 
 #[cfg(target_os = "linux")]
-const DENY_ALL_HELP: &str = "Deny all proxy egress. With `--safe --executor host`, also create a private network namespace so direct sockets cannot bypass the denial";
+const DENY_ALL_HELP: &str = "Deny all OverlayNet egress. VM `auto` enforces this on guest TCP; with `--safe --executor host`, a private network namespace also blocks direct sockets";
 #[cfg(target_os = "macos")]
-const DENY_ALL_HELP: &str = "Deny all proxy egress. With `--safe --executor host`, Seatbelt also blocks IP and ambient host Unix sockets while retaining Run-local IPC";
+const DENY_ALL_HELP: &str = "Deny all OverlayNet egress. VM `auto` enforces this on guest TCP; with `--safe --executor host`, Seatbelt also blocks IP and ambient host Unix sockets";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-const DENY_ALL_HELP: &str =
-    "Deny all forward-proxy egress; direct sockets remain outside this cooperative rule";
+const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain outside the cooperative host/container proxy rule";
 
 #[derive(Debug, Clone, Args)]
 pub struct RunArgs {
@@ -242,20 +241,21 @@ struct OverlayFsOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct OverlayNetOverrides {
-    #[arg(long, value_enum, hide = true)]
+    /// Network driver: auto selects VM smoltcp, proxy is host/container only, off disables it.
+    #[arg(long, value_enum)]
     overlaynet_mode: Option<OverlayNetMode>,
     /// Explicit proxy listen address; supplying it enables OverlayNet.
     #[arg(long, value_name = "ADDR")]
     overlaynet_listen: Option<String>,
     #[arg(long, value_enum, hide = true)]
     overlaynet_policy: Option<OverlayNetPolicy>,
-    /// Allowed HOST[:PORT] or CIDR[:PORT]; enables the cooperative proxy.
+    /// Allowed HOST[:PORT] or CIDR[:PORT]; enables the executor's OverlayNet driver.
     #[arg(long, value_name = "TARGET")]
     overlaynet_allow: Vec<OverlayNetTargetArg>,
-    /// Denied HOST[:PORT] or CIDR[:PORT]; enables the cooperative proxy.
+    /// Denied HOST[:PORT] or CIDR[:PORT]; enables the executor's OverlayNet driver.
     #[arg(long, value_name = "TARGET")]
     overlaynet_deny: Vec<OverlayNetTargetArg>,
-    /// Aggregate bandwidth limit; enables the cooperative proxy.
+    /// Aggregate bandwidth limit; enables the executor's OverlayNet driver.
     #[arg(long, value_name = "[TARGET=]RATE")]
     overlaynet_limit: Vec<OverlayNetLimitArg>,
     #[arg(
@@ -733,6 +733,12 @@ async fn execute_config(
         eprintln!(
             "pVisor OverlayNet boundary: explicit cooperative proxy; direct sockets remain ambient"
         );
+    } else if config.run.executor == RunExecutorKind::Vm
+        && config.overlaynet.mode == OverlayNetMode::Auto
+    {
+        eprintln!(
+            "pVisor OverlayNet boundary: non-bypassable libkrun virtio-net → smoltcp IPv4 TCP/DNS"
+        );
     }
 
     let workspace = config
@@ -806,7 +812,21 @@ async fn execute_config(
         .storage(&storage)
         .trajectory_sink(sink)
         .event_sink(event_sink)
-        .executors(vec![executor]);
+        .executors(vec![executor])
+        .network(NetworkDriverConfig::new(
+            config.overlaynet.mode,
+            NetworkConfig {
+                mode: match config.overlaynet.policy {
+                    OverlayNetPolicy::Public => NetworkMode::Public,
+                    OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
+                    OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+                },
+                allowed_hosts: config.overlaynet.allow.clone(),
+                rules: config.overlaynet.rules.clone(),
+                deny_rules: config.overlaynet.deny.clone(),
+                limits: config.overlaynet.limits.clone(),
+            },
+        ));
     if let Some(proxy) = proxy {
         builder = builder.gateway(
             GatewayDriverConfig::new(proxy)
@@ -886,7 +906,11 @@ async fn execute_config(
     }
 
     if safe_profile_requested {
-        let network_boundary = if cfg!(any(target_os = "linux", target_os = "macos"))
+        let network_boundary = if config.run.executor == RunExecutorKind::Vm
+            && config.overlaynet.mode == OverlayNetMode::Auto
+        {
+            "non-bypassable smoltcp IPv4 TCP/DNS"
+        } else if cfg!(any(target_os = "linux", target_os = "macos"))
             && config.run.executor == RunExecutorKind::Host
             && config.overlaynet.policy == OverlayNetPolicy::Deny
         {
@@ -919,7 +943,7 @@ async fn execute_config(
             ),
             RunExecutorKind::Vm => {
                 eprintln!(
-                    "boundary: libkrun Linux virtual machine (KVM/HVF); host Gateway integration is disabled"
+                    "boundary: libkrun Linux virtual machine (KVM/HVF); virtio-net is owned by pVisor smoltcp and Gateway capture uses a virtual guest route"
                 )
             }
         }
@@ -979,7 +1003,8 @@ fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
         .overlayfs
         .get_or_insert_with(OverlayFsSettings::default)
         .commit = OverlayFsCommit::Manual;
-    if config.overlaynet.mode == OverlayNetMode::Off {
+    if config.overlaynet.mode == OverlayNetMode::Auto && config.run.executor != RunExecutorKind::Vm
+    {
         config.overlaynet.mode = OverlayNetMode::Proxy;
         config.overlaynet.policy = OverlayNetPolicy::Public;
     }
@@ -1008,6 +1033,7 @@ fn free_loopback_address() -> anyhow::Result<String> {
 
 fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     let explicit_executor = args.run.executor;
+    let explicit_overlaynet_mode = args.overlaynet.overlaynet_mode;
     let host_rootfs = args.vm.host_rootfs;
     if host_rootfs {
         anyhow::ensure!(
@@ -1158,7 +1184,7 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         || !args.overlaynet.overlaynet_rule.is_empty()
         || args.overlaynet.overlaynet_deny_all
         || args.overlaynet.overlaynet_listen.is_some();
-    if let Some(value) = args.overlaynet.overlaynet_mode {
+    if let Some(value) = explicit_overlaynet_mode {
         config.overlaynet.mode = value;
     }
     if let Some(value) = args.overlaynet.overlaynet_listen {
@@ -1208,14 +1234,22 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
             .map(|rule| rule.0)
             .collect();
     }
-    if enables_overlaynet {
-        config.overlaynet.mode = OverlayNetMode::Proxy;
+    if enables_overlaynet && explicit_overlaynet_mode.is_none() {
+        config.overlaynet.mode = if config.run.executor == RunExecutorKind::Vm {
+            OverlayNetMode::Auto
+        } else {
+            OverlayNetMode::Proxy
+        };
     }
 
     if let Some(value) = args.gateway.gateway_mode {
         config.gateway.mode = value;
-        if value == GatewayMode::Capture {
-            config.overlaynet.mode = OverlayNetMode::Proxy;
+        if value == GatewayMode::Capture && explicit_overlaynet_mode.is_none() {
+            config.overlaynet.mode = if config.run.executor == RunExecutorKind::Vm {
+                OverlayNetMode::Auto
+            } else {
+                OverlayNetMode::Proxy
+            };
         }
     }
     if let Some(value) = args.gateway.gateway_admin_listen {
@@ -1322,9 +1356,8 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
             );
         }
         anyhow::ensure!(
-            config.overlaynet.mode == OverlayNetMode::Off
-                && config.gateway.mode == GatewayMode::Off,
-            "libkrun execution does not yet expose the host OverlayNet/Gateway to the guest"
+            config.overlaynet.mode != OverlayNetMode::Proxy,
+            "libkrun uses the smoltcp driver; choose --overlaynet-mode auto or off"
         );
     }
     if let Some(overlayfs) = &config.overlayfs {
@@ -1341,13 +1374,15 @@ fn validate(config: &RunConfig) -> anyhow::Result<()> {
             || !config.overlaynet.deny.is_empty()
             || !config.overlaynet.limits.is_empty()
         {
-            bail!("OverlayNet policy options require --overlaynet-mode proxy");
+            bail!("OverlayNet policy options require --overlaynet-mode auto or proxy");
         }
         if config.gateway.mode == GatewayMode::Capture {
-            bail!("--gateway-mode capture requires --overlaynet-mode proxy");
+            bail!("--gateway-mode capture requires OverlayNet auto or proxy");
         }
     }
-    if config.overlaynet.mode == OverlayNetMode::Proxy {
+    if config.overlaynet.mode == OverlayNetMode::Proxy
+        || config.gateway.mode == GatewayMode::Capture
+    {
         let listen: std::net::SocketAddr = config.overlaynet.listen.parse().with_context(|| {
             format!(
                 "invalid OverlayNet listen address {}",
@@ -1522,7 +1557,14 @@ fn resolve_overlay(
 }
 
 fn resolve_proxy(config: &RunConfig) -> anyhow::Result<Option<ProxyConfig>> {
-    if config.overlaynet.mode == OverlayNetMode::Off {
+    // VM Auto uses smoltcp directly. A loopback HTTP listener is still needed
+    // only when the explicit Gateway capture sink is enabled.
+    if config.run.executor == RunExecutorKind::Vm && config.gateway.mode == GatewayMode::Off {
+        return Ok(None);
+    }
+    if config.overlaynet.mode != OverlayNetMode::Proxy
+        && config.gateway.mode != GatewayMode::Capture
+    {
         return Ok(None);
     }
     let network = NetworkConfig {
@@ -1791,7 +1833,7 @@ mod tests {
     }
 
     #[test]
-    fn vm_rejects_unimplemented_overlaynet_transport() {
+    fn vm_rejects_the_host_only_explicit_proxy_mode() {
         let temporary = tempfile::tempdir().unwrap();
         let mut config = RunConfig::default();
         config.run.command = vec!["agent".into()];
@@ -1805,7 +1847,31 @@ mod tests {
         });
         config.overlaynet.mode = OverlayNetMode::Proxy;
         let error = validate(&config).unwrap_err();
-        assert!(error.to_string().contains("does not yet expose"));
+        assert!(error.to_string().contains("smoltcp driver"));
+    }
+
+    #[test]
+    fn explicit_off_is_not_overridden_by_vm_policy_flags() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--executor",
+            "vm",
+            "--overlaynet-mode",
+            "off",
+            "--overlaynet-deny-all",
+            "--",
+            "true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        assert_eq!(config.overlaynet.mode, OverlayNetMode::Off);
+        assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Deny);
     }
 
     #[test]
@@ -1970,13 +2036,14 @@ mod tests {
     }
 
     #[test]
-    fn help_exposes_only_the_simple_network_policy_surface() {
+    fn help_exposes_driver_selection_and_the_simple_network_policy_surface() {
         let error = Cli::try_parse_from(["pvisor", "run", "--help"]).unwrap_err();
         let help = error.to_string();
         assert!(help.contains("--overlaynet-allow"));
         assert!(help.contains("--overlaynet-deny"));
         assert!(help.contains("--overlaynet-limit"));
         assert!(help.contains("--overlaynet-deny-all"));
+        assert!(help.contains("--overlaynet-mode"));
         #[cfg(target_os = "linux")]
         {
             assert!(help.to_ascii_lowercase().contains("direct sockets"));

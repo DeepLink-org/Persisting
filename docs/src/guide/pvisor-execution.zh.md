@@ -177,4 +177,6 @@ OCI image / prepared rootfs / Linux host /
   `--overlayfs-base`。
 - Linux 机器不能照搬 `/Users/...` 这样的 macOS 路径，应使用真实 Linux 路径，
   例如 `/home/reiase/workspace`。
-- VM executor 暂时不能使用 OverlayNet/Gateway，因为 host 服务还没有 guest relay。
+- VM 网络默认使用 OverlayNet `auto`：pVisor 通过 smoltcp 提供 DHCP、合成 DNS 和受策略控制的
+  IPv4 TCP；`mode = "off"` 可让 guest 彻底离线。当前不支持通用 UDP、IPv6、ICMP、QUIC
+  或入站连接。启用 Gateway capture 时，guest 通过虚拟路由器访问它，不直接暴露 host loopback。

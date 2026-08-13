@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use crate::policy::NetworkBandwidthLimit;
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct BandwidthRegistry {
+pub struct BandwidthRegistry {
     buckets: Arc<Mutex<HashMap<NetworkBandwidthLimit, Arc<BandwidthBucket>>>>,
 }
 

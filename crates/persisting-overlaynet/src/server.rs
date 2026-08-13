@@ -25,6 +25,7 @@ use crate::resolver::{authorize_target, AuthorizedTarget, TargetAuthorizationErr
 pub struct OverlayRequestContext<T> {
     pub policy: NetworkPolicy,
     pub run_id: Option<String>,
+    pub attempt_id: Option<String>,
     pub storyline_id: Option<String>,
     pub session_id: String,
     pub sink: T,
@@ -102,6 +103,11 @@ where
 
     pub fn with_interception_metrics(mut self, metrics: InterceptionMetrics) -> Self {
         self.interception_metrics = metrics;
+        self
+    }
+
+    pub fn with_bandwidth_registry(mut self, registry: BandwidthRegistry) -> Self {
+        self.bandwidth_registry = registry;
         self
     }
 }
@@ -285,7 +291,10 @@ where
         &context.policy,
         NetworkAccessRequest {
             run_id: context.run_id.clone().map(RunId),
-            attempt_id: None,
+            attempt_id: context
+                .attempt_id
+                .clone()
+                .map(persisting_control::AttemptId),
             storyline_id: context.storyline_id.clone().map(StorylineId),
             host: host.to_string(),
             port,
@@ -392,6 +401,7 @@ mod tests {
                     limits: Vec::new(),
                 })?,
                 run_id: Some("run-1".into()),
+                attempt_id: Some("attempt-1".into()),
                 storyline_id: None,
                 session_id: "session-1".into(),
                 sink: (),

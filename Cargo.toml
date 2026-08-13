@@ -126,6 +126,7 @@ serde = "1"
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.11"
+smoltcp = { version = "0.13.1", default-features = false }
 tar = "0.4"
 tempfile = "3"
 thiserror = "2"

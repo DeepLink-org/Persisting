@@ -27,7 +27,8 @@ pub(crate) fn build_router(state: GatewayState) -> Router {
         state.clone(),
         state.active_requests.clone(),
     )
-    .with_interception_metrics(state.interception_metrics.clone());
+    .with_interception_metrics(state.interception_metrics.clone())
+    .with_bandwidth_registry(state.bandwidth_registry.clone());
     persisting_overlaynet::server::build_router(server)
 }
 
@@ -50,6 +51,7 @@ impl OverlaySink for GatewayState {
         Ok(OverlayRequestContext {
             policy: NetworkPolicy::from_config(config.as_ref())?,
             run_id: route.root_session,
+            attempt_id: self.attempt_id.clone(),
             storyline_id: Some(route.session_id.clone()),
             session_id: route.session_id,
             sink: GatewayRequestContext { config, debug_on },

@@ -4,7 +4,7 @@
 //! separate control plane: CLI / pPilot talk to this API directly.
 
 use crate::agent_abi::{AgentAbiServer, AGENT_ABI_VERSION};
-use crate::config::{GatewayDriverConfig, PVisorConfig};
+use crate::config::{GatewayDriverConfig, NetworkDriverConfig, PVisorConfig};
 use crate::event::{EventSink, NoopEventSink, RunEventPublisher};
 use crate::executor::{AttemptContext, RunExecutor};
 use crate::process::ProcessExecutor;
@@ -249,12 +249,19 @@ impl PVisorBuilder {
             self.runtime = self.runtime.gateway(gateway);
         }
         self.runtime = self.runtime.overlay(config.overlay);
+        self.runtime = self.runtime.network(config.network);
         self
     }
 
     /// Enable pVisor's built-in Agent protocol Gateway driver.
     pub fn gateway(mut self, gateway: GatewayDriverConfig) -> Self {
         self.runtime = self.runtime.gateway(gateway);
+        self
+    }
+
+    /// Configure the Attempt network policy and interception-driver selection.
+    pub fn network(mut self, network: NetworkDriverConfig) -> Self {
+        self.runtime = self.runtime.network(network);
         self
     }
 
@@ -348,7 +355,24 @@ impl PVisor {
             .cloned()
             .ok_or(PVisorError::UnsupportedInvocation)?;
         let descriptor = executor.descriptor();
-        if spec.runtime.policy_mode == PolicyMode::Enforce && !descriptor.enforces_capabilities {
+        let vm_executor = descriptor.kind == persisting_control::ExecutorKind::VirtualMachine;
+        let vm_network_executor = vm_executor && executor.supports_vm_network_attachment();
+        if self.runtime.vm_network_is_requested()
+            && descriptor.isolation == persisting_control::IsolationKind::VirtualMachine
+            && !vm_network_executor
+        {
+            return Err(PVisorError::InvalidSpec(format!(
+                "executor `{}` reports virtual-machine isolation but does not support pVisor VM network attachments",
+                descriptor.name
+            )));
+        }
+        self.runtime.apply_network_capability(&mut spec);
+        if spec.runtime.policy_mode == PolicyMode::Enforce
+            && !descriptor.enforces_capabilities
+            && !(vm_network_executor
+                && self.runtime.vm_network_is_enforcing()
+                && requests_only_network_capability(&spec))
+        {
             return Err(PVisorError::UnsupportedPolicy(descriptor.name));
         }
         spec.metadata.insert(
@@ -381,8 +405,17 @@ impl PVisor {
         }
         let session = self
             .runtime
-            .prepare(&mut spec, &supervisor.initial_limits)
+            .prepare(
+                &mut spec,
+                &supervisor.initial_limits,
+                vm_network_executor,
+                &attempt_id,
+            )
             .map_err(PVisorError::Prepare)?;
+        let attachments = session
+            .as_ref()
+            .map(|session| session.attachments())
+            .unwrap_or_default();
         let checkpoint_record = session
             .as_ref()
             .and_then(|session| session.checkpoint_record());
@@ -435,7 +468,7 @@ impl PVisor {
                     "task_id": spec.task_id,
                     "executor": descriptor,
                     "policy_mode": spec.runtime.policy_mode,
-                    "capture_session": session.as_ref().map(|s| s.root_session.clone()),
+                    "capture_session": session.as_ref().map(|session| session.root_session()),
                     "agent_abi_version": AGENT_ABI_VERSION,
                 }),
             )
@@ -541,6 +574,7 @@ impl PVisor {
             status_tx,
             events.clone(),
             agent_abi.clone(),
+            attachments,
         );
         let supervisor_warning = supervisor.warning;
         let supervisor_session = supervisor.session;
@@ -697,6 +731,17 @@ impl PVisor {
             join,
         })
     }
+}
+
+fn requests_only_network_capability(spec: &RunSpec) -> bool {
+    !matches!(
+        spec.capabilities.network,
+        persisting_control::NetworkCapability::Ambient
+    ) && spec.capabilities.models.is_empty()
+        && spec.capabilities.tools.is_empty()
+        && spec.capabilities.filesystem.is_empty()
+        && spec.capabilities.secrets.is_empty()
+        && !spec.capabilities.allow_subprocess
 }
 
 fn terminal_payload(result: &RunResult) -> serde_json::Value {
@@ -1183,6 +1228,12 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(error, PVisorError::UnsupportedPolicy(_)));
+    }
+
+    #[test]
+    fn ambient_network_is_not_an_enforceable_network_capability() {
+        let spec = RunSpec::process("run-ambient", "test-agent", "echo");
+        assert!(!requests_only_network_capability(&spec));
     }
 
     #[tokio::test]

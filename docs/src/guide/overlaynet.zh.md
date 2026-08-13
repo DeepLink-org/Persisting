@@ -1,12 +1,12 @@
 # 使用 OverlayNet 控制网络访问
 
-OverlayNet 让 pVisor 对经过进程内代理的 HTTP/HTTPS 流量执行允许、拒绝和限速规则。
-它适合约束愿意使用代理的 Agent 工具，不要求先启用容器或虚拟机。
+OverlayNet 让 pVisor 对网络出口执行允许、拒绝和限速规则。Host/container Run 使用进程内
+HTTP proxy；libkrun VM Run 使用进程内 smoltcp 数据面处理 IPv4 TCP 和 DNS。
 
-!!! warning "当前安全边界"
-    OverlayNet 目前是显式的 cooperative proxy。pVisor 会向子进程注入代理环境变量，
-    但程序可以通过删除环境变量、使用 `NO_PROXY` 或直接创建 socket 绕过策略。
-    应把它视为面向 proxy-aware 客户端的出口控制，而不是不可绕过的网络沙箱。
+!!! warning "安全边界取决于 driver"
+    Host/container 的显式 proxy 是 cooperative 的，程序可通过删除 proxy 变量或直接创建
+    socket 绕过。VM `auto` 的 virtio-net 终止于 pVisor，因此对整个 guest 进程树不可绕过。
+    VM MVP 只支持 IPv4 TCP 和 DNS；UDP、IPv6、ICMP、QUIC 与入站转发都会 fail closed。
 
 ## 只允许声明的目标
 
@@ -24,13 +24,14 @@ pvisor run \
 
 ## 选择策略
 
-公开的 CLI 参数会自动推导代理模式和默认动作：
+公开的 CLI 参数会自动推导与 executor 对应的驱动模式和默认动作（host/container
+使用 `proxy`，VM 使用 `auto`/`vm-smoltcp`）：
 
 | 目标 | 参数 | 对其他代理流量的处理 |
 |---|---|---|
 | 只允许指定目标 | `--overlaynet-allow TARGET` | 拒绝 |
 | 拒绝指定目标 | `--overlaynet-deny TARGET` | 允许 |
-| 拒绝全部代理出口 | `--overlaynet-deny-all` | 拒绝 |
+| 拒绝全部被接管的出口 | `--overlaynet-deny-all` | 拒绝 |
 | 限制带宽 | `--overlaynet-limit [TARGET=]RATE` | 不改变允许/拒绝动作 |
 
 allow、deny 和 limit 参数都可以重复。显式 deny 的优先级高于 allow。
@@ -52,8 +53,9 @@ pvisor run \
 pvisor run --overlaynet-deny-all -- agent-command
 ```
 
-它会拒绝到达注入代理的 HTTP/HTTPS 请求，但不会禁用 direct socket，也不会阻止本地
-Gateway route。
+对于 host/container Run，它会拒绝到达注入代理的 HTTP/HTTPS 请求，但不会禁用 direct
+socket，也不会阻止本地 Gateway route。对于 VM `auto`，同一策略会拒绝普通 guest TCP
+出口；启用 capture 时，内部 Gateway route 仍可用。
 
 `--overlaynet-deny-all` 不支持再叠加 allow 例外。如果目标是“默认全部拒绝，只允许少数
 地址”，不要先写 deny-all，直接声明允许的目标即可：
@@ -91,7 +93,7 @@ pvisor run \
 command = ["agent-command"]
 
 [overlaynet]
-mode = "proxy"
+mode = "auto" # VM 使用 smoltcp；host/container 使用 "proxy"
 policy = "allowlist"
 
 [[overlaynet.rules]]
@@ -122,26 +124,33 @@ hostname 规则默认拒绝解析到私网或 loopback 的地址。有意访问�
 明确的 IP/CIDR 规则；也可以在范围足够窄的 hostname 规则上设置
 `allow_private_ips = true`。link-local 等其他特殊地址段仍需显式 IP 或 CIDR 规则。
 
+如果 host 使用 DNS/TUN fake-IP connector，VM 出站只会在逻辑 hostname 与 port 已通过
+授权后，把 `198.18/15` 结果视为不透明的 connector alias；guest 不能把该网段作为 IP
+literal 直接连接。connector 不暴露最终真实地址，因此需要对 hostname 解析结果执行
+IP/CIDR 策略时，应使用能返回具体地址的 resolver。
+
 ## 理解哪些客户端会被控制
 
-pVisor 会向 Agent 进程注入 `HTTP_PROXY`、`HTTPS_PROXY`、对应的小写形式和
-`ALL_PROXY`。遵守这些设置的 HTTP 客户端会经过 OverlayNet；代理支持普通 HTTP 转发
-和 HTTPS `CONNECT` 隧道。
+对于 host/container Run，pVisor 会向 Agent 进程注入 `HTTP_PROXY`、`HTTPS_PROXY`、
+对应的小写形式和 `ALL_PROXY`。遵守这些设置的 HTTP 客户端会经过 OverlayNet；代理
+支持普通 HTTP 转发和 HTTPS `CONNECT` 隧道。
 
-以下路径不在当前策略边界内：
+以下路径不在这个 cooperative host/container 策略边界内：
 
 - 客户端忽略或删除代理环境变量；
 - 目标被加入 `NO_PROXY`；
 - 程序直接创建 socket；
 - 不经过 HTTP proxy 的 DNS 和 UDP 流量。
 
-因此 cooperative-proxy Run 会报告 `safety.network_non_bypassable = false`。如果必须
+因此 host/container cooperative-proxy Run 会报告
+`safety.network_non_bypassable = false`。如果必须
 彻底阻止直接联网，使用 `pvisor run --safe --overlaynet-deny-all`：Linux 会创建私有
 network namespace；macOS 会用 Seatbelt 阻断 IP 与宿主 ambient Unix socket，只保留精确的
 Agent ABI 和 Run 私有目录内 IPC。Container Run 也可以使用 `--container-network none`。
-两种本地 host 路径上的 selective allow/deny 仍是协作式。当前 VM executor 还不能使用
-宿主机的 OverlayNet endpoint；container executor 使用进程内代理时要求
-`--container-network host`。
+两种本地 host 路径上的 selective allow/deny 仍是协作式。VM executor 默认使用
+`[overlaynet] mode = "auto"`，由 smoltcp 提供 DHCP、合成 DNS 与受策略控制的 IPv4 TCP；
+`mode = "off"` 会让 VM 离线。Gateway capture 通过 guest 虚拟路由器暴露；container
+executor 使用进程内 proxy 时仍要求 `--container-network host`。
 
 ## 检查运行结果
 
@@ -159,7 +168,9 @@ pvisor review --json last | jq '{policy: .network.policy,
      non_bypassable: .safety.network_non_bypassable}'
 ```
 
-这些 counter 只描述真正到达 OverlayNet 的请求，无法统计绕过代理的流量。
+这些 counter 描述由当前 OverlayNet driver 处理的流量。它们无法统计绕过 cooperative
+host/container proxy 的流量；VM smoltcp profile 在已支持的 TCP/DNS 数据面之外没有
+guest 网络旁路。
 
 ## 常见问题
 
@@ -169,7 +180,7 @@ pvisor review --json last | jq '{policy: .network.policy,
 | 使用 `--overlaynet-deny-all` 后请求仍然成功 | 确认客户端遵守注入的 proxy，且没有使用 `NO_PROXY` 或 direct socket |
 | pVisor 无法绑定代理端口 | 使用 `--overlaynet-listen 127.0.0.1:19082` 选择一个空闲的非零端口 |
 | 容器无法连接代理 | 使用 `--container-network host` |
-| KVM 配置被拒绝 | 宿主机 OverlayNet 目前还没有暴露给 guest |
+| VM 的 `proxy` 模式被拒绝 | 使用 `auto` 选择 smoltcp，或使用 `off` 让 guest 离线 |
 
 可以运行
 [`examples/pvisor/03-network-isolation`](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation)
