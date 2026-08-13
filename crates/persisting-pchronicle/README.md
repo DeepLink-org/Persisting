@@ -4,27 +4,12 @@
 
 pChronicle 统一拥有轨迹的逻辑格式、物理 schema、落盘、读取、格式转换、检索和可重建视图。其它 crate 可以生产或消费轨迹，但不应再实现自己的轨迹格式或持久化后端。
 
-## 本地 Web UI
-
-```bash
-persisting chronicle serve ./store
-# http://127.0.0.1:9877
-
-# 联合浏览本地与对象存储；命名挂载默认只读
-persisting chronicle serve \
-  --dataset current=./store \
-  --dataset archive=s3://trajectory-bucket/archive
-
-# 位置参数保持兼容，并固定成为名为 dataset 的默认/可写 Dataset
-persisting chronicle serve ./store \
-  --dataset archive=s3://trajectory-bucket/archive
-```
-
-服务只允许绑定 loopback，首版不提供公网认证。UI 和 `/api/v1` 提供 Run/Event/Storyline
-浏览、只读 DataFusion SQL、HAR/OTLP 导出、judgment、revision lineage 与显式维护；浏览器
-不会重发捕获到的 HTTP 请求。命名挂载需要用 `--writable-dataset NAME` 才能执行 judgment
-或 maintenance；只有 canonical `events.lance` 源可写。UI 的 Refresh 通过
-`POST /api/v1/catalog` 完整构建新快照后原子切换，失败时继续提供旧快照。
+The Core crate has no HTTP or Web UI dependency. The standalone command lives
+in [`persisting-pchronicle-cli`](../persisting-pchronicle-cli/README.md), the
+read-only HTTP boundary in `persisting-pchronicle-server`, and the Dioxus
+frontend in `pchronicle-web`. See the
+[`pchronicle` command reference](../../docs/src/design/cli-pchronicle.md) for
+current product commands.
 
 ## 组件边界
 
@@ -33,7 +18,10 @@ persisting chronicle serve ./store \
 | `persisting-pchronicle` | `EventRecord` / `EventRow`；AgenticMD frontmatter 与文档 I/O；Lance 后端；目录布局与分区发现；轨迹 service；回放、统计、物化、judgment、格式转换、Search 和 ATIF 查询 | HTTP 代理、Agent 生命周期 |
 | `persisting-pvisor` | 管理 Agent Run/Attempt，并装配 Gateway 等运行时驱动 | 定义轨迹格式、物理 schema 或历史查询语义 |
 | `persisting-gateway` | 作为 pVisor 内部驱动观察 HTTP/LLM 生命周期，产出 `EventRecord` | 成为一级 Run 管理器或定义通用存储后端 |
-| `persisting-cli` | 参数解析、输入适配和输出展示 | 解析或持久化轨迹格式 |
+| `persisting-pchronicle-cli` | 独立 `pchronicle` 参数解析、输入适配和输出展示 | 定义格式、运行 HTTP Server 或实现 Web UI |
+| `persisting-pchronicle-server` | 静态 Warehouse 的只读 HTTP API、资源限制与嵌入式 Web assets | 轨迹格式、写入 API、认证与公网部署 |
+| `pchronicle-web` | 独立 Dioxus Web 前端，通过 HTTP API 读取数据 | Rust Core、存储、认证或服务端路由 |
+| `persisting-cli` | Capture/history/eval 与兼容 Web 工作台的参数解析和展示 | 定义或持久化轨迹格式 |
 
 正式边界及迁移规则见 [RFC-0003: pChronicle Ownership](../../docs/src/rfcs/0003-pchronicle-ownership.md)。
 

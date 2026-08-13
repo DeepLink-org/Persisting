@@ -600,6 +600,16 @@ cat ./results/ready.ndjson</code></pre>
             </div>
           </div>
         </div>
+        <div class="quickstart-step">
+          <div class="step-number">4</div>
+          <div class="step-content">
+            <h3>{% if config.theme.language == "zh" %}查询轨迹 Dataset{% else %}Query a trajectory Dataset{% endif %}</h3>
+            <div class="code-block">
+              <pre><code class="language-bash">pchronicle analysis overview examples/data/atif
+pchronicle query examples/data/atif "SELECT * FROM dataset.runs"</code></pre>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -684,8 +694,7 @@ cat ./results/ready.ndjson</code></pre>
           Persisting 把一次不稳定、带外部副作用的 Agent workload 封装成一个可执行、可中断、
           可检查、可追溯、可批量编排的 Run。pVisor 负责单个 Run 的生命周期与隔离边界，
           pPilot 负责批量调度、恢复与 fencing，pChronicle 保存 canonical 事件历史。
-          隔离的强度如实声明：默认的 host executor 提供的是进程级控制面和事务工作区，
-          需要更强边界时再注入 Docker/Podman 或 KVM。
+          隔离的强度按平台与 executor 如实记录在 Run Bundle；详细保证以 pVisor 隔离文档为准。
         </p>
         <a href="guide/" class="md-button md-button--primary">了解更多 →</a>
         {% else %}
@@ -695,9 +704,8 @@ cat ./results/ready.ndjson</code></pre>
           that can be executed, interrupted, reviewed, traced, and orchestrated at scale.
           pVisor owns one Run's lifecycle and placement, pPilot schedules and recovers many,
           and pChronicle keeps the canonical event history. Isolation strength is reported
-          honestly: the default host executor is a process-level control plane with a
-          transactional workspace, and Docker/Podman or KVM are injected when a stronger
-          boundary is needed.
+          honestly per platform and executor in the Run Bundle; consult the pVisor isolation
+          documentation for the exact guarantees.
         </p>
         <a href="guide/" class="md-button md-button--primary">Learn More →</a>
         {% endif %}
@@ -717,9 +725,8 @@ cat ./results/ready.ndjson</code></pre>
             写入暂存到 upper，并启用显式网络代理。Run Bundle 记录文件变更、网络拦截与安全警告。
           </p>
           <p>
-            默认的 host executor 不会阻止 Agent 访问项目目录以外的宿主路径，也不会阻止直接 socket
-            绕过代理——Run Bundle 会如实记录这些边界。需要更强隔离时，同样的控制面可以注入
-            Docker/Podman 或 KVM guest。
+            Host、容器和 VM executor 的读写与网络边界不同。Run Bundle 分别记录实际安装的
+            文件系统和网络约束；精确的平台保证与已知缺口见 pVisor 隔离文档。
           </p>
           <a href="design/cli-pvisor/" class="md-button">了解更多 →</a>
           {% else %}
@@ -730,10 +737,9 @@ cat ./results/ready.ndjson</code></pre>
             The Run Bundle records filesystem changes, network interception, and safety warnings.
           </p>
           <p>
-            The default host executor does not stop the Agent from touching host paths outside the
-            project, and direct sockets can bypass the proxy—the Run Bundle says so explicitly.
-            When a stronger boundary is needed, the same control plane runs inside Docker/Podman or
-            a KVM guest.
+            Host, container, and VM executors provide different filesystem and network boundaries.
+            The Run Bundle records the controls actually installed; see the pVisor isolation
+            documentation for platform-specific guarantees and known gaps.
           </p>
           <a href="design/cli-pvisor/" class="md-button">Learn More →</a>
           {% endif %}

@@ -80,19 +80,27 @@ cat ./results/ready.ndjson
 查询仓库自带的 ATIF 轨迹 fixture：
 
 ```bash
-ppilot query crates/persisting-pchronicle/tests/fixtures/atif \
-  --sql 'SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
+pchronicle query examples/data/atif \
+  'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source ORDER BY source'
 ```
 
-输入可以是 ATIF JSON、JSONL 或目录，也可以是 Lance Storyline store（本地目录或
-`s3://` URI）；两条路径暴露相同的 `runs` / `steps` / `tool_calls` 表。pChronicle 示例会
-用同一批 fixture 构建 Lance store，并比较查询结果：
+`pchronicle query` 接受本地 Dataset 目录或 S3 URI，发现其中的 ATIF、ACTF、OpenAI
+Messages、canonical events 与 Storyline Source，并暴露 `runs` / `steps` /
+`tool_calls` 等规范化表。还可以查看发现结果和内置概览：
+
+```bash
+pchronicle ls examples/data/atif
+pchronicle analysis overview examples/data/atif
+```
+
+pChronicle 示例会用 fixture 构建 Lance store 并比较查询结果；其中部分 benchmark
+脚本会有意覆盖较早的 pPilot 兼容命令，作为回归契约的一部分：
 
 ```bash
 just examples-pchronicle
 ```
 
-## 其他能力
+## 其他独立能力
 
 - [Tensor Memory（实验性）](guide/tensor-memory.md) — 张量下标与分层存储
 - [Queue](guide/queue.md) — 持久事件流
@@ -100,6 +108,6 @@ just examples-pchronicle
 
 ## 下一步
 
-- [安装指南](installation.md) — 三个安装物详解
+- [安装指南](installation.md) — wheel、nightly 与源码安装方式
 - [选择能力](guide/index.md) — 按目标选择工作流
 - [设计文档](design/index.md) — 架构与内部实现

@@ -1,8 +1,10 @@
 # `ppilot` — Run 编排与轨迹分析 CLI
 
-统一入口是 `persisting batch` 与 `persisting query`。`ppilot` 仍作为组件级入口保留，
-用于独立部署、调试和自检。pPilot 负责批量 Run 编排与查询交互；轨迹格式、
-Lance/ATIF datasource 与 SQL 执行继续由 pChronicle library 提供。
+`ppilot` 是批量 Run 编排、分片分析和分布式处理的组件入口；`persisting batch` 是
+`ppilot run` 的便利转发。`ppilot query/chronicle/convert` 与 `persisting query` 继续
+服务现有查询和格式转换工作流；新的 Dataset 目录、SQL、内置分析与格式交换应优先使用
+[`pchronicle`](cli-pchronicle.md)。轨迹格式、Lance/ATIF datasource 与 SQL 执行仍由
+pChronicle library 提供。
 
 ## 命令
 
@@ -21,7 +23,7 @@ ppilot process <INPUT> (--script <FILE> | --count <METRIC>) [--mappers N] [--out
 ppilot self-test [OPTIONS]
 ```
 
-`run` 和 `query` 分别等价于：
+以下两个 `persisting` 命令分别转发到 pPilot：
 
 ```bash
 persisting batch <SCRIPT> [OPTIONS]

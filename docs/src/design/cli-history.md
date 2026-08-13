@@ -1,7 +1,9 @@
-# `persisting history` / `eval` / `gateway` — 命令参考
+# Capture, evaluation, and compatibility commands
 
-轨迹命令按职责拆为三个稳定入口：`history` 负责数据生命周期，`eval` 负责评测，
-`gateway` 负责长期采集服务。pChronicle 只提供底层存储和查询能力。
+本文记录仍在使用的 `persisting history`、`eval`、`gateway` 与 `chronicle`
+兼容入口。它们面向 canonical capture event、AgenticMD、judgment 和长期 Gateway，
+不是 Dataset 目录、SQL、分析与格式交换的主参考；后者见
+[`pchronicle` 命令参考](cli-pchronicle.md)。
 
 单 Run 实时采集由 [`persisting execute`](cli-pvisor.md) 负责。
 
@@ -108,7 +110,7 @@ event micro-batch 时，使用 `persisting query follow`。
 
 实时查询统一使用 pPilot 所有的 `persisting query follow` 入口。
 
-## 6. 本地 Web 分析
+## 6. 兼容本地 Web 工作台
 
 ```bash
 persisting chronicle serve ./store
@@ -118,9 +120,10 @@ persisting chronicle serve --dataset live=./store \
   --dataset archive=s3://trajectory-bucket/archive
 ```
 
-该命令只监听 `127.0.0.1`，提供 Dataset/Run/Event/Storyline 浏览、只读 SQL、HAR/OTLP 导出、
-judgment、revision catalog 和显式 maintain。主视图使用 Storyline 阅读投影，Inspector 始终
-回链 canonical event 的 `seq` / `event_id` / `call_id` 与原始 JSON；增长中的 Run 通过 SSE
-提示并可自动跟随。位置目录固定挂载为名为 `dataset` 的默认 Dataset；重复
+该兼容命令只监听 loopback，提供 Dataset/Run/Event/Storyline 浏览、只读 SQL、导出、
+judgment、revision catalog 和显式 maintain。位置目录固定挂载为名为 `dataset` 的默认 Dataset；重复
 `--dataset NAME=URI` 可联合本地或对象存储前缀。Refresh 原子切换完整 Catalog 快照。
 它没有认证能力，因此拒绝绑定非 loopback 地址。
+
+新建只读静态 Warehouse 应使用 `pchronicle serve --config warehouse.toml`。该入口与
+兼容工作台的 flags、写能力和 API 不相同。

@@ -7,7 +7,7 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 
 ```text
 pvisor
-├── run       (default) execute one Agent Run
+├── run                 execute one Agent Run
 ├── env                 manage durable reusable environments
 ├── status              aggregate Run, filesystem, and network state
 ├── inspect             open a read-only Run view

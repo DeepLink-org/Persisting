@@ -1,7 +1,8 @@
 # pChronicle 轨迹存储
 
 > 当前实现说明。规范性所有权见 [RFC-0003](../rfcs/0003-pchronicle-ownership.md)，
-> 命令见 [`persisting history` / `eval` / `gateway`](cli-history.md)。
+> Dataset 命令见 [`pchronicle`](cli-pchronicle.md)；canonical capture event、
+> AgenticMD 与评测命令见[兼容命令参考](cli-history.md)。
 
 ## 1. 定位
 
@@ -160,3 +161,4 @@ OpenAI msg ┘
 - [Gateway 架构](gateway.md)
 - [pVisor 命令](cli-pvisor.md)
 - [History / Eval / Gateway 命令](cli-history.md)
+- [`pchronicle` Dataset 命令](cli-pchronicle.md)

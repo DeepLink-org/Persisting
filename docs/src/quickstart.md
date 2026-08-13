@@ -95,20 +95,29 @@ From a Persisting source checkout, query the bundled ATIF trajectory fixtures
 directly:
 
 ```bash
-ppilot query crates/persisting-pchronicle/tests/fixtures/atif \
-  --sql 'SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
+pchronicle query examples/data/atif \
+  'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source ORDER BY source'
 ```
 
-`ppilot query` accepts ATIF JSON, JSONL, or directories as well as local and
-`s3://` Lance Storyline stores. Both sources expose the `runs`, `steps`, and
-`tool_calls` tables. The pChronicle examples build a Lance store from those
-same fixtures and compare the query results:
+`pchronicle query` accepts local Dataset directories and S3 URIs, discovers
+supported ATIF, ACTF, OpenAI Messages, canonical events, and Storyline Sources,
+and exposes normalized tables such as `runs`, `steps`, and `tool_calls`.
+Try the built-in overview and inspect the discovered Sources:
+
+```bash
+pchronicle ls examples/data/atif
+pchronicle analysis overview examples/data/atif
+```
+
+The pChronicle examples build Lance stores from fixtures and compare query
+results. Some benchmark scripts deliberately exercise the older pPilot
+compatibility commands as part of their regression contract:
 
 ```bash
 just examples-pchronicle
 ```
 
-## Other capabilities
+## Other, independent capabilities
 
 - [Tensor Memory (experimental)](guide/tensor-memory.md) — tensor subscripts and tiered storage
 - [Queue](guide/queue.md) — persistent event streams
@@ -116,6 +125,6 @@ just examples-pchronicle
 
 ## Next steps
 
-- [Installation](installation.md) — details for all three distributions
+- [Installation](installation.md) — wheel, nightly, and source installation details
 - [Choose a Capability](guide/index.md) — find the workflow for your goal
 - [Architecture & Internals](design/index.md) — understand the implementation

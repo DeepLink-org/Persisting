@@ -56,11 +56,13 @@ cd Persisting
 pip install -e ".[lance]"
 ```
 
-## Unified CLI
+## CLI component set
 
-The CLI bundled in the wheel is a matched component set. `persisting` delegates execution and
-environment commands to `pvisor`, batch and query commands to `ppilot`, and
-calls pChronicle directly for History and Eval.
+The wheel bundles a matched component set. Use `pvisor` for one Run and
+environments, `ppilot` for batch orchestration, and `pchronicle` for Dataset
+catalog, SQL, analysis, exchange, and read-only serving. `persisting` remains a
+convenience and compatibility entry point for execution, capture history, and
+evaluation workflows.
 
 ### Cargo installation from source
 
@@ -106,6 +108,7 @@ print(persisting.__version__)
 ```bash
 pvisor --version
 ppilot --help
+pchronicle --help
 ```
 
 ## Dependencies

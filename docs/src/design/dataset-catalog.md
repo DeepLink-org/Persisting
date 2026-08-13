@@ -1,6 +1,7 @@
 # pChronicle Dataset Catalog 设计
 
-> 当前实现说明。命令参数见 [pPilot 命令参考](cli-ppilot.md)，轨迹物理格式见
+> 当前实现说明。新的 Dataset 命令参数见 [`pchronicle` 命令参考](cli-pchronicle.md)；
+> pPilot 的兼容/高级查询参数见 [pPilot 命令参考](cli-ppilot.md)。轨迹物理格式见
 > [pChronicle 轨迹存储](trajectory.md) 与
 > [Storyline 三表 Lance](storyline-lance.md)。
 

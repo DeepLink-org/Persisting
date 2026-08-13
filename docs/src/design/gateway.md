@@ -372,7 +372,7 @@ Gateway 在 **Dialogue** 级别下，从客户端原始 HTTP body（而非 upstr
 纯图无文字的用户 turn **仍计为 1 轮**（修复「有图无文 → stats 0 turns」）。  
 `capture_level = full` 时完整 JSON 仍在 `payload.body`，但 Markdown 物化**仍只展示占位符**，不嵌入像素数据。
 
-**后续（规划）**：sidecar 资产目录 `{run}/assets/{call_id}/…` + payload 引用；`history materialize` 可输出 `![…](assets/…)`。见本页 11 节演进方向。
+**后续（规划）**：sidecar 资产目录 `{run}/assets/{call_id}/…` + payload 引用；`history materialize` 可输出指向 `assets/…` 的 Markdown 图片。见本页 11 节演进方向。
 
 协议回归：`crates/persisting-gateway/tests/ag_fixture_tests.rs` + `tests/support/ag_capture_cases.rs`（agentgateway fixture 矩阵）。
 

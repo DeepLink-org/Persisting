@@ -53,10 +53,11 @@ cd Persisting
 pip install -e ".[lance]"
 ```
 
-## 统一 CLI
+## CLI 组件集
 
-wheel 内的 CLI 是匹配的组件集：`persisting` 把执行/环境命令转发给 `pvisor`，批量/查询命令转发给
-`ppilot`，history/eval 直接调用 pChronicle。
+wheel 内是一组版本匹配的 CLI 组件：单 Run 与环境使用 `pvisor`，批量编排使用
+`ppilot`，Dataset 目录、SQL、分析、格式交换与只读服务使用 `pchronicle`。
+`persisting` 继续作为执行、捕获历史与评测工作流的便利/兼容入口。
 
 ### 通过 Cargo 从源码安装
 
@@ -98,6 +99,7 @@ print(persisting.__version__)
 ```bash
 pvisor --version
 ppilot --help
+pchronicle --help
 ```
 
 ## 依赖

@@ -2,9 +2,9 @@
 
 仓库里的 [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
 按产品问题组织。每个 `run.sh` 都是平铺直叙的产品命令：先清理 `.work/`，再运行
-pVisor 或 pPilot，最后直接打印生成的文件、Bundle、报告或查询结果。pChronicle 示例
-统一通过 `ppilot chronicle` / `ppilot convert` / `ppilot query` 进入，不调用内部 Rust
-example。
+pVisor 或 pPilot，最后直接打印生成的文件、Bundle、报告或查询结果。pChronicle benchmark
+早于独立 CLI，特意保留 `ppilot chronicle` / `ppilot convert` / `ppilot query`，用于
+兼容回归覆盖。新的 Dataset 工作流请使用 [`pchronicle` 命令](../design/cli-pchronicle.md)。
 
 ## 运行方式
 
@@ -30,8 +30,9 @@ macOS 的 macFUSE 或 Linux 的 FUSE3。
 | [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | 三条平铺命令验证 allowlist、deny-all 和 direct socket 绕过边界 | [OverlayNet 指南](overlaynet.md) |
 | [04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control) | Gateway 路由并捕获两次 OpenAI-compatible 调用 | [Capture 指南](capture.md) |
 
-这里的"轻量级隔离"特指事务工作区和 cooperative proxy 覆盖的数据面；Run Bundle 会
-如实报告 Host executor 仍可访问工作区外路径、直接 socket 仍可绕过显式代理。
+这里的“轻量级隔离”特指事务工作区和 cooperative public proxy 覆盖的数据面；直接
+socket 可以绕过该代理。Host 文件系统与 deny-all 网络约束因平台而异，实际边界以
+Run Bundle 和 pVisor 隔离文档为准。
 [04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control)
 自带 mock OpenAI-compatible 模型和双轮 Agent，[Capture 指南](capture.md) 的本地
 walkthrough 就是基于它。

@@ -3,9 +3,10 @@
 The [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
 directory is organized around product questions. Each `run.sh` is deliberately
 linear: it clears `.work/`, runs pVisor or pPilot commands, and prints the
-generated files, bundles, reports, or query results. The pChronicle examples
-enter through `ppilot chronicle`, `ppilot convert`, and `ppilot query`, not
-internal Rust examples.
+generated files, bundles, reports, or query results. The pChronicle benchmark
+suite predates the standalone CLI and intentionally retains `ppilot chronicle`,
+`ppilot convert`, and `ppilot query` as compatibility regression coverage.
+For new Dataset workflows, use the [`pchronicle` command](../design/cli-pchronicle.md).
 
 ## Run the examples
 
@@ -34,10 +35,10 @@ macFUSE on macOS or FUSE3 on Linux.
 | [04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control) | Gateway routes and captures two OpenAI-compatible calls | [Capture guide](capture.md) |
 
 Here, lightweight isolation covers the transactional workspace and the data
-plane visible to the cooperative proxy. The Run Bundle reports that the Host
-executor can still access paths outside the workspace and that direct sockets
-can bypass the explicit proxy. The Gateway example includes its own mock model
-and two-turn Agent.
+plane visible to the cooperative public proxy. Direct sockets can bypass that
+proxy. Host filesystem and deny-all network enforcement vary by platform; the
+Run Bundle and pVisor isolation documentation describe the effective boundary.
+The Gateway example includes its own mock model and two-turn Agent.
 
 ## pPilot: batch orchestration and trajectory processing
 
@@ -71,6 +72,7 @@ query, and machine.
 | [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | Point-step, full-trajectory, CLI batching gain, and live canonical-event follow latency | [History CLI](../design/cli-history.md) |
 | [05-format-roundtrip](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/05-format-roundtrip) | pPilot imports OpenAI/ACTF into three-table Lance and verifies lossless JSON-model recovery | [pPilot CLI](../design/cli-ppilot.md) |
 | [06-query-openai-actf-directly](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly) | Direct OpenAI/ACTF directory SQL with `_file_ LIKE`, plus proof that Lance schemas stay unchanged | [pPilot CLI](../design/cli-ppilot.md) |
+| [07-objects-lance-blob-offload](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/07-objects-lance-blob-offload) | Inline/offloaded storage and query behavior for shared `objects.lance` blobs | [Trajectory storage](../design/trajectory.md) |
 
 ## Prerequisites
 

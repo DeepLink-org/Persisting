@@ -25,6 +25,7 @@ ACTF 小型确定性 Dataset，用于手动体验和 CLI 集成测试。
 | [2.4 点查、批查与 live follow](pchronicle/04-point-batch-live-query/) | pChronicle API 延迟、CLI batching gain 和运行中 follow |
 | [2.5 外围格式往返](pchronicle/05-format-roundtrip/) | pPilot 导入/恢复 OpenAI 与 ACTF 后 JSON 数据模型相等 |
 | [2.6 直接查询 OpenAI/ACTF](pchronicle/06-query-openai-actf-directly/) | `_file_` 相对路径、`LIKE` 筛选与 Lance schema 隔离 |
+| [2.7 大字段 Blob 外置](pchronicle/07-objects-lance-blob-offload/) | inline/offload 体积、压缩与查询开销 |
 
 ## 3. pPilot 批量编排与轨迹处理
 

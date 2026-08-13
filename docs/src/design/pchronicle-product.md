@@ -12,6 +12,18 @@
 索引算法由后续详细设计规定。当前仓库中的 `ppilot`、`persisting chronicle` 和本地 Web 接口
 不等同于本文的完整目标形态。
 
+当前可用命令以 [`pchronicle` 命令参考](cli-pchronicle.md)和二进制 `--help` 为准。
+截至本文更新时，核心差异如下：
+
+| 本文目标 | 当前实现 |
+|---|---|
+| `ls/status/query/analysis/find/import/export/serve` | 已实现并有独立 CLI 合同测试 |
+| lexical `search` | 命令名已预留，执行会明确返回 not implemented |
+| `maintain` | 命令名已预留，执行会明确返回 not implemented |
+| Query 的 Parquet/Arrow 输出、recipe | 未实现；当前输出为 table/JSONL/CSV，内置汇总使用 `analysis` |
+| Search cache、服务端 FTS、可信代理/公网部署 | 未实现；当前 `serve` 强制 loopback 且无认证 |
+| Import/Export conversion report 与部分目标 flags | 尚未形成本文描述的完整外部契约；以命令参考为准 |
+
 ## 1. 产品定位与边界
 
 pChronicle 是 path-first 的 Agent 轨迹数据层：它从本地目录和对象存储发现轨迹，将不同交换
@@ -153,7 +165,8 @@ Gateway/native writer 写入 append-only events，采用 at-least-once 语义；
 
 ## 3. CLI 产品面
 
-独立 `pchronicle` 是目标入口。数据命令可显式接收 Dataset URI；配置本地默认 Warehouse 后，
+独立 `pchronicle` 是目标入口。以下各节同时包含已实现语法和目标语法；当前支持范围以本节前的
+差异表及[命令参考](cli-pchronicle.md)为准。数据命令可显式接收 Dataset URI；配置本地默认 Warehouse 后，
 支持该形态的命令可以省略 URI。TTY 默认输出人读表格，结构化输出使用 `--format`。stdout
 只承载主结果，进度、Snapshot 和警告写入 stderr。
 
