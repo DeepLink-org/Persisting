@@ -1,14 +1,17 @@
 use std::fmt::Write as _;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_pchronicle::{
     CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus,
-    DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions, DEFAULT_DATASET_NAME,
+    ChronicleQueryEngine, DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions,
+    DEFAULT_DATASET_NAME,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 #[derive(Debug, Parser)]
@@ -28,7 +31,7 @@ enum Command {
     #[command(visible_alias = "list")]
     Ls(ListArgs),
     /// Show Dataset health and aggregate statistics.
-    Status(DatasetArgs),
+    Status(StatusArgs),
     /// Execute read-only SQL over one or more Datasets.
     Query(QueryArgs),
     /// Locate a Run, Trajectory, or Step by its Source-local ID.
@@ -76,6 +79,33 @@ struct ListArgs {
 struct DatasetArgs {
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: String,
+}
+
+#[derive(Debug, Args)]
+struct StatusArgs {
+    /// Local path or object-store URI of the Dataset.
+    #[arg(value_name = "DATASET_URI")]
+    dataset_uri: String,
+
+    /// Output format. Auto uses a table on a terminal and JSON when piped.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
+
+    /// Fail on a bad Source, or report partial counts and continue.
+    #[arg(long, value_enum, default_value_t = ErrorMode::Report)]
+    errors: ErrorMode,
+
+    /// Maximum number of trajectory Sources to discover.
+    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    max_files: usize,
+
+    /// Maximum number of filesystem entries or objects to inspect.
+    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    max_entries: usize,
+
+    /// Maximum time for trajectory count queries.
+    #[arg(long, default_value_t = 30)]
+    timeout_seconds: u64,
 }
 
 #[derive(Debug, Args)]
@@ -215,6 +245,51 @@ struct SourceResponse {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+struct StatusCounts {
+    runs: u64,
+    trajectories: u64,
+    steps: u64,
+    tool_calls: u64,
+    events: u64,
+}
+
+impl std::ops::AddAssign for StatusCounts {
+    fn add_assign(&mut self, other: Self) {
+        self.runs = self.runs.saturating_add(other.runs);
+        self.trajectories = self.trajectories.saturating_add(other.trajectories);
+        self.steps = self.steps.saturating_add(other.steps);
+        self.tool_calls = self.tool_calls.saturating_add(other.tool_calls);
+        self.events = self.events.saturating_add(other.events);
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct StatusResponse {
+    schema_version: &'static str,
+    dataset_uri: String,
+    snapshot_id: String,
+    created_at: String,
+    status: &'static str,
+    counts_complete: bool,
+    sources: StatusSources,
+    counts: StatusCounts,
+    source_errors: Vec<StatusSourceError>,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusSources {
+    total: usize,
+    ready: usize,
+    error: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusSourceError {
+    source_path: String,
+    error: String,
+}
+
 pub async fn run(
     cli: Cli,
     stdout_is_terminal: bool,
@@ -223,7 +298,7 @@ pub async fn run(
 ) -> Result<()> {
     match cli.command {
         Command::Ls(args) => run_list(args, stdout_is_terminal, stdout, stderr).await,
-        Command::Status(args) => not_implemented("status", Some(&args.dataset_uri)),
+        Command::Status(args) => run_status(args, stdout_is_terminal, stdout, stderr).await,
         Command::Query(args) => {
             let _ = args.sql;
             not_implemented("query", Some(&args.dataset_uri))
@@ -273,23 +348,13 @@ async fn run_list(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    let dataset_uri = normalize_and_validate_dataset_uri(&args.dataset_uri)?;
-    let mount = DatasetMount::default(dataset_uri.clone())?;
-    let snapshot = DatasetCatalogSnapshot::discover(
-        vec![mount],
-        Some(DEFAULT_DATASET_NAME.into()),
-        CatalogSnapshotOptions {
-            error_policy: args.errors.into(),
-            manifest: LocalQueryManifestOptions {
-                max_files: args.max_files,
-                max_entries: args.max_entries,
-                ..LocalQueryManifestOptions::default()
-            },
-            ..CatalogSnapshotOptions::default()
-        },
+    let (dataset_uri, snapshot) = discover_snapshot(
+        &args.dataset_uri,
+        args.errors,
+        args.max_files,
+        args.max_entries,
     )
-    .await
-    .with_context(|| "discover Dataset Sources")?;
+    .await?;
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
         .context("default Dataset missing from Catalog Snapshot")?;
@@ -339,6 +404,272 @@ async fn run_list(
     )
     .context("write pChronicle ls metadata")?;
     Ok(())
+}
+
+async fn run_status(
+    args: StatusArgs,
+    stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    anyhow::ensure!(
+        args.timeout_seconds > 0,
+        "--timeout-seconds must be greater than zero"
+    );
+    let (dataset_uri, snapshot) = discover_snapshot(
+        &args.dataset_uri,
+        args.errors,
+        args.max_files,
+        args.max_entries,
+    )
+    .await?;
+    let snapshot = Arc::new(snapshot);
+    let dataset = snapshot
+        .dataset(DEFAULT_DATASET_NAME)
+        .context("default Dataset missing from Catalog Snapshot")?;
+    let total_sources = dataset.sources.len();
+    let mut source_errors = dataset
+        .sources
+        .iter()
+        .filter(|source| source.status == CatalogSourceStatus::Error)
+        .map(|source| StatusSourceError {
+            source_path: source.file.clone(),
+            error: source
+                .error
+                .as_deref()
+                .map(|error| redact_message(error, &dataset_uri))
+                .unwrap_or_else(|| "Source discovery failed".into()),
+        })
+        .collect::<Vec<_>>();
+    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let timeout = Duration::from_secs(args.timeout_seconds);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let counts = match query_status_counts(&engine, None, deadline, timeout).await {
+        Ok(counts) if source_errors.is_empty() => counts,
+        Ok(_) | Err(_) if args.errors == ErrorMode::Report => {
+            let mut counts = StatusCounts::default();
+            for source in dataset
+                .sources
+                .iter()
+                .filter(|source| source.status == CatalogSourceStatus::Ready)
+            {
+                if source_errors
+                    .iter()
+                    .any(|error| error.source_path == source.file)
+                {
+                    continue;
+                }
+                match query_status_counts(&engine, Some(&source.file), deadline, timeout).await {
+                    Ok(source_counts) => counts += source_counts,
+                    Err(error) => source_errors.push(StatusSourceError {
+                        source_path: source.file.clone(),
+                        error: redact_message(&format!("{error:#}"), &dataset_uri),
+                    }),
+                }
+            }
+            counts
+        }
+        Err(error) => return Err(error),
+        Ok(counts) => counts,
+    };
+    source_errors.sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    source_errors.dedup_by(|left, right| left.source_path == right.source_path);
+    let error_sources = source_errors.len();
+    let ready_sources = total_sources.saturating_sub(error_sources);
+    let response = StatusResponse {
+        schema_version: "pchronicle.status.v1",
+        dataset_uri,
+        snapshot_id: snapshot.snapshot_id().to_string(),
+        created_at: snapshot.created_at().to_string(),
+        status: match (ready_sources, error_sources) {
+            (_, 0) => "ready",
+            (0, _) => "error",
+            _ => "degraded",
+        },
+        counts_complete: error_sources == 0,
+        sources: StatusSources {
+            total: total_sources,
+            ready: ready_sources,
+            error: error_sources,
+        },
+        counts,
+        source_errors,
+    };
+
+    let output_format = match args.format {
+        OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
+        OutputFormat::Auto => OutputFormat::Json,
+        explicit => explicit,
+    };
+    match output_format {
+        OutputFormat::Table => write_status_table(stdout, &response)?,
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *stdout, &response)
+                .context("encode pChronicle status JSON")?;
+            writeln!(stdout).context("write pChronicle status JSON")?;
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+    writeln!(
+        stderr,
+        "snapshot_id={} dataset_uri={} status={} counts_complete={}",
+        response.snapshot_id, response.dataset_uri, response.status, response.counts_complete,
+    )
+    .context("write pChronicle status metadata")?;
+    Ok(())
+}
+
+async fn discover_snapshot(
+    input: &str,
+    errors: ErrorMode,
+    max_files: usize,
+    max_entries: usize,
+) -> Result<(String, DatasetCatalogSnapshot)> {
+    let dataset_uri = normalize_and_validate_dataset_uri(input)?;
+    let mount = DatasetMount::default(dataset_uri.clone())?;
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![mount],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions {
+            error_policy: errors.into(),
+            manifest: LocalQueryManifestOptions {
+                max_files,
+                max_entries,
+                ..LocalQueryManifestOptions::default()
+            },
+            ..CatalogSnapshotOptions::default()
+        },
+    )
+    .await
+    .with_context(|| "discover Dataset Sources")?;
+    Ok((dataset_uri, snapshot))
+}
+
+async fn query_status_counts(
+    engine: &ChronicleQueryEngine,
+    source_path: Option<&str>,
+    deadline: tokio::time::Instant,
+    timeout: Duration,
+) -> Result<StatusCounts> {
+    let predicate = source_path
+        .map(|source| format!(" WHERE _file_ = {}", sql_string(source)))
+        .unwrap_or_default();
+    let sql = format!(
+        "SELECT \
+           (SELECT COUNT(*) FROM dataset.runs{predicate}) AS runs, \
+           (SELECT COUNT(*) FROM dataset.steps{predicate}) AS steps, \
+           (SELECT COUNT(*) FROM dataset.tool_calls{predicate}) AS tool_calls, \
+           (SELECT COUNT(*) FROM dataset.events{predicate}) AS events"
+    );
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    anyhow::ensure!(
+        !remaining.is_zero(),
+        "Dataset status query timed out after {} seconds",
+        timeout.as_secs()
+    );
+    let output = tokio::time::timeout(remaining, engine.query_jsonl(&sql))
+        .await
+        .with_context(|| {
+            format!(
+                "Dataset status query timed out after {} seconds",
+                timeout.as_secs()
+            )
+        })??;
+    let mut lines = output.lines().filter(|line| !line.trim().is_empty());
+    let line = lines
+        .next()
+        .context("Dataset status query returned no row")?;
+    anyhow::ensure!(
+        lines.next().is_none(),
+        "Dataset status query returned multiple rows"
+    );
+    #[derive(Deserialize)]
+    struct QueryCounts {
+        runs: u64,
+        steps: u64,
+        tool_calls: u64,
+        events: u64,
+    }
+    let counts: QueryCounts = serde_json::from_str(line).context("decode Dataset status counts")?;
+    Ok(StatusCounts {
+        runs: counts.runs,
+        trajectories: counts.runs,
+        steps: counts.steps,
+        tool_calls: counts.tool_calls,
+        events: counts.events,
+    })
+}
+
+fn write_status_table(stdout: &mut dyn Write, response: &StatusResponse) -> Result<()> {
+    writeln!(stdout, "FIELD         VALUE       ACCURACY")?;
+    writeln!(stdout, "status        {}", response.status)?;
+    writeln!(
+        stdout,
+        "sources       {}          exact",
+        response.sources.total
+    )?;
+    writeln!(
+        stdout,
+        "ready_sources {}          exact",
+        response.sources.ready
+    )?;
+    writeln!(
+        stdout,
+        "error_sources {}          exact",
+        response.sources.error
+    )?;
+    let accuracy = if response.counts_complete {
+        "exact"
+    } else {
+        "partial"
+    };
+    writeln!(
+        stdout,
+        "runs          {}          {accuracy}",
+        response.counts.runs
+    )?;
+    writeln!(
+        stdout,
+        "trajectories  {}          {accuracy}",
+        response.counts.trajectories
+    )?;
+    writeln!(
+        stdout,
+        "steps         {}          {accuracy}",
+        response.counts.steps
+    )?;
+    writeln!(
+        stdout,
+        "tool_calls    {}          {accuracy}",
+        response.counts.tool_calls
+    )?;
+    writeln!(
+        stdout,
+        "events        {}          {accuracy}",
+        response.counts.events
+    )?;
+    for error in &response.source_errors {
+        writeln!(
+            stdout,
+            "source_error  {}: {}",
+            truncate(&error.source_path, 48),
+            truncate(&error.error, 80)
+        )?;
+    }
+    Ok(())
+}
+
+fn sql_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn redact_message(message: &str, dataset_uri: &str) -> String {
+    message
+        .replace(dataset_uri, "<dataset>")
+        .split_whitespace()
+        .map(|part| part.split('?').next().unwrap_or(part))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn normalize_and_validate_dataset_uri(input: &str) -> Result<String> {
@@ -488,6 +819,11 @@ mod tests {
     use serde_json::Value;
     use std::fs;
 
+    fn atif_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../persisting-pchronicle/tests/fixtures/atif/dialogue_10.json")
+    }
+
     #[test]
     fn command_tree_contains_the_product_commands() {
         let command = Cli::command();
@@ -559,6 +895,142 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn status_reports_exact_counts_as_json() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "status",
+            atif_fixture().to_str().unwrap(),
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        run(cli, false, &mut stdout, &mut stderr).await?;
+
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["schema_version"], "pchronicle.status.v1");
+        assert_eq!(value["status"], "ready");
+        assert_eq!(value["counts_complete"], true);
+        assert_eq!(value["sources"]["total"], 1);
+        assert_eq!(value["sources"]["ready"], 1);
+        assert_eq!(value["sources"]["error"], 0);
+        assert_eq!(value["counts"]["runs"], 1);
+        assert_eq!(value["counts"]["trajectories"], 1);
+        assert_eq!(value["counts"]["steps"], 10);
+        assert_eq!(value["counts"]["tool_calls"], 0);
+        assert_eq!(value["counts"]["events"], 0);
+        assert!(value["source_errors"].as_array().unwrap().is_empty());
+        assert!(String::from_utf8(stderr)?.contains("counts_complete=true"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn status_reports_partial_counts_for_bad_sources() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::copy(atif_fixture(), temp.path().join("valid.json"))?;
+        fs::write(temp.path().join("broken.json"), "{not-json")?;
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "status",
+            temp.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--errors",
+            "report",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["status"], "degraded");
+        assert_eq!(value["counts_complete"], false);
+        assert_eq!(value["sources"]["total"], 2);
+        assert_eq!(value["sources"]["ready"], 1);
+        assert_eq!(value["sources"]["error"], 1);
+        assert_eq!(value["counts"]["runs"], 1);
+        assert_eq!(value["counts"]["steps"], 10);
+        assert_eq!(value["source_errors"][0]["source_path"], "broken.json");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn status_strict_mode_rejects_bad_sources() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::write(temp.path().join("broken.json"), "{not-json")?;
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "status",
+            temp.path().to_str().unwrap(),
+            "--errors",
+            "strict",
+        ])?;
+
+        assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn status_report_mode_marks_an_unreadable_dataset_as_error() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::write(temp.path().join("broken.json"), "{not-json")?;
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "status",
+            temp.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--errors",
+            "report",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["sources"]["ready"], 0);
+        assert_eq!(value["sources"]["error"], 1);
+        let error = value["source_errors"][0]["error"].as_str().unwrap();
+        assert!(error.contains("<dataset>/broken.json"));
+        assert!(!error.contains(temp.path().to_str().unwrap()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn status_table_marks_counts_as_exact() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "status",
+            atif_fixture().to_str().unwrap(),
+            "--format",
+            "table",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, true, &mut stdout, &mut Vec::new()).await?;
+
+        let output = String::from_utf8(stdout)?;
+        assert!(output.contains("FIELD"));
+        assert!(output.contains("ACCURACY"));
+        assert!(output.contains("trajectories  1          exact"));
+        assert!(output.contains("steps         10          exact"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn status_rejects_zero_timeout() -> Result<()> {
+        let cli = Cli::try_parse_from(["pchronicle", "status", ".", "--timeout-seconds", "0"])?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--timeout-seconds must be greater than zero"
+        );
+        Ok(())
+    }
+
     #[test]
     fn rejects_credentials_and_signed_queries() {
         assert!(normalize_and_validate_dataset_uri("s3://user:secret@bucket/path").is_err());
@@ -582,13 +1054,13 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_commands_fail_explicitly() -> Result<()> {
-        let cli = Cli::try_parse_from(["pchronicle", "status", "."])?;
+        let cli = Cli::try_parse_from(["pchronicle", "maintain", "."])?;
         let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
             .await
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "pchronicle status is not implemented yet"
+            "pchronicle maintain is not implemented yet"
         );
         Ok(())
     }
