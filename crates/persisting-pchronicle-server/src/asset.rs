@@ -22,8 +22,20 @@ fn normalize(path: &str) -> String {
     value
 }
 
-fn read(path: &str) -> Option<Bytes> {
+/// Normalize an asset request path and reject path traversal before any join
+/// against the assets root. The env-override mode joins the key onto an
+/// arbitrary local directory, so a `..` segment would otherwise read files
+/// outside it (e.g. `GET /../../etc/passwd`).
+fn safe_key(path: &str) -> Option<String> {
     let key = normalize(path);
+    if key.split('/').any(|segment| segment == "..") {
+        return None;
+    }
+    Some(key)
+}
+
+fn read(path: &str) -> Option<Bytes> {
+    let key = safe_key(path)?;
     if let Some(root) = assets_root() {
         return std::fs::read(Path::new(&root).join(key))
             .ok()
@@ -35,7 +47,9 @@ fn read(path: &str) -> Option<Bytes> {
 }
 
 fn contains(path: &str) -> bool {
-    let key = normalize(path);
+    let Some(key) = safe_key(path) else {
+        return false;
+    };
     if let Some(root) = assets_root() {
         return Path::new(&root).join(key).is_file();
     }
@@ -88,7 +102,7 @@ fn is_static_path(path: &str) -> bool {
 }
 
 fn response_for(path: &str, headers: &HeaderMap) -> Option<Response> {
-    let key = normalize(path);
+    let key = safe_key(path)?;
     let (body, encoding) = if accepts_brotli(headers) {
         let compressed = format!("{key}.br");
         match read(&compressed) {
@@ -140,6 +154,41 @@ mod tests {
     fn fallback_index_is_embedded() {
         assert!(contains("index.html"));
         assert!(read("index.html").is_some_and(|body| !body.is_empty()));
+    }
+
+    #[test]
+    fn traversal_segments_are_rejected_before_any_read() {
+        // `..` segments must never reach the assets root join; otherwise the
+        // env-override mode serves arbitrary local files (e.g. /etc/passwd).
+        assert!(!contains("/../../etc/passwd"));
+        assert!(!contains("../index.html"));
+        assert!(!contains("assets/../index.html"));
+        assert!(read("/../../etc/passwd").is_none());
+        assert!(read("/../secret").is_none());
+        // Leading slashes and `./` prefixes are still normalized normally.
+        assert!(contains("/index.html"));
+        assert!(read("/./index.html").is_some());
+        assert!(read("./index.html").is_some());
+    }
+
+    #[test]
+    fn fallback_serves_index_for_traversal_paths() {
+        let headers = HeaderMap::new();
+        let response =
+            futures::executor::block_on(fallback(Uri::from_static("/../../etc/passwd"), headers));
+        let status = response.status();
+        let bytes = futures::executor::block_on(async {
+            axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .map(|body| body.to_vec())
+                .unwrap_or_default()
+        });
+        // Either 404 or the SPA index — never raw file contents.
+        assert!(status == StatusCode::NOT_FOUND || status == StatusCode::OK);
+        assert!(!bytes.starts_with(b"root:"));
+        assert!(!bytes
+            .windows(b"nobody".len())
+            .any(|window| window == b"nobody"));
     }
 
     #[test]
