@@ -2,7 +2,8 @@
 
 Small deterministic Datasets used by the pChronicle CLI examples and tests.
 Each child directory is an independent Dataset that can be passed directly to
-`pchronicle ls`, `pchronicle status`, or `pchronicle query`.
+`pchronicle ls`, `pchronicle status`, or `pchronicle query`. Its file can also
+be used as the input to `pchronicle import`.
 
 | Dataset | Exchange format | Contents |
 |---|---|---|
@@ -15,4 +16,7 @@ For example:
 ```bash
 pchronicle query examples/data/atif \
   "SELECT session_id, COUNT(*) AS steps FROM dataset.steps GROUP BY session_id"
+
+pchronicle import --from examples/data/atif/support-ticket.json \
+  --output /tmp/imported-support-ticket
 ```

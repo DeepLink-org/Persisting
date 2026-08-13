@@ -1,15 +1,18 @@
+use std::collections::HashSet;
+use std::ffi::CString;
 use std::fmt::Write as _;
-use std::io::{Error as IoError, Write};
-use std::path::PathBuf;
+use std::io::{Error as IoError, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_pchronicle::{
-    CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus,
-    ChronicleQueryEngine, DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions,
-    DEFAULT_DATASET_NAME,
+    actf_to_storylines, detect_format, load_atif_trajectories, parse_actf_document,
+    parse_openai_msg_corpus_value, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
+    CatalogSourceStatus, ChronicleFormat, ChronicleQueryEngine, DatasetCatalogSnapshot,
+    DatasetMount, LocalQueryManifestOptions, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -214,7 +217,7 @@ struct SearchArgs {
     top_k: usize,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ExchangeFormat {
     Auto,
     Atif,
@@ -226,14 +229,25 @@ enum ExchangeFormat {
 
 #[derive(Debug, Args)]
 struct ImportArgs {
+    /// Input trajectory file, or - with --stream for stdin.
     #[arg(short = 'f', long = "from", value_name = "PATH_OR_STDIN")]
     from: String,
+
+    /// New local Dataset directory. The target must not already exist.
     #[arg(short, long, value_name = "NEW_DATASET_URI")]
     output: String,
-    #[arg(long, value_enum)]
+
+    /// Input exchange format. Auto detects regular files from name and content.
+    #[arg(long, value_enum, default_value_t = ExchangeFormat::Auto)]
     format: ExchangeFormat,
+
+    /// Read a finite trajectory stream from stdin and publish only after EOF.
     #[arg(long)]
     stream: bool,
+
+    /// Reject inputs larger than this many bytes.
+    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    max_input_bytes: usize,
 }
 
 #[derive(Debug, Args)]
@@ -400,9 +414,36 @@ struct FindMatch {
     timestamp: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct ImportResponse {
+    schema_version: &'static str,
+    dataset_uri: String,
+    source_path: String,
+    format: String,
+    trajectories: usize,
+    input_bytes: usize,
+}
+
 pub async fn run(
     cli: Cli,
     stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    run_with_stdin(
+        cli,
+        stdout_is_terminal,
+        &mut std::io::empty(),
+        stdout,
+        stderr,
+    )
+    .await
+}
+
+pub async fn run_with_stdin(
+    cli: Cli,
+    stdout_is_terminal: bool,
+    stdin: &mut dyn Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
@@ -415,10 +456,7 @@ pub async fn run(
             let _ = (args.query, args.top_k);
             not_implemented("search", Some(&args.dataset_uri))
         }
-        Command::Import(args) => {
-            let _ = (args.from, args.output, args.format, args.stream);
-            not_implemented("import", None)
-        }
+        Command::Import(args) => run_import(args, stdin, stdout, stderr).await,
         Command::Export(args) => {
             let _ = (
                 args.from,
@@ -836,6 +874,273 @@ async fn run_find(
     )
     .context("write pChronicle find metadata")?;
     Ok(())
+}
+
+async fn run_import(
+    args: ImportArgs,
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    anyhow::ensure!(
+        args.max_input_bytes > 0,
+        "--max-input-bytes must be greater than zero"
+    );
+    anyhow::ensure!(
+        (args.from == "-") == args.stream,
+        "--stream requires --from -, and --from - requires --stream"
+    );
+    if args.stream {
+        anyhow::ensure!(
+            args.format != ExchangeFormat::Auto,
+            "stdin import requires an explicit --format"
+        );
+    }
+    let output = validate_new_local_dataset_path(&args.output)?;
+    let input_path = (!args.stream).then(|| Path::new(&args.from));
+    let input = if args.stream {
+        read_bounded(stdin, args.max_input_bytes, "stdin")?
+    } else {
+        let input_path = input_path.expect("non-stream input path");
+        anyhow::ensure!(
+            input_path.is_file(),
+            "import input must be one regular file"
+        );
+        let file = std::fs::File::open(input_path)
+            .with_context(|| format!("open import input {}", input_path.display()))?;
+        read_bounded(file, args.max_input_bytes, "import input")?
+    };
+    let text = std::str::from_utf8(&input).context("import input must be UTF-8")?;
+    let format = resolve_import_format(args.format, input_path, text)?;
+    let source_path = import_source_name(format);
+    let parent = output
+        .parent()
+        .context("import output must have a parent directory")?;
+    let staging = tempfile::Builder::new()
+        .prefix(".pchronicle-import-")
+        .tempdir_in(parent)
+        .with_context(|| format!("create import staging directory in {}", parent.display()))?;
+    let staged_source = staging.path().join(source_path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged_source)
+        .context("create staged import Source")?;
+    file.write_all(&input)
+        .context("write staged import Source")?;
+    file.sync_all().context("sync staged import Source")?;
+    let trajectories = validate_import_source(format, &staged_source, text)?;
+    std::fs::File::open(staging.path())
+        .and_then(|directory| directory.sync_all())
+        .context("sync import staging directory")?;
+
+    let staging_path = staging.keep();
+    let mut cleanup = PublishedPathGuard::new(staging_path.clone());
+    rename_noreplace(&staging_path, &output)
+        .with_context(|| format!("publish new Dataset {}", output.display()))?;
+    cleanup.track(output.clone());
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("sync Dataset parent {}", parent.display()))?;
+    cleanup.disarm();
+
+    let response = ImportResponse {
+        schema_version: "pchronicle.import.v1",
+        dataset_uri: output.to_string_lossy().into_owned(),
+        source_path: source_path.into(),
+        format: format.as_str().into(),
+        trajectories,
+        input_bytes: input.len(),
+    };
+    serde_json::to_writer_pretty(&mut *stdout, &response)
+        .context("encode pChronicle import JSON")?;
+    writeln!(stdout).context("write pChronicle import JSON")?;
+    writeln!(
+        stderr,
+        "dataset_uri={} source={} format={} trajectories={} input_bytes={}",
+        response.dataset_uri,
+        response.source_path,
+        response.format,
+        response.trajectories,
+        response.input_bytes,
+    )
+    .context("write pChronicle import metadata")?;
+    Ok(())
+}
+
+fn read_bounded(mut reader: impl Read, max_bytes: usize, label: &str) -> Result<Vec<u8>> {
+    let limit = u64::try_from(max_bytes)
+        .ok()
+        .and_then(|limit| limit.checked_add(1))
+        .context("--max-input-bytes is too large")?;
+    let mut input = Vec::new();
+    reader
+        .by_ref()
+        .take(limit)
+        .read_to_end(&mut input)
+        .with_context(|| format!("read {label}"))?;
+    anyhow::ensure!(
+        input.len() <= max_bytes,
+        "{label} exceeds max_input_bytes limit of {max_bytes}"
+    );
+    anyhow::ensure!(!input.is_empty(), "{label} is empty");
+    Ok(input)
+}
+
+fn resolve_import_format(
+    requested: ExchangeFormat,
+    input_path: Option<&Path>,
+    input: &str,
+) -> Result<ChronicleFormat> {
+    let format = match requested {
+        ExchangeFormat::Auto => detect_format(input_path, Some(input))
+            .map_err(anyhow::Error::from)?
+            .context("cannot detect import format; pass --format explicitly")?,
+        ExchangeFormat::Atif => ChronicleFormat::Atif,
+        ExchangeFormat::Actf => ChronicleFormat::Actf,
+        ExchangeFormat::OpenaiMessages => ChronicleFormat::OpenaiMsg,
+        ExchangeFormat::Storyline => ChronicleFormat::Storyline,
+    };
+    anyhow::ensure!(
+        matches!(
+            format,
+            ChronicleFormat::Atif | ChronicleFormat::Actf | ChronicleFormat::OpenaiMsg
+        ),
+        "import format '{format}' is not supported by the first queryable import increment"
+    );
+    Ok(format)
+}
+
+fn import_source_name(format: ChronicleFormat) -> &'static str {
+    match format {
+        ChronicleFormat::Atif => "trajectories.atif.json",
+        ChronicleFormat::Actf => "trajectories.actf.json",
+        ChronicleFormat::OpenaiMsg => "session_steps.json",
+        _ => unreachable!("unsupported import format was rejected"),
+    }
+}
+
+fn validate_import_source(format: ChronicleFormat, path: &Path, input: &str) -> Result<usize> {
+    match format {
+        ChronicleFormat::Atif => {
+            let trajectories = load_atif_trajectories(path)?;
+            ensure_unique_session_ids(
+                trajectories
+                    .iter()
+                    .map(|trajectory| trajectory.effective_session_id())
+                    .collect::<persisting_pchronicle::Result<Vec<_>>>()?,
+            )?;
+            Ok(trajectories.len())
+        }
+        ChronicleFormat::OpenaiMsg => {
+            let document = serde_json::from_str(input).context("parse OpenAI Messages JSON")?;
+            let stories = parse_openai_msg_corpus_value(&document, "session_steps.json")?;
+            ensure_unique_session_ids(stories.iter().map(|story| story.session_id.as_str()))?;
+            Ok(stories.len())
+        }
+        ChronicleFormat::Actf => {
+            let document = parse_actf_document(input).map_err(anyhow::Error::from)?;
+            let stories = actf_to_storylines(&document).map_err(anyhow::Error::from)?;
+            ensure_unique_session_ids(stories.iter().map(|story| story.session_id.as_str()))?;
+            Ok(stories.len())
+        }
+        _ => unreachable!("unsupported import format was rejected"),
+    }
+}
+
+fn ensure_unique_session_ids<'a>(session_ids: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    let mut seen = HashSet::new();
+    for session_id in session_ids {
+        anyhow::ensure!(
+            seen.insert(session_id),
+            "duplicate session_id: {session_id}"
+        );
+    }
+    Ok(())
+}
+
+fn validate_new_local_dataset_path(input: &str) -> Result<PathBuf> {
+    let input = input.trim();
+    anyhow::ensure!(!input.is_empty(), "import output path must not be empty");
+    anyhow::ensure!(
+        !input.contains("://"),
+        "import currently supports only local output paths"
+    );
+    let path = Path::new(input);
+    anyhow::ensure!(
+        path.file_name().is_some(),
+        "import output must name a new Dataset directory"
+    );
+    anyhow::ensure!(!path.exists(), "import output already exists");
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = std::fs::canonicalize(parent)
+        .with_context(|| "canonicalize import output parent directory")?;
+    anyhow::ensure!(parent.is_dir(), "import output parent is not a directory");
+    let filename = path
+        .file_name()
+        .context("import output must name a Dataset directory")?;
+    Ok(parent.join(filename))
+}
+
+struct PublishedPathGuard {
+    path: Option<PathBuf>,
+}
+
+impl PublishedPathGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+
+    fn track(&mut self, path: PathBuf) {
+        self.path = Some(path);
+    }
+}
+
+impl Drop for PublishedPathGuard {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    #[cfg(target_os = "linux")]
+    // SAFETY: both pointers come from live CString values and are NUL-terminated.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: both pointers come from live CString values and are NUL-terminated.
+    let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn rename_noreplace(_from: &Path, _to: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic create-only Dataset publish is unsupported on this platform",
+    ))
 }
 
 fn find_sql(args: &FindArgs) -> Result<String> {
@@ -1556,6 +1861,16 @@ mod tests {
             .join(format)
     }
 
+    fn example_source(format: &str) -> PathBuf {
+        let filename = match format {
+            "atif" => "support-ticket.json",
+            "openai-messages" => "training.json",
+            "actf" => "code-repair.actf.json",
+            other => panic!("unknown example format: {other}"),
+        };
+        example_dataset(format).join(filename)
+    }
+
     #[test]
     fn command_tree_contains_the_product_commands() {
         let command = Cli::command();
@@ -2194,6 +2509,213 @@ mod tests {
                 .await
                 .is_err());
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_creates_queryable_lossless_datasets_for_all_example_formats() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        for (format, expected_format, source_name, expected_runs) in [
+            ("atif", "atif", "trajectories.atif.json", 1),
+            ("openai-messages", "openai_msg", "session_steps.json", 2),
+            ("actf", "actf", "trajectories.actf.json", 1),
+        ] {
+            let input = example_source(format);
+            let output = temp.path().join(format);
+            let cli = Cli::try_parse_from([
+                "pchronicle",
+                "import",
+                "--from",
+                input.to_str().unwrap(),
+                "--output",
+                output.to_str().unwrap(),
+            ])?;
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            run(cli, false, &mut stdout, &mut stderr).await?;
+
+            let response: Value = serde_json::from_slice(&stdout)?;
+            assert_eq!(response["schema_version"], "pchronicle.import.v1");
+            assert_eq!(response["format"], expected_format);
+            assert_eq!(response["source_path"], source_name);
+            assert_eq!(response["trajectories"], expected_runs);
+            assert_eq!(
+                fs::read(output.join(source_name))?,
+                fs::read(&input)?,
+                "import must preserve the exchange document byte-for-byte"
+            );
+            assert!(String::from_utf8(stderr)?.contains("trajectories="));
+
+            let cli = Cli::try_parse_from([
+                "pchronicle",
+                "query",
+                output.to_str().unwrap(),
+                "SELECT COUNT(*) AS runs FROM dataset.runs",
+                "--format",
+                "jsonl",
+            ])?;
+            let mut stdout = Vec::new();
+            run(cli, false, &mut stdout, &mut Vec::new()).await?;
+            let count: Value = serde_json::from_slice(&stdout)?;
+            assert_eq!(count["runs"], expected_runs, "format={format}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_reads_a_bounded_explicit_stdin_stream() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let output = temp.path().join("streamed");
+        let input = fs::read(example_source("atif"))?;
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "import",
+            "--from",
+            "-",
+            "--stream",
+            "--format",
+            "atif",
+            "--output",
+            output.to_str().unwrap(),
+            "--max-input-bytes",
+            &input.len().to_string(),
+        ])?;
+        let mut stdin = input.as_slice();
+        let mut stdout = Vec::new();
+        run_with_stdin(cli, false, &mut stdin, &mut stdout, &mut Vec::new()).await?;
+        let response: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(response["trajectories"], 1);
+        assert_eq!(fs::read(output.join("trajectories.atif.json"))?, input);
+
+        for args in [
+            vec![
+                "pchronicle",
+                "import",
+                "--from",
+                "-",
+                "--output",
+                temp.path().join("missing-stream").to_str().unwrap(),
+                "--format",
+                "atif",
+            ],
+            vec![
+                "pchronicle",
+                "import",
+                "--from",
+                "-",
+                "--stream",
+                "--output",
+                temp.path().join("missing-format").to_str().unwrap(),
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args)?;
+            let mut stdin = input.as_slice();
+            assert!(
+                run_with_stdin(cli, false, &mut stdin, &mut Vec::new(), &mut Vec::new())
+                    .await
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_output(
+    ) -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let invalid = temp.path().join("invalid.json");
+        fs::write(&invalid, "not json")?;
+
+        for (name, extra) in [
+            ("invalid", vec![]),
+            ("oversized", vec!["--max-input-bytes", "1"]),
+            ("storyline", vec!["--format", "storyline"]),
+        ] {
+            let output = temp.path().join(name);
+            let mut args = vec![
+                "pchronicle",
+                "import",
+                "--from",
+                invalid.to_str().unwrap(),
+                "--output",
+                output.to_str().unwrap(),
+            ];
+            args.extend(extra);
+            let cli = Cli::try_parse_from(args)?;
+            let mut stdout = Vec::new();
+            assert!(run(cli, false, &mut stdout, &mut Vec::new()).await.is_err());
+            assert!(stdout.is_empty());
+            assert!(!output.exists());
+        }
+        assert!(!fs::read_dir(temp.path())?.any(|entry| {
+            entry
+                .ok()
+                .and_then(|entry| entry.file_name().into_string().ok())
+                .is_some_and(|name| name.starts_with(".pchronicle-import-"))
+        }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_is_create_only_and_rejects_duplicate_sessions() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let output = temp.path().join("existing");
+        fs::create_dir(&output)?;
+        fs::write(output.join("sentinel"), "keep")?;
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "import",
+            "--from",
+            example_source("atif").to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])?;
+        assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err());
+        assert_eq!(fs::read_to_string(output.join("sentinel"))?, "keep");
+
+        let trajectory: Value = serde_json::from_slice(&fs::read(example_source("atif"))?)?;
+        let duplicate_input = temp.path().join("duplicates.json");
+        fs::write(
+            &duplicate_input,
+            serde_json::to_vec(&serde_json::json!([trajectory.clone(), trajectory]))?,
+        )?;
+        let duplicate_output = temp.path().join("duplicates");
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "import",
+            "--from",
+            duplicate_input.to_str().unwrap(),
+            "--output",
+            duplicate_output.to_str().unwrap(),
+            "--format",
+            "atif",
+        ])?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate session_id"),
+            "{error:#}"
+        );
+        assert!(!duplicate_output.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn import_publish_primitive_never_replaces_an_existing_target() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let staged = temp.path().join("staged");
+        let existing = temp.path().join("existing");
+        fs::create_dir(&staged)?;
+        fs::create_dir(&existing)?;
+        fs::write(staged.join("new"), "new")?;
+        fs::write(existing.join("sentinel"), "keep")?;
+
+        assert!(rename_noreplace(&staged, &existing).is_err());
+        assert_eq!(fs::read_to_string(existing.join("sentinel"))?, "keep");
+        assert_eq!(fs::read_to_string(staged.join("new"))?, "new");
         Ok(())
     }
 

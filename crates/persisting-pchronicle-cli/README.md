@@ -5,9 +5,11 @@ and serving pChronicle trajectory Datasets.
 
 The current implementation provides `pchronicle ls` (also available as
 `pchronicle list`), `pchronicle status`, bounded read-only `pchronicle query`,
-and Source-local `pchronicle find`. Other commands are present in the command
-tree and return a clear not-yet-implemented error until their respective product
-increments land.
+Source-local `pchronicle find`, and create-only local `pchronicle import` for
+ATIF, OpenAI Messages, and ACTF files. Import also accepts a finite stdin stream
+when `--from - --stream --format FORMAT` is explicit. Other commands are present
+in the command tree and return a clear not-yet-implemented error until their
+respective product increments land.
 
 Small ATIF, OpenAI Messages, and ACTF Datasets for trying the commands live in
 [`../../examples/data`](../../examples/data).
