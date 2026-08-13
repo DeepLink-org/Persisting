@@ -1,5 +1,6 @@
 //! Public SQL query engine over Lance, ATIF, OpenAI JSON, or ACTF sources.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -16,13 +17,19 @@ use datafusion::sql::sqlparser::ast::Statement as SqlStatement;
 use futures::TryStreamExt;
 
 use super::{
-    AtifDataSource, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
-    FileTrajectoryFormat, FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot,
-    LocalQueryManifest, RawEventDataSource, StorylineDataSource, SOURCE_FILE_COLUMN,
+    AtifDataSource, DatasetCatalogSnapshot, FileTrajectoryDataSource,
+    FileTrajectoryDataSourceOptions, FileTrajectoryFormat, FileTrajectoryQueryMetrics,
+    FileTrajectoryQueryMetricsSnapshot, LocalQueryManifest, RawEventDataSource,
+    StorylineDataSource, SOURCE_FILE_COLUMN,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChronicleQueryBackend {
+    Catalog {
+        snapshot_id: String,
+        datasets: usize,
+        sources: usize,
+    },
     Lance {
         generation: String,
     },
@@ -88,7 +95,9 @@ pub struct ChronicleQueryEngine {
     context: SessionContext,
     backend: ChronicleQueryBackend,
     require_file_join_key: bool,
-    local_file_metrics: Option<FileTrajectoryQueryMetrics>,
+    local_file_metrics: Vec<FileTrajectoryQueryMetrics>,
+    // Keeps pinned remote-file materializations alive for the complete query.
+    _catalog_snapshot: Option<Arc<DatasetCatalogSnapshot>>,
 }
 
 impl std::fmt::Debug for ChronicleQueryEngine {
@@ -101,6 +110,41 @@ impl std::fmt::Debug for ChronicleQueryEngine {
 }
 
 impl ChronicleQueryEngine {
+    pub async fn from_catalog_snapshot(snapshot: Arc<DatasetCatalogSnapshot>) -> Result<Self> {
+        Self::from_catalog_snapshot_with_options(
+            snapshot,
+            ChronicleQueryExecutionOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn from_catalog_snapshot_with_options(
+        snapshot: Arc<DatasetCatalogSnapshot>,
+        options: ChronicleQueryExecutionOptions,
+    ) -> Result<Self> {
+        let context = query_session_context(&options)?;
+        snapshot.register(&context).await?;
+        let datasets = snapshot.datasets().len();
+        let sources = snapshot
+            .datasets()
+            .iter()
+            .map(|dataset| dataset.ready_source_count())
+            .sum();
+        let require_file_join_key = snapshot.requires_file_join_key();
+        let snapshot_id = snapshot.snapshot_id().to_string();
+        Ok(Self {
+            context,
+            backend: ChronicleQueryBackend::Catalog {
+                snapshot_id,
+                datasets,
+                sources,
+            },
+            require_file_join_key,
+            local_file_metrics: Vec::new(),
+            _catalog_snapshot: Some(snapshot),
+        })
+    }
+
     pub async fn open_lance(root: impl AsRef<Path>) -> Result<Self> {
         let source = StorylineDataSource::open(root).await?;
         Self::from_lance_source(source)
@@ -190,7 +234,8 @@ impl ChronicleQueryEngine {
             context,
             backend: ChronicleQueryBackend::Lance { generation },
             require_file_join_key: false,
-            local_file_metrics: None,
+            local_file_metrics: Vec::new(),
+            _catalog_snapshot: None,
         })
     }
 
@@ -209,7 +254,8 @@ impl ChronicleQueryEngine {
             context,
             backend: ChronicleQueryBackend::Events { version },
             require_file_join_key: false,
-            local_file_metrics: None,
+            local_file_metrics: Vec::new(),
+            _catalog_snapshot: None,
         })
     }
 
@@ -226,7 +272,8 @@ impl ChronicleQueryEngine {
             context,
             backend,
             require_file_join_key: files > 1,
-            local_file_metrics: None,
+            local_file_metrics: Vec::new(),
+            _catalog_snapshot: None,
         })
     }
 
@@ -259,7 +306,8 @@ impl ChronicleQueryEngine {
             context,
             backend,
             require_file_join_key: files > 1,
-            local_file_metrics: Some(metrics),
+            local_file_metrics: vec![metrics],
+            _catalog_snapshot: None,
         })
     }
 
@@ -272,9 +320,45 @@ impl ChronicleQueryEngine {
     }
 
     pub fn local_file_metrics(&self) -> Option<FileTrajectoryQueryMetricsSnapshot> {
-        self.local_file_metrics
-            .as_ref()
-            .map(FileTrajectoryQueryMetrics::snapshot)
+        let mut metrics = self.local_file_metrics.clone();
+        if let Some(snapshot) = &self._catalog_snapshot {
+            metrics.extend(snapshot.file_metrics());
+        }
+        let mut snapshots = metrics.iter().map(FileTrajectoryQueryMetrics::snapshot);
+        let mut total = snapshots.next()?;
+        for snapshot in snapshots {
+            total.cache_hits = total.cache_hits.saturating_add(snapshot.cache_hits);
+            total.cache_misses = total.cache_misses.saturating_add(snapshot.cache_misses);
+            total.cache_evictions = total
+                .cache_evictions
+                .saturating_add(snapshot.cache_evictions);
+            total.files_parsed = total.files_parsed.saturating_add(snapshot.files_parsed);
+            total.source_bytes_read = total
+                .source_bytes_read
+                .saturating_add(snapshot.source_bytes_read);
+            total.projected_files = total
+                .projected_files
+                .saturating_add(snapshot.projected_files);
+            total.documents_scanned = total
+                .documents_scanned
+                .saturating_add(snapshot.documents_scanned);
+            total.documents_pruned = total
+                .documents_pruned
+                .saturating_add(snapshot.documents_pruned);
+            total.rows_scanned = total.rows_scanned.saturating_add(snapshot.rows_scanned);
+            total.rows_pruned = total.rows_pruned.saturating_add(snapshot.rows_pruned);
+            total.rows_emitted = total.rows_emitted.saturating_add(snapshot.rows_emitted);
+            total.projected_arrow_bytes = total
+                .projected_arrow_bytes
+                .saturating_add(snapshot.projected_arrow_bytes);
+            total.streamed_records = total
+                .streamed_records
+                .saturating_add(snapshot.streamed_records);
+            total.streaming_buffer_peak_bytes = total
+                .streaming_buffer_peak_bytes
+                .max(snapshot.streaming_buffer_peak_bytes);
+        }
+        Some(total)
     }
 
     /// Register a read-only file source in the same DataFusion context as the
@@ -337,7 +421,10 @@ impl ChronicleQueryEngine {
             .await
             .with_context(|| format!("plan pChronicle SQL: {sql}"))?;
         if self.require_file_join_key {
-            ensure_collision_safe_file_joins(dataframe.logical_plan())?;
+            ensure_collision_safe_file_joins(
+                dataframe.logical_plan(),
+                self._catalog_snapshot.as_deref(),
+            )?;
         }
         Ok(dataframe)
     }
@@ -448,7 +535,7 @@ fn query_session_context(options: &ChronicleQueryExecutionOptions) -> Result<Ses
     }
     let runtime = Arc::new(runtime.build().context("build DataFusion query runtime")?);
     Ok(SessionContext::new_with_config_rt(
-        SessionConfig::new(),
+        SessionConfig::new().with_information_schema(true),
         runtime,
     ))
 }
@@ -495,10 +582,12 @@ fn ensure_read_only_query(sql: &str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_collision_safe_file_joins(plan: &LogicalPlan) -> Result<()> {
+fn ensure_collision_safe_file_joins(
+    plan: &LogicalPlan,
+    catalog: Option<&DatasetCatalogSnapshot>,
+) -> Result<()> {
     if let LogicalPlan::Join(join) = plan {
-        if plan_uses_local_trajectory_table(&join.left)
-            && plan_uses_local_trajectory_table(&join.right)
+        if join_can_collide_without_file_key(&join.left, &join.right, catalog)
             && !join
                 .on
                 .iter()
@@ -515,22 +604,75 @@ fn ensure_collision_safe_file_joins(plan: &LogicalPlan) -> Result<()> {
         }
     }
     for input in plan.inputs() {
-        ensure_collision_safe_file_joins(input)?;
+        ensure_collision_safe_file_joins(input, catalog)?;
     }
     Ok(())
 }
 
-fn plan_uses_local_trajectory_table(plan: &LogicalPlan) -> bool {
+#[derive(Default)]
+struct TrajectoryPlanSources {
+    legacy: bool,
+    datasets: BTreeSet<String>,
+}
+
+fn join_can_collide_without_file_key(
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+    catalog: Option<&DatasetCatalogSnapshot>,
+) -> bool {
+    let left = trajectory_plan_sources(left, catalog);
+    let right = trajectory_plan_sources(right, catalog);
+    if left.legacy && right.legacy {
+        return true;
+    }
+    let Some(catalog) = catalog else {
+        return false;
+    };
+    left.datasets.intersection(&right.datasets).any(|dataset| {
+        catalog
+            .dataset(dataset)
+            .is_some_and(|dataset| dataset.ready_source_count() > 1)
+    })
+}
+
+fn trajectory_plan_sources(
+    plan: &LogicalPlan,
+    catalog: Option<&DatasetCatalogSnapshot>,
+) -> TrajectoryPlanSources {
+    let mut sources = TrajectoryPlanSources::default();
+    collect_trajectory_plan_sources(plan, catalog, &mut sources);
+    sources
+}
+
+fn collect_trajectory_plan_sources(
+    plan: &LogicalPlan,
+    catalog: Option<&DatasetCatalogSnapshot>,
+    sources: &mut TrajectoryPlanSources,
+) {
     if let LogicalPlan::TableScan(scan) = plan {
-        let table = scan.table_name.to_string();
-        let table = table.rsplit('.').next().unwrap_or(table.as_str());
-        if matches!(table, "runs" | "steps" | "tool_calls") {
-            return true;
+        if matches!(scan.table_name.table(), "runs" | "steps" | "tool_calls") {
+            let dataset = catalog.and_then(|catalog| {
+                scan.table_name
+                    .schema()
+                    .filter(|schema| catalog.dataset(schema).is_some())
+                    .or_else(|| {
+                        scan.table_name
+                            .schema()
+                            .is_none_or(|schema| schema == "public")
+                            .then(|| catalog.default_dataset())
+                            .flatten()
+                    })
+            });
+            if let Some(dataset) = dataset {
+                sources.datasets.insert(dataset.to_string());
+            } else {
+                sources.legacy = true;
+            }
         }
     }
-    plan.inputs()
-        .into_iter()
-        .any(plan_uses_local_trajectory_table)
+    for input in plan.inputs() {
+        collect_trajectory_plan_sources(input, catalog, sources);
+    }
 }
 
 fn expr_has_source_file_equality(expr: &Expr) -> bool {

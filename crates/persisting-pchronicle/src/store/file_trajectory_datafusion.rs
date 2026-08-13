@@ -286,6 +286,14 @@ impl FileTrajectoryDataSource {
         self.metrics.clone()
     }
 
+    pub(crate) fn provider(&self, kind: StorylineTableKind) -> Arc<dyn TableProvider> {
+        match kind {
+            StorylineTableKind::Runs => self.runs.clone(),
+            StorylineTableKind::Steps => self.steps.clone(),
+            StorylineTableKind::ToolCalls => self.tool_calls.clone(),
+        }
+    }
+
     pub fn register(&self, context: &SessionContext) -> Result<()> {
         self.register_as(context, &StorylineDataFusionTableNames::default())
     }
@@ -2376,7 +2384,7 @@ fn int_literal(expr: &Expr) -> Option<i64> {
     }
 }
 
-fn matches_file_filter(expr: &Expr, path: &str) -> Option<bool> {
+pub(crate) fn matches_file_filter(expr: &Expr, path: &str) -> Option<bool> {
     match expr {
         Expr::BinaryExpr(binary) if matches!(binary.op, Operator::Eq | Operator::NotEq) => {
             let value = if is_file_column(&binary.left) {

@@ -182,10 +182,6 @@ def test_editable_staging_does_not_resolve_firmware(
 
     monkeypatch.setattr(wheel_stage, "_firmware_source", unexpected_firmware)
 
-    scripts = wheel_stage.stage_wheel_binaries(
-        wheel_stage.BuildOptions(bundle_firmware=False)
-    )
+    scripts = wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions(bundle_firmware=False))
 
-    assert {path.name for path in scripts.iterdir()} == set(
-        wheel_stage.EXPECTED_BINARIES
-    )
+    assert {path.name for path in scripts.iterdir()} == set(wheel_stage.EXPECTED_BINARIES)

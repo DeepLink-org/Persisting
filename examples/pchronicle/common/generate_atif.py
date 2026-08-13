@@ -6,7 +6,6 @@ import random
 import sys
 from pathlib import Path
 
-
 SOURCE_SUFFIXES = {".rs", ".py", ".sh", ".toml"}
 SOURCE_ROOTS = ("crates", "persisting", "examples", "scripts")
 EXCLUDED_PARTS = {

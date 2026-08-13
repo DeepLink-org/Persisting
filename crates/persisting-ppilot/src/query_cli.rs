@@ -1,26 +1,29 @@
 //! Public pPilot query commands backed by pChronicle.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use persisting_pchronicle::{
-    ChronicleFormat, ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat,
+    CatalogErrorPolicy, CatalogSnapshotOptions, ChronicleFormat, ChronicleQueryEngine,
+    ChronicleQueryExecutionOptions, DatasetCatalogSnapshot, DatasetMount, ExternalTableFormat,
     ExternalTableSpec, FileTrajectoryDataSourceOptions, LocalQueryManifest,
     LocalQueryManifestOptions, RawEventLanceStore, StoryCoords, StorylineContentReadMode,
-    StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
+    StorylineDataSourceOptions, StorylineLanceStore, DEFAULT_DATASET_NAME,
     DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
     DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
     DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
     DEFAULT_MAX_LOCAL_QUERY_FILES,
 };
+use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum QuerySource {
     #[default]
     Auto,
@@ -47,6 +50,22 @@ impl QueryContentReadMode {
         match self {
             Self::Full => StorylineContentReadMode::Full,
             Self::Preview => StorylineContentReadMode::Preview,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum DatasetErrorMode {
+    #[default]
+    Strict,
+    Report,
+}
+
+impl From<DatasetErrorMode> for CatalogErrorPolicy {
+    fn from(value: DatasetErrorMode) -> Self {
+        match value {
+            DatasetErrorMode::Strict => Self::Strict,
+            DatasetErrorMode::Report => Self::Report,
         }
     }
 }
@@ -104,7 +123,19 @@ pub enum QueryCommand {
 pub struct SqlQueryArgs {
     /// Lance store path/S3 URI, or a supported trajectory file or directory.
     #[arg(value_name = "INPUT")]
-    pub input: String,
+    pub input: Option<String>,
+
+    /// Mount a query Dataset as NAME=URI. Repeat to query multiple Datasets.
+    #[arg(long = "dataset", value_name = "NAME=URI")]
+    pub datasets: Vec<String>,
+
+    /// Read Dataset mounts from a TOML file containing a [datasets] table.
+    #[arg(long, value_name = "FILE")]
+    pub dataset_file: Option<PathBuf>,
+
+    /// Fail on a bad source candidate, or report and skip it in Dataset.sources.
+    #[arg(long, value_enum, default_value_t = DatasetErrorMode::Strict)]
+    pub dataset_errors: DatasetErrorMode,
 
     /// Input representation. `auto` detects Lance, ATIF, OpenAI JSON, or ACTF.
     #[arg(long, value_enum, default_value_t = QuerySource::Auto)]
@@ -303,6 +334,16 @@ enum ResolvedQuerySource {
     Local(LocalQueryManifest),
 }
 
+impl ResolvedQuerySource {
+    fn format(&self) -> ChronicleFormat {
+        match self {
+            Self::Lance => ChronicleFormat::Storyline,
+            Self::Events => ChronicleFormat::Events,
+            Self::Local(manifest) => manifest.format(),
+        }
+    }
+}
+
 fn is_local_event_dataset(path: &Path) -> bool {
     path.is_dir() && path.file_name().is_some_and(|name| name == "events.lance")
 }
@@ -337,8 +378,11 @@ pub async fn run_query(args: QueryArgs) -> Result<()> {
                 "missing query mode or legacy INPUT; use `query sql|point|batch|follow ...`",
             )?;
             run_sql_query(SqlQueryArgs {
-                input,
+                input: Some(input),
                 source,
+                datasets: Vec::new(),
+                dataset_file: None,
+                dataset_errors: DatasetErrorMode::Strict,
                 tables,
                 sql,
                 sql_file,
@@ -395,42 +439,72 @@ async fn run_sql_query(args: SqlQueryArgs) -> Result<()> {
         spill_path: args.spill_path.clone(),
         max_spill_bytes: args.max_spill_bytes,
     };
-    let resolved = args
-        .source
-        .resolve_with_options(&args.input, manifest_options)?;
-    anyhow::ensure!(
-        args.content_read_mode == QueryContentReadMode::Full
-            || matches!(&resolved, ResolvedQuerySource::Lance),
-        "--content-read-mode preview requires a Storyline Lance input"
-    );
-    let engine = match resolved {
-        ResolvedQuerySource::Lance => {
-            let source = StorylineDataSource::open_uri_with_options(
-                &args.input,
-                StorylineDataSourceOptions {
+    let format_hint = if args.source != QuerySource::Auto {
+        let input = args
+            .input
+            .as_deref()
+            .context("--source requires the positional INPUT Dataset")?;
+        Some(
+            args.source
+                .resolve_with_options(input, manifest_options)?
+                .format(),
+        )
+    } else {
+        None
+    };
+    let (mut mounts, default_dataset) = resolve_dataset_mounts(
+        args.input.as_deref(),
+        &args.datasets,
+        args.dataset_file.as_deref(),
+    )?;
+    if let Some(format) = format_hint {
+        mounts[0] = mounts[0].clone().with_format_hint(format);
+    }
+    let snapshot = Arc::new(
+        DatasetCatalogSnapshot::discover(
+            mounts,
+            default_dataset,
+            CatalogSnapshotOptions {
+                error_policy: args.dataset_errors.into(),
+                manifest: manifest_options,
+                files: file_options,
+                storyline: StorylineDataSourceOptions {
                     content_read_mode: args.content_read_mode.storyline(),
                     ..StorylineDataSourceOptions::default()
                 },
-            )
-            .await
-            .with_context(|| format!("open Lance store {}", args.input))?;
-            ChronicleQueryEngine::from_lance_source_with_options(source, execution_options.clone())?
-        }
-        ResolvedQuerySource::Events => ChronicleQueryEngine::open_events_uri_with_options(
-            &args.input,
-            execution_options.clone(),
+            },
         )
-        .await
-        .with_context(|| format!("open canonical event dataset {}", args.input))?,
-        ResolvedQuerySource::Local(manifest) => {
-            ChronicleQueryEngine::open_local_manifest_with_execution_options(
-                manifest,
-                file_options,
-                execution_options,
-            )
-            .with_context(|| format!("open local trajectory input {}", args.input))?
+        .await?,
+    );
+    anyhow::ensure!(
+        args.content_read_mode == QueryContentReadMode::Full
+            || snapshot.datasets().iter().all(|dataset| {
+                dataset.sources.iter().all(|source| {
+                    source.status != persisting_pchronicle::CatalogSourceStatus::Ready
+                        || source.format.as_deref() == Some("storyline")
+                })
+            }),
+        "--content-read-mode preview requires Storyline Lance Dataset sources"
+    );
+    if args.dataset_errors == DatasetErrorMode::Report {
+        for dataset in snapshot.datasets() {
+            for source in dataset
+                .sources
+                .iter()
+                .filter(|source| source.error.is_some())
+            {
+                eprintln!(
+                    "[ppilot] Dataset {} skipped {}: {}",
+                    dataset.mount.name,
+                    source.file,
+                    source.error.as_deref().unwrap_or("unknown discovery error")
+                );
+            }
         }
-    };
+    }
+    let engine =
+        ChronicleQueryEngine::from_catalog_snapshot_with_options(snapshot, execution_options)
+            .await?;
     for table in &external_tables {
         engine.register_external_table(table).await?;
     }
@@ -677,6 +751,49 @@ fn write_stdout(output: &[u8]) -> Result<()> {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct DatasetMountFile {
+    datasets: BTreeMap<String, String>,
+}
+
+fn resolve_dataset_mounts(
+    input: Option<&str>,
+    values: &[String],
+    dataset_file: Option<&Path>,
+) -> Result<(Vec<DatasetMount>, Option<String>)> {
+    let mut mounts = Vec::new();
+    if let Some(input) = input {
+        mounts.push(DatasetMount::default(input)?);
+    }
+    if let Some(path) = dataset_file {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("read Dataset mount file {}", path.display()))?;
+        let config: DatasetMountFile = toml::from_str(&content)
+            .with_context(|| format!("parse Dataset mount file {}", path.display()))?;
+        for (name, uri) in config.datasets {
+            mounts.push(DatasetMount::new(name, uri)?);
+        }
+    }
+    for value in values {
+        let (name, uri) = value
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("invalid --dataset {value:?}; expected NAME=URI"))?;
+        mounts.push(DatasetMount::new(name, uri)?);
+    }
+    anyhow::ensure!(
+        !mounts.is_empty(),
+        "provide a positional INPUT, --dataset NAME=URI, or --dataset-file"
+    );
+    let default_dataset = if input.is_some() {
+        Some(DEFAULT_DATASET_NAME.to_string())
+    } else if mounts.len() == 1 {
+        Some(mounts[0].name.clone())
+    } else {
+        None
+    };
+    Ok((mounts, default_dataset))
+}
+
 fn parse_external_tables(values: &[String]) -> Result<Vec<ExternalTableSpec>> {
     let mut names = HashSet::with_capacity(values.len());
     values
@@ -850,7 +967,10 @@ mod tests {
     #[test]
     fn reads_inline_and_file_sql() -> Result<()> {
         let inline = SqlQueryArgs {
-            input: "ignored".into(),
+            input: Some("ignored".into()),
+            datasets: Vec::new(),
+            dataset_file: None,
+            dataset_errors: DatasetErrorMode::Strict,
             source: QuerySource::Auto,
             tables: Vec::new(),
             sql: Some("SELECT 1".into()),
@@ -876,7 +996,10 @@ mod tests {
         let temp = tempfile::NamedTempFile::new()?;
         fs::write(temp.path(), "SELECT * FROM steps")?;
         let file = SqlQueryArgs {
-            input: "ignored".into(),
+            input: Some("ignored".into()),
+            datasets: Vec::new(),
+            dataset_file: None,
+            dataset_errors: DatasetErrorMode::Strict,
             source: QuerySource::Auto,
             tables: Vec::new(),
             sql: None,
@@ -954,6 +1077,60 @@ mod tests {
         assert!(help.contains("NAME=jsonl:PATH"), "{help}");
         assert!(help.contains("openai_msg"), "{help}");
         assert!(help.contains("actf"), "{help}");
+        assert!(help.contains("--dataset <NAME=URI>"), "{help}");
+        assert!(help.contains("--dataset-file <FILE>"), "{help}");
+    }
+
+    #[test]
+    fn positional_input_is_the_default_dataset_and_can_coexist_with_mounts() -> Result<()> {
+        let (mounts, default_dataset) = resolve_dataset_mounts(
+            Some("/tmp/default"),
+            &["archive=s3://bucket/archive".into()],
+            None,
+        )?;
+        assert_eq!(default_dataset.as_deref(), Some(DEFAULT_DATASET_NAME));
+        assert_eq!(mounts[0], DatasetMount::default("/tmp/default")?);
+        assert_eq!(
+            mounts[1],
+            DatasetMount::new("archive", "s3://bucket/archive")?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_named_mount_is_default_but_multiple_named_mounts_are_qualified() -> Result<()> {
+        let (one, one_default) = resolve_dataset_mounts(None, &["prod=/tmp/prod".into()], None)?;
+        assert_eq!(one.len(), 1);
+        assert_eq!(one_default.as_deref(), Some("prod"));
+
+        let (_, multiple_default) = resolve_dataset_mounts(
+            None,
+            &["prod=/tmp/prod".into(), "staging=/tmp/staging".into()],
+            None,
+        )?;
+        assert_eq!(multiple_default, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dataset_file_and_duplicate_names_are_validated_by_catalog() -> Result<()> {
+        let file = tempfile::NamedTempFile::new()?;
+        fs::write(file.path(), "[datasets]\narchive = 's3://bucket/archive'\n")?;
+        let (mounts, default_dataset) = resolve_dataset_mounts(None, &[], Some(file.path()))?;
+        assert_eq!(default_dataset.as_deref(), Some("archive"));
+        assert_eq!(mounts[0].name, "archive");
+
+        let (duplicates, _) =
+            resolve_dataset_mounts(Some("/tmp/default"), &["dataset=/tmp/other".into()], None)?;
+        let error = DatasetCatalogSnapshot::discover(
+            duplicates,
+            Some(DEFAULT_DATASET_NAME.into()),
+            CatalogSnapshotOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate Dataset name"));
+        Ok(())
     }
 
     #[test]

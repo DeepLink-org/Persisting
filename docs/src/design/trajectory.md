@@ -155,6 +155,7 @@ OpenAI msg ┘
 
 ## 8. 相关文档
 
+- [Dataset Catalog](dataset-catalog.md)
 - [AgenticMD 格式](trajectory-format.md)
 - [Gateway 架构](gateway.md)
 - [pVisor 命令](cli-pvisor.md)

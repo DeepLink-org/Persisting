@@ -1,0 +1,133 @@
+{
+  "status": "experimental-local-retest",
+  "recorded_at": "2026-08-12",
+  "scope": "pChronicle lazy catalog and source-pruning retest",
+  "baseline": {
+    "persisting_head": "94531cf903e5abc336de347588fb1858e9d52b6a",
+    "state": "head plus local uncommitted pChronicle catalog/query changes",
+    "previous_results": "recorded-results-2026-08-11.json",
+    "clickhouse_version": "25.12.11.4"
+  },
+  "source_sha256": {
+    "catalog.rs": "f5066a96a0c8a8eb062b50b205b4f81a2272cf98385f17708fe496cea787872a",
+    "raw_event_datafusion.rs": "e4f2a19b1e62ffaa9e7538430d7b033d72bfca4d5ef0ccb816a8fe59f9dbba78",
+    "raw_event_lance.rs": "42089b5d10c966360f9a9beb72db74222a7d3fec499f579ccdd732916f544ce2",
+    "query_engine.rs": "40c95f0bc10de90cd04f97fc81cd5a0410321b56ad001df4c487b332042c26ea",
+    "storyline_datafusion.rs": "3f56eacf94735364b2b190313973510f6b0bcf8b04726c65054097de8f40e71f",
+    "langfuse_backend_feasibility.rs": "8c822ab13cdf7c949e3b93c0eab6b1c7335a560b3e24720165e7eaa4ad12f1b8"
+  },
+  "fixture": {
+    "sha256": "1b2ef8ed2f51e6d85a9907bbbebbdafbc4c961d8c4368b2a20b737f94cfc4c90",
+    "bytes": 238470862,
+    "rows": 113000,
+    "events": 100000,
+    "event_distinct_logical_ids": 99900,
+    "scores": 10000,
+    "dataset_run_items": 2000,
+    "blob_log_rows": 1000,
+    "projects": 2,
+    "traces": 200,
+    "pchronicle_sources": 210
+  },
+  "pchronicle": {
+    "append": {
+      "acknowledged_rows": 113000,
+      "elapsed_ms": 12302.462166,
+      "rows_per_second": 9185.15322179126,
+      "zero_acknowledged_loss": true
+    },
+    "catalog": {
+      "cold_start_ms": 35.041416999999996,
+      "rss_before_bytes": 308871168,
+      "rss_after_catalog_bytes": 316669952,
+      "rss_after_unpruned_queries_bytes": 624885760,
+      "sources": 210
+    },
+    "warm_query_p95_ms": {
+      "point": 258.13295899999997,
+      "list": 282.798583,
+      "simple_model_aggregate": 296.706625
+    },
+    "fresh_global": {
+      "point_catalog_setup_ms": 10.836791999999999,
+      "point_p95_ms": 302.93704199999996,
+      "list_catalog_setup_ms": 12.47275,
+      "list_p95_ms": 326.682458
+    },
+    "catalog_pruning": {
+      "direct_run_open_ms": 0.5066660000000001,
+      "direct_run_point_p95_ms": 2.1355,
+      "exact_file_catalog_setup_ms": 12.337958,
+      "exact_file_point_p95_ms": 3.0130410000000003,
+      "project_file_catalog_setup_ms": 12.02425,
+      "project_file_list_p95_ms": 167.17120799999998
+    },
+    "load_phase": {
+      "rows": 30,
+      "effective_rows_per_second": 9.582487175227183,
+      "ack_p95_ms": 27.738083,
+      "visibility_p95_ms": 5.46075,
+      "concurrent_query_p95_ms": 243.45462500000002,
+      "visible_rows": 30,
+      "zero_acknowledged_loss": true,
+      "pinned_count_after_append": 113000,
+      "refreshed_count": 113030
+    },
+    "json_export": {
+      "rows": 50000,
+      "bytes": 96902959,
+      "first_byte_ms": 336.693958,
+      "elapsed_ms": 503.48304200000007
+    },
+    "maintenance_restart": {
+      "maintenance_ms": 37.512542,
+      "fragments_removed": 3,
+      "restart_append_and_catalog_ms": 51.761459,
+      "restart_visibility_ms": 344.021583,
+      "restart_end_to_end_ms": 395.78304199999997,
+      "restart_row_visible": true
+    },
+    "semantics": {
+      "event_physical_rows": 100000,
+      "event_distinct_logical_ids": 99900,
+      "duplicate_versions_remain_physical": true,
+      "cross_project_point_rows": 0
+    }
+  },
+  "same_code_repeat_ranges": {
+    "catalog_cold_start_ms": [35.041416999999996, 35.360584],
+    "append_rows_per_second": [9105.865426522427, 9239.77754263836],
+    "warm_point_p95_ms": [258.13295899999997, 262.034875],
+    "warm_list_p95_ms": [282.798583, 352.99425],
+    "simple_model_aggregate_p95_ms": [292.394042, 299.305875],
+    "exact_file_point_p95_ms": [2.978792, 3.0130410000000003],
+    "project_file_list_p95_ms": [166.093667, 167.17120799999998]
+  },
+  "comparison_to_2026_08_11_pct": {
+    "catalog_cold_start_reduction": 98.33456378855257,
+    "cold_catalog_rss_reduction": 71.66979362101313,
+    "old_eager_catalog_vs_new_post_query_rss_reduction": 44.09591932457786,
+    "warm_point_latency_reduction": 34.79359228197787,
+    "warm_list_latency_reduction": 49.930903149318596,
+    "simple_model_aggregate_latency_reduction": 63.219746724583636,
+    "concurrent_query_latency_reduction": 30.52278276912816,
+    "append_throughput_reduction": 2.020792298691799
+  },
+  "comparison_to_clickhouse_2026_08_11": {
+    "clickhouse_point_p95_ms": 4.826582997338846,
+    "exact_file_point_ratio": 0.6242596473864122,
+    "clickhouse_list_p95_ms": 2.9707499779760838,
+    "project_file_list_ratio": 56.27239223742773,
+    "warm_global_point_ratio": 53.481512519793505,
+    "warm_global_list_ratio": 95.19433984567944
+  },
+  "tests": {
+    "langfuse_backend_faults": "2 passed; 0 failed",
+    "production_scale": "5 passed; 0 failed; 1 ignored",
+    "query_engine": "14 passed; 0 failed",
+    "catalog": "9 passed; 0 failed",
+    "raw_event_lance_and_rows": "21 passed; 0 failed",
+    "pchronicle_server_lib": "16 passed; 0 failed"
+  },
+  "artifact_directory": "/tmp/langfuse-pchronicle-retest-final.n9fgAW"
+}

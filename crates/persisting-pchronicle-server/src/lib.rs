@@ -1,7 +1,7 @@
 //! Local, loopback-only pChronicle browser.
 
+mod acceleration;
 mod asset;
-mod dataset;
 mod explorer;
 
 use std::collections::BTreeMap;
@@ -11,28 +11,64 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use persisting_pchronicle::{
-    events_to_har, events_to_otlp_json, events_to_storyline, expand_story_locations,
-    list_story_read_locations, maintain_raw_events, read_judge_rows, read_revisions,
-    write_judge_rows, Chronicle, ChronicleQueryEngine, EventRecord, EventsDocument, JudgeRow,
-    LanceMaintenanceOptions, StoryCoords, StorylineTurn, TrajectoryReplayRequest,
-    TrajectoryStatsRequest, TrajectoryStorageFormat,
+    events_to_har, events_to_otlp_json, maintain_raw_events, read_judge_rows, read_revisions,
+    write_judge_rows, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
+    ChronicleQueryEngine, DatasetCatalogSnapshot, DatasetMount, EventRecord, JudgeRow,
+    LanceMaintenanceOptions, StoryCoords, StorylineTurn, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio_stream::wrappers::IntervalStream;
-use tokio_stream::StreamExt;
+
+use acceleration::{AccelerationStatus, ServerAcceleration};
 
 #[derive(Clone)]
 struct AppState {
     storage: Arc<String>,
-    chronicle: Chronicle,
-    dataset: Option<Arc<dataset::DatasetStore>>,
+    config: Arc<ChronicleServerConfig>,
+    catalog: Arc<tokio::sync::RwLock<Option<Arc<CatalogRuntime>>>>,
     trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, LoadedTrajectory)>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChronicleServerConfig {
+    pub datasets: Vec<DatasetMount>,
+    pub default_dataset: Option<String>,
+    pub writable_dataset: Option<String>,
+    pub catalog_options: CatalogSnapshotOptions,
+}
+
+impl ChronicleServerConfig {
+    pub fn legacy(storage: impl Into<String>) -> anyhow::Result<Self> {
+        let mount = DatasetMount::default(storage.into())?;
+        Ok(Self {
+            datasets: vec![mount],
+            default_dataset: Some(DEFAULT_DATASET_NAME.into()),
+            writable_dataset: Some(DEFAULT_DATASET_NAME.into()),
+            catalog_options: CatalogSnapshotOptions::default(),
+        })
+    }
+
+    pub fn mounted(datasets: Vec<DatasetMount>) -> anyhow::Result<Self> {
+        anyhow::ensure!(!datasets.is_empty(), "mount at least one Dataset");
+        let default_dataset = (datasets.len() == 1).then(|| datasets[0].name.clone());
+        Ok(Self {
+            datasets,
+            default_dataset,
+            writable_dataset: None,
+            catalog_options: CatalogSnapshotOptions::default(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct CatalogRuntime {
+    snapshot: Arc<DatasetCatalogSnapshot>,
+    engine: Arc<ChronicleQueryEngine>,
+    acceleration: ServerAcceleration,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,6 +93,9 @@ fn api_error(error: impl std::fmt::Display) -> ApiError {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RunSummary {
+    pub(crate) dataset: String,
+    pub(crate) file: String,
+    pub(crate) run_id: String,
     pub(crate) agent_id: String,
     pub(crate) model_name: Option<String>,
     pub(crate) session_id: String,
@@ -69,6 +108,9 @@ pub(crate) struct RunSummary {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SessionQuery {
+    pub(crate) dataset: Option<String>,
+    pub(crate) file: Option<String>,
+    pub(crate) run_id: Option<String>,
     pub(crate) agent_id: String,
     pub(crate) session_id: String,
     pub(crate) root_session_id: Option<String>,
@@ -76,37 +118,26 @@ pub(crate) struct SessionQuery {
     pub(crate) limit: Option<usize>,
 }
 
-fn coords(storage: &str, query: &SessionQuery) -> StoryCoords {
-    StoryCoords::new(
-        storage,
-        &query.agent_id,
-        &query.session_id,
-        query.root_session_id.clone(),
-    )
-}
-
-fn logical_run_path(agent_id: &str, session_id: &str, root_session_id: Option<&str>) -> String {
-    match root_session_id {
-        Some(root) if root != session_id => {
-            format!("{agent_id}/{root}/subagents/{session_id}")
-        }
-        Some(root) => format!("{agent_id}/{root}"),
-        None => format!("{agent_id}/{session_id}"),
-    }
-}
-
 pub fn router(storage: impl Into<String>) -> Router {
     let storage = storage.into();
-    let dataset = dataset::DatasetStore::discover(&storage)
-        .map(|dataset| dataset.map(Arc::new))
-        .unwrap_or_else(|error| {
-            eprintln!("[persisting-pchronicle-server] dataset discovery failed: {error}");
-            None
-        });
+    let config = ChronicleServerConfig::legacy(storage.clone())
+        .expect("legacy pChronicle storage must create the default Dataset");
+    router_with_config(config)
+}
+
+pub fn router_with_config(config: ChronicleServerConfig) -> Router {
+    let storage = config
+        .writable_dataset
+        .as_deref()
+        .or(config.default_dataset.as_deref())
+        .and_then(|name| config.datasets.iter().find(|mount| mount.name == name))
+        .or_else(|| config.datasets.first())
+        .map(|mount| mount.uri.clone())
+        .unwrap_or_default();
     let state = AppState {
         storage: Arc::new(storage),
-        chronicle: Chronicle,
-        dataset,
+        config: Arc::new(config),
+        catalog: Arc::new(tokio::sync::RwLock::new(None)),
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
     };
     Router::new()
@@ -119,7 +150,6 @@ pub fn router(storage: impl Into<String>) -> Router {
         .route("/api/v1/explorer/turns", get(explorer_turns))
         .route("/api/v1/explorer/turn", get(explorer_turn))
         .route("/api/v1/events", get(events))
-        .route("/api/v1/stream", get(stream))
         .route("/api/v1/storyline", get(storyline))
         .route("/api/v1/trajectory-view", get(trajectory_view))
         .route("/api/v1/export/har", get(export_har))
@@ -127,6 +157,7 @@ pub fn router(storage: impl Into<String>) -> Router {
         .route("/api/v1/judgments", get(judgments).post(write_judgments))
         .route("/api/v1/revisions", get(revisions))
         .route("/api/v1/maintain", post(maintain))
+        .route("/api/v1/catalog", get(catalog).post(refresh_catalog))
         .route("/api/v1/query/tables", get(query_tables))
         .route("/api/v1/query", post(query_sql))
         .route("/api/v1/query/evidence", post(query_evidence))
@@ -137,12 +168,19 @@ pub fn router(storage: impl Into<String>) -> Router {
 /// Serve the local UI. Non-loopback addresses are deliberately rejected
 /// because this single-user surface has no authentication layer.
 pub async fn serve(storage: impl Into<String>, addr: SocketAddr) -> anyhow::Result<()> {
+    serve_with_config(ChronicleServerConfig::legacy(storage)?, addr).await
+}
+
+pub async fn serve_with_config(
+    config: ChronicleServerConfig,
+    addr: SocketAddr,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         addr.ip().is_loopback(),
         "pChronicle Web UI may only bind to a loopback address"
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router(storage))
+    axum::serve(listener, router_with_config(config))
         .await
         .context("serve pChronicle Web UI")
 }
@@ -155,50 +193,87 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"status":"ok","storage":state.storage.as_str()}))
 }
 
+async fn build_catalog_runtime(
+    config: &ChronicleServerConfig,
+) -> anyhow::Result<Arc<CatalogRuntime>> {
+    let snapshot = Arc::new(
+        DatasetCatalogSnapshot::discover(
+            config.datasets.clone(),
+            config.default_dataset.clone(),
+            config.catalog_options,
+        )
+        .await?,
+    );
+    let engine = Arc::new(ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?);
+    Ok(Arc::new(CatalogRuntime {
+        snapshot,
+        engine,
+        acceleration: ServerAcceleration::default(),
+    }))
+}
+
+async fn current_catalog(state: &AppState) -> Result<Arc<CatalogRuntime>, ApiError> {
+    if let Some(runtime) = state.catalog.read().await.as_ref() {
+        return Ok(runtime.clone());
+    }
+    let runtime = build_catalog_runtime(&state.config)
+        .await
+        .map_err(api_error)?;
+    let mut catalog = state.catalog.write().await;
+    Ok(catalog.get_or_insert_with(|| runtime.clone()).clone())
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogResponse {
+    snapshot_id: String,
+    created_at: String,
+    default_dataset: Option<String>,
+    writable_dataset: Option<String>,
+    error_policy: CatalogErrorPolicy,
+    datasets: Vec<persisting_pchronicle::CatalogDataset>,
+    acceleration: AccelerationStatus,
+}
+
+fn catalog_response(state: &AppState, runtime: &CatalogRuntime) -> CatalogResponse {
+    CatalogResponse {
+        snapshot_id: runtime.snapshot.snapshot_id().to_string(),
+        created_at: runtime.snapshot.created_at().to_string(),
+        default_dataset: runtime.snapshot.default_dataset().map(str::to_owned),
+        writable_dataset: state.config.writable_dataset.clone(),
+        error_policy: state.config.catalog_options.error_policy,
+        datasets: runtime.snapshot.datasets().to_vec(),
+        acceleration: runtime.acceleration.status(),
+    }
+}
+
+async fn catalog(State(state): State<AppState>) -> Result<Json<CatalogResponse>, ApiError> {
+    let runtime = current_catalog(&state).await?;
+    Ok(Json(catalog_response(&state, &runtime)))
+}
+
+async fn refresh_catalog(State(state): State<AppState>) -> Result<Json<CatalogResponse>, ApiError> {
+    // Build fully outside the write lock. Failed strict refreshes leave the
+    // previously published snapshot untouched.
+    let runtime = build_catalog_runtime(&state.config)
+        .await
+        .map_err(api_error)?;
+    *state.catalog.write().await = Some(runtime.clone());
+    *state.trajectory_cache.write().await = None;
+    Ok(Json(catalog_response(&state, &runtime)))
+}
+
 async fn runs(State(state): State<AppState>) -> Result<Json<Vec<RunSummary>>, ApiError> {
     Ok(Json(load_run_summaries(&state).await?))
 }
 
 async fn load_run_summaries(state: &AppState) -> Result<Vec<RunSummary>, ApiError> {
-    if let Some(dataset) = &state.dataset {
-        return Ok(dataset.summaries());
-    }
-    let roots = match list_story_read_locations(state.storage.as_ref().clone(), None, None, None) {
-        Ok(roots) => roots,
-        Err(error) if is_empty_storage_error(&error.to_string()) => return Ok(Vec::new()),
-        Err(error) => return Err(api_error(error)),
-    };
-    let locations = expand_story_locations(roots).await.map_err(api_error)?;
-    let mut out = Vec::with_capacity(locations.len());
-    for location in locations {
-        let stats = state
-            .chronicle
-            .stats(TrajectoryStatsRequest {
-                storage: location.storage.clone(),
-                agent_id: location.agent_id.clone(),
-                session_id: location.session_id.clone(),
-                root_session_id: location.root_session_id.clone(),
-                storage_format: TrajectoryStorageFormat::Lance,
-            })
-            .await
-            .map_err(api_error)?;
-        let path = logical_run_path(
-            &location.agent_id,
-            &location.session_id,
-            location.root_session_id.as_deref(),
-        );
-        out.push(RunSummary {
-            agent_id: location.agent_id,
-            model_name: None,
-            session_id: location.session_id,
-            root_session_id: location.root_session_id,
-            path,
-            row_count: stats.row_count,
-            duplicate_event_ids: stats.duplicate_event_ids,
-            status: stats.status,
-        });
-    }
-    Ok(out)
+    let runtime = current_catalog(state).await?;
+    runtime
+        .acceleration
+        .run_summaries(&runtime.snapshot, &runtime.engine)
+        .await
+        .map(|summaries| summaries.as_ref().clone())
+        .map_err(api_error)
 }
 
 async fn explorer_runs(
@@ -209,18 +284,18 @@ async fn explorer_runs(
     let mut judgments_by_run = BTreeMap::new();
     for run in &summaries {
         let session_query = SessionQuery {
+            dataset: Some(run.dataset.clone()),
+            file: Some(run.file.clone()),
+            run_id: Some(run.run_id.clone()),
             agent_id: run.agent_id.clone(),
             session_id: run.session_id.clone(),
             root_session_id: run.root_session_id.clone(),
             offset: None,
             limit: None,
         };
-        let rows = read_judge_rows(&coords(&state.storage, &session_query))
+        let rows = session_judgments(&state, &session_query)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|row| row.session_id == run.session_id)
-            .collect();
+            .unwrap_or_default();
         judgments_by_run.insert(explorer::run_key(run), rows);
     }
     Ok(Json(explorer::run_page(
@@ -230,40 +305,156 @@ async fn explorer_runs(
     )))
 }
 
-fn is_empty_storage_error(message: &str) -> bool {
-    message.contains("no trajectory sessions under") || message.contains("no sessions under")
+async fn resolve_run_summary(
+    state: &AppState,
+    query: &SessionQuery,
+) -> Result<RunSummary, ApiError> {
+    let mut matches = load_run_summaries(state)
+        .await?
+        .into_iter()
+        .filter(|run| {
+            query
+                .dataset
+                .as_ref()
+                .filter(|value| !value.is_empty())
+                .is_none_or(|value| value == &run.dataset)
+                && query
+                    .file
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                    .is_none_or(|value| value == &run.file)
+                && query
+                    .run_id
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                    .is_none_or(|value| value == &run.run_id)
+                && (run.agent_id == query.agent_id
+                    || run.model_name.as_deref() == Some(query.agent_id.as_str()))
+                && run.session_id == query.session_id
+        })
+        .collect::<Vec<_>>();
+    // Legacy browser URLs did not carry the Catalog key. Treat the old
+    // root_session_id coordinate as an ambiguity breaker, not as a required
+    // identity field: direct JSON sources may not preserve that field in the
+    // normalized run row.
+    if matches.len() > 1 {
+        if let Some(root) = &query.root_session_id {
+            matches.retain(|run| run.root_session_id.as_ref() == Some(root));
+        }
+    }
+    if matches.len() != 1 {
+        return Err(api_error(format!(
+            "trajectory selector resolved {} Storylines; include dataset, _file_, and session_id",
+            matches.len()
+        )));
+    }
+    Ok(matches.into_iter().next().expect("one matching run"))
+}
+
+fn catalog_storyline_key(run: &RunSummary) -> CatalogStorylineKey {
+    CatalogStorylineKey {
+        dataset: run.dataset.clone(),
+        file: run.file.clone(),
+        session_id: run.session_id.clone(),
+    }
+}
+
+async fn canonical_run_coords(
+    state: &AppState,
+    query: &SessionQuery,
+) -> Result<Option<StoryCoords>, ApiError> {
+    let run = resolve_run_summary(state, query).await?;
+    canonical_run_coords_for_summary(state, &run).await
+}
+
+async fn canonical_run_coords_for_summary(
+    state: &AppState,
+    run: &RunSummary,
+) -> Result<Option<StoryCoords>, ApiError> {
+    let runtime = current_catalog(state).await?;
+    let event_uri = runtime
+        .snapshot
+        .canonical_event_uri(&catalog_storyline_key(run))
+        .map_err(api_error)?;
+    event_uri
+        .map(|event_uri| event_uri_coords(event_uri, run).map_err(api_error))
+        .transpose()
+}
+
+async fn writable_run_coords(
+    state: &AppState,
+    query: &SessionQuery,
+    required: bool,
+) -> Result<Option<StoryCoords>, ApiError> {
+    let run = resolve_run_summary(state, query).await?;
+    let Some(writable_dataset) = state.config.writable_dataset.as_deref() else {
+        if required {
+            return Err(api_error(
+                "pChronicle Web was started without --writable-dataset",
+            ));
+        }
+        return Ok(None);
+    };
+    if run.dataset != writable_dataset {
+        if required {
+            return Err(api_error(format!(
+                "Dataset '{}' is read-only; writable Dataset is '{}'",
+                run.dataset, writable_dataset
+            )));
+        }
+        return Ok(None);
+    }
+    let Some(coords) = canonical_run_coords_for_summary(state, &run).await? else {
+        if required {
+            return Err(api_error(format!(
+                "Dataset source '{}/{}' is not a writable canonical events source",
+                run.dataset, run.file
+            )));
+        }
+        return Ok(None);
+    };
+    Ok(Some(coords))
+}
+
+fn event_uri_coords(uri: &str, run: &RunSummary) -> anyhow::Result<StoryCoords> {
+    let uri = uri.trim_end_matches('/');
+    let run_uri = uri
+        .strip_suffix("/events.lance")
+        .or_else(|| (uri == "events.lance").then_some(""))
+        .with_context(|| format!("canonical event URI does not end in events.lance: {uri}"))?;
+    let (agent_uri, physical_run_id) = run_uri
+        .rsplit_once('/')
+        .context("canonical event URI has no Run directory")?;
+    let (storage, physical_agent_id) = agent_uri
+        .rsplit_once('/')
+        .map_or((".", agent_uri), |(storage, agent)| (storage, agent));
+    anyhow::ensure!(
+        !physical_agent_id.is_empty() && !physical_run_id.is_empty(),
+        "canonical event URI has an invalid agent/Run hierarchy: {uri}"
+    );
+    Ok(StoryCoords::new(
+        storage,
+        physical_agent_id,
+        run.session_id.clone(),
+        Some(physical_run_id.to_string()),
+    ))
 }
 
 async fn load_events(state: &AppState, query: &SessionQuery) -> Result<Vec<EventRecord>, ApiError> {
-    if let Some(dataset) = &state.dataset {
-        if dataset.contains(query) {
-            let run = dataset.load(query).map_err(api_error)?;
-            let offset = query.offset.unwrap_or(0).min(run.records.len());
-            let end = query
-                .limit
-                .map(|limit| offset.saturating_add(limit).min(run.records.len()))
-                .unwrap_or(run.records.len());
-            return Ok(run.records[offset..end].to_vec());
-        }
-    }
-    let replay = state
-        .chronicle
-        .replay(TrajectoryReplayRequest {
-            storage: state.storage.as_ref().clone(),
-            agent_id: query.agent_id.clone(),
-            session_id: query.session_id.clone(),
-            root_session_id: query.root_session_id.clone(),
-            offset: query.offset.unwrap_or(0),
-            limit: query.limit.or(Some(1000)),
-            storage_format: TrajectoryStorageFormat::Lance,
-        })
+    let run = resolve_run_summary(state, query).await?;
+    let runtime = current_catalog(state).await?;
+    let document = runtime
+        .snapshot
+        .load_events(&catalog_storyline_key(&run))
         .await
-        .map_err(api_error)?;
-    replay
-        .records
-        .into_iter()
-        .map(|line| serde_json::from_str(&line).map_err(api_error))
-        .collect()
+        .map_err(api_error)?
+        .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?;
+    let offset = query.offset.unwrap_or(0).min(document.events.len());
+    let end = query
+        .limit
+        .map(|limit| offset.saturating_add(limit).min(document.events.len()))
+        .unwrap_or(document.events.len());
+    Ok(document.events[offset..end].to_vec())
 }
 
 async fn events(
@@ -272,104 +463,42 @@ async fn events(
 ) -> Result<Json<Value>, ApiError> {
     let offset = query.offset.unwrap_or(0);
     let requested_limit = query.limit.unwrap_or(1000);
-    let records = load_events(&state, &query).await?;
-    if let Some(summary) = state
-        .dataset
-        .as_ref()
-        .and_then(|dataset| dataset.summary(&query))
-    {
-        let next_offset = offset + records.len();
-        return Ok(Json(json!({
-            "snapshot": {
-                "offset": offset,
-                "next_offset": next_offset,
-                "total": summary.row_count,
-                "has_more": next_offset < summary.row_count && !records.is_empty(),
-                "limit": requested_limit
-            },
-            "records": records
-        })));
-    }
-    let stats = state
-        .chronicle
-        .stats(TrajectoryStatsRequest {
-            storage: state.storage.as_ref().clone(),
-            agent_id: query.agent_id.clone(),
-            session_id: query.session_id.clone(),
-            root_session_id: query.root_session_id.clone(),
-            storage_format: TrajectoryStorageFormat::Lance,
-        })
-        .await
-        .map_err(api_error)?;
+    let full_query = SessionQuery {
+        offset: None,
+        limit: None,
+        ..query.clone()
+    };
+    let all_records = load_events(&state, &full_query).await?;
+    let total = all_records.len();
+    let start = offset.min(total);
+    let end = start.saturating_add(requested_limit).min(total);
+    let records = all_records[start..end].to_vec();
     let next_offset = offset + records.len();
     Ok(Json(json!({
         "snapshot": {
             "offset": offset,
             "next_offset": next_offset,
-            "total": stats.row_count,
-            "has_more": next_offset < stats.row_count && !records.is_empty(),
+            "total": total,
+            "has_more": next_offset < total && !records.is_empty(),
             "limit": requested_limit
         },
         "records": records
     })))
 }
 
-async fn stream(
-    State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
-    let stream = IntervalStream::new(tokio::time::interval(std::time::Duration::from_secs(1)))
-        .then(move |_| {
-            let state = state.clone();
-            let query = SessionQuery {
-                agent_id: query.agent_id.clone(),
-                session_id: query.session_id.clone(),
-                root_session_id: query.root_session_id.clone(),
-                offset: None,
-                limit: None,
-            };
-            async move {
-                if let Some(dataset) = &state.dataset {
-                    if let Some(run) = dataset.summaries().into_iter().find(|run| {
-                        run.agent_id == query.agent_id && run.session_id == query.session_id
-                    }) {
-                        let payload = json!({"row_count":run.row_count,"status":run.status});
-                        return Ok(SseEvent::default()
-                            .event("snapshot")
-                            .data(payload.to_string()));
-                    }
-                }
-                let result = state
-                    .chronicle
-                    .stats(TrajectoryStatsRequest {
-                        storage: state.storage.as_ref().clone(),
-                        agent_id: query.agent_id,
-                        session_id: query.session_id,
-                        root_session_id: query.root_session_id,
-                        storage_format: TrajectoryStorageFormat::Lance,
-                    })
-                    .await;
-                let payload = match result {
-                    Ok(stats) => json!({"row_count":stats.row_count,"status":stats.status}),
-                    Err(error) => json!({"error":error.to_string()}),
-                };
-                Ok(SseEvent::default()
-                    .event("snapshot")
-                    .data(payload.to_string()))
-            }
-        });
-    Sse::new(stream).keep_alive(KeepAlive::default())
-}
-
 async fn storyline(
     State(state): State<AppState>,
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let document = EventsDocument::new(load_events(&state, &query).await?);
-    Ok(Json(
-        serde_json::to_value(events_to_storyline(&document).map_err(api_error)?)
-            .map_err(api_error)?,
-    ))
+    let run = resolve_run_summary(&state, &query).await?;
+    let runtime = current_catalog(&state).await?;
+    let document = runtime
+        .snapshot
+        .load_storyline(&catalog_storyline_key(&run))
+        .await
+        .map_err(api_error)?
+        .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?;
+    Ok(Json(serde_json::to_value(document).map_err(api_error)?))
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -508,53 +637,14 @@ async fn load_trajectory(
     state: &AppState,
     query: &SessionQuery,
 ) -> Result<LoadedTrajectory, ApiError> {
-    if let Some(dataset) = &state.dataset {
-        if dataset.contains(query) {
-            let cache_key = format!(
-                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-                query.agent_id,
-                query.session_id,
-                query.root_session_id.as_deref().unwrap_or_default(),
-                dataset.fingerprint(query).unwrap_or_default()
-            );
-            if let Some((_, loaded)) = state
-                .trajectory_cache
-                .read()
-                .await
-                .as_ref()
-                .filter(|(key, _)| key == &cache_key)
-            {
-                return Ok(loaded.clone());
-            }
-            let loaded = dataset.load(query).map_err(api_error)?;
-            let loaded = LoadedTrajectory {
-                run: loaded.summary,
-                records: loaded.records,
-                turns: loaded.turns,
-            };
-            *state.trajectory_cache.write().await = Some((cache_key, loaded.clone()));
-            return Ok(loaded);
-        }
-    }
-
-    let stats = state
-        .chronicle
-        .stats(TrajectoryStatsRequest {
-            storage: state.storage.as_ref().clone(),
-            agent_id: query.agent_id.clone(),
-            session_id: query.session_id.clone(),
-            root_session_id: query.root_session_id.clone(),
-            storage_format: TrajectoryStorageFormat::Lance,
-        })
-        .await
-        .map_err(api_error)?;
+    let run = resolve_run_summary(state, query).await?;
+    let runtime = current_catalog(state).await?;
     let cache_key = format!(
-        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
-        query.agent_id,
-        query.session_id,
-        query.root_session_id.as_deref().unwrap_or_default(),
-        stats.row_count,
-        stats.status
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        runtime.snapshot.snapshot_id(),
+        run.dataset,
+        run.file,
+        run.session_id
     );
     if let Some((_, loaded)) = state
         .trajectory_cache
@@ -565,19 +655,26 @@ async fn load_trajectory(
     {
         return Ok(loaded.clone());
     }
-    let full_query = SessionQuery {
-        offset: Some(0),
-        limit: None,
-        ..query.clone()
-    };
-    let records = load_events(state, &full_query).await?;
+    let key = catalog_storyline_key(&run);
+    let records = runtime
+        .snapshot
+        .load_events(&key)
+        .await
+        .map_err(api_error)?
+        .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?
+        .events;
+    let document = runtime
+        .snapshot
+        .load_storyline(&key)
+        .await
+        .map_err(api_error)?
+        .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?;
     let mut by_call = BTreeMap::<String, Vec<u64>>::new();
     for event in &records {
         if let Some(call_id) = event.call_id.as_ref().filter(|id| !id.is_empty()) {
             by_call.entry(call_id.clone()).or_default().push(event.seq);
         }
     }
-    let document = events_to_storyline(&EventsDocument::new(records.clone())).map_err(api_error)?;
     let turns = document
         .turns
         .into_iter()
@@ -607,20 +704,7 @@ async fn load_trajectory(
         })
         .collect();
     let loaded = LoadedTrajectory {
-        run: RunSummary {
-            agent_id: query.agent_id.clone(),
-            model_name: None,
-            session_id: query.session_id.clone(),
-            root_session_id: query.root_session_id.clone(),
-            path: logical_run_path(
-                &query.agent_id,
-                &query.session_id,
-                query.root_session_id.as_deref(),
-            ),
-            row_count: stats.row_count,
-            duplicate_event_ids: stats.duplicate_event_ids,
-            status: stats.status,
-        },
+        run,
         records,
         turns,
     };
@@ -651,7 +735,10 @@ async fn session_judgments(
     state: &AppState,
     query: &SessionQuery,
 ) -> Result<Vec<JudgeRow>, ApiError> {
-    Ok(read_judge_rows(&coords(&state.storage, query))
+    let Some(coords) = canonical_run_coords(state, query).await? else {
+        return Ok(Vec::new());
+    };
+    Ok(read_judge_rows(&coords)
         .await
         .map_err(api_error)?
         .into_iter()
@@ -675,6 +762,9 @@ async fn explorer_run(
 
 #[derive(Debug, Deserialize)]
 struct TurnsQuery {
+    dataset: Option<String>,
+    file: Option<String>,
+    run_id: Option<String>,
     agent_id: String,
     session_id: String,
     root_session_id: Option<String>,
@@ -687,6 +777,9 @@ struct TurnsQuery {
 impl TurnsQuery {
     fn session(&self) -> SessionQuery {
         SessionQuery {
+            dataset: self.dataset.clone(),
+            file: self.file.clone(),
+            run_id: self.run_id.clone(),
             agent_id: self.agent_id.clone(),
             session_id: self.session_id.clone(),
             root_session_id: self.root_session_id.clone(),
@@ -716,6 +809,9 @@ async fn explorer_turns(
 
 #[derive(Debug, Deserialize)]
 struct TurnDetailQuery {
+    dataset: Option<String>,
+    file: Option<String>,
+    run_id: Option<String>,
     agent_id: String,
     session_id: String,
     root_session_id: Option<String>,
@@ -727,6 +823,9 @@ async fn explorer_turn(
     Query(query): Query<TurnDetailQuery>,
 ) -> Result<Json<explorer::TurnDetail>, ApiError> {
     let session = SessionQuery {
+        dataset: query.dataset,
+        file: query.file,
+        run_id: query.run_id,
         agent_id: query.agent_id,
         session_id: query.session_id,
         root_session_id: query.root_session_id,
@@ -770,9 +869,7 @@ async fn judgments(
     State(state): State<AppState>,
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let rows = read_judge_rows(&coords(&state.storage, &query))
-        .await
-        .map_err(api_error)?;
+    let rows = session_judgments(&state, &query).await?;
     Ok(Json(Value::Array(
         rows.into_iter()
             .map(|row| {
@@ -787,6 +884,9 @@ async fn judgments(
 
 #[derive(Debug, Deserialize)]
 struct JudgmentWrite {
+    dataset: Option<String>,
+    file: Option<String>,
+    run_id: Option<String>,
     agent_id: String,
     session_id: String,
     root_session_id: Option<String>,
@@ -836,6 +936,9 @@ async fn write_judgments(
         });
     }
     let query = SessionQuery {
+        dataset: request.dataset,
+        file: request.file,
+        run_id: request.run_id,
         agent_id: request.agent_id,
         session_id: request.session_id.clone(),
         root_session_id: request.root_session_id,
@@ -858,9 +961,10 @@ async fn write_judgments(
         "verdict": row.verdict,
         "rationale": row.rationale,
     });
-    let dataset = write_judge_rows(&coords(&state.storage, &query), &[row])
-        .await
-        .map_err(api_error)?;
+    let coords = writable_run_coords(&state, &query, true)
+        .await?
+        .expect("required writable coordinates");
+    let dataset = write_judge_rows(&coords, &[row]).await.map_err(api_error)?;
     Ok(Json(
         json!({"status":"ok","dataset":dataset,"judgment":response_row}),
     ))
@@ -870,13 +974,12 @@ async fn revisions(
     State(state): State<AppState>,
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let Some(coords) = canonical_run_coords(&state, &query).await? else {
+        return Ok(Json(json!([])));
+    };
     Ok(Json(
-        serde_json::to_value(
-            read_revisions(&coords(&state.storage, &query))
-                .await
-                .map_err(api_error)?,
-        )
-        .map_err(api_error)?,
+        serde_json::to_value(read_revisions(&coords).await.map_err(api_error)?)
+            .map_err(api_error)?,
     ))
 }
 
@@ -884,12 +987,12 @@ async fn maintain(
     State(state): State<AppState>,
     Json(query): Json<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let report = maintain_raw_events(
-        &coords(&state.storage, &query),
-        &LanceMaintenanceOptions::default(),
-    )
-    .await
-    .map_err(api_error)?;
+    let coords = writable_run_coords(&state, &query, true)
+        .await?
+        .expect("required writable coordinates");
+    let report = maintain_raw_events(&coords, &LanceMaintenanceOptions::default())
+        .await
+        .map_err(api_error)?;
     Ok(Json(json!({
         "status":"ok", "fragments_removed":report.fragments_removed,
         "fragments_added":report.fragments_added, "old_versions_removed":report.old_versions_removed,
@@ -904,10 +1007,20 @@ struct SqlRequest {
 
 #[derive(Debug, Serialize)]
 struct QueryCatalog {
+    snapshot_id: String,
     database: String,
     storage_path: String,
     path_column: &'static str,
+    datasets: Vec<QueryDatasetSummary>,
     tables: Vec<QueryTableSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryDatasetSummary {
+    name: String,
+    uri: String,
+    ready_sources: usize,
+    error_sources: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -944,13 +1057,21 @@ fn run_query_fields() -> Vec<QueryFieldSummary> {
             "TEXT",
             "Relative source path; supports = and LIKE",
         ),
-        field("run_id", "TEXT", "Stable trajectory identifier"),
+        field(
+            "run_id",
+            "TEXT",
+            "Run grouping identifier; not the Storyline primary key",
+        ),
         field(
             "run_id_explicit",
             "BOOLEAN",
             "Whether run_id came from source data",
         ),
-        field("session_id", "TEXT", "Source session identifier"),
+        field(
+            "session_id",
+            "TEXT",
+            "Storyline identifier within one Catalog source",
+        ),
         field("schema_version", "TEXT", "Normalized schema version"),
         field("agent_id", "TEXT", "Agent identifier"),
         field("agent_name", "TEXT?", "Agent display name"),
@@ -990,8 +1111,8 @@ fn step_query_fields() -> Vec<QueryFieldSummary> {
             "TEXT",
             "Relative source path; supports = and LIKE",
         ),
-        field("run_id", "TEXT", "Owning trajectory identifier"),
-        field("session_id", "TEXT", "Owning session identifier"),
+        field("run_id", "TEXT", "Owning Run grouping identifier"),
+        field("session_id", "TEXT", "Owning Storyline identifier"),
         field("step_id", "BIGINT", "Ordered step number"),
         field("kind", "TEXT?", "Captured step kind"),
         field("effective_kind", "TEXT", "Normalized step kind"),
@@ -1030,8 +1151,8 @@ fn tool_call_query_fields() -> Vec<QueryFieldSummary> {
             "TEXT",
             "Relative source path; supports = and LIKE",
         ),
-        field("run_id", "TEXT", "Owning trajectory identifier"),
-        field("session_id", "TEXT", "Owning session identifier"),
+        field("run_id", "TEXT", "Owning Run grouping identifier"),
+        field("session_id", "TEXT", "Owning Storyline identifier"),
         field("step_id", "BIGINT", "Owning step number"),
         field("call_index", "BIGINT", "Tool-call order within the step"),
         field("tool_call_id", "TEXT", "Tool-call identifier"),
@@ -1062,12 +1183,83 @@ fn trajectory_query_fields() -> Vec<QueryFieldSummary> {
     fields
 }
 
-async fn query_tables(State(state): State<AppState>) -> Json<QueryCatalog> {
-    Json(QueryCatalog {
-        database: database_name(&state.storage),
-        storage_path: state.storage.as_ref().clone(),
+fn source_query_fields() -> Vec<QueryFieldSummary> {
+    vec![
+        field("_file_", "TEXT", "Dataset-relative logical source path"),
+        field("format", "TEXT?", "Detected trajectory format"),
+        field("kind", "TEXT", "file or composite store"),
+        field(
+            "snapshot_ref",
+            "TEXT?",
+            "Pinned generation, manifest, version, or ETag",
+        ),
+        field("size_bytes", "BIGINT?", "Discovered source size"),
+        field("last_modified", "TEXT?", "Source modification timestamp"),
+        field("status", "TEXT", "ready or error"),
+        field("error", "TEXT?", "Discovery error in report mode"),
+    ]
+}
+
+fn event_query_fields() -> Vec<QueryFieldSummary> {
+    vec![
+        field("_file_", "TEXT", "Dataset-relative canonical events source"),
+        field("seq", "BIGINT", "Canonical append sequence"),
+        field("event_id", "TEXT?", "Producer event identifier"),
+        field("timestamp", "TEXT?", "Captured timestamp"),
+        field("kind", "TEXT", "Canonical event kind"),
+        field("source", "TEXT", "Event producer"),
+        field("agent_id", "TEXT?", "Agent identifier"),
+        field("session_id", "TEXT?", "Session identifier"),
+        field("call_id", "TEXT?", "Call correlation identifier"),
+        field("trace_id", "TEXT?", "Trace correlation identifier"),
+        field("parent_call_id", "TEXT?", "Parent call identifier"),
+        field("model", "TEXT?", "Captured model"),
+        field("payload_json", "JSON", "Canonical event payload"),
+    ]
+}
+
+async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog>, ApiError> {
+    let runtime = current_catalog(&state).await?;
+    let database = runtime
+        .snapshot
+        .default_dataset()
+        .map(str::to_owned)
+        .or_else(|| {
+            runtime
+                .snapshot
+                .datasets()
+                .first()
+                .map(|dataset| dataset.mount.name.clone())
+        })
+        .unwrap_or_else(|| DEFAULT_DATASET_NAME.into());
+    let storage_path = runtime
+        .snapshot
+        .dataset(&database)
+        .map(|dataset| dataset.mount.uri.clone())
+        .unwrap_or_default();
+    Ok(Json(QueryCatalog {
+        snapshot_id: runtime.snapshot.snapshot_id().to_string(),
+        database,
+        storage_path,
         path_column: "_file_",
+        datasets: runtime
+            .snapshot
+            .datasets()
+            .iter()
+            .map(|dataset| QueryDatasetSummary {
+                name: dataset.mount.name.clone(),
+                uri: dataset.mount.uri.clone(),
+                ready_sources: dataset.ready_source_count(),
+                error_sources: dataset.error_source_count(),
+            })
+            .collect(),
         tables: vec![
+            QueryTableSummary {
+                name: "sources",
+                description: "One row per discovered logical trajectory source",
+                grain: "source",
+                fields: source_query_fields(),
+            },
             QueryTableSummary {
                 name: "runs",
                 description: "One row per trajectory across the complete data path",
@@ -1092,8 +1284,14 @@ async fn query_tables(State(state): State<AppState>) -> Json<QueryCatalog> {
                 grain: "complete trajectory",
                 fields: trajectory_query_fields(),
             },
+            QueryTableSummary {
+                name: "events",
+                description: "Raw canonical events; empty for non-events sources",
+                grain: "event",
+                fields: event_query_fields(),
+            },
         ],
-    })
+    }))
 }
 
 async fn query_sql(
@@ -1101,9 +1299,27 @@ async fn query_sql(
     Json(request): Json<SqlRequest>,
 ) -> Result<Response, ApiError> {
     validate_read_only_sql(&request.sql)?;
-    let (engine, _) = directory_query_engine(&state).await.map_err(api_error)?;
-    let body = engine.query_jsonl(&request.sql).await.map_err(api_error)?;
-    Ok(([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response())
+    let runtime = current_catalog(&state).await?;
+    let routed = runtime
+        .acceleration
+        .route_sql(&runtime.snapshot, &runtime.engine, &request.sql)
+        .await;
+    let body = runtime
+        .engine
+        .query_jsonl(&routed.sql)
+        .await
+        .map_err(api_error)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson"),
+            (
+                header::HeaderName::from_static("x-pchronicle-source-routing"),
+                routed.outcome.as_str(),
+            ),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1120,6 +1336,8 @@ struct QueryEvidence {
     truncated: bool,
     max_rows: usize,
     max_bytes: usize,
+    source_routing: &'static str,
+    candidate_sources: Option<usize>,
 }
 
 async fn query_evidence(
@@ -1132,8 +1350,16 @@ async fn query_evidence(
         .max_bytes
         .unwrap_or(64 * 1024)
         .clamp(1024, 8 * 1024 * 1024);
-    let (engine, _) = directory_query_engine(&state).await.map_err(api_error)?;
-    let body = engine.query_jsonl(&request.sql).await.map_err(api_error)?;
+    let runtime = current_catalog(&state).await?;
+    let routed = runtime
+        .acceleration
+        .route_sql(&runtime.snapshot, &runtime.engine, &request.sql)
+        .await;
+    let body = runtime
+        .engine
+        .query_jsonl(&routed.sql)
+        .await
+        .map_err(api_error)?;
     let mut rows = Vec::new();
     let mut bytes = 0usize;
     let mut truncated = false;
@@ -1151,6 +1377,8 @@ async fn query_evidence(
         truncated,
         max_rows,
         max_bytes,
+        source_routing: routed.outcome.as_str(),
+        candidate_sources: routed.candidate_sources,
     }))
 }
 
@@ -1185,99 +1413,6 @@ fn validate_read_only_sql(sql: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn database_name(storage: &str) -> String {
-    let name = std::path::Path::new(storage)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("data");
-    let normalized = name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '_' {
-                character.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if normalized.is_empty()
-        || normalized
-            .chars()
-            .next()
-            .is_some_and(|character| character.is_ascii_digit())
-    {
-        "data".into()
-    } else {
-        normalized
-    }
-}
-
-async fn directory_query_engine(
-    state: &AppState,
-) -> anyhow::Result<(ChronicleQueryEngine, String)> {
-    let database = database_name(&state.storage);
-    let (engine, suffixes, file_backed) = if let Some(dataset) = &state.dataset {
-        let (engine, suffixes) = dataset.query_engine()?;
-        (engine, suffixes, true)
-    } else {
-        (
-            ChronicleQueryEngine::open_lance(state.storage.as_str()).await?,
-            vec![String::new()],
-            false,
-        )
-    };
-    let context = engine.context();
-    context
-        .sql(&format!("CREATE SCHEMA IF NOT EXISTS {database}"))
-        .await?
-        .collect()
-        .await?;
-    for table in ["runs", "steps", "tool_calls"] {
-        let selects = suffixes
-            .iter()
-            .map(|suffix| {
-                if file_backed {
-                    format!("SELECT * FROM {table}{suffix}")
-                } else {
-                    format!("SELECT '{table}.lance' AS _file_, * FROM {table}{suffix}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" UNION ALL ");
-        context
-            .sql(&format!("CREATE VIEW {database}.{table} AS {selects}"))
-            .await?
-            .collect()
-            .await?;
-    }
-    context
-        .sql(&format!(
-            "CREATE VIEW {database}.trajectories AS \
-             SELECT r.*, \
-                    (SELECT COUNT(*) FROM {database}.steps s \
-                      WHERE s._file_ = r._file_ AND s.run_id = r.run_id) AS step_count, \
-                    (SELECT array_agg(s.step_id ORDER BY s.step_id) FROM {database}.steps s \
-                      WHERE s._file_ = r._file_ AND s.run_id = r.run_id) AS step_ids, \
-                    (SELECT array_agg(s.source ORDER BY s.step_id) FROM {database}.steps s \
-                      WHERE s._file_ = r._file_ AND s.run_id = r.run_id) AS step_sources, \
-                    (SELECT array_agg(s.message_json ORDER BY s.step_id) FROM {database}.steps s \
-                      WHERE s._file_ = r._file_ AND s.run_id = r.run_id) AS messages_json, \
-                    (SELECT COUNT(*) FROM {database}.tool_calls t \
-                      WHERE t._file_ = r._file_ AND t.run_id = r.run_id) AS tool_call_count, \
-                    (SELECT array_agg(t.function_name ORDER BY t.step_id, t.call_index) FROM {database}.tool_calls t \
-                      WHERE t._file_ = r._file_ AND t.run_id = r.run_id) AS tool_names, \
-                    (SELECT array_agg(t.arguments_json ORDER BY t.step_id, t.call_index) FROM {database}.tool_calls t \
-                      WHERE t._file_ = r._file_ AND t.run_id = r.run_id) AS tool_arguments_json, \
-                    (SELECT array_agg(t.results_json ORDER BY t.step_id, t.call_index) FROM {database}.tool_calls t \
-                      WHERE t._file_ = r._file_ AND t.run_id = r.run_id) AS tool_results_json \
-             FROM {database}.runs r"
-        ))
-        .await?
-        .collect()
-        .await?;
-    Ok((engine, database))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1294,21 +1429,37 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&root).unwrap();
+        write_gateway_fixture(&root, "gateway.json", "json-session", "json-job");
+        root
+    }
+
+    fn write_gateway_fixture(root: &std::path::Path, file: &str, session_id: &str, job_id: &str) {
+        write_gateway_fixture_with_status(root, file, session_id, job_id, false);
+    }
+
+    fn write_gateway_fixture_with_status(
+        root: &std::path::Path,
+        file: &str,
+        session_id: &str,
+        job_id: &str,
+        completed: bool,
+    ) {
         std::fs::write(
-            root.join("gateway.json"),
+            root.join(file),
             serde_json::to_vec(&json!([{
-                "id":"event-1",
-                "session_id":"json-session",
+                "id":format!("event-{session_id}"),
+                "session_id":session_id,
                 "step_id":1,
                 "agent_model":"model-json",
-                "job_id":"json-job",
+                "job_id":job_id,
+                "is_session_completed":completed,
+                "is_terminal":completed,
                 "messages":[{"role":"user","content":"hello"}],
                 "response":{"role":"assistant","content":"world"}
             }]))
             .unwrap(),
         )
         .unwrap();
-        root
     }
 
     #[tokio::test]
@@ -1351,13 +1502,29 @@ mod tests {
     }
 
     #[test]
-    fn empty_storage_errors_are_safe_to_render_as_an_empty_run_list() {
-        assert!(is_empty_storage_error(
-            "trajectory stats: no trajectory sessions under /tmp/store/"
-        ));
-        assert!(!is_empty_storage_error(
-            "trajectory stats: path not found or not a trajectory store"
-        ));
+    fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
+        let run = RunSummary {
+            dataset: "live".into(),
+            file: "agent/run-1/events.lance".into(),
+            run_id: "child".into(),
+            agent_id: "agent".into(),
+            model_name: None,
+            session_id: "child".into(),
+            root_session_id: Some("run-1".into()),
+            path: "live/agent/run-1/events.lance/child".into(),
+            row_count: 1,
+            duplicate_event_ids: 0,
+            status: "active".into(),
+        };
+        let local = event_uri_coords("/tmp/capture/agent/run-1/events.lance", &run).unwrap();
+        assert_eq!(local.storage, "/tmp/capture");
+        assert_eq!(local.agent_id, "agent");
+        assert_eq!(local.root_session_id.as_deref(), Some("run-1"));
+
+        let remote = event_uri_coords("s3://bucket/prefix/agent/run-1/events.lance", &run).unwrap();
+        assert_eq!(remote.storage, "s3://bucket/prefix");
+        assert_eq!(remote.agent_id, "agent");
+        assert_eq!(remote.session_id, "child");
     }
 
     #[tokio::test]
@@ -1397,10 +1564,13 @@ mod tests {
             serde_json::from_slice(&tables.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         let database = tables["database"].as_str().unwrap();
-        assert_eq!(tables["tables"][0]["name"], "runs");
-        assert_eq!(tables["tables"][1]["name"], "steps");
-        assert_eq!(tables["tables"][2]["name"], "tool_calls");
-        assert_eq!(tables["tables"][3]["name"], "trajectories");
+        assert_eq!(database, "dataset");
+        assert_eq!(tables["tables"][0]["name"], "sources");
+        assert_eq!(tables["tables"][1]["name"], "runs");
+        assert_eq!(tables["tables"][2]["name"], "steps");
+        assert_eq!(tables["tables"][3]["name"], "tool_calls");
+        assert_eq!(tables["tables"][4]["name"], "trajectories");
+        assert_eq!(tables["tables"][5]["name"], "events");
 
         let response = app
             .oneshot(
@@ -1428,8 +1598,221 @@ mod tests {
         );
         let row: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(row["session_id"], "json-session");
-        assert_eq!(row["step_count"], 1);
+        assert_eq!(row["step_count"], 2);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_routing_index_prunes_point_queries_and_resets_on_refresh() -> anyhow::Result<()>
+    {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let root = json_dataset_root();
+        write_gateway_fixture(&root, "second.json", "second-session", "second-job");
+        let app = router(root.to_string_lossy().to_string());
+
+        let routed = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/query")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({"sql":"SELECT _file_, session_id FROM runs WHERE session_id = 'json-session'"})
+                            .to_string(),
+                    ))?,
+            )
+            .await?;
+        assert_eq!(routed.status(), StatusCode::OK);
+        assert_eq!(
+            routed
+                .headers()
+                .get("x-pchronicle-source-routing")
+                .and_then(|value| value.to_str().ok()),
+            Some("applied")
+        );
+        let body = routed.into_body().collect().await?.to_bytes();
+        let row: Value = serde_json::from_slice(&body)?;
+        assert_eq!(row["_file_"], "gateway.json");
+        assert_eq!(row["session_id"], "json-session");
+
+        let quoted_alias = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/query")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({"sql":"SELECT \"R\".session_id FROM runs AS \"R\" WHERE \"R\".session_id = 'json-session'"})
+                            .to_string(),
+                    ))?,
+            )
+            .await?;
+        assert_eq!(quoted_alias.status(), StatusCode::OK);
+        assert_eq!(
+            quoted_alias
+                .headers()
+                .get("x-pchronicle-source-routing")
+                .and_then(|value| value.to_str().ok()),
+            Some("applied")
+        );
+
+        let catalog = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/catalog")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        let catalog: Value =
+            serde_json::from_slice(&catalog.into_body().collect().await?.to_bytes())?;
+        assert_eq!(catalog["acceleration"]["run_index"]["rows"], 2);
+        assert_eq!(catalog["acceleration"]["run_index"]["sources"], 2);
+        assert_eq!(catalog["acceleration"]["run_summaries_ready"], false);
+        assert_eq!(catalog["acceleration"]["event_identity_index"], Value::Null);
+        assert_eq!(
+            catalog["acceleration"]["event_partition_index"],
+            Value::Null
+        );
+
+        let already_pruned = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/query")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({"sql":"SELECT session_id FROM runs WHERE _file_ = 'gateway.json' AND session_id = 'json-session'"})
+                            .to_string(),
+                    ))?,
+            )
+            .await?;
+        assert_eq!(
+            already_pruned
+                .headers()
+                .get("x-pchronicle-source-routing")
+                .and_then(|value| value.to_str().ok()),
+            Some("already_pruned")
+        );
+
+        let refreshed = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/catalog")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(refreshed.status(), StatusCode::OK);
+        let refreshed: Value =
+            serde_json::from_slice(&refreshed.into_body().collect().await?.to_bytes())?;
+        assert_eq!(refreshed["acceleration"]["run_index"], Value::Null);
+        assert_eq!(
+            refreshed["acceleration"]["event_identity_index"],
+            Value::Null
+        );
+        assert_eq!(
+            refreshed["acceleration"]["event_partition_index"],
+            Value::Null
+        );
+
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn catalog_refresh_is_atomic_and_dataset_filtering_is_explicit() -> anyhow::Result<()> {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let live = json_dataset_root();
+        let archive = json_dataset_root();
+        let config = ChronicleServerConfig::mounted(vec![
+            DatasetMount::new("live", live.to_string_lossy())?,
+            DatasetMount::new("archive", archive.to_string_lossy())?,
+        ])?;
+        let app = router_with_config(config);
+
+        let initial = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/catalog")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(initial.status(), StatusCode::OK);
+        let initial: Value =
+            serde_json::from_slice(&initial.into_body().collect().await?.to_bytes())?;
+        assert_eq!(initial["default_dataset"], Value::Null);
+        assert_eq!(initial["datasets"].as_array().unwrap().len(), 2);
+        let initial_snapshot = initial["snapshot_id"].as_str().unwrap().to_string();
+
+        let filtered = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/explorer/runs?dataset=archive&limit=10")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        let filtered: Value =
+            serde_json::from_slice(&filtered.into_body().collect().await?.to_bytes())?;
+        assert_eq!(filtered["snapshot"]["total"], 1);
+        assert_eq!(filtered["records"][0]["dataset"], "archive");
+
+        // A malformed peripheral JSON file is intentionally validated only
+        // after `_file_` pruning. Use an invalid Storyline commit descriptor
+        // here so refresh fails while freezing the candidate snapshot.
+        std::fs::create_dir(live.join("broken-store"))?;
+        std::fs::write(live.join("broken-store/CURRENT"), "{")?;
+        let failed_refresh = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/catalog")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(failed_refresh.status(), StatusCode::BAD_REQUEST);
+
+        let preserved = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/catalog")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        let preserved: Value =
+            serde_json::from_slice(&preserved.into_body().collect().await?.to_bytes())?;
+        assert_eq!(preserved["snapshot_id"], initial_snapshot);
+
+        std::fs::remove_dir_all(live.join("broken-store"))?;
+        std::fs::copy(live.join("gateway.json"), live.join("second.json"))?;
+        let refreshed = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/catalog")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(refreshed.status(), StatusCode::OK);
+        let refreshed: Value =
+            serde_json::from_slice(&refreshed.into_body().collect().await?.to_bytes())?;
+        assert_ne!(refreshed["snapshot_id"], initial_snapshot);
+
+        std::fs::remove_dir_all(live)?;
+        std::fs::remove_dir_all(archive)?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -1457,7 +1840,7 @@ mod tests {
         assert_eq!(page["records"][0]["model"], "model-json");
         assert_eq!(
             page["records"][0]["path"],
-            "gateway.json/json-job/json-session"
+            "dataset/gateway.json/json-job/json-session"
         );
         assert_eq!(page["path_index"].as_array().unwrap().len(), 1);
 
@@ -1465,7 +1848,7 @@ mod tests {
             .clone()
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/api/v1/explorer/runs?path=gateway.json%2Fjson-job&limit=10")
+                    .uri("/api/v1/explorer/runs?path=dataset%2Fgateway.json%2Fjson-job&limit=10")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -1483,7 +1866,9 @@ mod tests {
         assert_eq!(path_filtered["snapshot"]["total"], 1);
         assert_eq!(path_filtered["path_index"].as_array().unwrap().len(), 1);
 
-        let coordinates = "agent_id=model-json&session_id=json-session&root_session_id=json-job";
+        // The browser emits empty Catalog coordinates when opening a legacy
+        // deep link that only carried the old agent/session identity.
+        let coordinates = "dataset=&file=&run_id=&agent_id=model-json&session_id=json-session&root_session_id=json-job";
         let analysis = app
             .clone()
             .oneshot(
@@ -1494,10 +1879,15 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(analysis.status(), StatusCode::OK);
-        let analysis: Value =
-            serde_json::from_slice(&analysis.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
+        let analysis_status = analysis.status();
+        let analysis_body = analysis.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            analysis_status,
+            StatusCode::OK,
+            "analysis failed: {}",
+            String::from_utf8_lossy(&analysis_body)
+        );
+        let analysis: Value = serde_json::from_slice(&analysis_body).unwrap();
         assert_eq!(analysis["turn_count"], 2);
         assert_eq!(analysis["latency_histogram"].as_array().unwrap().len(), 6);
         assert_eq!(analysis["source_breakdown"].as_array().unwrap().len(), 2);
@@ -1541,6 +1931,113 @@ mod tests {
         assert_eq!(detail["summary"]["id"], 1);
         assert_eq!(detail["turn"]["src"], "user");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn explorer_uses_terminal_metadata_for_run_status() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let root = json_dataset_root();
+        write_gateway_fixture_with_status(
+            &root,
+            "completed.json",
+            "completed-session",
+            "completed-job",
+            true,
+        );
+        let response = router(root.to_string_lossy().to_string())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/explorer/runs?status=completed&limit=10")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let page: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(page["snapshot"]["total"], 1);
+        assert_eq!(page["records"][0]["session_id"], "completed-session");
+        assert_eq!(page["records"][0]["status"], "completed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_only_mounts_expose_existing_judgments() -> anyhow::Result<()> {
+        use http_body_util::BodyExt;
+        use persisting_pchronicle::{RawEventLanceStore, StructuredStore};
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir()?;
+        let coords = StoryCoords::new(
+            root.path().to_string_lossy(),
+            "agent",
+            "child-session",
+            Some("shared-run".into()),
+        );
+        RawEventLanceStore
+            .append_events(
+                &coords,
+                &[EventRecord {
+                    identity: Default::default(),
+                    seq: 0,
+                    source: "test".into(),
+                    kind: "note".into(),
+                    timestamp: None,
+                    session_id: Some("child-session".into()),
+                    agent_id: Some("agent".into()),
+                    parent_uuid: None,
+                    trace_id: None,
+                    call_id: None,
+                    subagent_id: None,
+                    parent_agent_id: None,
+                    branch: None,
+                    parent_call_id: None,
+                    payload: json!({"content":"captured"}),
+                }],
+            )
+            .await?;
+        write_judge_rows(
+            &coords,
+            &[JudgeRow {
+                session_id: "child-session".into(),
+                call_id: "__story__".into(),
+                rubric_id: "quality".into(),
+                score: 91,
+                verdict: "pass".into(),
+                rationale: "stored before mounting read-only".into(),
+            }],
+        )
+        .await?;
+
+        let app = router_with_config(ChronicleServerConfig::mounted(vec![DatasetMount::new(
+            "archive",
+            root.path().to_string_lossy(),
+        )?])?);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(
+                        "/api/v1/judgments?dataset=archive&file=agent%2Fshared-run%2Fevents.lance&run_id=shared-run&agent_id=agent&session_id=child-session",
+                    )
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        let response_status = response.status();
+        let response_body = response.into_body().collect().await?.to_bytes();
+        assert_eq!(
+            response_status,
+            StatusCode::OK,
+            "judgment read failed: {}",
+            String::from_utf8_lossy(&response_body)
+        );
+        let rows: Value = serde_json::from_slice(&response_body)?;
+        assert_eq!(rows[0]["score"], 91);
+        assert_eq!(rows[0]["session_id"], "child-session");
+        Ok(())
     }
 
     #[tokio::test]
@@ -1607,7 +2104,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(valid.status(), StatusCode::OK);
+        assert_eq!(valid.status(), StatusCode::BAD_REQUEST);
 
         let saved = app
             .clone()
@@ -1619,11 +2116,16 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(saved.status(), StatusCode::OK);
-        let saved: Value =
-            serde_json::from_slice(&saved.into_body().collect().await.unwrap().to_bytes()).unwrap();
-        assert_eq!(saved[0]["score"], 88);
-        assert_eq!(saved[0]["call_id"], "__story__");
+        let saved_status = saved.status();
+        let saved_body = saved.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            saved_status,
+            StatusCode::OK,
+            "judgments failed: {}",
+            String::from_utf8_lossy(&saved_body)
+        );
+        let saved: Value = serde_json::from_slice(&saved_body).unwrap();
+        assert_eq!(saved, json!([]));
 
         let invalid = app
             .oneshot(
@@ -1657,18 +2159,5 @@ mod tests {
         assert!(validate_read_only_sql("DELETE FROM runs").is_err());
         assert!(validate_read_only_sql("EXPLAIN DELETE FROM runs").is_err());
         assert!(validate_read_only_sql("SELECT 1; DELETE FROM runs").is_err());
-    }
-
-    #[test]
-    fn logical_run_paths_match_the_story_storage_hierarchy() {
-        assert_eq!(
-            logical_run_path("agent", "root", Some("root")),
-            "agent/root"
-        );
-        assert_eq!(
-            logical_run_path("agent", "child", Some("root")),
-            "agent/root/subagents/child"
-        );
-        assert_eq!(logical_run_path("agent", "session", None), "agent/session");
     }
 }

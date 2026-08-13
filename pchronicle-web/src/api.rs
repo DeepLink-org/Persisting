@@ -20,6 +20,7 @@ async fn checked(response: Response) -> Result<Response, String> {
 
 pub async fn explorer_runs(
     q: &str,
+    dataset: &str,
     status: &str,
     sort: &str,
     direction: &str,
@@ -27,8 +28,9 @@ pub async fn explorer_runs(
     offset: usize,
 ) -> Result<RunPage, String> {
     let url = format!(
-        "/api/v1/explorer/runs?q={}&status={}&sort={}&direction={}&path={}&offset={offset}&limit=50",
+        "/api/v1/explorer/runs?q={}&dataset={}&status={}&sort={}&direction={}&path={}&offset={offset}&limit=50",
         urlencoding::encode(q),
+        urlencoding::encode(dataset),
         urlencoding::encode(status),
         urlencoding::encode(sort),
         urlencoding::encode(direction),
@@ -145,4 +147,15 @@ pub async fn query_catalog() -> Result<QueryCatalog, String> {
     .json()
     .await
     .map_err(|e| e.to_string())
+}
+
+pub async fn refresh_catalog() -> Result<(), String> {
+    checked(
+        Request::post("/api/v1/catalog")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?,
+    )
+    .await?;
+    Ok(())
 }

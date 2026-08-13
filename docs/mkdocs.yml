@@ -111,6 +111,7 @@ plugins:
             History / Eval / Gateway CLI: History / Eval / Gateway 命令
             Capture CLI: Capture 子命令
             pPilot Architecture: pPilot 架构
+            Dataset Catalog: 数据集目录
             Isolation backends: 隔离后端
             References: 参考
             Similar Systems: 类似系统
@@ -161,6 +162,7 @@ nav:
           - CLI and runtime boundary: design/cli.md
       - pPilot orchestration: design/ppilot.md
       - pChronicle history store:
+          - Dataset Catalog: design/dataset-catalog.md
           - Trajectory storage: design/trajectory.md
           - Storyline three-table Lance: design/storyline-lance.md
           - Trajectory Markdown format: design/trajectory-format.md

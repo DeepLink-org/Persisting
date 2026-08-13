@@ -27,7 +27,7 @@ ppilot query sql .work/openai \
            ORDER BY _file_" \
     > .work/openai-query.jsonl
 jq -e -s \
-    'length == 1 and .[0]._file_ == "batch/cybergym.json" and .[0].steps == 3' \
+    'length == 1 and .[0]._file_ == "batch/cybergym.json" and .[0].steps == 6' \
     .work/openai-query.jsonl >/dev/null
 
 echo 'Querying the ACTF directory with an explicit source and filename wildcard...'
@@ -48,10 +48,12 @@ jq -e -s 'any(.[]; .column_name == "_file_" and .data_type == "Utf8")' \
 
 echo 'Converting one OpenAI file to Lance and checking its physical schema...'
 ppilot convert .work/openai/root.json .work/lance --to lance
-ppilot query sql .work/lance --sql 'DESCRIBE runs' \
-    > .work/lance-runs-schema.jsonl
-jq -e -s 'all(.[]; .column_name != "_file_")' \
-    .work/lance-runs-schema.jsonl >/dev/null
+for table in runs steps tool_calls; do
+    manifest=$(find ".work/lance/generations" \
+        -path "*/${table}.lance/_versions/*.manifest" -type f -print -quit)
+    test -n "$manifest"
+    ! strings "$manifest" | grep -Fx '_file_' >/dev/null
+done
 
 echo
 echo 'OpenAI wildcard result:'

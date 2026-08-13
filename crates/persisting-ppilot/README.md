@@ -41,6 +41,11 @@ ppilot query sql ./storyline-store \
   --sql "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source"
 ppilot query sql s3://trajectory-bucket/persisting/storylines \
   --sql "SELECT COUNT(*) AS runs FROM runs"
+ppilot query sql --dataset current=./capture \
+  --dataset archive=s3://trajectory-bucket/archive \
+  --sql "SELECT COUNT(*) FROM current.runs"
+ppilot query sql ./capture --dataset archive=s3://trajectory-bucket/archive \
+  --sql "SELECT COUNT(*) FROM runs"
 ppilot query sql ./trajectories.ndjson --sql-file analysis.sql
 ppilot query sql ./openai-data \
   --sql "SELECT _file_, COUNT(*) FROM steps WHERE _file_ LIKE 'cybergym_%' GROUP BY _file_"
@@ -94,10 +99,20 @@ directories; losslessly imported OpenAI corpora recover their original file grou
 pChronicle and writes JSONL to stdout. Point and batch operate on normalized
 Storyline Lance data; follow continuously reads committed canonical events.
 Batch Storyline reads use one snapshot across `runs`, `steps`, and
-`tool_calls`, rather than N point lookups. SQL registers the same three tables
-for Storyline Lance and ATIF inputs. `s3://` inputs are automatically recognized
-as Lance; credentials come from the AWS provider chain. Use `--sql-file -` to
-read SQL from stdin. Repeat `--table NAME=FORMAT:PATH` to register external
+`tool_calls`, rather than N point lookups. SQL builds an immutable query-time
+Dataset Catalog across Storyline stores, canonical `events.lance`, and
+ATIF/OpenAI/ACTF files. Repeat `--dataset NAME=URI`, or load a TOML
+`[datasets]` table with `--dataset-file`. Each Dataset is a SQL schema exposing
+`sources`, `runs`, `steps`, `tool_calls`, `events`, and `trajectories`.
+Catalog providers prune sources from `_file_` predicates before lazily opening
+their pinned Lance/file versions; remote objects that cannot match are not
+downloaded, and business predicates continue to the native providers.
+A positional input remains compatible: it is mounted as the default schema
+named `dataset`, so unqualified `runs` still works, and additional named mounts
+may coexist with it. With only one named mount, that schema is the default;
+multiple named-only mounts require qualified table names. `s3://` inputs use
+the provider credential chain. Use `--sql-file -` to read SQL from stdin.
+Repeat `--table NAME=FORMAT:PATH` to register external
 CSV (`csv`), JSON array (`json`), or newline-delimited JSON (`jsonl`/`ndjson`)
 tables in the same DataFusion session before executing the query.
 The former `ppilot query <INPUT> --sql ...` spelling remains compatible.

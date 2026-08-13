@@ -1,0 +1,80 @@
+{
+  "recorded_at": "2026-08-12",
+  "scope": "pChronicle release Server source-routing acceleration",
+  "fixture": {
+    "storage": "/tmp/langfuse-pchronicle-retest-final.n9fgAW/pchronicle-store",
+    "catalog_sources": 211,
+    "indexed_event_rows": 113031
+  },
+  "routing_indexes": {
+    "event_partition": {
+      "rows": 113031,
+      "sources": 211,
+      "distinct_fingerprints": 213,
+      "project_a_candidate_sources": 106
+    },
+    "event_identity": {
+      "rows": 113031,
+      "sources": 211,
+      "distinct_fingerprints": 113132
+    }
+  },
+  "cold": {
+    "catalog_ms": 37.149,
+    "identity_point_ms_repeats": [166.173, 159.452, 134.261],
+    "identity_point_median_ms": 159.452,
+    "catalog_plus_identity_point_ms": 196.601,
+    "first_project_list_ms": 312.941
+  },
+  "warm_http_p95_ms": {
+    "point": 4.724,
+    "project_list": 151.047,
+    "project_aggregate": 165.406
+  },
+  "warm_http_p50_ms": {
+    "point": 4.149,
+    "project_list": 147.244,
+    "project_aggregate": 158.632
+  },
+  "warm_samples": {
+    "point": 20,
+    "project_list": 20,
+    "project_aggregate": 20
+  },
+  "process_rss_kib": {
+    "startup": 13456,
+    "after_catalog": 26880,
+    "after_partition_index_and_query": 129344,
+    "after_partition_then_identity_index_and_queries": 216928,
+    "fresh_after_catalog_identity_index_and_query": 104384,
+    "note": "RSS includes lazy source resolution, Lance/DataFusion buffers and allocator retention; it is not the routing-index heap size"
+  },
+  "comparison": {
+    "previous_pchronicle_p95_ms": {
+      "global_point": 258.132959,
+      "global_list": 282.798583,
+      "global_aggregate": 296.706625
+    },
+    "improvement_vs_previous_pchronicle_pct": {
+      "warm_point": 98.170,
+      "warm_project_list": 46.588,
+      "warm_project_aggregate": 44.253
+    },
+    "clickhouse_2026_08_11_p95_ms": {
+      "point": 4.826583,
+      "list": 2.970750,
+      "aggregate": 3.466209
+    },
+    "pchronicle_to_clickhouse_ratio": {
+      "warm_point": 0.978746,
+      "warm_project_list": 50.844737,
+      "warm_project_aggregate": 47.719569
+    }
+  },
+  "methodology": {
+    "build": "cargo build --release -p persisting-cli",
+    "server": "target/release/persisting chronicle serve ... --listen 127.0.0.1:19877",
+    "client": "curl over loopback HTTP/1.1",
+    "caveat": "pChronicle measurements include Axum and loopback HTTP; reused ClickHouse baseline was not rerun concurrently"
+  }
+}

@@ -20,6 +20,7 @@ use crate::{Error, Result};
 
 const LOSSLESS_FILE_KEY: &str = "_pchronicle_openai_file";
 const LOSSLESS_RECORD_KEY: &str = "_pchronicle_openai_record";
+const NORMALIZED_CONTEXT_KEY: &str = "_pchronicle_openai_context";
 const LOSSLESS_VERSION: u64 = 1;
 
 /// One source JSON file reconstructed from lossless OpenAI import metadata.
@@ -197,17 +198,21 @@ pub fn recover_openai_msg_files(
         }
 
         for turn in &story.turns {
-            let record = turn
-                .extra
-                .as_ref()
-                .and_then(|extra| extra.get(LOSSLESS_RECORD_KEY))
-                .and_then(Value::as_object)
-                .ok_or_else(|| {
-                    Error::Other(format!(
-                        "Storyline '{}' step {} has no lossless OpenAI record",
-                        story.session_id, turn.id
-                    ))
-                })?;
+            let extra = turn.extra.as_ref().ok_or_else(|| {
+                Error::Other(format!(
+                    "Storyline '{}' step {} has no OpenAI provenance",
+                    story.session_id, turn.id
+                ))
+            })?;
+            let Some(record) = extra.get(LOSSLESS_RECORD_KEY).and_then(Value::as_object) else {
+                if extra.get(NORMALIZED_CONTEXT_KEY).is_some() {
+                    continue;
+                }
+                return Err(Error::Other(format!(
+                    "Storyline '{}' step {} has no lossless OpenAI record",
+                    story.session_id, turn.id
+                )));
+            };
             validate_version(record, LOSSLESS_RECORD_KEY)?;
             let record_path = record
                 .get("relative_path")
@@ -305,9 +310,11 @@ fn rows_to_storyline(
 ) -> Result<StorylineDocument> {
     records.sort_by_key(|(_, row)| row.get("step_id").and_then(Value::as_i64));
     let mut seen_steps = HashSet::new();
-    let mut turns = Vec::with_capacity(records.len());
+    let mut turns = Vec::with_capacity(records.len().saturating_mul(2));
     let mut agent_source = None;
     let mut first_model: Option<String> = None;
+    let mut run_id: Option<String> = None;
+    let mut next_turn_id = 1_i64;
 
     for (ordinal, raw) in records {
         let row = raw
@@ -344,6 +351,25 @@ fn rows_to_storyline(
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
         }
+        if let Some(candidate) = ["run_id", "run_bucket", "job_id"]
+            .into_iter()
+            .find_map(|field| {
+                row.get(field)
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+            })
+        {
+            if let Some(existing) = &run_id {
+                if existing != candidate {
+                    return Err(Error::Other(format!(
+                        "OpenAI corpus {} session {} has conflicting Run ids '{}' and '{}'",
+                        relative_path, session_id, existing, candidate
+                    )));
+                }
+            } else {
+                run_id = Some(candidate.to_string());
+            }
+        }
 
         let output = select_output_message(row).ok_or_else(|| {
             Error::Other(format!(
@@ -370,9 +396,48 @@ fn rows_to_storyline(
             .and_then(|state| state.get("ttft_ms"))
             .and_then(number_to_i64);
 
+        let call_id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("step-{step_id}"));
+        let request_messages = row.get("messages").cloned();
+        if let Some(message) = last_user_message(request_messages.as_ref()) {
+            turns.push(StorylineTurn {
+                id: next_turn_id,
+                kind: Some("llm.request".into()),
+                timestamp: timestamp.clone(),
+                source: "user".into(),
+                message,
+                reasoning_content: None,
+                reasoning_effort: None,
+                tool_calls: None,
+                observation: None,
+                metrics: None,
+                model_name: None,
+                llm_call_count: None,
+                is_copied_context: None,
+                latency_ms: None,
+                ttft_ms: None,
+                extra: Some(json!({
+                    "call_id": call_id,
+                    NORMALIZED_CONTEXT_KEY: {
+                        "version": LOSSLESS_VERSION,
+                        "openai_step_id": step_id,
+                    }
+                })),
+            });
+            next_turn_id += 1;
+        }
+
         turns.push(StorylineTurn {
-            id: step_id,
-            kind: tool_calls.as_ref().map(|_| "autonomous".to_string()),
+            id: next_turn_id,
+            kind: Some(if tool_calls.is_some() {
+                "autonomous".into()
+            } else {
+                "llm.response".into()
+            }),
             timestamp,
             source: "agent".into(),
             message,
@@ -387,6 +452,8 @@ fn rows_to_storyline(
             latency_ms,
             ttft_ms,
             extra: Some(json!({
+                "call_id": call_id,
+                "request_messages": request_messages,
                 "_pchronicle_openai_record": {
                     "version": LOSSLESS_VERSION,
                     "relative_path": relative_path,
@@ -395,13 +462,16 @@ fn rows_to_storyline(
                 }
             })),
         });
+        next_turn_id += 1;
     }
 
     let final_metrics = turns.last().and_then(|turn| turn.metrics.clone());
-    let agent_id = agent_source.unwrap_or_else(|| "openai-import".into());
+    let agent_id = agent_source
+        .or_else(|| first_model.clone())
+        .unwrap_or_else(|| "openai-import".into());
     Ok(StorylineDocument {
         schema_version: STORYLINE_SCHEMA_VERSION.into(),
-        run_id: None,
+        run_id,
         session_id: session_id.to_string(),
         agent: StorylineAgent {
             id: agent_id.clone(),
@@ -419,6 +489,16 @@ fn rows_to_storyline(
         extra: Some(json!({ "_pchronicle_openai_file": file_metadata })),
         turns,
     })
+}
+
+fn last_user_message(messages: Option<&Value>) -> Option<Value> {
+    messages?
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .and_then(|message| message.get("content"))
+        .cloned()
 }
 
 fn input_files(input: &Path) -> Result<Vec<PathBuf>> {
@@ -765,11 +845,14 @@ mod tests {
         let input = corpus();
         let stories = parse_openai_msg_corpus_value(&input, "corpus.json").unwrap();
         assert_eq!(stories.len(), 2);
-        assert_eq!(stories[0].turns.len(), 2);
+        assert_eq!(stories[0].turns.len(), 4);
         assert_eq!(stories[0].turns[0].id, 1);
         assert_eq!(stories[0].turns[1].id, 2);
-        assert_eq!(stories[0].turns[0].message, json!("answer"));
-        assert_eq!(stories[1].turns[0].tool_calls.as_ref().unwrap().len(), 1);
+        assert_eq!(stories[0].turns[0].source, "user");
+        assert_eq!(stories[0].turns[0].message, json!("hello"));
+        assert_eq!(stories[0].turns[1].source, "agent");
+        assert_eq!(stories[0].turns[1].message, json!("answer"));
+        assert_eq!(stories[1].turns[1].tool_calls.as_ref().unwrap().len(), 1);
 
         let recovered = recover_openai_msg_files(&stories).unwrap();
         assert_eq!(recovered.len(), 1);
@@ -788,6 +871,28 @@ mod tests {
         let stories = parse_openai_msg_corpus_value(&input, "session_steps.json").unwrap();
         let recovered = recover_openai_msg_files(&stories).unwrap();
         assert_eq!(recovered[0].document, input);
+    }
+
+    #[test]
+    fn corpus_preserves_run_group_and_user_agent_turns() {
+        let input = json!([{
+            "id": "call-1",
+            "session_id": "child-session",
+            "job_id": "shared-run",
+            "step_id": 7,
+            "messages": [{"role":"user","content":"question"}],
+            "response": {"role":"assistant","content":"answer"},
+            "is_session_completed": true
+        }]);
+        let stories = parse_openai_msg_corpus_value(&input, "gateway.json").unwrap();
+        assert_eq!(stories[0].run_id.as_deref(), Some("shared-run"));
+        assert_eq!(stories[0].turns.len(), 2);
+        assert_eq!(stories[0].turns[0].source, "user");
+        assert_eq!(stories[0].turns[1].source, "agent");
+        assert_eq!(
+            recover_openai_msg_files(&stories).unwrap()[0].document,
+            input
+        );
     }
 
     #[test]

@@ -9,11 +9,22 @@ pChronicle 统一拥有轨迹的逻辑格式、物理 schema、落盘、读取�
 ```bash
 persisting chronicle serve ./store
 # http://127.0.0.1:9877
+
+# 联合浏览本地与对象存储；命名挂载默认只读
+persisting chronicle serve \
+  --dataset current=./store \
+  --dataset archive=s3://trajectory-bucket/archive
+
+# 位置参数保持兼容，并固定成为名为 dataset 的默认/可写 Dataset
+persisting chronicle serve ./store \
+  --dataset archive=s3://trajectory-bucket/archive
 ```
 
 服务只允许绑定 loopback，首版不提供公网认证。UI 和 `/api/v1` 提供 Run/Event/Storyline
 浏览、只读 DataFusion SQL、HAR/OTLP 导出、judgment、revision lineage 与显式维护；浏览器
-不会重发捕获到的 HTTP 请求。
+不会重发捕获到的 HTTP 请求。命名挂载需要用 `--writable-dataset NAME` 才能执行 judgment
+或 maintenance；只有 canonical `events.lance` 源可写。UI 的 Refresh 通过
+`POST /api/v1/catalog` 完整构建新快照后原子切换，失败时继续提供旧快照。
 
 ## 组件边界
 
@@ -71,6 +82,17 @@ judgments.lance               规范化派生评测，不修改 canonical event 
   `_file_` 相对路径列，支持 `=`、`IN`、`LIKE` 文件级裁剪；每个命中文件作为一个 lazy
   streaming partition 打开，该列不属于 Lance 三表 schema。多文件内建表 join 必须把
   `_file_` 纳入 join key。
+- `DatasetCatalogSnapshot` 在查询期挂载一个或多个本地目录、文件或对象存储前缀。每个
+  Dataset 映射为同名 SQL schema，稳定暴露 `sources`、`runs`、`steps`、`tool_calls`、
+  `events`、`trajectories`；复合 store 按 `CURRENT` / `events.lance/_manifest.json`
+  边界发现，外围 JSON 文件逐文件检测格式。位置输入固定命名为 `dataset`，并建立旧 SQL
+  使用的无 schema 兼容 view。Catalog 不持久化第二份元数据：本地 fingerprint、Lance
+  generation/manifest revision 和对象 version/ETag 共同冻结一次查询或 Web 刷新快照。
+  Dataset 级 `TableProvider` 先根据 `_file_` 谓词裁剪 source，再通过 single-flight
+  `LazySource` 打开命中的固定 Lance 版本或外围文件；未命中的远程对象不会下载，单 source
+  计划不构造 `UnionExec`。业务谓词和 projection 继续下推到各原生 provider。长期运行的
+  Web Server 额外按 Catalog generation 惰性构建内存 source-routing index，把简单的
+  run/session/agent/event/trace 条件转换成 `_file_` 候选；Catalog 数据模型本身保持不变。
 - ATIF object、array、pretty JSON 与 JSONL/NDJSON 的 `steps` 查询在 `TableProvider::scan` 边界接收 DataFusion
   projection 和安全谓词，直接跳过未引用的大字段、按 `session_id`/`step_id`/`source`
   提前裁剪并生成 projected Arrow batch，不经过 Storyline 导入和三表全量构造。NDJSON 用

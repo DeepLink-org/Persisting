@@ -5,6 +5,12 @@ use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RunSummary {
+    #[serde(default = "default_dataset_name")]
+    pub dataset: String,
+    #[serde(default = "default_source_file")]
+    pub file: String,
+    #[serde(default)]
+    pub run_id: String,
     pub agent_id: String,
     #[serde(default)]
     pub model_name: Option<String>,
@@ -44,10 +50,22 @@ pub struct RunPage {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct QueryCatalog {
+    #[serde(default)]
+    pub snapshot_id: String,
     pub database: String,
     pub storage_path: String,
     pub path_column: String,
+    #[serde(default)]
+    pub datasets: Vec<QueryDatasetSummary>,
     pub tables: Vec<QueryTableSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct QueryDatasetSummary {
+    pub name: String,
+    pub uri: String,
+    pub ready_sources: usize,
+    pub error_sources: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -68,7 +86,10 @@ pub struct QueryFieldSummary {
 impl RunSummary {
     pub fn query(&self) -> String {
         let mut out = format!(
-            "agent_id={}&session_id={}",
+            "dataset={}&file={}&run_id={}&agent_id={}&session_id={}",
+            urlencoding::encode(&self.dataset),
+            urlencoding::encode(&self.file),
+            urlencoding::encode(&self.run_id),
             urlencoding::encode(&self.agent_id),
             urlencoding::encode(&self.session_id)
         );
@@ -78,6 +99,14 @@ impl RunSummary {
         }
         out
     }
+}
+
+fn default_dataset_name() -> String {
+    "dataset".into()
+}
+
+fn default_source_file() -> String {
+    ".".into()
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -262,6 +291,9 @@ pub struct QueryEvidence {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct JudgmentWrite {
+    pub dataset: Option<String>,
+    pub file: Option<String>,
+    pub run_id: Option<String>,
     pub agent_id: String,
     pub session_id: String,
     pub root_session_id: Option<String>,
@@ -279,6 +311,9 @@ mod tests {
     #[test]
     fn run_query_encodes_coordinates() {
         let run = RunSummary {
+            dataset: "dataset".into(),
+            file: "nested/source.json".into(),
+            run_id: "run-1".into(),
             agent_id: "agent one".into(),
             model_name: None,
             session_id: "s/1".into(),
@@ -290,7 +325,7 @@ mod tests {
         };
         assert_eq!(
             run.query(),
-            "agent_id=agent%20one&session_id=s%2F1&root_session_id=root%2B1"
+            "dataset=dataset&file=nested%2Fsource.json&run_id=run-1&agent_id=agent%20one&session_id=s%2F1&root_session_id=root%2B1"
         );
     }
 }

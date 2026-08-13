@@ -98,6 +98,10 @@ persisting chronicle serve ./store
 
 # 也可以直接打开包含 probing JSON 导出的目录。
 persisting chronicle serve ./data
+
+# 在同一个不可变 Catalog 快照中浏览多个 Dataset schema。
+persisting chronicle serve --dataset live=./store \
+  --dataset archive=s3://trajectory-bucket/archive
 ```
 
 工作台只监听 loopback，以实时 Storyline 时间线展示轨迹，并可下钻对应的 canonical event
@@ -106,13 +110,14 @@ JSON；同时提供 HAR/OTLP 导出和面向整个目录的只读 SQL 工作区�
 在只读查看模式下，工作台会自动识别所选目录中的 probing gateway step 数组和 ACTF
 任务文档（`*.json`），无需先导入为 Lance 数据。
 
-所选目录会成为与目录同名的 SQL schema。例如目录名为 `data` 时，可查询
-`data.runs`、`data.steps`、`data.tool_calls` 和 `data.trajectories` 四张虚拟表。
-每张表都包含虚拟字段 `_file_`，既可精确匹配相对路径，也可用 `LIKE` 跨目录过滤：
+位置参数目录固定成为名为 `dataset` 的默认 SQL schema，与目录 basename 无关；稳定表为
+`sources`、`runs`、`steps`、`tool_calls`、`events` 和 `trajectories`，旧的不带 schema
+表名仍是兼容别名。可重复传入 `--dataset NAME=URI` 增加需要显式限定的 schema。每张数据表
+都包含虚拟字段 `_file_`，既可精确匹配相对路径，也可用 `LIKE` 跨目录过滤：
 
 ```sql
 SELECT _file_, COUNT(*) AS steps
-FROM data.steps
+FROM dataset.steps
 WHERE _file_ LIKE 'cybergym_%.json'
 GROUP BY _file_;
 ```

@@ -16,6 +16,8 @@ use datafusion::prelude::SessionContext;
 use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 
+use super::raw_event_manifest::EventManifest;
+
 pub const DATAFUSION_EVENTS_TABLE: &str = "events";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +126,24 @@ pub struct RawEventDataSource {
     provider: Arc<RawEventTableProvider>,
 }
 
+/// A manifest-only canonical event snapshot. It pins visible segment versions
+/// without opening any Lance dataset until a selected catalog scan needs it.
+#[derive(Debug, Clone)]
+pub(crate) struct RawEventSnapshot {
+    uri: String,
+    manifest: EventManifest,
+}
+
+impl RawEventSnapshot {
+    pub(crate) fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    pub(crate) fn version(&self) -> u64 {
+        self.manifest.revision
+    }
+}
+
 impl RawEventDataSource {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -141,17 +161,32 @@ impl RawEventDataSource {
         uri: impl AsRef<str>,
         options: RawEventDataSourceOptions,
     ) -> Result<Self> {
+        let snapshot = Self::pin_uri(uri).await?;
+        Self::from_pinned_snapshot_with_options(snapshot, options).await
+    }
+
+    pub(crate) async fn pin_uri(uri: impl AsRef<str>) -> Result<RawEventSnapshot> {
         let uri = uri.as_ref().to_string();
-        let (manifest, datasets) = super::raw_event_lance::open_visible_snapshot(&uri)
+        let manifest = super::raw_event_lance::pin_visible_snapshot(&uri)
             .await?
             .with_context(|| format!("canonical event manifest does not exist at {uri}"))?;
         anyhow::ensure!(
-            !datasets.is_empty(),
+            !manifest.segments.is_empty(),
             "canonical event manifest has no visible segments at {uri}"
         );
-        let version = manifest.revision;
+        Ok(RawEventSnapshot { uri, manifest })
+    }
+
+    pub(crate) async fn from_pinned_snapshot_with_options(
+        snapshot: RawEventSnapshot,
+        options: RawEventDataSourceOptions,
+    ) -> Result<Self> {
+        let datasets =
+            super::raw_event_lance::open_pinned_snapshot(snapshot.uri(), &snapshot.manifest)
+                .await?;
+        let version = snapshot.version();
         Ok(Self {
-            uri,
+            uri: snapshot.uri,
             version,
             provider: Arc::new(RawEventTableProvider::new(datasets, options)?),
         })
@@ -170,9 +205,17 @@ impl RawEventDataSource {
     }
 
     pub fn register(&self, context: &SessionContext) -> Result<()> {
+        self.register_as(context, DATAFUSION_EVENTS_TABLE)
+    }
+
+    pub fn register_as(&self, context: &SessionContext, table_name: &str) -> Result<()> {
+        anyhow::ensure!(
+            !table_name.trim().is_empty(),
+            "DataFusion event table name must not be empty"
+        );
         context
-            .register_table(DATAFUSION_EVENTS_TABLE, self.provider.clone())
-            .context("register DataFusion table 'events'")?;
+            .register_table(table_name, self.provider.clone())
+            .with_context(|| format!("register DataFusion table '{table_name}'"))?;
         Ok(())
     }
 

@@ -519,7 +519,15 @@ mod tests {
 
         let store = StorylineLanceStore::open(&store_path).await.unwrap();
         assert_eq!(store.list_runs().await.unwrap().len(), 2);
-        assert_eq!(store.list_steps("s-1").await.unwrap().len(), 2);
+        let steps = store.list_steps("s-1").await.unwrap();
+        assert_eq!(steps.len(), 4);
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| step.source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["user", "agent", "user", "agent"]
+        );
 
         run_chronicle(ChronicleArgs {
             command: ChronicleCommand::Export(ChronicleExportArgs {

@@ -9,6 +9,7 @@ mod trajectory_detail;
 mod trajectory_format;
 mod trajectory_stdout_toml;
 
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -18,11 +19,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use persisting_pchronicle::{
-    JudgeMethod, JudgeSampleMode, JudgeScope, RequestBody, ResponseBody, TrajectoryAppendRequest,
-    TrajectoryExtractRequest, TrajectoryJudgeRequest, TrajectoryJudgeResponse,
-    TrajectoryJudgeStatsRequest, TrajectoryJudgeStatsResponse, TrajectoryMaterializeRequest,
-    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
-    TrajectoryStatsResponse, TrajectoryStorageFormat,
+    CatalogErrorPolicy, DatasetMount, JudgeMethod, JudgeSampleMode, JudgeScope, RequestBody,
+    ResponseBody, TrajectoryAppendRequest, TrajectoryExtractRequest, TrajectoryJudgeRequest,
+    TrajectoryJudgeResponse, TrajectoryJudgeStatsRequest, TrajectoryJudgeStatsResponse,
+    TrajectoryMaterializeRequest, TrajectoryReplayRequest, TrajectoryReplayResponse,
+    TrajectoryStatsRequest, TrajectoryStatsResponse, TrajectoryStorageFormat,
 };
 
 use persisting_gateway::engine::TurnKind;
@@ -30,6 +31,7 @@ use persisting_pchronicle::{
     drop_lifecycle_run_partitions, expand_story_locations_blocking, list_traj_read_locations,
     merge_traj_location, resolve_traj_read_location, StoryCoords as TrajLocation,
 };
+use serde::Deserialize;
 use stats_output::{
     print_stats_section_divider, print_trajectory_stats_detail, print_trajectory_stats_list,
     print_trajectory_stats_summary, supports_detail_tree, ResolvedStatsOutputBackend,
@@ -174,11 +176,39 @@ enum ChronicleCommand {
     Serve {
         /// Trajectory storage root.
         #[arg(value_name = "STORAGE")]
-        storage: String,
+        storage: Option<String>,
+        /// Mount an additional query Dataset as NAME=URI. Repeat as needed.
+        #[arg(long = "dataset", value_name = "NAME=URI")]
+        datasets: Vec<String>,
+        /// Read Dataset mounts from a TOML file containing a [datasets] table.
+        #[arg(long, value_name = "FILE")]
+        dataset_file: Option<PathBuf>,
+        /// Dataset allowed to write judgments and run Lance maintenance.
+        #[arg(long, value_name = "NAME")]
+        writable_dataset: Option<String>,
+        /// Fail on bad candidates, or report and skip them in Dataset.sources.
+        #[arg(long, value_enum, default_value_t = CatalogErrorCli::Strict)]
+        dataset_errors: CatalogErrorCli,
         /// Loopback listen address.
         #[arg(long, default_value = "127.0.0.1:9877")]
         listen: std::net::SocketAddr,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum CatalogErrorCli {
+    #[default]
+    Strict,
+    Report,
+}
+
+impl From<CatalogErrorCli> for CatalogErrorPolicy {
+    fn from(value: CatalogErrorCli) -> Self {
+        match value {
+            CatalogErrorCli::Strict => Self::Strict,
+            CatalogErrorCli::Report => Self::Report,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -585,6 +615,70 @@ fn resolve_traj_ids_for_read(
     resolve_traj_read_location(op, path_arg, agent_id, session_id, root_session_id)
 }
 
+#[derive(Debug, Deserialize)]
+struct ChronicleDatasetFile {
+    datasets: BTreeMap<String, String>,
+}
+
+fn resolve_chronicle_server_config(
+    storage: Option<String>,
+    dataset_values: Vec<String>,
+    dataset_file: Option<&Path>,
+    writable_dataset: Option<String>,
+    dataset_errors: CatalogErrorCli,
+) -> Result<persisting_pchronicle_server::ChronicleServerConfig> {
+    let mut datasets = Vec::new();
+    if let Some(storage) = &storage {
+        datasets.push(DatasetMount::default(storage.clone())?);
+    }
+    if let Some(path) = dataset_file {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("read Dataset mount file {}", path.display()))?;
+        let file: ChronicleDatasetFile = toml::from_str(&content)
+            .with_context(|| format!("parse Dataset mount file {}", path.display()))?;
+        for (name, uri) in file.datasets {
+            datasets.push(DatasetMount::new(name, uri)?);
+        }
+    }
+    for value in dataset_values {
+        let (name, uri) = value
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("invalid --dataset {value:?}; expected NAME=URI"))?;
+        datasets.push(DatasetMount::new(name, uri)?);
+    }
+    anyhow::ensure!(
+        !datasets.is_empty(),
+        "provide STORAGE, --dataset NAME=URI, or --dataset-file"
+    );
+    let unique = datasets
+        .iter()
+        .map(|dataset| dataset.name.as_str())
+        .collect::<HashSet<_>>();
+    anyhow::ensure!(
+        unique.len() == datasets.len(),
+        "Dataset names must be unique"
+    );
+
+    let mut config = persisting_pchronicle_server::ChronicleServerConfig::mounted(datasets)?;
+    if storage.is_some() {
+        config.default_dataset = Some("dataset".into());
+        config.writable_dataset = Some("dataset".into());
+    }
+    if let Some(writable_dataset) = writable_dataset {
+        let writable_dataset = DatasetMount::new(writable_dataset, "validation")?.name;
+        anyhow::ensure!(
+            config
+                .datasets
+                .iter()
+                .any(|dataset| dataset.name == writable_dataset),
+            "writable Dataset '{writable_dataset}' is not mounted"
+        );
+        config.writable_dataset = Some(writable_dataset);
+    }
+    config.catalog_options.error_policy = dataset_errors.into();
+    Ok(config)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut lazy = ChronicleClient::new();
@@ -595,11 +689,27 @@ fn main() -> Result<()> {
         Command::Query(args) => dispatch_component("ppilot", &["query"], args)?,
         Command::History(args) => run_history(&mut lazy, args)?,
         Command::Chronicle(args) => match args.command {
-            ChronicleCommand::Serve { storage, listen } => {
+            ChronicleCommand::Serve {
+                storage,
+                datasets,
+                dataset_file,
+                writable_dataset,
+                dataset_errors,
+                listen,
+            } => {
+                let config = resolve_chronicle_server_config(
+                    storage,
+                    datasets,
+                    dataset_file.as_deref(),
+                    writable_dataset,
+                    dataset_errors,
+                )?;
                 eprintln!("[persisting-cli] pChronicle UI: http://{listen}");
                 tokio::runtime::Runtime::new()
                     .context("pChronicle Web runtime")?
-                    .block_on(persisting_pchronicle_server::serve(storage, listen))?;
+                    .block_on(persisting_pchronicle_server::serve_with_config(
+                        config, listen,
+                    ))?;
             }
         },
         Command::Eval(args) => run_eval(&mut lazy, args)?,
@@ -1663,6 +1773,15 @@ mod tests {
             vec!["persisting", "environment", "status", "demo"],
             vec!["persisting", "batch", "plan.py", "--workers", "2"],
             vec!["persisting", "query", "input.jsonl", "--sql", "SELECT 1"],
+            vec![
+                "persisting",
+                "chronicle",
+                "serve",
+                "--dataset",
+                "live=./store",
+                "--dataset",
+                "archive=s3://bucket/archive",
+            ],
             vec!["persisting", "history", "stats", "./store"],
             vec!["persisting", "history", "replay", "./store"],
             vec!["persisting", "eval", "stats", "./store"],
@@ -1716,5 +1835,47 @@ mod tests {
         assert!(should_flush_capture_record(&capture_record(
             "session.ended"
         )));
+    }
+
+    #[test]
+    fn chronicle_positional_storage_is_the_default_writable_dataset() {
+        let config = resolve_chronicle_server_config(
+            Some("./store".into()),
+            vec!["archive=s3://bucket/archive".into()],
+            None,
+            None,
+            CatalogErrorCli::Strict,
+        )
+        .unwrap();
+        assert_eq!(config.default_dataset.as_deref(), Some("dataset"));
+        assert_eq!(config.writable_dataset.as_deref(), Some("dataset"));
+        assert_eq!(config.datasets[0].name, "dataset");
+        assert_eq!(config.datasets[1].name, "archive");
+    }
+
+    #[test]
+    fn named_chronicle_mounts_only_infer_a_default_when_unambiguous() {
+        let one = resolve_chronicle_server_config(
+            None,
+            vec!["live=./store".into()],
+            None,
+            None,
+            CatalogErrorCli::Report,
+        )
+        .unwrap();
+        assert_eq!(one.default_dataset.as_deref(), Some("live"));
+        assert_eq!(one.writable_dataset, None);
+        assert_eq!(one.catalog_options.error_policy, CatalogErrorPolicy::Report);
+
+        let multiple = resolve_chronicle_server_config(
+            None,
+            vec!["live=./store".into(), "archive=./archive".into()],
+            None,
+            Some("live".into()),
+            CatalogErrorCli::Strict,
+        )
+        .unwrap();
+        assert_eq!(multiple.default_dataset, None);
+        assert_eq!(multiple.writable_dataset.as_deref(), Some("live"));
     }
 }

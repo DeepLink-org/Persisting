@@ -9,7 +9,7 @@ for supported workflows.
 | Subsystem | Start here | Then read |
 |---|---|---|
 | pVisor | [Agent infrastructure](agent-infrastructure.md) | [Isolation backends](pvisor-isolation.md) → standalone `pvisor` CLI → [Gateway driver](gateway.md) → [OverlayNet interception](overlaynet.md) |
-| pChronicle | [Agent infrastructure](agent-infrastructure.md) | [Trajectory storage](trajectory.md) → [Storyline 三表 Lance](storyline-lance.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
+| pChronicle | [Agent infrastructure](agent-infrastructure.md) | [Dataset Catalog](dataset-catalog.md) → [Trajectory storage](trajectory.md) → [Storyline 三表 Lance](storyline-lance.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
 | pPilot | [pPilot control plane](ppilot.md) | standalone `ppilot` CLI → run orchestration and pChronicle SQL analysis |
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
 | Gateway capture driver | [Gateway pipeline](gateway.md) | [Markdown format](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
