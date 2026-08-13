@@ -108,7 +108,7 @@ impl OverlayUpper {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayState {
     /// Mounted / Agent may write.
@@ -127,6 +127,39 @@ pub struct OverlayStatus {
     pub changed_files: usize,
     pub whiteouts: usize,
     pub sample_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    TypeChanged,
+    Opaque,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeEntryType {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChangeEntry {
+    pub path: String,
+    pub kind: ChangeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_type: Option<ChangeEntryType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_type: Option<ChangeEntryType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 
 /// Live in-process FUSE mount; unmounted on [`Self::unmount`] / Drop.
@@ -639,6 +672,88 @@ pub fn overlay_status(record: &OverlayRecord) -> Result<OverlayStatus, OverlayEr
         whiteouts,
         sample_paths: sample,
     })
+}
+
+/// Build the complete classified upper-layer changeset without reading file
+/// contents. `lower_dirs` use overlay priority order (highest first).
+pub fn overlay_changes(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+) -> Result<Vec<ChangeEntry>, OverlayError> {
+    let upper_dir = record.upper.path();
+    let mut changes = Vec::new();
+    if !upper_dir.is_dir() {
+        return Ok(changes);
+    }
+    walk_upper(upper_dir, upper_dir, &mut |rel, is_whiteout| {
+        let upper_path = upper_dir.join(&rel);
+        if is_whiteout {
+            let name = rel.file_name().unwrap_or_default();
+            let parent = rel.parent().unwrap_or_else(|| Path::new(""));
+            if name == OPAQUE_WHITEOUT {
+                changes.push(ChangeEntry {
+                    path: parent.display().to_string(),
+                    kind: ChangeKind::Opaque,
+                    old_type: Some(ChangeEntryType::Directory),
+                    new_type: Some(ChangeEntryType::Directory),
+                    size_bytes: None,
+                    mode: None,
+                });
+            } else if let Some(victim) = whiteout_target(name) {
+                let path = parent.join(victim);
+                let old = lower_metadata(lower_dirs, &path);
+                changes.push(ChangeEntry {
+                    path: path.display().to_string(),
+                    kind: ChangeKind::Deleted,
+                    old_type: old.as_ref().map(metadata_type),
+                    new_type: None,
+                    size_bytes: None,
+                    mode: None,
+                });
+            }
+            return Ok(());
+        }
+
+        let new = fs::symlink_metadata(&upper_path)?;
+        let old = lower_metadata(lower_dirs, &rel);
+        let old_type = old.as_ref().map(metadata_type);
+        let new_type = metadata_type(&new);
+        let kind = match old_type {
+            None => ChangeKind::Added,
+            Some(old_type) if old_type != new_type => ChangeKind::TypeChanged,
+            Some(_) => ChangeKind::Modified,
+        };
+        changes.push(ChangeEntry {
+            path: rel.display().to_string(),
+            kind,
+            old_type,
+            new_type: Some(new_type),
+            size_bytes: new.is_file().then_some(new.len()),
+            mode: Some(new.permissions().mode() & 0o7777),
+        });
+        Ok(())
+    })?;
+    changes.sort_by(|left, right| left.path.cmp(&right.path).then(left.kind.cmp(&right.kind)));
+    Ok(changes)
+}
+
+fn lower_metadata(lower_dirs: &[PathBuf], relative: &Path) -> Option<fs::Metadata> {
+    lower_dirs
+        .iter()
+        .find_map(|lower| fs::symlink_metadata(lower.join(relative)).ok())
+}
+
+fn metadata_type(metadata: &fs::Metadata) -> ChangeEntryType {
+    let file_type = metadata.file_type();
+    if file_type.is_file() {
+        ChangeEntryType::File
+    } else if file_type.is_dir() {
+        ChangeEntryType::Directory
+    } else if file_type.is_symlink() {
+        ChangeEntryType::Symlink
+    } else {
+        ChangeEntryType::Other
+    }
 }
 
 /// Copy the raw upper tree without interpreting whiteouts or opaque markers.
@@ -1604,6 +1719,51 @@ mod tests {
         assert!(!upper.exists());
         assert!(!work.exists());
         assert!(tmp.path().join(META_FILENAME).is_file());
+    }
+
+    #[test]
+    fn changeset_classifies_added_modified_deleted_and_opaque_entries() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir_all(target.join("dir")).unwrap();
+        fs::write(target.join("modified.txt"), b"old").unwrap();
+        fs::write(target.join("deleted.txt"), b"gone").unwrap();
+        fs::write(target.join("dir/lower.txt"), b"lower").unwrap();
+        fs::create_dir_all(upper.join("dir")).unwrap();
+        fs::write(upper.join("modified.txt"), b"new").unwrap();
+        fs::write(upper.join("added.txt"), b"added").unwrap();
+        fs::write(upper.join(".wh.deleted.txt"), b"").unwrap();
+        fs::write(upper.join("dir/.wh..wh..opq"), b"").unwrap();
+        let record = OverlayRecord {
+            id: "changes".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper,
+                work_dir: tmp.path().join("work"),
+            },
+            merged_dir: tmp.path().join("merged"),
+            stage_dir: tmp.path().to_path_buf(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+
+        let changes = overlay_changes(&record, std::slice::from_ref(&target)).unwrap();
+        assert!(changes
+            .iter()
+            .any(|change| change.path == "added.txt" && change.kind == ChangeKind::Added));
+        assert!(changes.iter().any(|change| {
+            change.path == "modified.txt" && change.kind == ChangeKind::Modified
+        }));
+        assert!(changes
+            .iter()
+            .any(|change| { change.path == "deleted.txt" && change.kind == ChangeKind::Deleted }));
+        assert!(changes
+            .iter()
+            .any(|change| change.path == "dir" && change.kind == ChangeKind::Opaque));
     }
 
     #[test]

@@ -11,6 +11,7 @@ readme = "README.md"
 default = []
 lance-chronicle = ["persisting-pchronicle/lance-store"]
 jujutsu-overlay = ["persisting-overlayfs/jujutsu"]
+fuzzing = []
 
 [dependencies]
 anyhow.workspace = true

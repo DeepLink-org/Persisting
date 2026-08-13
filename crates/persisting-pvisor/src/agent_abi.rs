@@ -14,6 +14,9 @@ use std::time::Duration;
 
 pub const AGENT_ABI_VERSION: u32 = 2;
 pub const AGENT_ABI_MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const AGENT_ABI_MAX_SESSIONS: usize = 64;
+pub const AGENT_ABI_MAX_PROCESSES: usize = 1024;
+pub const AGENT_ABI_MAX_EFFECTS: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -173,6 +176,8 @@ pub struct AgentClientSnapshot {
     pub role: AgentClientRole,
     pub lifecycle: AgentLifecycleState,
     pub last_heartbeat_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub stale: bool,
     pub quiesced_checkpoint_id: Option<String>,
 }
 
@@ -207,6 +212,7 @@ struct ClientSession {
     agent_name: String,
     role: AgentClientRole,
     lifecycle: AgentLifecycleState,
+    last_seen_unix_ms: u64,
     last_heartbeat_unix_ms: Option<u64>,
     quiesced_checkpoint_id: Option<String>,
 }
@@ -240,6 +246,7 @@ impl AgentAbiState {
     }
 
     fn snapshot(&self) -> AgentAbiSnapshot {
+        let now = crate::util::unix_now_ms();
         let mut clients = self
             .sessions
             .values()
@@ -249,6 +256,7 @@ impl AgentAbiState {
                 role: session.role,
                 lifecycle: session.lifecycle,
                 last_heartbeat_unix_ms: session.last_heartbeat_unix_ms,
+                stale: session_is_stale(session, now),
                 quiesced_checkpoint_id: session.quiesced_checkpoint_id.clone(),
             })
             .collect::<Vec<_>>();
@@ -480,6 +488,18 @@ fn read_request(stream: &std::os::unix::net::UnixStream) -> anyhow::Result<Agent
     Ok(serde_json::from_slice(&frame)?)
 }
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn decode_agent_abi_frame_for_fuzz(frame: &[u8]) -> anyhow::Result<AgentRequest> {
+    anyhow::ensure!(
+        !frame.is_empty() && frame.len() <= AGENT_ABI_MAX_FRAME_BYTES,
+        "invalid Agent ABI frame length"
+    );
+    let frame = frame.strip_suffix(b"\n").unwrap_or(frame);
+    anyhow::ensure!(!frame.is_empty(), "empty Agent ABI frame");
+    Ok(serde_json::from_slice(frame)?)
+}
+
 fn dispatch_request(request: AgentRequest, state: &Arc<Mutex<AgentAbiState>>) -> AgentResponse {
     let body = if request.version != AGENT_ABI_VERSION {
         error_body(format!(
@@ -513,6 +533,40 @@ fn handle_body(
         if hello.client_id.trim().is_empty() || hello.agent_name.trim().is_empty() {
             return Err("client_id and agent_name must be non-empty".into());
         }
+        let now = crate::util::unix_now_ms();
+        let reclaim = state.sessions.iter().find_map(|(session_id, session)| {
+            (session.client_id == hello.client_id && session_is_stale(session, now))
+                .then(|| session_id.clone())
+        });
+        if let Some(session_id) = reclaim {
+            let has_open_effects = state
+                .effects
+                .values()
+                .any(|effect| effect.session_id == session_id && effect.completion.is_none());
+            if has_open_effects {
+                return Err(format!(
+                    "stale client {} still owns open effects; refusing unsafe session replacement",
+                    hello.client_id
+                ));
+            }
+            state.sessions.remove(&session_id);
+            state.processes.retain(|(owner, _), _| owner != &session_id);
+        }
+        if state
+            .sessions
+            .values()
+            .any(|session| session.client_id == hello.client_id)
+        {
+            return Err(format!(
+                "client {} already has a live session",
+                hello.client_id
+            ));
+        }
+        if state.sessions.len() >= AGENT_ABI_MAX_SESSIONS {
+            return Err(format!(
+                "Agent ABI session limit of {AGENT_ABI_MAX_SESSIONS} reached"
+            ));
+        }
         let session_id = uuid::Uuid::new_v4().to_string();
         state.sessions.insert(
             session_id.clone(),
@@ -521,6 +575,7 @@ fn handle_body(
                 agent_name: hello.agent_name,
                 role: hello.role,
                 lifecycle: AgentLifecycleState::Starting,
+                last_seen_unix_ms: now,
                 last_heartbeat_unix_ms: None,
                 quiesced_checkpoint_id: None,
             },
@@ -536,12 +591,14 @@ fn handle_body(
     let session_id = session_id
         .ok_or_else(|| "authenticated Agent ABI request requires session_id".to_string())?;
     let now = crate::util::unix_now_ms();
+    session_mut(state, session_id)?.last_seen_unix_ms = now;
 
     match body {
         AgentRequestBody::Hello(_) => unreachable!(),
         AgentRequestBody::Heartbeat(lifecycle) => {
             let session = session_mut(state, session_id)?;
             session.lifecycle = lifecycle;
+            session.last_seen_unix_ms = now;
             session.last_heartbeat_unix_ms = Some(now);
             Ok(AgentResponseBody::Heartbeat(AgentHeartbeatAck {
                 directive_seq: state.directive_seq,
@@ -553,6 +610,15 @@ fn handle_body(
                 return Err("registered process requires a non-zero pid and non-empty role".into());
             }
             session_mut(state, session_id)?;
+            if !state
+                .processes
+                .contains_key(&(session_id.to_string(), registration.pid))
+                && state.processes.len() >= AGENT_ABI_MAX_PROCESSES
+            {
+                return Err(format!(
+                    "Agent ABI process registration limit of {AGENT_ABI_MAX_PROCESSES} reached"
+                ));
+            }
             state
                 .processes
                 .insert((session_id.to_string(), registration.pid), registration);
@@ -579,6 +645,11 @@ fn handle_body(
                 return Err(format!(
                     "effect {} already exists with different data",
                     begin.effect_id
+                ));
+            }
+            if state.effects.len() >= AGENT_ABI_MAX_EFFECTS {
+                return Err(format!(
+                    "Agent ABI effect limit of {AGENT_ABI_MAX_EFFECTS} reached"
                 ));
             }
             let sequence = state.next_effect_sequence;
@@ -613,6 +684,10 @@ fn handle_body(
             Ok(AgentResponseBody::Ack)
         }
     }
+}
+
+fn session_is_stale(session: &ClientSession, now_unix_ms: u64) -> bool {
+    now_unix_ms.saturating_sub(session.last_seen_unix_ms) > HEARTBEAT_INTERVAL_MS * 3
 }
 
 fn session_mut<'a>(
@@ -727,6 +802,34 @@ mod tests {
             exchange(&server.socket_path, &wrong_version).body,
             AgentResponseBody::Error { message } if message.contains("version mismatch")
         ));
+    }
+
+    #[test]
+    fn duplicate_live_client_is_rejected_and_stale_state_is_reported() {
+        let server =
+            AgentAbiServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+        let session_id = connect(&server);
+        let duplicate = AgentRequest::hello(AgentHello {
+            auth_token: server.auth_token.clone(),
+            client_id: "pilot-1".into(),
+            role: AgentClientRole::Pilot,
+            agent_name: "agent".into(),
+        });
+        assert!(matches!(
+            exchange(&server.socket_path, &duplicate).body,
+            AgentResponseBody::Error { message } if message.contains("live session")
+        ));
+
+        {
+            let mut state = lock_state(&server.control.state);
+            state
+                .sessions
+                .get_mut(&session_id)
+                .unwrap()
+                .last_seen_unix_ms =
+                crate::util::unix_now_ms().saturating_sub(HEARTBEAT_INTERVAL_MS * 4);
+        }
+        assert!(server.control.snapshot().clients[0].stale);
     }
 
     #[test]

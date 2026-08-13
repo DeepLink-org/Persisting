@@ -15,6 +15,20 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
 pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 1;
 
+#[cfg(feature = "fuzzing")]
+pub fn decode_supervisor_frame_for_fuzz(frame: &[u8]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        frame.len() <= MAX_FRAME_BYTES,
+        "Supervisor frame exceeds {MAX_FRAME_BYTES} bytes"
+    );
+    let client = serde_json::from_slice::<SupervisorClientMessage>(frame);
+    let server = serde_json::from_slice::<SupervisorServerMessage>(frame);
+    if client.is_err() && server.is_err() {
+        anyhow::bail!("frame is neither a Supervisor client nor server message");
+    }
+    Ok(())
+}
+
 fn supervisor_protocol_version() -> u32 {
     SUPERVISOR_PROTOCOL_VERSION
 }

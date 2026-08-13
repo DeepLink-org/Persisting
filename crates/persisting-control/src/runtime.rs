@@ -224,6 +224,10 @@ pub struct RuntimeConfig {
     /// Maximum retained bytes for each captured stdout/stderr stream.
     #[serde(default = "default_max_output_bytes")]
     pub max_output_bytes: usize,
+    /// Optional process-tree resource budget. Executors must report which
+    /// fields they can enforce; an unset field is intentionally unlimited.
+    #[serde(default)]
+    pub resource_limits: ResourceLimits,
     #[serde(default)]
     pub policy_mode: PolicyMode,
 }
@@ -234,8 +238,40 @@ impl Default for RuntimeConfig {
             timeout_ms: None,
             termination_grace_ms: default_termination_grace_ms(),
             max_output_bytes: default_max_output_bytes(),
+            resource_limits: ResourceLimits::default(),
             policy_mode: PolicyMode::Audit,
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceLimits {
+    /// Aggregate resident-memory budget when the executor has a process-tree
+    /// controller; otherwise an address-space limit may be used and reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_bytes: Option<u64>,
+    /// Maximum number of processes/threads admitted for the Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processes: Option<u64>,
+    /// CPU time budget in milliseconds. Native rlimit backends round this up
+    /// to whole seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_time_ms: Option<u64>,
+    /// Maximum number of open file descriptors inherited by descendants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_files: Option<u64>,
+    /// Maximum size of a file created by the process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size_bytes: Option<u64>,
+}
+
+impl ResourceLimits {
+    pub fn is_empty(&self) -> bool {
+        self.memory_bytes.is_none()
+            && self.processes.is_none()
+            && self.cpu_time_ms.is_none()
+            && self.open_files.is_none()
+            && self.file_size_bytes.is_none()
     }
 }
 

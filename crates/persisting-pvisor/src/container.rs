@@ -7,8 +7,8 @@ use crate::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
 use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
 use persisting_control::{
-    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessInvocation, ProcessOutput, RunFailure,
-    RunFailureKind, RunInvocation, RunResult, RunState, StdioMode,
+    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
+    RunInvocation, RunResult, RunSpec, RunState, StdioMode,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -96,13 +96,15 @@ impl ContainerExecutor {
 
     fn build_command(
         &self,
-        invocation: &ProcessInvocation,
-        run_id: &str,
+        spec: &RunSpec,
         attempt_id: &str,
         platform: ContainerPlatform,
         pvisor_binary: &Path,
         files: &DelegatedRunFiles,
     ) -> anyhow::Result<Command> {
+        let RunInvocation::Process(invocation) = &spec.invocation;
+        let run_id = spec.run_id.as_str();
+        let limits = &spec.runtime.resource_limits;
         let mut mounts = BTreeMap::<PathBuf, BindMount>::new();
         for mount in &self.settings.mounts {
             add_mount(
@@ -166,6 +168,30 @@ impl ContainerExecutor {
             .arg("0:0")
             .arg("--entrypoint")
             .arg(GUEST_PVISOR);
+
+        if let Some(bytes) = limits.memory_bytes {
+            command.arg("--memory").arg(format!("{bytes}b"));
+        }
+        if let Some(processes) = limits.processes {
+            command.arg("--pids-limit").arg(processes.to_string());
+        }
+        if let Some(milliseconds) = limits.cpu_time_ms {
+            let seconds = milliseconds.div_ceil(1_000).max(1);
+            command
+                .arg("--ulimit")
+                .arg(format!("cpu={seconds}:{seconds}"));
+        }
+        if let Some(open_files) = limits.open_files {
+            command
+                .arg("--ulimit")
+                .arg(format!("nofile={open_files}:{open_files}"));
+        }
+        if let Some(bytes) = limits.file_size_bytes {
+            let blocks = bytes.div_ceil(512);
+            command
+                .arg("--ulimit")
+                .arg(format!("fsize={blocks}:{blocks}"));
+        }
 
         if invocation.stdin == StdioMode::Inherit {
             command.arg("--interactive");
@@ -286,7 +312,6 @@ impl RunExecutor for ContainerExecutor {
 
     async fn execute(&self, context: AttemptContext) -> RunResult {
         let spec = context.spec().clone();
-        let RunInvocation::Process(invocation) = &spec.invocation;
         let started_at = crate::util::unix_now_ms();
         context
             .transition(
@@ -300,8 +325,7 @@ impl RunExecutor for ContainerExecutor {
             let binary = resolve_pvisor_binary(self.settings.pvisor_binary.as_deref())?;
             let files = DelegatedRunFiles::new(&spec)?;
             let command = self.build_command(
-                invocation,
-                spec.run_id.as_str(),
+                &spec,
                 context.attempt_id().as_str(),
                 platform,
                 &binary,
@@ -647,6 +671,7 @@ fn terminal_is_tty() -> bool {
 mod tests {
     use super::*;
     use crate::config::{ContainerNetwork, ContainerPlatform};
+    use persisting_control::ResourceLimits;
     use std::ffi::OsStr;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -674,15 +699,19 @@ mod tests {
         })
         .unwrap();
         let mut spec = persisting_control::RunSpec::process("run-one", "agent", "secret-agent");
+        spec.runtime.resource_limits = ResourceLimits {
+            memory_bytes: Some(1_048_576),
+            processes: Some(8),
+            open_files: Some(32),
+            ..ResourceLimits::default()
+        };
         let RunInvocation::Process(invocation) = &mut spec.invocation;
         invocation.cwd = Some(cwd.display().to_string());
         invocation.inherit_env = false;
         let files = DelegatedRunFiles::new(&spec).unwrap();
-        let RunInvocation::Process(invocation) = &spec.invocation;
         let command = executor
             .build_command(
-                invocation,
-                "run-one",
+                &spec,
                 "attempt-one",
                 ContainerPlatform::LinuxAmd64,
                 &runtime,
@@ -698,6 +727,11 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--entrypoint", GUEST_PVISOR]));
         assert!(args.windows(2).any(|pair| pair == ["--executor", "host"]));
+        assert!(args.windows(2).any(|pair| pair == ["--memory", "1048576b"]));
+        assert!(args.windows(2).any(|pair| pair == ["--pids-limit", "8"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--ulimit", "nofile=32:32"]));
         assert!(args.iter().any(|arg| arg.ends_with(SPEC_FILENAME)));
         assert!(!args.iter().any(|arg| arg == "secret-agent"));
     }
