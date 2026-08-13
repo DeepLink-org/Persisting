@@ -108,8 +108,9 @@ Heartbeats return pVisor's current desired state (`continue`, `quiesce`, or
 generation and the server's open-effect view.
 
 Hosts use `RunHandle::agent_abi()` to publish desired state and inspect the
-registered clients, processes, and effects. pPilot exposes `AgentAbiClient` for
-the client side.
+registered clients, processes, and effects. The reusable
+`persisting-agent-abi` crate owns the client SDK; pPilot re-exports it for
+compatibility and remains the reference quiescence/effect integration.
 
 ## Runtime configuration
 
@@ -121,6 +122,15 @@ re-read a Gateway-specific file:
 [run]
 executor = "container"
 command = ["codex"]
+inherit_env = false
+pass_env = ["EXPLICIT_NON_GATEWAY_TOKEN"]
+
+[run.resource_limits]
+memory_bytes = 2147483648
+processes = 128
+cpu_time_ms = 600000
+open_files = 1024
+file_size_bytes = 1073741824
 
 [container]
 runtime = "docker"                 # `podman` is also supported
@@ -453,7 +463,7 @@ timestamps and xattrs, and processes opaque markers before staged children.
 - `pvisor run --executor vm [--vm-rootfs DIR] [--vm-library-dir DIR] -- <agent>`
 - `pvisor run --overlayfs-base DIR [DRIVER OPTIONS] -- <agent>`
 - `pvisor run --config run.toml [OVERRIDES] [-- <agent>]`
-- `pvisor review [RUN|WORKSPACE] [--json]`
+- `pvisor review [RUN|WORKSPACE] [--json|--diff]`
 - `pvisor checkpoint [RUN|WORKSPACE] [--name NAME]`
 - `pvisor fork RUN --checkpoint NAME -- <agent>`
 - `pvisor status [RUN|STAGE|UPPER]`
@@ -463,9 +473,19 @@ timestamps and xattrs, and processes opaque markers before staged children.
 Each Run writes `run.json`, `lease.lock`, and (while live) `control.sock` next
 to `overlay.json`. Completed CLI Runs also write a mode-`0600`
 `run-bundle.json` containing outcome, safety boundary, filesystem summary,
-network profile, Agent ABI clients/processes/effects, output, metrics, and
-artifact references. `review` presents this bundle as an approval-oriented
-summary. `status` remains the lower-level live diagnostic view.
+network profile, requested resource limits, environment-key projection,
+classified filesystem changes, Agent ABI clients/processes/effects, output,
+metrics, and artifact references. `review` presents the complete A/M/D/T/O
+manifest; `--diff` adds bounded text diffs while marking binary, large,
+symlink, and opaque changes structurally. `status` remains the lower-level live
+diagnostic view.
+
+`pvisor run --safe` disables full host-environment inheritance. A small
+compatibility baseline is projected and additional host keys require repeated
+`--pass-env NAME` or `run.pass_env`. Gateway upstream credentials stay in the
+trusted Gateway; SDK-facing authentication variables, when required, contain
+only a Run-scoped local placeholder. Bundles record names and provenance, never
+environment values.
 
 `checkpoint` copies the raw upper into `checkpoints/<id>/` only after a Run is
 stopped. `RunHandle::checkpoint` is the live API: it requests Agent ABI

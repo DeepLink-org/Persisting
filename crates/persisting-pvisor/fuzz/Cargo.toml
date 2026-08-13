@@ -1,0 +1,43 @@
+[package]
+name = "persisting-pvisor-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+persisting-pvisor = { path = "..", features = ["fuzzing"] }
+
+[[bin]]
+name = "agent_abi_frame"
+path = "fuzz_targets/agent_abi_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oci_layer"
+path = "fuzz_targets/oci_layer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "supervisor_frame"
+path = "fuzz_targets/supervisor_frame.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+
+[patch.crates-io]
+fuser = { path = "../../../vendor/fuser" }
+libkrun = { path = "../../../vendor/libkrun" }
+krun-init-blob = { path = "../../../vendor/krun-init-blob" }
+krun-vmm = { path = "../../../vendor/krun-vmm" }
+krun-devices = { path = "../../../vendor/krun-devices" }

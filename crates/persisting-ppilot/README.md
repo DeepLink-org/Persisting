@@ -11,7 +11,8 @@ pPilot is a first-class Persisting component alongside pVisor and pChronicle:
 pPilot consumes Run contracts and results and is the user-facing entry point
 for querying trajectory data. It does not own provider protocol adaptation,
 execution drivers, or trajectory storage formats; those query implementations
-remain in pChronicle. It does expose the pPilot-side `AgentAbiClient` used for
+remain in pChronicle. It re-exports the standalone
+`persisting-agent-abi` client SDK used for
 heartbeat, process registration, checkpoint quiescence, and effect journaling
 with the pVisor that owns a Run.
 

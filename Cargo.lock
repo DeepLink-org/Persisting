@@ -6691,6 +6691,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df202b0b0f5b8e389955afd5f27b007b00fb948162953f1db9c70d2c7e3157d7"
 
 [[package]]
+name = "persisting-agent-abi"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "persisting-control",
+ "persisting-pvisor",
+ "serde_json",
+]
+
+[[package]]
 name = "persisting-cli"
 version = "0.2.0"
 dependencies = [
@@ -6903,6 +6913,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
+ "persisting-agent-abi",
  "persisting-control",
  "persisting-gateway",
  "persisting-pchronicle",

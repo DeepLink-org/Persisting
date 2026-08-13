@@ -164,12 +164,29 @@ impl RunHandle {
             .checkpoint_record
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Run {} has no OverlayFS stage", self.run_id))?;
+        let initial_snapshot = self.agent_abi.snapshot();
+        anyhow::ensure!(
+            !initial_snapshot.clients.is_empty(),
+            "live checkpoint requires at least one Agent ABI client; use the stopped `pvisor checkpoint` command after the Run exits"
+        );
+        if let Some(client) = initial_snapshot.clients.iter().find(|client| client.stale) {
+            anyhow::bail!(
+                "live checkpoint cannot quiesce stale Agent ABI client {}",
+                client.client_id
+            );
+        }
         let deadline = crate::unix_now_ms().saturating_add(timeout.as_millis() as u64);
         self.agent_abi
             .request_quiesce(checkpoint_id.to_owned(), Some(deadline));
         let outcome = async {
             loop {
                 let snapshot = self.agent_abi.snapshot();
+                if let Some(client) = snapshot.clients.iter().find(|client| client.stale) {
+                    anyhow::bail!(
+                        "checkpoint {checkpoint_id} lost Agent ABI client {} before quiescence",
+                        client.client_id
+                    );
+                }
                 if checkpoint_barrier_satisfied(&snapshot, checkpoint_id) {
                     return crate::checkpoint::create_agent_quiesced_checkpoint(
                         record,
@@ -207,10 +224,9 @@ impl RunHandle {
 
 fn checkpoint_barrier_satisfied(snapshot: &crate::AgentAbiSnapshot, checkpoint_id: &str) -> bool {
     !snapshot.clients.is_empty()
-        && snapshot
-            .clients
-            .iter()
-            .all(|client| client.quiesced_checkpoint_id.as_deref() == Some(checkpoint_id))
+        && snapshot.clients.iter().all(|client| {
+            !client.stale && client.quiesced_checkpoint_id.as_deref() == Some(checkpoint_id)
+        })
         && snapshot
             .effects
             .iter()
@@ -836,6 +852,22 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
             "runtime.max_output_bytes must be greater than zero".into(),
         ));
     }
+    let limits = &spec.runtime.resource_limits;
+    if [
+        limits.memory_bytes,
+        limits.processes,
+        limits.cpu_time_ms,
+        limits.open_files,
+        limits.file_size_bytes,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| value == 0)
+    {
+        return Err(PVisorError::InvalidSpec(
+            "runtime resource limits must be greater than zero when configured".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -870,6 +902,7 @@ mod tests {
             role: crate::AgentClientRole::Agent,
             lifecycle: crate::AgentLifecycleState::Quiesced,
             last_heartbeat_unix_ms: Some(1),
+            stale: false,
             quiesced_checkpoint_id: Some("cp".into()),
         });
         assert!(checkpoint_barrier_satisfied(&snapshot, "cp"));

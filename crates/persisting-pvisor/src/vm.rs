@@ -5,8 +5,8 @@ use crate::executor::{AttemptContext, RunExecutor};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use persisting_control::{
-    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
-    RunInvocation, RunResult, RunState, StdioMode,
+    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
+    RunFailureKind, RunInvocation, RunResult, RunState, StdioMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -434,6 +434,7 @@ impl RunExecutor for VmExecutor {
             workspace_target.as_deref(),
             mount_helper_guest.as_deref(),
             &guest,
+            &spec.runtime.resource_limits,
         ) {
             return failed_to_start(
                 &spec,
@@ -443,6 +444,12 @@ impl RunExecutor for VmExecutor {
             );
         }
         let helper_guest = Path::new("/").join(helper_name);
+        let requested_memory_mib = spec
+            .runtime
+            .resource_limits
+            .memory_bytes
+            .map(|bytes| bytes.div_ceil(1024 * 1024).max(1))
+            .and_then(|mib| u32::try_from(mib).ok());
         let runner = RunnerSpec {
             root: root_overlay,
             workspace,
@@ -450,7 +457,9 @@ impl RunExecutor for VmExecutor {
             mount_helper: Some(helper_guest),
             guest,
             cpus: self.settings.cpus as u8,
-            memory_mib: self.settings.memory_mib,
+            memory_mib: requested_memory_mib
+                .map(|requested| requested.min(self.settings.memory_mib))
+                .unwrap_or(self.settings.memory_mib),
             library_dir: self.settings.library_dir.clone(),
         };
         let runner_path = temporary.path().join("runner.json");
@@ -618,7 +627,10 @@ impl RunExecutor for VmExecutor {
             failure,
             output,
             value: None,
-            metrics: Default::default(),
+            metrics: BTreeMap::from([(
+                "resource.vm_memory_bytes".into(),
+                f64::from(runner.memory_mib) * 1024.0 * 1024.0,
+            )]),
             artifacts: Vec::new(),
             event_stream_ref: None,
             warnings,
@@ -784,6 +796,7 @@ fn write_guest_helper(
     workspace_target: Option<&Path>,
     mount_helper: Option<&Path>,
     guest: &GuestSpec,
+    limits: &ResourceLimits,
 ) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -795,6 +808,21 @@ fn write_guest_helper(
         script.push_str(" -t virtiofs pvisor-workspace ");
         script.push_str(&shell_quote(&target.to_string_lossy())?);
         script.push('\n');
+    }
+    if let Some(bytes) = limits.memory_bytes {
+        script.push_str(&format!("ulimit -v {}\n", bytes.div_ceil(1024)));
+    }
+    if let Some(processes) = limits.processes {
+        script.push_str(&format!("ulimit -u {processes}\n"));
+    }
+    if let Some(milliseconds) = limits.cpu_time_ms {
+        script.push_str(&format!("ulimit -t {}\n", milliseconds.div_ceil(1_000)));
+    }
+    if let Some(open_files) = limits.open_files {
+        script.push_str(&format!("ulimit -n {open_files}\n"));
+    }
+    if let Some(bytes) = limits.file_size_bytes {
+        script.push_str(&format!("ulimit -f {}\n", bytes.div_ceil(512)));
     }
     script.push_str("rm -f /init.krun \"$0\"");
     if let Some(mount_helper) = mount_helper {
@@ -1007,7 +1035,7 @@ mod tests {
             env: BTreeMap::from([("COMPLEX".into(), environment_value.into())]),
             cwd: temporary.path().to_path_buf(),
         };
-        write_guest_helper(&helper, None, None, &guest).unwrap();
+        write_guest_helper(&helper, None, None, &guest, &ResourceLimits::default()).unwrap();
 
         let status = std::process::Command::new(&helper).status().unwrap();
         assert!(status.success());
@@ -1015,6 +1043,38 @@ mod tests {
             std::fs::read_to_string(temporary.path().join("result")).unwrap(),
             format!("{environment_value}\n{argument_value}")
         );
+    }
+
+    #[test]
+    fn guest_helper_emits_requested_resource_limits() {
+        let temporary = tempfile::tempdir().unwrap();
+        let helper = temporary.path().join("guest-helper.sh");
+        let guest = GuestSpec {
+            program: "/bin/true".into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: PathBuf::from("/"),
+        };
+        write_guest_helper(
+            &helper,
+            None,
+            None,
+            &guest,
+            &ResourceLimits {
+                memory_bytes: Some(2 * 1024 * 1024),
+                processes: Some(8),
+                cpu_time_ms: Some(1_500),
+                open_files: Some(32),
+                file_size_bytes: Some(1024),
+            },
+        )
+        .unwrap();
+        let script = std::fs::read_to_string(helper).unwrap();
+        assert!(script.contains("ulimit -v 2048"));
+        assert!(script.contains("ulimit -u 8"));
+        assert!(script.contains("ulimit -t 2"));
+        assert!(script.contains("ulimit -n 32"));
+        assert!(script.contains("ulimit -f 2"));
     }
 
     #[test]

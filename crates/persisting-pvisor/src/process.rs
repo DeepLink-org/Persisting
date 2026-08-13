@@ -8,8 +8,9 @@ use crate::sandbox::{seatbelt_profile, SeatbeltPlan, MACOS_SANDBOX_EXEC, SEATBEL
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_EXIT_CODE, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
 use persisting_control::{
-    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessInvocation, ProcessOutput, RunFailure,
-    RunFailureKind, RunInvocation, RunResult, RunSpec, RunState, StdioMode,
+    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessInvocation, ProcessOutput,
+    ResourceLimits, RunFailure, RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
+    StdioMode,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use persisting_control::{FilesystemAccess, NetworkCapability};
@@ -19,6 +20,81 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
+
+#[cfg(target_os = "linux")]
+struct ResourceCgroup {
+    path: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl ResourceCgroup {
+    fn prepare(limits: &ResourceLimits) -> std::io::Result<Option<Self>> {
+        if limits.memory_bytes.is_none() && limits.processes.is_none() {
+            return Ok(None);
+        }
+        let membership = std::fs::read_to_string("/proc/self/cgroup")?;
+        let relative = membership
+            .lines()
+            .find_map(|line| line.strip_prefix("0::"))
+            .ok_or_else(|| std::io::Error::other("unified cgroup v2 membership is unavailable"))?;
+        let relative = Path::new(relative.trim_start_matches('/'));
+        anyhow::ensure!(
+            relative
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_))),
+            "unsafe cgroup v2 membership path"
+        )
+        .map_err(std::io::Error::other)?;
+        let parent = Path::new("/sys/fs/cgroup").join(relative);
+        let path = parent.join(format!("persisting-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir(&path)?;
+        let configure = (|| {
+            if let Some(bytes) = limits.memory_bytes {
+                std::fs::write(path.join("memory.max"), bytes.to_string())?;
+            }
+            if let Some(processes) = limits.processes {
+                std::fs::write(path.join("pids.max"), processes.to_string())?;
+            }
+            Ok::<_, std::io::Error>(())
+        })();
+        if let Err(error) = configure {
+            let _ = std::fs::remove_dir(&path);
+            return Err(error);
+        }
+        Ok(Some(Self { path }))
+    }
+
+    fn install(&self, command: &mut Command) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+
+        let membership = std::fs::OpenOptions::new()
+            .write(true)
+            .open(self.path.join("cgroup.procs"))?;
+        // SAFETY: the pre-exec hook performs one async-signal-safe write to a
+        // cgroup.procs file opened by the parent. Writing `0` moves the calling
+        // child into the prepared cgroup before Agent code executes.
+        unsafe {
+            command.as_std_mut().pre_exec(move || {
+                let fd = membership.as_raw_fd();
+                let moved = libc::write(fd, b"0".as_ptr().cast(), 1);
+                if moved == 1 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ResourceCgroup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.path);
+    }
+}
 
 #[cfg(unix)]
 struct ForegroundProcessGroup {
@@ -366,6 +442,7 @@ impl ProcessExecutor {
         {
             use std::os::unix::process::CommandExt;
             command.as_std_mut().process_group(0);
+            install_resource_limit_hook(&mut command, spec.runtime.resource_limits.clone());
         }
         if let Some(cwd) = &invocation.cwd {
             command.current_dir(cwd);
@@ -387,6 +464,67 @@ impl ProcessExecutor {
         }
         Ok(PreparedCommand { command, resources })
     }
+}
+
+#[cfg(unix)]
+fn install_resource_limit_hook(command: &mut Command, limits: ResourceLimits) {
+    if limits.is_empty() {
+        return;
+    }
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the hook only invokes async-signal-safe getrlimit/setrlimit calls
+    // and does not allocate or acquire locks between fork and exec.
+    unsafe {
+        command
+            .as_std_mut()
+            .pre_exec(move || apply_resource_limits(&limits));
+    }
+}
+
+#[cfg(unix)]
+fn apply_resource_limits(limits: &ResourceLimits) -> std::io::Result<()> {
+    macro_rules! set_limit {
+        ($resource:expr, $value:expr) => {{
+            let mut current = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if unsafe { libc::getrlimit($resource, &mut current) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let requested = $value as libc::rlim_t;
+            let effective = requested.min(current.rlim_max);
+            let limit = libc::rlimit {
+                rlim_cur: effective,
+                rlim_max: effective,
+            };
+            if unsafe { libc::setrlimit($resource, &limit) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }};
+    }
+
+    if let Some(bytes) = limits.memory_bytes {
+        set_limit!(libc::RLIMIT_AS, bytes);
+    }
+    if let Some(processes) = limits.processes {
+        set_limit!(libc::RLIMIT_NPROC, processes);
+    }
+    if let Some(milliseconds) = limits.cpu_time_ms {
+        let seconds = milliseconds
+            .saturating_add(999)
+            .checked_div(1_000)
+            .unwrap_or(0)
+            .max(1);
+        set_limit!(libc::RLIMIT_CPU, seconds);
+    }
+    if let Some(open_files) = limits.open_files {
+        set_limit!(libc::RLIMIT_NOFILE, open_files);
+    }
+    if let Some(bytes) = limits.file_size_bytes {
+        set_limit!(libc::RLIMIT_FSIZE, bytes);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -732,6 +870,33 @@ impl RunExecutor for ProcessExecutor {
                 };
             }
         };
+        let mut warnings = Vec::new();
+        #[cfg(target_os = "linux")]
+        let mut metrics = std::collections::BTreeMap::new();
+        #[cfg(not(target_os = "linux"))]
+        let metrics = std::collections::BTreeMap::new();
+        #[cfg(target_os = "linux")]
+        let _resource_cgroup = match ResourceCgroup::prepare(&spec.runtime.resource_limits) {
+            Ok(Some(cgroup)) => match cgroup.install(&mut command) {
+                Ok(()) => {
+                    metrics.insert("resource.cgroup_v2".into(), 1.0);
+                    Some(cgroup)
+                }
+                Err(error) => {
+                    warnings.push(format!(
+                        "cgroup v2 resource controller unavailable; using inherited rlimits: {error}"
+                    ));
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(error) => {
+                warnings.push(format!(
+                    "cgroup v2 resource controller unavailable; using inherited rlimits: {error}"
+                ));
+                None
+            }
+        };
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -757,7 +922,6 @@ impl RunExecutor for ProcessExecutor {
                 };
             }
         };
-
         #[cfg(unix)]
         let _foreground = match ForegroundProcessGroup::give_to(&child, invocation) {
             Ok(foreground) => foreground,
@@ -915,13 +1079,14 @@ impl RunExecutor for ProcessExecutor {
             failure,
             output,
             value: None,
-            metrics: Default::default(),
+            metrics,
             artifacts: Vec::new(),
             event_stream_ref: None,
-            warnings: if sandbox_setup_failed {
-                vec![SANDBOX_SETUP_FAILED_WARNING.into()]
-            } else {
-                Vec::new()
+            warnings: {
+                if sandbox_setup_failed {
+                    warnings.push(SANDBOX_SETUP_FAILED_WARNING.into());
+                }
+                warnings
             },
         }
     }
@@ -930,6 +1095,24 @@ impl RunExecutor for ProcessExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_process_receives_requested_open_file_limit() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "ulimit -n"]);
+        command.stdout(Stdio::piped());
+        install_resource_limit_hook(
+            &mut command,
+            ResourceLimits {
+                open_files: Some(32),
+                ..ResourceLimits::default()
+            },
+        );
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "32");
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

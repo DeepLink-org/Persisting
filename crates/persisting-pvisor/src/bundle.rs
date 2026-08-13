@@ -1,12 +1,14 @@
 //! Durable, versioned summary of one pVisor Run.
 
-use crate::runtime::{overlay_status, OverlayState, RunLineage, RunRecord};
+use crate::runtime::{
+    overlay_changes, overlay_status, ChangeEntry, OverlayState, RunLineage, RunRecord,
+};
 use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::util::{atomic_write, sync_directory};
 use crate::{unix_now_ms, AgentAbiSnapshot};
 use persisting_control::{
-    ArtifactRef, ExecutorDescriptor, IsolationKind, NetworkCapability, ProcessOutput, RunFailure,
-    RunResult, RunState,
+    ArtifactRef, ExecutorDescriptor, IsolationKind, NetworkCapability, ProcessOutput,
+    ResourceLimits, RunFailure, RunResult, RunState,
 };
 use persisting_overlaynet::{InterceptionProfile, InterceptionSnapshot};
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,10 @@ pub struct RunBundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem: Option<FilesystemSummary>,
     pub network: NetworkSummary,
+    #[serde(default)]
+    pub environment: crate::runtime::EnvironmentProjection,
+    #[serde(default)]
+    pub resources: ResourceSummary,
     pub agent_abi: AgentAbiSnapshot,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
@@ -109,6 +115,8 @@ pub struct FilesystemSummary {
     pub host_gid: Option<u32>,
     #[serde(default)]
     pub sample_paths: Vec<String>,
+    #[serde(default)]
+    pub changes: Vec<ChangeEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +127,16 @@ pub struct NetworkSummary {
     /// Present only when a driver exports final counters into the bundle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intercepted: Option<InterceptionSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResourceSummary {
+    pub requested: ResourceLimits,
+    pub effective: ResourceLimits,
+    #[serde(default)]
+    pub mechanisms: Vec<String>,
+    #[serde(default)]
+    pub limitations: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +172,7 @@ impl RunBundle {
                     host_uid: root_overlay.then(|| unsafe { libc::geteuid() }),
                     host_gid: root_overlay.then(|| unsafe { libc::getegid() }),
                     sample_paths: status.sample_paths,
+                    changes: overlay_changes(overlay, &record.overlay_lowers)?,
                 })
             })
             .transpose()?;
@@ -201,6 +220,7 @@ impl RunBundle {
             && !sandbox_setup_failed;
         let filesystem_non_bypassable =
             filesystem_read_non_bypassable && filesystem_write_non_bypassable;
+        let resources = resource_summary(record, result);
         let mut safety_warnings = Vec::new();
         if safe_profile_requested {
             if host_process {
@@ -304,6 +324,8 @@ impl RunBundle {
                 interception: record.network_interception.clone(),
                 intercepted: record.network_interception_metrics.clone(),
             },
+            environment: environment_summary(record),
+            resources,
             agent_abi,
             orchestration: record.orchestration.clone(),
             artifacts,
@@ -342,6 +364,119 @@ impl RunBundle {
     }
 }
 
+fn resource_summary(record: &RunRecord, result: &RunResult) -> ResourceSummary {
+    let isolation = record.executor.as_ref().map(|executor| executor.isolation);
+    let mut effective = record.resource_limits.clone();
+    let mut mechanisms = Vec::new();
+    let mut limitations: Vec<String> = Vec::new();
+    if !record.resource_limits.is_empty() {
+        mechanisms.push("inherited POSIX rlimits".into());
+        match isolation {
+            Some(IsolationKind::Container) => {
+                mechanisms.push("OCI memory/pids controller flags".into());
+            }
+            Some(IsolationKind::VirtualMachine) => {
+                mechanisms.push("libkrun VM memory boundary".into());
+                if let Some(bytes) = result.metrics.get("resource.vm_memory_bytes") {
+                    effective.memory_bytes = Some(*bytes as u64);
+                }
+                limitations.push(
+                    "process/open-file/file-size limits are inherited inside the guest helper"
+                        .into(),
+                );
+            }
+            _ => limitations.push(
+                "memory and CPU rlimits are per process/address space, not aggregate cgroup accounting"
+                    .into(),
+            ),
+        }
+        if matches!(
+            isolation,
+            None | Some(IsolationKind::HostProcess)
+                | Some(IsolationKind::RootlessProcess)
+                | Some(IsolationKind::SandboxedProcess)
+        ) {
+            effective = effective_native_limits(&record.resource_limits);
+        }
+        if result.metrics.get("resource.cgroup_v2") == Some(&1.0) {
+            mechanisms.push("Linux cgroup v2 memory/pids controller".into());
+            limitations.retain(|limitation| !limitation.contains("not aggregate cgroup"));
+            if record.resource_limits.cpu_time_ms.is_some() {
+                limitations.push(
+                    "CPU-time budget uses inherited RLIMIT_CPU; cgroup v2 does not provide a total CPU-time ceiling"
+                        .into(),
+                );
+            }
+        }
+    }
+    ResourceSummary {
+        requested: record.resource_limits.clone(),
+        effective,
+        mechanisms,
+        limitations,
+    }
+}
+
+#[cfg(unix)]
+fn effective_native_limits(requested: &ResourceLimits) -> ResourceLimits {
+    #[cfg(target_os = "linux")]
+    type RlimitResource = libc::__rlimit_resource_t;
+    #[cfg(not(target_os = "linux"))]
+    type RlimitResource = libc::c_int;
+
+    fn clamp(resource: RlimitResource, requested: Option<u64>) -> Option<u64> {
+        let requested = requested?;
+        let mut current = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
+            return None;
+        }
+        Some(requested.min(current.rlim_max))
+    }
+    ResourceLimits {
+        memory_bytes: clamp(libc::RLIMIT_AS, requested.memory_bytes),
+        processes: clamp(libc::RLIMIT_NPROC, requested.processes),
+        cpu_time_ms: clamp(
+            libc::RLIMIT_CPU,
+            requested
+                .cpu_time_ms
+                .map(|milliseconds| milliseconds.div_ceil(1_000)),
+        )
+        .map(|seconds| seconds.saturating_mul(1_000)),
+        open_files: clamp(libc::RLIMIT_NOFILE, requested.open_files),
+        file_size_bytes: clamp(libc::RLIMIT_FSIZE, requested.file_size_bytes),
+    }
+}
+
+#[cfg(not(unix))]
+fn effective_native_limits(_requested: &ResourceLimits) -> ResourceLimits {
+    ResourceLimits::default()
+}
+
+fn environment_summary(record: &RunRecord) -> crate::runtime::EnvironmentProjection {
+    let mut summary = record.environment.clone();
+    summary.runtime_injected_keys.extend(
+        [
+            "PERSISTING_AGENT",
+            "PERSISTING_AGENT_ABI_ENDPOINT",
+            "PERSISTING_AGENT_ABI_TOKEN",
+            "PERSISTING_AGENT_ABI_TRANSPORT",
+            "PERSISTING_AGENT_ABI_VERSION",
+            "PERSISTING_PVISOR_ROLE",
+            "PERSISTING_PVISOR_RUNTIME",
+            "PERSISTING_PVISOR_STORAGE",
+            "PERSISTING_RUN_ID",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    summary.runtime_injected_keys.sort();
+    summary.runtime_injected_keys.dedup();
+    summary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +511,8 @@ mod tests {
             gateway_listen: None,
             network: serde_json::json!({"mode": "ambient"}),
             network_policy: None,
+            environment: Default::default(),
+            resource_limits: Default::default(),
             overlay: Some(OverlayRecord {
                 id: "run-1".into(),
                 target: temp.path().join("target"),

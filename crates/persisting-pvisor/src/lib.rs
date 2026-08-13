@@ -30,17 +30,20 @@ mod supervisor;
 mod util;
 mod vm;
 
+#[cfg(feature = "fuzzing")]
+pub use agent_abi::decode_agent_abi_frame_for_fuzz;
 pub use agent_abi::{
     AgentAbiControl, AgentAbiServer, AgentAbiSnapshot, AgentCheckpointQuiesced, AgentClientRole,
     AgentClientSnapshot, AgentDirective, AgentEffectBegin, AgentEffectComplete, AgentEffectOutcome,
     AgentEffectSnapshot, AgentHeartbeatAck, AgentHello, AgentLifecycleState,
     AgentProcessRegistration, AgentProcessSnapshot, AgentRequest, AgentRequestBody, AgentResponse,
-    AgentResponseBody, AgentWelcome, AGENT_ABI_ENDPOINT_ENV, AGENT_ABI_MAX_FRAME_BYTES,
+    AgentResponseBody, AgentWelcome, AGENT_ABI_ENDPOINT_ENV, AGENT_ABI_MAX_EFFECTS,
+    AGENT_ABI_MAX_FRAME_BYTES, AGENT_ABI_MAX_PROCESSES, AGENT_ABI_MAX_SESSIONS,
     AGENT_ABI_TOKEN_ENV, AGENT_ABI_TRANSPORT_ENV, AGENT_ABI_VERSION, AGENT_ABI_VERSION_ENV,
 };
 pub use bundle::{
-    BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, RunBundle, SafetySummary,
-    RUN_BUNDLE_FILENAME, RUN_BUNDLE_SCHEMA_VERSION,
+    BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, ResourceSummary, RunBundle,
+    SafetySummary, RUN_BUNDLE_FILENAME, RUN_BUNDLE_SCHEMA_VERSION,
 };
 pub use checkpoint::{
     create_logical_checkpoint, latest_logical_checkpoint, restore_logical_checkpoint,
@@ -63,10 +66,17 @@ pub use event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
 };
 pub use executor::{AttemptContext, RunExecutor};
+#[cfg(feature = "fuzzing")]
+pub use oci::fuzz_oci_layer;
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;
 pub use pvisor::{PVisor, PVisorBuilder, PVisorError, RunCancellation, RunEventStream, RunHandle};
-pub use runtime::{ImplantPlan, OverlayHint, RunLineage, RuntimeCapabilities};
+pub use runtime::{
+    ChangeEntry, ChangeEntryType, ChangeKind, ImplantPlan, OverlayHint, RunLineage,
+    RuntimeCapabilities,
+};
+#[cfg(feature = "fuzzing")]
+pub use supervisor::decode_supervisor_frame_for_fuzz;
 pub use supervisor::{
     SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveAck,
     SupervisorDirectiveEnvelope, SupervisorHeartbeat, SupervisorNetworkQuotaGrant,
