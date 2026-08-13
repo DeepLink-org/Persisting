@@ -1,10 +1,10 @@
 use std::fmt::Write as _;
-use std::io::Write;
+use std::io::{Error as IoError, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_pchronicle::{
     CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus,
@@ -110,10 +110,45 @@ struct StatusArgs {
 
 #[derive(Debug, Args)]
 struct QueryArgs {
+    /// Dataset URI, or SQL when using --dataset mounts.
     #[arg(value_name = "DATASET_URI")]
-    dataset_uri: String,
+    dataset_uri: Option<String>,
+
+    /// Mount a named Dataset as NAME=URI. Repeat for cross-Dataset SQL.
+    #[arg(long = "dataset", value_name = "NAME=URI")]
+    datasets: Vec<String>,
+
+    /// One read-only SQL statement.
     #[arg(value_name = "SQL")]
-    sql: String,
+    sql: Option<String>,
+
+    /// Output format. Auto uses a table on a terminal and JSONL when piped.
+    #[arg(long, value_enum, default_value_t = QueryOutputFormat::Auto)]
+    format: QueryOutputFormat,
+
+    /// Write results to a new file instead of stdout. Use - for stdout.
+    #[arg(short, long, value_name = "PATH_OR_STDOUT", default_value = "-")]
+    output: String,
+
+    /// Reject results containing more rows than this limit.
+    #[arg(long, default_value_t = 100_000)]
+    max_output_rows: u64,
+
+    /// Reject intermediate or final encoded results larger than this many bytes.
+    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    max_output_bytes: usize,
+
+    /// Maximum time for SQL execution and result encoding.
+    #[arg(long, default_value_t = 30)]
+    timeout_seconds: u64,
+
+    /// Maximum number of trajectory Sources to discover.
+    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    max_files: usize,
+
+    /// Maximum number of filesystem entries or objects to inspect.
+    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    max_entries: usize,
 }
 
 #[derive(Debug, Args)]
@@ -209,6 +244,15 @@ enum OutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum QueryOutputFormat {
+    #[default]
+    Auto,
+    Table,
+    Jsonl,
+    Csv,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum ErrorMode {
     Strict,
     #[default]
@@ -299,10 +343,7 @@ pub async fn run(
     match cli.command {
         Command::Ls(args) => run_list(args, stdout_is_terminal, stdout, stderr).await,
         Command::Status(args) => run_status(args, stdout_is_terminal, stdout, stderr).await,
-        Command::Query(args) => {
-            let _ = args.sql;
-            not_implemented("query", Some(&args.dataset_uri))
-        }
+        Command::Query(args) => run_query(args, stdout_is_terminal, stdout, stderr).await,
         Command::Find(args) => {
             let _ = (args.source, args.run_id, args.session_id, args.step_id);
             not_implemented("find", Some(&args.dataset_uri))
@@ -517,6 +558,351 @@ async fn run_status(
     )
     .context("write pChronicle status metadata")?;
     Ok(())
+}
+
+async fn run_query(
+    args: QueryArgs,
+    stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let (dataset_uri, sql) = query_inputs(&args)?;
+    anyhow::ensure!(
+        args.max_output_rows > 0,
+        "--max-output-rows must be greater than zero"
+    );
+    anyhow::ensure!(
+        args.max_output_bytes > 0,
+        "--max-output-bytes must be greater than zero"
+    );
+    anyhow::ensure!(
+        args.timeout_seconds > 0,
+        "--timeout-seconds must be greater than zero"
+    );
+    let (dataset_label, dataset_uris, snapshot) = discover_query_snapshot(
+        dataset_uri,
+        &args.datasets,
+        args.max_files,
+        args.max_entries,
+    )
+    .await?;
+    let snapshot = Arc::new(snapshot);
+    let snapshot_id = snapshot.snapshot_id().to_string();
+    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot)
+        .await
+        .map_err(|error| redact_query_error(&error, &dataset_uris, None))?;
+    let mut buffer = LimitedBuffer::new(args.max_output_bytes);
+    let query_result = tokio::time::timeout(
+        Duration::from_secs(args.timeout_seconds),
+        engine.write_query_jsonl_with_max_rows(sql, &mut buffer, Some(args.max_output_rows)),
+    )
+    .await;
+    match query_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            return Err(redact_query_error(&error, &dataset_uris, Some(sql)));
+        }
+        Err(_) => bail!(
+            "Dataset query timed out after {} seconds",
+            args.timeout_seconds
+        ),
+    }
+    let jsonl = String::from_utf8(buffer.into_inner()).context("query JSONL is not UTF-8")?;
+    let rows = parse_jsonl_rows(&jsonl)?;
+    let format = match args.format {
+        QueryOutputFormat::Auto if stdout_is_terminal && args.output == "-" => {
+            QueryOutputFormat::Table
+        }
+        QueryOutputFormat::Auto => QueryOutputFormat::Jsonl,
+        explicit => explicit,
+    };
+    let output = match format {
+        QueryOutputFormat::Table => encode_query_table(&rows)?,
+        QueryOutputFormat::Jsonl => jsonl.into_bytes(),
+        QueryOutputFormat::Csv => encode_query_csv(&rows),
+        QueryOutputFormat::Auto => unreachable!("auto output format was resolved"),
+    };
+    anyhow::ensure!(
+        output.len() <= args.max_output_bytes,
+        "encoded SQL result exceeds max_output_bytes limit of {}",
+        args.max_output_bytes
+    );
+    write_query_output(&args.output, &output, stdout)?;
+    writeln!(
+        stderr,
+        "snapshot_id={} datasets={} rows={} format={} output_bytes={}",
+        snapshot_id,
+        dataset_label,
+        rows.values.len(),
+        query_format_name(format),
+        output.len(),
+    )
+    .context("write pChronicle query metadata")?;
+    Ok(())
+}
+
+fn redact_query_error(
+    error: &anyhow::Error,
+    dataset_uris: &[String],
+    sql: Option<&str>,
+) -> anyhow::Error {
+    let mut message = format!("{error:#}");
+    if let Some(sql) = sql {
+        message = message.replace(sql, "<sql>");
+    }
+    for dataset_uri in dataset_uris {
+        message = redact_message(&message, dataset_uri);
+    }
+    anyhow!(message)
+}
+
+fn query_inputs(args: &QueryArgs) -> Result<(Option<&str>, &str)> {
+    if args.datasets.is_empty() {
+        let dataset_uri = args
+            .dataset_uri
+            .as_deref()
+            .context("query requires <DATASET_URI> <SQL> or --dataset NAME=URI <SQL>")?;
+        let sql = args
+            .sql
+            .as_deref()
+            .context("query requires SQL after the Dataset URI")?;
+        Ok((Some(dataset_uri), sql))
+    } else {
+        anyhow::ensure!(
+            args.sql.is_none(),
+            "named Dataset query accepts one SQL positional argument"
+        );
+        let sql = args
+            .dataset_uri
+            .as_deref()
+            .context("named Dataset query requires SQL")?;
+        Ok((None, sql))
+    }
+}
+
+async fn discover_query_snapshot(
+    dataset_uri: Option<&str>,
+    datasets: &[String],
+    max_files: usize,
+    max_entries: usize,
+) -> Result<(String, Vec<String>, DatasetCatalogSnapshot)> {
+    let (mounts, default_dataset) = if let Some(dataset_uri) = dataset_uri {
+        let dataset_uri = normalize_and_validate_dataset_uri(dataset_uri)?;
+        (
+            vec![DatasetMount::default(dataset_uri)?],
+            Some(DEFAULT_DATASET_NAME.into()),
+        )
+    } else {
+        let mut mounts = Vec::with_capacity(datasets.len());
+        for dataset in datasets {
+            let (name, uri) = dataset
+                .split_once('=')
+                .context("--dataset must use NAME=URI")?;
+            anyhow::ensure!(!name.is_empty(), "--dataset name must not be empty");
+            let uri = normalize_and_validate_dataset_uri(uri)?;
+            mounts.push(DatasetMount::new(name, uri)?);
+        }
+        (mounts, None)
+    };
+    let dataset_uris = mounts
+        .iter()
+        .map(|mount| mount.uri.clone())
+        .collect::<Vec<_>>();
+    let dataset_label = mounts
+        .iter()
+        .map(|mount| mount.name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let snapshot = DatasetCatalogSnapshot::discover(
+        mounts,
+        default_dataset,
+        CatalogSnapshotOptions {
+            error_policy: CatalogErrorPolicy::Strict,
+            manifest: LocalQueryManifestOptions {
+                max_files,
+                max_entries,
+                ..LocalQueryManifestOptions::default()
+            },
+            ..CatalogSnapshotOptions::default()
+        },
+    )
+    .await
+    .map_err(|error| redact_query_error(&error, &dataset_uris, None))
+    .context("discover query Dataset Sources")?;
+    Ok((dataset_label, dataset_uris, snapshot))
+}
+
+struct LimitedBuffer {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+}
+
+impl LimitedBuffer {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            max_bytes,
+        }
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl Write for LimitedBuffer {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let next_size = self
+            .bytes
+            .len()
+            .checked_add(buffer.len())
+            .ok_or_else(|| IoError::other("query output size overflow"))?;
+        if next_size > self.max_bytes {
+            return Err(IoError::other(format!(
+                "SQL result exceeds max_output_bytes limit of {}",
+                self.max_bytes
+            )));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct QueryRows {
+    columns: Vec<String>,
+    values: Vec<serde_json::Map<String, serde_json::Value>>,
+}
+
+fn parse_jsonl_rows(jsonl: &str) -> Result<QueryRows> {
+    use serde::de::{MapAccess, Visitor};
+    use serde::Deserializer as _;
+
+    struct OrderedObjectVisitor;
+
+    impl<'de> Visitor<'de> for OrderedObjectVisitor {
+        type Value = Vec<(String, serde_json::Value)>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a JSON object")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(entry) = map.next_entry()? {
+                values.push(entry);
+            }
+            Ok(values)
+        }
+    }
+
+    let mut columns = Vec::new();
+    let mut values = Vec::new();
+    for line in jsonl.lines().filter(|line| !line.trim().is_empty()) {
+        let mut deserializer = serde_json::Deserializer::from_str(line);
+        let entries = deserializer
+            .deserialize_map(OrderedObjectVisitor)
+            .context("decode pChronicle query row")?;
+        deserializer.end().context("decode pChronicle query row")?;
+        let mut row = serde_json::Map::new();
+        for (column, value) in entries {
+            if !columns.contains(&column) {
+                columns.push(column.clone());
+            }
+            row.insert(column, value);
+        }
+        values.push(row);
+    }
+    Ok(QueryRows { columns, values })
+}
+
+fn encode_query_csv(rows: &QueryRows) -> Vec<u8> {
+    if rows.columns.is_empty() {
+        return Vec::new();
+    }
+    let mut output = String::new();
+    write_csv_row(&mut output, rows.columns.iter().cloned());
+    for row in &rows.values {
+        write_csv_row(
+            &mut output,
+            rows.columns
+                .iter()
+                .map(|column| query_value(row.get(column))),
+        );
+    }
+    output.into_bytes()
+}
+
+fn write_csv_row(output: &mut String, values: impl IntoIterator<Item = String>) {
+    for (index, value) in values.into_iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        if value.contains([',', '"', '\n', '\r']) {
+            output.push('"');
+            output.push_str(&value.replace('"', "\"\""));
+            output.push('"');
+        } else {
+            output.push_str(&value);
+        }
+    }
+    output.push('\n');
+}
+
+fn encode_query_table(rows: &QueryRows) -> Result<Vec<u8>> {
+    if rows.columns.is_empty() {
+        return Ok(b"(0 rows)\n".to_vec());
+    }
+    let mut grid = Vec::with_capacity(rows.values.len() + 1);
+    grid.push(rows.columns.clone());
+    grid.extend(rows.values.iter().map(|row| {
+        rows.columns
+            .iter()
+            .map(|column| truncate(&query_value(row.get(column)), 80))
+            .collect()
+    }));
+    let mut output = Vec::new();
+    write_grid(&mut output, &grid, "write pChronicle query table")?;
+    Ok(output)
+}
+
+fn query_value(value: Option<&serde_json::Value>) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::String(value)) => value.clone(),
+        Some(value) => value.to_string(),
+    }
+}
+
+fn write_query_output(path: &str, output: &[u8], stdout: &mut dyn Write) -> Result<()> {
+    if path == "-" {
+        stdout.write_all(output).context("write query output")?;
+        return Ok(());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("create query output file {path}"))?;
+    file.write_all(output)
+        .with_context(|| format!("write query output file {path}"))?;
+    file.flush()
+        .with_context(|| format!("flush query output file {path}"))
+}
+
+fn query_format_name(format: QueryOutputFormat) -> &'static str {
+    match format {
+        QueryOutputFormat::Table => "table",
+        QueryOutputFormat::Jsonl => "jsonl",
+        QueryOutputFormat::Csv => "csv",
+        QueryOutputFormat::Auto => "auto",
+    }
 }
 
 async fn discover_snapshot(
@@ -756,6 +1142,13 @@ fn write_table(stdout: &mut dyn Write, sources: &[SourceResponse], physical: boo
         rows.push(row);
     }
 
+    write_grid(stdout, &rows, "write pChronicle ls table")
+}
+
+fn write_grid(stdout: &mut dyn Write, rows: &[Vec<String>], context: &'static str) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
     let widths = (0..rows[0].len())
         .map(|column| {
             rows.iter()
@@ -773,7 +1166,7 @@ fn write_table(stdout: &mut dyn Write, sources: &[SourceResponse], physical: boo
             let padding = widths[column].saturating_sub(cell.chars().count());
             write!(line, "{cell}{}", " ".repeat(padding))?;
         }
-        writeln!(stdout, "{}", line.trim_end()).context("write pChronicle ls table")?;
+        writeln!(stdout, "{}", line.trim_end()).context(context)?;
     }
     Ok(())
 }
@@ -822,6 +1215,12 @@ mod tests {
     fn atif_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../persisting-pchronicle/tests/fixtures/atif/dialogue_10.json")
+    }
+
+    fn example_dataset(format: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/data")
+            .join(format)
     }
 
     #[test]
@@ -1028,6 +1427,185 @@ mod tests {
             error.to_string(),
             "--timeout-seconds must be greater than zero"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_reads_all_example_dataset_formats_as_jsonl() -> Result<()> {
+        for (format, expected_runs) in [("atif", 1), ("openai-messages", 2), ("actf", 1)] {
+            let cli = Cli::try_parse_from([
+                "pchronicle",
+                "query",
+                example_dataset(format).to_str().unwrap(),
+                "SELECT COUNT(*) AS runs FROM dataset.runs",
+                "--format",
+                "jsonl",
+            ])?;
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            run(cli, false, &mut stdout, &mut stderr).await?;
+
+            let value: Value = serde_json::from_slice(&stdout)?;
+            assert_eq!(value["runs"], expected_runs, "format={format}");
+            assert!(String::from_utf8(stderr)?.contains("datasets=dataset"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_preserves_selected_column_order_in_table_and_csv() -> Result<()> {
+        let dataset = example_dataset("atif");
+        for format in ["table", "csv"] {
+            let cli = Cli::try_parse_from([
+                "pchronicle",
+                "query",
+                dataset.to_str().unwrap(),
+                "SELECT session_id, step_id, source FROM dataset.steps ORDER BY step_id",
+                "--format",
+                format,
+            ])?;
+            let mut stdout = Vec::new();
+            run(cli, format == "table", &mut stdout, &mut Vec::new()).await?;
+            let output = String::from_utf8(stdout)?;
+            let header = output.lines().next().unwrap();
+            if format == "table" {
+                assert_eq!(
+                    header.split_whitespace().collect::<Vec<_>>(),
+                    ["session_id", "step_id", "source"]
+                );
+            } else {
+                assert_eq!(header, "session_id,step_id,source");
+            }
+            assert!(output.contains("support-001"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_supports_named_cross_dataset_sql() -> Result<()> {
+        let atif = format!("atif={}", example_dataset("atif").display());
+        let openai = format!("openai={}", example_dataset("openai-messages").display());
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "query",
+            "--dataset",
+            &atif,
+            "--dataset",
+            &openai,
+            "SELECT (SELECT COUNT(*) FROM atif.runs) AS atif_runs, \
+             (SELECT COUNT(*) FROM openai.runs) AS openai_runs",
+            "--format",
+            "jsonl",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["atif_runs"], 1);
+        assert_eq!(value["openai_runs"], 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_writes_new_files_without_overwriting() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let output = temp.path().join("runs.csv");
+        let dataset = example_dataset("actf");
+        let args = [
+            "pchronicle",
+            "query",
+            dataset.to_str().unwrap(),
+            "SELECT session_id FROM dataset.runs",
+            "--format",
+            "csv",
+            "--output",
+            output.to_str().unwrap(),
+        ];
+        let cli = Cli::try_parse_from(args)?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        assert!(stdout.is_empty());
+        assert_eq!(
+            fs::read_to_string(&output)?,
+            "session_id\nexample-code-repair\n"
+        );
+
+        let cli = Cli::try_parse_from(args)?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("create query output file"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_rejects_writes_and_bounded_output_without_partial_stdout() -> Result<()> {
+        for (sql, limit_flag, limit, expected) in [
+            (
+                "DELETE FROM dataset.runs",
+                "--max-output-rows",
+                "100",
+                "only accepts SELECT",
+            ),
+            (
+                "SELECT * FROM dataset.steps",
+                "--max-output-rows",
+                "1",
+                "max_output_rows",
+            ),
+            (
+                "SELECT * FROM dataset.steps",
+                "--max-output-bytes",
+                "8",
+                "max_output_bytes",
+            ),
+        ] {
+            let cli = Cli::try_parse_from([
+                "pchronicle",
+                "query",
+                example_dataset("atif").to_str().unwrap(),
+                sql,
+                limit_flag,
+                limit,
+            ])?;
+            let mut stdout = Vec::new();
+            let error = run(cli, false, &mut stdout, &mut Vec::new())
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert!(stdout.is_empty());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_errors_redact_sql_and_dataset_path() -> Result<()> {
+        let dataset = example_dataset("atif");
+        let sql = "SELECT secret_column FROM dataset.runs";
+        let cli = Cli::try_parse_from(["pchronicle", "query", dataset.to_str().unwrap(), sql])?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(!message.contains(sql));
+        assert!(!message.contains(dataset.to_str().unwrap()));
+        assert!(message.contains("<sql>"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_rejects_malformed_named_dataset_mounts() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "query",
+            "--dataset",
+            "missing-separator",
+            "SELECT 1",
+        ])?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("NAME=URI"));
         Ok(())
     }
 
