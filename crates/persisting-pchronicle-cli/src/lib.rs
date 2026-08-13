@@ -159,16 +159,49 @@ struct QueryArgs {
         .args(["run_id", "session_id"])
 ))]
 struct FindArgs {
+    /// Local path or object-store URI of the Dataset.
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: String,
+
+    /// Narrow the lookup to one Dataset-relative Source path.
     #[arg(long)]
     source: Option<String>,
+
+    /// Find Run or Trajectory candidates by Source-local Run ID.
     #[arg(long)]
     run_id: Option<String>,
+
+    /// Find Trajectory or Step candidates by Source-local Session ID.
     #[arg(long)]
     session_id: Option<String>,
+
+    /// Find one Step within the selected Session.
     #[arg(long, requires = "session_id")]
-    step_id: Option<String>,
+    step_id: Option<i64>,
+
+    /// Output format. Auto uses a table on a terminal and JSON when piped.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
+    format: OutputFormat,
+
+    /// Maximum number of matches returned before marking the result truncated.
+    #[arg(long, default_value_t = 100)]
+    max_results: usize,
+
+    /// Reject intermediate or final encoded results larger than this many bytes.
+    #[arg(long, default_value_t = 8 * 1024 * 1024)]
+    max_output_bytes: usize,
+
+    /// Maximum time for the lookup query.
+    #[arg(long, default_value_t = 30)]
+    timeout_seconds: u64,
+
+    /// Maximum number of trajectory Sources to discover.
+    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    max_files: usize,
+
+    /// Maximum number of filesystem entries or objects to inspect.
+    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    max_entries: usize,
 }
 
 #[derive(Debug, Args)]
@@ -334,6 +367,39 @@ struct StatusSourceError {
     error: String,
 }
 
+#[derive(Debug, Serialize)]
+struct FindResponse {
+    schema_version: &'static str,
+    dataset_uri: String,
+    snapshot_id: String,
+    query: FindQueryResponse,
+    truncated: bool,
+    matches: Vec<FindMatch>,
+}
+
+#[derive(Debug, Serialize)]
+struct FindQueryResponse {
+    source: Option<String>,
+    run_id: Option<String>,
+    session_id: Option<String>,
+    step_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FindMatch {
+    source_path: String,
+    run_id: String,
+    session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<String>,
+}
+
 pub async fn run(
     cli: Cli,
     stdout_is_terminal: bool,
@@ -344,10 +410,7 @@ pub async fn run(
         Command::Ls(args) => run_list(args, stdout_is_terminal, stdout, stderr).await,
         Command::Status(args) => run_status(args, stdout_is_terminal, stdout, stderr).await,
         Command::Query(args) => run_query(args, stdout_is_terminal, stdout, stderr).await,
-        Command::Find(args) => {
-            let _ = (args.source, args.run_id, args.session_id, args.step_id);
-            not_implemented("find", Some(&args.dataset_uri))
-        }
+        Command::Find(args) => run_find(args, stdout_is_terminal, stdout, stderr).await,
         Command::Search(args) => {
             let _ = (args.query, args.top_k);
             not_implemented("search", Some(&args.dataset_uri))
@@ -638,6 +701,276 @@ async fn run_query(
         output.len(),
     )
     .context("write pChronicle query metadata")?;
+    Ok(())
+}
+
+async fn run_find(
+    args: FindArgs,
+    stdout_is_terminal: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    anyhow::ensure!(
+        args.max_results > 0,
+        "--max-results must be greater than zero"
+    );
+    anyhow::ensure!(
+        args.max_output_bytes > 0,
+        "--max-output-bytes must be greater than zero"
+    );
+    anyhow::ensure!(
+        args.timeout_seconds > 0,
+        "--timeout-seconds must be greater than zero"
+    );
+    if let Some(source) = &args.source {
+        validate_source_path(source)?;
+    }
+    if let Some(run_id) = &args.run_id {
+        validate_find_id("--run-id", run_id)?;
+    }
+    if let Some(session_id) = &args.session_id {
+        validate_find_id("--session-id", session_id)?;
+    }
+    let (_, dataset_uris, snapshot) = discover_query_snapshot(
+        Some(&args.dataset_uri),
+        &[],
+        args.max_files,
+        args.max_entries,
+    )
+    .await?;
+    let dataset_uri = dataset_uris
+        .first()
+        .cloned()
+        .context("find Dataset URI missing after discovery")?;
+    let snapshot = Arc::new(snapshot);
+    let snapshot_id = snapshot.snapshot_id().to_string();
+    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot)
+        .await
+        .map_err(|error| redact_query_error(&error, std::slice::from_ref(&dataset_uri), None))?;
+    let sql = find_sql(&args)?;
+    let mut buffer = LimitedBuffer::new(args.max_output_bytes);
+    let max_query_rows = args
+        .max_results
+        .checked_add(1)
+        .and_then(|limit| u64::try_from(limit).ok())
+        .context("--max-results is too large")?;
+    let query_result = tokio::time::timeout(
+        Duration::from_secs(args.timeout_seconds),
+        engine.write_query_jsonl_with_max_rows(&sql, &mut buffer, Some(max_query_rows)),
+    )
+    .await;
+    let jsonl = match query_result {
+        Ok(Ok(())) => String::from_utf8(buffer.into_inner()).context("find JSONL is not UTF-8")?,
+        Ok(Err(error)) => {
+            return Err(redact_query_error(
+                &error,
+                std::slice::from_ref(&dataset_uri),
+                Some(&sql),
+            ));
+        }
+        Err(_) => bail!(
+            "Dataset find timed out after {} seconds",
+            args.timeout_seconds
+        ),
+    };
+    let mut matches = jsonl
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).context("decode pChronicle find match"))
+        .collect::<Result<Vec<FindMatch>>>()?;
+    let truncated = matches.len() > args.max_results;
+    matches.truncate(args.max_results);
+    let response = FindResponse {
+        schema_version: "pchronicle.find.v1",
+        dataset_uri,
+        snapshot_id,
+        query: FindQueryResponse {
+            source: args.source,
+            run_id: args.run_id,
+            session_id: args.session_id,
+            step_id: args.step_id,
+        },
+        truncated,
+        matches,
+    };
+
+    let output_format = match args.format {
+        OutputFormat::Auto if stdout_is_terminal => OutputFormat::Table,
+        OutputFormat::Auto => OutputFormat::Json,
+        explicit => explicit,
+    };
+    match output_format {
+        OutputFormat::Table => {
+            let mut output = Vec::new();
+            write_find_table(&mut output, &response)?;
+            anyhow::ensure!(
+                output.len() <= args.max_output_bytes,
+                "encoded find result exceeds max_output_bytes limit of {}",
+                args.max_output_bytes
+            );
+            stdout
+                .write_all(&output)
+                .context("write pChronicle find table")?;
+        }
+        OutputFormat::Json => {
+            let mut output =
+                serde_json::to_vec_pretty(&response).context("encode pChronicle find JSON")?;
+            output.push(b'\n');
+            anyhow::ensure!(
+                output.len() <= args.max_output_bytes,
+                "encoded find result exceeds max_output_bytes limit of {}",
+                args.max_output_bytes
+            );
+            stdout
+                .write_all(&output)
+                .context("write pChronicle find JSON")?;
+        }
+        OutputFormat::Auto => unreachable!("auto output format was resolved"),
+    }
+    writeln!(
+        stderr,
+        "snapshot_id={} matches={} truncated={}",
+        response.snapshot_id,
+        response.matches.len(),
+        response.truncated,
+    )
+    .context("write pChronicle find metadata")?;
+    Ok(())
+}
+
+fn find_sql(args: &FindArgs) -> Result<String> {
+    let mut predicates = Vec::new();
+    if let Some(source) = &args.source {
+        predicates.push(format!("_file_ = {}", sql_string(source)));
+    }
+    if let Some(run_id) = &args.run_id {
+        predicates.push(format!("run_id = {}", sql_string(run_id)));
+    }
+    if let Some(session_id) = &args.session_id {
+        predicates.push(format!("session_id = {}", sql_string(session_id)));
+    }
+    if let Some(step_id) = args.step_id {
+        predicates.push(format!("step_id = {step_id}"));
+    }
+    anyhow::ensure!(
+        !predicates.is_empty(),
+        "find requires an identity predicate"
+    );
+    let table = if args.step_id.is_some() {
+        "steps"
+    } else {
+        "runs"
+    };
+    let projection = if args.step_id.is_some() {
+        "_file_ AS source_path, run_id, session_id, step_id, \
+         source AS step_source, effective_kind, timestamp"
+    } else {
+        "_file_ AS source_path, run_id, session_id, \
+         CAST(NULL AS BIGINT) AS step_id, \
+         CAST(NULL AS VARCHAR) AS step_source, \
+         CAST(NULL AS VARCHAR) AS effective_kind, \
+         CAST(NULL AS VARCHAR) AS timestamp"
+    };
+    let limit = args
+        .max_results
+        .checked_add(1)
+        .context("--max-results is too large")?;
+    Ok(format!(
+        "SELECT {projection} FROM dataset.{table} WHERE {} \
+         ORDER BY _file_, session_id{} LIMIT {limit}",
+        predicates.join(" AND "),
+        if args.step_id.is_some() {
+            ", step_id"
+        } else {
+            ""
+        }
+    ))
+}
+
+fn validate_source_path(source: &str) -> Result<()> {
+    anyhow::ensure!(!source.trim().is_empty(), "--source must not be empty");
+    anyhow::ensure!(
+        source == source.trim(),
+        "--source must not contain surrounding whitespace"
+    );
+    anyhow::ensure!(source.len() <= 4096, "--source must not exceed 4096 bytes");
+    anyhow::ensure!(
+        !source.contains('\0'),
+        "--source must not contain NUL bytes"
+    );
+    anyhow::ensure!(
+        !source.starts_with('/') && !source.contains("://"),
+        "--source must be a Dataset-relative Source path"
+    );
+    anyhow::ensure!(
+        !source.split('/').any(|component| component == ".."),
+        "--source must not traverse outside the Dataset"
+    );
+    Ok(())
+}
+
+fn validate_find_id(flag: &str, value: &str) -> Result<()> {
+    anyhow::ensure!(!value.is_empty(), "{flag} must not be empty");
+    anyhow::ensure!(value.len() <= 4096, "{flag} must not exceed 4096 bytes");
+    anyhow::ensure!(!value.contains('\0'), "{flag} must not contain NUL bytes");
+    Ok(())
+}
+
+fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<()> {
+    let step_lookup = response.query.step_id.is_some();
+    let mut rows = Vec::with_capacity(response.matches.len() + 1);
+    if step_lookup {
+        rows.push(
+            [
+                "SOURCE",
+                "RUN ID",
+                "SESSION ID",
+                "STEP ID",
+                "STEP SOURCE",
+                "KIND",
+                "TIMESTAMP",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        );
+    } else {
+        rows.push(
+            ["SOURCE", "RUN ID", "SESSION ID"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    for candidate in &response.matches {
+        let mut row = vec![
+            truncate(&candidate.source_path, 64),
+            candidate.run_id.clone(),
+            candidate.session_id.clone(),
+        ];
+        if step_lookup {
+            row.extend([
+                candidate
+                    .step_id
+                    .map(|step_id| step_id.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                candidate.step_source.as_deref().unwrap_or("-").to_string(),
+                candidate
+                    .effective_kind
+                    .as_deref()
+                    .unwrap_or("-")
+                    .to_string(),
+                candidate.timestamp.as_deref().unwrap_or("-").to_string(),
+            ]);
+        }
+        rows.push(row);
+    }
+    write_grid(stdout, &rows, "write pChronicle find table")?;
+    if response.matches.is_empty() {
+        writeln!(stdout, "(0 matches)").context("write empty pChronicle find table")?;
+    } else if response.truncated {
+        writeln!(stdout, "(truncated)").context("write truncated pChronicle find table")?;
+    }
     Ok(())
 }
 
@@ -1606,6 +1939,261 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("NAME=URI"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_locates_runs_sessions_and_steps_in_example_datasets() -> Result<()> {
+        for (format, flag, identity, expected_source) in [
+            ("atif", "--session-id", "support-001", "support-ticket.json"),
+            (
+                "actf",
+                "--run-id",
+                "example-code-repair",
+                "code-repair.actf.json",
+            ),
+            (
+                "openai-messages",
+                "--session-id",
+                "training-002",
+                "training.json",
+            ),
+        ] {
+            let cli = Cli::try_parse_from([
+                "pchronicle",
+                "find",
+                example_dataset(format).to_str().unwrap(),
+                flag,
+                identity,
+                "--format",
+                "json",
+            ])?;
+            let mut stdout = Vec::new();
+            run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+            let value: Value = serde_json::from_slice(&stdout)?;
+            assert_eq!(value["schema_version"], "pchronicle.find.v1");
+            assert_eq!(value["truncated"], false);
+            assert_eq!(value["matches"][0]["source_path"], expected_source);
+        }
+
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            example_dataset("atif").to_str().unwrap(),
+            "--session-id",
+            "support-001",
+            "--step-id",
+            "2",
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["matches"][0]["step_id"], 2);
+        assert_eq!(value["matches"][0]["step_source"], "agent");
+        assert_eq!(value["matches"][0]["effective_kind"], "autonomous");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_discovers_candidates_and_source_narrows_them() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        for file in ["first.json", "second.json"] {
+            fs::write(
+                temp.path().join(file),
+                r#"[{"id":"event","session_id":"shared","step_id":1,"messages":[],"response":{"role":"assistant","content":"ok"}}]"#,
+            )?;
+        }
+
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            temp.path().to_str().unwrap(),
+            "--session-id",
+            "shared",
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["matches"].as_array().unwrap().len(), 2);
+
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            temp.path().to_str().unwrap(),
+            "--source",
+            "second.json",
+            "--session-id",
+            "shared",
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(value["matches"][0]["source_path"], "second.json");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_reports_truncation_and_empty_results() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            example_dataset("openai-messages").to_str().unwrap(),
+            "--run-id",
+            "training-001",
+            "--max-results",
+            "1",
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["truncated"], false);
+        assert_eq!(value["matches"].as_array().unwrap().len(), 1);
+
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            example_dataset("atif").to_str().unwrap(),
+            "--session-id",
+            "missing",
+            "--format",
+            "table",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, true, &mut stdout, &mut Vec::new()).await?;
+        assert!(String::from_utf8(stdout)?.contains("(0 matches)"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_truncates_ambiguous_candidates() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        for file in ["a.json", "b.json"] {
+            fs::write(
+                temp.path().join(file),
+                r#"[{"id":"event","session_id":"shared","step_id":1,"messages":[],"response":{"role":"assistant","content":"ok"}}]"#,
+            )?;
+        }
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            temp.path().to_str().unwrap(),
+            "--session-id",
+            "shared",
+            "--max-results",
+            "1",
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["matches"].as_array().unwrap().len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_validates_source_paths_and_escapes_quotes() -> Result<()> {
+        for source in ["/absolute.json", "../outside.json", "s3://bucket/file"] {
+            let cli = Cli::try_parse_from([
+                "pchronicle",
+                "find",
+                example_dataset("atif").to_str().unwrap(),
+                "--source",
+                source,
+                "--session-id",
+                "support-001",
+            ])?;
+            assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+                .await
+                .is_err());
+        }
+
+        let temp = tempfile::tempdir()?;
+        fs::write(
+            temp.path().join("it's-valid.json"),
+            r#"[{"id":"event","session_id":"quoted","step_id":1,"messages":[],"response":{"role":"assistant","content":"ok"}}]"#,
+        )?;
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            temp.path().to_str().unwrap(),
+            "--source",
+            "it's-valid.json",
+            "--session-id",
+            "quoted",
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let value: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(value["matches"][0]["source_path"], "it's-valid.json");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_enforces_output_byte_limit_without_partial_stdout() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            example_dataset("atif").to_str().unwrap(),
+            "--session-id",
+            "support-001",
+            "--max-output-bytes",
+            "8",
+            "--format",
+            "json",
+        ])?;
+        let mut stdout = Vec::new();
+        let error = run(cli, false, &mut stdout, &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("max_output_bytes"), "{error:#}");
+        assert!(stdout.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn find_cli_requires_one_identity_and_session_for_steps() {
+        assert!(Cli::try_parse_from(["pchronicle", "find", "."]).is_err());
+        assert!(Cli::try_parse_from([
+            "pchronicle",
+            "find",
+            ".",
+            "--run-id",
+            "r",
+            "--session-id",
+            "s"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["pchronicle", "find", ".", "--step-id", "1"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn find_rejects_empty_and_oversized_identities() -> Result<()> {
+        for identity in ["", &"x".repeat(4097)] {
+            let cli = Cli::try_parse_from([
+                "pchronicle",
+                "find",
+                example_dataset("atif").to_str().unwrap(),
+                "--session-id",
+                identity,
+            ])?;
+            assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+                .await
+                .is_err());
+        }
         Ok(())
     }
 
