@@ -8,15 +8,13 @@ use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration};
 
 use crate::bandwidth::BandwidthSession;
+use crate::egress::{connect_tcp_addresses, CONNECT_TIMEOUT};
 use crate::headers::skip_transparent_forward_header_for;
 use crate::resolver::AuthorizedTarget;
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConnectTarget {
@@ -34,24 +32,9 @@ pub(crate) async fn handle_connect_authorized(
     let on_upgrade: OnUpgrade = hyper::upgrade::on(req);
     // Establish the upstream before reporting success. Returning 200 first
     // makes a refused or unroutable destination look like an accepted tunnel.
-    let mut destination = timeout(CONNECT_TIMEOUT, async {
-        let mut last_error = None;
-        for address in &authorized.addresses {
-            match TcpStream::connect(address).await {
-                Ok(stream) => return Ok(stream),
-                Err(error) => last_error = Some(error),
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::AddrNotAvailable,
-                "no authorized address",
-            )
-        }))
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("CONNECT to {} timed out", target.authority))?
-    .map_err(|error| anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority))?;
+    let mut destination = connect_tcp_addresses(&authorized.addresses, &target.host, target.port)
+        .await
+        .map_err(|error| anyhow::anyhow!("CONNECT to {} failed: {error}", target.authority))?;
     tokio::spawn(async move {
         let Ok(upgraded) = on_upgrade.await else {
             return;

@@ -171,5 +171,8 @@ inside a base is hidden from the merged view, but keeping stages in a separate
   `--overlayfs-base`.
 - Do not use a macOS path such as `/Users/...` for a Linux host. Use the actual
   Linux path, such as `/home/reiase/workspace`.
-- OverlayNet/Gateway is currently unavailable for the VM executor because the
-  host service has no guest relay yet.
+- VM networking defaults to OverlayNet `auto`: pVisor supplies DHCP, synthetic
+  DNS, and policy-controlled IPv4 TCP through smoltcp. Use `mode = "off"` for
+  an offline guest. UDP, IPv6, ICMP, QUIC, and inbound connections are not part
+  of the current VM network surface. Gateway capture uses the virtual guest
+  router and does not expose host loopback directly.

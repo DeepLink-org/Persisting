@@ -10,6 +10,7 @@ mod registry;
 mod supervisor;
 
 pub(crate) use attempt::AttemptTeardown;
+pub(crate) use attempt::VmNetworkAttachment;
 pub(crate) use supervisor::RuntimeSupervisor;
 pub(crate) use supervisor::RuntimeSupervisorBuilder;
 

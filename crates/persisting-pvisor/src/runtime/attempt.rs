@@ -8,6 +8,7 @@ use super::overlay::{
 };
 use super::registry::{RunControlServer, RunLease, RunLineage, RunRecord};
 use crate::TrajectoryEventSink;
+use anyhow::Context as _;
 use persisting_control::ControlController;
 use persisting_control::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
 use persisting_gateway::config::ProxyConfig;
@@ -15,22 +16,27 @@ use persisting_gateway::injection::{client_gateway_config_args, proxy_environmen
 use persisting_gateway::lifecycle::{
     append_lifecycle, root_session_route, session_ended_record, session_started_record, CaptureMode,
 };
-use persisting_gateway::runtime::in_process::InProcessCapture;
+use persisting_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
 use persisting_gateway::runtime::run_config::snapshot_proxy_config;
 use persisting_gateway::runtime::run_env::write_run_session;
 use persisting_gateway::sink::SeqOnlySink;
-use persisting_overlaynet::policy::network_capability_from_config;
+use persisting_overlaynet::{
+    BandwidthRegistry, EgressContext, EgressRuntime, InterceptionMetrics, NetworkConfig,
+    NetworkPolicy,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 /// Live controls for one Attempt: capture proxy + optional overlay mount.
-pub struct AttemptSession {
-    pub root_session: String,
-    pub agent_id: String,
+pub(crate) struct AttemptSession {
+    root_session: String,
+    agent_id: String,
     /// Staging record retained after unmount (for apply / discard).
-    pub overlay_record: Option<OverlayRecord>,
+    overlay_record: Option<OverlayRecord>,
     gateway: Option<InProcessCapture>,
+    vm_network: Option<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>>,
+    network_metrics: Option<InterceptionMetrics>,
     overlay: Option<OverlayMount>,
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     started_at: Instant,
@@ -40,6 +46,15 @@ pub struct AttemptSession {
 }
 
 impl AttemptSession {
+    pub(crate) fn root_session(&self) -> &str {
+        &self.root_session
+    }
+
+    pub(crate) fn attachments(&self) -> crate::executor::AttemptAttachments {
+        crate::executor::AttemptAttachments {
+            vm_network: self.vm_network.clone(),
+        }
+    }
     pub(crate) fn checkpoint_record(&self) -> Option<RunRecord> {
         self.overlay_record
             .as_ref()
@@ -116,8 +131,25 @@ impl AttemptSession {
         }
         self.overlay_record = record;
 
+        if let Some(metrics) = &self.network_metrics {
+            self.run_record.network_interception_metrics = Some(metrics.snapshot());
+        }
+        if let Some(network) = self.vm_network.take() {
+            match network.lock() {
+                Ok(mut attachment) => {
+                    if let Some(attachment) = attachment.take() {
+                        match attachment.shutdown() {
+                            Ok(snapshot) => {
+                                self.run_record.network_interception_metrics = Some(snapshot)
+                            }
+                            Err(err) => errors.push(format!("shutdown VM OverlayNet: {err:#}")),
+                        }
+                    }
+                }
+                Err(_) => errors.push("shutdown VM OverlayNet: attachment lock poisoned".into()),
+            }
+        }
         if let Some(gateway) = self.gateway.take() {
-            self.run_record.network_interception_metrics = Some(gateway.interception_snapshot());
             if let Err(err) = gateway.shutdown() {
                 errors.push(format!("shutdown Gateway: {err:#}"));
             }
@@ -157,7 +189,7 @@ impl AttemptTeardown {
     }
 }
 
-pub struct AttemptPrepareOpts<'a> {
+pub(crate) struct AttemptPrepareOpts<'a> {
     pub config: &'a ProxyConfig,
     /// Durable pVisor Run storage and default OverlayFS stage.
     pub storage: &'a Path,
@@ -169,11 +201,61 @@ pub struct AttemptPrepareOpts<'a> {
     pub overlay_override: OverlayHint,
     pub controller: Arc<dyn ControlController>,
     pub gateway_enabled: bool,
+    pub vm_network: bool,
+    pub attempt_id: &'a str,
 }
 
-pub struct OverlayAttemptPrepareOpts<'a> {
+pub(crate) struct OverlayAttemptPrepareOpts<'a> {
     pub storage: &'a Path,
     pub overlay: OverlayHint,
+    pub vm_network: Option<VmNetworkPrepareOpts>,
+}
+
+#[derive(Clone)]
+pub(crate) struct VmNetworkPrepareOpts {
+    pub network: NetworkConfig,
+    pub controller: Arc<dyn ControlController>,
+    pub attempt_id: String,
+}
+
+pub(crate) struct VmNetworkAttachment {
+    guest_stream: std::os::unix::net::UnixStream,
+    backend: persisting_overlaynet::vm::VmNetwork,
+}
+
+impl VmNetworkAttachment {
+    pub(crate) fn guest_stream(&self) -> &std::os::unix::net::UnixStream {
+        &self.guest_stream
+    }
+
+    /// Close the peer first so a backend blocked on socket I/O can observe EOF
+    /// before we join its thread.
+    pub(crate) fn shutdown(self) -> anyhow::Result<persisting_overlaynet::InterceptionSnapshot> {
+        let Self {
+            backend,
+            guest_stream,
+        } = self;
+        drop(guest_stream);
+        backend.shutdown()
+    }
+}
+
+fn mark_vm_network(plan: &mut ImplantPlan) {
+    plan.env
+        .insert("PERSISTING_OVERLAYNET_DRIVER".into(), "vm-smoltcp".into());
+    plan.env.insert(
+        "PERSISTING_OVERLAYNET_STRENGTH".into(),
+        "non-bypassable".into(),
+    );
+    plan.notes.push(
+        "network interception: libkrun virtio-net → smoltcp (non-bypassable IPv4 TCP + DNS)".into(),
+    );
+}
+
+struct PreparedVmNetwork {
+    attachment: Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>,
+    metrics: InterceptionMetrics,
+    policy: serde_json::Value,
 }
 
 struct PreparedOverlay {
@@ -184,7 +266,7 @@ struct PreparedOverlay {
 }
 
 /// Start pVisor's configured Gateway and OverlayFS drivers, then enrich `spec`.
-pub fn prepare_attempt(
+pub(crate) fn prepare_attempt(
     spec: &mut RunSpec,
     opts: AttemptPrepareOpts<'_>,
 ) -> anyhow::Result<AttemptSession> {
@@ -199,18 +281,23 @@ pub fn prepare_attempt(
         .canonicalize()
         .unwrap_or_else(|_| opts.capture_storage.to_path_buf());
 
-    spec.capabilities.network = network_capability_from_config(&config);
-
     let sink = opts
         .sink
         .unwrap_or_else(|| Arc::new(SeqOnlySink::new()) as Arc<dyn TrajectoryEventSink>);
 
-    let gateway = InProcessCapture::start_with_control(
+    let network_metrics = InterceptionMetrics::default();
+    let bandwidth_registry = BandwidthRegistry::default();
+    let gateway = InProcessCapture::start_with_runtime(
         config.clone(),
         capture_storage.clone(),
         Arc::clone(&sink),
         opts.stream_markdown,
-        opts.controller,
+        InProcessRuntime {
+            controller: Arc::clone(&opts.controller),
+            interception_metrics: network_metrics.clone(),
+            bandwidth_registry: bandwidth_registry.clone(),
+            attempt_id: Some(opts.attempt_id.to_owned()),
+        },
     )?;
 
     // A Run has one top-level identity across pVisor, Gateway and pChronicle.
@@ -236,11 +323,30 @@ pub fn prepare_attempt(
     } = prepared_overlay;
 
     let RunInvocation::Process(process) = &spec.invocation;
+    let command = std::iter::once(process.program.clone())
+        .chain(process.args.iter().cloned())
+        .collect::<Vec<_>>();
     let stage_dir = overlay_record
         .as_ref()
         .map(|record| record.stage_dir.clone())
         .unwrap_or_else(|| storage.clone());
     let lease = RunLease::acquire(&stage_dir)?;
+    let vm_network = opts
+        .vm_network
+        .then(|| {
+            start_vm_network(
+                spec,
+                VmNetworkPrepareOpts {
+                    network: config.network.clone(),
+                    controller: Arc::clone(&opts.controller),
+                    attempt_id: opts.attempt_id.to_owned(),
+                },
+                Some((&gateway.listen, opts.gateway_enabled)),
+                network_metrics.clone(),
+                bandwidth_registry,
+            )
+        })
+        .transpose()?;
     let run_record = RunRecord {
         schema_version: 1,
         run_id: spec.run_id.as_str().to_string(),
@@ -249,9 +355,7 @@ pub fn prepare_attempt(
         session_id: root_session.clone(),
         agent: config.agent_id.clone(),
         pid: std::process::id(),
-        command: std::iter::once(process.program.clone())
-            .chain(process.args.iter().cloned())
-            .collect(),
+        command,
         executor: executor_from_spec(spec),
         state: "running".into(),
         started_at_unix_ms: crate::util::unix_now_ms(),
@@ -259,7 +363,11 @@ pub fn prepare_attempt(
         storage: storage.clone(),
         workspace: workspace_from_spec(spec),
         overlaynet_listen: Some(gateway.listen.clone()),
-        network_interception: Some(persisting_overlaynet::InterceptionProfile::explicit_proxy()),
+        network_interception: Some(if opts.vm_network {
+            persisting_overlaynet::InterceptionProfile::vm_smoltcp()
+        } else {
+            persisting_overlaynet::InterceptionProfile::explicit_proxy()
+        }),
         network_interception_metrics: None,
         gateway_listen: opts.gateway_enabled.then(|| gateway.listen.clone()),
         network: serde_json::to_value(&spec.capabilities.network)?,
@@ -300,6 +408,9 @@ pub fn prepare_attempt(
             gateway_enabled: opts.gateway_enabled,
         },
     )?;
+    if opts.vm_network && opts.gateway_enabled {
+        rewrite_vm_gateway_implant(spec, &gateway.listen);
+    }
     inject_krun_overlay_metadata(spec, &overlay_hint, overlay_record.as_ref());
 
     Ok(AttemptSession {
@@ -307,6 +418,8 @@ pub fn prepare_attempt(
         agent_id: config.agent_id.clone(),
         overlay_record,
         gateway: Some(gateway),
+        vm_network,
+        network_metrics: Some(network_metrics),
         overlay: overlay_mount,
         sink: Some(sink),
         started_at: Instant::now(),
@@ -317,7 +430,7 @@ pub fn prepare_attempt(
 }
 
 /// Prepare a durable OverlayFS Run without enabling the optional Gateway.
-pub fn prepare_overlay_attempt(
+pub(crate) fn prepare_overlay_attempt(
     spec: &mut RunSpec,
     opts: OverlayAttemptPrepareOpts<'_>,
 ) -> anyhow::Result<AttemptSession> {
@@ -345,7 +458,21 @@ pub fn prepare_overlay_attempt(
     })?;
 
     let RunInvocation::Process(process) = &spec.invocation;
+    let command = std::iter::once(process.program.clone())
+        .chain(process.args.iter().cloned())
+        .collect::<Vec<_>>();
     let lease = RunLease::acquire(&overlay_record.stage_dir)?;
+    let prepared_network = opts
+        .vm_network
+        .map(|network| prepare_vm_network(spec, network, None))
+        .transpose()?;
+    let vm_network = prepared_network
+        .as_ref()
+        .map(|network| Arc::clone(&network.attachment));
+    let network_metrics = prepared_network
+        .as_ref()
+        .map(|network| network.metrics.clone());
+    let network_policy = prepared_network.map(|network| network.policy);
     let run_record = RunRecord {
         schema_version: 1,
         run_id: spec.run_id.as_str().to_string(),
@@ -354,9 +481,7 @@ pub fn prepare_overlay_attempt(
         session_id: root_session.clone(),
         agent: spec.agent.name.clone(),
         pid: std::process::id(),
-        command: std::iter::once(process.program.clone())
-            .chain(process.args.iter().cloned())
-            .collect(),
+        command,
         executor: executor_from_spec(spec),
         state: "running".into(),
         started_at_unix_ms: crate::util::unix_now_ms(),
@@ -364,11 +489,13 @@ pub fn prepare_overlay_attempt(
         storage: storage.clone(),
         workspace: workspace_from_spec(spec),
         overlaynet_listen: None,
-        network_interception: None,
+        network_interception: vm_network
+            .as_ref()
+            .map(|_| persisting_overlaynet::InterceptionProfile::vm_smoltcp()),
         network_interception_metrics: None,
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
-        network_policy: None,
+        network_policy,
         overlay: Some(overlay_record.clone()),
         overlay_lowers,
         lineage: lineage_from_spec(spec),
@@ -405,6 +532,9 @@ pub fn prepare_overlay_attempt(
     );
     plan.env
         .insert("PERSISTING_OVERLAY_ID".into(), overlay_record.id.clone());
+    if vm_network.is_some() {
+        mark_vm_network(&mut plan);
+    }
     match &overlay_record.upper {
         super::overlay::OverlayUpper::Directory { upper_dir, .. } => {
             plan.env.insert(
@@ -442,6 +572,8 @@ pub fn prepare_overlay_attempt(
         agent_id: spec.agent.name.clone(),
         overlay_record: Some(overlay_record),
         gateway: None,
+        vm_network,
+        network_metrics,
         overlay: overlay_mount,
         sink: None,
         started_at: Instant::now(),
@@ -452,16 +584,30 @@ pub fn prepare_overlay_attempt(
 }
 
 /// Prepare metadata-only durable Run storage without Gateway or OverlayFS.
-pub fn prepare_storage_attempt(
+pub(crate) fn prepare_storage_attempt(
     spec: &mut RunSpec,
     storage: &Path,
+    vm_network_opts: Option<VmNetworkPrepareOpts>,
 ) -> anyhow::Result<AttemptSession> {
     let storage = storage
         .canonicalize()
         .unwrap_or_else(|_| storage.to_path_buf());
     let root_session = spec.run_id.as_str().to_string();
     let RunInvocation::Process(process) = &spec.invocation;
+    let command = std::iter::once(process.program.clone())
+        .chain(process.args.iter().cloned())
+        .collect::<Vec<_>>();
     let lease = RunLease::acquire(&storage)?;
+    let prepared_network = vm_network_opts
+        .map(|network| prepare_vm_network(spec, network, None))
+        .transpose()?;
+    let vm_network = prepared_network
+        .as_ref()
+        .map(|network| Arc::clone(&network.attachment));
+    let network_metrics = prepared_network
+        .as_ref()
+        .map(|network| network.metrics.clone());
+    let network_policy = prepared_network.map(|network| network.policy);
     let run_record = RunRecord {
         schema_version: 1,
         run_id: root_session.clone(),
@@ -470,9 +616,7 @@ pub fn prepare_storage_attempt(
         session_id: root_session.clone(),
         agent: spec.agent.name.clone(),
         pid: std::process::id(),
-        command: std::iter::once(process.program.clone())
-            .chain(process.args.iter().cloned())
-            .collect(),
+        command,
         executor: executor_from_spec(spec),
         state: "running".into(),
         started_at_unix_ms: crate::util::unix_now_ms(),
@@ -480,11 +624,13 @@ pub fn prepare_storage_attempt(
         storage: storage.clone(),
         workspace: workspace_from_spec(spec),
         overlaynet_listen: None,
-        network_interception: None,
+        network_interception: vm_network
+            .as_ref()
+            .map(|_| persisting_overlaynet::InterceptionProfile::vm_smoltcp()),
         network_interception_metrics: None,
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
-        network_policy: None,
+        network_policy,
         overlay: None,
         overlay_lowers: Vec::new(),
         lineage: lineage_from_spec(spec),
@@ -507,6 +653,9 @@ pub fn prepare_storage_attempt(
         "PERSISTING_PVISOR_STORAGE".into(),
         storage.display().to_string(),
     );
+    if vm_network.is_some() {
+        mark_vm_network(&mut plan);
+    }
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
     spec.metadata
@@ -517,6 +666,8 @@ pub fn prepare_storage_attempt(
         agent_id: spec.agent.name.clone(),
         overlay_record: None,
         gateway: None,
+        vm_network,
+        network_metrics,
         overlay: None,
         sink: None,
         started_at: Instant::now(),
@@ -524,6 +675,124 @@ pub fn prepare_storage_attempt(
         _control: control,
         _lease: lease,
     })
+}
+
+fn start_vm_network(
+    spec: &mut RunSpec,
+    opts: VmNetworkPrepareOpts,
+    gateway: Option<(&str, bool)>,
+    metrics: InterceptionMetrics,
+    bandwidth_registry: BandwidthRegistry,
+) -> anyhow::Result<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>> {
+    let policy = NetworkPolicy::compile(&opts.network)?;
+    let egress =
+        EgressRuntime::with_bandwidth_registry(policy, opts.controller, bandwidth_registry);
+    let mut config = persisting_overlaynet::vm::VmNetworkConfig::new(
+        egress,
+        EgressContext {
+            run_id: Some(spec.run_id.as_str().to_owned()),
+            attempt_id: Some(opts.attempt_id),
+            storyline_id: None,
+        },
+    );
+    config.metrics = metrics;
+    if let Some((listen, _)) = gateway.filter(|(_, enabled)| *enabled) {
+        let host: std::net::SocketAddr = listen
+            .strip_prefix("http://")
+            .or_else(|| listen.strip_prefix("https://"))
+            .unwrap_or(listen)
+            .parse()
+            .with_context(|| format!("parse Attempt Gateway listen address `{listen}`"))?;
+        config.gateway = Some(persisting_overlaynet::vm::VmGatewayRoute {
+            guest_port: host.port(),
+            host,
+        });
+    }
+    let (backend, guest_stream) = persisting_overlaynet::vm::VmNetwork::start(config)?;
+    spec.metadata.insert(
+        "pvisor.network.driver".into(),
+        serde_json::Value::String("vm-smoltcp".into()),
+    );
+    spec.metadata.insert(
+        "pvisor.network.guest_ipv4".into(),
+        serde_json::Value::String(persisting_overlaynet::vm::GUEST_IPV4.to_string()),
+    );
+    Ok(Arc::new(std::sync::Mutex::new(Some(VmNetworkAttachment {
+        guest_stream,
+        backend,
+    }))))
+}
+
+fn prepare_vm_network(
+    spec: &mut RunSpec,
+    opts: VmNetworkPrepareOpts,
+    gateway: Option<(&str, bool)>,
+) -> anyhow::Result<PreparedVmNetwork> {
+    let metrics = InterceptionMetrics::default();
+    let policy = serde_json::to_value(&opts.network)?;
+    let attachment = start_vm_network(
+        spec,
+        opts,
+        gateway,
+        metrics.clone(),
+        BandwidthRegistry::default(),
+    )?;
+    Ok(PreparedVmNetwork {
+        attachment,
+        metrics,
+        policy,
+    })
+}
+
+fn rewrite_vm_gateway_implant(spec: &mut RunSpec, listen: &str) {
+    let listen = listen.trim_end_matches('/');
+    let listen_authority = listen
+        .strip_prefix("http://")
+        .or_else(|| listen.strip_prefix("https://"))
+        .unwrap_or(listen);
+    let gateway_port = listen_authority
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .expect("Gateway listen address was validated before implant rewriting");
+    let virtual_base = format!(
+        "http://{}:{gateway_port}",
+        persisting_overlaynet::vm::ROUTER_IPV4
+    );
+    let mut source_bases = vec![
+        format!("http://{listen_authority}"),
+        format!("https://{listen_authority}"),
+    ];
+    if listen_authority.starts_with("127.0.0.1:") {
+        source_bases.push(format!("http://localhost:{gateway_port}"));
+        source_bases.push(format!("https://localhost:{gateway_port}"));
+    } else if listen_authority.starts_with("localhost:") {
+        source_bases.push(format!("http://127.0.0.1:{gateway_port}"));
+        source_bases.push(format!("https://127.0.0.1:{gateway_port}"));
+    }
+    let RunInvocation::Process(process) = &mut spec.invocation;
+    for value in process.env.values_mut() {
+        for source in &source_bases {
+            if value.contains(source) {
+                *value = value.replace(source, &virtual_base);
+            }
+        }
+    }
+    for argument in &mut process.args {
+        for source in &source_bases {
+            if argument.contains(source) {
+                *argument = argument.replace(source, &virtual_base);
+            }
+        }
+    }
+    let no_proxy = format!(
+        "127.0.0.1,localhost,{}",
+        persisting_overlaynet::vm::ROUTER_IPV4
+    );
+    process.env.insert("NO_PROXY".into(), no_proxy.clone());
+    process.env.insert("no_proxy".into(), no_proxy);
+    process
+        .env
+        .insert("PERSISTING_GATEWAY_VIRTUAL_ADDR".into(), virtual_base);
 }
 
 fn lineage_from_spec(spec: &RunSpec) -> Option<RunLineage> {
@@ -747,24 +1016,30 @@ fn enrich_with_session(
         "PERSISTING_PVISOR_STORAGE".into(),
         run_storage.display().to_string(),
     );
-    plan.notes.push("capture: in-process proxy started".into());
+    plan.notes
+        .push("network service: in-process HTTP proxy started".into());
 
     for (key, value) in proxy_environment(listen, root_session) {
         plan.env.insert(key, value);
     }
     plan.notes
-        .push(format!("capture: proxy env → http://{listen}"));
-    plan.env.insert(
-        "PERSISTING_OVERLAYNET_DRIVER".into(),
-        "explicit-proxy".into(),
-    );
-    plan.env.insert(
-        "PERSISTING_OVERLAYNET_STRENGTH".into(),
-        "cooperative".into(),
-    );
-    plan.notes.push(
-        "network interception: explicit proxy (cooperative; direct sockets remain ambient)".into(),
-    );
+        .push(format!("network service: proxy env → http://{listen}"));
+    if uses_krun_executor(spec) {
+        mark_vm_network(&mut plan);
+    } else {
+        plan.env.insert(
+            "PERSISTING_OVERLAYNET_DRIVER".into(),
+            "explicit-proxy".into(),
+        );
+        plan.env.insert(
+            "PERSISTING_OVERLAYNET_STRENGTH".into(),
+            "cooperative".into(),
+        );
+        plan.notes.push(
+            "network interception: explicit proxy (cooperative; direct sockets remain ambient)"
+                .into(),
+        );
+    }
 
     match &spec.capabilities.network {
         NetworkCapability::Ambient => {
@@ -776,8 +1051,11 @@ fn enrich_with_session(
         NetworkCapability::Deny => {
             plan.env
                 .insert("PERSISTING_NETWORK_POLICY".into(), "deny".into());
-            plan.notes
-                .push("network: deny for traffic intercepted by the proxy".into());
+            plan.notes.push(if uses_krun_executor(spec) {
+                "network: deny on the non-bypassable VM data plane".into()
+            } else {
+                "network: deny for traffic intercepted by the proxy".into()
+            });
         }
         NetworkCapability::AllowList { hosts, rules } => {
             plan.env
@@ -789,9 +1067,14 @@ fn enrich_with_session(
                     .insert("PERSISTING_NETWORK_RULES".into(), serialized);
             }
             plan.notes.push(format!(
-                "network: allowlist ({} legacy hosts, {} structured rules, applied to intercepted proxy traffic)",
+                "network: allowlist ({} legacy hosts, {} structured rules, applied to {} traffic)",
                 hosts.len(),
-                rules.len()
+                rules.len(),
+                if uses_krun_executor(spec) {
+                    "VM"
+                } else {
+                    "intercepted proxy"
+                },
             ));
         }
         NetworkCapability::Policy {
@@ -821,10 +1104,15 @@ fn enrich_with_session(
                     .insert("PERSISTING_NETWORK_LIMITS".into(), serialized);
             }
             plan.notes.push(format!(
-                "network: policy ({} allow, {} deny, {} bandwidth limits, applied to intercepted proxy traffic)",
+                "network: policy ({} allow, {} deny, {} bandwidth limits, applied to {} traffic)",
                 allow.len(),
                 deny.len(),
-                limits.len()
+                limits.len(),
+                if uses_krun_executor(spec) {
+                    "VM"
+                } else {
+                    "intercepted proxy"
+                },
             ));
         }
     }
@@ -909,5 +1197,36 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
         if let Some(cwd) = &plan.cwd {
             process.cwd = Some(cwd.display().to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod vm_network_tests {
+    use super::rewrite_vm_gateway_implant;
+    use persisting_control::{RunInvocation, RunSpec};
+
+    #[test]
+    fn gateway_loopback_urls_and_embedded_arguments_are_rewritten() {
+        let mut spec = RunSpec::process("run-1", "agent", "codex");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process
+            .env
+            .insert("OPENAI_BASE_URL".into(), "http://127.0.0.1:19081/v1".into());
+        process
+            .args
+            .push("openai_base_url=\"http://127.0.0.1:19081/v1\"".into());
+
+        rewrite_vm_gateway_implant(&mut spec, "127.0.0.1:19081");
+
+        let RunInvocation::Process(process) = &spec.invocation;
+        assert_eq!(
+            process.env.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("http://192.0.2.1:19081/v1")
+        );
+        assert_eq!(
+            process.args.last().map(String::as_str),
+            Some("openai_base_url=\"http://192.0.2.1:19081/v1\"")
+        );
+        assert!(process.env["NO_PROXY"].contains("192.0.2.1"));
     }
 }

@@ -8,6 +8,11 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone, Default)]
+pub(crate) struct AttemptAttachments {
+    pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
+}
+
 #[derive(Clone)]
 pub struct AttemptContext {
     spec: Arc<RunSpec>,
@@ -16,6 +21,7 @@ pub struct AttemptContext {
     status: watch::Sender<RunStatus>,
     events: RunEventPublisher,
     agent_abi: crate::AgentAbiControl,
+    attachments: AttemptAttachments,
 }
 
 impl AttemptContext {
@@ -26,6 +32,7 @@ impl AttemptContext {
         status: watch::Sender<RunStatus>,
         events: RunEventPublisher,
         agent_abi: crate::AgentAbiControl,
+        attachments: AttemptAttachments,
     ) -> Self {
         Self {
             spec,
@@ -34,6 +41,7 @@ impl AttemptContext {
             status,
             events,
             agent_abi,
+            attachments,
         }
     }
 
@@ -47,6 +55,18 @@ impl AttemptContext {
 
     pub fn cancellation(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+
+    pub(crate) fn take_vm_network(
+        &self,
+    ) -> anyhow::Result<Option<crate::runtime::VmNetworkAttachment>> {
+        let Some(attachment) = &self.attachments.vm_network else {
+            return Ok(None);
+        };
+        let mut attachment = attachment
+            .lock()
+            .map_err(|_| anyhow::anyhow!("VM network attachment lock poisoned"))?;
+        Ok(attachment.take())
     }
 
     pub fn events(&self) -> &RunEventPublisher {
@@ -102,5 +122,13 @@ impl AttemptContext {
 pub trait RunExecutor: Send + Sync {
     fn descriptor(&self) -> ExecutorDescriptor;
     fn supports(&self, invocation: &RunInvocation) -> bool;
+    /// Whether this executor consumes pVisor's VM network attachment.
+    ///
+    /// A virtual-machine descriptor alone is not sufficient to claim that the
+    /// Attempt network is non-bypassable: pluggable executors must explicitly
+    /// opt into the transport handoff contract.
+    fn supports_vm_network_attachment(&self) -> bool {
+        false
+    }
     async fn execute(&self, context: AttemptContext) -> RunResult;
 }

@@ -682,7 +682,7 @@ pPilot library
 | canonical record | `persisting-pchronicle::EventRecord`（Gateway 内部称 `CaptureRecord`） | 将 `run_id` 升为跨路径一等身份 |
 | canonical Lance events | `persisting-pchronicle::{EventRow, RawEventLanceStore}` | 统一 canonical-first，Markdown 降为 view |
 | Storyline / replay view | story actor、TLV Markdown、materialize、replay | 将 session 对齐为 Storyline，并补充因果关系 |
-| pVisor proxy drivers | `persisting-overlaynet` 独占显式 HTTP/HTTPS proxy 数据面；Gateway 是 LLM/轨迹 `OverlaySink`；另有 `persisting-dlcapt` | 可配置其他 sink；当前不宣称透明网络隔离。Linux 透明截获已定稿设计（主方案：非特权 netns + 进程内用户态协议栈；备选：seccomp user-notify + ADDFD），见 [OverlayNet interception](overlaynet.md) |
+| pVisor network drivers | `persisting-overlaynet` 提供 host/container 显式 HTTP/HTTPS proxy，以及 libkrun VM 的 virtio-net + smoltcp IPv4 TCP/DNS 数据面；Gateway 是 LLM/轨迹 `OverlaySink`；另有 `persisting-dlcapt` | VM 路径已不可绕过并复用 Control/限速；Linux host 透明截获仍采用已定稿的 netns 主方案与 seccomp user-notify + ADDFD 备选，见 [OverlayNet interception](overlaynet.md) |
 | pVisor executor | Local ProcessExecutor、Docker/Podman transport、libkrun VM full-root transport；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；Container/VM 仍有 capability enforcement 差距，尚缺 WASM/Remote，见 [pVisor isolation architecture](pvisor-isolation.md) |
 | pPilot batch control | Driver、Scheduler、Sink、Checkpoint；TaskExpr ↔ RunSpec/RunResult adapter | 将 Run/Attempt 写入 durable checkpoint 并增加 reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |

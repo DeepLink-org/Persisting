@@ -30,7 +30,7 @@ Run-owned temporary directory. Full-disk reads remain ambient for local
 toolchain compatibility; `--overlaynet-deny-all` additionally blocks IP and
 ambient host Unix sockets while retaining the exact Agent ABI and Run-local
 IPC. Seatbelt setup is attested by the hidden launcher and fails closed.
-Docker and KVM remain stronger placement choices, and every Run Bundle records
+Container and VM executors remain stronger placement choices, and every Run Bundle records
 read, write, and network enforcement separately.
 
 The default pVisor build is deliberately lightweight: directory OverlayFS and
@@ -160,6 +160,13 @@ upstream = "https://api.openai.com/v1"
 mode = "lance"
 dir = "s3://trajectory-bucket/persisting/runs"
 ```
+
+Library callers select the same network boundary with
+`PVisorBuilder::network(NetworkDriverConfig::new(mode, network))`. `Auto`
+attaches `vm-smoltcp` to a `VmExecutor`, `Off` leaves that guest offline, and
+`Proxy` remains the cooperative host/container driver. A Gateway configured on
+the same builder shares the Attempt controller, metrics, and bandwidth
+registry with VM egress.
 
 `chronicle.dir` accepts either a local directory or an S3 URI. The equivalent
 CLI form keeps the reusable project workspace local while offloading the canonical event log:
@@ -300,9 +307,17 @@ codesign --force --sign - \
   target/debug/pvisor
 ```
 
-The guest has no ambient network path. OverlayNet/Gateway and the host Agent
-ABI are rejected or omitted until their cross-platform guest transport is
-implemented. On Linux the self-exec VMM runner additionally enters pVisor's
+The guest has no ambient network path around pVisor. In the default
+`[overlaynet] mode = "auto"`, libkrun virtio-net is attached to pVisor's
+in-process smoltcp backend. It serves `192.0.2.2/24` by DHCP, answers DNS with
+stable synthetic `198.18.0.0/15` addresses, and terminates/re-originates IPv4
+TCP only after the hostname/IP and port pass Control policy. TCP and DNS are
+non-bypassable for the guest process tree; general UDP, IPv6, ICMP, QUIC, and
+inbound forwarding are deliberately unsupported and fail closed. `mode =
+"off"` leaves the VM offline. Gateway capture, when configured, is exposed at
+the virtual router address instead of its host loopback address.
+
+On Linux the self-exec VMM runner additionally enters pVisor's
 namespace/Landlock confinement. On macOS the VM provides a guest-kernel
 boundary, but the VMM still runs with the invoking user's host permissions;
 because libkrun's virtio-fs security model requires host-side confinement, this
@@ -362,23 +377,21 @@ cargo build -p persisting-pvisor --release
 The standalone `persisting-overlayfs` binary remains available only for
 diagnostics and manual mounts.
 
-### Network enforcement roadmap
+### Network enforcement
 
-Today's network driver is an explicit proxy: coverage is opt-in and
-`RuntimeCapabilities.network` honestly reports observe-grade behavior. The
-Run record now includes an OverlayNet interception profile (`explicit-proxy`,
-`cooperative`) and the child receives `PERSISTING_OVERLAYNET_DRIVER` plus
-`PERSISTING_OVERLAYNET_STRENGTH`. Gateway `/admin/status` exposes counters for
-requests that actually reached the proxy; these counters never imply that
-direct sockets were observed.
+Host and container runs retain the explicit proxy: coverage is opt-in and
+observe-grade. VM Auto uses the non-bypassable `vm-smoltcp` driver. Run records
+distinguish the two profiles and persist DNS/TCP flow, denial, failure, byte,
+active/peak flow, and unsupported-packet counters. Gateway and VM egress share
+the Attempt policy controller and bandwidth buckets.
 
-The accepted Linux design for non-bypassable interception — an unprivileged
-network namespace whose only egress is a pVisor-owned in-process userspace
-stack (mirroring the embedded FUSE decision), with a seccomp user-notify +
-`ADDFD` fallback for hosts without user namespaces — is specified in
-`docs/src/design/overlaynet.md`. Once a transparent driver is attached,
-`PolicyMode::Enforce` becomes satisfiable for network capabilities on Linux;
-other hosts keep observe mode.
+The accepted Linux host-process design for non-bypassable interception — an
+unprivileged network namespace whose only egress is a pVisor-owned in-process
+userspace stack, with a seccomp user-notify + `ADDFD` fallback — is specified in
+`docs/src/design/overlaynet.md`. That host-process path remains future work.
+VM `auto` already satisfies network-only `PolicyMode::Enforce` on Linux and
+Apple Silicon macOS; unsupported VM hosts and cooperative host/container proxy
+paths remain observe-only.
 
 Structured OverlayNet rules accept exact hosts, wildcard suffixes, IPs, and
 CIDRs. Empty `ports` or `transports` mean unrestricted, so production policy

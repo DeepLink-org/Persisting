@@ -11,6 +11,7 @@ use std::sync::Arc;
 #[serde(rename_all = "kebab-case")]
 pub enum InterceptionDriver {
     ExplicitProxy,
+    VmSmoltcp,
     LinuxNetns,
     LinuxSeccompNotify,
 }
@@ -52,9 +53,22 @@ impl InterceptionProfile {
     pub const fn is_enforcing(&self) -> bool {
         matches!(self.strength, InterceptionStrength::NonBypassable)
     }
+
+    pub const fn vm_smoltcp() -> Self {
+        Self {
+            driver: InterceptionDriver::VmSmoltcp,
+            strength: InterceptionStrength::NonBypassable,
+            http: false,
+            tcp_connect: true,
+            dns: true,
+            udp: false,
+            inherited_by_children: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InterceptionSnapshot {
     pub requests_seen: u64,
     pub policy_allowed: u64,
@@ -63,6 +77,16 @@ pub struct InterceptionSnapshot {
     pub absolute_http_requests: u64,
     pub sink_requests: u64,
     pub failures: u64,
+    pub dns_queries: u64,
+    pub dns_answers: u64,
+    pub tcp_flows_opened: u64,
+    pub tcp_flows_denied: u64,
+    pub tcp_connect_failures: u64,
+    pub bytes_guest_to_host: u64,
+    pub bytes_host_to_guest: u64,
+    pub unsupported_packets: u64,
+    pub active_tcp_flows: u64,
+    pub peak_tcp_flows: u64,
 }
 
 #[derive(Default)]
@@ -74,6 +98,16 @@ struct Counters {
     absolute_http_requests: AtomicU64,
     sink_requests: AtomicU64,
     failures: AtomicU64,
+    dns_queries: AtomicU64,
+    dns_answers: AtomicU64,
+    tcp_flows_opened: AtomicU64,
+    tcp_flows_denied: AtomicU64,
+    tcp_connect_failures: AtomicU64,
+    bytes_guest_to_host: AtomicU64,
+    bytes_host_to_guest: AtomicU64,
+    unsupported_packets: AtomicU64,
+    active_tcp_flows: AtomicU64,
+    peak_tcp_flows: AtomicU64,
 }
 
 /// Cloneable, lock-free counters for the traffic that reached OverlayNet.
@@ -96,6 +130,16 @@ impl InterceptionMetrics {
             absolute_http_requests: self.counters.absolute_http_requests.load(Ordering::Relaxed),
             sink_requests: self.counters.sink_requests.load(Ordering::Relaxed),
             failures: self.counters.failures.load(Ordering::Relaxed),
+            dns_queries: self.counters.dns_queries.load(Ordering::Relaxed),
+            dns_answers: self.counters.dns_answers.load(Ordering::Relaxed),
+            tcp_flows_opened: self.counters.tcp_flows_opened.load(Ordering::Relaxed),
+            tcp_flows_denied: self.counters.tcp_flows_denied.load(Ordering::Relaxed),
+            tcp_connect_failures: self.counters.tcp_connect_failures.load(Ordering::Relaxed),
+            bytes_guest_to_host: self.counters.bytes_guest_to_host.load(Ordering::Relaxed),
+            bytes_host_to_guest: self.counters.bytes_host_to_guest.load(Ordering::Relaxed),
+            unsupported_packets: self.counters.unsupported_packets.load(Ordering::Relaxed),
+            active_tcp_flows: self.counters.active_tcp_flows.load(Ordering::Relaxed),
+            peak_tcp_flows: self.counters.peak_tcp_flows.load(Ordering::Relaxed),
         }
     }
 
@@ -130,6 +174,68 @@ impl InterceptionMetrics {
     pub(crate) fn failure(&self) {
         self.counters.failures.fetch_add(1, Ordering::Relaxed);
     }
+
+    pub(crate) fn dns_query(&self) {
+        self.counters.dns_queries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn dns_answer(&self) {
+        self.counters.dns_answers.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn tcp_flow_opened(&self) {
+        self.counters
+            .tcp_flows_opened
+            .fetch_add(1, Ordering::Relaxed);
+        let active = self
+            .counters
+            .active_tcp_flows
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        self.counters
+            .peak_tcp_flows
+            .fetch_max(active, Ordering::Relaxed);
+    }
+
+    pub(crate) fn tcp_flow_closed(&self) {
+        let _ = self.counters.active_tcp_flows.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |active| active.checked_sub(1),
+        );
+    }
+
+    pub(crate) fn tcp_flow_denied(&self) {
+        self.counters
+            .tcp_flows_denied
+            .fetch_add(1, Ordering::Relaxed);
+        self.policy_denied();
+    }
+
+    pub(crate) fn tcp_connect_failure(&self) {
+        self.counters
+            .tcp_connect_failures
+            .fetch_add(1, Ordering::Relaxed);
+        self.failure();
+    }
+
+    pub(crate) fn guest_to_host(&self, bytes: usize) {
+        self.counters
+            .bytes_guest_to_host
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn host_to_guest(&self, bytes: usize) {
+        self.counters
+            .bytes_host_to_guest
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn unsupported_packet(&self) {
+        self.counters
+            .unsupported_packets
+            .fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +248,17 @@ mod tests {
         assert_eq!(profile.strength, InterceptionStrength::Cooperative);
         assert!(!profile.is_enforcing());
         assert!(!profile.dns);
+        assert!(!profile.udp);
+    }
+
+    #[test]
+    fn vm_smoltcp_claims_only_implemented_protocols() {
+        let profile = InterceptionProfile::vm_smoltcp();
+        assert!(profile.is_enforcing());
+        assert!(profile.tcp_connect);
+        assert!(profile.dns);
+        assert!(profile.inherited_by_children);
+        assert!(!profile.http);
         assert!(!profile.udp);
     }
 
@@ -182,6 +299,7 @@ mod tests {
                 absolute_http_requests: 1,
                 sink_requests: 1,
                 failures: 1,
+                ..InterceptionSnapshot::default()
             }
         );
     }

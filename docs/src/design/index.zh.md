@@ -22,6 +22,7 @@
 | pVisor、pPilot、pChronicle | 已实现 | 并列的 Agent 执行、编排与历史组件 |
 | Gateway、OverlayNet、OverlayFS | 已实现 | pVisor 运行时驱动；Gateway 提供 capture 语义 |
 | pVisor 强制隔离 | 已实现 / 部分完成 | Linux 已有 FUSE + 最小 synthetic root + rootless namespace + Landlock；macOS 已有 Seatbelt 强制 staged 写入和 deny-all socket 约束，读取仍为 ambient；Docker 与 libkrun/KVM transport 已有，seccomp、资源控制、LiteBox VFS 与 Firecracker 仍在[隔离路线图](pvisor-isolation.md)中 |
+| OverlayNet 透明截获 | VM 已实现 / host 规划中 | libkrun virtio-net + smoltcp 已在 Linux 与 Apple Silicon macOS 上不可绕过地接管 IPv4 TCP/DNS；Linux host netns/seccomp driver 仍在规划中；见[设计](overlaynet.md) |
 | TTAS / 分层张量内存 | 实验性 | 已有 host/SSD 工作；GPU 与跨节点数据路径仍在规划 |
 | 竞品与系统比较 | 参考 | 为后续设计提供输入，不构成产品承诺 |
 

@@ -226,11 +226,13 @@ stage contains a lower layer, is rejected. Both
 `commit=apply` and the later `pvisor apply` command are rejected
 for composed Runs until pVisor can materialize a complete merged-vs-base diff
 safely.
-OverlayNet policy applies to traffic routed through the explicit proxy and does
-not claim non-bypassable host network isolation.
-`--overlaynet-deny-all` provides the discoverable deny-all form for
-forward-proxy egress. Direct sockets remain ambient, and relative local Gateway
-routes remain available for configured model traffic.
+On host/container execution, OverlayNet policy applies to traffic routed
+through the explicit proxy and does not claim non-bypassable host network
+isolation. On a libkrun VM, `auto` attaches non-bypassable smoltcp IPv4
+TCP/DNS; `off` leaves the guest offline. `--overlaynet-deny-all` supplies the
+same default-deny policy to the active driver. Host/container direct sockets
+remain ambient, while a VM Gateway route remains available through the guest's
+virtual router for configured model traffic.
 
 ## Run project discovery
 

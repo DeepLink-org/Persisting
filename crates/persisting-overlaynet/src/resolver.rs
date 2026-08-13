@@ -2,7 +2,7 @@
 //! only addresses that the connector is permitted to use.
 
 use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use persisting_control::ControlController;
@@ -26,10 +26,27 @@ pub(crate) enum TargetAuthorizationError {
     Resolve(anyhow::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolvedAddressPolicy {
+    Strict,
+    /// Accept an opaque address returned by a host fake-IP DNS/TUN connector.
+    /// The logical hostname is re-authorized and IP literals never qualify.
+    HostConnectorAliases,
+}
+
 pub(crate) async fn authorize_target(
     controller: &dyn ControlController,
     policy: &NetworkPolicy,
+    request: NetworkAccessRequest,
+) -> Result<AuthorizedTarget, TargetAuthorizationError> {
+    authorize_target_with_policy(controller, policy, request, ResolvedAddressPolicy::Strict).await
+}
+
+pub(crate) async fn authorize_target_with_policy(
+    controller: &dyn ControlController,
+    policy: &NetworkPolicy,
     mut request: NetworkAccessRequest,
+    resolved_address_policy: ResolvedAddressPolicy,
 ) -> Result<AuthorizedTarget, TargetAuthorizationError> {
     request.resolved_ip = None;
     policy
@@ -58,14 +75,21 @@ pub(crate) async fn authorize_target(
         })?
         .collect::<Vec<_>>();
 
-    authorize_resolved_target(controller, policy, request, resolved)
+    authorize_resolved_target_with_policy(
+        controller,
+        policy,
+        request,
+        resolved,
+        resolved_address_policy,
+    )
 }
 
-fn authorize_resolved_target(
+fn authorize_resolved_target_with_policy(
     controller: &dyn ControlController,
     policy: &NetworkPolicy,
     mut request: NetworkAccessRequest,
     resolved: impl IntoIterator<Item = SocketAddr>,
+    resolved_address_policy: ResolvedAddressPolicy,
 ) -> Result<AuthorizedTarget, TargetAuthorizationError> {
     let mut seen = HashSet::new();
     let mut addresses = Vec::new();
@@ -77,7 +101,18 @@ fn authorize_resolved_target(
             continue;
         }
         request.resolved_ip = Some(address.ip());
-        match policy.authorize(controller, &request) {
+        let authorization = policy.authorize(controller, &request).or_else(|reason| {
+            if reason != DenyReason::ResolvedAddressNotAllowed
+                || resolved_address_policy != ResolvedAddressPolicy::HostConnectorAliases
+                || !is_host_connector_alias(&request.host, address.ip())
+            {
+                return Err(reason);
+            }
+            let mut logical_request = request.clone();
+            logical_request.resolved_ip = None;
+            policy.authorize(controller, &logical_request)
+        });
+        match authorization {
             Ok(()) => addresses.push(address),
             Err(reason) => denied = reason,
         }
@@ -95,6 +130,20 @@ fn authorize_resolved_target(
         host: request.host,
         addresses,
     })
+}
+
+/// The benchmarking range is commonly used as an opaque fake-IP namespace by
+/// host DNS/TUN connectors. It is never a connector alias for an IP-literal
+/// request, so a guest cannot use this exception as direct egress.
+pub(crate) fn is_host_connector_alias(host: &str, address: IpAddr) -> bool {
+    if host.parse::<IpAddr>().is_ok() {
+        return false;
+    }
+    let IpAddr::V4(address) = address else {
+        return false;
+    };
+    let octets = address.octets();
+    octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
 }
 
 #[cfg(test)]
@@ -116,6 +165,21 @@ mod tests {
             transport: NetworkTransport::TcpTunnel,
             resolved_ip: None,
         }
+    }
+
+    fn authorize_resolved_target(
+        controller: &dyn ControlController,
+        policy: &NetworkPolicy,
+        request: NetworkAccessRequest,
+        resolved: impl IntoIterator<Item = SocketAddr>,
+    ) -> Result<AuthorizedTarget, TargetAuthorizationError> {
+        authorize_resolved_target_with_policy(
+            controller,
+            policy,
+            request,
+            resolved,
+            ResolvedAddressPolicy::Strict,
+        )
     }
 
     fn host_allowlist(host: &str) -> NetworkPolicy {
@@ -164,6 +228,86 @@ mod tests {
             Err(TargetAuthorizationError::Denied(
                 DenyReason::ResolvedAddressNotAllowed
             ))
+        ));
+    }
+
+    #[test]
+    fn strict_resolution_rejects_host_connector_aliases() {
+        let policy = host_allowlist("api.example.com");
+        let result = authorize_resolved_target(
+            &PolicyControlController,
+            &policy,
+            request("api.example.com"),
+            ["198.18.0.42:443".parse().unwrap()],
+        );
+        assert!(matches!(
+            result,
+            Err(TargetAuthorizationError::Denied(
+                DenyReason::ResolvedAddressNotAllowed
+            ))
+        ));
+    }
+
+    #[test]
+    fn vm_resolution_accepts_an_authorized_host_connector_alias() {
+        let policy = host_allowlist("api.example.com");
+        let alias: SocketAddr = "198.18.0.42:443".parse().unwrap();
+        let target = authorize_resolved_target_with_policy(
+            &PolicyControlController,
+            &policy,
+            request("api.example.com"),
+            [alias],
+            ResolvedAddressPolicy::HostConnectorAliases,
+        )
+        .unwrap();
+        assert_eq!(target.addresses, [alias]);
+    }
+
+    #[test]
+    fn explicit_connector_range_deny_is_not_bypassed() {
+        let policy = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::Allowlist,
+            rules: vec![NetworkAccessRule {
+                host: "api.example.com".into(),
+                ports: vec![443],
+                transports: vec![NetworkTransport::TcpTunnel],
+                allow_private_ips: false,
+            }],
+            deny_rules: vec![NetworkAccessRule {
+                host: "198.18.0.0/15".into(),
+                ports: Vec::new(),
+                transports: Vec::new(),
+                allow_private_ips: false,
+            }],
+            ..NetworkConfig::default()
+        })
+        .unwrap();
+        let result = authorize_resolved_target_with_policy(
+            &PolicyControlController,
+            &policy,
+            request("api.example.com"),
+            ["198.18.0.42:443".parse().unwrap()],
+            ResolvedAddressPolicy::HostConnectorAliases,
+        );
+        assert!(matches!(
+            result,
+            Err(TargetAuthorizationError::Denied(DenyReason::ExplicitDeny))
+        ));
+    }
+
+    #[test]
+    fn connector_aliases_require_a_logical_hostname() {
+        assert!(is_host_connector_alias(
+            "api.example.com",
+            "198.18.0.42".parse().unwrap()
+        ));
+        assert!(!is_host_connector_alias(
+            "198.18.0.42",
+            "198.18.0.42".parse().unwrap()
+        ));
+        assert!(!is_host_connector_alias(
+            "api.example.com",
+            "93.184.216.34".parse().unwrap()
         ));
     }
 
@@ -241,6 +385,22 @@ mod tests {
             }
             ControlTransition::allowed(ControlReason::AmbientNetwork)
         }
+    }
+
+    #[test]
+    fn connector_aliases_do_not_bypass_the_logical_controller_decision() {
+        let policy = host_allowlist("controller-denied.invalid");
+        let result = authorize_resolved_target_with_policy(
+            &DenyHostController,
+            &policy,
+            request("controller-denied.invalid"),
+            ["198.18.0.42:443".parse().unwrap()],
+            ResolvedAddressPolicy::HostConnectorAliases,
+        );
+        assert!(matches!(
+            result,
+            Err(TargetAuthorizationError::Denied(DenyReason::ExplicitDeny))
+        ));
     }
 
     #[tokio::test]

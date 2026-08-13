@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use persisting_control::{ControlController, PolicyControlController};
-use persisting_overlaynet::InterceptionMetrics;
+use persisting_overlaynet::{BandwidthRegistry, InterceptionMetrics};
 use tokio::task::JoinHandle;
 
 use super::admin::{admin_router, AdminState};
@@ -31,11 +31,15 @@ pub(crate) struct GatewayState {
     pub(crate) control_controller: Arc<dyn ControlController>,
     pub(crate) active_requests: Arc<AtomicUsize>,
     pub(crate) interception_metrics: InterceptionMetrics,
+    pub(crate) bandwidth_registry: BandwidthRegistry,
+    pub(crate) attempt_id: Option<String>,
 }
 
 pub(crate) struct GatewayRuntimeControl {
     pub(crate) controller: Arc<dyn ControlController>,
     pub(crate) interception_metrics: InterceptionMetrics,
+    pub(crate) bandwidth_registry: BandwidthRegistry,
+    pub(crate) attempt_id: Option<String>,
 }
 
 pub async fn serve(
@@ -106,6 +110,8 @@ pub async fn serve_with_runtime_control(
         GatewayRuntimeControl {
             controller: control_controller,
             interception_metrics: InterceptionMetrics::default(),
+            bandwidth_registry: BandwidthRegistry::default(),
+            attempt_id: None,
         },
         ready,
         shutdown,
@@ -187,6 +193,8 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
         control_controller: runtime_control.controller,
         active_requests: Arc::clone(&active_requests),
         interception_metrics: interception_metrics.clone(),
+        bandwidth_registry: runtime_control.bandwidth_registry,
+        attempt_id: runtime_control.attempt_id,
     };
 
     let admin_state = AdminState {

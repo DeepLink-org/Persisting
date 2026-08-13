@@ -2,6 +2,7 @@
 
 use crate::config::VmSettings;
 use crate::executor::{AttemptContext, RunExecutor};
+use anyhow::Context as _;
 use async_trait::async_trait;
 use persisting_control::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
@@ -10,6 +11,7 @@ use persisting_control::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::CString;
+use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -18,6 +20,9 @@ use tokio::process::Command;
 
 const RUNNER_SPEC_ENV: &str = "PERSISTING_KRUN_RUNNER_SPEC";
 const WORKSPACE_TAG: &str = "pvisor-workspace";
+const NETWORK_FD_ENV: &str = "PERSISTING_KRUN_NETWORK_FD";
+const NETWORK_CHILD_FD: RawFd = 198;
+const NET_FLAG_DHCP_CLIENT: u32 = 1 << 1;
 
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
@@ -130,6 +135,10 @@ impl RunExecutor for VmExecutor {
 
     fn supports(&self, invocation: &RunInvocation) -> bool {
         matches!(invocation, RunInvocation::Process(_))
+    }
+
+    fn supports_vm_network_attachment(&self) -> bool {
+        true
     }
 
     async fn execute(&self, context: AttemptContext) -> RunResult {
@@ -285,7 +294,7 @@ impl RunExecutor for VmExecutor {
                 format!("prepare libkrun root overlay: {error}"),
             );
         }
-        let root_overlay = if root_overlay.upper.as_os_str().is_empty() {
+        let mut root_overlay = if root_overlay.upper.as_os_str().is_empty() {
             OverlayDeviceSpec {
                 lowers: root_overlay.lowers,
                 upper: root_upper.clone(),
@@ -295,6 +304,32 @@ impl RunExecutor for VmExecutor {
         } else {
             root_overlay
         };
+        let vm_network_enabled = context
+            .spec()
+            .metadata
+            .get("pvisor.network.driver")
+            .and_then(serde_json::Value::as_str)
+            == Some("vm-smoltcp");
+        if vm_network_enabled {
+            let network_lower = temporary.path().join("network-lower");
+            let resolver = network_lower.join("etc/resolv.conf");
+            if let Err(error) = std::fs::create_dir_all(resolver.parent().expect("resolver parent"))
+                .and_then(|()| {
+                    std::fs::write(
+                        &resolver,
+                        b"nameserver 192.0.2.1\noptions timeout:2 attempts:2\n",
+                    )
+                })
+            {
+                return failed_to_start(
+                    &spec,
+                    context.attempt_id(),
+                    started_at,
+                    format!("prepare VM synthetic resolver: {error}"),
+                );
+            }
+            root_overlay.lowers.insert(0, network_lower);
+        }
         if let Some(workspace) = &workspace {
             if workspace.lowers.is_empty()
                 || workspace.lowers.iter().any(|lower| !lower.is_dir())
@@ -423,6 +458,20 @@ impl RunExecutor for VmExecutor {
             return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
         }
 
+        let mut vm_network = match context.take_vm_network() {
+            Ok(network) => network,
+            Err(error) => {
+                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            }
+        };
+        if vm_network_enabled && vm_network.is_none() {
+            return failed_to_start(
+                &spec,
+                context.attempt_id(),
+                started_at,
+                "pVisor VM network attachment is missing".into(),
+            );
+        }
         let mut command = Command::new(executable);
         command
             .env(RUNNER_SPEC_ENV, &runner_path)
@@ -430,6 +479,21 @@ impl RunExecutor for VmExecutor {
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
             .kill_on_drop(true);
+        if let Some(network) = &vm_network {
+            let source_fd = network.guest_stream().as_raw_fd();
+            command.env(NETWORK_FD_ENV, NETWORK_CHILD_FD.to_string());
+            // The socketpair has CLOEXEC. Duplicate it to one fixed inherited
+            // descriptor after fork and before exec; the JSON runner spec never
+            // contains a process-local FD number.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::dup2(source_fd, NETWORK_CHILD_FD) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         // libkrun's x86_64 KVM path can otherwise race guest workqueue
         // creation and halt before init runs. The upstream compatibility
         // switch is still required on the Fedora 43 / Linux 6.17 host used by
@@ -536,6 +600,13 @@ impl RunExecutor for VmExecutor {
                 }),
             ),
         };
+        let mut warnings = Vec::new();
+        if let Some(network) = vm_network.take() {
+            if let Err(error) = network.shutdown() {
+                tracing::warn!(%error, "failed to stop VM smoltcp backend");
+                warnings.push(format!("failed to stop VM smoltcp backend: {error:#}"));
+            }
+        }
         RunResult {
             run_id: spec.run_id,
             attempt_id: context.attempt_id().clone(),
@@ -550,7 +621,7 @@ impl RunExecutor for VmExecutor {
             metrics: Default::default(),
             artifacts: Vec::new(),
             event_stream_ref: None,
-            warnings: Vec::new(),
+            warnings,
         }
     }
 }
@@ -611,6 +682,26 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
     add_krun_overlay(ctx, "/dev/root", &spec.root, 1 << 29)?;
     if let Some(workspace) = &spec.workspace {
         add_krun_overlay(ctx, workspace_tag.to_str()?, workspace, 0)?;
+    }
+    if let Some(fd) = std::env::var_os(NETWORK_FD_ENV) {
+        let fd = fd
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid {NETWORK_FD_ENV}"))?
+            .parse::<RawFd>()
+            .with_context(|| format!("parse {NETWORK_FD_ENV}"))?;
+        check_krun(
+            unsafe {
+                krun::krun_add_net_unixstream(
+                    ctx,
+                    std::ptr::null(),
+                    fd,
+                    persisting_overlaynet::vm::VM_MAC.as_ptr(),
+                    0,
+                    NET_FLAG_DHCP_CLIENT,
+                )
+            },
+            "krun_add_net_unixstream",
+        )?;
     }
     // Contexts start with an implicit vsock whose heuristic enables TSI when
     // there is no virtio-net device. Replace it with an explicit zero-feature

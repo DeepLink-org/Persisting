@@ -3,10 +3,10 @@ use super::attempt::{
     AttemptPrepareOpts, AttemptSession, OverlayAttemptPrepareOpts,
 };
 use super::implant::{ImplantPlan, OverlayHint};
-use crate::GatewayDriverConfig;
 use crate::TrajectoryEventSink;
+use crate::{GatewayDriverConfig, NetworkDriverConfig, OverlayNetMode};
+use persisting_control::{AttemptId, NetworkCapability, RunSpec};
 use persisting_control::{ControlController, PolicyControlController};
-use persisting_control::{NetworkCapability, RunSpec};
 use persisting_gateway::config::ProxyConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,23 +22,75 @@ pub struct RuntimeCapabilities {
     pub network: bool,
     pub filesystem: bool,
     pub providers: Vec<&'static str>,
+    /// Network interception support available to a VM Attempt. This is not a
+    /// claim that every configured executor is currently enforcing it.
+    pub vm_network: bool,
 }
 
 impl Default for RuntimeCapabilities {
     fn default() -> Self {
+        let vm_network = vm_network_supported();
+        let mut providers = vec![
+            "local-process",
+            "agent-abi-unix-v1",
+            "in-process-capture",
+            "overlaynet-explicit-proxy",
+            "fs-overlay-staging",
+        ];
+        if vm_network {
+            providers.push("overlaynet-vm-smoltcp");
+        }
         Self {
             agent_abi: true,
             gateway: true,
             network: false,
             filesystem: false,
-            providers: vec![
-                "local-process",
-                "agent-abi-unix-v1",
-                "in-process-capture",
-                "overlaynet-explicit-proxy",
-                "fs-overlay-staging",
-            ],
+            providers,
+            vm_network,
         }
+    }
+}
+
+fn vm_network_supported() -> bool {
+    cfg!(any(
+        target_os = "linux",
+        all(target_os = "macos", target_arch = "aarch64")
+    ))
+}
+
+fn network_config_from_capability(
+    capability: &NetworkCapability,
+) -> persisting_overlaynet::NetworkConfig {
+    use persisting_control::NetworkDefaultAction;
+    use persisting_overlaynet::NetworkMode;
+
+    match capability {
+        NetworkCapability::Ambient => persisting_overlaynet::NetworkConfig::default(),
+        NetworkCapability::Deny => persisting_overlaynet::NetworkConfig {
+            mode: NetworkMode::NoNetwork,
+            ..Default::default()
+        },
+        NetworkCapability::AllowList { hosts, rules } => persisting_overlaynet::NetworkConfig {
+            mode: NetworkMode::Allowlist,
+            allowed_hosts: hosts.clone(),
+            rules: rules.clone(),
+            ..Default::default()
+        },
+        NetworkCapability::Policy {
+            default_action,
+            allow,
+            deny,
+            limits,
+        } => persisting_overlaynet::NetworkConfig {
+            mode: match default_action {
+                NetworkDefaultAction::Allow => NetworkMode::Public,
+                NetworkDefaultAction::Deny => NetworkMode::Allowlist,
+            },
+            allowed_hosts: Vec::new(),
+            rules: allow.clone(),
+            deny_rules: deny.clone(),
+            limits: limits.clone(),
+        },
     }
 }
 
@@ -54,6 +106,7 @@ pub struct RuntimeSupervisorBuilder {
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
     controller: Option<Arc<dyn ControlController>>,
+    network: Option<NetworkDriverConfig>,
 }
 
 impl std::fmt::Debug for RuntimeSupervisorBuilder {
@@ -65,6 +118,7 @@ impl std::fmt::Debug for RuntimeSupervisorBuilder {
             .field("stream_markdown", &self.stream_markdown)
             .field("sink", &self.sink.as_ref().map(|_| "<TrajectoryEventSink>"))
             .field("overlay", &self.overlay)
+            .field("network", &self.network)
             .finish_non_exhaustive()
     }
 }
@@ -102,6 +156,11 @@ impl RuntimeSupervisorBuilder {
         self
     }
 
+    pub fn network(mut self, network: NetworkDriverConfig) -> Self {
+        self.network = Some(network);
+        self
+    }
+
     pub fn build(self) -> RuntimeSupervisor {
         RuntimeSupervisor {
             proxy: self.proxy,
@@ -114,6 +173,7 @@ impl RuntimeSupervisorBuilder {
             controller: self
                 .controller
                 .unwrap_or_else(|| Arc::new(PolicyControlController)),
+            network: self.network,
         }
     }
 }
@@ -129,6 +189,7 @@ pub struct RuntimeSupervisor {
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
     controller: Arc<dyn ControlController>,
+    network: Option<NetworkDriverConfig>,
 }
 
 impl Default for RuntimeSupervisor {
@@ -138,6 +199,47 @@ impl Default for RuntimeSupervisor {
 }
 
 impl RuntimeSupervisor {
+    fn network_mode(&self) -> OverlayNetMode {
+        self.network
+            .as_ref()
+            .map_or(OverlayNetMode::Auto, |network| network.mode)
+    }
+
+    fn effective_network_config(&self, spec: &RunSpec) -> persisting_overlaynet::NetworkConfig {
+        self.network
+            .as_ref()
+            .map(|network| network.network.clone())
+            .or_else(|| self.proxy.as_ref().map(|proxy| proxy.network.clone()))
+            .unwrap_or_else(|| network_config_from_capability(&spec.capabilities.network))
+    }
+
+    pub(crate) fn vm_network_is_enforcing(&self) -> bool {
+        self.network_mode() == OverlayNetMode::Auto && vm_network_supported()
+    }
+
+    pub(crate) fn vm_network_is_requested(&self) -> bool {
+        self.network_mode() == OverlayNetMode::Auto
+    }
+
+    pub(crate) fn apply_network_capability(&self, spec: &mut RunSpec) {
+        let network = self.effective_network_config(spec);
+        spec.capabilities.network = persisting_overlaynet::policy::network_capability(&network);
+    }
+
+    fn vm_network_options(
+        &self,
+        mut network: persisting_overlaynet::NetworkConfig,
+        supervisor_limits: &[persisting_control::NetworkBandwidthLimit],
+        attempt_id: &AttemptId,
+    ) -> super::attempt::VmNetworkPrepareOpts {
+        network.limits.extend_from_slice(supervisor_limits);
+        super::attempt::VmNetworkPrepareOpts {
+            network,
+            controller: Arc::clone(&self.controller),
+            attempt_id: attempt_id.to_string(),
+        }
+    }
+
     pub fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities::default()
     }
@@ -147,10 +249,32 @@ impl RuntimeSupervisor {
         &self,
         spec: &mut RunSpec,
         supervisor_limits: &[persisting_control::NetworkBandwidthLimit],
+        vm_executor: bool,
+        attempt_id: &AttemptId,
     ) -> anyhow::Result<Option<AttemptSession>> {
+        let network_mode = self.network_mode();
+        let network = self.effective_network_config(spec);
+        let vm_network = vm_executor && network_mode == OverlayNetMode::Auto;
+        if vm_executor && network_mode == OverlayNetMode::Proxy {
+            anyhow::bail!("overlaynet mode `proxy` is only valid for host/container execution; use `auto` for VM smoltcp networking");
+        }
+        if vm_executor && network_mode == OverlayNetMode::Off && self.proxy.is_some() {
+            anyhow::bail!(
+                "overlaynet mode `off` makes the VM offline and cannot be combined with Gateway/proxy configuration"
+            );
+        }
         if let Some(proxy) = &self.proxy {
             let mut proxy = proxy.clone();
-            proxy.network.limits.extend_from_slice(supervisor_limits);
+            // NetworkDriverConfig is the one Attempt policy source. ProxyConfig
+            // retains its field for standalone Gateway use only.
+            if vm_network {
+                proxy.network = self
+                    .vm_network_options(network, supervisor_limits, attempt_id)
+                    .network;
+            } else {
+                proxy.network = network;
+                proxy.network.limits.extend_from_slice(supervisor_limits);
+            }
             let storage = self
                 .storage
                 .clone()
@@ -170,6 +294,8 @@ impl RuntimeSupervisor {
                     overlay_override: self.overlay.clone(),
                     controller: Arc::clone(&self.controller),
                     gateway_enabled: self.gateway_enabled,
+                    vm_network,
+                    attempt_id: attempt_id.as_str(),
                 },
             )?;
             return Ok(Some(session));
@@ -190,13 +316,30 @@ impl RuntimeSupervisor {
                 OverlayAttemptPrepareOpts {
                     storage: &storage,
                     overlay: self.overlay.clone(),
+                    vm_network: vm_network
+                        .then(|| self.vm_network_options(network, supervisor_limits, attempt_id)),
                 },
             )?;
             return Ok(Some(session));
         }
 
         if let Some(storage) = &self.storage {
-            let session = prepare_storage_attempt(spec, storage)?;
+            let session = prepare_storage_attempt(
+                spec,
+                storage,
+                vm_network.then(|| self.vm_network_options(network, supervisor_limits, attempt_id)),
+            )?;
+            return Ok(Some(session));
+        }
+
+        if vm_network {
+            let storage = super::registry::default_run_home().join(spec.run_id.as_str());
+            std::fs::create_dir_all(&storage)?;
+            let session = prepare_storage_attempt(
+                spec,
+                &storage,
+                Some(self.vm_network_options(network, supervisor_limits, attempt_id)),
+            )?;
             return Ok(Some(session));
         }
 
@@ -319,5 +462,121 @@ impl RuntimeSupervisor {
         }
 
         plan
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use persisting_gateway::config::ProxyConfig;
+
+    fn test_proxy() -> ProxyConfig {
+        ProxyConfig::from_toml_str(
+            r#"
+listen = "127.0.0.1:19081"
+admin_listen = "127.0.0.1:19876"
+agent_id = "test"
+models = []
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn capabilities_report_vm_smoltcp_only_on_supported_hosts() {
+        let capabilities = RuntimeCapabilities::default();
+        assert_eq!(capabilities.vm_network, vm_network_supported());
+        assert_eq!(
+            capabilities.providers.contains(&"overlaynet-vm-smoltcp"),
+            vm_network_supported()
+        );
+    }
+
+    #[test]
+    fn explicit_network_config_is_the_attempt_policy_source() {
+        let mut proxy = test_proxy();
+        proxy.network.mode = persisting_overlaynet::NetworkMode::Public;
+        let supervisor = RuntimeSupervisorBuilder::new()
+            .gateway(GatewayDriverConfig::new(proxy))
+            .network(NetworkDriverConfig::new(
+                OverlayNetMode::Proxy,
+                persisting_overlaynet::NetworkConfig {
+                    mode: persisting_overlaynet::NetworkMode::NoNetwork,
+                    ..Default::default()
+                },
+            ))
+            .build();
+        let mut spec = RunSpec::process("configured-policy", "test", "true");
+
+        supervisor.apply_network_capability(&mut spec);
+
+        assert_eq!(spec.capabilities.network, NetworkCapability::Deny);
+    }
+
+    #[test]
+    fn absent_network_config_preserves_the_run_spec_policy() {
+        let supervisor = RuntimeSupervisorBuilder::new().build();
+        let mut spec = RunSpec::process("spec-policy", "test", "true");
+        spec.capabilities.network = NetworkCapability::Deny;
+
+        supervisor.apply_network_capability(&mut spec);
+
+        assert_eq!(spec.capabilities.network, NetworkCapability::Deny);
+    }
+
+    #[test]
+    fn network_capability_roundtrips_into_driver_config() {
+        let cases = [
+            NetworkCapability::Ambient,
+            NetworkCapability::Deny,
+            NetworkCapability::AllowList {
+                hosts: vec!["api.example.com".into()],
+                rules: Vec::new(),
+            },
+            NetworkCapability::Policy {
+                default_action: persisting_control::NetworkDefaultAction::Deny,
+                allow: vec![persisting_control::NetworkAccessRule {
+                    host: "api.example.com".into(),
+                    ports: vec![443],
+                    transports: vec![persisting_control::NetworkTransport::TcpTunnel],
+                    allow_private_ips: false,
+                }],
+                deny: vec![persisting_control::NetworkAccessRule {
+                    host: "metadata.internal".into(),
+                    ports: Vec::new(),
+                    transports: Vec::new(),
+                    allow_private_ips: false,
+                }],
+                limits: Vec::new(),
+            },
+        ];
+
+        for capability in cases {
+            let config = network_config_from_capability(&capability);
+            assert_eq!(
+                persisting_overlaynet::policy::network_capability(&config),
+                capability
+            );
+        }
+    }
+
+    #[test]
+    fn offline_vm_rejects_gateway_configuration() {
+        let supervisor = RuntimeSupervisorBuilder::new()
+            .network(NetworkDriverConfig::new(
+                OverlayNetMode::Off,
+                Default::default(),
+            ))
+            .gateway(GatewayDriverConfig::new(test_proxy()))
+            .build();
+        let mut spec = RunSpec::process("offline-vm", "test", "true");
+        let error =
+            match supervisor.prepare(&mut spec, &[], true, &AttemptId::new("attempt-offline")) {
+                Ok(_) => panic!("offline VM accepted Gateway configuration"),
+                Err(error) => error,
+            };
+        assert!(error
+            .to_string()
+            .contains("mode `off` makes the VM offline"));
     }
 }

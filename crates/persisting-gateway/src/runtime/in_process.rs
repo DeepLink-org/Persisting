@@ -12,7 +12,7 @@ use crate::config::ProxyConfig;
 use crate::runtime::service::CaptureDaemonState;
 use crate::sink::CaptureEventSink;
 use persisting_control::{ControlController, PolicyControlController};
-use persisting_overlaynet::{InterceptionMetrics, InterceptionSnapshot};
+use persisting_overlaynet::{BandwidthRegistry, InterceptionMetrics, InterceptionSnapshot};
 use tokio::sync::oneshot;
 
 pub struct InProcessCapture {
@@ -22,6 +22,27 @@ pub struct InProcessCapture {
     interception_metrics: InterceptionMetrics,
 }
 
+/// Attempt-scoped network services shared by Gateway and other interception
+/// drivers owned by pVisor.
+#[derive(Clone)]
+pub struct InProcessRuntime {
+    pub controller: Arc<dyn ControlController>,
+    pub interception_metrics: InterceptionMetrics,
+    pub bandwidth_registry: BandwidthRegistry,
+    pub attempt_id: Option<String>,
+}
+
+impl Default for InProcessRuntime {
+    fn default() -> Self {
+        Self {
+            controller: Arc::new(PolicyControlController),
+            interception_metrics: InterceptionMetrics::default(),
+            bandwidth_registry: BandwidthRegistry::default(),
+            attempt_id: None,
+        }
+    }
+}
+
 impl InProcessCapture {
     pub fn start(
         config: ProxyConfig,
@@ -29,21 +50,21 @@ impl InProcessCapture {
         sink: Arc<dyn CaptureEventSink>,
         stream_markdown: bool,
     ) -> Result<Self> {
-        Self::start_with_control(
+        Self::start_with_runtime(
             config,
             storage,
             sink,
             stream_markdown,
-            Arc::new(PolicyControlController),
+            InProcessRuntime::default(),
         )
     }
 
-    pub fn start_with_control(
+    pub fn start_with_runtime(
         config: ProxyConfig,
         storage: PathBuf,
         sink: Arc<dyn CaptureEventSink>,
         stream_markdown: bool,
-        controller: Arc<dyn ControlController>,
+        runtime: InProcessRuntime,
     ) -> Result<Self> {
         if let Some(state) = CaptureDaemonState::read(&storage)? {
             if state.is_running() {
@@ -59,7 +80,7 @@ impl InProcessCapture {
 
         let listen = config.listen.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let interception_metrics = InterceptionMetrics::default();
+        let interception_metrics = runtime.interception_metrics.clone();
         let thread_metrics = interception_metrics.clone();
 
         let join = std::thread::Builder::new()
@@ -72,8 +93,10 @@ impl InProcessCapture {
                     sink,
                     stream_markdown,
                     crate::gateway::GatewayRuntimeControl {
-                        controller,
+                        controller: runtime.controller,
                         interception_metrics: thread_metrics,
+                        bandwidth_registry: runtime.bandwidth_registry,
+                        attempt_id: runtime.attempt_id,
                     },
                     None,
                     async {
@@ -91,6 +114,26 @@ impl InProcessCapture {
             listen,
             interception_metrics,
         })
+    }
+
+    /// Compatibility entry point for callers that only inject a controller.
+    pub fn start_with_control(
+        config: ProxyConfig,
+        storage: PathBuf,
+        sink: Arc<dyn CaptureEventSink>,
+        stream_markdown: bool,
+        controller: Arc<dyn ControlController>,
+    ) -> Result<Self> {
+        Self::start_with_runtime(
+            config,
+            storage,
+            sink,
+            stream_markdown,
+            InProcessRuntime {
+                controller,
+                ..InProcessRuntime::default()
+            },
+        )
     }
 
     pub fn interception_snapshot(&self) -> InterceptionSnapshot {

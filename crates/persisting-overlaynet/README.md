@@ -1,9 +1,9 @@
 # persisting-overlaynet
 
-`persisting-overlaynet` is pVisor's lightweight proxy-based network overlay.
+`persisting-overlaynet` contains pVisor's network interception and shared
+egress-policy data planes.
 
-The current implementation intentionally covers only traffic that reaches an
-explicit HTTP/HTTPS proxy:
+Host and container execution use an explicit HTTP/HTTPS proxy:
 
 - HTTP `CONNECT` tunnels;
 - absolute-URI forwarding;
@@ -81,17 +81,24 @@ absolute-URI forwarding, access enforcement, request accounting, and dispatch
 to a caller-supplied `OverlaySink`. Gateway is one sink; other sinks can
 consume different protocols without changing OverlayNet.
 
-It does not yet provide transparent socket interception, DNS/UDP mediation, a
-TUN device, or a network namespace. The accepted Linux design for those —
-an unprivileged network namespace with an in-process userspace stack as the
-primary driver, and a seccomp user-notify fallback — is specified in
-`docs/src/design/overlaynet.md`; both arrive as independent drivers without
-changing the current proxy backend.
+libkrun VM execution uses a second, non-bypassable driver. Its virtio-net
+UnixStream terminates in an in-process smoltcp stack that serves DHCP and
+synthetic DNS, then terminates and re-originates policy-authorized IPv4 TCP.
+Gateway capture is reachable through the guest's virtual router; Gateway and
+ordinary VM egress share the Attempt controller, metrics, and bandwidth
+buckets. A host DNS/TUN `198.18/15` fake IP is accepted only as an opaque
+connector alias for an authorized hostname; guest literals in that range stay
+blocked. The alias does not expose its final IP for CIDR policy. General UDP,
+IPv6, ICMP, QUIC, inbound forwarding, link-local, and other reserved
+destinations fail closed in the MVP. The accepted Linux-host netns and seccomp
+designs remain future independent drivers and are specified in
+`docs/src/design/overlaynet.md`.
 
-`no-network` and `allowlist` therefore mean "for traffic that reached this
-proxy" today. Direct sockets and clients that remove proxy variables remain
-ambient, and `InterceptionProfile::explicit_proxy().is_enforcing()` is always
-false.
+For the explicit proxy, `no-network` and `allowlist` mean "for traffic that
+reached this proxy"; direct sockets and clients that remove proxy variables
+remain ambient, and `InterceptionProfile::explicit_proxy().is_enforcing()` is
+always false. `InterceptionProfile::vm_smoltcp()` truthfully records the VM's
+implemented non-bypassable TCP/DNS surface.
 
 `persisting-gateway` implements `OverlaySink` and remains responsible for LLM
 protocol adaptation, upstream selection, session correlation, capture events,
