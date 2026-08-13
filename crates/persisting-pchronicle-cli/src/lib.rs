@@ -8,11 +8,13 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use persisting_pchronicle::convert::storyline_to_atif;
 use persisting_pchronicle::{
     actf_to_storylines, detect_format, load_atif_trajectories, parse_actf_document,
-    parse_openai_msg_corpus_value, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
-    CatalogSourceStatus, ChronicleFormat, ChronicleQueryEngine, DatasetCatalogSnapshot,
-    DatasetMount, LocalQueryManifestOptions, DEFAULT_DATASET_NAME,
+    parse_openai_msg_corpus_value, storylines_to_actf, CatalogErrorPolicy, CatalogSnapshotOptions,
+    CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey, ChronicleFormat,
+    ChronicleQueryEngine, DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions,
+    StorylineDocument, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -252,26 +254,65 @@ struct ImportArgs {
 
 #[derive(Debug, Args)]
 struct ExportArgs {
+    /// Local path or object-store URI of the Dataset.
     #[arg(short = 'f', long = "from", value_name = "DATASET_URI")]
     from: String,
+
+    /// New local file, or - for stdout.
     #[arg(short, long, value_name = "PATH_OR_STDOUT")]
     output: String,
+
+    /// Output exchange format.
     #[arg(long, value_enum)]
     format: ExchangeFormat,
+
+    /// Narrow export to one Dataset-relative Source.
     #[arg(long)]
     source: Option<String>,
+
+    /// Export Trajectories with this Source-local Run ID.
     #[arg(long)]
     run_id: Option<String>,
+
+    /// Export one Source-local Session ID.
     #[arg(long)]
     session_id: Option<String>,
+
+    /// Additional SQL expression evaluated only against the trajectories view.
     #[arg(long, value_name = "EXPRESSION")]
     r#where: Option<String>,
+
+    /// Refuse any export that cannot preserve the original exchange document.
     #[arg(long)]
     strict: bool,
+
+    /// Atomically replace an existing local output file.
     #[arg(long)]
     overwrite: bool,
+
+    /// Write the finite export document to stdout; requires --output -.
     #[arg(long)]
     stream: bool,
+
+    /// Maximum number of complete Trajectories to export.
+    #[arg(long, default_value_t = 10_000)]
+    max_trajectories: u64,
+
+    /// Reject encoded output larger than this many bytes.
+    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    max_output_bytes: usize,
+
+    /// Maximum time for address selection and Storyline loading.
+    #[arg(long, default_value_t = 30)]
+    timeout_seconds: u64,
+
+    /// Maximum number of trajectory Sources to discover.
+    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    max_files: usize,
+
+    /// Maximum number of filesystem entries or objects to inspect.
+    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    max_entries: usize,
 }
 
 #[derive(Debug, Args)]
@@ -424,6 +465,13 @@ struct ImportResponse {
     input_bytes: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct ExportAddress {
+    source_path: String,
+    run_id: String,
+    session_id: String,
+}
+
 pub async fn run(
     cli: Cli,
     stdout_is_terminal: bool,
@@ -457,21 +505,7 @@ pub async fn run_with_stdin(
             not_implemented("search", Some(&args.dataset_uri))
         }
         Command::Import(args) => run_import(args, stdin, stdout, stderr).await,
-        Command::Export(args) => {
-            let _ = (
-                args.from,
-                args.output,
-                args.format,
-                args.source,
-                args.run_id,
-                args.session_id,
-                args.r#where,
-                args.strict,
-                args.overwrite,
-                args.stream,
-            );
-            not_implemented("export", None)
-        }
+        Command::Export(args) => run_export(args, stdout, stderr).await,
         Command::Maintain(args) => not_implemented("maintain", Some(&args.dataset_uri)),
         Command::Serve(args) => {
             let _ = (args.config, args.open);
@@ -966,6 +1000,446 @@ async fn run_import(
     )
     .context("write pChronicle import metadata")?;
     Ok(())
+}
+
+async fn run_export(
+    args: ExportArgs,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    anyhow::ensure!(
+        args.format != ExchangeFormat::Auto,
+        "export requires an explicit --format"
+    );
+    anyhow::ensure!(
+        args.max_trajectories > 0,
+        "--max-trajectories must be greater than zero"
+    );
+    anyhow::ensure!(
+        args.max_output_bytes > 0,
+        "--max-output-bytes must be greater than zero"
+    );
+    anyhow::ensure!(
+        args.timeout_seconds > 0,
+        "--timeout-seconds must be greater than zero"
+    );
+    anyhow::ensure!(
+        (args.output == "-") == args.stream,
+        "--stream requires --output -, and --output - requires --stream"
+    );
+    anyhow::ensure!(
+        !(args.output == "-" && args.overwrite),
+        "--overwrite cannot be used with stdout"
+    );
+    if let Some(source) = &args.source {
+        validate_source_path(source)?;
+    }
+    if let Some(run_id) = &args.run_id {
+        validate_find_id("--run-id", run_id)?;
+    }
+    if let Some(session_id) = &args.session_id {
+        validate_find_id("--session-id", session_id)?;
+    }
+    if let Some(expression) = &args.r#where {
+        anyhow::ensure!(!expression.trim().is_empty(), "--where must not be empty");
+        anyhow::ensure!(
+            expression.len() <= 16 * 1024,
+            "--where exceeds the 16384-byte limit"
+        );
+    }
+
+    let format = export_format(args.format)?;
+    let (_, dataset_uris, snapshot) =
+        discover_query_snapshot(Some(&args.from), &[], args.max_files, args.max_entries).await?;
+    let dataset_uri = dataset_uris
+        .first()
+        .cloned()
+        .context("export Dataset URI missing after discovery")?;
+    let snapshot = Arc::new(snapshot);
+    let snapshot_id = snapshot.snapshot_id().to_string();
+    let deadline = Duration::from_secs(args.timeout_seconds);
+    let export = tokio::time::timeout(
+        deadline,
+        export_from_snapshot(&args, format, &dataset_uri, snapshot.clone()),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Dataset export timed out after {} seconds",
+            args.timeout_seconds
+        )
+    })??;
+    anyhow::ensure!(
+        export.bytes.len() <= args.max_output_bytes,
+        "encoded export exceeds max_output_bytes limit of {}",
+        args.max_output_bytes
+    );
+    write_export_output(&args.output, &export.bytes, args.overwrite, stdout)?;
+    writeln!(
+        stderr,
+        "snapshot_id={} format={} trajectories={} output_bytes={} exact={}",
+        snapshot_id,
+        format.as_str(),
+        export.trajectories,
+        export.bytes.len(),
+        export.exact,
+    )
+    .context("write pChronicle export metadata")?;
+    Ok(())
+}
+
+struct EncodedExport {
+    bytes: Vec<u8>,
+    trajectories: usize,
+    exact: bool,
+}
+
+async fn export_from_snapshot(
+    args: &ExportArgs,
+    format: ChronicleFormat,
+    dataset_uri: &str,
+    snapshot: Arc<DatasetCatalogSnapshot>,
+) -> Result<EncodedExport> {
+    if let Some(export) = exact_local_file_export(args, format, dataset_uri, &snapshot)? {
+        return Ok(export);
+    }
+    anyhow::ensure!(
+        !args.strict,
+        "strict export requires an unfiltered Source already stored in the requested format"
+    );
+
+    let sql = export_address_sql(args)?;
+    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone())
+        .await
+        .map_err(|error| redact_query_error(&error, &[dataset_uri.to_string()], None))?;
+    let row_limit = args
+        .max_trajectories
+        .checked_add(1)
+        .context("--max-trajectories is too large")?;
+    let mut addresses = LimitedBuffer::new(args.max_output_bytes);
+    engine
+        .write_query_jsonl_with_max_rows(&sql, &mut addresses, Some(row_limit))
+        .await
+        .map_err(|error| redact_query_error(&error, &[dataset_uri.to_string()], Some(&sql)))?;
+    let mut addresses = addresses
+        .into_inner()
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).context("decode export Trajectory address"))
+        .collect::<Result<Vec<ExportAddress>>>()?;
+    anyhow::ensure!(
+        addresses.len() <= usize::try_from(args.max_trajectories).unwrap_or(usize::MAX),
+        "export exceeds max_trajectories limit of {}",
+        args.max_trajectories
+    );
+    anyhow::ensure!(
+        !addresses.is_empty(),
+        "export selection matched no Trajectories"
+    );
+    addresses.sort_by(|left, right| {
+        (&left.source_path, &left.session_id, &left.run_id).cmp(&(
+            &right.source_path,
+            &right.session_id,
+            &right.run_id,
+        ))
+    });
+    let mut stories = Vec::with_capacity(addresses.len());
+    let mut normalized_bytes = 0usize;
+    for address in &addresses {
+        let key = CatalogStorylineKey {
+            dataset: DEFAULT_DATASET_NAME.into(),
+            file: address.source_path.clone(),
+            session_id: address.session_id.clone(),
+        };
+        let story = snapshot
+            .load_storyline(&key)
+            .await
+            .with_context(|| {
+                format!(
+                    "load export Trajectory {}/{}",
+                    address.source_path, address.session_id
+                )
+            })?
+            .with_context(|| {
+                format!(
+                    "export Trajectory disappeared from snapshot: {}/{}",
+                    address.source_path, address.session_id
+                )
+            })?;
+        anyhow::ensure!(
+            story.run_id.as_deref().unwrap_or(&story.session_id) == address.run_id,
+            "export Trajectory Run ID changed within the snapshot"
+        );
+        normalized_bytes = normalized_bytes
+            .checked_add(serde_json::to_vec(&story)?.len())
+            .context("normalized export size overflow")?;
+        anyhow::ensure!(
+            normalized_bytes <= args.max_output_bytes,
+            "normalized export exceeds max_output_bytes limit of {}",
+            args.max_output_bytes
+        );
+        stories.push(story);
+    }
+    let bytes = encode_export(format, &stories)?;
+    Ok(EncodedExport {
+        bytes,
+        trajectories: stories.len(),
+        exact: false,
+    })
+}
+
+fn exact_local_file_export(
+    args: &ExportArgs,
+    format: ChronicleFormat,
+    dataset_uri: &str,
+    snapshot: &DatasetCatalogSnapshot,
+) -> Result<Option<EncodedExport>> {
+    if args.run_id.is_some() || args.session_id.is_some() || args.r#where.is_some() {
+        return Ok(None);
+    }
+    let Some(dataset) = snapshot.dataset(DEFAULT_DATASET_NAME) else {
+        return Ok(None);
+    };
+    let sources = dataset
+        .sources
+        .iter()
+        .filter(|source| source.status == CatalogSourceStatus::Ready)
+        .filter(|source| {
+            args.source
+                .as_deref()
+                .is_none_or(|selected| selected == source.file)
+        })
+        .collect::<Vec<_>>();
+    if sources.len() != 1 || sources[0].kind != CatalogSourceKind::File {
+        return Ok(None);
+    }
+    let root = Path::new(dataset_uri);
+    if !root.is_dir() {
+        return Ok(None);
+    }
+    let source_path = root.join(&sources[0].file);
+    let source_path = std::fs::canonicalize(&source_path).context("canonicalize export Source")?;
+    anyhow::ensure!(
+        source_path.starts_with(root),
+        "export Source resolves outside the local Dataset"
+    );
+    let input = std::fs::read(&source_path).context("read exact export Source")?;
+    anyhow::ensure!(
+        input.len() <= args.max_output_bytes,
+        "exact export exceeds max_output_bytes limit of {}",
+        args.max_output_bytes
+    );
+    let text = std::str::from_utf8(&input).context("exact export Source must be UTF-8")?;
+    let detected = detect_format(Some(&source_path), Some(text)).map_err(anyhow::Error::from)?;
+    if detected != Some(format) {
+        return Ok(None);
+    }
+    let trajectories = validate_import_source(format, &source_path, text)?;
+    anyhow::ensure!(
+        sources[0].size_bytes == Some(input.len() as u64)
+            && sources[0].snapshot_ref.as_deref() == Some(&local_file_snapshot_ref(&source_path)),
+        "export Source changed after the Catalog Snapshot was created"
+    );
+    Ok(Some(EncodedExport {
+        bytes: input,
+        trajectories,
+        exact: true,
+    }))
+}
+
+fn export_address_sql(args: &ExportArgs) -> Result<String> {
+    let mut predicates = Vec::new();
+    if let Some(source) = &args.source {
+        predicates.push(format!("_file_ = {}", sql_string(source)));
+    }
+    if let Some(run_id) = &args.run_id {
+        predicates.push(format!("run_id = {}", sql_string(run_id)));
+    }
+    if let Some(session_id) = &args.session_id {
+        predicates.push(format!("session_id = {}", sql_string(session_id)));
+    }
+    if let Some(expression) = &args.r#where {
+        predicates.push(format!("({expression})"));
+    }
+    let predicate = if predicates.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", predicates.join(" AND "))
+    };
+    let limit = args
+        .max_trajectories
+        .checked_add(1)
+        .context("--max-trajectories is too large")?;
+    Ok(format!(
+        "SELECT _file_ AS source_path, run_id, session_id \
+         FROM dataset.trajectories{predicate} \
+         ORDER BY _file_, session_id, run_id LIMIT {limit}"
+    ))
+}
+
+fn encode_export(format: ChronicleFormat, stories: &[StorylineDocument]) -> Result<Vec<u8>> {
+    let value = match format {
+        ChronicleFormat::Atif => {
+            let documents = stories
+                .iter()
+                .map(storyline_to_atif)
+                .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+            if documents.len() == 1 {
+                serde_json::to_value(&documents[0])?
+            } else {
+                serde_json::to_value(documents)?
+            }
+        }
+        ChronicleFormat::Actf => serde_json::to_value(storylines_to_actf(stories)?)?,
+        ChronicleFormat::OpenaiMsg => encode_openai_export(stories)?,
+        ChronicleFormat::Storyline => {
+            if stories.len() == 1 {
+                serde_json::to_value(&stories[0])?
+            } else {
+                serde_json::to_value(stories)?
+            }
+        }
+        _ => unreachable!("exchange export format was validated"),
+    };
+    let mut output = serde_json::to_vec_pretty(&value).context("encode export JSON")?;
+    output.push(b'\n');
+    Ok(output)
+}
+
+fn encode_openai_export(stories: &[StorylineDocument]) -> Result<serde_json::Value> {
+    if let Ok(files) = persisting_pchronicle::recover_openai_msg_files(stories) {
+        anyhow::ensure!(
+            files.len() == 1,
+            "one export document cannot preserve {} OpenAI source files; select one Source",
+            files.len()
+        );
+        return Ok(files.into_iter().next().expect("one file checked").document);
+    }
+    let mut records = Vec::new();
+    for story in stories {
+        let document = persisting_pchronicle::from_storyline(ChronicleFormat::OpenaiMsg, story)?;
+        let document: serde_json::Value = serde_json::from_str(&document)?;
+        records.extend(
+            document
+                .get("session_steps")
+                .and_then(serde_json::Value::as_array)
+                .context("synthesized OpenAI export has no session_steps array")?
+                .iter()
+                .cloned(),
+        );
+    }
+    Ok(serde_json::Value::Array(records))
+}
+
+fn export_format(format: ExchangeFormat) -> Result<ChronicleFormat> {
+    Ok(match format {
+        ExchangeFormat::Auto => bail!("export requires an explicit --format"),
+        ExchangeFormat::Atif => ChronicleFormat::Atif,
+        ExchangeFormat::Actf => ChronicleFormat::Actf,
+        ExchangeFormat::OpenaiMessages => ChronicleFormat::OpenaiMsg,
+        ExchangeFormat::Storyline => ChronicleFormat::Storyline,
+    })
+}
+
+fn write_export_output(
+    output: &str,
+    bytes: &[u8],
+    overwrite: bool,
+    stdout: &mut dyn Write,
+) -> Result<()> {
+    if output == "-" {
+        stdout.write_all(bytes).context("write export stream")?;
+        return Ok(());
+    }
+    anyhow::ensure!(
+        !output.contains("://"),
+        "export currently supports only local output files"
+    );
+    let output = Path::new(output);
+    let filename = output
+        .file_name()
+        .context("export output must name a file")?;
+    let parent = std::fs::canonicalize(output.parent().unwrap_or_else(|| Path::new(".")))
+        .context("canonicalize export output parent directory")?;
+    anyhow::ensure!(parent.is_dir(), "export output parent is not a directory");
+    let output = parent.join(filename);
+    if output.exists() {
+        anyhow::ensure!(overwrite, "export output already exists; pass --overwrite");
+        anyhow::ensure!(output.is_file(), "export output exists and is not a file");
+    }
+    let mut staging = tempfile::Builder::new()
+        .prefix(".pchronicle-export-")
+        .tempfile_in(&parent)
+        .context("create export staging file")?;
+    staging
+        .write_all(bytes)
+        .context("write export staging file")?;
+    staging
+        .as_file()
+        .sync_all()
+        .context("sync export staging file")?;
+    let staging_path = staging.into_temp_path().keep()?;
+    let mut cleanup = PublishedFileGuard::new(staging_path.clone());
+    if overwrite {
+        std::fs::rename(&staging_path, &output).context("replace export output atomically")?;
+        // The old file is no longer available after a successful atomic replace,
+        // so a later directory-sync error must not delete the newly published file.
+        cleanup.disarm();
+    } else {
+        rename_noreplace(&staging_path, &output).context("publish new export output")?;
+        cleanup.track(output);
+    }
+    std::fs::File::open(&parent)
+        .and_then(|directory| directory.sync_all())
+        .context("sync export output parent directory")?;
+    cleanup.disarm();
+    Ok(())
+}
+
+struct PublishedFileGuard {
+    path: Option<PathBuf>,
+}
+
+impl PublishedFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn track(&mut self, path: PathBuf) {
+        self.path = Some(path);
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for PublishedFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn local_file_snapshot_ref(path: &Path) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(path.to_string_lossy().as_bytes());
+    if let Ok(metadata) = std::fs::metadata(path) {
+        hash.update(&metadata.len().to_le_bytes());
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                hash.update(&duration.as_nanos().to_le_bytes());
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            hash.update(&metadata.dev().to_le_bytes());
+            hash.update(&metadata.ino().to_le_bytes());
+        }
+    }
+    format!("local:{}", hash.finalize().to_hex())
 }
 
 fn read_bounded(mut reader: impl Read, max_bytes: usize, label: &str) -> Result<Vec<u8>> {
@@ -2716,6 +3190,160 @@ mod tests {
         assert!(rename_noreplace(&staged, &existing).is_err());
         assert_eq!(fs::read_to_string(existing.join("sentinel"))?, "keep");
         assert_eq!(fs::read_to_string(staged.join("new"))?, "new");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn export_filters_complete_trajectories_and_streams_finite_json() -> Result<()> {
+        let dataset = example_dataset("openai-messages");
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "export",
+            "--from",
+            dataset.to_str().unwrap(),
+            "--output",
+            "-",
+            "--stream",
+            "--format",
+            "openai-messages",
+            "--session-id",
+            "training-002",
+            "--where",
+            "step_count = 2",
+        ])?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        run(cli, false, &mut stdout, &mut stderr).await?;
+
+        let rows: Value = serde_json::from_slice(&stdout)?;
+        let rows = rows.as_array().context("OpenAI export must be an array")?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["session_id"], "training-002");
+        assert!(String::from_utf8(stderr)?.contains("trajectories=1"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn export_converts_complete_trajectories_between_formats() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "export",
+            "--from",
+            example_dataset("atif").to_str().unwrap(),
+            "--output",
+            "-",
+            "--stream",
+            "--format",
+            "storyline",
+            "--session-id",
+            "support-001",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let story: persisting_pchronicle::StorylineDocument = serde_json::from_slice(&stdout)?;
+        assert_eq!(story.session_id, "support-001");
+        assert_eq!(story.turns.len(), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn export_is_bounded_create_only_and_has_no_partial_output() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let output = temp.path().join("export.json");
+        let dataset = example_dataset("atif");
+        fs::write(&output, "sentinel")?;
+        let base = [
+            "pchronicle",
+            "export",
+            "--from",
+            dataset.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--format",
+            "atif",
+        ];
+        let cli = Cli::try_parse_from(base)?;
+        assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err());
+        assert_eq!(fs::read_to_string(&output)?, "sentinel");
+
+        let mut overwrite = base.to_vec();
+        overwrite.push("--overwrite");
+        let cli = Cli::try_parse_from(overwrite)?;
+        run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+        assert!(fs::read_to_string(&output)?.contains("support-001"));
+
+        let limited = temp.path().join("limited.json");
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "export",
+            "--from",
+            example_dataset("atif").to_str().unwrap(),
+            "--output",
+            limited.to_str().unwrap(),
+            "--format",
+            "atif",
+            "--max-output-bytes",
+            "8",
+        ])?;
+        assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .is_err());
+        assert!(!limited.exists());
+        assert!(!fs::read_dir(temp.path())?.any(|entry| {
+            entry
+                .ok()
+                .and_then(|entry| entry.file_name().into_string().ok())
+                .is_some_and(|name| name.starts_with(".pchronicle-export-"))
+        }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn export_validates_stream_filters_and_strict_conversion() -> Result<()> {
+        for args in [
+            vec![
+                "pchronicle",
+                "export",
+                "--from",
+                example_dataset("atif").to_str().unwrap(),
+                "--output",
+                "-",
+                "--format",
+                "atif",
+            ],
+            vec![
+                "pchronicle",
+                "export",
+                "--from",
+                example_dataset("atif").to_str().unwrap(),
+                "--output",
+                "-",
+                "--stream",
+                "--format",
+                "storyline",
+                "--strict",
+            ],
+            vec![
+                "pchronicle",
+                "export",
+                "--from",
+                example_dataset("atif").to_str().unwrap(),
+                "--output",
+                "-",
+                "--stream",
+                "--format",
+                "atif",
+                "--where",
+                "DELETE FROM dataset.runs",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args)?;
+            let mut stdout = Vec::new();
+            assert!(run(cli, false, &mut stdout, &mut Vec::new()).await.is_err());
+            assert!(stdout.is_empty());
+        }
         Ok(())
     }
 

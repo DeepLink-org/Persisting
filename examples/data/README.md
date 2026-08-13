@@ -19,4 +19,7 @@ pchronicle query examples/data/atif \
 
 pchronicle import --from examples/data/atif/support-ticket.json \
   --output /tmp/imported-support-ticket
+
+pchronicle export --from /tmp/imported-support-ticket \
+  --output /tmp/exported-support-ticket.json --format atif
 ```
