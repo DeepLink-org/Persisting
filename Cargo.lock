@@ -6881,6 +6881,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "persisting-pchronicle",
  "serde",
  "serde_json",
