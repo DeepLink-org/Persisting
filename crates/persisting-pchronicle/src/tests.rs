@@ -48,12 +48,14 @@ fn sample_traj() -> AtifTrajectory {
                         tool_call_id: "call_price_1".into(),
                         function_name: "financial_search".into(),
                         arguments: json!({"ticker":"GOOGL","metric":"price"}),
+                        result: Some(json!({"price": 185.35})),
                         extra: Some(json!({"duration_ms": 42})),
                     },
                     AtifToolCall {
                         tool_call_id: "call_volume_2".into(),
                         function_name: "financial_search".into(),
                         arguments: json!({"ticker":"GOOGL","metric":"volume"}),
+                        result: None,
                         extra: Some(json!({"duration_ms": 37})),
                     },
                 ]),
@@ -164,6 +166,10 @@ fn atif_storyline_hub_roundtrip() {
     assert_eq!(back.effective_session_id().unwrap(), "sess-1");
     assert_eq!(back.steps.len(), 2);
     assert_eq!(back.steps[1].tool_calls.as_ref().unwrap().len(), 2);
+    assert_eq!(
+        back.steps[1].tool_calls.as_ref().unwrap()[0].result,
+        Some(serde_json::json!({"price": 185.35}))
+    );
     assert_eq!(
         back.steps[1]
             .metrics

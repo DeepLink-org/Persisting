@@ -6,6 +6,8 @@ use crate::formats::storyline::{
 };
 use crate::Result;
 
+const ATIF_TOOL_CALL_PROVENANCE_KEY: &str = "_pchronicle_atif_tool_call";
+
 fn timing_from_metrics(metrics: &Option<serde_json::Value>) -> (Option<i64>, Option<i64>) {
     let Some(m) = metrics else {
         return (None, None);
@@ -44,12 +46,20 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
                         .as_ref()
                         .and_then(|x| x.get("duration_ms"))
                         .and_then(|v| v.as_i64());
+                    let extra = Some(serde_json::json!({
+                        ATIF_TOOL_CALL_PROVENANCE_KEY: {
+                            "version": 1,
+                            "result_present": c.result.is_some(),
+                            "result": c.result,
+                            "extra": c.extra,
+                        }
+                    }));
                     StorylineToolCall {
                         tool_call_id: c.tool_call_id.clone(),
                         function_name: c.function_name.clone(),
                         arguments: c.arguments.clone(),
                         duration_ms,
-                        extra: c.extra.clone(),
+                        extra,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -127,7 +137,26 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
             calls
                 .iter()
                 .map(|c| {
-                    let mut extra = c.extra.clone().unwrap_or(serde_json::json!({}));
+                    let provenance = c
+                        .extra
+                        .as_ref()
+                        .and_then(|extra| extra.get(ATIF_TOOL_CALL_PROVENANCE_KEY))
+                        .filter(|value| value.get("version").and_then(|v| v.as_u64()) == Some(1));
+                    let result = provenance
+                        .filter(|value| {
+                            value.get("result_present").and_then(|v| v.as_bool()) == Some(true)
+                        })
+                        .and_then(|value| value.get("result"))
+                        .cloned();
+                    let mut extra = if let Some(provenance) = provenance {
+                        provenance
+                            .get("extra")
+                            .filter(|value| !value.is_null())
+                            .cloned()
+                    } else {
+                        c.extra.clone()
+                    }
+                    .unwrap_or(serde_json::json!({}));
                     if let Some(ms) = c.duration_ms {
                         if let Some(obj) = extra.as_object_mut() {
                             obj.insert("duration_ms".into(), serde_json::json!(ms));
@@ -142,6 +171,7 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
                         tool_call_id: c.tool_call_id.clone(),
                         function_name: c.function_name.clone(),
                         arguments: c.arguments.clone(),
+                        result,
                         extra,
                     }
                 })

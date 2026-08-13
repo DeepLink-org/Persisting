@@ -6880,6 +6880,7 @@ name = "persisting-pchronicle-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
  "libc",
  "persisting-pchronicle",
