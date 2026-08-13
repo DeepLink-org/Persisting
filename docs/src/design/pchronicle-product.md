@@ -162,6 +162,7 @@ Gateway/native writer 写入 append-only events，采用 at-least-once 语义；
 | `default` | 设置或读取单目录本地默认 Warehouse |
 | `ls/list`、`status` | Source 发现、能力、版本、数量与健康状态 |
 | `query` | 只读 SQL、结构化结果输出和内置 recipe |
+| `analysis` | 稳定内置分析：overview、agents、models、tools |
 | `find` | 按 Source-local ID 精确定位或发现候选 |
 | `search` | lexical full-text search |
 | `import` | 从单一格式创建新 Dataset |
@@ -229,6 +230,22 @@ Recipe 是有版本、参数 schema、SQL 定义和输出 schema 的 query 别�
 Maintain 只执行原生格式支持的 compaction、scalar index refresh、vacuum 和 orphan staging 清理。
 pChronicle 不提供 `rm/drop`；maintain 不能删除 Dataset 根或任意 Source 子树。物理删除由文件系统、
 对象存储或基础设施工具完成。
+
+### 3.4 Built-in Analysis
+
+`analysis` 是稳定逻辑表上的有界内置查询，不引入新的存储或执行引擎：
+
+```bash
+pchronicle analysis overview [<dataset-uri>]
+pchronicle analysis agents [<dataset-uri>]
+pchronicle analysis models [<dataset-uri>]
+pchronicle analysis tools [<dataset-uri>]
+```
+
+四个子命令分别提供总体规模与 Source 健康、Agent 活动、模型声明/观测使用和工具调用/时延
+覆盖。它们共享默认 Warehouse、Catalog Snapshot、超时、输出字节和行数上限，并支持 table、
+JSONL、CSV。任意 SQL 与自定义分析继续使用 `query`，避免形成第二套查询语言。当前稳定 schema
+没有用户身份字段，因此不提供会把消息角色误当用户的 `users` 分析。
 
 ## 4. 只读 Warehouse
 

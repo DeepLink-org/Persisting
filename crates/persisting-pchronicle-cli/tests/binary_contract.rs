@@ -17,7 +17,7 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
     for command in [
-        "default", "ls", "status", "query", "find", "import", "export", "serve",
+        "default", "ls", "status", "query", "analysis", "find", "import", "export", "serve",
     ] {
         assert!(stdout.contains(command), "help omits {command}: {stdout}");
     }

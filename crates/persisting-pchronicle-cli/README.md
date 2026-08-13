@@ -37,6 +37,26 @@ pchronicle find --session-id session-42
 pchronicle export --output runs.json --format storyline
 ```
 
+Built-in analyses use the same default Warehouse and normalized logical tables:
+
+```bash
+pchronicle analysis overview
+pchronicle analysis agents
+pchronicle analysis models
+pchronicle analysis tools
+```
+
+- `overview` reports Source readiness and total trajectories, Steps, Agents,
+  Models, and tool calls;
+- `agents` groups activity by Agent identity and version;
+- `models` combines declared trajectory models with observed Step models;
+- `tools` groups calls by normalized function name and reports duration
+  coverage.
+
+All analyses accept an optional explicit Dataset URI, `--format
+table|jsonl|csv`, and a bounded `--limit`. Use `query` for custom or larger
+analyses; `analysis` intentionally does not accept arbitrary SQL.
+
 File imports can also omit `--output`; the CLI derives a create-only Dataset
 subdirectory under the default Warehouse from the input file name:
 
@@ -90,6 +110,7 @@ them.
 | Round trip | exact bytes and forced Storyline conversion | `--test import_export_roundtrip` |
 | Process | exit codes and stdout/stderr separation | `--test binary_contract` |
 | Local Warehouse | persistent default and serverless command workflow | `--test local_warehouse` |
+| Built-in analysis | overview/Agent/Model/tool semantics and bounds | `--test analysis` |
 
 Run the complete CLI gate with:
 
