@@ -27,6 +27,18 @@ struct ResourceCgroup {
 }
 
 #[cfg(target_os = "linux")]
+fn validate_cgroup_relative_path(relative: &Path) -> std::io::Result<()> {
+    if relative
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("unsafe cgroup v2 membership path"))
+    }
+}
+
+#[cfg(target_os = "linux")]
 impl ResourceCgroup {
     fn prepare(limits: &ResourceLimits) -> std::io::Result<Option<Self>> {
         if limits.memory_bytes.is_none() && limits.processes.is_none() {
@@ -38,13 +50,7 @@ impl ResourceCgroup {
             .find_map(|line| line.strip_prefix("0::"))
             .ok_or_else(|| std::io::Error::other("unified cgroup v2 membership is unavailable"))?;
         let relative = Path::new(relative.trim_start_matches('/'));
-        anyhow::ensure!(
-            relative
-                .components()
-                .all(|component| matches!(component, std::path::Component::Normal(_))),
-            "unsafe cgroup v2 membership path"
-        )
-        .map_err(std::io::Error::other)?;
+        validate_cgroup_relative_path(relative)?;
         let parent = Path::new("/sys/fs/cgroup").join(relative);
         let path = parent.join(format!("persisting-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir(&path)?;
@@ -1095,6 +1101,15 @@ impl RunExecutor for ProcessExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cgroup_membership_path_rejects_non_normal_components() {
+        assert!(validate_cgroup_relative_path(Path::new("user.slice/session.scope")).is_ok());
+        assert!(validate_cgroup_relative_path(Path::new("")).is_ok());
+        assert!(validate_cgroup_relative_path(Path::new("../escape")).is_err());
+        assert!(validate_cgroup_relative_path(Path::new("/absolute")).is_err());
+    }
 
     #[cfg(unix)]
     #[tokio::test]
