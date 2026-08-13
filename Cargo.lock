@@ -6884,10 +6884,12 @@ dependencies = [
  "clap",
  "libc",
  "persisting-pchronicle",
+ "persisting-pchronicle-server",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "url",
 ]
 

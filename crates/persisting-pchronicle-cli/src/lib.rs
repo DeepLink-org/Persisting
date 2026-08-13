@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{Error as IoError, Read, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -317,10 +319,36 @@ struct ExportArgs {
 
 #[derive(Debug, Args)]
 struct ServeArgs {
+    /// Static Warehouse configuration file.
     #[arg(long, value_name = "FILE")]
     config: PathBuf,
+
+    /// Loopback address for the read-only API and Web UI.
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    listen: SocketAddr,
+
+    /// Open the Web UI in the system browser after the listener is ready.
     #[arg(long)]
     open: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WarehouseFile {
+    /// Reserved for a future rebuildable on-disk cache. The current server
+    /// keeps acceleration state in memory and never writes to this path.
+    #[serde(default)]
+    cache_dir: Option<PathBuf>,
+    #[serde(default)]
+    default_dataset: Option<String>,
+    datasets: Vec<WarehouseDataset>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WarehouseDataset {
+    name: String,
+    uri: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
@@ -507,15 +535,130 @@ pub async fn run_with_stdin(
         Command::Import(args) => run_import(args, stdin, stdout, stderr).await,
         Command::Export(args) => run_export(args, stdout, stderr).await,
         Command::Maintain(args) => not_implemented("maintain", Some(&args.dataset_uri)),
-        Command::Serve(args) => {
-            let _ = (args.config, args.open);
-            not_implemented("serve", None)
-        }
+        Command::Serve(args) => run_serve(args, stderr).await,
     }
 }
 
 fn not_implemented(command: &str, _dataset_uri: Option<&str>) -> Result<()> {
     bail!("pchronicle {command} is not implemented yet")
+}
+
+const MAX_WAREHOUSE_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_WAREHOUSE_DATASETS: usize = 128;
+
+fn load_warehouse_config(
+    path: &Path,
+) -> Result<persisting_pchronicle_server::ChronicleServerConfig> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("read Warehouse config metadata {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.is_file(),
+        "Warehouse config must be a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() <= MAX_WAREHOUSE_CONFIG_BYTES,
+        "Warehouse config exceeds the {} byte limit",
+        MAX_WAREHOUSE_CONFIG_BYTES
+    );
+    let mut content = String::new();
+    std::fs::File::open(path)
+        .with_context(|| format!("open Warehouse config {}", path.display()))?
+        .take(MAX_WAREHOUSE_CONFIG_BYTES + 1)
+        .read_to_string(&mut content)
+        .with_context(|| format!("read Warehouse config {}", path.display()))?;
+    anyhow::ensure!(
+        content.len() as u64 <= MAX_WAREHOUSE_CONFIG_BYTES,
+        "Warehouse config exceeds the {} byte limit",
+        MAX_WAREHOUSE_CONFIG_BYTES
+    );
+    let file: WarehouseFile = toml::from_str(&content)
+        .with_context(|| format!("parse Warehouse config {}", path.display()))?;
+    anyhow::ensure!(!file.datasets.is_empty(), "mount at least one Dataset");
+    anyhow::ensure!(
+        file.datasets.len() <= MAX_WAREHOUSE_DATASETS,
+        "Warehouse config mounts more than {MAX_WAREHOUSE_DATASETS} Datasets"
+    );
+
+    if let Some(cache_dir) = &file.cache_dir {
+        anyhow::ensure!(
+            cache_dir.is_absolute(),
+            "cache_dir must be an absolute path when configured"
+        );
+    }
+
+    let mut names = HashSet::with_capacity(file.datasets.len());
+    let mut mounts = Vec::with_capacity(file.datasets.len());
+    let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    for dataset in file.datasets {
+        let input = if !dataset.uri.contains("://") && Path::new(&dataset.uri).is_relative() {
+            config_dir.join(&dataset.uri).to_string_lossy().into_owned()
+        } else {
+            dataset.uri
+        };
+        let uri = normalize_and_validate_dataset_uri(&input)
+            .with_context(|| format!("validate Dataset '{}'", dataset.name))?;
+        let mount = DatasetMount::new(dataset.name, uri)?;
+        anyhow::ensure!(
+            names.insert(mount.name.clone()),
+            "Dataset names must be unique; duplicate '{}'",
+            mount.name
+        );
+        mounts.push(mount);
+    }
+
+    let mut config = persisting_pchronicle_server::ChronicleServerConfig::mounted(mounts)?;
+    if let Some(default_dataset) = file.default_dataset {
+        let normalized = DatasetMount::new(default_dataset, "validation")?.name;
+        anyhow::ensure!(
+            names.contains(&normalized),
+            "default_dataset '{normalized}' is not mounted"
+        );
+        config.default_dataset = Some(normalized);
+    }
+    config.catalog_options.error_policy = CatalogErrorPolicy::Report;
+    Ok(config)
+}
+
+async fn run_serve(args: ServeArgs, stderr: &mut dyn Write) -> Result<()> {
+    anyhow::ensure!(
+        args.listen.ip().is_loopback(),
+        "pChronicle Warehouse may only bind to a loopback address"
+    );
+    let config = load_warehouse_config(&args.config)?;
+    let listener = tokio::net::TcpListener::bind(args.listen)
+        .await
+        .with_context(|| format!("bind pChronicle Warehouse to {}", args.listen))?;
+    let addr = listener
+        .local_addr()
+        .context("read pChronicle Warehouse listen address")?;
+    let url = format!("http://{addr}/");
+    writeln!(stderr, "pChronicle Warehouse: {url}")
+        .context("write pChronicle Warehouse address")?;
+    if args.open {
+        open_browser(&url)?;
+    }
+    persisting_pchronicle_server::serve_warehouse_with_listener(config, listener).await
+}
+
+fn open_browser(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = ProcessCommand::new("open");
+    #[cfg(target_os = "linux")]
+    let mut command = ProcessCommand::new("xdg-open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = ProcessCommand::new("cmd");
+        command.args(["/C", "start", ""]);
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    bail!("--open is not supported on this platform; open {url} manually");
+
+    command
+        .arg(url)
+        .spawn()
+        .context("open pChronicle Warehouse in the system browser")?;
+    Ok(())
 }
 
 async fn run_list(
@@ -3378,6 +3521,124 @@ mod tests {
             error.to_string(),
             "pchronicle maintain is not implemented yet"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn warehouse_config_normalizes_mounts_and_selects_default() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir_all(&first)?;
+        fs::create_dir_all(&second)?;
+        let config_path = temp.path().join("warehouse.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+cache_dir = "/tmp/pchronicle-cache"
+default_dataset = "archive"
+
+[[datasets]]
+name = "live"
+uri = {first:?}
+
+[[datasets]]
+name = "archive"
+uri = {second:?}
+"#,
+                first = first.to_string_lossy(),
+                second = second.to_string_lossy(),
+            ),
+        )?;
+
+        let config = load_warehouse_config(&config_path)?;
+        assert_eq!(config.datasets.len(), 2);
+        assert_eq!(config.default_dataset.as_deref(), Some("archive"));
+        assert_eq!(config.writable_dataset, None);
+        assert_eq!(
+            config.catalog_options.error_policy,
+            CatalogErrorPolicy::Report
+        );
+        assert_eq!(
+            config.datasets[0].uri,
+            fs::canonicalize(first)?.to_string_lossy()
+        );
+        assert_eq!(
+            config.datasets[1].uri,
+            fs::canonicalize(second)?.to_string_lossy()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn warehouse_config_rejects_unsafe_or_ambiguous_mounts() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let dataset = temp.path().join("dataset");
+        fs::create_dir(&dataset)?;
+
+        for (name, body, expected) in [
+            (
+                "duplicate.toml",
+                format!(
+                    "[[datasets]]\nname='live'\nuri={dataset:?}\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
+                    dataset = dataset.to_string_lossy()
+                ),
+                "unique",
+            ),
+            (
+                "missing-default.toml",
+                format!(
+                    "default_dataset='missing'\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
+                    dataset = dataset.to_string_lossy()
+                ),
+                "not mounted",
+            ),
+            (
+                "credential.toml",
+                "[[datasets]]\nname='live'\nuri='s3://user:secret@bucket/path'\n".into(),
+                "credentials",
+            ),
+            (
+                "unknown.toml",
+                format!(
+                    "listen='0.0.0.0:80'\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
+                    dataset = dataset.to_string_lossy()
+                ),
+                "unknown field",
+            ),
+        ] {
+            let path = temp.path().join(name);
+            fs::write(&path, body)?;
+            let error = load_warehouse_config(&path).unwrap_err();
+            assert!(
+                format!("{error:#}").contains(expected),
+                "unexpected error for {name}: {error:#}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn serve_cli_defaults_to_loopback_and_rejects_public_listeners() -> Result<()> {
+        let cli = Cli::try_parse_from(["pchronicle", "serve", "--config", "warehouse.toml"])?;
+        let Command::Serve(args) = cli.command else {
+            unreachable!("serve command parsed as another variant")
+        };
+        assert_eq!(args.listen, "127.0.0.1:8080".parse::<SocketAddr>()?);
+
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--config",
+            "warehouse.toml",
+            "--listen",
+            "0.0.0.0:8080",
+        ])?;
+        let Command::Serve(args) = cli.command else {
+            unreachable!("serve command parsed as another variant")
+        };
+        assert!(!args.listen.ip().is_loopback());
         Ok(())
     }
 

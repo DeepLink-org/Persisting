@@ -17,8 +17,10 @@ blake3.workspace = true
 clap = { workspace = true, features = ["derive"] }
 libc.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store"] }
+persisting-pchronicle-server.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+toml.workspace = true
 url.workspace = true
