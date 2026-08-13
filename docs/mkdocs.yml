@@ -112,6 +112,7 @@ plugins:
             Capture CLI: Capture 子命令
             pPilot Architecture: pPilot 架构
             Dataset Catalog: 数据集目录
+            pChronicle Product Design: pChronicle 产品概要设计
             Isolation backends: 隔离后端
             References: 参考
             Similar Systems: 类似系统
@@ -162,6 +163,7 @@ nav:
           - CLI and runtime boundary: design/cli.md
       - pPilot orchestration: design/ppilot.md
       - pChronicle history store:
+          - pChronicle Product Design: design/pchronicle-product.md
           - Dataset Catalog: design/dataset-catalog.md
           - Trajectory storage: design/trajectory.md
           - Storyline three-table Lance: design/storyline-lance.md

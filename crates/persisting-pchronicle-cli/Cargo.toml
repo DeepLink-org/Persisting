@@ -1,0 +1,24 @@
+[package]
+name = "persisting-pchronicle-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Standalone pChronicle command-line interface"
+readme = "README.md"
+
+[[bin]]
+name = "pchronicle"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+persisting-pchronicle = { workspace = true, features = ["lance-store"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

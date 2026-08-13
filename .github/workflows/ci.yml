@@ -70,6 +70,7 @@ jobs:
       - name: Build Agent CLI component set
         run: |
           cargo build -p persisting-cli --bin persisting --locked
+          cargo build -p persisting-pchronicle-cli --bin pchronicle --locked
           cargo build -p persisting-pvisor --bin pvisor --locked
           cargo build -p persisting-ppilot --features cli --bin ppilot --locked
 

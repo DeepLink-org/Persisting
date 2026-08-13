@@ -6876,6 +6876,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "persisting-pchronicle-cli"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "persisting-pchronicle",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "persisting-pchronicle-server"
 version = "0.2.0"
 dependencies = [

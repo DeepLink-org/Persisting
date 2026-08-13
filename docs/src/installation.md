@@ -5,7 +5,7 @@ and its matched CLI component set:
 
 | Distribution | Contents | Use case |
 |---|---|---|
-| Host wheel | Python package plus `persisting`, `pvisor`, and `ppilot` | Python APIs and the complete host CLI component set |
+| Host wheel | Python package plus `persisting`, `pchronicle`, `pvisor`, and `ppilot` | Python APIs and the complete host CLI component set |
 
 ## Requirements
 
@@ -36,7 +36,7 @@ pip install persisting[lance]
 pip install persisting
 ```
 
-Both installation commands install the matching `persisting`, `pvisor`, and `ppilot`
+Both installation commands install the matching `persisting`, `pchronicle`, `pvisor`, and `ppilot`
 binaries into the Python environment's scripts directory.
 
 ### Nightly wheel
@@ -70,7 +70,7 @@ cd Persisting
 just install-cli
 ```
 
-This alternative installs matching builds of `persisting`, `pvisor`, and
+This alternative installs matching builds of `persisting`, `pchronicle`, `pvisor`, and
 `ppilot` into the Cargo binary directory without installing the Python package.
 
 ### Component overrides

@@ -24,7 +24,7 @@ WHEEL_DATA = ROOT / "target" / "wheel-data"
 WEB_ROOT = ROOT / "pchronicle-web"
 WEB_PUBLIC = ROOT / "crates" / "persisting-pchronicle-server" / "web-assets" / "public"
 DX_PUBLIC = WEB_ROOT / "target" / "dx" / "pchronicle-web" / "release" / "web" / "public"
-EXPECTED_BINARIES = ("persisting", "pvisor", "ppilot")
+EXPECTED_BINARIES = ("persisting", "pchronicle", "pvisor", "ppilot")
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
@@ -153,6 +153,10 @@ def _cargo_command(options: BuildOptions) -> list[str]:
         "persisting-cli",
         "--bin",
         "persisting",
+        "-p",
+        "persisting-pchronicle-cli",
+        "--bin",
+        "pchronicle",
         "-p",
         "persisting-pvisor",
         "--bin",
