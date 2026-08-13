@@ -159,6 +159,7 @@ chronicle-binary profile="debug": chronicle-web-build
 
 build profile="debug":
     cargo build -p persisting-cli {{ if profile == "release" { "--release" } else { "" } }}
+    cargo build -p persisting-pchronicle-cli --bin pchronicle {{ if profile == "release" { "--release" } else { "" } }}
     cargo build -p persisting-pvisor --bin pvisor {{ if profile == "release" { "--release" } else { "" } }}
     cargo build -p persisting-ppilot --features cli --bin ppilot {{ if profile == "release" { "--release" } else { "" } }}
 
@@ -207,6 +208,7 @@ install-cli:
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     cargo install --path crates/persisting-cli --locked --force --root "$install_root"
+    cargo install --path crates/persisting-pchronicle-cli --locked --force --root "$install_root"
     cargo install --path crates/persisting-pvisor --locked --force --root "$install_root"
     cargo install --path crates/persisting-ppilot --features cli --locked --force --root "$install_root"
     printf 'Installed Persisting component set in %s/bin\n' "$install_root"
@@ -316,12 +318,13 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# 单 crate：pchronicle | control | core | capture | cli | ppilot | pvisor | dlcapt
+# 单 crate：pchronicle | pchronicle-cli | control | core | capture | cli | ppilot | pvisor | dlcapt
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
       pchronicle) cargo test -p persisting-pchronicle ;;
+      pchronicle-cli) cargo test -p persisting-pchronicle-cli ;;
       control) cargo test -p persisting-control ;;
       core) cargo test -p persisting-core ;;
       capture) cargo test -p persisting-gateway ;;
@@ -329,7 +332,7 @@ test-crate crate:
       ppilot) cargo test -p persisting-ppilot ;;
       pvisor) cargo test -p persisting-pvisor ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
-      *) echo "unknown crate: {{ crate }} (pchronicle|control|core|capture|cli|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|control|core|capture|cli|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
     esac
 
 test-rust:

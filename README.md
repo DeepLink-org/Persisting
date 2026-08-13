@@ -64,10 +64,10 @@ pip install persisting
 ```
 
 The platform wheel installs the Python package and the matching `persisting`,
-`pvisor`, and `ppilot` host binaries into the same Python scripts directory.
+`pchronicle`, `pvisor`, and `ppilot` host binaries into the same Python scripts directory.
 Trajectory and Search operations are provided directly by pChronicle; no
 separate Engine library is installed. Source developers can still use
-`just install-cli` to install the three binaries into a Cargo bin directory.
+`just install-cli` to install the four binaries into a Cargo bin directory.
 
 Run `just examples` to execute the small quantitative experiments under
 [`examples/`](examples/). Each script runs the product commands in order and
@@ -246,6 +246,7 @@ The same wheel installs the unified CLI (`execute/env/batch/query/history/eval/g
 
 ```bash
 persisting --version
+pchronicle --help
 pvisor --version
 ppilot --help
 ```
@@ -257,7 +258,7 @@ and `PERSISTING_PPILOT_BIN` remain explicit overrides.
 
 ### Nightly wheel
 
-The nightly wheel includes the matching `persisting`, `pvisor`, and `ppilot`
+The nightly wheel includes the matching `persisting`, `pchronicle`, `pvisor`, and `ppilot`
 commands and does not require a Rust toolchain:
 
 ```bash

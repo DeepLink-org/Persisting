@@ -9,6 +9,7 @@ members = [
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
+    "crates/persisting-pchronicle-cli",
     "crates/persisting-pchronicle-server",
     "crates/persisting-overlayfs",
     "crates/persisting-overlay-core",
@@ -25,6 +26,7 @@ default-members = [
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
+    "crates/persisting-pchronicle-cli",
     "crates/persisting-pchronicle-server",
     "crates/persisting-overlaynet",
 ]

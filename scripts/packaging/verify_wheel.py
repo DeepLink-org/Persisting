@@ -13,7 +13,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
-EXPECTED_BINARIES = ("persisting", "pvisor", "ppilot")
+EXPECTED_BINARIES = ("persisting", "pchronicle", "pvisor", "ppilot")
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 

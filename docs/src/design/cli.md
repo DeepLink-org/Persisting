@@ -1,23 +1,23 @@
 # CLI 整体架构
 
-`persisting` 是面向用户的统一入口。它把单次执行和持久环境交给 pVisor，把批量编排和
-点查、批查、实时 follow 与 SQL 查询交给 pPilot，并直接提供历史维护、评测和 Gateway 管理。pChronicle 是
-底层存储与查询库，不提供独立命令行。
+`persisting` 是 Agent 执行面的统一入口：它把单次执行和持久环境交给 pVisor，把批量编排
+交给 pPilot。`pchronicle` 是轨迹数据层的独立入口，负责 Dataset 浏览、查询、导入导出和
+只读服务；旧 `persisting history/query` 与 `ppilot query/chronicle` 在迁移期转发。
 
-`pvisor` 和 `ppilot` 二进制仍保留为组件级、专家级入口，方便独立部署和调试；日常使用
-不需要记住它们。
+`pchronicle`、`pvisor` 和 `ppilot` 都是可独立部署和调试的组件级入口。
 
 | 统一命令 | 实现边界 |
 |----------|----------|
 | `persisting execute`（别名 `exec`） | 转发到 `pvisor run`，创建一次性 Run |
 | `persisting env …` | 转发到 `pvisor env …`，管理可复用的持久 OverlayFS 环境 |
 | `persisting batch …` | 转发到 `ppilot run …`，批量编排 Run |
-| `persisting query …` | 转发到 `ppilot query …`，提供 SQL、点查、批查与实时 follow |
-| `persisting history …` | 导入、追加、转换、回放、统计和物化轨迹 |
+| `persisting query …` | 迁移期转发；Dataset SQL 与点查最终归 `pchronicle` |
+| `persisting history …` | 迁移期转发；导入导出和维护最终归 `pchronicle` |
 | `persisting eval …` | judge 与评测统计 |
 | `persisting gateway …` | 长期 Gateway 服务和状态管理 |
 
-轨迹能力分别由 `history`、`eval` 和 `gateway` 提供，不再保留第二套轨迹命令树。
+目标命令树见 [pChronicle 产品架构设计](pchronicle-product.md)。迁移完成后不永久保留两套
+轨迹命令树。
 
 ```text
 persisting
@@ -31,7 +31,7 @@ persisting
 ├── eval
 └── gateway
 ```
-查询实现和物理格式仍归 pChronicle 所有，pPilot 只拥有用户交互。
+查询实现、用户交互和物理格式均归 pChronicle；pPilot 只拥有批量编排与分布式处理。
 
 ---
 
@@ -39,10 +39,10 @@ persisting
 
 | 原则 | 说明 |
 |------|------|
-| **组件化 CLI** | `persisting`、`pvisor`、`ppilot` 作为匹配的组件集安装；统一入口按职责转发 |
-| **领域直调** | `history` / `eval` 在进程内调用 pChronicle 的强类型 Rust API |
+| **组件化 CLI** | `persisting`、`pchronicle`、`pvisor`、`ppilot` 作为匹配的组件集安装；统一入口按职责转发 |
+| **领域直调** | `pchronicle` 在进程内调用 pChronicle 的强类型 Rust API |
 | **单一所有权** | 轨迹格式、存储、评测和 Search 全部归 pChronicle |
-| **边界转发** | Run/Env 转发 pVisor，Batch/Query 转发 pPilot，Gateway 由 CLI 装配 |
+| **边界转发** | Run/Env 转发 pVisor，Batch 转发 pPilot；旧轨迹入口迁移到 pChronicle |
 
 ```
 用户命令
@@ -50,8 +50,8 @@ persisting
     ▼
 CLI（解析 · 组件转发 · 历史格式 · 展示结果）
     ├── pvisor（Run / Env）
-    ├── ppilot（Batch / Query）
-    └── pChronicle（History / Eval / Search）
+    ├── ppilot（Batch / Process）
+    └── pchronicle（Dataset / Query / Exchange / Serve）
     │
     ▼
 持久化存储
