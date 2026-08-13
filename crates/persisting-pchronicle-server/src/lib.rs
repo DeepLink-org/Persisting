@@ -27,6 +27,7 @@ use acceleration::{AccelerationStatus, ServerAcceleration};
 
 #[derive(Clone)]
 struct AppState {
+    warehouse: bool,
     storage: Arc<String>,
     config: Arc<ChronicleServerConfig>,
     catalog: Arc<tokio::sync::RwLock<Option<Arc<CatalogRuntime>>>>,
@@ -54,6 +55,14 @@ impl ChronicleServerConfig {
 
     pub fn mounted(datasets: Vec<DatasetMount>) -> anyhow::Result<Self> {
         anyhow::ensure!(!datasets.is_empty(), "mount at least one Dataset");
+        let unique = datasets
+            .iter()
+            .map(|dataset| dataset.name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        anyhow::ensure!(
+            unique.len() == datasets.len(),
+            "Dataset names must be unique"
+        );
         let default_dataset = (datasets.len() == 1).then(|| datasets[0].name.clone());
         Ok(Self {
             datasets,
@@ -126,6 +135,19 @@ pub fn router(storage: impl Into<String>) -> Router {
 }
 
 pub fn router_with_config(config: ChronicleServerConfig) -> Router {
+    router_for_config(config, false)
+}
+
+/// Build the read-only Warehouse API and Web UI.
+///
+/// Unlike [`router_with_config`], this surface never exposes Dataset mutation
+/// routes, even when a caller accidentally supplies a writable Dataset.
+pub fn warehouse_router(mut config: ChronicleServerConfig) -> Router {
+    config.writable_dataset = None;
+    router_for_config(config, true)
+}
+
+fn app_state(config: ChronicleServerConfig, warehouse: bool) -> AppState {
     let storage = config
         .writable_dataset
         .as_deref()
@@ -134,16 +156,25 @@ pub fn router_with_config(config: ChronicleServerConfig) -> Router {
         .or_else(|| config.datasets.first())
         .map(|mount| mount.uri.clone())
         .unwrap_or_default();
-    let state = AppState {
+    AppState {
+        warehouse,
         storage: Arc::new(storage),
         config: Arc::new(config),
         catalog: Arc::new(tokio::sync::RwLock::new(None)),
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
+    }
+}
+
+fn read_routes(warehouse: bool) -> Router<AppState> {
+    let health_route = if warehouse {
+        get(warehouse_health)
+    } else {
+        get(health)
     };
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
-        .route("/api/v1/health", get(health))
+        .route("/api/v1/health", health_route)
         .route("/api/v1/runs", get(runs))
         .route("/api/v1/explorer/runs", get(explorer_runs))
         .route("/api/v1/explorer/run", get(explorer_run))
@@ -154,15 +185,26 @@ pub fn router_with_config(config: ChronicleServerConfig) -> Router {
         .route("/api/v1/trajectory-view", get(trajectory_view))
         .route("/api/v1/export/har", get(export_har))
         .route("/api/v1/export/otlp", get(export_otlp))
-        .route("/api/v1/judgments", get(judgments).post(write_judgments))
+        .route("/api/v1/judgments", get(judgments))
         .route("/api/v1/revisions", get(revisions))
-        .route("/api/v1/maintain", post(maintain))
         .route("/api/v1/catalog", get(catalog).post(refresh_catalog))
         .route("/api/v1/query/tables", get(query_tables))
-        .route("/api/v1/query", post(query_sql))
         .route("/api/v1/query/evidence", post(query_evidence))
-        .fallback(asset::fallback)
-        .with_state(state)
+        .fallback(asset_fallback)
+}
+
+fn router_for_config(config: ChronicleServerConfig, warehouse: bool) -> Router {
+    let state = app_state(config, warehouse);
+    let router = read_routes(warehouse);
+    let router = if warehouse {
+        router
+    } else {
+        router
+            .route("/api/v1/judgments", post(write_judgments))
+            .route("/api/v1/maintain", post(maintain))
+            .route("/api/v1/query", post(query_sql))
+    };
+    router.with_state(state)
 }
 
 /// Serve the local UI. Non-loopback addresses are deliberately rejected
@@ -185,12 +227,65 @@ pub async fn serve_with_config(
         .context("serve pChronicle Web UI")
 }
 
+/// Serve statically mounted Datasets through the read-only Warehouse surface.
+pub async fn serve_warehouse(
+    config: ChronicleServerConfig,
+    addr: SocketAddr,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        addr.ip().is_loopback(),
+        "pChronicle Warehouse may only bind to a loopback address"
+    );
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    serve_warehouse_with_listener(config, listener).await
+}
+
+/// Serve the Warehouse with an already-bound listener. This lets callers
+/// report the actual address (including an ephemeral port) before serving.
+pub async fn serve_warehouse_with_listener(
+    config: ChronicleServerConfig,
+    listener: tokio::net::TcpListener,
+) -> anyhow::Result<()> {
+    let addr = listener
+        .local_addr()
+        .context("read Warehouse listen address")?;
+    anyhow::ensure!(
+        addr.ip().is_loopback(),
+        "pChronicle Warehouse may only bind to a loopback address"
+    );
+    axum::serve(listener, warehouse_router(config))
+        .await
+        .context("serve pChronicle Warehouse")
+}
+
 async fn index(headers: axum::http::HeaderMap) -> Response {
     asset::index(headers).await
 }
 
+async fn asset_fallback(
+    State(state): State<AppState>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if state.warehouse {
+        let path = uri.path().to_ascii_lowercase();
+        if path.split('/').any(|segment| segment == "..")
+            || path.contains("%2e")
+            || path.contains('\\')
+            || path.contains("%5c")
+        {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    }
+    asset::fallback(uri, headers).await
+}
+
 async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"status":"ok","storage":state.storage.as_str()}))
+}
+
+async fn warehouse_health() -> Json<Value> {
+    Json(json!({"status":"ok","mode":"read_only"}))
 }
 
 async fn build_catalog_runtime(
@@ -1008,6 +1103,7 @@ struct SqlRequest {
 #[derive(Debug, Serialize)]
 struct QueryCatalog {
     snapshot_id: String,
+    read_only: bool,
     database: String,
     storage_path: String,
     path_column: &'static str,
@@ -1239,6 +1335,7 @@ async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog
         .unwrap_or_default();
     Ok(Json(QueryCatalog {
         snapshot_id: runtime.snapshot.snapshot_id().to_string(),
+        read_only: state.warehouse,
         database,
         storage_path,
         path_column: "_file_",
@@ -1355,11 +1452,18 @@ async fn query_evidence(
         .acceleration
         .route_sql(&runtime.snapshot, &runtime.engine, &request.sql)
         .await;
-    let body = runtime
+    let bounded_sql = bounded_evidence_sql(&routed.sql, max_rows);
+    let mut body = BoundedOutput::new(max_bytes);
+    runtime
         .engine
-        .query_jsonl(&routed.sql)
+        .write_query_jsonl_with_max_rows(
+            &bounded_sql,
+            &mut body,
+            Some(max_rows.saturating_add(1) as u64),
+        )
         .await
         .map_err(api_error)?;
+    let body = String::from_utf8(body.into_inner()).map_err(api_error)?;
     let mut rows = Vec::new();
     let mut bytes = 0usize;
     let mut truncated = false;
@@ -1380,6 +1484,57 @@ async fn query_evidence(
         source_routing: routed.outcome.as_str(),
         candidate_sources: routed.candidate_sources,
     }))
+}
+
+struct BoundedOutput {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+}
+
+impl BoundedOutput {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            max_bytes,
+        }
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl std::io::Write for BoundedOutput {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.len().saturating_add(buffer.len()) > self.max_bytes {
+            return Err(std::io::Error::other(format!(
+                "query evidence exceeds max_bytes limit of {}",
+                self.max_bytes
+            )));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn bounded_evidence_sql(sql: &str, max_rows: usize) -> String {
+    let statement = sql.trim().strip_suffix(';').unwrap_or(sql.trim());
+    if statement
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("explain ")
+    {
+        statement.to_owned()
+    } else {
+        format!(
+            "SELECT * FROM ({statement}) AS __pchronicle_evidence LIMIT {}",
+            max_rows.saturating_add(1)
+        )
+    }
 }
 
 fn validate_read_only_sql(sql: &str) -> Result<(), ApiError> {
@@ -1492,6 +1647,124 @@ mod tests {
         assert!(error.to_string().contains("loopback"));
     }
 
+    #[tokio::test]
+    async fn warehouse_rejects_non_loopback_bind() {
+        let config = ChronicleServerConfig::mounted(vec![
+            DatasetMount::default("/tmp/none").expect("test Dataset mount must be valid")
+        ])
+        .expect("test server config must be valid");
+        let error = serve_warehouse(
+            config,
+            SocketAddr::new(std::net::IpAddr::from([0, 0, 0, 0]), 0),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("loopback"));
+    }
+
+    #[test]
+    fn mounted_config_rejects_duplicate_dataset_names() {
+        let error = ChronicleServerConfig::mounted(vec![
+            DatasetMount::new("live", "/tmp/one").unwrap(),
+            DatasetMount::new("live", "/tmp/two").unwrap(),
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("unique"));
+    }
+
+    #[tokio::test]
+    async fn warehouse_router_is_read_only_and_redacts_storage() -> anyhow::Result<()> {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let root = json_dataset_root();
+        let mut config = ChronicleServerConfig::legacy(root.to_string_lossy())?;
+        assert!(config.writable_dataset.is_some());
+        let app = warehouse_router(config.clone());
+
+        let health = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/health")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(health.status(), StatusCode::OK);
+        let health: Value =
+            serde_json::from_slice(&health.into_body().collect().await?.to_bytes())?;
+        assert_eq!(health, json!({"status":"ok","mode":"read_only"}));
+        assert!(!health
+            .to_string()
+            .contains(&root.to_string_lossy().as_ref()));
+
+        for (method, path) in [
+            ("POST", "/api/v1/judgments"),
+            ("POST", "/api/v1/maintain"),
+            ("POST", "/api/v1/query"),
+            ("PUT", "/api/v1/events"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(axum::body::Body::empty())?,
+                )
+                .await?;
+            assert!(
+                matches!(
+                    response.status(),
+                    StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+                ),
+                "{method} {path} unexpectedly returned {}",
+                response.status()
+            );
+        }
+        let refresh = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/catalog")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(refresh.status(), StatusCode::OK);
+        let refresh: Value =
+            serde_json::from_slice(&refresh.into_body().collect().await?.to_bytes())?;
+        assert_eq!(refresh["writable_dataset"], Value::Null);
+
+        let traversal = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/%2e%2e/%2e%2e/etc/passwd")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(traversal.status(), StatusCode::NOT_FOUND);
+
+        // The legacy router remains writable for the deprecated entry point.
+        config.writable_dataset = None;
+        let legacy_query = router_with_config(config)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/query")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({"sql":"SELECT 1"}).to_string(),
+                    ))?,
+            )
+            .await?;
+        assert_eq!(legacy_query.status(), StatusCode::OK);
+
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     #[test]
     fn tool_call_counter_handles_openai_and_anthropic_payloads() {
         let payload = json!({
@@ -1499,6 +1772,22 @@ mod tests {
             "content": [{"type":"tool_use", "id":"toolu-1"}],
         });
         assert_eq!(count_tool_calls(&payload), 3);
+    }
+
+    #[test]
+    fn evidence_queries_are_wrapped_with_a_server_side_row_bound() {
+        assert_eq!(
+            bounded_evidence_sql("SELECT * FROM dataset.runs;", 200),
+            "SELECT * FROM (SELECT * FROM dataset.runs) AS __pchronicle_evidence LIMIT 201"
+        );
+        assert_eq!(
+            bounded_evidence_sql("WITH rows AS (SELECT 1) SELECT * FROM rows", 1),
+            "SELECT * FROM (WITH rows AS (SELECT 1) SELECT * FROM rows) AS __pchronicle_evidence LIMIT 2"
+        );
+        assert_eq!(
+            bounded_evidence_sql("EXPLAIN SELECT * FROM dataset.runs", 10),
+            "EXPLAIN SELECT * FROM dataset.runs"
+        );
     }
 
     #[test]

@@ -1,0 +1,14 @@
+# Read-only Warehouse fixture for `pchronicle serve`.
+default_dataset = "atif"
+
+[[datasets]]
+name = "atif"
+uri = "atif"
+
+[[datasets]]
+name = "actf"
+uri = "actf"
+
+[[datasets]]
+name = "openai_messages"
+uri = "openai-messages"

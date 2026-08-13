@@ -22,4 +22,9 @@ pchronicle import --from examples/data/atif/support-ticket.json \
 
 pchronicle export --from /tmp/imported-support-ticket \
   --output /tmp/exported-support-ticket.json --format atif
+
+pchronicle serve --config examples/data/warehouse.toml --open
 ```
+
+`warehouse.toml` mounts all three examples. Its relative paths are resolved
+from the configuration file's directory.

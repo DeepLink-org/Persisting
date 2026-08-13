@@ -214,6 +214,8 @@ pub fn App() -> Element {
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
+                                    read_only: catalog()
+                                        .is_some_and(|catalog| !catalog.can_write_judgments()),
                                     run: value.run.clone(),
                                     analysis: value,
                                     turns: turns(),
@@ -343,7 +345,8 @@ pub fn App() -> Element {
                 }
             }
 
-            if let (Some(target), Some(run)) = (annotation_target(), selected_run()) {
+            if catalog().is_none_or(|catalog| catalog.can_write_judgments()) {
+              if let (Some(target), Some(run)) = (annotation_target(), selected_run()) {
                 JudgmentDrawer {
                     run,
                     call_id: target,
@@ -355,6 +358,7 @@ pub fn App() -> Element {
                         }
                     },
                 }
+              }
             }
         }
     }
@@ -680,6 +684,7 @@ fn StatusBadge(value: String) -> Element {
 #[component]
 #[allow(clippy::too_many_arguments)]
 fn RunDetailWorkspace(
+    read_only: bool,
     run: RunSummary,
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
@@ -705,7 +710,7 @@ fn RunDetailWorkspace(
         section { class: "pc2-detail",
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
-                div { class: "pc2-head-actions", button { class: "button", onclick: on_annotate_story, "Annotate run" } button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/v1/export/otlp?{run.query()}", "OTLP" } }
+                div { class: "pc2-head-actions", if !read_only { button { class: "button", onclick: on_annotate_story, "Annotate run" } } button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/v1/export/otlp?{run.query()}", "OTLP" } }
             }
             MetricsStrip { analysis: analysis.clone() }
             nav { class: "pc2-detail-tabs", aria_label: "Trajectory detail view",
@@ -736,7 +741,7 @@ fn RunDetailWorkspace(
                     div { class: "pc2-turn-list pc2-span-scroll",
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing evidence…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible turns" } span { "No compact turn evidence matches this filter." } } }
-                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, on_turn, on_annotate: on_annotate_turn } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, annotatable: !read_only, on_turn, on_annotate: on_annotate_turn } }
                     }
                 }
             }

@@ -52,12 +52,20 @@ pub struct RunPage {
 pub struct QueryCatalog {
     #[serde(default)]
     pub snapshot_id: String,
+    #[serde(default)]
+    pub read_only: bool,
     pub database: String,
     pub storage_path: String,
     pub path_column: String,
     #[serde(default)]
     pub datasets: Vec<QueryDatasetSummary>,
     pub tables: Vec<QueryTableSummary>,
+}
+
+impl QueryCatalog {
+    pub fn can_write_judgments(&self) -> bool {
+        !self.read_only
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -327,5 +335,20 @@ mod tests {
             run.query(),
             "dataset=dataset&file=nested%2Fsource.json&run_id=run-1&agent_id=agent%20one&session_id=s%2F1&root_session_id=root%2B1"
         );
+    }
+
+    #[test]
+    fn warehouse_catalog_disables_judgment_writes() {
+        let catalog: QueryCatalog = serde_json::from_value(serde_json::json!({
+            "snapshot_id": "snapshot",
+            "read_only": true,
+            "database": "evals",
+            "storage_path": "/redacted",
+            "path_column": "_file_",
+            "datasets": [],
+            "tables": []
+        }))
+        .unwrap();
+        assert!(!catalog.can_write_judgments());
     }
 }
