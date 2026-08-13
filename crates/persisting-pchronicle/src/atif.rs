@@ -74,6 +74,9 @@ pub struct AtifToolCall {
     pub tool_call_id: String,
     pub function_name: String,
     pub arguments: Value,
+    /// Optional inline result used by some ATIF producers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }
