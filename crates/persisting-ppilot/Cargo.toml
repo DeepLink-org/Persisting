@@ -10,11 +10,6 @@ readme = "README.md"
 [[bin]]
 name = "ppilot"
 path = "src/bin/ppilot.rs"
-required-features = ["cli"]
-
-[[test]]
-name = "integration_pulsing_cluster"
-required-features = ["query"]
 
 [dependencies]
 anyhow.workspace = true
@@ -31,8 +26,6 @@ pulsing-actor = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
-tempfile = { workspace = true, optional = true }
-toml = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "sync", "time", "signal", "fs", "net"] }
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
@@ -42,10 +35,6 @@ uuid = { workspace = true, features = ["v4"] }
 
 [features]
 default = []
-# Public `ppilot` command and DataFusion query surface. The core orchestrator
-# always uses pVisor; this feature only adds the query-specific pChronicle API.
-cli = ["query"]
-query = ["dep:tempfile", "dep:toml"]
 # Append pPilot results to Lance via TrajectoryAppend (Tee with JsonlFileSink).
 traj-sink = ["dep:chrono"]
 

@@ -23,13 +23,12 @@ pPilot ── RunSpec ──► pVisor ── captured events ──► pChronic
 
 ## Install
 
-The Python wheel installs the Python package and a matched set of four host
+The Python wheel installs the Python package and a matched set of three host
 commands:
 
 ```bash
 pip install persisting
 
-persisting --version
 pvisor --version
 ppilot --version
 pchronicle --version
@@ -69,8 +68,8 @@ parallelism and a durable result journal:
 ppilot run plan.py --workers 4 --per-worker 2 --sink ./results
 ```
 
-For independent pVisor workspaces, use `ppilot produce`; for sharded analysis
-or map/reduce processing, use `ppilot analysis` or `ppilot process`.
+For independent pVisor workspaces, use `ppilot produce`. Dataset queries and
+analysis belong to pChronicle.
 
 ### Browse and analyze trajectories
 
@@ -94,13 +93,8 @@ read-only Warehouse UI and API.
 | Command | Primary responsibility |
 |---|---|
 | `pvisor` | One Run, environments, review, checkpoints, apply/drop |
-| `ppilot` | Batch planning, bounded execution, recovery, distributed processing |
+| `ppilot` | Batch planning, bounded execution, recovery, and Run production |
 | `pchronicle` | Dataset catalog, SQL, built-in analysis, find, import/export, read-only serving |
-| `persisting` | Compatibility and convenience entry point for execution, capture, event history, and evaluation |
-
-`persisting query`, `persisting history`, `ppilot query`, `ppilot chronicle`,
-and `ppilot convert` remain available for existing capture and conversion
-workflows. New Dataset-oriented workflows should start with `pchronicle`.
 
 ## Current maturity
 

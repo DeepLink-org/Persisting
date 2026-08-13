@@ -66,15 +66,9 @@ Use this order when documentation disagrees:
 The standalone component commands are the primary references:
 
 - `pvisor` — one Run and reusable environments;
-- `ppilot` — batch orchestration and distributed processing;
+- `ppilot` — scalable Run orchestration and production;
 - `pchronicle` — trajectory Dataset catalog, SQL, analysis, exchange, and
   read-only serving;
-- `persisting` — convenience and compatibility workflows for execution,
-  capture history, and evaluation.
-
-When a command migrates, keep old examples only if they are still executable
-compatibility coverage. Label them as such and point new users to the primary
-component command.
 
 ## Translation
 

@@ -1,9 +1,8 @@
 //! Embeddable argument surface for a pPilot host.
 //!
-//! - With script → **run** (default); `--check` validates first
-//! - `--self-test` → built-in smoke (no user plan)
+//! With a script, `--check` validates first and the default path executes it.
 
-use crate::check::{run_check, run_self_test, CheckOptions};
+use crate::check::{run_check, CheckOptions};
 use crate::checkpoint::{CheckpointLedger, CheckpointTracker};
 use crate::coordination::RunCoordinator;
 use crate::observe::{Observer, ObserverOptions};
@@ -27,13 +26,9 @@ use tokio_util::sync::CancellationToken;
     long_about = "pPilot — Durable Run Orchestrator.\n\nRun a Phase-1 map-style plan with bounded concurrency, checkpoint/resume, infrastructure retry, and a single result sink."
 )]
 pub struct PPilotArgs {
-    /// Plan script (`plan()` / `execute`). Required unless `--self-test`.
+    /// Plan script (`plan()` / `execute()`).
     #[arg(value_name = "SCRIPT")]
-    pub script: Option<PathBuf>,
-
-    /// Built-in smoke test (no user plan).
-    #[arg(long, hide = true)]
-    pub self_test: bool,
+    pub script: PathBuf,
 
     /// Validate env + plan + execute (+ sample run) instead of a full run.
     #[arg(long)]
@@ -157,18 +152,7 @@ pub enum ResultsFormat {
 
 /// Run pPilot (async). Caller owns the Tokio runtime.
 pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
-    if args.self_test {
-        let report = run_self_test(args.python, args.workers, args.verbose).await?;
-        return Ok(if report.passed() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        });
-    }
-
-    let Some(script) = args.script else {
-        bail!("missing SCRIPT; pass a plan file, or use --self-test");
-    };
+    let script = args.script;
 
     if args.check {
         let report = run_check(CheckOptions {

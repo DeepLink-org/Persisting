@@ -183,16 +183,5 @@ directory. The server rejects non-loopback listeners because it has no
 authentication. Its Dataset mounts and API are read-only; import, export,
 maintenance, and arbitrary filesystem access are not exposed over HTTP.
 
-## Related compatibility commands
-
-Some older or capture-specific workflows still have distinct commands:
-
-- `persisting history` manages canonical captured events and AgenticMD views;
-- `persisting eval` manages trajectory judgments;
-- `persisting gateway` runs the long-lived capture proxy;
-- `ppilot query`, `ppilot chronicle`, and `ppilot convert` remain available to
-  existing pPilot workflows and examples.
-
-Do not assume those command trees and `pchronicle` have identical flags.
-For new Dataset catalog, SQL, analysis, find, and exchange workflows, prefer
-the standalone `pchronicle` command.
+The standalone command is the only public CLI for Dataset catalog, SQL,
+analysis, find, exchange, and read-only Warehouse serving.

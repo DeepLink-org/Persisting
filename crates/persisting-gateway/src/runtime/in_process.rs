@@ -9,7 +9,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::config::ProxyConfig;
-use crate::runtime::service::CaptureDaemonState;
 use crate::sink::CaptureEventSink;
 use persisting_control::{ControlController, PolicyControlController};
 use persisting_overlaynet::{BandwidthRegistry, InterceptionMetrics, InterceptionSnapshot};
@@ -66,18 +65,6 @@ impl InProcessCapture {
         stream_markdown: bool,
         runtime: InProcessRuntime,
     ) -> Result<Self> {
-        if let Some(state) = CaptureDaemonState::read(&storage)? {
-            if state.is_running() {
-                anyhow::bail!(
-                    "Gateway already running (pid {}) for {}; \
-                     stop it with `persisting gateway stop -o {}` first — in-process capture does not fork a daemon",
-                    state.pid,
-                    storage.display(),
-                    storage.display(),
-                );
-            }
-        }
-
         let listen = config.listen.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let interception_metrics = runtime.interception_metrics.clone();

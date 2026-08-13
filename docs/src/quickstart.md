@@ -13,7 +13,7 @@ brew install --cask macfuse
 ## 1. Install the CLI
 
 ```bash
-# Stable wheel: installs persisting, pchronicle, pvisor, and ppilot together
+# Stable wheel: installs pchronicle, pvisor, and ppilot together
 pip install persisting
 
 # Or install the nightly wheel

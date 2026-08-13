@@ -150,11 +150,9 @@ nav:
       - Queue API: api/queue.md
       - Search API: api/search.md
       - TTAS types: api/tensor-address-space.md
-      - CLI architecture and loading: design/cli.md
       - pVisor command reference: design/cli-pvisor.md
       - pPilot command reference: design/cli-ppilot.md
       - pChronicle command reference: design/cli-pchronicle.md
-      - Capture, evaluation, and compatibility commands: design/cli-history.md
   - Architecture & Internals:
       - Overview and maturity: design/index.md
       - Agent infrastructure: design/agent-infrastructure.md
@@ -162,7 +160,6 @@ nav:
           - Isolation backends: design/pvisor-isolation.md
           - Gateway capture driver: design/gateway.md
           - OverlayNet transparent interception: design/overlaynet.md
-          - CLI and runtime boundary: design/cli.md
       - pPilot orchestration: design/ppilot.md
       - pChronicle history store:
           - pChronicle Product Design: design/pchronicle-product.md

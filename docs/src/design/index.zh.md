@@ -13,7 +13,7 @@
 | Queue | [队列持久化](architecture.zh.md) | [自定义后端指南](../guide/custom-backends.md) |
 | Gateway 采集驱动 | [Gateway 管线](gateway.md) | [Markdown 格式](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
 | Tensor Memory（实验性） | [TTAS 模型](tensor-address-space.md) | [分层存储](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
-| CLI 边界 | [CLI 整体架构](cli.md) | **参考**中的命令文档 |
+| CLI 边界 | [pVisor](cli-pvisor.md)、[pPilot](cli-ppilot.md)、[pChronicle](cli-pchronicle.md) | **参考**中的命令文档 |
 
 ## 成熟度与范围
 

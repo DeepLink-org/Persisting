@@ -10,7 +10,7 @@ workflows; architecture pages explain internal choices and experimental work.
 | Run one Agent with a reviewable workspace | [pVisor: run / review / checkpoint](../design/cli-pvisor.md) (design) |
 | Orchestrate many Agent Runs with recovery | [pPilot: run / produce](../design/cli-ppilot.md) (design) |
 | Browse, query, import, or export trajectory Datasets | [pChronicle command reference](../design/cli-pchronicle.md) |
-| Run sharded SQL or distributed trajectory processing | [pPilot: analysis / process](../design/cli-ppilot.md) (design) |
+| Query or analyze trajectory Datasets | [pChronicle CLI](../design/cli-pchronicle.md) |
 | Record agent LLM calls | [Capture](capture.md) |
 | Control HTTP/HTTPS egress for proxy-aware Agent tools | [OverlayNet](overlaynet.md) |
 | Store/retrieve parameters or KV cache by tensor subscript | [Tensor Memory](tensor-memory.md) |
@@ -28,7 +28,7 @@ generated files and reports directly. `just examples` runs them all.
 | Capability | What it provides | Maturity |
 |---|---|---|
 | [pVisor](../design/cli-pvisor.md) | One Run's execution, control, and transactional workspace | Implemented |
-| [pPilot](../design/cli-ppilot.md) | Batch orchestration, durable results, sharded analysis and processing | Implemented |
+| [pPilot](../design/cli-ppilot.md) | Batch orchestration, durable results, and Run production | Implemented |
 | [pChronicle](../design/cli-pchronicle.md) | Dataset catalog, bounded SQL/analysis, exchange, local read-only UI | Implemented; search/maintenance reserved |
 | [Capture](capture.md) | LLM traffic capture into Lance and Markdown views | Implemented |
 | [OverlayNet](overlaynet.md) | Cooperative HTTP/HTTPS proxy policy and bandwidth control | Implemented |

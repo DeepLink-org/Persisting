@@ -88,7 +88,7 @@ echo "Installing ${url}" >&2
 "$PYTHON" -c "import persisting; print('persisting', persisting.__version__)"
 
 scripts_dir="$($PYTHON -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
-for binary in persisting pchronicle pvisor ppilot; do
+for binary in pchronicle pvisor ppilot; do
   if [ ! -x "$scripts_dir/$binary" ]; then
     echo "error: wheel did not install executable $scripts_dir/$binary" >&2
     exit 1

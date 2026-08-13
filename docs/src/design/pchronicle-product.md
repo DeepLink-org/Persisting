@@ -9,8 +9,7 @@
 | 相关设计 | [Dataset Catalog](dataset-catalog.md) · [轨迹存储](trajectory.md) · [Storyline 三表 Lance](storyline-lance.md) · [Ownership RFC](../rfcs/0003-pchronicle-ownership.md) |
 
 本文定义 pChronicle 的产品边界、核心模型和交互契约。完整 flags、wire schema、物理布局与
-索引算法由后续详细设计规定。当前仓库中的 `ppilot`、`persisting chronicle` 和本地 Web 接口
-不等同于本文的完整目标形态。
+索引算法由后续详细设计规定。当前独立 CLI 与 Web 接口不等同于本文的完整目标形态。
 
 当前可用命令以 [`pchronicle` 命令参考](cli-pchronicle.md)和二进制 `--help` 为准。
 截至本文更新时，核心差异如下：
@@ -352,17 +351,7 @@ loss、staging/orphan bytes、同步取消和资源峰值；每个阶段提供�
 
 ## 6. 交付与演进
 
-现有入口保留一个明确发布周期的转发：
-
-| 旧入口 | 目标入口 |
-|---|---|
-| `ppilot chronicle import/export/maintain` | `pchronicle import/export/maintain` |
-| `ppilot query ...` | `pchronicle query/find` |
-| `ppilot convert ...` | `pchronicle import/export` 或文件转换兼容入口 |
-| `ppilot analysis ...` | `pchronicle query --recipe ...`；脚本继续由 pPilot 承担 |
-| `persisting chronicle serve ...` | `pchronicle serve --config ...` |
-
-转发层输出 deprecation warning，但不能污染 stdout 数据；一个弃用周期后移除旧入口。
+Dataset 产品能力只通过独立 `pchronicle` 命令发布，不保留跨组件转发层。
 
 交付顺序为：
 

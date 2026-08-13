@@ -56,10 +56,7 @@ fn lsof_client_pid_for_peer(peer: SocketAddr) -> Result<Option<u32>> {
         {
             continue;
         }
-        if let Some(cmd) = command_line_for_pid(entry.pid)? {
-            if is_gateway_serve_command(&cmd) {
-                continue;
-            }
+        if command_line_for_pid(entry.pid)?.is_some() {
             return Ok(Some(entry.pid));
         }
     }
@@ -119,11 +116,6 @@ fn format_socket_addr(addr: SocketAddr) -> String {
         std::net::IpAddr::V4(v4) => format!("{v4}:{}", addr.port()),
         std::net::IpAddr::V6(v6) => format!("[{v6}]:{}", addr.port()),
     }
-}
-
-#[cfg(unix)]
-fn is_gateway_serve_command(cmd: &str) -> bool {
-    cmd.contains("persisting gateway serve")
 }
 
 #[cfg(unix)]
@@ -208,13 +200,5 @@ n127.0.0.1:55522->127.0.0.1:8080
         assert_eq!(entries[0].pid, 100);
         assert_eq!(entries[1].pid, 200);
         assert_eq!(entries[1].names[0], "127.0.0.1:55522->127.0.0.1:8080");
-    }
-
-    #[test]
-    fn skips_gateway_serve_command() {
-        assert!(is_gateway_serve_command(
-            "./target/debug/persisting gateway serve -o ./store"
-        ));
-        assert!(!is_gateway_serve_command("claude --model deepseek"));
     }
 }

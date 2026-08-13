@@ -9,7 +9,7 @@
 //!   (programmatic, after you already loaded rows from Lance)
 //! - [`export_events_jsonl`] / [`export_events_json_pretty`]: **debug export only**
 //!
-//! Use `persisting history` to extract Lance → JSON for inspection.
+//! Use the pChronicle APIs to extract Lance events for inspection.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

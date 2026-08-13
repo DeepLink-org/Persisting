@@ -1,8 +1,7 @@
 # pChronicle 轨迹存储
 
 > 当前实现说明。规范性所有权见 [RFC-0003](../rfcs/0003-pchronicle-ownership.md)，
-> Dataset 命令见 [`pchronicle`](cli-pchronicle.md)；canonical capture event、
-> AgenticMD 与评测命令见[兼容命令参考](cli-history.md)。
+> Dataset 命令见 [`pchronicle`](cli-pchronicle.md)。
 
 ## 1. 定位
 
@@ -58,13 +57,9 @@ AgenticMD 是面向人的 Markdown 调试视图。它保存可见对话块和会
 代码审阅与人工分析。它会省略协议噪声，字段也允许缺失或扩展，因此不是存储格式或
 原始 HTTP 事件的无损替代。
 
-所有采集与 history 写入都落到 Lance：
-
-- `persisting execute -f md` 写 Lance，并额外维护 live AgenticMD；
-- `persisting execute -f lance` 只写 Lance；
-- `persisting history materialize` 从 Lance 重建 AgenticMD；
-- `persisting history add --format markdown` 将外部 Markdown 显式解析后导入 Lance；
-- `persisting history replay` 和 `stats` 只读取 Lance，现存 Markdown 仅作为诊断信息。
+`pvisor run --chronicle-mode lance` 写 canonical Lance events；
+`--gateway-stream-markdown` 可同时维护 live AgenticMD。Markdown 是诊断投影，Dataset
+消费统一使用 pChronicle API 和 `pchronicle` 命令。
 
 ### Storyline 三表 Lance
 
@@ -144,7 +139,7 @@ OpenAI msg ┘
 ```
 
 需要保存原始 payload 的路径直接读写 events，不能经有损 Storyline roundtrip。
-`persisting history convert` 用于文件格式转换；`persisting history materialize` 专门处理 Lance → AgenticMD。
+外围交换格式由 `pchronicle import/export` 处理。
 
 ## 7. 组件边界
 
@@ -160,5 +155,4 @@ OpenAI msg ┘
 - [AgenticMD 格式](trajectory-format.md)
 - [Gateway 架构](gateway.md)
 - [pVisor 命令](cli-pvisor.md)
-- [History / Eval / Gateway 命令](cli-history.md)
 - [`pchronicle` Dataset 命令](cli-pchronicle.md)

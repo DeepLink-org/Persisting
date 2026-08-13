@@ -14,7 +14,7 @@ for supported workflows.
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
 | Gateway capture driver | [Gateway pipeline](gateway.md) | [Markdown format](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
 | Tensor Memory (experimental) | [TTAS model](tensor-address-space.md) | [Tiered storage](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
-| CLI boundary | [CLI architecture](cli.md) | command references under **Reference** |
+| CLI boundary | [pVisor](cli-pvisor.md), [pPilot](cli-ppilot.md), [pChronicle](cli-pchronicle.md) | command references under **Reference** |
 
 ## Maturity and scope
 

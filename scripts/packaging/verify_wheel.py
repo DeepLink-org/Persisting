@@ -13,7 +13,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
-EXPECTED_BINARIES = ("persisting", "pchronicle", "pvisor", "ppilot")
+EXPECTED_BINARIES = ("pchronicle", "pvisor", "ppilot")
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 
@@ -114,9 +114,13 @@ def verify_native_payloads(
                         if not dependency.startswith(("/usr/lib/", "/System/Library/")):
                             raise RuntimeError(f"{name} has non-system dependency {dependency!r}")
                     if name == "pvisor":
-                        entitlements = _run(["codesign", "-d", "--entitlements", ":-", str(executable)])
+                        entitlements = _run(
+                            ["codesign", "-d", "--entitlements", ":-", str(executable)]
+                        )
                         if "com.apple.security.hypervisor" not in entitlements:
-                            raise RuntimeError("pvisor is missing the Hypervisor.framework entitlement")
+                            raise RuntimeError(
+                                "pvisor is missing the Hypervisor.framework entitlement"
+                            )
                 elif sys.platform == "linux" and "linux" in wheel_name:
                     dependencies = _run(["ldd", str(executable)])
                     if "not found" in dependencies:
@@ -150,8 +154,9 @@ def install_smoke(wheel: Path, version: str) -> None:
                 )
             _run([str(executable), "--help"], env=env)
 
-        _run([str(scripts / "persisting"), "execute", "--help"], env=env)
-        _run([str(scripts / "persisting"), "query", "--help"], env=env)
+        _run([str(scripts / "pvisor"), "run", "--help"], env=env)
+        _run([str(scripts / "ppilot"), "produce", "--help"], env=env)
+        _run([str(scripts / "pchronicle"), "query", "--help"], env=env)
 
 
 def main() -> None:

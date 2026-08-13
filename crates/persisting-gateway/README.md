@@ -15,7 +15,6 @@ format. `persisting-overlaynet` owns proxy transport, access enforcement, and
 generic sink dispatch. `persisting-pchronicle` owns schemas, persistence,
 reading, replay, conversion, and derived views.
 
-Capture remains the name of the user-facing capability. One-shot capture runs
-through `persisting execute`; long-running capture uses `persisting gateway`.
-Gateway is an internal pVisor driver and a reusable crate, not a peer of pVisor,
-pPilot, or pChronicle in the top-level product architecture.
+Capture remains the name of the user-facing capability. It runs through
+`pvisor run`; Gateway is an internal pVisor driver and a reusable crate, not a
+peer product or standalone service.

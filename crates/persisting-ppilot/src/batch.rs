@@ -1,8 +1,6 @@
 //! Product batch scenarios built from pPilot's pVisor and pChronicle seams.
 
 use anyhow::{bail, Context};
-#[cfg(feature = "query")]
-use futures::TryStreamExt;
 use futures::{stream, stream::FuturesUnordered, Stream, StreamExt};
 use persisting_control::{RunId, RunInvocation, RunSpec, RunState, StdioMode};
 use persisting_gateway::config::{CaptureLevel, NetworkConfig, OverlayConfig, ProxyConfig};
@@ -13,28 +11,6 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 pub const BATCH_PRODUCTION_SCHEMA_VERSION: u32 = 1;
-pub const BATCH_ANALYSIS_SCHEMA_VERSION: u32 = 1;
-
-#[cfg(feature = "query")]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum AnalysisOutputFormat {
-    #[default]
-    Jsonl,
-    Json,
-    Toml,
-}
-
-#[cfg(feature = "query")]
-impl AnalysisOutputFormat {
-    fn extension(self) -> &'static str {
-        match self {
-            Self::Jsonl => "jsonl",
-            Self::Json => "json",
-            Self::Toml => "toml",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchProductionManifest {
@@ -336,170 +312,6 @@ async fn run_production_entry(
     })
 }
 
-#[cfg(feature = "query")]
-#[derive(Debug, Clone)]
-pub struct BatchAnalysisOptions {
-    pub input: PathBuf,
-    pub sql: String,
-    pub output_dir: PathBuf,
-    pub parallelism: usize,
-    pub format: AnalysisOutputFormat,
-}
-
-#[cfg(feature = "query")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchAnalysisReport {
-    pub schema_version: u32,
-    pub requested_parallelism: usize,
-    pub shard_count: usize,
-    pub trajectories: usize,
-    pub output: PathBuf,
-    pub shards: Vec<AnalysisShardReport>,
-}
-
-#[cfg(feature = "query")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnalysisShardReport {
-    pub shard_id: usize,
-    pub trajectory_ids: Vec<String>,
-    pub output: PathBuf,
-    pub rows: usize,
-}
-
-/// Deterministically distribute item indices across balanced round-robin shards.
-#[cfg(feature = "query")]
-pub fn balanced_shards(item_count: usize, parallelism: usize) -> Vec<Vec<usize>> {
-    let shard_count = item_count.min(parallelism.max(1));
-    let mut shards = vec![Vec::new(); shard_count];
-    for index in 0..item_count {
-        shards[index % shard_count].push(index);
-    }
-    shards
-}
-
-/// Load trajectories through pChronicle, shard them deterministically according
-/// to parallelism, execute the same read-only SQL per shard, and concatenate the
-/// partition outputs into `results.jsonl`.
-#[cfg(feature = "query")]
-pub async fn process_trajectories(
-    options: BatchAnalysisOptions,
-) -> anyhow::Result<BatchAnalysisReport> {
-    use persisting_pchronicle::{AtifDataSource, ChronicleQueryEngine};
-
-    if options.sql.trim().is_empty() {
-        bail!("batch analysis SQL must not be empty");
-    }
-    let trajectories = load_analysis_trajectories(&options.input).await?;
-    let shard_indices = balanced_shards(trajectories.len(), options.parallelism);
-    tokio::fs::create_dir_all(&options.output_dir)
-        .await
-        .with_context(|| format!("create analysis output {}", options.output_dir.display()))?;
-
-    let parallelism = options.parallelism.max(1);
-    let sql = options.sql.clone();
-    let output_dir = options.output_dir.clone();
-    let mut shards = stream::iter(shard_indices.into_iter().enumerate().map(
-        |(shard_id, indices)| {
-            let documents = indices
-                .into_iter()
-                .map(|index| trajectories[index].clone())
-                .collect::<Vec<_>>();
-            let sql = sql.clone();
-            let output_dir = output_dir.clone();
-            async move {
-                let trajectory_ids = documents
-                    .iter()
-                    .map(|document| document.effective_session_id().map(str::to_owned))
-                    .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
-                let source = AtifDataSource::from_trajectories(&documents)?;
-                let engine = ChronicleQueryEngine::from_atif_source(source)?;
-                let jsonl = engine.query_jsonl(&sql).await?;
-                let output = output_dir.join(format!("part-{shard_id:05}.jsonl"));
-                write_bytes_atomic(&output, jsonl.as_bytes()).await?;
-                Ok::<_, anyhow::Error>(AnalysisShardReport {
-                    shard_id,
-                    trajectory_ids,
-                    output,
-                    rows: jsonl.lines().count(),
-                })
-            }
-        },
-    ))
-    .buffer_unordered(parallelism)
-    .try_collect::<Vec<_>>()
-    .await?;
-    shards.sort_by_key(|shard| shard.shard_id);
-
-    let combined_path = output_dir.join(format!("results.{}", options.format.extension()));
-    let mut combined = Vec::new();
-    for shard in &shards {
-        let part = tokio::fs::read(&shard.output).await?;
-        combined.extend_from_slice(&part);
-        if !part.is_empty() && !part.ends_with(b"\n") {
-            combined.push(b'\n');
-        }
-    }
-    let rendered = render_analysis_rows(&combined, options.format)?;
-    write_bytes_atomic(&combined_path, &rendered).await?;
-    let report = BatchAnalysisReport {
-        schema_version: BATCH_ANALYSIS_SCHEMA_VERSION,
-        requested_parallelism: parallelism,
-        shard_count: shards.len(),
-        trajectories: trajectories.len(),
-        output: combined_path,
-        shards,
-    };
-    write_json_atomic(&output_dir.join("analysis-report.json"), &report).await?;
-    Ok(report)
-}
-
-/// Convert canonical JSONL query rows to a presentation format.
-#[cfg(feature = "query")]
-pub fn render_analysis_rows(jsonl: &[u8], format: AnalysisOutputFormat) -> anyhow::Result<Vec<u8>> {
-    if format == AnalysisOutputFormat::Jsonl {
-        return Ok(jsonl.to_vec());
-    }
-    let text = std::str::from_utf8(jsonl).context("analysis JSONL is not valid UTF-8")?;
-    let rows = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str::<serde_json::Value>)
-        .collect::<serde_json::Result<Vec<_>>>()?;
-    let mut rendered = match format {
-        AnalysisOutputFormat::Jsonl => unreachable!(),
-        AnalysisOutputFormat::Json => serde_json::to_vec_pretty(&rows)?,
-        AnalysisOutputFormat::Toml => toml::to_string_pretty(&serde_json::json!({ "rows": rows }))
-            .context("render analysis rows as TOML (TOML cannot represent null values)")?
-            .into_bytes(),
-    };
-    rendered.push(b'\n');
-    Ok(rendered)
-}
-
-#[cfg(feature = "query")]
-pub(crate) async fn load_analysis_trajectories(
-    input: &Path,
-) -> anyhow::Result<Vec<persisting_pchronicle::AtifTrajectory>> {
-    let input = input.to_path_buf();
-    let mut trajectories =
-        tokio::task::spawn_blocking(move || persisting_pchronicle::load_atif_trajectories(input))
-            .await
-            .context("join ATIF loading task")??;
-    trajectories.sort_by(|left, right| {
-        left.effective_session_id()
-            .unwrap_or_default()
-            .cmp(right.effective_session_id().unwrap_or_default())
-    });
-    let mut seen = BTreeSet::new();
-    for trajectory in &trajectories {
-        let trajectory_id = trajectory.effective_session_id()?.to_owned();
-        if !seen.insert(trajectory_id.clone()) {
-            bail!("duplicate trajectory/session id {trajectory_id:?}");
-        }
-    }
-    Ok(trajectories)
-}
-
 pub(crate) async fn write_json_atomic(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
     write_bytes_atomic(path, &serde_json::to_vec_pretty(value)?).await
 }
@@ -653,41 +465,5 @@ def plan():
         assert!(error
             .to_string()
             .contains("requires the pVisor capture Gateway"));
-    }
-
-    #[cfg(feature = "query")]
-    #[test]
-    fn automatic_shards_are_balanced_complete_and_disjoint() {
-        let shards = balanced_shards(10, 3);
-        assert_eq!(shards.iter().map(Vec::len).collect::<Vec<_>>(), [4, 3, 3]);
-        let flattened = shards.into_iter().flatten().collect::<BTreeSet<_>>();
-        assert_eq!(flattened, (0..10).collect());
-        assert!(balanced_shards(0, 4).is_empty());
-        assert_eq!(balanced_shards(2, 8).len(), 2);
-    }
-
-    #[cfg(feature = "query")]
-    #[test]
-    fn analysis_formats_preserve_rows_and_reject_toml_nulls() {
-        let jsonl = b"{\"name\":\"alpha\",\"count\":1}\n{\"name\":\"beta\",\"count\":2}\n";
-        assert_eq!(
-            render_analysis_rows(jsonl, AnalysisOutputFormat::Jsonl).unwrap(),
-            jsonl
-        );
-        let json = render_analysis_rows(jsonl, AnalysisOutputFormat::Json).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<Vec<serde_json::Value>>(&json)
-                .unwrap()
-                .len(),
-            2
-        );
-        let toml = render_analysis_rows(jsonl, AnalysisOutputFormat::Toml).unwrap();
-        assert!(std::str::from_utf8(&toml).unwrap().contains("[[rows]]"));
-        assert!(
-            render_analysis_rows(b"{\"nullable\":null}\n", AnalysisOutputFormat::Toml)
-                .unwrap_err()
-                .to_string()
-                .contains("TOML cannot represent null")
-        );
     }
 }

@@ -69,10 +69,9 @@ jobs:
 
       - name: Build Agent CLI component set
         run: |
-          cargo build -p persisting-cli --bin persisting --locked
           cargo build -p persisting-pchronicle-cli --bin pchronicle --locked
           cargo build -p persisting-pvisor --bin pvisor --locked
-          cargo build -p persisting-ppilot --features cli --bin ppilot --locked
+          cargo build -p persisting-ppilot --bin ppilot --locked
 
       - name: Test
         # GitHub-hosted Linux runners may disable unprivileged user namespaces.
@@ -82,31 +81,12 @@ jobs:
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
         run: cargo test --workspace --locked
 
-      - name: Test pPilot CLI feature
-        run: cargo test -p persisting-ppilot --features cli --locked
-
-      - name: Smoke unified component dispatch
+      - name: Smoke product CLIs
         run: |
-          ./target/debug/persisting execute -- /usr/bin/true
-          ./target/debug/persisting batch --help
-          ./target/debug/persisting query --help
-          ./target/debug/persisting history --help
-          ./target/debug/persisting eval --help
-          ./target/debug/persisting gateway --help
-
-      - name: Test unified History CLI integration
-        if: runner.os == 'Linux'
-        env:
-          PERSISTING_CLI: ${{ github.workspace }}/target/debug/persisting
-          SKIP_BUILD: "1"
-        run: ./scripts/test_suite.sh traj-e2e
-
-      - name: Test unified Gateway CLI integration
-        if: runner.os == 'Linux'
-        env:
-          PERSISTING_CLI: ${{ github.workspace }}/target/debug/persisting
-          SKIP_BUILD: "1"
-        run: ./scripts/test_suite.sh capture-integration
+          ./target/debug/pvisor run --help
+          ./target/debug/ppilot run --help
+          ./target/debug/ppilot produce --help
+          ./target/debug/pchronicle query --help
 
   s3-contract:
     name: pChronicle S3 Contract (MinIO)
@@ -207,7 +187,7 @@ jobs:
       # from this checkout.
       - name: Run pPilot examples
         run: |
-          cargo build --release -q -p persisting-ppilot --features cli --bin ppilot
+          cargo build --release -q -p persisting-ppilot --bin ppilot
           for example in examples/ppilot/*; do
             [ -f "$example/run.sh" ] || continue
             echo "==> ${example}/run.sh"
