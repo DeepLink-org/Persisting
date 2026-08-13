@@ -28,12 +28,18 @@ use url::Url;
     about = "Browse, query, and exchange Agent trajectory Datasets"
 )]
 pub struct Cli {
+    /// Override the pChronicle settings file (primarily for isolated environments).
+    #[arg(long, global = true, value_name = "FILE")]
+    settings: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Show or set the local default Warehouse directory.
+    Default(DefaultArgs),
     /// List trajectory Sources discovered under a Dataset URI.
     #[command(visible_alias = "list")]
     Ls(ListArgs),
@@ -57,9 +63,9 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct ListArgs {
-    /// Local path or object-store URI of the Dataset.
+    /// Local path or object-store URI. Uses the default Warehouse when omitted.
     #[arg(value_name = "DATASET_URI")]
-    dataset_uri: String,
+    dataset_uri: Option<String>,
 
     /// Include physical size, modification time, and version columns.
     #[arg(long)]
@@ -89,10 +95,17 @@ struct DatasetArgs {
 }
 
 #[derive(Debug, Args)]
+struct DefaultArgs {
+    /// Local directory to use as the default Warehouse; created when absent.
+    #[arg(value_name = "DIRECTORY")]
+    directory: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
 struct StatusArgs {
-    /// Local path or object-store URI of the Dataset.
+    /// Local path or object-store URI. Uses the default Warehouse when omitted.
     #[arg(value_name = "DATASET_URI")]
-    dataset_uri: String,
+    dataset_uri: Option<String>,
 
     /// Output format. Auto uses a table on a terminal and JSON when piped.
     #[arg(long, value_enum, default_value_t = OutputFormat::Auto)]
@@ -166,9 +179,9 @@ struct QueryArgs {
         .args(["run_id", "session_id"])
 ))]
 struct FindArgs {
-    /// Local path or object-store URI of the Dataset.
+    /// Local path or object-store URI. Uses the default Warehouse when omitted.
     #[arg(value_name = "DATASET_URI")]
-    dataset_uri: String,
+    dataset_uri: Option<String>,
 
     /// Narrow the lookup to one Dataset-relative Source path.
     #[arg(long)]
@@ -237,9 +250,9 @@ struct ImportArgs {
     #[arg(short = 'f', long = "from", value_name = "PATH_OR_STDIN")]
     from: String,
 
-    /// New local Dataset directory. The target must not already exist.
+    /// New local Dataset directory. Defaults to a child of the default Warehouse.
     #[arg(short, long, value_name = "NEW_DATASET_URI")]
-    output: String,
+    output: Option<String>,
 
     /// Input exchange format. Auto detects regular files from name and content.
     #[arg(long, value_enum, default_value_t = ExchangeFormat::Auto)]
@@ -256,9 +269,9 @@ struct ImportArgs {
 
 #[derive(Debug, Args)]
 struct ExportArgs {
-    /// Local path or object-store URI of the Dataset.
+    /// Local path or object-store URI. Uses the default Warehouse when omitted.
     #[arg(short = 'f', long = "from", value_name = "DATASET_URI")]
-    from: String,
+    from: Option<String>,
 
     /// New local file, or - for stdout.
     #[arg(short, long, value_name = "PATH_OR_STDOUT")]
@@ -523,17 +536,21 @@ pub async fn run_with_stdin(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    let settings = cli.settings.as_deref();
     match cli.command {
-        Command::Ls(args) => run_list(args, stdout_is_terminal, stdout, stderr).await,
-        Command::Status(args) => run_status(args, stdout_is_terminal, stdout, stderr).await,
-        Command::Query(args) => run_query(args, stdout_is_terminal, stdout, stderr).await,
-        Command::Find(args) => run_find(args, stdout_is_terminal, stdout, stderr).await,
+        Command::Default(args) => run_default(args, settings, stdout, stderr),
+        Command::Ls(args) => run_list(args, settings, stdout_is_terminal, stdout, stderr).await,
+        Command::Status(args) => {
+            run_status(args, settings, stdout_is_terminal, stdout, stderr).await
+        }
+        Command::Query(args) => run_query(args, settings, stdout_is_terminal, stdout, stderr).await,
+        Command::Find(args) => run_find(args, settings, stdout_is_terminal, stdout, stderr).await,
         Command::Search(args) => {
             let _ = (args.query, args.top_k);
             not_implemented("search", Some(&args.dataset_uri))
         }
-        Command::Import(args) => run_import(args, stdin, stdout, stderr).await,
-        Command::Export(args) => run_export(args, stdout, stderr).await,
+        Command::Import(args) => run_import(args, settings, stdin, stdout, stderr).await,
+        Command::Export(args) => run_export(args, settings, stdout, stderr).await,
         Command::Maintain(args) => not_implemented("maintain", Some(&args.dataset_uri)),
         Command::Serve(args) => run_serve(args, stderr).await,
     }
@@ -545,6 +562,193 @@ fn not_implemented(command: &str, _dataset_uri: Option<&str>) -> Result<()> {
 
 const MAX_WAREHOUSE_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_WAREHOUSE_DATASETS: usize = 128;
+const SETTINGS_ENV: &str = "PCHRONICLE_SETTINGS";
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LocalSettings {
+    schema_version: u32,
+    default_warehouse: String,
+}
+
+fn default_settings_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os(SETTINGS_ENV).filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(not(target_os = "windows"))]
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    base.map(|base| base.join("pchronicle/settings.toml"))
+        .context("cannot locate the user configuration directory; pass --settings <FILE>")
+}
+
+fn settings_path(override_path: Option<&Path>) -> Result<PathBuf> {
+    match override_path {
+        Some(path) => Ok(path.to_path_buf()),
+        None => default_settings_path(),
+    }
+}
+
+fn load_local_settings(path: &Path) -> Result<LocalSettings> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("read pChronicle settings metadata {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.is_file(),
+        "pChronicle settings must be a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() <= MAX_WAREHOUSE_CONFIG_BYTES,
+        "pChronicle settings exceed the {} byte limit",
+        MAX_WAREHOUSE_CONFIG_BYTES
+    );
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("read pChronicle settings {}", path.display()))?;
+    let settings: LocalSettings = toml::from_str(&content)
+        .with_context(|| format!("parse pChronicle settings {}", path.display()))?;
+    anyhow::ensure!(
+        settings.schema_version == 1,
+        "unsupported settings schema_version"
+    );
+    Ok(settings)
+}
+
+fn resolve_default_warehouse(settings_override: Option<&Path>) -> Result<String> {
+    let path = settings_path(settings_override)?;
+    anyhow::ensure!(
+        path.exists(),
+        "default Warehouse is not configured; run `pchronicle default <DIRECTORY>` (settings: {})",
+        path.display()
+    );
+    let settings = load_local_settings(&path)?;
+    let warehouse = normalize_and_validate_dataset_uri(&settings.default_warehouse)
+        .context("validate configured default Warehouse")?;
+    anyhow::ensure!(
+        !warehouse.contains("://") && Path::new(&warehouse).is_dir(),
+        "configured default Warehouse must be a local directory"
+    );
+    Ok(warehouse)
+}
+
+fn write_local_settings(path: &Path, settings: &LocalSettings) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create pChronicle settings directory {}", parent.display()))?;
+    anyhow::ensure!(
+        parent.is_dir(),
+        "pChronicle settings parent is not a directory"
+    );
+    if path.exists() {
+        anyhow::ensure!(
+            path.is_file(),
+            "pChronicle settings path is not a regular file"
+        );
+    }
+    let content = toml::to_string_pretty(settings).context("encode pChronicle settings")?;
+    let mut staging = tempfile::Builder::new()
+        .prefix(".pchronicle-settings-")
+        .tempfile_in(parent)
+        .context("create pChronicle settings staging file")?;
+    staging
+        .write_all(content.as_bytes())
+        .context("write pChronicle settings staging file")?;
+    staging
+        .as_file()
+        .sync_all()
+        .context("sync pChronicle settings staging file")?;
+    staging
+        .persist(path)
+        .map_err(|error| error.error)
+        .context("publish pChronicle settings atomically")?;
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .context("sync pChronicle settings directory")?;
+    Ok(())
+}
+
+fn run_default(
+    args: DefaultArgs,
+    settings_override: Option<&Path>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    let path = settings_path(settings_override)?;
+    let warehouse = if let Some(directory) = args.directory {
+        if !directory.exists() {
+            std::fs::create_dir_all(&directory).with_context(|| {
+                format!("create default Warehouse directory {}", directory.display())
+            })?;
+        }
+        anyhow::ensure!(directory.is_dir(), "default Warehouse must be a directory");
+        let warehouse = std::fs::canonicalize(&directory)
+            .context("canonicalize default Warehouse directory")?
+            .to_string_lossy()
+            .into_owned();
+        write_local_settings(
+            &path,
+            &LocalSettings {
+                schema_version: 1,
+                default_warehouse: warehouse.clone(),
+            },
+        )?;
+        writeln!(stderr, "settings={} updated=true", path.display())
+            .context("write pChronicle default metadata")?;
+        warehouse
+    } else {
+        resolve_default_warehouse(settings_override)?
+    };
+    writeln!(stdout, "{warehouse}").context("write default Warehouse")?;
+    Ok(())
+}
+
+fn resolve_dataset_uri(explicit: Option<&str>, settings_override: Option<&Path>) -> Result<String> {
+    match explicit {
+        Some(uri) => normalize_and_validate_dataset_uri(uri),
+        None => resolve_default_warehouse(settings_override),
+    }
+}
+
+fn default_import_output(args: &ImportArgs, settings_override: Option<&Path>) -> Result<String> {
+    anyhow::ensure!(
+        !args.stream,
+        "stream import requires an explicit --output Dataset"
+    );
+    let file_name = Path::new(&args.from)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("import input must have a UTF-8 file name")?;
+    let stem = file_name.strip_suffix(".json").unwrap_or(file_name);
+    let stem = stem.strip_suffix(".actf").unwrap_or(stem);
+    let mut dataset_name = stem
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while dataset_name.contains("--") {
+        dataset_name = dataset_name.replace("--", "-");
+    }
+    let dataset_name = dataset_name.trim_matches('-');
+    anyhow::ensure!(
+        !dataset_name.is_empty(),
+        "cannot derive Dataset name from import input"
+    );
+    let warehouse = resolve_default_warehouse(settings_override)?;
+    Ok(Path::new(&warehouse)
+        .join(dataset_name)
+        .to_string_lossy()
+        .into_owned())
+}
 
 fn load_warehouse_config(
     path: &Path,
@@ -663,17 +867,14 @@ fn open_browser(url: &str) -> Result<()> {
 
 async fn run_list(
     args: ListArgs,
+    settings_override: Option<&Path>,
     stdout_is_terminal: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    let (dataset_uri, snapshot) = discover_snapshot(
-        &args.dataset_uri,
-        args.errors,
-        args.max_files,
-        args.max_entries,
-    )
-    .await?;
+    let dataset_uri = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
+    let (dataset_uri, snapshot) =
+        discover_snapshot(&dataset_uri, args.errors, args.max_files, args.max_entries).await?;
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
         .context("default Dataset missing from Catalog Snapshot")?;
@@ -727,6 +928,7 @@ async fn run_list(
 
 async fn run_status(
     args: StatusArgs,
+    settings_override: Option<&Path>,
     stdout_is_terminal: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -735,13 +937,9 @@ async fn run_status(
         args.timeout_seconds > 0,
         "--timeout-seconds must be greater than zero"
     );
-    let (dataset_uri, snapshot) = discover_snapshot(
-        &args.dataset_uri,
-        args.errors,
-        args.max_files,
-        args.max_entries,
-    )
-    .await?;
+    let dataset_uri = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
+    let (dataset_uri, snapshot) =
+        discover_snapshot(&dataset_uri, args.errors, args.max_files, args.max_entries).await?;
     let snapshot = Arc::new(snapshot);
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
@@ -840,11 +1038,12 @@ async fn run_status(
 
 async fn run_query(
     args: QueryArgs,
+    settings_override: Option<&Path>,
     stdout_is_terminal: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    let (dataset_uri, sql) = query_inputs(&args)?;
+    let (dataset_uri, sql) = query_inputs(&args, settings_override)?;
     anyhow::ensure!(
         args.max_output_rows > 0,
         "--max-output-rows must be greater than zero"
@@ -858,7 +1057,7 @@ async fn run_query(
         "--timeout-seconds must be greater than zero"
     );
     let (dataset_label, dataset_uris, snapshot) = discover_query_snapshot(
-        dataset_uri,
+        dataset_uri.as_deref(),
         &args.datasets,
         args.max_files,
         args.max_entries,
@@ -921,6 +1120,7 @@ async fn run_query(
 
 async fn run_find(
     args: FindArgs,
+    settings_override: Option<&Path>,
     stdout_is_terminal: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -946,13 +1146,9 @@ async fn run_find(
     if let Some(session_id) = &args.session_id {
         validate_find_id("--session-id", session_id)?;
     }
-    let (_, dataset_uris, snapshot) = discover_query_snapshot(
-        Some(&args.dataset_uri),
-        &[],
-        args.max_files,
-        args.max_entries,
-    )
-    .await?;
+    let dataset = resolve_dataset_uri(args.dataset_uri.as_deref(), settings_override)?;
+    let (_, dataset_uris, snapshot) =
+        discover_query_snapshot(Some(&dataset), &[], args.max_files, args.max_entries).await?;
     let dataset_uri = dataset_uris
         .first()
         .cloned()
@@ -1055,6 +1251,7 @@ async fn run_find(
 
 async fn run_import(
     args: ImportArgs,
+    settings_override: Option<&Path>,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -1073,7 +1270,11 @@ async fn run_import(
             "stdin import requires an explicit --format"
         );
     }
-    let output = validate_new_local_dataset_path(&args.output)?;
+    let output_arg = match args.output.as_deref() {
+        Some(output) => output.to_owned(),
+        None => default_import_output(&args, settings_override)?,
+    };
+    let output = validate_new_local_dataset_path(&output_arg)?;
     let input_path = (!args.stream).then(|| Path::new(&args.from));
     let input = if args.stream {
         read_bounded(stdin, args.max_input_bytes, "stdin")?
@@ -1147,6 +1348,7 @@ async fn run_import(
 
 async fn run_export(
     args: ExportArgs,
+    settings_override: Option<&Path>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
@@ -1192,8 +1394,9 @@ async fn run_export(
     }
 
     let format = export_format(args.format)?;
+    let dataset = resolve_dataset_uri(args.from.as_deref(), settings_override)?;
     let (_, dataset_uris, snapshot) =
-        discover_query_snapshot(Some(&args.from), &[], args.max_files, args.max_entries).await?;
+        discover_query_snapshot(Some(&dataset), &[], args.max_files, args.max_entries).await?;
     let dataset_uri = dataset_uris
         .first()
         .cloned()
@@ -1911,17 +2114,18 @@ fn redact_query_error(
     anyhow!(message)
 }
 
-fn query_inputs(args: &QueryArgs) -> Result<(Option<&str>, &str)> {
+fn query_inputs<'a>(
+    args: &'a QueryArgs,
+    settings_override: Option<&Path>,
+) -> Result<(Option<String>, &'a str)> {
     if args.datasets.is_empty() {
-        let dataset_uri = args
-            .dataset_uri
-            .as_deref()
-            .context("query requires <DATASET_URI> <SQL> or --dataset NAME=URI <SQL>")?;
-        let sql = args
-            .sql
-            .as_deref()
-            .context("query requires SQL after the Dataset URI")?;
-        Ok((Some(dataset_uri), sql))
+        match (&args.dataset_uri, &args.sql) {
+            (Some(sql), None) => Ok((Some(resolve_default_warehouse(settings_override)?), sql)),
+            (Some(dataset_uri), Some(sql)) => Ok((Some(dataset_uri.clone()), sql)),
+            (None, _) => bail!(
+                "query requires SQL, optionally preceded by <DATASET_URI>, or --dataset NAME=URI"
+            ),
+        }
     } else {
         anyhow::ensure!(
             args.sql.is_none(),
@@ -2497,7 +2701,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            ["ls", "status", "query", "find", "search", "import", "export", "maintain", "serve"]
+            [
+                "default", "ls", "status", "query", "find", "search", "import", "export",
+                "maintain", "serve",
+            ]
         );
         let ls = command
             .get_subcommands()

@@ -83,6 +83,7 @@ pub fn examples_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/data")
 }
 
+#[derive(Debug)]
 pub struct RunOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,

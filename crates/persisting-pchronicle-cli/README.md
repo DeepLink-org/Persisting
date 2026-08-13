@@ -15,6 +15,41 @@ of Datasets behind a loopback-only, read-only API and embedded Web UI. Other
 commands are present in the command tree and return a clear not-yet-implemented
 error until their respective product increments land.
 
+## Local Warehouse
+
+Set one local directory as the default Warehouse once:
+
+```bash
+pchronicle default ./trajectory-data
+pchronicle default
+```
+
+The first command creates the directory when needed, stores its normalized
+absolute path in the user settings, and prints it. The second command reports
+the current value. Once configured, the path can be omitted from local read
+commands:
+
+```bash
+pchronicle ls
+pchronicle status
+pchronicle query "SELECT * FROM dataset.runs"
+pchronicle find --session-id session-42
+pchronicle export --output runs.json --format storyline
+```
+
+File imports can also omit `--output`; the CLI derives a create-only Dataset
+subdirectory under the default Warehouse from the input file name:
+
+```bash
+pchronicle import --from ./training.json
+```
+
+An explicit Dataset URI still takes precedence. This basic Warehouse is just a
+recursive local Dataset root: it has no server, authentication, background
+process, or hidden database. Use global `--settings FILE` or the
+`PCHRONICLE_SETTINGS` environment variable to isolate its settings in tests or
+automation.
+
 ```toml
 default_dataset = "evals"
 
@@ -54,6 +89,7 @@ them.
 | Format matrix | every Warehouse fixture × catalog/query/import/export | `--test command_matrix` |
 | Round trip | exact bytes and forced Storyline conversion | `--test import_export_roundtrip` |
 | Process | exit codes and stdout/stderr separation | `--test binary_contract` |
+| Local Warehouse | persistent default and serverless command workflow | `--test local_warehouse` |
 
 Run the complete CLI gate with:
 

@@ -22,6 +22,7 @@ pChronicle 是 path-first 的 Agent 轨迹数据层：它从本地目录和对�
 | 路径直用 | CLI 直接浏览本地目录或 S3 prefix | 无额外状态 |
 | 原生 Dataset | create-only import 或 Gateway/native writer 写入 | Dataset 自身版本和 manifest |
 | 只读 Warehouse | 静态挂载多个 Dataset，提供 API 与 Web | 配置文件和可重建 cache |
+| 本地默认 Warehouse | 单个本地目录作为默认 Dataset 根 | 用户设置中的规范化绝对路径 |
 
 ```mermaid
 flowchart LR
@@ -152,11 +153,13 @@ Gateway/native writer 写入 append-only events，采用 at-least-once 语义；
 
 ## 3. CLI 产品面
 
-独立 `pchronicle` 是目标入口。所有数据命令显式接收 Dataset URI；TTY 默认输出人读表格，
-结构化输出使用 `--format`。stdout 只承载主结果，进度、Snapshot 和警告写入 stderr。
+独立 `pchronicle` 是目标入口。数据命令可显式接收 Dataset URI；配置本地默认 Warehouse 后，
+支持该形态的命令可以省略 URI。TTY 默认输出人读表格，结构化输出使用 `--format`。stdout
+只承载主结果，进度、Snapshot 和警告写入 stderr。
 
 | 命令 | 职责 |
 |---|---|
+| `default` | 设置或读取单目录本地默认 Warehouse |
 | `ls/list`、`status` | Source 发现、能力、版本、数量与健康状态 |
 | `query` | 只读 SQL、结构化结果输出和内置 recipe |
 | `find` | 按 Source-local ID 精确定位或发现候选 |
@@ -195,6 +198,8 @@ snippet、lexical score 和索引 `snapshot_id`。FTS cache 是实现细节：�
 pchronicle import --from <path-or-> --output <new-dataset-uri> \
   --format auto|atif|actf|openai-messages|storyline
 
+pchronicle import --from <path> # 在默认 Warehouse 下创建确定性子目录
+
 pchronicle import --stream --from - --output <new-dataset-uri> --format atif
 
 pchronicle export --from <dataset-uri> --output <path-or-> \
@@ -226,6 +231,22 @@ pChronicle 不提供 `rm/drop`；maintain 不能删除 Dataset 根或任意 Sour
 对象存储或基础设施工具完成。
 
 ## 4. 只读 Warehouse
+
+### 4.0 本地默认 Warehouse
+
+最基础 Warehouse 不需要服务端：用户通过 `pchronicle default <DIRECTORY>` 将一个本地目录
+保存为默认 Warehouse。该目录同时是一个递归发现 Source 的 Dataset 根；设置后，`ls`、
+`status`、`query`、`find` 和 `export` 可以省略 Dataset URI。显式 URI 始终优先。
+
+```bash
+pchronicle default ./trajectory-data
+pchronicle query "SELECT COUNT(*) FROM dataset.runs"
+pchronicle find --session-id session-42
+```
+
+配置只保存规范化绝对路径，不保存凭证；数据、Catalog Snapshot 和查询仍由 pChronicle Core
+直接从该目录构建。此形态没有 HTTP、认证、守护进程、后台 Job 或额外数据库，可用于完整开发
+和集成测试。`default` 无目录参数时只读取并打印当前设置。
 
 ### 4.1 静态配置与服务
 

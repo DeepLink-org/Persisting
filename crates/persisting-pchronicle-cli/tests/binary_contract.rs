@@ -16,7 +16,9 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
-    for command in ["ls", "status", "query", "find", "import", "export", "serve"] {
+    for command in [
+        "default", "ls", "status", "query", "find", "import", "export", "serve",
+    ] {
         assert!(stdout.contains(command), "help omits {command}: {stdout}");
     }
     Ok(())
@@ -62,5 +64,60 @@ fn successful_query_keeps_machine_output_on_stdout() -> Result<()> {
     let value: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(value["runs"], 1);
     assert!(String::from_utf8(output.stderr)?.contains("datasets=dataset"));
+    Ok(())
+}
+
+#[test]
+fn default_warehouse_is_persistent_across_cli_processes() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let settings = temp.path().join("settings.toml");
+    let warehouse = temp.path().join("warehouse");
+    let settings = settings.to_string_lossy();
+    let warehouse = warehouse.to_string_lossy();
+
+    let configured = pchronicle(&["--settings", &settings, "default", &warehouse])?;
+    assert!(
+        configured.status.success(),
+        "{}",
+        String::from_utf8_lossy(&configured.stderr)
+    );
+    let expected = std::fs::canonicalize(warehouse.as_ref())?;
+    assert_eq!(
+        String::from_utf8(configured.stdout)?.trim(),
+        expected.to_string_lossy()
+    );
+
+    let queried = pchronicle(&[
+        "--settings",
+        &settings,
+        "query",
+        "SELECT COUNT(*) AS runs FROM dataset.runs",
+        "--format",
+        "jsonl",
+    ])?;
+    assert!(
+        queried.status.success(),
+        "{}",
+        String::from_utf8_lossy(&queried.stderr)
+    );
+    let value: Value = serde_json::from_slice(&queried.stdout)?;
+    assert_eq!(value["runs"], 0);
+    Ok(())
+}
+
+#[test]
+fn relative_settings_file_works_from_the_process_directory() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
+        .current_dir(temp.path())
+        .args(["--settings", "settings.toml", "default", "warehouse"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(temp.path().join("settings.toml").is_file());
+    assert!(temp.path().join("warehouse").is_dir());
     Ok(())
 }
