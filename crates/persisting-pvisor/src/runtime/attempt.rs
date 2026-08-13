@@ -6,13 +6,15 @@ use super::overlay::{
     mount_overlay_record, prepare_overlay_record_mountless, resolve_overlay_workspace,
     stage_overlay_record, OverlayMount, OverlayRecord,
 };
-use super::registry::{RunControlServer, RunLease, RunLineage, RunRecord};
+use super::registry::{EnvironmentProjection, RunControlServer, RunLease, RunLineage, RunRecord};
 use crate::TrajectoryEventSink;
 use anyhow::Context as _;
 use persisting_control::ControlController;
 use persisting_control::{NetworkCapability, ProcessInvocation, RunInvocation, RunSpec, RunState};
 use persisting_gateway::config::ProxyConfig;
-use persisting_gateway::injection::{client_gateway_config_args, proxy_environment};
+use persisting_gateway::injection::{
+    client_gateway_config_args, proxy_environment_with_local_auth,
+};
 use persisting_gateway::lifecycle::{
     append_lifecycle, root_session_route, session_ended_record, session_started_record, CaptureMode,
 };
@@ -347,7 +349,7 @@ pub(crate) fn prepare_attempt(
             )
         })
         .transpose()?;
-    let run_record = RunRecord {
+    let mut run_record = RunRecord {
         schema_version: 1,
         run_id: spec.run_id.as_str().to_string(),
         parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
@@ -372,6 +374,8 @@ pub(crate) fn prepare_attempt(
         gateway_listen: opts.gateway_enabled.then(|| gateway.listen.clone()),
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy: Some(serde_json::to_value(&config.network)?),
+        environment: environment_from_spec(spec),
+        resource_limits: spec.runtime.resource_limits.clone(),
         overlay: overlay_record.clone(),
         overlay_lowers,
         lineage: lineage_from_spec(spec),
@@ -395,7 +399,7 @@ pub(crate) fn prepare_attempt(
         ),
     )?;
 
-    enrich_with_session(
+    let implant = enrich_with_session(
         spec,
         SessionImplantOpts {
             listen: &gateway.listen,
@@ -406,8 +410,15 @@ pub(crate) fn prepare_attempt(
             capture_storage: &capture_storage,
             config_path: &config_snapshot,
             gateway_enabled: opts.gateway_enabled,
+            local_gateway_auth: opts.gateway_enabled
+                && config
+                    .models
+                    .iter()
+                    .any(|route| route.api_key.is_some() || route.api_key_env.is_some()),
         },
     )?;
+    run_record.environment.runtime_injected_keys = implant.env.keys().cloned().collect();
+    run_record.write()?;
     if opts.vm_network && opts.gateway_enabled {
         rewrite_vm_gateway_implant(spec, &gateway.listen);
     }
@@ -473,7 +484,7 @@ pub(crate) fn prepare_overlay_attempt(
         .as_ref()
         .map(|network| network.metrics.clone());
     let network_policy = prepared_network.map(|network| network.policy);
-    let run_record = RunRecord {
+    let mut run_record = RunRecord {
         schema_version: 1,
         run_id: spec.run_id.as_str().to_string(),
         parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
@@ -496,6 +507,8 @@ pub(crate) fn prepare_overlay_attempt(
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy,
+        environment: environment_from_spec(spec),
+        resource_limits: spec.runtime.resource_limits.clone(),
         overlay: Some(overlay_record.clone()),
         overlay_lowers,
         lineage: lineage_from_spec(spec),
@@ -563,6 +576,8 @@ pub(crate) fn prepare_overlay_attempt(
     }
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
+    run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
+    run_record.write()?;
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
     inject_krun_overlay_metadata(spec, &plan.overlay, Some(&overlay_record));
@@ -608,7 +623,7 @@ pub(crate) fn prepare_storage_attempt(
         .as_ref()
         .map(|network| network.metrics.clone());
     let network_policy = prepared_network.map(|network| network.policy);
-    let run_record = RunRecord {
+    let mut run_record = RunRecord {
         schema_version: 1,
         run_id: root_session.clone(),
         parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
@@ -631,6 +646,8 @@ pub(crate) fn prepare_storage_attempt(
         gateway_listen: None,
         network: serde_json::to_value(&spec.capabilities.network)?,
         network_policy,
+        environment: environment_from_spec(spec),
+        resource_limits: spec.runtime.resource_limits.clone(),
         overlay: None,
         overlay_lowers: Vec::new(),
         lineage: lineage_from_spec(spec),
@@ -658,6 +675,8 @@ pub(crate) fn prepare_storage_attempt(
     }
     let RunInvocation::Process(ref mut process) = spec.invocation;
     apply_implant(process, &plan);
+    run_record.environment.runtime_injected_keys = plan.env.keys().cloned().collect();
+    run_record.write()?;
     spec.metadata
         .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
 
@@ -810,6 +829,34 @@ fn orchestration_from_spec(
         .filter(|(key, _)| key.starts_with("ppilot.") || key.starts_with("persisting.ppilot."))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
+}
+
+fn environment_from_spec(spec: &RunSpec) -> EnvironmentProjection {
+    if let Some(value) = spec.metadata.get("pvisor.environment") {
+        let inherits_host = value
+            .get("inherits_host")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let projected_keys = value
+            .get("projected_keys")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        return EnvironmentProjection {
+            inherits_host,
+            projected_keys,
+            runtime_injected_keys: Vec::new(),
+        };
+    }
+    let RunInvocation::Process(process) = &spec.invocation;
+    EnvironmentProjection {
+        inherits_host: process.inherit_env,
+        projected_keys: process.env.keys().cloned().collect(),
+        runtime_injected_keys: Vec::new(),
+    }
 }
 
 fn workspace_from_spec(spec: &RunSpec) -> Option<PathBuf> {
@@ -977,6 +1024,7 @@ struct SessionImplantOpts<'a> {
     capture_storage: &'a Path,
     config_path: &'a Path,
     gateway_enabled: bool,
+    local_gateway_auth: bool,
 }
 
 fn enrich_with_session(
@@ -992,6 +1040,7 @@ fn enrich_with_session(
         capture_storage,
         config_path,
         gateway_enabled,
+        local_gateway_auth,
     } = opts;
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
@@ -1019,7 +1068,8 @@ fn enrich_with_session(
     plan.notes
         .push("network service: in-process HTTP proxy started".into());
 
-    for (key, value) in proxy_environment(listen, root_session) {
+    for (key, value) in proxy_environment_with_local_auth(listen, root_session, local_gateway_auth)
+    {
         plan.env.insert(key, value);
     }
     plan.notes

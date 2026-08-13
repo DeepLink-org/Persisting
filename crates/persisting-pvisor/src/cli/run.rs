@@ -138,6 +138,24 @@ struct RunOverrides {
     stdio: Option<RunStdio>,
     #[arg(long, value_enum)]
     policy: Option<RunPolicy>,
+    /// Project one host environment variable by name; repeat as needed.
+    #[arg(long, value_name = "NAME")]
+    pass_env: Vec<String>,
+    /// Maximum resident/address-space bytes, depending on executor support.
+    #[arg(long, value_name = "BYTES")]
+    max_memory_bytes: Option<u64>,
+    /// Maximum processes/threads admitted for the Run.
+    #[arg(long, value_name = "COUNT")]
+    max_processes: Option<u64>,
+    /// CPU-time budget in milliseconds.
+    #[arg(long, value_name = "MILLISECONDS")]
+    max_cpu_time_ms: Option<u64>,
+    /// Maximum open file descriptors.
+    #[arg(long, value_name = "COUNT")]
+    max_open_files: Option<u64>,
+    /// Maximum size of a file created by the Agent.
+    #[arg(long, value_name = "BYTES")]
+    max_file_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Args)]
@@ -854,14 +872,35 @@ async fn execute_config(
         RunStdio::Capture => StdioMode::Capture,
     };
     process.stderr = process.stdout;
+    process.inherit_env = config.run.inherit_env;
     if let Some(image) = &prepared_image {
         process.inherit_env = false;
         process.env.extend(image.env.clone());
+    }
+    if !process.inherit_env {
+        project_safe_baseline_environment(&mut process.env);
+    }
+    for key in &config.run.pass_env {
+        anyhow::ensure!(
+            valid_environment_name(key),
+            "--pass-env requires a valid environment variable name, got {key:?}"
+        );
+        if let Ok(value) = std::env::var(key) {
+            process.env.insert(key.clone(), value);
+        }
     }
     if !overlay_enabled {
         process.cwd = Some(workspace.display().to_string());
     }
     spec.runtime.timeout_ms = config.run.timeout_ms;
+    spec.runtime.resource_limits = config.run.resource_limits.clone();
+    spec.metadata.insert(
+        "pvisor.environment".into(),
+        serde_json::json!({
+            "inherits_host": process.inherit_env,
+            "projected_keys": process.env.keys().cloned().collect::<Vec<_>>(),
+        }),
+    );
     spec.metadata.insert(
         "pvisor.workspace".into(),
         serde_json::Value::String(workspace.display().to_string()),
@@ -998,7 +1037,36 @@ async fn execute_config(
     })
 }
 
+fn project_safe_baseline_environment(env: &mut std::collections::BTreeMap<String, String>) {
+    for key in [
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "COLORTERM",
+        "TZ",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            env.entry(key.into()).or_insert(value);
+        }
+    }
+}
+
+fn valid_environment_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+        && !name.as_bytes()[0].is_ascii_digit()
+}
+
 fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
+    config.run.inherit_env = false;
     config
         .overlayfs
         .get_or_insert_with(OverlayFsSettings::default)
@@ -1059,6 +1127,24 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
     if let Some(value) = args.run.policy {
         config.run.policy = value;
+    }
+    if !args.run.pass_env.is_empty() {
+        config.run.pass_env = args.run.pass_env;
+    }
+    if let Some(value) = args.run.max_memory_bytes {
+        config.run.resource_limits.memory_bytes = Some(value);
+    }
+    if let Some(value) = args.run.max_processes {
+        config.run.resource_limits.processes = Some(value);
+    }
+    if let Some(value) = args.run.max_cpu_time_ms {
+        config.run.resource_limits.cpu_time_ms = Some(value);
+    }
+    if let Some(value) = args.run.max_open_files {
+        config.run.resource_limits.open_files = Some(value);
+    }
+    if let Some(value) = args.run.max_file_size_bytes {
+        config.run.resource_limits.file_size_bytes = Some(value);
     }
     if !args.command.is_empty() {
         config.run.command = args.command;
@@ -1988,6 +2074,37 @@ mod tests {
         assert_eq!(config.overlaynet.rules[0].host, "new.example");
         assert_eq!(config.overlaynet.mode, OverlayNetMode::Proxy);
         assert_eq!(config.overlaynet.policy, OverlayNetPolicy::Allowlist);
+    }
+
+    #[test]
+    fn safe_defaults_disable_inheritance_and_cli_maps_resource_limits() {
+        let crate::cli::Command::Run(args) = Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--pass-env",
+            "EXPLICIT_TOKEN",
+            "--max-memory-bytes",
+            "1048576",
+            "--max-processes",
+            "8",
+            "--max-open-files",
+            "32",
+            "--",
+            "true",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let mut config = RunConfig::default();
+        apply_cli(&mut config, *args).unwrap();
+        apply_safe_defaults(&mut config).unwrap();
+        assert!(!config.run.inherit_env);
+        assert_eq!(config.run.pass_env, ["EXPLICIT_TOKEN"]);
+        assert_eq!(config.run.resource_limits.memory_bytes, Some(1_048_576));
+        assert_eq!(config.run.resource_limits.processes, Some(8));
+        assert_eq!(config.run.resource_limits.open_files, Some(32));
     }
 
     #[test]

@@ -48,6 +48,16 @@ pub fn client_gateway_config_args(program: &str, listen: &str) -> Vec<String> {
 /// - absolute-URI HTTP → transparent forward, except LLM API paths (captured + yaml upstream)
 /// - relative paths on `listen` (via `OPENAI_BASE_URL`) → LLM gateway + capture
 pub fn proxy_environment(listen: &str, session_id: &str) -> HashMap<String, String> {
+    proxy_environment_with_local_auth(listen, session_id, false)
+}
+
+/// Build the proxy environment and, when the trusted Gateway owns upstream
+/// credentials, provide non-secret Run-scoped placeholders required by SDKs.
+pub fn proxy_environment_with_local_auth(
+    listen: &str,
+    session_id: &str,
+    local_auth: bool,
+) -> HashMap<String, String> {
     let base = if listen.starts_with("http://") || listen.starts_with("https://") {
         listen.to_string()
     } else {
@@ -74,10 +84,16 @@ pub fn proxy_environment(listen: &str, session_id: &str) -> HashMap<String, Stri
     env.insert("GEMINI_API_BASE".to_string(), format!("{base}/v1beta"));
     env.insert(ENV_SESSION_ID.to_string(), session_id.to_string());
 
-    // Claude Code + DeepSeek Anthropic surface reads ANTHROPIC_AUTH_TOKEN.
-    if let Ok(key) = std::env::var("DEEPSEEK_API_KEY") {
-        env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), key.clone());
-        env.insert("ANTHROPIC_API_KEY".to_string(), key);
+    if local_auth {
+        let placeholder = format!("persisting-local-{session_id}");
+        for key in [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+        ] {
+            env.insert(key.into(), placeholder.clone());
+        }
     }
 
     env
@@ -111,5 +127,30 @@ mod tests {
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "-c");
         assert_eq!(args[1], "openai_base_url=\"http://127.0.0.1:19081/v1\"");
+    }
+
+    #[test]
+    fn proxy_environment_never_projects_upstream_credentials() {
+        std::env::set_var("DEEPSEEK_API_KEY", "host-secret");
+        let env = proxy_environment("127.0.0.1:8080", "sess-1");
+        assert!(!env.contains_key("DEEPSEEK_API_KEY"));
+        assert!(!env.contains_key("ANTHROPIC_AUTH_TOKEN"));
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn local_auth_uses_run_scoped_placeholders_not_host_secrets() {
+        std::env::set_var("OPENAI_API_KEY", "host-secret");
+        let env = proxy_environment_with_local_auth("127.0.0.1:8080", "sess-1", true);
+        assert_eq!(
+            env.get("OPENAI_API_KEY").map(String::as_str),
+            Some("persisting-local-sess-1")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some("persisting-local-sess-1")
+        );
+        std::env::remove_var("OPENAI_API_KEY");
     }
 }

@@ -217,6 +217,8 @@ fn create(args: CreateArgs) -> Result<i32> {
         gateway_listen: None,
         network: serde_json::json!({"mode": "host"}),
         network_policy: None,
+        environment: Default::default(),
+        resource_limits: Default::default(),
         overlay: Some(overlay),
         overlay_lowers: vec![target],
         lineage: None,

@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use persisting_control::ResourceLimits;
 use persisting_gateway::config::{CaptureLevel, ModelRoute, ProxyConfig};
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,12 @@ pub struct RunSettings {
     pub timeout_ms: Option<u64>,
     pub stdio: RunStdio,
     pub policy: RunPolicy,
+    /// Inherit the complete supervisor environment. Safe CLI runs override
+    /// this to false and project only baseline plus explicitly passed keys.
+    pub inherit_env: bool,
+    /// Host environment variables projected by name when `inherit_env=false`.
+    pub pass_env: Vec<String>,
+    pub resource_limits: ResourceLimits,
     pub command: Vec<String>,
 }
 
@@ -56,6 +63,9 @@ impl Default for RunSettings {
             timeout_ms: None,
             stdio: RunStdio::Inherit,
             policy: RunPolicy::Observe,
+            inherit_env: true,
+            pass_env: Vec::new(),
+            resource_limits: ResourceLimits::default(),
             command: Vec::new(),
         }
     }

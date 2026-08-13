@@ -252,6 +252,8 @@ mod tests {
             gateway_listen: None,
             network: serde_json::json!({"mode": "ambient"}),
             network_policy: None,
+            environment: Default::default(),
+            resource_limits: Default::default(),
             overlay: Some(OverlayRecord {
                 id: "run-source".into(),
                 target: target.clone(),

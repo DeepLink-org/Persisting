@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use persisting_control::ExecutorDescriptor;
+use persisting_control::{ExecutorDescriptor, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";
@@ -38,6 +38,16 @@ pub fn default_run_home() -> PathBuf {
 pub struct RunLineage {
     pub parent_run_id: String,
     pub checkpoint_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnvironmentProjection {
+    #[serde(default)]
+    pub inherits_host: bool,
+    #[serde(default)]
+    pub projected_keys: Vec<String>,
+    #[serde(default)]
+    pub runtime_injected_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +81,10 @@ pub struct RunRecord {
     pub network: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_policy: Option<serde_json::Value>,
+    #[serde(default)]
+    pub environment: EnvironmentProjection,
+    #[serde(default)]
+    pub resource_limits: ResourceLimits,
     pub overlay: Option<OverlayRecord>,
     #[serde(default)]
     pub overlay_lowers: Vec<PathBuf>,
@@ -646,6 +660,8 @@ mod tests {
             gateway_listen: None,
             network: serde_json::json!({"mode": "ambient"}),
             network_policy: None,
+            environment: Default::default(),
+            resource_limits: Default::default(),
             overlay: Some(OverlayRecord {
                 id: "session-test".into(),
                 target: storage.join("target"),

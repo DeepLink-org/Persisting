@@ -1,0 +1,16 @@
+[package]
+name = "persisting-agent-abi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Reusable client SDK for the versioned pVisor Agent ABI"
+readme = "README.md"
+
+[dependencies]
+anyhow.workspace = true
+persisting-pvisor.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+persisting-control.workspace = true
