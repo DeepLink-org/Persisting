@@ -11,5 +11,6 @@
 | [04-gateway-llm-control](04-gateway-llm-control/) | Gateway 路由并捕获两次 OpenAI-compatible 调用 |
 
 文件系统示例需要 macOS 的 macFUSE 或 Linux 的 FUSE3。这里的“轻量级隔离”特指
-事务工作区和 cooperative proxy 所覆盖的数据面；Bundle 会如实报告 Host executor
-仍可访问工作区外路径、直接 socket 仍可绕过显式代理。
+事务工作区和示例中 cooperative public proxy 所覆盖的数据面；直接 socket 可绕过
+该代理。Host executor 的完整文件系统与 deny-all 网络边界因平台而异，以 Run Bundle
+和 pVisor 隔离文档为准。

@@ -1,13 +1,12 @@
-# `persisting execute` / `env`（pVisor）
+# `pvisor` 命令参考
 
-面向用户的入口是 `persisting execute` 和 `persisting env`；它们分别转发到组件命令
-`pvisor run` 和 `pvisor env`。直接使用 `pvisor` 适合组件部署与调试。
+`pvisor` 是单个 Run 和持久环境的产品命令。
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guide/pvisor-execution.md)。
 
 ```text
 pvisor
-├── run       (default) execute one Agent Run
+├── run                 execute one Agent Run
 ├── env                 manage durable reusable environments
 ├── status              aggregate Run, filesystem, and network state
 ├── inspect             open a read-only Run view
@@ -63,15 +62,15 @@ memory.
 持久环境拥有稳定名称和可复用 OverlayFS upper：
 
 ```bash
-persisting env create dev --target ./project
-persisting env exec dev -- make test
-persisting env shell dev
-persisting env inspect dev -- git status --short
-persisting env stop dev
-persisting env start dev
-persisting env apply dev       # 提交修改并重置为空 stage
-persisting env drop dev        # 丢弃修改并重置为空 stage
-persisting env delete dev --force
+pvisor env create dev --target ./project
+pvisor env exec dev -- make test
+pvisor env shell dev
+pvisor env inspect dev -- git status --short
+pvisor env stop dev
+pvisor env start dev
+pvisor env apply dev       # 提交修改并重置为空 stage
+pvisor env drop dev        # 丢弃修改并重置为空 stage
+pvisor env delete dev --force
 ```
 
 默认元数据位于 `~/.persisting/envs`，可用 `--root` 或 `PERSISTING_ENV_HOME`
@@ -80,7 +79,7 @@ persisting env delete dev --force
 
 ## One configuration model
 
-`persisting execute` / `pvisor run` has one canonical `RunConfig`. TOML and command-line options are
+`pvisor run` has one canonical `RunConfig`. TOML and command-line options are
 two representations of the same fields. `--config` is optional and explicit;
 pVisor does not discover a hidden project configuration file.
 

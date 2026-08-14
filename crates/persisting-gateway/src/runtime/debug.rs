@@ -86,13 +86,6 @@ pub fn truncate_body(raw: &str) -> String {
     format!("{}…[truncated]", &raw[..end])
 }
 
-pub fn log_daemon_env_applied(storage: &Path, keys: &[String]) {
-    emit(
-        storage,
-        &format!("capture daemon.env.applied keys={}", keys.join(",")),
-    );
-}
-
 pub fn log_daemon_start(storage: &Path, listen: &str, version: &str) {
     emit(
         storage,

@@ -1,63 +1,8 @@
-# 2.6 直接查询 OpenAI JSON 与 ACTF 目录
+# 直接查询 OpenAI Messages 与 ACTF Dataset
 
-这个示例展示 02/03 中所称的 `pChronicle JSON` 路径：使用 `ppilot query sql` 直接分析
-OpenAI-message JSON 和 ACTF 文件目录，不需要
-先创建 Lance store。pChronicle 会把输入临时规范化为 `runs`、`steps`、`tool_calls`，并在
-三张查询表上增加 `_file_` 列：
-
-- 单文件输入时，`_file_` 是文件名；
-- 目录输入时，`_file_` 是相对输入目录、使用 `/` 分隔的路径；
-- SQL 可以用 `LIKE` 的 `%` 和 `_` 通配符按路径筛选；
-- `_file_` 只存在于直接文件查询视图，不写入 Lance 三表。
-
-运行：
+`pchronicle query` 会发现目录中的交换格式文件，并把它们投影为统一的 `dataset.runs`
+和 `dataset.steps` 表。示例无需预先转换存储格式。
 
 ```bash
 ./run.sh
-```
-
-脚本会完成四项检查：
-
-1. 自动识别带嵌套目录的 OpenAI JSON corpus，并用 `LIKE 'batch/%'` 只打开指定路径；
-   目录中故意放置了一个未命中的损坏 JSON，用它验证文件级裁剪确实发生在读取之前；
-2. 显式使用 `--source actf` 查询 ACTF 目录，并用文件名通配符筛选；
-3. 验证直接文件查询的 `DESCRIBE runs` 包含 `_file_`；
-4. 把其中一个 OpenAI 文件转换为 Lance 后，直接检查三张 Lance manifest 的物理字段，
-   验证都不含 `_file_`。Catalog 查询层会统一增加该虚拟列，因此不能用它的
-   `DESCRIBE runs` 反推落盘 schema。
-
-示例使用仓库内裁剪、脱敏 fixture，所有生成内容保存在 `.work/`。目录自动识别会按稳定
-相对路径冻结递归发现的文件及其指纹。可下推的 `_file_ =`、`IN` 和 `LIKE` 条件会先裁剪
-manifest，只有命中文件才会执行格式检测、读取和规范化；实际扫描到的混合格式或损坏
-JSON 会明确报错。
-
-同一查询的三张表共享有界解析缓存；多文件 join 必须把 `_file_` 和 `session_id` 一起作为
-join key，例如：
-
-```sql
-SELECT s.session_id, t.function_name
-FROM steps s JOIN tool_calls t
-  ON s._file_ = t._file_
- AND s.session_id = t.session_id
- AND s.step_id = t.step_id
-```
-
-这是功能和结果正确性示例，不把不同格式的小型 fixture 用作性能结论。生产任务可以用
-`--max-files`、`--max-entries`、`--max-file-bytes`、`--max-record-bytes`、`--max-concurrent-files`、
-`--cache-bytes`、`--cache-files` 和 `--batch-size` 设置资源边界；`--query-metrics` 把运行
-计数器写到 stderr，`--memory-limit-bytes`、`--spill-path`、`--max-spill-bytes` 限制
-DataFusion 中间算子，`--timeout-seconds` 限制墙钟时间。查询结果按 Arrow batch 流式写出；
-`--max-output-rows` 限制结果规模。这个示例的 OpenAI/ACTF 兼容格式仍按命中文件完成规范化；
-ATIF object/array/pretty JSON 和 JSONL/NDJSON 的 `steps` 查询另有流式字段/简单谓词下推
-fast path。两者都没有文件内
-索引，超大、重复查询的数据集应先转换为 Lance。
-
-核心查询与普通 SQL 相同：
-
-```bash
-ppilot query sql ./openai-data \
-  --sql "SELECT _file_, COUNT(*) AS steps
-         FROM steps
-         WHERE _file_ LIKE 'batch/%'
-         GROUP BY _file_"
 ```

@@ -93,6 +93,7 @@ plugins:
             Tensor Memory: 张量内存
             Search: 检索
             pPilot: pPilot 编排
+            pChronicle CLI: pChronicle 命令参考
             Custom Backends: 自定义后端
             Reproducible examples: 可复现示例
             API Reference: API 参考
@@ -149,10 +150,9 @@ nav:
       - Queue API: api/queue.md
       - Search API: api/search.md
       - TTAS types: api/tensor-address-space.md
-      - CLI architecture and loading: design/cli.md
       - pVisor command reference: design/cli-pvisor.md
       - pPilot command reference: design/cli-ppilot.md
-      - history, eval, and gateway command reference: design/cli-history.md
+      - pChronicle command reference: design/cli-pchronicle.md
   - Architecture & Internals:
       - Overview and maturity: design/index.md
       - Agent infrastructure: design/agent-infrastructure.md
@@ -160,7 +160,6 @@ nav:
           - Isolation backends: design/pvisor-isolation.md
           - Gateway capture driver: design/gateway.md
           - OverlayNet transparent interception: design/overlaynet.md
-          - CLI and runtime boundary: design/cli.md
       - pPilot orchestration: design/ppilot.md
       - pChronicle history store:
           - pChronicle Product Design: design/pchronicle-product.md
@@ -178,6 +177,8 @@ nav:
       - 0001 Storyline format: rfcs/0001-storyline-format.md
       - 0002 Events format: rfcs/0002-events-format.md
       - 0003 pChronicle ownership: rfcs/0003-pchronicle-ownership.md
+      - 0004 ACTF format: rfcs/0004-actf-format.md
+      - 0005 pChronicle revision lineage: rfcs/0005-pchronicle-revision-lineage.md
   - Engineering Notes:
       - Implementation status: dev/index.md
       - Releasing persisting: dev/releasing.md
@@ -197,4 +198,4 @@ extra:
 extra_css:
   - assets/stylesheets/home.css
 
-copyright: © 2025 Persisting. All rights reserved.
+copyright: © 2025–2026 Persisting. All rights reserved.

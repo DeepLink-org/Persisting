@@ -1,80 +1,37 @@
 # 可复现示例
 
-仓库里的 [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
-按产品问题组织。每个 `run.sh` 都是平铺直叙的产品命令：先清理 `.work/`，再运行
-pVisor 或 pPilot，最后直接打印生成的文件、Bundle、报告或查询结果。pChronicle 示例
-统一通过 `ppilot chronicle` / `ppilot convert` / `ppilot query` 进入，不调用内部 Rust
-example。
-
-## 运行方式
+[`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
+按产品命令组织。每个 `run.sh` 清理自己的 `.work/`，并输出持久结果或查询结果。
 
 ```bash
-just examples                 # 全部（pvisor + pchronicle + ppilot）
-just examples-pvisor          # 只跑四组 pVisor 示例
-just examples-pchronicle      # 只跑 pChronicle
-just examples-ppilot          # 只跑 pPilot
+just examples
+just examples-pvisor
+just examples-ppilot
+just examples-pchronicle
 ```
 
-所有入口都会增量编译并使用 release Rust targets，之后复用 Cargo 缓存。需要 macOS
-或 Linux、Cargo、Python 3 和常见 POSIX 工具（`jq`、`awk`、`curl`）。
+## pVisor
 
-## pVisor：轻量级隔离与 Run 管控
+| 示例 | 可复现结论 |
+|---|---|
+| `01-filesystem-isolation` | 事务工作区隔离 |
+| `02-changeset-management` | review、apply 与 drop |
+| `03-network-isolation` | 显式代理策略及其边界 |
+| `04-gateway-llm-control` | 内嵌 Gateway 路由与捕获 |
 
-这组示例逐项测量事务工作区、changeset、显式网络代理和 Gateway。文件系统示例需要
-macOS 的 macFUSE 或 Linux 的 FUSE3。
+## pPilot
 
-| 示例 | 可复现结论 | 相关指南 |
-|---|---|---|
-| [01-filesystem-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/01-filesystem-isolation) | Agent 写入 upper，lower 在 apply 前保持不变 | [pVisor CLI](../design/cli-pvisor.md) |
-| [02-changeset-management](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/02-changeset-management) | changeset 可 review，并可分别 apply 或 drop | [pVisor CLI](../design/cli-pvisor.md) |
-| [03-network-isolation](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/03-network-isolation) | 三条平铺命令验证 allowlist、deny-all 和 direct socket 绕过边界 | [OverlayNet 指南](overlaynet.md) |
-| [04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control) | Gateway 路由并捕获两次 OpenAI-compatible 调用 | [Capture 指南](capture.md) |
+| 示例 | 可复现结论 |
+|---|---|
+| `01-run` | `plan()` / `execute()` 并发执行并写 durable sink |
+| `02-produce` | 流式 planner 创建独立 pVisor Run |
 
-这里的"轻量级隔离"特指事务工作区和 cooperative proxy 覆盖的数据面；Run Bundle 会
-如实报告 Host executor 仍可访问工作区外路径、直接 socket 仍可绕过显式代理。
-[04-gateway-llm-control](https://github.com/DeepLink-org/Persisting/tree/main/examples/pvisor/04-gateway-llm-control)
-自带 mock OpenAI-compatible 模型和双轮 Agent，[Capture 指南](capture.md) 的本地
-walkthrough 就是基于它。
+## pChronicle
 
-## pPilot：批量编排与轨迹处理
+| 示例 | 可复现结论 |
+|---|---|
+| `05-format-roundtrip` | 严格 ATIF 往返并规范化后按字节比较 |
+| `06-query-openai-actf-directly` | 直接对 OpenAI Messages 与 ACTF Dataset 执行 SQL |
 
-这组示例覆盖 pPilot 的四个公开工作模式，默认使用本地 Pulsing workers，不要求
-`torchrun` 或多节点环境。
-
-| 示例 | 可复现结论 | 相关指南 |
-|---|---|---|
-| [01-run](https://github.com/DeepLink-org/Persisting/tree/main/examples/ppilot/01-run) | `plan()` / `execute()` 任务被并发执行并写入 durable sink | [快速开始](../quickstart.md) 第 3 步 |
-| [02-produce](https://github.com/DeepLink-org/Persisting/tree/main/examples/ppilot/02-produce) | Python planner 生成多个独立、可审查的 pVisor Run | [pPilot CLI](../design/cli-ppilot.md) |
-| [03-process](https://github.com/DeepLink-org/Persisting/tree/main/examples/ppilot/03-process) | Python map/reduce 在确定性 ATIF shards 上得到全局结果 | [pPilot CLI](../design/cli-ppilot.md) |
-| [04-analysis](https://github.com/DeepLink-org/Persisting/tree/main/examples/ppilot/04-analysis) | 同一条 SQL 在平衡 ATIF shards 上并行执行并合并结果 | [pPilot CLI](../design/cli-ppilot.md) |
-
-CLI 的正式命令名是 `produce`；它对应"生产一批轨迹 Run"的模式，不是 `product`。
-
-## pChronicle：轨迹存储与分析
-
-这组示例使用确定性 ATIF corpus 和裁剪格式 fixture，分别展示物理体积、分析速度、
-跨格式 SQL 结果一致性、外围格式恢复保真度和直接目录查询。查询性能统一以 Python
-标准库 `json.loads` 加等价手写循环为 raw JSON 基线；pChronicle 直接 JSON 查询和
-pChronicle Lance 查询分别相对该基线报告 median/P95、输入 rows/s 和独立进程峰值 RSS；
-projected JSON reader 另有 allocation traffic 和输入 buffer 基准。体积和速度结论都限定
-在脚本打印的数据规模、查询与当前机器。
-
-| 示例 | 可复现结论 | 相关指南 |
-|---|---|---|
-| [01-atif-import-compression](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/01-atif-import-compression) | raw JSON 与完整 pChronicle Lance store 的物理体积 | [轨迹格式](../design/trajectory-format.md) |
-| [02-lance-vs-atif-speed](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/02-lance-vs-atif-speed) | Python JSON 基线、pChronicle JSON 与 pChronicle Lance 的冷进程查询 | [轨迹存储](../design/trajectory.md) |
-| [03-analyze-lance-and-atif](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/03-analyze-lance-and-atif) | 三条路径的查询语义一致性和统一性能口径 | [pPilot CLI](../design/cli-ppilot.md) |
-| [04-point-batch-live-query](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/04-point-batch-live-query) | 单 step、完整轨迹、CLI batching gain 与实时 canonical event follow | [History CLI](../design/cli-history.md) |
-| [05-format-roundtrip](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/05-format-roundtrip) | pPilot 将 OpenAI/ACTF 导入三表 Lance，并验证 JSON 数据模型无损恢复 | [pPilot CLI](../design/cli-ppilot.md) |
-| [06-query-openai-actf-directly](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/06-query-openai-actf-directly) | 直接查询 OpenAI/ACTF 目录，以 `_file_ LIKE` 筛选路径，并验证 Lance schema 不变 | [pPilot CLI](../design/cli-ppilot.md) |
-| [07-objects-lance-blob-offload](https://github.com/DeepLink-org/Persisting/tree/main/examples/pchronicle/07-objects-lance-blob-offload) | 同一 corpus 强制 inline/offload，比较共享 `objects.lance` 的存储、压缩与分析性能 | [轨迹存储](../design/trajectory.md) |
-
-## 前置条件
-
-- macOS 或 Linux；Windows 暂不支持
-- Cargo（首次运行按需编译）
-- Python 3、`jq`、`awk`、`curl`
-- pVisor 文件系统示例需要 macFUSE（macOS）或 FUSE3（Linux）
-- 网络示例与 Gateway 示例使用本机 loopback，不需要外部网络
-
-需要 CLI 时先按[安装指南](../installation.md)装好组件集，或 `just install-cli`。
+pChronicle 示例使用 `examples/data` 中的确定性 fixture。运行要求为 macOS 或 Linux、
+Cargo、Python 3 和 `jq` 等常见 POSIX 工具；pVisor 文件系统示例另需 macFUSE 或 FUSE3。

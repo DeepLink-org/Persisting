@@ -1,6 +1,6 @@
 # pChronicle Dataset Catalog 设计
 
-> 当前实现说明。命令参数见 [pPilot 命令参考](cli-ppilot.md)，轨迹物理格式见
+> 当前实现说明。Dataset 命令参数见 [`pchronicle` 命令参考](cli-pchronicle.md)；轨迹物理格式见
 > [pChronicle 轨迹存储](trajectory.md) 与
 > [Storyline 三表 Lance](storyline-lance.md)。
 
@@ -116,10 +116,10 @@ Storyline/session 身份分组，并保留实际 `events.lance` URI，避免后�
 `--dataset` 可以重复：
 
 ```bash
-ppilot query sql \
+pchronicle query \
   --dataset current=local:///srv/pchronicle/current \
   --dataset archive=s3://trajectory-bucket/archive \
-  --sql "SELECT * FROM current.runs"
+  "SELECT * FROM current.runs"
 ```
 
 也可以从 TOML 读取：
@@ -131,8 +131,9 @@ archive = "s3://trajectory-bucket/archive"
 ```
 
 ```bash
-ppilot query sql --dataset-file datasets.toml \
-  --sql "SELECT table_schema, table_name FROM information_schema.tables"
+pchronicle query --dataset current=local:///srv/pchronicle/current \
+  --dataset archive=s3://trajectory-bucket/archive \
+  "SELECT table_schema, table_name FROM information_schema.tables"
 ```
 
 位置参数、配置文件与重复 `--dataset` 可以同时使用。三者中出现规范化重名时整体失败，
@@ -149,15 +150,15 @@ ppilot query sql --dataset-file datasets.toml \
 位置参数形式如下：
 
 ```bash
-ppilot query ./capture --sql "SELECT * FROM runs"
+pchronicle query ./capture "SELECT * FROM dataset.runs"
 ```
 
 等价于把 `./capture` 挂载为 `dataset`，并查询 `dataset.runs`。它还可以追加其他挂载：
 
 ```bash
-ppilot query ./capture \
+pchronicle query ./capture \
   --dataset archive=s3://trajectory-bucket/archive \
-  --sql "SELECT * FROM runs UNION ALL SELECT * FROM archive.runs"
+  "SELECT * FROM dataset.runs UNION ALL SELECT * FROM archive.runs"
 ```
 
 ## 5. 层级发现
@@ -425,9 +426,8 @@ Catalog 复用直接文件查询的资源参数：
 
 ## 9. Server、刷新与 Web
 
-`persisting chronicle serve` 接受与查询相同的 `STORAGE`、重复 `--dataset`、
-`--dataset-file` 和 `--dataset-errors`。Catalog 在第一个需要数据的请求到达时惰性构建，
-随后由所有 REST 和 SQL 请求共享。
+`pchronicle serve` 从静态 Warehouse 配置挂载命名 Dataset。Catalog 在第一个需要数据的
+请求到达时惰性构建，随后由所有 REST 和 SQL 请求共享。
 
 | API | 语义 |
 |---|---|
@@ -478,9 +478,8 @@ judgment 或 maintenance 操作，而且目标 source 必须是实际发现的 c
 `events.lance`。服务端从该 source 的物理 URI 恢复 `StoryCoords`，不会根据 Dataset 根和
 `_file_` 拼接猜测写入位置。
 
-位置参数形式 `persisting chronicle serve STORAGE` 把 `STORAGE` 挂载为 `dataset`，并默认将其
-设为可写；只有命名挂载时不会隐式选择可写 Dataset。当前 Web 服务仍限制为 loopback，
-Catalog 本身不提供认证或逐 Dataset 授权。
+当前 `pchronicle serve` 的挂载只读，并强制限制为 loopback；Catalog 本身不提供认证或
+逐 Dataset 授权。
 
 ## 10. Rust API 边界
 
@@ -591,7 +590,7 @@ basename 会受路径拼写、对象前缀和部署目录影响，不带 schema 
   generation 延迟打开；
 - `crates/persisting-pchronicle/src/store/raw_event_datafusion.rs`：canonical event manifest
   固定与按固定 segment 延迟打开；
-- `crates/persisting-ppilot/src/query_cli.rs`：查询 CLI 挂载与默认 Dataset 解析；
+- `crates/persisting-pchronicle-cli/src/lib.rs`：查询 CLI 挂载与默认 Dataset 解析；
 - `crates/persisting-pchronicle-server/src/lib.rs`：惰性构建、原子刷新、读写路由；
 - `crates/persisting-pchronicle-server/src/acceleration.rs`：同代内存 source-routing index、
   保守 SQL 分析与 `_file_` 注入；

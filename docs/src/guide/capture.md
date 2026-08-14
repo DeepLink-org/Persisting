@@ -1,39 +1,23 @@
 # Capture Agent Trajectories
 
-Use `persisting execute` for one managed Agent Run. Use `persisting gateway serve` only when
-several independently started clients need to share a long-running Gateway.
-
-References: [pVisor CLI](../design/cli-pvisor.md), [History / Eval / Gateway CLI](../design/cli-history.md),
-[Gateway architecture](../design/gateway.md).
-
-## Build
-
-```bash
-cargo build --release -p persisting-pvisor -p persisting-cli
-export PATH="$(pwd)/target/release:$PATH"
-```
+Gateway capture is a pVisor Run driver. It is started and stopped with the Run;
+there is no standalone Gateway command or daemon.
 
 ## Local walkthrough
 
-The repository includes a mock OpenAI-compatible model and a two-turn Agent.
-The quantitative example verifies upstream requests, Gateway counters, and
-AgenticMD blocks:
-
 ```bash
+cargo build --release -p persisting-pvisor --bin pvisor
 cd examples/pvisor/04-gateway-llm-control
 ./run.sh
 ```
 
-The script prints the generated path. pVisor assigns the Run ID, so do not
-hard-code a session directory or Markdown filename.
+The example starts a loopback OpenAI-compatible model, executes its Agent with
+`pvisor run`, and prints Gateway counters and the captured conversation.
 
 ## Run a real Agent
 
-Provide the upstream route and its API key directly:
-
 ```bash
 export DEEPSEEK_API_KEY=sk-...
-export PERSISTING_RUN_HOME=$HOME/.persisting/runs
 
 pvisor run \
   --agent deepseek \
@@ -44,121 +28,15 @@ pvisor run \
   -- claude
 ```
 
-Replace `claude` with `codex` or any program that uses an injected proxy/base
-URL. pVisor starts the in-process Gateway, injects the child environment, waits
-for the child, and stops the Gateway. The workspace is reusable; each execution
-writes an independent `run-<uuid>` directory below `PERSISTING_RUN_HOME`.
+pVisor starts the embedded Gateway, injects proxy/base-URL values into the
+child, waits for the child, flushes capture, and stops the Gateway. Each Run
+writes an independent directory below `PERSISTING_RUN_HOME`.
 
-### Storage mode
+Use `--gateway-stream-markdown` for a live human-readable projection and
+`--chronicle-mode lance` for canonical structured events. Dataset catalog,
+query, analysis, import/export, and the read-only Web UI are provided by
+[`pchronicle`](../design/cli-pchronicle.md).
 
-| Option | Writes | Use when |
-|---|---|---|
-| `--gateway-stream-markdown` | Live AgenticMD projection | You want a lightweight human-readable run |
-| `--chronicle-mode lance` | Canonical structured events | You need complete events, judgment, or derived views |
-
-Generate AgenticMD from a Lance run with `persisting history materialize`.
-
-## Long-running Gateway
-
-Start a foreground proxy:
-
-```bash
-persisting gateway serve -o ./store \
-  -c examples/pvisor/04-gateway-llm-control/configs/deepseek.toml -f markdown
-```
-
-The startup banner prints the proxy address and environment variables. Export
-them in the terminal that starts the Agent. For a background daemon:
-
-```bash
-persisting gateway start -o ./store \
-  -c examples/pvisor/04-gateway-llm-control/configs/deepseek.toml -f markdown
-persisting gateway status
-persisting gateway list
-persisting gateway stop
-```
-
-Do not run `pvisor run` and a standalone proxy against the same storage root at
-the same time. The standalone proxy does not provide pVisor's process or
-OverlayFS lifecycle.
-
-## Inspect trajectories
-
-```bash
-# Discover every Story under one Agent directory.
-persisting history stats ./store/<agent-id> --detail
-
-# Replay a particular Run directory.
-persisting history replay ./store/<agent-id>/<run-id>
-
-# Build the human-readable view from canonical Lance events.
-persisting history materialize ./store \
-  --agent-id <agent-id> \
-  --root-session-id <run-id> \
-  --session-id <session-id>
-
-# Open the local trajectory workbench.
-persisting chronicle serve ./store
-
-# Probing exports can be opened directly as a directory of JSON files.
-persisting chronicle serve ./data
-
-# Browse several Dataset schemas in one immutable Catalog snapshot.
-persisting chronicle serve --dataset live=./store \
-  --dataset archive=s3://trajectory-bucket/archive
-```
-
-The loopback-only workbench presents a live Storyline timeline linked back to
-canonical event JSON, plus HAR/OTLP export and a directory-wide read-only SQL
-workspace.
-
-For read-only inspection, the workbench auto-detects probing gateway step
-arrays and ACTF task documents (`*.json`) in the selected directory. These
-files do not need to be imported into Lance first.
-
-A positional directory becomes the default SQL schema named `dataset`,
-regardless of its basename. The stable tables are `sources`, `runs`, `steps`,
-`tool_calls`, `events`, and `trajectories`; unqualified table names remain
-compatible aliases. Repeat `--dataset NAME=URI` for additional, explicitly
-qualified schemas. Every data table includes a virtual `_file_` column, so
-queries can select an exact relative path or use `LIKE` patterns across the
-directory:
-
-```sql
-SELECT _file_, COUNT(*) AS steps
-FROM dataset.steps
-WHERE _file_ LIKE 'cybergym_%.json'
-GROUP BY _file_;
-```
-
-`stats`, `replay`, and `materialize` may omit the storage argument
-after `gateway start`, or when `PERSISTING_CAPTURE_STORAGE` is set.
-
-## Layout
-
-```text
-store/
-├── .capture/                 # Gateway runtime metadata and failure records
-└── agent-id/
-    └── run-id/
-        ├── events.lance/     # with --chronicle-mode lance
-        ├── run-id.md         # with --gateway-stream-markdown or after materialize
-        └── agent-<id>.md     # optional subagent Story
-```
-
-Generated AgenticMD uses session-named files and Storyline-like block fields. The
-reader also accepts legacy headers and plain Markdown because this is a debug
-view, not a storage protocol.
-
-## Troubleshooting
-
-| Problem | Check |
-|---|---|
-| Agent cannot reach Gateway | Use the injected child via `pvisor run`, or export the standalone proxy banner variables |
-| Codex bypasses the proxy | Pass the printed `-c openai_base_url=...` setting |
-| No Markdown with Lance output | Enable `--gateway-stream-markdown` or run `history materialize` |
-| Failed capture event | Inspect `.capture/dead_letter.jsonl`, then use `history replay-dead-letter` |
-| `persisting execute` reports an active owner | Stop `gateway`, wait for the live Run, or use another storage root |
-
-The independent dlcapt implementation has its own configuration and storage
-model; see `crates/persisting-dlcapt/README.md` when working on that component.
+Clients must use an injected proxy or base URL to be observed. Direct sockets
+can bypass the explicit proxy unless the selected executor provides an enforced
+network boundary; inspect the Run Bundle for the effective isolation level.

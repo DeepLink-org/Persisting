@@ -9,18 +9,18 @@ for supported workflows.
 | Subsystem | Start here | Then read |
 |---|---|---|
 | pVisor | [Agent infrastructure](agent-infrastructure.md) | [Isolation backends](pvisor-isolation.md) → standalone `pvisor` CLI → [Gateway driver](gateway.md) → [OverlayNet interception](overlaynet.md) |
-| pChronicle | [Agent infrastructure](agent-infrastructure.md) | [Dataset Catalog](dataset-catalog.md) → [Trajectory storage](trajectory.md) → [Storyline 三表 Lance](storyline-lance.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
+| pChronicle | [`pchronicle` command reference](cli-pchronicle.md) | [Dataset Catalog](dataset-catalog.md) → [Trajectory storage](trajectory.md) → [Storyline three-table Lance](storyline-lance.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
 | pPilot | [pPilot control plane](ppilot.md) | standalone `ppilot` CLI → run orchestration and pChronicle SQL analysis |
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
 | Gateway capture driver | [Gateway pipeline](gateway.md) | [Markdown format](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
 | Tensor Memory (experimental) | [TTAS model](tensor-address-space.md) | [Tiered storage](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
-| CLI boundary | [CLI architecture](cli.md) | command references under **Reference** |
+| CLI boundary | [pVisor](cli-pvisor.md), [pPilot](cli-ppilot.md), [pChronicle](cli-pchronicle.md) | command references under **Reference** |
 
 ## Maturity and scope
 
 | Area | Status | Notes |
 |---|---|---|
-| pVisor, pPilot, pChronicle | Implemented | Peer Agent execution, orchestration, and history components |
+| pVisor, pPilot, pChronicle | Implemented core | Peer Agent execution, orchestration, and history components; pChronicle `search` and `maintain` remain reserved |
 | Gateway, OverlayNet, OverlayFS | Implemented | pVisor runtime drivers; Gateway supplies capture semantics |
 | pVisor enforced isolation | Implemented / partial | Linux uses FUSE + synthetic root + rootless namespaces + Landlock; macOS uses Seatbelt-enforced staged writes and deny-all socket confinement while reads remain ambient; Docker and libkrun/KVM transports exist; seccomp, resource controls, LiteBox VFS, and Firecracker remain on the [isolation roadmap](pvisor-isolation.md) |
 | OverlayNet transparent interception | VM implemented / host planned | libkrun virtio-net + smoltcp is non-bypassable for IPv4 TCP/DNS on Linux and Apple Silicon macOS; Linux host netns/seccomp drivers remain planned; see [design](overlaynet.md) |

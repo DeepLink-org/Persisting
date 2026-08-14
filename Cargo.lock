@@ -6701,30 +6701,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "persisting-cli"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "dirs",
- "persisting-dlcapt",
- "persisting-gateway",
- "persisting-pchronicle",
- "persisting-pchronicle-server",
- "reqwest 0.12.28",
- "ron",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "persisting-control"
 version = "0.2.0"
 dependencies = [
@@ -6944,7 +6920,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
- "toml",
  "tracing",
  "tracing-subscriber",
  "uuid",

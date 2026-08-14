@@ -23,27 +23,21 @@ Persisting 不定义 Agent framework、提示词 DSL 或训练算法，也不替
 
 ## 2. 产品入口
 
-面向 Agent 使用者的统一入口是 `persisting`：
+面向 Agent 使用者有三个职责独立的入口：
 
 ```text
-persisting
-├── execute       执行一个 Run
-├── env           管理持久执行环境
-├── batch/query   批量编排与历史 SQL
-├── history       导入、回放和维护 Run 历史
-├── eval          评测 Run 历史
-└── gateway       管理长期捕获 sink
+pvisor       单 Run、持久环境和内嵌 Gateway
+ppilot       规模化 Run 编排与生产
+pchronicle   Dataset catalog、查询、分析、交换与只读服务
 ```
 
 命令与组件的关系：
 
 | 命令 | 主组件 | 产品语义 |
 |---|---|---|
-| `persisting execute` | pVisor | 创建并执行一个 Run，装配 Gateway、Control、OverlayNet 与 OverlayFS |
-| `persisting env` | pVisor | 创建、执行、检查和维护持久运行环境 |
-| `persisting batch/query` | pPilot | 批量编排和历史 SQL 分析 |
-| `persisting history/eval` | pChronicle | 导入、读取、维护和评测 Run 历史 |
-| `persisting gateway` | Gateway | 独立启动或管理长期捕获 sink |
+| `pvisor run/env/...` | pVisor | 执行一个 Run 或管理持久环境，装配内部驱动 |
+| `ppilot run/produce` | pPilot | 计划、恢复并规模化生产 Run |
+| `pchronicle ...` | pChronicle | 管理和消费轨迹 Dataset |
 
 ## 3. 设计目标与非目标
 
@@ -696,7 +690,7 @@ pPilot library
 
 1. `pvisor run` 创建 canonical Run，返回稳定 RunResult。
 2. Gateway、执行和导入使用同一 Run/Event identity。
-3. `persisting history replay` 读取 pChronicle 历史。
+3. `pchronicle query/find/export` 读取 pChronicle 历史。
 4. append、WAL、dead letter、repair 和 terminal commit 可测试。
 
 ### 阶段二：pPilot 批量闭环

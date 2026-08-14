@@ -9,8 +9,19 @@
 | 相关设计 | [Dataset Catalog](dataset-catalog.md) · [轨迹存储](trajectory.md) · [Storyline 三表 Lance](storyline-lance.md) · [Ownership RFC](../rfcs/0003-pchronicle-ownership.md) |
 
 本文定义 pChronicle 的产品边界、核心模型和交互契约。完整 flags、wire schema、物理布局与
-索引算法由后续详细设计规定。当前仓库中的 `ppilot`、`persisting chronicle` 和本地 Web 接口
-不等同于本文的完整目标形态。
+索引算法由后续详细设计规定。当前独立 CLI 与 Web 接口不等同于本文的完整目标形态。
+
+当前可用命令以 [`pchronicle` 命令参考](cli-pchronicle.md)和二进制 `--help` 为准。
+截至本文更新时，核心差异如下：
+
+| 本文目标 | 当前实现 |
+|---|---|
+| `ls/status/query/analysis/find/import/export/serve` | 已实现并有独立 CLI 合同测试 |
+| lexical `search` | 命令名已预留，执行会明确返回 not implemented |
+| `maintain` | 命令名已预留，执行会明确返回 not implemented |
+| Query 的 Parquet/Arrow 输出、recipe | 未实现；当前输出为 table/JSONL/CSV，内置汇总使用 `analysis` |
+| Search cache、服务端 FTS、可信代理/公网部署 | 未实现；当前 `serve` 强制 loopback 且无认证 |
+| Import/Export conversion report 与部分目标 flags | 尚未形成本文描述的完整外部契约；以命令参考为准 |
 
 ## 1. 产品定位与边界
 
@@ -22,6 +33,7 @@ pChronicle 是 path-first 的 Agent 轨迹数据层：它从本地目录和对�
 | 路径直用 | CLI 直接浏览本地目录或 S3 prefix | 无额外状态 |
 | 原生 Dataset | create-only import 或 Gateway/native writer 写入 | Dataset 自身版本和 manifest |
 | 只读 Warehouse | 静态挂载多个 Dataset，提供 API 与 Web | 配置文件和可重建 cache |
+| 本地默认 Warehouse | 单个本地目录作为默认 Dataset 根 | 用户设置中的规范化绝对路径 |
 
 ```mermaid
 flowchart LR
@@ -152,13 +164,17 @@ Gateway/native writer 写入 append-only events，采用 at-least-once 语义；
 
 ## 3. CLI 产品面
 
-独立 `pchronicle` 是目标入口。所有数据命令显式接收 Dataset URI；TTY 默认输出人读表格，
-结构化输出使用 `--format`。stdout 只承载主结果，进度、Snapshot 和警告写入 stderr。
+独立 `pchronicle` 是目标入口。以下各节同时包含已实现语法和目标语法；当前支持范围以本节前的
+差异表及[命令参考](cli-pchronicle.md)为准。数据命令可显式接收 Dataset URI；配置本地默认 Warehouse 后，
+支持该形态的命令可以省略 URI。TTY 默认输出人读表格，结构化输出使用 `--format`。stdout
+只承载主结果，进度、Snapshot 和警告写入 stderr。
 
 | 命令 | 职责 |
 |---|---|
+| `default` | 设置或读取单目录本地默认 Warehouse |
 | `ls/list`、`status` | Source 发现、能力、版本、数量与健康状态 |
 | `query` | 只读 SQL、结构化结果输出和内置 recipe |
+| `analysis` | 稳定内置分析：overview、agents、models、tools |
 | `find` | 按 Source-local ID 精确定位或发现候选 |
 | `search` | lexical full-text search |
 | `import` | 从单一格式创建新 Dataset |
@@ -195,6 +211,8 @@ snippet、lexical score 和索引 `snapshot_id`。FTS cache 是实现细节：�
 pchronicle import --from <path-or-> --output <new-dataset-uri> \
   --format auto|atif|actf|openai-messages|storyline
 
+pchronicle import --from <path> # 在默认 Warehouse 下创建确定性子目录
+
 pchronicle import --stream --from - --output <new-dataset-uri> --format atif
 
 pchronicle export --from <dataset-uri> --output <path-or-> \
@@ -225,7 +243,39 @@ Maintain 只执行原生格式支持的 compaction、scalar index refresh、vacu
 pChronicle 不提供 `rm/drop`；maintain 不能删除 Dataset 根或任意 Source 子树。物理删除由文件系统、
 对象存储或基础设施工具完成。
 
+### 3.4 Built-in Analysis
+
+`analysis` 是稳定逻辑表上的有界内置查询，不引入新的存储或执行引擎：
+
+```bash
+pchronicle analysis overview [<dataset-uri>]
+pchronicle analysis agents [<dataset-uri>]
+pchronicle analysis models [<dataset-uri>]
+pchronicle analysis tools [<dataset-uri>]
+```
+
+四个子命令分别提供总体规模与 Source 健康、Agent 活动、模型声明/观测使用和工具调用/时延
+覆盖。它们共享默认 Warehouse、Catalog Snapshot、超时、输出字节和行数上限，并支持 table、
+JSONL、CSV。任意 SQL 与自定义分析继续使用 `query`，避免形成第二套查询语言。当前稳定 schema
+没有用户身份字段，因此不提供会把消息角色误当用户的 `users` 分析。
+
 ## 4. 只读 Warehouse
+
+### 4.0 本地默认 Warehouse
+
+最基础 Warehouse 不需要服务端：用户通过 `pchronicle default <DIRECTORY>` 将一个本地目录
+保存为默认 Warehouse。该目录同时是一个递归发现 Source 的 Dataset 根；设置后，`ls`、
+`status`、`query`、`find` 和 `export` 可以省略 Dataset URI。显式 URI 始终优先。
+
+```bash
+pchronicle default ./trajectory-data
+pchronicle query "SELECT COUNT(*) FROM dataset.runs"
+pchronicle find --session-id session-42
+```
+
+配置只保存规范化绝对路径，不保存凭证；数据、Catalog Snapshot 和查询仍由 pChronicle Core
+直接从该目录构建。此形态没有 HTTP、认证、守护进程、后台 Job 或额外数据库，可用于完整开发
+和集成测试。`default` 无目录参数时只读取并打印当前设置。
 
 ### 4.1 静态配置与服务
 
@@ -301,17 +351,7 @@ loss、staging/orphan bytes、同步取消和资源峰值；每个阶段提供�
 
 ## 6. 交付与演进
 
-现有入口保留一个明确发布周期的转发：
-
-| 旧入口 | 目标入口 |
-|---|---|
-| `ppilot chronicle import/export/maintain` | `pchronicle import/export/maintain` |
-| `ppilot query ...` | `pchronicle query/find` |
-| `ppilot convert ...` | `pchronicle import/export` 或文件转换兼容入口 |
-| `ppilot analysis ...` | `pchronicle query --recipe ...`；脚本继续由 pPilot 承担 |
-| `persisting chronicle serve ...` | `pchronicle serve --config ...` |
-
-转发层输出 deprecation warning，但不能污染 stdout 数据；一个弃用周期后移除旧入口。
+Dataset 产品能力只通过独立 `pchronicle` 命令发布，不保留跨组件转发层。
 
 交付顺序为：
 

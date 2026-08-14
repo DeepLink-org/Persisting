@@ -1,4 +1,4 @@
-# Standalone `persisting gateway serve` configuration for DeepSeek.
+# Gateway route configuration used by the pVisor capture driver.
 listen = "127.0.0.1:19081"
 admin_listen = "127.0.0.1:9876"
 agent_id = "deepseek-proxy"

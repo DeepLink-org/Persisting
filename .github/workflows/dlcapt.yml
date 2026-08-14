@@ -4,14 +4,12 @@ on:
   push:
     paths:
       - "crates/persisting-dlcapt/**"
-      - "crates/persisting-cli/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/dlcapt.yml"
   pull_request:
     paths:
       - "crates/persisting-dlcapt/**"
-      - "crates/persisting-cli/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/dlcapt.yml"
@@ -39,9 +37,3 @@ jobs:
         run: RUSTDOCFLAGS="-D warnings" cargo doc -p persisting-dlcapt --all-features --no-deps --locked
       - name: build standalone dlcapt
         run: cargo build -p persisting-dlcapt --locked
-      - name: test persisting-cli dlcapt feature
-        run: |
-          metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
-          target_directory="$(jq -r '.target_directory' <<<"${metadata}")"
-          DLCAPT_BIN="${target_directory}/debug/dlcapt" \
-            cargo test -p persisting-cli --features dlcapt --locked

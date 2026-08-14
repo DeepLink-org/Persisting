@@ -24,7 +24,7 @@ WHEEL_DATA = ROOT / "target" / "wheel-data"
 WEB_ROOT = ROOT / "pchronicle-web"
 WEB_PUBLIC = ROOT / "crates" / "persisting-pchronicle-server" / "web-assets" / "public"
 DX_PUBLIC = WEB_ROOT / "target" / "dx" / "pchronicle-web" / "release" / "web" / "public"
-EXPECTED_BINARIES = ("persisting", "pchronicle", "pvisor", "ppilot")
+EXPECTED_BINARIES = ("pchronicle", "pvisor", "ppilot")
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
@@ -150,10 +150,6 @@ def _cargo_command(options: BuildOptions) -> list[str]:
         options.profile,
         "--message-format=json-render-diagnostics",
         "-p",
-        "persisting-cli",
-        "--bin",
-        "persisting",
-        "-p",
         "persisting-pchronicle-cli",
         "--bin",
         "pchronicle",
@@ -163,8 +159,6 @@ def _cargo_command(options: BuildOptions) -> list[str]:
         "pvisor",
         "-p",
         "persisting-ppilot",
-        "--features",
-        "cli",
         "--bin",
         "ppilot",
     ]
@@ -319,9 +313,7 @@ def _build_web_assets() -> None:
     assets.mkdir(parents=True, exist_ok=True)
     for stylesheet in sorted((WEB_ROOT / "assets").glob("*.css")):
         shutil.copy2(stylesheet, assets / stylesheet.name)
-    manifest.write_text(
-        "__PCHRONICLE_EMBEDDED_WEB_ASSETS_V1__\n", encoding="utf-8"
-    )
+    manifest.write_text("__PCHRONICLE_EMBEDDED_WEB_ASSETS_V1__\n", encoding="utf-8")
 
 
 def stage_wheel_binaries(options: BuildOptions) -> Path:

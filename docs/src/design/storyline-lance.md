@@ -163,13 +163,8 @@ let report = store.maintain(&LanceMaintenanceOptions::default()).await?;
 导入大型语料时同时保留整表的 Arrow 副本。`CURRENT` 只解析一次；DataSource 随后把每张
 表直接打开到指针指定的 version，不再先验证、再重复打开同一 dataset。
 
-生产环境也可使用 pPilot 执行相同维护：
-
-```bash
-ppilot chronicle maintain ./storyline-store \
-  --vacuum-retention-hours 168 \
-  --target-rows-per-fragment 1048576
-```
+生产环境通过 `StorylineLanceStore::maintain` API 执行维护；CLI 的 `maintain` 入口仍为
+明确的未实现预留命令。
 
 ## DataFusion datasource
 
@@ -298,7 +293,7 @@ median/P95、rows/s、独立进程峰值 RSS，以及计数 allocator 观测到�
 直接使用 JSON；超大、远端或反复查询的数据应先转换为 Lance，利用 snapshot、列裁剪、
 并行 fragment scan 和 scalar index。
 
-`ppilot chronicle import` 同样默认走 `AtifReader`。空 store 使用一个 producer 单遍完成
+ATIF 导入同样默认走 `AtifReader`。空 store 使用一个 producer 单遍完成
 校验、Storyline 规范化和三表拆分，再经三条有界 Arrow channel 并行创建三个 Lance
 dataset；已有 store 则以最多 256 个 Storyline 为一个增量替换批次。两种路径都在所有
 输入和三表写入成功后才原子切换一次 `CURRENT`。
@@ -306,16 +301,16 @@ dataset；已有 store 则以最多 256 个 Storyline 为一个增量替换批�
 CLI 使用相同引擎，输出稳定的 JSONL：
 
 ```bash
-ppilot query sql ./trajectories.ndjson \
-  --sql 'SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source'
+pchronicle query ./trajectories.ndjson \
+  'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source ORDER BY source'
 
 # 含 CURRENT 的三表 store 根目录会被 auto 识别为 Lance
-ppilot query sql ./storyline-store \
-  --sql 'SELECT step_id, source FROM steps WHERE session_id = '\''s-1'\'' ORDER BY step_id'
+pchronicle query ./storyline-store \
+  'SELECT step_id, source FROM dataset.steps WHERE session_id = '\''s-1'\'' ORDER BY step_id'
 
 # OpenAI/ACTF 目录直接查询；_file_ 为查询期相对路径列，不写入 Lance
-ppilot query sql ./openai-data \
-  --sql "SELECT _file_, COUNT(*) FROM steps WHERE _file_ LIKE 'batch/%' GROUP BY _file_"
+pchronicle query ./openai-data \
+  "SELECT _file_, COUNT(*) FROM dataset.steps WHERE _file_ LIKE 'batch/%' GROUP BY _file_"
 ```
 
 查询是只读的；SQL 可以使用 SELECT、CTE、JOIN、聚合和 DataFusion 内置函数，但不通过

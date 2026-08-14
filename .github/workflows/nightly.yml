@@ -186,4 +186,4 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash
             ```
 
-            The wheel includes the matched `persisting`, `pvisor`, and `ppilot` CLI component set. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).
+            The wheel includes the matched `pchronicle`, `pvisor`, and `ppilot` CLI component set. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).

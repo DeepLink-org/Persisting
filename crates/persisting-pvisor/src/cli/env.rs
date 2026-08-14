@@ -257,7 +257,7 @@ fn exec(args: SelectArgs, command: Vec<String>) -> Result<i32> {
     ensure_idle(&record)?;
     anyhow::ensure!(
         record.state == "ready",
-        "environment '{}' is {}; run `persisting env start {}` first",
+        "environment '{}' is {}; run `pvisor env start {}` first",
         record.run_id,
         record.state,
         record.run_id

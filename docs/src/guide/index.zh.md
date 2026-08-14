@@ -8,7 +8,8 @@
 |---|---|
 | 运行单个 Agent 并拥有可审查工作区 | [pVisor：run / review / checkpoint](../design/cli-pvisor.md)（设计） |
 | 批量编排 Agent Run 并支持恢复 | [pPilot：run / produce](../design/cli-ppilot.md)（设计） |
-| 用 SQL 查询轨迹历史 | [pPilot：query / analysis](../design/cli-ppilot.md)（设计） |
+| 浏览、查询、导入或导出轨迹 Dataset | [pChronicle 命令参考](../design/cli-pchronicle.md) |
+| 查询或分析轨迹 Dataset | [pChronicle CLI](../design/cli-pchronicle.md) |
 | 记录 Agent LLM 调用 | [Capture](capture.md) |
 | 控制 proxy-aware Agent 工具的 HTTP/HTTPS 出口 | [OverlayNet](overlaynet.md) |
 | 用张量下标存储/读取参数或 KV Cache | [Tensor Memory](tensor-memory.md) |
@@ -25,8 +26,8 @@
 | 能力 | 提供内容 | 状态 |
 |---|---|---|
 | [pVisor](../design/cli-pvisor.md) | 单个 Run 的执行、控制与事务工作区 | 已实现 |
-| [pPilot](../design/cli-ppilot.md) | 批量编排、durable 结果、SQL 分析 | 已实现 |
-| [pChronicle](../design/trajectory.md) | Canonical 事件、Storyline/ATIF、S3 存储 | 已实现 |
+| [pPilot](../design/cli-ppilot.md) | 批量编排、durable 结果与 Run 生产 | 已实现 |
+| [pChronicle](../design/cli-pchronicle.md) | Dataset 目录、有界 SQL/分析、格式交换、本地只读 UI | 已实现；search/maintain 预留 |
 | [Capture](capture.md) | 捕获 LLM 流量并生成 Lance 与 Markdown 视图 | 已实现 |
 | [OverlayNet](overlaynet.md) | Cooperative HTTP/HTTPS 代理策略与带宽控制 | 已实现 |
 | [Search](search.md) | 文档索引与向量/混合检索 | 稳定 |

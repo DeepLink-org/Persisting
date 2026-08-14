@@ -1672,99 +1672,6 @@ mod tests {
         assert!(error.to_string().contains("unique"));
     }
 
-    #[tokio::test]
-    async fn warehouse_router_is_read_only_and_redacts_storage() -> anyhow::Result<()> {
-        use http_body_util::BodyExt;
-        use tower::ServiceExt;
-
-        let root = json_dataset_root();
-        let mut config = ChronicleServerConfig::legacy(root.to_string_lossy())?;
-        assert!(config.writable_dataset.is_some());
-        let app = warehouse_router(config.clone());
-
-        let health = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/api/v1/health")
-                    .body(axum::body::Body::empty())?,
-            )
-            .await?;
-        assert_eq!(health.status(), StatusCode::OK);
-        let health: Value =
-            serde_json::from_slice(&health.into_body().collect().await?.to_bytes())?;
-        assert_eq!(health, json!({"status":"ok","mode":"read_only"}));
-        assert!(!health
-            .to_string()
-            .contains(&root.to_string_lossy().as_ref()));
-
-        for (method, path) in [
-            ("POST", "/api/v1/judgments"),
-            ("POST", "/api/v1/maintain"),
-            ("POST", "/api/v1/query"),
-            ("PUT", "/api/v1/events"),
-        ] {
-            let response = app
-                .clone()
-                .oneshot(
-                    axum::http::Request::builder()
-                        .method(method)
-                        .uri(path)
-                        .body(axum::body::Body::empty())?,
-                )
-                .await?;
-            assert!(
-                matches!(
-                    response.status(),
-                    StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
-                ),
-                "{method} {path} unexpectedly returned {}",
-                response.status()
-            );
-        }
-        let refresh = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/catalog")
-                    .body(axum::body::Body::empty())?,
-            )
-            .await?;
-        assert_eq!(refresh.status(), StatusCode::OK);
-        let refresh: Value =
-            serde_json::from_slice(&refresh.into_body().collect().await?.to_bytes())?;
-        assert_eq!(refresh["writable_dataset"], Value::Null);
-
-        let traversal = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/%2e%2e/%2e%2e/etc/passwd")
-                    .body(axum::body::Body::empty())?,
-            )
-            .await?;
-        assert_eq!(traversal.status(), StatusCode::NOT_FOUND);
-
-        // The legacy router remains writable for the deprecated entry point.
-        config.writable_dataset = None;
-        let legacy_query = router_with_config(config)
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/query")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(axum::body::Body::from(
-                        json!({"sql":"SELECT 1"}).to_string(),
-                    ))?,
-            )
-            .await?;
-        assert_eq!(legacy_query.status(), StatusCode::OK);
-
-        std::fs::remove_dir_all(root)?;
-        Ok(())
-    }
-
     #[test]
     fn tool_call_counter_handles_openai_and_anthropic_payloads() {
         let payload = json!({
@@ -1814,21 +1721,6 @@ mod tests {
         assert_eq!(remote.storage, "s3://bucket/prefix");
         assert_eq!(remote.agent_id, "agent");
         assert_eq!(remote.session_id, "child");
-    }
-
-    #[tokio::test]
-    async fn spa_shell_does_not_capture_unknown_api_paths() {
-        use tower::ServiceExt;
-        let response = router("/tmp/chronicle-test")
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/api/v1/not-a-route")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

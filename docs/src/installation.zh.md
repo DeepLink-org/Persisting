@@ -4,7 +4,7 @@ Persisting 通过 Python wheel 发布，wheel 同时包含 Python 包和版本�
 
 | 安装物 | 内容 | 用途 |
 |---|---|---|
-| 宿主机 wheel | Python 包以及 `persisting`、`pchronicle`、`pvisor`、`ppilot` | Python API 和完整宿主机 CLI 组件集 |
+| 宿主机 wheel | Python 包以及 `pchronicle`、`pvisor`、`ppilot` | Python API 和完整宿主机 CLI 组件集 |
 
 ## 环境要求
 
@@ -34,7 +34,7 @@ pip install persisting[lance]
 pip install persisting
 ```
 
-上面两种安装命令都会把版本匹配的 `persisting`、`pchronicle`、`pvisor`、`ppilot` 安装到 Python 环境的
+上面两种安装命令都会把版本匹配的 `pchronicle`、`pvisor`、`ppilot` 安装到 Python 环境的
 scripts 目录。
 
 ### Nightly wheel
@@ -53,10 +53,10 @@ cd Persisting
 pip install -e ".[lance]"
 ```
 
-## 统一 CLI
+## CLI 组件集
 
-wheel 内的 CLI 是匹配的组件集：`persisting` 把执行/环境命令转发给 `pvisor`，批量/查询命令转发给
-`ppilot`，history/eval 直接调用 pChronicle。
+wheel 内是一组版本匹配的 CLI 组件：单 Run 与环境使用 `pvisor`，批量编排使用
+`ppilot`，Dataset 目录、SQL、分析、格式交换与只读服务使用 `pchronicle`。
 
 ### 通过 Cargo 从源码安装
 
@@ -66,7 +66,7 @@ cd Persisting
 just install-cli
 ```
 
-这是不安装 Python 包的替代路径，会把版本匹配的 `persisting`、`pchronicle`、`pvisor` 和 `ppilot`
+这是不安装 Python 包的替代路径，会把版本匹配的 `pchronicle`、`pvisor` 和 `ppilot`
 安装到 Cargo bin 目录。
 
 ### 组件覆盖
@@ -98,6 +98,7 @@ print(persisting.__version__)
 ```bash
 pvisor --version
 ppilot --help
+pchronicle --help
 ```
 
 ## 依赖
