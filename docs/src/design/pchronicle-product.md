@@ -2,31 +2,28 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | Target Architecture |
+| 状态 | Current Product Boundary |
 | 文档层级 | 产品边界、命令树规范与参数概要 |
 | 目标读者 | Agent 平台工程师、训练数据工程师、CLI/服务端/存储开发者 |
 | 目标入口 | 独立 `pchronicle` CLI、pChronicle Core、只读 Warehouse API 与 Web |
 | 相关设计 | [Dataset Catalog](dataset-catalog.md) · [轨迹存储](trajectory.md) · [Storyline 三表 Lance](storyline-lance.md) · [Ownership RFC](../rfcs/0003-pchronicle-ownership.md) |
 
-本文定义 pChronicle 的产品边界、核心模型和交互契约。完整 flags、wire schema、物理布局与
-索引算法由后续详细设计规定。当前独立 CLI 与 Web 接口不等同于本文的完整目标形态。
+本文定义 pChronicle 当前的产品边界、核心模型和交互契约。完整 flags、wire schema、物理布局与
+索引算法由详细设计规定；公共命令和 HTTP 路由必须与当前实现一致，未实现能力不作为预留命令出现。
 
 当前可用命令以 [`pchronicle` 命令参考](cli-pchronicle.md)和二进制 `--help` 为准。
-截至本文更新时，核心差异如下：
+截至本文更新时，公共产品面如下：
 
-| 本文目标 | 当前实现 |
+| 产品能力 | 当前状态 |
 |---|---|
 | `ls/status/query/analysis/find/import/export/serve` | 已实现并有独立 CLI 合同测试 |
-| lexical `search` | 命令名已预留，执行会明确返回 not implemented |
-| `maintain` | 命令名已预留，执行会明确返回 not implemented |
-| Query 的 Parquet/Arrow 输出、recipe | 未实现；当前输出为 table/JSONL/CSV，内置汇总使用 `analysis` |
-| Search cache、服务端 FTS、可信代理/公网部署 | 未实现；当前 `serve` 强制 loopback 且无认证 |
-| Import/Export conversion report 与部分目标 flags | 尚未形成本文描述的完整外部契约；以命令参考为准 |
+| Query 输出 | table/JSONL/CSV；内置汇总使用 `analysis` |
+| Warehouse 服务 | 强制 loopback、无认证，只提供当前路由表列出的只读 API |
 
 ## 1. 产品定位与边界
 
 pChronicle 是 path-first 的 Agent 轨迹数据层：它从本地目录和对象存储发现轨迹，将不同交换
-格式投影到统一模型，并提供 SQL、精确定位、全文搜索、导入导出和只读可视化。
+格式投影到统一模型，并提供 SQL、精确定位、导入导出和只读可视化。
 
 | 产品形态 | 用法 | 持久状态 |
 |---|---|---|
@@ -39,8 +36,8 @@ pChronicle 是 path-first 的 Agent 轨迹数据层：它从本地目录和对�
 flowchart LR
   P[Gateway / Native Writer / Files] --> D[Dataset URI\nlocal or S3]
   D --> C[pChronicle Core]
-  C --> Q[Query / Find / FTS]
-  C --> E[Import / Export / Maintain]
+  C --> Q[Query / Analysis / Find]
+  C --> E[Import / Export]
   W[Static mounts\nread-only API + Web] --> C
 ```
 
@@ -58,7 +55,7 @@ flowchart LR
 |---|---|
 | Dataset 全局 canonical ID、跨 Source 唯一索引 | 使用 Dataset URI、Source 路径和原始 ID 组成完整地址 |
 | Dataset 物理删除 | 使用文件系统、对象存储或基础设施工具 |
-| vector/hybrid Search、embedding provider | v1 只提供 lexical FTS |
+| lexical/vector/hybrid Search、embedding provider | 使用 SQL 条件或仓库外的检索系统；当前 CLI/API 不提供 Search |
 | 动态 Warehouse、服务端写入与后台 Job | 静态配置和同步只读 API |
 | pChronicle 内执行用户脚本或 transform | SQL pipeline、pPilot 或独立执行系统 |
 | Langfuse/OTLP 兼容入口 | Gateway 或独立 adapter |
@@ -120,7 +117,7 @@ ID，并在报告中标记。`find` 未指定 Source 时只做候选发现：一
 
 ### 2.3 Catalog Snapshot、权威层与 SQL
 
-Catalog Snapshot 是一次 query、find、search、export 或 recipe 实际读取的 Source 集合及其固定
+Catalog Snapshot 是一次 query、analysis、find 或 export 实际读取的 Source 集合及其固定
 引用。`snapshot_id` 是 Dataset URI、Source 路径、`snapshot_ref` 和发现错误的稳定摘要。
 
 | Source | 操作内保证 | 后续可复现性 |
@@ -164,8 +161,8 @@ Gateway/native writer 写入 append-only events，采用 at-least-once 语义；
 
 ## 3. CLI 产品面
 
-独立 `pchronicle` 是目标入口。以下各节同时包含已实现语法和目标语法；当前支持范围以本节前的
-差异表及[命令参考](cli-pchronicle.md)为准。数据命令可显式接收 Dataset URI；配置本地默认 Warehouse 后，
+独立 `pchronicle` 是产品入口。以下各节只描述当前公共命令；完整参数以
+[命令参考](cli-pchronicle.md)和二进制 `--help` 为准。数据命令可显式接收 Dataset URI；配置本地默认 Warehouse 后，
 支持该形态的命令可以省略 URI。TTY 默认输出人读表格，结构化输出使用 `--format`。stdout
 只承载主结果，进度、Snapshot 和警告写入 stderr。
 
@@ -173,16 +170,14 @@ Gateway/native writer 写入 append-only events，采用 at-least-once 语义；
 |---|---|
 | `default` | 设置或读取单目录本地默认 Warehouse |
 | `ls/list`、`status` | Source 发现、能力、版本、数量与健康状态 |
-| `query` | 只读 SQL、结构化结果输出和内置 recipe |
+| `query` | 只读 SQL 与结构化结果输出 |
 | `analysis` | 稳定内置分析：overview、agents、models、tools |
 | `find` | 按 Source-local ID 精确定位或发现候选 |
-| `search` | lexical full-text search |
 | `import` | 从单一格式创建新 Dataset |
 | `export` | 导出完整 Trajectory |
-| `maintain` | 原生格式维护和失败 staging 清理 |
 | `serve` | 启动静态挂载的只读 API 与 Web |
 
-### 3.1 Query、Find 与 FTS
+### 3.1 Query 与 Find
 
 ```bash
 pchronicle query <dataset-uri> \
@@ -191,19 +186,14 @@ pchronicle query <dataset-uri> \
 pchronicle query --dataset live=<uri> --dataset archive=<uri> \
   "SELECT * FROM live.runs UNION ALL SELECT * FROM archive.runs"
 
-pchronicle query <dataset-uri> --format jsonl|csv|parquet|arrow \
+pchronicle query <dataset-uri> --format table|jsonl|csv \
   --output <path-or-> "<read-only-sql>"
 
 pchronicle find <dataset-uri> --session-id <id> [--source <source-path>]
-pchronicle search <dataset-uri> "database timeout" --top-k 20
 ```
 
 每次读取先构造 Catalog Snapshot。Query 承担任意 SQL 投影的结构化输出；find 带 `--source` 时
 是精确地址查询，不带时只发现候选。两者都受内存、行数、并发、超时和 spill 上限约束。
-
-Search v1 只索引 Step 的消息、模型输入输出、工具参数和结果。命中返回完整轨迹地址、受限
-snippet、lexical score 和索引 `snapshot_id`。FTS cache 是实现细节：输入 Snapshot 不匹配时
-同步刷新或失败，不能返回陈旧结果；只读 Dataset 不写入 sidecar。
 
 ### 3.2 Import 与 Export
 
@@ -224,24 +214,19 @@ Import 只有 create 语义：目标已存在时拒绝，不提供 append/upsert
 输入格式；目录 `auto` 必须得到唯一格式，stdin 必须明确格式。导入先写不可见 staging，完成
 格式、schema 和 Source-local ID 校验后再原子发布；失败或断流不留下可查询半成品。
 
-Export 只输出完整 Trajectory，不编码任意 SQL 行。`--where` 仅作用于 `trajectories` view；复杂
-筛选可先由 query 产生地址列表。格式转换默认 best-effort，字段损失写入 machine-readable
-conversion report；`--strict` 遇到损失即失败。stream 均是读取到 EOF 后退出的有限记录流。
+Export 只输出完整 Trajectory，不编码任意 SQL 行。复杂筛选可先由 query 产生地址列表。
+`--strict` 在转换无法保留原交换文档时失败。stream 均是读取到 EOF 后退出的有限记录流。
 
-### 3.3 Recipe、Pipeline 与 Maintenance
+### 3.3 Query Pipeline 与维护边界
 
 ```bash
-pchronicle query <dataset-uri> --recipe users|models|tool-calls
 pchronicle query <dataset-uri> --format jsonl "<read-only-sql>" | python metrics.py
-pchronicle maintain <dataset-uri>
 ```
 
-Recipe 是有版本、参数 schema、SQL 定义和输出 schema 的 query 别名。pChronicle 不启动、上传、
-分发或 sandbox 用户脚本，也不解释脚本输出。
-
-Maintain 只执行原生格式支持的 compaction、scalar index refresh、vacuum 和 orphan staging 清理。
-pChronicle 不提供 `rm/drop`；maintain 不能删除 Dataset 根或任意 Source 子树。物理删除由文件系统、
-对象存储或基础设施工具完成。
+pChronicle 不启动、上传、分发或 sandbox 用户脚本，也不解释脚本输出。公共 CLI 不提供存储维护
+命令；原生 Storyline compaction、index refresh、vacuum 和内容 GC 仅通过 Rust
+`StorylineLanceStore::maintain` API 调用。pChronicle 不提供 `rm/drop`，Dataset 物理删除和失败
+staging 清理由文件系统、对象存储或基础设施工具负责。
 
 ### 3.4 Built-in Analysis
 
@@ -282,8 +267,6 @@ pchronicle find --session-id session-42
 Warehouse 是 operator-managed 配置定义的只读多 Dataset 视图，例如：
 
 ```toml
-cache_dir = "/var/cache/pchronicle"
-
 [[datasets]]
 name = "production"
 uri = "s3://agent-data/production/"
@@ -301,9 +284,26 @@ pchronicle serve --config warehouse.toml --open
 名称必须唯一，URI 在启动时规范化并固定。公开 API 只接受配置名称，不接收任意 URI、自定义
 endpoint、凭证或写权限。`--open` 打开同一 Web UI，取代单独的 `dashboard` 命令。
 
-Web 提供 Dataset/Source overview、Run/Trajectory 列表与详情、基础筛选、SQL、FTS 和查询结果
-下载。API 只提供 Catalog、query/find、FTS 和 health；不提供 import、trajectory export job、
-index mutation、maintenance、删除或在线 ingest。所有请求同步且有界，不创建隐藏后台 Job。
+需要在本机同时接入在线模型流量时，`serve` 可以显式组合 Gateway：
+
+```bash
+pchronicle serve --config warehouse.toml \
+  --gateway gateway.toml \
+  --gateway-dataset production
+```
+
+Gateway TOML 继续作为转发路由、模型凭证、网络策略、代理端口和管理端口的唯一配置源；两个
+Gateway 端口与 Warehouse 端口都必须绑定 loopback。捕获的 canonical events 由 Gateway sink
+直接写入静态挂载的目标 Dataset，不经过 Warehouse HTTP 写接口，因此 Warehouse 的只读契约
+不变。对象存储目标还必须用 `--gateway-state` 指定本地 session index/WAL 目录；本地 Dataset
+默认复用其根目录。`--gateway-stream-markdown` 仅额外维护便于诊断的 AgenticMD 投影。
+前台排障时可加 `--debug`（别名 `--gateway-debug`），将 Gateway dispatch/capture 日志直接
+输出到 stderr；日志可能包含经过长度限制的请求与响应 body，因此不应在常规生产运行中开启。
+
+Web 提供 Dataset/Source overview、Run/Trajectory 列表与详情、基础筛选、SQL 和查询结果下载。
+API 只提供 health、Catalog、Explorer、evidence query 及当前路由表列出的只读详情/导出接口；
+不提供 Search、import、Dataset mutation、maintenance、删除或在线 ingest。所有请求同步且有界，
+不创建隐藏后台 Job。
 
 ### 4.2 在线写入边界
 
@@ -319,9 +319,8 @@ URI。认证、重试、attribute mapping 和写入语义由 adapter RFC 定义�
 |---|---|
 | Source 在读取中变化 | 当前操作失败，不混合新旧内容 |
 | 单个 Source 损坏 | strict 失败；report 模式标记 degraded 并跳过 |
-| import 中断 | staging 不可见，可由 maintenance 清理 |
-| export 丢字段 | 生成 conversion report；`--strict` 失败 |
-| FTS cache 落后 | 同步刷新或失败，不返回陈旧结果 |
+| import 中断 | staging 不可见；残留由文件系统或对象存储运维工具清理 |
+| export 无法无损转换 | `--strict` 失败；非 strict 按目标格式能力导出 |
 | Warehouse 请求断开 | 同步操作取消或失败，不转为后台 Job |
 | 反向代理身份缺失 | fail closed，不猜测 Dataset 或 principal |
 
@@ -346,8 +345,8 @@ Server 默认监听 loopback；对外服务必须配置可信代理，丢弃非�
 header。Web 将轨迹内容按文本渲染。访问日志记录 request ID、可信 principal、配置别名、Dataset
 摘要、`snapshot_id` 和结果，不记录凭证或完整 payload。
 
-实现至少观测 Source 发现与版本固定、query 扫描量和 spill、FTS cache 命中/刷新、conversion
-loss、staging/orphan bytes、同步取消和资源峰值；每个阶段提供本地/S3 的可复现基准。
+实现至少观测 Source 发现与版本固定、query 扫描量和 spill、staging/orphan bytes、同步取消和
+资源峰值；每个阶段提供本地/S3 的可复现基准。
 
 ## 6. 交付与演进
 
@@ -356,7 +355,7 @@ Dataset 产品能力只通过独立 `pchronicle` 命令发布，不保留跨组�
 交付顺序为：
 
 1. 独立 CLI、Dataset/Source/Catalog Snapshot、统一 SQL 和 create-only import/export；
-2. Source-scoped find、FTS、SQL recipe 和 Catalog/status；
+2. Source-scoped find、内置 analysis 和 Catalog/status；
 3. 静态 Warehouse、只读 API/Web、可信代理和服务端可重建 cache。
 
 核心验收聚焦以下结果：
@@ -365,11 +364,11 @@ Dataset 产品能力只通过独立 `pchronicle` 命令发布，不保留跨组�
 2. 嵌套、混合格式目录形成确定 Source 列表，读取中变化不会被静默混读。
 3. 外部 ID 原样保留；跨 Source 冲突返回完整候选地址。
 4. 任意读取报告 `snapshot_id` 与 Source `snapshot_ref`。
-5. Import 只创建新 Dataset且原子发布；query/export 职责分离并报告转换损失。
-6. Find/FTS 返回含 `source_path` 的地址，FTS 不使用陈旧 cache。
+5. Import 只创建新 Dataset 且原子发布；query/export 职责分离，strict export 拒绝有损转换。
+6. Find 返回含 `source_path` 的地址，并在跨 Source 冲突时要求调用方消歧。
 7. pChronicle 不执行用户脚本、不物理删除 Dataset、不提供服务端写接口。
 8. 共享 API 只解析静态别名；远程连接、凭证和可信代理边界通过负向测试。
 
 后续详细设计只覆盖 URI/Source discovery、轨迹地址与 Snapshot schema、import/export framing、
-FTS cache、静态 Warehouse API 及出站连接校验。OTLP adapter、vector Search、动态 Catalog、
-物理删除和远程执行均保持为独立可选扩展，不得成为核心依赖。
+静态 Warehouse API 及出站连接校验。OTLP adapter、Search、动态 Catalog、物理删除和远程执行
+均保持为独立可选扩展，不得成为核心依赖或未实现的公共命令。

@@ -13,13 +13,16 @@ lance-store = [
     "dep:datafusion",
     "dep:futures",
     "dep:lance",
-    "dep:lance-core",
     "dep:lance-file",
-    "dep:lance-datafusion",
     "dep:lance-index",
+    "dep:object_store",
+]
+search = [
+    "lance-store",
+    "dep:lance-core",
+    "dep:lance-datafusion",
     "dep:lance-linalg",
     "dep:lance-table",
-    "dep:object_store",
 ]
 
 [dependencies]
@@ -69,3 +72,4 @@ harness = false
 
 [[test]]
 name = "search_integration"
+required-features = ["search"]

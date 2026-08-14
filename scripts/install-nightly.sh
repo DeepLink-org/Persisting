@@ -33,7 +33,7 @@ esac
 
 min_py="$("$PYTHON" -c 'import sys; print(sys.version_info.major * 10 + sys.version_info.minor)')"
 if [ "$min_py" -lt 310 ]; then
-  echo "error: persisting wheels require Python 3.10+ (abi3-py310); got $("$PYTHON" --version)" >&2
+  echo "error: persisting wheels require Python 3.10+; got $("$PYTHON" --version)" >&2
   exit 1
 fi
 api="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
@@ -50,8 +50,9 @@ import urllib.request
 api = "${api}"
 platform_re = re.compile(r"${platform_re}")
 
-# Wheels are PyO3 abi3-py310: one wheel per OS/arch, not per Python minor.
-ABI3_RE = re.compile(r"cp310-abi3|cp3\d+-abi3")
+# Wheels contain native CLIs but only pure Python modules, so one py3-none wheel
+# is published per supported OS/architecture.
+PY3_RE = re.compile(r"-py3-none-")
 
 req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json"})
 try:
@@ -69,14 +70,14 @@ for asset in data.get("assets", []):
     name = asset.get("name", "")
     if not name.endswith(".whl") or not name.startswith("persisting-"):
         continue
-    if not ABI3_RE.search(name):
+    if not PY3_RE.search(name):
         continue
     if platform_re.search(name):
         print(asset["browser_download_url"])
         break
 else:
     sys.exit(
-        f"no abi3 wheel for ${platform_re.pattern} in nightly release — "
+        f"no platform wheel for ${platform_re.pattern} in nightly release — "
         "check https://github.com/" + "${REPO}" + "/releases/tag/nightly"
     )
 PY

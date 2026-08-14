@@ -31,7 +31,8 @@ pub mod usage;
 
 pub use gateway::models_list;
 pub use gateway::{
-    serve, serve_with_runtime_control, serve_with_shutdown, serve_with_shutdown_and_ready,
+    serve, serve_with_listeners_and_shutdown, serve_with_runtime_control, serve_with_shutdown,
+    serve_with_shutdown_and_ready,
 };
 
 /// Used by [`sink`], [`record`], and gateway helpers (`crate::Call` internally).

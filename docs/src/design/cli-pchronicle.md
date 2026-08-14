@@ -5,9 +5,8 @@ discovers Sources under a local path or S3 prefix, normalizes supported formats
 into common SQL tables, and keeps result data on stdout while writing Snapshot
 metadata and diagnostics to stderr.
 
-This page describes the current command implementation. For the longer-term
-product boundary, including commands that are not implemented yet, see the
-[pChronicle product architecture](pchronicle-product.md).
+This page describes the current command implementation. For the surrounding
+product and storage boundary, see the [pChronicle product architecture](pchronicle-product.md).
 
 ## Command status
 
@@ -22,8 +21,6 @@ product boundary, including commands that are not implemented yet, see the
 | `import` | Create a new local Dataset from ATIF, ACTF, OpenAI Messages, or Storyline JSON |
 | `export` | Export complete trajectories to one of those exchange formats |
 | `serve` | Serve statically configured Datasets through a loopback-only read API and Web UI |
-| `search` | Reserved command; currently returns “not implemented” |
-| `maintain` | Reserved command; currently returns “not implemented” |
 
 The executable's `--help` is authoritative for individual flags and defaults.
 
@@ -182,6 +179,25 @@ Relative local Dataset paths are resolved from the configuration file's
 directory. The server rejects non-loopback listeners because it has no
 authentication. Its Dataset mounts and API are read-only; import, export,
 maintenance, and arbitrary filesystem access are not exposed over HTTP.
+
+`serve` can also compose the existing Gateway on separate loopback listeners:
+
+```bash
+pchronicle serve --config warehouse.toml \
+  --gateway gateway.toml \
+  --gateway-dataset evals \
+  --gateway-stream-markdown
+```
+
+`--gateway` points to the complete Gateway TOML, so model routes, upstream
+credentials, network policy, and proxy/admin listeners are not duplicated in
+the pChronicle CLI. Canonical events go through an in-process sink directly to
+the selected static Dataset while the Warehouse Web/API remains read-only. A
+multi-Dataset Warehouse without `default_dataset` requires
+`--gateway-dataset`; an object-store Dataset also requires a local
+`--gateway-state` directory. `--debug` (alias `--gateway-debug`) mirrors
+Gateway dispatch/capture diagnostics directly to stderr and may include
+bounded request and response bodies.
 
 The standalone command is the only public CLI for Dataset catalog, SQL,
 analysis, find, exchange, and read-only Warehouse serving.

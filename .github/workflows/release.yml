@@ -63,20 +63,9 @@ jobs:
         run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
       - name: Build manylinux wheel
-        uses: PyO3/maturin-action@v1
+        uses: pypa/cibuildwheel@v4.1.0
         with:
-          target: x86_64
-          args: >-
-            --release --locked --out dist --auditwheel repair
-          before-script-linux: >-
-            yum install -y glibc-static &&
-            env -u RUSTC_WRAPPER PERSISTING_FETCH_LIBKRUNFW=1
-            /opt/python/cp312-cp312/bin/python scripts/packaging/stage_wheel_binaries.py
-            --target x86_64-unknown-linux-gnu --profile release --locked
-          sccache: "true"
-          manylinux: 2014
-          maturin-version: v1.14.1
-          rust-toolchain: stable
+          output-dir: dist
 
       - name: Verify wheel component set
         run: |
@@ -117,20 +106,10 @@ jobs:
       - name: Build pChronicle Web assets
         run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
-      - name: Stage wheel CLI component set
-        run: >-
-          python3 scripts/packaging/stage_wheel_binaries.py
-          --target aarch64-apple-darwin --profile release --locked
-
       - name: Build wheel
-        uses: PyO3/maturin-action@v1
+        uses: pypa/cibuildwheel@v4.1.0
         with:
-          target: aarch64
-          args: >-
-            --release --locked --out dist --find-interpreter
-          sccache: "true"
-          maturin-version: v1.14.1
-          rust-toolchain: stable
+          output-dir: dist
 
       - name: Verify wheel component set
         run: |

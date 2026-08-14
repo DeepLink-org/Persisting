@@ -37,22 +37,22 @@ fn main() -> Result<()> {
         result.json_write, result.atif_open, result.lance_write, result.lance_open
     );
     let cold_query_mean = mean_duration(result.lance_cold_query, result.iterations);
-    let get_storyline_mean = mean_duration(result.get_storyline, result.iterations);
+    let get_storyline_full_mean = mean_duration(result.get_storyline_full, result.iterations);
     println!("pChronicle lifecycle:");
     println!(
         "  cold open+plan+query: {:?} total ({:?}/query)",
         result.lance_cold_query, cold_query_mean
     );
     println!(
-        "  get_storyline:       {:?} total ({:?}/lookup)",
-        result.get_storyline, get_storyline_mean
+        "  get_storyline_full:  {:?} total ({:?}/lookup)",
+        result.get_storyline_full, get_storyline_full_mean
     );
     println!("  single-story replace: {:?}", result.incremental_replace);
     println!(
-        "RESULT benchmark=lifecycle iterations={} cold_query_ms={:.3} get_storyline_ms={:.3} replace_storyline_ms={:.3}",
+        "RESULT benchmark=lifecycle iterations={} cold_query_ms={:.3} get_storyline_full_ms={:.3} replace_storyline_ms={:.3}",
         result.iterations,
         milliseconds(cold_query_mean),
-        milliseconds(get_storyline_mean),
+        milliseconds(get_storyline_full_mean),
         milliseconds(result.incremental_replace),
     );
     print_comparison(
@@ -89,7 +89,7 @@ struct BenchmarkResult {
     lance_write: Duration,
     lance_open: Duration,
     lance_cold_query: Duration,
-    get_storyline: Duration,
+    get_storyline_full: Duration,
     incremental_replace: Duration,
     selective: Comparison,
     analytical: Comparison,
@@ -206,11 +206,11 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
         json_memory: time_sync(iterations, || Ok(json_memory_analysis(&parsed)))?,
     };
     let lance_cold_query = time_lance_cold_query(&store, &selective_sql, iterations).await?;
-    let get_storyline_started = Instant::now();
+    let get_storyline_full_started = Instant::now();
     for _ in 0..iterations {
-        black_box(store.get_storyline(&target_session).await?);
+        black_box(store.get_storyline_full(&target_session).await?);
     }
-    let get_storyline = get_storyline_started.elapsed();
+    let get_storyline_full = get_storyline_full_started.elapsed();
     let lance_bytes = directory_size(store.root())?;
     let mut updated = stories
         .iter()
@@ -232,7 +232,7 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
         lance_write,
         lance_open,
         lance_cold_query,
-        get_storyline,
+        get_storyline_full,
         incremental_replace,
         selective,
         analytical,
@@ -437,7 +437,7 @@ fn print_conclusion(result: &BenchmarkResult) {
     println!(
         "  Lifecycle: cold query {:.3} ms, point lookup {:.3} ms, single-story replace {:.3} ms.",
         milliseconds(mean_duration(result.lance_cold_query, result.iterations)),
-        milliseconds(mean_duration(result.get_storyline, result.iterations)),
+        milliseconds(mean_duration(result.get_storyline_full, result.iterations,)),
         milliseconds(result.incremental_replace),
     );
     println!(

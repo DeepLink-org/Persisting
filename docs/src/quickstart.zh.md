@@ -102,9 +102,7 @@ just examples-pchronicle
 
 ## 其他独立能力
 
-- [Tensor Memory（实验性）](guide/tensor-memory.md) — 张量下标与分层存储
 - [Queue](guide/queue.md) — 持久事件流
-- [Search](guide/search.md) — 文档索引与向量/混合检索
 
 ## 下一步
 

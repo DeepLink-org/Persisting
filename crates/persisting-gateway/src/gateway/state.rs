@@ -89,6 +89,48 @@ pub async fn serve_with_shutdown_and_ready(
     .await
 }
 
+/// Run the Gateway with already-bound proxy and admin listeners.
+///
+/// Embedders can use this entry point to reserve every listener before
+/// starting any service, report the resolved addresses for port `0`, and
+/// coordinate one shutdown signal across multiple servers.
+pub async fn serve_with_listeners_and_shutdown(
+    mut config: ProxyConfig,
+    storage: impl AsRef<Path>,
+    sink: Arc<dyn CaptureEventSink>,
+    stream_markdown: bool,
+    listener: tokio::net::TcpListener,
+    admin_listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    config.listen = listener
+        .local_addr()
+        .context("read Gateway listen address")?
+        .to_string();
+    config.admin_listen = admin_listener
+        .local_addr()
+        .context("read Gateway admin listen address")?
+        .to_string();
+    config.validate()?;
+    serve_with_bound_listeners(
+        config,
+        storage,
+        sink,
+        stream_markdown,
+        GatewayRuntimeControl {
+            controller: Arc::new(PolicyControlController),
+            interception_metrics: InterceptionMetrics::default(),
+            bandwidth_registry: BandwidthRegistry::default(),
+            attempt_id: None,
+        },
+        listener,
+        admin_listener,
+        None,
+        shutdown,
+    )
+    .await
+}
+
 /// Gateway sink with an injected runtime control state controller.
 ///
 /// pVisor injects the controller; Gateway and OverlayNet apply model/network
@@ -128,26 +170,6 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
     ready: Option<tokio::sync::oneshot::Sender<()>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
-    tokio::spawn(async move {
-        shutdown.await;
-        let _ = stop_tx.send(());
-    });
-
-    let storage = Arc::new(storage.as_ref().to_path_buf());
-    let index_store = SessionIndexStore::open(storage.as_path())?;
-    let index = index_store.clone_handle();
-    let started_at = chrono::Utc::now().to_rfc3339();
-
-    if is_debug_enabled(&config, storage.as_path()) {
-        tracing::debug!(
-            target: "persisting_gateway",
-            "capture debug → {}",
-            debug::debug_log_path(storage.as_path()).display()
-        );
-        debug::log_daemon_start(storage.as_path(), &config.listen, env!("CARGO_PKG_VERSION"));
-    }
-
     let admin_listen: std::net::SocketAddr = config.admin_listen.parse().with_context(|| {
         format!(
             "invalid capture admin listen address `{}`",
@@ -164,6 +186,57 @@ pub(crate) async fn serve_with_runtime_control_and_metrics(
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind overlaynet gateway on {listen}"))?;
+    serve_with_bound_listeners(
+        config,
+        storage,
+        sink,
+        stream_markdown,
+        runtime_control,
+        listener,
+        admin_listener,
+        ready,
+        shutdown,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_with_bound_listeners(
+    config: ProxyConfig,
+    storage: impl AsRef<Path>,
+    sink: Arc<dyn CaptureEventSink>,
+    stream_markdown: bool,
+    runtime_control: GatewayRuntimeControl,
+    listener: tokio::net::TcpListener,
+    admin_listener: tokio::net::TcpListener,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
+    tokio::spawn(async move {
+        shutdown.await;
+        let _ = stop_tx.send(());
+    });
+
+    let listen = listener
+        .local_addr()
+        .context("read Gateway listen address")?;
+    let admin_listen = admin_listener
+        .local_addr()
+        .context("read Gateway admin listen address")?;
+    let storage = Arc::new(storage.as_ref().to_path_buf());
+    let index_store = SessionIndexStore::open(storage.as_path())?;
+    let index = index_store.clone_handle();
+    let started_at = chrono::Utc::now().to_rfc3339();
+
+    if is_debug_enabled(&config, storage.as_path()) {
+        tracing::debug!(
+            target: "persisting_gateway",
+            "capture debug → {}",
+            debug::debug_log_path(storage.as_path()).display()
+        );
+        debug::log_daemon_start(storage.as_path(), &config.listen, env!("CARGO_PKG_VERSION"));
+    }
 
     let active_requests = Arc::new(AtomicUsize::new(0));
     let interception_metrics = runtime_control.interception_metrics;

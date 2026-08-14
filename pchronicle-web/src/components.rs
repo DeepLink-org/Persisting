@@ -306,9 +306,7 @@ pub fn TrajectoryView(
     detail: Option<TurnDetail>,
     loading: bool,
     #[props(default = false)] embedded: bool,
-    #[props(default = true)] annotatable: bool,
     on_turn: EventHandler<i64>,
-    on_annotate: EventHandler<String>,
 ) -> Element {
     let groups = compact_span_groups(&turns);
     let total_events = turns
@@ -335,7 +333,7 @@ pub fn TrajectoryView(
             div { class: "span-table-head", div { "Structure" } div { "Overview" } div { class: "span-axis-head", span { "Timeline / occupancy" } div { class: "span-axis-ticks", span { "0" } span { "25%" } span { "50%" } span { "75%" } span { "{total_events.saturating_sub(1)}" } } } div { "Evidence" } }
             details { class: "trace-root", open: true,
                 summary { class: "trace-root-summary", div { class: "span-structure root", span { class: "disclosure" } strong { "trajectory" } span { "{groups.len()} spans" } } div { class: "span-row-copy root-copy", "{total_refs} canonical references across the loaded run" } div { class: "span-track", div { class: "span-bar root-bar", style: "left:0%;width:100%" } } div { class: "span-evidence-count", strong { "{total_refs} ev" } span { "{total_tools} tools" } } }
-                div { class: "span-children", for group in groups { CompactSpanRow { key: "{group.key}", group, total_events, expanded_turn_id, detail: detail.clone(), loading, embedded, annotatable, on_turn, on_annotate } } }
+                div { class: "span-children", for group in groups { CompactSpanRow { key: "{group.key}", group, total_events, expanded_turn_id, detail: detail.clone(), loading, embedded, on_turn } } }
             }
         }
     } }
@@ -349,9 +347,7 @@ fn CompactSpanRow(
     detail: Option<TurnDetail>,
     loading: bool,
     embedded: bool,
-    annotatable: bool,
     on_turn: EventHandler<i64>,
-    on_annotate: EventHandler<String>,
 ) -> Element {
     let event_refs = group
         .entries
@@ -394,7 +390,7 @@ fn CompactSpanRow(
     let has_error = group.entries.iter().any(|turn| turn.has_error);
     rsx! { details { class: "span-row",
         summary { class: "span-row-summary", div { class: "span-structure", span { class: "disclosure" } span { class: "span-status {phase}" } div { strong { title: "{group.label}", "{group.label}" } span { "{roles} · seq {group.first_seq}–{group.last_seq}" } } if has_error { span { class: "pc2-error-chip", "error" } } else { span { class: "phase-badge {phase}", "{phase}" } } } div { class: "span-row-copy", strong { title: "{preview}", "{preview}" } div { class: "span-copy-meta", if let Some(model) = model { span { "{model}" } } if latency > 0.0 { span { "{format_ms(latency)}" } } if group.tool_calls > 0 { span { "{group.tool_calls} tool calls" } } } } div { class: "span-track", title: "seq {group.first_seq} — {group.last_seq}", div { class: "span-grid-lines" } div { class: "span-bar {phase}", style: "left:{left:.4}%;width:max({width:.4}%,3px)" } } div { class: "span-evidence-count", strong { "{event_refs} ev" } span { "{group.tool_calls} tools" } } }
-        div { class: "span-detail", div { class: "span-detail-meta", code { "seq {group.first_seq}..{group.last_seq}" } if let Some(call_id) = &group.call_id { code { "call {call_id}" } } } for turn in group.entries { CompactTurnRow { key: "turn-{turn.id}", turn: turn.clone(), expanded: expanded_turn_id == Some(turn.id), detail: detail.clone(), loading, embedded, annotatable, on_turn, on_annotate } } }
+        div { class: "span-detail", div { class: "span-detail-meta", code { "seq {group.first_seq}..{group.last_seq}" } if let Some(call_id) = &group.call_id { code { "call {call_id}" } } } for turn in group.entries { CompactTurnRow { key: "turn-{turn.id}", turn: turn.clone(), expanded: expanded_turn_id == Some(turn.id), detail: detail.clone(), loading, embedded, on_turn } } }
     } }
 }
 
@@ -405,9 +401,7 @@ fn CompactTurnRow(
     detail: Option<TurnDetail>,
     loading: bool,
     embedded: bool,
-    annotatable: bool,
     on_turn: EventHandler<i64>,
-    on_annotate: EventHandler<String>,
 ) -> Element {
     let id = turn.id;
     let kind = turn.kind.clone().unwrap_or_else(|| "turn".into());
@@ -419,18 +413,13 @@ fn CompactTurnRow(
     }
     rsx! { details { class: if expanded { "compact-turn selected" } else { "compact-turn" }, open: expanded,
         summary { aria_label: "Expand {turn.source} turn {id}", onclick: move |event| { event.prevent_default(); on_turn.call(id); }, span { class: "compact-turn-chevron" } span { class: "pc2-role {turn.source}", "{turn.source}" } code { "#{id}" } span { class: "compact-kind", "{kind}" } span { class: "compact-preview", title: "{preview}", "{preview}" } span { class: "compact-turn-stats", if tool_count > 0 { span { "{tool_count} tools" } } span { "{event_count} ev" } } }
-        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full turn…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value, annotatable, on_annotate } } else { div { class: "pc2-inline-unavailable", "Full evidence is unavailable for this turn." } } } }
+        if expanded { div { class: "compact-turn-body pc2-inline-detail", if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Loading full turn…" } } else if let Some(value) = detail.filter(|value| value.summary.id == id) { InlineTurnDetail { value } } else { div { class: "pc2-inline-unavailable", "Full evidence is unavailable for this turn." } } } }
     } }
 }
 
 #[component]
-fn InlineTurnDetail(
-    value: TurnDetail,
-    annotatable: bool,
-    on_annotate: EventHandler<String>,
-) -> Element {
-    let annotate_call = value.summary.call_id.clone();
-    rsx! { div { class: "pc2-inline-detail-head", strong { "Full turn evidence" } if annotatable { if let Some(call) = annotate_call { button { class: "button", onclick: move |_| on_annotate.call(call.clone()), "Annotate" } } } }
+fn InlineTurnDetail(value: TurnDetail) -> Element {
+    rsx! { div { class: "pc2-inline-detail-head", strong { "Full turn evidence" } }
         div { class: "pc2-inspector-facts", Fact { label: "Turn", value: format!("#{}", value.summary.id) } Fact { label: "Source", value: value.summary.source.clone() } Fact { label: "Kind", value: value.summary.kind.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Model", value: value.summary.model_name.clone().unwrap_or_else(|| "unavailable".into()) } Fact { label: "Latency", value: value.summary.latency_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "TTFT", value: value.summary.ttft_ms.map(format_ms).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Tokens", value: value.summary.total_tokens.map(|tokens| tokens.to_string()).unwrap_or_else(|| "unavailable".into()) } Fact { label: "Token split", value: format!("{} in · {} out", optional_u64(value.summary.prompt_tokens), optional_u64(value.summary.completion_tokens)) } Fact { label: "Events", value: value.events.len().to_string() } }
         EvidenceBlock { title: "Message", value: value.turn.text() }
         if let Some(reasoning) = &value.turn.reasoning_content { EvidenceBlock { title: "Reasoning", value: reasoning.clone() } }

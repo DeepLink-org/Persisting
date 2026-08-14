@@ -62,12 +62,6 @@ pub struct QueryCatalog {
     pub tables: Vec<QueryTableSummary>,
 }
 
-impl QueryCatalog {
-    pub fn can_write_judgments(&self) -> bool {
-        !self.read_only
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct QueryDatasetSummary {
     pub name: String,
@@ -297,21 +291,6 @@ pub struct QueryEvidence {
     pub max_bytes: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct JudgmentWrite {
-    pub dataset: Option<String>,
-    pub file: Option<String>,
-    pub run_id: Option<String>,
-    pub agent_id: String,
-    pub session_id: String,
-    pub root_session_id: Option<String>,
-    pub call_id: String,
-    pub rubric_id: String,
-    pub score: i64,
-    pub verdict: String,
-    pub rationale: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,20 +314,5 @@ mod tests {
             run.query(),
             "dataset=dataset&file=nested%2Fsource.json&run_id=run-1&agent_id=agent%20one&session_id=s%2F1&root_session_id=root%2B1"
         );
-    }
-
-    #[test]
-    fn warehouse_catalog_disables_judgment_writes() {
-        let catalog: QueryCatalog = serde_json::from_value(serde_json::json!({
-            "snapshot_id": "snapshot",
-            "read_only": true,
-            "database": "evals",
-            "storage_path": "/redacted",
-            "path_column": "_file_",
-            "datasets": [],
-            "tables": []
-        }))
-        .unwrap();
-        assert!(!catalog.can_write_judgments());
     }
 }

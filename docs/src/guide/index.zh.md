@@ -12,9 +12,7 @@
 | 查询或分析轨迹 Dataset | [pChronicle CLI](../design/cli-pchronicle.md) |
 | 记录 Agent LLM 调用 | [Capture](capture.md) |
 | 控制 proxy-aware Agent 工具的 HTTP/HTTPS 出口 | [OverlayNet](overlaynet.md) |
-| 用张量下标存储/读取参数或 KV Cache | [Tensor Memory](tensor-memory.md) |
 | 流式传输事件并持久化 | [Queue](queue.md) |
-| 索引和检索文档 | [Search](search.md) |
 | 接入自定义存储 | [Custom Backends](custom-backends.md) |
 | 复现一个可测量的结论 | [可复现示例](examples.md) |
 
@@ -27,17 +25,15 @@
 |---|---|---|
 | [pVisor](../design/cli-pvisor.md) | 单个 Run 的执行、控制与事务工作区 | 已实现 |
 | [pPilot](../design/cli-ppilot.md) | 批量编排、durable 结果与 Run 生产 | 已实现 |
-| [pChronicle](../design/cli-pchronicle.md) | Dataset 目录、有界 SQL/分析、格式交换、本地只读 UI | 已实现；search/maintain 预留 |
+| [pChronicle](../design/cli-pchronicle.md) | Dataset 目录、有界 SQL/分析、格式交换、本地只读 UI | 已实现 |
 | [Capture](capture.md) | 捕获 LLM 流量并生成 Lance 与 Markdown 视图 | 已实现 |
 | [OverlayNet](overlaynet.md) | Cooperative HTTP/HTTPS 代理策略与带宽控制 | 已实现 |
-| [Search](search.md) | 文档索引与向量/混合检索 | 稳定 |
 | [Queue](queue.md) | 持久事件流和 KV 风格访问 | 稳定 |
-| [Tensor Memory](tensor-memory.md) | 张量下标 API 与 host/SSD block 存储 | 实验性 |
 | [Custom Backends](custom-backends.md) | Queue 存储后端扩展点 | 参考 |
 
 ## 这些能力如何关联
 
 pVisor、pPilot、pChronicle 是 Agent 基础设施：pVisor 运行单个 Run，pPilot 调度并恢复批量
 Run，pChronicle 保存 canonical 历史。Gateway、OverlayNet、Control 与 OverlayFS 是 pVisor
-组装的运行时驱动。Tensor Memory、Queue、Search 是独立的能力型数据系统——可单独使用，
-不是 Agent runtime 的必需依赖。实现模型与成熟度说明见[架构与内部实现](../design/index.md)。
+组装的运行时驱动。Queue 是独立的能力型数据系统，可单独使用，不是 Agent runtime
+的必需依赖。实现模型与成熟度说明见[架构与内部实现](../design/index.md)。

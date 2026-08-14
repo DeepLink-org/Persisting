@@ -301,6 +301,36 @@ async fn same_sql_returns_identical_results_for_lance_and_atif() -> Result<()> {
 }
 
 #[tokio::test]
+async fn timestamp_milliseconds_match_for_lance_and_direct_atif_queries() -> Result<()> {
+    let trajectories = load_trajectories()?;
+    let dir = tempfile::tempdir()?;
+    let store = StorylineLanceStore::open(dir.path()).await?;
+    let stories = trajectories
+        .iter()
+        .map(|trajectory| {
+            into_storyline(
+                ChronicleFormat::Atif,
+                &serde_json::to_string(trajectory).unwrap(),
+            )
+        })
+        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+    store.replace_storylines(&stories).await?;
+
+    let lance = ChronicleQueryEngine::open_lance(dir.path()).await?;
+    let atif = ChronicleQueryEngine::open_atif(fixture_root())?;
+    let sql = "SELECT session_id, step_id, timestamp \
+               FROM steps \
+               WHERE timestamp >= TIMESTAMP '2026-06-15T09:00:10Z' \
+               ORDER BY timestamp, session_id, step_id";
+    let lance_rows = lance.query_jsonl(sql).await?;
+    let atif_rows = atif.query_jsonl(sql).await?;
+
+    assert_eq!(lance_rows, atif_rows);
+    assert!(!lance_rows.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn streaming_jsonl_matches_collected_jsonl() -> Result<()> {
     let trajectories = load_trajectories()?;
     let engine = ChronicleQueryEngine::from_atif_source(AtifDataSource::from_trajectories(

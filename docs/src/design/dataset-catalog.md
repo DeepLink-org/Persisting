@@ -431,7 +431,7 @@ Catalog 复用直接文件查询的资源参数：
 
 | API | 语义 |
 |---|---|
-| `GET /api/v1/catalog` | 返回当前 `snapshot_id`、创建时间、默认/可写 Dataset、错误策略和 source 列表 |
+| `GET /api/v1/catalog` | 返回当前 `snapshot_id`、创建时间、默认 Dataset、错误策略和 source 列表 |
 | `POST /api/v1/catalog` | 在锁外完整构建新快照，成功后原子替换，并清空轨迹缓存 |
 
 刷新失败不会清空或部分更新旧 Catalog；正在处理的请求持有旧快照的 `Arc`，可以继续完成。
@@ -463,7 +463,7 @@ SQL 增加 `_file_ = ...` 或 `_file_ IN (...)`，原业务谓词仍由 DataFusi
 
 `GET /api/v1/catalog` 的 `acceleration` 字段报告索引是否已经构建及其行、source、distinct
 value 数，并通过 `failed` 列出本 generation 已缓存的构建失败，避免每个请求重复全表扫描；
-`POST /api/v1/query` 用 `x-pchronicle-source-routing` 响应头报告 `applied`、
+`POST /api/v1/query/evidence` 用 `source_routing` 响应字段报告 `applied`、
 `already_pruned`、`not_applicable`、`not_selective` 或 `index_unavailable`。Catalog 刷新会把
 新快照、查询引擎和空加速结构作为同一个 runtime 原子发布；旧请求继续持有旧 runtime，
 索引不会跨 `snapshot_id` 复用。
@@ -473,13 +473,9 @@ value 数，并通过 `failed` 列出本 generation 已缓存的构建失败，�
 
 ### 9.2 写入边界
 
-命名 Dataset 默认只读。只有 `--writable-dataset NAME` 指定的 Dataset 能执行需要写入的
-judgment 或 maintenance 操作，而且目标 source 必须是实际发现的 canonical
-`events.lance`。服务端从该 source 的物理 URI 恢复 `StoryCoords`，不会根据 Dataset 根和
-`_file_` 拼接猜测写入位置。
-
-当前 `pchronicle serve` 的挂载只读，并强制限制为 loopback；Catalog 本身不提供认证或
-逐 Dataset 授权。
+`pchronicle serve` 只提供读取、Catalog 刷新和有界 evidence query，不暴露 judgment 写入、
+maintenance、导入或任意 SQL 写接口。服务强制限制为 loopback；Gateway 和原生 writer
+直接写 Dataset，不经过 Warehouse API。
 
 ## 10. Rust API 边界
 
@@ -521,7 +517,7 @@ let rows = engine
 7. 同 Dataset 多 source 的轨迹表联接必须携带 `_file_` 等值。
 8. 查询期 source 不能脱离持有它的快照生命周期。
 9. Server 只原子发布完整新快照；失败时继续提供旧快照。
-10. 非 canonical source 和非显式 writable Dataset 不得成为写目标。
+10. Warehouse Server 不得把任何 Dataset 或 source 作为写目标。
 11. `_file_` source pruning 必须发生在 `LazySource::resolve` 之前；不能为了判断是否命中而
     打开 source。
 12. 延迟解析只能使用快照固定的版本描述，并在同一快照内 single-flight；不得在解析时

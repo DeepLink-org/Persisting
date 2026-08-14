@@ -13,9 +13,7 @@ workflows; architecture pages explain internal choices and experimental work.
 | Query or analyze trajectory Datasets | [pChronicle CLI](../design/cli-pchronicle.md) |
 | Record agent LLM calls | [Capture](capture.md) |
 | Control HTTP/HTTPS egress for proxy-aware Agent tools | [OverlayNet](overlaynet.md) |
-| Store/retrieve parameters or KV cache by tensor subscript | [Tensor Memory](tensor-memory.md) |
 | Stream events with persistence | [Queue](queue.md) |
-| Index and search documents | [Search](search.md) |
 | Plug in custom storage | [Custom Backends](custom-backends.md) |
 | Reproduce a measurable result | [Examples](examples.md) |
 
@@ -29,12 +27,10 @@ generated files and reports directly. `just examples` runs them all.
 |---|---|---|
 | [pVisor](../design/cli-pvisor.md) | One Run's execution, control, and transactional workspace | Implemented |
 | [pPilot](../design/cli-ppilot.md) | Batch orchestration, durable results, and Run production | Implemented |
-| [pChronicle](../design/cli-pchronicle.md) | Dataset catalog, bounded SQL/analysis, exchange, local read-only UI | Implemented; search/maintenance reserved |
+| [pChronicle](../design/cli-pchronicle.md) | Dataset catalog, bounded SQL/analysis, exchange, local read-only UI | Implemented |
 | [Capture](capture.md) | LLM traffic capture into Lance and Markdown views | Implemented |
 | [OverlayNet](overlaynet.md) | Cooperative HTTP/HTTPS proxy policy and bandwidth control | Implemented |
-| [Search](search.md) | Document indexing and vector/hybrid retrieval | Stable |
 | [Queue](queue.md) | Persistent event stream and KV-style access | Stable |
-| [Tensor Memory](tensor-memory.md) | Tensor subscript API and host/SSD block storage | Experimental |
 | [Custom Backends](custom-backends.md) | Queue storage backend extension points | Reference |
 
 ## How the pieces relate
@@ -42,7 +38,7 @@ generated files and reports directly. `just examples` runs them all.
 pVisor, pPilot, and pChronicle are the agent infrastructure: pVisor runs one
 Run, pPilot schedules and recovers many, pChronicle keeps the canonical
 history. Gateway, OverlayNet, Control, and OverlayFS are runtime drivers
-assembled by pVisor. Tensor Memory, Queue, and Search are separate
-capability-specific data systems — independently useful, not required by the
-agent runtime. See [Architecture & Internals](../design/index.md) for the
-implementation model and maturity notes.
+assembled by pVisor. Queue is a separate capability-specific data system that
+is independently useful and not required by the agent runtime. See
+[Architecture & Internals](../design/index.md) for the implementation model and
+maturity notes.

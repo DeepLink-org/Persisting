@@ -2,9 +2,7 @@
 
 ## Overview
 
-Persisting extends Pulsing with distributed tiered memory: **Pulsing handles the control plane** (actor runtime), **Persisting handles the data plane** (multi-dimensional addressing, GPU/host/SSD tiering, placement).
-
-This document describes the **queue persistence** architecture — the currently available capability. For the tensor memory architecture (TTAS addressing, tiered storage, KV Cache), see [TTAS](tensor-address-space.md) and the [architecture index](index.md).
+This document describes Persisting's **queue persistence** architecture.
 
 ### Queue Persistence
 
@@ -94,13 +92,3 @@ Record → hash(record[bucket_column]) % num_buckets → bucket_id
 bucket_id → owner_node (consistent hashing over cluster members)
 owner_node → BucketStorage actor → StorageBackend instance
 ```
-
-## Tensor Memory (next phase)
-
-Queue persistence is one layer of Persisting's data plane. The next phase adds **tensor memory** — the core distributed tiered memory capability:
-
-- **TTAS addressing**: Multi-dimensional tensor addressing (`kv["s1", 0, 2, 0:512]`) with canonicalization, routing, and batch optimization. See [TTAS](tensor-address-space.md).
-- **Tiered storage**: GPU ↔ host ↔ SSD, transparent to application code. Data placement driven by TTAS partition keys.
-- **Use cases**: KV Cache offloading, parameter serving, trajectory storage — all as views over the same distributed tiered memory.
-
-The queue architecture above continues to serve as the streaming/event backbone, while tensor memory handles the high-bandwidth tensor data path.

@@ -3,9 +3,7 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use persisting_pchronicle::{DatasetMount, DEFAULT_DATASET_NAME};
-use persisting_pchronicle_cli::server::{
-    router_with_config, warehouse_router, ChronicleServerConfig,
-};
+use persisting_pchronicle_cli::server::{warehouse_router, ChronicleServerConfig};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -54,7 +52,6 @@ async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<
         match assertion {
             "health" => assert_eq!(body, json!({"status":"ok","mode":"read_only"})),
             "catalog" => {
-                assert_eq!(body["writable_dataset"], Value::Null);
                 assert_eq!(body["datasets"].as_array().map(Vec::len), Some(3));
             }
             "tables" => {
@@ -112,24 +109,7 @@ async fn catalog_refresh_is_the_only_allowed_read_side_post() -> Result<()> {
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await?;
-    assert_eq!(body["writable_dataset"], Value::Null);
     assert_eq!(body["datasets"].as_array().map(Vec::len), Some(3));
-    Ok(())
-}
-
-#[tokio::test]
-async fn legacy_router_retains_its_explicit_query_surface() -> Result<()> {
-    let config = ChronicleServerConfig::legacy(example_uri("atif"))?;
-    let response = router_with_config(config)
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/query")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"sql": "SELECT 1"}).to_string()))?,
-        )
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
     Ok(())
 }
 

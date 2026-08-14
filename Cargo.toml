@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/persisting-agentctl",
-    "crates/persisting-core",
     "crates/persisting-gateway",
     "crates/persisting-dlcapt",
     "crates/persisting-ppilot",
@@ -17,7 +16,6 @@ exclude = ["vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
 
 default-members = [
     "crates/persisting-agentctl",
-    "crates/persisting-core",
     "crates/persisting-gateway",
     "crates/persisting-dlcapt",
     "crates/persisting-ppilot",

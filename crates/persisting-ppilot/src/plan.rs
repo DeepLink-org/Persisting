@@ -1,6 +1,6 @@
 //! Run a user plan script and stream typed values (NDJSON on stdout).
 //!
-//! The control plane never embeds the user's interpreter (PyO3). It **invokes**
+//! The control plane never embeds the user's interpreter. It **invokes**
 //! `--python` so quirky envs stay isolated; stacks stay in that process.
 //!
 //! User CLI args after `--` become ``sys.argv`` for the plan module (argparse-friendly).

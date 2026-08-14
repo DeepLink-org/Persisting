@@ -33,10 +33,6 @@ try:
     LANCE_AVAILABLE = True
 except ImportError:
     LANCE_AVAILABLE = False
-    logger.warning(
-        "Lance not available. Install with: pip install persisting[lance] "
-        "or pip install lance pyarrow"
-    )
 
 
 def _infer_arrow_table(records: list[dict[str, Any]]) -> "pa.Table":

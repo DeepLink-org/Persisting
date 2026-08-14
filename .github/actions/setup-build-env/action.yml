@@ -81,8 +81,3 @@ runs:
       run: |
         brew install protobuf
         protoc --version
-
-    - name: Point PyO3 at CI Python
-      shell: bash
-      run: |
-        echo "PYO3_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"

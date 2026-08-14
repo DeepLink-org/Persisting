@@ -1,15 +1,4 @@
-# `persisting-core` uses PyO3's abi3-py310 feature. Cargo does not read
-# `.python-version`, so PATH probing can accidentally select macOS Python 3.9.
-# The repository selector validates Python >= 3.10 and prefers the active or
-# project virtual environment. An explicitly exported PYO3_PYTHON still wins.
 [env]
-PYO3_PYTHON = { value = "scripts/pyo3-python", relative = true }
 # libkrun embeds a Linux guest init. Native Linux builds use cc; macOS builds
 # cross-compile that init with Zig instead of accidentally using Apple clang.
 CC_LINUX = { value = "scripts/libkrun-linux-cc", relative = true }
-
-# `maturin develop` requires a recognizable virtual environment. Use either:
-#    - 在仓库根创建并激活：python -m venv .venv && source .venv/bin/activate
-#      （Windows：.venv\Scripts\activate），再 pip install maturin && maturin develop --release
-#    - 或已 conda activate / 其它 venv 且设置了 CONDA_PREFIX / VIRTUAL_ENV
-#    不想用 venv 时：maturin build --release，再 pip install target/wheels/*.whl

@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use lance::deps::arrow_array::{Array, BooleanArray, Int64Array, RecordBatch, StringArray};
-use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
+use lance::deps::arrow_array::{
+    Array, BooleanArray, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+};
+use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -42,7 +44,11 @@ pub fn story_steps_arrow_schema() -> Arc<ArrowSchema> {
         field("step_id", DataType::Int64, false),
         field("kind", DataType::Utf8, true),
         field("effective_kind", DataType::Utf8, false),
-        field("timestamp", DataType::Utf8, true),
+        field(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+            true,
+        ),
         field("source", DataType::Utf8, false),
         field("message_json", DataType::Utf8, false),
         field("reasoning_content", DataType::Utf8, true),
@@ -87,6 +93,24 @@ fn req_utf8_owned(values: Vec<String>) -> StringArray {
 
 fn opt_utf8_owned(values: Vec<Option<String>>) -> StringArray {
     opt_utf8(values.iter().map(Option::as_deref))
+}
+
+pub(crate) fn timestamp_array<'a>(
+    values: impl IntoIterator<Item = Option<&'a str>>,
+) -> Result<TimestampMillisecondArray> {
+    let values = values
+        .into_iter()
+        .map(|value| {
+            value
+                .map(|value| {
+                    chrono::DateTime::parse_from_rfc3339(value)
+                        .with_context(|| format!("parse Storyline timestamp '{value}' as RFC3339"))
+                        .map(|timestamp| timestamp.timestamp_millis())
+                })
+                .transpose()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(TimestampMillisecondArray::from(values).with_timezone("UTC"))
 }
 
 fn json<T: Serialize>(value: &T) -> Result<String> {
@@ -161,7 +185,9 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
             )),
             Arc::new(opt_utf8(rows.iter().map(|r| r.kind.as_deref()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.effective_kind.as_str()))),
-            Arc::new(opt_utf8(rows.iter().map(|r| r.timestamp.as_deref()))),
+            Arc::new(timestamp_array(
+                rows.iter().map(|r| r.timestamp.as_deref()),
+            )?),
             Arc::new(req_utf8(rows.iter().map(|r| r.source.as_str()))),
             Arc::new(req_utf8_owned(
                 rows.iter()
@@ -279,6 +305,23 @@ fn required_i64_at(batch: &RecordBatch, name: &str, row: usize) -> Result<i64> {
     i64_at(batch, name, row)?.ok_or_else(|| anyhow::anyhow!("null required column '{name}'"))
 }
 
+fn timestamp_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<String>> {
+    let column = batch.column(column_index(batch, name)?);
+    let array = column
+        .as_any()
+        .downcast_ref::<TimestampMillisecondArray>()
+        .ok_or_else(|| anyhow::anyhow!("expected Timestamp(Millisecond, UTC) column '{name}'"))?;
+    if array.is_null(row) {
+        return Ok(None);
+    }
+    let value = array.value(row);
+    let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value)
+        .ok_or_else(|| anyhow::anyhow!("timestamp millisecond value {value} is out of range"))?;
+    Ok(Some(
+        timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+    ))
+}
+
 fn bool_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<bool>> {
     let column = batch.column(column_index(batch, name)?);
     let array = column
@@ -344,7 +387,7 @@ pub fn story_steps_from_batch(batch: &RecordBatch) -> Result<Vec<StoryStepRow>> 
                 step_id: required_i64_at(batch, "step_id", row)?,
                 kind: string_at(batch, "kind", row)?,
                 effective_kind: required_string_at(batch, "effective_kind", row)?,
-                timestamp: string_at(batch, "timestamp", row)?,
+                timestamp: timestamp_at(batch, "timestamp", row)?,
                 source: required_string_at(batch, "source", row)?,
                 message: parse_json(
                     required_string_at(batch, "message_json", row)?,
@@ -399,6 +442,67 @@ mod tests {
         assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 16);
         assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 18);
         assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 10);
+    }
+
+    #[test]
+    fn step_timestamps_normalize_to_utc_milliseconds() {
+        let schema = story_steps_arrow_schema();
+        assert_eq!(
+            schema.field_with_name("timestamp").unwrap().data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))
+        );
+        assert!(schema.field_with_name("timestamp_ms").is_err());
+
+        let mut rows = Vec::new();
+        for (step_id, timestamp) in [
+            (1, "2026-08-14T12:34:56.789123+08:00"),
+            (2, "2026-08-14T04:34:56.789Z"),
+        ] {
+            rows.push(StoryStepRow {
+                run_id: "r".into(),
+                session_id: "s".into(),
+                step_id,
+                kind: None,
+                effective_kind: "dialogue".into(),
+                timestamp: Some(timestamp.into()),
+                source: "user".into(),
+                message: serde_json::json!("hello"),
+                reasoning_content: None,
+                reasoning_effort: None,
+                metrics: None,
+                model_name: None,
+                llm_call_count: None,
+                is_copied_context: None,
+                latency_ms: None,
+                ttft_ms: None,
+                had_observation: false,
+                extra: None,
+            });
+        }
+
+        let batch = story_steps_to_batch(&rows).unwrap();
+        let normalized = batch
+            .column_by_name("timestamp")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<TimestampMillisecondArray>()
+            .unwrap();
+        assert_eq!(normalized.value(0), normalized.value(1));
+        let decoded = story_steps_from_batch(&batch).unwrap();
+        assert_eq!(
+            decoded[0].timestamp.as_deref(),
+            Some("2026-08-14T04:34:56.789Z")
+        );
+        assert_eq!(
+            decoded[1].timestamp.as_deref(),
+            Some("2026-08-14T04:34:56.789Z")
+        );
+    }
+
+    #[test]
+    fn step_timestamp_rejects_non_rfc3339_values() {
+        let error = timestamp_array([Some("2026/08/14 12:34:56")]).unwrap_err();
+        assert!(error.to_string().contains("as RFC3339"), "{error:#}");
     }
 
     #[test]

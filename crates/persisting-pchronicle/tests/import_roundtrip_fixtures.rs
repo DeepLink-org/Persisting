@@ -29,7 +29,7 @@ async fn assert_openai_fixture_roundtrip(name: &str, expected_sessions: usize) -
         .map(|story| story.session_id.clone())
         .collect::<Vec<_>>();
     let restored = store
-        .get_storylines(&session_ids)
+        .get_storylines_full(&session_ids)
         .await?
         .into_iter()
         .map(|story| story.context("missing restored OpenAI Storyline"))
@@ -58,7 +58,7 @@ async fn assert_actf_fixture_roundtrip(name: &str) -> Result<()> {
         .map(|story| story.session_id.clone())
         .collect::<Vec<_>>();
     let restored = store
-        .get_storylines(&session_ids)
+        .get_storylines_full(&session_ids)
         .await?
         .into_iter()
         .map(|story| story.context("missing restored ACTF Storyline"))

@@ -117,7 +117,14 @@ async fn run_contract(root: &str) -> Result<()> {
         1
     );
     let reopened = StorylineLanceStore::open_uri(&storyline_root).await?;
-    assert_eq!(reopened.list_runs().await?.len(), 2);
+    assert_eq!(
+        reopened
+            .list_run_summaries(Default::default())
+            .await?
+            .items
+            .len(),
+        2
+    );
     let engine = ChronicleQueryEngine::open_lance_uri(&storyline_root).await?;
     let output = engine
         .query_jsonl("SELECT COUNT(*) AS runs FROM runs")

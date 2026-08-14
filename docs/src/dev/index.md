@@ -9,7 +9,6 @@ experiments, or test plans.
 | Note | Audience | Purpose |
 |---|---|---|
 | [Releasing `persisting`](releasing.md) | Maintainers | Version, trusted-publisher, and stable release procedure |
-| [Tiered-storage implementation steps](tiered-storage-steps.md) | Contributors | Implementation phases, invariants, and test checklist for experimental tensor memory |
 
 For supported behavior, start with [Guides](../guide/index.md) and consult
 [Architecture & Internals](../design/index.md) for the rationale behind an

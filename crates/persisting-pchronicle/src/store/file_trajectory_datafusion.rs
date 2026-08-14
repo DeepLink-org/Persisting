@@ -36,6 +36,7 @@ use crate::{
     ChronicleFormat, StoryRunRow, StoryStepRow, StoryToolCallRow,
 };
 
+use super::storyline_lance_rows::timestamp_array;
 use super::{
     story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema, story_steps_to_batch,
     story_tool_calls_arrow_schema, story_tool_calls_to_batch, LocalQueryInputFile,
@@ -1776,9 +1777,9 @@ fn projected_step_rows_to_batch(
             "effective_kind" => Arc::new(StringArray::from_iter_values(
                 rows.iter().map(|row| row.effective_kind.as_str()),
             )),
-            "timestamp" => Arc::new(StringArray::from_iter(
+            "timestamp" => Arc::new(timestamp_array(
                 rows.iter().map(|row| row.timestamp.as_deref()),
-            )),
+            )?),
             "source" => Arc::new(StringArray::from_iter_values(
                 rows.iter().map(|row| row.source.as_str()),
             )),
