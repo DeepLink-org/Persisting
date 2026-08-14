@@ -5,8 +5,8 @@ use super::attempt::{
 use super::implant::{ImplantPlan, OverlayHint};
 use crate::TrajectoryEventSink;
 use crate::{GatewayDriverConfig, NetworkDriverConfig, OverlayNetMode};
-use persisting_control::{AttemptId, NetworkCapability, RunSpec};
-use persisting_control::{ControlController, PolicyControlController};
+use persisting_agentctl::{AttemptId, NetworkCapability, RunSpec};
+use persisting_agentctl::{ControlController, PolicyControlController};
 use persisting_gateway::config::ProxyConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,7 +61,7 @@ fn vm_network_supported() -> bool {
 fn network_config_from_capability(
     capability: &NetworkCapability,
 ) -> persisting_overlaynet::NetworkConfig {
-    use persisting_control::NetworkDefaultAction;
+    use persisting_agentctl::NetworkDefaultAction;
     use persisting_overlaynet::NetworkMode;
 
     match capability {
@@ -229,7 +229,7 @@ impl RuntimeSupervisor {
     fn vm_network_options(
         &self,
         mut network: persisting_overlaynet::NetworkConfig,
-        supervisor_limits: &[persisting_control::NetworkBandwidthLimit],
+        supervisor_limits: &[persisting_agentctl::NetworkBandwidthLimit],
         attempt_id: &AttemptId,
     ) -> super::attempt::VmNetworkPrepareOpts {
         network.limits.extend_from_slice(supervisor_limits);
@@ -248,7 +248,7 @@ impl RuntimeSupervisor {
     pub fn prepare(
         &self,
         spec: &mut RunSpec,
-        supervisor_limits: &[persisting_control::NetworkBandwidthLimit],
+        supervisor_limits: &[persisting_agentctl::NetworkBandwidthLimit],
         vm_executor: bool,
         attempt_id: &AttemptId,
     ) -> anyhow::Result<Option<AttemptSession>> {
@@ -350,7 +350,7 @@ impl RuntimeSupervisor {
     /// Build the implant plan and merge it into a process RunSpec (env markers only).
     pub fn enrich_spec(&self, spec: &mut RunSpec) -> ImplantPlan {
         let plan = self.plan_for(spec);
-        let persisting_control::RunInvocation::Process(ref mut process) = spec.invocation;
+        let persisting_agentctl::RunInvocation::Process(ref mut process) = spec.invocation;
         apply_implant(process, &plan);
         spec.metadata
             .insert("pvisor.runtime.implant".into(), plan.as_metadata_json());
@@ -427,8 +427,8 @@ impl RuntimeSupervisor {
                 plan.env.insert(
                     "PERSISTING_NETWORK_POLICY".into(),
                     match default_action {
-                        persisting_control::NetworkDefaultAction::Allow => "default-allow",
-                        persisting_control::NetworkDefaultAction::Deny => "default-deny",
+                        persisting_agentctl::NetworkDefaultAction::Allow => "default-allow",
+                        persisting_agentctl::NetworkDefaultAction::Deny => "default-deny",
                     }
                     .into(),
                 );
@@ -534,14 +534,14 @@ models = []
                 rules: Vec::new(),
             },
             NetworkCapability::Policy {
-                default_action: persisting_control::NetworkDefaultAction::Deny,
-                allow: vec![persisting_control::NetworkAccessRule {
+                default_action: persisting_agentctl::NetworkDefaultAction::Deny,
+                allow: vec![persisting_agentctl::NetworkAccessRule {
                     host: "api.example.com".into(),
                     ports: vec![443],
-                    transports: vec![persisting_control::NetworkTransport::TcpTunnel],
+                    transports: vec![persisting_agentctl::NetworkTransport::TcpTunnel],
                     allow_private_ips: false,
                 }],
-                deny: vec![persisting_control::NetworkAccessRule {
+                deny: vec![persisting_agentctl::NetworkAccessRule {
                     host: "metadata.internal".into(),
                     ports: Vec::new(),
                     transports: Vec::new(),

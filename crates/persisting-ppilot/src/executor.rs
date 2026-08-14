@@ -10,14 +10,14 @@
 //! Driver --ask--> WorkerActor -- RunSpec --> pVisor --> plan.py::execute(item)
 //! ```
 
-use crate::agent_abi::{AgentAbiClient, AgentAbiClientConfig};
+use crate::agent_abi::{AgentCtlClient, AgentCtlClientConfig};
 use crate::digest::sha256_hex;
 use crate::python_env;
 use crate::runtime_bridge::PilotRuntimeBridge;
 use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use persisting_control::{
+use persisting_agentctl::{
     ArtifactRef, ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure,
     RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
 };
@@ -442,7 +442,7 @@ fn connect_agent_abi(
     worker_id: &str,
 ) -> Result<Option<PilotRuntimeBridge>> {
     let RunInvocation::Process(process) = &spec.invocation;
-    let Some(config) = AgentAbiClientConfig::from_environment(
+    let Some(config) = AgentCtlClientConfig::from_environment(
         &process.env,
         format!("{worker_id}:{}", context.attempt_id()),
         AgentClientRole::Pilot,
@@ -452,7 +452,7 @@ fn connect_agent_abi(
         return Ok(None);
     };
     Ok(Some(PilotRuntimeBridge::start(
-        AgentAbiClient::new(config),
+        AgentCtlClient::new(config),
         AgentProcessRegistration {
             pid: std::process::id(),
             role: "ppilot-worker".into(),
@@ -468,7 +468,7 @@ fn connect_agent_abi(
 pub struct ExecutorRouter {
     host: Arc<PlanHostExecutor>,
     pvisor: PVisor,
-    supervisor: Option<persisting_control::SupervisorBootstrap>,
+    supervisor: Option<persisting_agentctl::SupervisorBootstrap>,
 }
 
 impl ExecutorRouter {
@@ -479,7 +479,7 @@ impl ExecutorRouter {
         plan_script: PathBuf,
         script_args: Vec<String>,
         worker_context: Value,
-        supervisor: Option<persisting_control::SupervisorBootstrap>,
+        supervisor: Option<persisting_agentctl::SupervisorBootstrap>,
     ) -> Self {
         let host = Arc::new(PlanHostExecutor::new(
             python,
@@ -596,7 +596,7 @@ pub(crate) fn task_run_spec(task: &TaskExpr, worker_id: &str, lease_epoch: u64) 
     let mut spec = RunSpec::process(run_id, "ppilot", "ppilot-plan-host");
     spec.lease_epoch = lease_epoch;
     spec.task_id = Some(task.id.clone());
-    spec.parent_run_id = Some(persisting_control::RunId::new(format!(
+    spec.parent_run_id = Some(persisting_agentctl::RunId::new(format!(
         "ppilot-job-{}",
         encode_run_id_part(&job_id)
     )));
@@ -626,7 +626,7 @@ fn encode_run_id_part(value: &str) -> String {
 
 pub(crate) fn task_result_to_run_result(
     spec: RunSpec,
-    attempt_id: persisting_control::AttemptId,
+    attempt_id: persisting_agentctl::AttemptId,
     task: TaskResult,
 ) -> RunResult {
     let output = ProcessOutput {

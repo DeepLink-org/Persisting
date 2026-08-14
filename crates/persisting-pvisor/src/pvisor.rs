@@ -14,8 +14,8 @@ use crate::runtime::{
 };
 use crate::util::unix_now_ms;
 use crate::TrajectoryEventSink;
-use persisting_control::ControlController;
-use persisting_control::{
+use persisting_agentctl::ControlController;
+use persisting_agentctl::{
     AttemptId, AttemptInfo, PolicyMode, RunFailure, RunFailureKind, RunInvocation, RunResult,
     RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
 };
@@ -108,7 +108,7 @@ impl RunCancellation {
 
 /// Handle for one in-flight Run: status, cancel, wait, event subscribe.
 pub struct RunHandle {
-    run_id: persisting_control::RunId,
+    run_id: persisting_agentctl::RunId,
     attempt_id: AttemptId,
     status: watch::Receiver<RunStatus>,
     cancellation: CancellationToken,
@@ -119,7 +119,7 @@ pub struct RunHandle {
 }
 
 impl RunHandle {
-    pub fn run_id(&self) -> &persisting_control::RunId {
+    pub fn run_id(&self) -> &persisting_agentctl::RunId {
         &self.run_id
     }
 
@@ -371,10 +371,10 @@ impl PVisor {
             .cloned()
             .ok_or(PVisorError::UnsupportedInvocation)?;
         let descriptor = executor.descriptor();
-        let vm_executor = descriptor.kind == persisting_control::ExecutorKind::VirtualMachine;
+        let vm_executor = descriptor.kind == persisting_agentctl::ExecutorKind::VirtualMachine;
         let vm_network_executor = vm_executor && executor.supports_vm_network_attachment();
         if self.runtime.vm_network_is_requested()
-            && descriptor.isolation == persisting_control::IsolationKind::VirtualMachine
+            && descriptor.isolation == persisting_agentctl::IsolationKind::VirtualMachine
             && !vm_network_executor
         {
             return Err(PVisorError::InvalidSpec(format!(
@@ -752,7 +752,7 @@ impl PVisor {
 fn requests_only_network_capability(spec: &RunSpec) -> bool {
     !matches!(
         spec.capabilities.network,
-        persisting_control::NetworkCapability::Ambient
+        persisting_agentctl::NetworkCapability::Ambient
     ) && spec.capabilities.models.is_empty()
         && spec.capabilities.tools.is_empty()
         && spec.capabilities.filesystem.is_empty()
@@ -836,13 +836,13 @@ fn validate_spec(spec: &RunSpec) -> Result<(), PVisorError> {
             "agent.name must not be empty".into(),
         ));
     }
-    let persisting_control::RunInvocation::Process(process) = &spec.invocation;
+    let persisting_agentctl::RunInvocation::Process(process) = &spec.invocation;
     if process.program.trim().is_empty() {
         return Err(PVisorError::InvalidSpec(
             "process program must not be empty".into(),
         ));
     }
-    if process.stdin == persisting_control::StdioMode::Capture {
+    if process.stdin == persisting_agentctl::StdioMode::Capture {
         return Err(PVisorError::InvalidSpec(
             "captured stdin is not supported in pVisor v1".into(),
         ));
@@ -877,8 +877,8 @@ mod tests {
     use crate::{EventSink, MemoryEventSink};
     use async_trait::async_trait;
     #[cfg(feature = "lance-chronicle")]
-    use persisting_control::SupervisorBootstrap;
-    use persisting_control::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
+    use persisting_agentctl::SupervisorBootstrap;
+    use persisting_agentctl::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
     use std::sync::Mutex;
 
     #[test]

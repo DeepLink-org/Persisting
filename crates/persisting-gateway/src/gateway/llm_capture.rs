@@ -8,7 +8,7 @@ use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
-use persisting_control::{ModelCallRequest, RunId, StorylineId};
+use persisting_agentctl::{ModelCallRequest, RunId, StorylineId};
 use serde_json::Value;
 
 use super::auth::{apply_upstream_headers, resolve_upstream_api_key};
@@ -193,11 +193,11 @@ pub(super) async fn llm_capture(
         protocol: protocol.as_str().to_string(),
         upstream_host: upstream_url.host_str().unwrap_or_default().to_string(),
     };
-    let mut control = persisting_control::ControlMachine::new();
+    let mut control = persisting_agentctl::ControlMachine::new();
     let control_transition = control
         .authorize(
             state.control_controller.as_ref(),
-            persisting_control::ControlRequest::Model {
+            persisting_agentctl::ControlRequest::Model {
                 policy: &model_policy,
                 request: &model_request,
             },

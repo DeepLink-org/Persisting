@@ -9,7 +9,9 @@ use crate::sink::{persist_terminal, ResultSink};
 use crate::task::TaskResult;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use persisting_control::{AttemptId, RunCommitRequest, RunId, RunLeaseRecord, RunResult, RunState};
+use persisting_agentctl::{
+    AttemptId, RunCommitRequest, RunId, RunLeaseRecord, RunResult, RunState,
+};
 use persisting_pchronicle::{
     attempt_registry_now_ms, AttemptRecordState, AttemptRegistry, CommitRunOutcome,
     LeaseAcquireOutcome, RunControlStore,
@@ -770,7 +772,7 @@ mod tests {
         ));
 
         let mut spec =
-            persisting_control::RunSpec::process(run.as_str(), "ppilot", "ppilot-plan-host");
+            persisting_agentctl::RunSpec::process(run.as_str(), "ppilot", "ppilot-plan-host");
         spec.lease_epoch = epoch;
         let run_result = crate::executor::task_result_to_run_result(
             spec,

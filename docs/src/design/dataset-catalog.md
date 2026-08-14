@@ -591,7 +591,7 @@ basename 会受路径拼写、对象前缀和部署目录影响，不带 schema 
 - `crates/persisting-pchronicle/src/store/raw_event_datafusion.rs`：canonical event manifest
   固定与按固定 segment 延迟打开；
 - `crates/persisting-pchronicle-cli/src/lib.rs`：查询 CLI 挂载与默认 Dataset 解析；
-- `crates/persisting-pchronicle-server/src/lib.rs`：惰性构建、原子刷新、读写路由；
-- `crates/persisting-pchronicle-server/src/acceleration.rs`：同代内存 source-routing index、
+- `crates/persisting-pchronicle-cli/src/server/mod.rs`：惰性构建、原子刷新、读写路由；
+- `crates/persisting-pchronicle-cli/src/server/acceleration.rs`：同代内存 source-routing index、
   保守 SQL 分析与 `_file_` 注入；
 - `pchronicle-web/src/`：Dataset 选择和完整 Run identity。

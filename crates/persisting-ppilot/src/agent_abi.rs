@@ -1,3 +1,3 @@
-//! Compatibility re-export of the standalone pVisor Agent ABI client SDK.
+//! Compatibility re-export of the AgentCtl client SDK and Agent ABI contract.
 
-pub use persisting_agent_abi::*;
+pub use persisting_agentctl::*;

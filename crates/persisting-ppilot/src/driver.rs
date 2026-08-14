@@ -425,7 +425,7 @@ async fn execute_with_placement(
 
 fn stamp_control(
     mut result: TaskResult,
-    run_id: &persisting_control::RunId,
+    run_id: &persisting_agentctl::RunId,
     epoch: u64,
 ) -> TaskResult {
     result.run_id = Some(run_id.as_str().to_string());

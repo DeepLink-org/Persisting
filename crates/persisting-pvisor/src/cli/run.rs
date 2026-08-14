@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use clap::{Args, ValueEnum};
-use persisting_control::{PolicyMode, RunInvocation, RunSpec, RunState, StdioMode};
+use persisting_agentctl::{PolicyMode, RunInvocation, RunSpec, RunState, StdioMode};
 use persisting_gateway::config::{
     CaptureLevel, ModelRoute, NetworkConfig, NetworkMode, OverlayBackend, OverlayConfig,
     ProxyConfig,
@@ -368,7 +368,7 @@ fn parse_overlaynet_target(value: &str) -> Result<NetworkAccessRule, String> {
     if port == Some(0) {
         return Err("OverlayNet target port must not be zero".into());
     }
-    persisting_control::parse_network_rule(host).map_err(|error| error.to_string())?;
+    persisting_agentctl::parse_network_rule(host).map_err(|error| error.to_string())?;
     Ok(NetworkAccessRule {
         host: host.to_string(),
         ports: port.into_iter().collect(),
@@ -612,7 +612,7 @@ pub async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let mut config = RunConfig::default();
     if source.executor.as_ref().is_some_and(|executor| {
-        executor.isolation == persisting_control::IsolationKind::VirtualMachine
+        executor.isolation == persisting_agentctl::IsolationKind::VirtualMachine
     }) {
         config.run.executor = RunExecutorKind::Vm;
         config.vm.rootfs = Some(checkpoint.target.clone());

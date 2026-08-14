@@ -73,7 +73,7 @@ network:    pVisor embeds a userspace TCP/IP stack and IS the child's network
    path of the entire process tree.
 4. pVisor runs a `smoltcp`-based userspace stack on the `tun` fd. Inbound
    TCP flows terminate in the stack and are re-originated on the host side
-   after passing the `persisting-control` policy gate. The existing OverlayNet
+   after passing the `persisting-agentctl` policy gate. The existing OverlayNet
    proxy / Gateway sink remains the LLM capture path, unchanged.
 5. DNS: the stack answers a virtual resolver address advertised via the
    namespace's `resolv.conf`. Queries are resolved host-side, giving a

@@ -525,7 +525,7 @@ RunResult 不内嵌全量轨迹，只保存状态、指标、错误、artifact �
 ### 8.5 Dioxus trajectory workbench
 
 当前工作区新增了独立的 `pchronicle-web` Cargo workspace。它使用 Dioxus 0.7 编译为
-WASM/JavaScript/CSS，由 `persisting-pchronicle-server` 的 Axum 进程在 loopback 上与
+WASM/JavaScript/CSS，由 `persisting-pchronicle-cli` 内置的 Axum 进程在 loopback 上与
 `/api/v1` 同源提供。Web 应用是 pChronicle 的消费与操作界面，不是新的事实源或存储后端。
 
 ```mermaid
@@ -680,7 +680,7 @@ pPilot library
 | pVisor executor | Local ProcessExecutor、Docker/Podman transport、libkrun VM full-root transport；pPilot Python host 实现 RunExecutor provider | provider 代码仍在 pPilot crate；Container/VM 仍有 capability enforcement 差距，尚缺 WASM/Remote，见 [pVisor isolation architecture](pvisor-isolation.md) |
 | pPilot batch control | Driver、Scheduler、Sink、Checkpoint；TaskExpr ↔ RunSpec/RunResult adapter | 将 Run/Attempt 写入 durable checkpoint 并增加 reconcile |
 | pChronicle commit path | `LanceResultSink: TaskResult → CaptureRecord → TrajectoryAppend` | 升级为 terminal CAS 和唯一可见结果 |
-| pChronicle Web | `pchronicle-web` Dioxus/WASM 应用；`persisting-pchronicle-server` Axum REST、embedded assets 与惰性 `DatasetCatalogSnapshot` | 当前仅 loopback、无认证；命名 Dataset 默认只读，外围格式不替代 canonical Lance |
+| pChronicle Web | `pchronicle-web` Dioxus/WASM 应用；`persisting-pchronicle-cli` 内置 Axum REST、embedded assets 与惰性 `DatasetCatalogSnapshot` | 当前仅 loopback、无认证；命名 Dataset 默认只读，外围格式不替代 canonical Lance |
 | distributed providers | Pulsing actors、torchrun integration | 只承担发现、投递和 worker 生命周期 |
 | pChronicle consumers | CLI、pPilot sink、Python Search、Judge | 直接消费 canonical history/Search API |
 

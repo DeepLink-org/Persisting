@@ -19,8 +19,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 futures.workspace = true
 persisting-gateway.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store"] }
-persisting-control.workspace = true
-persisting-agent-abi.workspace = true
+persisting-agentctl.workspace = true
 persisting-pvisor = { workspace = true, features = ["lance-chronicle"] }
 pulsing-actor = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

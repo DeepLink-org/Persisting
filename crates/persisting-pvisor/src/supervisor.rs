@@ -1,6 +1,6 @@
 //! Optional pPilot Supervisor client. The Run data plane never depends on it.
 
-use persisting_control::{AttemptId, NetworkBandwidthLimit, RunId, SupervisorBootstrap};
+use persisting_agentctl::{AttemptId, NetworkBandwidthLimit, RunId, SupervisorBootstrap};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

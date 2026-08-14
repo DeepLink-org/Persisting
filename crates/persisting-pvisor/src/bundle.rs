@@ -6,7 +6,7 @@ use crate::runtime::{
 use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::util::{atomic_write, sync_directory};
 use crate::{unix_now_ms, AgentAbiSnapshot};
-use persisting_control::{
+use persisting_agentctl::{
     ArtifactRef, ExecutorDescriptor, IsolationKind, NetworkCapability, ProcessOutput,
     ResourceLimits, RunFailure, RunResult, RunState,
 };
@@ -481,7 +481,7 @@ fn environment_summary(record: &RunRecord) -> crate::runtime::EnvironmentProject
 mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper};
-    use persisting_control::{AttemptId, RunId};
+    use persisting_agentctl::{AttemptId, RunId};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -575,7 +575,7 @@ mod tests {
 
         record.executor = Some(ExecutorDescriptor {
             name: "libkrun-root-overlay-v1".into(),
-            kind: persisting_control::ExecutorKind::VirtualMachine,
+            kind: persisting_agentctl::ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
             enforces_capabilities: false,
             supports_checkpoint: true,
@@ -590,7 +590,7 @@ mod tests {
 
         record.executor = Some(ExecutorDescriptor {
             name: "local-rootless-v1".into(),
-            kind: persisting_control::ExecutorKind::Process,
+            kind: persisting_agentctl::ExecutorKind::Process,
             isolation: IsolationKind::RootlessProcess,
             enforces_capabilities: false,
             supports_checkpoint: false,
@@ -607,7 +607,7 @@ mod tests {
 
         record.executor = Some(ExecutorDescriptor {
             name: "local-seatbelt-v1".into(),
-            kind: persisting_control::ExecutorKind::Process,
+            kind: persisting_agentctl::ExecutorKind::Process,
             isolation: IsolationKind::SandboxedProcess,
             enforces_capabilities: false,
             supports_checkpoint: false,

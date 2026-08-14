@@ -1,7 +1,7 @@
 //! Job-scoped pPilot supervisor embedded into normal orchestration commands.
 
 use anyhow::{bail, Context};
-use persisting_control::{NetworkBandwidthLimit, RunId, SupervisorBootstrap};
+use persisting_agentctl::{NetworkBandwidthLimit, RunId, SupervisorBootstrap};
 use persisting_pvisor::{
     SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveEnvelope,
     SupervisorNetworkQuotaGrant, SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
@@ -39,7 +39,7 @@ impl Default for EmbeddedSupervisorConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupervisorRegistrationSnapshot {
     pub run_id: RunId,
-    pub attempt_id: persisting_control::AttemptId,
+    pub attempt_id: persisting_agentctl::AttemptId,
     pub lease_epoch: u64,
     pub connected: bool,
     pub last_heartbeat_unix_ms: u64,
@@ -368,7 +368,7 @@ pub fn parse_bandwidth(value: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_control::AttemptId;
+    use persisting_agentctl::AttemptId;
     use persisting_pvisor::SupervisorRegistration;
 
     #[test]

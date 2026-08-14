@@ -27,7 +27,7 @@
 //! | Fleet boot | [`run_local_fleet`], [`run_fleet`] | [`crate::runtime`] |
 //! | Observe | [`Observer`] | [`crate::observe`] |
 //! | Python env | [`merge_pythonpath_parts`] | [`crate::python_env`] |
-//! | Agent ABI | [`AgentAbiClient`], [`AgentAbiClientConfig`] | [`crate::agent_abi`] |
+//! | Agent ABI | [`AgentCtlClient`], [`AgentCtlClientConfig`] | [`crate::agent_abi`] |
 //! | Runtime bridge | [`PilotRuntimeBridge`] | [`crate::runtime_bridge`] |
 //! | Batch trajectories | production + sharded analysis | [`crate::batch`] |
 //! | Federated analysis | Pulsing partial aggregation + coordinator merge | [`crate::federated`] |
@@ -56,8 +56,8 @@
 //! [`run_fleet`]: crate::runtime::run_fleet
 //! [`Observer`]: crate::observe::Observer
 //! [`merge_pythonpath_parts`]: crate::python_env::merge_pythonpath_parts
-//! [`AgentAbiClient`]: crate::agent_abi::AgentAbiClient
-//! [`AgentAbiClientConfig`]: crate::agent_abi::AgentAbiClientConfig
+//! [`AgentCtlClient`]: crate::agent_abi::AgentCtlClient
+//! [`AgentCtlClientConfig`]: crate::agent_abi::AgentCtlClientConfig
 //! [`PilotRuntimeBridge`]: crate::runtime_bridge::PilotRuntimeBridge
 
 /// Stable ids for docs / observability (not a separate test suite).

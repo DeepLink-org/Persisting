@@ -7,13 +7,13 @@ use crate::sandbox::INTERNAL_SANDBOX_ARG;
 use crate::sandbox::{seatbelt_profile, SeatbeltPlan, MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION};
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_EXIT_CODE, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
-use persisting_control::{
+use persisting_agentctl::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessInvocation, ProcessOutput,
     ResourceLimits, RunFailure, RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
     StdioMode,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use persisting_control::{FilesystemAccess, NetworkCapability};
+use persisting_agentctl::{FilesystemAccess, NetworkCapability};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;

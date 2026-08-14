@@ -1778,7 +1778,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "persisting-control"
+name = "persisting-agentctl"
 version = "0.2.0"
 dependencies = [
  "anyhow",
@@ -1802,7 +1802,7 @@ dependencies = [
  "futures-util",
  "hostname",
  "http-body-util",
- "persisting-control",
+ "persisting-agentctl",
  "persisting-overlaynet",
  "persisting-pchronicle",
  "pulsing-actor",
@@ -1850,7 +1850,7 @@ dependencies = [
  "futures-util",
  "hyper",
  "hyper-util",
- "persisting-control",
+ "persisting-agentctl",
  "reqwest",
  "serde",
  "smoltcp",
@@ -1869,7 +1869,7 @@ dependencies = [
  "blake3",
  "chrono",
  "fs2",
- "persisting-control",
+ "persisting-agentctl",
  "reqwest",
  "ron",
  "serde",
@@ -1893,7 +1893,7 @@ dependencies = [
  "fs2",
  "libc",
  "libkrun",
- "persisting-control",
+ "persisting-agentctl",
  "persisting-gateway",
  "persisting-overlay-core",
  "persisting-overlayfs",

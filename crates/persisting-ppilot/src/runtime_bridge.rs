@@ -1,6 +1,6 @@
 //! Long-lived pPilot adapter for pVisor's semantic Agent ABI.
 
-use crate::agent_abi::AgentAbiClient;
+use crate::agent_abi::AgentCtlClient;
 use anyhow::{bail, Context};
 use persisting_pvisor::{
     AgentCheckpointQuiesced, AgentDirective, AgentEffectBegin, AgentEffectComplete,
@@ -42,7 +42,7 @@ impl BridgeState {
 }
 
 struct BridgeInner {
-    client: Mutex<AgentAbiClient>,
+    client: Mutex<AgentCtlClient>,
     state: Mutex<BridgeState>,
     cancellation: CancellationToken,
     changed: Notify,
@@ -61,7 +61,7 @@ pub struct PilotRuntimeBridge {
 
 impl PilotRuntimeBridge {
     pub fn start(
-        mut client: AgentAbiClient,
+        mut client: AgentCtlClient,
         registration: AgentProcessRegistration,
         cancellation: CancellationToken,
     ) -> anyhow::Result<Self> {
@@ -308,15 +308,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_abi::AgentAbiClientConfig;
-    use persisting_control::{AttemptId, RunId};
+    use crate::agent_abi::AgentCtlClientConfig;
+    use persisting_agentctl::{AttemptId, RunId};
     use persisting_pvisor::{AgentAbiServer, AgentClientRole};
 
     #[tokio::test]
     async fn quiesce_waits_for_open_effect_then_acknowledges_safe_point() {
         let server =
             AgentAbiServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
-        let config = AgentAbiClientConfig::from_environment(
+        let config = AgentCtlClientConfig::from_environment(
             &server.environment(),
             "pilot-1",
             AgentClientRole::Pilot,
@@ -325,7 +325,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let bridge = PilotRuntimeBridge::start(
-            AgentAbiClient::new(config),
+            AgentCtlClient::new(config),
             AgentProcessRegistration {
                 pid: std::process::id(),
                 role: "ppilot-worker".into(),
@@ -371,7 +371,7 @@ mod tests {
     async fn shutdown_directive_cancels_the_owned_task_token() {
         let server =
             AgentAbiServer::start(&RunId::new("run-2"), &AttemptId::new("attempt-2")).unwrap();
-        let config = AgentAbiClientConfig::from_environment(
+        let config = AgentCtlClientConfig::from_environment(
             &server.environment(),
             "pilot-2",
             AgentClientRole::Pilot,
@@ -381,7 +381,7 @@ mod tests {
         .unwrap();
         let cancellation = CancellationToken::new();
         let bridge = PilotRuntimeBridge::start(
-            AgentAbiClient::new(config),
+            AgentCtlClient::new(config),
             AgentProcessRegistration {
                 pid: std::process::id(),
                 role: "ppilot-worker".into(),
