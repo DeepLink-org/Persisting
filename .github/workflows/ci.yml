@@ -196,6 +196,7 @@ jobs:
 
       - name: Run pChronicle examples
         run: |
+          cargo build --release -q -p persisting-pchronicle-cli --bin pchronicle
           for example in examples/pchronicle/*; do
             [ -f "$example/run.sh" ] || continue
             echo "==> ${example}/run.sh"
