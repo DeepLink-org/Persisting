@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use persisting_control::ResourceLimits;
+use persisting_agentctl::ResourceLimits;
 use persisting_gateway::config::{CaptureLevel, ModelRoute, ProxyConfig};
 use persisting_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::{Deserialize, Serialize};

@@ -6691,17 +6691,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df202b0b0f5b8e389955afd5f27b007b00fb948162953f1db9c70d2c7e3157d7"
 
 [[package]]
-name = "persisting-agent-abi"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "persisting-control",
- "persisting-pvisor",
- "serde_json",
-]
-
-[[package]]
-name = "persisting-control"
+name = "persisting-agentctl"
 version = "0.2.0"
 dependencies = [
  "anyhow",
@@ -6764,7 +6754,7 @@ dependencies = [
  "futures-util",
  "hostname",
  "http-body-util",
- "persisting-control",
+ "persisting-agentctl",
  "persisting-overlaynet",
  "persisting-pchronicle",
  "pulsing-actor",
@@ -6818,7 +6808,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "persisting-control",
+ "persisting-agentctl",
  "reqwest 0.12.28",
  "serde",
  "smoltcp",
@@ -6848,7 +6838,7 @@ dependencies = [
  "lance-table",
  "libc",
  "object_store",
- "persisting-control",
+ "persisting-agentctl",
  "reqwest 0.12.28",
  "ron",
  "serde",
@@ -6894,8 +6884,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
- "persisting-agent-abi",
- "persisting-control",
+ "persisting-agentctl",
  "persisting-gateway",
  "persisting-pchronicle",
  "persisting-pvisor",
@@ -6924,7 +6913,7 @@ dependencies = [
  "fs2",
  "libc",
  "libkrun",
- "persisting-control",
+ "persisting-agentctl",
  "persisting-gateway",
  "persisting-overlay-core",
  "persisting-overlayfs",

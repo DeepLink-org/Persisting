@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use crate::config::ProxyConfig;
 use crate::sink::CaptureEventSink;
-use persisting_control::{ControlController, PolicyControlController};
+use persisting_agentctl::{ControlController, PolicyControlController};
 use persisting_overlaynet::{BandwidthRegistry, InterceptionMetrics, InterceptionSnapshot};
 use tokio::sync::oneshot;
 

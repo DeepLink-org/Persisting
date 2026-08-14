@@ -4,7 +4,7 @@ use crate::config::VmSettings;
 use crate::executor::{AttemptContext, RunExecutor};
 use anyhow::Context as _;
 use async_trait::async_trait;
-use persisting_control::{
+use persisting_agentctl::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
     RunFailureKind, RunInvocation, RunResult, RunState, StdioMode,
 };
@@ -922,8 +922,8 @@ fn write_private_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()>
 }
 
 fn failed_to_start(
-    spec: &persisting_control::RunSpec,
-    attempt_id: &persisting_control::AttemptId,
+    spec: &persisting_agentctl::RunSpec,
+    attempt_id: &persisting_agentctl::AttemptId,
     started_at: u64,
     message: String,
 ) -> RunResult {

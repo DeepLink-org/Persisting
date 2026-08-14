@@ -1,13 +1,17 @@
-//! Unified control state and transition protocol.
+//! Shared Agent control contracts, policies, wire protocol, and client SDK.
 //!
 //! Drivers such as OverlayNet and Capture submit typed resources to a
 //! [`ControlController`]. Authorization is represented as a state transition;
 //! the driver then records whether the authorized operation was applied or
-//! failed. The crate decides policy but does not perform network, model, or
-//! filesystem operations itself.
+//! failed. The [`AgentCtlClient`] separately implements the low-frequency,
+//! Run-scoped Unix client for pVisor's versioned Agent ABI.
 
+pub mod abi;
+mod client;
 mod runtime;
 
+pub use abi::*;
+pub use client::{checkpoint_directive, AgentCtlClient, AgentCtlClientConfig};
 use ipnet::IpNet;
 pub use runtime::*;
 pub use runtime::{AccessEffect as ControlEffect, AccessReason as ControlReason};

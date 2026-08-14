@@ -279,20 +279,20 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# 单 crate：pchronicle | pchronicle-cli | control | core | capture | ppilot | pvisor | dlcapt
+# 单 crate：pchronicle | pchronicle-cli | agentctl | core | capture | ppilot | pvisor | dlcapt
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{ crate }}" in
       pchronicle) cargo test -p persisting-pchronicle ;;
       pchronicle-cli) cargo test -p persisting-pchronicle-cli ;;
-      control) cargo test -p persisting-control ;;
+      agentctl) cargo test -p persisting-agentctl ;;
       core) cargo test -p persisting-core ;;
       capture) cargo test -p persisting-gateway ;;
       ppilot) cargo test -p persisting-ppilot ;;
       pvisor) cargo test -p persisting-pvisor ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
-      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|control|core|capture|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|core|capture|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
     esac
 
 test-rust:

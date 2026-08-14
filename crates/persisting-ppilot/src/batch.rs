@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context};
 use futures::{stream, stream::FuturesUnordered, Stream, StreamExt};
-use persisting_control::{RunId, RunInvocation, RunSpec, RunState, StdioMode};
+use persisting_agentctl::{RunId, RunInvocation, RunSpec, RunState, StdioMode};
 use persisting_gateway::config::{CaptureLevel, NetworkConfig, OverlayConfig, ProxyConfig};
 use persisting_pvisor::{GatewayDriverConfig, PVisor};
 use serde::{Deserialize, Serialize};
@@ -246,7 +246,7 @@ async fn run_production_entry(
     parent_run_id: &str,
     output_dir: &Path,
     capture_gateway: bool,
-    supervisor: persisting_control::SupervisorBootstrap,
+    supervisor: persisting_agentctl::SupervisorBootstrap,
 ) -> anyhow::Result<ProductionRunOutcome> {
     let workspace = output_dir.join(&run.id);
     if workspace.exists() {

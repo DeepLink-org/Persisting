@@ -30,7 +30,7 @@ pulsing-actor = { workspace = true }
 dashmap.workspace = true
 blake3.workspace = true
 hostname.workspace = true
-persisting-control.workspace = true
+persisting-agentctl.workspace = true
 persisting-overlaynet.workspace = true
 persisting-pchronicle = { workspace = true, default-features = false }
 

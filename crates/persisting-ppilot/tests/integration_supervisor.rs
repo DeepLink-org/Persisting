@@ -1,6 +1,6 @@
 //! pPilot Supervisor -> pVisor -> OverlayNet integration.
 
-use persisting_control::{RunInvocation, RunSpec, RunState, StdioMode, SupervisorBootstrap};
+use persisting_agentctl::{RunInvocation, RunSpec, RunState, StdioMode, SupervisorBootstrap};
 use persisting_gateway::config::{
     CaptureLevel, NetworkConfig, NetworkMode, OverlayConfig, ProxyConfig,
 };
@@ -172,7 +172,7 @@ async fn supervisor_cancel_reaches_the_live_pvisor_attempt() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     supervisor
-        .cancel(&persisting_control::RunId::new("supervisor-cancelled"))
+        .cancel(&persisting_agentctl::RunId::new("supervisor-cancelled"))
         .await
         .unwrap();
     let result = tokio::time::timeout(Duration::from_secs(3), handle.wait())

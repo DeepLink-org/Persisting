@@ -8,7 +8,7 @@
 use crate::executor::ExecutorRouter;
 use crate::result_cache::{ResultCache, DEFAULT_RESULT_CACHE_CAP};
 use crate::task::{TaskExpr, TaskResult};
-use persisting_control::SupervisorBootstrap;
+use persisting_agentctl::SupervisorBootstrap;
 use pulsing_actor::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

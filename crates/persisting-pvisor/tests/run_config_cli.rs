@@ -388,10 +388,10 @@ exit 0
 
     let run_dir = only_run_dir(&run_home);
     let bundle = RunBundle::read(&run_dir).unwrap();
-    assert_eq!(bundle.run.state, persisting_control::RunState::Failed);
+    assert_eq!(bundle.run.state, persisting_agentctl::RunState::Failed);
     assert_eq!(
         bundle.run.failure.as_ref().map(|failure| failure.kind),
-        Some(persisting_control::RunFailureKind::DeadlineExceeded)
+        Some(persisting_agentctl::RunFailureKind::DeadlineExceeded)
     );
     assert!(!bundle.safety.host_process);
 }

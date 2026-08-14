@@ -6,7 +6,7 @@ use crate::config::{ContainerMount, ContainerPlatform, ContainerSettings};
 use crate::delegated::{DelegatedRunFiles, RESULT_FILENAME, SPEC_FILENAME};
 use crate::executor::{AttemptContext, RunExecutor};
 use async_trait::async_trait;
-use persisting_control::{
+use persisting_agentctl::{
     ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunSpec, RunState, StdioMode,
 };
@@ -479,8 +479,8 @@ impl RunExecutor for ContainerExecutor {
 }
 
 fn failed_to_start(
-    spec: &persisting_control::RunSpec,
-    attempt_id: &persisting_control::AttemptId,
+    spec: &persisting_agentctl::RunSpec,
+    attempt_id: &persisting_agentctl::AttemptId,
     started_at: u64,
     message: String,
 ) -> RunResult {
@@ -671,7 +671,7 @@ fn terminal_is_tty() -> bool {
 mod tests {
     use super::*;
     use crate::config::{ContainerNetwork, ContainerPlatform};
-    use persisting_control::ResourceLimits;
+    use persisting_agentctl::ResourceLimits;
     use std::ffi::OsStr;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -698,7 +698,7 @@ mod tests {
             ..ContainerSettings::default()
         })
         .unwrap();
-        let mut spec = persisting_control::RunSpec::process("run-one", "agent", "secret-agent");
+        let mut spec = persisting_agentctl::RunSpec::process("run-one", "agent", "secret-agent");
         spec.runtime.resource_limits = ResourceLimits {
             memory_bytes: Some(1_048_576),
             processes: Some(8),

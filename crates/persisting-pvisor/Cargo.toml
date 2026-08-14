@@ -22,7 +22,7 @@ flate2.workspace = true
 fs2.workspace = true
 libc.workspace = true
 libkrun = { workspace = true, features = ["net"] }
-persisting-control.workspace = true
+persisting-agentctl.workspace = true
 persisting-gateway.workspace = true
 persisting-overlaynet.workspace = true
 persisting-overlayfs = { workspace = true, default-features = false }

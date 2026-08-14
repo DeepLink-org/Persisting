@@ -1,10 +1,10 @@
 [package]
-name = "persisting-control"
+name = "persisting-agentctl"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Unified control state and transition protocol for Persisting runtimes"
+description = "Agent control contracts, policies, wire protocol, and client SDK"
 
 [dependencies]
 anyhow.workspace = true

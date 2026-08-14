@@ -63,7 +63,7 @@ acceptance; finalization failure is reported as a retryable infrastructure
 failure rather than a successful Run with warnings.
 
 There is no network control daemon. Hosts call the crate API directly;
-`persisting-control` is the shared state/transition protocol used by runtime
+`persisting-agentctl` is the shared state/transition protocol used by runtime
 drivers. Each live Run also gets a versioned, owner-only Agent ABI Unix socket.
 The separate OverlayFS control socket remains limited to discovery and
 owner-mediated read-only inspection.
@@ -76,7 +76,7 @@ owner-mediated read-only inspection.
 | `agent_abi` | Run-scoped Agent ABI server, desired state, and observations |
 | `config` | canonical `RunConfig` plus programmatic driver configuration |
 | `runtime` | Attempt preparation and driver ownership |
-| `control` | Re-export of the shared `persisting-control` state protocol |
+| `control` | Re-export of the shared `persisting-agentctl` state protocol |
 | `process` | Host process and Linux rootless executor |
 | `artifact` | target-specific static pVisor runtime discovery |
 | `delegated` | RunSpec/RunResult hand-off between pVisor placements |
@@ -109,7 +109,7 @@ generation and the server's open-effect view.
 
 Hosts use `RunHandle::agent_abi()` to publish desired state and inspect the
 registered clients, processes, and effects. The reusable
-`persisting-agent-abi` crate owns the client SDK; pPilot re-exports it for
+`persisting-agentctl` crate owns the client SDK; pPilot re-exports it for
 compatibility and remains the reference quiescence/effect integration.
 
 ## Runtime configuration

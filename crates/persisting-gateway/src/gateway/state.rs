@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use persisting_control::{ControlController, PolicyControlController};
+use persisting_agentctl::{ControlController, PolicyControlController};
 use persisting_overlaynet::{BandwidthRegistry, InterceptionMetrics};
 use tokio::task::JoinHandle;
 

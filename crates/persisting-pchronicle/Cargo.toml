@@ -40,7 +40,7 @@ lance-index = { workspace = true, optional = true }
 lance-linalg = { workspace = true, optional = true }
 lance-table = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
-persisting-control.workspace = true
+persisting-agentctl.workspace = true
 ron.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }

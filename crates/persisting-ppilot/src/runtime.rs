@@ -354,7 +354,7 @@ async fn spawn_one_slot(
     opts: &RunOptions,
     pythonpath: &[PathBuf],
     gate: Option<Arc<ShutdownGate>>,
-    supervisor: Option<persisting_control::SupervisorBootstrap>,
+    supervisor: Option<persisting_agentctl::SupervisorBootstrap>,
 ) -> Result<(ActorRef, usize)> {
     let SlotPlacement {
         worker,
@@ -394,7 +394,7 @@ async fn spawn_rank_slots(
     opts: &RunOptions,
     pythonpath: &[PathBuf],
     gate: Option<Arc<ShutdownGate>>,
-    supervisor: Option<persisting_control::SupervisorBootstrap>,
+    supervisor: Option<persisting_agentctl::SupervisorBootstrap>,
 ) -> Result<Vec<(ActorRef, usize)>> {
     let RankPlacement {
         rank,
@@ -430,7 +430,7 @@ async fn spawn_local_fleet_slots(
     per_worker: usize,
     opts: &RunOptions,
     pythonpath: &[PathBuf],
-    supervisor: Option<persisting_control::SupervisorBootstrap>,
+    supervisor: Option<persisting_agentctl::SupervisorBootstrap>,
 ) -> Result<Vec<(ActorRef, usize)>> {
     let mut out = Vec::with_capacity(n_workers.saturating_mul(per_worker));
     for slot in 0..per_worker {

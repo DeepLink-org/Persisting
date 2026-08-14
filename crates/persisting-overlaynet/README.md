@@ -7,7 +7,7 @@ Host and container execution use an explicit HTTP/HTTPS proxy:
 
 - HTTP `CONNECT` tunnels;
 - absolute-URI forwarding;
-- egress allow/deny/allowlist decisions through `persisting-control`;
+- egress allow/deny/allowlist decisions through `persisting-agentctl`;
 - shared proxy header safety rules;
 - dispatch to one caller-supplied `OverlaySink` implementation.
 

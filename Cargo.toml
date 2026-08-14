@@ -1,8 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/persisting-agent-abi",
-    "crates/persisting-control",
+    "crates/persisting-agentctl",
     "crates/persisting-core",
     "crates/persisting-gateway",
     "crates/persisting-dlcapt",
@@ -17,8 +16,7 @@ members = [
 exclude = ["vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
 
 default-members = [
-    "crates/persisting-agent-abi",
-    "crates/persisting-control",
+    "crates/persisting-agentctl",
     "crates/persisting-core",
     "crates/persisting-gateway",
     "crates/persisting-dlcapt",
@@ -109,8 +107,7 @@ libc = "0.2"
 libkrun = "=1.19.3"
 log = "0.4"
 object_store = "0.13.2"
-persisting-control = { path = "crates/persisting-control" }
-persisting-agent-abi = { path = "crates/persisting-agent-abi" }
+persisting-agentctl = { path = "crates/persisting-agentctl" }
 persisting-gateway = { path = "crates/persisting-gateway" }
 persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
 persisting-overlay-core = { path = "crates/persisting-overlay-core" }

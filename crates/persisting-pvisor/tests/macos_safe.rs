@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use persisting_control::IsolationKind;
+use persisting_agentctl::IsolationKind;
 use persisting_pvisor::RunBundle;
 use std::fs;
 use std::os::unix::net::UnixListener;

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use persisting_control::{AttemptId, RunId};
+use persisting_agentctl::{AttemptId, RunId};
 use persisting_pchronicle::{EventIdentity, EventRecord, EVENT_SCHEMA_VERSION};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};

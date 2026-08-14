@@ -1,16 +1,16 @@
 //! Egress policy for the explicit HTTP proxy backend.
 
 use axum::http::StatusCode;
-pub use persisting_control::{
+pub use persisting_agentctl::{
     host_matches, normalize_host, parse_network_rule as parse_allowed_entry,
     NetworkRule as AllowedEntry,
 };
-use persisting_control::{
+use persisting_agentctl::{
     ControlController, ControlMachine, ControlReason, ControlRequest, NetworkGuard,
     PolicyControlController,
 };
-use persisting_control::{NetworkAccessRequest, NetworkCapability, NetworkDefaultAction};
-pub use persisting_control::{NetworkAccessRule, NetworkBandwidthLimit};
+use persisting_agentctl::{NetworkAccessRequest, NetworkCapability, NetworkDefaultAction};
+pub use persisting_agentctl::{NetworkAccessRule, NetworkBandwidthLimit};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -287,8 +287,8 @@ pub fn forbidden_response(host: &str, reason: &DenyReason) -> (StatusCode, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_control::NetworkTransport;
-    use persisting_control::PolicyControlController;
+    use persisting_agentctl::NetworkTransport;
+    use persisting_agentctl::PolicyControlController;
 
     #[test]
     fn allowlist_contains_only_explicit_network_entries() {
