@@ -22,7 +22,7 @@ from typing import Any, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
 WEB_ROOT = ROOT / "pchronicle-web"
-WEB_PUBLIC = ROOT / "crates" / "persisting-pchronicle-server" / "web-assets" / "public"
+WEB_PUBLIC = ROOT / "crates" / "persisting-pchronicle-cli" / "web-assets" / "public"
 DX_PUBLIC = WEB_ROOT / "target" / "dx" / "pchronicle-web" / "release" / "web" / "public"
 EXPECTED_BINARIES = ("pchronicle", "pvisor", "ppilot")
 SUPPORTED_TARGETS = {

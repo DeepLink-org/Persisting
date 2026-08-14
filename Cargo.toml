@@ -10,7 +10,6 @@ members = [
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
     "crates/persisting-pchronicle-cli",
-    "crates/persisting-pchronicle-server",
     "crates/persisting-overlayfs",
     "crates/persisting-overlay-core",
     "crates/persisting-overlaynet",
@@ -27,7 +26,6 @@ default-members = [
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
     "crates/persisting-pchronicle-cli",
-    "crates/persisting-pchronicle-server",
     "crates/persisting-overlaynet",
 ]
 
@@ -118,7 +116,6 @@ persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features 
 persisting-overlay-core = { path = "crates/persisting-overlay-core" }
 persisting-overlaynet = { path = "crates/persisting-overlaynet" }
 persisting-pchronicle = { path = "crates/persisting-pchronicle", default-features = false }
-persisting-pchronicle-server = { path = "crates/persisting-pchronicle-server" }
 persisting-pvisor = { path = "crates/persisting-pvisor" }
 pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }

@@ -6866,36 +6866,23 @@ name = "persisting-pchronicle-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "axum",
  "blake3",
+ "bytes",
  "clap",
+ "datafusion",
+ "futures",
+ "http-body-util",
+ "include_dir",
  "libc",
  "persisting-pchronicle",
- "persisting-pchronicle-server",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "toml",
- "url",
-]
-
-[[package]]
-name = "persisting-pchronicle-server"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "datafusion",
- "futures",
- "http-body-util",
- "include_dir",
- "persisting-pchronicle",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
  "tower",
+ "url",
 ]
 
 [[package]]

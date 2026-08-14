@@ -11,8 +11,7 @@ The core crate has no HTTP or Web dependency. Product boundaries are split as:
 | Component | Responsibility |
 |---|---|
 | `persisting-pchronicle` | formats, catalog snapshots, Lance storage, readers, query engine |
-| `persisting-pchronicle-cli` | the standalone `pchronicle` command |
-| `persisting-pchronicle-server` | loopback-only read API and embedded Web assets |
+| `persisting-pchronicle-cli` | the standalone `pchronicle` command, loopback read API, and embedded Web assets |
 | `pchronicle-web` | Dioxus browser frontend |
 
 ```bash

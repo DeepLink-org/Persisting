@@ -24,7 +24,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, OnceCell};
 
-use crate::RunSummary;
+use super::RunSummary;
 
 const MAX_INJECTED_SOURCES: usize = 512;
 const MAX_ROUTING_INDEX_ROWS: usize = 1_000_000;

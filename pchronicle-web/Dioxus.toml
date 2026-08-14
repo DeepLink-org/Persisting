@@ -1,6 +1,6 @@
 [application]
 name = "pchronicle-web"
-out_dir = "../crates/persisting-pchronicle-server/web-assets"
+out_dir = "../crates/persisting-pchronicle-cli/web-assets"
 
 [web]
 pre_compress = true

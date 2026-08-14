@@ -4,7 +4,7 @@ use persisting_pchronicle::{EventRecord, JudgeRow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{RunSummary, TrajectoryTurnView};
+use super::{RunSummary, TrajectoryTurnView, WireToolCall};
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct ExplorerRunsQuery {
@@ -162,7 +162,7 @@ impl From<&JudgeRow> for JudgmentView {
 pub(crate) struct TurnDetail {
     pub(crate) summary: TurnSummary,
     pub(crate) turn: persisting_pchronicle::StorylineTurn,
-    pub(crate) wire_tool_calls: Vec<crate::WireToolCall>,
+    pub(crate) wire_tool_calls: Vec<WireToolCall>,
     pub(crate) events: Vec<EventRecord>,
     pub(crate) judgments: Vec<JudgmentView>,
 }

@@ -3,7 +3,9 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use persisting_pchronicle::{DatasetMount, DEFAULT_DATASET_NAME};
-use persisting_pchronicle_server::{router_with_config, warehouse_router, ChronicleServerConfig};
+use persisting_pchronicle_cli::server::{
+    router_with_config, warehouse_router, ChronicleServerConfig,
+};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 

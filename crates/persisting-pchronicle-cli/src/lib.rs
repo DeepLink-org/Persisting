@@ -1,3 +1,5 @@
+pub mod server;
+
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::fmt::Write as _;
@@ -806,9 +808,7 @@ fn default_import_output(args: &ImportArgs, settings_override: Option<&Path>) ->
         .into_owned())
 }
 
-fn load_warehouse_config(
-    path: &Path,
-) -> Result<persisting_pchronicle_server::ChronicleServerConfig> {
+fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServerConfig> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("read Warehouse config metadata {}", path.display()))?;
     anyhow::ensure!(
@@ -866,7 +866,7 @@ fn load_warehouse_config(
         mounts.push(mount);
     }
 
-    let mut config = persisting_pchronicle_server::ChronicleServerConfig::mounted(mounts)?;
+    let mut config = server::ChronicleServerConfig::mounted(mounts)?;
     if let Some(default_dataset) = file.default_dataset {
         let normalized = DatasetMount::new(default_dataset, "validation")?.name;
         anyhow::ensure!(
@@ -897,7 +897,7 @@ async fn run_serve(args: ServeArgs, stderr: &mut dyn Write) -> Result<()> {
     if args.open {
         open_browser(&url)?;
     }
-    persisting_pchronicle_server::serve_warehouse_with_listener(config, listener).await
+    server::serve_warehouse_with_listener(config, listener).await
 }
 
 fn open_browser(url: &str) -> Result<()> {

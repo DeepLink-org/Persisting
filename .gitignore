@@ -30,4 +30,4 @@ target/dlcapt/
 build/
 pchronicle-web/dist
 pchronicle-web/target/
-crates/persisting-pchronicle-server/web-assets/
+crates/persisting-pchronicle-cli/web-assets/

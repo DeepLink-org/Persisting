@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 description = "Standalone pChronicle command-line interface"
 readme = "README.md"
+build = "build.rs"
 
 [[bin]]
 name = "pchronicle"
@@ -13,14 +14,22 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
 blake3.workspace = true
+bytes.workspace = true
 clap = { workspace = true, features = ["derive"] }
+datafusion = { workspace = true, features = ["sql"] }
+futures.workspace = true
+include_dir = "=0.7.4"
 libc.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store"] }
-persisting-pchronicle-server.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
 toml.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tower = { version = "0.5", features = ["util"] }
