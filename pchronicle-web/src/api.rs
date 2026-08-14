@@ -1,6 +1,5 @@
 use crate::model::{
-    Judgment, JudgmentWrite, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary,
-    TurnDetail, TurnPage,
+    Judgment, QueryCatalog, QueryEvidence, RunAnalysis, RunPage, RunSummary, TurnDetail, TurnPage,
 };
 use gloo_net::http::{Request, Response};
 use serde_json::json;
@@ -97,17 +96,6 @@ pub async fn judgments(run: &RunSummary) -> Result<Vec<Judgment>, String> {
     .json()
     .await
     .map_err(|e| e.to_string())
-}
-
-pub async fn write_judgment(request: &JudgmentWrite) -> Result<(), String> {
-    let response = Request::post("/api/v1/judgments")
-        .json(request)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    checked(response).await?;
-    Ok(())
 }
 
 pub async fn query_evidence(sql: &str) -> Result<QueryEvidence, String> {

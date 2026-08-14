@@ -7,9 +7,8 @@ use crate::agent::{self, AgentAnswer, LlmConfig};
 use crate::api;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
 use crate::model::{
-    DimensionAggregate, HistogramBucket, Judgment, JudgmentWrite, QueryCatalog,
-    QueryDatasetSummary, RunAnalysis, RunExplorerItem, RunPage, RunSummary, ToolAggregate,
-    TurnDetail, TurnSummary,
+    DimensionAggregate, HistogramBucket, Judgment, QueryCatalog, QueryDatasetSummary, RunAnalysis,
+    RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,7 +92,6 @@ pub fn App() -> Element {
     let mut catalog = use_signal(|| None::<QueryCatalog>);
     let mut selected_table = use_signal(String::new);
     let mut copilot_open = use_signal(|| false);
-    let mut annotation_target = use_signal(|| None::<Option<String>>);
 
     use_effect(move || {
         load_runs(
@@ -214,8 +212,6 @@ pub fn App() -> Element {
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
-                                    read_only: catalog()
-                                        .is_some_and(|catalog| !catalog.can_write_judgments()),
                                     run: value.run.clone(),
                                     analysis: value,
                                     turns: turns(),
@@ -251,8 +247,6 @@ pub fn App() -> Element {
                                             load_turn(run, id, expanded_turn_id, selected_turn, turn_loading, error);
                                         }
                                     },
-                                    on_annotate_story: move |_| annotation_target.set(Some(None)),
-                                    on_annotate_turn: move |call_id| annotation_target.set(Some(Some(call_id))),
                                     on_open_copilot: move |_| copilot_open.set(true),
                                 }
                             } else { LoadingWorkspace { label: "Building trajectory evidence…" } }
@@ -345,21 +339,6 @@ pub fn App() -> Element {
                 }
             }
 
-            if catalog().is_none_or(|catalog| catalog.can_write_judgments()) {
-              if let (Some(target), Some(run)) = (annotation_target(), selected_run()) {
-                JudgmentDrawer {
-                    run,
-                    call_id: target,
-                    on_close: move |_| annotation_target.set(None),
-                    on_saved: move |_| {
-                        annotation_target.set(None);
-                        if let Some(run) = selected_run() {
-                            load_workspace(run, analysis, turns, judgments, detail_loading, error);
-                        }
-                    },
-                }
-              }
-            }
         }
     }
 }
@@ -684,7 +663,6 @@ fn StatusBadge(value: String) -> Element {
 #[component]
 #[allow(clippy::too_many_arguments)]
 fn RunDetailWorkspace(
-    read_only: bool,
     run: RunSummary,
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
@@ -702,15 +680,13 @@ fn RunDetailWorkspace(
     on_query: EventHandler<String>,
     on_apply_filter: EventHandler<()>,
     on_turn: EventHandler<i64>,
-    on_annotate_story: EventHandler<MouseEvent>,
-    on_annotate_turn: EventHandler<String>,
     on_open_copilot: EventHandler<MouseEvent>,
 ) -> Element {
     rsx! {
         section { class: "pc2-detail",
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
-                div { class: "pc2-head-actions", if !read_only { button { class: "button", onclick: on_annotate_story, "Annotate run" } } button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/v1/export/otlp?{run.query()}", "OTLP" } }
+                div { class: "pc2-head-actions", button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/v1/export/otlp?{run.query()}", "OTLP" } }
             }
             MetricsStrip { analysis: analysis.clone() }
             nav { class: "pc2-detail-tabs", aria_label: "Trajectory detail view",
@@ -741,7 +717,7 @@ fn RunDetailWorkspace(
                     div { class: "pc2-turn-list pc2-span-scroll",
                         if loading { div { class: "pc2-inline-loading", span { class: "spinner" } "Refreshing evidence…" } }
                         if turns.is_empty() { div { class: "pc2-empty", strong { "No visible turns" } span { "No compact turn evidence matches this filter." } } }
-                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, annotatable: !read_only, on_turn, on_annotate: on_annotate_turn } }
+                        else { TrajectoryView { turns, expanded_turn_id, detail: selected, loading: turn_loading, on_turn } }
                     }
                 }
             }
@@ -1104,41 +1080,6 @@ struct RubricSummary {
 }
 
 #[component]
-fn JudgmentDrawer(
-    run: RunSummary,
-    call_id: Option<String>,
-    on_close: EventHandler<MouseEvent>,
-    on_saved: EventHandler<()>,
-) -> Element {
-    let mut rubric = use_signal(|| "quality".to_string());
-    let mut score = use_signal(|| "80".to_string());
-    let mut verdict = use_signal(|| "pass".to_string());
-    let mut rationale = use_signal(String::new);
-    let mut saving = use_signal(|| false);
-    let mut error = use_signal(|| None::<String>);
-    let target = call_id.clone().unwrap_or_else(|| "__story__".into());
-    rsx! { div { class: "pc2-modal-backdrop",
-        section { class: "pc2-judgment-drawer", role: "dialog", aria_modal: "true", aria_label: "Add trajectory judgment",
-            header { div { p { class: "eyebrow", "Human evaluation" } h2 { if call_id.is_some() { "Annotate turn" } else { "Annotate trajectory" } } code { "{target}" } } button { aria_label: "Close", onclick: on_close, "×" } }
-            div { class: "pc2-form",
-                label { span { "Rubric" } input { value: "{rubric}", oninput: move |event| rubric.set(event.value()), placeholder: "quality" } }
-                label { span { "Score · 0–100" } input { r#type: "number", min: "0", max: "100", value: "{score}", oninput: move |event| score.set(event.value()) } }
-                label { span { "Verdict" } select { value: "{verdict}", onchange: move |event| verdict.set(event.value()), option { value: "pass", "Pass" } option { value: "partial", "Partial" } option { value: "fail", "Fail" } } }
-                label { span { "Rationale" } textarea { value: "{rationale}", oninput: move |event| rationale.set(event.value()), placeholder: "Why did this output receive this score?" } }
-                if let Some(message) = error() { div { class: "pc2-form-error", "{message}" } }
-            }
-            footer { button { class: "button", onclick: on_close, "Cancel" } button { class: "button primary", disabled: saving(), onclick: move |_| {
-                let Ok(parsed_score) = score().parse::<i64>() else { error.set(Some("Score must be an integer from 0 to 100.".into())); return; };
-                if rubric().trim().is_empty() || rationale().trim().is_empty() { error.set(Some("Rubric and rationale are required.".into())); return; }
-                saving.set(true);
-                let request = JudgmentWrite { dataset: Some(run.dataset.clone()), file: Some(run.file.clone()), run_id: Some(run.run_id.clone()), agent_id: run.agent_id.clone(), session_id: run.session_id.clone(), root_session_id: run.root_session_id.clone(), call_id: target.clone(), rubric_id: rubric(), score: parsed_score, verdict: verdict(), rationale: rationale() };
-                spawn(async move { match api::write_judgment(&request).await { Ok(()) => on_saved.call(()), Err(message) => error.set(Some(message)) } saving.set(false); });
-            }, if saving() { "Saving…" } else { "Save judgment" } } }
-        }
-    } }
-}
-
-#[component]
 fn CopilotPanel(
     run: RunSummary,
     analysis: RunAnalysis,
@@ -1220,7 +1161,7 @@ fn ChatBubble(
                     rsx! { div { key: "trajectory-{index}", class: "pc2-chat-component",
                         if let Some(title) = trajectory.title { strong { class: "pc2-chat-component-title", "{title}" } }
                         if visible.is_empty() { div { class: "pc2-data-empty", "Referenced turns are outside the loaded evidence window." } }
-                        else { TrajectoryView { turns: visible, expanded_turn_id: None, detail: None, loading: false, embedded: true, annotatable: false, on_turn, on_annotate: move |_: String| {} } }
+                        else { TrajectoryView { turns: visible, expanded_turn_id: None, detail: None, loading: false, embedded: true, on_turn } }
                     } }
                 },
             }

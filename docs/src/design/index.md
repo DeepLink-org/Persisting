@@ -13,18 +13,16 @@ for supported workflows.
 | pPilot | [pPilot control plane](ppilot.md) | standalone `ppilot` CLI → run orchestration and pChronicle SQL analysis |
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
 | Gateway capture driver | [Gateway pipeline](gateway.md) | [Markdown format](trajectory-format.md) → [RFC-0001 Storyline](../rfcs/0001-storyline-format.md) / [RFC-0002 Events](../rfcs/0002-events-format.md) |
-| Tensor Memory (experimental) | [TTAS model](tensor-address-space.md) | [Tiered storage](distributed-tiered-storage.md) → [BlockStore](block-store.md) |
 | CLI boundary | [pVisor](cli-pvisor.md), [pPilot](cli-ppilot.md), [pChronicle](cli-pchronicle.md) | command references under **Reference** |
 
 ## Maturity and scope
 
 | Area | Status | Notes |
 |---|---|---|
-| pVisor, pPilot, pChronicle | Implemented core | Peer Agent execution, orchestration, and history components; pChronicle `search` and `maintain` remain reserved |
+| pVisor, pPilot, pChronicle | Implemented core | Peer Agent execution, orchestration, and history components; the public pChronicle surface is documented by its command reference |
 | Gateway, OverlayNet, OverlayFS | Implemented | pVisor runtime drivers; Gateway supplies capture semantics |
 | pVisor enforced isolation | Implemented / partial | Linux uses FUSE + synthetic root + rootless namespaces + Landlock; macOS uses Seatbelt-enforced staged writes and deny-all socket confinement while reads remain ambient; Docker and libkrun/KVM transports exist; seccomp, resource controls, LiteBox VFS, and Firecracker remain on the [isolation roadmap](pvisor-isolation.md) |
 | OverlayNet transparent interception | VM implemented / host planned | libkrun virtio-net + smoltcp is non-bypassable for IPv4 TCP/DNS on Linux and Apple Silicon macOS; Linux host netns/seccomp drivers remain planned; see [design](overlaynet.md) |
-| TTAS / tiered tensor memory | Experimental | Host/SSD work exists; GPU and cross-node data paths remain planned |
 | Research comparisons | Reference | Input to future design, not a product commitment |
 
 ## Design principles
@@ -32,5 +30,4 @@ for supported workflows.
 1. Keep user programming models small and capability-specific.
 2. Use Lance as a durable baseline where a subsystem needs columnar storage.
 3. Keep control-plane concerns separate from data movement and user execution.
-4. Treat TTAS as an experimental internal substrate until its end-to-end data path is complete.
-5. Prefer explicit failure and recovery semantics over implied exactly-once guarantees.
+4. Prefer explicit failure and recovery semantics over implied exactly-once guarantees.

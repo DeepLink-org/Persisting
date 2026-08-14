@@ -930,7 +930,7 @@ mod tests {
             .map(|story| story.session_id.clone())
             .collect::<Vec<_>>();
         let restored = store
-            .get_storylines(&session_ids)
+            .get_storylines_full(&session_ids)
             .await
             .unwrap()
             .into_iter()

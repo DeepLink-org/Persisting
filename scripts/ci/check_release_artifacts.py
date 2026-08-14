@@ -50,7 +50,7 @@ def validate_artifacts(
             f"expected {len(PLATFORM_PATTERNS)} wheels, found {len(wheels)}: {names}"
         )
 
-    prefix = f"persisting-{version}-cp310-abi3-"
+    prefix = f"persisting-{version}-py3-none-"
     found: dict[str, Path] = {}
     for wheel in wheels:
         if wheel.stat().st_size > max_bytes:

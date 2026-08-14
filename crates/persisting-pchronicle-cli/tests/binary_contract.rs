@@ -21,6 +21,14 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
     ] {
         assert!(stdout.contains(command), "help omits {command}: {stdout}");
     }
+    for command in ["search", "maintain"] {
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with(command)),
+            "help exposes unsupported command {command}: {stdout}"
+        );
+    }
     Ok(())
 }
 
@@ -36,13 +44,10 @@ fn clap_errors_use_exit_code_two_and_do_not_write_stdout() -> Result<()> {
 
 #[test]
 fn runtime_errors_use_exit_code_one_and_do_not_write_stdout() -> Result<()> {
-    let output = pchronicle(&["maintain", "."])?;
+    let output = pchronicle(&["status", "/definitely/missing/pchronicle-dataset"])?;
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr)?,
-        "error: pchronicle maintain is not implemented yet\n"
-    );
+    assert!(String::from_utf8(output.stderr)?.starts_with("error: "));
     Ok(())
 }
 

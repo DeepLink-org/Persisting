@@ -554,7 +554,7 @@ mod tests {
 
         store.replace_storyline(&story).await.unwrap();
         let restored_story = store
-            .get_storyline(&story.session_id)
+            .get_storyline_full(&story.session_id)
             .await
             .unwrap()
             .unwrap();

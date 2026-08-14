@@ -1,3 +1,4 @@
+mod gateway_capture;
 pub mod server;
 
 use std::collections::HashSet;
@@ -53,15 +54,11 @@ enum Command {
     Analysis(AnalysisArgs),
     /// Locate a Run, Trajectory, or Step by its Source-local ID.
     Find(FindArgs),
-    /// Search trajectory text with lexical full-text search.
-    Search(SearchArgs),
     /// Create a new Dataset from one trajectory exchange format.
     Import(ImportArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
-    /// Compact and maintain an existing native Dataset.
-    Maintain(DatasetArgs),
-    /// Serve statically mounted Datasets through a read-only API and Web UI.
+    /// Serve the read-only Warehouse and optionally embed the local LLM Gateway.
     Serve(ServeArgs),
 }
 
@@ -90,12 +87,6 @@ struct ListArgs {
     /// Maximum number of filesystem entries or objects to inspect.
     #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
-}
-
-#[derive(Debug, Args)]
-struct DatasetArgs {
-    #[arg(value_name = "DATASET_URI")]
-    dataset_uri: String,
 }
 
 #[derive(Debug, Args)]
@@ -279,16 +270,6 @@ struct FindArgs {
     max_entries: usize,
 }
 
-#[derive(Debug, Args)]
-struct SearchArgs {
-    #[arg(value_name = "DATASET_URI")]
-    dataset_uri: String,
-    #[arg(value_name = "QUERY")]
-    query: String,
-    #[arg(long, default_value_t = 20)]
-    top_k: usize,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ExchangeFormat {
     Auto,
@@ -398,15 +379,31 @@ struct ServeArgs {
     /// Open the Web UI in the system browser after the listener is ready.
     #[arg(long)]
     open: bool,
+
+    /// Enable the LLM Gateway with an existing Gateway TOML configuration.
+    #[arg(long, visible_alias = "gateway-config", value_name = "FILE")]
+    gateway: Option<PathBuf>,
+
+    /// Mounted Dataset that receives Gateway capture events.
+    #[arg(long, value_name = "NAME", requires = "gateway")]
+    gateway_dataset: Option<String>,
+
+    /// Local Gateway state directory; required for an object-store Dataset.
+    #[arg(long, value_name = "DIRECTORY", requires = "gateway")]
+    gateway_state: Option<PathBuf>,
+
+    /// Also maintain Gateway's live AgenticMD projection.
+    #[arg(long, requires = "gateway")]
+    gateway_stream_markdown: bool,
+
+    /// Print Gateway diagnostics, including bounded request/response bodies, to stderr.
+    #[arg(long, visible_alias = "gateway-debug", requires = "gateway")]
+    debug: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WarehouseFile {
-    /// Reserved for a future rebuildable on-disk cache. The current server
-    /// keeps acceleration state in memory and never writes to this path.
-    #[serde(default)]
-    cache_dir: Option<PathBuf>,
     #[serde(default)]
     default_dataset: Option<String>,
     datasets: Vec<WarehouseDataset>,
@@ -603,19 +600,10 @@ pub async fn run_with_stdin(
             run_analysis(args, settings, stdout_is_terminal, stdout, stderr).await
         }
         Command::Find(args) => run_find(args, settings, stdout_is_terminal, stdout, stderr).await,
-        Command::Search(args) => {
-            let _ = (args.query, args.top_k);
-            not_implemented("search", Some(&args.dataset_uri))
-        }
         Command::Import(args) => run_import(args, settings, stdin, stdout, stderr).await,
         Command::Export(args) => run_export(args, settings, stdout, stderr).await,
-        Command::Maintain(args) => not_implemented("maintain", Some(&args.dataset_uri)),
         Command::Serve(args) => run_serve(args, stderr).await,
     }
-}
-
-fn not_implemented(command: &str, _dataset_uri: Option<&str>) -> Result<()> {
-    bail!("pchronicle {command} is not implemented yet")
 }
 
 const MAX_WAREHOUSE_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -839,13 +827,6 @@ fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServerConfig> {
         "Warehouse config mounts more than {MAX_WAREHOUSE_DATASETS} Datasets"
     );
 
-    if let Some(cache_dir) = &file.cache_dir {
-        anyhow::ensure!(
-            cache_dir.is_absolute(),
-            "cache_dir must be an absolute path when configured"
-        );
-    }
-
     let mut names = HashSet::with_capacity(file.datasets.len());
     let mut mounts = Vec::with_capacity(file.datasets.len());
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -879,6 +860,208 @@ fn load_warehouse_config(path: &Path) -> Result<server::ChronicleServerConfig> {
     Ok(config)
 }
 
+struct PreparedGateway {
+    config: persisting_gateway::config::ProxyConfig,
+    state_dir: PathBuf,
+    dataset_name: String,
+    stream_markdown: bool,
+    listener: tokio::net::TcpListener,
+    admin_listener: tokio::net::TcpListener,
+    sink: Arc<dyn persisting_gateway::sink::CaptureEventSink>,
+    writer: gateway_capture::GatewayCaptureWriter,
+}
+
+fn select_gateway_dataset(
+    config: &server::ChronicleServerConfig,
+    requested: Option<&str>,
+) -> Result<DatasetMount> {
+    let name = match requested {
+        Some(name) => DatasetMount::new(name, "validation")?.name,
+        None => config
+            .default_dataset
+            .clone()
+            .or_else(|| (config.datasets.len() == 1).then(|| config.datasets[0].name.clone()))
+            .context(
+                "Gateway capture Dataset is ambiguous; use --gateway-dataset or set default_dataset",
+            )?,
+    };
+    config
+        .datasets
+        .iter()
+        .find(|dataset| dataset.name == name)
+        .cloned()
+        .with_context(|| format!("Gateway capture Dataset '{name}' is not mounted"))
+}
+
+fn local_dataset_path(uri: &str) -> Result<Option<PathBuf>> {
+    if !uri.contains("://") {
+        return Ok(Some(PathBuf::from(uri)));
+    }
+    let url = Url::parse(uri).context("parse Gateway capture Dataset URI")?;
+    match url.scheme() {
+        "file" => url
+            .to_file_path()
+            .map(Some)
+            .map_err(|_| anyhow!("convert file Dataset URI to a local path")),
+        "local" => Ok(Some(PathBuf::from(url.path()))),
+        _ => Ok(None),
+    }
+}
+
+fn parse_gateway_listener(value: &str, label: &str) -> Result<SocketAddr> {
+    let addr = value
+        .parse::<SocketAddr>()
+        .with_context(|| format!("parse {label} address '{value}'"))?;
+    anyhow::ensure!(
+        addr.ip().is_loopback(),
+        "pChronicle embedded {label} may only bind to a loopback address"
+    );
+    Ok(addr)
+}
+
+async fn prepare_gateway(
+    args: &ServeArgs,
+    warehouse: &server::ChronicleServerConfig,
+) -> Result<Option<PreparedGateway>> {
+    let Some(config_path) = args.gateway.as_deref() else {
+        return Ok(None);
+    };
+    let mut config = persisting_gateway::config::ProxyConfig::from_file(config_path)
+        .with_context(|| format!("load Gateway config {}", config_path.display()))?;
+    if args.debug {
+        config.debug = true;
+        persisting_gateway::runtime::debug::enable_debug_stderr();
+    }
+    let dataset = select_gateway_dataset(warehouse, args.gateway_dataset.as_deref())?;
+    let state_dir = match args.gateway_state.clone() {
+        Some(path) => path,
+        None => local_dataset_path(&dataset.uri)?.with_context(|| {
+            format!(
+                "Gateway capture Dataset '{}' uses object storage; provide --gateway-state DIRECTORY",
+                dataset.name
+            )
+        })?,
+    };
+    let listen = parse_gateway_listener(&config.listen, "Gateway")?;
+    let admin_listen = parse_gateway_listener(&config.admin_listen, "Gateway admin")?;
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("bind pChronicle Gateway to {listen}"))?;
+    let admin_listener = tokio::net::TcpListener::bind(admin_listen)
+        .await
+        .with_context(|| format!("bind pChronicle Gateway admin API to {admin_listen}"))?;
+    config.listen = listener
+        .local_addr()
+        .context("read pChronicle Gateway listen address")?
+        .to_string();
+    config.admin_listen = admin_listener
+        .local_addr()
+        .context("read pChronicle Gateway admin listen address")?
+        .to_string();
+    let (sink, writer) = gateway_capture::gateway_capture_sink(&dataset.uri, &config.agent_id);
+    Ok(Some(PreparedGateway {
+        config,
+        state_dir,
+        dataset_name: dataset.name,
+        stream_markdown: args.gateway_stream_markdown,
+        listener,
+        admin_listener,
+        sink,
+        writer,
+    }))
+}
+
+async fn wait_for_stop(mut receiver: tokio::sync::watch::Receiver<bool>) {
+    let _ = receiver.wait_for(|stop| *stop).await;
+}
+
+async fn wait_for_termination() {
+    #[cfg(unix)]
+    {
+        let ctrl_c = tokio::signal::ctrl_c();
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = ctrl_c => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = ctrl_c.await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn serve_warehouse_and_gateway(
+    warehouse_config: server::ChronicleServerConfig,
+    warehouse_listener: tokio::net::TcpListener,
+    gateway: PreparedGateway,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    let PreparedGateway {
+        config,
+        state_dir,
+        listener,
+        admin_listener,
+        sink,
+        writer,
+        stream_markdown,
+        ..
+    } = gateway;
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let mut warehouse_server = Box::pin(server::serve_warehouse_with_listener_and_shutdown(
+        warehouse_config,
+        warehouse_listener,
+        wait_for_stop(stop_rx.clone()),
+    ));
+    let mut gateway_server = Box::pin(persisting_gateway::serve_with_listeners_and_shutdown(
+        config,
+        state_dir,
+        sink,
+        stream_markdown,
+        listener,
+        admin_listener,
+        wait_for_stop(stop_rx),
+    ));
+    let mut shutdown = Box::pin(shutdown);
+
+    let result = tokio::select! {
+        warehouse_result = &mut warehouse_server => {
+            let _ = stop_tx.send(true);
+            let gateway_result = (&mut gateway_server).await;
+            warehouse_result.context("pChronicle Warehouse stopped")?;
+            gateway_result.context("pChronicle Gateway stopped")
+        }
+        gateway_result = &mut gateway_server => {
+            let _ = stop_tx.send(true);
+            let warehouse_result = (&mut warehouse_server).await;
+            gateway_result.context("pChronicle Gateway stopped")?;
+            warehouse_result.context("pChronicle Warehouse stopped")
+        }
+        () = &mut shutdown => {
+            let _ = stop_tx.send(true);
+            let warehouse_result = (&mut warehouse_server).await;
+            let gateway_result = (&mut gateway_server).await;
+            warehouse_result.context("stop pChronicle Warehouse")?;
+            gateway_result.context("stop pChronicle Gateway")
+        }
+    };
+    // A completed async state machine may retain its input fields until the
+    // future itself is dropped. Release every producer before sending the
+    // writer's explicit Finish message so no event can be queued afterward.
+    drop(gateway_server);
+    drop(warehouse_server);
+    writer
+        .finish()
+        .context("finish pChronicle Gateway capture")?;
+    result
+}
+
 async fn run_serve(args: ServeArgs, stderr: &mut dyn Write) -> Result<()> {
     anyhow::ensure!(
         args.listen.ip().is_loopback(),
@@ -891,13 +1074,47 @@ async fn run_serve(args: ServeArgs, stderr: &mut dyn Write) -> Result<()> {
     let addr = listener
         .local_addr()
         .context("read pChronicle Warehouse listen address")?;
+    let gateway = prepare_gateway(&args, &config).await?;
     let url = format!("http://{addr}/");
     writeln!(stderr, "pChronicle Warehouse: {url}")
         .context("write pChronicle Warehouse address")?;
+    if let Some(gateway) = &gateway {
+        writeln!(
+            stderr,
+            "pChronicle Gateway: http://{}/ dataset={}",
+            gateway.config.listen, gateway.dataset_name
+        )
+        .context("write pChronicle Gateway address")?;
+        writeln!(
+            stderr,
+            "pChronicle Gateway admin: http://{}/",
+            gateway.config.admin_listen
+        )
+        .context("write pChronicle Gateway admin address")?;
+        if args.debug {
+            writeln!(
+                stderr,
+                "pChronicle Gateway debug: stderr (request/response bodies may be included)"
+            )
+            .context("write pChronicle Gateway debug status")?;
+        }
+    }
     if args.open {
         open_browser(&url)?;
     }
-    server::serve_warehouse_with_listener(config, listener).await
+    match gateway {
+        Some(gateway) => {
+            serve_warehouse_and_gateway(config, listener, gateway, wait_for_termination()).await
+        }
+        None => {
+            server::serve_warehouse_with_listener_and_shutdown(
+                config,
+                listener,
+                wait_for_termination(),
+            )
+            .await
+        }
+    }
 }
 
 fn open_browser(url: &str) -> Result<()> {
@@ -2934,8 +3151,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "default", "ls", "status", "query", "analysis", "find", "search", "import",
-                "export", "maintain", "serve",
+                "default", "ls", "status", "query", "analysis", "find", "import", "export",
+                "serve",
             ]
         );
         let ls = command
@@ -3950,19 +4167,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn placeholder_commands_fail_explicitly() -> Result<()> {
-        let cli = Cli::try_parse_from(["pchronicle", "maintain", "."])?;
-        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "pchronicle maintain is not implemented yet"
-        );
-        Ok(())
-    }
-
     #[test]
     fn warehouse_config_normalizes_mounts_and_selects_default() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -3975,7 +4179,6 @@ mod tests {
             &config_path,
             format!(
                 r#"
-cache_dir = "/tmp/pchronicle-cache"
 default_dataset = "archive"
 
 [[datasets]]
@@ -3994,7 +4197,6 @@ uri = {second:?}
         let config = load_warehouse_config(&config_path)?;
         assert_eq!(config.datasets.len(), 2);
         assert_eq!(config.default_dataset.as_deref(), Some("archive"));
-        assert_eq!(config.writable_dataset, None);
         assert_eq!(
             config.catalog_options.error_policy,
             CatalogErrorPolicy::Report
@@ -4078,6 +4280,232 @@ uri = {second:?}
             unreachable!("serve command parsed as another variant")
         };
         assert!(!args.listen.ip().is_loopback());
+        Ok(())
+    }
+
+    #[test]
+    fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--config",
+            "warehouse.toml",
+            "--gateway",
+            "gateway.toml",
+            "--gateway-dataset",
+            "captures",
+            "--gateway-state",
+            ".gateway-state",
+            "--gateway-stream-markdown",
+            "--debug",
+        ])?;
+        let Command::Serve(args) = cli.command else {
+            unreachable!("serve command parsed as another variant")
+        };
+        assert_eq!(args.gateway, Some(PathBuf::from("gateway.toml")));
+        assert_eq!(args.gateway_dataset.as_deref(), Some("captures"));
+        assert_eq!(args.gateway_state, Some(PathBuf::from(".gateway-state")));
+        assert!(args.gateway_stream_markdown);
+        assert!(args.debug);
+
+        assert!(Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--config",
+            "warehouse.toml",
+            "--gateway-dataset",
+            "captures",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--config",
+            "warehouse.toml",
+            "--debug",
+        ])
+        .is_err());
+
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "serve",
+            "--config",
+            "warehouse.toml",
+            "--gateway-config",
+            "gateway.toml",
+            "--gateway-debug",
+        ])?;
+        let Command::Serve(args) = cli.command else {
+            unreachable!("serve command parsed as another variant")
+        };
+        assert!(args.debug);
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_dataset_selection_uses_only_static_mounts() -> Result<()> {
+        let captures = DatasetMount::new("captures", "/tmp/captures")?;
+        let evals = DatasetMount::new("evals", "/tmp/evals")?;
+        let mut config = server::ChronicleServerConfig::mounted(vec![captures, evals])?;
+        assert!(select_gateway_dataset(&config, None)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        assert_eq!(
+            select_gateway_dataset(&config, Some("captures"))?.name,
+            "captures"
+        );
+        assert!(select_gateway_dataset(&config, Some("missing"))
+            .unwrap_err()
+            .to_string()
+            .contains("not mounted"));
+
+        config.default_dataset = Some("evals".into());
+        assert_eq!(select_gateway_dataset(&config, None)?.name, "evals");
+        Ok(())
+    }
+
+    #[test]
+    fn embedded_gateway_rejects_public_listeners() {
+        let error = parse_gateway_listener("0.0.0.0:8787", "Gateway").unwrap_err();
+        assert!(error.to_string().contains("loopback"));
+        assert!(parse_gateway_listener("127.0.0.1:0", "Gateway").is_ok());
+    }
+
+    #[tokio::test]
+    async fn embedded_gateway_forwards_and_persists_canonical_events() -> Result<()> {
+        let dataset = tempfile::tempdir()?;
+        let state = tempfile::tempdir()?;
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let upstream_addr = upstream_listener.local_addr()?;
+        let (upstream_stop_tx, upstream_stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let upstream = tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/v1/chat/completions",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "id": "chatcmpl-pchronicle",
+                        "object": "chat.completion",
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "stored"},
+                            "finish_reason": "stop"
+                        }]
+                    }))
+                }),
+            );
+            axum::serve(upstream_listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = upstream_stop_rx.await;
+                })
+                .await
+        });
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let gateway_addr = listener.local_addr()?;
+        let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let admin_addr = admin_listener.local_addr()?;
+        let mut config = persisting_gateway::config::ProxyConfig::from_toml_str(&format!(
+            r#"
+listen = "127.0.0.1:0"
+admin_listen = "127.0.0.1:0"
+agent_id = "test-agent"
+
+[[models]]
+name = "*"
+upstream = "http://{upstream_addr}/v1"
+"#
+        ))?;
+        config.listen = gateway_addr.to_string();
+        config.admin_listen = admin_addr.to_string();
+        let (sink, writer) = gateway_capture::gateway_capture_sink(
+            &dataset.path().to_string_lossy(),
+            &config.agent_id,
+        );
+        let warehouse_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let warehouse_addr = warehouse_listener.local_addr()?;
+        let warehouse_config =
+            server::ChronicleServerConfig::mounted(vec![DatasetMount::default(
+                dataset.path().to_string_lossy(),
+            )?])?;
+        let prepared_gateway = PreparedGateway {
+            config,
+            state_dir: state.path().to_path_buf(),
+            dataset_name: DEFAULT_DATASET_NAME.into(),
+            stream_markdown: false,
+            listener,
+            admin_listener,
+            sink,
+            writer,
+        };
+        let (serve_stop_tx, serve_stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(async move {
+            serve_warehouse_and_gateway(
+                warehouse_config,
+                warehouse_listener,
+                prepared_gateway,
+                async {
+                    let _ = serve_stop_rx.await;
+                },
+            )
+            .await
+        });
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        let health = client
+            .get(format!("http://{warehouse_addr}/api/v1/health"))
+            .send()
+            .await?;
+        assert_eq!(health.status(), reqwest::StatusCode::OK);
+        assert_eq!(health.json::<Value>().await?["mode"], "read_only");
+        let response = client
+            .post(format!("http://{gateway_addr}/v1/chat/completions"))
+            .header("content-type", "application/json")
+            .header("x-persisting-session-id", "session-42")
+            .body(r#"{"model":"test","messages":[{"role":"user","content":"keep me"}]}"#)
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await?["choices"][0]["message"]["content"],
+            "stored"
+        );
+
+        let _ = serve_stop_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), serve)
+            .await
+            .context("pChronicle serve shutdown timed out")???;
+        let _ = upstream_stop_tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), upstream)
+            .await
+            .context("mock upstream shutdown timed out")???;
+
+        let snapshot = Arc::new(
+            DatasetCatalogSnapshot::discover(
+                vec![DatasetMount::default(dataset.path().to_string_lossy())?],
+                Some(DEFAULT_DATASET_NAME.into()),
+                CatalogSnapshotOptions::default(),
+            )
+            .await?,
+        );
+        let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot).await?;
+        let rows = engine
+            .query_jsonl(
+                "SELECT kind, COUNT(*) AS count FROM dataset.events GROUP BY kind ORDER BY kind",
+            )
+            .await?;
+        let rows = rows
+            .lines()
+            .map(serde_json::from_str::<Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0]["kind"], "llm.request");
+        assert_eq!(rows[0]["count"], 1);
+        assert_eq!(rows[1]["kind"], "llm.response");
+        assert_eq!(rows[1]["count"], 1);
         Ok(())
     }
 

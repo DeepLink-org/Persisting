@@ -18,8 +18,7 @@ workspace-wide command would pull them into scope.
 
 This exclusion covers, in particular:
 
-- `persisting/store/` and TTAS-specific code in `persisting/core.py` and
-  `crates/persisting-core/`
+- TTAS and tiered-memory code
 - `persisting/queue/`, `persisting/sampler/`, and their tests and docs
 - `persisting/search/`, `crates/persisting-pchronicle/src/search/`, Search CLI
   surfaces, and their tests and docs

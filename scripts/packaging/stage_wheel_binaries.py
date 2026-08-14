@@ -17,7 +17,7 @@ import tarfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
@@ -31,11 +31,18 @@ SUPPORTED_TARGETS = {
 }
 MACOS_ENTITLEMENTS = ROOT / "crates" / "persisting-pvisor" / "macos-hypervisor.entitlements"
 LIBKRUNFW_VERSION = "5.5.0"
+MACOS_DEPLOYMENT_TARGET = "11.0"
 LIBKRUNFW_RELEASE = f"https://github.com/libkrun/libkrunfw/releases/download/v{LIBKRUNFW_VERSION}"
 LIBKRUNFW_ARCHIVES = {
     "x86_64-unknown-linux-gnu": (
         "libkrunfw-x86_64.tgz",
         "c169206b01c89fbe134f1728bf4f988702bc7f73b4cf73e6fdece447d6fceca1",
+        "lib64/libkrunfw.so.5.5.0",
+    ),
+    "aarch64-apple-darwin": (
+        "libkrunfw-prebuilt-aarch64.tgz",
+        "5bfae6efee63dbdf04a8fac2a69d772d9f900af2f54c4429b4acdfd6d86b9979",
+        "libkrunfw/kernel.c",
     ),
 }
 
@@ -53,36 +60,33 @@ class BuildOptions:
 
 
 def ensure_wheel_data_directory() -> Path:
-    """Create the Maturin data layout without compiling the CLI binaries."""
+    """Create the wheel scripts layout without compiling the CLI binaries."""
     scripts = WHEEL_DATA / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     return scripts
 
 
-def _option(args: Sequence[str], *names: str) -> str | None:
-    for index, arg in enumerate(args):
-        for name in names:
-            if arg == name:
-                if index + 1 >= len(args):
-                    raise RuntimeError(f"{name} requires a value")
-                return args[index + 1]
-            if arg.startswith(f"{name}="):
-                return arg.split("=", 1)[1]
-    return None
+def _setting(config: Mapping[str, Any] | None, name: str) -> str | None:
+    if not config:
+        return None
+    value = config.get(name)
+    if value is None:
+        value = config.get(f"--{name}")
+    if isinstance(value, list):
+        value = value[-1] if value else None
+    return None if value is None else str(value)
 
 
-def _jobs(args: Sequence[str]) -> str | None:
-    value = _option(args, "--jobs", "-j")
-    if value is not None:
-        return value
-    for arg in args:
-        if arg.startswith("-j") and len(arg) > 2:
-            return arg[2:]
-    return None
-
-
-def _has_flag(args: Sequence[str], name: str) -> bool:
-    return name in args
+def _bool_setting(config: Mapping[str, Any] | None, name: str, *, default: bool) -> bool:
+    value = _setting(config, name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean, got {value!r}")
 
 
 def _normalize_target(target: str | None) -> str | None:
@@ -110,35 +114,24 @@ def _normalize_target(target: str | None) -> str | None:
     return normalized
 
 
-def options_from_maturin(
+def options_from_build_backend(
     config_settings: Mapping[str, Any] | None,
     *,
     editable: bool,
 ) -> BuildOptions:
-    """Resolve Cargo options from the same inputs consumed by Maturin's backend."""
-    import maturin
-
-    args = maturin.get_maturin_pep517_args(config_settings)
-    config = maturin.get_config()
-    if _has_flag(args, "--zig"):
-        raise RuntimeError(
-            "PEP 517 wheel builds with --zig are unsupported because the staged CLI binaries "
-            "would not share Maturin's linker; build official Linux wheels in manylinux instead"
-        )
-
-    profile_key = "editable-profile" if editable else "profile"
-    default_profile = config.get(profile_key) or config.get("profile") or "release"
-    target = _option(args, "--target") or os.getenv("CARGO_BUILD_TARGET")
-    target_dir = _option(args, "--target-dir")
+    """Resolve Cargo options for the setuptools-backed PEP 517 build."""
+    default_profile = "dev" if editable else "release"
+    target = _setting(config_settings, "cargo-target") or os.getenv("CARGO_BUILD_TARGET")
+    target_dir = _setting(config_settings, "cargo-target-dir") or os.getenv("CARGO_TARGET_DIR")
     return BuildOptions(
         target=_normalize_target(target),
-        profile=_option(args, "--profile") or str(default_profile),
+        profile=_setting(config_settings, "cargo-profile") or default_profile,
         target_dir=target_dir,
-        locked=_has_flag(args, "--locked") or bool(config.get("locked", True)),
-        frozen=_has_flag(args, "--frozen") or bool(config.get("frozen", False)),
-        offline=_has_flag(args, "--offline") or bool(config.get("offline", False)),
-        jobs=_jobs(args),
-        bundle_firmware=not editable,
+        locked=_bool_setting(config_settings, "cargo-locked", default=True),
+        frozen=_bool_setting(config_settings, "cargo-frozen", default=False),
+        offline=_bool_setting(config_settings, "cargo-offline", default=False),
+        jobs=_setting(config_settings, "cargo-jobs"),
+        bundle_firmware=_bool_setting(config_settings, "bundle-firmware", default=not editable),
     )
 
 
@@ -224,36 +217,45 @@ def _is_macos(options: BuildOptions) -> bool:
 def _firmware_source(options: BuildOptions) -> tuple[Path, str]:
     name = "libkrunfw.5.dylib" if _is_macos(options) else "libkrunfw.so.5"
     configured = os.getenv("PERSISTING_LIBKRUNFW_PATH")
-    if not configured and os.getenv("PERSISTING_FETCH_LIBKRUNFW") == "1":
-        return _fetch_linux_firmware(options), name
-    if not configured:
-        raise RuntimeError(
-            "PERSISTING_LIBKRUNFW_PATH must point to libkrunfw when building a wheel; "
-            "official Linux builds may set PERSISTING_FETCH_LIBKRUNFW=1"
-        )
-    source = Path(configured).expanduser()
-    if source.is_dir():
-        source = source / name
-    source = source.resolve()
-    if not source.is_file():
-        raise RuntimeError(f"libkrunfw payload does not exist: {source}")
-    return source, name
+    if configured:
+        source = Path(configured).expanduser()
+        if source.is_dir():
+            source = source / name
+        source = source.resolve()
+        if not source.is_file():
+            raise RuntimeError(f"libkrunfw payload does not exist: {source}")
+        return source, name
+    return _fetch_firmware(options, name), name
 
 
-def _fetch_linux_firmware(options: BuildOptions) -> Path:
-    target = options.target or "x86_64-unknown-linux-gnu"
+def _host_target() -> str:
+    if sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}:
+        return "aarch64-apple-darwin"
+    if sys.platform == "linux" and platform.machine().lower() in {"x86_64", "amd64"}:
+        return "x86_64-unknown-linux-gnu"
+    raise RuntimeError(
+        f"automatic libkrunfw preparation is unsupported on {sys.platform}/{platform.machine()}"
+    )
+
+
+def _fetch_firmware(options: BuildOptions, name: str) -> Path:
+    target = options.target or _host_target()
     try:
-        archive_name, expected_sha256 = LIBKRUNFW_ARCHIVES[target]
+        archive_name, expected_sha256, archive_member = LIBKRUNFW_ARCHIVES[target]
     except KeyError as error:
         raise RuntimeError(f"no downloadable libkrunfw payload for {target}") from error
-    build_root = ROOT / "target" / "libkrunfw" / f"{LIBKRUNFW_VERSION}-{target}"
-    cached = sorted(build_root.rglob(f"libkrunfw.so.{LIBKRUNFW_VERSION}"))
-    if len(cached) == 1:
-        return cached[0]
+    cache_key = f"{LIBKRUNFW_VERSION}-{target}"
+    if _is_macos(options):
+        cache_key += f"-macos{MACOS_DEPLOYMENT_TARGET}"
+    build_root = ROOT / "target" / "libkrunfw" / cache_key
+    destination = build_root / name
+    if destination.is_file():
+        return destination
     archive = build_root.parent / archive_name
     build_root.parent.mkdir(parents=True, exist_ok=True)
     if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != expected_sha256:
         archive.unlink(missing_ok=True)
+        print(f"Downloading wheel firmware: {LIBKRUNFW_RELEASE}/{archive_name}", file=sys.stderr)
         urllib.request.urlretrieve(f"{LIBKRUNFW_RELEASE}/{archive_name}", archive)
     actual_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
     if actual_sha256 != expected_sha256:
@@ -261,18 +263,40 @@ def _fetch_linux_firmware(options: BuildOptions) -> Path:
         raise RuntimeError(
             f"libkrunfw checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
         )
-    shutil.rmtree(build_root, ignore_errors=True)
-    build_root.mkdir()
+    build_root.mkdir(parents=True, exist_ok=True)
+    source_path = build_root / "kernel.c"
     with tarfile.open(archive, "r:gz") as source:
-        source.extractall(build_root, filter="data")
-    makefiles = sorted(build_root.rglob("Makefile"))
-    if len(makefiles) != 1:
-        raise RuntimeError(f"expected one libkrunfw Makefile, found {len(makefiles)}")
-    subprocess.run(["make", "-j2"], cwd=makefiles[0].parent, check=True)
-    matches = sorted(build_root.rglob(f"libkrunfw.so.{LIBKRUNFW_VERSION}"))
-    if len(matches) != 1:
-        raise RuntimeError(f"expected one built libkrunfw payload, found {len(matches)}")
-    return matches[0]
+        try:
+            member = source.getmember(archive_member)
+        except KeyError as error:
+            raise RuntimeError(f"libkrunfw archive is missing {archive_member}") from error
+        if not member.isfile():
+            raise RuntimeError(f"libkrunfw archive member is not a file: {archive_member}")
+        payload = source.extractfile(member)
+        if payload is None:
+            raise RuntimeError(f"could not read libkrunfw archive member: {archive_member}")
+        extracted = source_path if _is_macos(options) else destination
+        with extracted.open("wb") as output:
+            shutil.copyfileobj(payload, output)
+
+    if _is_macos(options):
+        subprocess.run(
+            [
+                "/usr/bin/cc",
+                "-fPIC",
+                "-DABI_VERSION=5",
+                f"-mmacosx-version-min={MACOS_DEPLOYMENT_TARGET}",
+                "-shared",
+                "-Wl,-install_name,@rpath/libkrunfw.5.dylib",
+                "-o",
+                str(destination),
+                str(source_path),
+            ],
+            check=True,
+        )
+        source_path.unlink(missing_ok=True)
+    destination.chmod(0o755)
+    return destination
 
 
 def _sign_macos_pvisor(path: Path) -> None:
@@ -318,6 +342,7 @@ def _build_web_assets() -> None:
 
 def stage_wheel_binaries(options: BuildOptions) -> Path:
     """Build all host CLIs and atomically replace the wheel scripts directory."""
+    firmware = _firmware_source(options) if options.bundle_firmware else None
     _build_web_assets()
     artifacts = _build(options)
     ensure_wheel_data_directory()
@@ -337,8 +362,8 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
             )
             print(f"Staged {name}: {source} -> {destination}", file=sys.stderr)
 
-        if options.bundle_firmware:
-            firmware_source, firmware_name = _firmware_source(options)
+        if firmware is not None:
+            firmware_source, firmware_name = firmware
             firmware_destination = staged / firmware_name
             shutil.copy2(firmware_source, firmware_destination)
             (staged / "libkrunfw.SOURCE").write_text(

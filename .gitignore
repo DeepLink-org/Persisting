@@ -8,7 +8,6 @@ __pycache__/
 .pytest_cache/
 .persisting/
 .venv/
-*.abi3.so
 crates/persisting-engine/ds/
 
 # Local review, benchmark, and runtime artifacts

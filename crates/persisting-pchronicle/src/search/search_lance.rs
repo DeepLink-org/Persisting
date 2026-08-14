@@ -559,7 +559,9 @@ pub async fn vector_query(request: SearchQueryRequest) -> Result<SearchQueryResp
                 .limit(Some(request.k as i64));
             scan.full_text_search(fts_q).context("full_text_search")?;
             apply_sql_filter(&mut scan, request.filter.as_deref())?;
-            format!("BM25 FTS on column '{text_col}' (requires inverted index, e.g. from search index build).")
+            format!(
+                "BM25 FTS on column '{text_col}' (requires inverted index, e.g. from search index build)."
+            )
         }
         "hybrid" => {
             let dim = embedding_dim_for_column(&ds, QUERY_VECTOR_COLUMN)? as usize;

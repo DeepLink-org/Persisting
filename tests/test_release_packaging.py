@@ -4,7 +4,6 @@ import importlib.util
 import sys
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -38,13 +37,21 @@ def _load_wheel_stage():
 wheel_stage = _load_wheel_stage()
 
 
+def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
+    contents = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'requires = ["setuptools>=77"]' in contents
+    assert 'build-backend = "build_backend"' in contents
+    assert 'build = "cp312-*"' in contents
+    assert 'manylinux-x86_64-image = "manylinux2014"' in contents
+    assert 'archs = ["arm64"]' in contents
+
+
 @pytest.mark.parametrize("workflow", ["nightly.yml", "release.yml"])
-def test_manylinux_tag_is_configured_only_by_maturin_action(workflow: str) -> None:
+def test_platform_wheels_use_cibuildwheel(workflow: str) -> None:
     contents = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
 
-    assert "manylinux: 2014" in contents
-    assert "--compatibility manylinux2014" not in contents
-    assert "--manylinux 2014" not in contents
+    assert "pypa/cibuildwheel@v4.1.0" in contents
 
 
 def _write_version_tree(root: Path, *, pyproject: str, cargo: str, package: str) -> None:
@@ -95,8 +102,8 @@ def test_release_version_rejects_tag_version_mismatch(tmp_path: Path) -> None:
 def test_release_artifacts_accept_supported_matrix(tmp_path: Path) -> None:
     version = "1.2.3"
     names = [
-        f"persisting-{version}-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
-        f"persisting-{version}-cp310-abi3-macosx_11_0_arm64.whl",
+        f"persisting-{version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        f"persisting-{version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
         _write_wheel(tmp_path / name, version)
@@ -108,7 +115,7 @@ def test_release_artifacts_accept_supported_matrix(tmp_path: Path) -> None:
 def test_release_artifacts_reject_missing_platform(tmp_path: Path) -> None:
     version = "1.2.3"
     _write_wheel(
-        tmp_path / f"persisting-{version}-cp310-abi3-macosx_11_0_arm64.whl",
+        tmp_path / f"persisting-{version}-py3-none-macosx_11_0_arm64.whl",
         version,
     )
     with pytest.raises(release_artifacts.ArtifactValidationError, match="expected 2 wheels"):
@@ -118,8 +125,8 @@ def test_release_artifacts_reject_missing_platform(tmp_path: Path) -> None:
 def test_release_artifacts_reject_metadata_version_mismatch(tmp_path: Path) -> None:
     filename_version = "1.2.3"
     names = [
-        f"persisting-{filename_version}-cp310-abi3-manylinux2014_x86_64.whl",
-        f"persisting-{filename_version}-cp310-abi3-macosx_11_0_arm64.whl",
+        f"persisting-{filename_version}-py3-none-manylinux2014_x86_64.whl",
+        f"persisting-{filename_version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
         _write_wheel(tmp_path / name, "1.2.4")
@@ -131,8 +138,8 @@ def test_release_artifacts_reject_metadata_version_mismatch(tmp_path: Path) -> N
 def test_release_artifacts_reject_oversized_wheel(tmp_path: Path) -> None:
     version = "1.2.3"
     names = [
-        f"persisting-{version}-cp310-abi3-manylinux2014_x86_64.whl",
-        f"persisting-{version}-cp310-abi3-macosx_11_0_arm64.whl",
+        f"persisting-{version}-py3-none-manylinux2014_x86_64.whl",
+        f"persisting-{version}-py3-none-macosx_11_0_arm64.whl",
     ]
     for name in names:
         _write_wheel(tmp_path / name, version)
@@ -145,20 +152,30 @@ def test_release_artifacts_reject_oversized_wheel(tmp_path: Path) -> None:
     ("editable", "bundle_firmware"),
     [(True, False), (False, True)],
 )
-def test_maturin_options_only_skip_firmware_for_editable_builds(
-    monkeypatch: pytest.MonkeyPatch,
+def test_build_backend_options_only_skip_firmware_for_editable_builds(
     editable: bool,
     bundle_firmware: bool,
 ) -> None:
-    maturin = SimpleNamespace(
-        get_maturin_pep517_args=lambda _settings: [],
-        get_config=lambda: {"profile": "release", "editable-profile": "dev"},
-    )
-    monkeypatch.setitem(sys.modules, "maturin", maturin)
-
-    options = wheel_stage.options_from_maturin(None, editable=editable)
+    options = wheel_stage.options_from_build_backend(None, editable=editable)
 
     assert options.bundle_firmware is bundle_firmware
+
+
+def test_build_backend_options_accept_explicit_cargo_settings() -> None:
+    options = wheel_stage.options_from_build_backend(
+        {
+            "cargo-profile": "dev",
+            "cargo-locked": "false",
+            "cargo-jobs": "3",
+            "bundle-firmware": "false",
+        },
+        editable=False,
+    )
+
+    assert options.profile == "dev"
+    assert options.locked is False
+    assert options.jobs == "3"
+    assert options.bundle_firmware is False
 
 
 def test_editable_staging_does_not_resolve_firmware(
@@ -185,3 +202,58 @@ def test_editable_staging_does_not_resolve_firmware(
     scripts = wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions(bundle_firmware=False))
 
     assert {path.name for path in scripts.iterdir()} == set(wheel_stage.EXPECTED_BINARIES)
+
+
+def test_release_staging_resolves_firmware_before_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def missing_firmware(_options):
+        events.append("firmware")
+        raise RuntimeError("missing firmware")
+
+    def unexpected_build(_options):
+        events.append("build")
+        raise AssertionError("Cargo must not run before firmware is ready")
+
+    monkeypatch.setattr(wheel_stage, "_firmware_source", missing_firmware)
+    monkeypatch.setattr(wheel_stage, "_build", unexpected_build)
+
+    with pytest.raises(RuntimeError, match="missing firmware"):
+        wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions())
+
+    assert events == ["firmware"]
+
+
+def test_firmware_source_prefers_explicit_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    firmware = tmp_path / "libkrunfw.5.dylib"
+    firmware.write_bytes(b"firmware")
+    monkeypatch.setenv("PERSISTING_LIBKRUNFW_PATH", str(tmp_path))
+
+    source, name = wheel_stage._firmware_source(
+        wheel_stage.BuildOptions(target="aarch64-apple-darwin")
+    )
+
+    assert source == firmware.resolve()
+    assert name == firmware.name
+
+
+def test_firmware_source_fetches_when_path_is_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    firmware = tmp_path / "libkrunfw.5.dylib"
+    firmware.write_bytes(b"firmware")
+    monkeypatch.delenv("PERSISTING_LIBKRUNFW_PATH", raising=False)
+    monkeypatch.setattr(wheel_stage, "_fetch_firmware", lambda _options, _name: firmware)
+
+    source, name = wheel_stage._firmware_source(
+        wheel_stage.BuildOptions(target="aarch64-apple-darwin")
+    )
+
+    assert source == firmware
+    assert name == firmware.name

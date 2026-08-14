@@ -10,15 +10,14 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::extract::{Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use persisting_pchronicle::{
-    events_to_har, events_to_otlp_json, maintain_raw_events, read_judge_rows, read_revisions,
-    write_judge_rows, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
-    ChronicleQueryEngine, DatasetCatalogSnapshot, DatasetMount, EventRecord, JudgeRow,
-    LanceMaintenanceOptions, StoryCoords, StorylineTurn, DEFAULT_DATASET_NAME,
+    events_to_har, events_to_otlp_json, read_judge_rows, read_revisions, CatalogErrorPolicy,
+    CatalogSnapshotOptions, CatalogStorylineKey, ChronicleQueryEngine, DatasetCatalogSnapshot,
+    DatasetMount, EventRecord, JudgeRow, StoryCoords, StorylineTurn, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -27,8 +26,6 @@ use acceleration::{AccelerationStatus, ServerAcceleration};
 
 #[derive(Clone)]
 struct AppState {
-    warehouse: bool,
-    storage: Arc<String>,
     config: Arc<ChronicleServerConfig>,
     catalog: Arc<tokio::sync::RwLock<Option<Arc<CatalogRuntime>>>>,
     trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, LoadedTrajectory)>>>,
@@ -38,21 +35,10 @@ struct AppState {
 pub struct ChronicleServerConfig {
     pub datasets: Vec<DatasetMount>,
     pub default_dataset: Option<String>,
-    pub writable_dataset: Option<String>,
     pub catalog_options: CatalogSnapshotOptions,
 }
 
 impl ChronicleServerConfig {
-    pub fn legacy(storage: impl Into<String>) -> anyhow::Result<Self> {
-        let mount = DatasetMount::default(storage.into())?;
-        Ok(Self {
-            datasets: vec![mount],
-            default_dataset: Some(DEFAULT_DATASET_NAME.into()),
-            writable_dataset: Some(DEFAULT_DATASET_NAME.into()),
-            catalog_options: CatalogSnapshotOptions::default(),
-        })
-    }
-
     pub fn mounted(datasets: Vec<DatasetMount>) -> anyhow::Result<Self> {
         anyhow::ensure!(!datasets.is_empty(), "mount at least one Dataset");
         let unique = datasets
@@ -67,7 +53,6 @@ impl ChronicleServerConfig {
         Ok(Self {
             datasets,
             default_dataset,
-            writable_dataset: None,
             catalog_options: CatalogSnapshotOptions::default(),
         })
     }
@@ -127,54 +112,25 @@ pub(crate) struct SessionQuery {
     pub(crate) limit: Option<usize>,
 }
 
-pub fn router(storage: impl Into<String>) -> Router {
-    let storage = storage.into();
-    let config = ChronicleServerConfig::legacy(storage.clone())
-        .expect("legacy pChronicle storage must create the default Dataset");
-    router_with_config(config)
-}
-
-pub fn router_with_config(config: ChronicleServerConfig) -> Router {
-    router_for_config(config, false)
-}
-
 /// Build the read-only Warehouse API and Web UI.
-///
-/// Unlike [`router_with_config`], this surface never exposes Dataset mutation
-/// routes, even when a caller accidentally supplies a writable Dataset.
-pub fn warehouse_router(mut config: ChronicleServerConfig) -> Router {
-    config.writable_dataset = None;
-    router_for_config(config, true)
+pub fn warehouse_router(config: ChronicleServerConfig) -> Router {
+    let state = app_state(config);
+    read_routes().with_state(state)
 }
 
-fn app_state(config: ChronicleServerConfig, warehouse: bool) -> AppState {
-    let storage = config
-        .writable_dataset
-        .as_deref()
-        .or(config.default_dataset.as_deref())
-        .and_then(|name| config.datasets.iter().find(|mount| mount.name == name))
-        .or_else(|| config.datasets.first())
-        .map(|mount| mount.uri.clone())
-        .unwrap_or_default();
+fn app_state(config: ChronicleServerConfig) -> AppState {
     AppState {
-        warehouse,
-        storage: Arc::new(storage),
         config: Arc::new(config),
         catalog: Arc::new(tokio::sync::RwLock::new(None)),
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
     }
 }
 
-fn read_routes(warehouse: bool) -> Router<AppState> {
-    let health_route = if warehouse {
-        get(warehouse_health)
-    } else {
-        get(health)
-    };
+fn read_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
-        .route("/api/v1/health", health_route)
+        .route("/api/v1/health", get(warehouse_health))
         .route("/api/v1/runs", get(runs))
         .route("/api/v1/explorer/runs", get(explorer_runs))
         .route("/api/v1/explorer/run", get(explorer_run))
@@ -191,40 +147,6 @@ fn read_routes(warehouse: bool) -> Router<AppState> {
         .route("/api/v1/query/tables", get(query_tables))
         .route("/api/v1/query/evidence", post(query_evidence))
         .fallback(asset_fallback)
-}
-
-fn router_for_config(config: ChronicleServerConfig, warehouse: bool) -> Router {
-    let state = app_state(config, warehouse);
-    let router = read_routes(warehouse);
-    let router = if warehouse {
-        router
-    } else {
-        router
-            .route("/api/v1/judgments", post(write_judgments))
-            .route("/api/v1/maintain", post(maintain))
-            .route("/api/v1/query", post(query_sql))
-    };
-    router.with_state(state)
-}
-
-/// Serve the local UI. Non-loopback addresses are deliberately rejected
-/// because this single-user surface has no authentication layer.
-pub async fn serve(storage: impl Into<String>, addr: SocketAddr) -> anyhow::Result<()> {
-    serve_with_config(ChronicleServerConfig::legacy(storage)?, addr).await
-}
-
-pub async fn serve_with_config(
-    config: ChronicleServerConfig,
-    addr: SocketAddr,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        addr.ip().is_loopback(),
-        "pChronicle Web UI may only bind to a loopback address"
-    );
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router_with_config(config))
-        .await
-        .context("serve pChronicle Web UI")
 }
 
 /// Serve statically mounted Datasets through the read-only Warehouse surface.
@@ -246,6 +168,15 @@ pub async fn serve_warehouse_with_listener(
     config: ChronicleServerConfig,
     listener: tokio::net::TcpListener,
 ) -> anyhow::Result<()> {
+    serve_warehouse_with_listener_and_shutdown(config, listener, std::future::pending()).await
+}
+
+/// Serve the Warehouse until the supplied shutdown signal completes.
+pub async fn serve_warehouse_with_listener_and_shutdown(
+    config: ChronicleServerConfig,
+    listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
     let addr = listener
         .local_addr()
         .context("read Warehouse listen address")?;
@@ -254,6 +185,7 @@ pub async fn serve_warehouse_with_listener(
         "pChronicle Warehouse may only bind to a loopback address"
     );
     axum::serve(listener, warehouse_router(config))
+        .with_graceful_shutdown(shutdown)
         .await
         .context("serve pChronicle Warehouse")
 }
@@ -263,25 +195,19 @@ async fn index(headers: axum::http::HeaderMap) -> Response {
 }
 
 async fn asset_fallback(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    if state.warehouse {
-        let path = uri.path().to_ascii_lowercase();
-        if path.split('/').any(|segment| segment == "..")
-            || path.contains("%2e")
-            || path.contains('\\')
-            || path.contains("%5c")
-        {
-            return StatusCode::NOT_FOUND.into_response();
-        }
+    let path = uri.path().to_ascii_lowercase();
+    if path.split('/').any(|segment| segment == "..")
+        || path.contains("%2e")
+        || path.contains('\\')
+        || path.contains("%5c")
+    {
+        return StatusCode::NOT_FOUND.into_response();
     }
     asset::fallback(uri, headers).await
-}
-
-async fn health(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({"status":"ok","storage":state.storage.as_str()}))
 }
 
 async fn warehouse_health() -> Json<Value> {
@@ -323,7 +249,6 @@ struct CatalogResponse {
     snapshot_id: String,
     created_at: String,
     default_dataset: Option<String>,
-    writable_dataset: Option<String>,
     error_policy: CatalogErrorPolicy,
     datasets: Vec<persisting_pchronicle::CatalogDataset>,
     acceleration: AccelerationStatus,
@@ -334,7 +259,6 @@ fn catalog_response(state: &AppState, runtime: &CatalogRuntime) -> CatalogRespon
         snapshot_id: runtime.snapshot.snapshot_id().to_string(),
         created_at: runtime.snapshot.created_at().to_string(),
         default_dataset: runtime.snapshot.default_dataset().map(str::to_owned),
-        writable_dataset: state.config.writable_dataset.clone(),
         error_policy: state.config.catalog_options.error_policy,
         datasets: runtime.snapshot.datasets().to_vec(),
         acceleration: runtime.acceleration.status(),
@@ -474,41 +398,6 @@ async fn canonical_run_coords_for_summary(
     event_uri
         .map(|event_uri| event_uri_coords(event_uri, run).map_err(api_error))
         .transpose()
-}
-
-async fn writable_run_coords(
-    state: &AppState,
-    query: &SessionQuery,
-    required: bool,
-) -> Result<Option<StoryCoords>, ApiError> {
-    let run = resolve_run_summary(state, query).await?;
-    let Some(writable_dataset) = state.config.writable_dataset.as_deref() else {
-        if required {
-            return Err(api_error(
-                "pChronicle Web was started without --writable-dataset",
-            ));
-        }
-        return Ok(None);
-    };
-    if run.dataset != writable_dataset {
-        if required {
-            return Err(api_error(format!(
-                "Dataset '{}' is read-only; writable Dataset is '{}'",
-                run.dataset, writable_dataset
-            )));
-        }
-        return Ok(None);
-    }
-    let Some(coords) = canonical_run_coords_for_summary(state, &run).await? else {
-        if required {
-            return Err(api_error(format!(
-                "Dataset source '{}/{}' is not a writable canonical events source",
-                run.dataset, run.file
-            )));
-        }
-        return Ok(None);
-    };
-    Ok(Some(coords))
 }
 
 fn event_uri_coords(uri: &str, run: &RunSummary) -> anyhow::Result<StoryCoords> {
@@ -751,19 +640,14 @@ async fn load_trajectory(
         return Ok(loaded.clone());
     }
     let key = catalog_storyline_key(&run);
-    let records = runtime
+    let bundle = runtime
         .snapshot
-        .load_events(&key)
-        .await
-        .map_err(api_error)?
-        .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?
-        .events;
-    let document = runtime
-        .snapshot
-        .load_storyline(&key)
+        .load_trajectory_bundle(&key)
         .await
         .map_err(api_error)?
         .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?;
+    let records = bundle.events.events;
+    let document = bundle.storyline;
     let mut by_call = BTreeMap::<String, Vec<u64>>::new();
     for event in &records {
         if let Some(call_id) = event.call_id.as_ref().filter(|id| !id.is_empty()) {
@@ -977,94 +861,6 @@ async fn judgments(
     )))
 }
 
-#[derive(Debug, Deserialize)]
-struct JudgmentWrite {
-    dataset: Option<String>,
-    file: Option<String>,
-    run_id: Option<String>,
-    agent_id: String,
-    session_id: String,
-    root_session_id: Option<String>,
-    call_id: String,
-    rubric_id: String,
-    score: i64,
-    verdict: String,
-    rationale: String,
-}
-
-async fn write_judgments(
-    State(state): State<AppState>,
-    Json(mut request): Json<JudgmentWrite>,
-) -> Result<Json<Value>, ApiError> {
-    request.call_id = request.call_id.trim().to_string();
-    request.rubric_id = request.rubric_id.trim().to_string();
-    request.verdict = request.verdict.trim().to_ascii_lowercase();
-    request.rationale = request.rationale.trim().to_string();
-    if request.call_id.is_empty() {
-        return Err(ApiError {
-            code: "invalid_judgment",
-            message: "call_id is required; use __story__ for a trajectory judgment".into(),
-        });
-    }
-    if request.rubric_id.is_empty() {
-        return Err(ApiError {
-            code: "invalid_judgment",
-            message: "rubric_id is required".into(),
-        });
-    }
-    if request.rationale.is_empty() {
-        return Err(ApiError {
-            code: "invalid_judgment",
-            message: "rationale is required".into(),
-        });
-    }
-    if !(0..=100).contains(&request.score) {
-        return Err(ApiError {
-            code: "invalid_judgment",
-            message: "score must be between 0 and 100".into(),
-        });
-    }
-    if !matches!(request.verdict.as_str(), "pass" | "partial" | "fail") {
-        return Err(ApiError {
-            code: "invalid_judgment",
-            message: "verdict must be pass, partial, or fail".into(),
-        });
-    }
-    let query = SessionQuery {
-        dataset: request.dataset,
-        file: request.file,
-        run_id: request.run_id,
-        agent_id: request.agent_id,
-        session_id: request.session_id.clone(),
-        root_session_id: request.root_session_id,
-        offset: None,
-        limit: None,
-    };
-    let row = JudgeRow {
-        session_id: request.session_id,
-        call_id: request.call_id,
-        rubric_id: request.rubric_id,
-        score: request.score,
-        verdict: request.verdict,
-        rationale: request.rationale,
-    };
-    let response_row = json!({
-        "session_id": row.session_id,
-        "call_id": row.call_id,
-        "rubric_id": row.rubric_id,
-        "score": row.score,
-        "verdict": row.verdict,
-        "rationale": row.rationale,
-    });
-    let coords = writable_run_coords(&state, &query, true)
-        .await?
-        .expect("required writable coordinates");
-    let dataset = write_judge_rows(&coords, &[row]).await.map_err(api_error)?;
-    Ok(Json(
-        json!({"status":"ok","dataset":dataset,"judgment":response_row}),
-    ))
-}
-
 async fn revisions(
     State(state): State<AppState>,
     Query(query): Query<SessionQuery>,
@@ -1076,28 +872,6 @@ async fn revisions(
         serde_json::to_value(read_revisions(&coords).await.map_err(api_error)?)
             .map_err(api_error)?,
     ))
-}
-
-async fn maintain(
-    State(state): State<AppState>,
-    Json(query): Json<SessionQuery>,
-) -> Result<Json<Value>, ApiError> {
-    let coords = writable_run_coords(&state, &query, true)
-        .await?
-        .expect("required writable coordinates");
-    let report = maintain_raw_events(&coords, &LanceMaintenanceOptions::default())
-        .await
-        .map_err(api_error)?;
-    Ok(Json(json!({
-        "status":"ok", "fragments_removed":report.fragments_removed,
-        "fragments_added":report.fragments_added, "old_versions_removed":report.old_versions_removed,
-        "bytes_removed":report.bytes_removed, "final_version":report.final_version
-    })))
-}
-
-#[derive(Debug, Deserialize)]
-struct SqlRequest {
-    sql: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1212,7 +986,11 @@ fn step_query_fields() -> Vec<QueryFieldSummary> {
         field("step_id", "BIGINT", "Ordered step number"),
         field("kind", "TEXT?", "Captured step kind"),
         field("effective_kind", "TEXT", "Normalized step kind"),
-        field("timestamp", "TEXT?", "Captured timestamp"),
+        field(
+            "timestamp",
+            "TIMESTAMP(MILLISECOND, UTC)?",
+            "UTC millisecond timestamp for ordering and range queries",
+        ),
         field("source", "TEXT", "user, agent, or system"),
         field("message_json", "JSON", "Complete normalized message"),
         field(
@@ -1335,7 +1113,7 @@ async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog
         .unwrap_or_default();
     Ok(Json(QueryCatalog {
         snapshot_id: runtime.snapshot.snapshot_id().to_string(),
-        read_only: state.warehouse,
+        read_only: true,
         database,
         storage_path,
         path_column: "_file_",
@@ -1389,34 +1167,6 @@ async fn query_tables(State(state): State<AppState>) -> Result<Json<QueryCatalog
             },
         ],
     }))
-}
-
-async fn query_sql(
-    State(state): State<AppState>,
-    Json(request): Json<SqlRequest>,
-) -> Result<Response, ApiError> {
-    validate_read_only_sql(&request.sql)?;
-    let runtime = current_catalog(&state).await?;
-    let routed = runtime
-        .acceleration
-        .route_sql(&runtime.snapshot, &runtime.engine, &request.sql)
-        .await;
-    let body = runtime
-        .engine
-        .query_jsonl(&routed.sql)
-        .await
-        .map_err(api_error)?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/x-ndjson"),
-            (
-                header::HeaderName::from_static("x-pchronicle-source-routing"),
-                routed.outcome.as_str(),
-            ),
-        ],
-        body,
-    )
-        .into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1571,6 +1321,20 @@ fn validate_read_only_sql(sql: &str) -> Result<(), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header;
+    use persisting_pchronicle::write_judge_rows;
+
+    fn router(storage: impl Into<String>) -> Router {
+        let config = ChronicleServerConfig::mounted(vec![
+            DatasetMount::default(storage.into()).expect("test Dataset mount must be valid")
+        ])
+        .expect("test server config must be valid");
+        warehouse_router(config)
+    }
+
+    fn test_router_with_config(config: ChronicleServerConfig) -> Router {
+        warehouse_router(config)
+    }
 
     fn json_dataset_root() -> std::path::PathBuf {
         static NEXT_DATASET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1615,36 +1379,6 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-    }
-
-    #[tokio::test]
-    async fn health_exposes_selected_storage() {
-        use http_body_util::BodyExt;
-        use tower::ServiceExt;
-        let response = router("/tmp/chronicle-test")
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/api/v1/health")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let value: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["storage"], "/tmp/chronicle-test");
-    }
-
-    #[tokio::test]
-    async fn rejects_non_loopback_bind() {
-        let error = serve(
-            "/tmp/none",
-            SocketAddr::new(std::net::IpAddr::from([0, 0, 0, 0]), 0),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("loopback"));
     }
 
     #[tokio::test]
@@ -1757,7 +1491,7 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/api/v1/query")
+                    .uri("/api/v1/query/evidence")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(
                         json!({"sql":format!(
@@ -1777,9 +1511,9 @@ mod tests {
             "query failed: {}",
             String::from_utf8_lossy(&body)
         );
-        let row: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(row["session_id"], "json-session");
-        assert_eq!(row["step_count"], 2);
+        let result: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["rows"][0]["session_id"], "json-session");
+        assert_eq!(result["rows"][0]["step_count"], 2);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1798,7 +1532,7 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/api/v1/query")
+                    .uri("/api/v1/query/evidence")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(
                         json!({"sql":"SELECT _file_, session_id FROM runs WHERE session_id = 'json-session'"})
@@ -1807,24 +1541,18 @@ mod tests {
             )
             .await?;
         assert_eq!(routed.status(), StatusCode::OK);
-        assert_eq!(
-            routed
-                .headers()
-                .get("x-pchronicle-source-routing")
-                .and_then(|value| value.to_str().ok()),
-            Some("applied")
-        );
         let body = routed.into_body().collect().await?.to_bytes();
-        let row: Value = serde_json::from_slice(&body)?;
-        assert_eq!(row["_file_"], "gateway.json");
-        assert_eq!(row["session_id"], "json-session");
+        let result: Value = serde_json::from_slice(&body)?;
+        assert_eq!(result["source_routing"], "applied");
+        assert_eq!(result["rows"][0]["_file_"], "gateway.json");
+        assert_eq!(result["rows"][0]["session_id"], "json-session");
 
         let quoted_alias = app
             .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/api/v1/query")
+                    .uri("/api/v1/query/evidence")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(
                         json!({"sql":"SELECT \"R\".session_id FROM runs AS \"R\" WHERE \"R\".session_id = 'json-session'"})
@@ -1833,13 +1561,9 @@ mod tests {
             )
             .await?;
         assert_eq!(quoted_alias.status(), StatusCode::OK);
-        assert_eq!(
-            quoted_alias
-                .headers()
-                .get("x-pchronicle-source-routing")
-                .and_then(|value| value.to_str().ok()),
-            Some("applied")
-        );
+        let quoted_alias: Value =
+            serde_json::from_slice(&quoted_alias.into_body().collect().await?.to_bytes())?;
+        assert_eq!(quoted_alias["source_routing"], "applied");
 
         let catalog = app
             .clone()
@@ -1865,7 +1589,7 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/api/v1/query")
+                    .uri("/api/v1/query/evidence")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(axum::body::Body::from(
                         json!({"sql":"SELECT session_id FROM runs WHERE _file_ = 'gateway.json' AND session_id = 'json-session'"})
@@ -1873,13 +1597,9 @@ mod tests {
                     ))?,
             )
             .await?;
-        assert_eq!(
-            already_pruned
-                .headers()
-                .get("x-pchronicle-source-routing")
-                .and_then(|value| value.to_str().ok()),
-            Some("already_pruned")
-        );
+        let already_pruned: Value =
+            serde_json::from_slice(&already_pruned.into_body().collect().await?.to_bytes())?;
+        assert_eq!(already_pruned["source_routing"], "already_pruned");
 
         let refreshed = app
             .oneshot(
@@ -1917,7 +1637,7 @@ mod tests {
             DatasetMount::new("live", live.to_string_lossy())?,
             DatasetMount::new("archive", archive.to_string_lossy())?,
         ])?;
-        let app = router_with_config(config);
+        let app = test_router_with_config(config);
 
         let initial = app
             .clone()
@@ -2194,10 +1914,11 @@ mod tests {
         )
         .await?;
 
-        let app = router_with_config(ChronicleServerConfig::mounted(vec![DatasetMount::new(
-            "archive",
-            root.path().to_string_lossy(),
-        )?])?);
+        let app =
+            test_router_with_config(ChronicleServerConfig::mounted(vec![DatasetMount::new(
+                "archive",
+                root.path().to_string_lossy(),
+            )?])?);
         let response = app
             .oneshot(
                 axum::http::Request::builder()
@@ -2222,7 +1943,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn limited_query_and_judgment_validation_enforce_copilot_boundaries() {
+    async fn limited_query_and_read_only_judgments_enforce_copilot_boundaries() {
         use http_body_util::BodyExt;
         use tower::ServiceExt;
 
@@ -2265,7 +1986,7 @@ mod tests {
         assert_eq!(evidence["max_rows"], 1);
         assert_eq!(evidence["max_bytes"], 1_048_576);
 
-        let valid = app
+        let write = app
             .clone()
             .oneshot(
                 axum::http::Request::builder()
@@ -2285,7 +2006,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(valid.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(write.status(), StatusCode::METHOD_NOT_ALLOWED);
 
         let saved = app
             .clone()
@@ -2308,25 +2029,6 @@ mod tests {
         let saved: Value = serde_json::from_slice(&saved_body).unwrap();
         assert_eq!(saved, json!([]));
 
-        let invalid = app
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/judgments")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(axum::body::Body::from(
-                        json!({
-                            "agent_id":"model-json","session_id":"json-session",
-                            "root_session_id":"json-job","call_id":"__story__",
-                            "rubric_id":"quality","score":101,"verdict":"pass","rationale":""
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
         std::fs::remove_dir_all(root).unwrap();
     }
 

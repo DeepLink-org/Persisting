@@ -44,7 +44,7 @@ pub mod operations;
 pub mod projection;
 #[cfg(feature = "lance-store")]
 pub mod revision;
-#[cfg(feature = "lance-store")]
+#[cfg(feature = "search")]
 pub mod search;
 #[cfg(feature = "lance-store")]
 pub mod service;
@@ -120,11 +120,14 @@ pub use mapping::{
     markdown_document_to_event_records,
 };
 pub use messages::*;
-#[cfg(feature = "lance-store")]
+#[cfg(feature = "search")]
 pub use operations::bridge::{
     search_add, search_add_batch, search_import_lance, search_index, search_index_delete,
-    search_index_list, search_index_rebuild, search_index_reorder, search_query, trajectory_append,
-    trajectory_replay, trajectory_stats as trajectory_stats_request,
+    search_index_list, search_index_rebuild, search_index_reorder, search_query,
+};
+#[cfg(feature = "lance-store")]
+pub use operations::bridge::{
+    trajectory_append, trajectory_replay, trajectory_stats as trajectory_stats_request,
 };
 #[cfg(feature = "lance-store")]
 pub use operations::dispatch::invoke_request_body;
@@ -136,7 +139,7 @@ pub use projection::{
 };
 #[cfg(feature = "lance-store")]
 pub use revision::{read_revisions, revision_dataset_path, write_revisions, RevisionRow};
-#[cfg(feature = "lance-store")]
+#[cfg(feature = "search")]
 pub use search::agent as agent_search;
 #[cfg(feature = "lance-store")]
 pub use service::{
@@ -162,29 +165,32 @@ pub use store::{
     validate_event_lines, AppendOutcome, AtifDataSource, AtifDataSourceOptions, AtifReader,
     AttemptRecord, AttemptRecordState, AttemptRegistry, CatalogDataset, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions, CommitRunOutcome,
-    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, EventLogLayoutStats, EventRow,
-    EventWriterFence, ExportOutcome, ExternalTableFormat, ExternalTableSpec,
-    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryFormat,
-    FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot, LanceMaintenanceOptions,
-    LanceMaintenanceReport, LeaseAcquireOutcome, LocalQueryInputFile, LocalQueryManifest,
-    LocalQueryManifestOptions, RawEventDataSource, RawEventDataSourceOptions,
-    RawEventLanceAppender, RawEventLanceStore, RawEventTableProvider, ReplayOutcome,
-    RunControlStore, StorylineContentOptions, StorylineContentReadMode,
-    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
-    StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, StorylineTableProvider, StructuredStore,
-    TrajectorySession, TrajectoryStats, CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE,
-    DATAFUSION_EVENTS_TABLE, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
-    DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
-    DEFAULT_DATASET_NAME, DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
+    CatalogTrajectoryBundle, ChronicleQueryBackend, ChronicleQueryEngine,
+    ChronicleQueryExecutionOptions, CommitRunOutcome, DatasetCatalogSnapshot, DatasetMount,
+    DiscoveredSource, EventLogLayoutStats, EventRow, EventWriterFence, ExportOutcome,
+    ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
+    FileTrajectoryDataSourceOptions, FileTrajectoryFormat, FileTrajectoryQueryMetrics,
+    FileTrajectoryQueryMetricsSnapshot, LanceMaintenanceOptions, LanceMaintenanceReport,
+    LeaseAcquireOutcome, LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
+    RawEventDataSource, RawEventDataSourceOptions, RawEventLanceAppender, RawEventLanceStore,
+    RawEventTableProvider, ReplayOutcome, RunControlStore, StorylineContentOptions,
+    StorylineContentReadMode, StorylineDataFusionTableNames, StorylineDataSource,
+    StorylineDataSourceOptions, StorylineLanceStore, StorylineMaintenanceReport, StorylinePage,
+    StorylinePageRequest, StorylineRunCursor, StorylineRunSummary, StorylineStepCursor,
+    StorylineStreamImportReport, StorylineTableKind, StorylineTablePaths, StorylineTableProvider,
+    StorylineToolCallCursor, StructuredStore, TrajectorySession, TrajectoryStats,
+    CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, DATAFUSION_EVENTS_TABLE,
+    DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
+    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME,
+    DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
     DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
     DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES,
-    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES, SOURCE_FILE_COLUMN,
-    TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_COLS, TRAJECTORY_EVENT_ID_COL,
-    TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL,
-    TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
-    TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL,
+    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES, DEFAULT_STORYLINE_PAGE_SIZE,
+    MAX_STORYLINE_PAGE_SIZE, SOURCE_FILE_COLUMN, TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL,
+    TRAJECTORY_COLS, TRAJECTORY_EVENT_ID_COL, TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL,
+    TRAJECTORY_PARENT_CALL_ID_COL, TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL,
+    TRAJECTORY_SESSION_ID_COL, TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL,
+    TRAJECTORY_TRACE_ID_COL,
 };
 #[cfg(feature = "lance-store")]
 pub use store::{detect_local_query_format, detect_local_query_manifest};
@@ -193,9 +199,9 @@ pub use storyline_schema::{
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
 
-#[cfg(feature = "lance-store")]
+#[cfg(feature = "search")]
 pub const PERSISTING_VECTOR_INDEX_NAME: &str = search::search_lance::PERSISTING_VECTOR_INDEX_NAME;
-#[cfg(feature = "lance-store")]
+#[cfg(feature = "search")]
 pub const PERSISTING_FTS_INDEX_NAME: &str = search::search_lance::PERSISTING_FTS_INDEX_NAME;
 
 #[cfg(all(test, feature = "lance-store"))]

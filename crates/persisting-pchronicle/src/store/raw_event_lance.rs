@@ -693,8 +693,7 @@ pub async fn replay_available(
         records,
         note: format!(
             "Replay fenced Lance manifest revision {} at {uri}: session_id={}, ordered by immutable segment and append order, offset={offset}, limit={limit:?}.",
-            manifest.revision,
-            session.session_id,
+            manifest.revision, session.session_id,
         ),
     }))
 }

@@ -161,9 +161,6 @@ jobs:
       - name: Sync Python deps
         run: uv sync --extra all --extra dev
 
-      - name: Build extension (maturin develop)
-        run: uv run maturin develop
-
       - name: Pytest
         run: uv run pytest tests/ -q
 

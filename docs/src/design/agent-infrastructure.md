@@ -573,7 +573,7 @@ URL query 保存 Run identity、页面、source filter 和文本过滤条件，�
 - Run sidebar 与状态/事件计数；
 - 按 call/tool 关系分组的 span timeline；
 - Storyline turn、wire tool call 和 raw event inspector；
-- read-only SQL、HAR/OTLP 导出、judgment、revision 和显式 maintenance 工具。
+- 受限的 evidence query、HAR/OTLP 导出，以及 judgment、revision 的只读展示。
 
 #### Axum 服务与数据适配
 
@@ -583,8 +583,8 @@ URL query 保存 Run identity、页面、source filter 和文本过滤条件，�
 | `/api/v1/runs` | 从同一 Catalog 快照联合读取所有 Dataset 的规范化 `runs` |
 | `/api/v1/events` | 返回带 `offset / next_offset / total / has_more` 的稳定分页快照 |
 | `/api/v1/trajectory-view` | 按 `(Dataset, _file_, session_id)` 将源投影为 turns、call refs、event seq 与 tool calls |
-| `/api/v1/query` | 通过共享 Catalog 的 `ChronicleQueryEngine` 执行 read-only SQL，返回 NDJSON |
-| export / judgments / revisions / maintain | 复用 pChronicle 既有 HAR、OTLP、评测、血缘和显式维护 API |
+| `/api/v1/query/evidence` | 通过共享 Catalog 执行只读、限行限字节的 evidence query |
+| export / judgments / revisions | 导出轨迹并只读展示既有评测和血缘数据 |
 
 [`DatasetCatalogSnapshot`](dataset-catalog.md) 接受重复的 `--dataset NAME=URI` 或 TOML `[datasets]`，递归发现
 Storyline `CURRENT` store、canonical `events.lance` 和 ATIF/OpenAI/ACTF 文件。每个名称是
@@ -607,8 +607,8 @@ Catalog 只是发现和查询命名层，不把外围文件声明为 canonical�
   页面，保证 native crate 仍可独立构建。
 - server 拒绝非 loopback bind，因为当前没有 authentication/authorization；未知
   `/api/` 路径固定返回 404，SPA fallback 只处理非 API 路由。
-- 浏览器只读取或调用显式 pChronicle operation；它不会重放捕获的 HTTP 请求。maintenance
-  在 UI 中要求确认，但真正的安全边界仍是 loopback-only server，而不是前端确认框。
+- 浏览器只读取或调用显式 pChronicle operation；它不会重放捕获的 HTTP 请求，也不暴露
+  judgment 写入、maintenance、import 或任意 SQL endpoint。loopback-only server 仍是额外边界。
 
 ## 9. 端到端关键路径
 

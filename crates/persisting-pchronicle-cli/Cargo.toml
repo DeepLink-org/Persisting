@@ -22,14 +22,16 @@ datafusion = { workspace = true, features = ["sql"] }
 futures.workspace = true
 include_dir = "=0.7.4"
 libc.workspace = true
+persisting-gateway.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 toml.workspace = true
 url.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 tower = { version = "0.5", features = ["util"] }

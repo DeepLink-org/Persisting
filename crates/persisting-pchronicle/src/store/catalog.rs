@@ -132,6 +132,16 @@ pub struct CatalogStorylineKey {
     pub session_id: String,
 }
 
+/// One source-consistent trajectory materialization for Web/API consumers.
+///
+/// Non-event sources normalize the Storyline once and derive the event view
+/// from that same document, avoiding a second scan and content hydration pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogTrajectoryBundle {
+    pub storyline: StorylineDocument,
+    pub events: EventsDocument,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CatalogDataset {
     pub mount: DatasetMount,
@@ -293,58 +303,35 @@ impl DatasetCatalogSnapshot {
         key: &CatalogStorylineKey,
     ) -> Result<Option<StorylineDocument>> {
         let source = self.lazy_source(key)?.resolve().await?;
-        let context = SessionContext::new();
-        register_normalized_source(&context, &source).await?;
-        let session_predicate = sql_string(&key.session_id);
-        let run_batches = context
-            .sql(&format!(
-                "SELECT * FROM runs WHERE session_id = {session_predicate}"
-            ))
-            .await?
-            .collect()
-            .await?;
-        let mut runs = Vec::new();
-        for batch in &run_batches {
-            runs.extend(story_runs_from_batch(batch)?);
+        load_storyline_from_source(source.as_ref(), key).await
+    }
+
+    /// Resolve the normalized Storyline and event view without normalizing a
+    /// non-event source twice.
+    pub async fn load_trajectory_bundle(
+        &self,
+        key: &CatalogStorylineKey,
+    ) -> Result<Option<CatalogTrajectoryBundle>> {
+        let source = self.lazy_source(key)?.resolve().await?;
+        if let ResolvedSource::Events(events) = source.as_ref() {
+            let normalized = events.normalized().await?;
+            let Some(records) = normalized.events_by_session.get(&key.session_id).cloned() else {
+                return Ok(None);
+            };
+            let storyline = load_storyline_from_source(source.as_ref(), key)
+                .await?
+                .context("canonical events resolved without a normalized Storyline")?;
+            return Ok(Some(CatalogTrajectoryBundle {
+                storyline,
+                events: EventsDocument::new(records),
+            }));
         }
-        if runs.is_empty() {
+
+        let Some(storyline) = load_storyline_from_source(source.as_ref(), key).await? else {
             return Ok(None);
-        }
-        anyhow::ensure!(
-            runs.len() == 1,
-            "Catalog Storyline key resolved {} rows for {}/{}/{}",
-            runs.len(),
-            key.dataset,
-            key.file,
-            key.session_id
-        );
-        let step_batches = context
-            .sql(&format!(
-                "SELECT * FROM steps WHERE session_id = {session_predicate} ORDER BY step_id"
-            ))
-            .await?
-            .collect()
-            .await?;
-        let tool_batches = context
-            .sql(&format!(
-                "SELECT * FROM tool_calls WHERE session_id = {session_predicate} ORDER BY step_id, call_index"
-            ))
-            .await?
-            .collect()
-            .await?;
-        let mut steps = Vec::new();
-        let mut tool_calls = Vec::new();
-        for batch in &step_batches {
-            steps.extend(story_steps_from_batch(batch)?);
-        }
-        for batch in &tool_batches {
-            tool_calls.extend(story_tool_calls_from_batch(batch)?);
-        }
-        Ok(Some(reconstruct_storyline(crate::StorylineTables {
-            run: runs.remove(0),
-            steps,
-            tool_calls,
-        })?))
+        };
+        let events = storyline_to_events(&storyline)?;
+        Ok(Some(CatalogTrajectoryBundle { storyline, events }))
     }
 
     /// Return canonical records when the source is events.lance, otherwise a
@@ -359,7 +346,7 @@ impl DatasetCatalogSnapshot {
                 .cloned()
                 .map(EventsDocument::new));
         }
-        let Some(storyline) = self.load_storyline(key).await? else {
+        let Some(storyline) = load_storyline_from_source(source.as_ref(), key).await? else {
             return Ok(None);
         };
         Ok(Some(storyline_to_events(&storyline)?))
@@ -441,6 +428,64 @@ impl DatasetCatalogSnapshot {
         }
         Ok(())
     }
+}
+
+async fn load_storyline_from_source(
+    source: &ResolvedSource,
+    key: &CatalogStorylineKey,
+) -> Result<Option<StorylineDocument>> {
+    let context = SessionContext::new();
+    register_normalized_source(&context, source).await?;
+    let session_predicate = sql_string(&key.session_id);
+    let run_batches = context
+        .sql(&format!(
+            "SELECT * FROM runs WHERE session_id = {session_predicate}"
+        ))
+        .await?
+        .collect()
+        .await?;
+    let mut runs = Vec::new();
+    for batch in &run_batches {
+        runs.extend(story_runs_from_batch(batch)?);
+    }
+    if runs.is_empty() {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        runs.len() == 1,
+        "Catalog Storyline key resolved {} rows for {}/{}/{}",
+        runs.len(),
+        key.dataset,
+        key.file,
+        key.session_id
+    );
+    let step_batches = context
+        .sql(&format!(
+            "SELECT * FROM steps WHERE session_id = {session_predicate} ORDER BY step_id"
+        ))
+        .await?
+        .collect()
+        .await?;
+    let tool_batches = context
+        .sql(&format!(
+            "SELECT * FROM tool_calls WHERE session_id = {session_predicate} ORDER BY step_id, call_index"
+        ))
+        .await?
+        .collect()
+        .await?;
+    let mut steps = Vec::new();
+    let mut tool_calls = Vec::new();
+    for batch in &step_batches {
+        steps.extend(story_steps_from_batch(batch)?);
+    }
+    for batch in &tool_batches {
+        tool_calls.extend(story_tool_calls_from_batch(batch)?);
+    }
+    Ok(Some(reconstruct_storyline(crate::StorylineTables {
+        run: runs.remove(0),
+        steps,
+        tool_calls,
+    })?))
 }
 
 #[derive(Debug)]
@@ -2336,6 +2381,42 @@ mod tests {
                 .map(|source| source.resolution_count.load(Ordering::Relaxed))
                 .collect::<Vec<_>>(),
             vec![1, 0]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn trajectory_bundle_derives_events_from_one_storyline_source_resolution() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let expected = storyline("bundle-session", "bundle-run");
+        StorylineLanceStore::open(temp.path())
+            .await?
+            .replace_storyline(&expected)
+            .await?;
+        let snapshot = DatasetCatalogSnapshot::discover(
+            vec![DatasetMount::default(temp.path().to_string_lossy())?],
+            Some(DEFAULT_DATASET_NAME.into()),
+            CatalogSnapshotOptions::default(),
+        )
+        .await?;
+        let key = CatalogStorylineKey {
+            dataset: DEFAULT_DATASET_NAME.into(),
+            file: ".".into(),
+            session_id: expected.session_id.clone(),
+        };
+
+        let bundle = snapshot
+            .load_trajectory_bundle(&key)
+            .await?
+            .context("trajectory bundle must exist")?;
+
+        assert_eq!(bundle.storyline, expected);
+        assert_eq!(bundle.events, storyline_to_events(&bundle.storyline)?);
+        assert_eq!(
+            snapshot.prepared[0].sources[0]
+                .resolution_count
+                .load(Ordering::Relaxed),
+            1
         );
         Ok(())
     }

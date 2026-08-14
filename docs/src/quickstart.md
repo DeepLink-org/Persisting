@@ -119,9 +119,7 @@ just examples-pchronicle
 
 ## Other, independent capabilities
 
-- [Tensor Memory (experimental)](guide/tensor-memory.md) — tensor subscripts and tiered storage
 - [Queue](guide/queue.md) — persistent event streams
-- [Search](guide/search.md) — document indexing and vector/hybrid retrieval
 
 ## Next steps
 

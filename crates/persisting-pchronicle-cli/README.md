@@ -6,9 +6,7 @@ and serving pChronicle trajectory Datasets.
 The current implementation provides `default`, `ls`/`list`, `status`, bounded
 read-only `query`, built-in `analysis`, Source-local `find`, create-only
 `import`, complete-trajectory `export`, and loopback-only `serve`. Import and
-export support ATIF, OpenAI Messages, ACTF, and Storyline JSON. `search` and
-`maintain` are reserved in the command tree but currently return a clear
-not-implemented error.
+export support ATIF, OpenAI Messages, ACTF, and Storyline JSON.
 
 ## Local Warehouse
 
@@ -77,6 +75,29 @@ Use `--listen 127.0.0.1:8080` to select the local address and `--open` to open
 the UI after the listener is ready. Public bind addresses are rejected because
 this local Warehouse surface does not provide authentication. Relative local
 Dataset paths are resolved from the directory containing `warehouse.toml`.
+
+### Embedded Gateway
+
+Pass an existing Gateway TOML file to make `serve` forward LLM requests and
+capture canonical request/response events into one statically mounted Dataset:
+
+```bash
+pchronicle serve --config warehouse.toml \
+  --gateway gateway.toml \
+  --gateway-dataset evals
+```
+
+`gateway.toml` remains the single source for proxy/admin listeners, model
+routes, credentials, and network policy. Both listeners must use loopback
+addresses. If the Warehouse has one Dataset, or declares `default_dataset`,
+`--gateway-dataset` may be omitted. For an S3/Azure/GCS Dataset, add
+`--gateway-state ./gateway-state` for Gateway's local session index, WAL, and
+optional projection; local Datasets use their own root by default.
+`--gateway-stream-markdown` also maintains AgenticMD. Canonical Lance events
+are always written directly to the selected Dataset, never through the
+read-only Warehouse API. Add `--debug` (alias `--gateway-debug`) to mirror
+Gateway dispatch and capture diagnostics directly to stderr; these diagnostics
+can include bounded request and response bodies.
 
 Small ATIF, OpenAI Messages, and ACTF Datasets for trying the commands live in
 [`../../examples/data`](../../examples/data).

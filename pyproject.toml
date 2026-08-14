@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Agent execution, orchestration, and durable history infrastructure"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 authors = [
     {name = "reiase"}
 ]
@@ -24,42 +24,40 @@ lance = [
     "lance>=0.9.0",
     "pyarrow>=14.0.0",
 ]
-safetensors = [
-    "safetensors>=0.4.0",
-]
 all = [
     "persisting[lance]",
-    "persisting[safetensors]",
 ]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
-    "maturin>=1.14,<2.0",
 ]
 
-[tool.maturin]
-module-name = "persisting._core"
-manifest-path = "crates/persisting-core/Cargo.toml"
-python-packages = ["persisting"]
-features = ["python-extension"]
-data = "target/wheel-data"
-profile = "release"
-editable-profile = "dev"
-locked = true
-sdist-generator = "git"
-include = [
-    { path = "LICENSE", format = "sdist" },
-    { path = "README.md", format = "sdist" },
-    { path = "scripts/packaging/*.py", format = "sdist" },
-]
-# Keep the installable top-level dldb package out of the persisting wheel tree.
-# Install dldb separately: pip install -e ./persisting/dldb
-exclude = ["persisting/dldb/**"]
+[tool.setuptools.packages.find]
+include = ["persisting*"]
+exclude = ["persisting.dldb*"]
 
 [build-system]
-requires = ["maturin>=1.14,<2.0"]
+requires = ["setuptools>=77"]
 build-backend = "build_backend"
 backend-path = ["scripts/packaging"]
+
+[tool.cibuildwheel]
+build = "cp312-*"
+build-frontend = "build"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+manylinux-x86_64-image = "manylinux2014"
+before-all = [
+    "yum install -y curl glibc-static",
+    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
+]
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+repair-wheel-command = "cp {wheel} {dest_dir}"
 
 [tool.ruff]
 line-length = 100

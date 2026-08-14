@@ -66,8 +66,9 @@ pub use attempt_registry::{
 #[cfg(feature = "lance-store")]
 pub use catalog::{
     CatalogDataset, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
-    CatalogSourceStatus, CatalogStorylineKey, DatasetCatalogSnapshot, DatasetMount,
-    DiscoveredSource, CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME,
+    CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle, DatasetCatalogSnapshot,
+    DatasetMount, DiscoveredSource, CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE,
+    DEFAULT_DATASET_NAME,
 };
 #[cfg(feature = "lance-store")]
 pub use egress::{export_source_dirs, export_story_bundle, validate_event_lines, ExportOutcome};
@@ -120,8 +121,10 @@ pub use storyline_datafusion::{
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_lance::{
-    StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,
-    StorylineTablePaths,
+    StorylineLanceStore, StorylineMaintenanceReport, StorylinePage, StorylinePageRequest,
+    StorylineRunCursor, StorylineRunSummary, StorylineStepCursor, StorylineStreamImportReport,
+    StorylineTablePaths, StorylineToolCallCursor, DEFAULT_STORYLINE_PAGE_SIZE,
+    MAX_STORYLINE_PAGE_SIZE,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_lance_rows::{

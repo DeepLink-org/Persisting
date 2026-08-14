@@ -3,6 +3,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::ProxyConfig;
 
@@ -11,6 +12,7 @@ pub const ENV_CAPTURE_DEBUG: &str = "PERSISTING_CAPTURE_DEBUG";
 pub const ENV_CAPTURE_DEBUG_STDERR: &str = "PERSISTING_CAPTURE_DEBUG_STDERR";
 
 const MAX_BODY_CHARS: usize = 8192;
+static DEBUG_STDERR_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn debug_flag_path(storage: &Path) -> PathBuf {
     storage.join(".capture").join("debug.enabled")
@@ -44,8 +46,16 @@ fn env_truthy(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Mirror capture diagnostics to stderr for the lifetime of this process.
+///
+/// This is intended for foreground CLI commands. The atomic switch avoids
+/// mutating process environment variables after an async runtime has started.
+pub fn enable_debug_stderr() {
+    DEBUG_STDERR_ENABLED.store(true, Ordering::Relaxed);
+}
+
 fn mirror_debug_to_stderr() -> bool {
-    env_truthy(ENV_CAPTURE_DEBUG_STDERR)
+    DEBUG_STDERR_ENABLED.load(Ordering::Relaxed) || env_truthy(ENV_CAPTURE_DEBUG_STDERR)
 }
 
 fn emit(storage: &Path, line: &str) {

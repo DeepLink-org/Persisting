@@ -18,7 +18,7 @@ default:
     @echo "常用："
     @echo "  just gate                # 提交前（fmt + lint + test-rust）"
     @echo "  just ci                  # CI 近似全量"
-    @echo "  just py-dev              # maturin develop（Python 扩展）"
+    @echo "  just py-dev              # 同步纯 Python 开发环境"
     @echo "  just install-cli         # 安装 pchronicle、pvisor 和 ppilot"
     @echo "  just pvisor              # 构建 release pVisor；macOS 自动签名"
     @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
@@ -175,7 +175,7 @@ install-cli:
     cargo install --path crates/persisting-ppilot --locked --force --root "$install_root"
     printf 'Installed Persisting component set in %s/bin\n' "$install_root"
 
-# PEP 517 release wheel（Python extension + pchronicle/pvisor/ppilot）→ dist/
+# PEP 517 release wheel（Python package + pchronicle/pvisor/ppilot）→ dist/
 build-wheel:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -191,7 +191,7 @@ build-wheel-debug:
     set -euo pipefail
     mkdir -p dist
     uv build --force-pep517 --wheel --out-dir dist \
-      --config-setting 'build-args=--profile dev'
+      --config-setting 'cargo-profile=dev'
     wheel=$(ls -t dist/*.whl | head -n 1)
     python3 scripts/packaging/verify_wheel.py "$wheel" --install-smoke
     ls -la "$wheel"
@@ -279,7 +279,7 @@ ci:
 
 # ── Rust 测试 ─────────────────────────────────────────────────────────────────
 
-# 单 crate：pchronicle | pchronicle-cli | agentctl | core | capture | ppilot | pvisor | dlcapt
+# 单 crate：pchronicle | pchronicle-cli | agentctl | capture | ppilot | pvisor | dlcapt
 test-crate crate:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -287,12 +287,11 @@ test-crate crate:
       pchronicle) cargo test -p persisting-pchronicle ;;
       pchronicle-cli) cargo test -p persisting-pchronicle-cli ;;
       agentctl) cargo test -p persisting-agentctl ;;
-      core) cargo test -p persisting-core ;;
       capture) cargo test -p persisting-gateway ;;
       ppilot) cargo test -p persisting-ppilot ;;
       pvisor) cargo test -p persisting-pvisor ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
-      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|core|capture|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
+      *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;
     esac
 
 test-rust:
@@ -324,13 +323,9 @@ test: test-rust test-py
 py-sync:
     uv sync --all-extras
 
-# 调试迭代（更快）
+# 同步纯 Python 开发环境
 py-dev:
-    uv run maturin develop
-
-# 接近发布形态
-py-dev-release:
-    uv run maturin develop --release
+    uv sync --all-extras
 
 test-py:
     uv run pytest tests/ -q

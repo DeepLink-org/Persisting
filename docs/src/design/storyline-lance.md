@@ -23,6 +23,12 @@
 常用 JSON 值（message、arguments、metrics、extra 等）以 UTF-8 JSON 列保存；身份、
 顺序、类型、时间和性能字段使用独立的 Arrow 标量列，便于过滤和分析。
 
+`steps.timestamp` 是规范化到 UTC 的 `Timestamp(Millisecond, "UTC")`。写入端拒绝无法
+解析为 RFC3339 的非空时间；原始时区偏移和亚毫秒精度不会写入物理表，读取为 Storyline /
+ATIF 时统一编码成带 `Z` 后缀、精度不超过毫秒的 UTC 字符串（整秒省略小数部分）。SQL
+排序、范围过滤和时间聚合直接使用 `timestamp`。这是一次物理 schema 变更；旧三表投影
+需要从 canonical events 或原始交换文件重建，不对既有 Lance generation 做原地类型猜测。
+
 tool result 不再留在 step 的 observation JSON 中。写入时根据
 `observation.results[].source_call_id` 关联到对应 tool call，并保存到该行的
 `results_json`。缺失或错误的关联会拒绝整次写入。
@@ -95,9 +101,9 @@ scalar index 和 DataFusion execution node。这样可以得到需要的延迟�
 跨轨迹复用只依赖内容地址，不依赖 session 生命周期，因此同一长文本在不同 Run 中只保存
 一次。同一写入批次内若 content id 相同但 codec、原始长度或存储字节不一致，会拒绝写入。
 
-对象层当前保持 append-only；三表维护不会主动计算引用可达性并回收 payload。生产环境需要
-把对象增长率和不可达字节纳入指标，在确有容量压力后再增加离线 mark-and-sweep，而不是让
-GC 进入写入热路径。
+对象层在普通写入期间保持 append-only，GC 不进入写入热路径。显式 `maintain` 会只扫描三表
+的内容引用列，计算当前快照的可达 content id，并清理不可达 payload。生产环境仍需要把对象
+增长率、不可达字节和维护耗时纳入指标。
 
 ### 查询期延迟物化
 
@@ -137,34 +143,42 @@ root/
 阈值、preview 长度和 Zstd level 可通过 `StorylineContentOptions` 配置；三表 schema 不变。
 
 Lance MVCC 的旧版本默认保留，便于已打开的 reader 固定快照及故障恢复。频繁增量更新
-会积累 fragment、delete file 和未合并的索引增量。在线替换达到 32 个 fragment 时会做
-一次自动 index refresh 与 compaction；长期运行再通过 `maintain` 显式执行三表并行
-compaction、补齐/刷新索引和按保留期 vacuum。维护产生的三个新 version 仍先原子更新
+会积累 fragment、delete file 和未合并的索引增量。普通 replace 不执行 index refresh 或
+compaction，避免某次写请求出现维护型长尾；生产环境通过 `maintain` 显式执行三表并行
+compaction、补齐/刷新索引、内容 GC 和按保留期 vacuum。维护产生的三个新 version 仍先原子更新
 `CURRENT`，之后才回收旧版本。`CURRENT` 必须是包含全部精确版本的 JSON 指针，不读取旧的
 纯文本 generation 指针。
 
 本地写入通过进程内锁和文件锁串行化；对象存储通过 `CURRENT` 的 ETag/version 条件更新
-执行 optimistic CAS。冲突 writer 重新读取最新 snapshot、合并目标 session 后重试，stale
-commit 不能移动 `CURRENT`。上层 lease 仍可减少无效工作，但不是防止 lost update 的正确性前提。
+执行 optimistic CAS。stale commit 不能移动 `CURRENT`；`StorylineLanceStore` 在 CAS 冲突后
+直接返回错误，不会重新读取、merge 或自动重试。调用方若选择重试，必须从最新 snapshot 重新
+开始完整 replace。上层 lease 可减少冲突，但不改变这一失败语义。
 
 ## Rust API
 
 ```rust
 let store = StorylineLanceStore::open(path).await?;
 store.replace_storyline(&storyline).await?;
-let restored = store.get_storyline("session-id").await?;
+let runs = store.list_run_summaries(Default::default()).await?;
+let steps = store.list_steps_page("session-id", Default::default()).await?;
+let restored = store.get_storyline_full("session-id").await?;
 let report = store.maintain(&LanceMaintenanceOptions::default()).await?;
 ```
 
 `replace_storyline` 以 `session_id` 为边界替换三张表中的相关行，同时保留同一 store
 内的其他 Storyline。
 
+读取接口按成本分层：`list_run_summaries` 只扫描 runs 的标量摘要列，不打开 objects、steps
+或 tool_calls；`list_steps_page` 和 `list_tool_calls_page` 先读取排序键确定一页，再只为该页
+读取全列并恢复外置内容。分页 cursor 固定 `CURRENT` generation；期间发生写入会返回 stale
+cursor 错误，调用方应从第一页重试。`get_storyline_full` 明确表示会读取三表并恢复该 Storyline
+的全部内容。公共读取面只提供显式 full 或分页 API，不保留无成本提示的全量读取别名。
+
 首次导入和替换都并行写三张表。Arrow 行按最多 8192 行一批懒编码并流入 Lance，避免
 导入大型语料时同时保留整表的 Arrow 副本。`CURRENT` 只解析一次；DataSource 随后把每张
 表直接打开到指针指定的 version，不再先验证、再重复打开同一 dataset。
 
-生产环境通过 `StorylineLanceStore::maintain` API 执行维护；CLI 的 `maintain` 入口仍为
-明确的未实现预留命令。
+生产环境通过 `StorylineLanceStore::maintain` Rust API 执行维护；公共 CLI 不提供维护命令。
 
 ## DataFusion datasource
 
@@ -199,7 +213,7 @@ Blob payload I/O；为避免把 preview 当成完整值产生错误结果，内�
 | 表 | BTree | Bitmap |
 |---|---|---|
 | runs | `session_id`, `run_id` | — |
-| steps | `session_id` | `effective_kind`, `source` |
+| steps | `session_id`, `timestamp` | `effective_kind`, `source` |
 | tool_calls | `session_id`, `tool_call_id` | `function_name` |
 
 这些索引针对按 Story/Run 定位、tool-call 查找和类型过滤。`step_id` 在每个 Storyline 内
@@ -343,7 +357,7 @@ batch 也只包含执行计划需要的列。object、array、pretty JSON 和 JS
 projection decoder；`SELECT *` 和其他格式仍走完整规范化
 fallback。轻量路径执行 JSON、必需字段和表内约束校验，跨表引用完整性由导入或完整
 fallback 校验。预解析内存 JSON 对照只计算查询逻辑，用来区分产品工作流与纯内存遍历成本。
-benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline` 点查和单 Storyline
+benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline_full` 点查和单 Storyline
 替换的延迟，避免 warm SQL 吞吐掩盖在线读写路径的写放大。
 
 性能结论不应写成“Lance 在所有规模和查询上必然更快”：显式构造的 `MemTable` 或预解析
