@@ -3,6 +3,48 @@
 `StorylineLanceStore` 是 pChronicle 的 Storyline-native 规范化物理表示。它与
 `events.lance` 原始事件日志并列存在，不替代后者。
 
+## 投影合同与闭环
+
+Storyline 同时保留 Hub 交换合同（A 路径），三表则是可从 canonical `events.lance`
+重建的 silver projection（B 路径）。两种用途共享 schema，但写入身份严格分开：交换格式
+导入或直接 `replace_storyline` 不携带 canonical 血缘；只有 events projector 可以发布带
+projection lineage 的 `CURRENT`。
+
+```text
+events.lance (事实源)
+  ├─ project build/rebuild ─► runs + steps + tool_calls + objects
+  ├─ project sync ──────────► 只替换 append suffix 影响的 session
+  └─ Catalog fallback ──────► 投影缺失或 stale 时按固定快照即时转换
+```
+
+`CURRENT` v2 除四张表的精确 Lance version 外，还记录 source URI / source id、
+`fact_version`、`fact_rows`、构建时的 layout revision、projector 与 Storyline schema 版本、
+recipe hash 和 completeness。`fact_version` / `fact_rows` 是新鲜度水位；单纯 compaction 只
+改变 layout revision，不会使投影过期。直接文档写入会清除 lineage，维护则原样保留。
+
+常用运维命令：
+
+```bash
+# 输出必须为空；从一个固定事实快照做首次完整构建
+pchronicle project build --from ./run/events.lance --output ./run/storyline
+
+# status 只读 CURRENT；verify 对照当前 canonical fact watermark
+pchronicle project status --from ./run/storyline
+pchronicle project verify --from ./run/storyline --source ./run/events.lance
+
+# append-compatible 时只重算受影响 session；无新增事实时为 noop
+pchronicle project sync --from ./run/storyline --source ./run/events.lance
+
+# projector/schema/recipe 变化或水位不单调时，写入全新 table generation 再切 CURRENT
+pchronicle project rebuild --from ./run/events.lance --output ./run/storyline
+```
+
+Catalog 会把 lineage 指向同一 canonical URI 的 sidecar 与 events Source 合并为一个逻辑
+Source。`sources.projection_status` 为 `fresh` 时，规范化查询使用三表；为 `stale` 时隐藏
+sidecar 并回退到固定 events snapshot 的确定性投影。`projection_generation` 公开实际命中的
+generation，便于监控与诊断。Catalog 不会把无血缘的 Storyline 文档库自动认作 canonical
+events 的 projection。
+
 本文只负责三表物理 schema、内容层、Snapshot 发布、查询接入和维护语义。事实源与
 projection ownership 见[轨迹存储](trajectory-storage.md)，用户查询流程见
 [Dataset 查询指南](../guides/discover-and-query.md)。

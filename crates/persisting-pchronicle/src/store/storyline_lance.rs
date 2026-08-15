@@ -498,7 +498,7 @@ impl StorylineLanceStore {
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
-        self.replace_storyline_stream_with_projection(stories, None)
+        self.replace_storyline_stream_with_projection(stories, None, false)
             .await
     }
 
@@ -511,7 +511,23 @@ impl StorylineLanceStore {
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
         projection.validate()?;
-        self.replace_storyline_stream_with_projection(stories, Some(projection))
+        self.replace_storyline_stream_with_projection(stories, Some(projection), false)
+            .await
+    }
+
+    /// Rebuild every normalized table into a new physical generation, then
+    /// atomically replace CURRENT. Existing readers remain pinned to the old
+    /// generation until publication succeeds.
+    pub async fn rebuild_projected_storyline_stream<I>(
+        &self,
+        stories: I,
+        projection: StorylineProjectionLineage,
+    ) -> Result<StorylineStreamImportReport>
+    where
+        I: IntoIterator<Item = Result<StorylineDocument>>,
+    {
+        projection.validate()?;
+        self.replace_storyline_stream_with_projection(stories, Some(projection), true)
             .await
     }
 
@@ -519,6 +535,7 @@ impl StorylineLanceStore {
         &self,
         stories: I,
         projection: Option<StorylineProjectionLineage>,
+        rebuild: bool,
     ) -> Result<StorylineStreamImportReport>
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
@@ -526,7 +543,7 @@ impl StorylineLanceStore {
         let _guard = self.acquire_write_guard().await?;
         let original = self.resolve_current_table_paths().await?;
         let expected_generation = original.as_ref().map(|paths| paths.generation.clone());
-        let mut paths = original.clone();
+        let mut paths = if rebuild { None } else { original.clone() };
         let mut new_table_generation = None;
         let mut iterator = stories.into_iter();
         let mut session_ids = HashSet::new();
@@ -558,8 +575,12 @@ impl StorylineLanceStore {
                     None => {
                         let generation = next_generation();
                         let mut created = self.paths_for_generation(&generation);
-                        let objects_version =
-                            commit_pending_content(&created.objects, None, pending).await?;
+                        let objects_version = commit_pending_content(
+                            &created.objects,
+                            original.as_ref().map(|paths| paths.objects_version),
+                            pending,
+                        )
+                        .await?;
                         let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
                             write_batches(
                                 &created.runs,
@@ -703,7 +724,7 @@ impl StorylineLanceStore {
         }
         .await;
 
-        if result.is_err() && original.is_none() {
+        if result.is_err() {
             if let Some(generation) = new_table_generation {
                 let _ = self
                     .object_store

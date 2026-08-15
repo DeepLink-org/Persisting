@@ -2132,9 +2132,10 @@ fn redact_error(message: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        build_storyline_projection, story_lance_event_path, ChronicleQueryEngine, EventIdentity,
-        RawEventLanceStore, StoryCoords, StorylineAgent, StorylineLanceStore, StorylineTurn,
-        StructuredStore, STORYLINE_SCHEMA_VERSION,
+        build_storyline_projection, rebuild_storyline_projection, story_lance_event_path,
+        sync_storyline_projection, ChronicleQueryEngine, EventIdentity, RawEventLanceStore,
+        StoryCoords, StorylineAgent, StorylineLanceStore, StorylineProjectionSyncMode,
+        StorylineTurn, StructuredStore, STORYLINE_SCHEMA_VERSION,
     };
     use object_store::ObjectStoreExt;
 
@@ -2809,6 +2810,43 @@ mod tests {
             panic!("stale projection did not fall back to canonical events");
         };
         assert_eq!(stale_events.normalization_count.load(Ordering::Relaxed), 1);
+
+        let sync = sync_storyline_projection(
+            events_uri.to_string_lossy(),
+            projection_uri.to_string_lossy(),
+        )
+        .await?;
+        assert_eq!(sync.mode, StorylineProjectionSyncMode::Incremental);
+        assert_eq!(sync.affected_storylines, 1);
+        let noop = sync_storyline_projection(
+            events_uri.to_string_lossy(),
+            projection_uri.to_string_lossy(),
+        )
+        .await?;
+        assert_eq!(noop.mode, StorylineProjectionSyncMode::Noop);
+        assert_eq!(noop.generation, sync.generation);
+
+        let projection_store = StorylineLanceStore::open(&projection_uri).await?;
+        let before_rebuild = projection_store
+            .current_table_paths()
+            .await?
+            .context("synced projection must have CURRENT")?;
+        let rebuild = rebuild_storyline_projection(
+            events_uri.to_string_lossy(),
+            projection_uri.to_string_lossy(),
+            "agent/run-1/events.lance",
+        )
+        .await?;
+        assert_eq!(rebuild.mode, StorylineProjectionSyncMode::Rebuild);
+        let after_rebuild = projection_store
+            .current_table_paths()
+            .await?
+            .context("rebuilt projection must have CURRENT")?;
+        assert_ne!(
+            before_rebuild.table_generation,
+            after_rebuild.table_generation
+        );
+        assert_ne!(before_rebuild.generation, after_rebuild.generation);
         Ok(())
     }
 }

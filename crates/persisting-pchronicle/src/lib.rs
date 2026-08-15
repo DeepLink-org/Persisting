@@ -212,9 +212,10 @@ pub use store::{detect_local_query_format, detect_local_query_manifest};
 #[cfg(feature = "lance-store")]
 pub use storyline_projection::{
     build_storyline_projection, canonical_projection_lineage, projection_lineage_is_fresh,
-    storyline_projection_status, verify_storyline_projection, StorylineProjectionBuildReport,
-    StorylineProjectionStatus, StorylineProjectionVerification, STORYLINE_PROJECTION_COMPLETENESS,
-    STORYLINE_PROJECTOR_NAME,
+    rebuild_storyline_projection, storyline_projection_status, sync_storyline_projection,
+    verify_storyline_projection, StorylineProjectionBuildReport, StorylineProjectionStatus,
+    StorylineProjectionSyncMode, StorylineProjectionSyncReport, StorylineProjectionVerification,
+    STORYLINE_PROJECTION_COMPLETENESS, STORYLINE_PROJECTOR_NAME,
 };
 pub use storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,

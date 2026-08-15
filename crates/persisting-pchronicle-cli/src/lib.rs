@@ -17,11 +17,12 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_pchronicle::convert::storyline_to_atif;
 use persisting_pchronicle::{
     actf_to_storylines, build_storyline_projection, detect_format, load_atif_trajectories,
-    parse_actf_document, parse_openai_msg_corpus_value, storyline_projection_status,
-    storylines_to_actf, verify_storyline_projection, CatalogErrorPolicy, CatalogSnapshotOptions,
-    CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey, ChronicleFormat,
-    ChronicleQueryEngine, DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions,
-    StorylineDocument, DEFAULT_DATASET_NAME,
+    parse_actf_document, parse_openai_msg_corpus_value, rebuild_storyline_projection,
+    storyline_projection_status, storylines_to_actf, sync_storyline_projection,
+    verify_storyline_projection, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
+    CatalogSourceStatus, CatalogStorylineKey, ChronicleFormat, ChronicleQueryEngine,
+    DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions, StorylineDocument,
+    DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -388,6 +389,10 @@ enum ProjectCommand {
     Status(ProjectStatusArgs),
     /// Compare a projection with its current canonical fact snapshot.
     Verify(ProjectVerifyArgs),
+    /// Apply newly appended facts by replacing only affected Storylines.
+    Sync(ProjectSyncArgs),
+    /// Recreate every projection table in a new physical generation.
+    Rebuild(ProjectRebuildArgs),
 }
 
 #[derive(Debug, Args)]
@@ -421,6 +426,32 @@ struct ProjectVerifyArgs {
     /// Canonical events.lance path or object-store URI.
     #[arg(long, value_name = "EVENTS_URI")]
     source: String,
+}
+
+#[derive(Debug, Args)]
+struct ProjectSyncArgs {
+    /// Storyline projection root.
+    #[arg(short = 'f', long = "from", value_name = "STORYLINE_URI")]
+    from: String,
+
+    /// Canonical events.lance path or object-store URI.
+    #[arg(long, value_name = "EVENTS_URI")]
+    source: String,
+}
+
+#[derive(Debug, Args)]
+struct ProjectRebuildArgs {
+    /// Canonical events.lance path or object-store URI.
+    #[arg(short = 'f', long = "from", value_name = "EVENTS_URI")]
+    from: String,
+
+    /// Existing or new Storyline projection root.
+    #[arg(short, long, value_name = "STORYLINE_URI")]
+    output: String,
+
+    /// Dataset-relative canonical Source name recorded in projection lineage.
+    #[arg(long, value_name = "SOURCE_FILE", default_value = "events.lance")]
+    source_file: String,
 }
 
 #[derive(Debug, Args)]
@@ -715,6 +746,19 @@ async fn run_project(
                 .context("encode projection verification")?;
             writeln!(stdout).context("write projection verification")?;
             anyhow::ensure!(verification.fresh, "{}", verification.reason);
+        }
+        ProjectCommand::Sync(args) => {
+            let report = sync_storyline_projection(&args.source, &args.from).await?;
+            serde_json::to_writer_pretty(&mut *stdout, &report)
+                .context("encode projection sync report")?;
+            writeln!(stdout).context("write projection sync report")?;
+        }
+        ProjectCommand::Rebuild(args) => {
+            let report =
+                rebuild_storyline_projection(&args.from, &args.output, args.source_file).await?;
+            serde_json::to_writer_pretty(&mut *stdout, &report)
+                .context("encode projection rebuild report")?;
+            writeln!(stdout).context("write projection rebuild report")?;
         }
     }
     Ok(())
