@@ -20,6 +20,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 dirs.workspace = true
 flate2.workspace = true
 fs2.workspace = true
+globset.workspace = true
 libc.workspace = true
 libkrun = { workspace = true, features = ["net"] }
 persisting-agentctl.workspace = true

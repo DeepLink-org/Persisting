@@ -37,6 +37,8 @@ pub struct RequestEvent {
     pub body_bytes: usize,
     pub user_content: Option<String>,
     pub body_json: Option<Value>,
+    /// Provider-neutral Chronicle semantics parsed from the untouched client body.
+    pub semantic: Option<std::sync::Arc<persisting_pchronicle::LlmRequestEventPayload>>,
     pub model_rewritten: bool,
     /// HTTP request headers as `(name, value)` pairs (may include duplicates).
     pub headers: Vec<(String, String)>,
@@ -49,6 +51,8 @@ pub struct CompleteEvent {
     pub streaming: bool,
     pub stream_metrics: Option<StreamMetrics>,
     pub assistant_content: Option<String>,
+    /// Provider-neutral response semantics parsed once from the upstream wire.
+    pub semantic: Option<std::sync::Arc<persisting_pchronicle::LlmResponseEventPayload>>,
     /// HTTP response headers as `(name, value)` pairs (may include duplicates).
     pub headers: Vec<(String, String)>,
 }

@@ -21,6 +21,8 @@
 
 #[cfg(feature = "lance-store")]
 pub mod api;
+#[cfg(feature = "lance-store")]
+mod append_queue;
 pub mod atif;
 pub mod convert;
 #[cfg(feature = "lance-store")]
@@ -53,6 +55,12 @@ pub mod storyline_schema;
 
 #[cfg(feature = "lance-store")]
 pub use api::Chronicle;
+#[cfg(feature = "lance-store")]
+pub use append_queue::{
+    raw_event_append_queue, raw_event_append_queue_with_capacity, RawEventAppendQueueError,
+    RawEventAppendSender, RawEventAppendWorker, DEFAULT_RAW_EVENT_BATCH_DELAY,
+    DEFAULT_RAW_EVENT_BATCH_SIZE, DEFAULT_RAW_EVENT_QUEUE_CAPACITY,
+};
 pub use atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 pub use convert::{
     actf_to_storyline, actf_to_storylines, convert, events_to_storyline, from_storyline,
@@ -74,10 +82,14 @@ pub use formats::{
     strip_subagent_footer_from_body, validate_agenticmd_block, validate_speaker,
     validate_type_name, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdClientMeta, AgenticmdDocument,
     AgenticmdHeader, AgenticmdSessionFrontmatter, EventIdentity, EventRecord, EventsDocument,
-    OpenaiMsgCorpusReader, OpenaiMsgDocument, OpenaiMsgStep, RecoveredOpenaiMsgFile, StoryLink,
-    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn, AGENTICMD_BLOCK_LAYOUT,
-    AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT, BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION,
-    BLOCK_MARKER, OPENAI_MSG_FORMAT_VERSION, STORYLINE_SCHEMA_VERSION,
+    LlmCandidate, LlmContentPart, LlmExtensions, LlmGenerationParams, LlmImageSource, LlmMessage,
+    LlmProtocol, LlmRequest, LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload,
+    LlmResponseFormat, LlmRole, LlmStreamEvent, LlmToolChoice, LlmToolChoiceMode,
+    LlmToolDefinition, LlmUsage, OpenaiMsgCorpusReader, OpenaiMsgDocument, OpenaiMsgStep,
+    RecoveredOpenaiMsgFile, StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall,
+    StorylineTurn, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT,
+    BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION, BLOCK_MARKER, LLM_EVENT_SCHEMA_VERSION,
+    OPENAI_MSG_FORMAT_VERSION, STORYLINE_SCHEMA_VERSION,
 };
 pub use formats::{
     is_lossless_openai_storyline, parse_openai_msg_corpus_value, recover_openai_msg_files,

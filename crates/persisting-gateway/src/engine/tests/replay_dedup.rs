@@ -51,6 +51,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
                     body_bytes: 100,
                     user_content: Some(user.into()),
                     body_json: Some(body),
+                    semantic: None,
                     model_rewritten: false,
                     headers: vec![],
                 }),
@@ -75,6 +76,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
                     streaming: true,
                     stream_metrics: None,
                     assistant_content: Some(text.into()),
+                    semantic: None,
                     headers: vec![],
                 }),
             )

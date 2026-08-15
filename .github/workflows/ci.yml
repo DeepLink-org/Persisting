@@ -81,6 +81,15 @@ jobs:
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
         run: cargo test --workspace --locked
 
+      - name: Test pVisor with Lance Chronicle
+        if: runner.os == 'Linux'
+        # This is the mandatory feature profile for the pVisor ↔ pChronicle
+        # capture bridge; the default workspace profile does not enable it.
+        env:
+          PERSISTING_TEST_ALLOW_NO_USERNS: "1"
+          PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-lance-runs
+        run: cargo test -p persisting-pvisor --features lance-chronicle --locked
+
       - name: Smoke product CLIs
         run: |
           ./target/debug/pvisor run --help

@@ -7,7 +7,7 @@ workflows; architecture pages explain internal choices and experimental work.
 
 | You want to… | Start with |
 |--------------|------------|
-| Run one Agent with a reviewable workspace | [pVisor: run / review / checkpoint](../design/cli-pvisor.md) (design) |
+| Run one Agent with a reviewable workspace | [Run workloads with pVisor](pvisor-execution.md) |
 | Orchestrate many Agent Runs with recovery | [pPilot: run / produce](../design/cli-ppilot.md) (design) |
 | Browse, query, import, or export trajectory Datasets | [pChronicle command reference](../design/cli-pchronicle.md) |
 | Query or analyze trajectory Datasets | [pChronicle CLI](../design/cli-pchronicle.md) |
@@ -25,7 +25,7 @@ generated files and reports directly. `just examples` runs them all.
 
 | Capability | What it provides | Maturity |
 |---|---|---|
-| [pVisor](../design/cli-pvisor.md) | One Run's execution, control, and transactional workspace | Implemented |
+| [pVisor](pvisor-execution.md) | One Run's execution, control, and transactional workspace; implements the [AgentVisor contract](../design/agentvisor.md) | Implemented with documented product gates |
 | [pPilot](../design/cli-ppilot.md) | Batch orchestration, durable results, and Run production | Implemented |
 | [pChronicle](../design/cli-pchronicle.md) | Dataset catalog, bounded SQL/analysis, exchange, local read-only UI | Implemented |
 | [Capture](capture.md) | LLM traffic capture into Lance and Markdown views | Implemented |

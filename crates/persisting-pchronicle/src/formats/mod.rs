@@ -7,6 +7,7 @@ pub mod agenticmd_frontmatter;
 pub mod agenticmd_validate;
 pub mod detect;
 pub mod events;
+pub mod llm;
 pub mod openai_corpus;
 pub mod openai_msg;
 pub mod storyline;
@@ -35,6 +36,12 @@ pub use detect::detect_format;
 pub use events::{
     events_lance_only_error, events_lance_only_message, export_events_json_pretty,
     export_events_jsonl, EventIdentity, EventRecord, EventsDocument,
+};
+pub use llm::{
+    LlmCandidate, LlmContentPart, LlmExtensions, LlmGenerationParams, LlmImageSource, LlmMessage,
+    LlmProtocol, LlmRequest, LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload,
+    LlmResponseFormat, LlmRole, LlmStreamEvent, LlmToolChoice, LlmToolChoiceMode,
+    LlmToolDefinition, LlmUsage, LLM_EVENT_SCHEMA_VERSION,
 };
 pub use openai_corpus::{
     is_lossless_openai_storyline, parse_openai_msg_corpus_value, recover_openai_msg_files,

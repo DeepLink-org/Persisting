@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/requests/embeddings/array.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/requests/embeddings/array.json
 info:
   model: text-embedding-3-small
   input:
@@ -8,9 +8,19 @@ info:
     - world
 ---
 {
-  "model": "text-embedding-3-small",
-  "input": [
-    "hello",
-    "world"
-  ]
+  "request": {
+    "model": "text-embedding-3-small",
+    "input": [
+      "hello",
+      "world"
+    ]
+  },
+  "parsed": {
+    "input_format": "Embeddings",
+    "cache_convention": "InputIncludesCache",
+    "request_model": "text-embedding-3-small",
+    "provider": "openai",
+    "streaming": false,
+    "params": {}
+  }
 }

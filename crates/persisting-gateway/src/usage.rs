@@ -59,21 +59,28 @@ pub fn extract_usage_from_sse(raw: &str) -> TokenUsage {
 
 pub fn extract_usage_from_response(body: &Value) -> TokenUsage {
     let mut u = TokenUsage::default();
-    let usage = body.get("usage").or_else(|| body.get("Usage"));
+    let usage = body
+        .get("usage")
+        .or_else(|| body.get("Usage"))
+        .or_else(|| body.get("usageMetadata"));
     let Some(usage) = usage else {
         return u;
     };
-    u.input_tokens = pick_u64(usage, &["prompt_tokens", "input_tokens"]);
-    u.output_tokens = pick_u64(usage, &["completion_tokens", "output_tokens"]);
-    u.total_tokens = pick_u64(usage, &["total_tokens"]);
+    u.input_tokens = pick_u64(
+        usage,
+        &["prompt_tokens", "input_tokens", "promptTokenCount"],
+    );
+    u.output_tokens = pick_u64(
+        usage,
+        &["completion_tokens", "output_tokens", "candidatesTokenCount"],
+    );
+    u.total_tokens = pick_u64(usage, &["total_tokens", "totalTokenCount"]);
     if u.total_tokens == 0 {
         u.total_tokens = u.input_tokens + u.output_tokens;
     }
     if let Some(details) = usage.get("prompt_tokens_details") {
         u.cache_read_tokens = pick_u64(details, &["cached_tokens"]);
-    }
-    if let Some(details) = usage.get("cache_creation_input_tokens") {
-        u.cache_write_tokens = pick_u64(details, &[]);
+        u.cache_write_tokens = pick_u64(details, &["cache_write_tokens"]);
     }
     if usage.get("cache_creation_input_tokens").is_some() {
         u.cache_write_tokens = pick_u64(usage, &["cache_creation_input_tokens"]);
@@ -83,6 +90,12 @@ pub fn extract_usage_from_response(body: &Value) -> TokenUsage {
     }
     if usage.get("cache_read_input_tokens").is_some() {
         u.cache_read_tokens = pick_u64(usage, &["cache_read_input_tokens"]);
+    }
+    if usage.get("cachedContentTokenCount").is_some() {
+        u.cache_read_tokens = pick_u64(usage, &["cachedContentTokenCount"]);
+    }
+    if usage.get("thoughtsTokenCount").is_some() {
+        u.reasoning_tokens = pick_u64(usage, &["thoughtsTokenCount"]);
     }
     u
 }

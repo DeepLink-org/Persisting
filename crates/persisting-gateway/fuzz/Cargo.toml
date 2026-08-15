@@ -1,0 +1,30 @@
+[package]
+name = "persisting-gateway-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bytes = "1"
+libfuzzer-sys = "0.4"
+persisting-gateway = { path = ".." }
+
+[[bin]]
+name = "llm_request_conversion"
+path = "fuzz_targets/llm_request_conversion.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "llm_stream_conversion"
+path = "fuzz_targets/llm_stream_conversion.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

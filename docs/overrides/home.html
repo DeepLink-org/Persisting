@@ -506,20 +506,20 @@
     <div class="container">
       {% if config.theme.language == "zh" %}
       <h2>核心组件</h2>
-      <p class="section-subtitle">pVisor 管理单个 Agent Run，pPilot 编排批量 Run，pChronicle 保存 canonical 历史；Gateway、OverlayNet、OverlayFS 是 pVisor 的运行时驱动</p>
+      <p class="section-subtitle">pVisor 是管理单个 Agent Run 的 AgentVisor，pPilot 编排批量 Run，pChronicle 保存 canonical 历史；Gateway、OverlayNet、OverlayFS 是 pVisor 的运行时驱动</p>
       {% else %}
       <h2>Core Components</h2>
-      <p class="section-subtitle">pVisor runs one Agent, pPilot orchestrates many Runs, pChronicle keeps the canonical history. Gateway, OverlayNet, and OverlayFS are pVisor runtime drivers.</p>
+      <p class="section-subtitle">pVisor is the AgentVisor for one Run, pPilot orchestrates many Runs, and pChronicle keeps canonical history. Gateway, OverlayNet, and OverlayFS are pVisor runtime drivers.</p>
       {% endif %}
       <div class="features-grid">
         <div class="feature-card">
           <span class="feature-icon">🔌</span>
           {% if config.theme.language == "zh" %}
-          <h3>pVisor · 单个 Run</h3>
-          <p>执行一个 Agent workload：进程级控制、Agent ABI、取消、checkpoint，以及可注入 Docker/Podman 或 KVM 的 placement。</p>
+          <h3>pVisor · AgentVisor</h3>
+          <p>管理单个 Agent Run 的生命周期、能力、外部效果、checkpoint 与证据，并可放置到 host、Docker/Podman 或 libkrun VM。</p>
           {% else %}
-          <h3>pVisor · one Run</h3>
-          <p>Executes one Agent workload with process-level control, an Agent ABI, cancellation, and checkpoint, deployable inside Docker/Podman or KVM.</p>
+          <h3>pVisor · AgentVisor</h3>
+          <p>Governs one Agent Run's lifecycle, capabilities, effects, checkpoints, and evidence across host, Docker/Podman, and libkrun VM placements.</p>
           {% endif %}
         </div>
         <div class="feature-card">
@@ -692,7 +692,8 @@ pchronicle query examples/data/atif "SELECT * FROM dataset.runs"</code></pre>
         <h2>为什么选择 Persisting？</h2>
         <p>
           Persisting 把一次不稳定、带外部副作用的 Agent workload 封装成一个可执行、可中断、
-          可检查、可追溯、可批量编排的 Run。pVisor 负责单个 Run 的生命周期与隔离边界，
+          可检查、可追溯、可批量编排的 Run。pVisor 作为 AgentVisor，负责单个 Run 的
+          生命周期、能力、外部效果与隔离边界，
           pPilot 负责批量调度、恢复与 fencing，pChronicle 保存 canonical 事件历史。
           隔离的强度按平台与 executor 如实记录在 Run Bundle；详细保证以 pVisor 隔离文档为准。
         </p>
@@ -702,7 +703,8 @@ pchronicle query examples/data/atif "SELECT * FROM dataset.runs"</code></pre>
         <p>
           Persisting wraps an unreliable, side-effecting Agent workload into a Run
           that can be executed, interrupted, reviewed, traced, and orchestrated at scale.
-          pVisor owns one Run's lifecycle and placement, pPilot schedules and recovers many,
+          pVisor is the AgentVisor for one Run's lifecycle, capabilities, effects, and placement;
+          pPilot schedules and recovers many,
           and pChronicle keeps the canonical event history. Isolation strength is reported
           honestly per platform and executor in the Run Bundle; consult the pVisor isolation
           documentation for the exact guarantees.
@@ -719,7 +721,7 @@ pchronicle query examples/data/atif "SELECT * FROM dataset.runs"</code></pre>
       <div class="persisting-feature-content">
         <div class="persisting-feature-text">
           {% if config.theme.language == "zh" %}
-          <h2>可审查的隔离</h2>
+          <h2>AgentVisor：可审查的外部效果</h2>
           <p>
             <code>pvisor run --safe</code> 创建 durable workspace，当前目录作为 OverlayFS lower，
             写入暂存到 upper，并启用显式网络代理。Run Bundle 记录文件变更、网络拦截与安全警告。
@@ -728,9 +730,9 @@ pchronicle query examples/data/atif "SELECT * FROM dataset.runs"</code></pre>
             Host、容器和 VM executor 的读写与网络边界不同。Run Bundle 分别记录实际安装的
             文件系统和网络约束；精确的平台保证与已知缺口见 pVisor 隔离文档。
           </p>
-          <a href="design/cli-pvisor/" class="md-button">了解更多 →</a>
+          <a href="design/agentvisor/" class="md-button">了解 AgentVisor →</a>
           {% else %}
-          <h2>Reviewable Isolation</h2>
+          <h2>AgentVisor: Reviewable Effects</h2>
           <p>
             <code>pvisor run --safe</code> creates a durable workspace with the current directory as
             the OverlayFS lower, stages writes in the upper, and enables an explicit network proxy.
@@ -741,7 +743,7 @@ pchronicle query examples/data/atif "SELECT * FROM dataset.runs"</code></pre>
             The Run Bundle records the controls actually installed; see the pVisor isolation
             documentation for platform-specific guarantees and known gaps.
           </p>
-          <a href="design/cli-pvisor/" class="md-button">Learn More →</a>
+          <a href="design/agentvisor/" class="md-button">Explore AgentVisor →</a>
           {% endif %}
         </div>
         <div class="persisting-feature-demo">
@@ -750,8 +752,9 @@ pchronicle query examples/data/atif "SELECT * FROM dataset.runs"</code></pre>
 pvisor run --safe codex
 pvisor review last
 pvisor checkpoint last --name accepted-base
-# 接受、丢弃或分支
-pvisor apply last
+# 选择性接受、多次提交、丢弃或分支
+pvisor apply last --path src
+pvisor apply last --all
 pvisor drop last
 pvisor fork last --checkpoint accepted-base -- codex</code></pre>
           </div>

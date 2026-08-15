@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/vertex/embeddings.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/vertex/embeddings.json
 info:
   predictions:
     - embeddings:
@@ -51,6 +51,7 @@ info:
   },
   "parsed": {
     "input_tokens": 9,
-    "total_tokens": 9
+    "total_tokens": 9,
+    "provider_model": "text-embedding-004"
   }
 }

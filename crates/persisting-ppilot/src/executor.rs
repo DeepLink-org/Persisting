@@ -333,7 +333,7 @@ impl RunExecutor for PlanExecuteExecutor {
             name: "ppilot-plan-host-v1".into(),
             kind: ExecutorKind::Process,
             isolation: IsolationKind::HostProcess,
-            enforces_capabilities: false,
+            capability_enforcement: Default::default(),
             supports_checkpoint: true,
             supports_migration: false,
         }

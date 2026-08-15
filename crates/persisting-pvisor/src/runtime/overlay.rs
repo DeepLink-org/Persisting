@@ -13,22 +13,25 @@
 //!
 use super::implant::OverlayHint;
 use crate::util::{atomic_write, create_dir_all_durable};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use persisting_gateway::config::{OverlayBackend, OverlayConfig};
 use persisting_overlayfs::{
     jujutsu_upper_dir, mount as mount_embedded_overlay, snapshot_jujutsu_upper, OverlayMountConfig,
     OverlaySession,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CString, OsStr};
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 const META_FILENAME: &str = "overlay.json";
+const APPLY_LEDGER_FILENAME: &str = "apply-ledger.json";
+const APPLY_LEDGER_SCHEMA_VERSION: u32 = 1;
 const WHITEOUT_PREFIX: &str = ".wh.";
 const OPAQUE_WHITEOUT: &str = ".wh..wh..opq";
 const OPAQUE_XATTRS: [&[u8]; 3] = [
@@ -160,6 +163,62 @@ pub struct ChangeEntry {
     pub size_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
+}
+
+/// User-facing selection for one staged apply operation. Exact paths select
+/// the path and its descendants; include/exclude values use git-style glob
+/// matching against slash-separated paths relative to the overlay root.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplySelection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub includes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes: Vec<String>,
+}
+
+impl ApplySelection {
+    pub fn is_all(&self) -> bool {
+        self.paths.is_empty() && self.includes.is_empty() && self.excludes.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplyRecord {
+    pub schema_version: u32,
+    pub apply_id: String,
+    pub created_at_unix_ms: u64,
+    pub overlay_id: String,
+    pub target: PathBuf,
+    pub selection: ApplySelection,
+    pub changes: Vec<ChangeEntry>,
+    pub remaining_changes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyOutcome {
+    pub apply_id: String,
+    pub applied: Vec<ChangeEntry>,
+    pub remaining: Vec<ChangeEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApplyPlan {
+    pub selected: Vec<ChangeEntry>,
+    selected_paths: BTreeSet<PathBuf>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ApplyLedger {
+    #[serde(default = "apply_ledger_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    records: Vec<ApplyRecord>,
+}
+
+fn apply_ledger_schema_version() -> u32 {
+    APPLY_LEDGER_SCHEMA_VERSION
 }
 
 /// Live in-process FUSE mount; unmounted on [`Self::unmount`] / Drop.
@@ -779,10 +838,252 @@ pub fn restore_overlay_upper(source: &Path, destination: &Path) -> Result<(), Ov
     Ok(())
 }
 
-/// Merge staging upper onto `target` (handles portable `.wh.` whiteouts).
-pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
+struct CompiledApplySelection {
+    paths: Vec<PathBuf>,
+    includes: GlobSet,
+    excludes: GlobSet,
+    has_positive: bool,
+}
+
+impl CompiledApplySelection {
+    fn compile(selection: &ApplySelection) -> Result<Self, OverlayError> {
+        let paths = selection
+            .paths
+            .iter()
+            .map(|path| normalize_selection_path(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            has_positive: !paths.is_empty() || !selection.includes.is_empty(),
+            paths,
+            includes: compile_globs(&selection.includes, "include")?,
+            excludes: compile_globs(&selection.excludes, "exclude")?,
+        })
+    }
+
+    fn requested(&self, path: &Path) -> bool {
+        !self.has_positive
+            || self
+                .paths
+                .iter()
+                .any(|selected| path == selected || path.starts_with(selected))
+            || self.includes.is_match(path)
+    }
+
+    fn excluded(&self, path: &Path) -> bool {
+        let mut current = Some(path);
+        while let Some(candidate) = current {
+            if self.excludes.is_match(candidate) {
+                return true;
+            }
+            current = candidate.parent();
+        }
+        false
+    }
+}
+
+fn normalize_selection_path(path: &Path) -> Result<PathBuf, OverlayError> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(value) => normalized.push(value),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(OverlayError::InvalidConfig(format!(
+                    "apply path must be relative and cannot contain `..`: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn compile_globs(patterns: &[String], label: &str) -> Result<GlobSet, OverlayError> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        let glob = GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .build()
+            .map_err(|error| {
+                OverlayError::InvalidConfig(format!(
+                    "invalid apply {label} glob `{pattern}`: {error}"
+                ))
+            })?;
+        builder.add(glob);
+    }
+    builder.build().map_err(|error| {
+        OverlayError::InvalidConfig(format!("compile apply {label} globs: {error}"))
+    })
+}
+
+fn at_or_below(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+/// Resolve a filtered selection into a dependency-closed apply plan.
+///
+/// Directory ancestors and hard-link siblings are included automatically.
+/// Opaque directories remain atomic: callers must select the opaque directory,
+/// rather than only a child whose application would implicitly delete siblings.
+pub fn plan_overlay_apply(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    selection: &ApplySelection,
+) -> Result<ApplyPlan, OverlayError> {
+    let changes = overlay_changes(record, lower_dirs)?;
+    let compiled = CompiledApplySelection::compile(selection)?;
+    let mut selected_paths = changes
+        .iter()
+        .map(|change| PathBuf::from(&change.path))
+        .filter(|path| compiled.requested(path) && !compiled.excluded(path))
+        .collect::<BTreeSet<_>>();
+
+    if !selection.is_all() && selected_paths.is_empty() {
+        return Err(OverlayError::Apply(
+            "no staged changes matched the apply selection".into(),
+        ));
+    }
+
+    let opaque_dirs = changes
+        .iter()
+        .filter(|change| change.kind == ChangeKind::Opaque)
+        .map(|change| PathBuf::from(&change.path))
+        .collect::<Vec<_>>();
+    let hard_link_groups = upper_hard_link_groups(record.upper.path())?;
+
+    loop {
+        let before = selected_paths.len();
+
+        for opaque in &opaque_dirs {
+            let has_selected_child = selected_paths
+                .iter()
+                .any(|path| path != opaque && at_or_below(path, opaque));
+            if has_selected_child && !selected_paths.contains(opaque) {
+                return Err(OverlayError::Apply(format!(
+                    "{} is inside opaque directory {}; select the directory as one atomic unit",
+                    selected_paths
+                        .iter()
+                        .find(|path| *path != opaque && at_or_below(path, opaque))
+                        .map_or_else(|| "selected path".into(), |path| path.display().to_string()),
+                    if opaque.as_os_str().is_empty() {
+                        ".".into()
+                    } else {
+                        opaque.display().to_string()
+                    }
+                )));
+            }
+            if selected_paths.contains(opaque) {
+                for change in &changes {
+                    let path = PathBuf::from(&change.path);
+                    if at_or_below(&path, opaque) {
+                        if compiled.excluded(&path) {
+                            return Err(OverlayError::Apply(format!(
+                                "cannot exclude {} from atomic opaque directory {}",
+                                path.display(),
+                                opaque.display()
+                            )));
+                        }
+                        selected_paths.insert(path);
+                    }
+                }
+            }
+        }
+
+        for group in &hard_link_groups {
+            if group.iter().any(|path| selected_paths.contains(path)) {
+                for path in group {
+                    if compiled.excluded(path) {
+                        return Err(OverlayError::Apply(format!(
+                            "cannot exclude hard-link sibling {} from the selected apply batch",
+                            path.display()
+                        )));
+                    }
+                    selected_paths.insert(path.clone());
+                }
+            }
+        }
+
+        let selected_snapshot = selected_paths.iter().cloned().collect::<Vec<_>>();
+        for path in selected_snapshot {
+            let mut parent = path.parent();
+            while let Some(ancestor) = parent {
+                if changes.iter().any(|change| {
+                    Path::new(&change.path) == ancestor
+                        && change.new_type == Some(ChangeEntryType::Directory)
+                }) {
+                    if compiled.excluded(ancestor) {
+                        return Err(OverlayError::Apply(format!(
+                            "cannot exclude ancestor {} required by selected path {}",
+                            ancestor.display(),
+                            path.display()
+                        )));
+                    }
+                    selected_paths.insert(ancestor.to_path_buf());
+                }
+                parent = ancestor.parent();
+            }
+        }
+
+        if selected_paths.len() == before {
+            break;
+        }
+    }
+
+    let selected = changes
+        .iter()
+        .filter(|change| selected_paths.contains(Path::new(&change.path)))
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(ApplyPlan {
+        selected,
+        selected_paths,
+    })
+}
+
+fn upper_hard_link_groups(upper: &Path) -> Result<Vec<Vec<PathBuf>>, OverlayError> {
+    let mut groups = HashMap::<(u64, u64), Vec<PathBuf>>::new();
+    if !upper.is_dir() {
+        return Ok(Vec::new());
+    }
+    walk_upper(upper, upper, &mut |rel, is_whiteout| {
+        if !is_whiteout {
+            let metadata = fs::symlink_metadata(upper.join(&rel))?;
+            if metadata.is_file() && metadata.nlink() > 1 {
+                groups
+                    .entry((metadata.dev(), metadata.ino()))
+                    .or_default()
+                    .push(rel);
+            }
+        }
+        Ok(())
+    })?;
+    Ok(groups
+        .into_values()
+        .filter(|paths| paths.len() > 1)
+        .collect())
+}
+
+/// Apply one dependency-closed subset and retain all unselected changes for a
+/// later apply or drop decision.
+pub fn apply_overlay_selected(
+    record: &mut OverlayRecord,
+    lower_dirs: &[PathBuf],
+    selection: &ApplySelection,
+) -> Result<ApplyOutcome, OverlayError> {
     match record.state {
-        OverlayState::Applied => return Ok(()),
+        OverlayState::Applied if selection.is_all() => {
+            return Ok(ApplyOutcome {
+                apply_id: String::new(),
+                applied: Vec::new(),
+                remaining: Vec::new(),
+            });
+        }
+        OverlayState::Applied => {
+            return Err(OverlayError::InvalidState(format!(
+                "overlay {} was already fully applied",
+                record.id
+            )));
+        }
         OverlayState::Discarded => {
             return Err(OverlayError::InvalidState(format!(
                 "overlay {} was already dropped; apply cannot recover discarded changes",
@@ -797,32 +1098,58 @@ pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
             record.target.display()
         )));
     }
-    match &record.upper {
-        OverlayUpper::Directory { upper_dir, .. } => {
-            if upper_dir.is_dir() {
-                apply_upper_onto_target(upper_dir, &record.target)?;
-            }
-        }
-        OverlayUpper::Jujutsu {
-            store_path,
-            workspace,
-            upper_dir,
-        } => {
-            if upper_dir.is_dir() {
-                apply_upper_onto_target(upper_dir, &record.target)?;
-            }
-            clear_path(upper_dir)?;
-            snapshot_jujutsu_upper(store_path, workspace)
-                .map_err(|error| OverlayError::Finalize(error.to_string()))?;
-            // Snapshotting initializes an empty working-copy directory. It is
-            // no longer needed after this Run reaches its terminal state.
-            clear_path(upper_dir)?;
-        }
+
+    let plan = plan_overlay_apply(record, lower_dirs, selection)?;
+    let upper_dir = record.upper.path().to_path_buf();
+    if upper_dir.is_dir() && !plan.selected.is_empty() {
+        apply_selected_upper(&upper_dir, &record.target, &plan.selected_paths)?;
+        prune_selected_upper(&upper_dir, &plan.selected_paths)?;
     }
-    cleanup_terminal_overlay_data(record)?;
-    record.state = OverlayState::Applied;
+
+    if let OverlayUpper::Jujutsu {
+        store_path,
+        workspace,
+        ..
+    } = &record.upper
+    {
+        snapshot_jujutsu_upper(store_path, workspace)
+            .map_err(|error| OverlayError::Finalize(error.to_string()))?;
+    }
+
+    let remaining = overlay_changes(record, lower_dirs)?;
+    if remaining.is_empty() {
+        cleanup_terminal_overlay_data(record)?;
+        record.state = OverlayState::Applied;
+    } else {
+        record.state = OverlayState::Staged;
+    }
     write_overlay_record(record)?;
-    Ok(())
+
+    let apply_id = uuid::Uuid::new_v4().to_string();
+    append_apply_record(
+        record,
+        ApplyRecord {
+            schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+            apply_id: apply_id.clone(),
+            created_at_unix_ms: crate::util::unix_now_ms(),
+            overlay_id: record.id.clone(),
+            target: record.target.clone(),
+            selection: selection.clone(),
+            changes: plan.selected.clone(),
+            remaining_changes: remaining.len(),
+        },
+    )?;
+    Ok(ApplyOutcome {
+        apply_id,
+        applied: plan.selected,
+        remaining,
+    })
+}
+
+/// Merge the complete staging upper onto `target`.
+pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
+    let lower_dirs = vec![record.target.clone()];
+    apply_overlay_selected(record, &lower_dirs, &ApplySelection::default()).map(|_| ())
 }
 
 /// Drop staging upper (and optionally the whole stage dir contents except meta).
@@ -892,10 +1219,170 @@ fn clear_path(path: &Path) -> Result<(), OverlayError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn apply_upper_onto_target(upper: &Path, target: &Path) -> Result<(), OverlayError> {
     ensure_directory(target)?;
     let mut hard_links = HashMap::new();
     apply_directory(upper, target, &mut hard_links, false)
+}
+
+fn apply_selected_upper(
+    upper: &Path,
+    target: &Path,
+    selected: &BTreeSet<PathBuf>,
+) -> Result<(), OverlayError> {
+    ensure_directory(target)?;
+    let mut hard_links = HashMap::new();
+    apply_selected_directory(upper, target, Path::new(""), selected, &mut hard_links)
+}
+
+fn apply_selected_directory(
+    source: &Path,
+    destination: &Path,
+    relative: &Path,
+    selected: &BTreeSet<PathBuf>,
+    hard_links: &mut HashMap<(u64, u64), PathBuf>,
+) -> Result<(), OverlayError> {
+    ensure_directory(destination)?;
+    let opaque = path_exists(&source.join(OPAQUE_WHITEOUT)) || has_opaque_xattr(source);
+    if opaque && selected.contains(relative) {
+        for entry in fs::read_dir(destination)? {
+            remove_path(&entry?.path())?;
+        }
+    }
+
+    let entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
+    for entry in &entries {
+        let name = entry.file_name();
+        if name == OPAQUE_WHITEOUT {
+            continue;
+        }
+        if let Some(victim) = whiteout_target(&name) {
+            let logical = relative.join(victim);
+            if selected.contains(&logical) {
+                remove_path(&destination.join(victim))?;
+            }
+        }
+    }
+
+    for entry in entries {
+        let name = entry.file_name();
+        if name.as_bytes().starts_with(WHITEOUT_PREFIX.as_bytes()) {
+            continue;
+        }
+        let logical = relative.join(&name);
+        let source_path = entry.path();
+        let metadata = fs::symlink_metadata(&source_path)?;
+        if metadata.is_dir() {
+            let has_selected_descendant = selected
+                .iter()
+                .any(|path| path != &logical && path.starts_with(&logical));
+            if selected.contains(&logical) || has_selected_descendant {
+                let target_path = destination.join(&name);
+                ensure_directory(&target_path)?;
+                apply_selected_directory(
+                    &source_path,
+                    &target_path,
+                    &logical,
+                    selected,
+                    hard_links,
+                )?;
+                if selected.contains(&logical) {
+                    copy_host_metadata(&source_path, &target_path)?;
+                }
+            }
+        } else if selected.contains(&logical) {
+            copy_upper_entry(&source_path, &destination.join(name), hard_links)?;
+        }
+    }
+    Ok(())
+}
+
+fn prune_selected_upper(upper: &Path, selected: &BTreeSet<PathBuf>) -> Result<(), OverlayError> {
+    prune_selected_directory(upper, Path::new(""), selected)
+}
+
+fn prune_selected_directory(
+    directory: &Path,
+    relative: &Path,
+    selected: &BTreeSet<PathBuf>,
+) -> Result<(), OverlayError> {
+    if selected.contains(relative) {
+        clear_opaque_xattrs(directory)?;
+    }
+    let entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    for entry in entries {
+        let name = entry.file_name();
+        if name == OPAQUE_WHITEOUT {
+            if selected.contains(relative) {
+                remove_path(&entry.path())?;
+            }
+            continue;
+        }
+        if let Some(victim) = whiteout_target(&name) {
+            if selected.contains(&relative.join(victim)) {
+                remove_path(&entry.path())?;
+            }
+            continue;
+        }
+
+        let path = entry.path();
+        let logical = relative.join(&name);
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            let has_selected_descendant = selected.iter().any(|selected_path| {
+                selected_path != &logical && selected_path.starts_with(&logical)
+            });
+            if selected.contains(&logical) || has_selected_descendant {
+                prune_selected_directory(&path, &logical, selected)?;
+            }
+            if selected.contains(&logical) && fs::read_dir(&path)?.next().is_none() {
+                fs::remove_dir(&path)?;
+            }
+        } else if selected.contains(&logical) {
+            remove_path(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_ledger_path(stage_dir: &Path) -> PathBuf {
+    stage_dir.join(APPLY_LEDGER_FILENAME)
+}
+
+pub fn load_apply_records(stage_dir: &Path) -> Result<Vec<ApplyRecord>, OverlayError> {
+    let path = apply_ledger_path(stage_dir);
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let ledger = serde_json::from_slice::<ApplyLedger>(&raw)
+        .map_err(|error| OverlayError::Meta(format!("{}: {error}", path.display())))?;
+    if ledger.schema_version != APPLY_LEDGER_SCHEMA_VERSION {
+        return Err(OverlayError::Meta(format!(
+            "{}: unsupported apply ledger schema {}",
+            path.display(),
+            ledger.schema_version
+        )));
+    }
+    Ok(ledger.records)
+}
+
+fn append_apply_record(
+    overlay: &OverlayRecord,
+    apply_record: ApplyRecord,
+) -> Result<(), OverlayError> {
+    let mut ledger = ApplyLedger {
+        schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+        records: load_apply_records(&overlay.stage_dir)?,
+    };
+    ledger.records.push(apply_record);
+    let path = apply_ledger_path(&overlay.stage_dir);
+    let body = serde_json::to_vec_pretty(&ledger)
+        .map_err(|error| OverlayError::Persist(format!("serialize apply ledger: {error}")))?;
+    atomic_write(&path, &body, 0o600)
+        .map_err(|error| OverlayError::Persist(format!("{}: {error:#}", path.display())))
 }
 
 fn path_exists(path: &Path) -> bool {
@@ -1244,6 +1731,17 @@ fn has_opaque_xattr(path: &Path) -> bool {
         };
         get_host_xattr(&path, &name).is_ok_and(|value| value == b"y")
     })
+}
+
+fn clear_opaque_xattrs(path: &Path) -> Result<(), OverlayError> {
+    let path = c_path(path)?;
+    for name in OPAQUE_XATTRS {
+        let name = CString::new(name).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+        if get_host_xattr(&path, &name).is_ok_and(|value| value == b"y") {
+            remove_host_xattr(&path, &name)?;
+        }
+    }
+    Ok(())
 }
 
 fn remove_host_xattr(path: &CString, name: &CString) -> io::Result<()> {
@@ -1719,6 +2217,264 @@ mod tests {
         assert!(!upper.exists());
         assert!(!work.exists());
         assert!(tmp.path().join(META_FILENAME).is_file());
+    }
+
+    #[test]
+    fn selective_apply_retains_pending_changes_and_can_repeat() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let stage = tmp.path().join("stage");
+        let upper = stage.join("upper");
+        fs::create_dir_all(target.join("src")).unwrap();
+        fs::create_dir_all(upper.join("src")).unwrap();
+        fs::write(target.join("src/a.txt"), b"old-a").unwrap();
+        fs::write(target.join("src/b.txt"), b"old-b").unwrap();
+        fs::write(target.join("gone.txt"), b"old-gone").unwrap();
+        fs::write(upper.join("src/a.txt"), b"new-a").unwrap();
+        fs::write(upper.join("src/b.txt"), b"new-b").unwrap();
+        fs::write(upper.join(".wh.gone.txt"), b"").unwrap();
+        let mut record = OverlayRecord {
+            id: "selective".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper.clone(),
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage.clone(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+
+        let first = apply_overlay_selected(
+            &mut record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec!["src/a.txt".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read(target.join("src/a.txt")).unwrap(), b"new-a");
+        assert_eq!(fs::read(target.join("src/b.txt")).unwrap(), b"old-b");
+        assert!(target.join("gone.txt").exists());
+        assert_eq!(record.state, OverlayState::Staged);
+        assert!(first
+            .remaining
+            .iter()
+            .any(|change| change.path == "src/b.txt"));
+        assert!(upper.join("src/b.txt").is_file());
+        assert!(upper.join(".wh.gone.txt").is_file());
+
+        apply_overlay_selected(
+            &mut record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec!["gone.txt".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap();
+        assert!(!target.join("gone.txt").exists());
+        assert_eq!(record.state, OverlayState::Staged);
+
+        let final_apply = apply_overlay_selected(
+            &mut record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec!["src".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read(target.join("src/b.txt")).unwrap(), b"new-b");
+        assert!(final_apply.remaining.is_empty());
+        assert_eq!(record.state, OverlayState::Applied);
+        assert!(!upper.exists());
+
+        let ledger = load_apply_records(&stage).unwrap();
+        assert_eq!(ledger.len(), 3);
+        assert_eq!(ledger[0].remaining_changes, first.remaining.len());
+        assert_eq!(ledger[2].remaining_changes, 0);
+    }
+
+    #[test]
+    fn glob_excludes_leave_matching_subtrees_staged() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let stage = tmp.path().join("stage");
+        let upper = stage.join("upper");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(upper.join("src/generated")).unwrap();
+        fs::write(upper.join("src/lib.rs"), b"accepted").unwrap();
+        fs::write(upper.join("src/generated/code.rs"), b"pending").unwrap();
+        let mut record = OverlayRecord {
+            id: "glob".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper.clone(),
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage,
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+
+        let outcome = apply_overlay_selected(
+            &mut record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                includes: vec!["src/**".into()],
+                excludes: vec!["src/generated/**".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read(target.join("src/lib.rs")).unwrap(), b"accepted");
+        assert!(!target.join("src/generated/code.rs").exists());
+        assert!(upper.join("src/generated/code.rs").is_file());
+        assert!(outcome
+            .remaining
+            .iter()
+            .any(|change| change.path == "src/generated/code.rs"));
+        assert_eq!(record.state, OverlayState::Staged);
+    }
+
+    #[test]
+    fn opaque_directory_requires_atomic_selection() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let stage = tmp.path().join("stage");
+        let upper = stage.join("upper");
+        fs::create_dir_all(target.join("replaced")).unwrap();
+        fs::create_dir_all(upper.join("replaced")).unwrap();
+        fs::write(target.join("replaced/old"), b"old").unwrap();
+        fs::write(upper.join("replaced").join(OPAQUE_WHITEOUT), b"").unwrap();
+        fs::write(upper.join("replaced/new"), b"new").unwrap();
+        let mut record = OverlayRecord {
+            id: "opaque-select".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper,
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage,
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+
+        let error = plan_overlay_apply(
+            &record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec!["replaced/new".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("opaque directory replaced"));
+
+        apply_overlay_selected(
+            &mut record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec!["replaced".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap();
+        assert!(!target.join("replaced/old").exists());
+        assert_eq!(fs::read(target.join("replaced/new")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn selective_apply_expands_hard_link_groups() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let stage = tmp.path().join("stage");
+        let upper = stage.join("upper");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&upper).unwrap();
+        fs::write(upper.join("first"), b"linked").unwrap();
+        fs::hard_link(upper.join("first"), upper.join("second")).unwrap();
+        let mut record = OverlayRecord {
+            id: "hard-links".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper,
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage,
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+
+        let outcome = apply_overlay_selected(
+            &mut record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec!["first".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap();
+        assert!(outcome.applied.iter().any(|change| change.path == "first"));
+        assert!(outcome.applied.iter().any(|change| change.path == "second"));
+        assert_eq!(
+            fs::metadata(target.join("first")).unwrap().ino(),
+            fs::metadata(target.join("second")).unwrap().ino()
+        );
+        assert_eq!(record.state, OverlayState::Applied);
+    }
+
+    #[test]
+    fn apply_selection_rejects_parent_traversal() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&upper).unwrap();
+        fs::write(upper.join("value"), b"value").unwrap();
+        let record = OverlayRecord {
+            id: "invalid-selection".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper,
+                work_dir: tmp.path().join("work"),
+            },
+            merged_dir: tmp.path().join("merged"),
+            stage_dir: tmp.path().to_path_buf(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        let error = plan_overlay_apply(
+            &record,
+            std::slice::from_ref(&target),
+            &ApplySelection {
+                paths: vec!["../outside".into()],
+                ..ApplySelection::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot contain `..`"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/bedrock/basic.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/bedrock/basic.json
 info:
   output:
     message:
@@ -44,8 +44,11 @@ info:
       },
       "output_tokens_details": {
         "reasoning_tokens": 0
-      }
-    }
+      },
+      "total_tokens": 64
+    },
+    "created_at": "[date]",
+    "object": "response"
   },
   "parsed": {
     "input_tokens": 18,

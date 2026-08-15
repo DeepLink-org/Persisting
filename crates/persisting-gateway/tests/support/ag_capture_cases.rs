@@ -16,7 +16,7 @@ pub const USER_CAPTURE_CASES: &[UserCaptureCase] = &[
     UserCaptureCase {
         path: "requests/completions/full.json",
         min_turns: 1,
-        must_contain: &["What's in this image?", "[image: url:"],
+        must_contain: &["What's in this image?", "[image: base64:"],
     },
     UserCaptureCase {
         path: "requests/completions/tool-call.json",

@@ -346,6 +346,8 @@ pub fn api_key_env_aliases(primary: &str) -> &'static [&'static str] {
         "ANTHROPIC_API_KEY" => &["ANTHROPIC_AUTH_TOKEN", "DEEPSEEK_API_KEY"],
         "ANTHROPIC_AUTH_TOKEN" => &["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"],
         "OPENAI_API_KEY" => &["ANTHROPIC_AUTH_TOKEN"],
+        "GEMINI_API_KEY" => &["GOOGLE_API_KEY"],
+        "GOOGLE_API_KEY" => &["GEMINI_API_KEY"],
         _ => &[],
     }
 }

@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/completions/basic.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/completions/basic.json
 info:
   id: chatcmpl-C3kBOLGARFj2WJrm5MRyuTiK4u6eF
   object: chat.completion

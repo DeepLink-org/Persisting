@@ -8,7 +8,7 @@ for supported workflows.
 
 | Subsystem | Start here | Then read |
 |---|---|---|
-| pVisor | [Agent infrastructure](agent-infrastructure.md) | [Isolation backends](pvisor-isolation.md) → standalone `pvisor` CLI → [Gateway driver](gateway.md) → [OverlayNet interception](overlaynet.md) |
+| pVisor | [AgentVisor contract](agentvisor.md) | [Agent infrastructure](agent-infrastructure.md) → [Isolation backends](pvisor-isolation.md) → standalone `pvisor` CLI → [Gateway driver](gateway.md) → [OverlayNet interception](overlaynet.md) |
 | pChronicle | [`pchronicle` command reference](cli-pchronicle.md) | [Dataset Catalog](dataset-catalog.md) → [Trajectory storage](trajectory.md) → [Storyline three-table Lance](storyline-lance.md) → [RFC-0003 Ownership](../rfcs/0003-pchronicle-ownership.md) |
 | pPilot | [pPilot control plane](ppilot.md) | standalone `ppilot` CLI → run orchestration and pChronicle SQL analysis |
 | Queue | [Queue persistence](architecture.md) | [Custom backend guide](../guide/custom-backends.md) |
@@ -19,7 +19,7 @@ for supported workflows.
 
 | Area | Status | Notes |
 |---|---|---|
-| pVisor, pPilot, pChronicle | Implemented core | Peer Agent execution, orchestration, and history components; the public pChronicle surface is documented by its command reference |
+| pVisor, pPilot, pChronicle | Implemented core | pVisor is the AgentVisor for one Run, pPilot orchestrates many Runs, and pChronicle owns canonical history; the [AgentVisor contract](agentvisor.md) separates current behavior from product gates |
 | Gateway, OverlayNet, OverlayFS | Implemented | pVisor runtime drivers; Gateway supplies capture semantics |
 | pVisor enforced isolation | Implemented / partial | Linux uses FUSE + synthetic root + rootless namespaces + Landlock; macOS uses Seatbelt-enforced staged writes and deny-all socket confinement while reads remain ambient; Docker and libkrun/KVM transports exist; seccomp, resource controls, LiteBox VFS, and Firecracker remain on the [isolation roadmap](pvisor-isolation.md) |
 | OverlayNet transparent interception | VM implemented / host planned | libkrun virtio-net + smoltcp is non-bypassable for IPv4 TCP/DNS on Linux and Apple Silicon macOS; Linux host netns/seccomp drivers remain planned; see [design](overlaynet.md) |

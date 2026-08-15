@@ -74,6 +74,10 @@ analysis belong to pChronicle.
 ### Browse and analyze trajectories
 
 ```bash
+# Start with a temporary guided walkthrough, or jump to its SQL section.
+pchronicle onboard
+pchronicle onboard query
+
 # Optional: configure one local Dataset root as the default Warehouse.
 pchronicle default ./trajectory-data
 

@@ -20,7 +20,12 @@ pub fn resolve_upstream_api_key(
             .unwrap_or("inline_api_key");
         return Ok((Some(k), source));
     }
-    if let Some(k) = client_auth_token(client_headers) {
+    let client_key = if route.provider_kind() == ProviderKind::Gemini {
+        google_api_key(client_headers).or_else(|| client_auth_token(client_headers))
+    } else {
+        client_auth_token(client_headers)
+    };
+    if let Some(k) = client_key {
         return Ok((Some(k), "client_header"));
     }
     if route.api_key_env.is_some() || route.api_key.is_some() {
@@ -53,7 +58,9 @@ pub fn apply_upstream_headers(
     let (key, _source) = resolve_upstream_api_key(route, client_headers)?;
 
     if let Some(key) = key {
-        if anthropic_style {
+        if provider == ProviderKind::Gemini {
+            req = req.header("x-goog-api-key", key);
+        } else if anthropic_style {
             req = req.header("x-api-key", key);
         } else {
             req = req.bearer_auth(key);
@@ -83,6 +90,15 @@ fn client_auth_token(headers: &HeaderMap) -> Option<String> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn google_api_key(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-goog-api-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
 
@@ -163,6 +179,48 @@ mod tests {
         assert_eq!(
             built.headers().get("authorization").unwrap(),
             "Bearer sk-test"
+        );
+    }
+
+    #[test]
+    fn gemini_uses_google_api_key_header() {
+        let r = route(Some("gemini"), Some("gemini-test"));
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer client"));
+        let rb = apply_upstream_headers(
+            reqwest::Client::new()
+                .post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"),
+            &headers,
+            &r,
+            ProtocolKind::Gemini,
+        )
+        .unwrap();
+        let built = rb.build().unwrap();
+        assert_eq!(
+            built.headers().get("x-goog-api-key").unwrap(),
+            "gemini-test"
+        );
+        assert!(built.headers().get("authorization").is_none());
+    }
+
+    #[test]
+    fn gemini_can_use_client_google_api_key_without_forwarding_duplicates() {
+        let r = route(Some("gemini"), None);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-goog-api-key", HeaderValue::from_static("client-gemini"));
+        let rb = apply_upstream_headers(
+            reqwest::Client::new()
+                .post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"),
+            &headers,
+            &r,
+            ProtocolKind::Gemini,
+        )
+        .unwrap();
+        let built = rb.build().unwrap();
+        assert_eq!(built.headers().get_all("x-goog-api-key").iter().count(), 1);
+        assert_eq!(
+            built.headers().get("x-goog-api-key").unwrap(),
+            "client-gemini"
         );
     }
 

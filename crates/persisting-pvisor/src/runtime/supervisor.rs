@@ -221,6 +221,10 @@ impl RuntimeSupervisor {
         self.network_mode() == OverlayNetMode::Auto
     }
 
+    pub(crate) fn proxy_network_is_configured(&self) -> bool {
+        self.proxy.is_some()
+    }
+
     pub(crate) fn apply_network_capability(&self, spec: &mut RunSpec) {
         let network = self.effective_network_config(spec);
         spec.capabilities.network = persisting_overlaynet::policy::network_capability(&network);

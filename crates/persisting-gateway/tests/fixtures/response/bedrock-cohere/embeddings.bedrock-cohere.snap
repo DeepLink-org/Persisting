@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/bedrock-cohere/embeddings.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/bedrock-cohere/embeddings.json
 info:
   embeddings:
     - - 0.1
@@ -45,6 +45,7 @@ info:
   },
   "parsed": {
     "input_tokens": 0,
-    "total_tokens": 0
+    "total_tokens": 0,
+    "provider_model": "cohere.embed-english-v3"
   }
 }

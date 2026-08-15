@@ -127,6 +127,29 @@ impl EventsDocument {
     }
 }
 
+impl EventRecord {
+    /// Decode the canonical typed semantics attached to an `llm.request` event.
+    /// Wire-only and legacy events legitimately return `None`.
+    pub fn llm_request_payload(&self) -> Result<Option<super::llm::LlmRequestEventPayload>> {
+        let Some(payload) = self.payload.get("llm_request") else {
+            return Ok(None);
+        };
+        serde_json::from_value(payload.clone())
+            .map(Some)
+            .map_err(|error| Error::Other(format!("decode llm.request payload: {error}")))
+    }
+
+    /// Decode the canonical typed semantics attached to an `llm.response` event.
+    pub fn llm_response_payload(&self) -> Result<Option<super::llm::LlmResponseEventPayload>> {
+        let Some(payload) = self.payload.get("llm_response") else {
+            return Ok(None);
+        };
+        serde_json::from_value(payload.clone())
+            .map(Some)
+            .map_err(|error| Error::Other(format!("decode llm.response payload: {error}")))
+    }
+}
+
 /// Error message shared by string-based convert APIs.
 pub fn events_lance_only_message() -> &'static str {
     "events is Lance-only (events.lance); JSON/JSONL is not a supported wire format. \
@@ -190,5 +213,44 @@ mod tests {
         assert_eq!(encoded["event_id"], "event-1");
         assert_eq!(encoded["run_id"], "run-1");
         assert!(encoded.get("identity").is_none());
+    }
+
+    #[test]
+    fn typed_llm_payload_decodes_from_event_envelope() {
+        let record = EventRecord {
+            identity: EventIdentity::default(),
+            seq: 1,
+            source: "gateway".into(),
+            kind: "llm.request".into(),
+            timestamp: None,
+            session_id: None,
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: serde_json::json!({
+                "llm_request": {
+                    "schema_version":"llm/v1",
+                    "input_format":"chat_completions",
+                    "request": {
+                        "model":"m",
+                        "system":[],
+                        "messages":[],
+                        "generation":{},
+                        "stream":false
+                    }
+                }
+            }),
+        };
+        let payload = record.llm_request_payload().unwrap().unwrap();
+        assert_eq!(payload.request.model.as_deref(), Some("m"));
+        assert_eq!(
+            payload.input_format,
+            super::super::llm::LlmProtocol::ChatCompletions
+        );
     }
 }

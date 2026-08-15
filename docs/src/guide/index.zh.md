@@ -6,7 +6,7 @@
 
 | 你想… | 从这里开始 |
 |---|---|
-| 运行单个 Agent 并拥有可审查工作区 | [pVisor：run / review / checkpoint](../design/cli-pvisor.md)（设计） |
+| 运行单个 Agent 并拥有可审查工作区 | [使用 pVisor 运行工作负载](pvisor-execution.md) |
 | 批量编排 Agent Run 并支持恢复 | [pPilot：run / produce](../design/cli-ppilot.md)（设计） |
 | 浏览、查询、导入或导出轨迹 Dataset | [pChronicle 命令参考](../design/cli-pchronicle.md) |
 | 查询或分析轨迹 Dataset | [pChronicle CLI](../design/cli-pchronicle.md) |
@@ -23,7 +23,7 @@
 
 | 能力 | 提供内容 | 状态 |
 |---|---|---|
-| [pVisor](../design/cli-pvisor.md) | 单个 Run 的执行、控制与事务工作区 | 已实现 |
+| [pVisor](pvisor-execution.md) | 单个 Run 的执行、控制与事务工作区；实现 [AgentVisor 契约](../design/agentvisor.md) | 已实现，产品门槛见契约文档 |
 | [pPilot](../design/cli-ppilot.md) | 批量编排、durable 结果与 Run 生产 | 已实现 |
 | [pChronicle](../design/cli-pchronicle.md) | Dataset 目录、有界 SQL/分析、格式交换、本地只读 UI | 已实现 |
 | [Capture](capture.md) | 捕获 LLM 流量并生成 Lance 与 Markdown 视图 | 已实现 |

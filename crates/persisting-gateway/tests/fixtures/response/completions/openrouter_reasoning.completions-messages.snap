@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/completions/openrouter_reasoning.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/completions/openrouter_reasoning.json
 info:
   id: gen-1758648153-xeB95xIQsxABYYNTJLAj
   provider: test

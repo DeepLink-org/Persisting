@@ -16,8 +16,9 @@ use crate::util::unix_now_ms;
 use crate::TrajectoryEventSink;
 use persisting_agentctl::ControlController;
 use persisting_agentctl::{
-    AttemptId, AttemptInfo, PolicyMode, RunFailure, RunFailureKind, RunInvocation, RunResult,
-    RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
+    AttemptId, AttemptInfo, CapabilityDimension, CapabilityEnforcementEvidence, EnforcementLevel,
+    ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RunFailure, RunFailureKind,
+    RunInvocation, RunResult, RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
 };
 #[cfg(feature = "lance-chronicle")]
 use persisting_pchronicle::AttemptRegistry;
@@ -78,8 +79,13 @@ pub enum PVisorError {
     AgentAbi(#[source] anyhow::Error),
     #[error("no executor supports this invocation")]
     UnsupportedInvocation,
-    #[error("executor `{0}` cannot enforce the requested capability policy")]
-    UnsupportedPolicy(String),
+    #[error(
+        "executor `{executor}` lacks enforced evidence for requested capability dimensions: {dimensions}"
+    )]
+    UnsupportedPolicy {
+        executor: String,
+        dimensions: String,
+    },
     #[error("event sink rejected run creation: {0}")]
     EventSink(#[source] anyhow::Error),
     #[error("durable Attempt registration failed: {0}")]
@@ -370,7 +376,7 @@ impl PVisor {
             .find(|executor| executor.supports(&spec.invocation))
             .cloned()
             .ok_or(PVisorError::UnsupportedInvocation)?;
-        let descriptor = executor.descriptor();
+        let mut descriptor = executor.descriptor();
         let vm_executor = descriptor.kind == persisting_agentctl::ExecutorKind::VirtualMachine;
         let vm_network_executor = vm_executor && executor.supports_vm_network_attachment();
         if self.runtime.vm_network_is_requested()
@@ -383,18 +389,39 @@ impl PVisor {
             )));
         }
         self.runtime.apply_network_capability(&mut spec);
-        if spec.runtime.policy_mode == PolicyMode::Enforce
-            && !descriptor.enforces_capabilities
-            && !(vm_network_executor
-                && self.runtime.vm_network_is_enforcing()
-                && requests_only_network_capability(&spec))
-        {
-            return Err(PVisorError::UnsupportedPolicy(descriptor.name));
+        let capability_enforcement = effective_capability_enforcement(
+            &descriptor,
+            &spec,
+            self.runtime.proxy_network_is_configured(),
+            vm_network_executor && self.runtime.vm_network_is_enforcing(),
+        );
+        if spec.runtime.policy_mode == PolicyMode::Enforce {
+            let missing = capability_enforcement
+                .missing_dimensions(&spec.capabilities, &spec.runtime.resource_limits);
+            if !missing.is_empty() {
+                return Err(PVisorError::UnsupportedPolicy {
+                    executor: descriptor.name,
+                    dimensions: missing
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                });
+            }
         }
+        // Persist the effective, Run-specific evidence in Attempt status and
+        // Run Bundle descriptors, including enforcement supplied by drivers.
+        descriptor.capability_enforcement = capability_enforcement.clone();
         spec.metadata.insert(
             "pvisor.executor".into(),
             serde_json::to_value(&descriptor).map_err(|error| {
                 PVisorError::InvalidSpec(format!("serialize executor descriptor: {error}"))
+            })?,
+        );
+        spec.metadata.insert(
+            "pvisor.capability_enforcement".into(),
+            serde_json::to_value(&capability_enforcement).map_err(|error| {
+                PVisorError::InvalidSpec(format!("serialize capability enforcement: {error}"))
             })?,
         );
         let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
@@ -749,15 +776,43 @@ impl PVisor {
     }
 }
 
-fn requests_only_network_capability(spec: &RunSpec) -> bool {
-    !matches!(
-        spec.capabilities.network,
-        persisting_agentctl::NetworkCapability::Ambient
-    ) && spec.capabilities.models.is_empty()
-        && spec.capabilities.tools.is_empty()
-        && spec.capabilities.filesystem.is_empty()
-        && spec.capabilities.secrets.is_empty()
-        && !spec.capabilities.allow_subprocess
+fn effective_capability_enforcement(
+    descriptor: &ExecutorDescriptor,
+    spec: &RunSpec,
+    proxy_network_configured: bool,
+    vm_network_enforcing: bool,
+) -> CapabilityEnforcementEvidence {
+    let mut evidence = descriptor.capability_enforcement.clone();
+    if proxy_network_configured {
+        evidence.record(
+            CapabilityDimension::Network,
+            EnforcementLevel::Cooperative,
+            "explicit-proxy-environment",
+        );
+    }
+    if matches!(spec.capabilities.network, NetworkCapability::Deny) {
+        match descriptor.isolation {
+            IsolationKind::RootlessProcess => evidence.record(
+                CapabilityDimension::Network,
+                EnforcementLevel::Enforced,
+                "linux-network-namespace",
+            ),
+            IsolationKind::SandboxedProcess => evidence.record(
+                CapabilityDimension::Network,
+                EnforcementLevel::Enforced,
+                "macos-seatbelt-network-deny",
+            ),
+            _ => {}
+        }
+    }
+    if vm_network_enforcing {
+        evidence.record(
+            CapabilityDimension::Network,
+            EnforcementLevel::Enforced,
+            "vm-smoltcp-network-boundary",
+        );
+    }
+    evidence
 }
 
 fn terminal_payload(result: &RunResult) -> serde_json::Value {
@@ -1260,13 +1315,22 @@ mod tests {
             Ok(_) => panic!("host process must not claim capability enforcement"),
             Err(error) => error,
         };
-        assert!(matches!(error, PVisorError::UnsupportedPolicy(_)));
+        assert!(matches!(
+            error,
+            PVisorError::UnsupportedPolicy { dimensions, .. } if dimensions == "network"
+        ));
     }
 
     #[test]
-    fn ambient_network_is_not_an_enforceable_network_capability() {
+    fn ambient_network_requires_an_enforced_boundary() {
         let spec = RunSpec::process("run-ambient", "test-agent", "echo");
-        assert!(!requests_only_network_capability(&spec));
+        assert_eq!(
+            persisting_agentctl::requested_enforcement_dimensions(
+                &spec.capabilities,
+                &spec.runtime.resource_limits,
+            ),
+            vec![CapabilityDimension::Network]
+        );
     }
 
     #[tokio::test]
@@ -1306,7 +1370,10 @@ upstream = "https://example.com"
             Ok(_) => panic!("explicit proxy capture cannot enforce host process capabilities"),
             Err(error) => error,
         };
-        assert!(matches!(error, PVisorError::UnsupportedPolicy(_)));
+        assert!(matches!(
+            error,
+            PVisorError::UnsupportedPolicy { dimensions, .. } if dimensions == "network"
+        ));
     }
 
     #[cfg(target_os = "macos")]

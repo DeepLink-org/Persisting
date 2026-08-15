@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/anthropic/tool.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/anthropic/tool.json
 info:
   id: msg_01Aq9w938a90dw8q
   type: message
@@ -32,7 +32,8 @@ info:
       "completion_tokens": 48,
       "total_tokens": 606,
       "prompt_tokens_details": {
-        "cached_tokens": 2
+        "cached_tokens": 2,
+        "cache_write_tokens": 1
       },
       "cache_read_input_tokens": 2,
       "cache_creation_input_tokens": 1
@@ -65,8 +66,26 @@ info:
     "input_tokens": 558,
     "output_tokens": 48,
     "total_tokens": 606,
+    "cache_creation_input_tokens": 1,
     "cached_input_tokens": 2,
     "service_tier": "standard",
-    "provider_model": "claude-opus-4-6"
+    "provider_model": "claude-opus-4-6",
+    "output_messages": [
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_call",
+            "id": "toolu_01A09q90qw90lq917835lq9",
+            "name": "get_weather",
+            "arguments": {
+              "location": "San Francisco, CA",
+              "unit": "celsius"
+            }
+          }
+        ],
+        "finish_reason": "tool_calls"
+      }
+    ]
   }
 }

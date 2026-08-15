@@ -114,6 +114,7 @@ plugins:
             pPilot Architecture: pPilot 架构
             Dataset Catalog: 数据集目录
             pChronicle Product Design: pChronicle 产品概要设计
+            AgentVisor category: AgentVisor 品类契约
             Isolation backends: 隔离后端
             References: 参考
             Similar Systems: 类似系统
@@ -152,6 +153,7 @@ nav:
       - Overview and maturity: design/index.md
       - Agent infrastructure: design/agent-infrastructure.md
       - pVisor execution runtime:
+          - AgentVisor category: design/agentvisor.md
           - Isolation backends: design/pvisor-isolation.md
           - Gateway capture driver: design/gateway.md
           - OverlayNet transparent interception: design/overlaynet.md

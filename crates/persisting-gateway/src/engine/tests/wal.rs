@@ -19,6 +19,7 @@ async fn wal_replays_unacked_events_on_next_engine() {
                 body_bytes: 5,
                 user_content: Some("survives crash".into()),
                 body_json: None,
+                semantic: None,
                 model_rewritten: false,
                 headers: vec![],
             }),

@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/completions/stream.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/completions/stream.json
 ---
 data: {"id":"chatcmpl-DFnKV81lMKGBRRh35sxZO8I88ireo","object":"chat.completion.chunk","created":123,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"finish_reason":null}],"usage":null,"obfuscation":"Hxo8P"}
 

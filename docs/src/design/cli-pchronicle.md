@@ -12,6 +12,7 @@ product and storage boundary, see the [pChronicle product architecture](pchronic
 
 | Command | Current behavior |
 |---|---|
+| `onboard` | Render a guided walkthrough over a temporary example or an explicit Dataset |
 | `default` | Get or set one local directory as the default Warehouse |
 | `ls` / `list` | Discover logical trajectory Sources |
 | `status` | Report Dataset health and aggregate counts |
@@ -23,6 +24,35 @@ product and storage boundary, see the [pChronicle product architecture](pchronic
 | `serve` | Serve statically configured Datasets through a loopback-only read API and Web UI |
 
 The executable's `--help` is authoritative for individual flags and defaults.
+
+## Guided onboarding
+
+```bash
+pchronicle onboard
+pchronicle onboard ./dataset
+pchronicle onboard query ./dataset
+pchronicle onboard exchange
+```
+
+With no Dataset argument, the command creates deterministic temporary ATIF,
+ACTF, and OpenAI Messages Datasets and removes them on exit. An explicit Dataset
+is opened read-only. The default walkthrough executes every section; `all`,
+`concepts`, `inspect`, `analyze`, `query`, `formats`, `find`, `exchange`, and
+`serve` subcommands navigate directly to one section. Dataset-oriented sections
+accept an optional explicit Dataset URI.
+
+The expanded guide executes catalog, status, built-in analysis, schema discovery,
+Step and tool-call SQL, cross-format SQL, Source-local lookup, isolated default
+Warehouse setup, create-only import, strict export, and server guidance. Executed
+operations use the same internal implementation as their product commands. The
+Warehouse and exchange section always uses an isolated settings file and temporary
+paths.
+
+The guide is authored as Markdown. Interactive terminals receive a styled
+rendering of the small supported subset; redirected stdout receives the original
+Markdown with no ANSI escapes. ANSI styling is also disabled by `NO_COLOR` or
+`TERM=dumb`. This presentation behavior is confined to `onboard` and does not
+change any existing command's stdout/stderr contract.
 
 ## Local default Warehouse
 

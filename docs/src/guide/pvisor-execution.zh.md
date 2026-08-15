@@ -1,5 +1,9 @@
 # 使用 pVisor 运行工作负载
 
+pVisor 是 Persisting 对 [AgentVisor 契约](../design/agentvisor.md) 的实现：无论选择
+哪个 execution provider，它都统一管理单个 Agent Run 的生命周期、能力、外部效果、
+检查点与证据。
+
 本文详细说明 pVisor 当前支持的 host 与 VM 执行方式。命令行刻意把三个彼此独立的
 问题分开表达：
 
@@ -140,12 +144,17 @@ Run 结束后，使用输出的 Run id，或在没有歧义时使用 `last`：
 ```bash
 ./target/release/pvisor review last
 ./target/release/pvisor inspect last -- git status --short
-./target/release/pvisor apply last
+./target/release/pvisor apply last --path src
+./target/release/pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
+./target/release/pvisor apply last --all
 # 或者丢弃：
 ./target/release/pvisor drop last
 ```
 
 `apply` 默认写回 `--overlayfs-base`，也可以给 apply 子命令显式传 `--target`。
+过滤后的 apply 只消费依赖闭包内的选中变更，其余变更继续留在 stage，可再次
+apply 或最终 drop。opaque 目录和硬链接组不会被不安全地拆开；每次成功批次都会
+记录到 `apply-ledger.json`。
 stage 不能包含 base 或 compose layer。stage 位于 base 内时会从 merged view 隐藏，
 但把不同 Run 的 stage 放进独立的 `tmp` 子目录通常更容易审计和清理。
 

@@ -38,7 +38,7 @@ pub fn skip_transparent_forward_header_for(headers: &HeaderMap, name: &str) -> b
 pub fn skip_upstream_forward_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "host" | "content-length" | "x-api-key" | "authorization" | "expect"
+        "host" | "content-length" | "x-api-key" | "x-goog-api-key" | "authorization" | "expect"
     ) || is_hop_by_hop(name)
 }
 
