@@ -7,7 +7,7 @@
 | **Date** | 2026-07-30 |
 | **Component** | Gateway + pChronicle |
 | **Implements** | `persisting-gateway` `CaptureRecord` / `EventRow` · `persisting-pchronicle` `formats/events.rs` |
-| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [Capture 管线](../design/gateway.md) · [轨迹存储](../design/trajectory.md) |
+| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [Capture 管线](../pvisor/design/gateway.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ---
 
@@ -540,10 +540,10 @@ key = events 字段，value = 在 Storyline 上求值的 JSONPath。
 
 | 文档 | 关系 |
 |---|---|
-| [轨迹存储](../design/trajectory.md) | Lance SoT；本 RFC 强调 SoT 内容应是 HTTP wire |
-| [Gateway 管线](../design/gateway.md) | 生产 events；Story 边界在 **之后** 解释 |
+| [轨迹存储](../pchronicle/design/trajectory-storage.md) | Lance SoT；本 RFC 强调 SoT 内容应是 HTTP wire |
+| [Gateway 管线](../pvisor/design/gateway.md) | 生产 events；Story 边界在 **之后** 解释 |
 | [RFC-0001 Storyline](0001-storyline-format.md) | 有损 Normal 视图 / hub |
-| [轨迹 Markdown 格式](../design/trajectory-format.md) | 人读投影，不是 SoT |
+| [轨迹 Markdown 格式](../pchronicle/reference/agenticmd.md) | 人读投影，不是 SoT |
 
 实现现状：`CaptureRecord` 已具备 `path`/`body`/`status` 等扁平键；本 RFC 将其 **提升为明确的 HTTP-first 契约**，并引入 `http.*` kind 与 `payload.http` 嵌套作为演进目标。
 

@@ -1,7 +1,7 @@
 ---
 template: home.html
-title: Persisting — Agent 执行、编排与持久化历史
-description: Agent 基础设施：pVisor 是管理单个 Run 的 AgentVisor，pPilot 编排批量 Run，pChronicle 保存 canonical 历史。
+title: Persisting — Agent 执行虚拟化、Effect 治理与持久历史
+description: 在隔离的虚拟执行环境中运行一个 Agent，审查它的 Effect，扩展同一套 Run 模型，并保留发生过的事实。
 hide: toc
 ---
 

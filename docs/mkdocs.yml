@@ -1,5 +1,5 @@
 site_name: Persisting
-site_description: Persistent Storage for Parameters, KV Cache, and Trajectories
+site_description: Agent execution virtualization, effect governance, orchestration, and durable history
 site_url: https://github.com/DeepLink-org/Persisting
 docs_dir: src
 
@@ -38,11 +38,7 @@ theme:
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.superfences
   - pymdownx.highlight:
       anchor_linenums: true
       line_spans: __span
@@ -80,46 +76,75 @@ plugins:
           site_name: "Persisting 文档"
           nav_translations:
             Home: 首页
-            Start Here: 开始使用
-            Installation: 安装指南
-            Quick Start: 快速开始
-            Choose a Capability: 选择能力
-            User Guide: 用户指南
-            Guides: 使用指南
-            Run workloads with pVisor: 使用 pVisor 运行工作负载
-            Capture: 轨迹采集
-            Control network access with OverlayNet: 使用 OverlayNet 控制网络访问
-            Queue: 队列
-            Tensor Memory: 张量内存
-            Search: 检索
-            pPilot: pPilot 编排
-            pChronicle CLI: pChronicle 命令参考
-            Custom Backends: 自定义后端
-            Reproducible examples: 可复现示例
-            API Reference: API 参考
+            pVisor: pVisor
+            pChronicle: pChronicle
+            Overview: 概览
+            Concepts: 核心概念
+            Get Started: 快速开始
+            Guides: 指南
+            Design: 设计
             Reference: 参考
-            Design: 设计文档
-            Architecture & Internals: 架构与内部实现
-            Engineering Notes: 工程笔记
-            Implementation status: 实现状态
-            Tiered-storage implementation steps: 分层存储实现步骤
-            Research Notes: 调研笔记
-            Architecture: 架构设计
-            Distributed Tiered Storage: 分布式分层存储
-            Trajectory Storage: 轨迹存储模型
-            Trajectory Format: 轨迹 Markdown 格式
-            CLI Architecture: CLI 整体架构
-            History / Eval / Gateway CLI: History / Eval / Gateway 命令
-            Capture CLI: Capture 子命令
-            pPilot Architecture: pPilot 架构
+            Project: 项目
+            Product overview: 产品概览
+            Architecture: 架构
+            System overview: 系统概览
+            AgentVisor category: AgentVisor 品类
+            Run, Attempt, and Effect: Run、Attempt 与 Effect
+            Capabilities and evidence: Capability 与 Evidence
+            Guides overview: 指南概览
+            Design overview: 设计概览
+            Reference overview: 参考概览
+            Execution environments: 执行环境
+            Review and apply effects: 审查并应用 Effect
+            Network control: 网络控制
+            Capture trajectories: 捕获轨迹
+            Scale with pPilot: 使用 pPilot 扩展
+            Isolation architecture: 隔离架构
+            Gateway architecture: Gateway 架构
+            OverlayNet architecture: OverlayNet 架构
+            pPilot orchestration: pPilot 编排
+            pVisor CLI: pVisor CLI
+            pPilot CLI: pPilot CLI
+            Dataset and history concepts: Dataset 与历史概念
+            Dataset, Source, and Snapshot: Dataset、Source 与 Snapshot
+            Facts, projections, and revisions: 事实、Projection 与 Revision
+            Discover and query: 发现与查询
+            Import and export: 导入与导出
+            Local read-only Warehouse: 本地只读 Warehouse
+            Product architecture: 产品架构
+            Trajectory storage: 轨迹存储
+            Storyline Lance projection: Storyline Lance 投影
+            pChronicle reference: pChronicle 参考
+            AgenticMD format: AgenticMD 格式
+            Trajectory formats: 轨迹格式
+            End-to-end architecture: 端到端架构
+            Local to fleet: 从本地到集群
+            Security and evidence: 安全与 Evidence
+            Engineering: 工程
+            Engineering Notes: 工程说明
+            Releasing persisting: 发布 Persisting
+            Reproducible examples: 可复现示例
+            Decisions and RFCs: 决策与 RFC
+            Index: 索引
+            0001 Storyline format: 0001 Storyline 格式
+            0002 Events format: 0002 Events 格式
+            0003 pChronicle ownership: 0003 pChronicle 所有权
+            0004 ACTF format: 0004 ACTF 格式
+            0005 pChronicle revision lineage: 0005 pChronicle 修订谱系
+            Research: 调研
+            TransferQueue comparison: TransferQueue 对比
+            TransferQueue interface mapping: TransferQueue 接口映射
+            LMCache analysis: LMCache 分析
+            Standalone systems: 独立系统
+            Installation: 安装指南
+            pChronicle CLI: pChronicle 命令参考
+            Query model: Query Model
             Dataset Catalog: 数据集目录
-            pChronicle Product Design: pChronicle 产品概要设计
-            AgentVisor category: AgentVisor 品类契约
-            Isolation backends: 隔离后端
-            References: 参考
-            Similar Systems: 类似系统
-            TransferQueue Comparison: TransferQueue 对比
-            LMCache: LMCache 参考
+            Queue guide: Queue 指南
+            Python API overview: Python API 概览
+            Queue API: Queue API
+            Custom queue backends: 自定义 Queue backend
+            Queue persistence: Queue 持久化
   - mkdocstrings:
       handlers:
         python:
@@ -131,54 +156,87 @@ plugins:
             show_submodules: no
 
 nav:
-  - Home: index.md
-  - Start Here:
+  - Home:
+      - Overview: index.md
+      - Product overview: overview.md
       - Installation: installation.md
-      - Quick Start: quickstart.md
-      - Choose a Capability: guide/index.md
-  - Guides:
-      - Capture agent trajectories: guide/capture.md
-      - Run workloads with pVisor: guide/pvisor-execution.md
-      - Control network access with OverlayNet: guide/overlaynet.md
-      - Reproducible examples: guide/examples.md
-      - Stream events with Queue: guide/queue.md
-      - Build a custom queue backend: guide/custom-backends.md
-  - Reference:
-      - Python API overview: api/index.md
-      - Queue API: api/queue.md
-      - pVisor command reference: design/cli-pvisor.md
-      - pPilot command reference: design/cli-ppilot.md
-      - pChronicle command reference: design/cli-pchronicle.md
-  - Architecture & Internals:
-      - Overview and maturity: design/index.md
-      - Agent infrastructure: design/agent-infrastructure.md
-      - pVisor execution runtime:
-          - AgentVisor category: design/agentvisor.md
-          - Isolation backends: design/pvisor-isolation.md
-          - Gateway capture driver: design/gateway.md
-          - OverlayNet transparent interception: design/overlaynet.md
-      - pPilot orchestration: design/ppilot.md
-      - pChronicle history store:
-          - pChronicle Product Design: design/pchronicle-product.md
-          - Dataset Catalog: design/dataset-catalog.md
-          - Trajectory storage: design/trajectory.md
-          - Storyline three-table Lance: design/storyline-lance.md
-          - Trajectory Markdown format: design/trajectory-format.md
-      - Queue persistence: design/architecture.md
-  - RFCs:
-      - Index: rfcs/index.md
-      - 0001 Storyline format: rfcs/0001-storyline-format.md
-      - 0002 Events format: rfcs/0002-events-format.md
-      - 0003 pChronicle ownership: rfcs/0003-pchronicle-ownership.md
-      - 0004 ACTF format: rfcs/0004-actf-format.md
-      - 0005 pChronicle revision lineage: rfcs/0005-pchronicle-revision-lineage.md
-  - Engineering Notes:
-      - Implementation status: dev/index.md
-      - Releasing persisting: dev/releasing.md
-  - Research Notes:
-      - TransferQueue comparison: design/references/transfer-queue-comparison.md
-      - TransferQueue interface mapping: design/references/transfer-queue-interface.md
-      - LMCache analysis: design/references/lmcache.md
+  - pVisor:
+      - Overview: pvisor/index.md
+      - Get Started: pvisor/get-started.md
+      - Concepts:
+          - Overview: pvisor/concepts/index.md
+          - AgentVisor category: pvisor/concepts/agentvisor.md
+          - Run, Attempt, and Effect: pvisor/concepts/run-model.md
+          - Capabilities and evidence: pvisor/concepts/capabilities-and-evidence.md
+      - Guides:
+          - Guides overview: pvisor/guides/index.md
+          - Execution environments: pvisor/guides/execution.md
+          - Review and apply effects: pvisor/guides/review-apply.md
+          - Network control: pvisor/guides/network.md
+          - Capture trajectories: pvisor/guides/capture.md
+          - Scale with pPilot: pvisor/guides/orchestrate.md
+      - Design:
+          - Design overview: pvisor/design/index.md
+          - Isolation architecture: pvisor/design/isolation.md
+          - OverlayNet architecture: pvisor/design/overlaynet.md
+          - Gateway architecture: pvisor/design/gateway.md
+          - pPilot orchestration: pvisor/design/orchestration.md
+      - Reference:
+          - Reference overview: pvisor/reference/index.md
+          - pVisor CLI: pvisor/reference/cli.md
+          - pPilot CLI: pvisor/reference/ppilot-cli.md
+  - pChronicle:
+      - Overview: pchronicle/index.md
+      - Get Started: pchronicle/get-started.md
+      - Concepts:
+          - Dataset and history concepts: pchronicle/concepts/index.md
+          - Dataset, Source, and Snapshot: pchronicle/concepts/dataset-and-source.md
+          - Facts, projections, and revisions: pchronicle/concepts/facts-and-projections.md
+      - Guides:
+          - Guides overview: pchronicle/guides/index.md
+          - Discover and query: pchronicle/guides/discover-and-query.md
+          - Import and export: pchronicle/guides/exchange.md
+          - Local read-only Warehouse: pchronicle/guides/serve.md
+      - Design:
+          - Design overview: pchronicle/design/index.md
+          - Product architecture: pchronicle/design/architecture.md
+          - Dataset Catalog: pchronicle/design/catalog.md
+          - Trajectory storage: pchronicle/design/trajectory-storage.md
+          - Storyline Lance projection: pchronicle/design/storyline-lance.md
+      - Reference:
+          - pChronicle reference: pchronicle/reference/index.md
+          - pChronicle CLI: pchronicle/reference/cli.md
+          - Query model: pchronicle/reference/query-model.md
+          - AgenticMD format: pchronicle/reference/agenticmd.md
+          - Trajectory formats: pchronicle/reference/formats/index.md
+  - Project:
+      - Overview: project/index.md
+      - Architecture:
+          - System overview: system-design/index.md
+          - End-to-end architecture: system-design/architecture.md
+          - Local to fleet: system-design/local-to-fleet.md
+          - Security and evidence: system-design/security-evidence.md
+      - Engineering:
+          - Engineering Notes: project/engineering.md
+          - Releasing persisting: project/releasing.md
+          - Reproducible examples: project/examples.md
+      - Decisions and RFCs:
+          - Index: rfcs/index.md
+          - 0001 Storyline format: rfcs/0001-storyline-format.md
+          - 0002 Events format: rfcs/0002-events-format.md
+          - 0003 pChronicle ownership: rfcs/0003-pchronicle-ownership.md
+          - 0004 ACTF format: rfcs/0004-actf-format.md
+          - 0005 pChronicle revision lineage: rfcs/0005-pchronicle-revision-lineage.md
+      - Research:
+          - TransferQueue comparison: design/references/transfer-queue-comparison.md
+          - TransferQueue interface mapping: design/references/transfer-queue-interface.md
+          - LMCache analysis: design/references/lmcache.md
+      - Standalone systems:
+          - Queue guide: guide/queue.md
+          - Python API overview: api/index.md
+          - Queue API: api/queue.md
+          - Custom queue backends: guide/custom-backends.md
+          - Queue persistence: design/architecture.md
 
 extra:
   generator: false

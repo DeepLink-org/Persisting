@@ -13,8 +13,8 @@ container, and libkrun VM executors while preserving one Agent-facing contract.
 
 ![pVisor AgentVisor architecture](../../docs/src/assets/diagrams/pvisor/agentvisor-architecture.svg)
 
-The complete category definition and product invariants are in the
-[AgentVisor contract](../../docs/src/design/agentvisor.md). The
+The industry-level category definition is in
+[What is an AgentVisor?](../../docs/src/design/agentvisor.md). The
 [execution guide](../../docs/src/guide/pvisor-execution.md),
 [isolation architecture](../../docs/src/design/pvisor-isolation.md), and
 [command reference](../../docs/src/design/cli-pvisor.md) describe the current

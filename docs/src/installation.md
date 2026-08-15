@@ -119,6 +119,6 @@ pchronicle --help
 
 ## Next steps
 
-- [Quick Start](quickstart.md) — run an Agent workflow in five minutes
-- [Choose a Capability](guide/index.md) — find the workflow for your goal
-- [Architecture & Internals](design/index.md) — understand the implementation
+- [Run your first Agent](pvisor/get-started.md) — complete the run, review, and selective-apply loop
+- [Persisting, in one story](overview.md) — understand how one Run scales into orchestration and history
+- [Explore pVisor](pvisor/index.md) or [pChronicle](pchronicle/index.md) by product

@@ -3,802 +3,190 @@
 {% block tabs %}
   {{ super() }}
 
-  <style>
-    /* Prevent horizontal overflow */
-    body {
-      overflow-x: hidden;
-    }
-
-    /* Hide main content for home page */
-    .md-content {
-      display: none;
-    }
-
-    /* Hide table of contents */
-    @media screen and (min-width: 60em) {
-      .md-sidebar--secondary {
-        display: none;
-      }
-    }
-
-    /* Hide navigation */
-    @media screen and (min-width: 76.25em) {
-      .md-sidebar--primary {
-        display: none;
-      }
-    }
-
-    /* Make header static */
-    .md-header {
-      position: initial;
-    }
-
-    .md-main__inner {
-      margin: 0;
-    }
-
-    /* Style Learn More links */
-    .persisting-feature-section .md-button,
-    .persisting-intro-section .md-button:not(.md-button--primary) {
-      background-color: transparent;
-      color: #475569;
-      text-decoration: underline;
-      border: none;
-      box-shadow: none;
-    }
-
-    .persisting-feature-section .md-button:hover,
-    .persisting-intro-section .md-button:not(.md-button--primary):hover {
-      background-color: transparent;
-      color: #64748B;
-      text-decoration: underline;
-    }
-
-    /* Feature Cards Section */
-    .persisting-features-grid {
-      padding: 80px 0;
-      background: linear-gradient(180deg, rgba(71, 85, 105, 0.03) 0%, transparent 100%);
-    }
-
-    .persisting-features-grid .container {
-      width: 100%;
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 0 20px;
-    }
-
-    .persisting-features-grid h2 {
-      text-align: center;
-      font-size: 2.5rem;
-      font-weight: 600;
-      margin-bottom: 16px;
-      color: var(--md-primary-fg-color);
-    }
-
-    .persisting-features-grid .section-subtitle {
-      text-align: center;
-      font-size: 1.1rem;
-      opacity: 0.7;
-      margin-bottom: 48px;
-      max-width: 600px;
-      margin-left: auto;
-      margin-right: auto;
-    }
-
-    .features-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 24px;
-    }
-
-    .feature-card {
-      background: var(--md-default-bg-color);
-      border: 1px solid rgba(71, 85, 105, 0.15);
-      border-radius: 16px;
-      padding: 32px;
-      transition: all 0.3s ease;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .feature-card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 4px;
-      background: linear-gradient(90deg, #334155, #64748B);
-      opacity: 0;
-      transition: opacity 0.3s ease;
-    }
-
-    .feature-card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 12px 40px rgba(71, 85, 105, 0.2);
-      border-color: rgba(71, 85, 105, 0.4);
-    }
-
-    .feature-card:hover::before {
-      opacity: 1;
-    }
-
-    .feature-icon {
-      font-size: 2.5rem;
-      margin-bottom: 16px;
-      display: block;
-    }
-
-    .feature-card h3 {
-      font-size: 1.25rem;
-      font-weight: 600;
-      margin-bottom: 12px;
-      color: var(--md-typeset-color);
-    }
-
-    .feature-card p {
-      font-size: 0.95rem;
-      line-height: 1.6;
-      opacity: 0.8;
-      margin: 0;
-    }
-
-    /* Quick Start Section */
-    .persisting-quickstart {
-      padding: 80px 0;
-      background-color: var(--md-default-bg-color);
-    }
-
-    .persisting-quickstart .container {
-      width: 100%;
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 0 20px;
-    }
-
-    .persisting-quickstart h2 {
-      text-align: center;
-      font-size: 2.5rem;
-      font-weight: 600;
-      margin-bottom: 48px;
-      color: var(--md-primary-fg-color);
-    }
-
-    .quickstart-steps {
-      display: flex;
-      flex-direction: column;
-      gap: 32px;
-    }
-
-    .quickstart-step {
-      display: flex;
-      gap: 24px;
-      align-items: flex-start;
-    }
-
-    .step-number {
-      width: 48px;
-      height: 48px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, #334155, #475569);
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.25rem;
-      font-weight: 700;
-      flex-shrink: 0;
-    }
-
-    .step-content {
-      flex: 1;
-    }
-
-    .step-content h3 {
-      font-size: 1.25rem;
-      font-weight: 600;
-      margin-bottom: 12px;
-      color: var(--md-typeset-color);
-    }
-
-    .step-content .code-block {
-      background: #1e1e2e;
-      border-radius: 12px;
-      padding: 20px;
-      overflow-x: auto;
-    }
-
-    .step-content .code-block pre {
-      margin: 0;
-      background: transparent;
-    }
-
-    .step-content .code-block code {
-      font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
-      font-size: 0.9rem;
-      line-height: 1.6;
-      color: #cdd6f4;
-    }
-
-    /* Use Cases Section */
-    .persisting-usecases {
-      padding: 80px 0;
-      background: linear-gradient(180deg, transparent 0%, rgba(71, 85, 105, 0.04) 100%);
-    }
-
-    .persisting-usecases .container {
-      width: 100%;
-      max-width: 1140px;
-      margin: 0 auto;
-      padding: 0 20px;
-    }
-
-    .persisting-usecases h2 {
-      text-align: center;
-      font-size: 2.5rem;
-      font-weight: 600;
-      margin-bottom: 48px;
-      color: var(--md-primary-fg-color);
-    }
-
-    .usecases-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 24px;
-    }
-
-    .usecase-card {
-      background: linear-gradient(135deg, rgba(71, 85, 105, 0.05) 0%, rgba(100, 116, 139, 0.05) 100%);
-      border-radius: 16px;
-      padding: 32px;
-      border: 1px solid rgba(71, 85, 105, 0.15);
-    }
-
-    .usecase-icon {
-      font-size: 2rem;
-      margin-bottom: 16px;
-    }
-
-    .usecase-card h3 {
-      font-size: 1.25rem;
-      font-weight: 600;
-      margin-bottom: 12px;
-      color: var(--md-typeset-color);
-    }
-
-    .usecase-card p {
-      font-size: 0.95rem;
-      line-height: 1.6;
-      opacity: 0.8;
-      margin: 0;
-    }
-
-    /* Integration Section */
-    .persisting-integration {
-      padding: 80px 0;
-      background-color: var(--md-default-bg-color);
-    }
-
-    .persisting-integration .container {
-      width: 100%;
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 0 20px;
-    }
-
-    .persisting-integration h2 {
-      text-align: center;
-      font-size: 2.5rem;
-      font-weight: 600;
-      margin-bottom: 16px;
-      color: var(--md-primary-fg-color);
-    }
-
-    .persisting-integration .section-subtitle {
-      text-align: center;
-      font-size: 1.1rem;
-      opacity: 0.7;
-      margin-bottom: 48px;
-    }
-
-    .integration-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 24px;
-    }
-
-    .integration-card {
-      text-align: center;
-      padding: 32px 24px;
-      background: var(--md-default-bg-color);
-      border-radius: 16px;
-      border: 1px solid rgba(71, 85, 105, 0.15);
-      transition: all 0.3s ease;
-    }
-
-    .integration-card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 12px 40px rgba(71, 85, 105, 0.15);
-    }
-
-    .integration-icon {
-      font-size: 3rem;
-      margin-bottom: 12px;
-    }
-
-    .integration-card h4 {
-      font-size: 1.1rem;
-      font-weight: 600;
-      margin: 0;
-      color: var(--md-typeset-color);
-    }
-
-    /* Community Section */
-    .persisting-community {
-      padding: 80px 0;
-      background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
-      color: white;
-    }
-
-    .persisting-community .container {
-      width: 100%;
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 0 20px;
-      text-align: center;
-    }
-
-    .persisting-community h2 {
-      font-size: 2.5rem;
-      font-weight: 600;
-      margin-bottom: 16px;
-    }
-
-    .persisting-community .section-subtitle {
-      font-size: 1.1rem;
-      opacity: 0.8;
-      margin-bottom: 40px;
-    }
-
-    .community-links {
-      display: flex;
-      justify-content: center;
-      gap: 20px;
-      flex-wrap: wrap;
-    }
-
-    .community-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      padding: 16px 32px;
-      background: rgba(255, 255, 255, 0.1);
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      border-radius: 12px;
-      color: white;
-      text-decoration: none;
-      font-weight: 500;
-      transition: all 0.3s ease;
-    }
-
-    .community-link:hover {
-      background: rgba(255, 255, 255, 0.2);
-      transform: translateY(-2px);
-      color: white;
-    }
-
-    .community-link svg {
-      width: 24px;
-      height: 24px;
-      fill: currentColor;
-    }
-
-    /* Responsive */
-    @media (max-width: 768px) {
-      .persisting-features-grid h2,
-      .persisting-quickstart h2,
-      .persisting-usecases h2,
-      .persisting-integration h2,
-      .persisting-community h2 {
-        font-size: 2rem;
-      }
-
-      .quickstart-step {
-        flex-direction: column;
-        gap: 16px;
-      }
-
-      .community-links {
-        flex-direction: column;
-        align-items: center;
-      }
-
-      .community-link {
-        width: 100%;
-        max-width: 300px;
-        justify-content: center;
-      }
-    }
-  </style>
-
-  <script>
-    // Fix palette toggle jumping to bottom of page
-    (function() {
-      let savedScrollY = 0;
-      let isTogglingPalette = false;
-
-      if ('scrollRestoration' in history) {
-        history.scrollRestoration = 'manual';
-      }
-
-      const preventScroll = function() {
-        if (isTogglingPalette) {
-          window.scrollTo(0, savedScrollY);
-        }
-      };
-
-      document.addEventListener('click', function(e) {
-        const paletteLabel = e.target.closest('[for^="__palette"]');
-        if (paletteLabel) {
-          savedScrollY = window.scrollY;
-          isTogglingPalette = true;
-          window.addEventListener('scroll', preventScroll, { passive: false });
-          setTimeout(function() {
-            isTogglingPalette = false;
-            window.removeEventListener('scroll', preventScroll);
-          }, 100);
-        }
-      }, true);
-
-      window.addEventListener('hashchange', function(e) {
-        if (window.location.hash.startsWith('#__palette')) {
-          e.preventDefault();
-          window.scrollTo(0, savedScrollY);
-          history.replaceState(null, null, window.location.pathname);
-        }
-      }, false);
-
-      document.addEventListener('DOMContentLoaded', function() {
-        const paletteInputs = document.querySelectorAll('input[name="__palette"]');
-        paletteInputs.forEach(function(input) {
-          input.addEventListener('change', function() {
-            window.scrollTo(0, savedScrollY);
-          });
-        });
-      });
-    })();
-  </script>
-
-  <!-- Hero Section -->
-  <section class="mdx-container">
-    <div class="container">
-      <div class="intro-message">
-        <div class="hero-logo">
-          <span class="hero-icon">💾</span>
-          <h1>Persisting</h1>
-        </div>
+  <main class="persisting-home">
+    <section class="persisting-hero">
+      <div class="persisting-shell">
+        <p class="persisting-eyebrow">AGENT EXECUTION INFRASTRUCTURE</p>
+        <h1>Persisting</h1>
         {% if config.theme.language == "zh" %}
-        <h3>Agent 执行、编排与持久化历史</h3>
-        {% else %}
-        <h3>Agent execution, orchestration, and durable history</h3>
-        {% endif %}
-        <hr class="intro-divider" />
-        <ul class="list-inline">
-          <li>
-            <a href="quickstart/" class="md-button md-button--primary">{% if config.theme.language == "zh" %}快速开始{% else %}Get Started{% endif %}</a>
-          </li>
-          <li>
-            <a href="guide/" class="md-button">{% if config.theme.language == "zh" %}用户指南{% else %}User Guide{% endif %}</a>
-          </li>
-          <li>
-            <a href="design/" class="md-button">{% if config.theme.language == "zh" %}设计文档{% else %}Design Docs{% endif %}</a>
-          </li>
-          <li>
-            <a href="https://github.com/DeepLink-org/Persisting" class="md-button" target="_blank" rel="noopener">GitHub</a>
-          </li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
-  <!-- Core Features Grid -->
-  <section class="persisting-features-grid">
-    <div class="container">
-      {% if config.theme.language == "zh" %}
-      <h2>核心组件</h2>
-      <p class="section-subtitle">pVisor 是管理单个 Agent Run 的 AgentVisor，pPilot 编排批量 Run，pChronicle 保存 canonical 历史；Gateway、OverlayNet、OverlayFS 是 pVisor 的运行时驱动</p>
-      {% else %}
-      <h2>Core Components</h2>
-      <p class="section-subtitle">pVisor is the AgentVisor for one Run, pPilot orchestrates many Runs, and pChronicle keeps canonical history. Gateway, OverlayNet, and OverlayFS are pVisor runtime drivers.</p>
-      {% endif %}
-      <div class="features-grid">
-        <div class="feature-card">
-          <span class="feature-icon">🔌</span>
-          {% if config.theme.language == "zh" %}
-          <h3>pVisor · AgentVisor</h3>
-          <p>管理单个 Agent Run 的生命周期、能力、外部效果、checkpoint 与证据，并可放置到 host、Docker/Podman 或 libkrun VM。</p>
-          {% else %}
-          <h3>pVisor · AgentVisor</h3>
-          <p>Governs one Agent Run's lifecycle, capabilities, effects, checkpoints, and evidence across host, Docker/Podman, and libkrun VM placements.</p>
-          {% endif %}
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon">🗂️</span>
-          {% if config.theme.language == "zh" %}
-          <h3>pPilot · 批量编排</h3>
-          <p>plan()/execute() 有界并发编排：lease fencing、基础设施重试、崩溃恢复与 durable result journal。</p>
-          {% else %}
-          <h3>pPilot · many Runs</h3>
-          <p>plan()/execute() orchestration with bounded concurrency, lease fencing, infra retry, crash recovery, and a durable result journal.</p>
-          {% endif %}
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon">🗃️</span>
-          {% if config.theme.language == "zh" %}
-          <h3>pChronicle · 历史</h3>
-          <p>Canonical Lance EventStore、AgenticMD、Storyline 与 ATIF 视图，支持 DataFusion SQL 查询与 S3 对象存储。</p>
-          {% else %}
-          <h3>pChronicle · history</h3>
-          <p>Canonical Lance EventStore, AgenticMD, Storyline, and ATIF views with DataFusion SQL and S3 object storage.</p>
-          {% endif %}
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon">🔄</span>
-          {% if config.theme.language == "zh" %}
-          <h3>OverlayFS + OverlayNet</h3>
-          <p>事务式文件工作区（review/apply/drop/fork）与显式 HTTP 代理；隔离强度如实声明，不冒充不可绕过的沙箱。</p>
-          {% else %}
-          <h3>OverlayFS + OverlayNet</h3>
-          <p>A transactional file workspace (review/apply/drop/fork) and an explicit HTTP proxy whose isolation strength is reported honestly.</p>
-          {% endif %}
-        </div>
-        <div class="feature-card">
-          <span class="feature-icon">🪝</span>
-          {% if config.theme.language == "zh" %}
-          <h3>Gateway · 捕获</h3>
-          <p>适配 LLM/Agent HTTP 协议，生成 EventRecord 并汇入 pChronicle，配合轨迹 Markdown 投影。</p>
-          {% else %}
-          <h3>Gateway · capture</h3>
-          <p>Adapts LLM/Agent HTTP protocols, emits EventRecords into pChronicle, and projects live Markdown trajectories.</p>
-          {% endif %}
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Quick Start Section -->
-  <section class="persisting-quickstart">
-    <div class="container">
-      <h2>{% if config.theme.language == "zh" %}快速开始{% else %}Quick Start{% endif %}</h2>
-      <div class="quickstart-steps">
-        <div class="quickstart-step">
-          <div class="step-number">1</div>
-          <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}安装 CLI{% else %}Install the CLI{% endif %}</h3>
-            <div class="code-block">
-              <pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash</code></pre>
-            </div>
-          </div>
-        </div>
-        <div class="quickstart-step">
-          <div class="step-number">2</div>
-          <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}安全地运行一个 Agent{% else %}Run one Agent safely{% endif %}</h3>
-            <div class="code-block">
-              <pre><code class="language-bash">pvisor run --safe codex
-pvisor review last</code></pre>
-            </div>
-          </div>
-        </div>
-        <div class="quickstart-step">
-          <div class="step-number">3</div>
-          <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}批量编排{% else %}Orchestrate a batch{% endif %}</h3>
-            <div class="code-block">
-              <pre><code class="language-bash">ppilot run plan.py --workers 2 --sink ./results
-cat ./results/ready.ndjson</code></pre>
-            </div>
-          </div>
-        </div>
-        <div class="quickstart-step">
-          <div class="step-number">4</div>
-          <div class="step-content">
-            <h3>{% if config.theme.language == "zh" %}查询轨迹 Dataset{% else %}Query a trajectory Dataset{% endif %}</h3>
-            <div class="code-block">
-              <pre><code class="language-bash">pchronicle analysis overview examples/data/atif
-pchronicle query examples/data/atif "SELECT * FROM dataset.runs"</code></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Use Cases Section -->
-  <section class="persisting-usecases">
-    <div class="container">
-      <h2>{% if config.theme.language == "zh" %}应用场景{% else %}Use Cases{% endif %}</h2>
-      <div class="usecases-grid">
-        <div class="usecase-card">
-          <div class="usecase-icon">🛡️</div>
-          {% if config.theme.language == "zh" %}
-          <h3>可审查的 Agent Run</h3>
-          <p>事务式文件工作区 + 显式网络代理。Run Bundle 记录文件变更、网络策略与警告；review/apply/drop 决定是否接受修改。</p>
-          {% else %}
-          <h3>Reviewable Agent Runs</h3>
-          <p>A transactional file workspace and an explicit network proxy. The Run Bundle records changes, policy, and warnings; review/apply/drop decides what lands.</p>
-          {% endif %}
-        </div>
-        <div class="usecase-card">
-          <div class="usecase-icon">⚙️</div>
-          {% if config.theme.language == "zh" %}
-          <h3>批量 Run 编排</h3>
-          <p>plan()/execute() 有界并发生产大量独立 Run，lease fencing 与崩溃恢复保证每个结果只能提交一次。</p>
-          {% else %}
-          <h3>Batch Orchestration</h3>
-          <p>plan()/execute() with bounded concurrency produces many independent Runs; lease fencing and crash recovery keep each result committed at most once.</p>
-          {% endif %}
-        </div>
-        <div class="usecase-card">
-          <div class="usecase-icon">📊</div>
-          {% if config.theme.language == "zh" %}
-          <h3>轨迹分析与查询</h3>
-          <p>pChronicle 把事件沉淀为 runs/steps/tool_calls 规范视图，通过只读 DataFusion SQL 分析，本地与 S3 一致。</p>
-          {% else %}
-          <h3>Trajectory Analysis</h3>
-          <p>pChronicle reduces events to normalized runs/steps/tool_calls views queried with read-only DataFusion SQL, identically on local disk and S3.</p>
-          {% endif %}
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Integration Section -->
-  <section class="persisting-integration">
-    <div class="container">
-      {% if config.theme.language == "zh" %}
-      <h2>生态集成</h2>
-      <p class="section-subtitle">与 AI 生态系统无缝协作</p>
-      {% else %}
-      <h2>Ecosystem Integration</h2>
-      <p class="section-subtitle">Seamless integration with AI ecosystem</p>
-      {% endif %}
-      <div class="integration-grid">
-        <div class="integration-card">
-          <div class="integration-icon">⚡</div>
-          <h4>Pulsing</h4>
-        </div>
-        <div class="integration-card">
-          <div class="integration-icon">🗃️</div>
-          <h4>Lance</h4>
-        </div>
-        <div class="integration-card">
-          <div class="integration-icon">🐳</div>
-          <h4>Docker &amp; Podman</h4>
-        </div>
-        <div class="integration-card">
-          <div class="integration-icon">🖥️</div>
-          <h4>QEMU &amp; KVM</h4>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- What is Persisting Section -->
-  <section class="persisting-intro-section">
-    <div class="container">
-      <div class="persisting-intro-content">
-        {% if config.theme.language == "zh" %}
-        <h2>为什么选择 Persisting？</h2>
-        <p>
-          Persisting 把一次不稳定、带外部副作用的 Agent workload 封装成一个可执行、可中断、
-          可检查、可追溯、可批量编排的 Run。pVisor 作为 AgentVisor，负责单个 Run 的
-          生命周期、能力、外部效果与隔离边界，
-          pPilot 负责批量调度、恢复与 fencing，pChronicle 保存 canonical 事件历史。
-          隔离的强度按平台与 executor 如实记录在 Run Bundle；详细保证以 pVisor 隔离文档为准。
+        <p class="persisting-hero-copy">
+          给每个 Agent 一个隔离的虚拟执行环境。让它无需逐步批准即可工作，
+          再由你审查 Effect、扩展 Run，并保留完整历史。
         </p>
-        <a href="guide/" class="md-button md-button--primary">了解更多 →</a>
+        <div class="persisting-actions">
+          <a href="pvisor/get-started/" class="md-button md-button--primary">运行第一个 Agent</a>
+          <a href="overview/" class="md-button">查看产品概览</a>
+          <a href="pvisor/concepts/agentvisor/" class="md-button">什么是 AgentVisor？</a>
+        </div>
         {% else %}
-        <h2>Why Persisting?</h2>
-        <p>
-          Persisting wraps an unreliable, side-effecting Agent workload into a Run
-          that can be executed, interrupted, reviewed, traced, and orchestrated at scale.
-          pVisor is the AgentVisor for one Run's lifecycle, capabilities, effects, and placement;
-          pPilot schedules and recovers many,
-          and pChronicle keeps the canonical event history. Isolation strength is reported
-          honestly per platform and executor in the Run Bundle; consult the pVisor isolation
-          documentation for the exact guarantees.
+        <p class="persisting-hero-copy">
+          Give every Agent an isolated virtual execution environment. Let it
+          work without per-step approval, then review its effects, scale the
+          Run, and preserve the history.
         </p>
-        <a href="guide/" class="md-button md-button--primary">Learn More →</a>
+        <div class="persisting-actions">
+          <a href="pvisor/get-started/" class="md-button md-button--primary">Run the first Agent</a>
+          <a href="overview/" class="md-button">Product overview</a>
+          <a href="pvisor/concepts/agentvisor/" class="md-button">What is an AgentVisor?</a>
+        </div>
         {% endif %}
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- Feature: Reviewable Isolation -->
-  <section class="persisting-feature-section">
-    <div class="container">
-      <div class="persisting-feature-content">
-        <div class="persisting-feature-text">
+    <section class="persisting-section">
+      <div class="persisting-shell">
+        {% if config.theme.language == "zh" %}
+        <p class="persisting-kicker">系统概览</p>
+        <h2>Run、Effect、编排与持久历史</h2>
+        <p class="persisting-lead">
+          Persisting 不要求用户先理解一组组件。产品只围绕一个稳定对象展开：Run。
+        </p>
+        {% else %}
+        <p class="persisting-kicker">SYSTEM OVERVIEW</p>
+        <h2>Runs, effects, orchestration, and durable history</h2>
+        <p class="persisting-lead">
+          Persisting does not begin with a list of components. The product is
+          organized around one stable object: the Run.
+        </p>
+        {% endif %}
+
+        <div class="persisting-capability-grid">
+          <article>
+            <span>01</span>
+            {% if config.theme.language == "zh" %}
+            <h3>执行一个 Run</h3>
+            <p>pVisor 为 Agent 创建独立虚拟执行环境，同时复用底层 host、Container、VM 或集群资源。</p>
+            {% else %}
+            <h3>Execute one Run</h3>
+            <p>pVisor creates an isolated Agent virtual execution environment on shared host, container, VM, or fleet resources.</p>
+            {% endif %}
+          </article>
+          <article>
+            <span>02</span>
+            {% if config.theme.language == "zh" %}
+            <h3>治理 Effect</h3>
+            <p>Agent 在 stage 中自由工作；用户可以 review、选择性多次 apply，或丢弃剩余修改。</p>
+            {% else %}
+            <h3>Govern effects</h3>
+            <p>The Agent works freely in a stage; the user can review, apply selected batches repeatedly, or discard the remainder.</p>
+            {% endif %}
+          </article>
+          <article>
+            <span>03</span>
+            {% if config.theme.language == "zh" %}
+            <h3>编排多个 Run</h3>
+            <p>pPilot 增加有界并发、lease fencing、恢复和持久结果，但不改变 Run 语义。</p>
+            {% else %}
+            <h3>Orchestrate many</h3>
+            <p>pPilot adds bounded concurrency, lease fencing, recovery, and durable results without changing Run semantics.</p>
+            {% endif %}
+          </article>
+          <article>
+            <span>04</span>
+            {% if config.theme.language == "zh" %}
+            <h3>保留历史</h3>
+            <p>Gateway 捕获运行事件，pChronicle 保存并查询进程退出后仍需存在的事实。</p>
+            {% else %}
+            <h3>Preserve history</h3>
+            <p>Gateway captures runtime events; pChronicle preserves and queries the facts needed after processes exit.</p>
+            {% endif %}
+          </article>
+        </div>
+
+        <figure class="persisting-architecture-figure">
+          <img src="assets/diagrams/persisting/execution-story.svg" alt="Persisting execution architecture" />
+        </figure>
+      </div>
+    </section>
+
+    <section class="persisting-section persisting-section--contrast">
+      <div class="persisting-shell persisting-first-run">
+        <div>
           {% if config.theme.language == "zh" %}
-          <h2>AgentVisor：可审查的外部效果</h2>
+          <p class="persisting-kicker">先完成一个闭环</p>
+          <h2>运行、检查、选择性接受</h2>
           <p>
-            <code>pvisor run --safe</code> 创建 durable workspace，当前目录作为 OverlayFS lower，
-            写入暂存到 upper，并启用显式网络代理。Run Bundle 记录文件变更、网络拦截与安全警告。
+            Agent 的每次编辑不需要 approval。修改先进入 Run 独占 stage，
+            然后由你决定哪些文件进入真实项目。
           </p>
-          <p>
-            Host、容器和 VM executor 的读写与网络边界不同。Run Bundle 分别记录实际安装的
-            文件系统和网络约束；精确的平台保证与已知缺口见 pVisor 隔离文档。
-          </p>
-          <a href="design/agentvisor/" class="md-button">了解 AgentVisor →</a>
+          <a href="pvisor/guides/review-apply/">理解多次、过滤式 apply →</a>
           {% else %}
-          <h2>AgentVisor: Reviewable Effects</h2>
+          <p class="persisting-kicker">COMPLETE ONE LOOP FIRST</p>
+          <h2>Run, inspect, selectively accept</h2>
           <p>
-            <code>pvisor run --safe</code> creates a durable workspace with the current directory as
-            the OverlayFS lower, stages writes in the upper, and enables an explicit network proxy.
-            The Run Bundle records filesystem changes, network interception, and safety warnings.
+            The Agent does not need approval for every edit. Changes enter a
+            Run-owned stage, then you decide which files reach the real project.
           </p>
-          <p>
-            Host, container, and VM executors provide different filesystem and network boundaries.
-            The Run Bundle records the controls actually installed; see the pVisor isolation
-            documentation for platform-specific guarantees and known gaps.
-          </p>
-          <a href="design/agentvisor/" class="md-button">Explore AgentVisor →</a>
+          <a href="pvisor/guides/review-apply/">Understand repeatable, filtered apply →</a>
           {% endif %}
         </div>
-        <div class="persisting-feature-demo">
-          <div class="code-preview">
-            <pre><code class="language-bash"># 事务式文件工作区 + 显式网络代理
-pvisor run --safe codex
+        <pre><code>pvisor run --safe codex
 pvisor review last
-pvisor checkpoint last --name accepted-base
-# 选择性接受、多次提交、丢弃或分支
 pvisor apply last --path src
-pvisor apply last --all
-pvisor drop last
-pvisor fork last --checkpoint accepted-base -- codex</code></pre>
-          </div>
+pvisor apply last --include 'tests/**'
+pvisor apply last --all</code></pre>
+      </div>
+    </section>
+
+    <section class="persisting-section">
+      <div class="persisting-shell">
+        {% if config.theme.language == "zh" %}
+        <p class="persisting-kicker">按任务阅读</p>
+        <h2>下一步只取决于你要完成什么</h2>
+        {% else %}
+        <p class="persisting-kicker">CHOOSE BY TASK</p>
+        <h2>Choose what you need to do</h2>
+        {% endif %}
+
+        <div class="persisting-link-grid">
+          <a href="pvisor/guides/execution/">
+            {% if config.theme.language == "zh" %}<strong>选择执行环境</strong><span>Host、Container、VM 与具体隔离边界</span>{% else %}<strong>Choose an execution environment</strong><span>Host, container, VM, and exact isolation boundaries</span>{% endif %}
+          </a>
+          <a href="pvisor/guides/network/">
+            {% if config.theme.language == "zh" %}<strong>控制网络</strong><span>声明目标、策略和带宽限制</span>{% else %}<strong>Control network access</strong><span>Declare destinations, policy, and bandwidth limits</span>{% endif %}
+          </a>
+          <a href="pvisor/guides/capture/">
+            {% if config.theme.language == "zh" %}<strong>捕获轨迹</strong><span>让模型调用进入 Run 证据链</span>{% else %}<strong>Capture trajectories</strong><span>Bring model calls into the Run evidence chain</span>{% endif %}
+          </a>
+          <a href="pvisor/guides/orchestrate/">
+            {% if config.theme.language == "zh" %}<strong>扩展到多个 Run</strong><span>有界并发、lease、恢复与结果</span>{% else %}<strong>Scale to many Runs</strong><span>Bounded concurrency, leases, recovery, and results</span>{% endif %}
+          </a>
+          <a href="pchronicle/get-started/">
+            {% if config.theme.language == "zh" %}<strong>查询历史</strong><span>发现 Dataset、运行分析并使用只读 SQL</span>{% else %}<strong>Query the history</strong><span>Discover Datasets, run analysis, and use read-only SQL</span>{% endif %}
+          </a>
+          <a href="system-design/">
+            {% if config.theme.language == "zh" %}<strong>检查系统边界</strong><span>实现状态、架构决策与已知限制</span>{% else %}<strong>Inspect system boundaries</strong><span>Implementation status, decisions, and known limits</span>{% endif %}
+          </a>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- Community Section -->
-  <section class="persisting-community">
-    <div class="container">
-      {% if config.theme.language == "zh" %}
-      <h2>加入社区</h2>
-      <p class="section-subtitle">Persisting 是开源的、社区驱动的项目。欢迎参与！</p>
-      {% else %}
-      <h2>Join the Community</h2>
-      <p class="section-subtitle">Persisting is open source and community-driven. Get involved!</p>
-      {% endif %}
-      <div class="community-links">
-        <a href="https://github.com/DeepLink-org/Persisting" class="community-link" target="_blank" rel="noopener">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-          </svg>
-          GitHub
-        </a>
-        <a href="https://github.com/DeepLink-org/Persisting/issues" class="community-link" target="_blank" rel="noopener">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
-          </svg>
-          {% if config.theme.language == "zh" %}问题追踪{% else %}Issues{% endif %}
-        </a>
-        <a href="https://github.com/DeepLink-org/Persisting/discussions" class="community-link" target="_blank" rel="noopener">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path d="M21 6h-2v9H6v2c0 .55.45 1 1 1h11l4 4V7c0-.55-.45-1-1-1zm-4 6V3c0-.55-.45-1-1-1H3c-.55 0-1 .45-1 1v14l4-4h10c.55 0 1-.45 1-1z"/>
-          </svg>
-          {% if config.theme.language == "zh" %}讨论区{% else %}Discussions{% endif %}
-        </a>
+    <section class="persisting-section persisting-principle">
+      <div class="persisting-shell">
+        {% if config.theme.language == "zh" %}
+        <h2>保证必须具体</h2>
+        <p>
+          文件写入隔离不代表网络隔离，捕获不代表不可绕过，lease fencing 也不代表任意
+          外部 API 的 exactly-once。Persisting 在 Run Bundle 中按维度报告实际机制与证据。
+        </p>
+        <a class="md-button md-button--primary" href="system-design/">查看架构与成熟度</a>
+        {% else %}
+        <h2>Guarantees must be specific</h2>
+        <p>
+          Filesystem confinement does not imply network isolation, capture does
+          not imply non-bypassability, and lease fencing does not make arbitrary
+          external APIs exactly-once. Persisting reports mechanisms and evidence
+          per dimension in the Run Bundle.
+        </p>
+        <a class="md-button md-button--primary" href="system-design/">Review architecture and maturity</a>
+        {% endif %}
       </div>
-    </div>
-  </section>
-
+    </section>
+  </main>
 {% endblock %}
 
 {% block content %}{% endblock %}
+
 {% block footer %}
   {{ super() }}
 {% endblock %}

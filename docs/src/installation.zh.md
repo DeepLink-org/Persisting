@@ -111,6 +111,6 @@ pchronicle --help
 
 ## 下一步
 
-- [快速开始](quickstart.md) — 5 分钟跑通一个 Agent Run
-- [选择能力](guide/index.md) — 按目标选择工作流
-- [设计文档](design/index.md) — 架构与内部实现
+- [运行第一个 Agent](pvisor/get-started.md) — 完成 run、review 与选择性 apply 闭环
+- [Persisting 的完整故事](overview.md) — 理解一个 Run 如何扩展到编排与历史
+- 按产品进入 [pVisor](pvisor/index.md) 或 [pChronicle](pchronicle/index.md)
