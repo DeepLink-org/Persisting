@@ -9,7 +9,8 @@ pub(crate) const RESULT_FILENAME: &str = "run-result.json";
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DelegatedRunOutput {
     pub(crate) result: RunResult,
-    pub(crate) agent_abi: crate::AgentAbiSnapshot,
+    #[serde(alias = "agentctl")]
+    pub(crate) agentctl: crate::AgentCtlSnapshot,
 }
 
 pub(crate) struct DelegatedRunFiles {
@@ -28,9 +29,9 @@ impl DelegatedRunFiles {
         let mut delegated = spec.clone();
         delegated.metadata.remove("pvisor.executor");
         let RunInvocation::Process(process) = &mut delegated.invocation;
-        process
-            .env
-            .retain(|key, _| !key.starts_with("PERSISTING_AGENT_ABI_"));
+        process.env.retain(|key, _| {
+            !key.starts_with("PERSISTING_AGENTCTL_") && !key.starts_with("PERSISTING_AGENTCTL_")
+        });
         write_private_json(&spec_path, &delegated)?;
         Ok(Self {
             _temporary: temporary,
@@ -50,8 +51,8 @@ impl DelegatedRunFiles {
         output.result.run_id = run_id.clone();
         output.result.attempt_id = attempt_id.clone();
         output.result.lease_epoch = lease_epoch;
-        output.agent_abi.run_id = run_id.to_string();
-        output.agent_abi.attempt_id = attempt_id.to_string();
+        output.agentctl.run_id = run_id.to_string();
+        output.agentctl.attempt_id = attempt_id.to_string();
         Ok(output)
     }
 }
@@ -89,11 +90,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delegated_spec_drops_host_agent_abi_and_normalizes_result_identity() {
+    fn delegated_spec_drops_host_agentctl_and_normalizes_result_identity() {
         let mut spec = RunSpec::process("run-one", "agent", "true");
         let RunInvocation::Process(process) = &mut spec.invocation;
         process.env.insert(
-            "PERSISTING_AGENT_ABI_ENDPOINT".into(),
+            "PERSISTING_AGENTCTL_ENDPOINT".into(),
             "/tmp/host.sock".into(),
         );
         process.env.insert("KEEP".into(), "yes".into());
@@ -101,7 +102,7 @@ mod tests {
         let delegated: RunSpec =
             serde_json::from_slice(&std::fs::read(&files.spec_path).unwrap()).unwrap();
         let RunInvocation::Process(process) = delegated.invocation;
-        assert!(!process.env.contains_key("PERSISTING_AGENT_ABI_ENDPOINT"));
+        assert!(!process.env.contains_key("PERSISTING_AGENTCTL_ENDPOINT"));
         assert_eq!(process.env.get("KEEP").map(String::as_str), Some("yes"));
     }
 }

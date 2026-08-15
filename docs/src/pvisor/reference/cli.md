@@ -38,7 +38,7 @@ workspace containment non-bypassable for the Agent process tree.
 public/allowlist proxy modes remain cooperative. On macOS the default safe
 host executor installs a generated Seatbelt policy that makes staged writes
 non-bypassable. For deny-all Runs it blocks IP and ambient host Unix sockets,
-while retaining the exact Agent ABI and Run-local IPC. Reads and selective
+while retaining the exact AgentCtl and Run-local IPC. Reads and selective
 network policy remain ambient/cooperative and are labeled separately in the
 Bundle. Docker and KVM transports retain the same outer Run, OverlayFS, Agent
 ABI observation, and pChronicle control plane.
@@ -53,7 +53,7 @@ pvisor apply last       # or: pvisor drop last
 ```
 
 The CLI checkpoint is stopped-consistent. Embedded hosts can call
-`RunHandle::checkpoint`: pVisor publishes an Agent ABI quiesce directive,
+`RunHandle::checkpoint`: pVisor publishes an AgentCtl quiesce directive,
 requires every connected client to acknowledge the checkpoint with no open
 effects, snapshots the raw upper, then publishes `continue`. Logical
 checkpoints preserve filesystem and Agent/effect boundaries, not process
@@ -162,7 +162,7 @@ matching static `linux-amd64`/`linux-arm64` pVisor, mounts it into the image,
 overrides the entrypoint, and invokes the normal
 `pvisor run --executor host --run-spec ...` path. The Agent command is carried
 inside the RunSpec rather than exposed in Docker/Podman argv. The injected
-pVisor creates its own Agent ABI and returns a typed RunResult. The final
+pVisor creates its own AgentCtl and returns a typed RunResult. The final
 OverlayFS cwd and session Gateway configuration are mounted at stable paths.
 User mounts are repeatable TOML inline tables, for example:
 

@@ -184,7 +184,7 @@ denied = (errno.EPERM, errno.EACCES)
 assert os.environ["PERSISTING_SANDBOX_FILESYSTEM"] == "seatbelt-write"
 assert os.environ["PERSISTING_SANDBOX_NETWORK"] == "deny"
 abi = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-abi.connect(os.environ["PERSISTING_AGENT_ABI_ENDPOINT"])
+abi.connect(os.environ["PERSISTING_AGENTCTL_ENDPOINT"])
 abi.close()
 
 try:
