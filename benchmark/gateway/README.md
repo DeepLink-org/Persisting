@@ -53,6 +53,24 @@ bash benchmark/gateway/run.sh \
 - `--output FILE`：指定 JSON 结果文件。
 - `--keep-artifacts`：保留配置、日志、WAL 和 Dataset。
 
+通过 `just` 运行时，可以使用与 regression 一致的环境变量保留原始产物：
+
+```bash
+PERSISTING_KEEP_TEST_ARTIFACTS=1 just benchmark-gateway
+```
+
+命令结束时会打印 `Gateway benchmark artifacts: <目录>`。其中 `dataset/` 是完整的
+Lance capture Dataset，`gateway-state/` 包含 WAL，`logs/` 包含进程日志和聚合后的
+`capture-counts.jsonl`。例如，把完整事件导出成人工可读的 JSONL：
+
+```bash
+benchmark_artifacts=/tmp/persisting-gateway-benchmark.example
+target/release/pchronicle query "$benchmark_artifacts/dataset" \
+  'SELECT seq, kind, session_id, model, call_id, payload_json FROM dataset.events ORDER BY session_id, seq' \
+  --format jsonl \
+  --output "$benchmark_artifacts/logs/events.jsonl"
+```
+
 压测器是 closed-loop 模型：每个 worker 最多只有一个在途请求，所以
 `concurrency` 就是最大在途请求数。JSON 中的 `estimated_mean_in_flight` 用吞吐和
 平均延迟按 Little's law 估算实际在途数；它接近 `max_in_flight` 时，表示发压端已经
@@ -68,3 +86,29 @@ JSON 中的 `shutdown_drain_seconds` 是停止发送后等待 apply、Lance publ
 
 默认结果写入 `benchmark/gateway/results/latest.json`，该目录不会提交到 Git。
 sweep 结果分别写入 `benchmark/gateway/results/sweep-c<N>.json`。
+
+## 回放 example data 并人工检查
+
+下面的命令读取 `examples/data/` 中的 ATIF、ACTF 和 OpenAI Messages 样例，把每个可
+回放的 agent/inference step 转换成 Chat Completions 请求，经过真实 Gateway 和本地 Echo，
+最后将输入、HTTP 响应和 canonical capture 汇总到一个长期保留的 review bundle：
+
+```bash
+just benchmark-gateway-replay
+```
+
+默认输出根目录是 `benchmark/gateway/results/replay-review/`。每次运行创建独立的 UTC
+时间戳子目录，并把该目录写入 `latest.txt`，不会覆盖以前的 review。也可以指定输入和输出：
+
+```bash
+just benchmark-gateway-replay examples/data /tmp/gateway-replay-review
+```
+
+建议先打开 bundle 中的 `REVIEW.md` 看每个 case 的来源、参考回答、Echo 回答和自动检查；
+需要逐字段核对时再查看 `review.jsonl`。后者把 source record、实际 Gateway request/response、
+解析后的 canonical request/response 以及检查结果 join 在同一行。`captured-events.jsonl` 是
+未经 join 的完整事件导出，`dataset/` 和 `gateway-state/` 分别保留 Lance Dataset 与 WAL。
+
+这里的 source response 只作为人工 review 的参考，不参与相等性断言。本地 Echo 固定返回
+最后一条 user message，因此这个 replay 验证的是 Gateway wire handling、事件配对和 capture
+保真度，不声称能够复现原始模型回答。

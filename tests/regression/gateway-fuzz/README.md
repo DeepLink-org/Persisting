@@ -47,6 +47,35 @@ status/body digests. All network
 policy targets are loopback services created by the scenario—this test never
 depends on public network access.
 
+成功时默认会删除临时产物。要人工检查 `formats` 数据，请保留它们：
+
+```bash
+PERSISTING_KEEP_TEST_ARTIFACTS=1 just gateway-fuzz-formats
+```
+
+命令会打印 `Gateway formats fuzz artifacts: <目录>`。主要文件是：
+
+- `run.json`：seed 和运行参数；
+- `logs/cases.jsonl`：每个生成用例的完整输入和协议参数；
+- `logs/client-results.jsonl`：SDK 看到的结果摘要；
+- `logs/format-contract-results.jsonl`：固定格式契约用例的实际结果；
+- `dataset/`：Gateway 写入的 Lance capture Dataset；
+- `gateway-state/`：WAL 和 Gateway 状态。
+
+`formats` 不把持久化核对作为 pass/fail 契约，但保留后的 Dataset 仍可手工导出：
+
+```bash
+fuzz_artifacts=/tmp/persisting-gateway-formats-fuzz.example
+target/release/pchronicle query "$fuzz_artifacts/dataset" \
+  'SELECT seq, kind, session_id, model, call_id, payload_json FROM dataset.events ORDER BY session_id, seq' \
+  --format jsonl \
+  --output "$fuzz_artifacts/logs/events.jsonl"
+```
+
+如果希望测试本身自动核对持久化事件，请运行
+`PERSISTING_KEEP_TEST_ARTIFACTS=1 just gateway-fuzz-storage`；它还会生成
+`logs/events.jsonl` 和 `logs/comparison.jsonl`。
+
 `formats` deliberately stops at the client/wire contract. It proves that the
 Gateway can accept, forward/convert, and return each exercised shape, but it
 does **not** prove that capture reached durable storage. A broken capture path

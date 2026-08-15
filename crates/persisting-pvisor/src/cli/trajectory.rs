@@ -1,20 +1,20 @@
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use async_trait::async_trait;
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use persisting_gateway::record::CaptureRecord;
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use persisting_gateway::session::storage::CaptureRoute;
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use persisting_gateway::sink::CallbackSink;
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use persisting_pchronicle::{
     raw_event_append_queue, EventRecord, RawEventAppendSender, RawEventAppendWorker, StoryCoords,
 };
 
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use crate::EventAppendErrorKind;
 use crate::{EventSink, TrajectoryEventSink};
 
@@ -24,7 +24,7 @@ type ChronicleSinks = (
     ChronicleWriter,
 );
 
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 struct ChronicleEventSink {
     tx: RawEventAppendSender,
     storage: String,
@@ -32,7 +32,7 @@ struct ChronicleEventSink {
     agent_id: String,
 }
 
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 #[async_trait]
 impl EventSink for ChronicleEventSink {
     async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
@@ -63,29 +63,29 @@ impl EventSink for ChronicleEventSink {
     }
 }
 
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 pub struct ChronicleWriter {
     worker: RawEventAppendWorker,
 }
 
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 impl ChronicleWriter {
     pub fn finish(self) -> anyhow::Result<()> {
         self.worker.finish()
     }
 }
 
-#[cfg(not(feature = "lance-chronicle"))]
+#[cfg(not(any(feature = "lance-chronicle", feature = "local-lance-chronicle")))]
 pub struct ChronicleWriter;
 
-#[cfg(not(feature = "lance-chronicle"))]
+#[cfg(not(any(feature = "lance-chronicle", feature = "local-lance-chronicle")))]
 impl ChronicleWriter {
     pub fn finish(self) -> anyhow::Result<()> {
         Ok(())
     }
 }
 
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 pub fn chronicle_sink(
     storage: &Path,
     default_agent_id: &str,
@@ -124,7 +124,7 @@ pub fn chronicle_sink(
     ))
 }
 
-#[cfg(not(feature = "lance-chronicle"))]
+#[cfg(not(any(feature = "lance-chronicle", feature = "local-lance-chronicle")))]
 pub fn chronicle_sink(
     _storage: &Path,
     _default_agent_id: &str,

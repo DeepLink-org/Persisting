@@ -27,7 +27,7 @@ use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::{SessionContext, SessionContext as DataFusionSessionContext};
+use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use lance::io::ObjectStore as LanceObjectStore;
 use object_store::path::Path as ObjectPath;
@@ -36,11 +36,11 @@ use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::OnceCell;
 
-use crate::convert::storyline_to_events;
+use crate::convert::{event_storyline_key, project_event_records, storyline_to_events};
 use crate::{
-    event_row_to_event_record, event_rows_from_batch, events_to_storyline, reconstruct_storyline,
-    split_storyline, ChronicleFormat, EventRecord, EventsDocument, StoryLink, StoryRunRow,
-    StoryStepRow, StoryToolCallRow, StorylineDocument,
+    projection_lineage_is_fresh, reconstruct_storyline, split_storyline, ChronicleFormat,
+    EventRecord, EventsDocument, ProjectionSourceSnapshot, StoryRunRow, StoryStepRow,
+    StoryToolCallRow, StorylineDocument,
 };
 
 use super::file_trajectory_datafusion::matches_file_filter;
@@ -111,6 +111,13 @@ pub enum CatalogSourceStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogProjectionStatus {
+    Fresh,
+    Stale,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiscoveredSource {
     /// Stable path relative to the Dataset mount. A source at the mount root
@@ -119,6 +126,8 @@ pub struct DiscoveredSource {
     pub format: Option<String>,
     pub kind: CatalogSourceKind,
     pub snapshot_ref: Option<String>,
+    pub projection_status: Option<CatalogProjectionStatus>,
+    pub projection_generation: Option<String>,
     pub size_bytes: Option<u64>,
     pub last_modified: Option<String>,
     pub status: CatalogSourceStatus,
@@ -245,6 +254,7 @@ impl DatasetCatalogSnapshot {
                     }
                 }
             }
+            bind_canonical_storyline_projections(&mut source_rows, &mut prepared_sources)?;
             source_rows.sort_by(|left, right| left.file.cmp(&right.file));
             prepared_sources.sort_by(|left, right| left.file().cmp(right.file()));
             datasets.push(CatalogDataset {
@@ -546,6 +556,7 @@ enum LazySourceSpec {
     Events {
         uri: String,
         snapshot: RawEventSnapshot,
+        projection: Option<StorylineTablePaths>,
     },
     LocalFile {
         root: PathBuf,
@@ -621,14 +632,29 @@ impl LazySource {
                 )
                 .await?,
             )),
-            LazySourceSpec::Events { snapshot, .. } => {
+            LazySourceSpec::Events {
+                snapshot,
+                projection,
+                ..
+            } => {
                 let source = RawEventDataSource::from_pinned_snapshot_with_options(
                     snapshot.clone(),
                     RawEventDataSourceOptions::default(),
                 )
                 .await?;
+                let projection = match projection {
+                    Some(paths) => Some(
+                        StorylineDataSource::from_pinned_paths_with_options(
+                            paths.clone(),
+                            self.options.storyline,
+                        )
+                        .await?,
+                    ),
+                    None => None,
+                };
                 Ok(ResolvedSource::Events(ResolvedEventSource {
                     source,
+                    projection,
                     normalized: OnceCell::new(),
                     normalization_count: AtomicUsize::new(0),
                 }))
@@ -708,6 +734,7 @@ enum ResolvedSource {
 #[derive(Debug)]
 struct ResolvedEventSource {
     source: RawEventDataSource,
+    projection: Option<StorylineDataSource>,
     normalized: OnceCell<std::result::Result<Arc<NormalizedEventTables>, String>>,
     normalization_count: AtomicUsize,
 }
@@ -758,6 +785,12 @@ impl ResolvedSource {
                 carries_file_column: false,
             }),
             Self::Events(source) => {
+                if let Some(projection) = &source.projection {
+                    return Ok(storyline_kind().map(|kind| ResolvedTable {
+                        provider: projection.provider(kind),
+                        carries_file_column: false,
+                    }));
+                }
                 let normalized = source.normalized().await?;
                 storyline_kind().map(|kind| ResolvedTable {
                     provider: match kind {
@@ -788,6 +821,9 @@ async fn register_normalized_source(
         ResolvedSource::Storyline(source) => source.register(context),
         ResolvedSource::File(source) => source.register(context),
         ResolvedSource::Events(source) => {
+            if let Some(projection) = &source.projection {
+                return projection.register(context);
+            }
             let normalized = source.normalized().await?;
             context.register_table("runs", normalized.runs.clone())?;
             context.register_table("steps", normalized.steps.clone())?;
@@ -882,6 +918,8 @@ impl Candidate {
             format,
             kind,
             snapshot_ref,
+            projection_status: None,
+            projection_generation: None,
             size_bytes,
             last_modified,
             status: CatalogSourceStatus::Ready,
@@ -924,7 +962,11 @@ async fn freeze_candidate(
                 source_row,
                 Arc::new(LazySource::new(
                     file,
-                    LazySourceSpec::Events { uri, snapshot },
+                    LazySourceSpec::Events {
+                        uri,
+                        snapshot,
+                        projection: None,
+                    },
                     options,
                     temporary_files,
                 )),
@@ -983,6 +1025,96 @@ async fn freeze_candidate(
     }
 }
 
+/// Collapse a canonical events source and its derived Storyline sidecar into
+/// one Catalog identity. Fresh projections serve normalized tables; stale
+/// projections remain hidden and the canonical events adapter is used instead.
+fn bind_canonical_storyline_projections(
+    source_rows: &mut Vec<DiscoveredSource>,
+    prepared_sources: &mut Vec<Arc<LazySource>>,
+) -> Result<()> {
+    struct Binding {
+        projection_file: String,
+        event_file: String,
+        paths: StorylineTablePaths,
+        fresh: bool,
+    }
+
+    let mut bindings = Vec::new();
+    let mut bound_events = HashSet::new();
+    for projection in prepared_sources.iter() {
+        let LazySourceSpec::Storyline { paths } = &projection.spec else {
+            continue;
+        };
+        let Some(lineage) = paths.projection.as_ref() else {
+            continue;
+        };
+        let ProjectionSourceSnapshot::CanonicalEvents { source_uri, .. } = &lineage.source else {
+            continue;
+        };
+        let Some(events) = prepared_sources.iter().find(|candidate| {
+            matches!(
+                &candidate.spec,
+                LazySourceSpec::Events { uri, .. } if uri == source_uri
+            )
+        }) else {
+            continue;
+        };
+        anyhow::ensure!(
+            bound_events.insert(events.file.clone()),
+            "multiple Storyline projections claim canonical source '{}'",
+            events.file
+        );
+        let LazySourceSpec::Events { snapshot, .. } = &events.spec else {
+            unreachable!()
+        };
+        bindings.push(Binding {
+            projection_file: projection.file.clone(),
+            event_file: events.file.clone(),
+            paths: paths.clone(),
+            fresh: projection_lineage_is_fresh(&snapshot.fact_snapshot(), lineage),
+        });
+    }
+
+    for binding in &bindings {
+        let event_index = prepared_sources
+            .iter()
+            .position(|source| source.file == binding.event_file)
+            .context("bound canonical event source disappeared")?;
+        let event = &prepared_sources[event_index];
+        let LazySourceSpec::Events { uri, snapshot, .. } = &event.spec else {
+            anyhow::bail!("bound Catalog source is not canonical events");
+        };
+        prepared_sources[event_index] = Arc::new(LazySource::new(
+            event.file.clone(),
+            LazySourceSpec::Events {
+                uri: uri.clone(),
+                snapshot: snapshot.clone(),
+                projection: binding.fresh.then(|| binding.paths.clone()),
+            },
+            event.options,
+            event.temporary_files.clone(),
+        ));
+        let event_row = source_rows
+            .iter_mut()
+            .find(|source| source.file == binding.event_file)
+            .context("bound canonical event source row disappeared")?;
+        event_row.projection_status = Some(if binding.fresh {
+            CatalogProjectionStatus::Fresh
+        } else {
+            CatalogProjectionStatus::Stale
+        });
+        event_row.projection_generation = Some(binding.paths.generation.clone());
+    }
+
+    let projection_files = bindings
+        .into_iter()
+        .map(|binding| binding.projection_file)
+        .collect::<HashSet<_>>();
+    source_rows.retain(|source| !projection_files.contains(&source.file));
+    prepared_sources.retain(|source| !projection_files.contains(&source.file));
+    Ok(())
+}
+
 fn ensure_format_hint(mount: &DatasetMount, actual: ChronicleFormat, file: &str) -> Result<()> {
     if let Some(expected) = mount.format_hint {
         anyhow::ensure!(
@@ -994,21 +1126,12 @@ fn ensure_format_hint(mount: &DatasetMount, actual: ChronicleFormat, file: &str)
 }
 
 async fn normalize_event_source(source: &RawEventDataSource) -> Result<NormalizedEventTables> {
-    let context = DataFusionSessionContext::new();
-    source.register(&context)?;
-    let batches = context
-        .sql("SELECT * FROM events ORDER BY seq")
-        .await?
-        .collect()
-        .await
-        .context("read canonical events for normalized Catalog projection")?;
+    let records = source.read_records_in_append_order().await?;
     let mut groups = BTreeMap::<String, Vec<EventRecord>>::new();
-    for batch in &batches {
-        for row in event_rows_from_batch(batch)? {
-            let record = event_row_to_event_record(&row)?;
-            let key = event_group_key(&record);
-            groups.entry(key).or_default().push(record);
-        }
+    for record in records {
+        let key = event_storyline_key(&record)
+            .context("canonical event cannot be projected without a Storyline identity")?;
+        groups.entry(key.to_string()).or_default().push(record);
     }
 
     let mut runs = Vec::<StoryRunRow>::new();
@@ -1016,27 +1139,11 @@ async fn normalize_event_source(source: &RawEventDataSource) -> Result<Normalize
     let mut tool_calls = Vec::<StoryToolCallRow>::new();
     let mut events_by_session = BTreeMap::new();
     for (group_key, records) in groups {
-        let mut story = events_to_storyline(&EventsDocument::new(records.clone()))?;
-        if let Some(run_id) = records
-            .iter()
-            .find_map(|record| record.identity.run_id.clone())
-            .filter(|run_id| run_id != &story.session_id)
-        {
-            story.parent = Some(StoryLink {
-                parent_session_id: run_id,
-                spawn_call_id: None,
-                spawn_id: None,
-                relation: "spawn".into(),
-            });
-        }
-        // Canonical events can share one physical Run dataset across several
-        // Storylines. The event grouping identity is therefore the Storyline
-        // key, while run_id remains only the physical/logical Run grouping key.
-        story.session_id = group_key.clone();
-        story.run_id = records
-            .iter()
-            .find_map(|record| record.identity.run_id.clone())
-            .filter(|run_id| run_id != &group_key);
+        let story = project_event_records(&records)?;
+        anyhow::ensure!(
+            story.session_id == group_key,
+            "projected Storyline identity changed"
+        );
         let tables = split_storyline(&story)?;
         anyhow::ensure!(
             events_by_session
@@ -1067,15 +1174,6 @@ async fn normalize_event_source(source: &RawEventDataSource) -> Result<Normalize
         )?),
         events_by_session,
     })
-}
-
-fn event_group_key(record: &EventRecord) -> String {
-    record
-        .session_id
-        .clone()
-        .or_else(|| record.identity.storyline_id.clone())
-        .or_else(|| record.identity.run_id.clone())
-        .unwrap_or_else(|| "unknown".into())
 }
 
 async fn discover_candidates(
@@ -1666,6 +1764,23 @@ fn sources_table_provider(sources: &[DiscoveredSource]) -> Result<Arc<dyn TableP
                     .map(|source| source.snapshot_ref.as_deref())
                     .collect::<Vec<_>>(),
             )),
+            Arc::new(StringArray::from(
+                sources
+                    .iter()
+                    .map(|source| {
+                        source.projection_status.map(|status| match status {
+                            CatalogProjectionStatus::Fresh => "fresh",
+                            CatalogProjectionStatus::Stale => "stale",
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                sources
+                    .iter()
+                    .map(|source| source.projection_generation.as_deref())
+                    .collect::<Vec<_>>(),
+            )),
             Arc::new(UInt64Array::from(
                 sources
                     .iter()
@@ -1701,6 +1816,8 @@ fn sources_schema() -> SchemaRef {
         Field::new("format", DataType::Utf8, true),
         Field::new("kind", DataType::Utf8, false),
         Field::new("snapshot_ref", DataType::Utf8, true),
+        Field::new("projection_status", DataType::Utf8, true),
+        Field::new("projection_generation", DataType::Utf8, true),
         Field::new("size_bytes", DataType::UInt64, true),
         Field::new("last_modified", DataType::Utf8, true),
         Field::new("status", DataType::Utf8, false),
@@ -1979,6 +2096,15 @@ fn catalog_snapshot_id(datasets: &[CatalogDataset]) -> String {
                 hasher.update(b"\0");
                 hasher.update(snapshot_ref.as_bytes());
             }
+            if let Some(projection_generation) = &source.projection_generation {
+                hasher.update(b"\0projection:");
+                hasher.update(projection_generation.as_bytes());
+                hasher.update(match source.projection_status {
+                    Some(CatalogProjectionStatus::Fresh) => b":fresh",
+                    Some(CatalogProjectionStatus::Stale) => b":stale",
+                    None => b":none",
+                });
+            }
             if let Some(error) = &source.error {
                 hasher.update(b"\0");
                 hasher.update(error.as_bytes());
@@ -2006,8 +2132,10 @@ fn redact_error(message: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        ChronicleQueryEngine, EventIdentity, RawEventLanceStore, StoryCoords, StorylineAgent,
-        StorylineLanceStore, StorylineTurn, StructuredStore, STORYLINE_SCHEMA_VERSION,
+        build_storyline_projection, rebuild_storyline_projection, story_lance_event_path,
+        sync_storyline_projection, ChronicleQueryEngine, EventIdentity, RawEventLanceStore,
+        StoryCoords, StorylineAgent, StorylineLanceStore, StorylineProjectionSyncMode,
+        StorylineTurn, StructuredStore, STORYLINE_SCHEMA_VERSION,
     };
     use object_store::ObjectStoreExt;
 
@@ -2562,6 +2690,16 @@ mod tests {
                 .await?;
         }
 
+        let events_uri =
+            story_lance_event_path(&storage.to_string_lossy(), "agent", "root", Some("run-1"))?;
+        let projection_uri = storage.join("agent/run-1/storyline");
+        build_storyline_projection(
+            events_uri.to_string_lossy(),
+            projection_uri.to_string_lossy(),
+            "agent/run-1/events.lance",
+        )
+        .await?;
+
         let snapshot = Arc::new(
             DatasetCatalogSnapshot::discover(
                 vec![DatasetMount::default(storage.to_string_lossy())?],
@@ -2574,6 +2712,10 @@ mod tests {
         assert_eq!(
             snapshot.datasets()[0].sources[0].file,
             "agent/run-1/events.lance"
+        );
+        assert_eq!(
+            snapshot.datasets()[0].sources[0].projection_status,
+            Some(CatalogProjectionStatus::Fresh)
         );
         let updated_coords = StoryCoords::new(
             storage.to_string_lossy(),
@@ -2623,7 +2765,7 @@ mod tests {
         let runs = engine
             .query_jsonl("SELECT _file_, run_id, session_id FROM dataset.runs ORDER BY session_id")
             .await?;
-        assert_eq!(events.normalization_count.load(Ordering::Relaxed), 1);
+        assert_eq!(events.normalization_count.load(Ordering::Relaxed), 0);
         let keys = runs
             .lines()
             .map(serde_json::from_str::<serde_json::Value>)
@@ -2640,6 +2782,71 @@ mod tests {
                 .context("Catalog Storyline must resolve canonical events")?;
             assert_eq!(events.events.len(), 1);
         }
+        assert_eq!(events.normalization_count.load(Ordering::Relaxed), 1);
+
+        let stale_snapshot = Arc::new(
+            DatasetCatalogSnapshot::discover(
+                vec![DatasetMount::default(storage.to_string_lossy())?],
+                Some(DEFAULT_DATASET_NAME.into()),
+                CatalogSnapshotOptions::default(),
+            )
+            .await?,
+        );
+        assert_eq!(stale_snapshot.datasets()[0].sources.len(), 1);
+        assert_eq!(
+            stale_snapshot.datasets()[0].sources[0].projection_status,
+            Some(CatalogProjectionStatus::Stale)
+        );
+        let stale_engine =
+            ChronicleQueryEngine::from_catalog_snapshot(stale_snapshot.clone()).await?;
+        stale_engine.query("SELECT * FROM dataset.runs").await?;
+        let stale_resolved = stale_snapshot.prepared[0].sources[0]
+            .resolved
+            .get()
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        let ResolvedSource::Events(stale_events) = stale_resolved.as_ref() else {
+            panic!("stale projection did not fall back to canonical events");
+        };
+        assert_eq!(stale_events.normalization_count.load(Ordering::Relaxed), 1);
+
+        let sync = sync_storyline_projection(
+            events_uri.to_string_lossy(),
+            projection_uri.to_string_lossy(),
+        )
+        .await?;
+        assert_eq!(sync.mode, StorylineProjectionSyncMode::Incremental);
+        assert_eq!(sync.affected_storylines, 1);
+        let noop = sync_storyline_projection(
+            events_uri.to_string_lossy(),
+            projection_uri.to_string_lossy(),
+        )
+        .await?;
+        assert_eq!(noop.mode, StorylineProjectionSyncMode::Noop);
+        assert_eq!(noop.generation, sync.generation);
+
+        let projection_store = StorylineLanceStore::open(&projection_uri).await?;
+        let before_rebuild = projection_store
+            .current_table_paths()
+            .await?
+            .context("synced projection must have CURRENT")?;
+        let rebuild = rebuild_storyline_projection(
+            events_uri.to_string_lossy(),
+            projection_uri.to_string_lossy(),
+            "agent/run-1/events.lance",
+        )
+        .await?;
+        assert_eq!(rebuild.mode, StorylineProjectionSyncMode::Rebuild);
+        let after_rebuild = projection_store
+            .current_table_paths()
+            .await?
+            .context("rebuilt projection must have CURRENT")?;
+        assert_ne!(
+            before_rebuild.table_generation,
+            after_rebuild.table_generation
+        );
+        assert_ne!(before_rebuild.generation, after_rebuild.generation);
         Ok(())
     }
 }

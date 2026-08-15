@@ -20,7 +20,7 @@ futures.workspace = true
 persisting-gateway.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store"] }
 persisting-agentctl.workspace = true
-persisting-pvisor = { workspace = true, features = ["lance-chronicle"] }
+persisting-pvisor = { workspace = true, features = ["local-lance-chronicle"] }
 pulsing-actor = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

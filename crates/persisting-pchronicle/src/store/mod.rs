@@ -65,10 +65,10 @@ pub use attempt_registry::{
 };
 #[cfg(feature = "lance-store")]
 pub use catalog::{
-    CatalogDataset, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
-    CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle, DatasetCatalogSnapshot,
-    DatasetMount, DiscoveredSource, CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE,
-    DEFAULT_DATASET_NAME,
+    CatalogDataset, CatalogErrorPolicy, CatalogProjectionStatus, CatalogSnapshotOptions,
+    CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
+    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, CATALOG_SOURCES_TABLE,
+    CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME,
 };
 #[cfg(feature = "lance-store")]
 pub use egress::{export_source_dirs, export_story_bundle, validate_event_lines, ExportOutcome};
@@ -96,7 +96,8 @@ pub use query_engine::{
 };
 #[cfg(feature = "lance-store")]
 pub use raw_event_datafusion::{
-    RawEventDataSource, RawEventDataSourceOptions, RawEventTableProvider, DATAFUSION_EVENTS_TABLE,
+    EventFactSnapshot, RawEventDataSource, RawEventDataSourceOptions, RawEventTableProvider,
+    DATAFUSION_EVENTS_TABLE,
 };
 #[cfg(feature = "lance-store")]
 pub(crate) use raw_event_lance::compact_sealed_event_segment;
@@ -123,8 +124,8 @@ pub use storyline_datafusion::{
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_lance::{
-    StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,
-    StorylineTablePaths,
+    ProjectionSourceSnapshot, StorylineLanceStore, StorylineMaintenanceReport,
+    StorylineProjectionLineage, StorylineStreamImportReport, StorylineTablePaths,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_lance_rows::{

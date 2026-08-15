@@ -7,6 +7,9 @@ Gateway 黑盒压测位于 [`gateway/`](gateway/README.md)，使用确定性的�
 
 ```bash
 just benchmark-gateway
+
+# 回放 examples/data，生成可人工检查的 request/response/capture bundle
+just benchmark-gateway-replay
 ```
 
 结果包含吞吐、p50/p95/p99 延迟、Echo 直连基线，以及基于 canonical manifest 的

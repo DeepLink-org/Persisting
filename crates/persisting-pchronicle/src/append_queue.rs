@@ -312,8 +312,13 @@ fn run_append_worker(
             }
             Err(error) => {
                 let message = format!("{error:#}");
-                notify_completions(&completions, Err(message.clone()));
+                // Publish the terminal queue state before waking callers from
+                // the failed batch. Once a durable append observes `Write`, a
+                // subsequent append must deterministically observe `Closed`
+                // instead of racing into the drain path and receiving the same
+                // writer error again.
                 stop_and_reject_pending(&rx, &state, &message);
+                notify_completions(&completions, Err(message.clone()));
                 return Err(error);
             }
         }
