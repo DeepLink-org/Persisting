@@ -23,6 +23,7 @@ pub use actf::{
 };
 pub use agenticmd::{agenticmd_to_storyline, storyline_to_agenticmd};
 pub use atif::{atif_to_storyline, storyline_to_atif};
+#[cfg(feature = "lance-store")]
 pub(crate) use events::event_storyline_key;
 pub use events::{
     events_to_storyline, project_event_records, storyline_to_events,

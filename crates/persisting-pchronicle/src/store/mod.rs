@@ -124,8 +124,8 @@ pub use storyline_datafusion::{
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_lance::{
-    StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,
-    StorylineTablePaths,
+    ProjectionSourceSnapshot, StorylineLanceStore, StorylineMaintenanceReport,
+    StorylineProjectionLineage, StorylineStreamImportReport, StorylineTablePaths,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_lance_rows::{

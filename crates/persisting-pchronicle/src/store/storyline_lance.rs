@@ -67,6 +67,7 @@ use super::{root_write_lock, LanceMaintenanceOptions, LanceMaintenanceReport};
 
 const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
+const STORYLINE_POINTER_VERSION: u32 = 2;
 const WRITE_BATCH_ROWS: usize = 8192;
 const STREAM_IMPORT_STORIES: usize = 256;
 const RUN_INDEXES: [(&str, IndexType); 2] = [
@@ -102,10 +103,85 @@ pub struct StorylineTablePaths {
     pub steps_version: u64,
     pub tool_calls_version: u64,
     pub objects_version: u64,
+    /// Verified derivation metadata. `None` marks a legacy or directly-written store.
+    pub projection: Option<StorylineProjectionLineage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProjectionSourceSnapshot {
+    CanonicalEvents {
+        source_uri: String,
+        fact_version: u64,
+        fact_rows: u64,
+        layout_revision: u64,
+    },
+    Exchange {
+        source_uri: String,
+        snapshot_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_digest: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorylineProjectionLineage {
+    pub source_id: String,
+    pub source_file: String,
+    pub source: ProjectionSourceSnapshot,
+    pub projector_name: String,
+    pub projector_version: String,
+    pub storyline_schema_version: String,
+    pub recipe_hash: String,
+    pub completeness: String,
+}
+
+impl StorylineProjectionLineage {
+    fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("source_id", self.source_id.as_str()),
+            ("source_file", self.source_file.as_str()),
+            ("projector_name", self.projector_name.as_str()),
+            ("projector_version", self.projector_version.as_str()),
+            (
+                "storyline_schema_version",
+                self.storyline_schema_version.as_str(),
+            ),
+            ("recipe_hash", self.recipe_hash.as_str()),
+            ("completeness", self.completeness.as_str()),
+        ] {
+            anyhow::ensure!(
+                !value.trim().is_empty(),
+                "projection {name} must not be empty"
+            );
+        }
+        match &self.source {
+            ProjectionSourceSnapshot::CanonicalEvents { source_uri, .. }
+            | ProjectionSourceSnapshot::Exchange { source_uri, .. } => {
+                anyhow::ensure!(
+                    !source_uri.trim().is_empty(),
+                    "projection source_uri must not be empty"
+                );
+            }
+        }
+        if let ProjectionSourceSnapshot::Exchange { snapshot_ref, .. } = &self.source {
+            anyhow::ensure!(
+                !snapshot_ref.trim().is_empty(),
+                "projection exchange snapshot_ref must not be empty"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn legacy_pointer_version() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StorylineSnapshotPointer {
+    #[serde(default = "legacy_pointer_version")]
+    pointer_version: u32,
     generation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_generation: Option<String>,
@@ -114,6 +190,8 @@ struct StorylineSnapshotPointer {
     steps_version: u64,
     tool_calls_version: u64,
     objects_version: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    projection: Option<StorylineProjectionLineage>,
 }
 
 #[derive(Debug, Clone)]
@@ -305,6 +383,7 @@ impl StorylineLanceStore {
         paths.steps_version = pointer.steps_version;
         paths.tool_calls_version = pointer.tool_calls_version;
         paths.objects_version = pointer.objects_version;
+        paths.projection = pointer.projection;
         Ok(Some(paths))
     }
 
@@ -343,6 +422,21 @@ impl StorylineLanceStore {
         }
         let pointer = serde_json::from_str::<StorylineSnapshotPointer>(contents)
             .context("decode Storyline snapshot pointer")?;
+        anyhow::ensure!(
+            matches!(pointer.pointer_version, 1 | STORYLINE_POINTER_VERSION),
+            "unsupported Storyline CURRENT pointer version {}",
+            pointer.pointer_version
+        );
+        if pointer.pointer_version == STORYLINE_POINTER_VERSION {
+            if let Some(projection) = &pointer.projection {
+                projection.validate()?;
+            }
+        } else {
+            anyhow::ensure!(
+                pointer.projection.is_none(),
+                "legacy Storyline CURRENT cannot carry projection lineage"
+            );
+        }
         validate_generation_name(&pointer.generation)?;
         if let Some(parent) = &pointer.parent_generation {
             validate_generation_name(parent)?;
@@ -356,6 +450,17 @@ impl StorylineLanceStore {
 
     pub async fn replace_storyline(&self, story: &StorylineDocument) -> Result<()> {
         self.replace_storylines(std::slice::from_ref(story)).await
+    }
+
+    /// Publish complete Storyline replacements with verifiable source lineage.
+    pub async fn replace_projected_storylines(
+        &self,
+        stories: &[StorylineDocument],
+        projection: StorylineProjectionLineage,
+    ) -> Result<()> {
+        projection.validate()?;
+        self.replace_storylines_with_projection(stories, Some(projection))
+            .await
     }
 
     /// Build an empty Storyline store directly from a replayable ATIF input.
@@ -389,6 +494,31 @@ impl StorylineLanceStore {
     pub async fn replace_storyline_stream<I>(
         &self,
         stories: I,
+    ) -> Result<StorylineStreamImportReport>
+    where
+        I: IntoIterator<Item = Result<StorylineDocument>>,
+    {
+        self.replace_storyline_stream_with_projection(stories, None)
+            .await
+    }
+
+    pub async fn replace_projected_storyline_stream<I>(
+        &self,
+        stories: I,
+        projection: StorylineProjectionLineage,
+    ) -> Result<StorylineStreamImportReport>
+    where
+        I: IntoIterator<Item = Result<StorylineDocument>>,
+    {
+        projection.validate()?;
+        self.replace_storyline_stream_with_projection(stories, Some(projection))
+            .await
+    }
+
+    async fn replace_storyline_stream_with_projection<I>(
+        &self,
+        stories: I,
+        projection: Option<StorylineProjectionLineage>,
     ) -> Result<StorylineStreamImportReport>
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
@@ -555,6 +685,7 @@ impl StorylineLanceStore {
             let generation = next_generation();
             self.commit_snapshot(
                 &StorylineSnapshotPointer {
+                    pointer_version: STORYLINE_POINTER_VERSION,
                     generation: generation.clone(),
                     parent_generation: expected_generation.clone(),
                     table_generation: current.table_generation.clone(),
@@ -562,6 +693,7 @@ impl StorylineLanceStore {
                     steps_version,
                     tool_calls_version,
                     objects_version: current.objects_version,
+                    projection,
                 },
                 expected_generation.as_deref(),
             )
@@ -640,6 +772,7 @@ impl StorylineLanceStore {
         let generation = next_generation();
         self.commit_snapshot(
             &StorylineSnapshotPointer {
+                pointer_version: STORYLINE_POINTER_VERSION,
                 generation: generation.clone(),
                 parent_generation: Some(paths.generation.clone()),
                 table_generation: paths.table_generation.clone(),
@@ -647,6 +780,7 @@ impl StorylineLanceStore {
                 steps_version,
                 tool_calls_version,
                 objects_version,
+                projection: paths.projection.clone(),
             },
             Some(&paths.generation),
         )
@@ -672,6 +806,14 @@ impl StorylineLanceStore {
     /// documents are validated before the lock is acquired, and a new store
     /// builds each table and its indices only once.
     pub async fn replace_storylines(&self, stories: &[StorylineDocument]) -> Result<()> {
+        self.replace_storylines_with_projection(stories, None).await
+    }
+
+    async fn replace_storylines_with_projection(
+        &self,
+        stories: &[StorylineDocument],
+        projection: Option<StorylineProjectionLineage>,
+    ) -> Result<()> {
         if stories.is_empty() {
             return Ok(());
         }
@@ -703,10 +845,20 @@ impl StorylineLanceStore {
         }
         sort_rows(&mut runs, &mut steps, &mut tool_calls);
         match self.resolve_current_table_paths().await? {
-            None => self.create_initial_snapshot(runs, steps, tool_calls).await,
-            Some(paths) => {
-                self.replace_snapshot_rows(&paths, &session_ids, runs, steps, tool_calls)
+            None => {
+                self.create_initial_snapshot(runs, steps, tool_calls, projection)
                     .await
+            }
+            Some(paths) => {
+                self.replace_snapshot_rows(
+                    &paths,
+                    &session_ids,
+                    runs,
+                    steps,
+                    tool_calls,
+                    projection,
+                )
+                .await
             }
         }
     }
@@ -795,6 +947,7 @@ impl StorylineLanceStore {
         runs: Vec<StoryRunRow>,
         steps: Vec<StoryStepRow>,
         tool_calls: Vec<StoryToolCallRow>,
+        projection: Option<StorylineProjectionLineage>,
     ) -> Result<()> {
         let generation = next_generation();
         let paths = self.paths_for_generation(&generation);
@@ -830,6 +983,7 @@ impl StorylineLanceStore {
             )?;
             self.commit_snapshot(
                 &StorylineSnapshotPointer {
+                    pointer_version: STORYLINE_POINTER_VERSION,
                     generation: generation.clone(),
                     parent_generation: None,
                     table_generation: generation.clone(),
@@ -837,6 +991,7 @@ impl StorylineLanceStore {
                     steps_version,
                     tool_calls_version,
                     objects_version,
+                    projection,
                 },
                 None,
             )
@@ -859,6 +1014,7 @@ impl StorylineLanceStore {
         runs: Vec<StoryRunRow>,
         steps: Vec<StoryStepRow>,
         tool_calls: Vec<StoryToolCallRow>,
+        projection: Option<StorylineProjectionLineage>,
     ) -> Result<()> {
         let predicate = session_set_predicate(session_ids);
         let ExternalizedStorylineBatches {
@@ -897,6 +1053,7 @@ impl StorylineLanceStore {
         )?;
         self.commit_snapshot(
             &StorylineSnapshotPointer {
+                pointer_version: STORYLINE_POINTER_VERSION,
                 generation: next_generation(),
                 parent_generation: Some(paths.generation.clone()),
                 table_generation: paths.table_generation.clone(),
@@ -904,6 +1061,7 @@ impl StorylineLanceStore {
                 steps_version,
                 tool_calls_version,
                 objects_version,
+                projection,
             },
             Some(&paths.generation),
         )
@@ -932,6 +1090,7 @@ impl StorylineLanceStore {
             steps_version: 0,
             tool_calls_version: 0,
             objects_version: 0,
+            projection: None,
         }
     }
 
@@ -1561,6 +1720,24 @@ mod tests {
         )
     }
 
+    fn projection_lineage() -> StorylineProjectionLineage {
+        StorylineProjectionLineage {
+            source_id: "source-1".into(),
+            source_file: "agent/run/events.lance".into(),
+            source: ProjectionSourceSnapshot::CanonicalEvents {
+                source_uri: "/tmp/events.lance".into(),
+                fact_version: 7,
+                fact_rows: 42,
+                layout_revision: 9,
+            },
+            projector_name: "events-storyline".into(),
+            projector_version: "events-storyline/v1".into(),
+            storyline_schema_version: STORYLINE_SCHEMA_VERSION.into(),
+            recipe_hash: "blake3:recipe".into(),
+            completeness: "full".into(),
+        }
+    }
+
     async fn put_remote_object(uri: &str, relative: &str, contents: &[u8]) {
         let (store, root) = ObjectStore::from_uri(uri).await.unwrap();
         store.put(&root.join(relative), contents).await.unwrap();
@@ -1649,6 +1826,54 @@ mod tests {
             store.get_storyline_full("session-1").await.unwrap(),
             Some(expected)
         );
+    }
+
+    #[tokio::test]
+    async fn projection_lineage_is_atomic_preserved_by_maintenance_and_cleared_by_direct_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StorylineLanceStore::open(dir.path()).await.unwrap();
+        let lineage = projection_lineage();
+        store
+            .replace_projected_storylines(&[story("projected")], lineage.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .current_table_paths()
+                .await
+                .unwrap()
+                .unwrap()
+                .projection,
+            Some(lineage.clone())
+        );
+
+        store
+            .maintain(&LanceMaintenanceOptions {
+                compact: false,
+                optimize_indices: false,
+                vacuum_older_than: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .current_table_paths()
+                .await
+                .unwrap()
+                .unwrap()
+                .projection,
+            Some(lineage)
+        );
+
+        store.replace_storyline(&story("direct")).await.unwrap();
+        assert!(store
+            .current_table_paths()
+            .await
+            .unwrap()
+            .unwrap()
+            .projection
+            .is_none());
     }
 
     #[tokio::test]
@@ -2280,6 +2505,7 @@ mod tests {
         let error = store
             .commit_snapshot(
                 &StorylineSnapshotPointer {
+                    pointer_version: STORYLINE_POINTER_VERSION,
                     generation: attempted_generation,
                     parent_generation: Some(stale.generation.clone()),
                     table_generation: stale.table_generation.clone(),
@@ -2287,6 +2513,7 @@ mod tests {
                     steps_version: stale.steps_version,
                     tool_calls_version: stale.tool_calls_version,
                     objects_version: stale.objects_version,
+                    projection: stale.projection.clone(),
                 },
                 Some(&stale.generation),
             )
