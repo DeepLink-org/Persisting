@@ -15,7 +15,7 @@ pub(crate) use supervisor::RuntimeSupervisor;
 pub(crate) use supervisor::RuntimeSupervisorBuilder;
 
 pub use implant::{ImplantPlan, OverlayHint};
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub use overlay::apply_overlay;
 pub use overlay::{
     apply_overlay_selected, discard_overlay, load_apply_records, load_overlay_record,
