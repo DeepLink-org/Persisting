@@ -27,7 +27,7 @@ use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::{SessionContext, SessionContext as DataFusionSessionContext};
+use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
 use lance::io::ObjectStore as LanceObjectStore;
 use object_store::path::Path as ObjectPath;
@@ -36,11 +36,10 @@ use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::OnceCell;
 
-use crate::convert::storyline_to_events;
+use crate::convert::{event_storyline_key, project_event_records, storyline_to_events};
 use crate::{
-    event_row_to_event_record, event_rows_from_batch, events_to_storyline, reconstruct_storyline,
-    split_storyline, ChronicleFormat, EventRecord, EventsDocument, StoryLink, StoryRunRow,
-    StoryStepRow, StoryToolCallRow, StorylineDocument,
+    reconstruct_storyline, split_storyline, ChronicleFormat, EventRecord, EventsDocument,
+    StoryRunRow, StoryStepRow, StoryToolCallRow, StorylineDocument,
 };
 
 use super::file_trajectory_datafusion::matches_file_filter;
@@ -994,21 +993,12 @@ fn ensure_format_hint(mount: &DatasetMount, actual: ChronicleFormat, file: &str)
 }
 
 async fn normalize_event_source(source: &RawEventDataSource) -> Result<NormalizedEventTables> {
-    let context = DataFusionSessionContext::new();
-    source.register(&context)?;
-    let batches = context
-        .sql("SELECT * FROM events ORDER BY seq")
-        .await?
-        .collect()
-        .await
-        .context("read canonical events for normalized Catalog projection")?;
+    let records = source.read_records_in_append_order().await?;
     let mut groups = BTreeMap::<String, Vec<EventRecord>>::new();
-    for batch in &batches {
-        for row in event_rows_from_batch(batch)? {
-            let record = event_row_to_event_record(&row)?;
-            let key = event_group_key(&record);
-            groups.entry(key).or_default().push(record);
-        }
+    for record in records {
+        let key = event_storyline_key(&record)
+            .context("canonical event cannot be projected without a Storyline identity")?;
+        groups.entry(key.to_string()).or_default().push(record);
     }
 
     let mut runs = Vec::<StoryRunRow>::new();
@@ -1016,27 +1006,11 @@ async fn normalize_event_source(source: &RawEventDataSource) -> Result<Normalize
     let mut tool_calls = Vec::<StoryToolCallRow>::new();
     let mut events_by_session = BTreeMap::new();
     for (group_key, records) in groups {
-        let mut story = events_to_storyline(&EventsDocument::new(records.clone()))?;
-        if let Some(run_id) = records
-            .iter()
-            .find_map(|record| record.identity.run_id.clone())
-            .filter(|run_id| run_id != &story.session_id)
-        {
-            story.parent = Some(StoryLink {
-                parent_session_id: run_id,
-                spawn_call_id: None,
-                spawn_id: None,
-                relation: "spawn".into(),
-            });
-        }
-        // Canonical events can share one physical Run dataset across several
-        // Storylines. The event grouping identity is therefore the Storyline
-        // key, while run_id remains only the physical/logical Run grouping key.
-        story.session_id = group_key.clone();
-        story.run_id = records
-            .iter()
-            .find_map(|record| record.identity.run_id.clone())
-            .filter(|run_id| run_id != &group_key);
+        let story = project_event_records(&records)?;
+        anyhow::ensure!(
+            story.session_id == group_key,
+            "projected Storyline identity changed"
+        );
         let tables = split_storyline(&story)?;
         anyhow::ensure!(
             events_by_session
@@ -1067,15 +1041,6 @@ async fn normalize_event_source(source: &RawEventDataSource) -> Result<Normalize
         )?),
         events_by_session,
     })
-}
-
-fn event_group_key(record: &EventRecord) -> String {
-    record
-        .session_id
-        .clone()
-        .or_else(|| record.identity.storyline_id.clone())
-        .or_else(|| record.identity.run_id.clone())
-        .unwrap_or_else(|| "unknown".into())
 }
 
 async fn discover_candidates(

@@ -66,7 +66,8 @@ pub use append_queue::{
 pub use atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 pub use convert::{
     actf_to_storyline, actf_to_storylines, convert, events_to_storyline, from_storyline,
-    into_storyline, is_actf_storyline, storyline_to_actf, storylines_to_actf,
+    into_storyline, is_actf_storyline, project_event_records, storyline_to_actf,
+    storylines_to_actf, EVENTS_TO_STORYLINE_PROJECTOR_VERSION,
 };
 #[cfg(feature = "lance-store")]
 pub use discovery::{
@@ -181,8 +182,8 @@ pub use store::{
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
     CatalogTrajectoryBundle, ChronicleQueryBackend, ChronicleQueryEngine,
     ChronicleQueryExecutionOptions, CommitRunOutcome, DatasetCatalogSnapshot, DatasetMount,
-    DiscoveredSource, EventLogLayoutStats, EventRow, EventWriterFence, ExportOutcome,
-    ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
+    DiscoveredSource, EventFactSnapshot, EventLogLayoutStats, EventRow, EventWriterFence,
+    ExportOutcome, ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
     FileTrajectoryDataSourceOptions, FileTrajectoryFormat, FileTrajectoryQueryMetrics,
     FileTrajectoryQueryMetricsSnapshot, LanceMaintenanceOptions, LanceMaintenanceReport,
     LeaseAcquireOutcome, LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,

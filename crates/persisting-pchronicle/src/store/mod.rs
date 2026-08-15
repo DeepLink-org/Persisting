@@ -96,7 +96,8 @@ pub use query_engine::{
 };
 #[cfg(feature = "lance-store")]
 pub use raw_event_datafusion::{
-    RawEventDataSource, RawEventDataSourceOptions, RawEventTableProvider, DATAFUSION_EVENTS_TABLE,
+    EventFactSnapshot, RawEventDataSource, RawEventDataSourceOptions, RawEventTableProvider,
+    DATAFUSION_EVENTS_TABLE,
 };
 #[cfg(feature = "lance-store")]
 pub(crate) use raw_event_lance::compact_sealed_event_segment;
