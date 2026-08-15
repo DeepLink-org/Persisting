@@ -543,7 +543,7 @@ impl RunCoordinator {
     }
 
     async fn commit_record(&self, record: &mut DurableResultRecord) -> Result<()> {
-        let _ = self
+        let bound = self
             .control
             .bind_attempt(
                 &record.run_id,
@@ -551,6 +551,15 @@ impl RunCoordinator {
                 record.attempt_id.clone(),
             )
             .await?;
+        if !bound {
+            record.status = DurableResultStatus::Fenced;
+            self.write_record(record).await?;
+            bail!(
+                "Run result attempt {} no longer owns lease epoch {}",
+                record.attempt_id,
+                record.lease_epoch
+            );
+        }
         let outcome = self
             .control
             .commit_run(RunCommitRequest {

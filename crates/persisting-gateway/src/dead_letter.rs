@@ -1,6 +1,6 @@
 //! Failed capture events — append-only JSONL for recovery (`{storage}/.capture/dead_letter.jsonl`).
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,9 @@ use crate::engine::{
 };
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
+use crate::runtime::open_private_append_file;
 use crate::session::storage::CaptureRoute;
+use crate::sink::{redact_sensitive_body, redact_sensitive_headers, redact_sensitive_url};
 use crate::usage::StreamMetrics;
 
 fn default_post() -> String {
@@ -229,13 +231,7 @@ pub fn append_trajectory_dead_letter(
         error: error.to_string(),
     };
     let path = trajectory_dead_letter_path(storage);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create .capture for trajectory dead letter")?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
+    let mut file = open_private_append_file(&path)
         .with_context(|| format!("open trajectory dead letter {}", path.display()))?;
     let line = serde_json::to_string(&entry).context("serialize trajectory dead letter")?;
     writeln!(file, "{line}").context("append trajectory dead letter")?;
@@ -280,13 +276,7 @@ pub fn append_dead_letter(
         prepared_record_json,
     };
     let path = dead_letter_path(storage);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create .capture for dead letter")?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
+    let mut file = open_private_append_file(&path)
         .with_context(|| format!("open dead letter {}", path.display()))?;
     let line = serde_json::to_string(&entry).context("serialize dead letter entry")?;
     writeln!(file, "{line}").context("append dead letter")?;
@@ -319,7 +309,7 @@ impl DeadLetterContext {
             route: ctx.route().clone(),
             agent_id: ctx.agent_id().to_string(),
             call: ctx.call.clone(),
-            request_headers: ctx.request_headers.clone(),
+            request_headers: redact_sensitive_headers(&ctx.request_headers),
             level: ctx.level,
             client_model: ctx.client_model.clone(),
             upstream_model: ctx.upstream_model.clone(),
@@ -328,7 +318,7 @@ impl DeadLetterContext {
             client_peer: ctx.client_peer.clone(),
             client_meta: ctx.client_meta.clone(),
             http_version: ctx.http_version.clone(),
-            upstream_url: ctx.upstream_url.clone(),
+            upstream_url: ctx.upstream_url.as_deref().map(redact_sensitive_url),
         }
     }
 
@@ -364,14 +354,14 @@ impl SerializableEvent {
     pub fn from_event(event: &Event) -> Self {
         match event {
             Event::Request(e) => Self::Request {
-                path: e.path.clone(),
+                path: redact_sensitive_url(&e.path),
                 method: e.method.clone(),
-                url: e.url.clone(),
+                url: e.url.as_deref().map(redact_sensitive_url),
                 body_bytes: e.body_bytes,
                 user_content: e.user_content.clone(),
-                body_json: e.body_json.clone(),
+                body_json: e.body_json.as_ref().map(redact_sensitive_body),
                 model_rewritten: e.model_rewritten,
-                headers: e.headers.clone(),
+                headers: redact_sensitive_headers(&e.headers),
             },
             Event::ResponseComplete(e) => Self::ResponseComplete {
                 status: e.status,
@@ -379,7 +369,7 @@ impl SerializableEvent {
                 streaming: e.streaming,
                 stream_metrics: e.stream_metrics.clone(),
                 assistant_content: e.assistant_content.clone(),
-                headers: e.headers.clone(),
+                headers: redact_sensitive_headers(&e.headers),
             },
             Event::ResponseDraft(e) => Self::ResponseDraft {
                 status: e.status,
@@ -552,6 +542,96 @@ mod tests {
         assert!(matches!(entries[0].event.to_event(), Event::Request(_)));
         assert_eq!(entries[0].context.provider, ProviderKind::OpenAi);
         assert_eq!(entries[0].context.protocol, ProtocolKind::ChatCompletions);
+    }
+
+    #[test]
+    fn dead_letter_redacts_credentials_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = sample_ctx(dir.path());
+        ctx.request_headers = vec![
+            ("authorization".into(), "Bearer context-secret".into()),
+            ("x-request-id".into(), "req-safe".into()),
+        ];
+        ctx.upstream_url = Some("https://upstream.example/v1?key=url-secret".into());
+        let event = Event::Request(RequestEvent {
+            path: "/v1/chat/completions".into(),
+            method: "POST".into(),
+            url: Some("//gateway.example/v1?api_key=request-url-secret".into()),
+            body_bytes: 10,
+            user_content: Some("hi".into()),
+            body_json: Some(serde_json::json!({
+                "api_key": "body-secret",
+                "nested": {"clientSecret": "nested-secret"},
+                "safe": "kept"
+            })),
+            semantic: None,
+            model_rewritten: false,
+            headers: vec![("x-goog-api-key".into(), "event-secret".into())],
+        });
+
+        append_dead_letter(dir.path(), &ctx, &event, "mailbox full", None).unwrap();
+
+        let serialized = std::fs::read_to_string(dead_letter_path(dir.path())).unwrap();
+        for secret in [
+            "context-secret",
+            "event-secret",
+            "body-secret",
+            "nested-secret",
+            "url-secret",
+            "request-url-secret",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "dead letter persisted credential {secret}: {serialized}"
+            );
+        }
+        assert!(serialized.contains("req-safe"));
+        assert!(serialized.contains("kept"));
+        assert!(serialized.contains("<redacted>"));
+
+        let entries = read_dead_letter_entries(dir.path()).unwrap();
+        assert_eq!(entries[0].context.request_headers[0].1, "<redacted>");
+        let SerializableEvent::Request {
+            body_json, headers, ..
+        } = &entries[0].event
+        else {
+            panic!("expected request event")
+        };
+        assert_eq!(headers[0].1, "<redacted>");
+        assert_eq!(body_json.as_ref().unwrap()["api_key"], "<redacted>");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dead_letter_uses_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = sample_ctx(dir.path());
+        let event = Event::Cancelled(CancelEvent {
+            status: 499,
+            bytes_received: 0,
+            streaming: true,
+        });
+        append_dead_letter(dir.path(), &ctx, &event, "cancelled", None).unwrap();
+
+        let capture_dir = dir.path().join(".capture");
+        assert_eq!(
+            std::fs::metadata(&capture_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(dead_letter_path(dir.path()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]

@@ -16,6 +16,43 @@ pub(crate) fn ensure_private_dir(path: &Path) -> Result<()> {
     set_private_dir_permissions(path)
 }
 
+/// Open an append-only runtime-state file and make both it and its parent
+/// private to the current user. Existing files are hardened as well.
+pub(crate) fn open_private_append_file(path: &Path) -> Result<fs::File> {
+    open_private_file(path, true)
+}
+
+/// Open and truncate a runtime-state file while preserving private ownership.
+pub(crate) fn open_private_truncate_file(path: &Path) -> Result<fs::File> {
+    open_private_file(path, false)
+}
+
+fn open_private_file(path: &Path, append: bool) -> Result<fs::File> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("private file has no parent: {}", path.display()))?;
+    ensure_private_dir(parent)?;
+
+    let mut options = OpenOptions::new();
+    options.write(true).create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let file = options
+        .open(path)
+        .with_context(|| format!("open private file {}", path.display()))?;
+    set_private_file_permissions(path)?;
+    Ok(file)
+}
+
 /// Atomically replace a file with content readable only by the current user.
 pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path
@@ -121,6 +158,34 @@ mod tests {
         write_private_file(&path, b"new-secret").unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), b"new-secret");
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_append_hardens_existing_file_and_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("capture");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = parent.join("events.jsonl");
+        fs::write(&path, b"old\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut file = open_private_append_file(&path).unwrap();
+        file.write_all(b"new\n").unwrap();
+        drop(file);
+
+        assert_eq!(fs::read(&path).unwrap(), b"old\nnew\n");
         assert_eq!(
             fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
             0o700

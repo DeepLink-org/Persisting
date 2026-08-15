@@ -61,6 +61,8 @@ enum Command {
     Import(ImportArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
+    /// Run a deterministic local LLM upstream for Gateway testing.
+    Echo(EchoArgs),
     /// Serve the read-only Warehouse and optionally embed the local LLM Gateway.
     Serve(ServeArgs),
 }
@@ -404,6 +406,24 @@ struct ServeArgs {
     debug: bool,
 }
 
+#[derive(Debug, Args)]
+struct EchoArgs {
+    /// Loopback address for the Echo server.
+    #[arg(long, default_value = "127.0.0.1:19080")]
+    listen: SocketAddr,
+
+    /// Encode echoed text directly or as Base64.
+    #[arg(long, value_enum, default_value_t = EchoEncoding::Plain)]
+    encoding: EchoEncoding,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum EchoEncoding {
+    #[default]
+    Plain,
+    Base64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WarehouseFile {
@@ -606,6 +626,7 @@ pub async fn run_with_stdin(
         Command::Find(args) => run_find(args, settings, stdout_is_terminal, stdout, stderr).await,
         Command::Import(args) => run_import(args, settings, stdin, stdout, stderr).await,
         Command::Export(args) => run_export(args, settings, stdout, stderr).await,
+        Command::Echo(args) => run_echo(args, stderr).await,
         Command::Serve(args) => run_serve(args, stderr).await,
     }
 }
@@ -1119,6 +1140,34 @@ async fn run_serve(args: ServeArgs, stderr: &mut dyn Write) -> Result<()> {
             .await
         }
     }
+}
+
+async fn run_echo(args: EchoArgs, stderr: &mut dyn Write) -> Result<()> {
+    anyhow::ensure!(
+        args.listen.ip().is_loopback(),
+        "pChronicle Echo may only bind to a loopback address"
+    );
+    let listener = tokio::net::TcpListener::bind(args.listen)
+        .await
+        .with_context(|| format!("bind pChronicle Echo to {}", args.listen))?;
+    let addr = listener
+        .local_addr()
+        .context("read pChronicle Echo listen address")?;
+    let default_encoding = match args.encoding {
+        EchoEncoding::Plain => persisting_gateway::echo::EchoEncoding::Plain,
+        EchoEncoding::Base64 => persisting_gateway::echo::EchoEncoding::Base64,
+    };
+    writeln!(
+        stderr,
+        "pChronicle Echo: http://{addr}/ encoding={default_encoding}"
+    )
+    .context("write pChronicle Echo address")?;
+    persisting_gateway::echo::serve_with_shutdown(
+        listener,
+        persisting_gateway::echo::EchoServerConfig { default_encoding },
+        wait_for_termination(),
+    )
+    .await
 }
 
 fn open_browser(url: &str) -> Result<()> {
@@ -3156,7 +3205,7 @@ mod tests {
             names,
             [
                 "onboard", "default", "ls", "status", "query", "analysis", "find", "import",
-                "export", "serve",
+                "export", "echo", "serve",
             ]
         );
         let ls = command
@@ -4284,6 +4333,17 @@ uri = {second:?}
             unreachable!("serve command parsed as another variant")
         };
         assert!(!args.listen.ip().is_loopback());
+        Ok(())
+    }
+
+    #[test]
+    fn echo_cli_uses_a_normal_loopback_default() -> Result<()> {
+        let cli = Cli::try_parse_from(["pchronicle", "echo"])?;
+        let Command::Echo(args) = cli.command else {
+            unreachable!("echo command parsed as another variant")
+        };
+        assert_eq!(args.listen, "127.0.0.1:19080".parse::<SocketAddr>()?);
+        assert_eq!(args.encoding, EchoEncoding::Plain);
         Ok(())
     }
 

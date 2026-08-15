@@ -34,6 +34,7 @@ Mounted Datasets and API operations are read-only. Import, export, maintenance,
 and arbitrary filesystem access are not exposed over HTTP. A refresh constructs
 a new Catalog Snapshot before switching readers to it.
 
-For exact configuration and optional Gateway composition, see the
+To capture new LLM traffic in the same process, continue with
+[Gateway forwarding, rewriting, and capture](serve-gateway.md). For exact flags, see the
 [`pchronicle` command reference](../reference/cli.md). For Snapshot behavior,
 read the [Dataset Catalog design](../design/catalog.md).

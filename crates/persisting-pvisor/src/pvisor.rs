@@ -1317,7 +1317,8 @@ mod tests {
         };
         assert!(matches!(
             error,
-            PVisorError::UnsupportedPolicy { dimensions, .. } if dimensions == "network"
+            PVisorError::UnsupportedPolicy { dimensions, .. }
+                if dimensions == "network, subprocess"
         ));
     }
 
@@ -1329,7 +1330,10 @@ mod tests {
                 &spec.capabilities,
                 &spec.runtime.resource_limits,
             ),
-            vec![CapabilityDimension::Network]
+            vec![
+                CapabilityDimension::Network,
+                CapabilityDimension::Subprocess
+            ]
         );
     }
 
@@ -1372,7 +1376,8 @@ upstream = "https://example.com"
         };
         assert!(matches!(
             error,
-            PVisorError::UnsupportedPolicy { dimensions, .. } if dimensions == "network"
+            PVisorError::UnsupportedPolicy { dimensions, .. }
+                if dimensions == "network, subprocess"
         ));
     }
 

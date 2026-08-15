@@ -14,6 +14,8 @@ use persisting_pchronicle::{
     raw_event_append_queue, EventRecord, RawEventAppendSender, RawEventAppendWorker, StoryCoords,
 };
 
+#[cfg(feature = "lance-chronicle")]
+use crate::EventAppendErrorKind;
 use crate::{EventSink, TrajectoryEventSink};
 
 type ChronicleSinks = (
@@ -34,16 +36,30 @@ struct ChronicleEventSink {
 #[async_trait]
 impl EventSink for ChronicleEventSink {
     async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
-        self.tx.try_append(
-            StoryCoords::new(
-                self.storage.clone(),
-                self.agent_id.clone(),
-                self.run_id.clone(),
-                Some(self.run_id.clone()),
-            ),
-            event.clone(),
-        )?;
+        let tx = self.tx.clone();
+        let coords = StoryCoords::new(
+            self.storage.clone(),
+            self.agent_id.clone(),
+            self.run_id.clone(),
+            Some(self.run_id.clone()),
+        );
+        let event = event.clone();
+        tokio::task::spawn_blocking(move || tx.append_durable(coords, event))
+            .await
+            .map_err(|error| anyhow::anyhow!("pChronicle append task failed: {error}"))??;
         Ok(())
+    }
+
+    fn classify_append_error(&self, error: &anyhow::Error) -> EventAppendErrorKind {
+        match error.downcast_ref::<persisting_pchronicle::RawEventAppendQueueError>() {
+            Some(
+                persisting_pchronicle::RawEventAppendQueueError::Full
+                | persisting_pchronicle::RawEventAppendQueueError::Closed,
+            ) => EventAppendErrorKind::Rejected,
+            Some(persisting_pchronicle::RawEventAppendQueueError::Write(_)) | None => {
+                EventAppendErrorKind::Unknown
+            }
+        }
     }
 }
 
@@ -83,7 +99,7 @@ pub fn chronicle_sink(
     let callback = CallbackSink::new(
         default_agent_id,
         move |route: &CaptureRoute, agent_id, record: CaptureRecord| {
-            trajectory_tx.try_append(
+            trajectory_tx.append_durable(
                 StoryCoords::new(
                     callback_storage.clone(),
                     agent_id,

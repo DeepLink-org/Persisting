@@ -118,8 +118,8 @@ impl CaptureRuntime {
     /// streaming hot-path can share an `Arc` and avoid per-event clones, while
     /// non-streaming callers can keep passing owned values.
     ///
-    /// Synchronously appends to the WAL before queuing so that an OOM/panic between this call
-    /// and `apply_inner` completion is recoverable on next startup.
+    /// Best-effort submits to the bounded WAL writer before queuing. The submit
+    /// never waits for disk I/O; only records committed before a crash can be replayed.
     pub fn spawn_apply(&self, ctx: impl Into<Arc<CallContext>>, event: Event) {
         let ctx = ctx.into();
         let wal_seq = self.inner.wal.append_event(&ctx, &event);
@@ -134,10 +134,12 @@ impl CaptureRuntime {
         self.flush().await?;
         let snapshots = self.inner.collect_local_snapshots().await?;
         persist_story_snapshots(self.inner.story_deps.storage.as_path(), &snapshots)?;
-        // Once snapshots and per-story dispatcher queues are drained, every WAL entry
-        // has either been applied or dead-lettered — safe to truncate.
-        if let Err(e) = self.inner.wal.truncate() {
-            tracing::warn!(target: "persisting_gateway", "wal truncate on shutdown: {e:#}");
+        // Never erase a failed or rejected capture. A fully acknowledged WAL
+        // can be truncated; otherwise its pending rows remain for restart replay.
+        if replay_pending(self.inner.story_deps.storage.as_path()).is_empty() {
+            if let Err(e) = self.inner.wal.truncate() {
+                tracing::warn!(target: "persisting_gateway", "wal truncate on shutdown: {e:#}");
+            }
         }
         self.inner.system.shutdown().await.map_err(pulsing_err)
     }
@@ -147,6 +149,10 @@ impl CaptureRuntime {
         self.apply_dispatcher.flush().await?;
         self.inner.flush_stories().await?;
         self.inner.preparer.index.flush_if_dirty()?;
+        // ACKs are submitted asynchronously to the group-commit writer. Make
+        // their durability part of the runtime flush barrier before shutdown
+        // inspects pending WAL entries or decides that truncation is safe.
+        self.inner.wal.flush()?;
         Ok(())
     }
 

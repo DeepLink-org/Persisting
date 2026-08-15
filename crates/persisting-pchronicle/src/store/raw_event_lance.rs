@@ -14,6 +14,7 @@ use datafusion::error::DataFusionError;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::{StreamExt, TryStreamExt};
+use lance::dataset::optimize::{compact_files, CompactionOptions};
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance::deps::arrow_array::{Array, RecordBatch};
 use lance::index::DatasetIndexExt;
@@ -35,6 +36,7 @@ use super::{
 
 const SESSION_INDEX_NAME: &str = "pchronicle_session_id_idx";
 const MAX_SEGMENT_OPEN_CONCURRENCY: usize = 16;
+const MAX_APPEND_GROUP_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LanceMaintenanceOptions {
@@ -71,6 +73,8 @@ pub struct EventLogLayoutStats {
     pub visible_segments: usize,
     pub visible_fragments: usize,
     pub visible_rows: u64,
+    pub max_segment_level: u8,
+    pub sealed_segments: usize,
 }
 
 #[derive(Debug)]
@@ -87,7 +91,16 @@ struct CachedRawDataset {
     segment_uri: String,
     dataset: Option<Dataset>,
     rows: u64,
+    pending_fragments: usize,
     manifest_revision: u64,
+}
+
+/// Immutable writer segment handed to background tiny-fragment maintenance.
+#[derive(Debug)]
+pub(crate) struct SealedEventSegment {
+    root_uri: String,
+    fence: EventWriterFence,
+    segment: EventSegment,
 }
 
 impl Default for RawEventLanceAppender {
@@ -140,6 +153,7 @@ impl RawEventLanceAppender {
             segment_id,
             dataset: None,
             rows: 0,
+            pending_fragments: 0,
             manifest_revision: manifest.revision,
         })
     }
@@ -175,39 +189,32 @@ impl RawEventLanceAppender {
                 .push((session.session_id.clone(), canonical));
         }
 
-        let mut accepted_records = 0;
-        for (uri, (dataset_session, records)) in groups {
-            let mut state = match self.datasets.remove(&uri) {
+        let mut pending = Vec::with_capacity(groups.len());
+        for (uri, (_dataset_session, records)) in groups {
+            let state = match self.datasets.remove(&uri) {
                 Some(state) => state,
-                None => {
-                    let _ = dataset_session;
-                    self.new_state(&uri).await?
-                }
+                None => self.new_state(&uri).await?,
             };
-            let mut rows = Vec::with_capacity(records.len());
-            for (session_id, record) in &records {
-                rows.extend(rows_for_events(session_id, std::slice::from_ref(record))?);
-            }
-            let appended_rows = rows.len();
-            let dataset = append_rows(&state.segment_uri, state.dataset.take(), rows).await?;
-            state.rows = state
-                .rows
-                .checked_add(appended_rows as u64)
-                .context("event segment row count overflow")?;
-            let manifest = raw_event_manifest::publish_segment(
-                &uri,
-                &state.fence,
-                EventSegment {
-                    id: state.segment_id.clone(),
-                    version: dataset.version_id(),
-                    rows: state.rows,
-                },
-            )
-            .await?;
-            state.manifest_revision = manifest.revision;
-            state.dataset = Some(dataset);
-            accepted_records += appended_rows;
+            pending.push((uri, state, records));
+        }
+
+        // Every URI owns an independent Lance segment and manifest. Appending
+        // them sequentially made one slow session hold the completion for the
+        // entire cross-session micro-batch and indirectly starved Gateway's
+        // capture actors. Preserve per-URI ordering across batches while
+        // allowing independent sessions in this batch to progress concurrently.
+        let completed =
+            futures::stream::iter(pending)
+                .map(|(uri, state, records)| async move {
+                    append_event_group(uri, state, records).await
+                })
+                .buffer_unordered(MAX_APPEND_GROUP_CONCURRENCY)
+                .try_collect::<Vec<_>>()
+                .await?;
+        let mut accepted_records = 0;
+        for (uri, state, appended_rows) in completed {
             self.datasets.insert(uri, state);
+            accepted_records += appended_rows;
         }
         Ok(AppendOutcome {
             accepted_records,
@@ -216,9 +223,51 @@ impl RawEventLanceAppender {
         })
     }
 
-    /// Close the writer without indexing, compaction, vacuum, or any other
-    /// synchronous maintenance. Heavy layout work is available through the
-    /// explicit [`maintain`] API and never runs on the ingestion path.
+    /// Seal active segments that have accumulated enough micro-append
+    /// fragments. Future appends immediately move to a new private segment, so
+    /// the sealed segment can be compacted concurrently without commit races.
+    pub(crate) fn seal_fragmented_segments(
+        &mut self,
+        fragment_threshold: usize,
+    ) -> Result<Vec<SealedEventSegment>> {
+        anyhow::ensure!(
+            fragment_threshold > 1,
+            "fragment sealing threshold must be greater than one"
+        );
+
+        let mut sealed = Vec::new();
+        for (uri, state) in &mut self.datasets {
+            if state.pending_fragments < fragment_threshold {
+                continue;
+            }
+            let dataset = state
+                .dataset
+                .take()
+                .context("fragmented event segment is missing its Lance dataset")?;
+            sealed.push(SealedEventSegment {
+                root_uri: uri.clone(),
+                fence: state.fence.clone(),
+                segment: EventSegment {
+                    id: state.segment_id.clone(),
+                    version: dataset.version_id(),
+                    rows: state.rows,
+                    level: 0,
+                    sealed: false,
+                },
+            });
+
+            state.segment_id = format!("e{}-{}", state.fence.epoch, uuid::Uuid::new_v4());
+            state.segment_uri = raw_event_manifest::segment_uri(uri, &state.segment_id);
+            state.rows = 0;
+            state.pending_fragments = 0;
+        }
+        Ok(sealed)
+    }
+
+    /// Close the writer without indexing, full compaction, vacuum, or any other
+    /// synchronous maintenance. The append worker already performs bounded
+    /// tiny-fragment compaction; heavy layout work remains available through
+    /// the explicit [`maintain`] API.
     pub fn finish(self) -> Vec<LanceMaintenanceReport> {
         self.datasets
             .into_values()
@@ -227,6 +276,133 @@ impl RawEventLanceAppender {
                 ..Default::default()
             })
             .collect()
+    }
+}
+
+async fn append_event_group(
+    uri: String,
+    mut state: CachedRawDataset,
+    records: Vec<(String, crate::EventRecord)>,
+) -> Result<(String, CachedRawDataset, usize)> {
+    let mut rows = Vec::with_capacity(records.len());
+    for (session_id, record) in &records {
+        rows.extend(rows_for_events(session_id, std::slice::from_ref(record))?);
+    }
+    let appended_rows = rows.len();
+    let dataset = append_rows(&state.segment_uri, state.dataset.take(), rows).await?;
+    state.rows = state
+        .rows
+        .checked_add(appended_rows as u64)
+        .context("event segment row count overflow")?;
+    state.pending_fragments = state.pending_fragments.saturating_add(1);
+    let manifest = raw_event_manifest::publish_segment(
+        &uri,
+        &state.fence,
+        EventSegment {
+            id: state.segment_id.clone(),
+            version: dataset.version_id(),
+            rows: state.rows,
+            level: 0,
+            sealed: false,
+        },
+    )
+    .await?;
+    state.manifest_revision = manifest.revision;
+    state.dataset = Some(dataset);
+    Ok((uri, state, appended_rows))
+}
+
+/// Compact one immutable segment and atomically advance its outer visibility
+/// pointer. A crash before publication leaves the original segment version
+/// visible; a newer writer fence rejects the stale publication.
+pub(crate) async fn compact_sealed_event_segment(
+    sealed: SealedEventSegment,
+    target_rows_per_fragment: usize,
+    hierarchy_fanout: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        target_rows_per_fragment > 0,
+        "fragment compaction target rows must be greater than zero"
+    );
+    anyhow::ensure!(
+        hierarchy_fanout > 1,
+        "fragment hierarchy fanout must be greater than one"
+    );
+    let _guard = dataset_write_lock::acquire(&sealed.root_uri).await?;
+    let segment_uri = raw_event_manifest::segment_uri(&sealed.root_uri, &sealed.segment.id);
+    let mut dataset = Dataset::open(&segment_uri)
+        .await
+        .with_context(|| format!("open sealed event segment {segment_uri}"))?;
+    let metrics = compact_files(
+        &mut dataset,
+        CompactionOptions {
+            target_rows_per_fragment,
+            max_rows_per_group: target_rows_per_fragment.min(1024 * 1024),
+            num_threads: Some(1),
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .with_context(|| format!("compact sealed trajectory segment {segment_uri}"))?;
+    let mut published_segment = sealed.segment;
+    if metrics.fragments_removed > 0 {
+        published_segment.version = dataset.version_id();
+    }
+    published_segment.sealed = true;
+    raw_event_manifest::publish_segment(&sealed.root_uri, &sealed.fence, published_segment).await?;
+    compact_event_hierarchy_locked(&sealed.root_uri, &sealed.fence, hierarchy_fanout).await?;
+    Ok(())
+}
+
+fn next_hierarchy_group(manifest: &EventManifest, fanout: usize) -> Option<Vec<EventSegment>> {
+    manifest
+        .segments
+        .windows(fanout)
+        .find(|segments| {
+            let level = segments[0].level;
+            segments
+                .iter()
+                .all(|segment| segment.sealed && segment.level == level)
+        })
+        .map(<[EventSegment]>::to_vec)
+}
+
+async fn compact_event_hierarchy_locked(
+    root_uri: &str,
+    fence: &EventWriterFence,
+    fanout: usize,
+) -> Result<()> {
+    loop {
+        let manifest = raw_event_manifest::read(root_uri)
+            .await?
+            .context("event manifest disappeared during hierarchical compaction")?;
+        let Some(group) = next_hierarchy_group(&manifest, fanout) else {
+            return Ok(());
+        };
+        let next_level = group[0]
+            .level
+            .checked_add(1)
+            .context("event segment compaction level overflow")?;
+        let datasets = futures::stream::iter(group.iter().cloned())
+            .map(|segment| async move { open_visible_segment(root_uri, &segment).await })
+            .buffered(MAX_SEGMENT_OPEN_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
+        let rows = group.iter().try_fold(0_u64, |total, segment| {
+            total
+                .checked_add(segment.rows)
+                .context("hierarchical event segment row count overflow")
+        })?;
+        let target_rows = usize::try_from(rows)
+            .context("hierarchical event segment is too large for this platform")?
+            .max(1);
+        let (dataset, mut replacement) =
+            compact_visible_segments(root_uri, datasets, target_rows, false).await?;
+        replacement.version = dataset.version_id();
+        replacement.level = next_level;
+        replacement.sealed = true;
+        raw_event_manifest::replace_segment_group(root_uri, fence, &group, replacement).await?;
     }
 }
 
@@ -379,6 +555,8 @@ async fn compact_visible_segments(
             id: segment_id,
             version: 0,
             rows,
+            level: 0,
+            sealed: true,
         },
     ))
 }
@@ -762,6 +940,17 @@ pub async fn layout_stats(session: &TrajectorySession) -> Result<EventLogLayoutS
             .map(|dataset| dataset.get_fragments().len())
             .sum(),
         visible_rows: manifest.total_rows(),
+        max_segment_level: manifest
+            .segments
+            .iter()
+            .map(|segment| segment.level)
+            .max()
+            .unwrap_or(0),
+        sealed_segments: manifest
+            .segments
+            .iter()
+            .filter(|segment| segment.sealed)
+            .count(),
     })
 }
 

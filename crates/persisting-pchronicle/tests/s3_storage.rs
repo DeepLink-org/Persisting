@@ -119,11 +119,9 @@ async fn run_contract(root: &str) -> Result<()> {
     let reopened = StorylineLanceStore::open_uri(&storyline_root).await?;
     assert_eq!(
         reopened
-            .list_run_summaries(Default::default())
-            .await?
-            .items
-            .len(),
-        2
+            .get_storylines_full(&[first.session_id.clone(), second.session_id.clone()])
+            .await?,
+        [Some(first), Some(second)]
     );
     let engine = ChronicleQueryEngine::open_lance_uri(&storyline_root).await?;
     let output = engine

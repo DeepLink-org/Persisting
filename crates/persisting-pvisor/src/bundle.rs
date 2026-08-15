@@ -515,6 +515,7 @@ mod tests {
             resource_limits: Default::default(),
             overlay: Some(OverlayRecord {
                 id: "run-1".into(),
+                generation: 0,
                 target: temp.path().join("target"),
                 upper: OverlayUpper::Directory {
                     upper_dir: upper,

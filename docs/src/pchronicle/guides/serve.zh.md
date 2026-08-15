@@ -31,5 +31,7 @@ pchronicle serve --config warehouse.toml \
 挂载的 Dataset 和 API 操作均只读。HTTP 不暴露 import、export、maintenance 或任意文件
 访问。刷新会先构造新 Catalog Snapshot，再切换 reader。
 
-精确配置和可选 Gateway 组合见 [`pchronicle` 命令参考](../reference/cli.md)；Snapshot 行为见
+如需在同一进程中转发、改写并捕获新的 LLM 流量，继续阅读
+[Gateway 转发、改写与捕获](serve-gateway.md)。精确参数见
+[`pchronicle` 命令参考](../reference/cli.md)；Snapshot 行为见
 [Dataset Catalog 设计](../design/catalog.md)。

@@ -7,16 +7,24 @@ use std::time::Duration;
 use anyhow::Context;
 use thiserror::Error;
 
+use crate::store::compact_sealed_event_segment;
 use crate::{EventRecord, RawEventLanceAppender, StoryCoords};
 
 pub const DEFAULT_RAW_EVENT_QUEUE_CAPACITY: usize = 256;
 pub const DEFAULT_RAW_EVENT_BATCH_SIZE: usize = 256;
 pub const DEFAULT_RAW_EVENT_BATCH_DELAY: Duration = Duration::from_millis(2);
+/// Bound tiny fragments in the live snapshot before fan-out reads exhaust
+/// file descriptors. Compaction runs after durable waiters have been released.
+pub const DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD: usize = 8;
+pub const DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT: usize =
+    DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD;
+pub const DEFAULT_RAW_EVENT_HIERARCHY_FANOUT: usize = 8;
 
 #[derive(Debug)]
 struct RawEventAppendJob {
     coords: StoryCoords,
     record: EventRecord,
+    completion: Option<mpsc::SyncSender<Result<(), String>>>,
 }
 
 #[derive(Debug)]
@@ -31,6 +39,8 @@ pub enum RawEventAppendQueueError {
     Full,
     #[error("pChronicle append queue is closed")]
     Closed,
+    #[error("pChronicle append failed: {0}")]
+    Write(String),
 }
 
 #[derive(Debug)]
@@ -56,6 +66,33 @@ impl RawEventAppendSender {
         coords: StoryCoords,
         record: EventRecord,
     ) -> Result<(), RawEventAppendQueueError> {
+        self.enqueue(coords, record, None)
+    }
+
+    /// Append an event and wait until its Lance micro-batch is durably visible.
+    ///
+    /// Queue admission remains bounded and non-blocking. Once admitted, this
+    /// method waits for the writer so an upstream WAL can acknowledge the event
+    /// only after pChronicle has published the corresponding Lance segment.
+    pub fn append_durable(
+        &self,
+        coords: StoryCoords,
+        record: EventRecord,
+    ) -> Result<(), RawEventAppendQueueError> {
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        self.enqueue(coords, record, Some(completion_tx))?;
+        completion_rx
+            .recv()
+            .map_err(|_| RawEventAppendQueueError::Closed)?
+            .map_err(RawEventAppendQueueError::Write)
+    }
+
+    fn enqueue(
+        &self,
+        coords: StoryCoords,
+        record: EventRecord,
+        completion: Option<mpsc::SyncSender<Result<(), String>>>,
+    ) -> Result<(), RawEventAppendQueueError> {
         if !self.state.accepting.load(Ordering::SeqCst) {
             return Err(RawEventAppendQueueError::Closed);
         }
@@ -72,6 +109,7 @@ impl RawEventAppendSender {
             .try_send(WriterMessage::Append(Box::new(RawEventAppendJob {
                 coords,
                 record,
+                completion,
             })))
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => RawEventAppendQueueError::Full,
@@ -122,9 +160,35 @@ pub fn raw_event_append_queue() -> anyhow::Result<(RawEventAppendSender, RawEven
 pub fn raw_event_append_queue_with_capacity(
     capacity: usize,
 ) -> anyhow::Result<(RawEventAppendSender, RawEventAppendWorker)> {
+    raw_event_append_queue_with_options(
+        capacity,
+        DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
+        DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
+        DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
+    )
+}
+
+fn raw_event_append_queue_with_options(
+    capacity: usize,
+    compaction_threshold: usize,
+    target_rows_per_fragment: usize,
+    hierarchy_fanout: usize,
+) -> anyhow::Result<(RawEventAppendSender, RawEventAppendWorker)> {
     if capacity == 0 {
         anyhow::bail!("pChronicle append queue capacity must be greater than zero");
     }
+    anyhow::ensure!(
+        compaction_threshold > 1,
+        "pChronicle compaction threshold must be greater than one"
+    );
+    anyhow::ensure!(
+        target_rows_per_fragment > 0,
+        "pChronicle compaction target rows must be greater than zero"
+    );
+    anyhow::ensure!(
+        hierarchy_fanout > 1,
+        "pChronicle compaction hierarchy fanout must be greater than one"
+    );
 
     let (tx, rx) = mpsc::sync_channel::<WriterMessage>(capacity);
     let state = Arc::new(SenderState {
@@ -134,7 +198,18 @@ pub fn raw_event_append_queue_with_capacity(
     });
     let join = std::thread::Builder::new()
         .name("pchronicle-append".to_string())
-        .spawn(move || run_append_worker(rx))
+        .spawn({
+            let worker_state = Arc::clone(&state);
+            move || {
+                run_append_worker(
+                    rx,
+                    worker_state,
+                    compaction_threshold,
+                    target_rows_per_fragment,
+                    hierarchy_fanout,
+                )
+            }
+        })
         .context("spawn pChronicle append worker")?;
 
     Ok((
@@ -148,12 +223,33 @@ pub fn raw_event_append_queue_with_capacity(
     ))
 }
 
-fn run_append_worker(rx: mpsc::Receiver<WriterMessage>) -> anyhow::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+fn run_append_worker(
+    rx: mpsc::Receiver<WriterMessage>,
+    state: Arc<SenderState>,
+    compaction_threshold: usize,
+    target_rows_per_fragment: usize,
+    hierarchy_fanout: usize,
+) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .context("create pChronicle append worker runtime")?;
     let mut appender = RawEventLanceAppender::default();
+    let (maintenance_tx, mut maintenance_rx) = tokio::sync::mpsc::unbounded_channel();
+    let maintenance_task = runtime.spawn(async move {
+        while let Some(segment) = maintenance_rx.recv().await {
+            if let Err(error) =
+                compact_sealed_event_segment(segment, target_rows_per_fragment, hierarchy_fanout)
+                    .await
+            {
+                tracing::warn!(
+                    target: "persisting_pchronicle",
+                    "background raw-event compaction failed: {error:#}"
+                );
+            }
+        }
+    });
     let mut finishing = false;
 
     while !finishing {
@@ -178,25 +274,104 @@ fn run_append_worker(rx: mpsc::Receiver<WriterMessage>) -> anyhow::Result<()> {
             }
         }
 
+        let mut completions = Vec::with_capacity(jobs.len());
         let entries = jobs
             .into_iter()
-            .map(|job| (job.coords, job.record))
+            .map(|job| {
+                completions.push(job.completion);
+                (job.coords, job.record)
+            })
             .collect::<Vec<_>>();
-        runtime
+        let append_result = runtime
             .block_on(appender.append_event_batch(&entries))
-            .context("append event batch to pChronicle")?;
+            .context("append event batch to pChronicle");
+        match append_result {
+            Ok(_) => {
+                notify_completions(&completions, Ok(()));
+                match appender.seal_fragmented_segments(compaction_threshold) {
+                    Ok(segments) => {
+                        for segment in segments {
+                            if maintenance_tx.send(segment).is_err() {
+                                tracing::warn!(
+                                    target: "persisting_pchronicle",
+                                    "raw-event maintenance worker stopped unexpectedly"
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        // The append and its manifest publication are already
+                        // durable. Keep maintenance best-effort so a compaction
+                        // failure cannot turn a successful capture into a retry.
+                        tracing::warn!(
+                            target: "persisting_pchronicle",
+                            "background raw-event segment sealing failed: {error:#}"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                notify_completions(&completions, Err(message.clone()));
+                stop_and_reject_pending(&rx, &state, &message);
+                return Err(error);
+            }
+        }
     }
 
-    // Capture is append-only. Indexing, compaction, and vacuum remain explicit
-    // pChronicle maintenance operations.
+    // Seal the final partial segments after producers have stopped. This keeps
+    // post-shutdown readers from inheriting a tail of tiny live fragments.
+    if let Ok(segments) = appender.seal_fragmented_segments(2) {
+        for segment in segments {
+            if maintenance_tx.send(segment).is_err() {
+                tracing::warn!(
+                    target: "persisting_pchronicle",
+                    "raw-event maintenance worker stopped before final compaction"
+                );
+            }
+        }
+    }
+    drop(maintenance_tx);
+    if let Err(error) = runtime.block_on(maintenance_task) {
+        tracing::warn!(
+            target: "persisting_pchronicle",
+            "raw-event maintenance worker failed: {error}"
+        );
+    }
+
+    // Full compaction across sealed segments, indexing, and vacuum remain
+    // explicit pChronicle maintenance operations.
     let _reports = appender.finish();
     Ok(())
+}
+
+fn notify_completions(
+    completions: &[Option<mpsc::SyncSender<Result<(), String>>>],
+    result: Result<(), String>,
+) {
+    for completion in completions.iter().flatten() {
+        let _ = completion.send(result.clone());
+    }
+}
+
+fn stop_and_reject_pending(rx: &mpsc::Receiver<WriterMessage>, state: &SenderState, message: &str) {
+    state.accepting.store(false, Ordering::SeqCst);
+    while state.in_flight.load(Ordering::SeqCst) != 0 {
+        std::thread::yield_now();
+    }
+    while let Ok(message_in_queue) = rx.try_recv() {
+        if let WriterMessage::Append(job) = message_in_queue {
+            notify_completions(&[job.completion], Err(message.to_string()));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    use crate::{RawEventLanceStore, StructuredStore};
 
     fn event() -> EventRecord {
         EventRecord {
@@ -235,5 +410,119 @@ mod tests {
             sender.try_append(coords, record),
             Err(RawEventAppendQueueError::Full)
         );
+    }
+
+    #[test]
+    fn durable_append_returns_only_after_event_is_replayable() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("store");
+        let coords = StoryCoords::new(storage.to_string_lossy(), "agent", "session", None);
+        let (sender, worker) = raw_event_append_queue_with_capacity(1).unwrap();
+
+        sender.append_durable(coords.clone(), event()).unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let replay = runtime
+            .block_on(RawEventLanceStore.replay(&coords, 0, None))
+            .unwrap();
+        assert_eq!(replay.records.len(), 1);
+        worker.finish().unwrap();
+    }
+
+    #[test]
+    fn durable_append_reports_writer_failure_and_closes_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let invalid_storage = dir.path().join("not-a-directory");
+        std::fs::write(&invalid_storage, b"file").unwrap();
+        let coords = StoryCoords::new(invalid_storage.to_string_lossy(), "agent", "session", None);
+        let (sender, worker) = raw_event_append_queue_with_capacity(1).unwrap();
+
+        assert!(matches!(
+            sender.append_durable(coords.clone(), event()),
+            Err(RawEventAppendQueueError::Write(_))
+        ));
+        assert_eq!(
+            sender.append_durable(coords, event()),
+            Err(RawEventAppendQueueError::Closed)
+        );
+        assert!(worker.finish().is_err());
+    }
+
+    #[test]
+    fn append_worker_bounds_live_small_fragments() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("store");
+        let coords = StoryCoords::new(storage.to_string_lossy(), "agent", "session", None);
+        let (sender, worker) = raw_event_append_queue().unwrap();
+
+        for _ in 0..(DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD * 3) {
+            sender.append_durable(coords.clone(), event()).unwrap();
+        }
+        worker.finish().unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let layout = runtime
+            .block_on(RawEventLanceStore.layout_stats(&coords))
+            .unwrap();
+        assert_eq!(
+            layout.visible_rows,
+            (DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD * 3) as u64
+        );
+        assert_eq!(
+            layout.visible_segments, 3,
+            "unexpected sealed layout: {layout:?}"
+        );
+        assert_eq!(
+            layout.visible_fragments, 3,
+            "sealed segments were not compacted: {layout:?}"
+        );
+    }
+
+    #[test]
+    fn append_worker_compacts_sealed_segments_across_multiple_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("store");
+        let coords = StoryCoords::new(storage.to_string_lossy(), "agent", "session", None);
+        let (sender, worker) = raw_event_append_queue_with_options(32, 2, 2, 2).unwrap();
+
+        // 8 rows become four L0 segments, two L1 segments, and finally one L2
+        // segment. Each merge preserves append order and total row count.
+        for seq in 0..8 {
+            let mut record = event();
+            record.seq = seq;
+            sender.append_durable(coords.clone(), record).unwrap();
+        }
+        worker.finish().unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let layout = runtime
+            .block_on(RawEventLanceStore.layout_stats(&coords))
+            .unwrap();
+        assert_eq!(layout.visible_rows, 8);
+        assert_eq!(layout.max_segment_level, 2);
+        assert_eq!(layout.sealed_segments, 1);
+        assert_eq!(
+            layout.visible_segments, 1,
+            "hierarchy did not carry: {layout:?}"
+        );
+        assert_eq!(layout.visible_fragments, 1);
+        let replay = runtime
+            .block_on(RawEventLanceStore.replay(&coords, 0, None))
+            .unwrap();
+        let sequences = replay
+            .records
+            .iter()
+            .map(|record| serde_json::from_str::<EventRecord>(record).unwrap().seq)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, (0..8).collect::<Vec<_>>());
     }
 }

@@ -6,10 +6,15 @@ authors.workspace = true
 license.workspace = true
 description = "Agent protocol gateway for forwarding and trajectory capture"
 
+[features]
+default = ["echo-server"]
+echo-server = ["dep:base64"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "json", "tokio"] }
+base64 = { workspace = true, optional = true }
 bytes.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 http-body-util.workspace = true

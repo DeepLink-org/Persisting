@@ -6,7 +6,8 @@ task-oriented workflow.
 1. [Discover and query a Dataset](discover-and-query.md).
 2. [Import and export trajectories](exchange.md).
 3. [Serve a local read-only Warehouse](serve.md).
-4. [Capture a new Run with pVisor](../../pvisor/guides/capture.md).
+4. [Forward, rewrite, and capture through the `serve` Gateway](serve-gateway.md).
+5. [Capture a new Run with pVisor](../../pvisor/guides/capture.md).
 
 The guides explain decisions and complete workflows. Use the
 [`pchronicle` reference](../reference/cli.md) for exact flags, and

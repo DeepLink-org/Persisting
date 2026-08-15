@@ -1,10 +1,12 @@
 //! Event write-ahead log — append-before-apply durability for in-flight events.
 //!
-//! `spawn_apply` synchronously appends a JSONL line containing the
-//! `(CallContext, Event)` pair to `<storage>/.capture/events.wal.jsonl`
-//! BEFORE handing the event to [`super::apply_queue::ApplyDispatcher`].
+//! `spawn_apply` submits a JSONL `(CallContext, Event)` record to the bounded
+//! writer queue before handing the event to [`super::apply_queue::ApplyDispatcher`].
+//! Submission never waits for filesystem I/O; accepted records are committed
+//! in the background and may be lost if the process crashes inside that window.
 //! After apply succeeds, an `ack` line for the same `seq` is appended.
-//! On a clean shutdown the file is truncated.
+//! On a clean shutdown the file is truncated only when every event is acked;
+//! failed durable writes remain pending for restart replay.
 //!
 //! On startup [`replay_pending`] scans the file: events whose `seq` was
 //! never acked are returned for replay. This complements
@@ -12,11 +14,13 @@
 //! by giving us a recovery path for OOM/panic/SIGKILL between
 //! `spawn_apply` and `apply` completion.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +29,11 @@ use super::{CallContext, Event};
 use crate::dead_letter::{DeadLetterContext, SerializableEvent};
 
 const WAL_FILENAME: &str = "events.wal.jsonl";
+/// Maximum time the writer deliberately waits for peers to join a commit.
+/// Disk scheduling can add latency beyond this coalescing window.
+const GROUP_COMMIT_MAX_DELAY: Duration = Duration::from_millis(2);
+const GROUP_COMMIT_MAX_LINES: usize = 256;
+const WAL_QUEUE_CAPACITY: usize = 256;
 
 pub fn wal_path(storage: &Path) -> PathBuf {
     storage.join(".capture").join(WAL_FILENAME)
@@ -55,11 +64,29 @@ enum WalLine {
     },
 }
 
-/// Append-only WAL file with a process-local monotonic sequence.
+type ControlResult = std::result::Result<(), String>;
+type ControlCompletion = mpsc::SyncSender<ControlResult>;
+
+enum WalCommand {
+    Line(WalLine),
+    Flush { completion: ControlCompletion },
+    Truncate { completion: ControlCompletion },
+    Shutdown,
+}
+
+/// Append-only WAL with a process-local monotonic sequence and a dedicated
+/// bounded-delay group-commit writer.
+///
+/// Event and ACK submissions are both best-effort and asynchronous. Once a line
+/// reaches the writer it is protected by group commit, while queue saturation or
+/// a crash before the next commit may lose the WAL copy. Canonical capture keeps
+/// its independent apply/Lance durability path.
 pub(crate) struct EventWal {
-    path: PathBuf,
     next_seq: AtomicU64,
-    writer: Mutex<Option<File>>,
+    sender: Option<mpsc::SyncSender<WalCommand>>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    #[cfg(test)]
+    sync_count: Arc<AtomicU64>,
     enabled: bool,
 }
 
@@ -72,12 +99,30 @@ impl EventWal {
         let enabled = match prepare_writer(&path) {
             Ok(file) => {
                 let next_seq = next_sequence(&path);
-                return Self {
-                    path,
-                    next_seq: AtomicU64::new(next_seq),
-                    writer: Mutex::new(Some(file)),
-                    enabled: true,
-                };
+                let (sender, receiver) = mpsc::sync_channel(WAL_QUEUE_CAPACITY);
+                let writer_path = path.clone();
+                let sync_count = Arc::new(AtomicU64::new(0));
+                let worker_sync_count = Arc::clone(&sync_count);
+                match std::thread::Builder::new()
+                    .name("persisting-wal-commit".to_string())
+                    .spawn(move || {
+                        group_commit_loop(file, &writer_path, receiver, worker_sync_count)
+                    }) {
+                    Ok(worker) => {
+                        return Self {
+                            next_seq: AtomicU64::new(next_seq),
+                            sender: Some(sender),
+                            worker: Mutex::new(Some(worker)),
+                            #[cfg(test)]
+                            sync_count,
+                            enabled: true,
+                        };
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "persisting_gateway", "wal writer disabled: {e}");
+                        false
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!(target: "persisting_gateway", "wal disabled: {e:#}");
@@ -85,15 +130,18 @@ impl EventWal {
             }
         };
         Self {
-            path,
             next_seq: AtomicU64::new(0),
-            writer: Mutex::new(None),
+            sender: None,
+            worker: Mutex::new(None),
+            #[cfg(test)]
+            sync_count: Arc::new(AtomicU64::new(0)),
             enabled,
         }
     }
 
-    /// Append an event before dispatch. Returns `Some(seq)` on success
-    /// (must later be passed to [`Self::ack`]), or `None` if WAL is disabled.
+    /// Submit an event before dispatch without waiting for queue capacity or I/O.
+    /// Returns `Some(seq)` when accepted (must later be passed to [`Self::ack`]),
+    /// or `None` when WAL is disabled, full, or closed.
     pub fn append_event(&self, ctx: &CallContext, event: &Event) -> Option<u64> {
         if !self.enabled {
             return None;
@@ -107,11 +155,16 @@ impl EventWal {
                 event: SerializableEvent::from_event(event),
             }),
         };
-        if let Err(e) = self.write_line(&line) {
-            tracing::warn!(target: "persisting_gateway", "wal append: {e:#}");
+        let Some(sender) = &self.sender else {
             return None;
+        };
+        match sender.try_send(WalCommand::Line(line)) {
+            Ok(()) => Some(seq),
+            Err(e) => {
+                tracing::warn!(target: "persisting_gateway", "wal append: {e}");
+                None
+            }
         }
-        Some(seq)
     }
 
     /// Mark a previously enqueued event as applied.
@@ -119,47 +172,156 @@ impl EventWal {
         if !self.enabled {
             return;
         }
-        if let Err(e) = self.write_line(&WalLine::Ack { seq }) {
-            tracing::warn!(target: "persisting_gateway", "wal ack: {e:#}");
+        let Some(sender) = &self.sender else {
+            return;
+        };
+        if let Err(e) = sender.try_send(WalCommand::Line(WalLine::Ack { seq })) {
+            tracing::warn!(target: "persisting_gateway", "wal ack: {e}");
         }
     }
 
-    /// Truncate the WAL — call this on clean shutdown after every event has been applied.
+    /// Wait until every line submitted before this call has completed its group
+    /// commit. Required before inspecting or truncating the WAL during shutdown.
+    pub fn flush(&self) -> Result<()> {
+        self.control(|completion| WalCommand::Flush { completion })
+    }
+
+    /// Truncate the WAL after verifying that no unacknowledged event remains.
     pub fn truncate(&self) -> Result<()> {
+        self.control(|completion| WalCommand::Truncate { completion })
+    }
+
+    fn control(&self, command: impl FnOnce(ControlCompletion) -> WalCommand) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
-        let mut guard = self.writer.lock().expect("wal writer mutex");
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.path)
-            .with_context(|| format!("truncate wal {}", self.path.display()))?;
-        *guard = Some(file);
-        Ok(())
+        let (completion, completed) = mpsc::sync_channel(1);
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("wal not open"))?;
+        sender
+            .send(command(completion))
+            .map_err(|_| anyhow::anyhow!("wal writer stopped"))?;
+        completed
+            .recv()
+            .map_err(|_| anyhow::anyhow!("wal writer dropped control result"))?
+            .map_err(anyhow::Error::msg)
     }
 
-    fn write_line(&self, line: &WalLine) -> Result<()> {
-        let payload = serde_json::to_string(line).context("serialize wal line")?;
-        let mut guard = self.writer.lock().expect("wal writer mutex");
-        let file = guard
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("wal not open"))?;
-        writeln!(file, "{payload}").context("append wal line")?;
+    #[cfg(test)]
+    fn sync_count(&self) -> u64 {
+        self.sync_count.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for EventWal {
+    fn drop(&mut self) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(WalCommand::Shutdown);
+        }
+        if let Some(worker) = self.worker.lock().expect("wal worker mutex").take() {
+            if worker.join().is_err() {
+                tracing::warn!(target: "persisting_gateway", "wal writer thread panicked");
+            }
+        }
+    }
+}
+
+fn group_commit_loop(
+    mut file: File,
+    path: &Path,
+    receiver: mpsc::Receiver<WalCommand>,
+    sync_count: Arc<AtomicU64>,
+) {
+    let mut deferred = None;
+    loop {
+        let command = match deferred.take().or_else(|| receiver.recv().ok()) {
+            Some(command) => command,
+            None => return,
+        };
+        match command {
+            WalCommand::Line(line) => {
+                let deadline = Instant::now() + GROUP_COMMIT_MAX_DELAY;
+                let mut batch = vec![line];
+                let mut disconnected = false;
+                while batch.len() < GROUP_COMMIT_MAX_LINES {
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                        break;
+                    };
+                    match receiver.recv_timeout(remaining) {
+                        Ok(WalCommand::Line(line)) => batch.push(line),
+                        Ok(command) => {
+                            deferred = Some(command);
+                            break;
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => break,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+                commit_lines(&mut file, batch, &sync_count);
+                if disconnected {
+                    return;
+                }
+            }
+            WalCommand::Flush { completion } => {
+                // FIFO command ordering means all preceding line batches have
+                // already completed `sync_data` when this barrier is observed.
+                let _ = completion.send(Ok(()));
+            }
+            WalCommand::Truncate { completion } => {
+                let result = (|| -> Result<File> {
+                    let truncated = crate::runtime::open_private_truncate_file(path)
+                        .with_context(|| format!("truncate wal {}", path.display()))?;
+                    truncated.sync_data().context("fsync truncated wal")?;
+                    Ok(truncated)
+                })();
+                match result {
+                    Ok(truncated) => {
+                        file = truncated;
+                        sync_count.fetch_add(1, Ordering::Relaxed);
+                        let _ = completion.send(Ok(()));
+                    }
+                    Err(error) => {
+                        let _ = completion.send(Err(format!("{error:#}")));
+                    }
+                }
+            }
+            WalCommand::Shutdown => return,
+        }
+    }
+}
+
+fn commit_lines(file: &mut File, batch: Vec<WalLine>, sync_count: &AtomicU64) {
+    let result = (|| -> Result<()> {
+        for line in &batch {
+            serde_json::to_writer(&mut *file, line).context("serialize wal line")?;
+            file.write_all(b"\n").context("append wal newline")?;
+        }
         file.sync_data().context("fsync wal")?;
         Ok(())
+    })();
+    let commit = sync_count.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::trace!(
+        target: "persisting_gateway",
+        commit,
+        lines = batch.len(),
+        "wal group commit"
+    );
+    if let Err(error) = &result {
+        tracing::warn!(
+            target: "persisting_gateway",
+            lines = batch.len(),
+            "wal group commit failed: {error}"
+        );
     }
 }
 
 fn prepare_writer(path: &Path) -> Result<File> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
-    }
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
+    crate::runtime::open_private_append_file(path)
         .with_context(|| format!("open wal {}", path.display()))
 }
 
@@ -315,6 +477,44 @@ mod tests {
     }
 
     #[test]
+    fn writer_commits_queued_lines_with_one_fsync() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wal_path(dir.path());
+        let file = prepare_writer(&path).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(WAL_QUEUE_CAPACITY);
+        let sync_count = Arc::new(AtomicU64::new(0));
+        for seq in 0..16 {
+            sender.send(WalCommand::Line(WalLine::Ack { seq })).unwrap();
+        }
+        let (completion, completed) = mpsc::sync_channel(1);
+        sender.send(WalCommand::Flush { completion }).unwrap();
+        sender.send(WalCommand::Shutdown).unwrap();
+
+        let writer_path = path.clone();
+        let writer_sync_count = Arc::clone(&sync_count);
+        let worker = std::thread::spawn(move || {
+            group_commit_loop(file, &writer_path, receiver, writer_sync_count)
+        });
+        completed.recv().unwrap().unwrap();
+        worker.join().unwrap();
+
+        assert_eq!(sync_count.load(Ordering::Relaxed), 1);
+        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 16);
+    }
+
+    #[test]
+    fn flush_makes_async_ack_visible_before_pending_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal = EventWal::open(dir.path());
+        let seq = wal.append_event(&sample_ctx(), &sample_event()).unwrap();
+        wal.ack(seq);
+        wal.flush().unwrap();
+
+        assert!(replay_pending(dir.path()).is_empty());
+        assert!(wal.sync_count() >= 1);
+    }
+
+    #[test]
     fn truncate_clears_unacked() {
         let dir = tempfile::tempdir().unwrap();
         let wal = EventWal::open(dir.path());
@@ -398,5 +598,88 @@ mod tests {
         assert_eq!(replayed.url.as_deref(), Some("//gateway/v1/messages"));
         assert_eq!(replayed.body_json, Some(original_json));
         assert_eq!(replayed.headers[0], ("x-request-id".into(), "req-1".into()));
+    }
+
+    #[test]
+    fn wal_redacts_credentials_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = sample_ctx();
+        ctx.request_headers = vec![
+            ("authorization".into(), "Bearer context-secret".into()),
+            ("x-request-id".into(), "req-safe".into()),
+        ];
+        ctx.upstream_url = Some("https://upstream.example/v1?key=url-secret".into());
+        let event = Event::Request(RequestEvent {
+            path: "/v1/chat/completions".into(),
+            method: "POST".into(),
+            url: Some("//gateway.example/v1?api_key=request-url-secret".into()),
+            body_bytes: 10,
+            user_content: Some("hi".into()),
+            body_json: Some(serde_json::json!({
+                "apiKey": "body-secret",
+                "safe": "kept"
+            })),
+            semantic: None,
+            model_rewritten: false,
+            headers: vec![("x-api-key".into(), "event-secret".into())],
+        });
+
+        let wal = EventWal::open(dir.path());
+        wal.append_event(&ctx, &event).unwrap();
+        drop(wal);
+
+        let serialized = std::fs::read_to_string(wal_path(dir.path())).unwrap();
+        for secret in [
+            "context-secret",
+            "event-secret",
+            "body-secret",
+            "url-secret",
+            "request-url-secret",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "WAL persisted credential {secret}: {serialized}"
+            );
+        }
+        assert!(serialized.contains("req-safe"));
+        assert!(serialized.contains("kept"));
+        assert!(serialized.contains("<redacted>"));
+
+        let pending = replay_pending(dir.path());
+        assert_eq!(pending[0].context.request_headers[0].1, "<redacted>");
+        let Event::Request(replayed) = pending[0].event.to_event() else {
+            panic!("expected request event")
+        };
+        assert_eq!(replayed.headers[0].1, "<redacted>");
+        assert_eq!(replayed.body_json.unwrap()["apiKey"], "<redacted>");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wal_uses_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let wal = EventWal::open(dir.path());
+        wal.append_event(&sample_ctx(), &sample_event()).unwrap();
+        drop(wal);
+
+        let capture_dir = dir.path().join(".capture");
+        assert_eq!(
+            std::fs::metadata(&capture_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(wal_path(dir.path()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 }

@@ -6,7 +6,7 @@
 //! Session lifecycle records may still append via [`super::lifecycle`].
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use serde_json::Value;
@@ -88,7 +88,7 @@ impl CaptureEventSink for SeqOnlySink {
 /// Assigns monotonic `seq` per storage target and forwards records (RON encoding deferred to consumer).
 pub struct CallbackSink {
     agent_id: String,
-    next_seq: Mutex<HashMap<String, u64>>,
+    next_seq: Mutex<HashMap<String, Arc<Mutex<u64>>>>,
     #[allow(clippy::type_complexity)]
     callback: Box<dyn Fn(&CaptureRoute, &str, CaptureRecord) -> Result<()> + Send + Sync>,
 }
@@ -113,11 +113,22 @@ impl CaptureEventSink for CallbackSink {
         agent_id: &str,
         record: &mut CaptureRecord,
     ) -> Result<()> {
-        let mut guard = self.next_seq.lock().unwrap();
-        let seq = guard.entry(route.seq_key()).or_insert(0);
-        record.seq = *seq;
-        *seq += 1;
-        drop(guard);
+        let sequence = {
+            let mut guard = self.next_seq.lock().unwrap();
+            Arc::clone(
+                guard
+                    .entry(route.seq_key())
+                    .or_insert_with(|| Arc::new(Mutex::new(0))),
+            )
+        };
+        // Serialize one storage target through persistence. The sequence is
+        // advanced only after the callback accepts the record, so a rejected
+        // append can be retried without leaving a permanent gap.
+        let mut next_seq = sequence.lock().unwrap();
+        record.seq = *next_seq;
+        let following_seq = next_seq
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("capture sequence exhausted for {}", route.seq_key()))?;
         record.session_id = Some(route.session_id.clone());
         record.subagent_id = route.subagent_id.clone();
         let aid = if agent_id.is_empty() {
@@ -126,18 +137,73 @@ impl CaptureEventSink for CallbackSink {
             agent_id
         };
         (self.callback)(route, aid, record.clone())?;
+        *next_seq = following_seq;
         Ok(())
     }
 
     fn peek_next_seq(&self, route: &CaptureRoute) -> Option<u64> {
-        Some(
-            self.next_seq
-                .lock()
-                .unwrap()
-                .get(&route.seq_key())
-                .copied()
-                .unwrap_or(0),
-        )
+        let sequence = self.next_seq.lock().unwrap().get(&route.seq_key()).cloned();
+        Some(sequence.map_or(0, |sequence| *sequence.lock().unwrap()))
+    }
+}
+
+#[cfg(test)]
+mod sequence_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    fn record() -> CaptureRecord {
+        CaptureRecord {
+            identity: Default::default(),
+            seq: 99,
+            source: "test".into(),
+            kind: "test".into(),
+            timestamp: None,
+            session_id: None,
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: Value::Null,
+        }
+    }
+
+    #[test]
+    fn callback_rejection_does_not_advance_sequence() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink = CallbackSink::new("agent", {
+            let attempts = Arc::clone(&attempts);
+            let observed = Arc::clone(&observed);
+            move |_, _, record| {
+                observed.lock().unwrap().push(record.seq);
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    anyhow::bail!("reject first append");
+                }
+                Ok(())
+            }
+        });
+        let route = CaptureRoute {
+            root_session: Some("run".into()),
+            session_id: "session".into(),
+            storage_session_id: "session".into(),
+            subagent_id: None,
+        };
+
+        let mut first = record();
+        assert!(sink.append(&route, "agent", &mut first).is_err());
+        assert_eq!(sink.peek_next_seq(&route), Some(0));
+
+        let mut retry = record();
+        sink.append(&route, "agent", &mut retry).unwrap();
+        assert_eq!(retry.seq, 0);
+        assert_eq!(sink.peek_next_seq(&route), Some(1));
+        assert_eq!(*observed.lock().unwrap(), vec![0, 0]);
     }
 }
 
@@ -151,6 +217,128 @@ const REDACT_HEADER_NAMES: &[&str] = &[
     "api-key",
     "x-goog-api-key",
 ];
+
+const REDACTED_VALUE: &str = "<redacted>";
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    REDACT_HEADER_NAMES.contains(&name.as_str())
+        || name.ends_with("-api-key")
+        || name.ends_with("-token")
+        || name.contains("secret-key")
+}
+
+fn is_sensitive_field_name(name: &str) -> bool {
+    const SECRET_FIELDS: &[&str] = &[
+        "apikey",
+        "accesstoken",
+        "refreshtoken",
+        "authorization",
+        "password",
+        "secret",
+        "clientsecret",
+        "cookie",
+        "setcookie",
+        "token",
+        "idtoken",
+        "sessiontoken",
+        "bearertoken",
+        "secretaccesskey",
+        "privatekey",
+    ];
+    let normalized = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect::<String>();
+    SECRET_FIELDS.contains(&normalized.as_str())
+}
+
+fn is_sensitive_query_field_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("key") || is_sensitive_field_name(name)
+}
+
+/// Return a persistence-safe copy of HTTP headers without mutating the wire
+/// request. Header names and duplicates are retained for replay diagnostics.
+pub(crate) fn redact_sensitive_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            let value = if is_sensitive_header_name(name) {
+                REDACTED_VALUE.to_string()
+            } else {
+                value.clone()
+            };
+            (name.clone(), value)
+        })
+        .collect()
+}
+
+/// Redact credentials carried in URL user-info or well-known query fields.
+/// Invalid/relative URL syntax is retained, with its query sanitized when possible.
+pub(crate) fn redact_sensitive_url(value: &str) -> String {
+    let (mut parsed, scheme_relative) = if value.starts_with("//") {
+        match url::Url::parse(&format!("http:{value}")) {
+            Ok(url) => (Some(url), true),
+            Err(_) => (None, false),
+        }
+    } else {
+        (url::Url::parse(value).ok(), false)
+    };
+
+    let value = if let Some(url) = parsed.as_mut() {
+        if !url.username().is_empty() {
+            let _ = url.set_username(REDACTED_VALUE);
+        }
+        if url.password().is_some() {
+            let _ = url.set_password(Some(REDACTED_VALUE));
+        }
+        let rendered = url.to_string();
+        if scheme_relative {
+            rendered
+                .strip_prefix("http:")
+                .unwrap_or(&rendered)
+                .to_string()
+        } else {
+            rendered
+        }
+    } else {
+        value.to_string()
+    };
+
+    let Some((prefix, query_and_fragment)) = value.split_once('?') else {
+        return value;
+    };
+    let (query, fragment) = query_and_fragment
+        .split_once('#')
+        .map_or((query_and_fragment, None), |(query, fragment)| {
+            (query, Some(fragment))
+        });
+    let pairs = url::form_urlencoded::parse(query.as_bytes()).collect::<Vec<_>>();
+    if !pairs
+        .iter()
+        .any(|(name, _)| is_sensitive_query_field_name(name))
+    {
+        return value;
+    }
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (name, field_value) in pairs {
+        serializer.append_pair(
+            &name,
+            if is_sensitive_query_field_name(&name) {
+                REDACTED_VALUE
+            } else {
+                &field_value
+            },
+        );
+    }
+    let mut redacted_url = format!("{prefix}?{}", serializer.finish());
+    if let Some(fragment) = fragment {
+        redacted_url.push('#');
+        redacted_url.push_str(fragment);
+    }
+    redacted_url
+}
 
 /// Infer keep-alive / persistent connection flags from request headers + HTTP version.
 pub fn infer_connection_persistent(
@@ -329,26 +517,13 @@ pub fn attach_http_wire_response(
 /// canonical store. Provider-specific policies can pre-redact additional
 /// fields; this is the non-disableable safety floor.
 pub fn redact_sensitive_body(value: &Value) -> Value {
-    const SECRET_FIELDS: &[&str] = &[
-        "api_key",
-        "apikey",
-        "access_token",
-        "refresh_token",
-        "authorization",
-        "password",
-        "secret",
-        "client_secret",
-        "cookie",
-        "set_cookie",
-    ];
     match value {
         Value::Object(object) => Value::Object(
             object
                 .iter()
                 .map(|(key, value)| {
-                    let normalized = key.to_ascii_lowercase().replace('-', "_");
-                    let value = if SECRET_FIELDS.contains(&normalized.as_str()) {
-                        Value::String("<redacted>".into())
+                    let value = if is_sensitive_field_name(key) {
+                        Value::String(REDACTED_VALUE.into())
                     } else {
                         redact_sensitive_body(value)
                     };
@@ -369,15 +544,12 @@ pub fn redact_sensitive_body(value: &Value) -> Value {
 pub fn attach_recorded_headers(payload: &mut Value, headers: &[(String, String)]) {
     let mut map = serde_json::Map::new();
     let mut redacted = false;
-    for (name, value) in headers {
+    for ((name, _), (_, value)) in headers.iter().zip(redact_sensitive_headers(headers)) {
         let key = name.to_ascii_lowercase();
-        let out = if REDACT_HEADER_NAMES.iter().any(|n| *n == key) {
+        if is_sensitive_header_name(name) {
             redacted = true;
-            "<redacted>".to_string()
-        } else {
-            value.clone()
-        };
-        map.insert(key, Value::String(out));
+        }
+        map.insert(key, Value::String(value));
     }
     let headers_val = Value::Object(map);
     let Some(obj) = payload.as_object_mut() else {
@@ -574,7 +746,7 @@ pub fn llm_response_record_with_content(
 
 #[cfg(test)]
 mod header_tests {
-    use super::attach_recorded_headers;
+    use super::{attach_recorded_headers, redact_sensitive_headers, redact_sensitive_url};
     use serde_json::json;
 
     #[test]
@@ -635,10 +807,58 @@ mod header_tests {
 
     #[test]
     fn nested_body_credentials_are_redacted() {
-        let body = serde_json::json!({"request":{"api_key":"sk-live","safe":"x"}});
+        let body = serde_json::json!({
+            "request": {
+                "api_key": "sk-live",
+                "clientSecret": "client-live",
+                "session-token": "session-live",
+                "safe": "x"
+            }
+        });
         let redacted = super::redact_sensitive_body(&body);
         assert_eq!(redacted["request"]["api_key"], "<redacted>");
+        assert_eq!(redacted["request"]["clientSecret"], "<redacted>");
+        assert_eq!(redacted["request"]["session-token"], "<redacted>");
         assert_eq!(redacted["request"]["safe"], "x");
+    }
+
+    #[test]
+    fn persistence_header_copy_redacts_common_and_vendor_credentials() {
+        let headers = vec![
+            ("Authorization".into(), "Bearer live".into()),
+            ("x-goog-api-key".into(), "google-live".into()),
+            ("x-vendor-access-token".into(), "vendor-live".into()),
+            ("x-request-id".into(), "req-1".into()),
+        ];
+        let redacted = redact_sensitive_headers(&headers);
+        assert_eq!(redacted[0].1, "<redacted>");
+        assert_eq!(redacted[1].1, "<redacted>");
+        assert_eq!(redacted[2].1, "<redacted>");
+        assert_eq!(redacted[3].1, "req-1");
+        assert_eq!(
+            headers[0].1, "Bearer live",
+            "wire headers must be untouched"
+        );
+    }
+
+    #[test]
+    fn persisted_urls_redact_userinfo_and_sensitive_query_fields() {
+        let redacted = redact_sensitive_url(
+            "https://live-user:live-password@example.com/v1/models?key=live-key&alt=sse",
+        );
+        assert!(!redacted.contains("live-user"));
+        assert!(!redacted.contains("live-password"));
+        assert!(!redacted.contains("live-key"));
+        assert!(redacted.contains("alt=sse"));
+
+        assert_eq!(
+            redact_sensitive_url("//example.com/v1/models?api_key=live-key&safe=kept"),
+            "//example.com/v1/models?api_key=%3Credacted%3E&safe=kept"
+        );
+        assert_eq!(
+            redact_sensitive_url("/v1/models?safe=kept"),
+            "/v1/models?safe=kept"
+        );
     }
 
     #[test]

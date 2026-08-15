@@ -187,6 +187,7 @@ fn create(args: CreateArgs) -> Result<i32> {
     let jujutsu_store = args.jujutsu_store.unwrap_or_else(|| root.join(".jujutsu"));
     let overlay = OverlayRecord {
         id: args.name.clone(),
+        generation: 0,
         target: target.clone(),
         upper: match args.backend {
             EnvBackend::Directory => OverlayUpper::Directory {
@@ -242,13 +243,11 @@ fn create(args: CreateArgs) -> Result<i32> {
 }
 
 fn set_accepting(args: SelectArgs, accepting: bool) -> Result<i32> {
-    let mut record = selected(&args)?;
+    let record = selected(&args)?;
     ensure_idle(&record)?;
     let _lease = RunLease::acquire(&record.stage_dir())?;
-    let overlay = record
-        .overlay
-        .as_ref()
-        .context("environment has no OverlayFS stage")?;
+    let mut record = reload_after_lease(record)?;
+    let overlay = current_overlay(&record)?;
     anyhow::ensure!(
         matches!(overlay.state, OverlayState::Staged),
         "environment filesystem is {:?}; it cannot be started or stopped",
@@ -265,8 +264,10 @@ fn set_accepting(args: SelectArgs, accepting: bool) -> Result<i32> {
 }
 
 fn exec(args: SelectArgs, command: Vec<String>) -> Result<i32> {
-    let mut record = selected(&args)?;
+    let record = selected(&args)?;
     ensure_idle(&record)?;
+    let lease = RunLease::acquire(&record.stage_dir())?;
+    let mut record = reload_after_lease(record)?;
     anyhow::ensure!(
         record.state == "ready",
         "environment '{}' is {}; run `pvisor env start {}` first",
@@ -274,10 +275,7 @@ fn exec(args: SelectArgs, command: Vec<String>) -> Result<i32> {
         record.state,
         record.run_id
     );
-    let overlay = record
-        .overlay
-        .clone()
-        .context("environment has no OverlayFS stage")?;
+    let overlay = current_overlay(&record)?;
     anyhow::ensure!(
         overlay.state == OverlayState::Staged,
         "environment filesystem is {:?}; exec requires staged changes",
@@ -288,7 +286,6 @@ fn exec(args: SelectArgs, command: Vec<String>) -> Result<i32> {
     } else {
         record.overlay_lowers.clone()
     };
-    let lease = RunLease::acquire(&record.stage_dir())?;
     let mount = mount_overlay_record(&overlay, &lowers)?;
     let (program, program_args) = command
         .split_first()
@@ -368,9 +365,10 @@ fn apply(args: ApplyArgs) -> Result<i32> {
     {
         bail!("--all cannot be combined with --path, --include, or --exclude");
     }
-    let mut record = selected(&args.select)?;
+    let record = selected(&args.select)?;
     ensure_idle(&record)?;
     let _lease = RunLease::acquire(&record.stage_dir())?;
+    let mut record = reload_after_lease(record)?;
     let mut overlay = current_overlay(&record)?;
     if let Some(target) = args.target {
         fs::create_dir_all(&target)
@@ -400,8 +398,9 @@ fn apply(args: ApplyArgs) -> Result<i32> {
         record.overlay_lowers.clone()
     };
     let outcome = apply_overlay_selected(&mut overlay, &lowers, &selection)?;
-    overlay.state = OverlayState::Staged;
-    write_overlay_record(&overlay)?;
+    if outcome.remaining.is_empty() {
+        overlay = reset_overlay_generation(overlay)?;
+    }
     record.overlay = Some(overlay);
     record.state = "ready".into();
     record.write()?;
@@ -416,13 +415,13 @@ fn apply(args: ApplyArgs) -> Result<i32> {
 }
 
 fn drop_changes(args: SelectArgs) -> Result<i32> {
-    let mut record = selected(&args)?;
+    let record = selected(&args)?;
     ensure_idle(&record)?;
     let _lease = RunLease::acquire(&record.stage_dir())?;
+    let mut record = reload_after_lease(record)?;
     let mut overlay = current_overlay(&record)?;
     discard_overlay(&mut overlay)?;
-    overlay.state = OverlayState::Staged;
-    write_overlay_record(&overlay)?;
+    overlay = reset_overlay_generation(overlay)?;
     record.overlay = Some(overlay);
     record.state = "ready".into();
     record.write()?;
@@ -475,6 +474,42 @@ fn current_overlay(record: &RunRecord) -> Result<OverlayRecord> {
             .clone()
             .context("environment has no OverlayFS stage"),
     }
+}
+
+fn reload_after_lease(record: RunRecord) -> Result<RunRecord> {
+    let stage = record.stage_dir();
+    let mut current = RunRecord::read(&stage)
+        .with_context(|| format!("reload environment metadata from {}", stage.display()))?;
+    let overlay = current_overlay(&current)?;
+    if matches!(
+        overlay.state,
+        OverlayState::Applied | OverlayState::Discarded
+    ) {
+        current.overlay = Some(reset_overlay_generation(overlay)?);
+        current.state = "ready".into();
+        current.write()?;
+    } else {
+        current.overlay = Some(overlay);
+    }
+    Ok(current)
+}
+
+fn reset_overlay_generation(mut overlay: OverlayRecord) -> Result<OverlayRecord> {
+    anyhow::ensure!(
+        matches!(
+            overlay.state,
+            OverlayState::Applied | OverlayState::Discarded
+        ),
+        "overlay generation reset requires a terminal state, found {:?}",
+        overlay.state
+    );
+    overlay.generation = overlay
+        .generation
+        .checked_add(1)
+        .context("environment overlay generation overflow")?;
+    overlay.state = OverlayState::Staged;
+    write_overlay_record(&overlay)?;
+    Ok(overlay)
 }
 
 fn ensure_idle(record: &RunRecord) -> Result<()> {
@@ -584,10 +619,9 @@ mod tests {
         assert_eq!(fs::read(target.join("committed.txt"))?, b"value");
         assert!(!target.join("later.txt").exists());
         assert!(upper_dir.join("later.txt").exists());
-        assert_eq!(
-            selected(&select)?.overlay.context("overlay")?.state,
-            OverlayState::Staged
-        );
+        let after_partial = selected(&select)?.overlay.context("overlay")?;
+        assert_eq!(after_partial.state, OverlayState::Staged);
+        assert_eq!(after_partial.generation, 0);
 
         apply(ApplyArgs {
             select: select.clone(),
@@ -598,15 +632,20 @@ mod tests {
             all: true,
         })?;
         assert_eq!(fs::read(target.join("later.txt"))?, b"later");
+        let after_apply = selected(&select)?.overlay.context("overlay")?;
+        assert_eq!(after_apply.state, OverlayState::Staged);
+        assert_eq!(after_apply.generation, 1);
 
+        let OverlayUpper::Directory { upper_dir, .. } = &after_apply.upper else {
+            unreachable!("directory fixture")
+        };
         fs::create_dir_all(upper_dir)?;
         fs::write(upper_dir.join("discarded.txt"), b"value")?;
         drop_changes(select.clone())?;
         assert!(!target.join("discarded.txt").exists());
-        assert_eq!(
-            selected(&select)?.overlay.context("overlay")?.state,
-            OverlayState::Staged
-        );
+        let after_drop = selected(&select)?.overlay.context("overlay")?;
+        assert_eq!(after_drop.state, OverlayState::Staged);
+        assert_eq!(after_drop.generation, 2);
         Ok(())
     }
 
@@ -615,5 +654,36 @@ mod tests {
         assert!(validate_name("../escape").is_err());
         assert!(validate_name("nested/name").is_err());
         assert!(validate_name("valid-name").is_ok());
+    }
+
+    #[test]
+    fn reload_after_lease_recovers_interrupted_terminal_reset() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("envs");
+        let target = temp.path().join("target");
+        fs::create_dir(&target)?;
+        create(CreateArgs {
+            name: "recover".into(),
+            target,
+            root: Some(root.clone()),
+            backend: EnvBackend::Directory,
+            jujutsu_store: None,
+            agent: "test".into(),
+        })?;
+        let select = SelectArgs {
+            selector: PathBuf::from("recover"),
+            root: Some(root),
+        };
+        let record = selected(&select)?;
+        let mut overlay = current_overlay(&record)?;
+        discard_overlay(&mut overlay)?;
+        assert_eq!(overlay.state, OverlayState::Discarded);
+
+        let _lease = RunLease::acquire(&record.stage_dir())?;
+        let recovered = reload_after_lease(record)?;
+        let overlay = recovered.overlay.context("overlay")?;
+        assert_eq!(overlay.state, OverlayState::Staged);
+        assert_eq!(overlay.generation, 1);
+        Ok(())
     }
 }

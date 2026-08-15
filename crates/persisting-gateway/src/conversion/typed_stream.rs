@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use persisting_pchronicle::{
     LlmCandidate, LlmContentPart, LlmMessage, LlmProtocol, LlmResponse, LlmResponseEventPayload,
     LlmRole, LlmStreamEvent, LlmUsage, LLM_EVENT_SCHEMA_VERSION,
@@ -35,31 +36,44 @@ impl TypedStreamTranslator {
         })
     }
 
-    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<String> {
+    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<Bytes> {
+        if self.passthrough {
+            // Semantic capture is best-effort on an otherwise transparent route.
+            // Provider extensions or malformed frames must never alter or block
+            // the exact upstream bytes returned to the client.
+            if let Err(error) = self.decoder.push_chunk(chunk) {
+                tracing::warn!(
+                    target: "persisting_gateway",
+                    "passthrough stream semantic decode: {error:#}"
+                );
+            }
+            return Ok(Bytes::copy_from_slice(chunk));
+        }
         let events = self.decoder.push_chunk(chunk)?;
         let rendered = self.renderer.push_events(&events)?;
-        if self.passthrough {
-            Ok(String::from_utf8_lossy(chunk).into_owned())
-        } else {
-            Ok(rendered)
-        }
+        Ok(Bytes::from(rendered))
     }
 
-    pub fn finish_stream(&mut self) -> Result<String> {
+    pub fn finish_stream(&mut self) -> Result<Bytes> {
+        if self.passthrough {
+            if let Err(error) = self.decoder.finish() {
+                tracing::warn!(
+                    target: "persisting_gateway",
+                    "passthrough stream semantic finish: {error:#}"
+                );
+            }
+            return Ok(Bytes::new());
+        }
         let events = self.decoder.finish()?;
         let rendered = self.renderer.finish(&events)?;
-        if self.passthrough {
-            Ok(String::new())
-        } else {
-            Ok(rendered)
-        }
+        Ok(Bytes::from(rendered))
     }
 
     pub fn metrics(&self) -> &StreamMetrics {
         self.decoder.metrics()
     }
 
-    pub fn upstream_snapshot(&self) -> &str {
+    pub fn upstream_snapshot(&self) -> &[u8] {
         self.decoder.upstream_snapshot()
     }
 
@@ -90,8 +104,8 @@ fn llm_protocol(protocol: ProtocolKind) -> Option<LlmProtocol> {
 struct StreamDecoder {
     protocol: LlmProtocol,
     fallback_model: String,
-    buffer: String,
-    upstream_raw: String,
+    buffer: Vec<u8>,
+    upstream_raw: Vec<u8>,
     started: Instant,
     emitted_start: bool,
     finished: bool,
@@ -105,8 +119,8 @@ impl StreamDecoder {
         Self {
             protocol: protocol.clone(),
             fallback_model: fallback_model.into(),
-            buffer: String::new(),
-            upstream_raw: String::new(),
+            buffer: Vec::new(),
+            upstream_raw: Vec::new(),
             started: Instant::now(),
             emitted_start: false,
             finished: false,
@@ -117,11 +131,15 @@ impl StreamDecoder {
     }
 
     fn push_chunk(&mut self, chunk: &[u8]) -> Result<Vec<LlmStreamEvent>> {
-        let chunk = String::from_utf8_lossy(chunk);
-        self.upstream_raw.push_str(&chunk);
-        self.buffer.push_str(&chunk);
+        self.upstream_raw.extend_from_slice(chunk);
+        self.buffer.extend_from_slice(chunk);
         let mut events = Vec::new();
-        while let Some(data) = next_sse_data(&mut self.buffer) {
+        while let Some(frame) = next_sse_frame(&mut self.buffer) {
+            let frame = std::str::from_utf8(&frame).context("provider SSE frame is not UTF-8")?;
+            let data = sse_frame_data(frame);
+            if data.is_empty() {
+                continue;
+            }
             if data == "[DONE]" {
                 continue;
             }
@@ -559,7 +577,7 @@ impl StreamDecoder {
     fn metrics(&self) -> &StreamMetrics {
         &self.metrics
     }
-    fn upstream_snapshot(&self) -> &str {
+    fn upstream_snapshot(&self) -> &[u8] {
         &self.upstream_raw
     }
 
@@ -627,7 +645,10 @@ impl ResponseAccumulator {
                 signature,
             } => {
                 let state = self.candidates.entry(*candidate).or_default();
-                if !state.tools.iter().any(|tool| tool.id == *id) {
+                if let Some(tool) = state.tools.iter_mut().find(|tool| tool.id == *id) {
+                    tool.name = name.clone();
+                    tool.signature = signature.clone();
+                } else {
                     state.tools.push(ToolState {
                         id: id.clone(),
                         name: name.clone(),
@@ -644,6 +665,13 @@ impl ResponseAccumulator {
                 let state = self.candidates.entry(*candidate).or_default();
                 if let Some(tool) = state.tools.iter_mut().find(|tool| tool.id == *id) {
                     tool.arguments.push_str(delta);
+                } else {
+                    state.tools.push(ToolState {
+                        id: id.clone(),
+                        name: String::new(),
+                        arguments: delta.clone(),
+                        signature: None,
+                    });
                 }
             }
             LlmStreamEvent::Usage { usage } => self.usage = Some(usage.clone()),
@@ -830,8 +858,7 @@ impl StreamRenderer {
                     .as_ref()
                     .map(|signature| format!("{id}__thought__{signature}"))
                     .unwrap_or_else(|| id.clone());
-                let index = self.blocks.len();
-                self.blocks.insert(id.clone(), index);
+                let index = self.ensure_chat_tool_index(id);
                 choice = Some(
                     json!({"index":candidate,"delta":{"tool_calls":[{"index":index,"id":wire_id,"type":"function","function":{"name":name,"arguments":""}}]},"finish_reason":null}),
                 );
@@ -841,7 +868,7 @@ impl StreamRenderer {
                 id,
                 delta,
             } => {
-                let index = self.blocks.get(id).copied().unwrap_or(0);
+                let index = self.ensure_chat_tool_index(id);
                 choice = Some(
                     json!({"index":candidate,"delta":{"tool_calls":[{"index":index,"function":{"arguments":delta}}]},"finish_reason":null}),
                 );
@@ -885,10 +912,17 @@ impl StreamRenderer {
                 output.push_str(&format_sse(Some("content_block_delta"), &json!({"type":"content_block_delta","index":index,"delta":{"type":"thinking_delta","thinking":text}}))?);
             }
             LlmStreamEvent::ToolCallStart { id, name, .. } => {
+                self.tool_names.insert(id.clone(), name.clone());
                 self.ensure_message_block("tool_use", Some((id, name)), output)?;
             }
             LlmStreamEvent::ToolArgumentsDelta { id, delta, .. } => {
-                let index = self.blocks.get(id).copied().unwrap_or(0);
+                let empty_name = String::new();
+                let index =
+                    self.ensure_message_block("tool_use", Some((id, &empty_name)), output)?;
+                self.tool_arguments
+                    .entry(id.clone())
+                    .or_default()
+                    .push_str(delta);
                 output.push_str(&format_sse(Some("content_block_delta"), &json!({"type":"content_block_delta","index":index,"delta":{"type":"input_json_delta","partial_json":delta}}))?);
             }
             LlmStreamEvent::Usage { usage } => self.usage = usage.clone(),
@@ -948,6 +982,15 @@ impl StreamRenderer {
         Ok(index)
     }
 
+    fn ensure_chat_tool_index(&mut self, id: &str) -> usize {
+        if let Some(index) = self.blocks.get(id) {
+            return *index;
+        }
+        let index = self.blocks.len();
+        self.blocks.insert(id.to_string(), index);
+        index
+    }
+
     fn finish_messages(&mut self, output: &mut String) -> Result<()> {
         for index in 0..self.next_block {
             output.push_str(&format_sse(
@@ -955,7 +998,15 @@ impl StreamRenderer {
                 &json!({"type":"content_block_stop","index":index}),
             )?);
         }
-        output.push_str(&format_sse(Some("message_delta"), &json!({"type":"message_delta","delta":{"stop_reason":super::semantic::anthropic_finish_reason(self.finish_reason.as_deref(), !self.blocks.is_empty()),"stop_sequence":null},"usage":{"output_tokens":self.usage.output_tokens}}))?);
+        let mut usage = json!({
+            "input_tokens": self.usage.input_tokens,
+            "output_tokens": self.usage.output_tokens,
+            "cache_read_input_tokens": self.usage.cache_read_tokens,
+        });
+        if self.usage.cache_write_tokens > 0 {
+            usage["cache_creation_input_tokens"] = json!(self.usage.cache_write_tokens);
+        }
+        output.push_str(&format_sse(Some("message_delta"), &json!({"type":"message_delta","delta":{"stop_reason":super::semantic::anthropic_finish_reason(self.finish_reason.as_deref(), !self.blocks.is_empty()),"stop_sequence":null},"usage":usage}))?);
         output.push_str(&format_sse(
             Some("message_stop"),
             &json!({"type":"message_stop"}),
@@ -982,18 +1033,20 @@ impl StreamRenderer {
                     self.emit_response_event("response.content_part.added", json!({"type":"response.content_part.added","item_id":format!("msg_{}",self.id),"output_index":index,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}), output)?;
                 }
                 let index = self.text_block.unwrap_or(0);
-                self.emit_response_event("response.output_text.delta", json!({"type":"response.output_text.delta","item_id":format!("msg_{}",self.id),"output_index":index,"content_index":0,"delta":text}), output)?;
+                self.emit_response_event("response.output_text.delta", json!({"type":"response.output_text.delta","item_id":format!("msg_{}",self.id),"output_index":index,"content_index":0,"delta":text,"logprobs":[]}), output)?;
             }
             LlmStreamEvent::ToolCallStart { id, name, .. } => {
-                let index = self.next_block;
-                self.next_block += 1;
-                self.blocks.insert(id.clone(), index);
                 self.tool_names.insert(id.clone(), name.clone());
                 self.tool_arguments.entry(id.clone()).or_default();
-                self.emit_response_event("response.output_item.added", json!({"type":"response.output_item.added","output_index":index,"item":{"type":"function_call","id":format!("fc_{id}"),"call_id":id,"name":name,"arguments":"","status":"in_progress"}}), output)?;
+                if !self.blocks.contains_key(id) {
+                    self.start_response_tool(id, name, output)?;
+                }
             }
             LlmStreamEvent::ToolArgumentsDelta { id, delta, .. } => {
-                let index = self.blocks.get(id).copied().unwrap_or(0);
+                let index = match self.blocks.get(id).copied() {
+                    Some(index) => index,
+                    None => self.start_response_tool(id, "", output)?,
+                };
                 self.tool_arguments
                     .entry(id.clone())
                     .or_default()
@@ -1006,6 +1059,18 @@ impl StreamRenderer {
             _ => {}
         }
         Ok(())
+    }
+
+    fn start_response_tool(&mut self, id: &str, name: &str, output: &mut String) -> Result<usize> {
+        let index = self.next_block;
+        self.next_block += 1;
+        self.blocks.insert(id.to_string(), index);
+        self.tool_names
+            .entry(id.to_string())
+            .or_insert_with(|| name.to_string());
+        self.tool_arguments.entry(id.to_string()).or_default();
+        self.emit_response_event("response.output_item.added", json!({"type":"response.output_item.added","output_index":index,"item":{"type":"function_call","id":format!("fc_{id}"),"call_id":id,"name":name,"arguments":"","status":"in_progress"}}), output)?;
+        Ok(index)
     }
 
     fn emit_response_event(
@@ -1021,12 +1086,19 @@ impl StreamRenderer {
     }
 
     fn finish_responses(&mut self, output: &mut String) -> Result<()> {
+        let mut completed_output = Vec::new();
         if let Some(index) = self.text_block {
             let item_id = format!("msg_{}", self.id);
             let text = self.accumulated_text.clone();
-            self.emit_response_event("response.output_text.done", json!({"type":"response.output_text.done","item_id":item_id,"output_index":index,"content_index":0,"text":text}), output)?;
+            let item = json!({"type":"message","id":item_id,"role":"assistant","status":"completed","content":[{"type":"output_text","text":text,"annotations":[],"logprobs":[]}]});
+            self.emit_response_event("response.output_text.done", json!({"type":"response.output_text.done","item_id":item_id,"output_index":index,"content_index":0,"text":text,"logprobs":[]}), output)?;
             self.emit_response_event("response.content_part.done", json!({"type":"response.content_part.done","item_id":item_id,"output_index":index,"content_index":0,"part":{"type":"output_text","text":text,"annotations":[]}}), output)?;
-            self.emit_response_event("response.output_item.done", json!({"type":"response.output_item.done","output_index":index,"item":{"type":"message","id":item_id,"role":"assistant","status":"completed","content":[{"type":"output_text","text":text,"annotations":[]}]}}), output)?;
+            self.emit_response_event(
+                "response.output_item.done",
+                json!({"type":"response.output_item.done","output_index":index,"item":item}),
+                output,
+            )?;
+            completed_output.push((index, item));
         }
         let mut tools = self
             .blocks
@@ -1043,16 +1115,27 @@ impl StreamRenderer {
         tools.sort_by_key(|(index, ..)| *index);
         for (index, id, name, arguments) in tools {
             let item_id = format!("fc_{id}");
+            let item = json!({"type":"function_call","id":item_id,"call_id":id,"name":name,"arguments":arguments,"status":"completed"});
             self.emit_response_event("response.function_call_arguments.done", json!({"type":"response.function_call_arguments.done","item_id":item_id,"output_index":index,"arguments":arguments}), output)?;
-            self.emit_response_event("response.output_item.done", json!({"type":"response.output_item.done","output_index":index,"item":{"type":"function_call","id":item_id,"call_id":id,"name":name,"arguments":arguments,"status":"completed"}}), output)?;
+            self.emit_response_event(
+                "response.output_item.done",
+                json!({"type":"response.output_item.done","output_index":index,"item":item}),
+                output,
+            )?;
+            completed_output.push((index, item));
         }
+        completed_output.sort_by_key(|(index, _)| *index);
+        let completed_output = completed_output
+            .into_iter()
+            .map(|(_, item)| item)
+            .collect::<Vec<_>>();
         let status = match self.finish_reason.as_deref() {
             Some("length" | "max_tokens" | "MAX_TOKENS" | "incomplete") => "incomplete",
             Some("failed" | "content_filter") => "failed",
             _ => "completed",
         };
         let usage = self.usage.clone();
-        self.emit_response_event("response.completed", json!({"type":"response.completed","response":{"id":self.id,"object":"response","status":status,"model":self.model,"output":[],"usage":{"input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens,"total_tokens":usage.total_tokens}}}), output)
+        self.emit_response_event("response.completed", json!({"type":"response.completed","response":{"id":self.id,"object":"response","status":status,"model":self.model,"output":completed_output,"usage":{"input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens,"total_tokens":usage.total_tokens}}}), output)
     }
 
     fn render_gemini(&mut self, event: &LlmStreamEvent, output: &mut String) -> Result<()> {
@@ -1098,22 +1181,32 @@ impl StreamRenderer {
     }
 }
 
-fn next_sse_data(buffer: &mut String) -> Option<String> {
-    let lf = buffer.find("\n\n").map(|position| (position, 2));
-    let crlf = buffer.find("\r\n\r\n").map(|position| (position, 4));
+fn next_sse_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let lf = buffer
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|position| (position, 2));
+    let crlf = buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| (position, 4));
     let (position, delimiter) = match (lf, crlf) {
         (Some(left), Some(right)) => std::cmp::min(left, right),
         (Some(found), None) | (None, Some(found)) => found,
         (None, None) => return None,
     };
-    let frame = buffer[..position].to_string();
-    *buffer = buffer[position + delimiter..].to_string();
-    let data = frame
+    let remainder = buffer.split_off(position + delimiter);
+    buffer.truncate(position);
+    let frame = std::mem::replace(buffer, remainder);
+    Some(frame)
+}
+
+fn sse_frame_data(frame: &str) -> String {
+    frame
         .lines()
         .filter_map(|line| line.trim().strip_prefix("data:").map(str::trim))
         .collect::<Vec<_>>()
-        .join("\n");
-    (!data.is_empty()).then_some(data)
+        .join("\n")
 }
 
 fn format_sse(event: Option<&str>, value: &Value) -> Result<String> {
@@ -1160,8 +1253,10 @@ mod tests {
         .unwrap();
         let output = translator.push_chunk(b"data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n").unwrap();
         let tail = translator.finish_stream().unwrap();
-        assert!(output.contains("content_block_delta"));
-        assert!(tail.contains("message_stop"));
+        assert!(std::str::from_utf8(&output)
+            .unwrap()
+            .contains("content_block_delta"));
+        assert!(std::str::from_utf8(&tail).unwrap().contains("message_stop"));
         assert_eq!(
             translator.semantic_response().response.candidates[0]
                 .message
@@ -1169,5 +1264,139 @@ mod tests {
             LlmContentPart::text("hi")
         );
         assert_eq!(translator.metrics().usage.total_tokens, 2);
+    }
+
+    #[test]
+    fn passthrough_preserves_unicode_split_at_every_byte_boundary() {
+        let input = "data: {\"choices\":[{\"delta\":{\"content\":\"你好🌍\"}}]}\n\n".as_bytes();
+        for split in 0..=input.len() {
+            let mut translator = TypedStreamTranslator::new(
+                ProtocolBridge::Passthrough,
+                ProtocolKind::ChatCompletions,
+                "client-model",
+            )
+            .unwrap();
+            let mut output = Vec::new();
+            output.extend_from_slice(&translator.push_chunk(&input[..split]).unwrap());
+            output.extend_from_slice(&translator.push_chunk(&input[split..]).unwrap());
+            output.extend_from_slice(&translator.finish_stream().unwrap());
+            assert_eq!(output, input, "split at byte {split}");
+            assert_eq!(translator.upstream_snapshot(), input);
+        }
+    }
+
+    #[test]
+    fn translated_stream_decodes_unicode_only_after_complete_frame() {
+        let input = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"你好🌍\"}}]}\n\n";
+        let split = input.find('好').unwrap() + 1;
+        let mut translator = TypedStreamTranslator::new(
+            ProtocolBridge::MessagesToCompletions,
+            ProtocolKind::Messages,
+            "client-model",
+        )
+        .unwrap();
+        assert!(translator
+            .push_chunk(&input.as_bytes()[..split])
+            .unwrap()
+            .is_empty());
+        let output = translator.push_chunk(&input.as_bytes()[split..]).unwrap();
+        assert!(std::str::from_utf8(&output).unwrap().contains("你好🌍"));
+        assert_eq!(translator.upstream_snapshot(), input.as_bytes());
+    }
+
+    #[test]
+    fn passthrough_preserves_malformed_and_non_utf8_provider_bytes() {
+        let input = b"data: \xff\xfe\n\ndata: not-json\n\n";
+        let mut translator = TypedStreamTranslator::new(
+            ProtocolBridge::Passthrough,
+            ProtocolKind::ChatCompletions,
+            "client-model",
+        )
+        .unwrap();
+        let output = translator.push_chunk(input).unwrap();
+        assert_eq!(output.as_ref(), input);
+        assert_eq!(translator.upstream_snapshot(), input);
+    }
+
+    #[test]
+    fn responses_text_events_include_required_logprobs_fields() {
+        let input = b"data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        let mut translator = TypedStreamTranslator::new(
+            ProtocolBridge::ResponsesToCompletions,
+            ProtocolKind::Responses,
+            "client-model",
+        )
+        .unwrap();
+        let output = translator.push_chunk(input).unwrap();
+        let tail = translator.finish_stream().unwrap();
+        let output = std::str::from_utf8(&output).unwrap();
+        assert!(
+            output.contains(r#""type":"response.output_text.delta""#),
+            "{output}"
+        );
+        assert!(output.contains(r#""logprobs":[]"#));
+        let tail = std::str::from_utf8(&tail).unwrap();
+        assert!(tail.contains(r#""type":"response.output_text.done""#));
+        assert!(tail.contains(r#""logprobs":[]"#));
+        let completed = tail
+            .split("\n\n")
+            .find_map(|frame| {
+                let data = frame.lines().find_map(|line| line.strip_prefix("data: "))?;
+                let value: Value = serde_json::from_str(data).ok()?;
+                (value["type"] == "response.completed").then_some(value)
+            })
+            .expect("response.completed event");
+        assert_eq!(completed["response"]["output"][0]["type"], "message");
+        assert_eq!(
+            completed["response"]["output"][0]["content"][0]["text"],
+            "hi"
+        );
+    }
+
+    #[test]
+    fn orphan_tool_delta_reserves_a_unique_responses_output_index() {
+        let mut renderer = StreamRenderer::new(LlmProtocol::Responses, "client-model");
+        let orphan = renderer
+            .push_events(&[LlmStreamEvent::ToolArgumentsDelta {
+                candidate: 0,
+                id: "call-orphan".into(),
+                delta: "{\"city\":".into(),
+            }])
+            .unwrap();
+        assert!(orphan.contains("response.output_item.added"));
+        assert!(orphan.contains("\"output_index\":0"));
+
+        let text = renderer
+            .push_events(&[LlmStreamEvent::TextDelta {
+                candidate: 0,
+                text: "hello".into(),
+            }])
+            .unwrap();
+        assert!(text.contains("\"output_index\":1"));
+
+        let late_start = renderer
+            .push_events(&[LlmStreamEvent::ToolCallStart {
+                candidate: 0,
+                id: "call-orphan".into(),
+                name: "weather".into(),
+                signature: None,
+            }])
+            .unwrap();
+        assert!(!late_start.contains("response.output_item.added"));
+
+        let finished = renderer.finish(&[]).unwrap();
+        assert!(finished.contains("\"output_index\":0"));
+        assert!(finished.contains("\"name\":\"weather\""));
+        let completed = finished
+            .split("\n\n")
+            .find_map(|frame| {
+                let data = frame.lines().find_map(|line| line.strip_prefix("data: "))?;
+                let value: Value = serde_json::from_str(data).ok()?;
+                (value["type"] == "response.completed").then_some(value)
+            })
+            .expect("response.completed event");
+        assert_eq!(completed["response"]["output"].as_array().unwrap().len(), 2);
+        assert_eq!(completed["response"]["output"][0]["type"], "function_call");
+        assert_eq!(completed["response"]["output"][1]["type"], "message");
     }
 }

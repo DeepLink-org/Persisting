@@ -679,7 +679,10 @@ pub fn requested_enforcement_dimensions(
     if !capabilities.secrets.is_empty() {
         requested.insert(CapabilityDimension::Secrets);
     }
-    if capabilities.allow_subprocess {
+    // `false` is a deny policy, not the absence of a request. Enforce mode must
+    // have a non-bypassable mechanism that prevents fork/exec. When subprocesses
+    // are explicitly allowed there is no deny boundary to prove.
+    if !capabilities.allow_subprocess {
         requested.insert(CapabilityDimension::Subprocess);
     }
     if !resources.is_empty() {
@@ -918,7 +921,28 @@ mod tests {
 
         assert_eq!(
             evidence.missing_dimensions(&capabilities, &ResourceLimits::default()),
-            vec![CapabilityDimension::Network]
+            vec![
+                CapabilityDimension::Network,
+                CapabilityDimension::Subprocess
+            ]
+        );
+    }
+
+    #[test]
+    fn subprocess_deny_requires_evidence_but_explicit_allow_does_not() {
+        let denied = CapabilitySet::default();
+        assert!(
+            requested_enforcement_dimensions(&denied, &ResourceLimits::default())
+                .contains(&CapabilityDimension::Subprocess)
+        );
+
+        let allowed = CapabilitySet {
+            allow_subprocess: true,
+            ..CapabilitySet::default()
+        };
+        assert!(
+            !requested_enforcement_dimensions(&allowed, &ResourceLimits::default())
+                .contains(&CapabilityDimension::Subprocess)
         );
     }
 

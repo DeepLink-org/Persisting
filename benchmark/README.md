@@ -1,4 +1,18 @@
-# Persisting Queue 压测
+# Persisting benchmarks
+
+## Gateway
+
+Gateway 黑盒压测位于 [`gateway/`](gateway/README.md)，使用确定性的本地 Echo upstream，
+同时测量转发、Typed LLM capture、WAL 和 Lance durable append：
+
+```bash
+just benchmark-gateway
+```
+
+结果包含吞吐、p50/p95/p99 延迟、Echo 直连基线，以及基于 canonical manifest 的
+持久化事件数量校验。
+
+## Queue
 
 本目录用于对 Persisting Queue 做吞吐压测，可配置生产者/消费者数量，测试极限吞吐。
 

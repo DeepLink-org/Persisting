@@ -77,6 +77,9 @@ pvisor env delete dev --force
 默认元数据位于 `~/.persisting/envs`，可用 `--root` 或 `PERSISTING_ENV_HOME`
 覆盖。`start` / `stop` 控制是否接受新会话，并不表示常驻虚拟机；每次 `exec` / `shell`
 都会挂载同一个 writable upper，所以修改会跨命令保留。`inspect` 使用内核强制的只读视图。
+`apply --all` 或 `drop` 不会把 terminal Overlay 原地改回 `staged`；它们会创建单调递增的
+Overlay generation。命令取得环境 lease 后会重新读取 generation，避免用 reset 前的
+metadata 覆盖新 stage。
 
 ## One configuration model
 

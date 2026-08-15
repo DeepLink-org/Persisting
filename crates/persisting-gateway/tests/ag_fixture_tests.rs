@@ -4,17 +4,19 @@
 
 mod support;
 
+use std::collections::BTreeMap;
+
 use persisting_gateway::conversion::{
     completions_request_to_gemini, completions_response_to_messages,
     gemini_response_to_completions, messages_request_to_completions,
-    responses_request_to_completions, translate_completions_sse_to_messages,
-    translate_request_for_bridge, CompletionsStreamTranslator, GeminiNativeStreamTranslator,
-    ProtocolBridge, StreamTranslator,
+    responses_request_to_completions, translate_request_for_bridge, ProtocolBridge,
+    StreamTranslator,
 };
 use persisting_gateway::dialogue_extract::{
     count_visible_user_messages, extract_assistant_text_from_json, extract_assistant_turn_from_sse,
     extract_user_message_from_request_body,
 };
+use persisting_gateway::protocol::ProtocolKind;
 use persisting_gateway::understanding::understand_request;
 use persisting_gateway::usage::{extract_usage_from_response, extract_usage_from_sse};
 use serde_json::Value;
@@ -234,30 +236,23 @@ fn ag_gemini_native_response_matches_completions_goldens() {
 #[test]
 fn ag_gemini_native_stream_matches_completions_golden() {
     let input = read_fixture("response/vertex-gemini/stream_tool.json");
-    let mut translator = GeminiNativeStreamTranslator::new("gemini-2.5-pro");
-    let mut actual = String::new();
+    let mut translator = StreamTranslator::new(
+        ProtocolBridge::CompletionsToGemini,
+        ProtocolKind::ChatCompletions,
+        "gemini-2.5-pro",
+    )
+    .unwrap();
+    let mut actual = Vec::new();
     for chunk in input.as_bytes().chunks(37) {
-        actual.push_str(&translator.push_chunk(chunk).unwrap());
+        actual.extend_from_slice(&translator.push_chunk(chunk).unwrap());
     }
-    actual.push_str(&translator.finish_stream().unwrap());
+    actual.extend_from_slice(&translator.finish_stream().unwrap());
+    let actual = String::from_utf8(actual).unwrap();
 
     let expected = parse_ag_sse_snap(
         "response/vertex-gemini/stream_tool.vertex-gemini-completions-streaming.snap",
     );
-    let normalize = |sse: &str| {
-        sse.lines()
-            .filter_map(|line| line.strip_prefix("data: "))
-            .map(|data| {
-                if data == "[DONE]" {
-                    return Value::String("[DONE]".into());
-                }
-                let mut value: Value = serde_json::from_str(data).unwrap();
-                value["created"] = serde_json::json!("[date]");
-                value
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(normalize(&actual), normalize(&expected));
+    assert_eq!(fold_chat_sse(&actual), fold_chat_sse(&expected));
     assert_eq!(translator.metrics().usage.input_tokens, 15);
     assert_eq!(translator.metrics().usage.output_tokens, 12);
 }
@@ -268,12 +263,13 @@ fn gemini_native_stream_composes_with_messages_and_responses_bridges() {
 
     let mut messages = StreamTranslator::new(
         ProtocolBridge::MessagesToGemini,
-        persisting_gateway::protocol::ProtocolKind::Messages,
+        ProtocolKind::Messages,
         "claude-gemini-client",
     )
     .unwrap();
-    let mut messages_sse = messages.push_chunk(input.as_bytes()).unwrap();
-    messages_sse.push_str(&messages.finish_stream().unwrap());
+    let mut messages_sse = messages.push_chunk(input.as_bytes()).unwrap().to_vec();
+    messages_sse.extend_from_slice(&messages.finish_stream().unwrap());
+    let messages_sse = String::from_utf8(messages_sse).unwrap();
     let message_events = sse_event_names(&messages_sse);
     assert!(message_events.contains(&"message_start"));
     assert!(message_events.contains(&"content_block_start"));
@@ -281,12 +277,13 @@ fn gemini_native_stream_composes_with_messages_and_responses_bridges() {
 
     let mut responses = StreamTranslator::new(
         ProtocolBridge::ResponsesToGemini,
-        persisting_gateway::protocol::ProtocolKind::Responses,
+        ProtocolKind::Responses,
         "responses-gemini-client",
     )
     .unwrap();
-    let mut responses_sse = responses.push_chunk(input.as_bytes()).unwrap();
-    responses_sse.push_str(&responses.finish_stream().unwrap());
+    let mut responses_sse = responses.push_chunk(input.as_bytes()).unwrap().to_vec();
+    responses_sse.extend_from_slice(&responses.finish_stream().unwrap());
+    let responses_sse = String::from_utf8(responses_sse).unwrap();
     let response_events = sse_event_names(&responses_sse);
     assert!(response_events.contains(&"response.created"));
     assert!(response_events.contains(&"response.output_item.added"));
@@ -302,12 +299,17 @@ fn ag_completions_stream_translates_to_messages_sse() {
         panic!("missing required fixture {path}");
     }
     let client_model = "claude-test";
-    let mut translator = CompletionsStreamTranslator::new(client_model);
+    let mut translator = StreamTranslator::new(
+        ProtocolBridge::MessagesToCompletions,
+        ProtocolKind::Messages,
+        client_model,
+    )
+    .unwrap();
     let out = translate_openai_sse_fixture(path, |chunk| translator.push_chunk(chunk));
     let events = sse_event_names(&out);
     assert!(events.contains(&"message_start"), "events: {events:?}");
     assert!(events.contains(&"content_block_delta"));
-    let text = translator.accumulated_assistant_text();
+    let text = translator.streaming_capture_snapshot().unwrap_or_default();
     assert!(text.contains("Hi"), "accumulated: {text}");
     assert!(text.contains("help"));
 }
@@ -332,13 +334,18 @@ fn ag_completions_stream_matches_messages_golden() {
     ] {
         let input = format!("response/completions/{case}.json");
         let snapshot = format!("response/completions/{case}.completions-messages-streaming.snap");
-        let mut translator = CompletionsStreamTranslator::new(model);
+        let mut translator = StreamTranslator::new(
+            ProtocolBridge::MessagesToCompletions,
+            ProtocolKind::Messages,
+            model,
+        )
+        .unwrap();
         let mut actual = translate_openai_sse_fixture(&input, |chunk| translator.push_chunk(chunk));
-        actual.push_str(&translator.finish_stream().unwrap());
+        actual.push_str(std::str::from_utf8(&translator.finish_stream().unwrap()).unwrap());
         let expected = parse_ag_sse_snap(&snapshot);
         assert_eq!(
-            parse_sse_events(&actual),
-            parse_sse_events(&expected),
+            normalized_message_events(&actual),
+            normalized_message_events(&expected),
             "{case}"
         );
     }
@@ -347,7 +354,7 @@ fn ag_completions_stream_matches_messages_golden() {
 #[test]
 fn ag_local_stream_head_fixture() {
     let raw = read_fixture("local/response/completions/stream_head.txt");
-    let out = translate_completions_sse_to_messages(&raw, "claude-test").unwrap();
+    let out = completions_sse_to_messages(&raw, "claude-test");
     assert!(out.contains("message_start"));
     assert!(out.contains("content_block_delta"));
 }
@@ -452,7 +459,7 @@ fn ag_capture_assistant_sse_matrix() {
         }
         let raw = read_fixture(case.path);
         let sse = if case.translate_completions_to_messages {
-            translate_completions_sse_to_messages(&raw, "claude-test").unwrap()
+            completions_sse_to_messages(&raw, "claude-test")
         } else {
             raw
         };
@@ -479,10 +486,119 @@ fn ag_capture_assistant_from_completions_response() {
 #[test]
 fn ag_capture_assistant_from_stream_fixture() {
     let raw = read_fixture("local/response/completions/stream_head.txt");
-    let text = extract_assistant_turn_from_sse(
-        &translate_completions_sse_to_messages(&raw, "claude-test").unwrap(),
-    );
+    let text = extract_assistant_turn_from_sse(&completions_sse_to_messages(&raw, "claude-test"));
     assert!(text.contains("Hi"));
+}
+
+fn completions_sse_to_messages(raw: &str, model: &str) -> String {
+    let mut translator = StreamTranslator::new(
+        ProtocolBridge::MessagesToCompletions,
+        ProtocolKind::Messages,
+        model,
+    )
+    .unwrap();
+    let mut output = Vec::new();
+    for chunk in raw.as_bytes().chunks(512) {
+        output.extend_from_slice(&translator.push_chunk(chunk).unwrap());
+    }
+    output.extend_from_slice(&translator.finish_stream().unwrap());
+    String::from_utf8(output).unwrap()
+}
+
+fn fold_chat_sse(sse: &str) -> Value {
+    let mut id = None;
+    let mut model = None;
+    let mut role = None;
+    let mut content = String::new();
+    let mut finish_reason = None;
+    let mut tools: BTreeMap<u64, (String, String, String)> = BTreeMap::new();
+    let mut usage = None;
+    for line in sse.lines().filter_map(|line| line.strip_prefix("data: ")) {
+        if line == "[DONE]" {
+            continue;
+        }
+        let value: Value = serde_json::from_str(line).unwrap();
+        id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(id);
+        model = value
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(model);
+        if let Some(choice) = value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+        {
+            let delta = choice.get("delta").unwrap_or(&Value::Null);
+            role = delta
+                .get("role")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(role);
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                content.push_str(text);
+            }
+            for call in delta
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let tool = tools.entry(index).or_default();
+                if let Some(call_id) = call.get("id").and_then(Value::as_str) {
+                    tool.0 = call_id.to_string();
+                }
+                if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                    tool.1 = name.to_string();
+                }
+                if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str)
+                {
+                    tool.2.push_str(arguments);
+                }
+            }
+            finish_reason = choice
+                .get("finish_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(finish_reason);
+        }
+        if let Some(value_usage) = value.get("usage") {
+            usage = Some(serde_json::json!({
+                "prompt_tokens": value_usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
+                "completion_tokens": value_usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0),
+                "total_tokens": value_usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(0),
+            }));
+        }
+    }
+    serde_json::json!({
+        "id": id,
+        "model": model,
+        "role": role,
+        "content": content,
+        "finish_reason": finish_reason,
+        "tool_calls": tools.into_values().map(|(id, name, arguments)| serde_json::json!({"id":id,"name":name,"arguments":arguments})).collect::<Vec<_>>(),
+        "usage": usage,
+    })
+}
+
+fn normalized_message_events(sse: &str) -> Vec<(String, Value)> {
+    let mut events = parse_sse_events(sse);
+    for (_, value) in &mut events {
+        let Some(usage) = value.get_mut("usage").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for key in ["cache_read_input_tokens", "cache_creation_input_tokens"] {
+            if usage.get(key).and_then(Value::as_u64) == Some(0) {
+                usage.remove(key);
+            }
+        }
+    }
+    events
 }
 
 // --- capture: usage ---

@@ -117,7 +117,7 @@ pub(super) async fn streaming_llm_response(
                     }
                     let out = if let Some(t) = translator.as_mut() {
                         match t.push_chunk(&chunk) {
-                            Ok(s) if !s.is_empty() => Bytes::from(s),
+                            Ok(bytes) if !bytes.is_empty() => bytes,
                             Ok(_) => {
                                 maybe_emit_stream_draft(
                                     &capture_engine,
@@ -211,7 +211,7 @@ pub(super) async fn streaming_llm_response(
         if let Some(t) = translator.as_mut() {
             match t.finish_stream() {
                 Ok(tail) => {
-                    if !tail.is_empty() && tx.send(Ok(Bytes::from(tail))).await.is_err() {
+                    if !tail.is_empty() && tx.send(Ok(tail)).await.is_err() {
                         capture_engine.spawn_apply(
                             Arc::clone(&ctx_bg),
                             Event::Cancelled(CancelEvent {
@@ -246,7 +246,7 @@ pub(super) async fn streaming_llm_response(
         }
         let resp_bytes = translator
             .as_ref()
-            .map(|t| Bytes::from(t.upstream_snapshot().to_string()))
+            .map(|t| Bytes::copy_from_slice(t.upstream_snapshot()))
             .unwrap_or_else(|| buf.freeze());
         let stream_assistant_text = translator
             .as_ref()

@@ -99,6 +99,8 @@ pub use raw_event_datafusion::{
     RawEventDataSource, RawEventDataSourceOptions, RawEventTableProvider, DATAFUSION_EVENTS_TABLE,
 };
 #[cfg(feature = "lance-store")]
+pub(crate) use raw_event_lance::compact_sealed_event_segment;
+#[cfg(feature = "lance-store")]
 pub use raw_event_lance::{
     distinct_session_ids_in_run, maintain as maintain_raw_events, EventLogLayoutStats,
     EventWriterFence, LanceMaintenanceOptions, LanceMaintenanceReport, RawEventLanceAppender,
@@ -121,10 +123,8 @@ pub use storyline_datafusion::{
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_lance::{
-    StorylineLanceStore, StorylineMaintenanceReport, StorylinePage, StorylinePageRequest,
-    StorylineRunCursor, StorylineRunSummary, StorylineStepCursor, StorylineStreamImportReport,
-    StorylineTablePaths, StorylineToolCallCursor, DEFAULT_STORYLINE_PAGE_SIZE,
-    MAX_STORYLINE_PAGE_SIZE,
+    StorylineLanceStore, StorylineMaintenanceReport, StorylineStreamImportReport,
+    StorylineTablePaths,
 };
 #[cfg(feature = "lance-store")]
 pub use storyline_lance_rows::{

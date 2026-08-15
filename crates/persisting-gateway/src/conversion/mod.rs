@@ -3,9 +3,7 @@
 mod gemini_native;
 mod messages_completions;
 mod responses_completions;
-mod responses_stream;
 mod semantic;
-mod stream;
 mod tool_call;
 mod typed_stream;
 
@@ -19,17 +17,11 @@ pub const MAX_SSE_FRAME_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum complete streaming response retained for durable raw capture.
 pub const MAX_STREAM_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
 
-pub use gemini_native::{
-    completions_request_to_gemini, gemini_response_to_completions, GeminiNativeStreamTranslator,
-};
+pub use gemini_native::{completions_request_to_gemini, gemini_response_to_completions};
 pub use messages_completions::{completions_response_to_messages, messages_request_to_completions};
 pub use responses_completions::{
     completions_response_to_responses, responses_request_to_completions,
 };
-pub use responses_stream::{
-    translate_completions_sse_to_responses, CompletionsToResponsesStreamTranslator,
-};
-pub use stream::{translate_completions_sse_to_messages, CompletionsStreamTranslator};
 pub use tool_call::{decode_stream_arguments_delta, unquote_chat_tool_arguments};
 pub use typed_stream::TypedStreamTranslator as StreamTranslator;
 

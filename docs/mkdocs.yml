@@ -111,6 +111,7 @@ plugins:
             Discover and query: 发现与查询
             Import and export: 导入与导出
             Local read-only Warehouse: 本地只读 Warehouse
+            Gateway forwarding, rewriting, and capture: Gateway 转发、改写与捕获
             Product architecture: 产品架构
             Trajectory storage: 轨迹存储
             Storyline Lance projection: Storyline Lance 投影
@@ -197,6 +198,7 @@ nav:
           - Discover and query: pchronicle/guides/discover-and-query.md
           - Import and export: pchronicle/guides/exchange.md
           - Local read-only Warehouse: pchronicle/guides/serve.md
+          - Gateway forwarding, rewriting, and capture: pchronicle/guides/serve-gateway.md
       - Design:
           - Design overview: pchronicle/design/index.md
           - Product architecture: pchronicle/design/architecture.md
