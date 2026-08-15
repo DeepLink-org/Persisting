@@ -1,6 +1,7 @@
 # pChronicle：Dataset 管理与分析
 
-示例直接使用 `pchronicle` 产品命令和 [`examples/data`](../data/) 中的确定性 Dataset。
+首次上手请运行 `pchronicle onboard`；以下示例直接使用 `pchronicle` 产品命令和
+[`examples/data`](../data/) 中的确定性 Dataset。
 
 | 示例 | 可复现结论 |
 |---|---|

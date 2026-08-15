@@ -11,20 +11,22 @@ use super::reasoning::ReasoningCacheHandle;
 /// Build the request body sent to the upstream LLM after routing.
 pub fn prepare_upstream_body(
     client_body: &Bytes,
+    semantic: Option<&persisting_pchronicle::LlmRequestEventPayload>,
     model_rewritten: bool,
     upstream_model: &str,
     bridge: ProtocolBridge,
     reasoning_cache: Option<&ReasoningCacheHandle>,
 ) -> Result<Bytes> {
-    let mut upstream_body = client_body.clone();
-    if model_rewritten {
-        upstream_body = rewrite_model_in_body(client_body, upstream_model)?;
-    }
     if bridge.needs_request_translation() && !client_body.is_empty() {
-        upstream_body =
-            translate_request_for_bridge(bridge, &upstream_body, upstream_model, reasoning_cache)?;
+        let semantic = semantic.ok_or_else(|| {
+            anyhow::anyhow!("protocol translation requires a Chronicle typed LLM request")
+        })?;
+        return translate_request_for_bridge(bridge, semantic, upstream_model, reasoning_cache);
     }
-    Ok(upstream_body)
+    if model_rewritten {
+        return rewrite_model_in_body(client_body, upstream_model);
+    }
+    Ok(client_body.clone())
 }
 
 #[cfg(test)]
@@ -49,6 +51,7 @@ mod tests {
         let body = Bytes::from_static(br#"{"model":"m","messages":[]}"#);
         let out = prepare_upstream_body(
             &body,
+            None,
             false,
             "m",
             ProtocolBridge::needed(
@@ -66,6 +69,7 @@ mod tests {
         let body = Bytes::from_static(br#"{"model":"claude-3","messages":[]}"#);
         let out = prepare_upstream_body(
             &body,
+            None,
             true,
             "deepseek-chat",
             ProtocolBridge::Passthrough,

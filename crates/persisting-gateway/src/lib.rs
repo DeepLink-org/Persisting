@@ -27,6 +27,7 @@ pub mod runtime;
 pub mod session;
 pub mod sink;
 pub mod subagent_link;
+pub mod understanding;
 pub mod usage;
 
 pub use gateway::models_list;

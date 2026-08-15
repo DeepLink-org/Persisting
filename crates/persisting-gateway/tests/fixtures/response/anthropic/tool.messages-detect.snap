@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/anthropic/tool.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/anthropic/tool.json
 info:
   id: msg_01Aq9w938a90dw8q
   type: message

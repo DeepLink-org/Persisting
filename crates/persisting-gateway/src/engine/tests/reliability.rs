@@ -39,6 +39,7 @@ async fn session_sink_failure_writes_dead_letter_with_record() {
         body_bytes: 10,
         user_content: Some("hi".into()),
         body_json: None,
+        semantic: None,
         model_rewritten: false,
         headers: vec![],
     });

@@ -249,6 +249,7 @@ mod tests {
                 body_bytes: 10,
                 user_content: Some("hi".into()),
                 body_json: None,
+                semantic: None,
                 model_rewritten: false,
                 headers: vec![],
             }),
@@ -263,6 +264,7 @@ mod tests {
                 streaming: false,
                 stream_metrics: None,
                 assistant_content: Some("ok".into()),
+                semantic: None,
                 headers: vec![],
             }),
         );

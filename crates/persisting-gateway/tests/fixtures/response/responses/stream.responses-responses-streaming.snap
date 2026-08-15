@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/responses/stream.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/responses/stream.json
 ---
 event: response.created
 data: {"type":"response.created","sequence_number":1,"response":{"created_at":123,"id":"","model":"gpt-4.1-mini","object":"response","output":[],"status":"in_progress"}}
@@ -45,5 +45,24 @@ data: [DONE]
   "total_tokens": 20,
   "reasoning_tokens": 0,
   "cached_input_tokens": 0,
-  "provider_model": "gpt-4.1-mini"
+  "provider_model": "gpt-4.1-mini",
+  "completion": [
+    "Hello"
+  ],
+  "output_messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_call",
+          "id": "call_xxx",
+          "name": "get_weather",
+          "arguments": {
+            "location": "San Francisco"
+          }
+        }
+      ],
+      "finish_reason": "completed"
+    }
+  ]
 }

@@ -127,7 +127,7 @@ impl RunExecutor for VmExecutor {
             name: "libkrun-root-overlay-v1".into(),
             kind: ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
-            enforces_capabilities: false,
+            capability_enforcement: Default::default(),
             supports_checkpoint: true,
             supports_migration: false,
         }

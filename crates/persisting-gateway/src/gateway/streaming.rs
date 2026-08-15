@@ -13,7 +13,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::common::attach_capture_headers;
 use super::state::GatewayState;
-use crate::conversion::{ProtocolBridge, StreamTranslator};
+use crate::conversion::{ProtocolBridge, StreamTranslator, MAX_STREAM_CAPTURE_BYTES};
 use crate::engine::{
     headers_to_vec, CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event,
 };
@@ -81,7 +81,7 @@ pub(super) async fn streaming_llm_response(
 
     tokio::spawn(async move {
         let mut buf = BytesMut::new();
-        let mut translator = StreamTranslator::new(bridge, &ctx_bg.client_model);
+        let mut translator = StreamTranslator::new(bridge, ctx_bg.protocol, &ctx_bg.client_model);
         let mut last_draft_at = std::time::Instant::now();
         let mut last_draft_content = String::new();
         let mut client_disconnected = false;
@@ -90,7 +90,31 @@ pub(super) async fn streaming_llm_response(
         while let Some(item) = stream.next().await {
             match item {
                 Ok(chunk) => {
-                    buf.extend_from_slice(&chunk);
+                    let retained = translator
+                        .as_ref()
+                        .map(|translator| translator.upstream_snapshot().len())
+                        .unwrap_or(buf.len());
+                    if retained.saturating_add(chunk.len()) > MAX_STREAM_CAPTURE_BYTES {
+                        upstream_failed = true;
+                        let message = format!(
+                            "stream response exceeds durable capture limit of {MAX_STREAM_CAPTURE_BYTES} bytes"
+                        );
+                        let _ = tx.send(Err(message.clone())).await;
+                        if debug_on {
+                            debug::log_llm_upstream_error(
+                                storage.as_path(),
+                                &ctx_bg.route().session_id,
+                                ctx_bg.agent_id(),
+                                &ctx_bg.client_model,
+                                "stream",
+                                &message,
+                            );
+                        }
+                        break;
+                    }
+                    if translator.is_none() {
+                        buf.extend_from_slice(&chunk);
+                    }
                     let out = if let Some(t) = translator.as_mut() {
                         match t.push_chunk(&chunk) {
                             Ok(s) if !s.is_empty() => Bytes::from(s),
@@ -107,7 +131,10 @@ pub(super) async fn streaming_llm_response(
                             }
                             Err(e) => {
                                 tracing::warn!("stream translate: {e:#}");
-                                chunk
+                                upstream_failed = true;
+                                let message = format!("stream translation failed: {e:#}");
+                                let _ = tx.send(Err(message)).await;
+                                break;
                             }
                         }
                     } else {
@@ -148,11 +175,15 @@ pub(super) async fn streaming_llm_response(
         }
 
         if client_disconnected {
+            let bytes_received = translator
+                .as_ref()
+                .map(|translator| translator.upstream_snapshot().len())
+                .unwrap_or(buf.len());
             capture_engine.spawn_apply(
                 Arc::clone(&ctx_bg),
                 Event::Cancelled(CancelEvent {
                     status: status.as_u16(),
-                    bytes_received: buf.len(),
+                    bytes_received,
                     streaming: true,
                 }),
             );
@@ -160,11 +191,15 @@ pub(super) async fn streaming_llm_response(
         }
 
         if upstream_failed {
+            let bytes_received = translator
+                .as_ref()
+                .map(|translator| translator.upstream_snapshot().len())
+                .unwrap_or(buf.len());
             capture_engine.spawn_apply(
                 Arc::clone(&ctx_bg),
                 Event::Cancelled(CancelEvent {
                     status: status.as_u16(),
-                    bytes_received: buf.len(),
+                    bytes_received,
                     streaming: true,
                 }),
             );
@@ -172,25 +207,47 @@ pub(super) async fn streaming_llm_response(
         }
 
         let stream_metrics = translator.as_ref().map(|t| t.metrics().clone());
+        let mut stream_semantic = None;
         if let Some(t) = translator.as_mut() {
-            if let Ok(tail) = t.finish_stream() {
-                let _ = tx.send(Ok(Bytes::from(tail))).await;
+            match t.finish_stream() {
+                Ok(tail) => {
+                    if !tail.is_empty() && tx.send(Ok(Bytes::from(tail))).await.is_err() {
+                        capture_engine.spawn_apply(
+                            Arc::clone(&ctx_bg),
+                            Event::Cancelled(CancelEvent {
+                                status: status.as_u16(),
+                                bytes_received: t.upstream_snapshot().len(),
+                                streaming: true,
+                            }),
+                        );
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = tx
+                        .send(Err(format!("finish stream translation: {error:#}")))
+                        .await;
+                    capture_engine.spawn_apply(
+                        Arc::clone(&ctx_bg),
+                        Event::Cancelled(CancelEvent {
+                            status: status.as_u16(),
+                            bytes_received: t.upstream_snapshot().len(),
+                            streaming: true,
+                        }),
+                    );
+                    return;
+                }
             }
+            stream_semantic = Some(Arc::new(t.semantic_response()));
             let (tool_ids, reasoning) = t.drain_reasoning_snapshot();
             if !reasoning.is_empty() {
                 reasoning_cache.remember(&tool_ids, &reasoning);
             }
         }
-        let resp_bytes = if translate {
-            Bytes::from(
-                translator
-                    .as_ref()
-                    .map(|t| t.upstream_snapshot().to_string())
-                    .unwrap_or_default(),
-            )
-        } else {
-            buf.freeze()
-        };
+        let resp_bytes = translator
+            .as_ref()
+            .map(|t| Bytes::from(t.upstream_snapshot().to_string()))
+            .unwrap_or_else(|| buf.freeze());
         let stream_assistant_text = translator
             .as_ref()
             .and_then(|t| t.streaming_capture_snapshot());
@@ -202,6 +259,7 @@ pub(super) async fn streaming_llm_response(
                 streaming: true,
                 stream_metrics,
                 assistant_content: stream_assistant_text,
+                semantic: stream_semantic,
                 headers: recorded_resp_headers,
             }),
         );

@@ -1,72 +1,149 @@
 # pVisor
 
-**Foreground Agent Run Manager and Portable Execution Runtime.**
+**pVisor is an AgentVisor: the control and containment layer between an
+autonomous Agent and the infrastructure that executes it.**
+
+It gives an Agent room to work inside an isolated Run while governing
+capabilities, external effects, checkpoints, lineage, and which filesystem
+results may be promoted into the real workspace. pVisor is not an Agent
+framework, an OCI runtime, or an operating system. It can place Runs on host,
+container, and libkrun VM executors while preserving one Agent-facing contract.
+
+> Let Agents act freely inside. Control what becomes real.
+
+![pVisor AgentVisor architecture](../../docs/src/assets/diagrams/pvisor/agentvisor-architecture.svg)
+
+The complete category definition and product invariants are in the
+[AgentVisor contract](../../docs/src/design/agentvisor.md). The
+[execution guide](../../docs/src/guide/pvisor-execution.md),
+[isolation architecture](../../docs/src/design/pvisor-isolation.md), and
+[command reference](../../docs/src/design/cli-pvisor.md) describe the current
+implementation in detail.
+
+## Start with one Agent
 
 The shortest product path is a transactional Agent Run:
 
 ```bash
+cd /path/to/project
 pvisor run --safe codex
 pvisor review last
-# Then choose one:
-pvisor apply last
-pvisor drop last
+
+# Promote one dependency-closed batch. Other changes stay staged.
+pvisor apply last --path src
+pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
+
+# Then accept everything still staged, or discard it.
+pvisor apply last --all
+# pvisor drop last
 ```
 
-`--safe` uses the current directory as a reusable project workspace, creates
-an independent durable Run under `PERSISTING_RUN_HOME`, stages changes through
-OverlayFS, enables the cooperative OverlayNet proxy, and writes a private
-versioned `run-bundle.json`. On Linux, the host path self-executes through a
-small launcher that installs an unprivileged user/mount namespace, constructs
-a minimal bind-projected root, enters it with `chroot`, and applies Landlock
-before running the Agent. The policy confines the complete descendant process
-tree to the staged workspace, a read-only host runtime, and explicit
-capabilities; unprojected host files and pathname Unix sockets are absent. It
-fails closed instead of falling back to an ordinary host process. A deny-all
-network request additionally creates a private network namespace; public and
-allowlist proxy modes remain cooperative. On macOS, the host path wraps the
-Agent in a generated Seatbelt profile: writes are kernel-confined to the staged
-workspace, explicit read-write capabilities, exact device handles, and a
-Run-owned temporary directory. Full-disk reads remain ambient for local
-toolchain compatibility; `--overlaynet-deny-all` additionally blocks IP and
-ambient host Unix sockets while retaining the exact Agent ABI and Run-local
-IPC. Seatbelt setup is attested by the hidden launcher and fails closed.
-Container and VM executors remain stronger placement choices, and every Run Bundle records
-read, write, and network enforcement separately.
+`--safe` associates the current directory with a new durable Run, gives the
+Agent a copy-on-write workspace, applies the strongest supported local boundary
+for the selected executor, and emits a private versioned `run-bundle.json`.
+The real project is not changed while the Agent runs. A filtered apply consumes
+only its selected dependency-closed batch; the remaining stage can be reviewed,
+applied again, checkpointed, forked, or dropped.
 
-The default pVisor build is deliberately lightweight: directory OverlayFS and
-the compact pChronicle event model do not link Lance, DataFusion, Jujutsu,
-`prost`, or a protobuf toolchain. Full local Lance history and the Jujutsu
-upper backend are explicit `lance-chronicle` and `jujutsu-overlay` features.
+This workflow separates two decisions that ordinary process and container
+lifecycle APIs conflate:
 
-pVisor is a first-class Persisting component alongside pPilot and pChronicle:
+1. **May the Agent perform an operation inside this Run?** Capability policy
+   and enforcement evidence answer this question.
+2. **May the result become part of the user's real environment?** Review,
+   selective apply, and effect policy answer this question.
 
-- pVisor owns one Run and its Attempts;
-- pPilot plans and orchestrates many Runs;
-- pChronicle stores canonical Run history and derived views.
+## What pVisor owns
+
+| Product area | Current responsibility |
+| --- | --- |
+| Agent lifecycle | One logical `Run`, one or more `Attempt`s, cancellation, deadlines, terminal publication, and parent lineage |
+| Agent control | A Run-scoped authenticated Agent ABI for process/effect registration, heartbeats, quiescence, and desired state |
+| Capabilities | Models, tools, filesystem read/write, network, secrets, subprocess, and resources, with evidence recorded per dimension |
+| Filesystem effects | Copy-on-write staging, classified review, logical checkpoint/fork, repeated selective apply, terminal apply/drop, and an apply ledger |
+| Network and model access | Gateway capture plus OverlayNet policy; enforcement strength depends on executor and is never inferred from a product label |
+| Execution placement | Host process, Docker/Podman transport, or libkrun VM using an OCI image, prepared rootfs, or Linux host rootfs |
+| Evidence | Run Bundle, lifecycle events, capability enforcement, filesystem changes, network counters, Agent ABI state, output, and artifact references |
+
+pVisor deliberately does not own batch planning, global scheduling, Dataset
+query, or the implementation of every isolation backend. pPilot orchestrates
+many Runs; pChronicle stores canonical history; execution providers own their
+mechanics below the pVisor contract.
+
+## Choose the boundary intentionally
+
+The same Run model does not imply the same security boundary. pVisor records
+filesystem read, filesystem write, network, and other enforcement dimensions
+independently.
+
+| Placement | Current boundary | Suitable use | Important limit |
+| --- | --- | --- | --- |
+| Linux `host --safe` | Rootless user/mount namespaces, synthetic root, `chroot`, Landlock, dropped capabilities; optional private netns for deny-all | Same-owner local Agents that need the host toolchain | General public/allowlist network policy remains cooperative; seccomp and complete resource enforcement are not yet claimed |
+| macOS `host --safe` | Seatbelt-enforced writes and optional deny-all IP/ambient Unix-socket policy | Same-owner local Agents using the macOS toolchain | Host filesystem reads remain ambient for compatibility |
+| Container | Docker/Podman boundary with an injected pVisor | Packaged Linux userlands and stronger placement than a plain host process | Not every pVisor capability is compiled into an OCI restriction; enforced policy is rejected when evidence is incomplete |
+| libkrun VM | Dedicated Linux guest kernel through KVM or HVF; VM egress terminates in pVisor's smoltcp path | Reproducible Linux Agents and stronger kernel separation | The macOS VMM retains invoking-user host permissions and is not yet a hostile multi-tenant boundary |
+
+pVisor fails closed when `PolicyMode::Enforce` requests a dimension for which
+the selected executor cannot provide non-bypassable evidence. A staged
+workspace, injected proxy, executor name, or VM label is not itself proof of a
+specific capability boundary.
+
+## One Run model across placements
 
 ```text
-CLI / pPilot / host
-        │  PVisor::builder()…build()
-        │  PVisor::run(spec) → RunHandle
+CLI / pPilot / embedding host
+        │  RunSpec
         ▼
-pVisor
-    │  prepare drivers: Gateway/OverlayNet + Control + OverlayFS
-    │  execute Attempt
-    │  teardown
-        ▼
-RunHandle::wait / cancel / events
+     pVisor
+        ├── Control + Agent ABI
+        ├── WorkspaceOverlay ── review / checkpoint / apply / drop
+        ├── Gateway + OverlayNet
+        ├── execution provider ── host / container / libkrun VM
+        └── RunRecord + Run Bundle + pChronicle events
 ```
 
-The Run id is also the Gateway root-session id. A Run becomes terminal only
-after driver teardown, local RunRecord persistence, and terminal-event sink
-acceptance; finalization failure is reported as a retryable infrastructure
-failure rather than a successful Run with warnings.
+The logical Run id survives placement and retry decisions. Each physical
+execution receives a distinct Attempt id and, when pPilot owns it, a fenced
+lease epoch. The Run id is also the Gateway root-session id. A Run becomes
+terminal only after driver teardown, local RunRecord persistence, and terminal
+event-sink acceptance. Finalization failure is returned as infrastructure
+failure instead of being hidden behind a successful process exit.
 
-There is no network control daemon. Hosts call the crate API directly;
-`persisting-agentctl` is the shared state/transition protocol used by runtime
-drivers. Each live Run also gets a versioned, owner-only Agent ABI Unix socket.
-The separate OverlayFS control socket remains limited to discovery and
-owner-mediated read-only inspection.
+There is no required pVisor network daemon in the current local product. Hosts
+call the crate API directly; each live Run receives an owner-only Agent ABI Unix
+socket. pPilot currently embeds a job-scoped supervisor and can use durable
+leases and object-store control state, but a long-lived multi-node pVisor fleet
+controller remains a product gate rather than a current claim.
+
+## Platform status
+
+| Capability | Status |
+| --- | --- |
+| Run/Attempt lifecycle, cancellation, deadlines, terminal publication | Implemented |
+| Linux rootless and macOS Seatbelt local `--safe` paths | Implemented with the platform limits above |
+| Container transport and libkrun KVM/HVF execution | Implemented |
+| Transactional workspace, review, logical checkpoint/fork, repeated selective apply | Implemented |
+| Per-dimension capability enforcement evidence | Implemented; mechanisms are runtime evidence strings, not signed attestation |
+| Non-bypassable VM IPv4 TCP/DNS policy | Implemented; general UDP, IPv6, ICMP, QUIC, and inbound forwarding are unsupported |
+| Transparent host allowlist interception | Planned; explicit host/container proxy mode is cooperative |
+| Crash-atomic multi-file apply with target preimage conflict detection | Open product gate |
+| Warm-kernel pool and scrubbed reuse protocol | Open product gate |
+| Long-lived distributed pPilot controller and node reconciliation | Open product gate |
+
+The default build is deliberately lightweight: directory OverlayFS and the
+compact pChronicle event model do not link Lance, DataFusion, Jujutsu, `prost`,
+or a protobuf toolchain. Full local Lance history and the Jujutsu upper backend
+are explicit `lance-chronicle` and `jujutsu-overlay` features.
+
+pVisor is one part of the Persisting Agent infrastructure:
+
+- **pVisor** owns one Run, its Attempts, capabilities, effects, and evidence;
+- **pPilot** plans, leases, schedules, and reconciles many Runs;
+- **pChronicle** stores canonical Run history and derived views;
+- **Gateway, OverlayNet, Control, and OverlayFS** are pVisor runtime drivers.
+
+The product name remains **pVisor**. **AgentVisor** names the category and the
+contract that another compatible implementation could also satisfy.
 
 ## Modules
 
@@ -348,7 +425,8 @@ stage/upper (deltas) ─────────┘
 
 Attempt ends → unmount, keep upper/
   → pvisor status|inspect
-  → apply or drop (terminal; clean upper/work, retain audit metadata)
+  → selective apply (repeat while changes remain) or drop
+  → full apply/drop (terminal; clean upper/work, retain audit metadata)
 ```
 
 Any OverlayFS option enables the driver. `base` defaults to the project
@@ -453,6 +531,10 @@ copy-up, whiteouts/opaque directories, lower-directory rename, links, xattrs,
 directory snapshots and synchronization/statistics operations. pVisor's
 `apply` path preserves symlinks, hard links, modes, ownership,
 timestamps and xattrs, and processes opaque markers before staged children.
+`--path` selects a relative subtree; repeatable `--include` and `--exclude`
+accept git-style globs. Partial batches retain unselected changes in the stage,
+while opaque directories and hard-link groups remain dependency-closed atomic
+units. Every successful batch is recorded in `apply-ledger.json`.
 
 ## Usage
 
@@ -468,10 +550,12 @@ timestamps and xattrs, and processes opaque markers before staged children.
 - `pvisor fork RUN --checkpoint NAME -- <agent>`
 - `pvisor status [RUN|STAGE|UPPER]`
 - `pvisor inspect [RUN|STAGE|UPPER] [-- COMMAND...]`
-- `pvisor apply|drop [RUN|STAGE|UPPER]`
+- `pvisor apply [RUN|STAGE|UPPER] [--path PATH|--include GLOB] [--exclude GLOB]`
+- `pvisor drop [RUN|STAGE|UPPER]`
 
 Each Run writes `run.json`, `lease.lock`, and (while live) `control.sock` next
-to `overlay.json`. Completed CLI Runs also write a mode-`0600`
+to `overlay.json`. Successful apply batches are recorded in the mode-`0600`
+`apply-ledger.json`. Completed CLI Runs also write a mode-`0600`
 `run-bundle.json` containing outcome, safety boundary, filesystem summary,
 network profile, requested resource limits, environment-key projection,
 classified filesystem changes, Agent ABI clients/processes/effects, output,

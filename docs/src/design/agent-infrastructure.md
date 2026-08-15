@@ -10,7 +10,7 @@ Persisting 将一次不稳定、带外部副作用的 Agent workload，封装为
 
 ```text
 Persisting
-├── pVisor      Portable Agent Execution Runtime
+├── pVisor      AgentVisor for one Run
 ├── pPilot      Durable Run Orchestrator
 └── pChronicle  Canonical Run History Store
 ```
@@ -65,7 +65,7 @@ flowchart TB
   SURFACE["Agent / Harness / Workload<br/>CLI · SDK · API"]
 
   PPILOT["pPilot<br/>Durable Run Orchestrator"]
-  PVISOR["pVisor<br/>Portable Agent Execution Runtime"]
+  PVISOR["pVisor<br/>AgentVisor for one Run"]
   CONTROL["Control Protocol<br/>State · Transition · Policy"]
   PCHRONICLE["pChronicle<br/>Canonical Run History Store"]
 
@@ -176,9 +176,11 @@ stateDiagram-v2
 | `RunCommit` | pVisor / pPilot → pChronicle | 每个 Run 唯一可见终态与事件高水位 |
 | `RunView` | pChronicle → consumers | replay、检索、评测、派生和 lineage |
 
-## 6. pVisor：Portable Agent Execution Runtime
+## 6. pVisor：AgentVisor for one Run
 
-pVisor 位于 Agent workload 与模型、工具、文件、网络和算力之间。它不试图成为“Agent 操作系统”，而是提供一个稳定、可移植、可审计的 Run runtime boundary。
+pVisor 是 Persisting 对 [AgentVisor](agentvisor.md) 品类的实现，位于 Agent workload
+与模型、工具、文件、网络和算力之间。它不试图成为“Agent 操作系统”，而是提供
+稳定、可移植、可审计的 Run、capability 与 effect boundary。
 
 ### 6.1 职责
 

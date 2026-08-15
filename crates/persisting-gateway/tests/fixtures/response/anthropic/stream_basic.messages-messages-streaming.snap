@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/anthropic/stream_basic.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/anthropic/stream_basic.json
 ---
 event: message_start
 data: {"type":"message_start","message":{"id":"msg_016wbjv5k86nxxd8CEZwSQnA","type":"message","role":"assistant","model":"claude-haiku-4-5-20251001","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":15,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard"}}    }
@@ -44,5 +44,8 @@ data: {"type":"message_stop"            }
   "cache_creation_input_tokens": 0,
   "cached_input_tokens": 0,
   "service_tier": "standard",
-  "provider_model": "claude-haiku-4-5-20251001"
+  "provider_model": "claude-haiku-4-5-20251001",
+  "completion": [
+    "Hi there! How are you doing today? Is there anything I can help you with?"
+  ]
 }

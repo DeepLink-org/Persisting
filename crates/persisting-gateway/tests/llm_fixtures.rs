@@ -48,7 +48,7 @@ fn messages_to_completions_fixture() {
     let out = messages_request_to_completions(&body, "upstream-model").unwrap();
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["model"], "upstream-model");
-    assert_eq!(v["messages"][0]["content"], "Hello, world");
+    assert_eq!(v["messages"][0]["content"][0]["text"], "Hello, world");
 }
 
 #[test]

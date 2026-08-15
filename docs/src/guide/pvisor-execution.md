@@ -1,5 +1,10 @@
 # Run workloads with pVisor
 
+pVisor is Persisting's implementation of the
+[AgentVisor contract](../design/agentvisor.md): it governs one Agent Run's
+lifecycle, capabilities, effects, checkpoints, and evidence independently of
+the selected execution provider.
+
 This guide covers the supported host and VM execution layouts. The command-line
 surface deliberately keeps three independent decisions separate:
 
@@ -150,15 +155,20 @@ After a manual run, use the emitted Run id or `last`:
 ```bash
 ./target/release/pvisor review last
 ./target/release/pvisor inspect last -- git status --short
-./target/release/pvisor apply last
+./target/release/pvisor apply last --path src
+./target/release/pvisor apply last --include 'tests/**' --exclude 'tests/generated/**'
+./target/release/pvisor apply last --all
 # Or discard it instead:
 ./target/release/pvisor drop last
 ```
 
 `apply` targets `--overlayfs-base` unless `--target` is supplied to the apply
-command. A stage must not contain its base or compose layers. A stage nested
-inside a base is hidden from the merged view, but keeping stages in a separate
-`tmp` directory is easier to operate and audit.
+command. A filtered apply consumes only the selected dependency-closed batch;
+the remaining changes stay staged and can be applied again or dropped. Opaque
+directories and hard-link groups cannot be split unsafely. Successful batches
+are recorded in `apply-ledger.json`. A stage must not contain its base or
+compose layers. A stage nested inside a base is hidden from the merged view,
+but keeping stages in a separate `tmp` directory is easier to operate and audit.
 
 ## Requirements and common errors
 

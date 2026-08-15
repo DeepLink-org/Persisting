@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::Path;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use persisting_agentctl::{
@@ -84,6 +85,119 @@ async fn spawn_mock_http() -> (u16, oneshot::Sender<()>) {
     });
     tokio::task::yield_now().await;
     (port, stop_tx)
+}
+
+async fn spawn_capturing_llm_http() -> (
+    u16,
+    Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+    oneshot::Sender<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let captured_for_app = Arc::clone(&captured);
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |body: axum::body::Bytes| {
+                let captured = Arc::clone(&captured_for_app);
+                async move {
+                    *captured.lock().unwrap() = serde_json::from_slice(&body).ok();
+                    axum::Json(serde_json::json!({
+                        "id": "chatcmpl-bridge",
+                        "object": "chat.completion",
+                        "model": "upstream-model",
+                        "choices": [{
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "bridged"},
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+                    }))
+                }
+            }),
+        );
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stop_rx.await;
+            })
+            .await
+            .ok();
+    });
+    tokio::task::yield_now().await;
+    (port, captured, stop_tx)
+}
+
+async fn spawn_capturing_gemini_http() -> (
+    u16,
+    Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+    oneshot::Sender<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured = Arc::new(std::sync::Mutex::new(None));
+    let captured_for_app = Arc::clone(&captured);
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let app = Router::new().fallback(post(
+            move |uri: Uri, headers: HeaderMap, body: axum::body::Bytes| {
+                let captured = Arc::clone(&captured_for_app);
+                async move {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&body).expect("Gemini request JSON");
+                    *captured.lock().unwrap() = Some(serde_json::json!({
+                        "path": uri.path(),
+                        "query": uri.query(),
+                        "api_key": headers
+                            .get("x-goog-api-key")
+                            .and_then(|value| value.to_str().ok()),
+                        "authorization": headers
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok()),
+                        "body": body,
+                    }));
+                    if uri.path().ends_with(":streamGenerateContent") {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/event-stream")
+                            .body(axum::body::Body::from(
+                                "data: {\"responseId\":\"gemini-stream-e2e\",\"modelVersion\":\"gemini-2.5-pro\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"native streamed\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"totalTokenCount\":5}}\n\n",
+                            ))
+                            .unwrap()
+                            .into_response()
+                    } else {
+                        axum::Json(serde_json::json!({
+                            "responseId": "gemini-e2e",
+                            "modelVersion": "gemini-2.5-pro",
+                            "candidates": [{
+                                "index": 0,
+                                "content": {
+                                    "role": "model",
+                                    "parts": [{"text": "native bridged"}]
+                                },
+                                "finishReason": "STOP"
+                            }],
+                            "usageMetadata": {
+                                "promptTokenCount": 3,
+                                "candidatesTokenCount": 2,
+                                "totalTokenCount": 5
+                            }
+                        }))
+                        .into_response()
+                    }
+                }
+            },
+        ));
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stop_rx.await;
+            })
+            .await
+            .ok();
+    });
+    tokio::task::yield_now().await;
+    (port, captured, stop_tx)
 }
 
 async fn spawn_proxy(toml: &str) -> (String, tempfile::TempDir, oneshot::Sender<()>) {
@@ -851,6 +965,196 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
     // Must not be blocked by network policy (403). Upstream mock returns 200.
     assert_ne!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(resp.status(), StatusCode::OK);
+    let _ = stop.send(());
+    let _ = mock_stop.send(());
+}
+
+#[tokio::test]
+async fn e2e_messages_bridge_keeps_forwarding_and_translates_both_directions() {
+    let (mock_port, captured, mock_stop) = spawn_capturing_llm_http().await;
+    let toml = format!(
+        r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+agent_id = "t"
+
+[network]
+mode = "public"
+
+[[models]]
+name = "claude-client"
+forward = "upstream-model"
+
+[[models]]
+name = "upstream-model"
+upstream = "http://127.0.0.1:{mock_port}/v1"
+"#
+    );
+    let (proxy, _tmp, stop) = spawn_proxy(&toml).await;
+    let original = serde_json::json!({
+        "model": "claude-client",
+        "max_tokens": 32,
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [{
+            "name": "shell",
+            "description": "run a command",
+            "input_schema": {"type": "object", "properties": {}}
+        }]
+    });
+
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .post(format!("{proxy}/v1/messages"))
+        .header("content-type", "application/json")
+        .json(&original)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let client_body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(client_body["type"], "message");
+    assert_eq!(client_body["model"], "claude-client");
+    assert_eq!(client_body["content"][0]["text"], "bridged");
+
+    let upstream = captured.lock().unwrap().clone().expect("upstream request");
+    assert_eq!(upstream["model"], "upstream-model");
+    assert_eq!(upstream["max_completion_tokens"], 32);
+    assert_eq!(upstream["messages"][0]["content"][0]["text"], "hello");
+    assert_eq!(upstream["tools"][0]["function"]["name"], "shell");
+
+    let _ = stop.send(());
+    let _ = mock_stop.send(());
+}
+
+#[tokio::test]
+async fn e2e_messages_bridge_uses_gemini_native_forwarding_and_google_auth() {
+    let (mock_port, captured, mock_stop) = spawn_capturing_gemini_http().await;
+    let toml = format!(
+        r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+agent_id = "t"
+
+[network]
+mode = "public"
+
+[[models]]
+name = "claude-client"
+forward = "gemini-2.5-pro"
+
+[[models]]
+name = "gemini-2.5-pro"
+provider = "gemini"
+upstream = "http://127.0.0.1:{mock_port}/v1beta"
+api_key = "gemini-secret"
+"#,
+    );
+    let (proxy, _tmp, stop) = spawn_proxy(&toml).await;
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .post(format!("{proxy}/v1/messages"))
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer client-secret")
+        .json(&serde_json::json!({
+            "model": "claude-client",
+            "max_tokens": 32,
+            "system": "Be concise.",
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let client_body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(client_body["type"], "message");
+    assert_eq!(client_body["model"], "claude-client");
+    assert_eq!(client_body["content"][0]["text"], "native bridged");
+
+    let upstream = captured.lock().unwrap().clone().expect("upstream request");
+    assert_eq!(
+        upstream["path"],
+        "/v1beta/models/gemini-2.5-pro:generateContent"
+    );
+    assert_eq!(upstream["query"], serde_json::Value::Null);
+    assert_eq!(upstream["api_key"], "gemini-secret");
+    assert_eq!(upstream["authorization"], serde_json::Value::Null);
+    assert_eq!(upstream["body"]["contents"][0]["role"], "user");
+    assert_eq!(upstream["body"]["contents"][0]["parts"][0]["text"], "hello");
+    assert_eq!(
+        upstream["body"]["systemInstruction"]["parts"][0]["text"],
+        "Be concise."
+    );
+    assert_eq!(upstream["body"]["generationConfig"]["maxOutputTokens"], 32);
+
+    let _ = stop.send(());
+    let _ = mock_stop.send(());
+}
+
+#[tokio::test]
+async fn e2e_completions_bridge_uses_gemini_native_stream_endpoint() {
+    let (mock_port, captured, mock_stop) = spawn_capturing_gemini_http().await;
+    let toml = format!(
+        r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+agent_id = "t"
+
+[network]
+mode = "public"
+
+[[models]]
+name = "gemini-2.5-pro"
+provider = "gemini"
+upstream = "http://127.0.0.1:{mock_port}/v1beta"
+api_key = "gemini-secret"
+"#,
+    );
+    let (proxy, _tmp, stop) = spawn_proxy(&toml).await;
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .post(format!("{proxy}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({
+            "model": "gemini-2.5-pro",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let client_sse = response.text().await.unwrap();
+    assert!(client_sse.contains("chat.completion.chunk"), "{client_sse}");
+    assert!(client_sse.contains("native streamed"), "{client_sse}");
+    assert!(client_sse.contains("data: [DONE]"), "{client_sse}");
+
+    let upstream = captured.lock().unwrap().clone().expect("upstream request");
+    assert_eq!(
+        upstream["path"],
+        "/v1beta/models/gemini-2.5-pro:streamGenerateContent"
+    );
+    assert_eq!(upstream["query"], "alt=sse");
+    assert_eq!(upstream["api_key"], "gemini-secret");
+    assert!(upstream["body"].get("stream").is_none());
+
     let _ = stop.send(());
     let _ = mock_stop.send(());
 }

@@ -411,6 +411,9 @@ impl SerializableEvent {
                 body_bytes: *body_bytes,
                 user_content: user_content.clone(),
                 body_json: body_json.clone(),
+                // WAL/dead-letter rows retain one source of truth: the exact
+                // client JSON. Replay reconstructs the typed request in prepare.
+                semantic: None,
                 model_rewritten: *model_rewritten,
                 headers: headers.clone(),
             }),
@@ -427,6 +430,7 @@ impl SerializableEvent {
                 streaming: *streaming,
                 stream_metrics: stream_metrics.clone(),
                 assistant_content: assistant_content.clone(),
+                semantic: None,
                 headers: headers.clone(),
             }),
             Self::ResponseDraft {
@@ -537,6 +541,7 @@ mod tests {
             body_bytes: 10,
             user_content: Some("hi".into()),
             body_json: None,
+            semantic: None,
             model_rewritten: false,
             headers: vec![],
         });

@@ -8,9 +8,9 @@ use crate::sandbox::{seatbelt_profile, SeatbeltPlan, MACOS_SANDBOX_EXEC, SEATBEL
 use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_EXIT_CODE, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
 use persisting_agentctl::{
-    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessInvocation, ProcessOutput,
-    ResourceLimits, RunFailure, RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
-    StdioMode,
+    CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
+    IsolationKind, ProcessInvocation, ProcessOutput, ResourceLimits, RunFailure, RunFailureKind,
+    RunInvocation, RunResult, RunSpec, RunState, StdioMode,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use persisting_agentctl::{FilesystemAccess, NetworkCapability};
@@ -826,11 +826,29 @@ impl RunExecutor for ProcessExecutor {
         } else {
             ("local-process-v1", IsolationKind::HostProcess)
         };
+        let mut capability_enforcement = CapabilityEnforcementEvidence::default()
+            .enforced(CapabilityDimension::Resources, "posix-rlimit");
+        if self.is_rootless() {
+            capability_enforcement = capability_enforcement
+                .enforced(
+                    CapabilityDimension::FilesystemRead,
+                    "linux-user-mount-namespace",
+                )
+                .enforced(
+                    CapabilityDimension::FilesystemWrite,
+                    "linux-user-mount-namespace",
+                );
+        } else if self.is_seatbelt() {
+            capability_enforcement = capability_enforcement.enforced(
+                CapabilityDimension::FilesystemWrite,
+                "macos-seatbelt-write-policy",
+            );
+        }
         ExecutorDescriptor {
             name: name.into(),
             kind: ExecutorKind::Process,
             isolation,
-            enforces_capabilities: false,
+            capability_enforcement,
             supports_checkpoint: false,
             supports_migration: false,
         }
@@ -1137,9 +1155,15 @@ mod tests {
         let descriptor = executor.descriptor();
         assert_eq!(descriptor.name, "local-rootless-v1");
         assert_eq!(descriptor.isolation, IsolationKind::RootlessProcess);
-        // Filesystem containment is recorded separately in the Run Bundle;
-        // network allowlists and subprocess capabilities are not all enforced.
-        assert!(!descriptor.enforces_capabilities);
+        assert!(descriptor
+            .capability_enforcement
+            .is_enforced(CapabilityDimension::FilesystemRead));
+        assert!(descriptor
+            .capability_enforcement
+            .is_enforced(CapabilityDimension::FilesystemWrite));
+        assert!(!descriptor
+            .capability_enforcement
+            .is_enforced(CapabilityDimension::Network));
     }
 
     #[cfg(target_os = "macos")]
@@ -1150,8 +1174,12 @@ mod tests {
         let descriptor = executor.descriptor();
         assert_eq!(descriptor.name, "local-seatbelt-v1");
         assert_eq!(descriptor.isolation, IsolationKind::SandboxedProcess);
-        // Reads and selective network policies are still not all enforced.
-        assert!(!descriptor.enforces_capabilities);
+        assert!(!descriptor
+            .capability_enforcement
+            .is_enforced(CapabilityDimension::FilesystemRead));
+        assert!(descriptor
+            .capability_enforcement
+            .is_enforced(CapabilityDimension::FilesystemWrite));
     }
 
     #[cfg(target_os = "macos")]

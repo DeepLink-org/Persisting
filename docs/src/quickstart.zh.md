@@ -76,6 +76,13 @@ cat ./results/ready.ndjson
 
 ## 4. 查询轨迹历史
 
+第一次使用 pChronicle 时，可以运行完整终端指引，或者直接进入 SQL 章节：
+
+```bash
+pchronicle onboard
+pchronicle onboard query examples/data/atif
+```
+
 上面的 result sink 保存任务结果，并不是轨迹存储。在 Persisting 源码目录中，可以直接
 查询仓库自带的 ATIF 轨迹 fixture：
 

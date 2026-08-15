@@ -6884,6 +6884,7 @@ dependencies = [
  "dirs",
  "flate2",
  "fs2",
+ "globset",
  "libc",
  "libkrun",
  "persisting-agentctl",

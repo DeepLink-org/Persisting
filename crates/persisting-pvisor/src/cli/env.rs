@@ -9,9 +9,9 @@ use clap::{Args, Subcommand, ValueEnum};
 use persisting_overlayfs::jujutsu_upper_dir;
 
 use crate::runtime::{
-    all_runs, apply_overlay, discard_overlay, is_live, load_overlay_record, mount_overlay_record,
-    resolve_run, write_overlay_record, OverlayRecord, OverlayState, OverlayUpper, RunLease,
-    RunRecord,
+    all_runs, apply_overlay_selected, discard_overlay, is_live, load_overlay_record,
+    mount_overlay_record, resolve_run, write_overlay_record, ApplySelection, OverlayRecord,
+    OverlayState, OverlayUpper, RunLease, RunRecord,
 };
 
 #[derive(Debug, Args)]
@@ -120,6 +120,18 @@ struct ApplyArgs {
     select: SelectArgs,
     #[arg(long, value_name = "DIR")]
     target: Option<PathBuf>,
+    /// Apply this relative path and its descendants. Repeatable.
+    #[arg(long = "path", value_name = "RELATIVE_PATH")]
+    paths: Vec<PathBuf>,
+    /// Include staged paths matching this glob. Repeatable.
+    #[arg(long, value_name = "GLOB")]
+    include: Vec<String>,
+    /// Exclude staged paths matching this glob. Repeatable.
+    #[arg(long, value_name = "GLOB")]
+    exclude: Vec<String>,
+    /// Explicitly apply every remaining staged change.
+    #[arg(long)]
+    all: bool,
 }
 
 #[derive(Debug, Args)]
@@ -352,6 +364,10 @@ fn inspect(args: InspectArgs) -> Result<i32> {
 }
 
 fn apply(args: ApplyArgs) -> Result<i32> {
+    if args.all && (!args.paths.is_empty() || !args.include.is_empty() || !args.exclude.is_empty())
+    {
+        bail!("--all cannot be combined with --path, --include, or --exclude");
+    }
     let mut record = selected(&args.select)?;
     ensure_idle(&record)?;
     let _lease = RunLease::acquire(&record.stage_dir())?;
@@ -373,15 +389,28 @@ fn apply(args: ApplyArgs) -> Result<i32> {
         overlay.target = target.clone();
         record.overlay_lowers = vec![target];
     }
-    apply_overlay(&mut overlay)?;
+    let selection = ApplySelection {
+        paths: args.paths,
+        includes: args.include,
+        excludes: args.exclude,
+    };
+    let lowers = if record.overlay_lowers.is_empty() {
+        vec![overlay.target.clone()]
+    } else {
+        record.overlay_lowers.clone()
+    };
+    let outcome = apply_overlay_selected(&mut overlay, &lowers, &selection)?;
     overlay.state = OverlayState::Staged;
     write_overlay_record(&overlay)?;
     record.overlay = Some(overlay);
     record.state = "ready".into();
     record.write()?;
     println!(
-        "applied environment '{}' and reset its stage",
-        record.run_id
+        "applied {} changes from environment '{}' (apply_id={}, remaining={})",
+        outcome.applied.len(),
+        record.run_id,
+        outcome.apply_id,
+        outcome.remaining.len()
     );
     Ok(0)
 }
@@ -541,17 +570,34 @@ mod tests {
         };
         fs::create_dir_all(upper_dir)?;
         fs::write(upper_dir.join("committed.txt"), b"value")?;
+        fs::write(upper_dir.join("later.txt"), b"later")?;
         write_overlay_record(&overlay)?;
 
         apply(ApplyArgs {
             select: select.clone(),
             target: None,
+            paths: vec!["committed.txt".into()],
+            include: Vec::new(),
+            exclude: Vec::new(),
+            all: false,
         })?;
         assert_eq!(fs::read(target.join("committed.txt"))?, b"value");
+        assert!(!target.join("later.txt").exists());
+        assert!(upper_dir.join("later.txt").exists());
         assert_eq!(
             selected(&select)?.overlay.context("overlay")?.state,
             OverlayState::Staged
         );
+
+        apply(ApplyArgs {
+            select: select.clone(),
+            target: None,
+            paths: Vec::new(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            all: true,
+        })?;
+        assert_eq!(fs::read(target.join("later.txt"))?, b"later");
 
         fs::create_dir_all(upper_dir)?;
         fs::write(upper_dir.join("discarded.txt"), b"value")?;

@@ -1,4 +1,5 @@
 mod gateway_capture;
+mod onboard;
 pub mod server;
 
 use std::collections::HashSet;
@@ -28,7 +29,7 @@ use url::Url;
 #[command(
     name = "pchronicle",
     version,
-    about = "Browse, query, and exchange Agent trajectory Datasets"
+    about = "Learn, browse, query, and exchange Agent trajectory Datasets"
 )]
 pub struct Cli {
     /// Override the pChronicle settings file (primarily for isolated environments).
@@ -41,6 +42,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Learn the core pChronicle workflow with a guided Dataset walkthrough.
+    Onboard(onboard::OnboardArgs),
     /// Show or set the local default Warehouse directory.
     Default(DefaultArgs),
     /// List trajectory Sources discovered under a Dataset URI.
@@ -590,6 +593,7 @@ pub async fn run_with_stdin(
 ) -> Result<()> {
     let settings = cli.settings.as_deref();
     match cli.command {
+        Command::Onboard(args) => onboard::run(args, stdout_is_terminal, stdout).await,
         Command::Default(args) => run_default(args, settings, stdout, stderr),
         Command::Ls(args) => run_list(args, settings, stdout_is_terminal, stdout, stderr).await,
         Command::Status(args) => {
@@ -3151,8 +3155,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "default", "ls", "status", "query", "analysis", "find", "import", "export",
-                "serve",
+                "onboard", "default", "ls", "status", "query", "analysis", "find", "import",
+                "export", "serve",
             ]
         );
         let ls = command

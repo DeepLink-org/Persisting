@@ -17,7 +17,8 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
     for command in [
-        "default", "ls", "status", "query", "analysis", "find", "import", "export", "serve",
+        "onboard", "default", "ls", "status", "query", "analysis", "find", "import", "export",
+        "serve",
     ] {
         assert!(stdout.contains(command), "help omits {command}: {stdout}");
     }
@@ -27,6 +28,85 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
                 .lines()
                 .any(|line| line.trim_start().starts_with(command)),
             "help exposes unsupported command {command}: {stdout}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn piped_onboard_is_markdown_without_terminal_escapes() -> Result<()> {
+    let output = pchronicle(&["onboard"])?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.starts_with("# pChronicle Onboard\n"), "{stdout}");
+    assert!(stdout.contains("## Inspect · 发现 Source"), "{stdout}");
+    assert!(stdout.contains("## Query · 先看 Schema"), "{stdout}");
+    assert!(stdout.contains("## Formats · 跨格式查询"), "{stdout}");
+    assert!(stdout.contains("## Exchange · 严格导出"), "{stdout}");
+    assert!(stdout.contains("support-ticket.json"), "{stdout}");
+    assert!(stdout.contains("support-001"), "{stdout}");
+    assert!(stdout.contains("example-code-repair"), "{stdout}");
+    assert!(stdout.contains("exact=true"), "{stdout}");
+    assert!(stdout.contains("# 完成"), "{stdout}");
+    assert!(!stdout.contains('\u{1b}'), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn onboard_accepts_an_explicit_dataset_read_only() -> Result<()> {
+    let dataset = format!("{}/../../examples/data/actf", env!("CARGO_MANIFEST_DIR"));
+    let output = pchronicle(&["onboard", &dataset])?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("code-repair.actf.json"), "{stdout}");
+    assert!(stdout.contains("example-code-repair"), "{stdout}");
+    assert!(stdout.contains("本次完整流程将实际读取"), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn onboard_subcommand_navigates_directly_to_one_section() -> Result<()> {
+    let dataset = format!("{}/../../examples/data/atif", env!("CARGO_MANIFEST_DIR"));
+    let output = pchronicle(&["onboard", "query", &dataset])?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.starts_with("# pChronicle Onboard · Query"));
+    assert!(stdout.contains("DESCRIBE dataset.steps"), "{stdout}");
+    assert!(stdout.contains("dataset.tool_calls"), "{stdout}");
+    assert!(!stdout.contains("## Inspect ·"), "{stdout}");
+    assert!(!stdout.contains("## Exchange ·"), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn onboard_help_lists_every_section() -> Result<()> {
+    let output = pchronicle(&["onboard", "--help"])?;
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    for section in [
+        "all", "concepts", "inspect", "analyze", "query", "formats", "find", "exchange", "serve",
+    ] {
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with(section)),
+            "onboard help omits {section}: {stdout}"
         );
     }
     Ok(())

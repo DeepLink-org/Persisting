@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::body::Body;
+use axum::body::{to_bytes, Body};
 use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use http_body_util::BodyExt;
+use futures_util::StreamExt;
 use persisting_agentctl::{ModelCallRequest, RunId, StorylineId};
 use serde_json::Value;
 
@@ -21,13 +21,16 @@ use super::state::GatewayState;
 use super::streaming::{should_stream_to_client, streaming_llm_response};
 use super::upstream::prepare_upstream_body;
 use crate::config::ProxyConfig;
-use crate::conversion::{translate_response_for_bridge, ProtocolBridge};
-use crate::dialogue_extract::extract_user_message_from_request_body;
+use crate::conversion::{
+    translate_error_for_bridge, translate_response_for_bridge, ProtocolBridge,
+    MAX_REQUEST_BODY_BYTES, MAX_RESPONSE_BODY_BYTES,
+};
 use crate::engine::headers_to_vec;
 use crate::engine::{CompleteEvent, Event, RequestEvent};
 use crate::protocol::ProtocolKind;
 use crate::runtime::debug::{self, truncate_body_bytes};
 use crate::session::storage::resolve_capture_route;
+use crate::understanding::understand_request;
 use crate::Call;
 use persisting_overlaynet::headers::{
     is_websocket_upgrade, skip_response_header_when_body_changed,
@@ -82,11 +85,22 @@ pub(super) async fn llm_capture(
             .into_response());
     }
 
-    let body_bytes = body
-        .collect()
-        .await
-        .map_err(|e| anyhow::anyhow!("read request body: {e}"))?
-        .to_bytes();
+    let body_bytes = match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::warn!(
+                target: "persisting_gateway",
+                %error,
+                limit = MAX_REQUEST_BODY_BYTES,
+                "rejecting oversized LLM request body"
+            );
+            return Ok((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("LLM request body exceeds {MAX_REQUEST_BODY_BYTES} bytes"),
+            )
+                .into_response());
+        }
+    };
     let path = parts.uri.path().to_string();
     let method = parts.method.clone();
     let protocol = ProtocolKind::from_path(&path);
@@ -117,7 +131,28 @@ pub(super) async fn llm_capture(
             .session_clients
             .ensure(state.storage.as_path(), &agent_id, &capture_route, peer);
 
-    let client_model = extract_model(&body_bytes).unwrap_or_else(|| "_unknown".to_string());
+    // Understand the untouched client request once. Routing, rendering, and live capture below
+    // share this typed value; WAL retains the pre-rewrite JSON for crash replay.
+    let mut parsed_request = understand_request(protocol, &body_bytes).ok();
+    let stream_request = parsed_request
+        .as_ref()
+        .map(|parsed| parsed.semantic.request.stream)
+        .unwrap_or_else(|| super::streaming::request_wants_stream(&body_bytes))
+        || path.ends_with(":streamGenerateContent");
+    let client_model = parsed_request
+        .as_ref()
+        .and_then(|parsed| parsed.semantic.request.model.clone())
+        .or_else(|| extract_model(&body_bytes))
+        .or_else(|| gemini_model_from_path(&path))
+        .unwrap_or_else(|| "_unknown".to_string());
+    if let Some(parsed) = parsed_request.as_mut() {
+        let semantic = Arc::make_mut(&mut parsed.semantic);
+        semantic
+            .request
+            .model
+            .get_or_insert_with(|| client_model.clone());
+        semantic.request.stream = stream_request;
+    }
     let resolved = resolve_route(&cfg.models, &client_model)?;
     let route = resolved.route;
     let upstream_model = resolved.upstream_model.clone();
@@ -144,8 +179,16 @@ pub(super) async fn llm_capture(
     let mut call_ctx: Arc<_> = Arc::new(ctx);
 
     {
-        let user_content = extract_user_message_from_request_body(&body_bytes);
-        let body_json = serde_json::from_slice::<Value>(&body_bytes).ok();
+        let user_content = parsed_request
+            .as_ref()
+            .and_then(|parsed| parsed.latest_visible_user_content.clone());
+        let body_json = parsed_request
+            .as_ref()
+            .map(|parsed| parsed.body_json.clone())
+            .or_else(|| serde_json::from_slice::<Value>(&body_bytes).ok());
+        let semantic = parsed_request
+            .as_ref()
+            .map(|parsed| Arc::clone(&parsed.semantic));
         state.capture_engine.spawn_apply(
             Arc::clone(&call_ctx),
             Event::Request(RequestEvent {
@@ -155,6 +198,7 @@ pub(super) async fn llm_capture(
                 body_bytes: body_bytes.len(),
                 user_content,
                 body_json,
+                semantic,
                 model_rewritten: resolved.model_rewritten,
                 headers: headers_to_vec(&parts.headers),
             }),
@@ -163,15 +207,30 @@ pub(super) async fn llm_capture(
 
     let upstream_body = prepare_upstream_body(
         &body_bytes,
+        parsed_request
+            .as_ref()
+            .map(|parsed| parsed.semantic.as_ref()),
         resolved.model_rewritten,
         &upstream_model,
         bridge,
         Some(state.reasoning_cache.as_ref()),
     )?;
 
-    let upstream_path = bridge.upstream_path(&path);
+    let upstream_path = bridge.upstream_path(&path, &upstream_model, stream_request)?;
     let mut upstream_url = route.resolve_upstream_url(&upstream_path, upstream_protocol)?;
-    if let Some(q) = parts.uri.query() {
+    if bridge == ProtocolBridge::Passthrough {
+        if let Some(q) = parts.uri.query() {
+            upstream_url.set_query(Some(q));
+        }
+    } else if matches!(
+        bridge,
+        ProtocolBridge::CompletionsToGemini
+            | ProtocolBridge::MessagesToGemini
+            | ProtocolBridge::ResponsesToGemini
+    ) && stream_request
+    {
+        upstream_url.query_pairs_mut().append_pair("alt", "sse");
+    } else if let Some(q) = parts.uri.query() {
         upstream_url.set_query(Some(q));
     }
 
@@ -268,22 +327,23 @@ pub(super) async fn llm_capture(
 
     let mut upstream_req = state.client.request(method, upstream_url.clone());
     upstream_req = upstream_req.body(upstream_body.clone());
-    upstream_req = match apply_upstream_headers(upstream_req, &parts.headers, route, protocol) {
-        Ok(r) => r,
-        Err(e) => {
-            if debug_on {
-                debug::log_llm_upstream_error(
-                    state.storage.as_path(),
-                    &session_id,
-                    &agent_id,
-                    &client_model,
-                    upstream_url.as_str(),
-                    &format!("auth: {e:#}"),
-                );
+    upstream_req =
+        match apply_upstream_headers(upstream_req, &parts.headers, route, upstream_protocol) {
+            Ok(r) => r,
+            Err(e) => {
+                if debug_on {
+                    debug::log_llm_upstream_error(
+                        state.storage.as_path(),
+                        &session_id,
+                        &agent_id,
+                        &client_model,
+                        upstream_url.as_str(),
+                        &format!("auth: {e:#}"),
+                    );
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
-    };
+        };
     if debug_on {
         debug::log_llm_upstream_sending(
             state.storage.as_path(),
@@ -310,8 +370,6 @@ pub(super) async fn llm_capture(
     };
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
-    let stream_request = super::streaming::request_wants_stream(&upstream_body);
-
     if debug_on {
         let content_type = resp_headers
             .get("content-type")
@@ -329,18 +387,51 @@ pub(super) async fn llm_capture(
         );
     }
 
-    if should_stream_to_client(&resp_headers, &upstream_body) {
+    if !status.is_success() {
+        let raw_error = read_response_body_limited(upstream_resp, MAX_RESPONSE_BODY_BYTES).await?;
+        let client_error = translate_error_for_bridge(bridge, &raw_error, status)?;
+        let body_was_rewritten = client_error != raw_error;
+        state.capture_engine.spawn_apply(
+            Arc::clone(&call_ctx),
+            Event::ResponseComplete(CompleteEvent {
+                status: status.as_u16(),
+                resp_bytes: client_error.clone(),
+                streaming: false,
+                stream_metrics: None,
+                assistant_content: None,
+                semantic: None,
+                headers: headers_to_vec(&resp_headers),
+            }),
+        );
+        let mut builder = Response::builder().status(status);
+        for (name, value) in &resp_headers {
+            if body_was_rewritten && skip_response_header_when_body_changed(name.as_str()) {
+                continue;
+            }
+            builder = builder.header(name, value);
+        }
+        if body_was_rewritten {
+            builder = builder.header("content-type", "application/json");
+        }
+        builder = attach_capture_headers(builder, &call);
+        return Ok(builder
+            .body(Body::from(client_error))
+            .map_err(|e| anyhow::anyhow!("error response body: {e}"))?
+            .into_response());
+    }
+
+    if should_stream_to_client(&resp_headers, &body_bytes) {
         // streaming_llm_response takes an owned CallContext so unwrap the Arc when
         // we know we're the only owner (we are — request emit was the only earlier clone).
         let owned_ctx = Arc::try_unwrap(call_ctx).unwrap_or_else(|arc| (*arc).clone());
         return streaming_llm_response(upstream_resp, state, owned_ctx, bridge).await;
     }
 
-    let mut resp_bytes = upstream_resp.bytes().await?;
+    let upstream_bytes = read_response_body_limited(upstream_resp, MAX_RESPONSE_BODY_BYTES).await?;
     let body_was_rewritten = bridge.needs_response_translation();
-    if body_was_rewritten {
-        resp_bytes = translate_response_for_bridge(bridge, &resp_bytes, &client_model)?;
-    }
+    let translated =
+        translate_response_for_bridge(bridge, &upstream_bytes, protocol, &client_model)?;
+    let resp_bytes = translated.body;
     state.capture_engine.spawn_apply(
         Arc::clone(&call_ctx),
         Event::ResponseComplete(CompleteEvent {
@@ -349,6 +440,7 @@ pub(super) async fn llm_capture(
             streaming: false,
             stream_metrics: None,
             assistant_content: None,
+            semantic: Some(translated.semantic),
             headers: headers_to_vec(&resp_headers),
         }),
     );
@@ -371,4 +463,32 @@ pub(super) async fn llm_capture(
         .body(Body::from(resp_bytes))
         .map_err(|e| anyhow::anyhow!("response body: {e}"))?
         .into_response())
+}
+
+fn gemini_model_from_path(path: &str) -> Option<String> {
+    let model = path.split("/models/").nth(1)?.split(':').next()?;
+    (!model.is_empty()).then(|| model.to_string())
+}
+
+async fn read_response_body_limited(
+    response: reqwest::Response,
+    limit: usize,
+) -> anyhow::Result<bytes::Bytes> {
+    if response
+        .content_length()
+        .is_some_and(|content_length| content_length > limit as u64)
+    {
+        anyhow::bail!("upstream response body exceeds {limit} bytes");
+    }
+    let mut body = bytes::BytesMut::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("read upstream response body")?;
+        anyhow::ensure!(
+            body.len().saturating_add(chunk.len()) <= limit,
+            "upstream response body exceeds {limit} bytes"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.freeze())
 }

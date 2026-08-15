@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/bedrock-titan/embeddings.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/bedrock-titan/embeddings.json
 info:
   embedding:
     - -0.006603240966796875
@@ -30,6 +30,7 @@ info:
   },
   "parsed": {
     "input_tokens": 3,
-    "total_tokens": 3
+    "total_tokens": 3,
+    "provider_model": "amazon.titan-embed-text-v2:0"
   }
 }

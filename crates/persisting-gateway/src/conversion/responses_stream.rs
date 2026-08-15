@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use super::tool_call::decode_stream_arguments_delta;
+use crate::conversion::MAX_SSE_FRAME_BYTES;
 use crate::usage::{StreamMetrics, TokenUsage};
 
 /// Incremental translator: upstream OpenAI completions SSE → client Responses SSE.
@@ -159,18 +160,11 @@ impl CompletionsToResponsesStreamTranslator {
                 out.push_str(&self.emit_created()?);
             }
             out.push_str(&self.handle_choice_delta(&v)?);
-            if let Some(reason) = v
-                .get("choices")
-                .and_then(|c| c.as_array())
-                .and_then(|a| a.first())
-                .and_then(|c| c.get("finish_reason"))
-                .and_then(|f| f.as_str())
-            {
-                if reason == "stop" || reason == "length" || reason == "tool_calls" {
-                    out.push_str(&self.finish()?);
-                }
-            }
         }
+        anyhow::ensure!(
+            self.upstream_buf.len() <= MAX_SSE_FRAME_BYTES,
+            "OpenAI SSE frame exceeds {MAX_SSE_FRAME_BYTES} bytes"
+        );
         Ok(out)
     }
 
@@ -612,8 +606,8 @@ fn next_sse_data_line(buf: &mut String) -> Option<String> {
 }
 
 fn extract_usage_from_response_chunk(v: &Value) -> TokenUsage {
-    if let Some(u) = v.get("usage") {
-        return crate::usage::extract_usage_from_response(u);
+    if v.get("usage").is_some_and(Value::is_object) {
+        return crate::usage::extract_usage_from_response(v);
     }
     TokenUsage::default()
 }

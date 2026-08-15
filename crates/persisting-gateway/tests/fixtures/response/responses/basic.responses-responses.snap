@@ -1,7 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-assertion_line: 62
-description: src/llm/tests/response/responses/basic.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/responses/basic.json
 info:
   id: resp_0fd43e1b46691ead0069a89a2144808199a06ce29faf5798da
   object: response
@@ -94,7 +93,7 @@ info:
       "total_tokens": 20
     },
     "object": "response",
-    "created_at": 1772657185,
+    "created_at": "[date]",
     "background": false,
     "billing": {
       "payer": "developer"

@@ -291,6 +291,7 @@ mod tests {
             body_bytes: 10,
             user_content: Some("hi".into()),
             body_json: None,
+            semantic: None,
             model_rewritten: false,
             headers: vec![],
         })
@@ -344,5 +345,58 @@ mod tests {
             reopened.append_event(&sample_ctx(), &sample_event()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn wal_retains_original_client_request_before_protocol_conversion() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_bytes = bytes::Bytes::from_static(
+            br#"{"model":"claude-client","max_tokens":16,"messages":[{"role":"user","content":"original"}]}"#,
+        );
+        let original_json: serde_json::Value = serde_json::from_slice(&original_bytes).unwrap();
+        let converted =
+            crate::conversion::messages_request_to_completions(&original_bytes, "upstream-model")
+                .unwrap();
+        let converted_json: serde_json::Value = serde_json::from_slice(&converted).unwrap();
+        assert_eq!(converted_json["model"], "upstream-model");
+
+        let wal = EventWal::open(dir.path());
+        let semantic =
+            crate::understanding::understand_request(ProtocolKind::Messages, &original_bytes)
+                .unwrap()
+                .semantic;
+        wal.append_event(
+            &sample_ctx(),
+            &Event::Request(RequestEvent {
+                path: "/v1/messages".into(),
+                method: "POST".into(),
+                url: Some("//gateway/v1/messages".into()),
+                body_bytes: original_bytes.len(),
+                user_content: Some("original".into()),
+                body_json: Some(original_json.clone()),
+                semantic: Some(semantic),
+                model_rewritten: true,
+                headers: vec![("x-request-id".into(), "req-1".into())],
+            }),
+        )
+        .unwrap();
+        drop(wal);
+
+        let serialized = std::fs::read_to_string(wal_path(dir.path())).unwrap();
+        assert!(serialized.contains("body_json"));
+        assert!(
+            !serialized.contains("\"semantic\""),
+            "WAL must not duplicate the typed payload: {serialized}"
+        );
+
+        let pending = replay_pending(dir.path());
+        assert_eq!(pending.len(), 1);
+        let Event::Request(replayed) = pending[0].event.to_event() else {
+            panic!("expected request event")
+        };
+        assert_eq!(replayed.path, "/v1/messages");
+        assert_eq!(replayed.url.as_deref(), Some("//gateway/v1/messages"));
+        assert_eq!(replayed.body_json, Some(original_json));
+        assert_eq!(replayed.headers[0], ("x-request-id".into(), "req-1".into()));
     }
 }

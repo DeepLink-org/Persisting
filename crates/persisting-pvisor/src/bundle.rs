@@ -577,7 +577,7 @@ mod tests {
             name: "libkrun-root-overlay-v1".into(),
             kind: persisting_agentctl::ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
-            enforces_capabilities: false,
+            capability_enforcement: Default::default(),
             supports_checkpoint: true,
             supports_migration: false,
         });
@@ -592,7 +592,7 @@ mod tests {
             name: "local-rootless-v1".into(),
             kind: persisting_agentctl::ExecutorKind::Process,
             isolation: IsolationKind::RootlessProcess,
-            enforces_capabilities: false,
+            capability_enforcement: Default::default(),
             supports_checkpoint: false,
             supports_migration: false,
         });
@@ -609,7 +609,7 @@ mod tests {
             name: "local-seatbelt-v1".into(),
             kind: persisting_agentctl::ExecutorKind::Process,
             isolation: IsolationKind::SandboxedProcess,
-            enforces_capabilities: false,
+            capability_enforcement: Default::default(),
             supports_checkpoint: false,
             supports_migration: false,
         });

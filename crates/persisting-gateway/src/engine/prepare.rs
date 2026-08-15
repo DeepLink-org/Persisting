@@ -64,6 +64,15 @@ impl CapturePreparer {
         );
         // Session index is flushed in batch via CaptureEngine::flush / shutdown.
 
+        // Runtime requests already carry the once-parsed semantic payload. The
+        // fallback keeps WAL rows written by older binaries replayable.
+        let semantic = event.semantic.clone().or_else(|| {
+            event.body_json.as_ref().and_then(|body| {
+                crate::understanding::understand_request_value(ctx.protocol, body)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })
+        });
         let forward_to = event.model_rewritten.then_some(ctx.upstream_model.as_str());
         let mut rec = llm_request_summary_record(
             Some(ctx.route().session_id.clone()),
@@ -105,6 +114,9 @@ impl CapturePreparer {
             body_for_wire,
             body_for_wire.is_some() && !event.headers.is_empty(),
         );
+        if let Some(semantic) = semantic {
+            rec.payload["llm_request"] = serde_json::to_value(semantic.as_ref())?;
+        }
         let backfills = run_enrich(run, &mut rec, ctx, event.body_json.as_ref(), None).await?;
         let scope = StoryScope::from_context(ctx);
         let story_cmd = Some(StoryCommand::persist_record(
@@ -233,6 +245,32 @@ impl CapturePreparer {
             None
         };
 
+        // Live responses carry the exact once-parsed semantic value used by the
+        // client renderer. The fallback is reserved for WAL/dead-letter replay.
+        let semantic_response = event.semantic.or_else(|| {
+            if event.streaming {
+                Some(std::sync::Arc::new(
+                    crate::understanding::understand_stream_summary(
+                        ctx.protocol,
+                        &ctx.client_model,
+                        assistant_content.as_deref(),
+                        persisting_pchronicle::LlmUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            total_tokens: usage.total_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            cache_write_tokens: usage.cache_write_tokens,
+                            reasoning_tokens: usage.reasoning_tokens,
+                        },
+                    ),
+                ))
+            } else {
+                crate::understanding::understand_response_value(ctx.protocol, &resp_json)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            }
+        });
+
         let mut rec = llm_response_record_with_content(
             Some(ctx.route().session_id.clone()),
             Some(ctx.agent_id().to_string()),
@@ -243,6 +281,9 @@ impl CapturePreparer {
             &ctx.call,
             ctx.level,
         );
+        if let Some(semantic) = semantic_response {
+            rec.payload["llm_response"] = serde_json::to_value(semantic.as_ref())?;
+        }
         attach_recorded_headers(&mut rec.payload, &event.headers);
         attach_connection_and_client(
             &mut rec.payload,

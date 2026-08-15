@@ -17,6 +17,7 @@ async fn request_event_appends_single_llm_request() {
                 body_bytes: 12,
                 user_content: Some("hi".into()),
                 body_json: None,
+                semantic: None,
                 model_rewritten: false,
                 headers: vec![],
             }),
@@ -27,6 +28,55 @@ async fn request_event_appends_single_llm_request() {
     let records = sink.drain();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, "llm.request");
+}
+
+#[tokio::test]
+async fn request_event_projects_original_body_and_typed_understanding() {
+    let sink = RecordingSink::new();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = test_engine(sink.clone(), dir.path(), false).await;
+    let ctx = test_context();
+    let original = serde_json::json!({
+        "model": "deepseek-chat",
+        "stream": true,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "keep me"}],
+        "tools": [{"type": "function", "function": {"name": "shell"}}]
+    });
+    engine
+        .apply(
+            &ctx,
+            Event::Request(RequestEvent {
+                path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: Some("//localhost/v1/chat/completions".into()),
+                body_bytes: serde_json::to_vec(&original).unwrap().len(),
+                user_content: Some("keep me".into()),
+                body_json: Some(original.clone()),
+                semantic: None,
+                model_rewritten: true,
+                headers: vec![("content-type".into(), "application/json".into())],
+            }),
+        )
+        .await
+        .unwrap();
+    flush_engine(&engine).await;
+
+    let records = sink.drain();
+    let payload = &records[0].payload;
+    assert_eq!(payload["http"]["request_body"], original);
+    assert_eq!(payload["llm_request"]["schema_version"], "llm/v1");
+    assert_eq!(payload["llm_request"]["input_format"], "chat_completions");
+    assert_eq!(payload["llm_request"]["request"]["model"], "deepseek-chat");
+    assert_eq!(payload["llm_request"]["request"]["stream"], true);
+    assert_eq!(
+        payload["llm_request"]["request"]["generation"]["max_output_tokens"],
+        64
+    );
+    assert_eq!(
+        payload["llm_request"]["request"]["tools"][0]["name"],
+        "shell"
+    );
 }
 
 #[tokio::test]
@@ -44,6 +94,7 @@ async fn response_event_appends_single_stream_record() {
                 streaming: true,
                 stream_metrics: None,
                 assistant_content: Some("hello".into()),
+                semantic: None,
                 headers: vec![],
             }),
         )
@@ -56,6 +107,19 @@ async fn response_event_appends_single_stream_record() {
     assert_eq!(
         records[0].payload["assistant_content"].as_str(),
         Some("hello")
+    );
+    assert_eq!(
+        records[0].payload["llm_response"]["schema_version"],
+        "llm/v1"
+    );
+    assert_eq!(
+        records[0].payload["llm_response"]["output_format"],
+        "chat_completions"
+    );
+    assert_eq!(
+        records[0].payload["llm_response"]["response"]["candidates"][0]["message"]["parts"][0]
+            ["text"],
+        "hello"
     );
 }
 

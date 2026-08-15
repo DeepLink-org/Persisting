@@ -1,6 +1,6 @@
 ---
-source: crates/agentgateway/src/llm/tests.rs
-description: src/llm/tests/response/openai/embeddings.json
+source: crates/llm/src/golden_tests.rs
+description: src/tests/response/openai/embeddings.json
 info:
   object: list
   data:
@@ -37,6 +37,7 @@ info:
   },
   "parsed": {
     "input_tokens": 8,
-    "total_tokens": 8
+    "total_tokens": 8,
+    "provider_model": "text-embedding-3-small"
   }
 }

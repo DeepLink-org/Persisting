@@ -8,6 +8,8 @@ pub enum ProtocolKind {
     ChatCompletions,
     Messages,
     Responses,
+    /// Gemini native `models/*:generateContent` API.
+    Gemini,
     Embeddings,
     CountTokens,
     Realtime,
@@ -27,6 +29,11 @@ impl ProtocolKind {
         }
         if p.ends_with("/responses") {
             return Self::Responses;
+        }
+        if p.contains("/models/")
+            && (p.ends_with(":generateContent") || p.ends_with(":streamGenerateContent"))
+        {
+            return Self::Gemini;
         }
         if p.ends_with("/embeddings") {
             return Self::Embeddings;
@@ -48,6 +55,7 @@ impl ProtocolKind {
             Self::ChatCompletions => "chat_completions",
             Self::Messages => "messages",
             Self::Responses => "responses",
+            Self::Gemini => "gemini",
             Self::Embeddings => "embeddings",
             Self::CountTokens => "count_tokens",
             Self::Realtime => "realtime",
@@ -61,6 +69,7 @@ impl ProtocolKind {
             "chat_completions" => Self::ChatCompletions,
             "messages" => Self::Messages,
             "responses" => Self::Responses,
+            "gemini" => Self::Gemini,
             "embeddings" => Self::Embeddings,
             "count_tokens" => Self::CountTokens,
             "realtime" => Self::Realtime,
@@ -87,6 +96,14 @@ mod tests {
         assert_eq!(
             ProtocolKind::from_path("/v1/embeddings"),
             ProtocolKind::Embeddings
+        );
+        assert_eq!(
+            ProtocolKind::from_path("/v1beta/models/gemini-2.5-pro:generateContent"),
+            ProtocolKind::Gemini
+        );
+        assert_eq!(
+            ProtocolKind::from_path("/v1beta/models/gemini-2.5-pro:streamGenerateContent"),
+            ProtocolKind::Gemini
         );
     }
 }

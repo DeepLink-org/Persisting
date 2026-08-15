@@ -300,7 +300,7 @@ impl RunExecutor for ContainerExecutor {
             name: "docker-pvisor-v2".into(),
             kind: ExecutorKind::Container,
             isolation: IsolationKind::Container,
-            enforces_capabilities: false,
+            capability_enforcement: Default::default(),
             supports_checkpoint: false,
             supports_migration: false,
         }
@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(descriptor.name, "docker-pvisor-v2");
         assert_eq!(descriptor.kind, ExecutorKind::Container);
         assert_eq!(descriptor.isolation, IsolationKind::Container);
-        assert!(!descriptor.enforces_capabilities);
+        assert!(descriptor.capability_enforcement.dimensions.is_empty());
     }
 
     #[test]

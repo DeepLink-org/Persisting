@@ -54,37 +54,15 @@ pub fn ag_snap_response(relative: &str) -> Value {
         .unwrap_or_else(|| panic!("snap {relative} missing .response"))
 }
 
+/// AG request snaps wrap wire output in `{ "request": ..., "parsed": ... }`.
+pub fn ag_snap_request(relative: &str) -> Value {
+    let value = parse_ag_json_snap(relative);
+    value.get("request").cloned().unwrap_or(value)
+}
+
 /// AG streaming snaps are SSE text after frontmatter.
 pub fn parse_ag_sse_snap(relative: &str) -> String {
     strip_snap_frontmatter(&read_fixture(relative)).to_string()
-}
-
-/// Normalize completions request JSON for comparison with AG `.completions.snap`.
-pub fn normalize_completions_request(v: &mut Value) {
-    let Some(obj) = v.as_object_mut() else {
-        return;
-    };
-    obj.remove("stream");
-    if obj.contains_key("max_tokens") && !obj.contains_key("max_completion_tokens") {
-        if let Some(mt) = obj.remove("max_tokens") {
-            obj.insert("max_completion_tokens".to_string(), mt);
-        }
-    }
-    if let Some(msgs) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        for msg in msgs.iter_mut() {
-            if let Some(content) = msg.get_mut("content") {
-                *content = normalize_message_content(content.clone());
-            }
-        }
-    }
-}
-
-fn normalize_message_content(v: Value) -> Value {
-    match v {
-        Value::String(s) => json!([{"type": "text", "text": s}]),
-        Value::Object(ref obj) if obj.get("type").is_some() => json!([v]),
-        other => other,
-    }
 }
 
 /// Normalize Anthropic message response for comparison with AG snaps.
@@ -111,20 +89,7 @@ pub fn normalize_messages_response(v: &mut Value) {
 }
 
 pub fn assert_json_eq(actual: &Value, expected: &Value, context: &str) {
-    let mut a = actual.clone();
-    let mut e = expected.clone();
-    normalize_completions_request(&mut a);
-    normalize_completions_request(&mut e);
-    // Persisting intentionally strips tools/thinking on messages→completions (minimal bridge).
-    if let Some(ao) = a.as_object_mut() {
-        ao.remove("tools");
-        ao.remove("output_format");
-    }
-    if let Some(eo) = e.as_object_mut() {
-        eo.remove("tools");
-        eo.remove("reasoning_effort");
-    }
-    assert_eq!(a, e, "{context}");
+    assert_eq!(actual, expected, "{context}");
 }
 
 pub fn assert_messages_response_eq(actual: &Value, expected: &Value, context: &str) {
@@ -132,20 +97,7 @@ pub fn assert_messages_response_eq(actual: &Value, expected: &Value, context: &s
     let mut e = expected.clone();
     normalize_messages_response(&mut a);
     normalize_messages_response(&mut e);
-    assert_eq!(a["type"], e["type"], "{context}: type");
-    assert_eq!(a["role"], e["role"], "{context}: role");
-    assert_eq!(a["content"], e["content"], "{context}: content");
-    assert_eq!(a["stop_reason"], e["stop_reason"], "{context}: stop_reason");
-    if e.get("usage").is_some() {
-        assert_eq!(
-            a["usage"]["input_tokens"], e["usage"]["input_tokens"],
-            "{context}: input_tokens"
-        );
-        assert_eq!(
-            a["usage"]["output_tokens"], e["usage"]["output_tokens"],
-            "{context}: output_tokens"
-        );
-    }
+    assert_eq!(a, e, "{context}");
 }
 
 /// Feed full upstream OpenAI SSE fixture through a translator callback.
@@ -168,19 +120,51 @@ pub fn sse_event_names(sse: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Parse SSE into protocol events, ignoring agentgateway's trailing parsed-info JSON.
+pub fn parse_sse_events(sse: &str) -> Vec<(String, Value)> {
+    let mut events = Vec::new();
+    let mut event_name = None;
+    for line in sse.lines() {
+        if let Some(name) = line.strip_prefix("event: ") {
+            event_name = Some(name.to_string());
+        } else if let Some(data) = line.strip_prefix("data: ") {
+            if data == "[DONE]" {
+                continue;
+            }
+            if let (Some(name), Ok(value)) = (event_name.take(), serde_json::from_str(data)) {
+                events.push((name, value));
+            }
+        }
+    }
+    events
+}
+
 pub fn fixture_exists(relative: &str) -> bool {
     fixture_path(relative).is_file()
 }
 
 /// Case tables aligned with agentgateway `llm/tests.rs` (Persisting-supported bridges only).
-pub const MESSAGES_TO_COMPLETIONS: &[&str] = &["basic", "tools", "reasoning"];
+pub const MESSAGES_TO_COMPLETIONS: &[&str] = &[
+    "basic",
+    "cache_control",
+    "gpt_adaptive_thinking_with_tools",
+    "metadata",
+    "reasoning",
+    "server_tools",
+    "structured-output",
+    "system_message",
+    "tools",
+];
 
 pub const COMPLETIONS_TO_MESSAGES: &[&str] = &[
     "basic",
+    "cache_write",
     "gemini_with_completion_tokens",
     "gemini_zero_completion_tokens",
     "openrouter_reasoning",
     "audio",
+    "tool_call",
+    "truncated_tool_call",
 ];
 
 pub const RESPONSES_TO_COMPLETIONS: &[&str] = &[
@@ -190,6 +174,23 @@ pub const RESPONSES_TO_COMPLETIONS: &[&str] = &[
     "assistant-history",
     "parallel-tool-call",
 ];
+
+/// Gemini native `generateContent` request goldens. The upstream corpus names the shared
+/// Google wire contract `vertex-gemini`; Gemini API uses the same request/response schema.
+pub const COMPLETIONS_TO_GEMINI: &[&str] = &[
+    "basic",
+    "generation-config",
+    "image-file",
+    "image-inline",
+    "multi-turn-tools",
+    "parallel-tool-call",
+    "reasoning",
+    "reasoning_max",
+    "structured-output",
+    "tool-call",
+];
+
+pub const GEMINI_TO_COMPLETIONS: &[&str] = &["basic", "tool", "reasoning", "blocked"];
 
 /// Tracks how many fixture cases actually ran (guards against silent `continue` on missing files).
 #[derive(Debug, Default, Clone, Copy)]
@@ -292,7 +293,7 @@ mod tests {
 
     #[test]
     fn parse_basic_completions_snap() {
-        let v = parse_ag_json_snap("requests/messages/basic.completions.snap");
+        let v = ag_snap_request("requests/messages/basic.completions.snap");
         assert!(v.get("messages").is_some());
     }
 }

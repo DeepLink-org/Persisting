@@ -1,7 +1,7 @@
 ---
 template: home.html
 title: Persisting — Agent execution, orchestration, and durable history
-description: Agent infrastructure for running one Run (pVisor), orchestrating many Runs (pPilot), and keeping canonical history (pChronicle), with reviewable isolation and trajectory capture.
+description: Agent infrastructure built around pVisor, the AgentVisor for one Run; pPilot orchestrates many Runs and pChronicle keeps canonical history.
 hide: toc
 ---
 

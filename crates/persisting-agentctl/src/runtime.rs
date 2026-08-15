@@ -524,12 +524,177 @@ pub enum IsolationKind {
     Wasm,
 }
 
+/// Strength of the boundary claimed for one capability dimension.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementLevel {
+    #[default]
+    Unenforced,
+    Cooperative,
+    Enforced,
+}
+
+/// Independently enforceable dimensions of a Run policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityDimension {
+    Models,
+    Tools,
+    FilesystemRead,
+    FilesystemWrite,
+    Network,
+    Secrets,
+    Subprocess,
+    Resources,
+}
+
+impl fmt::Display for CapabilityDimension {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Models => "models",
+            Self::Tools => "tools",
+            Self::FilesystemRead => "filesystem_read",
+            Self::FilesystemWrite => "filesystem_write",
+            Self::Network => "network",
+            Self::Secrets => "secrets",
+            Self::Subprocess => "subprocess",
+            Self::Resources => "resources",
+        };
+        f.write_str(name)
+    }
+}
+
+/// Auditable claim for one dimension. `mechanisms` names the concrete boundary
+/// rather than inferring enforcement from an executor or isolation label.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnforcementEvidence {
+    #[serde(default)]
+    pub level: EnforcementLevel,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mechanisms: Vec<String>,
+}
+
+impl EnforcementEvidence {
+    pub fn new(level: EnforcementLevel, mechanism: impl Into<String>) -> Self {
+        Self {
+            level,
+            mechanisms: vec![mechanism.into()],
+        }
+    }
+
+    pub fn is_enforced(&self) -> bool {
+        self.level == EnforcementLevel::Enforced
+    }
+}
+
+/// Sparse, per-dimension enforcement evidence advertised by an executor and
+/// augmented by runtime drivers for a specific Run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityEnforcementEvidence {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<CapabilityDimension, EnforcementEvidence>,
+}
+
+impl CapabilityEnforcementEvidence {
+    pub fn record(
+        &mut self,
+        dimension: CapabilityDimension,
+        level: EnforcementLevel,
+        mechanism: impl Into<String>,
+    ) {
+        let mechanism = mechanism.into();
+        let evidence = self.dimensions.entry(dimension).or_default();
+        if level > evidence.level {
+            evidence.level = level;
+        }
+        if !evidence.mechanisms.contains(&mechanism) {
+            evidence.mechanisms.push(mechanism);
+        }
+    }
+
+    pub fn enforced(
+        mut self,
+        dimension: CapabilityDimension,
+        mechanism: impl Into<String>,
+    ) -> Self {
+        self.record(dimension, EnforcementLevel::Enforced, mechanism);
+        self
+    }
+
+    pub fn cooperative(
+        mut self,
+        dimension: CapabilityDimension,
+        mechanism: impl Into<String>,
+    ) -> Self {
+        self.record(dimension, EnforcementLevel::Cooperative, mechanism);
+        self
+    }
+
+    pub fn evidence(&self, dimension: CapabilityDimension) -> Option<&EnforcementEvidence> {
+        self.dimensions.get(&dimension)
+    }
+
+    pub fn is_enforced(&self, dimension: CapabilityDimension) -> bool {
+        self.evidence(dimension)
+            .is_some_and(EnforcementEvidence::is_enforced)
+    }
+
+    pub fn missing_dimensions(
+        &self,
+        capabilities: &CapabilitySet,
+        resources: &ResourceLimits,
+    ) -> Vec<CapabilityDimension> {
+        requested_enforcement_dimensions(capabilities, resources)
+            .into_iter()
+            .filter(|dimension| !self.is_enforced(*dimension))
+            .collect()
+    }
+}
+
+/// Dimensions that require non-bypassable evidence when `PolicyMode::Enforce`
+/// is selected. Network is always included because `Ambient` is explicitly an
+/// audit/compatibility mode, not an enforceable boundary.
+pub fn requested_enforcement_dimensions(
+    capabilities: &CapabilitySet,
+    resources: &ResourceLimits,
+) -> Vec<CapabilityDimension> {
+    use std::collections::BTreeSet;
+
+    let mut requested = BTreeSet::new();
+    if !capabilities.models.is_empty() {
+        requested.insert(CapabilityDimension::Models);
+    }
+    if !capabilities.tools.is_empty() {
+        requested.insert(CapabilityDimension::Tools);
+    }
+    for filesystem in &capabilities.filesystem {
+        requested.insert(CapabilityDimension::FilesystemRead);
+        if filesystem.access == FilesystemAccess::ReadWrite {
+            requested.insert(CapabilityDimension::FilesystemWrite);
+        }
+    }
+    // PolicyMode::Enforce must fail closed for `Ambient` too: selecting ambient
+    // access is not evidence that direct sockets are confined by a boundary.
+    requested.insert(CapabilityDimension::Network);
+    if !capabilities.secrets.is_empty() {
+        requested.insert(CapabilityDimension::Secrets);
+    }
+    if capabilities.allow_subprocess {
+        requested.insert(CapabilityDimension::Subprocess);
+    }
+    if !resources.is_empty() {
+        requested.insert(CapabilityDimension::Resources);
+    }
+    requested.into_iter().collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutorDescriptor {
     pub name: String,
     pub kind: ExecutorKind,
     pub isolation: IsolationKind,
-    pub enforces_capabilities: bool,
+    #[serde(default)]
+    pub capability_enforcement: CapabilityEnforcementEvidence,
     pub supports_checkpoint: bool,
     pub supports_migration: bool,
 }
@@ -735,5 +900,40 @@ mod tests {
             serde_json::from_str::<NetworkCapability>(&json).unwrap(),
             capability
         );
+    }
+
+    #[test]
+    fn enforcement_evidence_checks_only_requested_dimensions() {
+        let capabilities = CapabilitySet {
+            filesystem: vec![FilesystemCapability {
+                path: "/workspace".into(),
+                access: FilesystemAccess::ReadWrite,
+            }],
+            network: NetworkCapability::Deny,
+            ..CapabilitySet::default()
+        };
+        let evidence = CapabilityEnforcementEvidence::default()
+            .enforced(CapabilityDimension::FilesystemRead, "mount-namespace")
+            .enforced(CapabilityDimension::FilesystemWrite, "mount-namespace");
+
+        assert_eq!(
+            evidence.missing_dimensions(&capabilities, &ResourceLimits::default()),
+            vec![CapabilityDimension::Network]
+        );
+    }
+
+    #[test]
+    fn descriptor_without_new_evidence_field_remains_readable() {
+        let descriptor: ExecutorDescriptor = serde_json::from_value(serde_json::json!({
+            "name": "legacy",
+            "kind": "process",
+            "isolation": "host_process",
+            "enforces_capabilities": false,
+            "supports_checkpoint": false,
+            "supports_migration": false
+        }))
+        .unwrap();
+
+        assert!(descriptor.capability_enforcement.dimensions.is_empty());
     }
 }

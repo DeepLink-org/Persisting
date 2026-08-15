@@ -90,6 +90,14 @@ just examples-ppilot
 
 ## 4. Query trajectory history
 
+For a first pChronicle session, run the complete terminal walkthrough or jump
+directly to its SQL section:
+
+```bash
+pchronicle onboard
+pchronicle onboard query examples/data/atif
+```
+
 The result sink above contains task results; it is not a trajectory store.
 From a Persisting source checkout, query the bundled ATIF trajectory fixtures
 directly:

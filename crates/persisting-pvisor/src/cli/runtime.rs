@@ -5,9 +5,10 @@ use anyhow::{bail, Context};
 use clap::Args;
 
 use crate::runtime::{
-    apply_overlay, control_mount_inspect, control_overlay_status, control_ping,
-    control_unmount_inspect, discard_overlay, is_live, mount_overlay_record_read_only,
-    overlay_status, resolve_run, OverlayState, ReadOnlyOverlayMount, RunRecord,
+    apply_overlay_selected, control_mount_inspect, control_overlay_status, control_ping,
+    control_unmount_inspect, discard_overlay, is_live, load_apply_records,
+    mount_overlay_record_read_only, overlay_status, resolve_run, ApplySelection, OverlayState,
+    ReadOnlyOverlayMount, RunLease, RunRecord,
 };
 
 const DEFAULT_STORAGE: &str = ".persisting/capture";
@@ -50,11 +51,24 @@ pub struct ApplyArgs {
     /// Apply staged changes here instead of the target recorded by the Run.
     #[arg(long, value_name = "PATH")]
     pub target: Option<PathBuf>,
+    /// Apply this relative path and its descendants. Repeatable.
+    #[arg(long = "path", value_name = "RELATIVE_PATH")]
+    pub paths: Vec<PathBuf>,
+    /// Include staged paths matching this glob. Repeatable.
+    #[arg(long, value_name = "GLOB")]
+    pub include: Vec<String>,
+    /// Exclude staged paths matching this glob. Repeatable.
+    #[arg(long, value_name = "GLOB")]
+    pub exclude: Vec<String>,
+    /// Explicitly apply every remaining staged change.
+    #[arg(long)]
+    pub all: bool,
 }
 
 pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     let record = selected(args.selector.as_deref(), &args.output_dir)?;
     let live = control_ping(&record.stage_dir()) || is_live(&record.stage_dir())?;
+    let apply_history = load_apply_records(&record.stage_dir())?;
     let fs = record
         .overlay
         .as_ref()
@@ -82,6 +96,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             serde_json::to_string_pretty(&serde_json::json!({
                 "run": record,
                 "live": live,
+                "apply_history": apply_history,
                 "filesystem": fs.as_ref().map(|status| serde_json::json!({
                     "state": record.overlay.as_ref().map(|overlay| overlay.state),
                     "changed_files": status.changed_files,
@@ -111,6 +126,9 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     println!("agent: {}", record.agent);
     println!("command: {}", shell_join(&record.command));
     println!("stage: {}", record.stage_dir().display());
+    if !apply_history.is_empty() {
+        println!("apply batches: {}", apply_history.len());
+    }
     println!("net: {}", serde_json::to_string(&record.network)?);
     println!(
         "overlaynet: {}",
@@ -238,18 +256,32 @@ impl InspectMount {
 }
 
 pub fn apply(args: ApplyArgs) -> anyhow::Result<()> {
+    if args.all && (!args.paths.is_empty() || !args.include.is_empty() || !args.exclude.is_empty())
+    {
+        bail!("--all cannot be combined with --path, --include, or --exclude");
+    }
+    let selection = ApplySelection {
+        paths: args.paths,
+        includes: args.include,
+        excludes: args.exclude,
+    };
     let select = SelectArgs {
         selector: args.selector,
         output_dir: args.output_dir,
     };
-    mutate(select, true, args.target.as_deref())
+    mutate(select, true, args.target.as_deref(), Some(&selection))
 }
 
 pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
-    mutate(args, false, None)
+    mutate(args, false, None, None)
 }
 
-fn mutate(args: SelectArgs, apply: bool, target: Option<&Path>) -> anyhow::Result<()> {
+fn mutate(
+    args: SelectArgs,
+    apply: bool,
+    target: Option<&Path>,
+    selection: Option<&ApplySelection>,
+) -> anyhow::Result<()> {
     let mut record = selected(args.selector.as_deref(), &args.output_dir)?;
     if is_live(&record.stage_dir())? {
         bail!(
@@ -258,6 +290,7 @@ fn mutate(args: SelectArgs, apply: bool, target: Option<&Path>) -> anyhow::Resul
             if apply { "applied" } else { "dropped" }
         );
     }
+    let _lease = RunLease::acquire(&record.stage_dir())?;
     let mut overlay = record
         .overlay
         .take()
@@ -283,7 +316,10 @@ fn mutate(args: SelectArgs, apply: bool, target: Option<&Path>) -> anyhow::Resul
             return Ok(());
         }
         (false, OverlayState::Discarded) => {
-            println!("already dropped {} (target untouched)", record.run_id);
+            println!(
+                "remaining staged changes already dropped for {}",
+                record.run_id
+            );
             return Ok(());
         }
         (false, OverlayState::Applied) => {
@@ -317,11 +353,27 @@ fn mutate(args: SelectArgs, apply: bool, target: Option<&Path>) -> anyhow::Resul
                 record.overlay_lowers.push(target);
             }
         }
-        apply_overlay(&mut overlay)?;
-        println!("applied {} → {}", record.run_id, overlay.target.display());
+        let lower_dirs = if record.overlay_lowers.is_empty() {
+            vec![overlay.target.clone()]
+        } else {
+            record.overlay_lowers.clone()
+        };
+        let outcome = apply_overlay_selected(
+            &mut overlay,
+            &lower_dirs,
+            selection.expect("apply always supplies a selection"),
+        )?;
+        println!(
+            "applied {} changes from {} → {} (apply_id={}, remaining={})",
+            outcome.applied.len(),
+            record.run_id,
+            overlay.target.display(),
+            outcome.apply_id,
+            outcome.remaining.len()
+        );
     } else {
         discard_overlay(&mut overlay)?;
-        println!("dropped {} (target untouched)", record.run_id);
+        println!("dropped remaining staged changes for {}", record.run_id);
     }
     record.overlay = Some(overlay);
     record.write()?;

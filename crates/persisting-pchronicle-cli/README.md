@@ -1,12 +1,39 @@
 # pChronicle CLI
 
-Standalone command-line interface for browsing, querying, importing, exporting,
-and serving pChronicle trajectory Datasets.
+Standalone command-line interface for onboarding, browsing, querying, importing,
+exporting, and serving pChronicle trajectory Datasets.
 
-The current implementation provides `default`, `ls`/`list`, `status`, bounded
-read-only `query`, built-in `analysis`, Source-local `find`, create-only
+The current implementation provides `onboard`, `default`, `ls`/`list`, `status`,
+bounded read-only `query`, built-in `analysis`, Source-local `find`, create-only
 `import`, complete-trajectory `export`, and loopback-only `serve`. Import and
 export support ATIF, OpenAI Messages, ACTF, and Storyline JSON.
+
+## Guided onboarding
+
+Start with the built-in deterministic ATIF example, or apply the same walkthrough
+to an existing Dataset:
+
+```bash
+pchronicle onboard
+pchronicle onboard ./my-trajectories
+pchronicle onboard query ./my-trajectories
+```
+
+The complete walkthrough covers concepts, catalog/status inspection, built-in
+analysis, schema discovery, Step and tool-call SQL, cross-format queries,
+Source-local ID lookup, an isolated local Warehouse, strict import/export, and
+the read-only server boundary. Jump directly to one section with:
+
+```text
+concepts  inspect  analyze  query  formats  find  exchange  serve
+```
+
+On a terminal, `onboard` renders its Markdown guide with terminal styling. When
+stdout is redirected or piped, it emits the original Markdown without ANSI
+escapes. `NO_COLOR` and `TERM=dumb` disable ANSI styling. The built-in example
+uses temporary ATIF, ACTF, and OpenAI Messages Datasets. The Warehouse and
+import/export exercise uses isolated settings. All are removed when the command
+exits and do not read or modify the user's default Warehouse or settings.
 
 ## Local Warehouse
 

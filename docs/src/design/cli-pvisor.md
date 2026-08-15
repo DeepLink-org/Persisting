@@ -68,7 +68,8 @@ pvisor env shell dev
 pvisor env inspect dev -- git status --short
 pvisor env stop dev
 pvisor env start dev
-pvisor env apply dev       # 提交修改并重置为空 stage
+pvisor env apply dev --path src   # 提交选中部分，其余继续 staged
+pvisor env apply dev --all        # 提交剩余修改并重置为空 stage
 pvisor env drop dev        # 丢弃修改并重置为空 stage
 pvisor env delete dev --force
 ```
@@ -265,13 +266,17 @@ Lifecycle commands accept a Run id, Run directory, project workspace,
 pvisor status /path/to/project
 pvisor inspect /path/to/project -- rg TODO .
 pvisor apply /path/to/project
+pvisor apply /path/to/project --path src --path tests/unit
+pvisor apply /path/to/project --include 'docs/**' --exclude 'docs/generated/**'
 pvisor apply /path/to/project --target /path/to/another-target
 pvisor drop /path/to/project
 ```
 
 `inspect` creates a separate kernel-read-only view. `apply` and `drop` refuse
-to mutate a live Run. They are mutually exclusive terminal decisions: repeating
-the same decision is idempotent, while `drop` cannot undo an applied Run and
-`apply` cannot recover a dropped Run. Either decision removes `upper`, `work`,
-and other disposable staging data but retains the compact Run/Overlay metadata
-and pChronicle history for status, review, and audit.
+to mutate a live Run. A filtered apply is dependency-closed and repeatable:
+unselected paths remain staged, while opaque directories and hard-link groups
+remain atomic. Each successful batch is persisted in `apply-ledger.json`.
+Applying all remaining changes or dropping the stage is terminal; `drop` cannot
+undo already applied batches, and `apply` cannot recover discarded changes.
+Terminal cleanup removes `upper`, `work`, and other disposable staging data but
+retains compact Run/Overlay metadata, the apply ledger, and pChronicle history.
