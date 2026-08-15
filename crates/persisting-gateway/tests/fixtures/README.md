@@ -36,6 +36,7 @@ fixtures/
 
 - **`.json`** / 无后缀文本：原始 wire 输入（请求或上游响应）。
 - **`.snap`**：agentgateway 用 [insta](https://github.com/mitsuhiko/insta) 生成的期望输出；YAML frontmatter（`---` … `---`）后为 JSON 或 SSE 正文。
+- 原始 SSE fixture 必须保留事件后的空行分隔符，包括文件末尾的 `\n\n`；该空行属于 wire 协议，不能作为多余尾部空白删除。
 
 ## 在本项目中的用途
 

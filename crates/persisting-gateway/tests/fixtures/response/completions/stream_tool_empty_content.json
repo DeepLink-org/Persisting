@@ -17,3 +17,4 @@ data: {"id":"chatcmpl-tool-empty-content","object":"chat.completion.chunk","crea
 data: {"id":"chatcmpl-tool-empty-content","object":"chat.completion.chunk","created":1772656915,"model":"claude-opus-4-8","service_tier":"default","system_fingerprint":null,"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}
 
 data: [DONE]
+
