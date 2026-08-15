@@ -104,7 +104,7 @@ pub async fn verify_storyline_projection(
     let source = RawEventDataSource::open_uri(source_uri.as_ref()).await?;
     let snapshot = source.fact_snapshot().clone();
     let projection = storyline_projection_status(output_uri).await?;
-    let (fresh, reason) = verify_lineage(&snapshot, projection.lineage.as_ref());
+    let (fresh, reason) = projection_lineage_freshness(&snapshot, projection.lineage.as_ref());
     Ok(StorylineProjectionVerification {
         fresh,
         reason,
@@ -140,7 +140,14 @@ pub fn canonical_projection_lineage(
     }
 }
 
-fn verify_lineage(
+pub fn projection_lineage_is_fresh(
+    snapshot: &EventFactSnapshot,
+    lineage: &StorylineProjectionLineage,
+) -> bool {
+    projection_lineage_freshness(snapshot, Some(lineage)).0
+}
+
+fn projection_lineage_freshness(
     snapshot: &EventFactSnapshot,
     lineage: Option<&StorylineProjectionLineage>,
 ) -> (bool, String) {
@@ -260,17 +267,17 @@ mod tests {
             layout_revision: 12,
         };
         let lineage = canonical_projection_lineage(&snapshot, "events.lance");
-        assert!(verify_lineage(&snapshot, Some(&lineage)).0);
+        assert!(projection_lineage_freshness(&snapshot, Some(&lineage)).0);
         let compacted = EventFactSnapshot {
             layout_revision: 13,
             ..snapshot.clone()
         };
-        assert!(verify_lineage(&compacted, Some(&lineage)).0);
+        assert!(projection_lineage_freshness(&compacted, Some(&lineage)).0);
         let appended = EventFactSnapshot {
             fact_version: 5,
             fact_rows: 10,
             ..compacted
         };
-        assert!(!verify_lineage(&appended, Some(&lineage)).0);
+        assert!(!projection_lineage_freshness(&appended, Some(&lineage)).0);
     }
 }

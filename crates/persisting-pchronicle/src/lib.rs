@@ -181,8 +181,8 @@ pub use store::{
     export_story_bundle, load_atif_trajectories, raw_event_arrow_schema, raw_event_lance_path,
     validate_event_lines, AppendOutcome, AtifDataSource, AtifDataSourceOptions, AtifReader,
     AttemptRecord, AttemptRecordState, AttemptRegistry, CatalogDataset, CatalogErrorPolicy,
-    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    CatalogTrajectoryBundle, ChronicleQueryBackend, ChronicleQueryEngine,
+    CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus,
+    CatalogStorylineKey, CatalogTrajectoryBundle, ChronicleQueryBackend, ChronicleQueryEngine,
     ChronicleQueryExecutionOptions, CommitRunOutcome, DatasetCatalogSnapshot, DatasetMount,
     DiscoveredSource, EventFactSnapshot, EventLogLayoutStats, EventRow, EventWriterFence,
     ExportOutcome, ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
@@ -211,9 +211,10 @@ pub use store::{
 pub use store::{detect_local_query_format, detect_local_query_manifest};
 #[cfg(feature = "lance-store")]
 pub use storyline_projection::{
-    build_storyline_projection, canonical_projection_lineage, storyline_projection_status,
-    verify_storyline_projection, StorylineProjectionBuildReport, StorylineProjectionStatus,
-    StorylineProjectionVerification, STORYLINE_PROJECTION_COMPLETENESS, STORYLINE_PROJECTOR_NAME,
+    build_storyline_projection, canonical_projection_lineage, projection_lineage_is_fresh,
+    storyline_projection_status, verify_storyline_projection, StorylineProjectionBuildReport,
+    StorylineProjectionStatus, StorylineProjectionVerification, STORYLINE_PROJECTION_COMPLETENESS,
+    STORYLINE_PROJECTOR_NAME,
 };
 pub use storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,

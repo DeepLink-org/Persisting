@@ -186,7 +186,14 @@ impl RawEventDataSource {
     }
 
     pub(crate) async fn pin_uri(uri: impl AsRef<str>) -> Result<RawEventSnapshot> {
-        let uri = uri.as_ref().to_string();
+        let uri = if uri.as_ref().contains("://") {
+            uri.as_ref().to_string()
+        } else {
+            std::fs::canonicalize(uri.as_ref())
+                .with_context(|| format!("canonicalize canonical event source {}", uri.as_ref()))?
+                .to_string_lossy()
+                .into_owned()
+        };
         let manifest = super::raw_event_lance::pin_visible_snapshot(&uri)
             .await?
             .with_context(|| format!("canonical event manifest does not exist at {uri}"))?;
