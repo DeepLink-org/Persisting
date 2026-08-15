@@ -250,7 +250,7 @@ impl RawEventDataSource {
     }
 
     /// Read a pinned source in manifest segment and physical append order.
-    pub(crate) async fn read_records_in_append_order(&self) -> Result<Vec<EventRecord>> {
+    pub async fn read_records_in_append_order(&self) -> Result<Vec<EventRecord>> {
         let mut records = Vec::new();
         for dataset in self.provider.datasets() {
             let mut scan = dataset.scan();

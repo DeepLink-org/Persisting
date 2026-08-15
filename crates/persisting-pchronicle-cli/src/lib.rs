@@ -16,8 +16,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_pchronicle::convert::storyline_to_atif;
 use persisting_pchronicle::{
-    actf_to_storylines, detect_format, load_atif_trajectories, parse_actf_document,
-    parse_openai_msg_corpus_value, storylines_to_actf, CatalogErrorPolicy, CatalogSnapshotOptions,
+    actf_to_storylines, build_storyline_projection, detect_format, load_atif_trajectories,
+    parse_actf_document, parse_openai_msg_corpus_value, storyline_projection_status,
+    storylines_to_actf, verify_storyline_projection, CatalogErrorPolicy, CatalogSnapshotOptions,
     CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey, ChronicleFormat,
     ChronicleQueryEngine, DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions,
     StorylineDocument, DEFAULT_DATASET_NAME,
@@ -61,6 +62,8 @@ enum Command {
     Import(ImportArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
+    /// Build and inspect the rebuildable Storyline projection.
+    Project(ProjectArgs),
     /// Run a deterministic local LLM upstream for Gateway testing.
     Echo(EchoArgs),
     /// Serve the read-only Warehouse and optionally embed the local LLM Gateway.
@@ -372,6 +375,55 @@ struct ExportArgs {
 }
 
 #[derive(Debug, Args)]
+struct ProjectArgs {
+    #[command(subcommand)]
+    command: ProjectCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectCommand {
+    /// Build a complete projection into a new, empty Storyline store.
+    Build(ProjectBuildArgs),
+    /// Show the committed projection generation and lineage.
+    Status(ProjectStatusArgs),
+    /// Compare a projection with its current canonical fact snapshot.
+    Verify(ProjectVerifyArgs),
+}
+
+#[derive(Debug, Args)]
+struct ProjectBuildArgs {
+    /// Canonical events.lance path or object-store URI.
+    #[arg(short = 'f', long = "from", value_name = "EVENTS_URI")]
+    from: String,
+
+    /// New Storyline projection root.
+    #[arg(short, long, value_name = "STORYLINE_URI")]
+    output: String,
+
+    /// Dataset-relative canonical Source name recorded in projection lineage.
+    #[arg(long, value_name = "SOURCE_FILE", default_value = "events.lance")]
+    source_file: String,
+}
+
+#[derive(Debug, Args)]
+struct ProjectStatusArgs {
+    /// Storyline projection root.
+    #[arg(short = 'f', long = "from", value_name = "STORYLINE_URI")]
+    from: String,
+}
+
+#[derive(Debug, Args)]
+struct ProjectVerifyArgs {
+    /// Storyline projection root.
+    #[arg(short = 'f', long = "from", value_name = "STORYLINE_URI")]
+    from: String,
+
+    /// Canonical events.lance path or object-store URI.
+    #[arg(long, value_name = "EVENTS_URI")]
+    source: String,
+}
+
+#[derive(Debug, Args)]
 struct ServeArgs {
     /// Static Warehouse configuration file.
     #[arg(long, value_name = "FILE")]
@@ -626,9 +678,46 @@ pub async fn run_with_stdin(
         Command::Find(args) => run_find(args, settings, stdout_is_terminal, stdout, stderr).await,
         Command::Import(args) => run_import(args, settings, stdin, stdout, stderr).await,
         Command::Export(args) => run_export(args, settings, stdout, stderr).await,
+        Command::Project(args) => run_project(args, stdout, stderr).await,
         Command::Echo(args) => run_echo(args, stderr).await,
         Command::Serve(args) => run_serve(args, stderr).await,
     }
+}
+
+async fn run_project(
+    args: ProjectArgs,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    match args.command {
+        ProjectCommand::Build(args) => {
+            let report =
+                build_storyline_projection(&args.from, &args.output, args.source_file).await?;
+            serde_json::to_writer_pretty(&mut *stdout, &report)
+                .context("encode projection build report")?;
+            writeln!(stdout).context("write projection build report")?;
+            writeln!(
+                stderr,
+                "generation={} fact_version={} fact_rows={} storylines={}",
+                report.generation, report.fact_version, report.fact_rows, report.storylines
+            )
+            .context("write projection build metadata")?;
+        }
+        ProjectCommand::Status(args) => {
+            let status = storyline_projection_status(&args.from).await?;
+            serde_json::to_writer_pretty(&mut *stdout, &status)
+                .context("encode projection status")?;
+            writeln!(stdout).context("write projection status")?;
+        }
+        ProjectCommand::Verify(args) => {
+            let verification = verify_storyline_projection(&args.source, &args.from).await?;
+            serde_json::to_writer_pretty(&mut *stdout, &verification)
+                .context("encode projection verification")?;
+            writeln!(stdout).context("write projection verification")?;
+            anyhow::ensure!(verification.fresh, "{}", verification.reason);
+        }
+    }
+    Ok(())
 }
 
 const MAX_WAREHOUSE_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -3205,7 +3294,7 @@ mod tests {
             names,
             [
                 "onboard", "default", "ls", "status", "query", "analysis", "find", "import",
-                "export", "echo", "serve",
+                "export", "project", "echo", "serve",
             ]
         );
         let ls = command

@@ -51,6 +51,8 @@ pub mod search;
 #[cfg(feature = "lance-store")]
 pub mod service;
 pub mod store;
+#[cfg(feature = "lance-store")]
+pub mod storyline_projection;
 pub mod storyline_schema;
 
 #[cfg(feature = "lance-store")]
@@ -207,6 +209,12 @@ pub use store::{
 };
 #[cfg(feature = "lance-store")]
 pub use store::{detect_local_query_format, detect_local_query_manifest};
+#[cfg(feature = "lance-store")]
+pub use storyline_projection::{
+    build_storyline_projection, canonical_projection_lineage, storyline_projection_status,
+    verify_storyline_projection, StorylineProjectionBuildReport, StorylineProjectionStatus,
+    StorylineProjectionVerification, STORYLINE_PROJECTION_COMPLETENESS, STORYLINE_PROJECTOR_NAME,
+};
 pub use storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
