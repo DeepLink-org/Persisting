@@ -1,25 +1,26 @@
 # Persisting
 
-**Agent execution, orchestration, and durable history.**
+**Virtualized Agent execution, governed effects, and durable history.**
 
-Persisting is an Agent infrastructure toolkit built from three peer products:
+Persisting turns an Agent command into a durable **Run** with an isolated
+virtual execution environment, reviewable effects, stable identity, and
+history that survives the process.
 
-- **pVisor** runs one Agent in a reviewable workspace;
-- **pPilot** plans, executes, and recovers many independent Runs;
-- **pChronicle** discovers, queries, exchanges, and serves trajectory Datasets.
+The product follows one lifecycle:
+
+1. **pVisor** creates an Agent virtual execution environment for one Run.
+2. The Agent works inside a staged boundary; the user reviews and selectively
+   accepts its effects.
+3. **pPilot** plans, executes, and recovers many independent Runs without
+   changing the Run model.
+4. **pChronicle** preserves, queries, exchanges, and serves the resulting
+   trajectory history.
 
 Gateway, Control, OverlayFS, and OverlayNet are runtime drivers assembled by
 pVisor. Queue, Search, and Tensor Memory are separate data capabilities; they
 are not dependencies of the Agent execution path.
 
-```text
-pPilot ── RunSpec ──► pVisor ── captured events ──► pChronicle
-  │                    │                              ▲
-  └──── results ───────┴──────────────────────────────┘
-                       ├─ Control
-                       ├─ OverlayFS
-                       └─ OverlayNet → Gateway
-```
+![One execution model from laptop to fleet](docs/src/assets/diagrams/persisting/execution-story.svg)
 
 ## Install
 
@@ -44,19 +45,21 @@ Source developers can install the same command set with `just install-cli`.
 See the [installation guide](https://deeplink-org.github.io/Persisting/installation/)
 for platform requirements and executor setup.
 
-## Start with the task
+## Follow the Run lifecycle
 
 ### Run and review one Agent
 
 ```bash
 pvisor run --safe codex
 pvisor review last
-pvisor apply last       # or: pvisor drop last
+pvisor apply last --path src
+pvisor apply last --include 'tests/**'
+pvisor apply last --all # or: pvisor drop last
 ```
 
 `--safe` stages workspace changes. The exact filesystem and network boundary
 is platform-dependent and is recorded in the Run Bundle; consult the
-[pVisor guide](https://deeplink-org.github.io/Persisting/guide/pvisor-execution/)
+[pVisor guide](https://deeplink-org.github.io/Persisting/pvisor/guides/execution/)
 before treating it as a security boundary.
 
 ### Orchestrate many Runs
@@ -117,12 +120,16 @@ The CLI `--help`, component READMEs, tests, and user guides describe supported
 behavior. Files under `docs/src/design/` may also contain explicitly labelled
 target architecture; RFCs preserve decisions and are not command references.
 
-## Documentation and examples
+## Documentation
 
-- [Quick Start](https://deeplink-org.github.io/Persisting/quickstart/)
-- [Choose a capability](https://deeplink-org.github.io/Persisting/guide/)
-- [pChronicle command reference](https://deeplink-org.github.io/Persisting/design/cli-pchronicle/)
-- [Architecture and maturity](https://deeplink-org.github.io/Persisting/design/)
+- [Persisting overview](https://deeplink-org.github.io/Persisting/overview/)
+- [Run your first Agent](https://deeplink-org.github.io/Persisting/pvisor/get-started/)
+- [pVisor documentation](https://deeplink-org.github.io/Persisting/pvisor/)
+- [Review and selectively apply changes](https://deeplink-org.github.io/Persisting/pvisor/guides/review-apply/)
+- [Orchestrate many Runs](https://deeplink-org.github.io/Persisting/pvisor/guides/orchestrate/)
+- [pChronicle documentation](https://deeplink-org.github.io/Persisting/pchronicle/)
+- [Explore durable history](https://deeplink-org.github.io/Persisting/pchronicle/get-started/)
+- [Project architecture](https://deeplink-org.github.io/Persisting/system-design/)
 - [Runnable examples](examples/)
 
 From a source checkout:

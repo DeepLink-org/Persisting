@@ -5,7 +5,7 @@
 | **Status** | Accepted |
 | **Date** | 2026-07-31 |
 | **Component** | `persisting-pchronicle` |
-| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0002 Events](0002-events-format.md) · [轨迹存储](../design/trajectory.md) |
+| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0002 Events](0002-events-format.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ## 摘要
 
