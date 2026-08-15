@@ -5,8 +5,8 @@
 use bytes::Bytes;
 use persisting_gateway::config::ProxyConfig;
 use persisting_gateway::conversion::{
-    completions_response_to_messages, messages_request_to_completions,
-    translate_completions_sse_to_messages, ProtocolBridge,
+    completions_response_to_messages, messages_request_to_completions, ProtocolBridge,
+    StreamTranslator,
 };
 use persisting_gateway::models_list::build_models_response;
 use persisting_gateway::protocol::ProtocolKind;
@@ -63,7 +63,15 @@ fn completions_to_messages_fixture() {
 #[test]
 fn stream_translate_fixture() {
     let raw = include_str!("fixtures/local/response/completions/stream_head.txt");
-    let out = translate_completions_sse_to_messages(raw, "claude-test").unwrap();
+    let mut translator = StreamTranslator::new(
+        ProtocolBridge::MessagesToCompletions,
+        ProtocolKind::Messages,
+        "claude-test",
+    )
+    .unwrap();
+    let mut out = translator.push_chunk(raw.as_bytes()).unwrap().to_vec();
+    out.extend_from_slice(&translator.finish_stream().unwrap());
+    let out = String::from_utf8(out).unwrap();
     assert!(out.contains("message_start"));
     assert!(out.contains("content_block_delta"));
 }

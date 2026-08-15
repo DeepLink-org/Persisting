@@ -5,7 +5,8 @@
 1. [发现并查询 Dataset](discover-and-query.md)。
 2. [导入与导出轨迹](exchange.md)。
 3. [启动本地只读 Warehouse](serve.md)。
-4. [使用 pVisor 捕获新 Run](../../pvisor/guides/capture.md)。
+4. [通过 `serve` Gateway 转发、改写并捕获请求](serve-gateway.md)。
+5. [使用 pVisor 捕获新 Run](../../pvisor/guides/capture.md)。
 
 Guide 解释决策并完成工作流；精确参数查阅 [`pchronicle` 参考](../reference/cli.md)，仓库内
 fixture 见[项目示例](../../project/examples.md)。

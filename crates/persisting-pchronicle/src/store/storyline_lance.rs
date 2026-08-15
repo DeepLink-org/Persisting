@@ -2,9 +2,9 @@
 //!
 //! `CURRENT` pins one exact MVCC version from each normalized Lance dataset and
 //! the shared content-addressed object dataset.
-//! A replacement deletes and appends rows for only the requested sessions,
-//! then moves `CURRENT` after all table versions are durable. Readers therefore
-//! never observe a partially updated Storyline.
+//! A replacement merge-upserts rows for only the requested sessions, removes
+//! obsolete keys in that session set, then moves `CURRENT` after all table
+//! versions are durable. Readers never observe a partially updated Storyline.
 //!
 //! ```text
 //! root/
@@ -28,11 +28,11 @@ use anyhow::{Context, Result};
 use fs2::FileExt;
 use futures::TryStreamExt;
 use lance::dataset::optimize::{compact_files, CompactionOptions};
-use lance::dataset::scanner::ColumnOrdering;
-use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
-use lance::deps::arrow_array::{
-    Array, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
+use lance::dataset::{
+    InsertBuilder, MergeInsertBuilder, WhenMatched, WhenNotMatched, WhenNotMatchedBySource,
+    WriteMode, WriteParams,
 };
+use lance::deps::arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use lance::deps::arrow_schema::{ArrowError, SchemaRef};
 use lance::index::DatasetIndexExt;
 use lance::io::ObjectStore;
@@ -69,8 +69,6 @@ const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
 const WRITE_BATCH_ROWS: usize = 8192;
 const STREAM_IMPORT_STORIES: usize = 256;
-pub const DEFAULT_STORYLINE_PAGE_SIZE: usize = 100;
-pub const MAX_STORYLINE_PAGE_SIZE: usize = 1_000;
 const RUN_INDEXES: [(&str, IndexType); 2] = [
     ("session_id", IndexType::BTree),
     ("run_id", IndexType::BTree),
@@ -104,64 +102,6 @@ pub struct StorylineTablePaths {
     pub steps_version: u64,
     pub tool_calls_version: u64,
     pub objects_version: u64,
-}
-
-/// Scalar-only run metadata suitable for catalog and list views.
-///
-/// This projection deliberately excludes every content-addressed column, so
-/// listing runs does not open the objects dataset or read step/tool-call rows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorylineRunSummary {
-    pub run_id: String,
-    pub session_id: String,
-    pub schema_version: String,
-    pub agent_id: String,
-    pub agent_name: Option<String>,
-    pub agent_version: Option<String>,
-    pub agent_model_name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorylineRunCursor {
-    pub generation: String,
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorylineStepCursor {
-    pub generation: String,
-    pub session_id: String,
-    pub step_id: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorylineToolCallCursor {
-    pub generation: String,
-    pub session_id: String,
-    pub step_id: i64,
-    pub call_index: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorylinePageRequest<C> {
-    pub limit: usize,
-    pub after: Option<C>,
-}
-
-impl<C> Default for StorylinePageRequest<C> {
-    fn default() -> Self {
-        Self {
-            limit: DEFAULT_STORYLINE_PAGE_SIZE,
-            after: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StorylinePage<T, C> {
-    pub generation: Option<String>,
-    pub items: Vec<T>,
-    pub next_cursor: Option<C>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -530,6 +470,7 @@ impl StorylineLanceStore {
                                 &current.runs,
                                 current.runs_version,
                                 &predicate,
+                                &["session_id"],
                                 run_batches,
                                 story_runs_arrow_schema(),
                             ),
@@ -537,6 +478,7 @@ impl StorylineLanceStore {
                                 &current.steps,
                                 current.steps_version,
                                 &predicate,
+                                &["session_id", "step_id"],
                                 step_batches,
                                 story_steps_arrow_schema(),
                             ),
@@ -544,6 +486,7 @@ impl StorylineLanceStore {
                                 &current.tool_calls,
                                 current.tool_calls_version,
                                 &predicate,
+                                &["session_id", "step_id", "call_index"],
                                 tool_call_batches,
                                 story_tool_calls_arrow_schema(),
                             ),
@@ -847,215 +790,6 @@ impl StorylineLanceStore {
             .collect()
     }
 
-    /// List scalar-only run summaries with stable, generation-pinned cursors.
-    pub async fn list_run_summaries(
-        &self,
-        request: StorylinePageRequest<StorylineRunCursor>,
-    ) -> Result<StorylinePage<StorylineRunSummary, StorylineRunCursor>> {
-        validate_page_limit(request.limit)?;
-        let Some(paths) = self.resolve_current_table_paths().await? else {
-            anyhow::ensure!(
-                request.after.is_none(),
-                "cannot continue an empty Storyline store"
-            );
-            return Ok(empty_page());
-        };
-        validate_cursor_generation(
-            request
-                .after
-                .as_ref()
-                .map(|cursor| cursor.generation.as_str()),
-            &paths.generation,
-        )?;
-        let predicate = request
-            .after
-            .as_ref()
-            .map(|cursor| format!("session_id > '{}'", sql_string(&cursor.session_id)));
-        let batches = read_ordered_page_batches(
-            &paths.runs,
-            paths.runs_version,
-            &[
-                "run_id",
-                "session_id",
-                "schema_version",
-                "agent_id",
-                "agent_name",
-                "agent_version",
-                "agent_model_name",
-            ],
-            predicate.as_deref(),
-            &["session_id"],
-            request.limit + 1,
-        )
-        .await?;
-        let mut items = decode_run_summary_batches(&batches)?;
-        items.sort_by(|left, right| left.session_id.cmp(&right.session_id));
-        ensure_unique_by(&items, |item| item.session_id.as_str(), "run session_id")?;
-        let has_more = items.len() > request.limit;
-        items.truncate(request.limit);
-        let next_cursor = has_more.then(|| StorylineRunCursor {
-            generation: paths.generation.clone(),
-            session_id: items.last().expect("non-empty page").session_id.clone(),
-        });
-        Ok(StorylinePage {
-            generation: Some(paths.generation),
-            items,
-            next_cursor,
-        })
-    }
-
-    /// Read one ordered page of complete steps. The first scan reads only step
-    /// IDs; full columns and content objects are fetched for the selected page.
-    pub async fn list_steps_page(
-        &self,
-        session_id: &str,
-        request: StorylinePageRequest<StorylineStepCursor>,
-    ) -> Result<StorylinePage<StoryStepRow, StorylineStepCursor>> {
-        validate_page_limit(request.limit)?;
-        let Some(paths) = self.resolve_current_table_paths().await? else {
-            anyhow::ensure!(
-                request.after.is_none(),
-                "cannot continue an empty Storyline store"
-            );
-            return Ok(empty_page());
-        };
-        validate_detail_cursor(
-            request
-                .after
-                .as_ref()
-                .map(|cursor| (cursor.generation.as_str(), cursor.session_id.as_str())),
-            &paths.generation,
-            session_id,
-        )?;
-        let mut predicate = session_predicate(session_id);
-        if let Some(cursor) = &request.after {
-            predicate.push_str(&format!(" AND step_id > {}", cursor.step_id));
-        }
-        let key_batches = read_ordered_page_batches(
-            &paths.steps,
-            paths.steps_version,
-            &["step_id"],
-            Some(&predicate),
-            &["step_id"],
-            request.limit + 1,
-        )
-        .await?;
-        let mut ids = decode_i64_column(&key_batches, "step_id")?;
-        ids.sort_unstable();
-        ensure_unique_values(&ids, "step_id")?;
-        let has_more = ids.len() > request.limit;
-        ids.truncate(request.limit);
-        let items = if ids.is_empty() {
-            Vec::new()
-        } else {
-            let predicate = format!(
-                "{} AND step_id IN ({})",
-                session_predicate(session_id),
-                ids.iter()
-                    .map(i64::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            let batches =
-                read_filtered_batches(&paths.steps, paths.steps_version, &predicate).await?;
-            let objects = Arc::new(open_objects(&paths.objects, paths.objects_version).await?);
-            let batches = hydrate_batches(&objects, batches, StorylineTableKind::Steps).await?;
-            let mut rows = decode_step_batches(&batches)?;
-            rows.sort_by_key(|row| row.step_id);
-            rows
-        };
-        let next_cursor = has_more.then(|| StorylineStepCursor {
-            generation: paths.generation.clone(),
-            session_id: session_id.to_string(),
-            step_id: *ids.last().expect("non-empty page"),
-        });
-        Ok(StorylinePage {
-            generation: Some(paths.generation),
-            items,
-            next_cursor,
-        })
-    }
-
-    /// Read one ordered page of complete tool calls. Blob hydration is delayed
-    /// until after `(step_id, call_index)` selects the requested page.
-    pub async fn list_tool_calls_page(
-        &self,
-        session_id: &str,
-        request: StorylinePageRequest<StorylineToolCallCursor>,
-    ) -> Result<StorylinePage<StoryToolCallRow, StorylineToolCallCursor>> {
-        validate_page_limit(request.limit)?;
-        let Some(paths) = self.resolve_current_table_paths().await? else {
-            anyhow::ensure!(
-                request.after.is_none(),
-                "cannot continue an empty Storyline store"
-            );
-            return Ok(empty_page());
-        };
-        validate_detail_cursor(
-            request
-                .after
-                .as_ref()
-                .map(|cursor| (cursor.generation.as_str(), cursor.session_id.as_str())),
-            &paths.generation,
-            session_id,
-        )?;
-        let mut predicate = session_predicate(session_id);
-        if let Some(cursor) = &request.after {
-            predicate.push_str(&format!(
-                " AND (step_id > {} OR (step_id = {} AND call_index > {}))",
-                cursor.step_id, cursor.step_id, cursor.call_index
-            ));
-        }
-        let key_batches = read_ordered_page_batches(
-            &paths.tool_calls,
-            paths.tool_calls_version,
-            &["step_id", "call_index"],
-            Some(&predicate),
-            &["step_id", "call_index"],
-            request.limit + 1,
-        )
-        .await?;
-        let mut keys = decode_i64_pair(&key_batches, "step_id", "call_index")?;
-        keys.sort_unstable();
-        ensure_unique_values(&keys, "tool-call (step_id, call_index)")?;
-        let has_more = keys.len() > request.limit;
-        keys.truncate(request.limit);
-        let items = if keys.is_empty() {
-            Vec::new()
-        } else {
-            let selected = keys
-                .iter()
-                .map(|(step_id, call_index)| {
-                    format!("(step_id = {step_id} AND call_index = {call_index})")
-                })
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            let predicate = format!("{} AND ({selected})", session_predicate(session_id));
-            let batches =
-                read_filtered_batches(&paths.tool_calls, paths.tool_calls_version, &predicate)
-                    .await?;
-            let objects = Arc::new(open_objects(&paths.objects, paths.objects_version).await?);
-            let batches = hydrate_batches(&objects, batches, StorylineTableKind::ToolCalls).await?;
-            let mut rows = decode_tool_call_batches(&batches)?;
-            rows.sort_by_key(|row| (row.step_id, row.call_index));
-            rows
-        };
-        let next_cursor = has_more.then(|| {
-            let (step_id, call_index) = *keys.last().expect("non-empty page");
-            StorylineToolCallCursor {
-                generation: paths.generation.clone(),
-                session_id: session_id.to_string(),
-                step_id,
-                call_index,
-            }
-        });
-        Ok(StorylinePage {
-            generation: Some(paths.generation),
-            items,
-            next_cursor,
-        })
-    }
-
     async fn create_initial_snapshot(
         &self,
         runs: Vec<StoryRunRow>,
@@ -1140,6 +874,7 @@ impl StorylineLanceStore {
                 &paths.runs,
                 paths.runs_version,
                 &predicate,
+                &["session_id"],
                 run_batches,
                 story_runs_arrow_schema(),
             ),
@@ -1147,6 +882,7 @@ impl StorylineLanceStore {
                 &paths.steps,
                 paths.steps_version,
                 &predicate,
+                &["session_id", "step_id"],
                 step_batches,
                 story_steps_arrow_schema(),
             ),
@@ -1154,6 +890,7 @@ impl StorylineLanceStore {
                 &paths.tool_calls,
                 paths.tool_calls_version,
                 &predicate,
+                &["session_id", "step_id", "call_index"],
                 tool_call_batches,
                 story_tool_calls_arrow_schema(),
             ),
@@ -1521,6 +1258,7 @@ async fn replace_table_batches(
     path: &Path,
     snapshot_version: u64,
     predicate: &str,
+    merge_keys: &[&str],
     batches: Vec<RecordBatch>,
     schema: SchemaRef,
 ) -> Result<u64> {
@@ -1535,20 +1273,32 @@ async fn replace_table_batches(
             )
         })?;
     }
-    dataset
-        .delete(predicate)
-        .await
-        .with_context(|| format!("replace rows in Storyline table {}", path.display()))?;
     let has_rows = batches.iter().any(|batch| batch.num_rows() > 0);
     if has_rows {
-        dataset = InsertBuilder::new(Arc::new(dataset))
-            .with_params(&WriteParams {
-                mode: WriteMode::Append,
-                ..Default::default()
-            })
-            .execute_stream(batch_reader(batches, schema))
+        let delete_missing =
+            WhenNotMatchedBySource::delete_if(&dataset, predicate).with_context(|| {
+                format!("build Storyline replacement filter for {}", path.display())
+            })?;
+        let mut merge = MergeInsertBuilder::try_new(
+            Arc::new(dataset),
+            merge_keys.iter().map(|key| (*key).to_string()).collect(),
+        )?;
+        merge
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(WhenNotMatched::InsertAll)
+            .when_not_matched_by_source(delete_missing);
+        let (updated, _) = merge
+            .try_build()?
+            .execute_reader(batch_reader(batches, schema))
             .await
-            .with_context(|| format!("append replacement rows to {}", path.display()))?;
+            .with_context(|| format!("merge replacement rows into {}", path.display()))?;
+        return Ok(updated.version_id());
+    } else {
+        // An empty source still means "remove this session's former rows".
+        dataset
+            .delete(predicate)
+            .await
+            .with_context(|| format!("delete empty Storyline region from {}", path.display()))?;
     }
     Ok(dataset.version_id())
 }
@@ -1731,28 +1481,6 @@ async fn read_projected_batches(
     projection: &[&str],
     predicate: Option<&str>,
 ) -> Result<Vec<RecordBatch>> {
-    read_scan_batches(path, version, projection, predicate, &[], None).await
-}
-
-async fn read_ordered_page_batches(
-    path: &Path,
-    version: u64,
-    projection: &[&str],
-    predicate: Option<&str>,
-    ordering: &[&str],
-    limit: usize,
-) -> Result<Vec<RecordBatch>> {
-    read_scan_batches(path, version, projection, predicate, ordering, Some(limit)).await
-}
-
-async fn read_scan_batches(
-    path: &Path,
-    version: u64,
-    projection: &[&str],
-    predicate: Option<&str>,
-    ordering: &[&str],
-    limit: Option<usize>,
-) -> Result<Vec<RecordBatch>> {
     let dataset = open_table_version(path, version).await?;
     let mut scan = dataset.scan();
     if !projection.is_empty() {
@@ -1763,19 +1491,6 @@ async fn read_scan_batches(
         scan.filter(predicate)
             .with_context(|| format!("filter Storyline Lance table {}", path.display()))?;
         scan.use_scalar_index(true);
-    }
-    if !ordering.is_empty() {
-        scan.order_by(Some(
-            ordering
-                .iter()
-                .map(|column| ColumnOrdering::asc_nulls_first((*column).to_string()))
-                .collect(),
-        ))
-        .with_context(|| format!("order Storyline Lance table {}", path.display()))?;
-    }
-    if let Some(limit) = limit {
-        scan.limit(Some(i64::try_from(limit)?), None)
-            .with_context(|| format!("limit Storyline Lance table {}", path.display()))?;
     }
     scan.try_into_stream()
         .await
@@ -1791,14 +1506,6 @@ async fn read_filtered_batches(
     predicate: &str,
 ) -> Result<Vec<RecordBatch>> {
     read_projected_batches(path, version, &[], Some(predicate)).await
-}
-
-fn session_predicate(session_id: &str) -> String {
-    format!("session_id = '{}'", sql_string(session_id))
-}
-
-fn sql_string(value: &str) -> String {
-    value.replace('\'', "''")
 }
 
 fn session_set_predicate(session_ids: &HashSet<String>) -> String {
@@ -1818,128 +1525,6 @@ fn decode_run_batches(batches: &[RecordBatch]) -> Result<Vec<StoryRunRow>> {
         .into_iter()
         .flatten()
         .collect())
-}
-
-fn decode_run_summary_batches(batches: &[RecordBatch]) -> Result<Vec<StorylineRunSummary>> {
-    let mut summaries = Vec::new();
-    for batch in batches {
-        for row in 0..batch.num_rows() {
-            summaries.push(StorylineRunSummary {
-                run_id: required_string_column(batch, "run_id", row)?,
-                session_id: required_string_column(batch, "session_id", row)?,
-                schema_version: required_string_column(batch, "schema_version", row)?,
-                agent_id: required_string_column(batch, "agent_id", row)?,
-                agent_name: optional_string_column(batch, "agent_name", row)?,
-                agent_version: optional_string_column(batch, "agent_version", row)?,
-                agent_model_name: optional_string_column(batch, "agent_model_name", row)?,
-            });
-        }
-    }
-    Ok(summaries)
-}
-
-fn optional_string_column(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<String>> {
-    let column = batch
-        .column_by_name(name)
-        .ok_or_else(|| anyhow::anyhow!("batch missing column '{name}'"))?;
-    let array = column
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| anyhow::anyhow!("expected Utf8 column '{name}'"))?;
-    Ok((!array.is_null(row)).then(|| array.value(row).to_string()))
-}
-
-fn required_string_column(batch: &RecordBatch, name: &str, row: usize) -> Result<String> {
-    optional_string_column(batch, name, row)?
-        .ok_or_else(|| anyhow::anyhow!("null required column '{name}'"))
-}
-
-fn decode_i64_column(batches: &[RecordBatch], name: &str) -> Result<Vec<i64>> {
-    let mut values = Vec::new();
-    for batch in batches {
-        let column = batch
-            .column_by_name(name)
-            .ok_or_else(|| anyhow::anyhow!("batch missing column '{name}'"))?;
-        let array = column
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .ok_or_else(|| anyhow::anyhow!("expected Int64 column '{name}'"))?;
-        for row in 0..batch.num_rows() {
-            anyhow::ensure!(!array.is_null(row), "null required column '{name}'");
-            values.push(array.value(row));
-        }
-    }
-    Ok(values)
-}
-
-fn decode_i64_pair(batches: &[RecordBatch], first: &str, second: &str) -> Result<Vec<(i64, i64)>> {
-    let mut values = Vec::new();
-    for batch in batches {
-        let first_values = decode_i64_column(std::slice::from_ref(batch), first)?;
-        let second_values = decode_i64_column(std::slice::from_ref(batch), second)?;
-        values.extend(first_values.into_iter().zip(second_values));
-    }
-    Ok(values)
-}
-
-fn validate_page_limit(limit: usize) -> Result<()> {
-    anyhow::ensure!(limit > 0, "Storyline page limit must be greater than zero");
-    anyhow::ensure!(
-        limit <= MAX_STORYLINE_PAGE_SIZE,
-        "Storyline page limit {limit} exceeds maximum {MAX_STORYLINE_PAGE_SIZE}"
-    );
-    Ok(())
-}
-
-fn validate_cursor_generation(cursor: Option<&str>, generation: &str) -> Result<()> {
-    if let Some(cursor) = cursor {
-        anyhow::ensure!(
-            cursor == generation,
-            "Storyline changed while paging: cursor generation '{cursor}', current generation '{generation}'; restart pagination"
-        );
-    }
-    Ok(())
-}
-
-fn validate_detail_cursor(
-    cursor: Option<(&str, &str)>,
-    generation: &str,
-    session_id: &str,
-) -> Result<()> {
-    if let Some((cursor_generation, cursor_session_id)) = cursor {
-        validate_cursor_generation(Some(cursor_generation), generation)?;
-        anyhow::ensure!(
-            cursor_session_id == session_id,
-            "Storyline cursor belongs to session '{cursor_session_id}', not '{session_id}'"
-        );
-    }
-    Ok(())
-}
-
-fn ensure_unique_by<'a, T>(
-    items: &'a [T],
-    key: impl Fn(&'a T) -> &'a str,
-    label: &str,
-) -> Result<()> {
-    for pair in items.windows(2) {
-        anyhow::ensure!(key(&pair[0]) != key(&pair[1]), "duplicate {label}");
-    }
-    Ok(())
-}
-
-fn ensure_unique_values<T: PartialEq>(items: &[T], label: &str) -> Result<()> {
-    for pair in items.windows(2) {
-        anyhow::ensure!(pair[0] != pair[1], "duplicate {label}");
-    }
-    Ok(())
-}
-
-fn empty_page<T, C>() -> StorylinePage<T, C> {
-    StorylinePage {
-        generation: None,
-        items: Vec::new(),
-        next_cursor: None,
-    }
 }
 
 fn decode_step_batches(batches: &[RecordBatch]) -> Result<Vec<StoryStepRow>> {
@@ -2341,172 +1926,7 @@ mod tests {
         updated.notes = Some("updated".into());
         updated.turns.truncate(1);
         store.replace_storyline(&updated).await.unwrap();
-        assert_eq!(
-            store
-                .list_run_summaries(Default::default())
-                .await
-                .unwrap()
-                .items
-                .len(),
-            2
-        );
-        assert_eq!(
-            store
-                .list_steps_page("a", Default::default())
-                .await
-                .unwrap()
-                .items
-                .len(),
-            1
-        );
-        assert!(store
-            .list_tool_calls_page("a", Default::default())
-            .await
-            .unwrap()
-            .items
-            .is_empty());
         assert_eq!(store.get_storyline_full("a").await.unwrap(), Some(updated));
-    }
-
-    #[tokio::test]
-    async fn run_summary_pages_are_projected_and_generation_pinned() {
-        let dir = tempfile::tempdir().unwrap();
-        let options = StorylineContentOptions {
-            offload_threshold: 8,
-            ..Default::default()
-        };
-        let store = StorylineLanceStore::open_with_content_options(dir.path(), options)
-            .await
-            .unwrap();
-        let mut alpha = story("alpha");
-        alpha.notes = Some("offloaded run notes".repeat(32));
-        store
-            .replace_storylines(&[story("charlie"), alpha, story("bravo")])
-            .await
-            .unwrap();
-        let paths = store.resolve_current_table_paths().await.unwrap().unwrap();
-        tokio::fs::remove_dir_all(&paths.steps).await.unwrap();
-        tokio::fs::remove_dir_all(&paths.tool_calls).await.unwrap();
-        tokio::fs::remove_dir_all(&paths.objects).await.unwrap();
-
-        let first = store
-            .list_run_summaries(StorylinePageRequest {
-                limit: 2,
-                after: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            first
-                .items
-                .iter()
-                .map(|run| run.session_id.as_str())
-                .collect::<Vec<_>>(),
-            ["alpha", "bravo"]
-        );
-        let second = store
-            .list_run_summaries(StorylinePageRequest {
-                limit: 2,
-                after: first.next_cursor,
-            })
-            .await
-            .unwrap();
-        assert_eq!(second.items[0].session_id, "charlie");
-        assert!(second.next_cursor.is_none());
-    }
-
-    #[tokio::test]
-    async fn detail_pages_hydrate_only_selected_rows_and_reject_stale_cursors() {
-        let dir = tempfile::tempdir().unwrap();
-        let options = StorylineContentOptions {
-            offload_threshold: 8,
-            ..Default::default()
-        };
-        let store = StorylineLanceStore::open_with_content_options(dir.path(), options)
-            .await
-            .unwrap();
-        let mut document = story("paged");
-        for id in 3..=5 {
-            let mut turn = document.turns[1].clone();
-            turn.id = id;
-            turn.message = serde_json::json!(format!("large message {id} {}", "x".repeat(64)));
-            let call = turn.tool_calls.as_mut().unwrap().first_mut().unwrap();
-            call.tool_call_id = format!("call-{id}");
-            turn.observation = Some(serde_json::json!({
-                "results": [{"source_call_id": format!("call-{id}"), "content": "result"}]
-            }));
-            document.turns.push(turn);
-        }
-        store.replace_storyline(&document).await.unwrap();
-
-        let first_steps = store
-            .list_steps_page(
-                "paged",
-                StorylinePageRequest {
-                    limit: 2,
-                    after: None,
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            first_steps
-                .items
-                .iter()
-                .map(|step| step.step_id)
-                .collect::<Vec<_>>(),
-            [1, 2]
-        );
-        let second_steps = store
-            .list_steps_page(
-                "paged",
-                StorylinePageRequest {
-                    limit: 2,
-                    after: first_steps.next_cursor.clone(),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            second_steps
-                .items
-                .iter()
-                .map(|step| step.step_id)
-                .collect::<Vec<_>>(),
-            [3, 4]
-        );
-
-        let first_calls = store
-            .list_tool_calls_page(
-                "paged",
-                StorylinePageRequest {
-                    limit: 2,
-                    after: None,
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            first_calls
-                .items
-                .iter()
-                .map(|call| call.step_id)
-                .collect::<Vec<_>>(),
-            [2, 3]
-        );
-
-        store.replace_storyline(&story("other")).await.unwrap();
-        let stale = store
-            .list_steps_page(
-                "paged",
-                StorylinePageRequest {
-                    limit: 2,
-                    after: first_steps.next_cursor,
-                },
-            )
-            .await
-            .unwrap_err();
-        assert!(stale.to_string().contains("changed while paging"));
     }
 
     #[tokio::test]
@@ -2521,15 +1941,8 @@ mod tests {
             .unwrap()
             .unwrap()
             .generation;
-        assert_eq!(
-            store
-                .list_run_summaries(Default::default())
-                .await
-                .unwrap()
-                .items
-                .len(),
-            2
-        );
+        assert!(store.get_storyline_full("a").await.unwrap().is_some());
+        assert!(store.get_storyline_full("b").await.unwrap().is_some());
 
         let duplicate = vec![story("same"), story("same")];
         assert!(store.replace_storylines(&duplicate).await.is_err());
@@ -2578,26 +1991,16 @@ mod tests {
         assert_eq!(report.steps, 600);
         assert_eq!(report.tool_calls, 300);
         assert!(!report.generation.is_empty());
+        let current = store.current_table_paths().await.unwrap().unwrap();
+        assert_eq!(current.generation, report.generation);
         assert_eq!(
-            store
-                .list_run_summaries(StorylinePageRequest {
-                    limit: 300,
-                    after: None,
-                })
+            open_table_version(&current.runs, current.runs_version)
                 .await
                 .unwrap()
-                .items
-                .len(),
+                .count_rows(None)
+                .await
+                .unwrap(),
             300
-        );
-        assert_eq!(
-            store
-                .current_table_paths()
-                .await
-                .unwrap()
-                .unwrap()
-                .generation,
-            report.generation
         );
     }
 
@@ -2632,11 +2035,13 @@ mod tests {
             .unwrap();
         assert_eq!(report.tool_calls, 0);
         assert!(empty_tools_store
-            .list_tool_calls_page("fixture-dialogue_10", Default::default())
+            .get_storyline_full("fixture-dialogue_10")
             .await
             .unwrap()
-            .items
-            .is_empty());
+            .unwrap()
+            .turns
+            .iter()
+            .all(|turn| turn.tool_calls.as_ref().is_none_or(Vec::is_empty)));
     }
 
     #[tokio::test]
@@ -2652,15 +2057,6 @@ mod tests {
         assert!(error.to_string().contains("broken stream"));
         let after = store.current_table_paths().await.unwrap().unwrap();
         assert_eq!(before.generation, after.generation);
-        assert_eq!(
-            store
-                .list_run_summaries(Default::default())
-                .await
-                .unwrap()
-                .items
-                .len(),
-            1
-        );
         assert!(store
             .get_storyline_full("committed")
             .await
@@ -2740,24 +2136,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = StorylineLanceStore::open(dir.path()).await.unwrap();
         assert!(store.current_table_paths().await.unwrap().is_none());
-        assert!(store
-            .list_run_summaries(Default::default())
-            .await
-            .unwrap()
-            .items
-            .is_empty());
-        assert!(store
-            .list_steps_page("missing", Default::default())
-            .await
-            .unwrap()
-            .items
-            .is_empty());
-        assert!(store
-            .list_tool_calls_page("missing", Default::default())
-            .await
-            .unwrap()
-            .items
-            .is_empty());
         assert!(store.get_storyline_full("missing").await.unwrap().is_none());
 
         store.replace_storylines(&[]).await.unwrap();
@@ -2852,12 +2230,7 @@ mod tests {
         left.replace_storyline(&story("left")).await.unwrap();
         assert!(left.get_storyline_full("left").await.unwrap().is_some());
         assert!(right.current_table_paths().await.unwrap().is_none());
-        assert!(right
-            .list_run_summaries(Default::default())
-            .await
-            .unwrap()
-            .items
-            .is_empty());
+        assert!(right.get_storyline_full("left").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2881,21 +2254,17 @@ mod tests {
         }
 
         let reopened = StorylineLanceStore::open_uri(&uri).await.unwrap();
-        let mut sessions = reopened
-            .list_run_summaries(Default::default())
+        let expected = (0..6)
+            .map(|index| format!("session-{index}"))
+            .collect::<Vec<_>>();
+        let sessions = reopened
+            .get_storylines_full(&expected)
             .await
             .unwrap()
-            .items
             .into_iter()
-            .map(|run| run.session_id)
+            .map(|story| story.unwrap().session_id)
             .collect::<Vec<_>>();
-        sessions.sort();
-        assert_eq!(
-            sessions,
-            (0..6)
-                .map(|index| format!("session-{index}"))
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(sessions, expected);
     }
 
     #[tokio::test]

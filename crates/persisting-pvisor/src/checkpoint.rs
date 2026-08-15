@@ -256,6 +256,7 @@ mod tests {
             resource_limits: Default::default(),
             overlay: Some(OverlayRecord {
                 id: "run-source".into(),
+                generation: 0,
                 target: target.clone(),
                 upper: OverlayUpper::Directory {
                     upper_dir: upper,

@@ -103,14 +103,14 @@ pub fn assert_messages_response_eq(actual: &Value, expected: &Value, context: &s
 /// Feed full upstream OpenAI SSE fixture through a translator callback.
 pub fn translate_openai_sse_fixture<F>(relative: &str, mut translate: F) -> String
 where
-    F: FnMut(&[u8]) -> anyhow::Result<String>,
+    F: FnMut(&[u8]) -> anyhow::Result<bytes::Bytes>,
 {
     let raw = read_fixture(relative);
-    let mut out = String::new();
+    let mut out = Vec::new();
     for chunk in raw.as_bytes().chunks(512) {
-        out.push_str(&translate(chunk).expect("translate SSE chunk"));
+        out.extend_from_slice(&translate(chunk).expect("translate SSE chunk"));
     }
-    out
+    String::from_utf8(out).expect("translated SSE must be UTF-8")
 }
 
 pub fn sse_event_names(sse: &str) -> Vec<&str> {

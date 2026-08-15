@@ -6717,6 +6717,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "blake3",
  "bytes",
  "chrono",
@@ -6818,6 +6819,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
  "zstd",
 ]

@@ -70,6 +70,10 @@ pub enum OverlayError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayRecord {
     pub id: String,
+    /// Monotonic reusable-environment generation. Terminal overlays are never
+    /// reopened; a reset creates the next generation over the same stage.
+    #[serde(default)]
+    pub generation: u64,
     /// Target filesystem (apply destination + primary lower).
     pub target: PathBuf,
     pub upper: OverlayUpper,
@@ -190,10 +194,31 @@ pub struct ApplyRecord {
     pub apply_id: String,
     pub created_at_unix_ms: u64,
     pub overlay_id: String,
+    #[serde(default)]
+    pub overlay_generation: u64,
     pub target: PathBuf,
     pub selection: ApplySelection,
     pub changes: Vec<ChangeEntry>,
+    /// Exact dependency-closed paths selected by the prepared transaction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned_paths: Vec<PathBuf>,
+    /// Old ledgers contain only successful records and therefore deserialize
+    /// as committed.
+    #[serde(default = "committed_apply_state")]
+    pub state: ApplyRecordState,
     pub remaining_changes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyRecordState {
+    Prepared,
+    TargetApplied,
+    Committed,
+}
+
+fn committed_apply_state() -> ApplyRecordState {
+    ApplyRecordState::Committed
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,6 +463,7 @@ pub fn resolve_overlay_workspace(
 
     Ok(Some(OverlayRecord {
         id: session_id.to_string(),
+        generation: 0,
         target,
         upper,
         merged_dir: merged,
@@ -1070,6 +1096,13 @@ pub fn apply_overlay_selected(
     lower_dirs: &[PathBuf],
     selection: &ApplySelection,
 ) -> Result<ApplyOutcome, OverlayError> {
+    if record.protect_target {
+        return Err(OverlayError::Apply(format!(
+            "target is an immutable image rootfs: {}",
+            record.target.display()
+        )));
+    }
+    recover_pending_applies(record, lower_dirs)?;
     match record.state {
         OverlayState::Applied if selection.is_all() => {
             return Ok(ApplyOutcome {
@@ -1092,18 +1125,104 @@ pub fn apply_overlay_selected(
         }
         OverlayState::Active | OverlayState::Staged => {}
     }
-    if record.protect_target {
-        return Err(OverlayError::Apply(format!(
-            "target is an immutable image rootfs: {}",
-            record.target.display()
-        )));
-    }
-
     let plan = plan_overlay_apply(record, lower_dirs, selection)?;
+    let apply_id = uuid::Uuid::new_v4().to_string();
+    append_apply_record(
+        record,
+        ApplyRecord {
+            schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+            apply_id: apply_id.clone(),
+            created_at_unix_ms: crate::util::unix_now_ms(),
+            overlay_id: record.id.clone(),
+            overlay_generation: record.generation,
+            target: record.target.clone(),
+            selection: selection.clone(),
+            changes: plan.selected.clone(),
+            planned_paths: plan.selected_paths.iter().cloned().collect(),
+            state: ApplyRecordState::Prepared,
+            remaining_changes: 0,
+        },
+    )?;
+    apply_prepared_target(record, &plan.selected_paths)?;
+    mark_apply_target_applied(record, &apply_id)?;
+    let remaining = complete_target_applied(record, lower_dirs, &plan.selected_paths)?;
+    mark_apply_committed(record, &apply_id, remaining.len())?;
+    Ok(ApplyOutcome {
+        apply_id,
+        applied: plan.selected,
+        remaining,
+    })
+}
+
+/// Complete any transaction whose durable intent was written before a crash.
+/// `TargetApplied` is persisted before pruning starts, so recovery never tries
+/// to reinterpret a partially-pruned opaque upper as a fresh target mutation.
+pub fn recover_pending_applies(
+    record: &mut OverlayRecord,
+    lower_dirs: &[PathBuf],
+) -> Result<Vec<String>, OverlayError> {
+    let pending = load_apply_records(&record.stage_dir)?
+        .into_iter()
+        .filter(|apply| apply.state != ApplyRecordState::Committed)
+        .collect::<Vec<_>>();
+    let mut recovered = Vec::with_capacity(pending.len());
+    for apply in pending {
+        if apply.overlay_id != record.id
+            || apply.overlay_generation != record.generation
+            || apply.target != record.target
+        {
+            return Err(OverlayError::InvalidState(format!(
+                "prepared apply {} belongs to overlay {} generation {} target {}, not overlay {} generation {} target {}",
+                apply.apply_id,
+                apply.overlay_id,
+                apply.overlay_generation,
+                apply.target.display(),
+                record.id,
+                record.generation,
+                record.target.display()
+            )));
+        }
+        let selected_paths = apply
+            .planned_paths
+            .iter()
+            .map(|path| normalize_selection_path(path))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        if selected_paths.is_empty() && !apply.changes.is_empty() {
+            return Err(OverlayError::InvalidState(format!(
+                "prepared apply {} has changes but no recovery paths",
+                apply.apply_id
+            )));
+        }
+        if apply.state == ApplyRecordState::Prepared {
+            apply_prepared_target(record, &selected_paths)?;
+            mark_apply_target_applied(record, &apply.apply_id)?;
+        }
+        let remaining = complete_target_applied(record, lower_dirs, &selected_paths)?;
+        mark_apply_committed(record, &apply.apply_id, remaining.len())?;
+        recovered.push(apply.apply_id);
+    }
+    Ok(recovered)
+}
+
+fn apply_prepared_target(
+    record: &OverlayRecord,
+    selected_paths: &BTreeSet<PathBuf>,
+) -> Result<(), OverlayError> {
+    let upper_dir = record.upper.path();
+    if upper_dir.is_dir() && !selected_paths.is_empty() {
+        apply_selected_upper(upper_dir, &record.target, selected_paths)?;
+    }
+    Ok(())
+}
+
+fn complete_target_applied(
+    record: &mut OverlayRecord,
+    lower_dirs: &[PathBuf],
+    selected_paths: &BTreeSet<PathBuf>,
+) -> Result<Vec<ChangeEntry>, OverlayError> {
     let upper_dir = record.upper.path().to_path_buf();
-    if upper_dir.is_dir() && !plan.selected.is_empty() {
-        apply_selected_upper(&upper_dir, &record.target, &plan.selected_paths)?;
-        prune_selected_upper(&upper_dir, &plan.selected_paths)?;
+    if upper_dir.is_dir() && !selected_paths.is_empty() {
+        prune_selected_upper(&upper_dir, selected_paths)?;
     }
 
     if let OverlayUpper::Jujutsu {
@@ -1124,26 +1243,7 @@ pub fn apply_overlay_selected(
         record.state = OverlayState::Staged;
     }
     write_overlay_record(record)?;
-
-    let apply_id = uuid::Uuid::new_v4().to_string();
-    append_apply_record(
-        record,
-        ApplyRecord {
-            schema_version: APPLY_LEDGER_SCHEMA_VERSION,
-            apply_id: apply_id.clone(),
-            created_at_unix_ms: crate::util::unix_now_ms(),
-            overlay_id: record.id.clone(),
-            target: record.target.clone(),
-            selection: selection.clone(),
-            changes: plan.selected.clone(),
-            remaining_changes: remaining.len(),
-        },
-    )?;
-    Ok(ApplyOutcome {
-        apply_id,
-        applied: plan.selected,
-        remaining,
-    })
+    Ok(remaining)
 }
 
 /// Merge the complete staging upper onto `target`.
@@ -1378,6 +1478,51 @@ fn append_apply_record(
         records: load_apply_records(&overlay.stage_dir)?,
     };
     ledger.records.push(apply_record);
+    let path = apply_ledger_path(&overlay.stage_dir);
+    let body = serde_json::to_vec_pretty(&ledger)
+        .map_err(|error| OverlayError::Persist(format!("serialize apply ledger: {error}")))?;
+    atomic_write(&path, &body, 0o600)
+        .map_err(|error| OverlayError::Persist(format!("{}: {error:#}", path.display())))
+}
+
+fn mark_apply_committed(
+    overlay: &OverlayRecord,
+    apply_id: &str,
+    remaining_changes: usize,
+) -> Result<(), OverlayError> {
+    update_apply_state(
+        overlay,
+        apply_id,
+        ApplyRecordState::Committed,
+        Some(remaining_changes),
+    )
+}
+
+fn mark_apply_target_applied(overlay: &OverlayRecord, apply_id: &str) -> Result<(), OverlayError> {
+    update_apply_state(overlay, apply_id, ApplyRecordState::TargetApplied, None)
+}
+
+fn update_apply_state(
+    overlay: &OverlayRecord,
+    apply_id: &str,
+    state: ApplyRecordState,
+    remaining_changes: Option<usize>,
+) -> Result<(), OverlayError> {
+    let mut ledger = ApplyLedger {
+        schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+        records: load_apply_records(&overlay.stage_dir)?,
+    };
+    let record = ledger
+        .records
+        .iter_mut()
+        .find(|record| record.apply_id == apply_id)
+        .ok_or_else(|| {
+            OverlayError::Persist(format!("prepared apply {apply_id} disappeared from ledger"))
+        })?;
+    record.state = state;
+    if let Some(remaining_changes) = remaining_changes {
+        record.remaining_changes = remaining_changes;
+    }
     let path = apply_ledger_path(&overlay.stage_dir);
     let body = serde_json::to_vec_pretty(&ledger)
         .map_err(|error| OverlayError::Persist(format!("serialize apply ledger: {error}")))?;
@@ -2023,6 +2168,7 @@ mod tests {
         fs::create_dir_all(&lower).unwrap();
         let record = OverlayRecord {
             id: "mountless".into(),
+            generation: 0,
             target: lower.clone(),
             upper: OverlayUpper::Directory {
                 upper_dir: stage.join("upper"),
@@ -2115,6 +2261,7 @@ mod tests {
         fs::write(lower.join("deleted-file"), b"delete me").unwrap();
         let record = OverlayRecord {
             id: "embedded-e2e".into(),
+            generation: 0,
             target: lower.clone(),
             upper: OverlayUpper::Directory {
                 upper_dir: upper.clone(),
@@ -2190,6 +2337,7 @@ mod tests {
         fs::write(work.join("scratch"), b"temporary").unwrap();
         let mut rec = OverlayRecord {
             id: "t".into(),
+            generation: 0,
             target: target.clone(),
             upper: OverlayUpper::Directory {
                 upper_dir: upper.clone(),
@@ -2234,6 +2382,7 @@ mod tests {
         fs::write(upper.join("src/b.txt"), b"new-b").unwrap();
         fs::write(upper.join(".wh.gone.txt"), b"").unwrap();
         let mut record = OverlayRecord {
+            generation: 0,
             id: "selective".into(),
             target: target.clone(),
             upper: OverlayUpper::Directory {
@@ -2297,8 +2446,164 @@ mod tests {
 
         let ledger = load_apply_records(&stage).unwrap();
         assert_eq!(ledger.len(), 3);
+        assert!(ledger
+            .iter()
+            .all(|record| record.state == ApplyRecordState::Committed));
         assert_eq!(ledger[0].remaining_changes, first.remaining.len());
         assert_eq!(ledger[2].remaining_changes, 0);
+    }
+
+    #[test]
+    fn prepared_apply_recovers_before_or_after_target_mutation() {
+        for target_already_mutated in [false, true] {
+            let tmp = tempdir().unwrap();
+            let target = tmp.path().join("target");
+            let stage = tmp.path().join("stage");
+            let upper = stage.join("upper");
+            fs::create_dir_all(&target).unwrap();
+            fs::create_dir_all(&upper).unwrap();
+            fs::write(target.join("value.txt"), b"old").unwrap();
+            fs::write(upper.join("value.txt"), b"new").unwrap();
+            let mut record = OverlayRecord {
+                generation: 0,
+                id: format!("recover-{target_already_mutated}"),
+                target: target.clone(),
+                upper: OverlayUpper::Directory {
+                    upper_dir: upper.clone(),
+                    work_dir: stage.join("work"),
+                },
+                merged_dir: stage.join("merged"),
+                stage_dir: stage.clone(),
+                excluded_paths: Vec::new(),
+                auto_apply: false,
+                auto_discard: false,
+                protect_target: false,
+                state: OverlayState::Staged,
+            };
+            let selection = ApplySelection::default();
+            let plan =
+                plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();
+            let apply_id = format!("prepared-{target_already_mutated}");
+            append_apply_record(
+                &record,
+                ApplyRecord {
+                    schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+                    apply_id: apply_id.clone(),
+                    created_at_unix_ms: crate::util::unix_now_ms(),
+                    overlay_id: record.id.clone(),
+                    overlay_generation: record.generation,
+                    target: target.clone(),
+                    selection,
+                    changes: plan.selected.clone(),
+                    planned_paths: plan.selected_paths.iter().cloned().collect(),
+                    state: ApplyRecordState::Prepared,
+                    remaining_changes: 0,
+                },
+            )
+            .unwrap();
+
+            let mut next_generation = record.clone();
+            next_generation.generation += 1;
+            let stale =
+                recover_pending_applies(&mut next_generation, std::slice::from_ref(&target))
+                    .unwrap_err();
+            assert!(stale.to_string().contains("generation"));
+
+            if target_already_mutated {
+                apply_selected_upper(&upper, &target, &plan.selected_paths).unwrap();
+                assert_eq!(fs::read(target.join("value.txt")).unwrap(), b"new");
+                assert!(upper.join("value.txt").is_file());
+            }
+
+            assert_eq!(
+                recover_pending_applies(&mut record, std::slice::from_ref(&target)).unwrap(),
+                vec![apply_id.clone()]
+            );
+            assert_eq!(fs::read(target.join("value.txt")).unwrap(), b"new");
+            assert_eq!(record.state, OverlayState::Applied);
+            assert!(!upper.exists());
+            let ledger = load_apply_records(&stage).unwrap();
+            assert_eq!(ledger.len(), 1);
+            assert_eq!(ledger[0].apply_id, apply_id);
+            assert_eq!(ledger[0].state, ApplyRecordState::Committed);
+            assert_eq!(ledger[0].remaining_changes, 0);
+        }
+    }
+
+    #[test]
+    fn target_applied_recovery_only_finishes_partially_pruned_opaque_upper() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let stage = tmp.path().join("stage");
+        let upper = stage.join("upper");
+        fs::create_dir_all(target.join("replaced")).unwrap();
+        fs::create_dir_all(upper.join("replaced")).unwrap();
+        fs::write(target.join("replaced/old"), b"old").unwrap();
+        fs::write(upper.join("replaced").join(OPAQUE_WHITEOUT), b"").unwrap();
+        fs::write(upper.join("replaced/new"), b"new").unwrap();
+        let mut record = OverlayRecord {
+            generation: 0,
+            id: "opaque-recovery".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper.clone(),
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage.clone(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        let selection = ApplySelection {
+            paths: vec!["replaced".into()],
+            ..ApplySelection::default()
+        };
+        let plan = plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();
+        let apply_id = "opaque-partial-prune".to_string();
+        append_apply_record(
+            &record,
+            ApplyRecord {
+                schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+                apply_id: apply_id.clone(),
+                created_at_unix_ms: crate::util::unix_now_ms(),
+                overlay_id: record.id.clone(),
+                overlay_generation: record.generation,
+                target: target.clone(),
+                selection,
+                changes: plan.selected,
+                planned_paths: plan.selected_paths.iter().cloned().collect(),
+                state: ApplyRecordState::Prepared,
+                remaining_changes: 0,
+            },
+        )
+        .unwrap();
+
+        apply_prepared_target(&record, &plan.selected_paths).unwrap();
+        mark_apply_target_applied(&record, &apply_id).unwrap();
+        assert!(!target.join("replaced/old").exists());
+        assert_eq!(fs::read(target.join("replaced/new")).unwrap(), b"new");
+
+        // Simulate a crash after opaque metadata was pruned but before the
+        // selected upper entries and ledger were finalized.
+        fs::remove_file(upper.join("replaced").join(OPAQUE_WHITEOUT)).unwrap();
+        assert_eq!(
+            load_apply_records(&stage).unwrap()[0].state,
+            ApplyRecordState::TargetApplied
+        );
+
+        assert_eq!(
+            recover_pending_applies(&mut record, std::slice::from_ref(&target)).unwrap(),
+            vec![apply_id]
+        );
+        assert_eq!(record.state, OverlayState::Applied);
+        assert!(!upper.exists());
+        assert_eq!(
+            load_apply_records(&stage).unwrap()[0].state,
+            ApplyRecordState::Committed
+        );
     }
 
     #[test]
@@ -2312,6 +2617,7 @@ mod tests {
         fs::write(upper.join("src/lib.rs"), b"accepted").unwrap();
         fs::write(upper.join("src/generated/code.rs"), b"pending").unwrap();
         let mut record = OverlayRecord {
+            generation: 0,
             id: "glob".into(),
             target: target.clone(),
             upper: OverlayUpper::Directory {
@@ -2359,6 +2665,7 @@ mod tests {
         fs::write(upper.join("replaced").join(OPAQUE_WHITEOUT), b"").unwrap();
         fs::write(upper.join("replaced/new"), b"new").unwrap();
         let mut record = OverlayRecord {
+            generation: 0,
             id: "opaque-select".into(),
             target: target.clone(),
             upper: OverlayUpper::Directory {
@@ -2409,6 +2716,7 @@ mod tests {
         fs::write(upper.join("first"), b"linked").unwrap();
         fs::hard_link(upper.join("first"), upper.join("second")).unwrap();
         let mut record = OverlayRecord {
+            generation: 0,
             id: "hard-links".into(),
             target: target.clone(),
             upper: OverlayUpper::Directory {
@@ -2451,6 +2759,7 @@ mod tests {
         fs::create_dir_all(&upper).unwrap();
         fs::write(upper.join("value"), b"value").unwrap();
         let record = OverlayRecord {
+            generation: 0,
             id: "invalid-selection".into(),
             target: target.clone(),
             upper: OverlayUpper::Directory {
@@ -2492,6 +2801,7 @@ mod tests {
         fs::write(upper.join(".wh.deleted.txt"), b"").unwrap();
         fs::write(upper.join("dir/.wh..wh..opq"), b"").unwrap();
         let record = OverlayRecord {
+            generation: 0,
             id: "changes".into(),
             target: target.clone(),
             upper: OverlayUpper::Directory {
@@ -2532,6 +2842,7 @@ mod tests {
         fs::write(target.join("system"), b"cached").unwrap();
         fs::write(upper.join("system"), b"changed").unwrap();
         let mut record = OverlayRecord {
+            generation: 0,
             id: "immutable".into(),
             target: target.clone(),
             upper: OverlayUpper::Directory {
@@ -2591,6 +2902,7 @@ mod tests {
         fs::create_dir_all(&upper).unwrap();
         std::os::unix::fs::symlink(tmp.path(), upper.join("loop")).unwrap();
         let record = OverlayRecord {
+            generation: 0,
             id: "t".into(),
             target: tmp.path().join("target"),
             upper: OverlayUpper::Directory {
@@ -2617,6 +2929,7 @@ mod tests {
         fs::write(upper.join("x"), b"1").unwrap();
         let mut rec = OverlayRecord {
             id: "t".into(),
+            generation: 0,
             target: tmp.path().join("target"),
             upper: OverlayUpper::Directory {
                 upper_dir: upper.clone(),
@@ -2645,6 +2958,7 @@ mod tests {
         fs::write(applied_upper.join("value"), b"applied").unwrap();
         let mut applied = OverlayRecord {
             id: "applied-run".into(),
+            generation: 0,
             target: applied_target,
             upper: OverlayUpper::Directory {
                 upper_dir: applied_upper,
@@ -2673,6 +2987,7 @@ mod tests {
         fs::write(dropped_upper.join("value"), b"discarded").unwrap();
         let mut dropped = OverlayRecord {
             id: "dropped-run".into(),
+            generation: 0,
             target: dropped_root.path().join("target"),
             upper: OverlayUpper::Directory {
                 upper_dir: dropped_upper,

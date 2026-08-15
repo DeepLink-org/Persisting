@@ -112,7 +112,7 @@ impl StoryActor {
         }
     }
 
-    fn handle(&mut self, cmd: StoryCommand) -> Result<StoryReply> {
+    async fn handle(&mut self, cmd: StoryCommand) -> Result<StoryReply> {
         match cmd {
             StoryCommand::Flush => {
                 // Drain any pending frontmatter writes so external observers see a
@@ -150,10 +150,16 @@ impl StoryActor {
                 let mut rec: crate::record::CaptureRecord = serde_json::from_slice(&record_bytes)?;
                 let mut next_turns = self.turns.clone();
                 next_turns.observe_record(&mut rec);
-                self.deps
-                    .sink
-                    .append(scope.route(), scope.agent_id(), &mut rec)
-                    .context("capture append")?;
+                let sink = Arc::clone(&self.deps.sink);
+                let route = scope.route().clone();
+                let agent_id = scope.agent_id().to_string();
+                rec = tokio::task::spawn_blocking(move || {
+                    sink.append(&route, &agent_id, &mut rec)
+                        .context("capture append")?;
+                    Ok::<_, anyhow::Error>(rec)
+                })
+                .await
+                .context("join capture append")??;
                 self.turns = next_turns;
                 if let Err(error) = self.md_writer(&scope).write_record(&rec) {
                     tracing::warn!(
@@ -206,7 +212,7 @@ impl Actor for StoryActor {
         _ctx: &mut ActorContext,
     ) -> pulsing_actor::error::Result<Message> {
         let cmd: StoryCommand = msg.unpack()?;
-        let reply = match self.handle(cmd) {
+        let reply = match self.handle(cmd).await {
             Ok(r) => r,
             Err(e) => StoryReply::Ack(CaptureAck::err(format!("{e:#}"))),
         };

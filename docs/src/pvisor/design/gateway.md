@@ -450,19 +450,21 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 ### 10.1 可靠性模型
 
 ```text
-请求线程 ──► 发事件（写 WAL + 入队）──► 立即继续转发
+请求线程 ──► 发事件（WAL 非阻塞入队 + apply 入队）──► 继续转发
                     │
                     └──► 后台：有序 apply ──► Lance / Markdown
                               │
                               ├─ 成功 → 确认 WAL
-                              └─ 失败 → dead letter（不影响 HTTP）
+                              └─ 失败 → dead letter + 保留 WAL（重启重放，不影响 HTTP）
 ```
 
 | 机制 | 目的 |
 |------|------|
 | **异步 apply** | 采集不占用上游连接线程 |
+| **Blocking sink 隔离** | Lance durable wait 运行在 blocking pool，不占用 Gateway Tokio HTTP worker |
 | **Per-story 有序队列** | 同一故事线内事件顺序可复现 |
-| **事件 WAL** | 崩溃后至少一次投递到 apply |
+| **事件 WAL** | 请求线程只做有界 `try_send`；后台最多等待 2 ms 合批并 `sync_data`，已落盘事件在崩溃后可重放 |
+| **ACK WAL** | 异步 best-effort 合批；丢 ACK 只会导致安全重放，flush/shutdown barrier 保证已接收 ACK 先落盘 |
 | **Barrier flush** | 优雅退出前排空队列与 Actor 邮箱 |
 | **Dead letter** | 可运维重放，而非静默丢数 |
 

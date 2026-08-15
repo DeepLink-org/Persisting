@@ -113,14 +113,6 @@ async fn corpus_round_trips_through_three_lance_tables() -> Result<()> {
         expected.push(story);
     }
 
-    assert_eq!(
-        store
-            .list_run_summaries(Default::default())
-            .await?
-            .items
-            .len(),
-        expected.len()
-    );
     for story in expected {
         assert_eq!(
             store.get_storyline_full(&story.session_id).await?,

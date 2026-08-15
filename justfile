@@ -22,6 +22,8 @@ default:
     @echo "  just install-cli         # 安装 pchronicle、pvisor 和 ppilot"
     @echo "  just pvisor              # 构建 release pVisor；macOS 自动签名"
     @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
+    @echo "  just echo                # 启动确定性的本地 LLM Echo upstream"
+    @echo "  just benchmark-gateway   # Gateway 转发与持久化黑盒压测"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just docs-serve          # 本地文档"
 
@@ -40,6 +42,10 @@ test-list:
         just dev                  日常：fmt + clippy + check-quick
         just ci                   CI 近似
         just test-rust / test-pchronicle / capture-test / test-py
+        just regression           大规模黑盒回归（按场景运行 tests/regression）
+        just gateway-fuzz         一分钟 Gateway 四类 fuzz 汇总
+        just gateway-fuzz-formats / gateway-fuzz-forwarding
+        just gateway-fuzz-storage / gateway-fuzz-network
 
       组件示例
         just examples-pvisor / examples-pchronicle / examples-ppilot
@@ -84,7 +90,78 @@ examples-ppilot:
 [group('test')]
 examples: examples-pvisor examples-pchronicle examples-ppilot
 
+# Run repository-level black-box regression scenarios against prebuilt real
+# component binaries. Long-running scenarios are excluded from this sweep.
+[group('test')]
+regression:
+    bash tests/regression/run.sh
+
+# Run the four Gateway fuzz contracts (about one minute total by default).
+# Override duration, concurrency, and rate through PERSISTING_FUZZ_* variables.
+[group('test')]
+gateway-fuzz:
+    bash tests/regression/gateway-fuzz/run.sh
+
+[group('test')]
+gateway-fuzz-formats:
+    bash tests/regression/gateway-fuzz/formats/run.sh
+
+[group('test')]
+gateway-fuzz-forwarding:
+    bash tests/regression/gateway-fuzz/forwarding/run.sh
+
+[group('test')]
+gateway-fuzz-storage:
+    bash tests/regression/gateway-fuzz/storage/run.sh
+
+[group('test')]
+gateway-fuzz-network:
+    bash tests/regression/gateway-fuzz/network-policy/run.sh
+
+# Benchmark Gateway forwarding, typed capture, WAL, and durable Lance append
+# against the deterministic local Echo upstream.
+# Usage: `just benchmark-gateway`, or `just benchmark-gateway 30 32 1024 0 16 2048`.
+[group('benchmark')]
+benchmark-gateway duration="10" concurrency="16" payload_bytes="256" warmup="0" sessions="16" requests="1024":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash benchmark/gateway/run.sh \
+      --duration "{{ duration }}" \
+      --concurrency "{{ concurrency }}" \
+      --sessions "{{ sessions }}" \
+      --requests "{{ requests }}" \
+      --payload-bytes "{{ payload_bytes }}" \
+      --warmup "{{ warmup }}"
+
+# Find Gateway's saturation point with a closed-loop concurrency sweep. This
+# consumes the existing release binary and deliberately skips the Echo baseline.
+# Usage: `just benchmark-gateway-sweep`, or
+# `just benchmark-gateway-sweep 10 "1 2 4 8 16 32 64" 256 0 16 256`.
+[group('benchmark')]
+benchmark-gateway-sweep duration="5" concurrencies="1 2 4 8 16 32" payload_bytes="256" warmup="0" sessions="16" requests="256":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for concurrency in {{ concurrencies }}; do
+      printf '\n==> Gateway concurrency %s\n' "$concurrency"
+      bash benchmark/gateway/run.sh \
+        --duration "{{ duration }}" \
+        --concurrency "$concurrency" \
+        --sessions "{{ sessions }}" \
+        --requests "{{ requests }}" \
+        --payload-bytes "{{ payload_bytes }}" \
+        --warmup "{{ warmup }}" \
+        --skip-baseline \
+        --output "benchmark/gateway/results/sweep-c${concurrency}.json"
+    done
+
 # ── 构建 ─────────────────────────────────────────────────────────────────────
+
+# Start the deterministic local LLM upstream used to test Gateway forwarding,
+# model/protocol rewriting, streaming, and capture.
+# Usage: `just echo`, or `just echo 127.0.0.1:19080 base64`.
+[group('build')]
+echo listen="127.0.0.1:19080" encoding="plain":
+    target/release/pchronicle echo --listen "{{ listen }}" --encoding "{{ encoding }}"
 
 # Build the Dioxus trajectory workbench for compile-time embedding.
 chronicle-web-build:

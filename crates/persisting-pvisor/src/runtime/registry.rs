@@ -424,15 +424,7 @@ pub fn is_live(stage_dir: &Path) -> anyhow::Result<bool> {
 pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<RunRecord> {
     if let Some(selector) = selector {
         if selector == Path::new("last") {
-            if let Ok(current) = std::env::current_dir() {
-                if let Ok(record) = resolve_path(&current) {
-                    return Ok(record);
-                }
-                if let Ok(record) = latest_workspace_run(&current) {
-                    return Ok(record);
-                }
-            }
-            return latest_run(storage).or_else(|_| latest_default_run());
+            return resolve_last(storage, std::env::current_dir().ok().as_deref());
         }
         if selector.exists() || selector.components().count() > 1 {
             return resolve_path(selector);
@@ -460,6 +452,18 @@ pub fn resolve_run(selector: Option<&Path>, storage: &Path) -> anyhow::Result<Ru
             return Ok(record);
         }
         if let Ok(record) = latest_workspace_run(&current) {
+            return Ok(record);
+        }
+    }
+    latest_run(storage).or_else(|_| latest_default_run())
+}
+
+fn resolve_last(storage: &Path, current: Option<&Path>) -> anyhow::Result<RunRecord> {
+    if let Some(current) = current {
+        if let Ok(record) = resolve_path(current) {
+            return Ok(record);
+        }
+        if let Ok(record) = latest_workspace_run(current) {
             return Ok(record);
         }
     }
@@ -664,6 +668,7 @@ mod tests {
             resource_limits: Default::default(),
             overlay: Some(OverlayRecord {
                 id: "session-test".into(),
+                generation: 0,
                 target: storage.join("target"),
                 upper: OverlayUpper::Directory {
                     upper_dir: upper.to_path_buf(),
@@ -712,11 +717,6 @@ mod tests {
         assert_eq!(resolve_path(&stage).unwrap().run_id, "run-test");
         assert_eq!(resolve_path(&upper).unwrap().run_id, "run-test");
         assert_eq!(resolve_path(&storage).unwrap().run_id, "run-test");
-        assert_eq!(
-            resolve_run(Some(Path::new("last")), &storage)
-                .unwrap()
-                .run_id,
-            "run-test"
-        );
+        assert_eq!(resolve_last(&storage, None).unwrap().run_id, "run-test");
     }
 }

@@ -197,18 +197,18 @@ impl RunControlStore {
             let Some(current) = current else {
                 return Ok(Mutation::Unchanged(false));
             };
-            if current.commit.is_some()
-                || current.lease.as_ref().map(|lease| lease.epoch) != Some(epoch)
-            {
+            let now = unix_now_ms();
+            let Some(lease) = current.lease.as_ref() else {
+                return Ok(Mutation::Unchanged(false));
+            };
+            if current.commit.is_some() || lease.epoch != epoch || lease.expires_at_unix_ms <= now {
                 return Ok(Mutation::Unchanged(false));
             }
-            if current
-                .lease
-                .as_ref()
-                .and_then(|lease| lease.attempt_id.as_ref())
-                == Some(&attempt_id)
-            {
+            if lease.attempt_id.as_ref() == Some(&attempt_id) {
                 return Ok(Mutation::Unchanged(true));
+            }
+            if lease.attempt_id.is_some() {
+                return Ok(Mutation::Unchanged(false));
             }
             let record = next_record(Some(current), owned_run_id.clone(), |record| {
                 if let Some(lease) = record.lease.as_mut() {
@@ -277,9 +277,18 @@ impl RunControlStore {
                 }
                 return Ok(Mutation::Unchanged(CommitRunOutcome::Conflict(existing)));
             }
-            let current_epoch =
-                current.and_then(|record| record.lease.as_ref().map(|lease| lease.epoch));
-            if current_epoch != Some(request.lease_epoch) {
+            let now = unix_now_ms();
+            let current_lease = current.and_then(|record| record.lease.as_ref());
+            let current_epoch = current_lease.map(|lease| lease.epoch);
+            let lease_matches = current_lease.is_some_and(|lease| {
+                lease.epoch == request.lease_epoch
+                    && lease.expires_at_unix_ms > now
+                    && lease
+                        .attempt_id
+                        .as_ref()
+                        .is_none_or(|attempt_id| attempt_id == &request.attempt_id)
+            });
+            if !lease_matches {
                 return Ok(Mutation::Unchanged(CommitRunOutcome::StaleLease {
                     supplied_epoch: request.lease_epoch,
                     current_epoch,
@@ -290,6 +299,9 @@ impl RunControlStore {
                 committed_at_unix_ms: unix_now_ms(),
             };
             let record = next_record(current, closure_run_id.clone(), |record| {
+                if let Some(lease) = record.lease.as_mut() {
+                    lease.attempt_id.get_or_insert(request.attempt_id.clone());
+                }
                 record.commit = Some(commit.clone());
             })?;
             Ok(Mutation::Replace(
@@ -726,6 +738,91 @@ mod tests {
             .renew_lease(&run, lease.epoch, "owner", 10_000)
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn expired_lease_cannot_commit_terminal_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunControlStore::open(dir.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let run = RunId::new("run-expired-commit");
+        let lease = store
+            .acquire_lease(&run, Some("task-1"), "owner", 5)
+            .await
+            .unwrap();
+        let LeaseAcquireOutcome::Acquired(lease) = lease else {
+            panic!()
+        };
+        while unix_now_ms() <= lease.expires_at_unix_ms {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        assert!(matches!(
+            store
+                .commit_run(commit(
+                    "run-expired-commit",
+                    "attempt-expired",
+                    lease.epoch,
+                    "sha256:expired"
+                ))
+                .await
+                .unwrap(),
+            CommitRunOutcome::StaleLease {
+                supplied_epoch,
+                current_epoch: Some(current_epoch)
+            } if supplied_epoch == lease.epoch && current_epoch == lease.epoch
+        ));
+        assert!(store.get(&run).await.unwrap().unwrap().commit.is_none());
+    }
+
+    #[tokio::test]
+    async fn bound_attempt_cannot_be_replaced_within_same_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunControlStore::open(dir.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let run = RunId::new("run-attempt-fence");
+        let lease = store
+            .acquire_lease(&run, Some("task-1"), "owner", 10_000)
+            .await
+            .unwrap();
+        let LeaseAcquireOutcome::Acquired(lease) = lease else {
+            panic!()
+        };
+
+        assert!(store
+            .bind_attempt(&run, lease.epoch, AttemptId::new("attempt-owner"))
+            .await
+            .unwrap());
+        assert!(!store
+            .bind_attempt(&run, lease.epoch, AttemptId::new("attempt-stale"))
+            .await
+            .unwrap());
+        assert!(matches!(
+            store
+                .commit_run(commit(
+                    "run-attempt-fence",
+                    "attempt-stale",
+                    lease.epoch,
+                    "sha256:stale"
+                ))
+                .await
+                .unwrap(),
+            CommitRunOutcome::StaleLease { .. }
+        ));
+        assert!(matches!(
+            store
+                .commit_run(commit(
+                    "run-attempt-fence",
+                    "attempt-owner",
+                    lease.epoch,
+                    "sha256:owner"
+                ))
+                .await
+                .unwrap(),
+            CommitRunOutcome::Committed(_)
+        ));
     }
 
     #[tokio::test]

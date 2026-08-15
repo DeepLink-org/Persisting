@@ -21,6 +21,7 @@ product and storage boundary, see the [pChronicle product architecture](../desig
 | `find` | Locate Run, Session, or Step candidates by Source-local ID |
 | `import` | Create a new local Dataset from ATIF, ACTF, OpenAI Messages, or Storyline JSON |
 | `export` | Export complete trajectories to one of those exchange formats |
+| `echo` | Run a deterministic loopback-only LLM upstream for Gateway tests |
 | `serve` | Serve statically configured Datasets through a loopback-only read API and Web UI |
 
 The executable's `--help` is authoritative for individual flags and defaults.
@@ -189,6 +190,20 @@ Supported exchange formats are `atif`, `actf`, `openai-messages`, and
 `--strict` refuses a conversion that cannot preserve the original exchange
 document.
 
+## Deterministic Echo upstream
+
+`echo` runs a loopback-only LLM upstream for Gateway integration tests. It
+supports Chat Completions, Messages, Responses, Gemini, streaming responses,
+and plain or Base64 output:
+
+```bash
+pchronicle echo
+pchronicle echo --listen 127.0.0.1:19080 --encoding base64
+```
+
+One request can override the server default with the
+`x-persisting-echo-encoding: plain|base64` header.
+
 ## Read-only Warehouse server
 
 `serve` uses an explicit static configuration; it does not use the local
@@ -229,13 +244,15 @@ multi-Dataset Warehouse without `default_dataset` requires
 Gateway dispatch/capture diagnostics directly to stderr and may include
 bounded request and response bodies.
 
-The standalone command is the only public CLI for Dataset catalog, SQL,
-analysis, find, exchange, and read-only Warehouse serving.
+The `pchronicle` executable is the public CLI for Dataset catalog, SQL,
+analysis, find, exchange, deterministic Gateway testing, and read-only
+Warehouse serving.
 
 ## Related workflows
 
 - [Discover and query a Dataset](../guides/discover-and-query.md).
 - [Import and export trajectories](../guides/exchange.md).
 - [Serve a local read-only Warehouse](../guides/serve.md).
+- [Configure Gateway forwarding, rewriting, and capture](../guides/serve-gateway.md).
 - [Dataset, Source, and Snapshot](../concepts/dataset-and-source.md) explains the
   identity model behind the command arguments.

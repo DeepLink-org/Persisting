@@ -9,7 +9,7 @@
 
 ## 摘要
 
-`persisting-pchronicle` 是 Persisting 唯一的 **Agent 轨迹结构化存储与检索层**。轨迹的逻辑记录、格式 schema、目录布局、物理落盘、读取、回放、格式转换、Search 和派生视图 MUST 收敛到 pChronicle。
+`persisting-pchronicle` 是 Persisting 唯一的 **Agent 轨迹结构化存储与检索层**。轨迹的逻辑记录、格式 schema、目录布局、物理落盘、读取、回放、格式转换和派生视图 MUST 收敛到 pChronicle。
 
 Gateway 和 CLI 可以分别生产事件和适配输入，但 MUST NOT 定义第二套通用轨迹存储实现。
 
@@ -58,13 +58,13 @@ pChronicle MUST 统一拥有：
 |---|---|---|
 | Gateway | 作为 OverlayNet sink 解释并转发 Agent/LLM 协议；维护采集顺序与调用生命周期；产出 `EventRecord`；实现与实时流状态有关的 live projection 策略 | 自有网络数据面或轨迹记录 schema；把 AgenticMD 当作可恢复事实源 |
 | CLI | 解析参数和输入来源；进程内调用 pChronicle；展示结果 | 自有 Markdown/ATIF parser、落盘协议或动态 ABI |
-| pChronicle | 定义格式、存储、读取、转换、Search 和派生视图 | 依赖 Gateway 才能解释持久化数据 |
+| pChronicle | 定义格式、存储、读取、转换和派生视图 | 依赖 Gateway 才能解释持久化数据 |
 
 Gateway 的 live Markdown 行为可以保留 producer-specific 策略，例如流式 draft upsert；它必须同时写 canonical events。通用 batch materialize 归 pChronicle，不提供 AgenticMD → events 的隐式 compact。
 
 ### 5. 代码布局
 
-- `persisting-pchronicle/src/search/` 实现 Lance 文档写入、索引与检索；`src/operations/trajectory/` 是强类型轨迹操作适配。
+- `persisting-pchronicle/src/operations/trajectory/` 是强类型轨迹操作适配。
 - `persisting-gateway/src/session/` 维护 session 身份、路由、client metadata、索引与 snapshot。
 - `persisting-gateway/src/projection/` 维护 Gateway 特有的可见文本解释、实时过滤、draft/upsert 和 reconcile。
 - `persisting-gateway/src/engine/` 维护采集 actor、WAL、顺序状态机和 egress；这里的 “engine” 是 Gateway 内部编排器，不是轨迹存储层。
@@ -86,7 +86,7 @@ Run lease epoch MUST 通过 `EventWriterFence` 进入 canonical event 提交协�
 
 ## 收敛结果
 
-- 原 Engine 中的 Search、Trajectory 适配、Lance、Markdown 和 Arrow row 实现全部迁入 pChronicle；Engine crate 删除。
+- 原 Engine 中的 Trajectory 适配、Lance、Markdown 和 Arrow row 实现全部迁入 pChronicle；Engine crate 删除。
 - Gateway 直接使用 pChronicle 的 `EventRecord`；Gateway extension 仅承载实时 payload 解释。
 - Gateway 仅保留实时 payload 解释、live Markdown eligibility/upsert orchestration 与运行时 reconcile；格式解析、文件 I/O、frontmatter 契约与索引实现委托 pChronicle。
 - 调用方直接依赖 pChronicle。
@@ -98,7 +98,7 @@ Run lease epoch MUST 通过 `EventWriterFence` 进入 canonical event 提交协�
 ## 验收条件
 
 - Workspace 不再包含 `persisting-engine` crate、动态库、C ABI 或 Engine RPC 信封。
-- Search 与 append、replay、stats、judge 等流程均由 pChronicle 提供。
+- append、replay、stats、judge 等轨迹流程均由 pChronicle 提供。
 - CLI 不再实现 AgenticMD 到 event 的独立解析。
 - Gateway 不再定义与 `EventRecord` 同构的序列化 struct，也不再独立实现 AgenticMD 文档重写或索引。
 - pChronicle MUST 使用 Gateway 的真实 AgenticMD、request/response、provider snapshot 与 SSE fixture 验证 wire、Arrow、Lance 和投影兼容性。

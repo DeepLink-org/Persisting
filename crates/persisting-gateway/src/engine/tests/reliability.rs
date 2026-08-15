@@ -55,3 +55,36 @@ async fn session_sink_failure_writes_dead_letter_with_record() {
         "failed canonical append must not advance the story read model"
     );
 }
+
+#[tokio::test]
+async fn failed_durable_sink_keeps_wal_event_pending_after_shutdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(dir.path().to_path_buf());
+    let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+    let engine = CaptureEngine::new(Arc::new(FailingSink), index, storage.clone(), false)
+        .await
+        .unwrap();
+    engine.spawn_apply(
+        test_context(),
+        Event::Request(RequestEvent {
+            path: "/v1/chat/completions".into(),
+            method: "POST".into(),
+            url: None,
+            body_bytes: 10,
+            user_content: Some("retry me".into()),
+            body_json: None,
+            semantic: None,
+            model_rewritten: false,
+            headers: vec![],
+        }),
+    );
+
+    engine.flush().await.unwrap();
+    assert_eq!(crate::engine::wal::replay_pending(dir.path()).len(), 1);
+    engine.shutdown().await.unwrap();
+    assert_eq!(
+        crate::engine::wal::replay_pending(dir.path()).len(),
+        1,
+        "clean shutdown must not erase an event rejected by the durable sink"
+    );
+}

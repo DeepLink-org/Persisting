@@ -29,6 +29,18 @@ namespaced provider extensions. Protocol rendering and capture share that same
 in-memory value, which becomes canonical `EventRecord.payload.llm_request`. The
 WAL retains only the original wire JSON and reconstructs semantics during crash
 replay, avoiding a second copy of large multimodal payloads on disk.
+Gateway acknowledges a WAL row only after the canonical pChronicle sink has
+confirmed its Lance publication. A failed sink write is also recorded as a
+dead letter, but remains unacknowledged for restart replay.
+
+WAL event and ACK writes use bounded-delay best-effort group commit. Request
+threads only attempt a non-blocking bounded-queue submission; serialization,
+file writes, and `sync_data` all run on a dedicated writer. The writer waits up
+to 2 ms and writes at most 256 lines per fsync. Queue saturation or a process
+crash before the next commit can lose the WAL copy, but never blocks forwarding;
+canonical Lance capture continues on its independent apply path. Losing an ACK
+only causes safe replay. Runtime flush/shutdown includes a WAL barrier before
+pending-entry inspection or truncation.
 
 Non-streaming responses follow `provider wire -> typed response -> client wire`.
 Streaming follows `provider SSE -> typed stream events -> client SSE` and folds
@@ -56,3 +68,28 @@ The upstream request targets `models/{model}:generateContent` or
 Native Gemini client paths can also pass through directly. Conversion does not change the
 capture contract: WAL and request events retain the original client JSON before rewrite,
 alongside its typed Chronicle semantics.
+
+## Deterministic Echo upstream
+
+`pchronicle echo` provides local Chat Completions, Messages, Responses, and
+Gemini endpoints. It returns the last user text directly or as standard Base64
+and supports the corresponding SSE streaming shapes. This makes the request
+input the complete test fixture while still exercising real Gateway HTTP
+forwarding.
+
+```bash
+just echo
+
+# Or invoke the installed CLI directly:
+pchronicle echo --listen 127.0.0.1:19080 --encoding plain
+```
+
+The server only accepts a loopback listener. Override its default per request:
+
+```text
+x-persisting-echo-encoding: plain
+x-persisting-echo-encoding: base64
+```
+
+It only accepts a loopback listener and is intended for deterministic local
+Gateway tests.

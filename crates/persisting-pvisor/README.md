@@ -477,9 +477,11 @@ The accepted Linux host-process design for non-bypassable interception — an
 unprivileged network namespace whose only egress is a pVisor-owned in-process
 userspace stack, with a seccomp user-notify + `ADDFD` fallback — is specified in
 `docs/src/design/overlaynet.md`. That host-process path remains future work.
-VM `auto` already satisfies network-only `PolicyMode::Enforce` on Linux and
-Apple Silicon macOS; unsupported VM hosts and cooperative host/container proxy
-paths remain observe-only.
+VM `auto` already provides a non-bypassable network boundary on Linux and
+Apple Silicon macOS. A default `CapabilitySet` also denies subprocesses, so
+`PolicyMode::Enforce` continues to fail closed until the selected executor can
+prove that subprocess deny dimension as well. Unsupported VM hosts and
+cooperative host/container proxy paths remain observe-only.
 
 Structured OverlayNet rules accept exact hosts, wildcard suffixes, IPs, and
 CIDRs. Empty `ports` or `transports` mean unrestricted, so production policy

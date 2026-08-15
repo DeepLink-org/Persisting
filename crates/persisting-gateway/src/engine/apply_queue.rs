@@ -1,6 +1,7 @@
 //! Per-`story_id` ordered capture apply queue — preserves event order within a story.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -10,12 +11,70 @@ use super::{CallContext, Event};
 use crate::dead_letter;
 
 const APPLY_QUEUE_CAPACITY: usize = 256;
+const REJECTED_EVENT_QUEUE_CAPACITY: usize = 256;
+
+enum RejectedEventMessage {
+    Event { ctx: Arc<CallContext>, event: Event },
+    Finish,
+}
+
+struct RejectedEventWriter {
+    tx: std_mpsc::SyncSender<RejectedEventMessage>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl RejectedEventWriter {
+    fn new(storage: Arc<PathBuf>) -> Self {
+        let (tx, rx) = std_mpsc::sync_channel(REJECTED_EVENT_QUEUE_CAPACITY);
+        let worker = std::thread::Builder::new()
+            .name("persisting-dead-letter".to_string())
+            .spawn(move || {
+                while let Ok(message) = rx.recv() {
+                    let RejectedEventMessage::Event { ctx, event } = message else {
+                        break;
+                    };
+                    if let Err(error) = dead_letter::append_dead_letter(
+                        storage.as_path(),
+                        &ctx,
+                        &event,
+                        "apply queue full or closed",
+                        None,
+                    ) {
+                        tracing::error!("dead letter write failed: {error:#}");
+                    }
+                }
+            })
+            .expect("dead-letter writer thread must start with capture runtime");
+        Self {
+            tx,
+            worker: Mutex::new(Some(worker)),
+        }
+    }
+
+    fn try_record(&self, ctx: Arc<CallContext>, event: Event) {
+        if let Err(error) = self.tx.try_send(RejectedEventMessage::Event { ctx, event }) {
+            tracing::warn!(
+                target: "persisting_gateway",
+                "dead-letter queue rejected overloaded capture event: {error}"
+            );
+        }
+    }
+}
+
+impl Drop for RejectedEventWriter {
+    fn drop(&mut self) {
+        let _ = self.tx.send(RejectedEventMessage::Finish);
+        if let Some(worker) = self.worker.lock().expect("dead-letter worker mutex").take() {
+            let _ = worker.join();
+        }
+    }
+}
 
 enum ApplyJob {
     Capture {
         ctx: Arc<CallContext>,
         event: Event,
-        /// WAL sequence to ack once apply completes (success or dead-lettered).
+        /// WAL sequence to ack only after the canonical sink confirms success.
         wal_seq: Option<u64>,
     },
     Barrier {
@@ -28,13 +87,18 @@ enum ApplyJob {
 pub(crate) struct ApplyDispatcher {
     inner: Arc<CaptureRuntimeInner>,
     queues: Arc<DashMap<String, mpsc::Sender<ApplyJob>>>,
+    rejected: Arc<RejectedEventWriter>,
 }
 
 impl ApplyDispatcher {
     pub(crate) fn new(inner: Arc<CaptureRuntimeInner>) -> Self {
+        let rejected = Arc::new(RejectedEventWriter::new(Arc::clone(
+            &inner.story_deps.storage,
+        )));
         Self {
             inner,
             queues: Arc::new(DashMap::new()),
+            rejected,
         }
     }
 
@@ -85,17 +149,21 @@ impl ApplyDispatcher {
                         event,
                         wal_seq,
                     } => {
-                        if let Err(e) = inner.apply(&ctx, event).await {
-                            tracing::warn!(
-                                target: "persisting_gateway",
-                                "capture apply: {e:#}"
-                            );
-                        }
-                        // Ack regardless of apply success: a failed apply has already
-                        // been routed to dead_letter.jsonl and replaying the WAL would
-                        // double-write that dead letter on restart.
-                        if let Some(seq) = wal_seq {
-                            inner.wal.ack(seq);
+                        match inner.apply(&ctx, event).await {
+                            Ok(()) => {
+                                if let Some(seq) = wal_seq {
+                                    inner.wal.ack(seq);
+                                }
+                            }
+                            Err(e) => {
+                                // Keep the WAL entry pending. The dead letter is an
+                                // operator diagnostic, not a durable-store substitute;
+                                // restart replay may recover a transient sink failure.
+                                tracing::warn!(
+                                    target: "persisting_gateway",
+                                    "capture apply: {e:#}"
+                                );
+                            }
                         }
                     }
                     ApplyJob::Barrier { ack } => {
@@ -111,24 +179,14 @@ impl ApplyDispatcher {
         let ApplyJob::Capture {
             ctx,
             event,
-            wal_seq,
+            wal_seq: _,
         } = job
         else {
             return;
         };
-        let storage = self.inner.story_deps.storage.as_path();
-        if let Err(dl) = dead_letter::append_dead_letter(
-            storage,
-            &ctx,
-            &event,
-            "apply queue full or closed",
-            None,
-        ) {
-            tracing::error!("dead letter write failed: {dl:#}");
-        }
-        if let Some(seq) = wal_seq {
-            self.inner.wal.ack(seq);
-        }
+        self.rejected.try_record(Arc::clone(&ctx), event);
+        // A rejected queue job never reached the durable sink, so its WAL row
+        // deliberately remains pending for restart replay.
         tracing::warn!(
             target: "persisting_gateway",
             story_id = %ctx.story_id().as_str(),
@@ -157,6 +215,20 @@ mod tests {
     struct OrderRecordingSink {
         order: Mutex<Vec<String>>,
         next_seq: Mutex<HashMap<String, u64>>,
+    }
+
+    struct SlowSink;
+
+    impl CaptureEventSink for SlowSink {
+        fn append(
+            &self,
+            _route: &CaptureRoute,
+            _agent_id: &str,
+            _record: &mut CaptureRecord,
+        ) -> anyhow::Result<()> {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            Ok(())
+        }
     }
 
     impl OrderRecordingSink {
@@ -278,5 +350,37 @@ mod tests {
                 && order[1].starts_with("llm.response"),
             "expected request before response, got {order:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn durable_sink_wait_does_not_block_tokio_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(dir.path().to_path_buf());
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let engine = CaptureEngine::new(Arc::new(SlowSink), index, storage, false)
+            .await
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        engine.spawn_apply(
+            sample_ctx("slow-call"),
+            Event::Request(RequestEvent {
+                path: "/v1/chat/completions".into(),
+                method: "POST".into(),
+                url: None,
+                body_bytes: 10,
+                user_content: Some("hi".into()),
+                body_json: None,
+                semantic: None,
+                model_rewritten: false,
+                headers: vec![],
+            }),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "synchronous sink wait starved the only Tokio worker"
+        );
+        engine.flush().await.unwrap();
     }
 }

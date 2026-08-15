@@ -47,6 +47,10 @@ pub(super) struct EventSegment {
     pub id: String,
     pub version: u64,
     pub rows: u64,
+    #[serde(default)]
+    pub level: u8,
+    #[serde(default)]
+    pub sealed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,12 +149,28 @@ pub(super) async fn publish_segment(
             .iter()
             .find(|existing| existing.id == segment.id)
         {
-            if existing.version == segment.version && existing.rows == segment.rows {
+            if existing == &segment {
                 return Ok(ManifestMutation::Unchanged(current.clone()));
             }
             anyhow::ensure!(
-                segment.version > existing.version && segment.rows >= existing.rows,
-                "event segment publication must advance version and row count"
+                segment.version >= existing.version && segment.rows >= existing.rows,
+                "event segment publication cannot move version or row count backwards"
+            );
+            anyhow::ensure!(
+                segment.level == existing.level,
+                "event segment publication cannot change compaction level"
+            );
+            anyhow::ensure!(
+                !existing.sealed || segment.sealed,
+                "event segment publication cannot reopen a sealed segment"
+            );
+            anyhow::ensure!(
+                segment.version > existing.version
+                    || (segment.version == existing.version
+                        && segment.rows == existing.rows
+                        && !existing.sealed
+                        && segment.sealed),
+                "event segment publication must advance version or seal the segment"
             );
         }
         let mut next = current.clone();
@@ -186,6 +206,50 @@ pub(super) async fn replace_segments(
             .checked_add(1)
             .context("event manifest revision overflow")?;
         next.segments.clone_from(&segments);
+        Ok(ManifestMutation::Replace(next.clone(), next))
+    })
+    .await
+}
+
+/// Atomically replace one contiguous immutable segment group while preserving
+/// its position in append order. Exact descriptor matching prevents a stale
+/// compactor from overwriting a segment version published by another task.
+pub(super) async fn replace_segment_group(
+    root_uri: &str,
+    fence: &EventWriterFence,
+    expected: &[EventSegment],
+    replacement: EventSegment,
+) -> Result<EventManifest> {
+    anyhow::ensure!(!expected.is_empty(), "segment replacement group is empty");
+    let expected = expected.to_vec();
+    let fence = fence.clone();
+    mutate(root_uri, move |current| {
+        let current = current.context("event manifest disappeared during segment merge")?;
+        ensure_active_writer(current, &fence)?;
+        let start = current
+            .segments
+            .windows(expected.len())
+            .position(|window| window == expected.as_slice())
+            .context("event segment merge inputs changed before publication")?;
+        let expected_rows = expected.iter().try_fold(0_u64, |total, segment| {
+            total
+                .checked_add(segment.rows)
+                .context("event segment merge row count overflow")
+        })?;
+        anyhow::ensure!(
+            replacement.rows == expected_rows,
+            "event segment merge must preserve row count"
+        );
+
+        let mut next = current.clone();
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .context("event manifest revision overflow")?;
+        next.segments.splice(
+            start..start + expected.len(),
+            std::iter::once(replacement.clone()),
+        );
         Ok(ManifestMutation::Replace(next.clone(), next))
     })
     .await
@@ -490,6 +554,8 @@ mod tests {
                 id: "old-segment".into(),
                 version: 1,
                 rows: 10,
+                level: 0,
+                sealed: false,
             },
         )
         .await
@@ -502,6 +568,8 @@ mod tests {
                 id: "old-segment".into(),
                 version: 2,
                 rows: 20,
+                level: 0,
+                sealed: false,
             },
         )
         .await
@@ -567,6 +635,8 @@ mod tests {
                 id: "one-writer-segment".into(),
                 version: 1,
                 rows: 1,
+                level: 0,
+                sealed: false,
             },
         )
         .await
@@ -581,6 +651,8 @@ mod tests {
                     id: "one-writer-segment".into(),
                     version,
                     rows: version,
+                    level: 0,
+                    sealed: false,
                 },
             )
             .await
@@ -594,6 +666,8 @@ mod tests {
                 id: "one-writer-segment".into(),
                 version: PUBLISHES,
                 rows: PUBLISHES,
+                level: 0,
+                sealed: false,
             },
         )
         .await
@@ -607,6 +681,84 @@ mod tests {
             final_bytes <= initial_bytes + 32,
             "manifest bytes must grow only with integer digit width: initial={initial_bytes}, final={final_bytes}"
         );
+    }
+
+    #[test]
+    fn legacy_segment_metadata_defaults_to_active_level_zero() {
+        let segment: EventSegment = serde_json::from_value(serde_json::json!({
+            "id": "legacy",
+            "version": 1,
+            "rows": 7
+        }))
+        .unwrap();
+        assert_eq!(segment.level, 0);
+        assert!(!segment.sealed);
+    }
+
+    #[tokio::test]
+    async fn contiguous_segment_group_replacement_preserves_order_and_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("events.lance");
+        let uri = root.to_str().unwrap();
+        let fence = EventWriterFence::new(1, "writer").unwrap();
+        activate(uri, Some(&fence), "unused").await.unwrap();
+        for id in ["a", "b", "c"] {
+            publish_segment(
+                uri,
+                &fence,
+                EventSegment {
+                    id: id.into(),
+                    version: 1,
+                    rows: 2,
+                    level: 0,
+                    sealed: true,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let before = read(uri).await.unwrap().unwrap();
+        let merged = replace_segment_group(
+            uri,
+            &fence,
+            &before.segments[..2],
+            EventSegment {
+                id: "ab".into(),
+                version: 1,
+                rows: 4,
+                level: 1,
+                sealed: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            merged
+                .segments
+                .iter()
+                .map(|segment| segment.id.as_str())
+                .collect::<Vec<_>>(),
+            ["ab", "c"]
+        );
+        assert_eq!(merged.total_rows(), before.total_rows());
+
+        let stale_error = replace_segment_group(
+            uri,
+            &fence,
+            &before.segments[..2],
+            EventSegment {
+                id: "stale".into(),
+                version: 1,
+                rows: 4,
+                level: 1,
+                sealed: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(stale_error
+            .to_string()
+            .contains("merge inputs changed before publication"));
     }
 
     #[tokio::test]
@@ -648,6 +800,8 @@ mod tests {
                 id: "visible".into(),
                 version: 1,
                 rows: 1,
+                level: 0,
+                sealed: false,
             }],
             Duration::ZERO,
         )
