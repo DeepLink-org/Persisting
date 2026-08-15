@@ -13,10 +13,12 @@ use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
+use futures::TryStreamExt;
 use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 
 use super::raw_event_manifest::EventManifest;
+use crate::{event_row_to_event_record, event_rows_from_batch, EventRecord};
 
 pub const DATAFUSION_EVENTS_TABLE: &str = "events";
 
@@ -122,8 +124,17 @@ impl TableProvider for RawEventTableProvider {
 #[derive(Debug)]
 pub struct RawEventDataSource {
     uri: String,
-    version: u64,
+    snapshot: EventFactSnapshot,
     provider: Arc<RawEventTableProvider>,
+}
+
+/// Stable logical and physical coordinates for one pinned canonical event view.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EventFactSnapshot {
+    pub source_uri: String,
+    pub fact_version: u64,
+    pub fact_rows: u64,
+    pub layout_revision: u64,
 }
 
 /// A manifest-only canonical event snapshot. It pins visible segment versions
@@ -141,6 +152,15 @@ impl RawEventSnapshot {
 
     pub(crate) fn version(&self) -> u64 {
         self.manifest.revision
+    }
+
+    pub(crate) fn fact_snapshot(&self) -> EventFactSnapshot {
+        EventFactSnapshot {
+            source_uri: self.uri.clone(),
+            fact_version: self.manifest.fact_version,
+            fact_rows: self.manifest.fact_rows,
+            layout_revision: self.manifest.revision,
+        }
     }
 }
 
@@ -166,7 +186,14 @@ impl RawEventDataSource {
     }
 
     pub(crate) async fn pin_uri(uri: impl AsRef<str>) -> Result<RawEventSnapshot> {
-        let uri = uri.as_ref().to_string();
+        let uri = if uri.as_ref().contains("://") {
+            uri.as_ref().to_string()
+        } else {
+            std::fs::canonicalize(uri.as_ref())
+                .with_context(|| format!("canonicalize canonical event source {}", uri.as_ref()))?
+                .to_string_lossy()
+                .into_owned()
+        };
         let manifest = super::raw_event_lance::pin_visible_snapshot(&uri)
             .await?
             .with_context(|| format!("canonical event manifest does not exist at {uri}"))?;
@@ -184,10 +211,10 @@ impl RawEventDataSource {
         let datasets =
             super::raw_event_lance::open_pinned_snapshot(snapshot.uri(), &snapshot.manifest)
                 .await?;
-        let version = snapshot.version();
+        let fact_snapshot = snapshot.fact_snapshot();
         Ok(Self {
             uri: snapshot.uri,
-            version,
+            snapshot: fact_snapshot,
             provider: Arc::new(RawEventTableProvider::new(datasets, options)?),
         })
     }
@@ -197,7 +224,11 @@ impl RawEventDataSource {
     }
 
     pub fn version(&self) -> u64 {
-        self.version
+        self.snapshot.layout_revision
+    }
+
+    pub fn fact_snapshot(&self) -> &EventFactSnapshot {
+        &self.snapshot
     }
 
     pub fn provider(&self) -> Arc<RawEventTableProvider> {
@@ -223,6 +254,28 @@ impl RawEventDataSource {
         let context = SessionContext::new();
         self.register(&context)?;
         Ok(context)
+    }
+
+    /// Read a pinned source in manifest segment and physical append order.
+    pub async fn read_records_in_append_order(&self) -> Result<Vec<EventRecord>> {
+        let mut records = Vec::new();
+        for dataset in self.provider.datasets() {
+            let mut scan = dataset.scan();
+            scan.scan_in_order(true);
+            let batches = scan
+                .try_into_stream()
+                .await
+                .context("scan pinned canonical events in append order")?
+                .try_collect::<Vec<_>>()
+                .await
+                .context("collect pinned canonical events in append order")?;
+            for batch in &batches {
+                for row in event_rows_from_batch(batch)? {
+                    records.push(event_row_to_event_record(&row)?);
+                }
+            }
+        }
+        Ok(records)
     }
 }
 

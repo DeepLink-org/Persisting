@@ -8,7 +8,7 @@ description = "pChronicle: Persisting's structured storage layer for Agent traje
 readme = "README.md"
 
 [features]
-default = ["lance-store"]
+default = ["lance-store", "s3-store"]
 lance-store = [
     "dep:datafusion",
     "dep:futures",
@@ -17,6 +17,12 @@ lance-store = [
     "dep:lance-index",
     "dep:object_store",
 ]
+# Remote object stores are separated from the local Lance engine so pPilot and
+# other local-only consumers do not compile cloud SDKs. `s3-store` remains a
+# default feature for backwards compatibility; workspace dependencies disable
+# defaults and opt into only the backend they use.
+s3-store = ["lance-store", "lance/aws"]
+oss-store = ["lance-store", "lance/oss"]
 search = [
     "lance-store",
     "dep:lance-core",

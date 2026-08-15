@@ -24,6 +24,7 @@ default:
     @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
     @echo "  just echo                # 启动确定性的本地 LLM Echo upstream"
     @echo "  just benchmark-gateway   # Gateway 转发与持久化黑盒压测"
+    @echo "  just benchmark-gateway-replay # 回放 examples/data 并生成人工 review bundle"
     @echo "  just build-wheel         # 打 release wheel → dist/"
     @echo "  just docs-serve          # 本地文档"
 
@@ -120,18 +121,32 @@ gateway-fuzz-network:
 
 # Benchmark Gateway forwarding, typed capture, WAL, and durable Lance append
 # against the deterministic local Echo upstream.
+# Set PERSISTING_KEEP_TEST_ARTIFACTS=1 to retain the Dataset, WAL, and logs.
 # Usage: `just benchmark-gateway`, or `just benchmark-gateway 30 32 1024 0 16 2048`.
 [group('benchmark')]
 benchmark-gateway duration="10" concurrency="16" payload_bytes="256" warmup="0" sessions="16" requests="1024":
     #!/usr/bin/env bash
     set -euo pipefail
+    extra_args=()
+    if [[ "${PERSISTING_KEEP_TEST_ARTIFACTS:-0}" == "1" ]]; then
+      extra_args+=(--keep-artifacts)
+    fi
     bash benchmark/gateway/run.sh \
       --duration "{{ duration }}" \
       --concurrency "{{ concurrency }}" \
       --sessions "{{ sessions }}" \
       --requests "{{ requests }}" \
       --payload-bytes "{{ payload_bytes }}" \
-      --warmup "{{ warmup }}"
+      --warmup "{{ warmup }}" \
+      "${extra_args[@]}"
+
+# Replay every supported trajectory example through Gateway and write a
+# timestamped, human-reviewable bundle. Both arguments accept relative paths.
+[group('benchmark')]
+benchmark-gateway-replay data="examples/data" output="benchmark/gateway/results/replay-review":
+    bash benchmark/gateway/replay.sh \
+      --data "{{ data }}" \
+      --output "{{ output }}"
 
 # Find Gateway's saturation point with a closed-loop concurrency sweep. This
 # consumes the existing release binary and deliberately skips the Echo baseline.
@@ -199,12 +214,30 @@ chronicle-binary profile="debug": chronicle-web-build
     printf 'Run: %s serve --warehouse %s\n' "$binary" "{{ repo }}/data"
 
 build profile="debug":
-    cargo build -p persisting-pchronicle-cli --bin pchronicle {{ if profile == "release" { "--release" } else { "" } }}
-    cargo build -p persisting-pvisor --bin pvisor {{ if profile == "release" { "--release" } else { "" } }}
-    cargo build -p persisting-ppilot --bin ppilot {{ if profile == "release" { "--release" } else { "" } }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile="{{ profile }}"
+    case "$profile" in
+      debug) cargo_args=() ;;
+      release) cargo_args=(--release) ;;
+      *)
+        echo "unsupported build profile: $profile (expected debug or release)" >&2
+        exit 2
+        ;;
+    esac
+    # pChronicle and pPilot both require the Lance-backed Chronicle graph. Build
+    # them together so Cargo resolves and compiles that heavy feature set once.
+    cargo build \
+      -p persisting-pchronicle-cli --bin pchronicle \
+      -p persisting-ppilot --bin ppilot \
+      "${cargo_args[@]}"
+
+    # Keep the standalone pVisor binary on its deliberately lightweight graph;
+    # pPilot enables pVisor's local Lance Chronicle feature only above.
+    cargo build -p persisting-pvisor --bin pvisor "${cargo_args[@]}"
 
 build-release:
-    just build profile=release
+    just build release
 
 # Build pVisor and add the Hypervisor entitlement required by macOS/HVF.
 # Usage: `just pvisor` (release) or `just pvisor debug`.

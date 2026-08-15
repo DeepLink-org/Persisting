@@ -7,9 +7,86 @@ use serde_json::json;
 use crate::convert::message_text;
 use crate::formats::events::{EventIdentity, EventRecord, EventsDocument};
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    StoryLink, StorylineAgent, StorylineDocument, StorylineTurn, STORYLINE_SCHEMA_VERSION,
 };
-use crate::Result;
+use crate::{Error, Result};
+
+/// Version of the canonical events-to-Storyline projection semantics.
+pub const EVENTS_TO_STORYLINE_PROJECTOR_VERSION: &str = "events-storyline/v1";
+
+/// Resolve and project exactly one canonical Storyline from append-ordered events.
+///
+/// Unlike the interchange helper, this rejects identity-free or mixed-session
+/// input so a durable projection cannot silently merge unrelated facts.
+pub fn project_event_records(records: &[EventRecord]) -> Result<StorylineDocument> {
+    let mut session_id: Option<String> = None;
+    let mut run_id: Option<String> = None;
+    for record in records {
+        let resolved = event_storyline_key(record).ok_or_else(|| {
+            Error::Other("canonical event requires session_id, storyline_id, or run_id".into())
+        })?;
+        if let Some(existing) = &session_id {
+            if existing != resolved {
+                return Err(Error::Other(format!(
+                    "canonical event group mixes Storyline identities '{existing}' and '{resolved}'"
+                )));
+            }
+        } else {
+            session_id = Some(resolved.to_string());
+        }
+        if let Some(candidate) = record
+            .identity
+            .run_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+        {
+            if let Some(existing) = &run_id {
+                if existing != candidate {
+                    return Err(Error::Other(format!(
+                        "canonical event group mixes run identities '{existing}' and '{candidate}'"
+                    )));
+                }
+            } else {
+                run_id = Some(candidate.to_string());
+            }
+        }
+    }
+    let session_id =
+        session_id.ok_or_else(|| Error::Other("canonical event group is empty".into()))?;
+    let mut story = events_to_storyline(&EventsDocument::new(records.to_vec()))?;
+    story.session_id = session_id.clone();
+    story.run_id = run_id.clone().filter(|run_id| run_id != &session_id);
+    if let Some(parent_session_id) = run_id.filter(|run_id| run_id != &session_id) {
+        story.parent = Some(StoryLink {
+            parent_session_id,
+            spawn_call_id: None,
+            spawn_id: None,
+            relation: "spawn".into(),
+        });
+    }
+    Ok(story)
+}
+
+pub(crate) fn event_storyline_key(record: &EventRecord) -> Option<&str> {
+    record
+        .session_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            record
+                .identity
+                .storyline_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+        })
+        .or_else(|| {
+            record
+                .identity
+                .run_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+        })
+}
 
 pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
     let session_id = doc
@@ -24,10 +101,14 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
         .unwrap_or_else(|| "unknown".into());
 
     let mut by_call: BTreeMap<String, Vec<&EventRecord>> = BTreeMap::new();
+    let mut first_call_position = BTreeMap::<String, usize>::new();
     let mut orphans: Vec<&EventRecord> = Vec::new();
-    for ev in &doc.events {
+    for (position, ev) in doc.events.iter().enumerate() {
         match &ev.call_id {
-            Some(cid) if !cid.is_empty() => by_call.entry(cid.clone()).or_default().push(ev),
+            Some(cid) if !cid.is_empty() => {
+                first_call_position.entry(cid.clone()).or_insert(position);
+                by_call.entry(cid.clone()).or_default().push(ev);
+            }
             _ => orphans.push(ev),
         }
     }
@@ -35,14 +116,11 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
     let mut turns = Vec::new();
     let mut next_id = 1i64;
 
-    let mut call_order: Vec<(i64, String)> = by_call
-        .iter()
-        .map(|(cid, evs)| {
-            let min_seq = evs.iter().map(|e| e.seq as i64).min().unwrap_or(0);
-            (min_seq, cid.clone())
-        })
+    let mut call_order: Vec<(usize, String)> = first_call_position
+        .into_iter()
+        .map(|(cid, position)| (position, cid))
         .collect();
-    call_order.sort_by_key(|(s, _)| *s);
+    call_order.sort_by_key(|(position, _)| *position);
 
     for (_, cid) in call_order {
         let evs = &by_call[&cid];
@@ -571,4 +649,46 @@ fn extract_assistant(payload: &serde_json::Value) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         })
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    fn response(session_id: Option<&str>, call_id: &str, seq: u64, content: &str) -> EventRecord {
+        EventRecord {
+            identity: EventIdentity::default(),
+            seq,
+            source: "test".into(),
+            kind: "llm.response".into(),
+            timestamp: None,
+            session_id: session_id.map(str::to_string),
+            agent_id: Some("agent".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: Some(call_id.into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({"content": content}),
+        }
+    }
+
+    #[test]
+    fn canonical_projection_rejects_missing_storyline_identity() {
+        let error = project_event_records(&[response(None, "call", 0, "text")]).unwrap_err();
+        assert!(error.to_string().contains("requires session_id"));
+    }
+
+    #[test]
+    fn canonical_projection_uses_append_order_before_producer_seq() {
+        let records = vec![
+            response(Some("session"), "later-seq", 100, "first"),
+            response(Some("session"), "earlier-seq", 1, "second"),
+        ];
+        let story = project_event_records(&records).unwrap();
+        assert_eq!(story.turns[0].message, json!("first"));
+        assert_eq!(story.turns[1].message, json!("second"));
+    }
 }

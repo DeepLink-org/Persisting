@@ -202,7 +202,7 @@ fn chronicle_object_store_uri_survives_toml_round_trip() {
     );
 }
 
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 #[test]
 fn run_accepts_portable_object_store_chronicle_sink() {
     let temporary = tempfile::tempdir().expect("create CLI fixture");

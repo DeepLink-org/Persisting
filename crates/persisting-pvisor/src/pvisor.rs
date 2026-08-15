@@ -20,7 +20,7 @@ use persisting_agentctl::{
     ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
 };
-#[cfg(feature = "lance-chronicle")]
+#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use persisting_pchronicle::AttemptRegistry;
 use persisting_pchronicle::EventRecord;
 use serde_json::json;
@@ -29,10 +29,10 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(not(feature = "lance-chronicle"))]
+#[cfg(not(any(feature = "lance-chronicle", feature = "local-lance-chronicle")))]
 struct AttemptRegistry;
 
-#[cfg(not(feature = "lance-chronicle"))]
+#[cfg(not(any(feature = "lance-chronicle", feature = "local-lance-chronicle")))]
 impl AttemptRegistry {
     async fn open(_root: impl AsRef<str>) -> anyhow::Result<Self> {
         anyhow::bail!("durable remote Attempt registration requires the `lance-chronicle` feature")
@@ -931,7 +931,7 @@ mod tests {
     use super::*;
     use crate::{EventSink, MemoryEventSink};
     use async_trait::async_trait;
-    #[cfg(feature = "lance-chronicle")]
+    #[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
     use persisting_agentctl::SupervisorBootstrap;
     use persisting_agentctl::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
     use std::sync::Mutex;
@@ -1061,7 +1061,10 @@ mod tests {
         assert!(kinds.iter().any(|kind| kind == "run.state_changed"));
     }
 
-    #[cfg(all(unix, feature = "lance-chronicle"))]
+    #[cfg(all(
+        unix,
+        any(feature = "lance-chronicle", feature = "local-lance-chronicle")
+    ))]
     #[tokio::test]
     async fn durable_attempt_registry_receives_terminal_run_result() {
         let dir = tempfile::tempdir().unwrap();

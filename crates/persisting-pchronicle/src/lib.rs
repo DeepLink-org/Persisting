@@ -51,6 +51,8 @@ pub mod search;
 #[cfg(feature = "lance-store")]
 pub mod service;
 pub mod store;
+#[cfg(feature = "lance-store")]
+pub mod storyline_projection;
 pub mod storyline_schema;
 
 #[cfg(feature = "lance-store")]
@@ -66,7 +68,8 @@ pub use append_queue::{
 pub use atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 pub use convert::{
     actf_to_storyline, actf_to_storylines, convert, events_to_storyline, from_storyline,
-    into_storyline, is_actf_storyline, storyline_to_actf, storylines_to_actf,
+    into_storyline, is_actf_storyline, project_event_records, storyline_to_actf,
+    storylines_to_actf, EVENTS_TO_STORYLINE_PROJECTOR_VERSION,
 };
 #[cfg(feature = "lance-store")]
 pub use discovery::{
@@ -178,34 +181,42 @@ pub use store::{
     export_story_bundle, load_atif_trajectories, raw_event_arrow_schema, raw_event_lance_path,
     validate_event_lines, AppendOutcome, AtifDataSource, AtifDataSourceOptions, AtifReader,
     AttemptRecord, AttemptRecordState, AttemptRegistry, CatalogDataset, CatalogErrorPolicy,
-    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    CatalogTrajectoryBundle, ChronicleQueryBackend, ChronicleQueryEngine,
+    CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus,
+    CatalogStorylineKey, CatalogTrajectoryBundle, ChronicleQueryBackend, ChronicleQueryEngine,
     ChronicleQueryExecutionOptions, CommitRunOutcome, DatasetCatalogSnapshot, DatasetMount,
-    DiscoveredSource, EventLogLayoutStats, EventRow, EventWriterFence, ExportOutcome,
-    ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
+    DiscoveredSource, EventFactSnapshot, EventLogLayoutStats, EventRow, EventWriterFence,
+    ExportOutcome, ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
     FileTrajectoryDataSourceOptions, FileTrajectoryFormat, FileTrajectoryQueryMetrics,
     FileTrajectoryQueryMetricsSnapshot, LanceMaintenanceOptions, LanceMaintenanceReport,
     LeaseAcquireOutcome, LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
-    RawEventDataSource, RawEventDataSourceOptions, RawEventLanceAppender, RawEventLanceStore,
-    RawEventTableProvider, ReplayOutcome, RunControlStore, StorylineContentOptions,
-    StorylineContentReadMode, StorylineDataFusionTableNames, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineLanceStore, StorylineMaintenanceReport,
-    StorylineStreamImportReport, StorylineTableKind, StorylineTablePaths, StorylineTableProvider,
-    StructuredStore, TrajectorySession, TrajectoryStats, CATALOG_SOURCES_TABLE,
-    CATALOG_TRAJECTORIES_TABLE, DATAFUSION_EVENTS_TABLE, DATAFUSION_RUNS_TABLE,
-    DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
-    DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME, DEFAULT_LOCAL_QUERY_BATCH_SIZE,
-    DEFAULT_LOCAL_QUERY_CACHE_BYTES, DEFAULT_LOCAL_QUERY_CACHE_FILES,
-    DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
-    DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES, DEFAULT_MAX_LOCAL_QUERY_ENTRIES,
-    DEFAULT_MAX_LOCAL_QUERY_FILES, SOURCE_FILE_COLUMN, TRAJECTORY_AGENT_ID_COL,
-    TRAJECTORY_CALL_ID_COL, TRAJECTORY_COLS, TRAJECTORY_EVENT_ID_COL, TRAJECTORY_KIND_COL,
-    TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL, TRAJECTORY_PAYLOAD_JSON_COL,
-    TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL, TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL,
-    TRAJECTORY_TRACE_ID_COL,
+    ProjectionSourceSnapshot, RawEventDataSource, RawEventDataSourceOptions, RawEventLanceAppender,
+    RawEventLanceStore, RawEventTableProvider, ReplayOutcome, RunControlStore,
+    StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
+    StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
+    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
+    StorylineTableKind, StorylineTablePaths, StorylineTableProvider, StructuredStore,
+    TrajectorySession, TrajectoryStats, CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE,
+    DATAFUSION_EVENTS_TABLE, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
+    DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
+    DEFAULT_DATASET_NAME, DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
+    DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+    DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES,
+    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES, SOURCE_FILE_COLUMN,
+    TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_COLS, TRAJECTORY_EVENT_ID_COL,
+    TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL,
+    TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
+    TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL,
 };
 #[cfg(feature = "lance-store")]
 pub use store::{detect_local_query_format, detect_local_query_manifest};
+#[cfg(feature = "lance-store")]
+pub use storyline_projection::{
+    build_storyline_projection, canonical_projection_lineage, projection_lineage_is_fresh,
+    rebuild_storyline_projection, storyline_projection_status, sync_storyline_projection,
+    verify_storyline_projection, StorylineProjectionBuildReport, StorylineProjectionStatus,
+    StorylineProjectionSyncMode, StorylineProjectionSyncReport, StorylineProjectionVerification,
+    STORYLINE_PROJECTION_COMPLETENESS, STORYLINE_PROJECTOR_NAME,
+};
 pub use storyline_schema::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,

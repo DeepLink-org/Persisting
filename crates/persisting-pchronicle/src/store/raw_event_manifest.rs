@@ -19,7 +19,8 @@ use object_store::path::Path as ObjectPath;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
-const EVENT_MANIFEST_SCHEMA_VERSION: u32 = 1;
+const EVENT_MANIFEST_SCHEMA_VERSION: u32 = 2;
+const LEGACY_EVENT_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "_manifest.json";
 const MANIFEST_LOCK_FILE: &str = "_manifest.lock";
 const CAS_RETRIES: usize = 64;
@@ -56,7 +57,15 @@ pub(super) struct EventSegment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct EventManifest {
     pub schema_version: u32,
+    /// Physical manifest revision. Writer fencing, layout maintenance, and
+    /// fact publication may all advance this value.
     pub revision: u64,
+    /// Logical fact revision. Only publishing newly visible rows advances it.
+    #[serde(default)]
+    pub fact_version: u64,
+    /// Number of canonical rows visible at `fact_version`.
+    #[serde(default)]
+    pub fact_rows: u64,
     pub active_writer: EventWriterFence,
     #[serde(default)]
     pub segments: Vec<EventSegment>,
@@ -122,6 +131,8 @@ pub(super) async fn activate(
         let mut next = current.cloned().unwrap_or(EventManifest {
             schema_version: EVENT_MANIFEST_SCHEMA_VERSION,
             revision: 0,
+            fact_version: 0,
+            fact_rows: 0,
             active_writer: next_fence.clone(),
             segments: Vec::new(),
         });
@@ -186,6 +197,14 @@ pub(super) async fn publish_segment(
             Some(existing) => *existing = segment.clone(),
             None => next.segments.push(segment.clone()),
         }
+        let visible_rows = next.total_rows();
+        if visible_rows > current.fact_rows {
+            next.fact_version = current
+                .fact_version
+                .checked_add(1)
+                .context("event fact version overflow")?;
+            next.fact_rows = visible_rows;
+        }
         Ok(ManifestMutation::Replace(next.clone(), next))
     })
     .await
@@ -200,6 +219,15 @@ pub(super) async fn replace_segments(
     mutate(root_uri, move |current| {
         let current = current.context("event manifest disappeared during maintenance")?;
         ensure_active_writer(current, &fence)?;
+        let replacement_rows = segments.iter().try_fold(0_u64, |total, segment| {
+            total
+                .checked_add(segment.rows)
+                .context("event segment replacement row count overflow")
+        })?;
+        anyhow::ensure!(
+            replacement_rows == current.fact_rows,
+            "event maintenance must preserve visible fact rows"
+        );
         let mut next = current.clone();
         next.revision = next
             .revision
@@ -461,6 +489,12 @@ fn validate_manifest(manifest: &EventManifest) -> Result<()> {
         manifest.active_writer.epoch,
         manifest.active_writer.writer_id.clone(),
     )?;
+    anyhow::ensure!(
+        manifest.fact_rows == manifest.total_rows(),
+        "event manifest fact_rows {} does not match visible segment rows {}",
+        manifest.fact_rows,
+        manifest.total_rows()
+    );
     let mut ids = std::collections::BTreeSet::new();
     for segment in &manifest.segments {
         anyhow::ensure!(!segment.id.is_empty(), "event segment id must not be empty");
@@ -473,6 +507,18 @@ fn validate_manifest(manifest: &EventManifest) -> Result<()> {
     Ok(())
 }
 
+fn decode_manifest(bytes: &[u8], context: impl std::fmt::Display) -> Result<EventManifest> {
+    let mut manifest: EventManifest = serde_json::from_slice(bytes)
+        .with_context(|| format!("decode event manifest {context}"))?;
+    if manifest.schema_version == LEGACY_EVENT_MANIFEST_SCHEMA_VERSION {
+        manifest.fact_version = manifest.revision;
+        manifest.fact_rows = manifest.total_rows();
+        manifest.schema_version = EVENT_MANIFEST_SCHEMA_VERSION;
+    }
+    validate_manifest(&manifest)?;
+    Ok(manifest)
+}
+
 fn read_local_manifest(path: &Path) -> Result<Option<EventManifest>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -481,9 +527,7 @@ fn read_local_manifest(path: &Path) -> Result<Option<EventManifest>> {
     };
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
-    let manifest: EventManifest = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decode event manifest {}", path.display()))?;
-    validate_manifest(&manifest)?;
+    let manifest = decode_manifest(&bytes, path.display())?;
     Ok(Some(manifest))
 }
 
@@ -525,9 +569,7 @@ async fn read_object_manifest(
         version: result.meta.version.clone(),
     };
     let bytes = result.bytes().await?;
-    let manifest: EventManifest = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decode event manifest object {path}"))?;
-    validate_manifest(&manifest)?;
+    let manifest = decode_manifest(&bytes, format_args!("object {path}"))?;
     Ok(Some((manifest, version)))
 }
 
@@ -578,6 +620,44 @@ mod tests {
         let manifest = read(uri).await.unwrap().unwrap();
         assert_eq!(manifest.active_writer, new);
         assert_eq!(manifest.total_rows(), 10);
+    }
+
+    #[tokio::test]
+    async fn fact_version_changes_only_when_visible_rows_advance() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("events.lance");
+        let uri = root.to_str().unwrap();
+        let first = EventWriterFence::new(1, "first").unwrap();
+        let activated = activate(uri, Some(&first), "unused").await.unwrap();
+        assert_eq!((activated.fact_version, activated.fact_rows), (0, 0));
+
+        let published = publish_segment(
+            uri,
+            &first,
+            EventSegment {
+                id: "segment".into(),
+                version: 1,
+                rows: 3,
+                level: 0,
+                sealed: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((published.fact_version, published.fact_rows), (1, 3));
+
+        let second = EventWriterFence::new(2, "second").unwrap();
+        let reactivated = activate(uri, Some(&second), "unused").await.unwrap();
+        assert!(reactivated.revision > published.revision);
+        assert_eq!(reactivated.fact_version, published.fact_version);
+        assert_eq!(reactivated.fact_rows, published.fact_rows);
+
+        let maintained = replace_segments(uri, &second, reactivated.segments.clone())
+            .await
+            .unwrap();
+        assert!(maintained.revision > reactivated.revision);
+        assert_eq!(maintained.fact_version, published.fact_version);
+        assert_eq!(maintained.fact_rows, published.fact_rows);
     }
 
     #[tokio::test]

@@ -15,14 +15,9 @@ members = [
 exclude = ["vendor/libkrun", "vendor/krun-vmm", "vendor/krun-devices"]
 
 default-members = [
-    "crates/persisting-agentctl",
-    "crates/persisting-gateway",
-    "crates/persisting-dlcapt",
+    "crates/persisting-pchronicle-cli",
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
-    "crates/persisting-pchronicle",
-    "crates/persisting-pchronicle-cli",
-    "crates/persisting-overlaynet",
 ]
 
 [workspace.package]
@@ -65,9 +60,18 @@ codegen-units = 256
 strip = "none"
 
 [profile.release]
+# Keep production builds compact without serializing code generation behind
+# whole-program optimization. Use `--profile release-compact` when maximum
+# size reduction is worth the substantially longer link step.
+opt-level = "s"
+lto = false
+strip = "symbols"
+codegen-units = 16
+
+[profile.release-compact]
+inherits = "release"
 opt-level = "z"
 lto = "thin"
-strip = "symbols"
 codegen-units = 1
 
 [workspace.dependencies]
@@ -95,7 +99,7 @@ hyper = "1"
 hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
 jj-lib = "0.43.0"
-lance = { version = "9.0.1", default-features = false, features = ["aws", "oss", "protoc"] }
+lance = { version = "9.0.1", default-features = false, features = ["protoc"] }
 lance-core = "9.0.1"
 lance-file = "9.0.1"
 lance-datafusion = { version = "9.0.1", features = ["protoc"] }
