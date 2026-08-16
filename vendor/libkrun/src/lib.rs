@@ -695,6 +695,7 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay(
     lower_count: usize,
     c_upper_path: *const c_char,
     c_work_path: *const c_char,
+    c_preimage_path: *const c_char,
     excluded_paths: *const *const c_char,
     excluded_count: usize,
     shm_size: u64,
@@ -728,6 +729,14 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay(
         None
     } else {
         match parse(c_work_path) {
+            Ok(value) => Some(value),
+            Err(()) => return -libc::EINVAL,
+        }
+    };
+    let preimage_dir = if c_preimage_path.is_null() {
+        None
+    } else {
+        match parse(c_preimage_path) {
             Ok(value) => Some(value),
             Err(()) => return -libc::EINVAL,
         }
@@ -780,6 +789,7 @@ pub unsafe extern "C" fn krun_add_virtiofs_overlay(
                     lower_dirs,
                     upper_dir,
                     work_dir,
+                    preimage_dir,
                     excluded_paths: excluded,
                     semantics: PermissionSemantics::LinuxComplete,
                 }),
@@ -3211,6 +3221,7 @@ mod test_disable_implicit_init {
         let lower = CString::new("/lower").unwrap();
         let upper = CString::new("/upper").unwrap();
         let work = CString::new("/work").unwrap();
+        let preimages = CString::new("/preimages").unwrap();
         let excluded = CString::new(".stage").unwrap();
         let lowers = [lower.as_ptr()];
         let excluded_paths = [excluded.as_ptr()];
@@ -3223,6 +3234,7 @@ mod test_disable_implicit_init {
                     lowers.len(),
                     upper.as_ptr(),
                     work.as_ptr(),
+                    preimages.as_ptr(),
                     excluded_paths.as_ptr(),
                     excluded_paths.len(),
                     0,
@@ -3234,6 +3246,7 @@ mod test_disable_implicit_init {
         let overlay = ctx_map[&ctx].vmr.fs[0].overlay.as_ref().unwrap();
         assert_eq!(overlay.lower_dirs, ["/lower"]);
         assert_eq!(overlay.upper_dir, "/upper");
+        assert_eq!(overlay.preimage_dir.as_deref(), Some("/preimages"));
         assert_eq!(overlay.excluded_paths, [".stage"]);
         drop(ctx_map);
         assert_eq!(krun_free_ctx(ctx), KRUN_SUCCESS);
@@ -3248,6 +3261,7 @@ mod test_disable_implicit_init {
                     lowers.len(),
                     upper.as_ptr(),
                     work.as_ptr(),
+                    std::ptr::null(),
                     std::ptr::null(),
                     0,
                     0,

@@ -1026,7 +1026,7 @@ async fn execute_config(
             RunExecutorKind::Host => {
                 #[cfg(target_os = "linux")]
                 eprintln!(
-                    "boundary: rootless namespace + synthetic root + Landlock filesystem; network remains cooperative unless explicitly denied"
+                    "boundary: rootless user/mount/PID namespaces + PID 1 reaper + synthetic root + Landlock filesystem; network remains cooperative unless explicitly denied"
                 );
                 #[cfg(target_os = "macos")]
                 eprintln!(

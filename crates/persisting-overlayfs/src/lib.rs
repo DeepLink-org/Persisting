@@ -45,6 +45,8 @@ pub struct OverlayMountConfig {
     /// macFUSE backend (`kernel` or `fskit`). Ignored on non-macOS hosts.
     pub backend: Option<String>,
     pub debug: bool,
+    /// Optional durable first-touch journal used to reject apply conflicts.
+    pub preimage_dir: Option<PathBuf>,
     /// Paths relative to the overlay root that are absent from the mounted
     /// namespace. Exclusions apply to every lower and the writable upper and
     /// cannot be recreated from inside the mount.
@@ -72,6 +74,7 @@ impl OverlayMountConfig {
             fsname: "persisting-overlayfs".into(),
             backend: None,
             debug: false,
+            preimage_dir: None,
             excluded_paths: Vec::new(),
         }
     }
@@ -317,19 +320,21 @@ fn prepare(
     }
 
     let mut jujutsu = None;
+    let preimage_dir = config.preimage_dir;
     let filesystem = match config.upper {
         UpperBackend::Directory {
             upper_dir,
             work_dir,
         } => {
-            if config.excluded_paths.is_empty() {
+            if config.excluded_paths.is_empty() && preimage_dir.is_none() {
                 OverlayFs::new(config.lower_dirs, upper_dir, work_dir)?
             } else {
-                OverlayFs::new_with_exclusions(
+                OverlayFs::new_with_exclusions_and_preimages(
                     config.lower_dirs,
                     upper_dir,
                     work_dir,
                     config.excluded_paths,
+                    preimage_dir,
                 )?
             }
         }
@@ -339,14 +344,15 @@ fn prepare(
         } => {
             let workspace = JujutsuWorkspace::open(store_path, workspace, config.read_only)?;
             let upper_dir = workspace.upper_dir().to_path_buf();
-            let filesystem = if config.excluded_paths.is_empty() {
+            let filesystem = if config.excluded_paths.is_empty() && preimage_dir.is_none() {
                 OverlayFs::new(config.lower_dirs, upper_dir, None)?
             } else {
-                OverlayFs::new_with_exclusions(
+                OverlayFs::new_with_exclusions_and_preimages(
                     config.lower_dirs,
                     upper_dir,
                     None,
                     config.excluded_paths,
+                    preimage_dir,
                 )?
             };
             if !config.read_only {

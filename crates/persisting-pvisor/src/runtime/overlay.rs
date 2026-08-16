@@ -15,17 +15,22 @@ use super::implant::OverlayHint;
 use crate::util::{atomic_write, create_dir_all_durable};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use persisting_gateway::config::{OverlayBackend, OverlayConfig};
+use persisting_overlay_core::{
+    fingerprint_at, load_preimages, preimage_journal_is_complete, remove_preimages,
+    PathFingerprint, PathPreimage,
+};
 use persisting_overlayfs::{
     jujutsu_upper_dir, mount as mount_embedded_overlay, snapshot_jujutsu_upper, OverlayMountConfig,
     OverlaySession,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CString, OsStr};
-use std::fs;
+use std::fs::{self, File};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -202,6 +207,9 @@ pub struct ApplyRecord {
     /// Exact dependency-closed paths selected by the prepared transaction.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub planned_paths: Vec<PathBuf>,
+    /// Target state captured when each path was first mutated in the overlay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preimages: Vec<PathPreimage>,
     /// Old ledgers contain only successful records and therefore deserialize
     /// as committed.
     #[serde(default = "committed_apply_state")]
@@ -257,6 +265,49 @@ pub struct OverlayMount {
 pub struct ReadOnlyOverlayMount {
     session: Option<OverlaySession>,
     mountpoint: PathBuf,
+}
+
+struct TargetApplyLock {
+    file: File,
+}
+
+impl TargetApplyLock {
+    fn acquire(target: &Path) -> Result<Self, OverlayError> {
+        let directory = std::env::temp_dir()
+            .join(format!("persisting-pvisor-apply-locks-{}", unsafe {
+                libc::geteuid()
+            }));
+        fs::create_dir_all(&directory)?;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        let identity = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+        let path = directory.join(format!("{}.lock", path_digest(&identity)));
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)?;
+        fs2::FileExt::lock_exclusive(&file)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for TargetApplyLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+fn path_digest(path: &Path) -> String {
+    use std::fmt::Write as _;
+
+    let digest = Sha256::digest(path.as_os_str().as_bytes());
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 impl ReadOnlyOverlayMount {
@@ -582,6 +633,7 @@ pub fn mount_overlay_record(
     };
     config.fsname = format!("pvisor-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
+    config.preimage_dir = Some(record.stage_dir.join("preimages"));
     let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)?;
 
@@ -608,6 +660,8 @@ pub(crate) fn prepare_overlay_record_mountless(
         create_dir_all_durable(dir)
             .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     }
+    create_dir_all_durable(&record.stage_dir.join("preimages/entries"))
+        .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     match &record.upper {
         OverlayUpper::Directory {
             upper_dir,
@@ -1102,7 +1156,8 @@ pub fn apply_overlay_selected(
             record.target.display()
         )));
     }
-    recover_pending_applies(record, lower_dirs)?;
+    let _target_lock = TargetApplyLock::acquire(&record.target)?;
+    recover_pending_applies_locked(record, lower_dirs)?;
     match record.state {
         OverlayState::Applied if selection.is_all() => {
             return Ok(ApplyOutcome {
@@ -1126,6 +1181,8 @@ pub fn apply_overlay_selected(
         OverlayState::Active | OverlayState::Staged => {}
     }
     let plan = plan_overlay_apply(record, lower_dirs, selection)?;
+    let preimages = prepare_apply_preimages(record, &plan.selected_paths)?;
+    validate_target_preimages(record, &preimages, &plan.selected, false)?;
     let apply_id = uuid::Uuid::new_v4().to_string();
     append_apply_record(
         record,
@@ -1139,13 +1196,21 @@ pub fn apply_overlay_selected(
             selection: selection.clone(),
             changes: plan.selected.clone(),
             planned_paths: plan.selected_paths.iter().cloned().collect(),
+            preimages: preimages.clone(),
             state: ApplyRecordState::Prepared,
             remaining_changes: 0,
         },
     )?;
-    apply_prepared_target(record, &plan.selected_paths)?;
+    apply_prepared_target(
+        record,
+        &plan.selected_paths,
+        &preimages,
+        &plan.selected,
+        false,
+    )?;
     mark_apply_target_applied(record, &apply_id)?;
     let remaining = complete_target_applied(record, lower_dirs, &plan.selected_paths)?;
+    consume_applied_preimages(record, &plan.selected_paths)?;
     mark_apply_committed(record, &apply_id, remaining.len())?;
     Ok(ApplyOutcome {
         apply_id,
@@ -1157,7 +1222,16 @@ pub fn apply_overlay_selected(
 /// Complete any transaction whose durable intent was written before a crash.
 /// `TargetApplied` is persisted before pruning starts, so recovery never tries
 /// to reinterpret a partially-pruned opaque upper as a fresh target mutation.
-pub fn recover_pending_applies(
+#[cfg(test)]
+fn recover_pending_applies(
+    record: &mut OverlayRecord,
+    lower_dirs: &[PathBuf],
+) -> Result<Vec<String>, OverlayError> {
+    let _target_lock = TargetApplyLock::acquire(&record.target)?;
+    recover_pending_applies_locked(record, lower_dirs)
+}
+
+fn recover_pending_applies_locked(
     record: &mut OverlayRecord,
     lower_dirs: &[PathBuf],
 ) -> Result<Vec<String>, OverlayError> {
@@ -1194,23 +1268,142 @@ pub fn recover_pending_applies(
             )));
         }
         if apply.state == ApplyRecordState::Prepared {
-            apply_prepared_target(record, &selected_paths)?;
+            apply_prepared_target(
+                record,
+                &selected_paths,
+                &apply.preimages,
+                &apply.changes,
+                true,
+            )?;
             mark_apply_target_applied(record, &apply.apply_id)?;
         }
         let remaining = complete_target_applied(record, lower_dirs, &selected_paths)?;
+        consume_applied_preimages(record, &selected_paths)?;
         mark_apply_committed(record, &apply.apply_id, remaining.len())?;
         recovered.push(apply.apply_id);
     }
     Ok(recovered)
 }
 
-fn apply_prepared_target(
+fn consume_applied_preimages(
     record: &OverlayRecord,
     selected_paths: &BTreeSet<PathBuf>,
 ) -> Result<(), OverlayError> {
+    let paths = selected_paths.iter().cloned().collect::<Vec<_>>();
+    remove_preimages(&record.stage_dir.join("preimages"), &paths).map_err(OverlayError::Io)
+}
+
+fn apply_prepared_target(
+    record: &OverlayRecord,
+    selected_paths: &BTreeSet<PathBuf>,
+    preimages: &[PathPreimage],
+    changes: &[ChangeEntry],
+    recovering: bool,
+) -> Result<(), OverlayError> {
+    validate_target_preimages(record, preimages, changes, recovering)?;
     let upper_dir = record.upper.path();
     if upper_dir.is_dir() && !selected_paths.is_empty() {
         apply_selected_upper(upper_dir, &record.target, selected_paths)?;
+    }
+    Ok(())
+}
+
+fn prepare_apply_preimages(
+    record: &OverlayRecord,
+    selected_paths: &BTreeSet<PathBuf>,
+) -> Result<Vec<PathPreimage>, OverlayError> {
+    let journal_directory = record.stage_dir.join("preimages");
+    let complete = preimage_journal_is_complete(&journal_directory);
+    let mut journal = load_preimages(&journal_directory)?
+        .into_iter()
+        .map(|preimage| (preimage.relative_path(), preimage))
+        .collect::<HashMap<_, _>>();
+    let mut preimages = Vec::with_capacity(selected_paths.len());
+    for path in selected_paths {
+        if let Some(preimage) = journal.remove(path) {
+            preimages.push(preimage);
+        } else if complete {
+            return Err(OverlayError::InvalidState(format!(
+                "complete preimage journal is missing selected path {}; refusing an unverified apply",
+                path.display()
+            )));
+        } else {
+            // Backward compatibility for stages produced before first-touch
+            // journaling existed. These paths get an apply-time preimage, but
+            // only complete-v1 stages claim run-time conflict detection.
+            preimages.push(PathPreimage {
+                path: path.as_os_str().as_bytes().to_vec(),
+                state: fingerprint_at(&record.target, path)?,
+            });
+        }
+    }
+    Ok(preimages)
+}
+
+fn recovery_fingerprint_matches(current: &PathFingerprint, expected: &PathFingerprint) -> bool {
+    if current == expected {
+        return true;
+    }
+    matches!(
+        (current, expected),
+        (
+            PathFingerprint::Directory {
+                mode: current_mode,
+                uid: current_uid,
+                gid: current_gid,
+                ..
+            },
+            PathFingerprint::Directory {
+                mode: expected_mode,
+                uid: expected_uid,
+                gid: expected_gid,
+                ..
+            }
+        ) if current_mode == expected_mode
+            && current_uid == expected_uid
+            && current_gid == expected_gid
+    )
+}
+
+fn desired_fingerprint(
+    record: &OverlayRecord,
+    path: &Path,
+    changes: &[ChangeEntry],
+) -> Result<Option<PathFingerprint>, OverlayError> {
+    let Some(change) = changes
+        .iter()
+        .find(|change| Path::new(&change.path) == path)
+    else {
+        return Ok(None);
+    };
+    if change.kind == ChangeKind::Deleted {
+        return Ok(Some(PathFingerprint::Absent));
+    }
+    Ok(Some(fingerprint_at(record.upper.path(), path)?))
+}
+
+fn validate_target_preimages(
+    record: &OverlayRecord,
+    preimages: &[PathPreimage],
+    changes: &[ChangeEntry],
+    recovering: bool,
+) -> Result<(), OverlayError> {
+    for preimage in preimages {
+        let path = preimage.relative_path();
+        let current = fingerprint_at(&record.target, &path)?;
+        if current == preimage.state {
+            continue;
+        }
+        if recovering
+            && desired_fingerprint(record, &path, changes)?
+                .is_some_and(|desired| recovery_fingerprint_matches(&current, &desired))
+        {
+            continue;
+        }
+        return Err(OverlayError::Apply(format!(
+            "target changed after staging at {}; refusing to overwrite concurrent changes",
+            record.target.join(&path).display()
+        )));
     }
     Ok(())
 }
@@ -1612,40 +1805,64 @@ fn copy_upper_entry(
         ensure_directory(destination)?;
         return apply_directory(source, destination, hard_links, true);
     }
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    remove_path(destination)?;
-    if kind.is_symlink() {
-        std::os::unix::fs::symlink(fs::read_link(source)?, destination)?;
-    } else if kind.is_file() {
-        let identity = (metadata.dev(), metadata.ino());
-        if metadata.nlink() > 1 {
-            if let Some(existing) = hard_links.get(&identity) {
-                fs::hard_link(existing, destination)?;
-                return Ok(());
+    let parent = destination.parent().ok_or_else(|| {
+        OverlayError::Apply(format!(
+            "apply destination has no parent: {}",
+            destination.display()
+        ))
+    })?;
+    fs::create_dir_all(parent)?;
+    // The deterministic reserved name lets a Prepared transaction clean up
+    // its own interrupted copy before retrying. TargetApplyLock serializes all
+    // pVisor writers for this target while the entry exists.
+    let temporary = parent.join(format!(".pvisor-apply-{}", path_digest(destination)));
+    remove_path(&temporary)?;
+    let identity = (metadata.dev(), metadata.ino());
+    let result = (|| {
+        if kind.is_symlink() {
+            std::os::unix::fs::symlink(fs::read_link(source)?, &temporary)?;
+        } else if kind.is_file() {
+            if metadata.nlink() > 1 {
+                if let Some(existing) = hard_links.get(&identity) {
+                    fs::hard_link(existing, &temporary)?;
+                } else {
+                    fs::copy(source, &temporary)?;
+                }
+            } else {
+                fs::copy(source, &temporary)?;
+            }
+        } else {
+            let path = c_path(&temporary)?;
+            // SAFETY: path is NUL terminated and points to valid storage for this call.
+            let rc = unsafe {
+                libc::mknod(
+                    path.as_ptr(),
+                    metadata.mode() as libc::mode_t,
+                    metadata.rdev() as libc::dev_t,
+                )
+            };
+            if rc != 0 {
+                return Err(io::Error::last_os_error().into());
             }
         }
-        fs::copy(source, destination)?;
-        if metadata.nlink() > 1 {
+        copy_host_metadata(source, &temporary)?;
+        if kind.is_file() {
+            File::open(&temporary)?.sync_all()?;
+        }
+        if fs::symlink_metadata(destination).is_ok_and(|metadata| metadata.is_dir()) {
+            remove_path(destination)?;
+        }
+        fs::rename(&temporary, destination)?;
+        File::open(parent)?.sync_all()?;
+        if kind.is_file() && metadata.nlink() > 1 {
             hard_links.insert(identity, destination.to_path_buf());
         }
-    } else {
-        let path = c_path(destination)?;
-        // SAFETY: path is NUL terminated and points to valid storage for this call.
-        let rc = unsafe {
-            libc::mknod(
-                path.as_ptr(),
-                metadata.mode() as libc::mode_t,
-                metadata.rdev() as libc::dev_t,
-            )
-        };
-        if rc != 0 {
-            return Err(io::Error::last_os_error().into());
-        }
+        Ok::<_, OverlayError>(())
+    })();
+    if result.is_err() {
+        let _ = remove_path(&temporary);
     }
-    copy_host_metadata(source, destination)?;
-    Ok(())
+    result
 }
 
 fn snapshot_directory_raw(
@@ -2483,6 +2700,7 @@ mod tests {
             let selection = ApplySelection::default();
             let plan =
                 plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();
+            let preimages = prepare_apply_preimages(&record, &plan.selected_paths).unwrap();
             let apply_id = format!("prepared-{target_already_mutated}");
             append_apply_record(
                 &record,
@@ -2496,6 +2714,7 @@ mod tests {
                     selection,
                     changes: plan.selected.clone(),
                     planned_paths: plan.selected_paths.iter().cloned().collect(),
+                    preimages,
                     state: ApplyRecordState::Prepared,
                     remaining_changes: 0,
                 },
@@ -2528,6 +2747,51 @@ mod tests {
             assert_eq!(ledger[0].state, ApplyRecordState::Committed);
             assert_eq!(ledger[0].remaining_changes, 0);
         }
+    }
+
+    #[test]
+    fn apply_rejects_a_target_changed_after_first_touch() {
+        let temporary = tempdir().unwrap();
+        let target = temporary.path().join("target");
+        let stage = temporary.path().join("stage");
+        let upper = stage.join("upper");
+        let work = stage.join("work");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("value.txt"), b"original").unwrap();
+        let core = persisting_overlay_core::OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            Some(work.clone()),
+            Vec::new(),
+            Some(stage.join("preimages")),
+        )
+        .unwrap();
+        core.copy_up(Path::new("value.txt")).unwrap();
+        fs::write(upper.join("value.txt"), b"staged").unwrap();
+        fs::write(target.join("value.txt"), b"concurrent").unwrap();
+
+        let mut record = OverlayRecord {
+            generation: 0,
+            id: "conflicting-apply".into(),
+            target: target.clone(),
+            upper: OverlayUpper::Directory {
+                upper_dir: upper.clone(),
+                work_dir: work,
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage.clone(),
+            excluded_paths: Vec::new(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+
+        let error = apply_overlay(&mut record).unwrap_err();
+        assert!(error.to_string().contains("target changed after staging"));
+        assert_eq!(fs::read(target.join("value.txt")).unwrap(), b"concurrent");
+        assert_eq!(fs::read(upper.join("value.txt")).unwrap(), b"staged");
+        assert!(load_apply_records(&stage).unwrap().is_empty());
     }
 
     #[test]
@@ -2573,15 +2837,16 @@ mod tests {
                 overlay_generation: record.generation,
                 target: target.clone(),
                 selection,
-                changes: plan.selected,
+                changes: plan.selected.clone(),
                 planned_paths: plan.selected_paths.iter().cloned().collect(),
+                preimages: Vec::new(),
                 state: ApplyRecordState::Prepared,
                 remaining_changes: 0,
             },
         )
         .unwrap();
 
-        apply_prepared_target(&record, &plan.selected_paths).unwrap();
+        apply_prepared_target(&record, &plan.selected_paths, &[], &plan.selected, false).unwrap();
         mark_apply_target_applied(&record, &apply_id).unwrap();
         assert!(!target.join("replaced/old").exists());
         assert_eq!(fs::read(target.join("replaced/new")).unwrap(), b"new");

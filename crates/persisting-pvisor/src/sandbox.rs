@@ -22,6 +22,8 @@ pub(crate) const SANDBOX_SETUP_FAILED_WARNING: &str = "pvisor.sandbox.setup_fail
 pub(crate) const MACOS_SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 #[cfg(target_os = "macos")]
 pub(crate) const SEATBELT_ATTESTATION: &[u8] = b"pvisor-seatbelt-ready-v1\n";
+#[cfg(target_os = "linux")]
+pub(crate) const ROOTLESS_ATTESTATION: &[u8] = b"pvisor-rootless-ready-v1\n";
 
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_EXECUTE: u64 = 1 << 0;
@@ -44,6 +46,7 @@ const LANDLOCK_ACCESS_FS_READ: u64 =
 pub(crate) struct SandboxPlan {
     pub root: PathBuf,
     pub cwd: PathBuf,
+    pub attestation: PathBuf,
     pub read_only: Vec<PathBuf>,
     pub read_write: Vec<PathBuf>,
     pub deny_network: bool,
@@ -59,7 +62,8 @@ pub(crate) struct SeatbeltPlan {
 /// Enter the hidden launcher when the first argument is the internal marker.
 ///
 /// Returns `Ok(false)` for an ordinary pVisor invocation.  A successful
-/// sandbox invocation never returns because it replaces itself with the Agent.
+/// sandbox invocation never returns because it supervises or replaces itself
+/// with the Agent.
 #[doc(hidden)]
 pub fn run_internal_if_requested() -> anyhow::Result<bool> {
     if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(INTERNAL_SANDBOX_ARG)) {
@@ -72,7 +76,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 #[cfg(target_os = "linux")]
 fn run_internal() -> anyhow::Result<()> {
     use anyhow::{bail, Context};
-    use std::os::unix::process::CommandExt;
+    use std::os::fd::AsRawFd;
 
     let encoded = std::env::var(SANDBOX_PLAN_ENV).context("missing rootless sandbox plan")?;
     let plan: SandboxPlan =
@@ -88,15 +92,28 @@ fn run_internal() -> anyhow::Result<()> {
 
     enter_rootless_namespaces(plan.deny_network)
         .context("initialize rootless user and mount namespaces")?;
+    enter_child_pid_namespace().context("initialize private PID namespace")?;
+    // Open the parent-owned inode before chroot/Landlock. The descriptor is
+    // retained only by trusted setup code and closed before Agent execution,
+    // so no attestation pathname needs to be projected into the sandbox.
+    let attestation = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&plan.attestation)
+        .with_context(|| {
+            format!(
+                "open rootless setup attestation {}",
+                plan.attestation.display()
+            )
+        })?;
     enter_synthetic_root(&plan).context("construct private sandbox root")?;
     std::env::set_current_dir(&plan.cwd)
         .with_context(|| format!("enter sandbox workspace {}", plan.cwd.display()))?;
 
     // Enumerating /proc/self/fd must happen before Landlock intentionally
     // removes access to the host procfs tree.
-    close_unexpected_file_descriptors().context("close inherited file descriptors")?;
+    close_unexpected_file_descriptors(Some(attestation.as_raw_fd()))
+        .context("close inherited file descriptors")?;
     let landlock_abi = install_landlock(&plan).context("install Landlock filesystem policy")?;
-
     drop_process_capabilities().context("drop namespace capabilities")?;
     std::env::remove_var(SANDBOX_PLAN_ENV);
     std::env::set_var("PERSISTING_SANDBOX_FILESYSTEM", "landlock");
@@ -107,10 +124,7 @@ fn run_internal() -> anyhow::Result<()> {
         if plan.deny_network { "deny" } else { "ambient" },
     );
 
-    Err(std::process::Command::new(program)
-        .args(arguments)
-        .exec()
-        .into())
+    supervise_pid_namespace(program, arguments, attestation)
 }
 
 #[cfg(target_os = "macos")]
@@ -285,6 +299,7 @@ pub(crate) fn restrict_krun_runner(
     let plan = SandboxPlan {
         root: PathBuf::from("/"),
         cwd: PathBuf::from("/"),
+        attestation: PathBuf::from("/dev/null"),
         read_only,
         read_write,
         deny_network: true,
@@ -571,6 +586,22 @@ fn enter_rootless_namespaces(deny_network: bool) -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+fn enter_child_pid_namespace() -> std::io::Result<()> {
+    if unsafe { libc::unshare(libc::CLONE_NEWPID) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn write_rootless_attestation(attestation: &mut std::fs::File) -> std::io::Result<()> {
+    use std::io::Write;
+
+    attestation.write_all(ROOTLESS_ATTESTATION)?;
+    attestation.sync_data()
+}
+
+#[cfg(target_os = "linux")]
 fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind};
 
@@ -752,7 +783,240 @@ fn drop_process_capabilities() -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn close_unexpected_file_descriptors() -> std::io::Result<()> {
+extern "C" fn forward_namespace_signal(signal: libc::c_int) {
+    // PID 1 is excluded from kill(-1, ...), so this forwards cancellation to
+    // every Agent descendant even after setsid(2) or a double fork.
+    unsafe {
+        libc::kill(-1, signal);
+    }
+}
+
+#[cfg(target_os = "linux")]
+static NAMESPACE_INIT_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+#[cfg(target_os = "linux")]
+extern "C" fn forward_launcher_signal(signal: libc::c_int) {
+    let pid = NAMESPACE_INIT_PID.load(std::sync::atomic::Ordering::Relaxed);
+    if pid > 0 {
+        unsafe {
+            libc::kill(pid, signal);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn install_namespace_signal_handlers(handler: libc::sighandler_t) -> std::io::Result<()> {
+    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
+        let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
+        action.sa_sigaction = handler;
+        action.sa_flags = libc::SA_RESTART;
+        unsafe {
+            libc::sigemptyset(&mut action.sa_mask);
+        }
+        if unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn exit_with_wait_status(status: libc::c_int) -> ! {
+    if libc::WIFEXITED(status) {
+        unsafe { libc::_exit(libc::WEXITSTATUS(status)) };
+    }
+    if libc::WIFSIGNALED(status) {
+        let signal = libc::WTERMSIG(status);
+        unsafe {
+            libc::signal(signal, libc::SIG_DFL);
+            libc::kill(libc::getpid(), signal);
+            libc::_exit(128 + signal);
+        }
+    }
+    unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+}
+
+/// Run a tiny trusted PID-namespace supervisor. The first child after
+/// CLONE_NEWPID becomes namespace PID 1; when it exits, the kernel kills all
+/// remaining processes in that namespace, including daemonized descendants.
+#[cfg(target_os = "linux")]
+fn supervise_pid_namespace(
+    program: std::ffi::OsString,
+    arguments: Vec<std::ffi::OsString>,
+    mut attestation: std::fs::File,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use std::os::unix::process::CommandExt;
+
+    let mut ready_pipe = [0; 2];
+    let mut release_pipe = [0; 2];
+    if unsafe { libc::pipe2(ready_pipe.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("create PID supervisor ready pipe");
+    }
+    if unsafe { libc::pipe2(release_pipe.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe {
+            libc::close(ready_pipe[0]);
+            libc::close(ready_pipe[1]);
+        }
+        return Err(error).context("create PID supervisor release pipe");
+    }
+
+    let namespace_init = unsafe { libc::fork() };
+    if namespace_init < 0 {
+        unsafe {
+            libc::close(ready_pipe[0]);
+            libc::close(ready_pipe[1]);
+            libc::close(release_pipe[0]);
+            libc::close(release_pipe[1]);
+        }
+        return Err(std::io::Error::last_os_error()).context("fork PID namespace init");
+    }
+    if namespace_init > 0 {
+        unsafe {
+            libc::close(ready_pipe[1]);
+            libc::close(release_pipe[0]);
+        }
+        NAMESPACE_INIT_PID.store(namespace_init, std::sync::atomic::Ordering::Relaxed);
+        if let Err(error) = install_namespace_signal_handlers(
+            forward_launcher_signal as *const () as libc::sighandler_t,
+        ) {
+            unsafe {
+                libc::kill(namespace_init, libc::SIGKILL);
+                libc::waitpid(namespace_init, std::ptr::null_mut(), 0);
+            }
+            return Err(error).context("install PID namespace launcher signal handlers");
+        }
+        let mut ready = 0_u8;
+        let ready_count = unsafe { libc::read(ready_pipe[0], (&mut ready as *mut u8).cast(), 1) };
+        unsafe {
+            libc::close(ready_pipe[0]);
+        }
+        if ready_count != 1 || ready != 1 {
+            unsafe {
+                libc::kill(namespace_init, libc::SIGKILL);
+                libc::waitpid(namespace_init, std::ptr::null_mut(), 0);
+                libc::close(release_pipe[1]);
+            }
+            return Err(std::io::Error::other(
+                "PID namespace Agent setup did not attest",
+            ))
+            .context("initialize PID namespace supervisor");
+        }
+        if let Err(error) = write_rootless_attestation(&mut attestation) {
+            unsafe {
+                libc::kill(namespace_init, libc::SIGKILL);
+                libc::waitpid(namespace_init, std::ptr::null_mut(), 0);
+                libc::close(release_pipe[1]);
+            }
+            return Err(error).context("record installed rootless sandbox controls");
+        }
+        let release = 1_u8;
+        let released = unsafe { libc::write(release_pipe[1], (&release as *const u8).cast(), 1) };
+        unsafe {
+            libc::close(release_pipe[1]);
+        }
+        if released != 1 {
+            let error = std::io::Error::last_os_error();
+            let _ = attestation.set_len(0);
+            let _ = attestation.sync_data();
+            unsafe {
+                libc::kill(namespace_init, libc::SIGKILL);
+                libc::waitpid(namespace_init, std::ptr::null_mut(), 0);
+            }
+            return Err(error).context("release attested Agent executable");
+        }
+        drop(attestation);
+        let mut status = 0;
+        loop {
+            let waited = unsafe { libc::waitpid(namespace_init, &mut status, 0) };
+            if waited == namespace_init {
+                exit_with_wait_status(status);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error).context("wait for PID namespace init");
+            }
+        }
+    }
+
+    unsafe {
+        libc::close(ready_pipe[0]);
+        libc::close(release_pipe[1]);
+    }
+    drop(attestation);
+
+    // If the outer launcher is terminated before it can forward a signal,
+    // killing PID 1 still gives the kernel an authoritative cleanup point.
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
+        unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+    }
+    if install_namespace_signal_handlers(
+        forward_namespace_signal as *const () as libc::sighandler_t,
+    )
+    .is_err()
+    {
+        unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+    }
+
+    let agent = unsafe { libc::fork() };
+    if agent < 0 {
+        unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+    }
+    if agent == 0 {
+        let supervisor = unsafe { libc::getppid() };
+        if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0
+            || unsafe { libc::getppid() } != supervisor
+            || install_namespace_signal_handlers(libc::SIG_DFL).is_err()
+        {
+            unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+        }
+        let ready = 1_u8;
+        let ready_count = unsafe { libc::write(ready_pipe[1], (&ready as *const u8).cast(), 1) };
+        unsafe {
+            libc::close(ready_pipe[1]);
+        }
+        if ready_count != 1 {
+            unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+        }
+        let mut release = 0_u8;
+        let release_count =
+            unsafe { libc::read(release_pipe[0], (&mut release as *mut u8).cast(), 1) };
+        unsafe {
+            libc::close(release_pipe[0]);
+        }
+        if release_count != 1 || release != 1 {
+            unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+        }
+        let error = std::process::Command::new(program).args(arguments).exec();
+        eprintln!("pvisor: execute sandboxed Agent: {error}");
+        unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+    }
+
+    unsafe {
+        libc::close(ready_pipe[1]);
+        libc::close(release_pipe[0]);
+    }
+
+    // Reap all descendants while the Agent is alive. Orphans are reparented
+    // to namespace PID 1, so they cannot accumulate as unreaped zombies.
+    loop {
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(-1, &mut status, 0) };
+        if waited == agent {
+            exit_with_wait_status(status);
+        }
+        if waited < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                unsafe { libc::_exit(SANDBOX_SETUP_EXIT_CODE) };
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn close_unexpected_file_descriptors(retain: Option<libc::c_int>) -> std::io::Result<()> {
     let mut descriptors = Vec::new();
     for entry in std::fs::read_dir("/proc/self/fd")? {
         let entry = entry?;
@@ -762,7 +1026,7 @@ fn close_unexpected_file_descriptors() -> std::io::Result<()> {
         let Ok(fd) = name.parse::<libc::c_int>() else {
             continue;
         };
-        if fd > libc::STDERR_FILENO {
+        if fd > libc::STDERR_FILENO && Some(fd) != retain {
             descriptors.push(fd);
         }
     }

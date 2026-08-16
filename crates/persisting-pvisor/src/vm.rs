@@ -5,8 +5,9 @@ use crate::executor::{AttemptContext, RunExecutor};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use persisting_agentctl::{
-    ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
-    RunFailureKind, RunInvocation, RunResult, RunState, StdioMode,
+    CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
+    IsolationKind, ProcessOutput, ResourceLimits, RunFailure, RunFailureKind, RunInvocation,
+    RunResult, RunState, StdioMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -52,6 +53,8 @@ struct OverlayDeviceSpec {
     lowers: Vec<PathBuf>,
     upper: PathBuf,
     work: Option<PathBuf>,
+    #[serde(default)]
+    preimages: Option<PathBuf>,
     #[serde(default)]
     excluded: Vec<PathBuf>,
 }
@@ -127,7 +130,15 @@ impl RunExecutor for VmExecutor {
             name: "libkrun-root-overlay-v1".into(),
             kind: ExecutorKind::VirtualMachine,
             isolation: IsolationKind::VirtualMachine,
-            capability_enforcement: Default::default(),
+            capability_enforcement: CapabilityEnforcementEvidence::default()
+                .enforced(
+                    CapabilityDimension::FilesystemRead,
+                    "libkrun-guest-kernel-virtiofs-root",
+                )
+                .enforced(
+                    CapabilityDimension::FilesystemWrite,
+                    "libkrun-guest-kernel-virtiofs-overlay",
+                ),
             supports_checkpoint: true,
             supports_migration: false,
         }
@@ -211,6 +222,7 @@ impl RunExecutor for VmExecutor {
                     lowers: vec![root.clone()],
                     upper: PathBuf::new(),
                     work: None,
+                    preimages: None,
                     excluded: Vec::new(),
                 }),
                 None,
@@ -221,6 +233,7 @@ impl RunExecutor for VmExecutor {
                     lowers: vec![root.clone()],
                     upper: PathBuf::new(),
                     work: None,
+                    preimages: None,
                     excluded: Vec::new(),
                 },
                 configured_overlay,
@@ -303,6 +316,7 @@ impl RunExecutor for VmExecutor {
                 lowers: root_overlay.lowers,
                 upper: root_upper.clone(),
                 work: Some(root_work.clone()),
+                preimages: root_overlay.preimages,
                 excluded: root_overlay.excluded,
             }
         } else {
@@ -663,6 +677,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
             read_only.extend(workspace.lowers.iter().cloned());
             read_write.push(workspace.upper.clone());
             read_write.extend(workspace.work.iter().cloned());
+            read_write.extend(workspace.preimages.iter().cloned());
         }
         crate::sandbox::restrict_krun_runner(read_only, read_write, spec.library_dir.clone())?;
     }
@@ -768,6 +783,7 @@ fn add_krun_overlay(
     let lower_ptrs = lowers.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
     let upper = path_cstring(&overlay.upper)?;
     let work = overlay.work.as_deref().map(path_cstring).transpose()?;
+    let preimages = overlay.preimages.as_deref().map(path_cstring).transpose()?;
     let excluded = overlay
         .excluded
         .iter()
@@ -786,6 +802,9 @@ fn add_krun_overlay(
                 lower_ptrs.len(),
                 upper.as_ptr(),
                 work.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
+                preimages
+                    .as_ref()
+                    .map_or(std::ptr::null(), |path| path.as_ptr()),
                 excluded_ptrs.as_ptr(),
                 excluded_ptrs.len(),
                 shm_size,

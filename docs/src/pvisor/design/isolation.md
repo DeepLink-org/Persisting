@@ -107,7 +107,7 @@ Run-scoped scratch directory.
 The native Linux safe path is operational for ordinary local executables:
 
 - pVisor self-executes a hidden launcher before Agent code starts;
-- the launcher creates one-ID user and private mount namespaces without
+- the launcher creates one-ID user plus private mount and child PID namespaces without
   `/etc/subuid`, `newuidmap`, a setuid binary, or a daemon;
 - a private tmpfs root bind-projects only the runtime, staged workspace, exact
   device nodes, Run-scoped AgentCtl socket, and explicit capabilities before
@@ -115,7 +115,11 @@ The native Linux safe path is operational for ordinary local executables:
   are therefore absent rather than left to Landlock;
 - inherited descriptors above stderr are closed, Landlock ABI v3 handles all
   filesystem rights through `TRUNCATE`, `no_new_privs` is set, namespace and
-  ambient capabilities are cleared, and the launcher `exec`s the Agent;
+  ambient capabilities are cleared, and a trusted namespace PID 1 supervises
+  and reaps the Agent tree;
+- successful main-process exit, cancellation, and forced termination all end
+  at the PID namespace boundary, so `setsid` and double-fork descendants cannot
+  survive the Run;
 - the writable FUSE merged workspace and explicit read/write capabilities are
   admitted, while the executable and a broad host runtime are read-only;
 - `NetworkCapability::Deny` also creates a private network namespace. Public
@@ -210,8 +214,8 @@ post-fork closure of the multithreaded supervisor.
   Seatbelt boundary.
 
 The implementation already combines Landlock with an empty capability set,
-`no_new_privs`, rootless user/mount namespaces, and a network namespace for
-deny-all Runs. Seccomp, PID namespaces, `rlimit`/cgroup limits, and transparent
+`no_new_privs`, rootless user/mount/PID namespaces, and a network namespace for
+deny-all Runs. Seccomp, complete aggregate resource limits, and transparent
 enforcement for selective egress remain necessary hardening without changing
 the workspace contract.
 

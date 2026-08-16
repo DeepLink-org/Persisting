@@ -30,7 +30,8 @@ OverlayFS base, creates an independent Run and writable stage under
 manual review, enables the explicit OverlayNet proxy on ephemeral loopback
 ports, and writes `run-bundle.json` with mode `0600`.
 On Linux, the default host executor self-executes through pVisor's rootless
-launcher before the async runtime reaches the Agent. A user/mount namespace,
+launcher before the async runtime reaches the Agent. User/mount/PID namespaces,
+an in-namespace PID 1 descendant reaper,
 minimal bind-projected root plus `chroot`, Landlock ABI v3 policy, closed
 inherited descriptors, `no_new_privs`, and an empty capability set make
 workspace containment non-bypassable for the Agent process tree.
@@ -279,6 +280,11 @@ pvisor drop /path/to/project
 to mutate a live Run. A filtered apply is dependency-closed and repeatable:
 unselected paths remain staged, while opaque directories and hard-link groups
 remain atomic. Each successful batch is persisted in `apply-ledger.json`.
+The overlay records a durable first-touch fingerprint for every mutated target
+path. `apply` fails closed if a selected target path changed after staging;
+prepared batches recover forward, and individual non-directory replacements
+commit with a same-directory atomic rename. The host filesystem still provides
+no single atomic commit point for an arbitrary multi-file batch.
 Applying all remaining changes or dropping the stage is terminal; `drop` cannot
 undo already applied batches, and `apply` cannot recover discarded changes.
 Terminal cleanup removes `upper`, `work`, and other disposable staging data but
