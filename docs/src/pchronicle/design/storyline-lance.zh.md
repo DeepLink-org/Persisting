@@ -17,9 +17,9 @@ events.lance (事实源)
   └─ Catalog fallback ──────► 投影缺失或 stale 时按固定快照即时转换
 ```
 
-`CURRENT` v2 除四张表的精确 Lance version 外，还记录 source URI / source id、
-`fact_version`、`fact_rows`、构建时的 layout revision、projector 与 Storyline schema 版本、
-recipe hash 和 completeness。`fact_version` / `fact_rows` 是新鲜度水位；单纯 compaction 只
+`CURRENT` 除四张表的精确 Lance version 外，还记录 source URI / source id、
+`fact_version`、`fact_rows`、构建时的 layout revision、projector、recipe hash 和
+completeness。`fact_version` / `fact_rows` 是新鲜度水位；单纯 compaction 只
 改变 layout revision，不会使投影过期。直接文档写入会清除 lineage，维护则原样保留。
 
 常用运维命令：
@@ -35,7 +35,10 @@ pchronicle project verify --from ./run/storyline --source ./run/events.lance
 # append-compatible 时只重算受影响 session；无新增事实时为 noop
 pchronicle project sync --from ./run/storyline --source ./run/events.lance
 
-# projector/schema/recipe 变化或水位不单调时，写入全新 table generation 再切 CURRENT
+# 独立于 Gateway 热路径持续 sync，并周期性 verify；每轮输出一条 JSONL 状态
+pchronicle project watch --from ./run/storyline --source ./run/events.lance
+
+# projector/recipe 变化或水位不单调时，写入全新 table generation 再切 CURRENT
 pchronicle project rebuild --from ./run/events.lance --output ./run/storyline
 ```
 
@@ -44,6 +47,11 @@ Source。`sources.projection_status` 为 `fresh` 时，规范化查询使用三�
 sidecar 并回退到固定 events snapshot 的确定性投影。`projection_generation` 公开实际命中的
 generation，便于监控与诊断。Catalog 不会把无血缘的 Storyline 文档库自动认作 canonical
 events 的 projection。
+
+`project watch` 是推荐的默认运维入口，可由 systemd、Kubernetes 或其他 supervisor
+托管。失败时它采用有上限的指数退避，进程信号可正常终止；`--exit-on-error` 适合由外部
+调度器负责重试的环境。它不进入 Gateway 捕获热路径，因此投影故障不会阻塞 canonical
+events 写入。
 
 本文只负责三表物理 schema、内容层、Snapshot 发布、查询接入和维护语义。事实源与
 projection ownership 见[轨迹存储](trajectory-storage.md)，用户查询流程见
@@ -100,12 +108,12 @@ scalar index 和 DataFusion execution node。这样可以得到需要的延迟�
 超过默认 64 KiB 的内容列在三表中暂时编码为：
 
 ```text
-<RS>PCHRONICLE-CONTENT-1:<type>:<codec>:<blake3-256>:<raw_length>:<preview-base64url>
+<RS>PCHRONICLE-CONTENT:<type>:<codec>:<blake3-256>:<raw_length>:<preview-base64url>
 ```
 
 | 字段 | 当前编码 | 作用 |
 |---|---|---|
-| magic/version | `PCHRONICLE-CONTENT-1` | 严格识别内部引用并允许协议演进 |
+| magic | `PCHRONICLE-CONTENT` | 严格识别内部引用 |
 | logical type | `u` / `j` / `b` | UTF-8、JSON；binary 标签已保留给后续二进制列 |
 | codec | `i` / `z` | identity 或 Zstd |
 | content id | 64 位十六进制 BLAKE3-256 | 对未压缩原始字节寻址、校验和跨轨迹复用 |

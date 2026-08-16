@@ -4,7 +4,7 @@
 //! **not** treat JSON / JSONL as a supported events wire format.
 //!
 //! What this module provides:
-//! - [`EventRecord`] / [`EventsDocument`]: in-memory shape aligned with CaptureRecord
+//! - [`EventRecord`] / [`EventsDocument`]: in-memory shape aligned with EventRecord
 //! - [`events_to_storyline`](crate::convert::events_to_storyline) / storyline→events
 //!   (programmatic, after you already loaded rows from Lance)
 //! - [`export_events_jsonl`] / [`export_events_json_pretty`]: **debug export only**
@@ -16,22 +16,12 @@ use serde_json::Value;
 
 use crate::{Error, Result};
 
-/// Current serialized schema for the canonical event identity fields.
-pub const EVENT_SCHEMA_VERSION: u32 = 2;
-
-fn event_schema_version() -> u32 {
-    EVENT_SCHEMA_VERSION
-}
-
 /// Runtime identity shared by lifecycle and trajectory events.
 ///
-/// The fields are flattened into [`EventRecord`] on the wire. Optional IDs
-/// preserve reads of legacy capture rows; new runtime producers must populate
-/// `event_id` and `run_id` before persistence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The fields are flattened into [`EventRecord`] on the wire. Storage fills
+/// missing routing identities from [`crate::StoryCoords`] and rejects conflicts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventIdentity {
-    #[serde(default = "event_schema_version")]
-    pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,26 +38,11 @@ pub struct EventIdentity {
     pub producer: Option<String>,
 }
 
-impl Default for EventIdentity {
-    fn default() -> Self {
-        Self {
-            schema_version: EVENT_SCHEMA_VERSION,
-            event_id: None,
-            run_id: None,
-            attempt_id: None,
-            storyline_id: None,
-            turn_id: None,
-            timestamp_unix_ms: None,
-            producer: None,
-        }
-    }
-}
-
 /// Canonical Agent trajectory event.
 ///
-/// Capture uses this type directly (its `CaptureRecord` name is a compatibility
-/// alias) and adds producer-specific payload interpretation through an extension
-/// trait rather than defining a second serialized record schema.
+/// Capture uses this type directly and adds producer-specific payload
+/// interpretation through an extension trait rather than defining a second
+/// serialized record schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventRecord {
     #[serde(flatten)]
@@ -116,8 +91,8 @@ impl EventsDocument {
     pub const FORMAT_NAME: &'static str = "events";
 
     pub fn new(events: Vec<EventRecord>) -> Self {
-        let session_id = events.iter().find_map(|e| e.session_id.clone());
-        let agent_id = events.iter().find_map(|e| e.agent_id.clone());
+        let session_id = events.iter().rev().find_map(|e| e.session_id.clone());
+        let agent_id = events.iter().rev().find_map(|e| e.agent_id.clone());
         Self {
             format: Self::FORMAT_NAME.into(),
             session_id,
@@ -128,6 +103,17 @@ impl EventsDocument {
 }
 
 impl EventRecord {
+    /// Validate the canonical event envelope before persistence or projection.
+    pub fn validate(&self) -> Result<()> {
+        if self.source.trim().is_empty() {
+            return Err(Error::Other("event source is required".into()));
+        }
+        if self.kind.trim().is_empty() {
+            return Err(Error::Other("event kind is required".into()));
+        }
+        Ok(())
+    }
+
     /// Decode the canonical typed semantics attached to an `llm.request` event.
     /// Wire-only and legacy events legitimately return `None`.
     pub fn llm_request_payload(&self) -> Result<Option<super::llm::LlmRequestEventPayload>> {
@@ -198,15 +184,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_record_deserializes_and_runtime_identity_is_flattened() {
-        let legacy = serde_json::json!({
+    fn event_wire_has_no_schema_version() {
+        let value = serde_json::json!({
             "seq": 0,
-            "source": "legacy-capture",
+            "source": "capture",
             "kind": "llm.request",
             "payload": {}
         });
-        let mut record: EventRecord = serde_json::from_value(legacy).unwrap();
-        assert_eq!(record.identity, EventIdentity::default());
+        let record = serde_json::from_value::<EventRecord>(value).unwrap();
+        assert!(serde_json::to_value(record)
+            .unwrap()
+            .get("schema_version")
+            .is_none());
+    }
+
+    #[test]
+    fn runtime_identity_is_flattened() {
+        let mut record = EventRecord {
+            identity: EventIdentity::default(),
+            seq: 0,
+            source: "capture".into(),
+            kind: "llm.request".into(),
+            timestamp: None,
+            session_id: None,
+            agent_id: None,
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: Value::Object(Default::default()),
+        };
         record.identity.event_id = Some("event-1".into());
         record.identity.run_id = Some("run-1".into());
         let encoded = serde_json::to_value(record).unwrap();
@@ -234,7 +244,6 @@ mod tests {
             parent_call_id: None,
             payload: serde_json::json!({
                 "llm_request": {
-                    "schema_version":"llm/v1",
                     "input_format":"chat_completions",
                     "request": {
                         "model":"m",

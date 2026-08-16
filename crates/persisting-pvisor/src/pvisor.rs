@@ -1049,8 +1049,7 @@ mod tests {
 
         let emitted = sink.events();
         assert!(emitted.iter().all(|event| {
-            event.identity.schema_version == persisting_pchronicle::EVENT_SCHEMA_VERSION
-                && event.identity.event_id.is_some()
+            event.identity.event_id.is_some()
                 && event.identity.run_id.as_deref() == Some("run-success")
                 && event.identity.attempt_id.is_some()
                 && event.identity.producer.as_deref() == Some("persisting-pvisor")

@@ -6,7 +6,7 @@
 //!
 //! ```ignore
 //! use persisting_gateway::config::ProxyConfig;
-//! use persisting_gateway::record::CaptureRecord;
+//! use persisting_gateway::record::EventRecord;
 //! use persisting_gateway::engine::CaptureEngine;
 //! use persisting_gateway::serve;
 //! ```

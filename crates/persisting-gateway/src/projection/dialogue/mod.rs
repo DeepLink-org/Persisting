@@ -1,6 +1,6 @@
-//! `CaptureRecord` ↔ markdown trajectory blocks.
+//! `EventRecord` ↔ markdown trajectory blocks.
 //!
-//! Markdown role/body text comes from Capture's [`crate::record::CaptureRecordExt`]
+//! Markdown role/body text comes from Capture's [`crate::record::EventRecordExt`]
 //! behavior (shared with turn indexing).
 
 mod block;

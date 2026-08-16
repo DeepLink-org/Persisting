@@ -9,7 +9,7 @@ use persisting_pchronicle::{
     ChronicleFormat, ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions,
     EventIdentity, EventRecord, ExternalTableFormat, ExternalTableSpec,
     FileTrajectoryDataSourceOptions, LocalQueryManifest, RawEventLanceStore, StoryCoords,
-    StorylineDataFusionTableNames, StorylineLanceStore, StructuredStore,
+    StorylineDataFusionTableNames, StorylineLanceStore,
 };
 
 const SHARED_SQL: &str =

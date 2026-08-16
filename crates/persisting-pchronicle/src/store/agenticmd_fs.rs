@@ -82,7 +82,7 @@ pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(AgenticmdBloc
 /// Append blocks to a session markdown file.
 ///
 /// When the file is empty / new, writes `empty_file_preamble` (or a default
-/// `persisting:1.0` frontmatter when `None`).
+/// `persisting` frontmatter when `None`).
 pub fn append_agenticmd_blocks(
     path: &Path,
     blocks: &[AgenticmdBlock],
@@ -638,8 +638,7 @@ mod tests {
 
     #[test]
     fn unclosed_frontmatter_returns_error() {
-        let err =
-            parse_agenticmd_document_validated("---\nformat: \"persisting:1.0\"\n").unwrap_err();
+        let err = parse_agenticmd_document_validated("---\nformat: \"persisting\"\n").unwrap_err();
         assert!(
             err.to_string().contains("unclosed YAML frontmatter"),
             "{err:#}"
@@ -670,7 +669,7 @@ mod tests {
         .unwrap();
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(on_disk.starts_with("---\n"));
-        assert!(on_disk.contains("persisting:1.0"));
+        assert!(on_disk.contains("persisting"));
         let blocks = read_blocks(&path);
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].body, "hi");

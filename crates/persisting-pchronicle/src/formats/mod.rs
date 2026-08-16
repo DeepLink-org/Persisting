@@ -24,7 +24,6 @@ pub use agenticmd::{
 };
 pub use agenticmd_body::{
     append_subagent_refs_footer, is_subagent_footer_line, strip_subagent_footer_from_body,
-    BLOCK_FORMAT_BLOCK, BLOCK_FORMAT_VERSION,
 };
 pub use agenticmd_frontmatter::{
     encode_agenticmd_session_frontmatter, AgenticmdClientMeta, AgenticmdSessionFrontmatter,
@@ -41,16 +40,14 @@ pub use llm::{
     LlmCandidate, LlmContentPart, LlmExtensions, LlmGenerationParams, LlmImageSource, LlmMessage,
     LlmProtocol, LlmRequest, LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload,
     LlmResponseFormat, LlmRole, LlmStreamEvent, LlmToolChoice, LlmToolChoiceMode,
-    LlmToolDefinition, LlmUsage, LLM_EVENT_SCHEMA_VERSION,
+    LlmToolDefinition, LlmUsage,
 };
 pub use openai_corpus::{
     is_lossless_openai_storyline, parse_openai_msg_corpus_value, recover_openai_msg_files,
     OpenaiMsgCorpusReader, RecoveredOpenaiMsgFile,
 };
-pub use openai_msg::{
-    parse_openai_msg_document, OpenaiMsgDocument, OpenaiMsgStep, OPENAI_MSG_FORMAT_VERSION,
-};
+pub use openai_msg::{parse_openai_msg_document, OpenaiMsgDocument, OpenaiMsgStep};
 pub use storyline::{
     parse_storyline_document, StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall,
-    StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    StorylineTurn,
 };

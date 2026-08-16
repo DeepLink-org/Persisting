@@ -14,14 +14,13 @@ use chrono::{SecondsFormat, TimeZone, Utc};
 use serde_json::{json, Map, Value};
 
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
 use crate::{Error, Result};
 
 const LOSSLESS_FILE_KEY: &str = "_pchronicle_openai_file";
 const LOSSLESS_RECORD_KEY: &str = "_pchronicle_openai_record";
 const NORMALIZED_CONTEXT_KEY: &str = "_pchronicle_openai_context";
-const LOSSLESS_VERSION: u64 = 1;
 
 /// One source JSON file reconstructed from lossless OpenAI import metadata.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,7 +107,6 @@ pub fn parse_openai_msg_corpus_value(
     };
 
     let file_metadata = json!({
-        "version": LOSSLESS_VERSION,
         "relative_path": relative_path,
         "document_kind": kind,
         "envelope": envelope,
@@ -169,7 +167,6 @@ pub fn recover_openai_msg_files(
                     story.session_id
                 ))
             })?;
-        validate_version(file, LOSSLESS_FILE_KEY)?;
         let relative_path = file
             .get("relative_path")
             .and_then(Value::as_str)
@@ -213,7 +210,6 @@ pub fn recover_openai_msg_files(
                     story.session_id, turn.id
                 )));
             };
-            validate_version(record, LOSSLESS_RECORD_KEY)?;
             let record_path = record
                 .get("relative_path")
                 .and_then(Value::as_str)
@@ -289,17 +285,14 @@ pub fn recover_openai_msg_files(
     Ok(output)
 }
 
-/// Whether a Storyline carries the versioned provenance required for strict
-/// OpenAI corpus recovery.
+/// Whether a Storyline carries the provenance required for strict OpenAI corpus recovery.
 pub fn is_lossless_openai_storyline(story: &StorylineDocument) -> bool {
     story
         .extra
         .as_ref()
         .and_then(|extra| extra.get(LOSSLESS_FILE_KEY))
         .and_then(Value::as_object)
-        .is_some_and(|metadata| {
-            metadata.get("version").and_then(Value::as_u64) == Some(LOSSLESS_VERSION)
-        })
+        .is_some()
 }
 
 fn rows_to_storyline(
@@ -423,7 +416,6 @@ fn rows_to_storyline(
                 extra: Some(json!({
                     "call_id": call_id,
                     NORMALIZED_CONTEXT_KEY: {
-                        "version": LOSSLESS_VERSION,
                         "openai_step_id": step_id,
                     }
                 })),
@@ -455,7 +447,6 @@ fn rows_to_storyline(
                 "call_id": call_id,
                 "request_messages": request_messages,
                 "_pchronicle_openai_record": {
-                    "version": LOSSLESS_VERSION,
                     "relative_path": relative_path,
                     "ordinal": ordinal,
                     "value": raw,
@@ -470,13 +461,12 @@ fn rows_to_storyline(
         .or_else(|| first_model.clone())
         .unwrap_or_else(|| "openai-import".into());
     Ok(StorylineDocument {
-        schema_version: STORYLINE_SCHEMA_VERSION.into(),
         run_id,
         session_id: session_id.to_string(),
         agent: StorylineAgent {
             id: agent_id.clone(),
             name: Some(agent_id),
-            version: Some("0".into()),
+            version: None,
             model_name: first_model,
             tool_definitions: None,
             extra: None,
@@ -778,15 +768,6 @@ fn number_to_i64(value: &Value) -> Option<i64> {
         .or_else(|| value.as_f64().map(|value| value as i64))
 }
 
-fn validate_version(metadata: &Map<String, Value>, label: &str) -> Result<()> {
-    if metadata.get("version").and_then(Value::as_u64) != Some(LOSSLESS_VERSION) {
-        return Err(Error::Other(format!(
-            "unsupported or missing {label} version"
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -863,7 +844,6 @@ mod tests {
     #[test]
     fn envelope_roundtrip_preserves_root_metadata() {
         let input = json!({
-            "format_version": 1,
             "session_id": "s-1",
             "custom": null,
             "session_steps": [corpus()[0].clone()]

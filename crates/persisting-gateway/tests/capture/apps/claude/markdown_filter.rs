@@ -3,7 +3,7 @@
 use persisting_gateway::config::CaptureLevel;
 use persisting_gateway::engine::Call;
 use persisting_gateway::projection::dialogue::skip_markdown_block;
-use persisting_gateway::record::CaptureRecord;
+use persisting_gateway::record::EventRecord;
 use persisting_gateway::sink::llm_request_summary_record;
 use serde_json::json;
 
@@ -22,7 +22,7 @@ fn request_record(
     user: &str,
     subagent_id: Option<&str>,
     body: Option<&serde_json::Value>,
-) -> CaptureRecord {
+) -> EventRecord {
     let mut rec = llm_request_summary_record(
         Some(super::support::CLAUDE_SESSION.into()),
         Some(super::support::PROXY_AGENT.into()),

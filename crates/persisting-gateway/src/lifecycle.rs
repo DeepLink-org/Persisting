@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::record::{now_rfc3339, CaptureRecord};
+use super::record::{now_rfc3339, EventRecord};
 use crate::session::storage::CaptureRoute;
 
 pub const SESSION_STARTED: &str = "session.started";
@@ -57,7 +57,7 @@ pub fn session_started_record(
     mode: CaptureMode,
     listen: Option<&str>,
     command: Option<&str>,
-) -> CaptureRecord {
+) -> EventRecord {
     lifecycle_record(
         SESSION_STARTED,
         session_id,
@@ -84,7 +84,7 @@ pub fn session_ended_record(
     reason: &str,
     exit_code: Option<i32>,
     duration_ms: Option<u64>,
-) -> CaptureRecord {
+) -> EventRecord {
     lifecycle_record(
         SESSION_ENDED,
         session_id,
@@ -111,7 +111,7 @@ pub fn session_state_record(
     from: &str,
     to: &str,
     reason: Option<&str>,
-) -> CaptureRecord {
+) -> EventRecord {
     lifecycle_record(
         SESSION_STATE,
         session_id,
@@ -136,8 +136,8 @@ fn lifecycle_record(
     session_id: Option<String>,
     agent_id: Option<String>,
     payload: SessionLifecyclePayload,
-) -> CaptureRecord {
-    CaptureRecord {
+) -> EventRecord {
+    EventRecord {
         identity: persisting_pchronicle::EventIdentity::default(),
         seq: 0,
         source: "persisting-gateway".into(),
@@ -180,7 +180,7 @@ pub fn append_lifecycle(
     sink: &dyn super::sink::CaptureEventSink,
     route: &CaptureRoute,
     agent_id: &str,
-    mut record: CaptureRecord,
+    mut record: EventRecord,
 ) -> anyhow::Result<()> {
     sink.append(route, agent_id, &mut record)?;
     Ok(())

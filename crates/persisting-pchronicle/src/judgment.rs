@@ -12,7 +12,7 @@ use lance::deps::arrow_array::{Array, Int64Array, RecordBatch, RecordBatchIterat
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use lance::Dataset;
 
-use crate::{story_lance_judgment_path, TrajectorySession};
+use crate::{story_lance_judgment_path, StoryCoords};
 
 pub const STORY_CALL_ID: &str = "__story__";
 pub const MANUAL_RATIONALE_PREFIX: &str = "[manual] ";
@@ -352,7 +352,7 @@ pub fn has_judgment(rows: &[JudgeRow], session_id: &str, call_id: &str, rubric_i
         .any(|r| r.session_id == session_id && r.call_id == call_id && r.rubric_id == rubric_id)
 }
 
-pub async fn dataset_path(session: &TrajectorySession) -> Result<String> {
+pub async fn dataset_path(session: &StoryCoords) -> Result<String> {
     Ok(story_lance_judgment_path(
         &session.storage,
         &session.agent_id,
@@ -430,7 +430,7 @@ fn normalized_rows_from_batch(batch: &RecordBatch) -> Result<Vec<JudgeRow>> {
 }
 
 /// Read normalized judgments ordered by session, rubric, then unit.
-pub async fn read_judge_rows(session: &TrajectorySession) -> Result<Vec<JudgeRow>> {
+pub async fn read_judge_rows(session: &StoryCoords) -> Result<Vec<JudgeRow>> {
     let uri = dataset_path(session).await?;
     let ds = match Dataset::open(&uri).await {
         Ok(ds) => ds,
@@ -489,7 +489,7 @@ fn i64_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<i64>> {
 }
 
 /// Upsert normalized judgments by `(session_id, call_id, rubric_id)`.
-pub async fn write_judge_rows(session: &TrajectorySession, rows: &[JudgeRow]) -> Result<String> {
+pub async fn write_judge_rows(session: &StoryCoords, rows: &[JudgeRow]) -> Result<String> {
     if rows.is_empty() {
         return dataset_path(session).await;
     }

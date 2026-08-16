@@ -147,7 +147,7 @@ impl StoryActor {
         self.sync_scope(&scope);
         match cmd {
             StoryCommand::PersistRecord { record_bytes, .. } => {
-                let mut rec: crate::record::CaptureRecord = serde_json::from_slice(&record_bytes)?;
+                let mut rec: crate::record::EventRecord = serde_json::from_slice(&record_bytes)?;
                 let mut next_turns = self.turns.clone();
                 next_turns.observe_record(&mut rec);
                 let sink = Arc::clone(&self.deps.sink);
@@ -177,7 +177,7 @@ impl StoryActor {
             }
             StoryCommand::UpsertDraft { draft_bytes, .. } => {
                 let draft: DraftPayload = serde_json::from_slice(&draft_bytes)?;
-                let mut rec: crate::record::CaptureRecord =
+                let mut rec: crate::record::EventRecord =
                     serde_json::from_slice(&draft.record_bytes)?;
                 rec.seq = self
                     .deps

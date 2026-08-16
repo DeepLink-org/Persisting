@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::{
-    decode_event_lines, encode_event_lines, event_record_to_event_row, event_row_to_event_record,
-    event_rows_from_batch, event_rows_to_batch, raw_event_arrow_schema, EventRecord,
-    RawEventLanceStore, StoryCoords, StructuredStore,
+    event_record_to_event_row, event_row_to_event_record, event_rows_from_batch,
+    event_rows_to_batch, raw_event_arrow_schema, EventRecord, RawEventLanceStore, StoryCoords,
 };
 use serde_json::{json, Value};
 
@@ -116,9 +115,6 @@ fn capture_payload_corpus_roundtrips_through_wire_and_arrow() -> Result<()> {
         raw_streams >= 124,
         "expected snapshots and SSE fixtures to be preserved as raw payloads"
     );
-
-    let wire = encode_event_lines(&records)?;
-    assert_eq!(decode_event_lines(&wire)?, records);
 
     let rows = records
         .iter()

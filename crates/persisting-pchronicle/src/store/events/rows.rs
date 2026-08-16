@@ -2,10 +2,8 @@
 
 use std::sync::Arc;
 
-#[cfg(test)]
-use crate::decode_event_lines;
 use crate::{
-    event_record_to_event_row, event_row_to_replay_json, EventRecord, EventRow,
+    event_record_to_event_row, event_row_to_event_record, EventRecord, EventRow,
     TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_COLS, TRAJECTORY_EVENT_ID_COL,
     TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL,
     TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
@@ -94,19 +92,18 @@ pub fn event_rows_to_batch(schema: Arc<ArrowSchema>, rows: &[EventRow]) -> Resul
     .context("build trajectory RecordBatch")
 }
 
-#[cfg(test)]
-pub fn rows_for_lines(storage_session_id: &str, lines: &[String]) -> Result<Vec<EventRow>> {
-    rows_for_events(storage_session_id, &decode_event_lines(lines)?)
-}
-
-pub fn rows_for_events(storage_session_id: &str, records: &[EventRecord]) -> Result<Vec<EventRow>> {
-    let mut rows = Vec::with_capacity(records.len());
-    for record in records {
-        let mut row = event_record_to_event_row(record)?;
-        row.session_id = Some(storage_session_id.to_string());
-        rows.push(row);
-    }
-    Ok(rows)
+pub fn event_row_for_storage(
+    storage_session_id: &str,
+    storage_agent_id: &str,
+    record: &EventRecord,
+) -> Result<EventRow> {
+    // Preserve the producer envelope in payload_json, but route and replay
+    // through the physical coordinates selected by the capture caller.
+    // Conflicting producer identity is evidence, not an append failure.
+    let mut row = event_record_to_event_row(record)?;
+    row.session_id = Some(storage_session_id.to_string());
+    row.agent_id = Some(storage_agent_id.to_string());
+    Ok(row)
 }
 
 pub fn utf8_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<String>> {
@@ -164,11 +161,11 @@ pub fn event_row_from_batch(batch: &RecordBatch, index: usize) -> Result<EventRo
     })
 }
 
-pub fn replay_records_from_batch(batch: &RecordBatch) -> Result<Vec<String>> {
+pub fn event_records_from_batch(batch: &RecordBatch) -> Result<Vec<EventRecord>> {
     (0..batch.num_rows())
         .map(|i| {
             let row = event_row_from_batch(batch, i)?;
-            event_row_to_replay_json(&row)
+            event_row_to_event_record(&row)
         })
         .collect()
 }
@@ -218,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_for_lines_stamps_session_and_preserves_producer_seq() {
+    fn event_row_for_storage_stamps_physical_route_and_preserves_producer_seq() {
         let record = EventRecord {
             identity: crate::EventIdentity {
                 event_id: Some("event-a".into()),
@@ -228,7 +225,7 @@ mod tests {
             source: "test".into(),
             kind: "note".into(),
             timestamp: None,
-            session_id: None,
+            session_id: Some("sess-a".into()),
             agent_id: None,
             parent_uuid: None,
             trace_id: None,
@@ -239,15 +236,14 @@ mod tests {
             parent_call_id: None,
             payload: serde_json::json!({"content":"a"}),
         };
-        let line = ron::to_string(&serde_json::to_value(record).unwrap()).unwrap();
-        let rows = rows_for_lines("sess-a", std::slice::from_ref(&line)).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].seq, 0);
-        assert_eq!(rows[0].session_id.as_deref(), Some("sess-a"));
+        let row = event_row_for_storage("sess-a", "agent-a", &record).unwrap();
+        assert_eq!(row.seq, 0);
+        assert_eq!(row.session_id.as_deref(), Some("sess-a"));
+        assert_eq!(row.agent_id.as_deref(), Some("agent-a"));
     }
 
     #[test]
-    fn event_line_to_event_row_preserves_call_id() {
+    fn event_record_to_event_row_preserves_call_id() {
         let resp = EventRecord {
             identity: crate::EventIdentity {
                 event_id: Some("event-response".into()),
@@ -271,8 +267,7 @@ mod tests {
                 "choices":[{"message":{"role":"assistant","content":"你好！"}}],
             }),
         };
-        let line = ron::to_string(&serde_json::to_value(resp).unwrap()).unwrap();
-        let row = rows_for_lines("sess", &[line]).unwrap().remove(0);
+        let row = event_row_for_storage("sess", "agent", &resp).unwrap();
         assert_eq!(row.call_id.as_deref(), Some("call-a"));
         assert_eq!(row.trace_id.as_deref(), Some("trace-a"));
         assert_eq!(row.seq, 0);
@@ -280,6 +275,36 @@ mod tests {
         let back = crate::event_row_to_event_record(&row).unwrap();
         assert_eq!(back.call_id.as_deref(), Some("call-a"));
         assert_eq!(back.seq, 0);
+    }
+
+    #[test]
+    fn physical_routing_identity_wins_without_rewriting_payload_json() {
+        let record = EventRecord {
+            identity: crate::EventIdentity::default(),
+            seq: 0,
+            source: "test".into(),
+            kind: "note".into(),
+            timestamp: None,
+            session_id: Some("payload-session".into()),
+            agent_id: Some("agent".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: serde_json::json!({"content":"test"}),
+        };
+        let mut row = event_record_to_event_row(&record).unwrap();
+        row.session_id = Some("physical-session".into());
+        row.agent_id = Some("physical-agent".into());
+        let replayed = crate::event_row_to_event_record(&row).unwrap();
+        assert_eq!(replayed.session_id.as_deref(), Some("physical-session"));
+        assert_eq!(replayed.agent_id.as_deref(), Some("physical-agent"));
+        let preserved: EventRecord = serde_json::from_str(&row.payload_json).unwrap();
+        assert_eq!(preserved.session_id.as_deref(), Some("payload-session"));
+        assert_eq!(preserved.agent_id.as_deref(), Some("agent"));
     }
 
     #[test]

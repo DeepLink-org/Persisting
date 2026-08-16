@@ -8,7 +8,7 @@ use lance::io::ObjectStore;
 use persisting_pchronicle::{
     into_storyline, AtifTrajectory, ChronicleFormat, ChronicleQueryEngine, EventRecord,
     LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore, StoryCoords,
-    StorylineLanceStore, StructuredStore,
+    StorylineLanceStore,
 };
 
 fn unique_root() -> Result<String> {
@@ -87,10 +87,12 @@ async fn run_contract(root: &str) -> Result<()> {
     );
     assert_eq!(RawEventLanceStore.stats(&main).await?.row_count, 2);
 
-    // Decoding fails before a write, so an invalid append cannot corrupt the
-    // already committed S3 dataset.
+    // Encoding fails before a write, so an invalid typed event cannot corrupt
+    // the already committed S3 dataset.
+    let mut invalid = event("invalid");
+    invalid.seq = u64::MAX;
     assert!(RawEventLanceStore
-        .append(&main, &["invalid RON".into()])
+        .append_events(&main, &[invalid])
         .await
         .is_err());
     assert_eq!(

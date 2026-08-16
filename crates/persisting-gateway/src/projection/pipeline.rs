@@ -1,4 +1,4 @@
-//! CaptureRecord → session markdown: eligibility, block build, live upsert.
+//! EventRecord → session markdown: eligibility, block build, live upsert.
 //!
 //! All paths (live `-f md`, materialize, reconcile) go through [`MarkdownPipeline`].
 //! Live session actors hold [`LiveMarkdownWriter`] (pipeline + target path + upsert).
@@ -14,7 +14,7 @@ use super::dialogue::capture_record_to_agenticmd_block;
 use super::markdown_policy::should_skip_record;
 use super::markdown_trajectory::upsert_block_by_call_id;
 use crate::dialogue_extract::count_visible_user_messages;
-use crate::record::{CaptureRecord, CaptureRecordExt};
+use crate::record::{EventRecord, EventRecordExt};
 use crate::session::storage::{trajectory_run_dir, CaptureRoute};
 use persisting_pchronicle::session_markdown_write_path_for_key;
 
@@ -26,11 +26,11 @@ pub struct MarkdownPipeline {
 }
 
 impl MarkdownPipeline {
-    pub fn static_skip(rec: &CaptureRecord) -> bool {
+    pub fn static_skip(rec: &EventRecord) -> bool {
         should_skip_record(rec)
     }
 
-    pub fn should_skip(&mut self, rec: &CaptureRecord) -> bool {
+    pub fn should_skip(&mut self, rec: &EventRecord) -> bool {
         if self.skip_history_replay(rec) {
             return true;
         }
@@ -41,14 +41,14 @@ impl MarkdownPipeline {
         self.skipped_call_ids.contains(call_id)
     }
 
-    pub fn try_agenticmd_block(&mut self, rec: &CaptureRecord) -> Result<Option<AgenticmdBlock>> {
+    pub fn try_agenticmd_block(&mut self, rec: &EventRecord) -> Result<Option<AgenticmdBlock>> {
         if self.should_skip(rec) {
             return Ok(None);
         }
         Ok(Some(capture_record_to_agenticmd_block(rec)?))
     }
 
-    pub fn agenticmd_blocks_from_records(records: &[CaptureRecord]) -> Result<Vec<AgenticmdBlock>> {
+    pub fn agenticmd_blocks_from_records(records: &[EventRecord]) -> Result<Vec<AgenticmdBlock>> {
         let mut pipeline = Self::default();
         let mut blocks = Vec::new();
         for rec in records {
@@ -59,7 +59,7 @@ impl MarkdownPipeline {
         Ok(blocks)
     }
 
-    pub fn call_ids_from_records(records: &[CaptureRecord]) -> BTreeSet<String> {
+    pub fn call_ids_from_records(records: &[EventRecord]) -> BTreeSet<String> {
         let mut pipeline = Self::default();
         let mut ids = BTreeSet::new();
         for rec in records {
@@ -73,7 +73,7 @@ impl MarkdownPipeline {
         ids
     }
 
-    fn skip_history_replay(&mut self, rec: &CaptureRecord) -> bool {
+    fn skip_history_replay(&mut self, rec: &EventRecord) -> bool {
         match rec.kind.as_str() {
             "llm.request" => {
                 // Codex / Responses tool rounds resend the full `input` array; visible user
@@ -108,7 +108,7 @@ impl MarkdownPipeline {
 }
 
 /// Responses / Codex tool-output follow-up (not Claude history replay).
-fn is_tool_result_continuation(rec: &CaptureRecord) -> bool {
+fn is_tool_result_continuation(rec: &EventRecord) -> bool {
     rec.visible_user_text()
         .is_some_and(|t| t.contains("```tool_result:"))
 }
@@ -157,7 +157,7 @@ impl LiveMarkdownWriter {
         self.target.path()
     }
 
-    pub fn write_record(&mut self, rec: &CaptureRecord) -> Result<()> {
+    pub fn write_record(&mut self, rec: &EventRecord) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
@@ -190,7 +190,7 @@ pub fn stamp_request_payload(payload: &mut Value, body_json: Option<&Value>) {
 }
 
 /// Alias kept for tests and CLI view helpers.
-pub fn skip_markdown_block(rec: &CaptureRecord) -> bool {
+pub fn skip_markdown_block(rec: &EventRecord) -> bool {
     should_skip_record(rec)
 }
 
@@ -223,12 +223,7 @@ mod tests {
         }
     }
 
-    fn request(
-        id: &str,
-        user: &str,
-        user_message_count: u64,
-        body: Option<Value>,
-    ) -> CaptureRecord {
+    fn request(id: &str, user: &str, user_message_count: u64, body: Option<Value>) -> EventRecord {
         let mut rec = llm_request_summary_record(
             Some("sess-1".into()),
             Some("agent-1".into()),
@@ -247,7 +242,7 @@ mod tests {
         rec
     }
 
-    fn response(id: &str, text: &str) -> CaptureRecord {
+    fn response(id: &str, text: &str) -> EventRecord {
         llm_response_record_with_content(
             Some("sess-1".into()),
             Some("agent-1".into()),

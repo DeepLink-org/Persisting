@@ -3,6 +3,57 @@
 `StorylineLanceStore` 是 pChronicle 的 Storyline-native 规范化物理表示。它与
 `events.lance` 原始事件日志并列存在，不替代后者。
 
+## Projection contract and closed loop
+
+Storyline retains the Hub interchange contract (path A), while the three-table store is a
+rebuildable silver projection of canonical `events.lance` (path B). The two uses share a schema,
+but not write identity: interchange imports and direct `replace_storyline` calls carry no canonical
+lineage. Only the events projector may publish a `CURRENT` with projection lineage.
+
+```text
+events.lance (source of truth)
+  ├─ project build/rebuild ─► runs + steps + tool_calls + objects
+  ├─ project sync ──────────► replace only sessions touched by the append suffix
+  └─ Catalog fallback ──────► project a pinned events snapshot when missing or stale
+```
+
+`CURRENT` pins exact Lance versions for all four tables and records the source URI and source
+identity, `fact_version`, `fact_rows`, the source layout revision at build time, projector and
+recipe identity, recipe hash, and completeness. `fact_version` and `fact_rows` are the
+freshness watermark. Compaction changes only the layout revision and does not stale a projection.
+Direct document writes clear lineage; maintenance preserves it.
+
+Operational commands:
+
+```bash
+# The destination must be empty; build from one pinned fact snapshot.
+pchronicle project build --from ./run/events.lance --output ./run/storyline
+
+# status reads CURRENT only; verify compares it with the current canonical fact watermark.
+pchronicle project status --from ./run/storyline
+pchronicle project verify --from ./run/storyline --source ./run/events.lance
+
+# Read only the new append suffix, then reload and replace the affected sessions.
+pchronicle project sync --from ./run/storyline --source ./run/events.lance
+
+# Continuously sync and periodically verify outside the Gateway hot path; emit one JSONL event per loop.
+pchronicle project watch --from ./run/storyline --source ./run/events.lance
+
+# Write a new table generation before switching CURRENT.
+pchronicle project rebuild --from ./run/events.lance --output ./run/storyline
+```
+
+Catalog merges a lineage-linked sidecar with the events source into one logical source. When
+`sources.projection_status` is `fresh`, normalized queries use the three tables. When it is `stale`,
+Catalog hides the sidecar and falls back to a deterministic projection of the pinned events
+snapshot. `projection_generation` exposes the generation actually selected. A Storyline document
+store without lineage is never inferred to be a projection of canonical events.
+
+`project watch` is the recommended operational runner under systemd, Kubernetes, or another
+supervisor. It applies capped exponential backoff, shuts down on process signals, and supports
+`--exit-on-error` when the supervisor owns retries. It deliberately stays outside Gateway capture,
+so projection failures cannot block canonical event writes.
+
 本文只负责三表物理 schema、内容层、Snapshot 发布、查询接入和维护语义。事实源与
 projection ownership 见[轨迹存储](trajectory-storage.md)，用户查询流程见
 [Dataset 查询指南](../guides/discover-and-query.md)。
@@ -58,12 +109,12 @@ scalar index 和 DataFusion execution node。这样可以得到需要的延迟�
 超过默认 64 KiB 的内容列在三表中暂时编码为：
 
 ```text
-<RS>PCHRONICLE-CONTENT-1:<type>:<codec>:<blake3-256>:<raw_length>:<preview-base64url>
+<RS>PCHRONICLE-CONTENT:<type>:<codec>:<blake3-256>:<raw_length>:<preview-base64url>
 ```
 
 | 字段 | 当前编码 | 作用 |
 |---|---|---|
-| magic/version | `PCHRONICLE-CONTENT-1` | 严格识别内部引用并允许协议演进 |
+| magic | `PCHRONICLE-CONTENT` | 严格识别内部引用 |
 | logical type | `u` / `j` / `b` | UTF-8、JSON；binary 标签已保留给后续二进制列 |
 | codec | `i` / `z` | identity 或 Zstd |
 | content id | 64 位十六进制 BLAKE3-256 | 对未压缩原始字节寻址、校验和跨轨迹复用 |

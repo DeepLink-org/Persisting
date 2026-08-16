@@ -19,8 +19,6 @@ use object_store::path::Path as ObjectPath;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
-const EVENT_MANIFEST_SCHEMA_VERSION: u32 = 2;
-const LEGACY_EVENT_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "_manifest.json";
 const MANIFEST_LOCK_FILE: &str = "_manifest.lock";
 const CAS_RETRIES: usize = 64;
@@ -48,23 +46,18 @@ pub(super) struct EventSegment {
     pub id: String,
     pub version: u64,
     pub rows: u64,
-    #[serde(default)]
     pub level: u8,
-    #[serde(default)]
     pub sealed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct EventManifest {
-    pub schema_version: u32,
     /// Physical manifest revision. Writer fencing, layout maintenance, and
     /// fact publication may all advance this value.
     pub revision: u64,
     /// Logical fact revision. Only publishing newly visible rows advances it.
-    #[serde(default)]
     pub fact_version: u64,
     /// Number of canonical rows visible at `fact_version`.
-    #[serde(default)]
     pub fact_rows: u64,
     pub active_writer: EventWriterFence,
     #[serde(default)]
@@ -129,7 +122,6 @@ pub(super) async fn activate(
             },
         };
         let mut next = current.cloned().unwrap_or(EventManifest {
-            schema_version: EVENT_MANIFEST_SCHEMA_VERSION,
             revision: 0,
             fact_version: 0,
             fact_rows: 0,
@@ -480,11 +472,6 @@ where
 }
 
 fn validate_manifest(manifest: &EventManifest) -> Result<()> {
-    anyhow::ensure!(
-        manifest.schema_version == EVENT_MANIFEST_SCHEMA_VERSION,
-        "unsupported event manifest schema version {}",
-        manifest.schema_version
-    );
     EventWriterFence::new(
         manifest.active_writer.epoch,
         manifest.active_writer.writer_id.clone(),
@@ -508,13 +495,8 @@ fn validate_manifest(manifest: &EventManifest) -> Result<()> {
 }
 
 fn decode_manifest(bytes: &[u8], context: impl std::fmt::Display) -> Result<EventManifest> {
-    let mut manifest: EventManifest = serde_json::from_slice(bytes)
+    let manifest: EventManifest = serde_json::from_slice(bytes)
         .with_context(|| format!("decode event manifest {context}"))?;
-    if manifest.schema_version == LEGACY_EVENT_MANIFEST_SCHEMA_VERSION {
-        manifest.fact_version = manifest.revision;
-        manifest.fact_rows = manifest.total_rows();
-        manifest.schema_version = EVENT_MANIFEST_SCHEMA_VERSION;
-    }
     validate_manifest(&manifest)?;
     Ok(manifest)
 }
@@ -763,18 +745,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn legacy_segment_metadata_defaults_to_active_level_zero() {
-        let segment: EventSegment = serde_json::from_value(serde_json::json!({
-            "id": "legacy",
-            "version": 1,
-            "rows": 7
-        }))
-        .unwrap();
-        assert_eq!(segment.level, 0);
-        assert!(!segment.sealed);
-    }
-
     #[tokio::test]
     async fn contiguous_segment_group_replacement_preserves_order_and_rows() {
         let directory = tempfile::tempdir().unwrap();
@@ -850,6 +820,21 @@ mod tests {
         std::fs::write(root.join(MANIFEST_FILE), b"{truncated").unwrap();
         let error = read(uri).await.unwrap_err();
         assert!(error.to_string().contains("decode event manifest"));
+    }
+
+    #[test]
+    fn manifest_wire_has_no_schema_marker() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "revision": 7,
+            "fact_version": 7,
+            "fact_rows": 0,
+            "active_writer": {"epoch": 1, "writer_id": "writer"},
+            "segments": []
+        }))
+        .unwrap();
+        let manifest = decode_manifest(&bytes, "manifest fixture").unwrap();
+        let value = serde_json::to_value(manifest).unwrap();
+        assert!(value.get("schema_version").is_none());
     }
 
     #[tokio::test]

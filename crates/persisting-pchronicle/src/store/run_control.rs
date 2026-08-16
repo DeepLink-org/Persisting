@@ -12,7 +12,6 @@ use object_store::path::Path as ObjectPath;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use persisting_agentctl::{
     AttemptId, RunCommit, RunCommitRequest, RunControlRecord, RunId, RunLeaseRecord,
-    RUN_CONTROL_SCHEMA_VERSION,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -438,13 +437,12 @@ fn next_record(
     apply: impl FnOnce(&mut RunControlRecord),
 ) -> anyhow::Result<RunControlRecord> {
     let mut record = current.cloned().unwrap_or(RunControlRecord {
-        schema_version: RUN_CONTROL_SCHEMA_VERSION,
         revision: 0,
         run_id: run_id.clone(),
         lease: None,
         commit: None,
     });
-    if record.schema_version != RUN_CONTROL_SCHEMA_VERSION || record.run_id != run_id {
+    if record.run_id != run_id {
         bail!("invalid Run control record for {run_id}");
     }
     record.revision = record

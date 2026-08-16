@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::story::{RunId, Story, StoryId, TurnKind, TurnMachine};
-use crate::record::CaptureRecord;
+use crate::record::EventRecord;
 use crate::session::storage::CaptureRoute;
 
 /// On-disk cache of live story snapshots (keyed by markdown session stem).
@@ -25,7 +25,7 @@ fn rebuild_story_from_records(
     story_id: StoryId,
     agent_id: impl Into<String>,
     run_id: Option<RunId>,
-    records: &[CaptureRecord],
+    records: &[EventRecord],
 ) -> Story {
     TurnMachine::replay_records(story_id, agent_id, run_id, records).snapshot()
 }
@@ -34,7 +34,7 @@ fn rebuild_story_from_records(
 pub fn rebuild_session_story(
     session_id: &str,
     root_session: &str,
-    records: &[CaptureRecord],
+    records: &[EventRecord],
 ) -> Story {
     let route = CaptureRoute::for_replay_stem(root_session, session_id);
     let agent_id = records

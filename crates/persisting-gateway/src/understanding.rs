@@ -13,7 +13,6 @@ use persisting_pchronicle::{
     LlmCandidate, LlmContentPart, LlmGenerationParams, LlmImageSource, LlmMessage, LlmProtocol,
     LlmRequest, LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload, LlmResponseFormat,
     LlmRole, LlmToolChoice, LlmToolChoiceMode, LlmToolDefinition, LlmUsage,
-    LLM_EVENT_SCHEMA_VERSION,
 };
 use serde_json::{Map, Value};
 
@@ -53,7 +52,6 @@ pub fn understand_request_value(
         _ => parse_chat_request(object),
     };
     Ok(LlmRequestEventPayload {
-        schema_version: LLM_EVENT_SCHEMA_VERSION.into(),
         input_format: protocol.into(),
         request,
     })
@@ -73,7 +71,6 @@ pub fn understand_response_value(
         _ => parse_chat_response(object),
     };
     Ok(LlmResponseEventPayload {
-        schema_version: LLM_EVENT_SCHEMA_VERSION.into(),
         output_format: protocol.into(),
         response,
     })
@@ -100,7 +97,6 @@ pub fn understand_stream_summary(
         })
         .unwrap_or_default();
     LlmResponseEventPayload {
-        schema_version: LLM_EVENT_SCHEMA_VERSION.into(),
         output_format: protocol.into(),
         response: LlmResponse {
             id: None,

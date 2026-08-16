@@ -17,9 +17,8 @@ Gateway 和 CLI 可以分别生产事件和适配输入，但 MUST NOT 定义第
 
 ### 1. Canonical 记录
 
-`EventRecord` 是 crate 边界上的 canonical 逻辑记录。Gateway 不再定义同构记录
-schema；Gateway 内部名称 `CaptureRecord` 必须直接指向 `EventRecord`。provider/SSE payload
-解释可作为 Gateway 扩展行为存在，但不得形成第二套可序列化轨迹类型。
+`EventRecord` 是 crate 边界和 Gateway 采集管线共同使用的 canonical 逻辑记录。
+provider/SSE payload 解释可作为 Gateway 扩展行为存在，但不得形成第二套可序列化轨迹类型。
 
 `EventRow` 是 `events.lance` 的稳定物理行。其 Arrow schema、行转换、序号和 session 分区语义由 pChronicle 独占维护。
 
@@ -27,7 +26,7 @@ schema；Gateway 内部名称 `CaptureRecord` 必须直接指向 `EventRecord`�
 
 | 层 | API / 实现 | 语义 |
 |---|---|---|
-| canonical event log | `StructuredStore`, `RawEventLanceStore` | append、replay、stats；同一 run 按 `session_id` 分区 |
+| canonical event log | `RawEventLanceStore` | typed append、replay、stats；同一 run 按 `session_id` 分区 |
 | 人读/调试视图 | `materialize_lance_to_markdown`, AgenticMD 文件 helpers | 从 canonical events 单向生成，可随时删除和重建 |
 | 发现 | `expand_story_locations` | 发现 canonical Run/Story 分区；Markdown 不参与存储层选择 |
 | 数据维护 | `RawEventLanceStore::maintain` | 显式离线 compaction、session 索引和 vacuum；事实层不支持 truncate/overwrite |
@@ -91,9 +90,9 @@ Run lease epoch MUST 通过 `EventWriterFence` 进入 canonical event 提交协�
 - Gateway 仅保留实时 payload 解释、live Markdown eligibility/upsert orchestration 与运行时 reconcile；格式解析、文件 I/O、frontmatter 契约与索引实现委托 pChronicle。
 - 调用方直接依赖 pChronicle。
 - 旧 ATIF `sessions` / `steps` / `tool_calls`、`NormalizedStore`、内存联表视图及对应 Python 门面删除；ATIF 查询统一复用 Storyline 三表 schema。
-- event lines 是 pChronicle append service 的批输入表示，不是跨 crate RPC 协议。
+- append 边界直接传递 `EventRecord` 批次，不保留 RON/event-lines 字符串适配层。
 
-新代码 SHOULD 直接依赖 pChronicle 的类型与操作；`CaptureRecord` 只是 Gateway 内部领域命名，不构成独立 public schema。
+新代码 SHOULD 直接依赖 pChronicle 的类型与操作；Gateway 也直接使用 `EventRecord`。
 
 ## 验收条件
 

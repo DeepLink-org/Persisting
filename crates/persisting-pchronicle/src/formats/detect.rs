@@ -35,10 +35,14 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<ChronicleFormat
 
 /// Detect format from document text when path is unavailable.
 ///
-/// Does **not** classify CaptureRecord-shaped JSON as `events` (Lance-only).
+/// Does **not** classify EventRecord-shaped JSON as `events` (Lance-only).
 pub fn detect_format_from_content(input: &str) -> Result<Option<ChronicleFormat>> {
     let trimmed = input.trim_start();
-    if trimmed.starts_with("---") && trimmed.contains("format: persisting:1.0") {
+    if trimmed.starts_with("---")
+        && trimmed
+            .lines()
+            .any(|line| line.trim() == "format: persisting")
+    {
         return Ok(Some(ChronicleFormat::Agenticmd));
     }
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
@@ -103,7 +107,7 @@ fn detect_json_format(v: &serde_json::Value) -> Option<ChronicleFormat> {
     {
         return Some(ChronicleFormat::Atif);
     }
-    if v.get("session_steps").is_some() || v.get("format_version").is_some() {
+    if v.get("session_steps").is_some() {
         return Some(ChronicleFormat::OpenaiMsg);
     }
     if v.get("turns").is_some()

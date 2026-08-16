@@ -22,7 +22,6 @@ pub struct StoryRunRow {
     /// `run_id` contains the effective value (`session_id`) used for joins.
     pub run_id_explicit: bool,
     pub session_id: String,
-    pub schema_version: String,
     pub agent_id: String,
     pub agent_name: Option<String>,
     pub agent_version: Option<String>,
@@ -112,7 +111,6 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
         run_id: run_id.clone(),
         run_id_explicit: story.run_id.is_some(),
         session_id: story.session_id.clone(),
-        schema_version: story.schema_version.clone(),
         agent_id: story.agent.id.clone(),
         agent_name: story.agent.name.clone(),
         agent_version: story.agent.version.clone(),
@@ -308,7 +306,6 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         })
         .collect();
     let story = StorylineDocument {
-        schema_version: run.schema_version,
         run_id: run.run_id_explicit.then_some(run.run_id),
         session_id: run.session_id,
         agent: crate::StorylineAgent {
@@ -334,7 +331,7 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StorylineAgent, STORYLINE_SCHEMA_VERSION};
+    use crate::StorylineAgent;
     use serde_json::json;
 
     fn turn(id: i64, source: &str) -> StorylineTurn {
@@ -371,7 +368,6 @@ mod tests {
             "results": [{"source_call_id": "call-1", "content": "42"}]
         }));
         StorylineDocument {
-            schema_version: STORYLINE_SCHEMA_VERSION.into(),
             run_id: Some("run-1".into()),
             session_id: "session-1".into(),
             agent: StorylineAgent {

@@ -4,7 +4,6 @@ use std::sync::Arc;
 #[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use async_trait::async_trait;
 #[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
-use persisting_gateway::record::CaptureRecord;
 #[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 use persisting_gateway::session::storage::CaptureRoute;
 #[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
@@ -98,7 +97,7 @@ pub fn chronicle_sink(
     let callback_storage = storage.clone();
     let callback = CallbackSink::new(
         default_agent_id,
-        move |route: &CaptureRoute, agent_id, record: CaptureRecord| {
+        move |route: &CaptureRoute, agent_id, record: EventRecord| {
             trajectory_tx.append_durable(
                 StoryCoords::new(
                     callback_storage.clone(),

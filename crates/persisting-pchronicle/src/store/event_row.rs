@@ -49,16 +49,33 @@ pub fn event_record_to_event_row(rec: &EventRecord) -> Result<EventRow> {
 }
 
 pub fn event_row_to_event_record(row: &EventRow) -> Result<EventRecord> {
-    let record: EventRecord =
+    let mut record: EventRecord =
         serde_json::from_str(&row.payload_json).context("decode EventRecord JSON")?;
-    anyhow::ensure!(
-        record.identity.event_id == row.event_id,
-        "event_id mismatch between physical column and payload_json"
-    );
+    record.validate().map_err(anyhow::Error::from)?;
+    let seq = i64::try_from(record.seq).context("EventRecord seq exceeds i64")?;
+    for (field, matches) in [
+        ("seq", seq == row.seq),
+        ("event_id", record.identity.event_id == row.event_id),
+        ("timestamp", record.timestamp == row.timestamp),
+        ("kind", record.kind == row.kind),
+        ("source", record.source == row.source),
+        ("call_id", record.call_id == row.call_id),
+        ("trace_id", record.trace_id == row.trace_id),
+        (
+            "parent_call_id",
+            record.parent_call_id == row.parent_call_id,
+        ),
+        ("model", index_model(&record) == row.model),
+    ] {
+        anyhow::ensure!(
+            matches,
+            "{field} mismatch between physical column and payload_json"
+        );
+    }
+    // The append caller's physical routing coordinates are authoritative at
+    // replay time. payload_json still contains the producer's original claim,
+    // so admission remains lossless without adding conflict columns or indexes.
+    record.agent_id.clone_from(&row.agent_id);
+    record.session_id.clone_from(&row.session_id);
     Ok(record)
-}
-
-pub fn event_row_to_replay_json(row: &EventRow) -> Result<String> {
-    let rec = event_row_to_event_record(row)?;
-    serde_json::to_string(&rec).context("encode replay JSON")
 }

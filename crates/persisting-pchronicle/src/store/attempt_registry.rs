@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 const ATTEMPT_DIR: &str = "attempt-registry";
 const CAS_RETRIES: usize = 32;
-pub const ATTEMPT_RECORD_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,7 +28,6 @@ pub enum AttemptRecordState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttemptRecord {
-    pub schema_version: u32,
     pub revision: u64,
     pub run_id: String,
     pub attempt_id: String,
@@ -122,7 +120,6 @@ impl AttemptRegistry {
             }
             let now = unix_now_ms();
             let record = AttemptRecord {
-                schema_version: ATTEMPT_RECORD_SCHEMA_VERSION,
                 revision: next_revision(current)?,
                 run_id: run_id.clone(),
                 attempt_id: attempt_id.clone(),
@@ -151,8 +148,7 @@ impl AttemptRegistry {
             let Some(current) = current else {
                 return Ok(Mutation::Unchanged(false));
             };
-            if current.schema_version != ATTEMPT_RECORD_SCHEMA_VERSION
-                || current.run_id != run_id
+            if current.run_id != run_id
                 || current.attempt_id != attempt_id
                 || current.lease_epoch != lease_epoch
                 || current.state != AttemptRecordState::Active

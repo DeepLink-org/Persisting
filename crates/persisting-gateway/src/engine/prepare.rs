@@ -321,7 +321,7 @@ impl CapturePreparer {
         ctx: &CallContext,
         event: CancelEvent,
     ) -> Result<PreparedCapture> {
-        let rec = crate::record::CaptureRecord {
+        let rec = crate::record::EventRecord {
             identity: persisting_pchronicle::EventIdentity::default(),
             seq: 0,
             source: "capture".into(),

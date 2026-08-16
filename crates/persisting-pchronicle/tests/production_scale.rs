@@ -20,7 +20,7 @@ use persisting_agentctl::RunId;
 use persisting_pchronicle::{
     raw_event_lance_path, ChronicleQueryEngine, EventIdentity, EventRecord, EventWriterFence,
     LanceMaintenanceOptions, LeaseAcquireOutcome, RawEventLanceAppender, RawEventLanceStore,
-    RunControlStore, StoryCoords, StructuredStore,
+    RunControlStore, StoryCoords,
 };
 
 const CI_STORIES: usize = 4;

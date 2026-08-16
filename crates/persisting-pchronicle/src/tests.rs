@@ -80,30 +80,6 @@ fn sample_traj() -> AtifTrajectory {
 }
 
 #[test]
-fn typed_events_roundtrip_through_event_lines() {
-    let record = crate::EventRecord {
-        identity: crate::EventIdentity::default(),
-        seq: 7,
-        source: "test".into(),
-        kind: "http.request".into(),
-        timestamp: None,
-        session_id: Some("sess-1".into()),
-        agent_id: Some("agent".into()),
-        parent_uuid: None,
-        trace_id: None,
-        call_id: Some("call-1".into()),
-        subagent_id: None,
-        parent_agent_id: None,
-        branch: None,
-        parent_call_id: None,
-        payload: json!({"http": {"method": "POST", "path": "/v1/messages"}}),
-    };
-    let lines = crate::encode_event_lines(std::slice::from_ref(&record)).unwrap();
-    let decoded = crate::decode_event_lines(&lines).unwrap();
-    assert_eq!(decoded, vec![record]);
-}
-
-#[test]
 fn chronicle_format_names_are_canonical_only() {
     use crate::ChronicleFormat;
     use std::str::FromStr;
@@ -111,7 +87,6 @@ fn chronicle_format_names_are_canonical_only() {
         ChronicleFormat::from_str("storyline").unwrap(),
         ChronicleFormat::Storyline
     );
-    assert!(ChronicleFormat::from_str("storyline/v1").is_err());
     assert!(ChronicleFormat::Storyline.is_hub());
     assert_eq!(
         ChronicleFormat::from_str("events").unwrap(),
@@ -368,7 +343,7 @@ fn parse_agenticmd_document_roundtrip() {
     doc.session_id = Some("sess-1".into());
     doc.agent_id = Some("agent-a".into());
     let text = encode_agenticmd_document(&doc).unwrap();
-    assert!(text.contains("format: persisting:1.0"));
+    assert!(text.contains("format: persisting"));
     assert!(text.contains("session_id: sess-1"));
     assert!(text.contains("agent_id: agent-a"));
     assert!(text.contains("<!-- persisting:block:user"));
@@ -400,20 +375,20 @@ fn agenticmd_accepts_minimal_storyline_style_block() {
 fn agenticmd_accepts_plain_markdown_but_rejects_unclosed_frontmatter() {
     use crate::{parse_agenticmd_blocks_with_spans, parse_agenticmd_document};
 
-    let unclosed = "---\nformat: persisting:1.0\n";
+    let unclosed = "---\nformat: persisting\n";
     let err = parse_agenticmd_document(unclosed).unwrap_err();
     assert!(
         err.to_string().contains("unclosed YAML frontmatter"),
         "{err}"
     );
 
-    let garbage = "---\nformat: persisting:1.0\n---\n\nnot a block\n";
+    let garbage = "---\nformat: persisting\n---\n\nnot a block\n";
     let parsed = parse_agenticmd_document(garbage).unwrap();
     assert_eq!(parsed.blocks.len(), 1);
     assert_eq!(parsed.blocks[0].body, "not a block");
     assert_eq!(parsed.blocks[0].source(), Some("system"));
 
-    let spans = parse_agenticmd_blocks_with_spans("---\nformat: persisting:1.0\n---\n\n").unwrap();
+    let spans = parse_agenticmd_blocks_with_spans("---\nformat: persisting\n---\n\n").unwrap();
     assert!(spans.is_empty());
 }
 
@@ -421,7 +396,7 @@ fn agenticmd_accepts_plain_markdown_but_rejects_unclosed_frontmatter() {
 fn agenticmd_body_byte_offset_matches_split() {
     use crate::agenticmd_body_byte_offset;
     assert_eq!(agenticmd_body_byte_offset("no-fm").unwrap(), 0);
-    let doc = "---\nformat: persisting:1.0\n---\n\nbody";
+    let doc = "---\nformat: persisting\n---\n\nbody";
     let off = agenticmd_body_byte_offset(doc).unwrap();
     assert_eq!(&doc[off..], "\nbody");
     let err = agenticmd_body_byte_offset("---\nno close\n").unwrap_err();
@@ -469,7 +444,6 @@ fn encode_agenticmd_preamble_preserves_nested_mapping() {
 fn parse_openai_msg_envelope() {
     use crate::formats::openai_msg::parse_openai_msg_document;
     let raw = r#"{
-      "format_version": 1,
       "session_id": "s1",
       "session_dir": "s1",
       "agent_id": "a1",
@@ -545,7 +519,7 @@ fn detect_format_from_content_and_path() {
         detect_format(None, Some(&atif_ndjson)).unwrap(),
         Some(ChronicleFormat::Atif)
     );
-    let story = r#"{"spec":"storyline/v1","session":"s","agent":{"id":"a"},"turns":[]}"#;
+    let story = r#"{"session":"s","agent":{"id":"a"},"turns":[]}"#;
     assert_eq!(
         detect_format(None, Some(story)).unwrap(),
         Some(ChronicleFormat::Storyline)
@@ -568,7 +542,6 @@ fn openai_msg_preserves_user_and_llm_turns() {
     use crate::convert::into_storyline;
     use crate::ChronicleFormat;
     let raw = r#"{
-      "format_version": 1,
       "session_id": "s1",
       "session_dir": "s1",
       "agent_id": "a1",
@@ -615,7 +588,7 @@ fn storyline_wire_uses_short_keys() {
         &into_storyline(ChronicleFormat::Atif, &atif).unwrap(),
     )
     .unwrap();
-    assert!(out.contains(r#""spec""#));
+    assert!(!out.contains(r#""spec""#));
     assert!(out.contains(r#""session""#));
     assert!(out.contains(r#""agent""#));
     assert!(out.contains(r#""src""#));
@@ -639,7 +612,6 @@ fn convert_storyline_agenticmd_preserves_dialogue_and_timing() {
     use crate::convert::convert;
     use crate::ChronicleFormat;
     let story = r#"{
-      "spec": "storyline/v1",
       "session": "sess-md",
       "agent": { "id": "agent-md", "name": "demo" },
       "turns": [
@@ -653,7 +625,7 @@ fn convert_storyline_agenticmd_preserves_dialogue_and_timing() {
         story,
     )
     .unwrap();
-    assert!(md.contains("format: persisting:1.0"));
+    assert!(md.contains("format: persisting"));
     assert!(md.contains("ask me"));
     assert!(md.contains("answer"));
     assert!(md.contains("latency_ms"));
@@ -697,7 +669,7 @@ fn convert_agenticmd_storyline_preserves_call_id_and_seq() {
 
     let doc = AgenticmdDocument {
         format: "agenticmd".into(),
-        frontmatter_format: "persisting:1.0".into(),
+        frontmatter_format: "persisting".into(),
         session_id: Some("s-cid".into()),
         agent_id: Some("a-cid".into()),
         frontmatter: BTreeMap::new(),
@@ -805,7 +777,6 @@ fn convert_openai_msg_storyline_roundtrip_messages() {
     use crate::convert::convert;
     use crate::ChronicleFormat;
     let raw = r#"{
-      "format_version": 1,
       "session_id": "s-om",
       "session_dir": "s-om",
       "agent_id": "a-om",
@@ -941,7 +912,6 @@ fn storyline_to_events_assigns_call_id_for_paired_turns() {
     use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
     use serde_json::json;
     let story = StorylineDocument {
-        schema_version: "storyline/v1".into(),
         run_id: None,
         session_id: "s-pair".into(),
         agent: StorylineAgent {

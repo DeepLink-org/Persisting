@@ -12,9 +12,7 @@ use crate::formats::agenticmd::{
     AgenticmdBlock, AgenticmdDocument, AgenticmdHeader, AGENTICMD_FORMAT_NAME,
     AGENTICMD_FRONTMATTER_FORMAT,
 };
-use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineTurn, STORYLINE_SCHEMA_VERSION,
-};
+use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
 use crate::Result;
 
 /// Header field names preserved via `turn.extra` for hub round-trips.
@@ -28,7 +26,6 @@ const EXTRA_CORRELATION_KEYS: &[&str] = &[
     "trace_id",
     "parent_uuid",
     "draft",
-    "v",
     "source",
 ];
 
@@ -86,13 +83,12 @@ pub fn agenticmd_to_storyline(doc: &AgenticmdDocument) -> Result<StorylineDocume
     }
 
     Ok(StorylineDocument {
-        schema_version: STORYLINE_SCHEMA_VERSION.into(),
         run_id: None,
         session_id,
         agent: StorylineAgent {
             id: agent_id.clone(),
             name: Some(agent_id),
-            version: Some("0".into()),
+            version: None,
             model_name: None,
             tool_definitions: None,
             extra: None,

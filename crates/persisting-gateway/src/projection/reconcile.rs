@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{rebuild_session_story, story_call_ids, story_user_turn_count};
-use crate::record::CaptureRecord;
+use crate::record::EventRecord;
 use persisting_pchronicle::index_agenticmd_path;
 
 use super::markdown_pipeline::MarkdownPipeline;
@@ -52,7 +52,7 @@ pub struct RunReconcileReport {
 }
 
 /// Extract visible dialogue `call_id`s that event records would materialize into markdown.
-pub fn expected_markdown_call_ids(records: &[CaptureRecord]) -> BTreeSet<String> {
+pub fn expected_markdown_call_ids(records: &[EventRecord]) -> BTreeSet<String> {
     MarkdownPipeline::call_ids_from_records(records)
 }
 
@@ -77,7 +77,7 @@ pub fn reconcile_session(
     session_id: &str,
     root_session: &str,
     md_path: &Path,
-    event_records: &[CaptureRecord],
+    event_records: &[EventRecord],
 ) -> Result<SessionReconcile> {
     let (md_block_count, md_ids, structural_issues) = index_markdown_path(md_path)?;
     let event_ids = expected_markdown_call_ids(event_records);
@@ -122,7 +122,7 @@ pub fn build_run_report(
     root_session: &str,
     agent_id: &str,
     run_dir: &Path,
-    events_by_session: &BTreeMap<String, Vec<CaptureRecord>>,
+    events_by_session: &BTreeMap<String, Vec<EventRecord>>,
 ) -> Result<RunReconcileReport> {
     let mut sessions = Vec::new();
     for md_path in list_run_markdown_paths(run_dir)? {

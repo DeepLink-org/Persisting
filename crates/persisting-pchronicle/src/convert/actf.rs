@@ -9,13 +9,12 @@ use crate::formats::actf::{
     ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
 };
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
 use crate::{Error, Result};
 
 const ACTF_PROVENANCE_KEY: &str = "_pchronicle_actf";
 const ACTF_STEP_KEY: &str = "_pchronicle_actf_step";
-const ACTF_PROVENANCE_VERSION: u64 = 1;
 
 pub fn actf_to_storyline(document: &ActfDocument) -> Result<StorylineDocument> {
     let mut stories = actf_to_storylines(document)?;
@@ -76,7 +75,6 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
     }
 
     let first = provenance(&stories[0]).expect("provenance count checked above");
-    validate_provenance(first)?;
     let root_value = first
         .get("root")
         .and_then(Value::as_object)
@@ -86,7 +84,6 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
     for story in stories {
         story.validate()?;
         let metadata = provenance(story).expect("provenance count checked above");
-        validate_provenance(metadata)?;
         if metadata.get("root").and_then(Value::as_object) != Some(&root_value) {
             return Err(Error::Other(
                 "ACTF Storylines have conflicting root metadata".into(),
@@ -143,8 +140,7 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
 }
 
 pub fn is_actf_storyline(story: &StorylineDocument) -> bool {
-    provenance(story)
-        .is_some_and(|metadata| metadata.get("version").and_then(Value::as_u64) == Some(1))
+    provenance(story).is_some()
 }
 
 fn attempt_to_storyline(
@@ -221,13 +217,12 @@ fn attempt_to_storyline(
         document.task_id.clone()
     };
     Ok(StorylineDocument {
-        schema_version: STORYLINE_SCHEMA_VERSION.into(),
         run_id: Some(document.task_id.clone()),
         session_id,
         agent: StorylineAgent {
             id: "actf-agent".into(),
             name: Some("ACTF Agent".into()),
-            version: Some(ACTF_SCHEMA_VERSION.into()),
+            version: None,
             model_name: None,
             tool_definitions: None,
             extra: None,
@@ -244,7 +239,6 @@ fn attempt_to_storyline(
         continued_trajectory_ref: None,
         extra: Some(json!({
             "_pchronicle_actf": {
-                "version": ACTF_PROVENANCE_VERSION,
                 "root": root_metadata,
                 "attempt_id": attempt_id,
                 "attempt": attempt_metadata,
@@ -481,15 +475,6 @@ fn trajectory_metadata(trajectory: &ActfTrajectory) -> Result<Value> {
 
 fn provenance(story: &StorylineDocument) -> Option<&Map<String, Value>> {
     story.extra.as_ref()?.get(ACTF_PROVENANCE_KEY)?.as_object()
-}
-
-fn validate_provenance(metadata: &Map<String, Value>) -> Result<()> {
-    if metadata.get("version").and_then(Value::as_u64) != Some(ACTF_PROVENANCE_VERSION) {
-        return Err(Error::Other(
-            "unsupported or missing ACTF provenance version".into(),
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -65,7 +65,7 @@ async fn request_event_projects_original_body_and_typed_understanding() {
     let records = sink.drain();
     let payload = &records[0].payload;
     assert_eq!(payload["http"]["request_body"], original);
-    assert_eq!(payload["llm_request"]["schema_version"], "llm/v1");
+    assert!(payload["llm_request"].get("schema_version").is_none());
     assert_eq!(payload["llm_request"]["input_format"], "chat_completions");
     assert_eq!(payload["llm_request"]["request"]["model"], "deepseek-chat");
     assert_eq!(payload["llm_request"]["request"]["stream"], true);
@@ -108,10 +108,9 @@ async fn response_event_appends_single_stream_record() {
         records[0].payload["assistant_content"].as_str(),
         Some("hello")
     );
-    assert_eq!(
-        records[0].payload["llm_response"]["schema_version"],
-        "llm/v1"
-    );
+    assert!(records[0].payload["llm_response"]
+        .get("schema_version")
+        .is_none());
     assert_eq!(
         records[0].payload["llm_response"]["output_format"],
         "chat_completions"

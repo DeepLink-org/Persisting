@@ -9,13 +9,12 @@ use crate::convert::event_storyline_key;
 use crate::{
     project_event_records, EventFactSnapshot, EventRecord, ProjectionSourceSnapshot,
     RawEventDataSource, StorylineDocument, StorylineLanceStore, StorylineProjectionLineage,
-    EVENTS_TO_STORYLINE_PROJECTOR_VERSION, STORYLINE_SCHEMA_VERSION,
 };
 
 pub const STORYLINE_PROJECTOR_NAME: &str = "canonical-events-to-storyline";
 pub const STORYLINE_PROJECTION_COMPLETENESS: &str = "full";
 const STORYLINE_PROJECTION_RECIPE: &str =
-    "group=storyline_identity;order=manifest_append;projection=events-storyline/v1";
+    "group=storyline_identity;order=manifest_append;projection=events-storyline";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorylineProjectionBuildReport {
@@ -64,6 +63,10 @@ pub struct StorylineProjectionSyncReport {
     pub previous_fact_rows: Option<u64>,
     pub fact_rows: u64,
     pub affected_storylines: usize,
+    /// Newly appended canonical rows read to discover affected Storylines.
+    pub suffix_rows_scanned: u64,
+    /// Canonical history rows read for the affected Storylines.
+    pub history_rows_scanned: u64,
 }
 
 /// Build a complete, pinned Storyline projection into an empty output store.
@@ -150,6 +153,8 @@ pub async fn rebuild_storyline_projection(
         previous_fact_rows,
         fact_rows: snapshot.fact_rows,
         affected_storylines: report.storylines,
+        suffix_rows_scanned: 0,
+        history_rows_scanned: snapshot.fact_rows,
     })
 }
 
@@ -192,6 +197,8 @@ pub async fn sync_storyline_projection(
             previous_fact_rows: Some(*previous_fact_rows),
             fact_rows: snapshot.fact_rows,
             affected_storylines: 0,
+            suffix_rows_scanned: 0,
+            history_rows_scanned: 0,
         });
     }
 
@@ -200,14 +207,11 @@ pub async fn sync_storyline_projection(
             && *previous_fact_version <= snapshot.fact_version,
         "canonical fact watermark is non-monotonic; use `project rebuild`"
     );
-    let records = source.read_records_in_append_order().await?;
-    let previous_rows = usize::try_from(*previous_fact_rows)
-        .context("previous fact row watermark does not fit this platform")?;
-    anyhow::ensure!(
-        records.len() == usize::try_from(snapshot.fact_rows)?,
-        "canonical fact row watermark does not match the pinned event scan"
-    );
-    let affected = records[previous_rows..]
+    let suffix = source
+        .read_records_range_in_append_order(*previous_fact_rows, snapshot.fact_rows)
+        .await?;
+    let suffix_rows_scanned = u64::try_from(suffix.len())?;
+    let affected = suffix
         .iter()
         .map(|record| {
             event_storyline_key(record)
@@ -220,10 +224,8 @@ pub async fn sync_storyline_projection(
         "canonical fact watermark advanced without visible appended events"
     );
     let affected_count = affected.len();
-    let selected = records
-        .into_iter()
-        .filter(|record| event_storyline_key(record).is_some_and(|key| affected.contains(key)))
-        .collect();
+    let selected = source.read_records_for_storylines(&affected).await?;
+    let history_rows_scanned = u64::try_from(selected.len())?;
     let stories = project_canonical_event_records(selected)?;
     anyhow::ensure!(
         stories.len() == affected_count,
@@ -248,6 +250,8 @@ pub async fn sync_storyline_projection(
         previous_fact_rows: Some(*previous_fact_rows),
         fact_rows: snapshot.fact_rows,
         affected_storylines: affected_count,
+        suffix_rows_scanned,
+        history_rows_scanned,
     })
 }
 
@@ -285,8 +289,6 @@ pub fn canonical_projection_lineage(
             layout_revision: snapshot.layout_revision,
         },
         projector_name: STORYLINE_PROJECTOR_NAME.into(),
-        projector_version: EVENTS_TO_STORYLINE_PROJECTOR_VERSION.into(),
-        storyline_schema_version: STORYLINE_SCHEMA_VERSION.into(),
         recipe_hash: blake3::hash(STORYLINE_PROJECTION_RECIPE.as_bytes())
             .to_hex()
             .to_string(),
@@ -313,8 +315,6 @@ fn ensure_incremental_compatibility(
         source_uri == &snapshot.source_uri
             && lineage.source_id == expected.source_id
             && lineage.projector_name == expected.projector_name
-            && lineage.projector_version == expected.projector_version
-            && lineage.storyline_schema_version == expected.storyline_schema_version
             && lineage.recipe_hash == expected.recipe_hash
             && lineage.completeness == STORYLINE_PROJECTION_COMPLETENESS,
         "projection lineage is incompatible with incremental sync; use `project rebuild`"

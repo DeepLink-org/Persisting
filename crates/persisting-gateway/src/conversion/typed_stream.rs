@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use persisting_pchronicle::{
     LlmCandidate, LlmContentPart, LlmMessage, LlmProtocol, LlmResponse, LlmResponseEventPayload,
-    LlmRole, LlmStreamEvent, LlmUsage, LLM_EVENT_SCHEMA_VERSION,
+    LlmRole, LlmStreamEvent, LlmUsage,
 };
 use serde_json::{json, Value};
 
@@ -746,7 +746,6 @@ impl ResponseAccumulator {
             })
             .collect();
         LlmResponseEventPayload {
-            schema_version: LLM_EVENT_SCHEMA_VERSION.into(),
             output_format: self.protocol.clone(),
             response: LlmResponse {
                 id: self.id.clone(),

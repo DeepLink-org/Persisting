@@ -1,7 +1,7 @@
 use axum::http::{HeaderMap, HeaderValue};
 use serde_json::json;
 
-use crate::record::CaptureRecord;
+use crate::record::EventRecord;
 use crate::session::storage::CaptureRoute;
 
 use super::*;
@@ -139,7 +139,7 @@ fn match_spawns_by_doc_target_when_subagents_registered_first() {
         storage_session_id: run_key.into(),
         subagent_id: None,
     };
-    let mut rec = CaptureRecord {
+    let mut rec = EventRecord {
         identity: Default::default(),
         seq: 3,
         source: "persisting-proxy".into(),
@@ -197,7 +197,7 @@ fn backfill_spawn_link_when_subagent_registers_after_assistant() {
         storage_session_id: run_key.into(),
         subagent_id: None,
     };
-    let mut main_rec = CaptureRecord {
+    let mut main_rec = EventRecord {
         identity: Default::default(),
         seq: 2,
         source: "t".into(),
@@ -231,7 +231,7 @@ fn backfill_spawn_link_when_subagent_registers_after_assistant() {
         storage_session_id: "agent-deadbeef".into(),
         subagent_id: Some("deadbeef".into()),
     };
-    let mut sub_rec = CaptureRecord {
+    let mut sub_rec = EventRecord {
         identity: Default::default(),
         seq: 0,
         source: "t".into(),
@@ -291,7 +291,7 @@ fn enrich_links_main_request_to_subagent_trajectory() {
         storage_session_id: run_key.into(),
         subagent_id: None,
     };
-    let mut rec = CaptureRecord {
+    let mut rec = EventRecord {
         identity: Default::default(),
         seq: 0,
         source: "t".into(),
@@ -332,7 +332,7 @@ fn enrich_subagent_record_has_self_trajectory() {
         storage_session_id: "agent-xyz".into(),
         subagent_id: Some("xyz".into()),
     };
-    let mut rec = CaptureRecord {
+    let mut rec = EventRecord {
         identity: Default::default(),
         seq: 0,
         source: "t".into(),

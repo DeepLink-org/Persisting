@@ -45,7 +45,7 @@ async fn catalog_command_matrix_reports_every_supported_format() -> Result<()> {
         let listed = run_cli(["ls", &dataset, "--format", "json"])
             .await?
             .json()?;
-        assert_eq!(listed["schema_version"], "pchronicle.ls.v1", "{fixture:?}");
+        assert!(listed.get("schema_version").is_none(), "{fixture:?}");
         assert_eq!(
             listed["sources"].as_array().map(Vec::len),
             Some(1),
@@ -60,10 +60,7 @@ async fn catalog_command_matrix_reports_every_supported_format() -> Result<()> {
         let status = run_cli(["status", &dataset, "--format", "json"])
             .await?
             .json()?;
-        assert_eq!(
-            status["schema_version"], "pchronicle.status.v1",
-            "{fixture:?}"
-        );
+        assert!(status.get("schema_version").is_none(), "{fixture:?}");
         assert_eq!(status["status"], "ready", "{fixture:?}");
         assert_eq!(status["counts_complete"], true, "{fixture:?}");
         assert_eq!(
@@ -135,10 +132,7 @@ async fn import_matrix_preserves_sources_and_produces_queryable_datasets() -> Re
         let response = run_cli(["import", "--from", &source, "--output", &dataset])
             .await?
             .json()?;
-        assert_eq!(
-            response["schema_version"], "pchronicle.import.v1",
-            "{fixture:?}"
-        );
+        assert!(response.get("schema_version").is_none(), "{fixture:?}");
         assert_eq!(response["format"], fixture.detected_format, "{fixture:?}");
         assert_eq!(
             response["source_path"], fixture.imported_source,

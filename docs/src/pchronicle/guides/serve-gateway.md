@@ -375,7 +375,7 @@ does not automatically add new events to its current Snapshot. Refresh the
 Catalog from the Web UI, or request a refresh through the local API:
 
 ```bash
-curl -X POST http://127.0.0.1:8080/api/v1/catalog
+curl -X POST http://127.0.0.1:8080/api/catalog
 ```
 
 Then query the selected Dataset through the Web UI or read API. On `SIGINT` or

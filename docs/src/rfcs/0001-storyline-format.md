@@ -1,9 +1,9 @@
-# RFC-0001: Storyline Format（storyline/v1）
+# RFC-0001: Storyline Format
 
 | Field | Value |
 |---|---|
 | **Status** | Accepted |
-| **Schema** | `storyline/v1` |
+| **Format** | `storyline` |
 | **Date** | 2026-07-30 |
 | **Component** | pChronicle (`persisting-pchronicle`) |
 | **Implements** | `crates/persisting-pchronicle/src/formats/storyline.rs` |
@@ -61,7 +61,6 @@ Storyline: Document    →  turns[]  →  tool_calls / observation / metrics (+ 
 
 | ATIF | Storyline wire | 说明 |
 |---|---|---|
-| `schema_version` | `spec` | 各自命名空间；互转时改写 |
 | `session_id` | `session` | 同义；Storyline Required |
 | `trajectory_id` | `run` | 近似映射 |
 | `agent.name` / `version` / `model_name` / `tool_definitions` / `extra` | `agent.name` / `ver` / `model` / `tools` / `extra` | 另有 Required `agent.id` |
@@ -103,17 +102,16 @@ Storyline: Document    →  turns[]  →  tool_calls / observation / metrics (+ 
 
 ---
 
-## Schema：`storyline/v1`
+## Wire schema
 
-编码：UTF-8 JSON。根对象 MUST 设 **`spec`: `"storyline/v1"`**。
+编码：UTF-8 JSON。根对象 MUST 包含 `session`、`agent` 和 `turns`。
 
 ### Wire 短名
 
-JSON **序列化用短名**；解码 MAY 接受长名 alias（含历史 `story_id`）。
+JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不作为兼容输入。
 
-| 短名 | 长名 alias | 位置 |
+| 短名 | 字段概念 | 位置 |
 |---|---|---|
-| `spec` | `schema_version` | root |
 | `run` | `run_id` / `trajectory_id` | root |
 | `session` | `session_id` / `story_id` | root |
 | `children` | `child_session_ids` / `child_story_ids` | root |
@@ -141,7 +139,6 @@ JSON **序列化用短名**；解码 MAY 接受长名 alias（含历史 `story_i
 
 | Wire | Type | Status | ATIF |
 |---|---|---|---|
-| `spec` | string | Required | （改写为 `storyline/v1`） |
 | `session` | string | Required | `session_id` |
 | `agent` | object | Required | `agent` |
 | `turns` | array | Required | `steps` |
@@ -236,7 +233,6 @@ value = 在 ATIF 根上求值的 JSONPath。
 
 ```json
 {
-  "spec": "storyline/v1",
   "run": "$.trajectory_id",
   "session": "$.session_id",
   "agent": {
@@ -303,15 +299,15 @@ value = 在 ATIF 根上求值的 JSONPath。
 | 约定 | 值 |
 |---|---|
 | 文件名 | `storyline.json` / `{session}.storyline.json` |
-| 内容 | `spec` 以 `storyline/` 开头；或 `session`/`session_id`/`story_id` + `turns` |
+| 内容 | `session` + `turns` |
 
 实现：`into_storyline` / `from_storyline` / `convert`。
 
 ---
 
-## Changelog
+## History
 
-| Version | Date | Notes |
-|---|---|---|
-| `storyline/v1` | 2026-07-30 | 初稿与迭代（hub、短名、去 `calls[]`、性能字段、`session`） |
-| `storyline/v1` | 2026-07-30 | 收敛为 ATIF-first：去掉 Capture Call/Normal 过度叙事；`continued_trajectory_ref` 对齐 ATIF；`parent.scid` 可选 |
+| Date | Notes |
+|---|---|
+| 2026-07-30 | 初稿与迭代（hub、短名、去 `calls[]`、性能字段、`session`） |
+| 2026-07-30 | 收敛为 ATIF-first：去掉 Capture Call/Normal 过度叙事；`continued_trajectory_ref` 对齐 ATIF；`parent.scid` 可选 |
