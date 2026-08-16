@@ -343,44 +343,107 @@ impl RawEventDataSource {
         &self,
         session_ids: &BTreeSet<String>,
     ) -> Result<Vec<EventRecord>> {
-        if session_ids.is_empty() {
+        self.read_records_inner(Some(session_ids), None, None).await
+    }
+
+    /// Read selected Storyline histories while enforcing Catalog fallback
+    /// budgets before retaining decoded events in memory.
+    pub(crate) async fn read_records_for_storylines_bounded(
+        &self,
+        session_ids: &BTreeSet<String>,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<EventRecord>> {
+        anyhow::ensure!(max_rows > 0, "event fallback max_rows must be positive");
+        anyhow::ensure!(max_bytes > 0, "event fallback max_bytes must be positive");
+        self.read_records_inner(Some(session_ids), Some(max_rows), Some(max_bytes))
+            .await
+    }
+
+    /// Read the complete pinned event snapshot with hard Catalog fallback
+    /// limits.
+    pub(crate) async fn read_records_bounded(
+        &self,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<EventRecord>> {
+        anyhow::ensure!(max_rows > 0, "event fallback max_rows must be positive");
+        anyhow::ensure!(max_bytes > 0, "event fallback max_bytes must be positive");
+        self.read_records_inner(None, Some(max_rows), Some(max_bytes))
+            .await
+    }
+
+    async fn read_records_inner(
+        &self,
+        session_ids: Option<&BTreeSet<String>>,
+        max_rows: Option<usize>,
+        max_bytes: Option<usize>,
+    ) -> Result<Vec<EventRecord>> {
+        if session_ids.is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
         }
-        let predicate = format!(
-            "session_id IN ({})",
-            session_ids
-                .iter()
-                .map(|id| format!("'{}'", id.replace('\'', "''")))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let predicate = session_ids.map(|session_ids| {
+            format!(
+                "session_id IN ({})",
+                session_ids
+                    .iter()
+                    .map(|id| format!("'{}'", id.replace('\'', "''")))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        });
         let mut records = Vec::new();
+        let mut retained_bytes = 0usize;
         for dataset in self.provider.datasets() {
             let mut scan = dataset.scan();
-            scan.filter(&predicate)
-                .context("filter pinned events by Storyline identity")?;
+            if let Some(predicate) = &predicate {
+                scan.filter(predicate)
+                    .context("filter pinned events by Storyline identity")?;
+            }
             scan.scan_in_order(true);
             scan.use_scalar_index(true);
-            let batches = scan
+            if let Some(max_bytes) = max_bytes {
+                scan.batch_size_bytes(u64::try_from(max_bytes.min(8 * 1024 * 1024))?);
+            }
+            let mut batches = scan
                 .try_into_stream()
                 .await
-                .context("scan pinned Storyline event histories")?
-                .try_collect::<Vec<_>>()
+                .context("scan pinned Storyline event histories")?;
+            while let Some(batch) = batches
+                .try_next()
                 .await
-                .context("collect pinned Storyline event histories")?;
-            for batch in &batches {
-                for row in event_rows_from_batch(batch)? {
+                .context("read pinned Storyline event history batch")?
+            {
+                retained_bytes = retained_bytes
+                    .checked_add(batch.get_array_memory_size())
+                    .context("event fallback retained byte count overflow")?;
+                if let Some(max_bytes) = max_bytes {
+                    anyhow::ensure!(
+                        retained_bytes <= max_bytes,
+                        "canonical event fallback exceeds max_event_fallback_bytes {max_bytes}; build or sync a Storyline projection"
+                    );
+                }
+                let rows = event_rows_from_batch(&batch)?;
+                if let Some(max_rows) = max_rows {
+                    anyhow::ensure!(
+                        records.len().saturating_add(rows.len()) <= max_rows,
+                        "canonical event fallback exceeds max_event_fallback_rows {max_rows}; build or sync a Storyline projection"
+                    );
+                }
+                for row in rows {
                     records.push(event_row_to_event_record(&row)?);
                 }
             }
         }
-        anyhow::ensure!(
-            records.iter().all(|record| record
-                .session_id
-                .as_ref()
-                .is_some_and(|id| session_ids.contains(id))),
-            "Storyline event history scan returned an unrequested identity"
-        );
+        if let Some(session_ids) = session_ids {
+            anyhow::ensure!(
+                records.iter().all(|record| record
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|id| session_ids.contains(id))),
+                "Storyline event history scan returned an unrequested identity"
+            );
+        }
         Ok(records)
     }
 }

@@ -53,7 +53,11 @@ Gateway 的 durable 微批写入每累计 8 个小 fragment 就 seal 一个 L0 s
 `sealed` 元数据，只替换精确匹配的连续 segment 区间，active tail 永不参与。由此 visible
 segment 数按层级增长而不是随事件线性增长；旧 version/file 仍按 maintenance 的保留期
 vacuum，避免破坏已经固定旧快照的 reader。
-物理 schema 把 `event_id` 提升为独立业务列，但事实层不检查唯一性，也不为它维护索引；
+物理 schema 把 `event_id` 提升为独立业务列，并把非空 `timestamp` 规范化为 UTC
+`Timestamp(Millisecond)`。其值来自 `timestamp_unix_ms`；缺失时由 admission 根据 RFC3339
+`timestamp` 或接收时间补齐；两者同时存在时必须在毫秒级一致。Storyline 投影也从
+`timestamp_unix_ms` 生成 UTC 毫秒文本，输入文本时间戳保存在 `payload_json`。事实层不检查
+`event_id` 唯一性，也不为它维护索引；
 重复 ID 和重试行是合法事实。完整 `EventRecord` 仍保存在 `payload_json`，因此回放不丢字段。评测结果写入同 Run 的
 `judgments.lance/`，不会随 rubric 增加而演化事实表 schema。需要审计保真度的工作流应
 使用 canonical events 层。

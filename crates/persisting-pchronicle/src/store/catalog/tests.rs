@@ -752,9 +752,33 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
     stale_engine
         .query("SELECT * FROM dataset.runs WHERE session_id = 'root'")
         .await?;
-    assert_eq!(stale_events.normalization_count.load(Ordering::Relaxed), 0);
-    stale_engine.query("SELECT * FROM dataset.runs").await?;
     assert_eq!(stale_events.normalization_count.load(Ordering::Relaxed), 1);
+    let broad_fallback = stale_engine
+        .query_jsonl("SELECT session_id FROM dataset.runs ORDER BY session_id")
+        .await?;
+    assert_eq!(
+        broad_fallback.lines().collect::<Vec<_>>(),
+        [r#"{"session_id":"child"}"#, r#"{"session_id":"root"}"#]
+    );
+    assert_eq!(stale_events.normalization_count.load(Ordering::Relaxed), 2);
+
+    let limited_snapshot = Arc::new(
+        DatasetCatalogSnapshot::discover(
+            vec![DatasetMount::default(storage.to_string_lossy())?],
+            Some(DEFAULT_DATASET_NAME.into()),
+            CatalogSnapshotOptions {
+                max_event_fallback_rows: 1,
+                ..CatalogSnapshotOptions::default()
+            },
+        )
+        .await?,
+    );
+    let limited_engine = ChronicleQueryEngine::from_catalog_snapshot(limited_snapshot).await?;
+    let limit_error = limited_engine
+        .query("SELECT * FROM dataset.runs")
+        .await
+        .unwrap_err();
+    assert!(format!("{limit_error:#}").contains("max_event_fallback_rows 1"));
 
     let sync = sync_storyline_projection(
         events_uri.to_string_lossy(),
