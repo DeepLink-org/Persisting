@@ -228,6 +228,7 @@ jobs:
       - name: Run pPilot examples
         run: |
           cargo build --release -q \
+            -p persisting-pchronicle-cli --bin pchronicle \
             -p persisting-ppilot --bin ppilot
           cargo build --release -q \
             -p persisting-pvisor --bin pvisor

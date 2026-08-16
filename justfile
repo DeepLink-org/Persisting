@@ -82,6 +82,7 @@ examples-ppilot:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -q \
+      -p persisting-pchronicle-cli --bin pchronicle \
       -p persisting-ppilot --bin ppilot
     cargo build --release -q \
       -p persisting-pvisor --bin pvisor
