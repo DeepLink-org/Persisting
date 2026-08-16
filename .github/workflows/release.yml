@@ -97,12 +97,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install libkrunfw
-        run: |
-          brew tap slp/krun
-          brew install libkrunfw
-          echo "PERSISTING_LIBKRUNFW_PATH=$(brew --prefix libkrunfw)/lib/libkrunfw.5.dylib" >> "$GITHUB_ENV"
-
       - name: Build pChronicle Web assets
         run: python3 scripts/packaging/stage_wheel_binaries.py --web-only
 
