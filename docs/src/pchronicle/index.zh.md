@@ -1,7 +1,8 @@
 # pChronicle
 
-**pChronicle 是 Agent Run 的持久历史系统。** 它发现本地或 S3 上的轨迹 Dataset，保存
-canonical event，提供规范化 Run 视图，并支持查询、分析与格式交换。
+**pChronicle 是 Persisting 的结构化轨迹与 Dataset 数据层。** 它发现本地存储或 S3 上的
+原生及受支持外部 Source，保留 canonical fact 与来源，提供规范化 Run 视图，并支持有界
+查询、分析、revision lineage 与格式交换。
 
 ![pChronicle 产品边界](../assets/diagrams/persisting/pchronicle-product.svg)
 
@@ -32,7 +33,7 @@ pchronicle query examples/data/atif \
 | --- | --- |
 | 查询第一个 Dataset | [Get Started](get-started.md) |
 | 理解 Dataset、Source、event 与 projection | [Concepts](concepts/index.md) |
-| 完成常见历史工作流 | [Guides](guides/index.md) |
+| 完成常见轨迹数据工作流 | [Guides](guides/index.md) |
 | 检查存储与 Catalog 机制 | [Design](design/index.md) |
 | 查找命令、schema 与格式 | [Reference](reference/index.md) |
 

@@ -1,8 +1,9 @@
 # pChronicle
 
-**pChronicle is the durable history system for Agent Runs.** It discovers
-trajectory Datasets on local storage or S3, preserves canonical events, exposes
-normalized Run views, and supports query, analysis, and format exchange.
+**pChronicle is Persisting's structured trajectory and Dataset data layer.** It
+discovers native and supported external Sources on local storage or S3,
+preserves canonical facts and origin, exposes normalized Run views, and
+supports bounded query, analysis, revision lineage, and format exchange.
 
 ![pChronicle product boundary](../assets/diagrams/persisting/pchronicle-product.svg)
 
@@ -34,7 +35,7 @@ pchronicle query examples/data/atif \
 | --- | --- |
 | Query the first Dataset | [Get Started](get-started.md) |
 | Understand Dataset, Source, events, and projections | [Concepts](concepts/index.md) |
-| Follow common history workflows | [Guides](guides/index.md) |
+| Follow common trajectory data workflows | [Guides](guides/index.md) |
 | Inspect storage and catalog mechanisms | [Design](design/index.md) |
 | Look up commands, schemas, and formats | [Reference](reference/index.md) |
 

@@ -1,12 +1,15 @@
 # Dataset、Source 与 Snapshot
 
-pChronicle 是 path-first 的系统。它保留历史的物理来源，不把每条轨迹都隐藏在一个全局
-数据库 ID 后面。
+pChronicle 是 path-first 的系统。它保留轨迹数据的物理来源，不把每条轨迹都隐藏在一个
+全局数据库 ID 后面。
 
 ## Dataset
 
 Dataset 是以规范化本地路径或对象存储 URI 为根的逻辑查询空间。URI 就是它的身份；
 Warehouse mount name 只是 SQL 别名，不改变身份。
+
+Dataset 是 discovery、snapshot、query 与 exchange 的边界。它不声称每个预期的外部任务
+都产生了 Source。pChronicle 报告它能够发现和固定的 Source；它不会推断未报告的轨迹。
 
 ## Source
 
