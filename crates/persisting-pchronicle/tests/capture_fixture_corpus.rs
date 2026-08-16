@@ -102,6 +102,13 @@ fn capture_payload_corpus_roundtrips_through_wire_and_arrow() -> Result<()> {
     let (mut records, json_documents, raw_streams) = capture_payload_records()?;
     for (index, record) in records.iter_mut().enumerate() {
         record.identity.event_id = Some(format!("fixture-event-{index}"));
+        let timestamp = record
+            .timestamp
+            .as_deref()
+            .context("capture fixture is missing its textual timestamp")?;
+        record.identity.timestamp_unix_ms = Some(u64::try_from(
+            chrono::DateTime::parse_from_rfc3339(timestamp)?.timestamp_millis(),
+        )?);
     }
     assert!(
         records.len() >= 170,
