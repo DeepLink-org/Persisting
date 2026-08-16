@@ -1,5 +1,5 @@
 name: "Setup Build Environment"
-description: "Python, Rust, uv, and optional protoc for Persisting CI"
+description: "Python, Rust, uv, and optional legacy protoc for Persisting CI"
 inputs:
   python-version:
     description: "Python version"
@@ -10,9 +10,9 @@ inputs:
     required: false
     default: "stable"
   install-protoc:
-    description: "Install protobuf compiler (needed by persisting-dlcapt)"
+    description: "Install the legacy native protobuf compiler when explicitly required"
     required: false
-    default: "true"
+    default: "false"
   components:
     description: "Rust components (comma-separated)"
     required: false

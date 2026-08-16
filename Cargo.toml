@@ -83,6 +83,7 @@ blake3 = "1"
 bytes = "1"
 chrono = "0.4"
 clap = "4"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support", "html_reports", "plotters"] }
 dashmap = "6"
 datafusion = { version = "54.1.0", default-features = false }
 dirs = "6"
@@ -99,10 +100,10 @@ hyper = "1"
 hyper-util = { version = "0.1", default-features = false }
 ipnet = "2"
 jj-lib = "0.43.0"
-lance = { version = "9.0.1", default-features = false, features = ["protoc"] }
+lance = { version = "9.0.1", default-features = false }
 lance-core = "9.0.1"
 lance-file = "9.0.1"
-lance-datafusion = { version = "9.0.1", features = ["protoc"] }
+lance-datafusion = "9.0.1"
 lance-index = "9.0.1"
 lance-linalg = "9.0.1"
 lance-table = "9.0.1"
@@ -140,6 +141,10 @@ uuid = "1"
 zstd = "0.13"
 
 [patch.crates-io]
+# Lance 9.0.1 invokes prost-build from six build scripts. This compatibility
+# adapter preserves Prost's code generation API but parses .proto files with
+# pure-Rust protox, avoiding both a system protoc and vendored protobuf-src.
+prost-build = { path = "vendor/prost-build-protox" }
 fuser = { path = "vendor/fuser" }
 libkrun = { path = "vendor/libkrun" }
 krun-vmm = { path = "vendor/krun-vmm" }

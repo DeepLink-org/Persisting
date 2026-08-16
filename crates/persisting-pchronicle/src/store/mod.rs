@@ -52,9 +52,10 @@ pub use attempt_registry::{
 };
 #[cfg(feature = "lance-store")]
 pub use catalog::{
-    CatalogDataset, CatalogErrorPolicy, CatalogProjectionStatus, CatalogSnapshotOptions,
-    CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
-    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, CATALOG_SOURCES_TABLE,
+    CatalogDataset, CatalogErrorPolicy, CatalogNamespace, CatalogPage, CatalogProjectionStatus,
+    CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind, CatalogSourceRevision,
+    CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle, DatasetCatalogSnapshot,
+    DatasetMount, DiscoveredSource, NamespacePath, CATALOG_SOURCES_TABLE,
     CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME,
 };
 #[cfg(feature = "lance-store")]

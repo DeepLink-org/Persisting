@@ -63,6 +63,78 @@ fn dataset_names_are_normalized_and_validated() {
     );
     assert!(DatasetMount::new("bad-name", "/tmp/x").is_err());
     assert!(DatasetMount::new("public", "/tmp/x").is_err());
+
+    let mount = DatasetMount::namespaced(
+        NamespacePath::new(["prod", "agent-data"]).unwrap(),
+        "prod_agents",
+        "/tmp/x",
+    )
+    .unwrap();
+    assert_eq!(mount.namespace.display_name(), "prod/agent-data");
+    assert_eq!(mount.name, "prod_agents");
+}
+
+#[tokio::test]
+async fn namespace_listing_is_hierarchical_paginated_and_snapshot_bound() -> Result<()> {
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    write_openai_source(&first.path().join("first.json"), "event-first")?;
+    write_openai_source(&first.path().join("second.json"), "event-second")?;
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![
+            DatasetMount::namespaced(
+                NamespacePath::new(["prod", "agents"])?,
+                "prod_agents",
+                first.path().to_string_lossy(),
+            )?,
+            DatasetMount::namespaced(
+                NamespacePath::new(["staging", "agents"])?,
+                "staging_agents",
+                second.path().to_string_lossy(),
+            )?,
+        ],
+        None,
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+
+    let first_page = snapshot.list_namespaces(None, None, Some(1))?;
+    assert_eq!(first_page.items.len(), 1);
+    let token = first_page
+        .next_page_token
+        .as_deref()
+        .context("two root namespaces require a second page")?;
+    let second_page = snapshot.list_namespaces(None, Some(token), Some(1))?;
+    assert_eq!(second_page.items.len(), 1);
+    assert!(second_page.next_page_token.is_none());
+
+    let prod = NamespacePath::single("prod")?;
+    let children = snapshot.list_namespaces(Some(&prod), None, None)?;
+    assert_eq!(children.items.len(), 1);
+    assert!(children.items[0].mounted);
+    assert_eq!(children.items[0].sql_alias.as_deref(), Some("prod_agents"));
+
+    let prod_agents = NamespacePath::new(["prod", "agents"])?;
+    let sources = snapshot.list_sources(&prod_agents, None, Some(1))?;
+    assert_eq!(sources.items.len(), 1);
+    assert!(sources.next_page_token.is_some());
+    let source = snapshot
+        .describe_source(&prod_agents, "first.json")?
+        .context("mounted namespace must describe its frozen source")?;
+    assert_eq!(source.sql_alias, "prod_agents");
+    assert!(matches!(
+        source.source.revision,
+        Some(CatalogSourceRevision::LocalFile { .. })
+    ));
+
+    let changed = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(first.path().to_string_lossy())?],
+        None,
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    assert!(changed.list_namespaces(None, Some(token), Some(1)).is_err());
+    Ok(())
 }
 
 #[tokio::test]
@@ -648,7 +720,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
             .context("Catalog Storyline must resolve canonical events")?;
         assert_eq!(events.events.len(), 1);
     }
-    assert_eq!(events.normalization_count.load(Ordering::Relaxed), 1);
+    assert_eq!(events.normalization_count.load(Ordering::Relaxed), 0);
 
     let stale_snapshot = Arc::new(
         DatasetCatalogSnapshot::discover(
@@ -664,16 +736,24 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         Some(CatalogProjectionStatus::Stale)
     );
     let stale_engine = ChronicleQueryEngine::from_catalog_snapshot(stale_snapshot.clone()).await?;
-    stale_engine.query("SELECT * FROM dataset.runs").await?;
-    let stale_resolved = stale_snapshot.prepared[0].sources[0]
-        .resolved
-        .get()
-        .unwrap()
-        .as_ref()
-        .unwrap();
+    let stale_resolved = stale_snapshot.prepared[0].sources[0].resolve().await?;
     let ResolvedSource::Events(stale_events) = stale_resolved.as_ref() else {
         panic!("stale projection did not fall back to canonical events");
     };
+    stale_snapshot
+        .load_events(&CatalogStorylineKey {
+            dataset: DEFAULT_DATASET_NAME.into(),
+            file: "agent/run-1/events.lance".into(),
+            session_id: "root".into(),
+        })
+        .await?
+        .context("point load must resolve the selected Storyline")?;
+    assert_eq!(stale_events.normalization_count.load(Ordering::Relaxed), 0);
+    stale_engine
+        .query("SELECT * FROM dataset.runs WHERE session_id = 'root'")
+        .await?;
+    assert_eq!(stale_events.normalization_count.load(Ordering::Relaxed), 0);
+    stale_engine.query("SELECT * FROM dataset.runs").await?;
     assert_eq!(stale_events.normalization_count.load(Ordering::Relaxed), 1);
 
     let sync = sync_storyline_projection(
@@ -716,5 +796,69 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         after_rebuild.table_generation
     );
     assert_ne!(before_rebuild.generation, after_rebuild.generation);
+    Ok(())
+}
+
+#[tokio::test]
+async fn multiple_fresh_projections_choose_one_without_hiding_canonical_events() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    let coords = StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "root",
+        Some("run-1".into()),
+    );
+    RawEventLanceStore
+        .append_events(
+            &coords,
+            &[EventRecord {
+                identity: EventIdentity::default(),
+                seq: 0,
+                source: "test".into(),
+                kind: "note".into(),
+                timestamp: None,
+                session_id: Some("root".into()),
+                agent_id: Some("agent".into()),
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: serde_json::json!({"content": "kept"}),
+            }],
+        )
+        .await?;
+    let events_uri =
+        story_lance_event_path(&storage.to_string_lossy(), "agent", "root", Some("run-1"))?;
+    for name in ["storyline-a", "storyline-b"] {
+        build_storyline_projection(
+            events_uri.to_string_lossy(),
+            storage.join("agent/run-1").join(name).to_string_lossy(),
+            "agent/run-1/events.lance",
+        )
+        .await?;
+    }
+
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(storage.to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+    assert_eq!(snapshot.datasets()[0].sources.len(), 1);
+    let source = &snapshot.datasets()[0].sources[0];
+    assert_eq!(source.file, "agent/run-1/events.lance");
+    assert_eq!(
+        source.projection_status,
+        Some(CatalogProjectionStatus::Fresh)
+    );
+    assert_eq!(source.projection_candidates, 2);
+    assert!(matches!(
+        source.revision,
+        Some(CatalogSourceRevision::Events { .. })
+    ));
     Ok(())
 }

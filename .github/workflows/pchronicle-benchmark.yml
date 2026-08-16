@@ -1,0 +1,113 @@
+name: pChronicle Benchmark
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: pchronicle-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Criterion + hyperfine report
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+
+      - name: Install hyperfine
+        uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine@1.20.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pchronicle-benchmark
+
+      - name: Resolve main baseline
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            baseline_ref="origin/${{ github.base_ref }}"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            baseline_ref="HEAD^"
+          else
+            baseline_ref="HEAD"
+          fi
+          baseline_sha="$(git rev-parse "$baseline_ref")"
+          baseline_repo="${RUNNER_TEMP}/persisting-main"
+          git worktree add --detach "$baseline_repo" "$baseline_sha"
+          echo "repo=$baseline_repo" >> "$GITHUB_OUTPUT"
+          echo "sha=$baseline_sha" >> "$GITHUB_OUTPUT"
+          if [[ -f "$baseline_repo/benchmark/pchronicle/bench.py" ]] && \
+             grep -q 'pchronicle_criterion' "$baseline_repo/crates/persisting-pchronicle/Cargo.toml"; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Benchmark main
+        if: steps.baseline.outputs.supported == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_repo="${{ steps.baseline.outputs.repo }}"
+          python3 benchmark/pchronicle/bench.py run \
+            --repo "$baseline_repo" \
+            --suite smoke \
+            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci" \
+            --output "${RUNNER_TEMP}/pchronicle-benchmark/main"
+
+      - name: Benchmark candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 benchmark/pchronicle/bench.py run \
+            --repo . \
+            --suite smoke \
+            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci" \
+            --output "${RUNNER_TEMP}/pchronicle-benchmark/candidate"
+
+      - name: Compare and render report page
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="${RUNNER_TEMP}/pchronicle-benchmark/candidate/raw-report.json"
+          output="${RUNNER_TEMP}/pchronicle-benchmark/comparison"
+          if [[ -f "${RUNNER_TEMP}/pchronicle-benchmark/main/raw-report.json" ]]; then
+            python3 benchmark/pchronicle/bench.py compare \
+              --baseline "${RUNNER_TEMP}/pchronicle-benchmark/main/raw-report.json" \
+              --candidate "$candidate" \
+              --output "$output"
+          else
+            python3 benchmark/pchronicle/bench.py compare \
+              --candidate "$candidate" \
+              --output "$output"
+          fi
+          cat "$output/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark data and report page
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pchronicle-benchmark-${{ github.run_id }}
+          path: ${{ runner.temp }}/pchronicle-benchmark
+          retention-days: 30
+          if-no-files-found: error

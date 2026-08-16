@@ -152,10 +152,6 @@ impl RawEventSnapshot {
         &self.uri
     }
 
-    pub(crate) fn version(&self) -> u64 {
-        self.manifest.revision
-    }
-
     pub(crate) fn fact_snapshot(&self) -> EventFactSnapshot {
         EventFactSnapshot {
             source_uri: self.uri.clone(),

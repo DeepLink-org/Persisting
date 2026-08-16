@@ -746,9 +746,22 @@ pub async fn run_with_stdin(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
+    run_with_stdio(cli, false, stdout_is_terminal, stdin, stdout, stderr).await
+}
+
+pub async fn run_with_stdio(
+    cli: Cli,
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
     let settings = cli.settings.as_deref();
     match cli.command {
-        Command::Onboard(args) => onboard::run(args, stdout_is_terminal, stdout).await,
+        Command::Onboard(args) => {
+            onboard::run(args, stdin_is_terminal, stdout_is_terminal, stdin, stdout).await
+        }
         Command::Default(args) => run_default(args, settings, stdout, stderr),
         Command::Ls(args) => run_list(args, settings, stdout_is_terminal, stdout, stderr).await,
         Command::Status(args) => {
@@ -1262,7 +1275,7 @@ async fn run_list(
                 source_path: source.file.clone(),
                 format: source.format.clone(),
                 kind: source.kind,
-                snapshot_ref: source.snapshot_ref.clone(),
+                snapshot_ref: source.snapshot_ref(),
                 size_bytes: source.size_bytes,
                 last_modified: source.last_modified.clone(),
                 status: source.status,

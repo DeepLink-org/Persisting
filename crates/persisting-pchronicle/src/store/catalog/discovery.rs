@@ -30,7 +30,7 @@ pub(super) enum Candidate {
 
 impl Candidate {
     pub(super) fn source_stub(&self) -> DiscoveredSource {
-        let (file, format, kind, size_bytes, last_modified, snapshot_ref) = match self {
+        let (file, format, kind, size_bytes, last_modified, revision) = match self {
             Self::Storyline {
                 file,
                 size_bytes,
@@ -69,7 +69,9 @@ impl Candidate {
                 CatalogSourceKind::File,
                 Some(*size_bytes),
                 last_modified.clone(),
-                Some(local_snapshot_ref(path)),
+                Some(CatalogSourceRevision::LocalFile {
+                    fingerprint: local_snapshot_ref(path),
+                }),
             ),
             Self::RemoteFile { file, meta, .. } => (
                 file.clone(),
@@ -77,16 +79,17 @@ impl Candidate {
                 CatalogSourceKind::File,
                 Some(meta.size),
                 Some(meta.last_modified.to_rfc3339()),
-                Some(remote_snapshot_ref(meta)),
+                Some(remote_source_revision(meta)),
             ),
         };
         DiscoveredSource {
             file,
             format,
             kind,
-            snapshot_ref,
+            revision,
             projection_status: None,
             projection_generation: None,
+            projection_candidates: 0,
             size_bytes,
             last_modified,
             status: CatalogSourceStatus::Ready,
@@ -108,7 +111,9 @@ pub(super) async fn freeze_candidate(
             let paths = StorylineDataSource::pin_uri(&uri)
                 .await
                 .with_context(|| format!("pin Storyline source {uri}"))?;
-            source_row.snapshot_ref = Some(paths.generation.clone());
+            source_row.revision = Some(CatalogSourceRevision::Storyline {
+                generation: paths.generation.clone(),
+            });
             Ok((
                 source_row,
                 Arc::new(LazySource::new(
@@ -124,7 +129,12 @@ pub(super) async fn freeze_candidate(
             let snapshot = RawEventDataSource::pin_uri(&uri)
                 .await
                 .with_context(|| format!("pin canonical event source {uri}"))?;
-            source_row.snapshot_ref = Some(format!("manifest-revision:{}", snapshot.version()));
+            let fact = snapshot.fact_snapshot();
+            source_row.revision = Some(CatalogSourceRevision::Events {
+                fact_version: fact.fact_version,
+                fact_rows: fact.fact_rows,
+                layout_revision: fact.layout_revision,
+            });
             Ok((
                 source_row,
                 Arc::new(LazySource::new(
@@ -204,10 +214,10 @@ pub(super) fn bind_canonical_storyline_projections(
         event_file: String,
         paths: StorylineTablePaths,
         fresh: bool,
+        last_modified: Option<String>,
     }
 
-    let mut bindings = Vec::new();
-    let mut bound_events = HashSet::new();
+    let mut bindings = BTreeMap::<String, Vec<Binding>>::new();
     for projection in prepared_sources.iter() {
         let LazySourceSpec::Storyline { paths } = &projection.spec else {
             continue;
@@ -226,23 +236,49 @@ pub(super) fn bind_canonical_storyline_projections(
         }) else {
             continue;
         };
-        anyhow::ensure!(
-            bound_events.insert(events.file.clone()),
-            "multiple Storyline projections claim canonical source '{}'",
-            events.file
-        );
         let LazySourceSpec::Events { snapshot, .. } = &events.spec else {
             unreachable!()
         };
-        bindings.push(Binding {
-            projection_file: projection.file.clone(),
-            event_file: events.file.clone(),
-            paths: paths.clone(),
-            fresh: projection_lineage_is_fresh(&snapshot.fact_snapshot(), lineage),
-        });
+        let last_modified = source_rows
+            .iter()
+            .find(|source| source.file == projection.file)
+            .and_then(|source| source.last_modified.clone());
+        bindings
+            .entry(events.file.clone())
+            .or_default()
+            .push(Binding {
+                projection_file: projection.file.clone(),
+                event_file: events.file.clone(),
+                paths: paths.clone(),
+                fresh: projection_lineage_is_fresh(&snapshot.fact_snapshot(), lineage),
+                last_modified,
+            });
     }
 
-    for binding in &bindings {
+    let mut projection_files = HashSet::new();
+    for candidates in bindings.values_mut() {
+        candidates.sort_by(|left, right| {
+            (
+                left.fresh,
+                left.last_modified.as_deref().unwrap_or(""),
+                left.paths.generation.as_str(),
+                left.projection_file.as_str(),
+            )
+                .cmp(&(
+                    right.fresh,
+                    right.last_modified.as_deref().unwrap_or(""),
+                    right.paths.generation.as_str(),
+                    right.projection_file.as_str(),
+                ))
+        });
+        let binding = candidates
+            .last()
+            .context("projection binding group is empty")?;
+        projection_files.extend(
+            candidates
+                .iter()
+                .map(|candidate| candidate.projection_file.clone()),
+        );
         let event_index = prepared_sources
             .iter()
             .position(|source| source.file == binding.event_file)
@@ -271,12 +307,9 @@ pub(super) fn bind_canonical_storyline_projections(
             CatalogProjectionStatus::Stale
         });
         event_row.projection_generation = Some(binding.paths.generation.clone());
+        event_row.projection_candidates = candidates.len() as u64;
     }
 
-    let projection_files = bindings
-        .into_iter()
-        .map(|binding| binding.projection_file)
-        .collect::<HashSet<_>>();
     source_rows.retain(|source| !projection_files.contains(&source.file));
     prepared_sources.retain(|source| !projection_files.contains(&source.file));
     Ok(())
@@ -296,6 +329,18 @@ pub(super) async fn normalize_event_source(
     source: &RawEventDataSource,
 ) -> Result<NormalizedEventTables> {
     let records = source.read_records_in_append_order().await?;
+    normalize_event_records(records)
+}
+
+pub(super) async fn normalize_event_storylines(
+    source: &RawEventDataSource,
+    session_ids: &BTreeSet<String>,
+) -> Result<NormalizedEventTables> {
+    let records = source.read_records_for_storylines(session_ids).await?;
+    normalize_event_records(records)
+}
+
+fn normalize_event_records(records: Vec<EventRecord>) -> Result<NormalizedEventTables> {
     let mut groups = BTreeMap::<String, Vec<EventRecord>>::new();
     for record in records {
         let key = event_storyline_key(&record)
@@ -306,7 +351,6 @@ pub(super) async fn normalize_event_source(
     let mut runs = Vec::<StoryRunRow>::new();
     let mut steps = Vec::<StoryStepRow>::new();
     let mut tool_calls = Vec::<StoryToolCallRow>::new();
-    let mut events_by_session = BTreeMap::new();
     for (group_key, records) in groups {
         let story = project_event_records(&records)?;
         anyhow::ensure!(
@@ -314,13 +358,6 @@ pub(super) async fn normalize_event_source(
             "projected Storyline identity changed"
         );
         let tables = split_storyline(&story)?;
-        anyhow::ensure!(
-            events_by_session
-                .insert(tables.run.session_id.clone(), records)
-                .is_none(),
-            "canonical events produced a duplicate Catalog session_id '{}'",
-            tables.run.session_id
-        );
         runs.push(tables.run);
         steps.extend(tables.steps);
         tool_calls.extend(tables.tool_calls);
@@ -341,7 +378,6 @@ pub(super) async fn normalize_event_source(
             story_tool_calls_arrow_schema(),
             vec![vec![tool_batch]],
         )?),
-        events_by_session,
     })
 }
 
@@ -493,17 +529,20 @@ async fn discover_object_candidates(
         .await
         .with_context(|| format!("open Dataset object store {uri}"))?;
     let store = Arc::clone(&store);
-    let mut metas = store
-        .inner
-        .list(Some(&root))
-        .try_collect::<Vec<_>>()
+    let mut listing = store.inner.list(Some(&root));
+    let mut metas = Vec::new();
+    while let Some(meta) = listing
+        .try_next()
         .await
-        .with_context(|| format!("list Dataset object prefix {uri}"))?;
-    anyhow::ensure!(
-        metas.len() <= options.max_entries,
-        "Dataset traversal exceeds max_entries limit of {}",
-        options.max_entries
-    );
+        .with_context(|| format!("list Dataset object prefix {uri}"))?
+    {
+        anyhow::ensure!(
+            metas.len() < options.max_entries,
+            "Dataset traversal exceeds max_entries limit of {}",
+            options.max_entries
+        );
+        metas.push(meta);
+    }
     metas.sort_by(|left, right| left.location.cmp(&right.location));
 
     let root_is_events = root.as_ref().ends_with("events.lance");

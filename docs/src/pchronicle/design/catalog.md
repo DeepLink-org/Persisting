@@ -56,7 +56,7 @@ Catalog **不是**一份需要长期维护的元数据数据库。它不复制�
 
 | 对象 | 作用 | 生命周期 |
 |---|---|---|
-| `DatasetMount` | 保存规范化名称、根 URI 和可选格式提示 | 配置期 |
+| `DatasetMount` | 保存层级 namespace、SQL alias、根 URI 和可选格式提示 | 配置期 |
 | `CatalogDataset` | 一个 Dataset 及其 `DiscoveredSource` 列表 | 快照期 |
 | `DiscoveredSource` | 描述一个复合 store 或外围文件的逻辑路径、格式、版本和状态 | 快照期 |
 | `DatasetCatalogSnapshot` | 固定全部挂载的成员、源版本和临时对象文件 | 一条 CLI 查询或一代 Server Catalog |
@@ -64,14 +64,16 @@ Catalog **不是**一份需要长期维护的元数据数据库。它不复制�
 | `CatalogTableProvider` | 在 DataFusion `scan` 边界执行 source 裁剪并组合命中的物理计划 | 每个 Dataset 稳定表 |
 | `ChronicleQueryEngine` | 把快照注册为 DataFusion schema，并执行只读 SQL | 与快照相同 |
 
-### 3.1 Dataset
+### 3.1 Namespace、Dataset 与 SQL alias
 
 Dataset 是用户命名的逻辑查询空间，不等于物理 Lance dataset。一个 Dataset 可以包含多个
 Storyline store、多个 `events.lance` 和多个外围文件；每个 Dataset 对应一个 DataFusion
-schema。
+schema。Catalog 用 `NamespacePath` 表达层级身份，用独立的 SQL alias 注册 DataFusion
+schema；因此 `prod/agents` 与 `staging/agents` 可以同时存在，而无需把目录身份编码进表名。
 
-名称会去除首尾空白并转成小写，必须匹配 `[A-Za-z_][A-Za-z0-9_]*`。`public` 和
-`information_schema` 是保留名称；规范化后重名会在发现前失败。
+SQL alias 会去除首尾空白并转成小写，必须匹配 `[A-Za-z_][A-Za-z0-9_]*`。`public` 和
+`information_schema` 是保留名称。namespace component 允许字母、数字、`_`、`-`、`.`。
+完整 namespace 或 SQL alias 重名都会在发现前失败。
 
 ### 3.2 Source 与 `_file_`
 
@@ -97,6 +99,17 @@ source 时使用 `.`。它不是源表的持久字段，也不会写回 Lance。
 所以同一 source 内多行可以共享一个 `run_id`。canonical events 规范化时按事件的
 Storyline/session 身份分组，并保留实际 `events.lance` URI，避免后续读写根据挂载根猜测
 物理位置。
+
+### 3.4 Source revision
+
+内部用 `CatalogSourceRevision` 保存类型化 revision，而不是让一个字符串同时表示 Storyline
+generation、event fact/layout 水位、本地文件指纹与对象版本。`sources.snapshot_ref` 仍是便于
+SQL 展示和筛选的字符串投影；一致性判断、快照摘要和 API 描述使用类型化 revision。
+
+一个 canonical events source 可以关联多个派生 Storyline 投影。Catalog 不因此隐藏或拒绝
+canonical source，而按 `fresh → last_modified → generation → path` 的稳定顺序选出一个读取
+加速投影；`projection_candidates` 暴露候选数。所有候选都不新鲜时，查询回退到固定的
+canonical events 快照。
 
 ## 4. 挂载与默认 Dataset
 
@@ -195,7 +208,8 @@ Catalog 产生四个 source：
 
 ### 5.3 对象存储发现
 
-对象 URI 通过 Lance/object-store 适配层解析。Catalog 对前缀执行一次有界 listing，然后：
+对象 URI 通过 Lance/object-store 适配层解析。Catalog 流式消费前缀 listing，并在读取
+`max_entries + 1` 个对象前失败；不会先把无界 listing 收进内存再检查。随后：
 
 1. 用 `CURRENT` 对象识别 Storyline 根；
 2. 用 `events.lance/_manifest.json` 识别 canonical events 根；
@@ -235,7 +249,8 @@ provider 按以下顺序构造物理计划：
 1. 先排除不能提供目标表的 source，例如 `events` 自动排除 Storyline 和外围文件；
 2. 在每个 source 的常量 `_file_` 上求值可识别的过滤表达式；
 3. 完全不可能匹配的 source 直接跳过，不调用 `LazySource::resolve`；
-4. 只解析可能匹配的 source，并把业务列投影、业务谓词和 limit 继续交给其原生 provider；
+4. 以 `max_concurrent_sources` 为上限、按稳定 source 顺序解析候选，并把业务列投影、业务
+   谓词和 limit 继续交给其原生 provider；
 5. 零个命中 source 生成 `EmptyExec`，一个命中 source 直接使用其计划，多个命中 source
    才生成 `UnionExec`，最后在需要时应用全局 limit。
 
@@ -257,8 +272,10 @@ provider。没有 `_file_` 条件时，Catalog 没有跨 source 的 `run_id`/时
 
 `LazySource` 使用异步 `OnceCell` 缓存解析结果，多个并发查询命中同一个 source 时只执行
 一次打开、远程物化或格式解析。source 解析阶段的失败也会缓存，以保证同一快照内行为
-稳定。canonical events 的原始 `events` 表可以直接扫描固定 segment；只有查询 `runs`、`steps`、
-`tool_calls` 或完整 Storyline 时，才会执行一次事件到 Storyline 三表的规范化。
+稳定。canonical events 的原始 `events` 表可以直接扫描固定 segment。没有 fresh 投影时，
+带 `session_id = ...` 或 `session_id IN (...)` 的 `runs`、`steps`、`tool_calls` 查询只读取目标
+Storyline 的完整历史；无可证明的 session 约束时才读取固定快照的全部事件并缓存三表。
+`load_events` 点查直接读取目标 session，不构造 DataFusion MemTable。
 
 可以用 `EXPLAIN` 检查裁剪后的物理计划：精确命中一个 source 时，计划中不应出现
 `UnionExec`。
@@ -376,6 +393,7 @@ Catalog 复用直接文件查询的资源参数：
 - `max_detection_bytes`：格式检测输入上限；
 - `max_file_bytes`：外围文件/对象大小上限；
 - `max_record_bytes`、`max_concurrent_files`、cache 参数：解析期边界；
+- `max_concurrent_sources`：单次物理 scan 同时解析的 source 上限；
 - DataFusion memory pool、spill path、spill bytes、timeout 与输出行数：查询期边界。
 
 `--query-metrics` 只聚合已经解析的外围文件 source 的读取、裁剪、缓存和 buffer 指标；
@@ -459,14 +477,15 @@ let rows = engine
 ```
 
 需要按 Storyline 读取完整轨迹时使用 `CatalogStorylineKey` 调用快照的 `load_storyline`、`load_events`
-或 `canonical_event_uri`。调用方不应绕过快照重新发现 source，否则可能把不同成员或版本
-拼进同一个响应。
+或 `canonical_event_uri`。控制面可用 `list_namespaces`、`list_sources` 和 `describe_source`
+分页浏览同一快照；page token 与 `snapshot_id` 绑定，刷新后不能复用。调用方不应绕过快照
+重新发现 source，否则可能把不同成员或版本拼进同一个响应。
 
 ## 11. 关键不变量
 
 实现和后续扩展必须保持以下不变量：
 
-1. Dataset 名称在 SQL、API 和 Web 中使用同一个小写规范化结果。
+1. Namespace 是层级逻辑身份；SQL alias 是独立且唯一的小写 schema 名，二者不得混作一个字段。
 2. `_file_` 在一个快照内稳定、相对 Dataset 根，根 source 固定表示为 `.`。
 3. Catalog Storyline 的完整身份始终是 `(dataset, _file_, session_id)`；`run_id` 只用于 Run 分组。
 4. 识别复合 store 后不得继续把其内部文件注册为独立 source。
@@ -480,7 +499,9 @@ let rows = engine
     打开 source。
 12. 延迟解析只能使用快照固定的版本描述，并在同一快照内 single-flight；不得在解析时
     重新跟随 `CURRENT` 或最新 manifest。
-13. Server routing index 必须与 snapshot 同代发布；构建或分析不确定时只能回退原查询，
+13. 多个投影关联同一 canonical events source 时必须保留 canonical source，并稳定选择最多
+    一个 fresh 投影；冲突只能形成诊断信息，不能阻断事实读取。
+14. Server routing index 必须与 snapshot 同代发布；构建或分析不确定时只能回退原查询，
     不得用不完整索引排除 source。
 
 ## 12. 取舍与备选方案
@@ -522,7 +543,9 @@ basename 会受路径拼写、对象前缀和部署目录影响，不带 schema 
 - `_file_` 与业务谓词组合只解析命中的本地、远程和 Storyline source；
 - 单 source 物理计划没有 `UnionExec`，未命中的远程对象不会下载；
 - 延迟错误不会在 `report` 下被静默跳过；
-- canonical `events` 原始扫描不会触发 Storyline 规范化，规范化表首次读取只执行一次；
+- canonical `events` 原始扫描和 session 点查不会触发全量 Storyline 规范化；
+- 多 fresh 投影稳定选出一个且 canonical events 始终可见；
+- 层级 namespace 分页、source describe 和跨快照 page-token 拒绝；
 - 同 Dataset 危险联接拒绝与跨 Dataset 联接；
 - 一个 canonical events source 中多个 Storyline 的独立读取；
 - CLI 位置参数、单/多命名挂载、TOML 与帮助文本；

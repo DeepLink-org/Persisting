@@ -333,7 +333,7 @@ fn exact_local_file_export(
     let trajectories = validate_import_source(format, &source_path, text)?;
     anyhow::ensure!(
         sources[0].size_bytes == Some(input.len() as u64)
-            && sources[0].snapshot_ref.as_deref() == Some(&local_file_snapshot_ref(&source_path)),
+            && sources[0].snapshot_ref().as_deref() == Some(&local_file_snapshot_ref(&source_path)),
         "export Source changed after the Catalog Snapshot was created"
     );
     Ok(Some(EncodedExport {
