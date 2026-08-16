@@ -1364,8 +1364,9 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let storage = temporary.path().join("storage");
         let runtime = PVisor::builder().storage(&storage).build();
-        let mut spec = RunSpec::process("run-secret-projection", "test-agent", "/bin/true");
+        let mut spec = RunSpec::process("run-secret-projection", "test-agent", "/bin/sh");
         let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "exit 0".into()];
         process.inherit_env = false;
         process
             .env
