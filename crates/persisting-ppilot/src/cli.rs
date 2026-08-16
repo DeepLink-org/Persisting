@@ -13,6 +13,7 @@ use crate::skip::SkipSet;
 use crate::task::TaskResult;
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
+use persisting_pchronicle_client::{ChronicleControl, ChronicleControlProcessClient};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -110,6 +111,10 @@ pub struct PPilotArgs {
     /// Standalone pVisor executable used for each Run.
     #[arg(long, env = "PERSISTING_PVISOR_BIN", default_value = "pvisor")]
     pub pvisor_binary: PathBuf,
+
+    /// Standalone pChronicle executable used for durable control and trajectory writes.
+    #[arg(long, env = "PERSISTING_PCHRONICLE_BIN", default_value = "pchronicle")]
+    pub pchronicle_binary: PathBuf,
 
     /// Extra PYTHONPATH entries (plan dir is always added).
     #[arg(short = 'E', long = "pythonpath")]
@@ -224,6 +229,20 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
         cancel_bg.cancel();
     });
 
+    let chronicle_control: Option<Arc<dyn ChronicleControl>> = if let Some(dir) = &args.sink {
+        let control_root = args
+            .control_uri
+            .clone()
+            .unwrap_or_else(|| dir.display().to_string());
+        Some(Arc::new(
+            ChronicleControlProcessClient::spawn(&args.pchronicle_binary, control_root)
+                .await
+                .context("start pChronicle control process")?,
+        ))
+    } else {
+        None
+    };
+
     let file_sink: Option<Arc<dyn ResultSink>> = if let Some(dir) = &args.sink {
         let mut sinks: Vec<Box<dyn ResultSink>> = Vec::new();
         sinks.push(Box::new(
@@ -245,6 +264,11 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
                     .to_string()
             });
             let lance = crate::sink_traj::LanceResultSink::new(
+                Arc::clone(
+                    chronicle_control
+                        .as_ref()
+                        .context("trajectory sink requires pChronicle control")?,
+                ),
                 traj_storage.display().to_string(),
                 args.traj_agent.clone(),
                 session.clone(),
@@ -316,14 +340,19 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
     };
 
     let coordinator = if let (Some(dir), Some(sink)) = (&args.sink, &file_sink) {
-        let control_root = args
-            .control_uri
-            .clone()
-            .unwrap_or_else(|| dir.display().to_string());
         let coordinator = Arc::new(
-            RunCoordinator::open_for_job(&control_root, dir, args.lease_ttl_ms, &job_id)
-                .await
-                .context("open pPilot Run coordinator")?,
+            RunCoordinator::open_with_control(
+                Arc::clone(
+                    chronicle_control
+                        .as_ref()
+                        .context("durable coordinator requires pChronicle control")?,
+                ),
+                dir,
+                args.lease_ttl_ms,
+                Some(crate::executor::job_run_id_prefix(&job_id)),
+            )
+            .await
+            .context("open pPilot Run coordinator")?,
         );
         let observer = coordinator.durable_attempt_observer();
         let report = coordinator

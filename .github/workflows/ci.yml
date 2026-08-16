@@ -70,7 +70,7 @@ jobs:
       - name: Build Agent CLI component set
         run: |
           cargo build -p persisting-pchronicle-cli --bin pchronicle --locked
-          cargo build -p persisting-pvisor --bin pvisor --features local-lance-chronicle --locked
+          cargo build -p persisting-pvisor --bin pvisor --locked
           cargo build -p persisting-ppilot --bin ppilot --locked
 
       - name: Test
@@ -83,8 +83,8 @@ jobs:
 
       - name: Test pVisor with Lance Chronicle
         if: runner.os == 'Linux'
-        # This is the mandatory feature profile for the pVisor ↔ pChronicle
-        # capture bridge; the default workspace profile does not enable it.
+        # The default profile covers local Lance. This additional profile
+        # verifies the cloud object-store extension.
         env:
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
           PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-lance-runs
@@ -230,8 +230,7 @@ jobs:
           cargo build --release -q \
             -p persisting-ppilot --bin ppilot
           cargo build --release -q \
-            -p persisting-pvisor --bin pvisor \
-            --features local-lance-chronicle
+            -p persisting-pvisor --bin pvisor
           for example in examples/ppilot/*; do
             [ -f "$example/run.sh" ] || continue
             echo "==> ${example}/run.sh"

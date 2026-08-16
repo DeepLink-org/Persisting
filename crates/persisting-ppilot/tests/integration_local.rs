@@ -5,6 +5,7 @@
 
 mod common;
 
+use persisting_pchronicle_client::{ChronicleControl, MemoryChronicleControl};
 use persisting_ppilot::{
     run_local_fleet, spawn_coordinated_sink_writer, spawn_sink_writer, CheckpointLedger,
     JsonlFileSink, Observer, RunCoordinator, RunOptions, SkipSet,
@@ -67,8 +68,10 @@ def execute(item):
     let sink_root = dir.path().join("sink");
     let sink: Arc<dyn persisting_ppilot::ResultSink> =
         Arc::new(JsonlFileSink::open(&sink_root).await.unwrap());
+    let control: Arc<dyn ChronicleControl> =
+        Arc::new(MemoryChronicleControl::new(dir.path().to_string_lossy()));
     let coordinator = Arc::new(
-        RunCoordinator::open(dir.path().to_string_lossy(), &sink_root, 30_000)
+        RunCoordinator::open_with_control(control, &sink_root, 30_000, None)
             .await
             .unwrap(),
     );
@@ -87,7 +90,12 @@ def execute(item):
     assert!(result.lease_epoch > 0);
     assert!(result.attempt_id.is_some());
     let run_id = persisting_agentctl::RunId::new(result.run_id.as_deref().unwrap());
-    let control = coordinator.control().get(&run_id).await.unwrap().unwrap();
+    let control = coordinator
+        .control()
+        .get_run(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
     let commit = control.commit.expect("terminal RunCommit");
     assert_eq!(commit.request.lease_epoch, result.lease_epoch);
     assert_eq!(

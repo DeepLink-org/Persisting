@@ -34,8 +34,8 @@ fn command_tree_contains_the_product_commands() {
     assert_eq!(
         names,
         [
-            "onboard", "default", "ls", "status", "query", "analysis", "find", "import", "export",
-            "project", "echo", "serve",
+            "control", "onboard", "default", "ls", "status", "query", "analysis", "find", "import",
+            "export", "project", "echo", "serve",
         ]
     );
     let ls = command

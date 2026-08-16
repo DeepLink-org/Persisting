@@ -3,12 +3,12 @@
 **Durable Run production at scale.**
 
 pPilot plans, schedules, resumes, and reconciles many independent Runs. pVisor
-owns each Run and its workspace; pChronicle owns trajectory Dataset discovery,
-query, analysis, and exchange.
+owns each Run and its workspace; pChronicle owns durable leases, fencing,
+Attempt state, trajectory storage, Dataset discovery, query, and exchange.
 
 ```bash
-cargo build -p persisting-pvisor --bin pvisor \
-  --features local-lance-chronicle
+cargo build -p persisting-pvisor --bin pvisor
+cargo build -p persisting-pchronicle-cli --bin pchronicle
 cargo build -p persisting-ppilot --bin ppilot
 
 ppilot run plan.py --workers 8 --sink ./results
@@ -26,10 +26,14 @@ checkpoint/resume, infrastructure retry, and a durable result journal.
 one independent pVisor workspace per emitted Run, and writes a durable
 production report. Both commands invoke the standalone `pvisor` binary for
 each Run and embed a job-scoped Supervisor; there is no separate Supervisor
-service to deploy. Use `--pvisor-binary PATH` or `PERSISTING_PVISOR_BIN` when
-`pvisor` is not installed beside `ppilot` or available on `PATH`.
-For durable `run --sink` coordination, build that standalone binary with
-`local-lance-chronicle`; pPilot itself still does not link pVisor.
+service to deploy. For `run --sink`, pPilot starts one authenticated,
+loopback-only `pchronicle control` child and uses its versioned client protocol;
+pPilot does not link pChronicle, Lance, Arrow, or DataFusion. Use
+`--pchronicle-binary PATH` or `PERSISTING_PCHRONICLE_BIN` when `pchronicle` is
+not installed beside `ppilot` or available on `PATH`. Similarly, use
+`--pvisor-binary PATH` or `PERSISTING_PVISOR_BIN` for pVisor.
+The default pVisor build includes `local-lance-chronicle` for durable
+`run --sink` coordination; pPilot itself still does not link pVisor.
 
 The CLI intentionally contains no Dataset catalog, query, conversion, or
 analysis commands. Use `pchronicle` for those operations.

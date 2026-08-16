@@ -24,14 +24,17 @@ include_dir = "=0.7.4"
 libc.workspace = true
 persisting-gateway.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store", "s3-store"] }
+persisting-pchronicle-client.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 toml.workspace = true
 url.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 http-body-util.workspace = true
+persisting-agentctl.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 tower = { version = "0.5", features = ["util"] }

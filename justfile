@@ -84,8 +84,7 @@ examples-ppilot:
     cargo build --release -q \
       -p persisting-ppilot --bin ppilot
     cargo build --release -q \
-      -p persisting-pvisor --bin pvisor \
-      --features local-lance-chronicle
+      -p persisting-pvisor --bin pvisor
     for example in "{{ repo }}"/examples/ppilot/*; do
         [[ -f "$example/run.sh" ]] || continue
         echo "==> ${example#"{{ repo }}/"}/run.sh"
@@ -245,18 +244,17 @@ build profile="debug":
         exit 2
         ;;
     esac
-    # pChronicle and pPilot both require the Lance-backed Chronicle graph. Build
-    # them together so Cargo resolves and compiles that heavy feature set once.
+    # Build the pChronicle storage service beside its lightweight pPilot client.
+    # pPilot launches this binary for durable control and does not link Lance.
     cargo build \
       -p persisting-pchronicle-cli --bin pchronicle \
       -p persisting-ppilot --bin ppilot \
       "${cargo_args[@]}"
 
-    # pPilot invokes pVisor at runtime instead of linking it. Enable only the
-    # local Lance Chronicle adapter so the child can durably publish attempt
-    # state into pPilot's registry; cloud object-store SDKs remain excluded.
+    # pPilot invokes pVisor at runtime instead of linking it. The default
+    # pVisor profile includes local Lance Chronicle for durable Attempt state
+    # while keeping cloud object-store SDKs excluded.
     cargo build -p persisting-pvisor --bin pvisor \
-      --features local-lance-chronicle \
       "${cargo_args[@]}"
 
 build-release:
@@ -422,7 +420,7 @@ test-crate crate:
       agentctl) cargo test -p persisting-agentctl ;;
       capture) cargo test -p persisting-gateway ;;
       ppilot)
-        cargo build -p persisting-pvisor --bin pvisor --features local-lance-chronicle
+        cargo build -p persisting-pvisor --bin pvisor
         cargo test -p persisting-ppilot
         ;;
       pvisor) cargo test -p persisting-pvisor ;;

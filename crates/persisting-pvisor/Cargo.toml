@@ -8,10 +8,10 @@ description = "pVisor foreground Agent Run manager and portable execution runtim
 readme = "README.md"
 
 [features]
-default = []
+default = ["local-lance-chronicle"]
 # Public full backend, retaining the historical local + S3 behavior.
 lance-chronicle = ["local-lance-chronicle", "persisting-pchronicle/s3-store"]
-# Local-only backend used by pPilot to avoid compiling cloud SDKs.
+# Default local-only backend used by pPilot without compiling cloud SDKs.
 local-lance-chronicle = ["persisting-pchronicle/lance-store"]
 jujutsu-overlay = ["persisting-overlayfs/jujutsu"]
 fuzzing = []

@@ -28,7 +28,7 @@ cancel messages are shared agentctl contracts. Process exit remains the
 lifecycle boundary; a Supervisor connection supplies live control without a
 resident pVisor daemon.
 
-The product build enables pVisor's `local-lance-chronicle` adapter so the
+The default pVisor build enables the `local-lance-chronicle` adapter so the
 standalone child can publish attempt state into pPilot's durable registry.
 This is a runtime-binary capability: it does not add pVisor or Gateway to
 pPilot's Cargo dependency graph, and it excludes cloud object-store SDKs.

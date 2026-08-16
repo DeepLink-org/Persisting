@@ -6982,8 +6982,10 @@ dependencies = [
  "http-body-util",
  "include_dir",
  "libc",
+ "persisting-agentctl",
  "persisting-gateway",
  "persisting-pchronicle",
+ "persisting-pchronicle-client",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -6992,6 +6994,19 @@ dependencies = [
  "toml",
  "tower",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "persisting-pchronicle-client"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "persisting-agentctl",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -7004,7 +7019,7 @@ dependencies = [
  "clap",
  "futures",
  "persisting-agentctl",
- "persisting-pchronicle",
+ "persisting-pchronicle-client",
  "pulsing-actor",
  "serde",
  "serde_json",
