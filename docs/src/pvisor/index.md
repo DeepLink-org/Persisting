@@ -29,6 +29,19 @@ The Agent can edit freely inside its stage. The user decides which filesystem
 effects enter the base project, and can apply independent batches more than
 once.
 
+The standalone pVisor product loop is:
+
+```text
+RunSpec -> admission -> Attempt
+  -> terminal RunResult + private Run Bundle + staged Effects
+  -> later review/apply/drop
+```
+
+Attempt finalization writes the terminal RunResult and private, versioned Run
+Bundle while leaving filesystem Effects staged. Later `review`, `apply`, or
+`drop` operations read the Bundle and operate on the stage. pChronicle is not a
+runtime prerequisite for this loop.
+
 ## Read pVisor by purpose
 
 | Goal | Section |
@@ -39,5 +52,7 @@ once.
 | Inspect isolation and runtime mechanisms | [Design](design/index.md) |
 | Look up exact command syntax | [Reference](reference/index.md) |
 
-To understand how pVisor history becomes a queryable Dataset, continue to
-[pChronicle](../pchronicle/index.md).
+To query configured Gateway trajectory events and pVisor lifecycle records as
+a durable Dataset, continue to [pChronicle](../pchronicle/index.md). The current
+handoff does not publish the full Run Bundle or its Artifact, lineage, Effect,
+and broader Evidence inventory.

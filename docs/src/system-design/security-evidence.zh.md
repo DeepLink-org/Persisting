@@ -2,7 +2,9 @@
 
 Persisting 不会把安全压缩成一个 `safe` 或 `sandboxed` 标签。每个 Run 都按 capability
 维度报告保证。pVisor 拥有 admission 与 runtime enforcement；pPilot 保存 authority 与
-lease generation；pChronicle 保存 Evidence 引用与终态事实。
+lease generation；配置后的 pChronicle capture 保存 lifecycle fact，且只保存 Gateway 或
+lifecycle event record 实际携带的 Evidence。完整 Run Bundle Evidence 清单仍留在本地，
+除非另行搬运。
 
 | 维度 | 示例机制 | Evidence 问题 |
 | --- | --- | --- |
@@ -32,8 +34,11 @@ requested capability
   → provider evidence
   → observed Effect
   → terminal result
-  → durable history reference
+  → configured event-carried history
 ```
+
+最后一段 event 路径比 Run Bundle 更窄：当前不会发布完整的 Artifact、lineage、filesystem
+Effect、AgentCtl/network/resource Evidence、output 或 metrics 清单。
 
 用户模型见 [Capability 与 Evidence](../pvisor/concepts/capabilities-and-evidence.md)，平台机制见
 [pVisor 隔离设计](../pvisor/design/isolation.md)与 [OverlayNet](../pvisor/design/overlaynet.md)，

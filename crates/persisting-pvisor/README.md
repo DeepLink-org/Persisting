@@ -38,6 +38,19 @@ pvisor apply last --all
 # pvisor drop last
 ```
 
+The standalone product loop is:
+
+```text
+RunSpec -> admission -> Attempt
+  -> terminal RunResult + private Run Bundle + staged Effects
+  -> later review/apply/drop
+```
+
+Attempt finalization writes the terminal RunResult and private, versioned Run
+Bundle while leaving filesystem Effects staged. Later `review`, `apply`, or
+`drop` operations read the Bundle and operate on the stage. pChronicle is not a
+runtime prerequisite for this loop.
+
 `--safe` associates the current directory with a new durable Run, gives the
 Agent a copy-on-write workspace, applies the strongest supported local boundary
 for the selected executor, and emits a private versioned `run-bundle.json`.
@@ -58,7 +71,7 @@ lifecycle APIs conflate:
 | Product area | Current responsibility |
 | --- | --- |
 | Agent lifecycle | One logical `Run`, one or more `Attempt`s, cancellation, deadlines, terminal publication, and parent lineage |
-| Agent control | Optional authenticated AgentCtl for heartbeats, desired state, cooperative process/operation declarations, and quiescence |
+| Agent control | Optional authenticated AgentCtl v1 for Sessions, client state, directives, and cooperative quiescence |
 | Capabilities | Models, tools, filesystem read/write, network, secrets, subprocess, and resources, with evidence recorded per dimension |
 | Filesystem effects | Copy-on-write staging, classified review, logical checkpoint/fork, repeated selective apply, terminal apply/drop, and an apply ledger |
 | Network and model access | Gateway capture plus OverlayNet policy; enforcement strength depends on executor and is never inferred from a product label |
@@ -99,8 +112,14 @@ CLI / pPilot / embedding host
         ├── WorkspaceOverlay ── review / checkpoint / apply / drop
         ├── Gateway + OverlayNet
         ├── execution provider ── host / container / libkrun VM
-        └── RunRecord + Run Bundle + pChronicle events
+        └── RunRecord + private versioned Run Bundle
 ```
+
+When configured, pChronicle receives Gateway trajectory events and pVisor
+lifecycle records. Those records carry Run/Attempt identity, lifecycle facts,
+and available event-carried Evidence. Artifact references, lineage, staged
+filesystem Effects, AgentCtl/network/resource Evidence, and the full Run Bundle
+remain local unless a separate adapter moves them.
 
 The logical Run id survives placement and retry decisions. Each physical
 execution receives a distinct Attempt id and, when pPilot owns it, a fenced
@@ -131,17 +150,18 @@ controller remains a product gate rather than a current claim.
 | Warm-kernel pool and scrubbed reuse protocol | Open product gate |
 | Long-lived distributed pPilot controller and node reconciliation | Open product gate |
 
-The default build does not link Lance or DataFusion. When Chronicle persistence
-is enabled, pVisor starts a standalone `pchronicle control` sidecar and sends
-shared runtime events through the lightweight versioned client protocol. The
-sidecar owns local or cloud storage support. Use `jujutsu-overlay` for the
-Jujutsu upper backend.
+The default build includes the local Lance/DataFusion pChronicle backend for an
+optional durable Attempt-state handoff to pPilot. The standalone pVisor loop
+does not require that handoff. The default build excludes cloud object-store
+SDKs, Jujutsu, `prost`, and a protobuf toolchain. Use
+`lance-chronicle` for S3 support, `jujutsu-overlay` for the Jujutsu upper
+backend, or `--no-default-features` for a storage-light binary.
 
 pVisor is one part of the Persisting Agent infrastructure:
 
 - **pVisor** owns one Run, its Attempts, capabilities, effects, and evidence;
 - **pPilot** plans, leases, schedules, and reconciles many Runs;
-- **pChronicle** stores canonical Run history and derived views;
+- **pChronicle** stores configured canonical event history and derived views;
 - **Gateway, OverlayNet, Control, and OverlayFS** are pVisor runtime drivers.
 
 The product name remains **pVisor**. **AgentVisor** names the category and the
@@ -170,7 +190,7 @@ invocation:
 ```text
 PERSISTING_AGENTCTL_ENDPOINT=/tmp/pvisor-agent-….sock
 PERSISTING_AGENTCTL_TOKEN=…
-PERSISTING_AGENTCTL_VERSION=2
+PERSISTING_AGENTCTL_VERSION=1
 PERSISTING_AGENTCTL_TRANSPORT=unix
 ```
 
@@ -178,20 +198,21 @@ The token is intentionally not written to Run metadata. The socket is mode
 `0600`, exists only for the Attempt lifetime, and accepts bounded JSON frames.
 Docker and VM placements start a complete pVisor inside the isolation
 boundary. That injected pVisor creates AgentCtl locally and executes the
-Agent through the same ProcessExecutor used by a native Run; the host ABI token
-is deliberately removed from the delegated RunSpec.
+Agent through the same ProcessExecutor used by a native Run; host AgentCtl
+credentials are deliberately removed from the delegated RunSpec.
 The compact protocol is owned by pVisor and currently uses the injected Unix
-socket directly. The v2 handshake authenticates the client and opens a session.
-Heartbeats return pVisor's current desired state (`continue`, `quiesce`, or
-`shutdown`). Quiesce acknowledgements must match the active directive
-generation and the server's open-effect view.
+socket directly. In v1, `Hello` authenticates the client and opens a Session;
+periodic `Sync` exchanges `active`, `idle`, or checkpoint-specific `quiesced`
+state for pVisor's current `continue`, `quiesce`, or `shutdown` directive.
 
 Hosts use `RunHandle::agentctl()` to publish desired state and inspect the
-registered clients, declared processes, and declared open operations. These
-are cooperative observations, not proof that no unreported process or external
-effect exists. The reusable
-`persisting-agentctl` crate owns the client SDK; pPilot re-exports it for
-compatibility and remains the reference quiescence/effect integration.
+registered clients and their latest state. These are cooperative observations,
+not an authoritative process inventory or proof that no external effect exists.
+The reusable
+`persisting-agentctl` crate owns the client SDK; pPilot re-exports it for its
+runtime bridge and remains the reference quiescence integration. Interactive
+terminal login is reserved for a future, separately authorized Debug protocol
+and Session rather than additional Control messages.
 
 ## Runtime configuration
 
@@ -569,7 +590,7 @@ to `overlay.json`. Successful apply batches are recorded in the mode-`0600`
 `apply-ledger.json`. Completed CLI Runs also write a mode-`0600`
 `run-bundle.json` containing outcome, safety boundary, filesystem summary,
 network profile, requested resource limits, environment-key projection,
-classified filesystem changes, AgentCtl clients/process declarations/operation declarations, output,
+classified filesystem changes, AgentCtl client states, output,
 metrics, and artifact references. `review` presents the complete A/M/D/T/O
 manifest; `--diff` adds bounded text diffs while marking binary, large,
 symlink, and opaque changes structurally. `status` remains the lower-level live
@@ -584,8 +605,8 @@ environment values.
 
 `checkpoint` copies the raw upper into `checkpoints/<id>/` only after a Run is
 stopped. `RunHandle::checkpoint` is the live API: it requests AgentCtl
-quiescence, waits for every connected client to acknowledge the same directive
-generation with no open effects, snapshots the upper, and resumes clients.
+quiescence, waits for every Session frozen into the checkpoint to report the
+matching quiesced state, snapshots the upper, and resumes clients.
 Both are logical Agent checkpoints; neither claims to preserve process memory.
 `fork` restores one of these checkpoints into a new directory upper and starts
 a new safe Run whose `run.json` and Run Bundle record the parent Run and

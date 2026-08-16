@@ -183,9 +183,9 @@ fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
 denied = (errno.EPERM, errno.EACCES)
 assert os.environ["PERSISTING_SANDBOX_FILESYSTEM"] == "seatbelt-write"
 assert os.environ["PERSISTING_SANDBOX_NETWORK"] == "deny"
-abi = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-abi.connect(os.environ["PERSISTING_AGENTCTL_ENDPOINT"])
-abi.close()
+agentctl = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+agentctl.connect(os.environ["PERSISTING_AGENTCTL_ENDPOINT"])
+agentctl.close()
 
 try:
     inet = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

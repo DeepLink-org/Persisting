@@ -1,7 +1,7 @@
 ---
 template: home.html
-title: Persisting — Agent 执行虚拟化、Effect 治理与持久历史
-description: 在隔离的虚拟执行环境中运行一个 Agent，审查它的 Effect，扩展同一套 Run 模型，并保留发生过的事实。
+title: Persisting — 治理 Agent 执行与持久轨迹 Dataset
+description: 治理 Agent Run，并将原生或外部轨迹转化为持久、可查询的 Dataset；保留明确的 Source identity、lineage，以及 Source 实际携带的 Evidence。
 hide: toc
 ---
 

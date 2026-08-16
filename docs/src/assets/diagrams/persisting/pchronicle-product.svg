@@ -1,15 +1,105 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
-  <title id="title">pChronicle product boundary</title><desc id="desc">Gateway, native writers, and files produce a local or S3 Dataset. pChronicle Core discovers and normalizes it for query, analysis, find, import, export, and a read-only Warehouse API and Web interface.</desc>
-  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#08111f"/><stop offset="1" stop-color="#17233a"/></linearGradient><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7dd3fc"/></marker><style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.title{font-size:32px;font-weight:700;fill:#f8fafc}.sub{font-size:16px;fill:#94a3b8}.label{font-size:18px;font-weight:700;fill:#f8fafc}.tiny{font-size:13px;fill:#94a3b8}.box{fill:#111c2e;stroke:#40516a;stroke-width:1.6}.accent{fill:#10333a;stroke:#5eead4;stroke-width:2}.line{fill:none;stroke:#7dd3fc;stroke-width:2.3;marker-end:url(#a)}</style></defs>
-  <rect width="1200" height="500" rx="26" fill="url(#bg)"/><text x="48" y="55" class="title">pChronicle product boundary</text><text x="48" y="84" class="sub">Path-first trajectory Datasets · local and S3 · read-oriented product surface</text>
-  <rect x="55" y="160" width="220" height="112" rx="18" class="box"/><text x="85" y="202" class="label">Producers</text><text x="85" y="231" class="tiny">Gateway · native writer</text><text x="85" y="253" class="tiny">ATIF · ACTF · files</text>
-  <path d="M275 216H340" class="line"/>
-  <rect x="343" y="160" width="220" height="112" rx="18" class="box"/><text x="373" y="202" class="label">Dataset URI</text><text x="373" y="231" class="tiny">local directory or S3 prefix</text><text x="373" y="253" class="tiny">identity stays path-first</text>
-  <path d="M563 216H628" class="line"/>
-  <rect x="631" y="145" width="250" height="142" rx="20" class="accent"/><text x="667" y="194" class="label">pChronicle Core</text><text x="667" y="224" class="tiny">discover · pin snapshot</text><text x="667" y="246" class="tiny">normalize · query · exchange</text><text x="667" y="268" class="tiny">read-only execution boundary</text>
-  <path d="M881 190H947" class="line"/><path d="M881 248H947" class="line"/>
-  <rect x="950" y="130" width="200" height="96" rx="18" class="box"/><text x="979" y="170" class="label">CLI</text><text x="979" y="198" class="tiny">query · analysis · find</text>
-  <rect x="950" y="250" width="200" height="96" rx="18" class="box"/><text x="979" y="290" class="label">Exchange</text><text x="979" y="318" class="tiny">import · export</text>
-  <rect x="631" y="350" width="519" height="82" rx="18" class="box"/><text x="661" y="383" class="label">Read-only Warehouse</text><text x="661" y="409" class="tiny">static mounts · loopback API · Web · reconstructible cache</text>
-  <path d="M756 287V350" class="line"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1325" height="620" viewBox="0 0 1325 620" role="img" aria-labelledby="title desc">
+  <title id="title">pChronicle product boundary</title>
+  <desc id="desc">Canonical runtime event Sources and pinned local or S3 external trajectory Sources from external evaluators and Agent frameworks enter pChronicle through separate branches and converge at a Catalog Snapshot and normalized Dataset views. Supported external files include ATIF, ACTF, OpenAI Messages, and Storyline Sources; they do not become canonical runtime events. CLI import is a separate inbound path that accepts ATIF, ACTF, and OpenAI Messages into a new Dataset. Outbound surfaces provide query and analysis, export including Storyline, revisions, and a read-only Warehouse API and Web interface.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#08111f"/>
+      <stop offset="1" stop-color="#17233a"/>
+    </linearGradient>
+    <marker id="arrow-ingest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#5eead4"/>
+    </marker>
+    <marker id="arrow-read" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#7dd3fc"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { font-size: 32px; font-weight: 700; fill: #f8fafc; }
+      .sub { font-size: 16px; fill: #94a3b8; }
+      .label { font-size: 18px; font-weight: 700; fill: #f8fafc; }
+      .tiny { font-size: 13px; fill: #cbd5e1; }
+      .legend { font-size: 12px; font-weight: 600; fill: #cbd5e1; }
+      .box { fill: #111c2e; stroke: #40516a; stroke-width: 1.6; }
+      .accent { fill: #10333a; stroke: #5eead4; stroke-width: 2; }
+      .ingest-line { fill: none; stroke: #5eead4; stroke-width: 2.4; marker-end: url(#arrow-ingest); }
+      .read-line { fill: none; stroke: #7dd3fc; stroke-width: 2.3; stroke-dasharray: 8 5; marker-end: url(#arrow-read); }
+    </style>
+  </defs>
+
+  <rect width="1325" height="620" rx="26" fill="url(#bg)"/>
+  <text x="48" y="55" class="title">pChronicle product boundary</text>
+  <text x="48" y="84" class="sub">Dataset-first trajectory data · direct Sources · directional read and exchange surfaces</text>
+
+  <path d="M48 116H95" class="ingest-line"/>
+  <text x="107" y="121" class="legend">ingest / write</text>
+  <path d="M224 116H271" class="read-line"/>
+  <text x="283" y="121" class="legend">query / export / read</text>
+
+  <g id="canonical-event-sources">
+    <rect x="40" y="155" width="350" height="100" rx="18" class="box"/>
+    <text x="65" y="192" class="label">Canonical event Sources</text>
+    <text x="65" y="224" class="tiny">Gateway · pVisor lifecycle · native writers</text>
+  </g>
+
+  <g id="external-sources">
+    <rect x="40" y="280" width="350" height="140" rx="18" class="box"/>
+    <text x="65" y="317" class="label">Pinned external Sources</text>
+    <text x="65" y="344" class="tiny">External evaluators · Agent frameworks</text>
+    <text x="65" y="370" class="tiny">local/S3 ATIF · ACTF · OpenAI Messages</text>
+    <text x="65" y="396" class="tiny">Storyline Sources · direct normalization</text>
+  </g>
+
+  <g id="import-input">
+    <rect x="40" y="455" width="350" height="100" rx="18" class="box"/>
+    <text x="65" y="492" class="label">CLI import → new Dataset</text>
+    <text x="65" y="524" class="tiny">ATIF · ACTF · OpenAI Messages</text>
+  </g>
+
+  <path d="M390 205H420V250H452" class="ingest-line"/>
+  <path d="M390 343H452" class="ingest-line"/>
+  <path d="M390 505H420V410H452" class="ingest-line"/>
+
+  <g id="dataset-boundary">
+    <rect x="455" y="210" width="230" height="225" rx="18" class="box"/>
+    <text x="481" y="250" class="label">Catalog Snapshot</text>
+    <text x="481" y="283" class="tiny">pin Source versions</text>
+    <text x="481" y="310" class="tiny">preserve Source identity</text>
+    <text x="481" y="337" class="tiny">normalize Dataset views</text>
+    <text x="481" y="375" class="tiny">external files remain</text>
+    <text x="481" y="400" class="tiny">non-event Sources</text>
+  </g>
+
+  <path d="M685 322H747" class="ingest-line"/>
+
+  <g id="pchronicle-core">
+    <rect x="750" y="210" width="255" height="205" rx="20" class="accent"/>
+    <text x="779" y="250" class="label">pChronicle Core</text>
+    <text x="779" y="285" class="tiny">discover · pin Snapshot</text>
+    <text x="779" y="312" class="tiny">normalize Sources · query</text>
+    <text x="779" y="339" class="tiny">persist canonical runtime events</text>
+    <text x="779" y="366" class="tiny">export · revision lineage</text>
+  </g>
+
+  <path d="M1005 245H1062" class="read-line"/>
+  <path d="M1005 312H1034V347H1062" class="read-line"/>
+  <path d="M878 415V475H1062" class="read-line"/>
+
+  <g id="query-output">
+    <rect x="1065" y="145" width="220" height="100" rx="18" class="box"/>
+    <text x="1091" y="184" class="label">CLI query</text>
+    <text x="1091" y="215" class="tiny">query · analysis</text>
+  </g>
+
+  <g id="export-output">
+    <rect x="1065" y="285" width="220" height="125" rx="18" class="box"/>
+    <text x="1091" y="324" class="label">Export + revisions</text>
+    <text x="1091" y="355" class="tiny">ATIF · ACTF · OpenAI</text>
+    <text x="1091" y="380" class="tiny">Storyline · revision lineage</text>
+  </g>
+
+  <g id="warehouse-output">
+    <rect x="1065" y="435" width="220" height="90" rx="18" class="box"/>
+    <text x="1091" y="471" class="label">Read-only Warehouse</text>
+    <text x="1091" y="499" class="tiny">API · Web</text>
+  </g>
 </svg>

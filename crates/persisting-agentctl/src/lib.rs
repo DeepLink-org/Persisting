@@ -15,15 +15,10 @@ pub mod protocol;
 mod runtime;
 mod supervisor;
 
-pub use protocol::*;
-/// Deprecated module path retained for source compatibility.
-#[deprecated(note = "use persisting_agentctl::protocol")]
-pub mod abi {
-    pub use super::protocol::*;
-}
-pub use client::{checkpoint_directive, AgentCtlClient, AgentCtlClientConfig};
+pub use client::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError};
 use ipnet::IpNet;
 pub use process::{PVisorProcessClient, PVisorProcessOptions};
+pub use protocol::*;
 pub use runtime::*;
 pub use runtime::{AccessEffect as ControlEffect, AccessReason as ControlReason};
 use serde::{Deserialize, Serialize};

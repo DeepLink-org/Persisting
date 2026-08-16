@@ -1,38 +1,38 @@
 # Persisting overview
 
-Persisting turns an Agent command into a durable **Run** with an isolated
-execution environment, reviewable effects, a stable identity, and a history
-that survives the process.
+Persisting has two connected entry paths: govern Agent execution with pVisor,
+or build durable trajectory Datasets with pChronicle. Each path works on its
+own, and stable contracts connect them when both products are used together.
 
-That same Run model is used on a developer laptop and when many Runs are
-orchestrated together.
+## Two product domains
 
-![Persisting execution architecture](assets/diagrams/persisting/execution-story.svg)
+- **pVisor** virtualizes and governs Agent execution. **pPilot** extends the
+  same Run contract to many independent Runs.
+- **pChronicle** turns native and external trajectory Sources into durable,
+  queryable Datasets with preserved origin, normalized views, and lineage.
 
-## 1. Start with one Agent Run
+Where Run identity is present, it remains stable across the product boundary.
+The implemented configured handoff publishes Gateway trajectory events and
+pVisor lifecycle records, including Evidence carried by those records. The Run
+Bundle and its Artifact references, lineage, staged Effects, and broader runtime
+Evidence remain local unless moved separately. Neither product is only a stage
+in a mandatory end-to-end lifecycle.
+
+![Persisting product domains and integration](assets/diagrams/persisting/system-products.svg)
+
+## Govern Agent execution
 
 An Agent needs more than a process. It needs a workspace, tools, network
 access, credentials, state, and a boundary around the changes it can make.
-
-`pvisor` creates that boundary. It is Persisting's implementation of the
-[AgentVisor](pvisor/concepts/agentvisor.md) category: a hypervisor for Agent execution.
-Each Run receives an Agent virtual execution environment while the underlying
-host, container, VM, or fleet resources remain shareable.
+`pvisor` creates that boundary for one Run while the underlying host,
+container, VM, or fleet resources remain shareable.
 
 ```bash
 pvisor run --safe codex
 ```
 
-The command runs with a staged workspace and records the controls that were
-actually installed. The Run identity does not depend on its process ID or
-execution provider.
-
-## 2. Separate execution from acceptance
-
-Letting an Agent work and accepting its effects are different decisions.
-Persisting keeps filesystem changes in a Run-owned stage so the Agent can work
-without requesting approval for every edit.
-
+The command uses a staged workspace and records the controls actually
+installed. Run identity does not depend on a process ID or execution provider.
 After the Run, inspect the result and accept only what should enter the base
 workspace:
 
@@ -43,59 +43,60 @@ pvisor apply last --include 'tests/**'
 pvisor apply last --all
 ```
 
-`apply` is intentionally repeatable. Every successful call consumes only the
-selected dependency-closed batch; unselected changes remain staged. Effects
-that cannot be represented as staged files—network calls, messages, database
-writes, deployments—need their own admission and evidence mechanisms.
+`apply` is repeatable: each successful call consumes only the selected,
+dependency-closed batch, while unselected changes remain staged. Gateway,
+OverlayFS, OverlayNet, and Control are pVisor runtime drivers. pVisor produces
+a useful Run Bundle without requiring pChronicle at runtime.
 
-## 3. Scale the Run, not the shell command
+## Build trajectory Datasets
 
-Once one Run has stable identity, inputs, lifecycle, results, and evidence, it
-can be orchestrated without changing its meaning. `pPilot` plans many tasks,
-bounds concurrency, fences leases, records durable results, and reconciles
-supported crash windows.
+`pChronicle` discovers native and external trajectory Sources, preserves their
+origin, records Catalog Snapshots, exposes normalized query and exchange views,
+and retains revision lineage. External Sources can enter pChronicle without
+first passing through pVisor.
+
+```bash
+pchronicle onboard
+pchronicle onboard query
+```
+
+The onboarding workflow creates temporary example Datasets without requiring a
+source checkout. The Dataset is the durable unit for discovery, inspection,
+exchange, and analysis. pChronicle does not start, schedule, or control Agent
+Runs.
+
+## Use the integrated path
+
+When many governed Runs are needed, `pPilot` plans tasks, bounds concurrency,
+fences leases, records durable results, and reconciles supported crash windows
+without changing the Run contract:
 
 ```bash
 ppilot run plan.py --workers 4 --per-worker 2 --sink ./results
 ```
 
-The local workflow and the fleet workflow share the same unit: a Run. Physical
-placement may change; Run identity, authority, checkpoint lineage, and result
-ownership must not.
+The default pPilot path ends with durable results, task-to-Run mapping,
+coordination and lease history, and the configured result journal. With the
+`traj-sink` feature and `--traj`, pPilot additionally emits only terminal
+`ppilot.result` or `ppilot.failure` records. That option does not capture a
+general pVisor trajectory.
 
-## 4. Keep the history after execution ends
+pVisor's configured Gateway/lifecycle capture is a separate integration.
+Delegated pVisor Runs launched through the current `--run-spec` path do not
+inherit Chronicle capture configuration, and the full Run Bundle remains local.
 
-Processes disappear. The facts needed to understand a Run should not.
-Gateway capture emits canonical events while `pChronicle` discovers trajectory
-sources, normalizes their views, and makes them queryable.
+## Guarantees remain source-specific
 
-```bash
-pchronicle analysis overview examples/data/atif
-pchronicle query examples/data/atif \
-  'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source'
-```
-
-History is not the scheduler and it is not the execution boundary. It is the
-durable record used for inspection, replay, evaluation, exchange, and analysis.
-
-## One model from local to fleet
-
-| Concern | One local Run | Many Runs or a fleet |
-| --- | --- | --- |
-| Execution | One Agent virtual execution environment | A pool of environments placed across providers |
-| Identity | Stable Run ID and one active Attempt | Stable Run IDs with lease-fenced ownership |
-| Effects | Review, selective apply, drop | Policy-driven promotion and reconciliation |
-| Continuity | Stage, checkpoint, fork | Recovery, migration, and lineage across placement |
-| Evidence | Run Bundle and captured events | Durable history and cross-Run analysis |
-
-The component boundary is direct: **pVisor runs and contains one Run, pPilot
-orchestrates many Runs, and pChronicle preserves what happened.** Gateway,
-OverlayFS, and OverlayNet are runtime mechanisms inside pVisor.
+pVisor records the controls and provider-specific Evidence available for each
+Run; filesystem confinement does not imply network isolation or control of
+remote Effects. pChronicle preserves the identity and lineage supplied by each
+Source, but importing a trajectory cannot retroactively add execution controls
+or Evidence that the Source did not carry.
 
 ## Continue by task
 
 - [Run the first Agent](pvisor/get-started.md)
 - [Review and selectively apply changes](pvisor/guides/review-apply.md)
 - [Orchestrate many Runs](pvisor/guides/orchestrate.md)
-- [Explore durable history](pchronicle/get-started.md)
+- [Explore a trajectory Dataset](pchronicle/get-started.md)
 - [Read the system architecture](system-design/index.md)

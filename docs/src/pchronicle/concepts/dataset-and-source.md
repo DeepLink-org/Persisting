@@ -1,13 +1,17 @@
 # Dataset, Source, and Snapshot
 
-pChronicle is path-first. It keeps the physical origin of history visible
-instead of hiding every trajectory behind a global database identifier.
+pChronicle is path-first. It keeps the physical origin of trajectory data
+visible instead of hiding every trajectory behind a global database identifier.
 
 ## Dataset
 
 A Dataset is one logical query space rooted at a normalized local path or
 object-store URI. The URI is its identity. A Warehouse mount name is only a SQL
 alias and does not change that identity.
+
+A Dataset is a discovery, snapshot, query, and exchange boundary. It does not
+claim that every expected external task produced a Source. pChronicle reports
+the Sources it can discover and pin; it does not infer unreported trajectories.
 
 ## Source
 

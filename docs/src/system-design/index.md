@@ -3,30 +3,43 @@
 Persisting has two primary product domains:
 
 - [pVisor](../pvisor/index.md) virtualizes and governs Agent execution;
-- [pChronicle](../pchronicle/index.md) preserves and queries durable Run history.
+- [pChronicle](../pchronicle/index.md) organizes durable trajectory Sources into
+  queryable Datasets.
 
 pPilot extends pVisor from one Run to many. Gateway, OverlayFS, and OverlayNet
-are pVisor runtime mechanisms. The products meet at stable Run identity,
-captured events, artifacts, terminal results, and lineage.
+are pVisor runtime mechanisms. Where available, stable Run identity connects the
+domains, but each also has a standalone entry path.
 
-![Persisting system architecture](../assets/diagrams/persisting/execution-story.svg)
+![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
 
 ## Cross-product contract
 
 ```text
-Agent goal
-  → RunSpec
-  → pVisor / pPilot own execution and Attempt state
-  → EventIngest + Artifact + RunResult
-  → pChronicle owns durable history and derived views
+Configured pVisor capture
+  Gateway trajectory events ─┐
+  pVisor lifecycle records ──┴─> canonical event Source ─┐
+Pinned external Sources                                  │
+  ATIF / ACTF / OpenAI Messages / Storyline ─────────────┴─> Catalog Snapshot
+                                                               └─> normalized Dataset views
 ```
+
+Attempt finalization writes a private, versioned Run Bundle and leaves Effects
+staged for later review/apply/drop without pChronicle. Configured capture sends
+Gateway trajectory events and pVisor lifecycle records, including the Evidence
+those records carry. The full Bundle and its Artifact, lineage, Effect, and
+broader Evidence inventory remain local unless moved separately.
+
+External file and Storyline Sources are pinned and normalized directly without
+passing through pVisor or becoming canonical events. Each path retains
+source-specific guarantees; ingestion does not add Evidence that its Source did
+not provide.
 
 | Concern | Owner |
 | --- | --- |
 | One Run's execution boundary | pVisor |
 | Planning and recovery of many Runs | pPilot |
 | Model, network, and filesystem runtime drivers | pVisor |
-| Canonical events and Dataset history | pChronicle |
+| Canonical events, terminal facts, and Dataset history | pChronicle |
 | Query, exchange, and revision lineage | pChronicle |
 
 ## Continue by question

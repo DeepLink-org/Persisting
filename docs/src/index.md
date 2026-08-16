@@ -1,7 +1,7 @@
 ---
 template: home.html
-title: Persisting — Agent execution virtualization, governed effects, and durable history
-description: Run one Agent in an isolated virtual execution environment, review its effects, scale the same Run model, and preserve what happened.
+title: Persisting — governed Agent execution and durable trajectory Datasets
+description: Govern Agent Runs and turn native or external trajectories into durable, queryable Datasets with explicit source identity and lineage, preserving any Evidence a Source carries.
 hide: toc
 ---
 

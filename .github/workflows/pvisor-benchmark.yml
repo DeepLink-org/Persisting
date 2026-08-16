@@ -68,7 +68,7 @@ jobs:
           just benchmark-pvisor \
             smoke \
             "${RUNNER_TEMP}/pvisor-benchmark/main" \
-            "${GITHUB_WORKSPACE}/target/pvisor-benchmark-ci"
+            "${GITHUB_WORKSPACE}/target/pvisor-benchmark-main"
 
       - name: Benchmark candidate
         shell: bash
@@ -76,7 +76,7 @@ jobs:
           just benchmark-pvisor \
             smoke \
             "${RUNNER_TEMP}/pvisor-benchmark/candidate" \
-            "${GITHUB_WORKSPACE}/target/pvisor-benchmark-ci"
+            "${GITHUB_WORKSPACE}/target/pvisor-benchmark-candidate"
 
       - name: Compare reports
         shell: bash

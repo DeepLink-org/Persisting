@@ -1,12 +1,9 @@
-//! Long-lived pPilot adapter for pVisor's semantic AgentCtl protocol.
+//! Long-lived pPilot adapter for pVisor's AgentCtl v1 Control protocol.
 
 use crate::agentctl::AgentCtlClient;
 use anyhow::{bail, Context};
-use persisting_agentctl::{
-    AgentCheckpointQuiesced, AgentDirective, AgentLifecycleState, AgentOperationBegin,
-    AgentOperationComplete, AgentOperationOutcome, AgentProcessRegistration,
-};
-use std::collections::{BTreeMap, BTreeSet};
+use persisting_agentctl::{AgentDirective, AgentState};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -15,176 +12,140 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 struct BridgeState {
-    lifecycle: AgentLifecycleState,
-    accepting_effects: bool,
+    agent_state: AgentState,
+    accepting_work: bool,
     directive: AgentDirective,
-    directive_seq: u64,
-    quiesced_checkpoint_id: Option<String>,
     quiesce_deadline_unix_ms: Option<u64>,
-    open_effects: BTreeSet<String>,
     warnings: Vec<String>,
 }
 
 impl BridgeState {
-    fn new(directive: AgentDirective, directive_seq: u64) -> Self {
-        let accepting_effects = matches!(&directive, AgentDirective::Continue);
+    fn new(directive: AgentDirective) -> Self {
+        let accepting_work = matches!(&directive, AgentDirective::Continue);
+        let quiesce_deadline_unix_ms = match &directive {
+            AgentDirective::Quiesce {
+                deadline_unix_ms, ..
+            } => *deadline_unix_ms,
+            AgentDirective::Continue | AgentDirective::Shutdown { .. } => None,
+        };
         Self {
-            lifecycle: AgentLifecycleState::Starting,
-            accepting_effects,
+            agent_state: AgentState::Active,
+            accepting_work,
             directive,
-            directive_seq,
-            quiesced_checkpoint_id: None,
-            quiesce_deadline_unix_ms: None,
-            open_effects: BTreeSet::new(),
+            quiesce_deadline_unix_ms,
             warnings: Vec::new(),
         }
     }
 }
 
 struct BridgeInner {
+    sync: Mutex<()>,
     client: Mutex<AgentCtlClient>,
     state: Mutex<BridgeState>,
     cancellation: CancellationToken,
     changed: Notify,
 }
 
-/// One Run-scoped pPilot client that continuously observes pVisor directives.
-///
-/// The bridge stops admitting new semantic effects as soon as it observes a
-/// quiesce directive. It acknowledges the checkpoint only at an idle safe point
-/// with an empty local/pVisor effect journal.
+/// One Run-scoped pPilot client that continuously exchanges state and directives.
 pub struct PilotRuntimeBridge {
     inner: Arc<BridgeInner>,
     stop: CancellationToken,
-    heartbeat: Option<JoinHandle<()>>,
+    sync_task: Option<JoinHandle<()>>,
 }
 
 impl PilotRuntimeBridge {
+    /// Connect the client and start periodic state synchronization.
     pub fn start(
         mut client: AgentCtlClient,
-        registration: AgentProcessRegistration,
         cancellation: CancellationToken,
     ) -> anyhow::Result<Self> {
-        let welcome = client.connect().context("connect pPilot Agent ABI")?;
-        if let AgentDirective::Shutdown { reason } = &welcome.directive {
+        let directive = client.connect().context("connect pPilot AgentCtl")?;
+        if let AgentDirective::Shutdown { reason } = &directive {
             bail!(
-                "pVisor requested shutdown during Agent ABI handshake{}",
+                "pVisor requested shutdown during AgentCtl handshake{}",
                 reason
                     .as_deref()
                     .map(|reason| format!(": {reason}"))
                     .unwrap_or_default()
             );
         }
-        client
-            .register_process(registration)
-            .context("register pPilot process")?;
-
+        let interval = Duration::from_millis(client.sync_interval_ms().unwrap_or(1_000).max(20));
         let inner = Arc::new(BridgeInner {
+            sync: Mutex::new(()),
             client: Mutex::new(client),
-            state: Mutex::new(BridgeState::new(welcome.directive, welcome.directive_seq)),
+            state: Mutex::new(BridgeState::new(directive)),
             cancellation,
             changed: Notify::new(),
         });
+        sync_once(&inner)?;
         let stop = CancellationToken::new();
         let loop_stop = stop.clone();
         let loop_inner = Arc::clone(&inner);
-        let interval = Duration::from_millis(welcome.heartbeat_interval_ms.max(20));
-        let heartbeat = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
+        let sync_task = tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     _ = loop_stop.cancelled() => break,
                     _ = ticker.tick() => {
-                        if let Err(error) = heartbeat_once(&loop_inner) {
-                            push_warning(&loop_inner, format!("Agent ABI heartbeat failed: {error:#}"));
+                        if let Err(error) = sync_once(&loop_inner) {
+                            push_warning(&loop_inner, format!("AgentCtl sync failed: {error:#}"));
                         }
                     }
                 }
             }
         });
 
-        let bridge = Self {
+        Ok(Self {
             inner,
             stop,
-            heartbeat: Some(heartbeat),
-        };
-        bridge.set_lifecycle(AgentLifecycleState::Running);
-        heartbeat_once(&bridge.inner)?;
-        Ok(bridge)
+            sync_task: Some(sync_task),
+        })
     }
 
-    pub fn set_lifecycle(&self, lifecycle: AgentLifecycleState) {
-        lock(&self.inner.state).lifecycle = lifecycle;
-        self.inner.changed.notify_waiters();
-    }
-
-    pub fn begin_effect(
-        &self,
-        effect_id: impl Into<String>,
-        kind: impl Into<String>,
-        request_digest: impl Into<String>,
-        idempotency_key: Option<String>,
-    ) -> anyhow::Result<u64> {
-        let effect_id = effect_id.into();
+    /// Mark the client active if pVisor currently permits work.
+    pub fn set_active(&self) -> anyhow::Result<()> {
         let mut state = lock(&self.inner.state);
-        if !state.accepting_effects {
-            bail!("pVisor is quiescing; refusing new effect {effect_id}");
+        if !state.accepting_work {
+            bail!("pVisor is not accepting Agent work");
         }
-        if state.open_effects.contains(&effect_id) {
-            bail!("effect {effect_id} is already open");
-        }
-        let sequence = lock(&self.inner.client).begin_operation(AgentOperationBegin {
-            operation_id: effect_id.clone(),
-            kind: kind.into(),
-            request_digest: request_digest.into(),
-            idempotency_key,
-        })?;
-        state.open_effects.insert(effect_id);
-        Ok(sequence)
-    }
-
-    pub fn complete_effect(
-        &self,
-        effect_id: &str,
-        outcome: AgentOperationOutcome,
-    ) -> anyhow::Result<()> {
-        let mut state = lock(&self.inner.state);
-        if !state.open_effects.contains(effect_id) {
-            bail!("effect {effect_id} is not open");
-        }
-        lock(&self.inner.client).complete_operation(AgentOperationComplete {
-            operation_id: effect_id.to_owned(),
-            outcome,
-        })?;
-        state.open_effects.remove(effect_id);
+        state.agent_state = AgentState::Active;
         self.inner.changed.notify_waiters();
         Ok(())
     }
 
-    pub fn open_effects(&self) -> BTreeSet<String> {
-        lock(&self.inner.state).open_effects.clone()
+    /// Mark the client idle, or quiesced when a checkpoint is already pending.
+    pub fn set_idle(&self) {
+        let mut state = lock(&self.inner.state);
+        state.agent_state = match &state.directive {
+            AgentDirective::Quiesce { checkpoint_id, .. } => AgentState::Quiesced {
+                checkpoint_id: checkpoint_id.clone(),
+            },
+            AgentDirective::Continue | AgentDirective::Shutdown { .. } => AgentState::Idle,
+        };
+        self.inner.changed.notify_waiters();
     }
 
+    /// Return the most recently observed pVisor directive.
     pub fn directive(&self) -> AgentDirective {
         lock(&self.inner.state).directive.clone()
     }
 
-    /// Enter an idle safe point, service a pending checkpoint, then stop the
-    /// heartbeat only after pVisor publishes Continue (or its deadline passes).
+    /// Enter an idle safe point and wait for a pending checkpoint to release it.
     pub async fn finish(mut self) -> Vec<String> {
-        self.set_lifecycle(AgentLifecycleState::Idle);
-        if let Err(error) = heartbeat_once(&self.inner) {
+        self.set_idle();
+        if let Err(error) = sync_once(&self.inner) {
             push_warning(
                 &self.inner,
-                format!("final Agent ABI heartbeat failed: {error:#}"),
+                format!("final AgentCtl sync failed: {error:#}"),
             );
         }
 
         loop {
             let wait_until = {
                 let state = lock(&self.inner.state);
-                if state.quiesced_checkpoint_id.is_none() {
+                if !matches!(state.agent_state, AgentState::Quiesced { .. }) {
                     break;
                 }
                 state.quiesce_deadline_unix_ms
@@ -204,31 +165,24 @@ impl PilotRuntimeBridge {
             } else {
                 let _ = tokio::time::timeout(Duration::from_secs(5), notified).await;
             }
-            if let Err(error) = heartbeat_once(&self.inner) {
-                push_warning(
-                    &self.inner,
-                    format!("Agent ABI heartbeat failed: {error:#}"),
-                );
+            if let Err(error) = sync_once(&self.inner) {
+                push_warning(&self.inner, format!("AgentCtl sync failed: {error:#}"));
             }
         }
 
         self.stop.cancel();
-        if let Some(heartbeat) = self.heartbeat.take() {
-            let _ = heartbeat.await;
+        if let Some(sync_task) = self.sync_task.take() {
+            let _ = sync_task.await;
         }
         lock(&self.inner.state).warnings.clone()
     }
 
+    /// Return the bridge's small diagnostic state.
     pub fn snapshot(&self) -> BTreeMap<String, serde_json::Value> {
         let state = lock(&self.inner.state);
         BTreeMap::from([
-            ("lifecycle".into(), serde_json::json!(state.lifecycle)),
+            ("state".into(), serde_json::json!(state.agent_state)),
             ("directive".into(), serde_json::json!(state.directive)),
-            (
-                "directive_seq".into(),
-                serde_json::json!(state.directive_seq),
-            ),
-            ("open_effects".into(), serde_json::json!(state.open_effects)),
         ])
     }
 }
@@ -239,60 +193,77 @@ impl Drop for PilotRuntimeBridge {
     }
 }
 
-fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
-    let lifecycle = lock(&inner.state).lifecycle;
-    let ack = lock(&inner.client).heartbeat(lifecycle)?;
-
-    let checkpoint = {
+fn sync_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
+    // The ticker and lifecycle calls may request synchronization concurrently.
+    // Serialize the complete snapshot/exchange/apply sequence so an older
+    // response can never overwrite a newer directive.
+    let _sync = lock(&inner.sync);
+    let agent_state = lock(&inner.state).agent_state.clone();
+    let directive = lock(&inner.client).sync(agent_state)?;
+    let immediate_sync = {
         let mut state = lock(&inner.state);
-        state.directive_seq = ack.directive_seq;
-        state.directive = ack.directive.clone();
-        match ack.directive {
-            AgentDirective::Continue => {
-                state.accepting_effects = true;
-                state.quiesce_deadline_unix_ms = None;
-                if state.quiesced_checkpoint_id.take().is_some() {
-                    state.lifecycle = AgentLifecycleState::Idle;
-                }
-                None
-            }
-            AgentDirective::Shutdown { .. } => {
-                state.accepting_effects = false;
-                state.lifecycle = AgentLifecycleState::Stopping;
-                inner.cancellation.cancel();
-                None
-            }
-            AgentDirective::Quiesce {
-                checkpoint_id,
-                deadline_unix_ms,
-            } => {
-                state.accepting_effects = false;
-                state.quiesce_deadline_unix_ms = deadline_unix_ms;
-                let at_safe_point = matches!(
-                    state.lifecycle,
-                    AgentLifecycleState::Idle | AgentLifecycleState::Quiesced
-                ) && state.open_effects.is_empty();
-                if at_safe_point && state.quiesced_checkpoint_id.as_deref() != Some(&checkpoint_id)
-                {
-                    Some(AgentCheckpointQuiesced {
-                        checkpoint_id,
-                        directive_seq: ack.directive_seq,
-                    })
-                } else {
-                    None
-                }
-            }
-        }
+        apply_directive(&mut state, directive)
     };
+    if matches!(
+        lock(&inner.state).directive,
+        AgentDirective::Shutdown { .. }
+    ) {
+        inner.cancellation.cancel();
+    }
 
-    if let Some(checkpoint) = checkpoint {
-        lock(&inner.client).checkpoint_quiesced(checkpoint.clone())?;
+    if immediate_sync {
+        let agent_state = lock(&inner.state).agent_state.clone();
+        let directive = lock(&inner.client).sync(agent_state)?;
         let mut state = lock(&inner.state);
-        state.lifecycle = AgentLifecycleState::Quiesced;
-        state.quiesced_checkpoint_id = Some(checkpoint.checkpoint_id);
+        apply_directive(&mut state, directive);
+        if matches!(state.directive, AgentDirective::Shutdown { .. }) {
+            inner.cancellation.cancel();
+        }
     }
     inner.changed.notify_waiters();
     Ok(())
+}
+
+/// Apply a directive and return whether the new quiesced state needs immediate Sync.
+fn apply_directive(state: &mut BridgeState, directive: AgentDirective) -> bool {
+    let immediate_sync = match &directive {
+        AgentDirective::Continue => {
+            state.accepting_work = true;
+            state.quiesce_deadline_unix_ms = None;
+            if matches!(state.agent_state, AgentState::Quiesced { .. }) {
+                state.agent_state = AgentState::Idle;
+            }
+            false
+        }
+        AgentDirective::Shutdown { .. } => {
+            state.accepting_work = false;
+            false
+        }
+        AgentDirective::Quiesce {
+            checkpoint_id,
+            deadline_unix_ms,
+        } => {
+            state.accepting_work = false;
+            state.quiesce_deadline_unix_ms = *deadline_unix_ms;
+            let reached_safe_point = matches!(state.agent_state, AgentState::Idle)
+                || matches!(
+                    &state.agent_state,
+                    AgentState::Quiesced {
+                        checkpoint_id: current
+                    } if current != checkpoint_id
+                );
+            if reached_safe_point {
+                state.agent_state = AgentState::Quiesced {
+                    checkpoint_id: checkpoint_id.clone(),
+                };
+                true
+            } else {
+                false
+            }
+        }
+    };
+    state.directive = directive;
+    immediate_sync
 }
 
 fn unix_now_ms() -> u64 {
@@ -311,4 +282,98 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_client_becomes_quiesced_for_the_requested_checkpoint() {
+        let mut state = BridgeState::new(AgentDirective::Continue);
+        state.agent_state = AgentState::Idle;
+
+        assert!(apply_directive(
+            &mut state,
+            AgentDirective::Quiesce {
+                checkpoint_id: "cp".into(),
+                deadline_unix_ms: None,
+            },
+        ));
+        assert_eq!(
+            state.agent_state,
+            AgentState::Quiesced {
+                checkpoint_id: "cp".into()
+            }
+        );
+        assert!(!state.accepting_work);
+    }
+
+    #[test]
+    fn active_client_drains_before_reporting_quiesced() {
+        let mut state = BridgeState::new(AgentDirective::Continue);
+
+        assert!(!apply_directive(
+            &mut state,
+            AgentDirective::Quiesce {
+                checkpoint_id: "cp".into(),
+                deadline_unix_ms: Some(10),
+            },
+        ));
+        assert_eq!(state.agent_state, AgentState::Active);
+        assert!(!state.accepting_work);
+    }
+
+    #[test]
+    fn continue_releases_a_quiesced_client_to_idle() {
+        let mut state = BridgeState::new(AgentDirective::Quiesce {
+            checkpoint_id: "cp".into(),
+            deadline_unix_ms: None,
+        });
+        state.agent_state = AgentState::Quiesced {
+            checkpoint_id: "cp".into(),
+        };
+
+        assert!(!apply_directive(&mut state, AgentDirective::Continue));
+        assert_eq!(state.agent_state, AgentState::Idle);
+        assert!(state.accepting_work);
+    }
+
+    #[test]
+    fn quiesced_client_rebinds_to_a_back_to_back_checkpoint() {
+        let mut state = BridgeState::new(AgentDirective::Quiesce {
+            checkpoint_id: "cp-1".into(),
+            deadline_unix_ms: None,
+        });
+        state.agent_state = AgentState::Quiesced {
+            checkpoint_id: "cp-1".into(),
+        };
+
+        assert!(apply_directive(
+            &mut state,
+            AgentDirective::Quiesce {
+                checkpoint_id: "cp-2".into(),
+                deadline_unix_ms: None,
+            },
+        ));
+        assert_eq!(
+            state.agent_state,
+            AgentState::Quiesced {
+                checkpoint_id: "cp-2".into()
+            }
+        );
+    }
+
+    #[test]
+    fn shutdown_disables_work_admission() {
+        let mut state = BridgeState::new(AgentDirective::Continue);
+
+        assert!(!apply_directive(
+            &mut state,
+            AgentDirective::Shutdown {
+                reason: Some("done".into()),
+            },
+        ));
+        assert!(!state.accepting_work);
+    }
 }

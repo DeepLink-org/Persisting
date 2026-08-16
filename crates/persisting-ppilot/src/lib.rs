@@ -47,7 +47,7 @@ pub(crate) mod worker;
 
 // ── Public surface (embedding + integration tests) ──────────────────
 
-pub use agentctl::{checkpoint_directive, AgentCtlClient, AgentCtlClientConfig};
+pub use agentctl::{AgentCtlClient, AgentCtlClientConfig};
 pub use batch::{
     produce_from_planner, produce_trajectories, BatchProductionManifest, BatchProductionOptions,
     BatchProductionReport, TrajectoryProductionRun,

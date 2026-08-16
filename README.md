@@ -1,26 +1,25 @@
 # Persisting
 
-**Virtualized Agent execution, governed effects, and durable history.**
+**Governed Agent execution and durable trajectory Datasets.**
 
-Persisting turns an Agent command into a durable **Run** with an isolated
-virtual execution environment, reviewable effects, stable identity, and
-history that survives the process.
+Persisting has two connected product domains:
 
-The product follows one lifecycle:
+- pVisor virtualizes and governs Agent execution. pPilot extends the same Run
+  contract to many independent Runs.
+- pChronicle turns native and external trajectory Sources into durable,
+  queryable Datasets with preserved origin, normalized views, and lineage.
 
-1. **pVisor** creates an Agent virtual execution environment for one Run.
-2. The Agent works inside a staged boundary; the user reviews and selectively
-   accepts its effects.
-3. **pPilot** plans, executes, and recovers many independent Runs without
-   changing the Run model.
-4. **pChronicle** preserves, queries, exchanges, and serves the resulting
-   trajectory history.
+The domains share stable Run identity where it is present. Today the configured
+pVisor-to-pChronicle path publishes Gateway trajectory events and pVisor
+lifecycle records, including the Evidence those records carry. The private Run
+Bundle, its Artifact references and lineage, staged Effects, and broader runtime
+Evidence remain local unless a separate adapter moves them.
 
-Gateway, Control, OverlayFS, and OverlayNet are runtime drivers assembled by
-pVisor. Queue, Search, and Tensor Memory are separate data capabilities; they
-are not dependencies of the Agent execution path.
+Gateway, OverlayFS, OverlayNet, and Control are pVisor runtime drivers. Queue,
+Search, and Tensor Memory are separate data capabilities; they are not
+dependencies of the Agent execution path.
 
-![One execution model from laptop to fleet](docs/src/assets/diagrams/persisting/execution-story.svg)
+![Persisting product domains and integration](docs/src/assets/diagrams/persisting/system-products.svg)
 
 ## Install
 
@@ -45,22 +44,21 @@ Source developers can install the same command set with `just install-cli`.
 See the [installation guide](https://deeplink-org.github.io/Persisting/installation/)
 for platform requirements and executor setup.
 
-## Follow the Run lifecycle
+## Choose a product path
 
-### Run and review one Agent
+### Govern one Agent Run
 
 ```bash
 pvisor run --safe codex
 pvisor review last
-pvisor apply last --path src
-pvisor apply last --include 'tests/**'
 pvisor apply last --all # or: pvisor drop last
 ```
 
 `--safe` stages workspace changes. The exact filesystem and network boundary
 is platform-dependent and is recorded in the Run Bundle; consult the
 [pVisor guide](https://deeplink-org.github.io/Persisting/pvisor/guides/execution/)
-before treating it as a security boundary.
+before treating it as a security boundary. A useful Run Bundle is produced
+without requiring pChronicle at runtime.
 
 ### Orchestrate many Runs
 
@@ -74,26 +72,18 @@ ppilot run plan.py --workers 4 --per-worker 2 --sink ./results
 For independent pVisor workspaces, use `ppilot produce`. Dataset queries and
 analysis belong to pChronicle.
 
-### Browse and analyze trajectories
+### Explore a trajectory Dataset
 
 ```bash
-# Start with a temporary guided walkthrough, or jump to its SQL section.
 pchronicle onboard
 pchronicle onboard query
-
-# Optional: configure one local Dataset root as the default Warehouse.
-pchronicle default ./trajectory-data
-
-pchronicle ls
-pchronicle status
-pchronicle analysis overview
-pchronicle query "SELECT agent_id, COUNT(*) AS runs FROM dataset.runs GROUP BY agent_id"
 ```
 
-An explicit local path or S3 URI can be supplied instead of configuring a
-default Warehouse. `pchronicle import` and `export` exchange ATIF, ACTF, OpenAI
-Messages, and Storyline JSON; `pchronicle serve` starts the loopback-only,
-read-only Warehouse UI and API.
+The installed-product onboarding flow creates temporary example Datasets and
+does not require a source checkout. External Sources can enter pChronicle
+without pVisor. `pchronicle import` accepts ATIF, ACTF, and OpenAI Messages;
+`pchronicle export` supports those formats plus Storyline JSON.
+`pchronicle serve` starts the loopback-only, read-only Warehouse UI and API.
 
 ## pChronicle performance
 

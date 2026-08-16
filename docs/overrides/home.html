@@ -6,28 +6,28 @@
   <main class="persisting-home">
     <section class="persisting-hero">
       <div class="persisting-shell">
-        <p class="persisting-eyebrow">AGENT EXECUTION INFRASTRUCTURE</p>
+        <p class="persisting-eyebrow">AGENT EXECUTION + TRAJECTORY DATASETS</p>
         <h1>Persisting</h1>
         {% if config.theme.language == "zh" %}
         <p class="persisting-hero-copy">
-          给每个 Agent 一个隔离的虚拟执行环境。让它无需逐步批准即可工作，
-          再由你审查 Effect、扩展 Run，并保留完整历史。
+          治理 Agent Run，并将原生或外部轨迹转化为持久、可查询的 Dataset，
+          保留明确的 Source identity、lineage，以及 Source 实际携带的 Evidence。
         </p>
         <div class="persisting-actions">
-          <a href="pvisor/get-started/" class="md-button md-button--primary">运行第一个 Agent</a>
+          <a href="pvisor/get-started/" class="md-button md-button--primary">安全运行 Agent</a>
+          <a href="pchronicle/get-started/" class="md-button md-button--primary">查看轨迹 Dataset</a>
           <a href="overview/" class="md-button">查看产品概览</a>
-          <a href="pvisor/concepts/agentvisor/" class="md-button">什么是 AgentVisor？</a>
         </div>
         {% else %}
         <p class="persisting-hero-copy">
-          Give every Agent an isolated virtual execution environment. Let it
-          work without per-step approval, then review its effects, scale the
-          Run, and preserve the history.
+          Govern Agent Runs and turn native or external trajectories into
+          durable, queryable Datasets with explicit source identity and lineage,
+          preserving any Evidence a Source carries.
         </p>
         <div class="persisting-actions">
-          <a href="pvisor/get-started/" class="md-button md-button--primary">Run the first Agent</a>
+          <a href="pvisor/get-started/" class="md-button md-button--primary">Run an Agent safely</a>
+          <a href="pchronicle/get-started/" class="md-button md-button--primary">Explore a Dataset</a>
           <a href="overview/" class="md-button">Product overview</a>
-          <a href="pvisor/concepts/agentvisor/" class="md-button">What is an AgentVisor?</a>
         </div>
         {% endif %}
       </div>
@@ -36,95 +36,104 @@
     <section class="persisting-section">
       <div class="persisting-shell">
         {% if config.theme.language == "zh" %}
-        <p class="persisting-kicker">系统概览</p>
-        <h2>Run、Effect、编排与持久历史</h2>
+        <p class="persisting-kicker">产品域</p>
+        <h2>两个互联的产品域</h2>
         <p class="persisting-lead">
-          Persisting 不要求用户先理解一组组件。产品只围绕一个稳定对象展开：Run。
+          从治理 Agent 执行或轨迹 Dataset 独立开始，也可以通过稳定契约连接两条路径。
         </p>
         {% else %}
-        <p class="persisting-kicker">SYSTEM OVERVIEW</p>
-        <h2>Runs, effects, orchestration, and durable history</h2>
+        <p class="persisting-kicker">PRODUCT DOMAINS</p>
+        <h2>Two connected product domains</h2>
         <p class="persisting-lead">
-          Persisting does not begin with a list of components. The product is
-          organized around one stable object: the Run.
+          Start with governed Agent execution or a trajectory Dataset, or
+          connect the two paths through stable contracts.
         </p>
         {% endif %}
 
-        <div class="persisting-capability-grid">
+        <div class="persisting-capability-grid persisting-link-grid">
           <article>
-            <span>01</span>
+            <span>PVISOR</span>
             {% if config.theme.language == "zh" %}
-            <h3>执行一个 Run</h3>
-            <p>pVisor 为 Agent 创建独立虚拟执行环境，同时复用底层 host、Container、VM 或集群资源。</p>
+            <h3>pVisor — 治理执行</h3>
+            <p>Run 与 Attempt identity；capability；分阶段 Effect；Provider 特定的 Evidence。</p>
             {% else %}
-            <h3>Execute one Run</h3>
-            <p>pVisor creates an isolated Agent virtual execution environment on shared host, container, VM, or fleet resources.</p>
+            <h3>pVisor — governed execution</h3>
+            <p>Run and Attempt identity; capabilities; staged Effects; provider-specific Evidence.</p>
             {% endif %}
           </article>
           <article>
-            <span>02</span>
+            <span>PCHRONICLE</span>
             {% if config.theme.language == "zh" %}
-            <h3>治理 Effect</h3>
-            <p>Agent 在 stage 中自由工作；用户可以 review、选择性多次 apply，或丢弃剩余修改。</p>
+            <h3>pChronicle — 轨迹 Dataset</h3>
+            <p>Source；canonical fact；Catalog Snapshot；规范化查询与交换视图；revision lineage。</p>
             {% else %}
-            <h3>Govern effects</h3>
-            <p>The Agent works freely in a stage; the user can review, apply selected batches repeatedly, or discard the remainder.</p>
+            <h3>pChronicle — trajectory Datasets</h3>
+            <p>Sources; canonical facts; Catalog Snapshots; normalized query and exchange views; revision lineage.</p>
             {% endif %}
           </article>
           <article>
-            <span>03</span>
+            <span>INTEGRATION</span>
             {% if config.theme.language == "zh" %}
-            <h3>编排多个 Run</h3>
-            <p>pPilot 增加有界并发、lease fencing、恢复和持久结果，但不改变 Run 语义。</p>
+            <h3>集成路径</h3>
+            <p>pPilot 保存持久结果与 task-to-Run mapping。另一条单独配置的 pVisor capture 只发布 Gateway 轨迹 event、lifecycle record 及其携带的 Evidence。</p>
             {% else %}
-            <h3>Orchestrate many</h3>
-            <p>pPilot adds bounded concurrency, lease fencing, recovery, and durable results without changing Run semantics.</p>
-            {% endif %}
-          </article>
-          <article>
-            <span>04</span>
-            {% if config.theme.language == "zh" %}
-            <h3>保留历史</h3>
-            <p>Gateway 捕获运行事件，pChronicle 保存并查询进程退出后仍需存在的事实。</p>
-            {% else %}
-            <h3>Preserve history</h3>
-            <p>Gateway captures runtime events; pChronicle preserves and queries the facts needed after processes exit.</p>
+            <h3>Integrated path</h3>
+            <p>pPilot persists results and task-to-Run mapping. Separately configured pVisor capture publishes Gateway trajectory events, lifecycle records, and their event-carried Evidence.</p>
             {% endif %}
           </article>
         </div>
 
         <figure class="persisting-architecture-figure">
-          <img src="assets/diagrams/persisting/execution-story.svg" alt="Persisting execution architecture" />
+          {% if config.theme.language == "zh" %}
+          <img src="assets/diagrams/persisting/system-products.svg" alt="Persisting 产品域与集成关系" />
+          {% else %}
+          <img src="assets/diagrams/persisting/system-products.svg" alt="Persisting product domains and integration" />
+          {% endif %}
         </figure>
       </div>
     </section>
 
     <section class="persisting-section persisting-section--contrast">
-      <div class="persisting-shell persisting-first-run">
-        <div>
-          {% if config.theme.language == "zh" %}
-          <p class="persisting-kicker">先完成一个闭环</p>
-          <h2>运行、检查、选择性接受</h2>
-          <p>
-            Agent 的每次编辑不需要 approval。修改先进入 Run 独占 stage，
-            然后由你决定哪些文件进入真实项目。
-          </p>
-          <a href="pvisor/guides/review-apply/">理解多次、过滤式 apply →</a>
-          {% else %}
-          <p class="persisting-kicker">COMPLETE ONE LOOP FIRST</p>
-          <h2>Run, inspect, selectively accept</h2>
-          <p>
-            The Agent does not need approval for every edit. Changes enter a
-            Run-owned stage, then you decide which files reach the real project.
-          </p>
-          <a href="pvisor/guides/review-apply/">Understand repeatable, filtered apply →</a>
-          {% endif %}
-        </div>
-        <pre><code>pvisor run --safe codex
+      <div class="persisting-shell">
+        {% if config.theme.language == "zh" %}
+        <p class="persisting-kicker">选择入口</p>
+        <h2>独立使用任一产品路径</h2>
+        {% else %}
+        <p class="persisting-kicker">CHOOSE AN ENTRY PATH</p>
+        <h2>Start with either product</h2>
+        {% endif %}
+
+        <div class="persisting-first-run">
+          <article>
+            {% if config.theme.language == "zh" %}
+            <h3>安全运行 Agent</h3>
+            <p>在 Run 独占 stage 中工作，然后检查并选择性接受文件 Effect。</p>
+            <a href="pvisor/guides/review-apply/">理解多次、过滤式 apply →</a>
+            {% else %}
+            <h3>Run an Agent safely</h3>
+            <p>Work in a Run-owned stage, then inspect and selectively accept filesystem Effects.</p>
+            <a href="pvisor/guides/review-apply/">Understand repeatable, filtered apply →</a>
+            {% endif %}
+            <pre><code>pvisor run --safe codex
 pvisor review last
 pvisor apply last --path src
 pvisor apply last --include 'tests/**'
 pvisor apply last --all</code></pre>
+          </article>
+          <article>
+            {% if config.theme.language == "zh" %}
+            <h3>查看轨迹 Dataset</h3>
+            <p>使用安装包自带的临时示例探索 Dataset；这条路径不要求源码 checkout 或先通过 pVisor 运行 Agent。</p>
+            <a href="pchronicle/get-started/">开始探索 Dataset →</a>
+            {% else %}
+            <h3>Explore a trajectory Dataset</h3>
+            <p>Explore temporary examples included in the installed workflow; this path needs neither a source checkout nor a pVisor Run first.</p>
+            <a href="pchronicle/get-started/">Start exploring a Dataset →</a>
+            {% endif %}
+            <pre><code>pchronicle onboard
+pchronicle onboard query</code></pre>
+          </article>
+        </div>
       </div>
     </section>
 
@@ -164,19 +173,18 @@ pvisor apply last --all</code></pre>
     <section class="persisting-section persisting-principle">
       <div class="persisting-shell">
         {% if config.theme.language == "zh" %}
-        <h2>保证必须具体</h2>
+        <h2>保证取决于来源</h2>
         <p>
-          文件写入隔离不代表网络隔离，捕获不代表不可绕过，lease fencing 也不代表任意
-          外部 API 的 exactly-once。Persisting 在 Run Bundle 中按维度报告实际机制与证据。
+          pVisor 在 Run Bundle 中按维度报告实际机制与 Evidence；pChronicle 保留 Source
+          lineage，而 Dataset 能够提供的保证取决于各 Source 实际携带的事实、身份与 Evidence。
         </p>
         <a class="md-button md-button--primary" href="system-design/">查看架构与成熟度</a>
         {% else %}
-        <h2>Guarantees must be specific</h2>
+        <h2>Guarantees remain source-specific</h2>
         <p>
-          Filesystem confinement does not imply network isolation, capture does
-          not imply non-bypassability, and lease fencing does not make arbitrary
-          external APIs exactly-once. Persisting reports mechanisms and evidence
-          per dimension in the Run Bundle.
+          pVisor reports actual mechanisms and Evidence per dimension in the
+          Run Bundle. pChronicle preserves Source lineage, while Dataset
+          guarantees depend on the facts, identity, and Evidence each Source actually carries.
         </p>
         <a class="md-button md-button--primary" href="system-design/">Review architecture and maturity</a>
         {% endif %}

@@ -1,9 +1,10 @@
-# 查询持久化 Run 历史
+# 查看轨迹 Dataset
 
 `pChronicle` 从本地目录或 S3 读取轨迹 Dataset，发现支持的 Source 格式，并提供规范化的
 `runs`、`steps` 与 `tool_calls` 表。
 
-它是执行结束后的历史层，不是 runtime 或 scheduler。
+它是 capture runtime 历史与外部轨迹文件的数据层，不是 runtime 或 scheduler。外部文件会被
+直接固定版本并规范化，而不是先转换为 canonical runtime event。
 
 ## 从已知 Dataset 开始
 

@@ -1,17 +1,12 @@
 //! Optional, cooperative Run-scoped AgentCtl channel owned by pVisor.
 
-pub use persisting_agentctl::abi::{
-    AgentCheckpointQuiesced, AgentClientRole, AgentDirective, AgentHeartbeatAck, AgentHello,
-    AgentLifecycleState, AgentOperationBegin, AgentOperationComplete, AgentProcessRegistration,
-    AgentRequest, AgentRequestBody, AgentResponse, AgentResponseBody, AgentWelcome,
-    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION, LEGACY_AGENT_ABI_ENDPOINT_ENV,
-    LEGACY_AGENT_ABI_TOKEN_ENV, LEGACY_AGENT_ABI_TRANSPORT_ENV, LEGACY_AGENT_ABI_VERSION_ENV,
+pub use persisting_agentctl::{
+    AgentDirective, AgentErrorCode, AgentRequest, AgentResponse, AgentState,
+    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION,
 };
-#[cfg(test)]
-use persisting_agentctl::AgentOperationOutcome;
 use persisting_agentctl::{AttemptId, RunId};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{BufRead, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -21,86 +16,81 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Maximum live runtime Sessions accepted by one Run.
 pub const AGENTCTL_MAX_SESSIONS: usize = 64;
-pub const AGENTCTL_MAX_PROCESSES: usize = 1024;
-pub const AGENTCTL_MAX_OPERATIONS: usize = 10_000;
 
-const HEARTBEAT_INTERVAL_MS: u64 = 1_000;
+const SYNC_INTERVAL_MS: u64 = 1_000;
 
+/// Diagnostic observation of one cooperative runtime client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentClientSnapshot {
+    /// Stable identity supplied during `Hello`.
     pub client_id: String,
-    pub agent_name: String,
-    pub role: AgentClientRole,
-    pub lifecycle: AgentLifecycleState,
-    pub last_heartbeat_unix_ms: Option<u64>,
-    #[serde(default)]
+    /// Most recently accepted cooperative state.
+    pub state: AgentState,
+    /// Time of the most recently accepted `Sync`, if any.
+    pub last_sync_unix_ms: Option<u64>,
+    /// Whether the Session has missed three synchronization intervals.
     pub stale: bool,
-    pub quiesced_checkpoint_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentProcessSnapshot {
-    pub session_id: String,
-    pub registration: AgentProcessRegistration,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentOperationSnapshot {
-    pub session_id: String,
-    pub sequence: u64,
-    pub begin: AgentOperationBegin,
-    pub completion: Option<AgentOperationComplete>,
-}
-
+/// Serializable AgentCtl observation attached to a Run Bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCtlSnapshot {
+    /// Owning Run identity.
     pub run_id: String,
+    /// Owning Attempt identity.
     pub attempt_id: String,
-    pub directive_seq: u64,
+    /// Current pVisor directive.
     pub directive: AgentDirective,
+    /// Runtime clients sorted by `client_id`.
     pub clients: Vec<AgentClientSnapshot>,
-    pub processes: Vec<AgentProcessSnapshot>,
-    #[serde(default, alias = "effects")]
-    pub operations: Vec<AgentOperationSnapshot>,
 }
 
 #[derive(Debug)]
 struct ClientSession {
     client_id: String,
-    agent_name: String,
-    role: AgentClientRole,
-    lifecycle: AgentLifecycleState,
+    state: AgentState,
     last_seen_unix_ms: u64,
-    last_heartbeat_unix_ms: Option<u64>,
-    quiesced_checkpoint_id: Option<String>,
+    last_sync_unix_ms: Option<u64>,
+    checkpoint_ack: Option<CheckpointAcknowledgement>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CheckpointAcknowledgement {
+    generation: u64,
+    acknowledged_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveCheckpoint {
+    generation: u64,
+    checkpoint_id: String,
+    deadline_unix_ms: Option<u64>,
+    participants: BTreeSet<String>,
 }
 
 #[derive(Debug)]
 struct AgentCtlState {
     run_id: String,
     attempt_id: String,
-    auth_token: String,
-    directive_seq: u64,
+    token: String,
     directive: AgentDirective,
     sessions: HashMap<String, ClientSession>,
-    processes: HashMap<(String, u32), AgentProcessRegistration>,
-    effects: HashMap<String, AgentOperationSnapshot>,
-    next_effect_sequence: u64,
+    next_checkpoint_generation: u64,
+    active_checkpoint: Option<ActiveCheckpoint>,
 }
 
 impl AgentCtlState {
-    fn new(run_id: &RunId, attempt_id: &AttemptId, auth_token: String) -> Self {
+    fn new(run_id: &RunId, attempt_id: &AttemptId, token: String) -> Self {
         Self {
             run_id: run_id.as_str().to_string(),
             attempt_id: attempt_id.as_str().to_string(),
-            auth_token,
-            directive_seq: 0,
+            token,
             directive: AgentDirective::Continue,
             sessions: HashMap::new(),
-            processes: HashMap::new(),
-            effects: HashMap::new(),
-            next_effect_sequence: 1,
+            next_checkpoint_generation: 0,
+            active_checkpoint: None,
         }
     }
 
@@ -111,42 +101,22 @@ impl AgentCtlState {
             .values()
             .map(|session| AgentClientSnapshot {
                 client_id: session.client_id.clone(),
-                agent_name: session.agent_name.clone(),
-                role: session.role,
-                lifecycle: session.lifecycle,
-                last_heartbeat_unix_ms: session.last_heartbeat_unix_ms,
+                state: session.state.clone(),
+                last_sync_unix_ms: session.last_sync_unix_ms,
                 stale: session_is_stale(session, now),
-                quiesced_checkpoint_id: session.quiesced_checkpoint_id.clone(),
             })
             .collect::<Vec<_>>();
         clients.sort_by(|left, right| left.client_id.cmp(&right.client_id));
-
-        let mut processes = self
-            .processes
-            .iter()
-            .map(|((session_id, _), registration)| AgentProcessSnapshot {
-                session_id: session_id.clone(),
-                registration: registration.clone(),
-            })
-            .collect::<Vec<_>>();
-        processes.sort_by_key(|process| process.registration.pid);
-
-        let mut effects = self.effects.values().cloned().collect::<Vec<_>>();
-        effects.sort_by_key(|effect| effect.sequence);
-
         AgentCtlSnapshot {
             run_id: self.run_id.clone(),
             attempt_id: self.attempt_id.clone(),
-            directive_seq: self.directive_seq,
             directive: self.directive.clone(),
             clients,
-            processes,
-            operations: effects,
         }
     }
 }
 
-/// Cloneable pVisor-side control surface for one Run's cooperative AgentCtl channel.
+/// Cloneable pVisor-side control surface for one Run's AgentCtl channel.
 #[derive(Clone)]
 pub struct AgentCtlControl {
     endpoint: PathBuf,
@@ -154,11 +124,92 @@ pub struct AgentCtlControl {
     delegated_snapshot: Arc<Mutex<Option<AgentCtlSnapshot>>>,
 }
 
+/// Cancellation-safe ownership of one live checkpoint transition.
+pub(crate) struct AgentCtlCheckpointGuard {
+    control: AgentCtlControl,
+    generation: u64,
+    checkpoint_id: String,
+}
+
+impl AgentCtlCheckpointGuard {
+    /// Capture while the exact checkpoint generation remains fully quiesced.
+    ///
+    /// The closure runs while directive transitions and client Sync requests
+    /// are blocked. `Ok(None)` means the frozen participant set is still
+    /// draining. Any completed capture, including a capture error, releases
+    /// the matching `Quiesce` before returning.
+    pub(crate) fn try_capture<T>(
+        &self,
+        capture: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
+        let mut state = lock_state(&self.control.state);
+        let checkpoint = state
+            .active_checkpoint
+            .as_ref()
+            .filter(|checkpoint| checkpoint.generation == self.generation)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "checkpoint {} no longer owns the active AgentCtl quiesce",
+                    self.checkpoint_id
+                )
+            })?;
+        anyhow::ensure!(
+            matches!(
+                &state.directive,
+                AgentDirective::Quiesce { checkpoint_id, .. }
+                    if checkpoint_id == &checkpoint.checkpoint_id
+            ),
+            "checkpoint {} lost its AgentCtl quiesce directive",
+            self.checkpoint_id
+        );
+
+        let ready = checkpoint.participants.iter().all(|session_id| {
+            state.sessions.get(session_id).is_some_and(|session| {
+                matches!(
+                    &session.state,
+                    AgentState::Quiesced { checkpoint_id }
+                        if checkpoint_id == &checkpoint.checkpoint_id
+                ) && session.checkpoint_ack.is_some_and(|ack| {
+                    ack.generation == checkpoint.generation
+                        && checkpoint
+                            .deadline_unix_ms
+                            .is_none_or(|deadline| ack.acknowledged_at_unix_ms <= deadline)
+                })
+            })
+        });
+        if !ready {
+            if checkpoint
+                .deadline_unix_ms
+                .is_some_and(|deadline| crate::util::unix_now_ms() >= deadline)
+            {
+                anyhow::bail!(
+                    "checkpoint {} timed out waiting for all AgentCtl clients to quiesce",
+                    self.checkpoint_id
+                );
+            }
+            return Ok(None);
+        }
+
+        let outcome = capture();
+        finish_checkpoint(&mut state, self.generation);
+        outcome.map(Some)
+    }
+}
+
+impl Drop for AgentCtlCheckpointGuard {
+    fn drop(&mut self) {
+        finish_checkpoint(&mut lock_state(&self.control.state), self.generation);
+    }
+}
+
 impl AgentCtlControl {
+    /// Return the Run-local endpoint path.
     pub fn endpoint(&self) -> &Path {
         &self.endpoint
     }
 
+    /// Return the latest cooperative observation.
     pub fn snapshot(&self) -> AgentCtlSnapshot {
         if let Some(snapshot) = self
             .delegated_snapshot
@@ -182,56 +233,128 @@ impl AgentCtlControl {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snapshot);
     }
 
+    /// Freeze all currently live Sessions and request a checkpoint boundary.
     pub fn request_quiesce(
         &self,
         checkpoint_id: impl Into<String>,
         deadline_unix_ms: Option<u64>,
-    ) -> u64 {
-        self.set_directive(AgentDirective::Quiesce {
-            checkpoint_id: checkpoint_id.into(),
-            deadline_unix_ms,
+    ) -> anyhow::Result<()> {
+        self.start_checkpoint(checkpoint_id.into(), deadline_unix_ms)
+            .map(|_| ())
+    }
+
+    pub(crate) fn begin_checkpoint(
+        &self,
+        checkpoint_id: String,
+        deadline_unix_ms: Option<u64>,
+    ) -> anyhow::Result<AgentCtlCheckpointGuard> {
+        let generation = self.start_checkpoint(checkpoint_id.clone(), deadline_unix_ms)?;
+        Ok(AgentCtlCheckpointGuard {
+            control: self.clone(),
+            generation,
+            checkpoint_id,
         })
     }
 
-    pub fn continue_execution(&self) -> u64 {
-        self.set_directive(AgentDirective::Continue)
-    }
-
-    pub fn request_shutdown(&self, reason: Option<String>) -> u64 {
-        self.set_directive(AgentDirective::Shutdown { reason })
-    }
-
-    fn set_directive(&self, directive: AgentDirective) -> u64 {
+    fn start_checkpoint(
+        &self,
+        checkpoint_id: String,
+        deadline_unix_ms: Option<u64>,
+    ) -> anyhow::Result<u64> {
+        anyhow::ensure!(
+            !checkpoint_id.trim().is_empty(),
+            "AgentCtl checkpoint_id must be non-empty"
+        );
         let mut state = lock_state(&self.state);
-        state.directive_seq = state.directive_seq.saturating_add(1);
-        state.directive = directive;
+        anyhow::ensure!(
+            matches!(state.directive, AgentDirective::Continue),
+            "AgentCtl cannot start a checkpoint while {:?} is active",
+            state.directive
+        );
+        let now = crate::util::unix_now_ms();
+        state
+            .sessions
+            .retain(|_, session| !session_is_stale(session, now));
+        anyhow::ensure!(
+            !state.sessions.is_empty(),
+            "live checkpoint requires at least one AgentCtl client"
+        );
+        let generation = state
+            .next_checkpoint_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("AgentCtl checkpoint generation exhausted"))?;
+        state.next_checkpoint_generation = generation;
         for session in state.sessions.values_mut() {
-            session.quiesced_checkpoint_id = None;
+            session.checkpoint_ack = None;
         }
-        state.directive_seq
+        state.active_checkpoint = Some(ActiveCheckpoint {
+            generation,
+            checkpoint_id: checkpoint_id.clone(),
+            deadline_unix_ms,
+            participants: state.sessions.keys().cloned().collect(),
+        });
+        state.directive = AgentDirective::Quiesce {
+            checkpoint_id,
+            deadline_unix_ms,
+        };
+        Ok(generation)
+    }
+
+    /// Release clients after a checkpoint succeeds or is abandoned.
+    pub fn continue_execution(&self) {
+        let mut state = lock_state(&self.state);
+        if let Some(checkpoint) = &state.active_checkpoint {
+            let generation = checkpoint.generation;
+            finish_checkpoint(&mut state, generation);
+        }
+    }
+
+    /// Ask all runtime clients to terminate.
+    pub fn request_shutdown(&self, reason: Option<String>) {
+        let mut state = lock_state(&self.state);
+        state.active_checkpoint = None;
+        for session in state.sessions.values_mut() {
+            session.checkpoint_ack = None;
+        }
+        state.directive = AgentDirective::Shutdown { reason };
     }
 }
 
-/// Owns the Run-scoped Unix listener. Dropping it closes and removes the endpoint.
+fn finish_checkpoint(state: &mut AgentCtlState, generation: u64) {
+    if state
+        .active_checkpoint
+        .as_ref()
+        .is_some_and(|checkpoint| checkpoint.generation == generation)
+    {
+        state.active_checkpoint = None;
+        for session in state.sessions.values_mut() {
+            session.checkpoint_ack = None;
+        }
+        state.directive = AgentDirective::Continue;
+    }
+}
+
+/// Owns the Run-scoped Unix listener and removes it on drop.
 pub struct AgentCtlServer {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
     socket_path: PathBuf,
-    auth_token: String,
+    token: String,
     control: AgentCtlControl,
 }
 
 impl AgentCtlServer {
+    /// Create and start one Run-scoped AgentCtl server.
     pub fn start(run_id: &RunId, attempt_id: &AttemptId) -> anyhow::Result<Self> {
         let socket_path = std::env::temp_dir().join(format!(
             "pvisor-agent-{}.sock",
             uuid::Uuid::new_v4().simple()
         ));
-        let auth_token = uuid::Uuid::new_v4().to_string();
+        let token = uuid::Uuid::new_v4().to_string();
         let state = Arc::new(Mutex::new(AgentCtlState::new(
             run_id,
             attempt_id,
-            auth_token.clone(),
+            token.clone(),
         )));
         let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
         if let Err(error) = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)) {
@@ -276,40 +399,35 @@ impl AgentCtlServer {
             stop,
             join: Some(join),
             socket_path,
-            auth_token,
+            token,
             control,
         })
     }
 
+    /// Return the cloneable Run control surface.
     pub fn control(&self) -> AgentCtlControl {
         self.control.clone()
     }
 
+    /// Return the environment injected into runtime clients.
     pub fn environment(&self) -> BTreeMap<String, String> {
-        let endpoint = self.socket_path.display().to_string();
-        let version = AGENTCTL_VERSION.to_string();
         BTreeMap::from([
             (
                 persisting_agentctl::AGENTCTL_ENDPOINT_ENV.into(),
-                endpoint.clone(),
+                self.socket_path.display().to_string(),
             ),
             (
                 persisting_agentctl::AGENTCTL_TOKEN_ENV.into(),
-                self.auth_token.clone(),
+                self.token.clone(),
             ),
             (
                 persisting_agentctl::AGENTCTL_VERSION_ENV.into(),
-                version.clone(),
+                AGENTCTL_VERSION.to_string(),
             ),
             (
                 persisting_agentctl::AGENTCTL_TRANSPORT_ENV.into(),
                 "unix".into(),
             ),
-            // Compatibility for clients that have not migrated to AgentCtl names.
-            (LEGACY_AGENT_ABI_ENDPOINT_ENV.into(), endpoint),
-            (LEGACY_AGENT_ABI_TOKEN_ENV.into(), self.auth_token.clone()),
-            (LEGACY_AGENT_ABI_VERSION_ENV.into(), version),
-            (LEGACY_AGENT_ABI_TRANSPORT_ENV.into(), "unix".into()),
         ])
     }
 }
@@ -325,19 +443,29 @@ impl Drop for AgentCtlServer {
     }
 }
 
+#[derive(Debug)]
+struct ProtocolFailure {
+    code: AgentErrorCode,
+    message: String,
+}
+
+impl ProtocolFailure {
+    fn new(code: AgentErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
 fn serve_connection(mut stream: std::os::unix::net::UnixStream, state: &Arc<Mutex<AgentCtlState>>) {
-    // Accepted sockets inherit O_NONBLOCK from the listener on some Unix
-    // platforms (including macOS); frames themselves use bounded blocking I/O.
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
     let response = read_request(&stream)
-        .map(|request| dispatch_request(request, state))
-        .unwrap_or_else(|error| AgentResponse {
-            body: AgentResponseBody::Error {
-                message: error.to_string(),
-            },
-        });
+        .map_err(|error| ProtocolFailure::new(AgentErrorCode::InvalidRequest, error.to_string()))
+        .and_then(|request| dispatch_request(request, state))
+        .unwrap_or_else(error_response);
     if let Ok(mut body) = serde_json::to_vec(&response) {
         body.push(b'\n');
         let _ = stream.write_all(&body);
@@ -375,233 +503,160 @@ pub fn decode_agentctl_frame_for_fuzz(frame: &[u8]) -> anyhow::Result<AgentReque
     Ok(serde_json::from_slice(frame)?)
 }
 
-fn dispatch_request(request: AgentRequest, state: &Arc<Mutex<AgentCtlState>>) -> AgentResponse {
-    let body = if request.version != AGENTCTL_VERSION {
-        error_body(format!(
-            "AgentCtl version mismatch: expected {AGENTCTL_VERSION}, got {}",
-            request.version
-        ))
-    } else {
-        let mut state = match state.lock() {
-            Ok(state) => state,
-            Err(_) => {
-                return AgentResponse {
-                    body: error_body("AgentCtl state lock poisoned"),
-                };
-            }
-        };
-        handle_body(request.session_id.as_deref(), request.body, &mut state)
-            .unwrap_or_else(error_body)
+fn dispatch_request(
+    request: AgentRequest,
+    state: &Arc<Mutex<AgentCtlState>>,
+) -> Result<AgentResponse, ProtocolFailure> {
+    let version = match &request {
+        AgentRequest::Hello { version, .. } | AgentRequest::Sync { version, .. } => *version,
     };
-    AgentResponse { body }
+    if version != AGENTCTL_VERSION {
+        return Err(ProtocolFailure::new(
+            AgentErrorCode::VersionMismatch,
+            format!("AgentCtl version mismatch: expected {AGENTCTL_VERSION}, got {version}"),
+        ));
+    }
+    let mut state = state.lock().map_err(|_| {
+        ProtocolFailure::new(AgentErrorCode::Conflict, "AgentCtl state lock poisoned")
+    })?;
+    handle_request(request, &mut state)
 }
 
-fn handle_body(
-    session_id: Option<&str>,
-    body: AgentRequestBody,
+fn handle_request(
+    request: AgentRequest,
     state: &mut AgentCtlState,
-) -> Result<AgentResponseBody, String> {
-    if let AgentRequestBody::Hello(hello) = body {
-        if hello.auth_token != state.auth_token {
-            return Err("invalid AgentCtl token".into());
-        }
-        if hello.client_id.trim().is_empty() || hello.agent_name.trim().is_empty() {
-            return Err("client_id and agent_name must be non-empty".into());
-        }
-        let now = crate::util::unix_now_ms();
-        let reclaim = state.sessions.iter().find_map(|(session_id, session)| {
-            (session.client_id == hello.client_id && session_is_stale(session, now))
-                .then(|| session_id.clone())
-        });
-        if let Some(session_id) = reclaim {
-            let has_open_effects = state
-                .effects
-                .values()
-                .any(|effect| effect.session_id == session_id && effect.completion.is_none());
-            if has_open_effects {
-                return Err(format!(
-                    "stale client {} still owns declared open operations; refusing unsafe session replacement",
-                    hello.client_id
-                ));
-            }
-            state.sessions.remove(&session_id);
-            state.processes.retain(|(owner, _), _| owner != &session_id);
-        }
-        if state
-            .sessions
-            .values()
-            .any(|session| session.client_id == hello.client_id)
-        {
-            return Err(format!(
-                "client {} already has a live session",
-                hello.client_id
-            ));
-        }
-        if state.sessions.len() >= AGENTCTL_MAX_SESSIONS {
-            return Err(format!(
-                "AgentCtl session limit of {AGENTCTL_MAX_SESSIONS} reached"
-            ));
-        }
-        let session_id = uuid::Uuid::new_v4().to_string();
-        state.sessions.insert(
-            session_id.clone(),
-            ClientSession {
-                client_id: hello.client_id,
-                agent_name: hello.agent_name,
-                role: hello.role,
-                lifecycle: AgentLifecycleState::Starting,
-                last_seen_unix_ms: now,
-                last_heartbeat_unix_ms: None,
-                quiesced_checkpoint_id: None,
-            },
-        );
-        return Ok(AgentResponseBody::Welcome(AgentWelcome {
+) -> Result<AgentResponse, ProtocolFailure> {
+    match request {
+        AgentRequest::Hello {
+            token, client_id, ..
+        } => handle_hello(token, client_id, state),
+        AgentRequest::Sync {
             session_id,
-            heartbeat_interval_ms: HEARTBEAT_INTERVAL_MS,
-            directive_seq: state.directive_seq,
-            directive: state.directive.clone(),
-        }));
+            state: reported_state,
+            ..
+        } => handle_sync(session_id, reported_state, state),
+    }
+}
+
+fn handle_hello(
+    token: String,
+    client_id: String,
+    state: &mut AgentCtlState,
+) -> Result<AgentResponse, ProtocolFailure> {
+    if token != state.token {
+        return Err(ProtocolFailure::new(
+            AgentErrorCode::Unauthorized,
+            "invalid AgentCtl token",
+        ));
+    }
+    if client_id.trim().is_empty() {
+        return Err(ProtocolFailure::new(
+            AgentErrorCode::InvalidRequest,
+            "client_id must be non-empty",
+        ));
+    }
+    if matches!(state.directive, AgentDirective::Quiesce { .. }) {
+        return Err(ProtocolFailure::new(
+            AgentErrorCode::Conflict,
+            "AgentCtl checkpoint is in progress",
+        ));
     }
 
-    let session_id = session_id
-        .ok_or_else(|| "authenticated AgentCtl request requires session_id".to_string())?;
     let now = crate::util::unix_now_ms();
-    session_mut(state, session_id)?.last_seen_unix_ms = now;
+    state
+        .sessions
+        .retain(|_, session| !session_is_stale(session, now));
+    if state
+        .sessions
+        .values()
+        .any(|session| session.client_id == client_id)
+    {
+        return Err(ProtocolFailure::new(
+            AgentErrorCode::Conflict,
+            format!("client {client_id} already has a live Session"),
+        ));
+    }
+    if state.sessions.len() >= AGENTCTL_MAX_SESSIONS {
+        return Err(ProtocolFailure::new(
+            AgentErrorCode::Conflict,
+            format!("AgentCtl Session limit of {AGENTCTL_MAX_SESSIONS} reached"),
+        ));
+    }
 
-    match body {
-        AgentRequestBody::Hello(_) => unreachable!(),
-        AgentRequestBody::Heartbeat(lifecycle) => {
-            let session = session_mut(state, session_id)?;
-            session.lifecycle = lifecycle;
-            session.last_seen_unix_ms = now;
-            session.last_heartbeat_unix_ms = Some(now);
-            Ok(AgentResponseBody::Heartbeat(AgentHeartbeatAck {
-                directive_seq: state.directive_seq,
-                directive: state.directive.clone(),
-            }))
-        }
-        AgentRequestBody::RegisterProcess(registration) => {
-            if registration.pid == 0 || registration.role.trim().is_empty() {
-                return Err("registered process requires a non-zero pid and non-empty role".into());
-            }
-            session_mut(state, session_id)?;
-            if !state
-                .processes
-                .contains_key(&(session_id.to_string(), registration.pid))
-                && state.processes.len() >= AGENTCTL_MAX_PROCESSES
-            {
-                return Err(format!(
-                    "AgentCtl process registration limit of {AGENTCTL_MAX_PROCESSES} reached"
-                ));
-            }
-            state
-                .processes
-                .insert((session_id.to_string(), registration.pid), registration);
-            Ok(AgentResponseBody::Ack)
-        }
-        AgentRequestBody::CheckpointQuiesced(quiesced) => {
-            record_quiesced(state, session_id, &quiesced)?;
-            Ok(AgentResponseBody::Ack)
-        }
-        AgentRequestBody::EffectBegin(begin) => {
-            session_mut(state, session_id)?;
-            if begin.operation_id.trim().is_empty()
-                || begin.kind.trim().is_empty()
-                || begin.request_digest.trim().is_empty()
-            {
-                return Err("effect_id, kind, and request_digest must be non-empty".into());
-            }
-            if let Some(existing) = state.effects.get(&begin.operation_id) {
-                if existing.session_id == session_id && existing.begin == begin {
-                    return Ok(AgentResponseBody::OperationAccepted {
-                        sequence: existing.sequence,
-                    });
-                }
-                return Err(format!(
-                    "effect {} already exists with different data",
-                    begin.operation_id
-                ));
-            }
-            if state.effects.len() >= AGENTCTL_MAX_OPERATIONS {
-                return Err(format!(
-                    "AgentCtl operation declaration limit of {AGENTCTL_MAX_OPERATIONS} reached"
-                ));
-            }
-            let sequence = state.next_effect_sequence;
-            state.next_effect_sequence = state.next_effect_sequence.saturating_add(1);
-            state.effects.insert(
-                begin.operation_id.clone(),
-                AgentOperationSnapshot {
-                    session_id: session_id.to_string(),
-                    sequence,
-                    begin,
-                    completion: None,
-                },
-            );
-            Ok(AgentResponseBody::OperationAccepted { sequence })
-        }
-        AgentRequestBody::EffectComplete(completion) => {
-            session_mut(state, session_id)?;
-            let effect = state
-                .effects
-                .get_mut(&completion.operation_id)
-                .ok_or_else(|| format!("effect {} was not begun", completion.operation_id))?;
-            if effect.session_id != session_id {
-                return Err("operation declaration belongs to another AgentCtl session".into());
-            }
-            if let Some(existing) = &effect.completion {
-                if existing != &completion {
-                    return Err("effect was already completed with a different outcome".into());
-                }
-            } else {
-                effect.completion = Some(completion);
-            }
-            Ok(AgentResponseBody::Ack)
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state.sessions.insert(
+        session_id.clone(),
+        ClientSession {
+            client_id,
+            state: AgentState::Active,
+            last_seen_unix_ms: now,
+            last_sync_unix_ms: None,
+            checkpoint_ack: None,
+        },
+    );
+    Ok(AgentResponse::Welcome {
+        session_id,
+        sync_interval_ms: SYNC_INTERVAL_MS,
+        directive: state.directive.clone(),
+    })
+}
+
+fn handle_sync(
+    session_id: String,
+    reported_state: AgentState,
+    state: &mut AgentCtlState,
+) -> Result<AgentResponse, ProtocolFailure> {
+    let session = state.sessions.get(&session_id).ok_or_else(|| {
+        ProtocolFailure::new(AgentErrorCode::Unauthorized, "unknown AgentCtl Session")
+    })?;
+    let active_checkpoint = state.active_checkpoint.as_ref().map(|checkpoint| {
+        (
+            checkpoint.generation,
+            checkpoint.checkpoint_id.clone(),
+            checkpoint.participants.contains(&session_id),
+        )
+    });
+    if let AgentState::Quiesced { checkpoint_id } = &reported_state {
+        let repeated = session.state == reported_state;
+        let matches_active = active_checkpoint
+            .as_ref()
+            .is_some_and(|(_, active, participant)| *participant && active == checkpoint_id);
+        if !repeated && !matches_active {
+            return Err(ProtocolFailure::new(
+                AgentErrorCode::Conflict,
+                "quiesced state does not match the active checkpoint",
+            ));
         }
     }
+
+    let now = crate::util::unix_now_ms();
+    let session = state
+        .sessions
+        .get_mut(&session_id)
+        .expect("Session validated");
+    session.checkpoint_ack = match (&reported_state, active_checkpoint) {
+        (
+            AgentState::Quiesced { checkpoint_id },
+            Some((generation, active_checkpoint_id, true)),
+        ) if checkpoint_id == &active_checkpoint_id => Some(match session.checkpoint_ack {
+            Some(ack) if ack.generation == generation => ack,
+            _ => CheckpointAcknowledgement {
+                generation,
+                acknowledged_at_unix_ms: now,
+            },
+        }),
+        _ => None,
+    };
+    session.state = reported_state;
+    session.last_seen_unix_ms = now;
+    session.last_sync_unix_ms = Some(now);
+    Ok(AgentResponse::Synced {
+        directive: state.directive.clone(),
+    })
 }
 
 fn session_is_stale(session: &ClientSession, now_unix_ms: u64) -> bool {
-    now_unix_ms.saturating_sub(session.last_seen_unix_ms) > HEARTBEAT_INTERVAL_MS * 3
-}
-
-fn session_mut<'a>(
-    state: &'a mut AgentCtlState,
-    session_id: &str,
-) -> Result<&'a mut ClientSession, String> {
-    state
-        .sessions
-        .get_mut(session_id)
-        .ok_or_else(|| "unknown AgentCtl session".to_string())
-}
-
-fn record_quiesced(
-    state: &mut AgentCtlState,
-    session_id: &str,
-    quiesced: &AgentCheckpointQuiesced,
-) -> Result<(), String> {
-    let (checkpoint_id, directive_seq) = match &state.directive {
-        AgentDirective::Quiesce { checkpoint_id, .. } => {
-            (checkpoint_id.clone(), state.directive_seq)
-        }
-        _ => {
-            return Err("pVisor has not requested quiescence".into());
-        }
-    };
-    if quiesced.directive_seq != directive_seq || quiesced.checkpoint_id != checkpoint_id {
-        return Err("quiesced acknowledgement does not match the active directive".into());
-    }
-    let has_open_effects = state
-        .effects
-        .values()
-        .any(|effect| effect.session_id == session_id && effect.completion.is_none());
-    if has_open_effects {
-        return Err("AgentCtl session still has declared open operations".into());
-    }
-    let session = session_mut(state, session_id)?;
-    session.lifecycle = AgentLifecycleState::Quiesced;
-    session.quiesced_checkpoint_id = Some(checkpoint_id);
-    Ok(())
+    now_unix_ms.saturating_sub(session.last_seen_unix_ms) > SYNC_INTERVAL_MS * 3
 }
 
 fn lock_state(state: &Arc<Mutex<AgentCtlState>>) -> std::sync::MutexGuard<'_, AgentCtlState> {
@@ -610,9 +665,10 @@ fn lock_state(state: &Arc<Mutex<AgentCtlState>>) -> std::sync::MutexGuard<'_, Ag
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn error_body(message: impl Into<String>) -> AgentResponseBody {
-    AgentResponseBody::Error {
-        message: message.into(),
+fn error_response(error: ProtocolFailure) -> AgentResponse {
+    AgentResponse::Error {
+        code: error.code,
+        message: error.message,
     }
 }
 
@@ -631,180 +687,276 @@ mod tests {
         serde_json::from_str(&line).unwrap()
     }
 
-    fn connect(server: &AgentCtlServer) -> String {
-        let request = AgentRequest::hello(AgentHello {
-            auth_token: server.auth_token.clone(),
-            client_id: "pilot-1".into(),
-            role: AgentClientRole::Pilot,
-            agent_name: "agent".into(),
-        });
-        match exchange(&server.socket_path, &request).body {
-            AgentResponseBody::Welcome(welcome) => welcome.session_id,
-            body => panic!("unexpected response: {body:?}"),
+    fn connect(server: &AgentCtlServer, client_id: &str) -> String {
+        match exchange(
+            &server.socket_path,
+            &AgentRequest::Hello {
+                version: AGENTCTL_VERSION,
+                token: server.token.clone(),
+                client_id: client_id.into(),
+            },
+        ) {
+            AgentResponse::Welcome { session_id, .. } => session_id,
+            response => panic!("unexpected response: {response:?}"),
         }
     }
 
     #[test]
-    fn rejects_invalid_token_and_protocol_version() {
+    fn rejects_invalid_token_and_protocol_version_with_typed_codes() {
         let server =
             AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
-        let unauthorized = exchange(
-            &server.socket_path,
-            &AgentRequest::hello(AgentHello {
-                auth_token: "wrong".into(),
-                client_id: "pilot".into(),
-                role: AgentClientRole::Pilot,
-                agent_name: "agent".into(),
-            }),
-        );
-        assert!(
-            matches!(
-                &unauthorized.body,
-                AgentResponseBody::Error { message } if message.contains("token")
-            ),
-            "unexpected response: {:?}",
-            unauthorized.body
-        );
-
-        let mut wrong_version = AgentRequest::hello(AgentHello {
-            auth_token: server.auth_token.clone(),
-            client_id: "pilot".into(),
-            role: AgentClientRole::Pilot,
-            agent_name: "agent".into(),
-        });
-        wrong_version.version += 1;
         assert!(matches!(
-            exchange(&server.socket_path, &wrong_version).body,
-            AgentResponseBody::Error { message } if message.contains("version mismatch")
+            exchange(
+                &server.socket_path,
+                &AgentRequest::Hello {
+                    version: AGENTCTL_VERSION,
+                    token: "wrong".into(),
+                    client_id: "client".into(),
+                },
+            ),
+            AgentResponse::Error {
+                code: AgentErrorCode::Unauthorized,
+                ..
+            }
+        ));
+        assert!(matches!(
+            exchange(
+                &server.socket_path,
+                &AgentRequest::Hello {
+                    version: 99,
+                    token: server.token.clone(),
+                    client_id: "client".into(),
+                },
+            ),
+            AgentResponse::Error {
+                code: AgentErrorCode::VersionMismatch,
+                ..
+            }
         ));
     }
 
     #[test]
-    fn duplicate_live_client_is_rejected_and_stale_state_is_reported() {
+    fn request_quiesce_purges_sessions_that_were_already_stale() {
         let server =
             AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
-        let session_id = connect(&server);
-        let duplicate = AgentRequest::hello(AgentHello {
-            auth_token: server.auth_token.clone(),
-            client_id: "pilot-1".into(),
-            role: AgentClientRole::Pilot,
-            agent_name: "agent".into(),
-        });
-        assert!(matches!(
-            exchange(&server.socket_path, &duplicate).body,
-            AgentResponseBody::Error { message } if message.contains("live session")
-        ));
-
+        let stale_id = connect(&server, "stale");
+        let live_id = connect(&server, "live");
         {
             let mut state = lock_state(&server.control.state);
-            state
-                .sessions
-                .get_mut(&session_id)
-                .unwrap()
-                .last_seen_unix_ms =
-                crate::util::unix_now_ms().saturating_sub(HEARTBEAT_INTERVAL_MS * 4);
+            state.sessions.get_mut(&stale_id).unwrap().last_seen_unix_ms = 0;
+            state.sessions.get_mut(&live_id).unwrap().last_seen_unix_ms =
+                crate::util::unix_now_ms();
         }
-        assert!(server.control.snapshot().clients[0].stale);
+
+        server.control.request_quiesce("cp", None).unwrap();
+        let snapshot = server.control.snapshot();
+        assert_eq!(snapshot.clients.len(), 1);
+        assert_eq!(snapshot.clients[0].client_id, "live");
     }
 
     #[test]
-    fn heartbeat_quiesce_process_and_effect_lifecycle() {
+    fn checkpoint_never_expires_a_frozen_participant() {
         let server =
             AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
-        let session_id = connect(&server);
-        let directive_seq = server.control.request_quiesce("checkpoint-1", None);
-
-        let heartbeat = exchange(
-            &server.socket_path,
-            &AgentRequest::authenticated(
-                &session_id,
-                AgentRequestBody::Heartbeat(AgentLifecycleState::Quiescing),
-            ),
-        );
-        assert!(matches!(
-            heartbeat.body,
-            AgentResponseBody::Heartbeat(AgentHeartbeatAck {
-                directive: AgentDirective::Quiesce { .. },
-                ..
-            })
-        ));
-
-        let register = AgentRequest::authenticated(
-            &session_id,
-            AgentRequestBody::RegisterProcess(AgentProcessRegistration {
-                pid: 42,
-                role: "worker".into(),
-                executable: Some("python".into()),
-            }),
-        );
-        assert!(matches!(
-            exchange(&server.socket_path, &register).body,
-            AgentResponseBody::Ack
-        ));
-
-        let begin = AgentOperationBegin {
-            operation_id: "effect-1".into(),
-            kind: "tool.call".into(),
-            request_digest: "sha256:abc".into(),
-            idempotency_key: Some("idem-1".into()),
-        };
-        let begin_response = exchange(
-            &server.socket_path,
-            &AgentRequest::authenticated(&session_id, AgentRequestBody::EffectBegin(begin)),
-        );
-        assert!(matches!(
-            begin_response.body,
-            AgentResponseBody::OperationAccepted { sequence: 1 }
-        ));
-        let complete = AgentRequest::authenticated(
-            &session_id,
-            AgentRequestBody::EffectComplete(AgentOperationComplete {
-                operation_id: "effect-1".into(),
-                outcome: AgentOperationOutcome::Committed,
-            }),
-        );
-        assert!(matches!(
-            exchange(&server.socket_path, &complete).body,
-            AgentResponseBody::Ack
-        ));
-
-        let quiesced = AgentRequest::authenticated(
-            &session_id,
-            AgentRequestBody::CheckpointQuiesced(AgentCheckpointQuiesced {
-                checkpoint_id: "checkpoint-1".into(),
-                directive_seq,
-            }),
-        );
-        assert!(matches!(
-            exchange(&server.socket_path, &quiesced).body,
-            AgentResponseBody::Ack
-        ));
+        let session_id = connect(&server, "participant");
+        server.control.request_quiesce("cp", None).unwrap();
+        lock_state(&server.control.state)
+            .sessions
+            .get_mut(&session_id)
+            .unwrap()
+            .last_seen_unix_ms = 0;
 
         let snapshot = server.control.snapshot();
-        assert_eq!(
-            snapshot.clients[0].quiesced_checkpoint_id.as_deref(),
-            Some("checkpoint-1")
-        );
-        assert_eq!(snapshot.processes[0].registration.pid, 42);
-        assert_eq!(
-            snapshot.operations[0].completion.as_ref().unwrap().outcome,
-            AgentOperationOutcome::Committed
-        );
+        assert_eq!(snapshot.clients.len(), 1);
+        assert!(snapshot.clients[0].stale);
     }
 
     #[test]
-    fn delegated_snapshot_replaces_empty_host_transport_observation() {
+    fn delegated_snapshot_preserves_outer_identity() {
         let server =
             AgentCtlServer::start(&RunId::new("outer-run"), &AttemptId::new("outer-attempt"))
                 .unwrap();
-        let mut delegated = server.control.snapshot();
-        delegated.run_id = "inner-run".into();
-        delegated.attempt_id = "inner-attempt".into();
-        delegated.directive_seq = 7;
+        let delegated = AgentCtlSnapshot {
+            run_id: "inner-run".into(),
+            attempt_id: "inner-attempt".into(),
+            directive: AgentDirective::Shutdown { reason: None },
+            clients: Vec::new(),
+        };
         server.control.import_delegated_snapshot(delegated);
+
         let imported = server.control.snapshot();
         assert_eq!(imported.run_id, "outer-run");
         assert_eq!(imported.attempt_id, "outer-attempt");
-        assert_eq!(imported.directive_seq, 7);
+        assert!(matches!(
+            imported.directive,
+            AgentDirective::Shutdown { .. }
+        ));
+    }
+
+    #[test]
+    fn retrying_a_checkpoint_id_requires_a_fresh_acknowledgement() {
+        let server =
+            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+        let session_id = connect(&server, "participant");
+        let deadline = crate::util::unix_now_ms().saturating_add(10_000);
+        let first = server
+            .control
+            .begin_checkpoint("cp".into(), Some(deadline))
+            .unwrap();
+        let quiesced = AgentState::Quiesced {
+            checkpoint_id: "cp".into(),
+        };
+        assert!(matches!(
+            exchange(
+                &server.socket_path,
+                &AgentRequest::Sync {
+                    version: AGENTCTL_VERSION,
+                    session_id: session_id.clone(),
+                    state: quiesced.clone(),
+                },
+            ),
+            AgentResponse::Synced {
+                directive: AgentDirective::Quiesce { .. }
+            }
+        ));
+        drop(first);
+
+        let retry = server
+            .control
+            .begin_checkpoint("cp".into(), Some(deadline))
+            .unwrap();
+        assert!(retry.try_capture(|| Ok(())).unwrap().is_none());
+
+        exchange(
+            &server.socket_path,
+            &AgentRequest::Sync {
+                version: AGENTCTL_VERSION,
+                session_id,
+                state: quiesced,
+            },
+        );
+        assert_eq!(retry.try_capture(|| Ok(())).unwrap(), Some(()));
+    }
+
+    #[test]
+    fn checkpoint_guard_drop_releases_only_its_own_quiesce() {
+        let server =
+            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+        connect(&server, "participant");
+        let checkpoint = server.control.begin_checkpoint("cp".into(), None).unwrap();
+        drop(checkpoint);
+        assert_eq!(
+            server.control.snapshot().directive,
+            AgentDirective::Continue
+        );
+
+        let checkpoint = server
+            .control
+            .begin_checkpoint("cp-2".into(), None)
+            .unwrap();
+        server.control.request_shutdown(Some("stop".into()));
+        drop(checkpoint);
+        assert!(matches!(
+            server.control.snapshot().directive,
+            AgentDirective::Shutdown { .. }
+        ));
+        server.control.continue_execution();
+        assert!(matches!(
+            server.control.snapshot().directive,
+            AgentDirective::Shutdown { .. }
+        ));
+    }
+
+    #[test]
+    fn checkpoint_copy_holds_transition_ownership_until_capture_finishes() {
+        let server =
+            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+        let session_id = connect(&server, "participant");
+        let checkpoint = server.control.begin_checkpoint("cp".into(), None).unwrap();
+        exchange(
+            &server.socket_path,
+            &AgentRequest::Sync {
+                version: AGENTCTL_VERSION,
+                session_id,
+                state: AgentState::Quiesced {
+                    checkpoint_id: "cp".into(),
+                },
+            },
+        );
+
+        let (capture_started_tx, capture_started_rx) = std::sync::mpsc::channel();
+        let (release_capture_tx, release_capture_rx) = std::sync::mpsc::channel();
+        let capture = std::thread::spawn(move || {
+            checkpoint
+                .try_capture(|| {
+                    capture_started_tx.send(()).unwrap();
+                    release_capture_rx.recv().unwrap();
+                    Ok(())
+                })
+                .unwrap()
+        });
+        capture_started_rx.recv().unwrap();
+
+        let control = server.control();
+        let (shutdown_done_tx, shutdown_done_rx) = std::sync::mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            control.request_shutdown(Some("stop".into()));
+            shutdown_done_tx.send(()).unwrap();
+        });
+        assert!(shutdown_done_rx
+            .recv_timeout(Duration::from_millis(30))
+            .is_err());
+
+        release_capture_tx.send(()).unwrap();
+        assert_eq!(capture.join().unwrap(), Some(()));
+        shutdown_done_rx.recv().unwrap();
+        shutdown.join().unwrap();
+        assert!(matches!(
+            server.control.snapshot().directive,
+            AgentDirective::Shutdown { .. }
+        ));
+    }
+
+    #[test]
+    fn acknowledgement_after_deadline_cannot_satisfy_checkpoint() {
+        let server =
+            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+        let session_id = connect(&server, "participant");
+        let deadline = crate::util::unix_now_ms();
+        let checkpoint = server
+            .control
+            .begin_checkpoint("cp".into(), Some(deadline))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        exchange(
+            &server.socket_path,
+            &AgentRequest::Sync {
+                version: AGENTCTL_VERSION,
+                session_id,
+                state: AgentState::Quiesced {
+                    checkpoint_id: "cp".into(),
+                },
+            },
+        );
+
+        let error = checkpoint.try_capture(|| Ok(())).unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn hello_purges_all_stale_sessions_before_enforcing_capacity() {
+        let server =
+            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+        for index in 0..AGENTCTL_MAX_SESSIONS {
+            connect(&server, &format!("stale-{index}"));
+        }
+        for session in lock_state(&server.control.state).sessions.values_mut() {
+            session.last_seen_unix_ms = 0;
+        }
+
+        connect(&server, "replacement");
+        let snapshot = server.control.snapshot();
+        assert_eq!(snapshot.clients.len(), 1);
+        assert_eq!(snapshot.clients[0].client_id, "replacement");
     }
 }

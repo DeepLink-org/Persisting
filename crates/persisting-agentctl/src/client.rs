@@ -1,50 +1,42 @@
-//! Reusable client for pVisor's cooperative, low-frequency AgentCtl protocol.
+//! Synchronous client for pVisor's cooperative, low-frequency AgentCtl protocol.
 
 use crate::{
-    AgentCheckpointQuiesced, AgentClientRole, AgentDirective, AgentHeartbeatAck, AgentHello,
-    AgentLifecycleState, AgentOperationBegin, AgentOperationComplete, AgentProcessRegistration,
-    AgentRequest, AgentRequestBody, AgentResponse, AgentResponseBody, AgentWelcome,
-    AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
-    AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, LEGACY_AGENT_ABI_ENDPOINT_ENV,
-    LEGACY_AGENT_ABI_TOKEN_ENV, LEGACY_AGENT_ABI_TRANSPORT_ENV, LEGACY_AGENT_ABI_VERSION_ENV,
+    AgentDirective, AgentErrorCode, AgentRequest, AgentResponse, AgentState, AGENTCTL_ENDPOINT_ENV,
+    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV, AGENTCTL_VERSION,
+    AGENTCTL_VERSION_ENV,
 };
 use anyhow::{bail, Context};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
+/// Configuration discovered from one Run's injected AgentCtl environment.
 pub struct AgentCtlClientConfig {
+    /// Run-local Unix socket path.
     pub endpoint: PathBuf,
-    pub auth_token: String,
+    /// Run-scoped authentication token.
+    pub token: String,
+    /// Stable non-empty identity for this runtime client.
     pub client_id: String,
-    pub role: AgentClientRole,
-    pub agent_name: String,
 }
 
 impl AgentCtlClientConfig {
-    pub fn from_current_environment(
-        client_id: impl Into<String>,
-        role: AgentClientRole,
-        agent_name: impl Into<String>,
-    ) -> anyhow::Result<Option<Self>> {
-        Self::from_environment(&std::env::vars().collect(), client_id, role, agent_name)
+    /// Discover AgentCtl from the current process environment.
+    pub fn from_current_environment(client_id: impl Into<String>) -> anyhow::Result<Option<Self>> {
+        Self::from_environment(&std::env::vars().collect(), client_id)
     }
 
+    /// Discover AgentCtl from an explicit environment projection.
     pub fn from_environment(
         environment: &BTreeMap<String, String>,
         client_id: impl Into<String>,
-        role: AgentClientRole,
-        agent_name: impl Into<String>,
     ) -> anyhow::Result<Option<Self>> {
-        let Some(endpoint) = environment
-            .get(AGENTCTL_ENDPOINT_ENV)
-            .or_else(|| environment.get(LEGACY_AGENT_ABI_ENDPOINT_ENV))
-        else {
+        let Some(endpoint) = environment.get(AGENTCTL_ENDPOINT_ENV) else {
             return Ok(None);
         };
         let transport = environment
             .get(AGENTCTL_TRANSPORT_ENV)
-            .or_else(|| environment.get(LEGACY_AGENT_ABI_TRANSPORT_ENV))
             .map(String::as_str)
             .unwrap_or("unix");
         if transport != "unix" {
@@ -52,7 +44,6 @@ impl AgentCtlClientConfig {
         }
         let version = environment
             .get(AGENTCTL_VERSION_ENV)
-            .or_else(|| environment.get(LEGACY_AGENT_ABI_VERSION_ENV))
             .context("AgentCtl endpoint is present without a version")?
             .parse::<u32>()
             .context("parse AgentCtl version")?;
@@ -63,114 +54,112 @@ impl AgentCtlClientConfig {
                 version
             );
         }
+        let client_id = client_id.into();
+        if client_id.trim().is_empty() {
+            bail!("AgentCtl client_id must be non-empty");
+        }
         Ok(Some(Self {
             endpoint: endpoint.into(),
-            auth_token: environment
+            token: environment
                 .get(AGENTCTL_TOKEN_ENV)
-                .or_else(|| environment.get(LEGACY_AGENT_ABI_TOKEN_ENV))
                 .context("AgentCtl endpoint is present without an auth token")?
                 .clone(),
-            client_id: client_id.into(),
-            role,
-            agent_name: agent_name.into(),
+            client_id,
         }))
     }
 }
 
+/// A machine-readable error returned by the AgentCtl server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCtlResponseError {
+    /// Stable category used for client control flow.
+    pub code: AgentErrorCode,
+    /// Human-readable diagnostic context.
+    pub message: String,
+}
+
+impl fmt::Display for AgentCtlResponseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let code = match self.code {
+            AgentErrorCode::InvalidRequest => "invalid_request",
+            AgentErrorCode::Unauthorized => "unauthorized",
+            AgentErrorCode::VersionMismatch => "version_mismatch",
+            AgentErrorCode::Conflict => "conflict",
+        };
+        write!(formatter, "AgentCtl {code}: {}", self.message)
+    }
+}
+
+impl std::error::Error for AgentCtlResponseError {}
+
+/// One runtime client's AgentCtl Session.
 pub struct AgentCtlClient {
     config: AgentCtlClientConfig,
     session_id: Option<String>,
+    sync_interval_ms: Option<u64>,
 }
 
 impl AgentCtlClient {
+    /// Construct a disconnected client.
     pub fn new(config: AgentCtlClientConfig) -> Self {
         Self {
             config,
             session_id: None,
+            sync_interval_ms: None,
         }
     }
 
+    /// Return the current Session identifier after a successful connection.
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
 
-    pub fn connect(&mut self) -> anyhow::Result<AgentWelcome> {
+    /// Return the server-recommended synchronization interval after connection.
+    pub fn sync_interval_ms(&self) -> Option<u64> {
+        self.sync_interval_ms
+    }
+
+    /// Authenticate, create a Session, and return the current directive.
+    pub fn connect(&mut self) -> anyhow::Result<AgentDirective> {
         let response = exchange(
             &self.config.endpoint,
-            &AgentRequest::hello(AgentHello {
-                auth_token: self.config.auth_token.clone(),
+            &AgentRequest::Hello {
+                version: AGENTCTL_VERSION,
+                token: self.config.token.clone(),
                 client_id: self.config.client_id.clone(),
-                role: self.config.role,
-                agent_name: self.config.agent_name.clone(),
-            }),
+            },
         )?;
-        match response.body {
-            AgentResponseBody::Welcome(welcome) => {
-                self.session_id = Some(welcome.session_id.clone());
-                Ok(welcome)
+        match response {
+            AgentResponse::Welcome {
+                session_id,
+                sync_interval_ms,
+                directive,
+            } => {
+                self.session_id = Some(session_id);
+                self.sync_interval_ms = Some(sync_interval_ms);
+                Ok(directive)
             }
-            body => unexpected("welcome", body),
+            response => unexpected("welcome", response),
         }
     }
 
-    pub fn heartbeat(
-        &mut self,
-        lifecycle: AgentLifecycleState,
-    ) -> anyhow::Result<AgentHeartbeatAck> {
-        match self.request(AgentRequestBody::Heartbeat(lifecycle))? {
-            AgentResponseBody::Heartbeat(ack) => Ok(ack),
-            body => unexpected("heartbeat acknowledgement", body),
-        }
-    }
-
-    pub fn register_process(&mut self, value: AgentProcessRegistration) -> anyhow::Result<()> {
-        expect_ack(self.request(AgentRequestBody::RegisterProcess(value))?)
-    }
-
-    pub fn checkpoint_quiesced(&mut self, value: AgentCheckpointQuiesced) -> anyhow::Result<()> {
-        expect_ack(self.request(AgentRequestBody::CheckpointQuiesced(value))?)
-    }
-
-    pub fn begin_operation(&mut self, value: AgentOperationBegin) -> anyhow::Result<u64> {
-        match self.request(AgentRequestBody::EffectBegin(value))? {
-            AgentResponseBody::OperationAccepted { sequence } => Ok(sequence),
-            body => unexpected("effect acceptance", body),
-        }
-    }
-
-    pub fn complete_operation(&mut self, value: AgentOperationComplete) -> anyhow::Result<()> {
-        expect_ack(self.request(AgentRequestBody::EffectComplete(value))?)
-    }
-
-    #[deprecated(note = "use begin_operation; AgentCtl reports are cooperative declarations")]
-    pub fn begin_effect(&mut self, value: AgentOperationBegin) -> anyhow::Result<u64> {
-        self.begin_operation(value)
-    }
-
-    #[deprecated(note = "use complete_operation; AgentCtl reports are cooperative declarations")]
-    pub fn complete_effect(&mut self, value: AgentOperationComplete) -> anyhow::Result<()> {
-        self.complete_operation(value)
-    }
-
-    fn request(&mut self, body: AgentRequestBody) -> anyhow::Result<AgentResponseBody> {
+    /// Report cooperative state and return pVisor's current directive.
+    pub fn sync(&mut self, state: AgentState) -> anyhow::Result<AgentDirective> {
         let session_id = self
             .session_id
             .clone()
             .context("AgentCtl client is not connected")?;
-        Ok(exchange(
+        match exchange(
             &self.config.endpoint,
-            &AgentRequest::authenticated(session_id, body),
-        )?
-        .body)
-    }
-}
-
-pub fn checkpoint_directive(ack: &AgentHeartbeatAck) -> Option<(&str, u64)> {
-    match &ack.directive {
-        AgentDirective::Quiesce { checkpoint_id, .. } => {
-            Some((checkpoint_id.as_str(), ack.directive_seq))
+            &AgentRequest::Sync {
+                version: AGENTCTL_VERSION,
+                session_id,
+                state,
+            },
+        )? {
+            AgentResponse::Synced { directive } => Ok(directive),
+            response => unexpected("sync acknowledgement", response),
         }
-        AgentDirective::Continue | AgentDirective::Shutdown { .. } => None,
     }
 }
 
@@ -190,19 +179,63 @@ fn exchange(path: &Path, request: &AgentRequest) -> anyhow::Result<AgentResponse
         bail!("AgentCtl response exceeds {AGENTCTL_MAX_FRAME_BYTES} bytes");
     }
     let response: AgentResponse = serde_json::from_slice(&frame)?;
-    if let AgentResponseBody::Error { message } = &response.body {
-        bail!("AgentCtl: {message}");
+    if let AgentResponse::Error { code, message } = response {
+        return Err(AgentCtlResponseError { code, message }.into());
     }
     Ok(response)
 }
 
-fn expect_ack(body: AgentResponseBody) -> anyhow::Result<()> {
-    match body {
-        AgentResponseBody::Ack => Ok(()),
-        body => unexpected("acknowledgement", body),
-    }
+fn unexpected<T>(expected: &str, response: AgentResponse) -> anyhow::Result<T> {
+    bail!("expected AgentCtl {expected}, got {response:?}")
 }
 
-fn unexpected<T>(expected: &str, body: AgentResponseBody) -> anyhow::Result<T> {
-    bail!("expected AgentCtl {expected}, got {body:?}")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn environment() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (AGENTCTL_ENDPOINT_ENV.into(), "/tmp/agentctl.sock".into()),
+            (AGENTCTL_TOKEN_ENV.into(), "secret".into()),
+            (AGENTCTL_VERSION_ENV.into(), "1".into()),
+            (AGENTCTL_TRANSPORT_ENV.into(), "unix".into()),
+        ])
+    }
+
+    #[test]
+    fn config_reads_only_agentctl_v1_environment() {
+        let config = AgentCtlClientConfig::from_environment(&environment(), "worker-1")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(config.client_id, "worker-1");
+        assert_eq!(config.token, "secret");
+        assert_eq!(config.endpoint, PathBuf::from("/tmp/agentctl.sock"));
+    }
+
+    #[test]
+    fn legacy_agent_abi_environment_is_not_discovered() {
+        let environment = BTreeMap::from([(
+            "PERSISTING_AGENT_ABI_ENDPOINT".into(),
+            "/tmp/legacy.sock".into(),
+        )]);
+
+        assert!(
+            AgentCtlClientConfig::from_environment(&environment, "worker-1")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn response_error_keeps_machine_code_and_human_message() {
+        let error = AgentCtlResponseError {
+            code: AgentErrorCode::Conflict,
+            message: "busy".into(),
+        };
+
+        assert_eq!(error.code, AgentErrorCode::Conflict);
+        assert_eq!(error.message, "busy");
+        assert_eq!(error.to_string(), "AgentCtl conflict: busy");
+    }
 }

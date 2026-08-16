@@ -1,10 +1,13 @@
 # pChronicle
 
-**Persisting's structured trajectory and Dataset core.**
+**Persisting's structured trajectory and Dataset data layer.**
 
-pChronicle owns trajectory formats, physical schemas, persistence, discovery,
-query execution, exchange, and derived views. Other crates may produce or
-consume trajectories but must not define a second storage format.
+pChronicle discovers native and supported external Sources on local storage or
+S3, preserves canonical facts and origin, exposes normalized Run views, and
+supports bounded query, analysis, revision lineage, and format exchange. It
+owns trajectory formats, physical schemas, persistence, discovery, query
+execution, exchange, and derived views. Other crates may produce or consume
+trajectories but must not define a second storage format.
 
 The core crate has no HTTP or Web dependency. Product boundaries are split as:
 

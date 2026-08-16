@@ -41,8 +41,8 @@ host executor installs a generated Seatbelt policy that makes staged writes
 non-bypassable. For deny-all Runs it blocks IP and ambient host Unix sockets,
 while retaining the exact AgentCtl and Run-local IPC. Reads and selective
 network policy remain ambient/cooperative and are labeled separately in the
-Bundle. Docker and KVM transports retain the same outer Run, OverlayFS, Agent
-ABI observation, and pChronicle control plane.
+Bundle. Docker and KVM transports retain the same outer Run, OverlayFS,
+AgentCtl state observation, and pChronicle control plane.
 
 After completion:
 
@@ -55,10 +55,10 @@ pvisor apply last       # or: pvisor drop last
 
 The CLI checkpoint is stopped-consistent. Embedded hosts can call
 `RunHandle::checkpoint`: pVisor publishes an AgentCtl quiesce directive,
-requires every connected client to acknowledge the checkpoint with no open
-effects, snapshots the raw upper, then publishes `continue`. Logical
-checkpoints preserve filesystem and Agent/effect boundaries, not process
-memory.
+requires every Session frozen into the checkpoint to report the matching
+quiesced state, snapshots the raw upper, then publishes `continue`. Logical
+checkpoints preserve filesystem and cooperative client safe-point boundaries,
+not process memory.
 
 持久环境拥有稳定名称和可复用 OverlayFS upper：
 
