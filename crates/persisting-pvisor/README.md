@@ -38,6 +38,16 @@ pvisor apply last --all
 # pvisor drop last
 ```
 
+The standalone product loop is:
+
+```text
+RunSpec -> admission -> Attempt -> Effect review/apply/drop -> Run Bundle
+```
+
+A pVisor Run completes with reviewable staged Effects and a private, versioned
+Run Bundle. pChronicle is the standard durable Dataset and history handoff, not
+a runtime prerequisite for this loop.
+
 `--safe` associates the current directory with a new durable Run, gives the
 Agent a copy-on-write workspace, applies the strongest supported local boundary
 for the selected executor, and emits a private versioned `run-bundle.json`.
@@ -99,8 +109,11 @@ CLI / pPilot / embedding host
         ├── WorkspaceOverlay ── review / checkpoint / apply / drop
         ├── Gateway + OverlayNet
         ├── execution provider ── host / container / libkrun VM
-        └── RunRecord + Run Bundle + pChronicle events
+        └── RunRecord + private versioned Run Bundle
 ```
+
+An optional pChronicle handoff persists the Run's events, artifacts, terminal
+facts, and Evidence as canonical Dataset history.
 
 The logical Run id survives placement and retry decisions. Each physical
 execution receives a distinct Attempt id and, when pPilot owns it, a fenced
@@ -131,9 +144,10 @@ controller remains a product gate rather than a current claim.
 | Warm-kernel pool and scrubbed reuse protocol | Open product gate |
 | Long-lived distributed pPilot controller and node reconciliation | Open product gate |
 
-The default build includes the local Lance/DataFusion pChronicle backend so a
-standalone pVisor can publish durable Attempt state for pPilot. It excludes
-cloud object-store SDKs, Jujutsu, `prost`, and a protobuf toolchain. Use
+The default build includes the local Lance/DataFusion pChronicle backend for an
+optional durable Attempt-state handoff to pPilot. The standalone pVisor loop
+does not require that handoff. The default build excludes cloud object-store
+SDKs, Jujutsu, `prost`, and a protobuf toolchain. Use
 `lance-chronicle` for S3 support, `jujutsu-overlay` for the Jujutsu upper
 backend, or `--no-default-features` for a storage-light binary.
 

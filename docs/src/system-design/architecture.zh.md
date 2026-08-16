@@ -10,12 +10,25 @@ pChronicle Design，命令属于各产品 Reference。
 | 产品或层次 | 拥有 | 不拥有 |
 | --- | --- | --- |
 | pVisor | 一个 Run、Attempt、执行环境、capability admission、Effect 与运行时 Evidence | 多 Run 调度或持久历史查询 |
-| pPilot | 多 Run planning 与 reconciliation、lease、有界并发、基础设施重试和结果收集 | Agent reasoning、Provider enforcement 或轨迹存储 |
-| pChronicle | canonical event、终态事实、Dataset discovery、规范化 projection、revision 与读取面 | 启动、调度或控制 Run |
+| pPilot | 多 Run planning、有界执行、lease、重试与恢复、reconciliation、结果收集及 task-to-Run mapping | Agent reasoning、Provider enforcement 或轨迹格式与存储 |
+| pChronicle | Dataset 与 Source discovery、canonical event 与终态事实、规范化 projection、revision lineage、查询与交换 | 启动、调度或控制 Run |
 | Runtime Provider | 一种物理执行机制 | 逻辑 Run identity 或产品策略 |
 
 Gateway、OverlayFS 和 OverlayNet 是 pVisor 运行时机制，不构成独立控制面。pPilot 扩展
 pVisor 的 Run 模型，仍位于 pVisor 产品路径中。
+
+## 独立 Ingress 路径
+
+```text
+Agent goal -> pVisor / pPilot -> events + artifacts + terminal facts + Evidence
+                                                   |
+External Sources -> importer / adapter ------------+-> pChronicle Dataset
+```
+
+pPilot 是受治理执行路径上可选的多 Run 编排器。pVisor 可以用 staged Effect 与私有、带版本的
+Run Bundle 完成独立闭环。交接到 pChronicle 是标准持久 Dataset 与历史路径，而不是 pVisor
+运行时前置条件。外部 Source 可通过受支持的 importer 或 adapter 进入 pChronicle，但不会
+因此获得 pVisor 执行保证。
 
 ## 稳定对象
 
@@ -26,8 +39,10 @@ RunSpec
       ├── Attempt 2
       ├── Artifact references
       ├── Effect decisions
-      └── terminal RunResult
-              └── canonical events and history projections
+      └── terminal RunResult + private versioned Run Bundle
+
+Optional durable handoff
+  └── pChronicle canonical events and Dataset projections
 ```
 
 逻辑 Run 可以迁移，Attempt 与 Provider 绑定。基础设施重试创建新 Attempt；语义重试创建
@@ -45,9 +60,8 @@ User or Agent framework
   → capability-by-dimension provider selection
   → Attempt execution
   → runtime events and Artifact references
-  → Effect review or direct policy decision
-  → terminal RunResult
-  → pChronicle canonical history
+  → staged Effect review / apply / drop
+  → terminal RunResult + private versioned Run Bundle
 ```
 
 Admission 比较请求的 capability 维度与选中 Provider 能提供的 Evidence。必需维度无法
@@ -55,6 +69,9 @@ enforce 时，在 workload 执行前失败；可选降级必须明确写入 Run 
 
 文件 promotion 是 Effect 决策，不是 Run 终态提交。只要 stage 仍存在，就可以多次 apply
 不同路径。网络请求和远程工具修改属于不同 Effect 维度，不能从文件状态推断。
+
+配置后，pVisor 会把 event、Artifact、终态事实与 Evidence 交接给 pChronicle，形成持久
+Dataset 历史。未配置该交接不会使本地 Run Bundle 不满足 pVisor 契约。
 
 ## 多 Run 路径
 
@@ -65,8 +82,8 @@ Manifest or task stream
   → bounded RunFuture set
   → pVisor placement and Attempts
   → pPilot checkpoint and reconciliation
-  → terminal results
-  → pChronicle history
+  → terminal results and task-to-Run mapping
+  → events, artifacts, terminal facts, and Evidence
 ```
 
 pPilot 调度 Run future，而不是 Agent conversation。它持久保存：
@@ -78,9 +95,13 @@ job_id → task_id → run_id → attempt_id / lease_epoch → terminal result
 系统不承诺物理执行 exactly once。Lease fencing、稳定 identity、幂等 event ingestion 和
 终态 compare-and-swap 的目标是 at-least-once Attempt 与一个可见 Run 结果。
 
-## 历史路径
+这些事实可使用与单 Run 相同的可选 pChronicle 持久交接。即使由 pChronicle control 进程
+保存所选 coordination record，编排决策与 mapping 仍归 pPilot 所有。
 
-pVisor、Gateway、Provider 和 importer 产生事实；ingestion 之后的持久解释由 pChronicle 拥有：
+## Dataset 路径
+
+pVisor、Gateway、Provider 与外部 importer 从相互独立的 Source 路径产生事实；ingestion
+之后的持久解释由 pChronicle 拥有：
 
 ```text
 producers
@@ -93,6 +114,17 @@ producers
 Canonical fact 采用 append-oriented 模型。Storyline 等规范化视图是可重建 projection；交换
 文件是互操作边界，不替代事实源。每次读取固定一个 Catalog Snapshot，但不会虚构跨无关
 Source 的全局事务。
+
+## Source 特定保证
+
+| Source 路径 | 支持的主张 | 明确不主张 |
+| --- | --- | --- |
+| 外部文件或 imported Source | 已发现的内容、固定的 Source version、规范化表示，以及在已实现位置记录的 conversion lineage | 外部 task manifest 的完整性，或不存在未报告轨迹 |
+| Gateway capture | 通过所配置 Gateway 路径观察到并持久发布的 request 与 response | 不存在绕过 Gateway 的流量 |
+| pVisor Run | Run/Attempt identity、已记录终态事实、已安装机制、观察到的 Effect 与 Provider 特定 Evidence | 所选 Provider 未提供的 enforcement |
+| pPilot job | 所选模式支持的持久 task/Run mapping、重试与 lease 历史，以及终态结果行为 | 物理 exactly-once execution |
+
+Ingestion 保留这些边界。规范化表示或 Catalog Snapshot 不会升级 Source 提供的 Evidence。
 
 ## 故障与恢复
 

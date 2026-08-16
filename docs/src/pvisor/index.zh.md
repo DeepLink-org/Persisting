@@ -27,6 +27,15 @@ pvisor apply last --path src
 Agent 可以在 stage 内自由编辑。用户决定哪些 filesystem Effect 进入基础项目，并且可以
 分多批、多次 apply。
 
+pVisor 的独立产品闭环是：
+
+```text
+RunSpec -> admission -> Attempt -> Effect review/apply/drop -> Run Bundle
+```
+
+pVisor Run 以可审查的 staged Effect 和私有、带版本的 Run Bundle 完成。pChronicle 是标准的
+持久 Dataset 与历史交接路径，并非此闭环的运行时前置条件。
+
 ## 按目的阅读 pVisor
 
 | 目标 | 文档 |
@@ -37,5 +46,5 @@ Agent 可以在 stage 内自由编辑。用户决定哪些 filesystem Effect 进
 | 检查隔离与运行时机制 | [Design](design/index.md) |
 | 查找精确命令语法 | [Reference](reference/index.md) |
 
-理解 pVisor 历史如何变成可查询 Dataset，请继续阅读
-[pChronicle](../pchronicle/index.md)。
+要让 pVisor Run 的 event、Artifact、终态事实与 Evidence 成为持久、可查询的 Dataset，
+请继续阅读 [pChronicle](../pchronicle/index.md)。

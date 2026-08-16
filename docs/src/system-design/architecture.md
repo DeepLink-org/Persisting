@@ -11,13 +11,28 @@ commands belong to each product's Reference.
 | Product or layer | Owns | Does not own |
 | --- | --- | --- |
 | pVisor | one Run, its Attempts, execution environment, capability admission, effects, and runtime evidence | many-Run scheduling or durable history queries |
-| pPilot | planning and reconciling many Runs, leases, bounded concurrency, infrastructure retry, and result collection | Agent reasoning, provider enforcement, or trajectory storage |
-| pChronicle | canonical events, terminal facts, Dataset discovery, normalized projections, revisions, and read surfaces | starting, scheduling, or controlling a Run |
+| pPilot | planning, bounded execution, leases, retry and recovery, reconciliation, result collection, and task-to-Run mapping for many Runs | Agent reasoning, provider enforcement, or trajectory formats and storage |
+| pChronicle | Dataset and Source discovery, canonical events and terminal facts, normalized projections, revision lineage, query, and exchange | starting, scheduling, or controlling a Run |
 | Runtime provider | one physical execution mechanism | logical Run identity or product policy |
 
 Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. They do not
 form independent control planes. pPilot scales the pVisor Run model and remains
 inside the pVisor product boundary.
+
+## Independent ingress paths
+
+```text
+Agent goal -> pVisor / pPilot -> events + artifacts + terminal facts + Evidence
+                                                   |
+External Sources -> importer / adapter ------------+-> pChronicle Dataset
+```
+
+pPilot is the optional many-Run orchestrator on the governed-execution path.
+pVisor can complete its standalone loop with staged Effects and a private,
+versioned Run Bundle. The handoff to pChronicle is the standard durable Dataset
+and history path, not a pVisor runtime prerequisite. External Sources enter
+pChronicle through supported importers or adapters without acquiring pVisor
+execution guarantees.
 
 ## Stable objects
 
@@ -28,8 +43,10 @@ RunSpec
       ├── Attempt 2
       ├── Artifact references
       ├── Effect decisions
-      └── terminal RunResult
-              └── canonical events and history projections
+      └── terminal RunResult + private versioned Run Bundle
+
+Optional durable handoff
+  └── pChronicle canonical events and Dataset projections
 ```
 
 The logical Run is portable. An Attempt is provider-specific. Infrastructure
@@ -49,9 +66,8 @@ User or Agent framework
   → capability-by-dimension provider selection
   → Attempt execution
   → runtime events and Artifact references
-  → Effect review or direct policy decision
-  → terminal RunResult
-  → pChronicle canonical history
+  → staged Effect review / apply / drop
+  → terminal RunResult + private versioned Run Bundle
 ```
 
 Admission compares requested capability dimensions with evidence the selected
@@ -64,6 +80,10 @@ Selected paths can be applied more than once while the stage remains available.
 Network requests and remote tool mutations are separate effect dimensions and
 cannot be inferred from filesystem state.
 
+When configured, pVisor hands events, artifacts, terminal facts, and Evidence
+to pChronicle for durable Dataset history. Failure to configure that handoff
+does not make the local Run Bundle incomplete for the pVisor contract.
+
 ## Many-Run path
 
 ```text
@@ -73,8 +93,8 @@ Manifest or task stream
   → bounded RunFuture set
   → pVisor placement and Attempts
   → pPilot checkpoint and reconciliation
-  → terminal results
-  → pChronicle history
+  → terminal results and task-to-Run mapping
+  → events, artifacts, terminal facts, and Evidence
 ```
 
 pPilot schedules Run futures rather than Agent conversations. It persists the
@@ -88,10 +108,14 @@ The system does not promise exactly-once physical execution. Lease fencing,
 stable identity, idempotent event ingestion, and terminal compare-and-swap aim
 for at-least-once Attempts with one visible Run result.
 
-## History path
+The resulting facts can use the same optional durable pChronicle handoff as one
+Run. pPilot owns the orchestration decisions and mapping even when a pChronicle
+control process stores the selected coordination records.
 
-pVisor, Gateway, providers, and importers emit facts. pChronicle owns their
-durable interpretation after ingestion:
+## Dataset path
+
+pVisor, Gateway, providers, and external importers emit facts from independent
+Source paths. pChronicle owns their durable interpretation after ingestion:
 
 ```text
 producers
@@ -105,6 +129,18 @@ Canonical facts are append-oriented. Storyline and other normalized views are
 rebuildable projections. Exchange files are interoperability boundaries, not a
 replacement source of truth. Each read operation fixes a Catalog Snapshot; it
 does not invent a global transaction across unrelated Sources.
+
+## Source-specific guarantees
+
+| Source path | Supported claim | Explicit non-claim |
+| --- | --- | --- |
+| External file or imported Source | discovered content, pinned Source version, normalized representation, and recorded conversion lineage where implemented | completeness of an external task manifest or absence of unreported trajectories |
+| Gateway capture | requests and responses observed and durably published through the configured Gateway path | absence of traffic that bypassed Gateway |
+| pVisor Run | Run/Attempt identity, recorded terminal facts, installed mechanisms, observed Effects, and provider-specific Evidence | enforcement a selected provider did not supply |
+| pPilot job | persisted task/Run mapping, retry and lease history, and terminal result behavior supported by its selected mode | physical exactly-once execution |
+
+Ingestion preserves these boundaries. A normalized representation or Catalog
+Snapshot does not upgrade the evidence supplied by its Source.
 
 ## Failure and recovery
 
