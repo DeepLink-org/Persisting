@@ -628,7 +628,7 @@ fn platform_launcher_command(
             invocation
                 .env
                 .get(crate::AGENTCTL_ENDPOINT_ENV)
-                .or_else(|| process.env.get(crate::LEGACY_AGENT_ABI_ENDPOINT_ENV))
+                .or_else(|| invocation.env.get(crate::LEGACY_AGENT_ABI_ENDPOINT_ENV))
                 .map(PathBuf::from)
                 .filter(|path| path.exists())
                 .into_iter()
