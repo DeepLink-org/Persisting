@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::json;
 
 use crate::convert::message_text;
@@ -16,7 +17,13 @@ use crate::{Error, Result};
 /// its routing identity first, so canonical storage remains deterministically
 /// session-scoped without rejecting producer metadata at ingest.
 pub fn project_event_records(records: &[EventRecord]) -> Result<StorylineDocument> {
-    records.iter().try_for_each(EventRecord::validate)?;
+    records
+        .iter()
+        .try_for_each(EventRecord::validate)
+        .map_err(|error| crate::Error::Other(error.to_string()))?;
+    records
+        .iter()
+        .try_for_each(|record| canonical_event_timestamp(record).map(|_| ()))?;
     let session_id = records
         .iter()
         .rev()
@@ -108,6 +115,11 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
 
     for (_, cid) in call_order {
         let evs = &by_call[&cid];
+        let first_ts = evs
+            .first()
+            .map(|event| canonical_event_timestamp(event))
+            .transpose()?
+            .flatten();
         let mut model = None;
         let mut user_text = None;
         let mut asst_text = None;
@@ -118,9 +130,10 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
         let mut resp_ts = None;
         let mut request_messages = None;
         for ev in evs {
+            let timestamp = canonical_event_timestamp(ev)?;
             match ev.kind.as_str() {
                 "llm.request" | "http.request" => {
-                    req_ts = ev.timestamp.clone();
+                    req_ts = timestamp;
                     model = ev
                         .payload
                         .get("model")
@@ -133,7 +146,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
                 | "llm.response.stream"
                 | "http.response"
                 | "http.response.stream" => {
-                    resp_ts = ev.timestamp.clone();
+                    resp_ts = timestamp;
                     asst_text = extract_assistant(&ev.payload);
                     if let Some(u) = ev.payload.get("usage") {
                         metrics = Some(u.clone());
@@ -186,9 +199,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
                 turns.push(StorylineTurn {
                     id: next_id,
                     kind: Some("llm.request".into()),
-                    timestamp: req_ts
-                        .clone()
-                        .or_else(|| evs.first().and_then(|e| e.timestamp.clone())),
+                    timestamp: req_ts.clone().or_else(|| first_ts.clone()),
                     source: "user".into(),
                     message: serde_json::Value::String(ut),
                     reasoning_content: None,
@@ -236,9 +247,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
         turns.push(StorylineTurn {
             id: next_id,
             kind: Some(turn_kind.into()),
-            timestamp: resp_ts
-                .or(req_ts)
-                .or_else(|| evs.first().and_then(|e| e.timestamp.clone())),
+            timestamp: resp_ts.or(req_ts).or(first_ts),
             source: source.into(),
             message,
             reasoning_content: None,
@@ -261,7 +270,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
             turns.push(StorylineTurn {
                 id: next_id,
                 kind: Some("internal".into()),
-                timestamp: ev.timestamp.clone(),
+                timestamp: canonical_event_timestamp(ev)?,
                 source: "system".into(),
                 message: json!({"kind": ev.kind, "payload": ev.payload}),
                 reasoning_content: None,
@@ -515,80 +524,47 @@ fn latency_between(req: Option<&str>, resp: Option<&str>) -> Option<i64> {
     Some(resp_ms - req_ms)
 }
 
-/// Best-effort RFC3339 → unix millis (UTC `Z` or `±HH:MM`). No chrono dependency.
 fn parse_rfc3339_millis(s: &str) -> Option<i64> {
-    // Accept `YYYY-MM-DDTHH:MM:SS[.fff]Z` or with offset.
-    let s = s.trim();
-    if s.len() < 20 {
-        return None;
-    }
-    let date = &s[..10];
-    let time = &s[11..];
-    let (y, mo, d) = {
-        let parts: Vec<_> = date.split('-').collect();
-        if parts.len() != 3 {
-            return None;
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+fn canonical_event_timestamp(record: &EventRecord) -> Result<Option<String>> {
+    let textual_ms = record
+        .timestamp
+        .as_deref()
+        .map(|timestamp| {
+            DateTime::parse_from_rfc3339(timestamp)
+                .map(|timestamp| timestamp.timestamp_millis())
+                .map_err(|error| {
+                    Error::Other(format!(
+                        "invalid RFC3339 event timestamp '{timestamp}': {error}"
+                    ))
+                })
+        })
+        .transpose()?;
+    let canonical_ms = record
+        .identity
+        .timestamp_unix_ms
+        .map(|timestamp| {
+            i64::try_from(timestamp)
+                .map_err(|_| Error::Other("event timestamp_unix_ms exceeds i64".into()))
+        })
+        .transpose()?;
+    if let (Some(canonical), Some(textual)) = (canonical_ms, textual_ms) {
+        if canonical != textual {
+            return Err(Error::Other(format!(
+                "event timestamp conflict: timestamp_unix_ms={canonical}, RFC3339 timestamp={textual}"
+            )));
         }
-        (
-            parts[0].parse::<i64>().ok()?,
-            parts[1].parse::<i64>().ok()?,
-            parts[2].parse::<i64>().ok()?,
-        )
-    };
-    let (hms, frac_and_tz) = time.split_once('.').unwrap_or((time, "0Z"));
-    let hms_parts: Vec<_> = hms.split(':').collect();
-    if hms_parts.len() != 3 {
-        return None;
     }
-    let (hh, mm, ss) = (
-        hms_parts[0].parse::<i64>().ok()?,
-        hms_parts[1].parse::<i64>().ok()?,
-        hms_parts[2]
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse::<i64>()
-            .ok()?,
-    );
-    let (frac_str, tz) = if let Some(rest) = frac_and_tz.strip_suffix('Z') {
-        (rest, 0i64)
-    } else if let Some(pos) = frac_and_tz.rfind('+').or_else(|| {
-        // find last '-' after digits start
-        frac_and_tz
-            .char_indices()
-            .skip_while(|(_, c)| c.is_ascii_digit())
-            .find(|(_, c)| *c == '-')
-            .map(|(i, _)| i)
-    }) {
-        let (frac, off) = frac_and_tz.split_at(pos);
-        let sign = if off.starts_with('+') { 1i64 } else { -1i64 };
-        let off = off.trim_start_matches(['+', '-']);
-        let op: Vec<_> = off.split(':').collect();
-        let oh = op.first()?.parse::<i64>().ok()?;
-        let om = op.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
-        (frac, sign * (oh * 60 + om) * 60_000)
-    } else if hms_parts[2].ends_with('Z') {
-        ("0", 0)
-    } else {
-        return None;
+    let Some(timestamp_ms) = canonical_ms.or(textual_ms) else {
+        return Ok(None);
     };
-    let mut millis = 0i64;
-    let digits: String = frac_str
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    if !digits.is_empty() {
-        let padded = format!("{:0<3}", digits.chars().take(3).collect::<String>());
-        millis = padded.parse().ok()?;
-    }
-    // Days from civil date (Howard Hinnant algorithm)
-    let y = if mo <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468; // days since 1970-01-01
-    Some(days * 86_400_000 + hh * 3_600_000 + mm * 60_000 + ss * 1_000 + millis - tz)
+    let timestamp = DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
+        .ok_or_else(|| Error::Other("event timestamp is outside the RFC3339 range".into()))?;
+    Ok(Some(timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)))
 }
 
 fn extract_user(payload: &serde_json::Value) -> Option<String> {
@@ -673,6 +649,26 @@ mod projection_tests {
         let story = project_event_records(&records).unwrap();
         assert_eq!(story.turns[0].message, json!("first"));
         assert_eq!(story.turns[1].message, json!("second"));
+    }
+
+    #[test]
+    fn canonical_projection_uses_timestamp_unix_ms() {
+        let mut record = response(Some("session"), "call", 0, "text");
+        record.identity.timestamp_unix_ms = Some(1_000);
+        let story = project_event_records(&[record]).unwrap();
+        assert_eq!(
+            story.turns[0].timestamp.as_deref(),
+            Some("1970-01-01T00:00:01.000Z")
+        );
+    }
+
+    #[test]
+    fn canonical_projection_rejects_timestamp_conflicts() {
+        let mut record = response(Some("session"), "call", 0, "text");
+        record.identity.timestamp_unix_ms = Some(1_000);
+        record.timestamp = Some("1970-01-01T00:00:02Z".into());
+        let error = project_event_records(&[record]).unwrap_err();
+        assert!(error.to_string().contains("timestamp conflict"));
     }
 
     #[test]

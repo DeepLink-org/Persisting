@@ -33,7 +33,7 @@ pub fn spawn_link_backfill_record(
     payload["subagent_trajectories"] = json!(paths);
 
     EventRecord {
-        identity: persisting_pchronicle::EventIdentity::default(),
+        identity: persisting_events::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
         kind: "llm.spawn_link".to_string(),

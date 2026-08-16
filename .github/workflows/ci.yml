@@ -81,14 +81,11 @@ jobs:
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
         run: cargo test --workspace --locked
 
-      - name: Test pVisor with Lance Chronicle
+      - name: Test shared event control contract
         if: runner.os == 'Linux'
-        # The default profile covers local Lance. This additional profile
-        # verifies the cloud object-store extension.
-        env:
-          PERSISTING_TEST_ALLOW_NO_USERNS: "1"
-          PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-lance-runs
-        run: just test-pvisor-lance
+        # pVisor no longer links a Chronicle storage backend. Exercise the
+        # lightweight sidecar/control feature at its owning crate boundary.
+        run: cargo test -p persisting-events --features control --locked
 
       - name: Smoke product CLIs
         run: |

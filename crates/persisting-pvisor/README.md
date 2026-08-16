@@ -269,8 +269,9 @@ name = "openai"
 upstream = "https://api.openai.com/v1"
 
 [chronicle]
-mode = "lance"
+mode = "spawn"
 dir = "s3://trajectory-bucket/persisting/runs"
+binary = "pchronicle"
 ```
 
 Library callers select the same network boundary with
@@ -286,7 +287,7 @@ CLI form keeps the reusable project workspace local while offloading the canonic
 ```bash
 AWS_REGION=us-east-1 pvisor run \
   --overlayfs-base /path/to/project \
-  --chronicle-mode lance \
+  --chronicle-mode spawn \
   --chronicle-dir s3://trajectory-bucket/persisting/runs \
   -- codex
 ```
@@ -294,9 +295,9 @@ AWS_REGION=us-east-1 pvisor run \
 The resulting dataset is
 `s3://trajectory-bucket/persisting/runs/<agent>/<run-id>/events.lance`.
 Credentials use the AWS provider chain and are not persisted in Run metadata.
-The configured pChronicle writer receives both Gateway trajectory records and
-pVisor `run.*` lifecycle records as the same canonical `EventRecord`; pVisor no
-longer defines a second runtime event envelope outside pChronicle.
+The pChronicle sidecar receives both Gateway trajectory records and pVisor
+`run.*` lifecycle records as the shared, storage-independent `EventRecord`.
+pVisor does not load or write Lance directly.
 
 ### Container executor
 

@@ -224,7 +224,8 @@ impl LazySource {
                 Ok(ResolvedSource::Events(ResolvedEventSource {
                     source,
                     projection,
-                    normalized: OnceCell::new(),
+                    max_fallback_rows: self.options.max_event_fallback_rows,
+                    max_fallback_bytes: self.options.max_event_fallback_bytes,
                     normalization_count: AtomicUsize::new(0),
                 }))
             }
@@ -304,35 +305,26 @@ pub(super) enum ResolvedSource {
 pub(super) struct ResolvedEventSource {
     source: RawEventDataSource,
     projection: Option<StorylineDataSource>,
-    normalized: OnceCell<std::result::Result<Arc<NormalizedEventTables>, String>>,
+    max_fallback_rows: usize,
+    max_fallback_bytes: usize,
     pub(super) normalization_count: AtomicUsize,
 }
 
 impl ResolvedEventSource {
-    async fn normalized(&self) -> Result<Arc<NormalizedEventTables>> {
-        let result = self
-            .normalized
-            .get_or_init(|| async {
-                self.normalization_count.fetch_add(1, Ordering::Relaxed);
-                normalize_event_source(&self.source)
-                    .await
-                    .map(Arc::new)
-                    .map_err(|error| redact_error(&format!("{error:#}")))
-            })
-            .await;
-        match result {
-            Ok(tables) => Ok(tables.clone()),
-            Err(error) => anyhow::bail!("{error}"),
-        }
-    }
-
     async fn normalized_for(
         &self,
-        session_ids: &BTreeSet<String>,
-    ) -> Result<Arc<NormalizedEventTables>> {
-        Ok(Arc::new(
-            normalize_event_storylines(&self.source, session_ids).await?,
-        ))
+        session_ids: Option<&BTreeSet<String>>,
+        kind: CatalogTableKind,
+    ) -> Result<Arc<MemTable>> {
+        self.normalization_count.fetch_add(1, Ordering::Relaxed);
+        normalize_event_storylines(
+            &self.source,
+            session_ids,
+            kind,
+            self.max_fallback_rows,
+            self.max_fallback_bytes,
+        )
+        .await
     }
 
     pub(super) async fn records_for_storyline(
@@ -342,7 +334,11 @@ impl ResolvedEventSource {
         let session_ids = BTreeSet::from([session_id.to_string()]);
         let records = self
             .source
-            .read_records_for_storylines(&session_ids)
+            .read_records_for_storylines_bounded(
+                &session_ids,
+                self.max_fallback_rows,
+                self.max_fallback_bytes,
+            )
             .await?;
         Ok((!records.is_empty()).then_some(records))
     }
@@ -385,28 +381,14 @@ impl ResolvedSource {
                         carries_file_column: false,
                     }));
                 }
-                let normalized = match event_session_ids {
-                    Some(session_ids) => source.normalized_for(session_ids).await?,
-                    None => source.normalized().await?,
-                };
-                storyline_kind().map(|kind| ResolvedTable {
-                    provider: match kind {
-                        StorylineTableKind::Runs => normalized.runs.clone(),
-                        StorylineTableKind::Steps => normalized.steps.clone(),
-                        StorylineTableKind::ToolCalls => normalized.tool_calls.clone(),
-                    },
+                let normalized = source.normalized_for(event_session_ids, kind).await?;
+                Some(ResolvedTable {
+                    provider: normalized,
                     carries_file_column: false,
                 })
             }
         })
     }
-}
-
-#[derive(Debug)]
-pub(super) struct NormalizedEventTables {
-    pub(super) runs: Arc<MemTable>,
-    pub(super) steps: Arc<MemTable>,
-    pub(super) tool_calls: Arc<MemTable>,
 }
 
 async fn register_normalized_source(
@@ -420,11 +402,9 @@ async fn register_normalized_source(
             if let Some(projection) = &source.projection {
                 return projection.register(context);
             }
-            let normalized = source.normalized().await?;
-            context.register_table("runs", normalized.runs.clone())?;
-            context.register_table("steps", normalized.steps.clone())?;
-            context.register_table("tool_calls", normalized.tool_calls.clone())?;
-            Ok(())
+            anyhow::bail!(
+                "registering all normalized canonical events requires a fresh Storyline projection"
+            )
         }
     }
 }

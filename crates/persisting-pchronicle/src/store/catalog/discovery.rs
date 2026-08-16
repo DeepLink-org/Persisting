@@ -325,22 +325,29 @@ fn ensure_format_hint(mount: &DatasetMount, actual: ChronicleFormat, file: &str)
     Ok(())
 }
 
-pub(super) async fn normalize_event_source(
-    source: &RawEventDataSource,
-) -> Result<NormalizedEventTables> {
-    let records = source.read_records_in_append_order().await?;
-    normalize_event_records(records)
-}
-
 pub(super) async fn normalize_event_storylines(
     source: &RawEventDataSource,
-    session_ids: &BTreeSet<String>,
-) -> Result<NormalizedEventTables> {
-    let records = source.read_records_for_storylines(session_ids).await?;
-    normalize_event_records(records)
+    session_ids: Option<&BTreeSet<String>>,
+    kind: CatalogTableKind,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<Arc<MemTable>> {
+    let records = match session_ids {
+        Some(session_ids) => {
+            source
+                .read_records_for_storylines_bounded(session_ids, max_rows, max_bytes)
+                .await?
+        }
+        None => source.read_records_bounded(max_rows, max_bytes).await?,
+    };
+    normalize_event_records(records, kind, max_bytes)
 }
 
-fn normalize_event_records(records: Vec<EventRecord>) -> Result<NormalizedEventTables> {
+fn normalize_event_records(
+    records: Vec<EventRecord>,
+    kind: CatalogTableKind,
+    max_bytes: usize,
+) -> Result<Arc<MemTable>> {
     let mut groups = BTreeMap::<String, Vec<EventRecord>>::new();
     for record in records {
         let key = event_storyline_key(&record)
@@ -348,37 +355,49 @@ fn normalize_event_records(records: Vec<EventRecord>) -> Result<NormalizedEventT
         groups.entry(key.to_string()).or_default().push(record);
     }
 
-    let mut runs = Vec::<StoryRunRow>::new();
-    let mut steps = Vec::<StoryStepRow>::new();
-    let mut tool_calls = Vec::<StoryToolCallRow>::new();
-    for (group_key, records) in groups {
+    let stories = groups.into_iter().map(|(group_key, records)| {
         let story = project_event_records(&records)?;
         anyhow::ensure!(
             story.session_id == group_key,
             "projected Storyline identity changed"
         );
-        let tables = split_storyline(&story)?;
-        runs.push(tables.run);
-        steps.extend(tables.steps);
-        tool_calls.extend(tables.tool_calls);
-    }
-    let run_batch = story_runs_to_batch(&runs)?;
-    let step_batch = story_steps_to_batch(&steps)?;
-    let tool_batch = story_tool_calls_to_batch(&tool_calls)?;
-    Ok(NormalizedEventTables {
-        runs: Arc::new(MemTable::try_new(
-            story_runs_arrow_schema(),
-            vec![vec![run_batch]],
-        )?),
-        steps: Arc::new(MemTable::try_new(
-            story_steps_arrow_schema(),
-            vec![vec![step_batch]],
-        )?),
-        tool_calls: Arc::new(MemTable::try_new(
-            story_tool_calls_arrow_schema(),
-            vec![vec![tool_batch]],
-        )?),
-    })
+        Ok(story)
+    });
+
+    let (schema, batch) = match kind {
+        CatalogTableKind::Runs => {
+            let mut rows = Vec::<StoryRunRow>::new();
+            for story in stories {
+                rows.push(split_storyline(&story?)?.run);
+            }
+            (story_runs_arrow_schema(), story_runs_to_batch(&rows)?)
+        }
+        CatalogTableKind::Steps => {
+            let mut rows = Vec::<StoryStepRow>::new();
+            for story in stories {
+                rows.extend(split_storyline(&story?)?.steps);
+            }
+            (story_steps_arrow_schema(), story_steps_to_batch(&rows)?)
+        }
+        CatalogTableKind::ToolCalls => {
+            let mut rows = Vec::<StoryToolCallRow>::new();
+            for story in stories {
+                rows.extend(split_storyline(&story?)?.tool_calls);
+            }
+            (
+                story_tool_calls_arrow_schema(),
+                story_tool_calls_to_batch(&rows)?,
+            )
+        }
+        CatalogTableKind::Events => {
+            anyhow::bail!("canonical events do not require Storyline normalization")
+        }
+    };
+    anyhow::ensure!(
+        batch.get_array_memory_size() <= max_bytes,
+        "normalized canonical event fallback exceeds max_event_fallback_bytes {max_bytes}; build or sync a Storyline projection"
+    );
+    Ok(Arc::new(MemTable::try_new(schema, vec![vec![batch]])?))
 }
 
 pub(super) async fn discover_candidates(

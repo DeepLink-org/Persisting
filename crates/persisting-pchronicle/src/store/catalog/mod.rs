@@ -18,7 +18,7 @@ use source::*;
 
 use discovery::{
     bind_canonical_storyline_projections, discover_candidates, freeze_candidate,
-    normalize_event_source, normalize_event_storylines,
+    normalize_event_storylines,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -74,6 +74,8 @@ use super::{
 pub const DEFAULT_DATASET_NAME: &str = "dataset";
 pub const CATALOG_SOURCES_TABLE: &str = "sources";
 pub const CATALOG_TRAJECTORIES_TABLE: &str = "trajectories";
+pub const DEFAULT_MAX_EVENT_FALLBACK_ROWS: usize = 100_000;
+pub const DEFAULT_MAX_EVENT_FALLBACK_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -175,6 +177,11 @@ pub struct CatalogSnapshotOptions {
     pub storyline: StorylineDataSourceOptions,
     /// Maximum physical Sources opened concurrently while planning one scan.
     pub max_concurrent_sources: usize,
+    /// Maximum selected canonical rows that may be normalized in memory when a
+    /// fresh Storyline projection is unavailable.
+    pub max_event_fallback_rows: usize,
+    /// Maximum Arrow bytes retained while normalizing selected canonical rows.
+    pub max_event_fallback_bytes: usize,
 }
 
 impl Default for CatalogSnapshotOptions {
@@ -189,6 +196,8 @@ impl Default for CatalogSnapshotOptions {
             files: FileTrajectoryDataSourceOptions::default(),
             storyline: StorylineDataSourceOptions::default(),
             max_concurrent_sources,
+            max_event_fallback_rows: DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+            max_event_fallback_bytes: DEFAULT_MAX_EVENT_FALLBACK_BYTES,
         }
     }
 }
@@ -471,6 +480,14 @@ fn validate_catalog_options(options: CatalogSnapshotOptions) -> Result<()> {
     anyhow::ensure!(
         options.max_concurrent_sources > 0,
         "catalog max_concurrent_sources must be positive"
+    );
+    anyhow::ensure!(
+        options.max_event_fallback_rows > 0,
+        "catalog max_event_fallback_rows must be positive"
+    );
+    anyhow::ensure!(
+        options.max_event_fallback_bytes > 0,
+        "catalog max_event_fallback_bytes must be positive"
     );
     Ok(())
 }

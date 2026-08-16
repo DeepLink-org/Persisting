@@ -23,9 +23,10 @@ pvisor run \
 ```
 
 pVisor 启动内嵌 Gateway、向子进程注入代理或 base URL、等待执行、排空捕获并停止
-Gateway。`--gateway-stream-markdown` 生成实时人读投影，`--chronicle-mode lance` 写
-canonical structured events。Dataset 目录、查询、分析、导入导出和只读 Web UI 由
-[`pchronicle`](../../pchronicle/get-started.md) 提供。
+Gateway。`--gateway-stream-markdown` 生成实时人读投影；`--chronicle-mode spawn` 启动
+pChronicle sidecar 来写 canonical structured events。pVisor 只发送公共事件契约，不直接
+写 Lance；`lance` 仅保留为兼容别名。Dataset 目录、查询、分析、导入导出和只读 Web UI
+由 [`pchronicle`](../../pchronicle/get-started.md) 提供。
 
 客户端只有使用注入的代理或 base URL 才能被观察；直接 socket 是否受限取决于 executor，
 实际隔离边界以 Run Bundle 为准。

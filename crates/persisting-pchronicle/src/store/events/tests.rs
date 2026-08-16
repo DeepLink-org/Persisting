@@ -88,6 +88,82 @@ async fn append_creates_lance_dataset() {
 }
 
 #[tokio::test]
+async fn canonical_timestamp_is_utc_milliseconds_and_preserves_original_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = dir.path().join("store");
+    std::fs::create_dir_all(&storage).unwrap();
+    let session = flat_session(storage.to_str().unwrap(), "agent", "sess");
+    let mut record = note("timestamped");
+    record.timestamp = Some("2026-01-02T03:04:05.123456+08:00".into());
+
+    append_events(&session, std::slice::from_ref(&record))
+        .await
+        .unwrap();
+
+    let uri = raw_event_lance_path(&session)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let (_, datasets) = open_visible_snapshot(&uri).await.unwrap().unwrap();
+    assert_eq!(
+        datasets[0]
+            .schema()
+            .field(crate::TRAJECTORY_TIMESTAMP_COL)
+            .unwrap()
+            .data_type(),
+        lance::deps::arrow_schema::DataType::Timestamp(
+            lance::deps::arrow_schema::TimeUnit::Millisecond,
+            Some("UTC".into())
+        )
+    );
+    let rows = read_all_rows(&uri).await.unwrap();
+    assert_eq!(rows[0].timestamp, 1_767_294_245_123);
+    let restored = replay(&session, 0, None).await.unwrap().records;
+    assert_eq!(restored[0].timestamp, record.timestamp);
+}
+
+#[tokio::test]
+async fn append_rejects_conflicting_canonical_timestamps() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = dir.path().join("store");
+    std::fs::create_dir_all(&storage).unwrap();
+    let session = flat_session(storage.to_str().unwrap(), "agent", "sess");
+    let mut record = note("timestamp-conflict");
+    record.identity.timestamp_unix_ms = Some(1_000);
+    record.timestamp = Some("1970-01-01T00:00:02Z".into());
+
+    let error = append_events(&session, &[record]).await.unwrap_err();
+    assert!(format!("{error:#}").contains("timestamp conflict"));
+}
+
+#[tokio::test]
+async fn bounded_storyline_fallback_rejects_row_and_byte_overflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = dir.path().join("store");
+    std::fs::create_dir_all(&storage).unwrap();
+    let session = flat_session(storage.to_str().unwrap(), "agent", "sess");
+    append_events(&session, &[note("one"), note("two")])
+        .await
+        .unwrap();
+    let source = RawEventDataSource::open(raw_event_lance_path(&session).unwrap())
+        .await
+        .unwrap();
+    let sessions = std::collections::BTreeSet::from(["sess".to_string()]);
+
+    let row_error = source
+        .read_records_for_storylines_bounded(&sessions, 1, usize::MAX)
+        .await
+        .unwrap_err();
+    assert!(row_error.to_string().contains("max_event_fallback_rows"));
+
+    let byte_error = source
+        .read_records_for_storylines_bounded(&sessions, 10, 1)
+        .await
+        .unwrap_err();
+    assert!(byte_error.to_string().contains("max_event_fallback_bytes"));
+}
+
+#[tokio::test]
 async fn append_then_append_preserves_rows() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().join("store");
@@ -299,7 +375,7 @@ async fn missing_event_id_is_stored_as_null_without_deduplication() {
 }
 
 #[tokio::test]
-async fn incompatible_event_schema_is_rejected_without_migration() {
+async fn event_schema_mismatch_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().join("store");
     std::fs::create_dir_all(&storage).unwrap();

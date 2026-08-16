@@ -1,17 +1,17 @@
-//! Capture-side behavior over pChronicle's canonical
-//! [`EventRecord`](persisting_pchronicle::EventRecord) schema.
+//! Capture-side behavior over the shared
+//! [`EventRecord`](persisting_events::EventRecord) schema.
 
 use serde_json::Value;
 
 use super::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use crate::protocol::ProtocolKind;
 
-pub use persisting_pchronicle::EventRecord;
+pub use persisting_events::EventRecord;
 
 /// Capture-only interpretation of raw proxy payloads.
 ///
-/// The record schema belongs to pChronicle; SSE and provider payload extraction
-/// remain producer concerns and are supplied as extension behavior.
+/// The record schema belongs to the shared events contract; SSE and provider
+/// payload extraction remain producer concerns and are extension behavior.
 pub trait EventRecordExt {
     /// Internal traffic (e.g. `count_tokens`) — not a dialogue turn.
     fn is_internal_llm_request(&self) -> bool;

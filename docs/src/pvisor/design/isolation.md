@@ -134,11 +134,13 @@ compatibility with shell, Python, Node, and dynamically linked local tools. A
 measured runtime-closure builder may narrow it later; the current policy never
 makes those hierarchies writable.
 
-The default pVisor dependency graph includes the local Lance/DataFusion
-pChronicle backend for durable Attempt publication, but excludes cloud storage
-SDKs and protobuf/prost. `lance-chronicle` adds S3 support,
-`jujutsu-overlay` adds the Jujutsu OverlayFS upper, and
-`--no-default-features` produces a storage-light binary.
+The default pVisor dependency graph does not include a pChronicle storage
+backend, Lance, or DataFusion. Durable Attempt and trajectory publication uses
+the lightweight `persisting-events` control feature to start and communicate
+with a `pchronicle control` sidecar; storage-engine and cloud SDK dependencies
+remain in that process. `jujutsu-overlay` adds the Jujutsu OverlayFS upper.
+See [RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md) for the
+dependency boundary.
 
 ```text
 pVisor process

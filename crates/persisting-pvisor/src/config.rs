@@ -362,6 +362,7 @@ pub enum GatewayMode {
 pub struct ChronicleSettings {
     pub mode: ChronicleMode,
     pub dir: Option<PathBuf>,
+    pub binary: PathBuf,
 }
 
 impl Default for ChronicleSettings {
@@ -369,6 +370,7 @@ impl Default for ChronicleSettings {
         Self {
             mode: ChronicleMode::Off,
             dir: None,
+            binary: "pchronicle".into(),
         }
     }
 }
@@ -378,6 +380,10 @@ impl Default for ChronicleSettings {
 pub enum ChronicleMode {
     #[default]
     Off,
+    /// Spawn a pChronicle sidecar that owns durable trajectory storage.
+    Spawn,
+    /// Compatibility spelling for the former embedded Lance mode. This now
+    /// has the same sidecar semantics as [`Self::Spawn`].
     Lance,
 }
 

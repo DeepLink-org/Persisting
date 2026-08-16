@@ -132,6 +132,7 @@ plugins:
             0003 pChronicle ownership: 0003 pChronicle 所有权
             0004 ACTF format: 0004 ACTF 格式
             0005 pChronicle revision lineage: 0005 pChronicle 修订谱系
+            0007 Events contract and pChronicle sidecar: 0007 事件契约与 pChronicle Sidecar
             Research: 调研
             TransferQueue comparison: TransferQueue 对比
             TransferQueue interface mapping: TransferQueue 接口映射
@@ -229,6 +230,7 @@ nav:
           - 0003 pChronicle ownership: rfcs/0003-pchronicle-ownership.md
           - 0004 ACTF format: rfcs/0004-actf-format.md
           - 0005 pChronicle revision lineage: rfcs/0005-pchronicle-revision-lineage.md
+          - 0007 Events contract and pChronicle sidecar: rfcs/0007-events-contract-pchronicle-sidecar.md
       - Research:
           - TransferQueue comparison: design/references/transfer-queue-comparison.md
           - TransferQueue interface mapping: design/references/transfer-queue-interface.md

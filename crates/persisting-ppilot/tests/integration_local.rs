@@ -5,7 +5,7 @@
 
 mod common;
 
-use persisting_pchronicle_client::{ChronicleControl, MemoryChronicleControl};
+use persisting_events::{ChronicleControl, MemoryChronicleControl};
 use persisting_ppilot::{
     run_local_fleet, spawn_coordinated_sink_writer, spawn_sink_writer, CheckpointLedger,
     JsonlFileSink, Observer, RunCoordinator, RunOptions, SkipSet,

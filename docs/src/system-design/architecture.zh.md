@@ -9,6 +9,7 @@ pChronicle Design，命令属于各产品 Reference。
 
 | 产品或层次 | 拥有 | 不拥有 |
 | --- | --- | --- |
+| `persisting-events` 契约 | 存储无关的 `EventRecord` identity/envelope 与可选的版本化 pChronicle control 协议 | 物理 row、存储引擎、查询或 projection |
 | pVisor | 一个 Run、Attempt、执行环境、capability admission、Effect 与运行时 Evidence | 多 Run 调度或持久历史查询 |
 | pPilot | 多 Run planning、有界执行、lease、重试与恢复、reconciliation、结果收集及 task-to-Run mapping | Agent reasoning、Provider enforcement 或轨迹格式与存储 |
 | pChronicle | Dataset 与 Source discovery、canonical event 与终态事实、规范化 projection、revision lineage、查询与交换 | 启动、调度或控制 Run |
@@ -136,13 +137,19 @@ Source 的全局事务。固定外部文件不会把它转换为 canonical runti
 
 Ingestion 保留这些边界。规范化表示或 Catalog Snapshot 不会升级 Source 提供的 Evidence。
 
+pVisor 默认构建不链接 Lance/DataFusion。Chronicle mode 为 `spawn` 时，pVisor 启动
+`pchronicle control`，通过带认证的 loopback IPC 提交生命周期与 Gateway 事件，并且只把
+sidecar 成功响应视为 durable acknowledgement。旧模式名 `lance` 是 `spawn` 的兼容别名；
+pVisor 不再自行写 Lance。
+
 ## 故障与恢复
 
 | 故障 | Owner | 必需行为 |
 | --- | --- | --- |
 | Attempt 退出或 Provider 消失 | pVisor | finalise Evidence；暴露失败或创建 fenced replacement Attempt |
 | Worker lease 过期 | pPilot | 阻止 stale terminal publication；reconcile 期望与实际状态 |
-| capture queue 饱和 | producer/Gateway | 永不阻塞请求 callback；按配置报告丢失或进入持久路径 |
+| sidecar append queue 饱和或关闭 | pVisor/Gateway producer | 提交前明确拒绝并报告失败；不得声称已经 durable |
+| append 连接或 ACK 丢失 | producer 与 pChronicle writer | 由于写入可能已经提交，保留 unknown 状态；不得按“明确拒绝”复用序号 |
 | 历史发布冲突 | pChronicle writer | 保留已发布 Snapshot；按 writer contract 报错或重试 |
 | 控制面重启 | pPilot | reconcile checkpoint、活跃 Attempt 与终态历史事实 |
 | 视图生成失败 | pChronicle | 保持 canonical fact 可读；重建派生视图 |
@@ -175,6 +182,7 @@ Evidence 层级见[安全与 Evidence](security-evidence.md)，可迁移要求�
 
 | 边界 | 契约 Owner | 详细文章 |
 | --- | --- | --- |
+| 逻辑运行事件与本地 Chronicle control 协议 | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
 | Agent 执行与 Effect review | pVisor | [pVisor 概念](../pvisor/concepts/index.md)与[指南](../pvisor/guides/index.md) |
 | Provider 与运行时机制 | pVisor | [pVisor Design](../pvisor/design/index.md) |
 | 多 Run 编排 | pVisor 中的 pPilot | [pPilot Design](../pvisor/design/orchestration.md) |

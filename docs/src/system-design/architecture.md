@@ -10,6 +10,7 @@ commands belong to each product's Reference.
 
 | Product or layer | Owns | Does not own |
 | --- | --- | --- |
+| `persisting-events` contract | storage-independent `EventRecord` identity/envelope and the optional versioned pChronicle control protocol | storage rows, storage engines, query, or projection |
 | pVisor | one Run, its Attempts, execution environment, capability admission, effects, and runtime evidence | many-Run scheduling or durable history queries |
 | pPilot | planning, bounded execution, leases, retry and recovery, reconciliation, result collection, and task-to-Run mapping for many Runs | Agent reasoning, provider enforcement, or trajectory formats and storage |
 | pChronicle | Dataset and Source discovery, canonical events and terminal facts, normalized projections, revision lineage, query, and exchange | starting, scheduling, or controlling a Run |
@@ -155,13 +156,20 @@ external file does not convert it into a canonical runtime event Source.
 Ingestion preserves these boundaries. A normalized representation or Catalog
 Snapshot does not upgrade the evidence supplied by its Source.
 
+The default pVisor build does not link Lance or DataFusion. With Chronicle mode
+`spawn`, pVisor starts `pchronicle control`, submits lifecycle and Gateway
+events over authenticated loopback IPC, and treats only a successful sidecar
+response as a durable acknowledgement. The legacy mode name `lance` is an
+alias for `spawn`; pVisor no longer writes Lance itself.
+
 ## Failure and recovery
 
 | Failure | Owner | Required behavior |
 | --- | --- | --- |
 | Attempt exits or provider disappears | pVisor | finalize evidence; expose failure or create a fenced replacement Attempt |
 | Worker lease expires | pPilot | prevent stale terminal publication; reconcile expected and observed state |
-| capture queue is saturated | producer/Gateway | never block the request callback; report loss or preserve through the configured durable path |
+| sidecar append queue is saturated or closed | pVisor/Gateway producer | reject before submission and report the failure; do not claim durability |
+| append connection or acknowledgement is lost | producer and pChronicle writer | preserve the write as unknown because it may have committed; do not reuse its sequence as if definitely rejected |
 | history publication conflicts | pChronicle writer | preserve the previously published Snapshot; surface or retry according to the writer contract |
 | control plane restarts | pPilot | reconcile checkpoint, active Attempts, and terminal history facts |
 | view generation fails | pChronicle | keep canonical facts readable; rebuild the derived view |
@@ -197,6 +205,7 @@ See [Security and evidence](security-evidence.md) for evidence levels and
 
 | Boundary | Contract owner | Detailed document |
 | --- | --- | --- |
+| logical runtime event and local Chronicle control protocol | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
 | Agent execution and Effect review | pVisor | [pVisor concepts](../pvisor/concepts/index.md) and [guides](../pvisor/guides/index.md) |
 | provider and runtime mechanisms | pVisor | [pVisor design](../pvisor/design/index.md) |
 | many-Run orchestration | pPilot within pVisor | [pPilot design](../pvisor/design/orchestration.md) |

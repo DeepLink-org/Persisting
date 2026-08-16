@@ -18,7 +18,7 @@ chrono = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive", "env"] }
 futures.workspace = true
 persisting-agentctl.workspace = true
-persisting-pchronicle-client.workspace = true
+persisting-events = { workspace = true, features = ["control"] }
 pulsing-actor = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

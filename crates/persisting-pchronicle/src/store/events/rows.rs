@@ -10,14 +10,20 @@ use crate::{
     TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL,
 };
 use anyhow::{Context, Result};
-use lance::deps::arrow_array::{Array, Int64Array, RecordBatch, StringArray};
-use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema};
+use lance::deps::arrow_array::{
+    Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+};
+use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit};
 
 pub fn raw_event_arrow_schema() -> Arc<ArrowSchema> {
     Arc::new(ArrowSchema::new(vec![
         Field::new(TRAJECTORY_SEQ_COL, DataType::Int64, false),
         Field::new(TRAJECTORY_EVENT_ID_COL, DataType::Utf8, true),
-        Field::new(TRAJECTORY_TIMESTAMP_COL, DataType::Utf8, true),
+        Field::new(
+            TRAJECTORY_TIMESTAMP_COL,
+            DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+            false,
+        ),
         Field::new(TRAJECTORY_KIND_COL, DataType::Utf8, false),
         Field::new(TRAJECTORY_SOURCE_COL, DataType::Utf8, false),
         Field::new(TRAJECTORY_AGENT_ID_COL, DataType::Utf8, true),
@@ -48,9 +54,12 @@ pub fn event_rows_to_batch(schema: Arc<ArrowSchema>, rows: &[EventRow]) -> Resul
             Arc::new(opt_utf8(
                 &rows.iter().map(|r| r.event_id.clone()).collect::<Vec<_>>(),
             )),
-            Arc::new(opt_utf8(
-                &rows.iter().map(|r| r.timestamp.clone()).collect::<Vec<_>>(),
-            )),
+            Arc::new(
+                TimestampMillisecondArray::from(
+                    rows.iter().map(|row| row.timestamp).collect::<Vec<_>>(),
+                )
+                .with_timezone("UTC"),
+            ),
             Arc::new(req_utf8(
                 &rows.iter().map(|r| r.kind.clone()).collect::<Vec<_>>(),
             )),
@@ -92,7 +101,7 @@ pub fn event_rows_to_batch(schema: Arc<ArrowSchema>, rows: &[EventRow]) -> Resul
     .context("build trajectory RecordBatch")
 }
 
-pub fn event_row_for_storage(
+pub(super) fn event_row_for_storage(
     storage_session_id: &str,
     storage_agent_id: &str,
     record: &EventRecord,
@@ -142,13 +151,32 @@ pub fn seq_at(batch: &RecordBatch, row: usize) -> Result<i64> {
     Ok(a.value(row))
 }
 
+fn timestamp_ms_at(batch: &RecordBatch, name: &str, row: usize) -> Result<i64> {
+    let col_idx = batch
+        .schema()
+        .fields()
+        .iter()
+        .position(|field| field.name() == name)
+        .ok_or_else(|| anyhow::anyhow!("batch missing column '{name}'"))?;
+    let column = batch.column(col_idx);
+    let array = column
+        .as_any()
+        .downcast_ref::<TimestampMillisecondArray>()
+        .ok_or_else(|| anyhow::anyhow!("expected Timestamp(Millisecond, UTC) column {name}"))?;
+    anyhow::ensure!(
+        !array.is_null(row),
+        "null canonical timestamp in column {name}"
+    );
+    Ok(array.value(row))
+}
+
 pub fn event_row_from_batch(batch: &RecordBatch, index: usize) -> Result<EventRow> {
     let payload_json = req_utf8_at(batch, TRAJECTORY_PAYLOAD_JSON_COL, index)?;
     let event_id = utf8_at(batch, TRAJECTORY_EVENT_ID_COL, index)?;
     Ok(EventRow {
         seq: seq_at(batch, index)?,
         event_id,
-        timestamp: utf8_at(batch, TRAJECTORY_TIMESTAMP_COL, index)?,
+        timestamp: timestamp_ms_at(batch, TRAJECTORY_TIMESTAMP_COL, index)?,
         kind: req_utf8_at(batch, TRAJECTORY_KIND_COL, index)?,
         source: req_utf8_at(batch, TRAJECTORY_SOURCE_COL, index)?,
         agent_id: utf8_at(batch, TRAJECTORY_AGENT_ID_COL, index)?,
@@ -201,7 +229,7 @@ mod tests {
         EventRow {
             seq,
             event_id: Some(format!("event-{seq}")),
-            timestamp: None,
+            timestamp: 0,
             kind: "note".into(),
             source: "test".into(),
             agent_id: Some("agent".into()),
@@ -219,6 +247,7 @@ mod tests {
         let record = EventRecord {
             identity: crate::EventIdentity {
                 event_id: Some("event-a".into()),
+                timestamp_unix_ms: Some(0),
                 ..Default::default()
             },
             seq: 0,
@@ -247,6 +276,7 @@ mod tests {
         let resp = EventRecord {
             identity: crate::EventIdentity {
                 event_id: Some("event-response".into()),
+                timestamp_unix_ms: Some(0),
                 ..Default::default()
             },
             seq: 0,
@@ -280,7 +310,10 @@ mod tests {
     #[test]
     fn physical_routing_identity_wins_without_rewriting_payload_json() {
         let record = EventRecord {
-            identity: crate::EventIdentity::default(),
+            identity: crate::EventIdentity {
+                timestamp_unix_ms: Some(0),
+                ..Default::default()
+            },
             seq: 0,
             source: "test".into(),
             kind: "note".into(),
@@ -312,6 +345,7 @@ mod tests {
         let record = EventRecord {
             identity: crate::EventIdentity {
                 event_id: Some("event-storyline-seq".into()),
+                timestamp_unix_ms: Some(0),
                 ..Default::default()
             },
             seq: 42,

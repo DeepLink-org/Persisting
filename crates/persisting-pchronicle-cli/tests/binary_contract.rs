@@ -11,6 +11,22 @@ fn pchronicle(args: &[&str]) -> Result<Output> {
 }
 
 #[test]
+fn version_reports_the_package_version() -> Result<()> {
+    let output = pchronicle(&["--version"])?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout)?.trim(),
+        format!("pchronicle {}", env!("CARGO_PKG_VERSION"))
+    );
+    Ok(())
+}
+
+#[test]
 fn help_exposes_the_supported_product_surface() -> Result<()> {
     let output = pchronicle(&["--help"])?;
     assert!(output.status.success());

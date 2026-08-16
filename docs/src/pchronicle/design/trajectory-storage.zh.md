@@ -1,21 +1,23 @@
 # pChronicle 轨迹存储
 
-> 当前实现说明。规范性所有权见 [RFC-0003](../../rfcs/0003-pchronicle-ownership.md)，
+> 当前实现说明。规范性所有权见 [RFC-0003](../../rfcs/0003-pchronicle-ownership.md)与
+> [RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md)，
 > Dataset 命令见 [`pchronicle`](../reference/cli.md)。
 
 ## 1. 定位
 
 `persisting-pchronicle` 是 Agent 轨迹的结构化存储层，统一拥有：
 
-- `EventRecord` 逻辑事件和 Lance `EventRow` schema；
+- 公共 `persisting-events::EventRecord` 到 Lance `EventRow` 的映射与物理 schema；
 - Run / Story 坐标、目录布局和发现规则；
 - Lance canonical events 的读写、统计和维护；
 - AgenticMD 人读/调试视图的生成与宽松解析；
 - events、Storyline、ATIF、ACTF、OpenAI messages、AgenticMD 之间的格式转换；
 - materialize、judgment 和标准查询视图。
 
-Gateway 负责把协议流量解释为事件；CLI 只解析参数与展示结果，
-并在进程内直接调用 pChronicle。它们都不定义第二套轨迹落盘格式。
+`persisting-events` 拥有存储无关的逻辑事件信封。Gateway 与 pVisor 负责产出事件；CLI
+可以在进程内调用 pChronicle，pVisor 也可以通过 `pchronicle control` sidecar 提交。
+这些 producer 都不定义第二套轨迹落盘格式。
 
 ## 2. 逻辑坐标
 
@@ -51,7 +53,11 @@ Gateway 的 durable 微批写入每累计 8 个小 fragment 就 seal 一个 L0 s
 `sealed` 元数据，只替换精确匹配的连续 segment 区间，active tail 永不参与。由此 visible
 segment 数按层级增长而不是随事件线性增长；旧 version/file 仍按 maintenance 的保留期
 vacuum，避免破坏已经固定旧快照的 reader。
-物理 schema 把 `event_id` 提升为独立业务列，但事实层不检查唯一性，也不为它维护索引；
+物理 schema 把 `event_id` 提升为独立业务列，并把非空 `timestamp` 规范化为 UTC
+`Timestamp(Millisecond)`。其值来自 `timestamp_unix_ms`；缺失时由 admission 根据 RFC3339
+`timestamp` 或接收时间补齐；两者同时存在时必须在毫秒级一致。Storyline 投影也从
+`timestamp_unix_ms` 生成 UTC 毫秒文本，输入文本时间戳保存在 `payload_json`。事实层不检查
+`event_id` 唯一性，也不为它维护索引；
 重复 ID 和重试行是合法事实。完整 `EventRecord` 仍保存在 `payload_json`，因此回放不丢字段。评测结果写入同 Run 的
 `judgments.lance/`，不会随 rubric 增加而演化事实表 schema。需要审计保真度的工作流应
 使用 canonical events 层。
@@ -62,7 +68,8 @@ AgenticMD 是面向人的 Markdown 调试视图。它保存可见对话块和会
 代码审阅与人工分析。它会省略协议噪声，字段也允许缺失或扩展，因此不是存储格式或
 原始 HTTP 事件的无损替代。
 
-`pvisor run --chronicle-mode lance` 写 canonical Lance events；
+`pvisor run --chronicle-mode spawn` 启动 pChronicle sidecar，由 sidecar 写 canonical Lance
+events；旧值 `lance` 是相同行为的兼容别名，pVisor 本身不打开 Lance。
 `--gateway-stream-markdown` 可同时维护 live AgenticMD。Markdown 是诊断投影，Dataset
 消费统一使用 pChronicle API 和 `pchronicle` 命令。
 
