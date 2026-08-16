@@ -243,6 +243,106 @@ printf metadata-denied
 }
 
 #[test]
+fn safe_run_selectively_applies_then_drops_remaining_changes() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let run_home = temporary.path().join("runs");
+    fs::create_dir_all(workspace.join("src")).unwrap();
+    fs::create_dir_all(workspace.join("tests")).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .args(["run", "--safe", "--stdio", "capture"])
+        .current_dir(&workspace)
+        .args([
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf promoted > src/promote.txt; printf deferred > tests/defer.txt",
+        ])
+        .output()
+        .unwrap();
+
+    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!workspace.join("src/promote.txt").exists());
+    assert!(!workspace.join("tests/defer.txt").exists());
+
+    let run = only_run(&run_home);
+    let apply = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .args(["apply"])
+        .arg(&run)
+        .args(["--path", "src"])
+        .output()
+        .unwrap();
+    assert!(
+        apply.status.success(),
+        "selective apply failed: {}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("src/promote.txt")).unwrap(),
+        "promoted"
+    );
+    assert!(!workspace.join("tests/defer.txt").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .args(["status"])
+        .arg(&run)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "status failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["apply_history"].as_array().unwrap().len(), 1);
+    assert_eq!(status["filesystem"]["state"], "staged");
+    assert!(status["filesystem"]["sample_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path.as_str().is_some_and(|path| path.contains("defer.txt"))));
+
+    let drop = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .arg("drop")
+        .arg(&run)
+        .output()
+        .unwrap();
+    assert!(
+        drop.status.success(),
+        "drop failed: {}",
+        String::from_utf8_lossy(&drop.stderr)
+    );
+    assert!(!workspace.join("tests/defer.txt").exists());
+
+    let status = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .args(["status"])
+        .arg(&run)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["filesystem"]["state"], "discarded");
+    assert_eq!(status["filesystem"]["changed_files"], 0);
+    assert_eq!(status["apply_history"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn safe_launcher_closes_inherited_host_file_descriptors() {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");

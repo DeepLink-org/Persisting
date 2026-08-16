@@ -163,6 +163,59 @@ impl AttemptSession {
             errors,
         }
     }
+
+    /// Finalize durable state when pVisor prepared the Attempt drivers but
+    /// could not hand the Attempt to an executor.
+    ///
+    /// Preparation writes a live RunRecord and may start an overlay, Gateway,
+    /// or VM network attachment.  A later AgentCtl or event-publisher failure
+    /// must therefore take the same teardown path as an executed Attempt
+    /// instead of leaving a stale `running` record behind.
+    pub(crate) fn abort_startup(
+        self,
+        attempt_id: &persisting_agentctl::AttemptId,
+        lease_epoch: u64,
+        agentctl: crate::AgentCtlSnapshot,
+        safe_profile_requested: bool,
+        message: String,
+    ) -> anyhow::Result<()> {
+        let run_id = persisting_agentctl::RunId::new(self.run_record.run_id.clone());
+        let started_at_unix_ms = self.run_record.started_at_unix_ms;
+        let mut teardown = self.teardown(None);
+        let mut warnings = Vec::new();
+        if let Some(error) = teardown.error_message() {
+            warnings.push(format!("attempt teardown after startup failure: {error}"));
+        }
+        let result = persisting_agentctl::RunResult {
+            run_id,
+            attempt_id: attempt_id.clone(),
+            lease_epoch,
+            state: RunState::Failed,
+            started_at_unix_ms,
+            finished_at_unix_ms: crate::util::unix_now_ms(),
+            exit_code: None,
+            failure: Some(persisting_agentctl::RunFailure {
+                kind: persisting_agentctl::RunFailureKind::Infrastructure,
+                message,
+                retryable: true,
+            }),
+            output: Default::default(),
+            value: None,
+            metrics: Default::default(),
+            artifacts: Vec::new(),
+            event_stream_ref: None,
+            warnings,
+        };
+        teardown.commit_state(RunState::Failed)?;
+        crate::RunBundle::capture(
+            teardown.run_record(),
+            &result,
+            agentctl,
+            safe_profile_requested,
+        )?
+        .write(&teardown.run_record().stage_dir())?;
+        Ok(())
+    }
 }
 
 pub(crate) struct AttemptTeardown {
