@@ -68,9 +68,11 @@ pub use executor::{AttemptContext, RunExecutor};
 #[cfg(feature = "fuzzing")]
 pub use oci::fuzz_oci_layer;
 pub use persisting_agentctl::{
-    AgentOperationBegin, AgentOperationComplete, AgentOperationOutcome, AGENTCTL_ENDPOINT_ENV,
-    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV, AGENTCTL_VERSION,
-    AGENTCTL_VERSION_ENV,
+    AgentOperationBegin, AgentOperationComplete, AgentOperationOutcome, SupervisorClientMessage,
+    SupervisorDirective, SupervisorDirectiveAck, SupervisorDirectiveEnvelope, SupervisorHeartbeat,
+    SupervisorNetworkQuotaGrant, SupervisorRegistration, SupervisorServerMessage,
+    AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
+    AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, SUPERVISOR_PROTOCOL_VERSION,
 };
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;
@@ -81,11 +83,6 @@ pub use runtime::{
 };
 #[cfg(feature = "fuzzing")]
 pub use supervisor::decode_supervisor_frame_for_fuzz;
-pub use supervisor::{
-    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveAck,
-    SupervisorDirectiveEnvelope, SupervisorHeartbeat, SupervisorNetworkQuotaGrant,
-    SupervisorRegistration, SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
-};
 pub use util::unix_now_ms;
 pub use vm::run_internal_if_requested as run_krun_internal_if_requested;
 pub use vm::VmExecutor;

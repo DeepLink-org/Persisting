@@ -8,6 +8,10 @@ description = "Agent control contracts, policies, wire protocol, and client SDK"
 
 [dependencies]
 anyhow.workspace = true
+libc.workspace = true
 ipnet.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }

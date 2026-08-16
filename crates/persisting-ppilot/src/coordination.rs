@@ -12,9 +12,12 @@ use async_trait::async_trait;
 use persisting_agentctl::{
     AttemptId, RunCommitRequest, RunId, RunLeaseRecord, RunResult, RunState,
 };
-use persisting_pchronicle::{
-    attempt_registry_now_ms, AttemptRecordState, AttemptRegistry, CommitRunOutcome,
-    LeaseAcquireOutcome, RunControlStore,
+#[cfg(not(test))]
+use persisting_pchronicle_client::ChronicleControlProcessClient;
+#[cfg(test)]
+use persisting_pchronicle_client::MemoryChronicleControl;
+use persisting_pchronicle_client::{
+    AttemptRecordState, ChronicleControl, CommitRunOutcome, LeaseAcquireOutcome,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -115,20 +118,20 @@ impl AttemptObserver for ProcessLocalAttemptObserver {
 
 /// pChronicle-backed observer used by production resume/reconciliation.
 pub struct DurableAttemptObserver {
-    registry: Arc<AttemptRegistry>,
+    control: Arc<dyn ChronicleControl>,
 }
 
 impl DurableAttemptObserver {
-    fn new(registry: Arc<AttemptRegistry>) -> Self {
-        Self { registry }
+    fn new(control: Arc<dyn ChronicleControl>) -> Self {
+        Self { control }
     }
 }
 
 #[async_trait]
 impl AttemptObserver for DurableAttemptObserver {
     async fn observe(&self, lease: &RunLeaseRecord) -> Result<AttemptObservation> {
-        let Some(record) = self.registry.get(lease.run_id.as_str()).await? else {
-            return Ok(if lease.expires_at_unix_ms > attempt_registry_now_ms() {
+        let Some(record) = self.control.get_attempt(lease.run_id.as_str()).await? else {
+            return Ok(if lease.expires_at_unix_ms > unix_now_ms() {
                 AttemptObservation::Pending
             } else {
                 AttemptObservation::Absent
@@ -138,7 +141,7 @@ impl AttemptObserver for DurableAttemptObserver {
             return Ok(AttemptObservation::Absent);
         }
         match record.state {
-            AttemptRecordState::Active if record.is_live_at(attempt_registry_now_ms()) => {
+            AttemptRecordState::Active if record.is_live_at(unix_now_ms()) => {
                 Ok(AttemptObservation::Active {
                     attempt_id: AttemptId::new(record.attempt_id),
                     lease_epoch: record.lease_epoch,
@@ -183,8 +186,7 @@ pub struct ReconcileReport {
 /// Shared pPilot coordination state for one job/sink.
 #[derive(Clone)]
 pub struct RunCoordinator {
-    control: Arc<RunControlStore>,
-    attempt_registry: Arc<AttemptRegistry>,
+    control: Arc<dyn ChronicleControl>,
     journal_root: PathBuf,
     lease_ttl_ms: u64,
     owner_id: String,
@@ -212,7 +214,7 @@ impl RunCoordinator {
         sink_root: impl Into<PathBuf>,
         lease_ttl_ms: u64,
     ) -> Result<Self> {
-        Self::open_inner(control_root, sink_root, lease_ttl_ms, None).await
+        Self::open_with_binary("pchronicle", control_root, sink_root, lease_ttl_ms, None).await
     }
 
     pub async fn open_for_job(
@@ -221,7 +223,8 @@ impl RunCoordinator {
         lease_ttl_ms: u64,
         job_id: &str,
     ) -> Result<Self> {
-        Self::open_inner(
+        Self::open_with_binary(
+            "pchronicle",
             control_root,
             sink_root,
             lease_ttl_ms,
@@ -230,8 +233,47 @@ impl RunCoordinator {
         .await
     }
 
-    async fn open_inner(
+    pub async fn open_for_job_with_binary(
+        binary: impl AsRef<Path>,
         control_root: impl AsRef<str>,
+        sink_root: impl Into<PathBuf>,
+        lease_ttl_ms: u64,
+        job_id: &str,
+    ) -> Result<Self> {
+        Self::open_with_binary(
+            binary,
+            control_root,
+            sink_root,
+            lease_ttl_ms,
+            Some(crate::executor::job_run_id_prefix(job_id)),
+        )
+        .await
+    }
+
+    async fn open_with_binary(
+        binary: impl AsRef<Path>,
+        control_root: impl AsRef<str>,
+        sink_root: impl Into<PathBuf>,
+        lease_ttl_ms: u64,
+        run_id_prefix: Option<String>,
+    ) -> Result<Self> {
+        let control_root = control_root.as_ref().to_owned();
+        #[cfg(test)]
+        let control: Arc<dyn ChronicleControl> = {
+            let _ = binary;
+            Arc::new(MemoryChronicleControl::new(control_root))
+        };
+        #[cfg(not(test))]
+        let control = Arc::new(
+            ChronicleControlProcessClient::spawn(binary, control_root)
+                .await
+                .context("start pChronicle control client")?,
+        );
+        Self::open_with_control(control, sink_root, lease_ttl_ms, run_id_prefix).await
+    }
+
+    pub async fn open_with_control(
+        control: Arc<dyn ChronicleControl>,
         sink_root: impl Into<PathBuf>,
         lease_ttl_ms: u64,
         run_id_prefix: Option<String>,
@@ -244,10 +286,8 @@ impl RunCoordinator {
         tokio::fs::create_dir_all(&journal_root)
             .await
             .with_context(|| format!("create result journal {}", journal_root.display()))?;
-        let control_root = control_root.as_ref();
         Ok(Self {
-            control: Arc::new(RunControlStore::open(control_root).await?),
-            attempt_registry: Arc::new(AttemptRegistry::open(control_root).await?),
+            control,
             journal_root,
             lease_ttl_ms,
             owner_id: unique_owner_id(),
@@ -257,7 +297,7 @@ impl RunCoordinator {
         })
     }
 
-    pub fn control(&self) -> &Arc<RunControlStore> {
+    pub fn control(&self) -> &Arc<dyn ChronicleControl> {
         &self.control
     }
 
@@ -266,7 +306,7 @@ impl RunCoordinator {
     }
 
     pub fn durable_attempt_observer(&self) -> DurableAttemptObserver {
-        DurableAttemptObserver::new(Arc::clone(&self.attempt_registry))
+        DurableAttemptObserver::new(Arc::clone(&self.control))
     }
 
     pub fn lease_ttl_ms(&self) -> u64 {
@@ -451,7 +491,7 @@ impl RunCoordinator {
             }
         }
 
-        for control in self.control.list().await? {
+        for control in self.control.list_runs().await? {
             if self
                 .run_id_prefix
                 .as_ref()
@@ -692,6 +732,15 @@ fn unique_owner_id() -> String {
     format!("ppilot:{}:{nanos}:{sequence}", std::process::id())
 }
 
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 fn result_digest(result: &TaskResult) -> Result<String> {
     // serde_json's default map representation is key-sorted; hashing the Value
     // makes HashMap insertion order irrelevant across a crash/reload boundary.
@@ -758,7 +807,7 @@ mod tests {
             .unwrap();
         let lease = coordinator
             .control
-            .get(&run)
+            .get_run(&run)
             .await
             .unwrap()
             .unwrap()
@@ -771,8 +820,8 @@ mod tests {
         ));
 
         coordinator
-            .attempt_registry
-            .publish_active(run.as_str(), "attempt-durable", epoch, 30_000)
+            .control
+            .publish_attempt_active(run.as_str(), "attempt-durable", epoch, 30_000)
             .await
             .unwrap();
         assert!(matches!(
@@ -789,8 +838,8 @@ mod tests {
             terminal("task-durable", run.as_str(), "attempt-durable", epoch),
         );
         coordinator
-            .attempt_registry
-            .publish_terminal(
+            .control
+            .publish_attempt_terminal(
                 run.as_str(),
                 "attempt-durable",
                 epoch,
@@ -837,7 +886,7 @@ mod tests {
         assert!(report.committed_task_ids.contains("task-1"));
         assert!(coordinator
             .control
-            .get(&run)
+            .get_run(&run)
             .await
             .unwrap()
             .unwrap()
@@ -941,9 +990,12 @@ mod tests {
     async fn job_scoped_reconciler_ignores_other_jobs_in_shared_control_root() {
         let dir = tempfile::tempdir().unwrap();
         let sink_root = dir.path().join("sink");
-        let unscoped = RunCoordinator::open(dir.path().to_string_lossy(), &sink_root, 30_000)
-            .await
-            .unwrap();
+        let shared: Arc<dyn ChronicleControl> =
+            Arc::new(MemoryChronicleControl::new(dir.path().to_string_lossy()));
+        let unscoped =
+            RunCoordinator::open_with_control(Arc::clone(&shared), &sink_root, 30_000, None)
+                .await
+                .unwrap();
         let other_run = RunId::new("ppilot-job-b-task-1");
         let epoch = unscoped
             .acquire_lease(&other_run, "same-task-id", "driver-b")
@@ -959,10 +1011,14 @@ mod tests {
             .await
             .unwrap();
 
-        let scoped =
-            RunCoordinator::open_for_job(dir.path().to_string_lossy(), &sink_root, 30_000, "job-a")
-                .await
-                .unwrap();
+        let scoped = RunCoordinator::open_with_control(
+            shared,
+            &sink_root,
+            30_000,
+            Some(crate::executor::job_run_id_prefix("job-a")),
+        )
+        .await
+        .unwrap();
         let sink = JsonlFileSink::open(&sink_root).await.unwrap();
         let report = scoped
             .reconcile(&sink, &ProcessLocalAttemptObserver)
@@ -972,7 +1028,7 @@ mod tests {
         assert!(report.retry_task_ids.is_empty());
         assert!(scoped
             .control
-            .get(&other_run)
+            .get_run(&other_run)
             .await
             .unwrap()
             .unwrap()
@@ -1030,7 +1086,7 @@ mod tests {
             .unwrap();
         let initial_expiry = coordinator
             .control
-            .get(&run)
+            .get_run(&run)
             .await
             .unwrap()
             .unwrap()
@@ -1044,7 +1100,7 @@ mod tests {
             loop {
                 let expiry = coordinator
                     .control
-                    .get(&run)
+                    .get_run(&run)
                     .await
                     .unwrap()
                     .unwrap()
@@ -1113,7 +1169,7 @@ mod tests {
         assert!(report.retry_task_ids.contains("task-2"));
         assert!(coordinator
             .control
-            .get(&run)
+            .get_run(&run)
             .await
             .unwrap()
             .unwrap()

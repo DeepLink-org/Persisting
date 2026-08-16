@@ -81,7 +81,11 @@ examples-pchronicle:
 examples-ppilot:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release -q -p persisting-ppilot --bin ppilot
+    cargo build --release -q \
+      -p persisting-pchronicle-cli --bin pchronicle \
+      -p persisting-ppilot --bin ppilot
+    cargo build --release -q \
+      -p persisting-pvisor --bin pvisor
     for example in "{{ repo }}"/examples/ppilot/*; do
         [[ -f "$example/run.sh" ]] || continue
         echo "==> ${example#"{{ repo }}/"}/run.sh"
@@ -241,16 +245,18 @@ build profile="debug":
         exit 2
         ;;
     esac
-    # pChronicle and pPilot both require the Lance-backed Chronicle graph. Build
-    # them together so Cargo resolves and compiles that heavy feature set once.
+    # Build the pChronicle storage service beside its lightweight pPilot client.
+    # pPilot launches this binary for durable control and does not link Lance.
     cargo build \
       -p persisting-pchronicle-cli --bin pchronicle \
       -p persisting-ppilot --bin ppilot \
       "${cargo_args[@]}"
 
-    # Keep the standalone pVisor binary on its deliberately lightweight graph;
-    # pPilot enables pVisor's local Lance Chronicle feature only above.
-    cargo build -p persisting-pvisor --bin pvisor "${cargo_args[@]}"
+    # pPilot invokes pVisor at runtime instead of linking it. The default
+    # pVisor profile includes local Lance Chronicle for durable Attempt state
+    # while keeping cloud object-store SDKs excluded.
+    cargo build -p persisting-pvisor --bin pvisor \
+      "${cargo_args[@]}"
 
 build-release:
     just build release
@@ -414,7 +420,10 @@ test-crate crate:
       pchronicle-cli) cargo test -p persisting-pchronicle-cli ;;
       agentctl) cargo test -p persisting-agentctl ;;
       capture) cargo test -p persisting-gateway ;;
-      ppilot) cargo test -p persisting-ppilot ;;
+      ppilot)
+        cargo build -p persisting-pvisor --bin pvisor
+        cargo test -p persisting-ppilot
+        ;;
       pvisor) cargo test -p persisting-pvisor ;;
       dlcapt) cargo test -p persisting-dlcapt ;;
       *) echo "unknown crate: {{ crate }} (pchronicle|pchronicle-cli|agentctl|capture|ppilot|pvisor|dlcapt)" >&2; exit 2 ;;

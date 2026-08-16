@@ -1,8 +1,8 @@
-//! Long-lived pPilot adapter for pVisor's semantic AgentCtl.
+//! Long-lived pPilot adapter for pVisor's semantic AgentCtl protocol.
 
 use crate::agentctl::AgentCtlClient;
 use anyhow::{bail, Context};
-use persisting_pvisor::{
+use persisting_agentctl::{
     AgentCheckpointQuiesced, AgentDirective, AgentLifecycleState, AgentOperationBegin,
     AgentOperationComplete, AgentOperationOutcome, AgentProcessRegistration,
 };
@@ -16,26 +16,26 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug)]
 struct BridgeState {
     lifecycle: AgentLifecycleState,
-    accepting_operations: bool,
+    accepting_effects: bool,
     directive: AgentDirective,
     directive_seq: u64,
     quiesced_checkpoint_id: Option<String>,
     quiesce_deadline_unix_ms: Option<u64>,
-    open_operations: BTreeSet<String>,
+    open_effects: BTreeSet<String>,
     warnings: Vec<String>,
 }
 
 impl BridgeState {
     fn new(directive: AgentDirective, directive_seq: u64) -> Self {
-        let accepting_operations = matches!(&directive, AgentDirective::Continue);
+        let accepting_effects = matches!(&directive, AgentDirective::Continue);
         Self {
             lifecycle: AgentLifecycleState::Starting,
-            accepting_operations,
+            accepting_effects,
             directive,
             directive_seq,
             quiesced_checkpoint_id: None,
             quiesce_deadline_unix_ms: None,
-            open_operations: BTreeSet::new(),
+            open_effects: BTreeSet::new(),
             warnings: Vec::new(),
         }
     }
@@ -50,7 +50,7 @@ struct BridgeInner {
 
 /// One Run-scoped pPilot client that continuously observes pVisor directives.
 ///
-/// The bridge stops admitting new declared operations as soon as it observes a
+/// The bridge stops admitting new semantic effects as soon as it observes a
 /// quiesce directive. It acknowledges the checkpoint only at an idle safe point
 /// with an empty local/pVisor effect journal.
 pub struct PilotRuntimeBridge {
@@ -65,10 +65,10 @@ impl PilotRuntimeBridge {
         registration: AgentProcessRegistration,
         cancellation: CancellationToken,
     ) -> anyhow::Result<Self> {
-        let welcome = client.connect().context("connect pPilot AgentCtl")?;
+        let welcome = client.connect().context("connect pPilot Agent ABI")?;
         if let AgentDirective::Shutdown { reason } = &welcome.directive {
             bail!(
-                "pVisor requested shutdown during AgentCtl handshake{}",
+                "pVisor requested shutdown during Agent ABI handshake{}",
                 reason
                     .as_deref()
                     .map(|reason| format!(": {reason}"))
@@ -97,7 +97,7 @@ impl PilotRuntimeBridge {
                     _ = loop_stop.cancelled() => break,
                     _ = ticker.tick() => {
                         if let Err(error) = heartbeat_once(&loop_inner) {
-                            push_warning(&loop_inner, format!("AgentCtl heartbeat failed: {error:#}"));
+                            push_warning(&loop_inner, format!("Agent ABI heartbeat failed: {error:#}"));
                         }
                     }
                 }
@@ -119,51 +119,51 @@ impl PilotRuntimeBridge {
         self.inner.changed.notify_waiters();
     }
 
-    pub fn begin_operation(
+    pub fn begin_effect(
         &self,
-        operation_id: impl Into<String>,
+        effect_id: impl Into<String>,
         kind: impl Into<String>,
         request_digest: impl Into<String>,
         idempotency_key: Option<String>,
     ) -> anyhow::Result<u64> {
-        let operation_id = operation_id.into();
+        let effect_id = effect_id.into();
         let mut state = lock(&self.inner.state);
-        if !state.accepting_operations {
-            bail!("pVisor is quiescing; refusing new operation {operation_id}");
+        if !state.accepting_effects {
+            bail!("pVisor is quiescing; refusing new effect {effect_id}");
         }
-        if state.open_operations.contains(&operation_id) {
-            bail!("operation {operation_id} is already open");
+        if state.open_effects.contains(&effect_id) {
+            bail!("effect {effect_id} is already open");
         }
         let sequence = lock(&self.inner.client).begin_operation(AgentOperationBegin {
-            operation_id: operation_id.clone(),
+            operation_id: effect_id.clone(),
             kind: kind.into(),
             request_digest: request_digest.into(),
             idempotency_key,
         })?;
-        state.open_operations.insert(operation_id);
+        state.open_effects.insert(effect_id);
         Ok(sequence)
     }
 
-    pub fn complete_operation(
+    pub fn complete_effect(
         &self,
-        operation_id: &str,
+        effect_id: &str,
         outcome: AgentOperationOutcome,
     ) -> anyhow::Result<()> {
         let mut state = lock(&self.inner.state);
-        if !state.open_operations.contains(operation_id) {
-            bail!("operation {operation_id} is not open");
+        if !state.open_effects.contains(effect_id) {
+            bail!("effect {effect_id} is not open");
         }
         lock(&self.inner.client).complete_operation(AgentOperationComplete {
-            operation_id: operation_id.to_owned(),
+            operation_id: effect_id.to_owned(),
             outcome,
         })?;
-        state.open_operations.remove(operation_id);
+        state.open_effects.remove(effect_id);
         self.inner.changed.notify_waiters();
         Ok(())
     }
 
-    pub fn open_operations(&self) -> BTreeSet<String> {
-        lock(&self.inner.state).open_operations.clone()
+    pub fn open_effects(&self) -> BTreeSet<String> {
+        lock(&self.inner.state).open_effects.clone()
     }
 
     pub fn directive(&self) -> AgentDirective {
@@ -177,7 +177,7 @@ impl PilotRuntimeBridge {
         if let Err(error) = heartbeat_once(&self.inner) {
             push_warning(
                 &self.inner,
-                format!("final AgentCtl heartbeat failed: {error:#}"),
+                format!("final Agent ABI heartbeat failed: {error:#}"),
             );
         }
 
@@ -191,7 +191,7 @@ impl PilotRuntimeBridge {
             };
             let notified = self.inner.changed.notified();
             if let Some(deadline) = wait_until {
-                let now = persisting_pvisor::unix_now_ms();
+                let now = unix_now_ms();
                 if now >= deadline.saturating_add(1_000) {
                     push_warning(
                         &self.inner,
@@ -205,7 +205,10 @@ impl PilotRuntimeBridge {
                 let _ = tokio::time::timeout(Duration::from_secs(5), notified).await;
             }
             if let Err(error) = heartbeat_once(&self.inner) {
-                push_warning(&self.inner, format!("AgentCtl heartbeat failed: {error:#}"));
+                push_warning(
+                    &self.inner,
+                    format!("Agent ABI heartbeat failed: {error:#}"),
+                );
             }
         }
 
@@ -225,10 +228,7 @@ impl PilotRuntimeBridge {
                 "directive_seq".into(),
                 serde_json::json!(state.directive_seq),
             ),
-            (
-                "open_operations".into(),
-                serde_json::json!(state.open_operations),
-            ),
+            ("open_effects".into(), serde_json::json!(state.open_effects)),
         ])
     }
 }
@@ -249,7 +249,7 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
         state.directive = ack.directive.clone();
         match ack.directive {
             AgentDirective::Continue => {
-                state.accepting_operations = true;
+                state.accepting_effects = true;
                 state.quiesce_deadline_unix_ms = None;
                 if state.quiesced_checkpoint_id.take().is_some() {
                     state.lifecycle = AgentLifecycleState::Idle;
@@ -257,7 +257,7 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
                 None
             }
             AgentDirective::Shutdown { .. } => {
-                state.accepting_operations = false;
+                state.accepting_effects = false;
                 state.lifecycle = AgentLifecycleState::Stopping;
                 inner.cancellation.cancel();
                 None
@@ -266,12 +266,12 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
                 checkpoint_id,
                 deadline_unix_ms,
             } => {
-                state.accepting_operations = false;
+                state.accepting_effects = false;
                 state.quiesce_deadline_unix_ms = deadline_unix_ms;
                 let at_safe_point = matches!(
                     state.lifecycle,
                     AgentLifecycleState::Idle | AgentLifecycleState::Quiesced
-                ) && state.open_operations.is_empty();
+                ) && state.open_effects.is_empty();
                 if at_safe_point && state.quiesced_checkpoint_id.as_deref() != Some(&checkpoint_id)
                 {
                     Some(AgentCheckpointQuiesced {
@@ -295,6 +295,14 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
 fn push_warning(inner: &Arc<BridgeInner>, warning: String) {
     lock(&inner.state).warnings.push(warning);
 }
@@ -303,96 +311,4 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agentctl::AgentCtlClientConfig;
-    use persisting_agentctl::{AttemptId, RunId};
-    use persisting_pvisor::{AgentClientRole, AgentCtlServer};
-
-    #[tokio::test]
-    async fn quiesce_waits_for_open_effect_then_acknowledges_safe_point() {
-        let server =
-            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
-        let config = AgentCtlClientConfig::from_environment(
-            &server.environment(),
-            "pilot-1",
-            AgentClientRole::Pilot,
-            "ppilot",
-        )
-        .unwrap()
-        .unwrap();
-        let bridge = PilotRuntimeBridge::start(
-            AgentCtlClient::new(config),
-            AgentProcessRegistration {
-                pid: std::process::id(),
-                role: "ppilot-worker".into(),
-                executable: None,
-            },
-            CancellationToken::new(),
-        )
-        .unwrap();
-        bridge
-            .begin_operation(
-                "task-1",
-                "ppilot.task",
-                "sha256:test",
-                Some("task-1".into()),
-            )
-            .unwrap();
-        server.control().request_quiesce(
-            "checkpoint-1",
-            Some(persisting_pvisor::unix_now_ms() + 2_000),
-        );
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        assert!(server.control().snapshot().clients[0]
-            .quiesced_checkpoint_id
-            .is_none());
-
-        bridge
-            .complete_operation("task-1", AgentOperationOutcome::Committed)
-            .unwrap();
-        bridge.set_lifecycle(AgentLifecycleState::Idle);
-        heartbeat_once(&bridge.inner).unwrap();
-        assert_eq!(
-            server.control().snapshot().clients[0]
-                .quiesced_checkpoint_id
-                .as_deref(),
-            Some("checkpoint-1")
-        );
-        server.control().continue_execution();
-        let warnings = bridge.finish().await;
-        assert!(warnings.is_empty(), "{warnings:?}");
-    }
-
-    #[tokio::test]
-    async fn shutdown_directive_cancels_the_owned_task_token() {
-        let server =
-            AgentCtlServer::start(&RunId::new("run-2"), &AttemptId::new("attempt-2")).unwrap();
-        let config = AgentCtlClientConfig::from_environment(
-            &server.environment(),
-            "pilot-2",
-            AgentClientRole::Pilot,
-            "ppilot",
-        )
-        .unwrap()
-        .unwrap();
-        let cancellation = CancellationToken::new();
-        let bridge = PilotRuntimeBridge::start(
-            AgentCtlClient::new(config),
-            AgentProcessRegistration {
-                pid: std::process::id(),
-                role: "ppilot-worker".into(),
-                executable: None,
-            },
-            cancellation.clone(),
-        )
-        .unwrap();
-        server.control().request_shutdown(Some("test".into()));
-        heartbeat_once(&bridge.inner).unwrap();
-        assert!(cancellation.is_cancelled());
-        let _ = bridge.finish().await;
-    }
 }

@@ -47,6 +47,9 @@ struct ProduceArgs {
     /// Python interpreter used to evaluate the planner.
     #[arg(long, env = "PERSISTING_PYTHON", default_value = "python3")]
     python: PathBuf,
+    /// Standalone pVisor executable used for every produced Run.
+    #[arg(long, env = "PERSISTING_PVISOR_BIN", default_value = "pvisor")]
+    pvisor_binary: PathBuf,
     /// Stable batch identifier; defaults to the planner filename stem.
     #[arg(long, value_name = "ID")]
     batch_id: Option<String>,
@@ -76,6 +79,7 @@ async fn dispatch(command: Command) -> Result<ExitCode> {
         Command::Produce(args) => {
             let options = BatchProductionOptions {
                 output_dir: args.output,
+                pvisor_binary: args.pvisor_binary,
                 parallelism: args.parallelism,
                 capture_gateway: !args.no_capture,
                 supervisor_network_limit_bytes_per_second: args.cluster_network_limit,

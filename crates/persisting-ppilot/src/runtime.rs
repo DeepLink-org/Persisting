@@ -372,8 +372,18 @@ async fn spawn_one_slot(
         opts.job_cancel.clone(),
         gate,
     )
+    .with_pvisor_binary(opts.pvisor_binary.clone())
     .with_supervisor(supervisor);
-    let wref = spawn_supervised(system, &name, move || Ok(cfg.build())).await?;
+    let wref = spawn_supervised(system, &name, move || {
+        cfg.build().map_err(|error| {
+            pulsing_actor::error::PulsingError::from(
+                pulsing_actor::error::RuntimeError::ActorSpawnFailed {
+                    reason: format!("initialize pPilot worker: {error:#}"),
+                },
+            )
+        })
+    })
+    .await?;
     let flat = DistEnv::slot_flat_index(worker, slot, n_workers, per_worker);
     tracing::debug!(%name, worker, slot, flat, "worker slot ready");
     Ok((wref, flat))

@@ -89,6 +89,11 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE", requires = "run_spec")]
     result_file: Option<PathBuf>,
 
+    /// Create a durable `<run_id>/` workspace below this root. Control-plane
+    /// callers set this; nested Container/VM delegation leaves it unset.
+    #[arg(long, value_name = "DIR", requires = "run_spec")]
+    run_home: Option<PathBuf>,
+
     #[arg(long, help = SAFE_HELP, long_help = SAFE_LONG_HELP)]
     safe: bool,
 
@@ -524,18 +529,71 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             .is_none_or(|executor| executor == RunExecutorKind::Host),
         "--run-spec must execute with --executor host"
     );
-    let spec_path = args.run_spec.context("missing --run-spec")?;
+    let spec_path = args.run_spec.clone().context("missing --run-spec")?;
     let result_path = args
         .result_file
+        .clone()
         .context("--run-spec requires --result-file")?;
+    let run_home = args.run_home.clone();
     let spec: RunSpec = serde_json::from_slice(
         &std::fs::read(&spec_path)
             .with_context(|| format!("read delegated RunSpec from {}", spec_path.display()))?,
     )
     .context("decode delegated RunSpec")?;
-    let pvisor = PVisor::builder()
-        .executors(vec![Arc::new(ProcessExecutor::default())])
-        .build();
+    let pvisor = if let Some(run_home) = run_home {
+        let mut config = RunConfig::default();
+        config.run.agent = spec.agent.name.clone();
+        let RunInvocation::Process(process) = &spec.invocation;
+        config.run.command = std::iter::once(process.program.clone())
+            .chain(process.args.iter().cloned())
+            .collect();
+        config.run.workspace = process.cwd.as_deref().map(PathBuf::from);
+        apply_cli(&mut config, args)?;
+        anyhow::ensure!(
+            config.run.executor == RunExecutorKind::Host,
+            "--run-spec currently supports only the host executor"
+        );
+        anyhow::ensure!(
+            config.overlayfs.is_none(),
+            "--run-spec does not accept OverlayFS overrides"
+        );
+        anyhow::ensure!(
+            config.chronicle.mode == ChronicleMode::Off,
+            "--run-spec does not accept Chronicle overrides"
+        );
+        let storage = resolve_run_storage(&run_home.join(spec.run_id.as_str()))?;
+        let proxy = resolve_proxy(&config)?;
+        let mut builder = PVisor::builder()
+            .storage(&storage)
+            .executors(vec![Arc::new(ProcessExecutor::default())])
+            .network(NetworkDriverConfig::new(
+                config.overlaynet.mode,
+                NetworkConfig {
+                    mode: match config.overlaynet.policy {
+                        OverlayNetPolicy::Public => NetworkMode::Public,
+                        OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
+                        OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+                    },
+                    allowed_hosts: config.overlaynet.allow.clone(),
+                    rules: config.overlaynet.rules.clone(),
+                    deny_rules: config.overlaynet.deny.clone(),
+                    limits: config.overlaynet.limits.clone(),
+                },
+            ));
+        if let Some(proxy) = proxy {
+            builder = builder.gateway(
+                GatewayDriverConfig::new(proxy)
+                    .output_dir(&storage)
+                    .stream_markdown(config.gateway.stream_markdown)
+                    .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
+            );
+        }
+        builder.build()
+    } else {
+        PVisor::builder()
+            .executors(vec![Arc::new(ProcessExecutor::default())])
+            .build()
+    };
     let handle = pvisor.run(spec).await?;
     let agentctl = handle.agentctl();
     let cancellation = handle.cancellation();

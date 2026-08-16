@@ -1,3 +1,4 @@
+mod control;
 mod exchange;
 mod gateway_capture;
 mod onboard;
@@ -52,6 +53,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Serve the versioned pChronicle storage control protocol on loopback.
+    Control(ControlArgs),
     /// Learn the core pChronicle workflow with a guided Dataset walkthrough.
     Onboard(onboard::OnboardArgs),
     /// Show or set the local default Warehouse directory.
@@ -77,6 +80,17 @@ enum Command {
     Echo(EchoArgs),
     /// Serve the read-only Warehouse and optionally embed the local LLM Gateway.
     Serve(ServeArgs),
+}
+
+#[derive(Debug, Args)]
+struct ControlArgs {
+    /// Durable Run control and Attempt registry root.
+    #[arg(long, value_name = "URI")]
+    storage: String,
+
+    /// Loopback control listener. Port zero selects an ephemeral port.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    listen: SocketAddr,
 }
 
 #[derive(Debug, Args)]
@@ -759,6 +773,7 @@ pub async fn run_with_stdio(
 ) -> Result<()> {
     let settings = cli.settings.as_deref();
     match cli.command {
+        Command::Control(args) => control::run_control(&args.storage, args.listen, stdout).await,
         Command::Onboard(args) => {
             onboard::run(args, stdin_is_terminal, stdout_is_terminal, stdin, stdout).await
         }

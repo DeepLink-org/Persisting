@@ -1,10 +1,10 @@
 //! Job-scoped pPilot supervisor embedded into normal orchestration commands.
 
 use anyhow::{bail, Context};
-use persisting_agentctl::{NetworkBandwidthLimit, RunId, SupervisorBootstrap};
-use persisting_pvisor::{
-    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveEnvelope,
-    SupervisorNetworkQuotaGrant, SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
+use persisting_agentctl::{
+    NetworkBandwidthLimit, RunId, SupervisorBootstrap, SupervisorClientMessage,
+    SupervisorDirective, SupervisorDirectiveEnvelope, SupervisorNetworkQuotaGrant,
+    SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
 };
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -369,7 +369,7 @@ pub fn parse_bandwidth(value: &str) -> Result<u64, String> {
 mod tests {
     use super::*;
     use persisting_agentctl::AttemptId;
-    use persisting_pvisor::SupervisorRegistration;
+    use persisting_agentctl::SupervisorRegistration;
 
     #[test]
     fn bandwidth_parser_distinguishes_bits_and_bytes() {

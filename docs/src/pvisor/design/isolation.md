@@ -130,10 +130,11 @@ compatibility with shell, Python, Node, and dynamically linked local tools. A
 measured runtime-closure builder may narrow it later; the current policy never
 makes those hierarchies writable.
 
-The default pVisor dependency graph is independent of the analytical storage
-stack: it does not link Lance/DataFusion or protobuf/prost. Durable Lance
-Chronicle integration and the Jujutsu OverlayFS upper are separately enabled
-by `lance-chronicle` and `jujutsu-overlay`.
+The default pVisor dependency graph includes the local Lance/DataFusion
+pChronicle backend for durable Attempt publication, but excludes cloud storage
+SDKs and protobuf/prost. `lance-chronicle` adds S3 support,
+`jujutsu-overlay` adds the Jujutsu OverlayFS upper, and
+`--no-default-features` produces a storage-light binary.
 
 ```text
 pVisor process

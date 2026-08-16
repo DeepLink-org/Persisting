@@ -130,10 +130,11 @@ controller remains a product gate rather than a current claim.
 | Warm-kernel pool and scrubbed reuse protocol | Open product gate |
 | Long-lived distributed pPilot controller and node reconciliation | Open product gate |
 
-The default build is deliberately lightweight: directory OverlayFS and the
-compact pChronicle event model do not link Lance, DataFusion, Jujutsu, `prost`,
-or a protobuf toolchain. Full local Lance history and the Jujutsu upper backend
-are explicit `lance-chronicle` and `jujutsu-overlay` features.
+The default build includes the local Lance/DataFusion pChronicle backend so a
+standalone pVisor can publish durable Attempt state for pPilot. It excludes
+cloud object-store SDKs, Jujutsu, `prost`, and a protobuf toolchain. Use
+`lance-chronicle` for S3 support, `jujutsu-overlay` for the Jujutsu upper
+backend, or `--no-default-features` for a storage-light binary.
 
 pVisor is one part of the Persisting Agent infrastructure:
 

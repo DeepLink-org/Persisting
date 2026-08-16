@@ -31,7 +31,9 @@ ppilot run plan.py --workers 2 --per-worker 2 --sink ./results
 ```
 
 `--workers` and `--per-worker` bound active work. `--sink` enables the durable
-result journal and lease fencing.
+result journal and lease fencing. pPilot invokes the standalone `pvisor`
+binary for every task; use `--pvisor-binary PATH` or
+`PERSISTING_PVISOR_BIN` to select it explicitly.
 
 ## Inspect durable results
 

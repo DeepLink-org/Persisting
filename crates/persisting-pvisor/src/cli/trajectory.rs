@@ -130,6 +130,6 @@ pub fn chronicle_sink(
     _run_id: &str,
 ) -> anyhow::Result<ChronicleSinks> {
     anyhow::bail!(
-        "Lance trajectory capture is not part of the lightweight pVisor build; rebuild with `--features lance-chronicle`"
+        "Lance trajectory capture is disabled; rebuild with `--features local-lance-chronicle` (or `lance-chronicle` for cloud storage)"
     )
 }

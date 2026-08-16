@@ -3,10 +3,24 @@
 Standalone command-line interface for onboarding, browsing, querying, importing,
 exporting, and serving pChronicle trajectory Datasets.
 
-The current implementation provides `onboard`, `default`, `ls`/`list`, `status`,
+The current implementation provides `control`, `onboard`, `default`, `ls`/`list`, `status`,
 bounded read-only `query`, built-in `analysis`, Source-local `find`, create-only
 `import`, complete-trajectory `export`, and loopback-only `serve`. Import and
 export support ATIF, OpenAI Messages, ACTF, and Storyline JSON.
+
+## Orchestrator control plane
+
+`pchronicle control --storage URI` starts the write-capable storage control
+plane used by pPilot. It owns Run lease acquisition and renewal, fencing,
+terminal commits, Attempt registry access, and trajectory append. The process
+binds an ephemeral loopback port, publishes its endpoint and one-time token to
+its parent through stdout, and serves versioned authenticated requests until
+the parent exits.
+
+This command is normally launched automatically by pPilot. Use
+`--pchronicle-binary PATH` or `PERSISTING_PCHRONICLE_BIN` on pPilot to select
+the executable. It is deliberately separate from `pchronicle serve`: the
+Warehouse and Web UI remain read-only.
 
 ## Guided onboarding
 

@@ -1,4 +1,4 @@
-//! Lance trajectory sink: TaskResult → EventRecord → TrajectoryAppend.
+//! pChronicle trajectory sink: TaskResult → EventRecord → TrajectoryAppend.
 //!
 //! Enabled with feature `traj-sink`. Always Tee with [`JsonlFileSink`] so
 //! `--resume` keeps using the JSONL task_id ledger.
@@ -7,13 +7,16 @@ use crate::sink::ResultSink;
 use crate::task::TaskResult;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use persisting_pchronicle::TrajectoryAppendRequest;
-use persisting_pchronicle::{EventIdentity, EventRecord};
+use persisting_pchronicle_client::{
+    ChronicleControl, EventIdentity, EventRecord, TrajectoryAppendRequest,
+};
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 /// Append terminal pPilot results as `ppilot.result` / `ppilot.failure` events.
 pub struct LanceResultSink {
+    control: Arc<dyn ChronicleControl>,
     storage: String,
     agent_id: String,
     session_id: String,
@@ -22,11 +25,13 @@ pub struct LanceResultSink {
 
 impl LanceResultSink {
     pub fn new(
+        control: Arc<dyn ChronicleControl>,
         storage: impl Into<String>,
         agent_id: impl Into<String>,
         session_id: impl Into<String>,
     ) -> Self {
         Self {
+            control,
             storage: storage.into(),
             agent_id: agent_id.into(),
             session_id: session_id.into(),
@@ -105,7 +110,9 @@ impl LanceResultSink {
                 root_session_id: None,
                 records: vec![rec],
             };
-            let resp = persisting_pchronicle::operations::trajectory::append_async(req)
+            let resp = self
+                .control
+                .append_trajectory(req)
                 .await
                 .context("trajectory_append")?;
             tracing::debug!(
