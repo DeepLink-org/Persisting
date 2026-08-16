@@ -40,6 +40,7 @@ use url::Url;
 #[derive(Debug, Parser)]
 #[command(
     name = "pchronicle",
+    version,
     about = "Learn, browse, query, and exchange Agent trajectory Datasets"
 )]
 pub struct Cli {

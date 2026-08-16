@@ -149,5 +149,6 @@ zstd = "0.13"
 prost-build = { path = "vendor/prost-build-protox" }
 fuser = { path = "vendor/fuser" }
 libkrun = { path = "vendor/libkrun" }
+krun-init-blob = { path = "vendor/krun-init-blob" }
 krun-vmm = { path = "vendor/krun-vmm" }
 krun-devices = { path = "vendor/krun-devices" }

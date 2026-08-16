@@ -4898,8 +4898,6 @@ dependencies = [
 [[package]]
 name = "krun-init-blob"
 version = "0.1.0-1.19.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c90831a5abcb1c887fcd56b76c9970e1a6e36e6892e74fb672a731448473cd3b"
 
 [[package]]
 name = "krun-kernel"
