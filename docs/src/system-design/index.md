@@ -7,26 +7,32 @@ Persisting has two primary product domains:
   queryable Datasets.
 
 pPilot extends pVisor from one Run to many. Gateway, OverlayFS, and OverlayNet
-are pVisor runtime mechanisms. The product domains integrate through stable Run
-identity, events, artifacts, terminal facts, lineage, and Evidence, but each has
-a standalone entry path.
+are pVisor runtime mechanisms. Where available, stable Run identity connects the
+domains, but each also has a standalone entry path.
 
 ![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
 
 ## Cross-product contract
 
 ```text
-Agent goal -> pVisor / pPilot -> events + artifacts + terminal facts + Evidence
-                                                   |
-External Sources -> importer / adapter ------------+-> pChronicle Dataset
+Configured pVisor capture
+  Gateway trajectory events ─┐
+  pVisor lifecycle records ──┴─> canonical event Source ─┐
+Pinned external Sources                                  │
+  ATIF / ACTF / OpenAI Messages / Storyline ─────────────┴─> Catalog Snapshot
+                                                               └─> normalized Dataset views
 ```
 
-A pVisor Run can end with reviewable staged Effects and a private, versioned Run
-Bundle without pChronicle. The standard durable handoff sends its observed
-facts and Evidence to pChronicle. External Sources can enter the same Dataset
-model through a supported importer or adapter without passing through pVisor.
-Each path retains source-specific guarantees; ingestion does not add evidence
-that its source did not provide.
+Attempt finalization writes a private, versioned Run Bundle and leaves Effects
+staged for later review/apply/drop without pChronicle. Configured capture sends
+Gateway trajectory events and pVisor lifecycle records, including the Evidence
+those records carry. The full Bundle and its Artifact, lineage, Effect, and
+broader Evidence inventory remain local unless moved separately.
+
+External file and Storyline Sources are pinned and normalized directly without
+passing through pVisor or becoming canonical events. Each path retains
+source-specific guarantees; ingestion does not add Evidence that its Source did
+not provide.
 
 | Concern | Owner |
 | --- | --- |

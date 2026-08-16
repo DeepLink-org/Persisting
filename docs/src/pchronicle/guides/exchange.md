@@ -2,6 +2,8 @@
 
 Use import and export at the interoperability boundary. Import creates a new
 Dataset; export reconstructs complete trajectories from one Catalog Snapshot.
+Import accepts ATIF, ACTF, and OpenAI Messages. Export supports those formats
+plus Storyline JSON.
 
 ## Import into a new Dataset
 
@@ -16,7 +18,7 @@ must be finite and explicit:
 
 ```bash
 cat input.json | pchronicle import --from - --stream \
-  --output ./imported --format storyline
+  --output ./imported --format openai-messages
 ```
 
 After import, inspect the new boundary:

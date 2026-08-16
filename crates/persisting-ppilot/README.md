@@ -35,8 +35,11 @@ coordination records. When pPilot is built with `traj-sink` and `--traj` is
 enabled, the same child also appends terminal `ppilot.result` / `ppilot.failure`
 trajectory events; it does not capture a general Run trajectory. pPilot retains
 ownership of lease and fencing decisions, recovery, reconciliation, and
-task-to-Run mapping. pPilot does not link pChronicle, Lance, Arrow, or
-DataFusion. Use
+task-to-Run mapping. Delegated pVisor Runs receive no Chronicle overrides, so
+`--sink` does not automatically enable their Gateway or lifecycle capture. Any
+pVisor capture is a separate integration outside the current delegated
+`--run-spec` path. pPilot does not link pChronicle, Lance, Arrow, or DataFusion.
+Use
 `--pchronicle-binary PATH` or `PERSISTING_PCHRONICLE_BIN` when `pchronicle` is
 not installed beside `ppilot` or available on `PATH`. Similarly, use
 `--pvisor-binary PATH` or `PERSISTING_PVISOR_BIN` for pVisor.

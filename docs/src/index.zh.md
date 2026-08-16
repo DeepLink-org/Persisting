@@ -1,7 +1,7 @@
 ---
 template: home.html
 title: Persisting — 治理 Agent 执行与持久轨迹 Dataset
-description: 治理 Agent Run，并将原生或外部轨迹转化为持久、可查询的 Dataset，具备明确的 identity、lineage 与 Evidence。
+description: 治理 Agent Run，并将原生或外部轨迹转化为持久、可查询的 Dataset；保留明确的 Source identity、lineage，以及 Source 实际携带的 Evidence。
 hide: toc
 ---
 

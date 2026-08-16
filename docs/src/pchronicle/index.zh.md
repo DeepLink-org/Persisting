@@ -1,8 +1,8 @@
 # pChronicle
 
 **pChronicle 是 Persisting 的结构化轨迹与 Dataset 数据层。** 它发现本地存储或 S3 上的
-原生及受支持外部 Source，保留 canonical fact 与来源，提供规范化 Run 视图，并支持有界
-查询、分析、revision lineage 与格式交换。
+原生及受支持外部 Source；它在存在 canonical event fact 时予以保留，并始终保留 Source
+来源。pChronicle 提供规范化 Run 视图，并支持有界查询、分析、revision lineage 与格式交换。
 
 ![pChronicle 产品边界](../assets/diagrams/persisting/pchronicle-product.svg)
 
@@ -12,20 +12,23 @@
 - 不可变 Catalog Snapshot 的成员和 Source version 描述；
 - Canonical event 存储与 Run 终态事实；
 - 规范化的 `runs`、`steps` 与 `tool_calls` 查询视图；
-- Storyline、ATIF、ACTF 与 OpenAI Messages 的交换边界；
+- ATIF、ACTF 与 OpenAI Messages 的 import 边界；
+- 上述格式与 Storyline JSON 的 export 边界；
 - AgenticMD 非权威人读 projection；
 - 派生数据的 revision lineage。
 
-pChronicle 不执行或调度 Agent。它从 runtime event 变成持久历史的位置开始工作。
+pChronicle 不执行或调度 Agent。它的输入包括 canonical runtime-event Source，以及固定版本的
+本地或 S3 ATIF、ACTF、OpenAI Messages 与 Storyline Source。外部 Source 会被直接规范化，
+不会先变成 canonical runtime event。
 
 ## 提出第一个问题
 
 ```bash
-pchronicle ls examples/data/atif
-pchronicle analysis overview examples/data/atif
-pchronicle query examples/data/atif \
-  'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source'
+pchronicle onboard
+pchronicle onboard query
 ```
+
+这些安装后即可运行的 walkthrough 会创建临时示例 Dataset，不要求源码 checkout。
 
 ## 按目的阅读 pChronicle
 
@@ -37,4 +40,5 @@ pchronicle query examples/data/atif \
 | 检查存储与 Catalog 机制 | [Design](design/index.md) |
 | 查找命令、schema 与格式 | [Reference](reference/index.md) |
 
-理解 Run 如何执行和捕获，请从 [pVisor](../pvisor/index.md)开始。
+要了解 Persisting 治理的 capture 如何通过 pVisor 配置后的 Gateway 与 lifecycle-event 路径
+进入 pChronicle，请从 [pVisor](../pvisor/index.md)开始。

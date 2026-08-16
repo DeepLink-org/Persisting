@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780" role="img" aria-labelledby="title desc">
   <title id="title">pVisor AgentVisor architecture</title>
-  <desc id="desc">An Agent sends one Run contract into pVisor. pVisor governs lifecycle, capabilities, effects, checkpoints, lineage, evidence, and runtime drivers. pPilot orchestrates many Runs, host, container, VM, and future fleet providers execute Attempts, and pChronicle is an optional durable Dataset handoff for events, artifacts, terminal facts, and Evidence.</desc>
+  <desc id="desc">An Agent sends one Run contract into pVisor. pVisor governs lifecycle, capabilities, Effects, checkpoints, lineage, Evidence, and runtime drivers. pPilot orchestrates many Runs, while host, container, VM, and future fleet providers execute Attempts. Configured pChronicle capture receives Gateway trajectory events, pVisor lifecycle records, and their event-carried Evidence; the full Run Bundle and its Artifact, lineage, Effect, and broader Evidence inventory remain local.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#08111f"/>
@@ -102,12 +102,13 @@
   <g filter="url(#shadow)">
     <rect x="1160" y="322" width="205" height="132" rx="20" class="card" stroke="#86efac"/>
     <text x="1191" y="360" class="label">pChronicle</text>
-    <text x="1173" y="387" class="small">Optional durable handoff</text>
+    <text x="1176" y="387" class="small">Configured event handoff</text>
     <text x="1191" y="410" class="small">Dataset · history</text>
-    <text x="1191" y="434" class="tiny">Canonical facts · lineage</text>
+    <text x="1191" y="434" class="tiny">Event-carried facts only</text>
   </g>
   <path d="M1122 388H1142V294H1262V322" class="teal-line"/>
-  <text x="1236" y="282" class="tiny" text-anchor="middle">events · artifacts · terminal facts · Evidence</text>
+  <text x="1236" y="267" class="tiny" text-anchor="middle">Gateway trajectory events</text>
+  <text x="1236" y="286" class="tiny" text-anchor="middle">pVisor lifecycle records + carried Evidence</text>
 
   <path d="M700 592V625" class="teal-line"/>
   <text x="718" y="616" class="tiny">Attempt placement</text>

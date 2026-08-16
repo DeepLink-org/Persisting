@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780" role="img" aria-labelledby="title desc">
   <title id="title">Persisting product domains and integration handoff</title>
-  <desc id="desc">Agent tasks enter the pVisor governed-execution domain, while evaluators, frameworks, and files enter the pChronicle trajectory Dataset domain directly. A one-way data and evidence handoff carries events, artifacts, terminal facts, lineage, and Evidence from pVisor to pChronicle. Stable Run identity is shared where present while source identity remains visible.</desc>
+  <desc id="desc">Agent tasks enter the pVisor governed-execution domain, while evaluators, frameworks, and files enter the pChronicle trajectory Dataset domain directly. The configured one-way handoff carries Gateway trajectory events, pVisor lifecycle records, and the Evidence those records carry. The Run Bundle, Artifact references, lineage, staged Effects, and broader runtime Evidence remain local. Stable Run identity is shared where present while source identity remains visible.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#08111f"/>
@@ -66,15 +66,17 @@
     <text x="100" y="290" class="eyebrow">pVisor domain</text>
     <text x="100" y="324" class="domain-title">pVisor: governed execution</text>
 
-    <rect x="100" y="351" width="440" height="86" rx="16" class="inner-card pilot-card"/>
+    <rect x="100" y="351" width="440" height="100" rx="16" class="inner-card pilot-card"/>
     <text x="124" y="383" class="card-title">Many-Run orchestration</text>
-    <text x="124" y="414" class="body">pPilot: plan · lease · retry · reconcile</text>
+    <text x="124" y="410" class="small">pPilot: plan · lease · retry · results · mapping</text>
+    <text x="124" y="433" class="small">traj-sink + --traj: terminal result / failure records only</text>
 
-    <rect x="100" y="456" width="440" height="91" rx="16" class="inner-card visor-card"/>
-    <text x="124" y="509" class="body">pVisor: Run · Attempt · capabilities · Effects · Evidence</text>
+    <rect x="100" y="465" width="440" height="91" rx="16" class="inner-card visor-card"/>
+    <text x="124" y="500" class="body">pVisor: Run · Attempt · capabilities · Effects</text>
+    <text x="124" y="529" class="small">Run Bundle + broader Evidence stay local</text>
 
-    <rect x="100" y="566" width="440" height="66" rx="16" class="inner-card"/>
-    <text x="124" y="606" class="body">Host · Container · libkrun VM providers</text>
+    <rect x="100" y="575" width="440" height="57" rx="16" class="inner-card"/>
+    <text x="124" y="610" class="body">Host · Container · libkrun VM providers</text>
   </g>
 
   <g id="pchronicle-domain" filter="url(#shadow)">
@@ -91,11 +93,13 @@
 
   <g id="integration-handoff">
     <rect x="590" y="340" width="220" height="132" rx="18" fill="#101c30" stroke="#60a5fa" stroke-width="1.7"/>
-    <text x="700" y="370" text-anchor="middle" class="eyebrow">Integration handoff</text>
-    <text x="700" y="407" text-anchor="middle" class="small">events · artifacts · terminal facts · <tspan x="700" dy="23">lineage · Evidence</tspan></text>
+    <text x="700" y="370" text-anchor="middle" class="eyebrow">Configured handoff</text>
+    <text x="700" y="399" text-anchor="middle" class="small">Gateway trajectory events</text>
+    <text x="700" y="423" text-anchor="middle" class="small">pVisor lifecycle records</text>
+    <text x="700" y="447" text-anchor="middle" class="small">event-carried Evidence</text>
     <path d="M570 500H830" class="handoff-line"/>
-    <rect x="612" y="483" width="176" height="34" rx="17" fill="#17233a" stroke="#60a5fa" stroke-width="1.4"/>
-    <text x="700" y="505" text-anchor="middle" class="small handoff-label">data / evidence handoff</text>
+    <rect x="602" y="483" width="196" height="34" rx="17" fill="#17233a" stroke="#60a5fa" stroke-width="1.4"/>
+    <text x="700" y="505" text-anchor="middle" class="small handoff-label">configured event handoff</text>
   </g>
 
   <g id="shared-contract" filter="url(#shadow)">

@@ -11,9 +11,12 @@ own, and stable contracts connect them when both products are used together.
 - **pChronicle** turns native and external trajectory Sources into durable,
   queryable Datasets with preserved origin, normalized views, and lineage.
 
-The products meet at stable Run identity, canonical events, artifacts,
-terminal facts, lineage, and Evidence. Neither product is only a stage in a
-mandatory end-to-end lifecycle.
+Where Run identity is present, it remains stable across the product boundary.
+The implemented configured handoff publishes Gateway trajectory events and
+pVisor lifecycle records, including Evidence carried by those records. The Run
+Bundle and its Artifact references, lineage, staged Effects, and broader runtime
+Evidence remain local unless moved separately. Neither product is only a stage
+in a mandatory end-to-end lifecycle.
 
 ![Persisting product domains and integration](assets/diagrams/persisting/system-products.svg)
 
@@ -53,13 +56,14 @@ and retains revision lineage. External Sources can enter pChronicle without
 first passing through pVisor.
 
 ```bash
-pchronicle analysis overview examples/data/atif
-pchronicle query examples/data/atif \
-  'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source'
+pchronicle onboard
+pchronicle onboard query
 ```
 
-The Dataset is the durable unit for discovery, inspection, exchange, and
-analysis. pChronicle does not start, schedule, or control Agent Runs.
+The onboarding workflow creates temporary example Datasets without requiring a
+source checkout. The Dataset is the durable unit for discovery, inspection,
+exchange, and analysis. pChronicle does not start, schedule, or control Agent
+Runs.
 
 ## Use the integrated path
 
@@ -71,9 +75,15 @@ without changing the Run contract:
 ppilot run plan.py --workers 4 --per-worker 2 --sink ./results
 ```
 
-pPilot scales pVisor Runs. Their canonical events, artifacts, terminal facts,
-lineage, and Evidence can then become pChronicle inputs, joined through stable
-Run identity rather than process or provider identity.
+The default pPilot path ends with durable results, task-to-Run mapping,
+coordination and lease history, and the configured result journal. With the
+`traj-sink` feature and `--traj`, pPilot additionally emits only terminal
+`ppilot.result` or `ppilot.failure` records. That option does not capture a
+general pVisor trajectory.
+
+pVisor's configured Gateway/lifecycle capture is a separate integration.
+Delegated pVisor Runs launched through the current `--run-spec` path do not
+inherit Chronicle capture configuration, and the full Run Bundle remains local.
 
 ## Guarantees remain source-specific
 

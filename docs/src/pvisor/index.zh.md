@@ -30,11 +30,14 @@ Agent 可以在 stage 内自由编辑。用户决定哪些 filesystem Effect 进
 pVisor 的独立产品闭环是：
 
 ```text
-RunSpec -> admission -> Attempt -> Effect review/apply/drop -> Run Bundle
+RunSpec -> admission -> Attempt
+  -> terminal RunResult + private Run Bundle + staged Effects
+  -> later review/apply/drop
 ```
 
-pVisor Run 以可审查的 staged Effect 和私有、带版本的 Run Bundle 完成。pChronicle 是标准的
-持久 Dataset 与历史交接路径，并非此闭环的运行时前置条件。
+Attempt finalization 会写入 terminal RunResult 与私有、带版本的 Run Bundle，同时保留 staged
+filesystem Effect。后续 `review`、`apply` 或 `drop` 操作再读取并处理 Bundle 与 stage。
+pChronicle 并非此闭环的运行时前置条件。
 
 ## 按目的阅读 pVisor
 
@@ -46,5 +49,6 @@ pVisor Run 以可审查的 staged Effect 和私有、带版本的 Run Bundle 完
 | 检查隔离与运行时机制 | [Design](design/index.md) |
 | 查找精确命令语法 | [Reference](reference/index.md) |
 
-要让 pVisor Run 的 event、Artifact、终态事实与 Evidence 成为持久、可查询的 Dataset，
-请继续阅读 [pChronicle](../pchronicle/index.md)。
+要把配置后的 Gateway 轨迹 event 与 pVisor lifecycle record 作为持久 Dataset 查询，请继续
+阅读 [pChronicle](../pchronicle/index.md)。当前交接不会发布完整 Run Bundle，也不会发布其中的
+Artifact、lineage、Effect 与更完整的 Evidence 清单。

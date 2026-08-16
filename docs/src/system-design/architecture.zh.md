@@ -3,7 +3,7 @@
 本文只定义 Persisting 产品之间的契约。Provider 机制属于 pVisor Design，存储布局属于
 pChronicle Design，命令属于各产品 Reference。
 
-![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
+![Persisting 产品域与集成关系](../assets/diagrams/persisting/system-products.svg)
 
 ## 产品 Ownership
 
@@ -20,15 +20,19 @@ pVisor 的 Run 模型，仍位于 pVisor 产品路径中。
 ## 独立 Ingress 路径
 
 ```text
-Agent goal -> pVisor / pPilot -> events + artifacts + terminal facts + Evidence
-                                                   |
-External Sources -> importer / adapter ------------+-> pChronicle Dataset
+Configured runtime capture
+  Gateway trajectory events ─┐
+  pVisor lifecycle records ──┴─> canonical event Source ──────────────┐
+Pinned external Sources                                                │
+  local/S3 ATIF, ACTF, OpenAI Messages files ──────────────────────────┼─> Catalog Snapshot
+  local/S3 Storyline Sources ──────────────────────────────────────────┘
+                                                                         └─> normalized Dataset views
 ```
 
 pPilot 是受治理执行路径上可选的多 Run 编排器。pVisor 可以用 staged Effect 与私有、带版本的
-Run Bundle 完成独立闭环。交接到 pChronicle 是标准持久 Dataset 与历史路径，而不是 pVisor
-运行时前置条件。外部 Source 可通过受支持的 importer 或 adapter 进入 pChronicle，但不会
-因此获得 pVisor 执行保证。
+Run Bundle 及 terminal RunResult 完成独立闭环。配置 capture 并不是 pVisor 运行时前置条件。
+外部文件与 Storyline Source 会被直接固定版本并规范化；它们既不经过 pVisor，也不会变成
+canonical runtime event，因此不会获得 pVisor 执行保证。
 
 ## 稳定对象
 
@@ -37,19 +41,21 @@ RunSpec
   └── Run
       ├── Attempt 1
       ├── Attempt 2
-      ├── Artifact references
-      ├── Effect decisions
-      └── terminal RunResult + private versioned Run Bundle
+      └── Attempt finalization
+          ├── terminal RunResult
+          ├── private versioned Run Bundle
+          └── staged Effects → later review / apply / drop
 
-Optional durable handoff
-  └── pChronicle canonical events and Dataset projections
+Optional configured event handoff
+  └── Gateway trajectory events + pVisor lifecycle records
 ```
 
 逻辑 Run 可以迁移，Attempt 与 Provider 绑定。基础设施重试创建新 Attempt；语义重试创建
 派生 Run。一个 Run 可以有多个 Attempt，但只能有一个可见终态结果。
 
-跨产品稳定身份是 `run_id`。Session、Step、call、event 和 Artifact identity 保留自己的
-scope 与 Source lineage。进程 ID、Container ID、VM ID 或 worker lease 都不能代替 Run identity。
+Source 携带 `run_id` 时，它就是跨产品稳定身份。Session、Step、call、event 和 Artifact
+identity 保留自己的 scope 与 Source lineage。进程 ID、Container ID、VM ID 或 worker lease
+都不能代替 Run identity。
 
 ## 单 Run 路径
 
@@ -59,9 +65,8 @@ User or Agent framework
   → pVisor admission
   → capability-by-dimension provider selection
   → Attempt execution
-  → runtime events and Artifact references
-  → staged Effect review / apply / drop
-  → terminal RunResult + private versioned Run Bundle
+  → terminal RunResult + private versioned Run Bundle + staged Effects
+  → later review / apply / drop
 ```
 
 Admission 比较请求的 capability 维度与选中 Provider 能提供的 Evidence。必需维度无法
@@ -70,8 +75,10 @@ enforce 时，在 workload 执行前失败；可选降级必须明确写入 Run 
 文件 promotion 是 Effect 决策，不是 Run 终态提交。只要 stage 仍存在，就可以多次 apply
 不同路径。网络请求和远程工具修改属于不同 Effect 维度，不能从文件状态推断。
 
-配置后，pVisor 会把 event、Artifact、终态事实与 Evidence 交接给 pChronicle，形成持久
-Dataset 历史。未配置该交接不会使本地 Run Bundle 不满足 pVisor 契约。
+配置后，pVisor 会向 pChronicle 发布 Gateway 轨迹 event，以及 `run.created`、
+`run.state_changed` 和终态 lifecycle record。这些 record 携带 Run/Attempt identity、
+lifecycle fact 与其中可用的 Evidence。Artifact reference、lineage、staged filesystem Effect、
+AgentCtl/network/resource Evidence 和完整 Run Bundle 仍留在本地，除非由单独 adapter 搬运。
 
 ## 多 Run 路径
 
@@ -83,7 +90,6 @@ Manifest or task stream
   → pVisor placement and Attempts
   → pPilot checkpoint and reconciliation
   → terminal results and task-to-Run mapping
-  → events, artifacts, terminal facts, and Evidence
 ```
 
 pPilot 调度 Run future，而不是 Agent conversation。它持久保存：
@@ -95,25 +101,29 @@ job_id → task_id → run_id → attempt_id / lease_epoch → terminal result
 系统不承诺物理执行 exactly once。Lease fencing、稳定 identity、幂等 event ingestion 和
 终态 compare-and-swap 的目标是 at-least-once Attempt 与一个可见 Run 结果。
 
-这些事实可使用与单 Run 相同的可选 pChronicle 持久交接。即使由 pChronicle control 进程
-保存所选 coordination record，编排决策与 mapping 仍归 pPilot 所有。
+使用 `run --sink` 时，默认路径会写入配置的结果 journal，并让 pChronicle control 子进程
+保存所选 coordination record。启用 `traj-sink` 构建并传入 `--traj` 时，pPilot 只额外发出
+终态 `ppilot.result` 或 `ppilot.failure` record；它不会捕获通用 Run 轨迹。Delegated pVisor
+Run 不会获得 Chronicle capture 配置。在所有模式中，编排决策与 task-to-Run mapping 仍归
+pPilot 所有。
 
 ## Dataset 路径
 
-pVisor、Gateway、Provider 与外部 importer 从相互独立的 Source 路径产生事实；ingestion
-之后的持久解释由 pChronicle 拥有：
+Canonical runtime writer 与固定版本的外部 Source 是相互独立的 Source 路径；它们只在
+Catalog Snapshot 与规范化 Dataset 视图处汇合：
 
 ```text
-producers
-  → canonical events
-  → terminal fact and Artifact manifest
-  → normalized Run / Step / ToolCall projections
-  → exchange formats and lineage-bearing revisions
+configured Gateway and pVisor lifecycle writers
+  → canonical event Source ────────────────────────────────┐
+pinned local/S3 external Sources                           │
+  → ATIF / ACTF / OpenAI Messages files ───────────────────┼─> Catalog Snapshot
+  → Storyline Sources ─────────────────────────────────────┘     ├─> normalized Run / Step / ToolCall views
+                                                                 └─> query / export / revision lineage
 ```
 
 Canonical fact 采用 append-oriented 模型。Storyline 等规范化视图是可重建 projection；交换
 文件是互操作边界，不替代事实源。每次读取固定一个 Catalog Snapshot，但不会虚构跨无关
-Source 的全局事务。
+Source 的全局事务。固定外部文件不会把它转换为 canonical runtime event Source。
 
 ## Source 特定保证
 
@@ -144,7 +154,9 @@ Ingestion 保留这些边界。规范化表示或 Catalog Snapshot 不会升级 
 
 安全性按 capability 维度报告。pVisor 记录请求策略、实际机制、Provider identity、
 enforcement 结果与观察到的 Effect；pPilot 在 placement 间保存 authority generation 和
-lease history；pChronicle 保存 Evidence 引用与不可变结果事实。
+lease history；配置后的 pChronicle capture 只保存 lifecycle fact，以及 Gateway 或 lifecycle
+event record 实际携带的 Evidence。更完整的 Run Bundle Evidence 清单仍留在本地，除非另行
+搬运。
 
 ```text
 requested policy

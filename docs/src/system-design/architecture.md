@@ -22,17 +22,21 @@ inside the pVisor product boundary.
 ## Independent ingress paths
 
 ```text
-Agent goal -> pVisor / pPilot -> events + artifacts + terminal facts + Evidence
-                                                   |
-External Sources -> importer / adapter ------------+-> pChronicle Dataset
+Configured runtime capture
+  Gateway trajectory events ─┐
+  pVisor lifecycle records ──┴─> canonical event Source ──────────────┐
+Pinned external Sources                                                │
+  local/S3 ATIF, ACTF, OpenAI Messages files ──────────────────────────┼─> Catalog Snapshot
+  local/S3 Storyline Sources ──────────────────────────────────────────┘
+                                                                         └─> normalized Dataset views
 ```
 
 pPilot is the optional many-Run orchestrator on the governed-execution path.
-pVisor can complete its standalone loop with staged Effects and a private,
-versioned Run Bundle. The handoff to pChronicle is the standard durable Dataset
-and history path, not a pVisor runtime prerequisite. External Sources enter
-pChronicle through supported importers or adapters without acquiring pVisor
-execution guarantees.
+pVisor can complete its standalone loop with a terminal RunResult, staged
+Effects, and a private, versioned Run Bundle. Configured capture is not a pVisor
+runtime prerequisite. External file and Storyline Sources are pinned and
+normalized directly; they neither pass through pVisor nor become canonical
+runtime events, and they do not acquire pVisor execution guarantees.
 
 ## Stable objects
 
@@ -41,21 +45,23 @@ RunSpec
   └── Run
       ├── Attempt 1
       ├── Attempt 2
-      ├── Artifact references
-      ├── Effect decisions
-      └── terminal RunResult + private versioned Run Bundle
+      └── Attempt finalization
+          ├── terminal RunResult
+          ├── private versioned Run Bundle
+          └── staged Effects → later review / apply / drop
 
-Optional durable handoff
-  └── pChronicle canonical events and Dataset projections
+Optional configured event handoff
+  └── Gateway trajectory events + pVisor lifecycle records
 ```
 
 The logical Run is portable. An Attempt is provider-specific. Infrastructure
 retry creates another Attempt; a semantic retry creates a derived Run. A Run
 may have multiple Attempts but only one visible terminal result.
 
-The stable cross-product identity is `run_id`. Session, Step, call, event, and
-Artifact identities remain scoped and retain their Source lineage. A process
-ID, container ID, VM ID, or worker lease is never a substitute for Run identity.
+Where a Source carries it, the stable cross-product identity is `run_id`.
+Session, Step, call, event, and Artifact identities remain scoped and retain
+their Source lineage. A process ID, container ID, VM ID, or worker lease is
+never a substitute for Run identity.
 
 ## Single-Run path
 
@@ -65,9 +71,8 @@ User or Agent framework
   → pVisor admission
   → capability-by-dimension provider selection
   → Attempt execution
-  → runtime events and Artifact references
-  → staged Effect review / apply / drop
-  → terminal RunResult + private versioned Run Bundle
+  → terminal RunResult + private versioned Run Bundle + staged Effects
+  → later review / apply / drop
 ```
 
 Admission compares requested capability dimensions with evidence the selected
@@ -80,9 +85,12 @@ Selected paths can be applied more than once while the stage remains available.
 Network requests and remote tool mutations are separate effect dimensions and
 cannot be inferred from filesystem state.
 
-When configured, pVisor hands events, artifacts, terminal facts, and Evidence
-to pChronicle for durable Dataset history. Failure to configure that handoff
-does not make the local Run Bundle incomplete for the pVisor contract.
+When configured, pVisor publishes Gateway trajectory events plus `run.created`,
+`run.state_changed`, and terminal lifecycle records to pChronicle. Those records
+carry Run/Attempt identity, lifecycle facts, and available event-carried
+Evidence. Artifact references, lineage, staged filesystem Effects,
+AgentCtl/network/resource Evidence, and the full Run Bundle remain local unless
+a separate adapter moves them.
 
 ## Many-Run path
 
@@ -94,7 +102,6 @@ Manifest or task stream
   → pVisor placement and Attempts
   → pPilot checkpoint and reconciliation
   → terminal results and task-to-Run mapping
-  → events, artifacts, terminal facts, and Evidence
 ```
 
 pPilot schedules Run futures rather than Agent conversations. It persists the
@@ -108,27 +115,33 @@ The system does not promise exactly-once physical execution. Lease fencing,
 stable identity, idempotent event ingestion, and terminal compare-and-swap aim
 for at-least-once Attempts with one visible Run result.
 
-The resulting facts can use the same optional durable pChronicle handoff as one
-Run. pPilot owns the orchestration decisions and mapping even when a pChronicle
-control process stores the selected coordination records.
+With `run --sink`, the default path writes the configured result journal and
+uses a pChronicle control child for selected coordination records. When built
+with `traj-sink` and invoked with `--traj`, pPilot additionally emits only
+terminal `ppilot.result` or `ppilot.failure` records; it does not capture a
+general Run trajectory. Delegated pVisor Runs do not receive Chronicle capture
+configuration. pPilot owns orchestration decisions and task-to-Run mapping in
+all of these modes.
 
 ## Dataset path
 
-pVisor, Gateway, providers, and external importers emit facts from independent
-Source paths. pChronicle owns their durable interpretation after ingestion:
+Canonical runtime writers and pinned external Sources are independent Source
+paths. They converge only at the Catalog Snapshot and normalized Dataset views:
 
 ```text
-producers
-  → canonical events
-  → terminal fact and Artifact manifest
-  → normalized Run / Step / ToolCall projections
-  → exchange formats and lineage-bearing revisions
+configured Gateway and pVisor lifecycle writers
+  → canonical event Source ────────────────────────────────┐
+pinned local/S3 external Sources                           │
+  → ATIF / ACTF / OpenAI Messages files ───────────────────┼─> Catalog Snapshot
+  → Storyline Sources ─────────────────────────────────────┘     ├─> normalized Run / Step / ToolCall views
+                                                                 └─> query / export / revision lineage
 ```
 
 Canonical facts are append-oriented. Storyline and other normalized views are
 rebuildable projections. Exchange files are interoperability boundaries, not a
 replacement source of truth. Each read operation fixes a Catalog Snapshot; it
-does not invent a global transaction across unrelated Sources.
+does not invent a global transaction across unrelated Sources. Pinning an
+external file does not convert it into a canonical runtime event Source.
 
 ## Source-specific guarantees
 
@@ -161,7 +174,9 @@ lost callback, and an unenforced capability remain visible states.
 Security is reported per capability dimension. pVisor records requested policy,
 installed mechanism, provider identity, enforcement result, and observed
 effects. pPilot preserves authority generation and lease history across
-placement. pChronicle stores the evidence references and immutable outcome facts.
+placement. Configured pChronicle capture stores lifecycle facts and only the
+Evidence carried by Gateway or lifecycle event records; the broader Run Bundle
+evidence inventory remains local unless moved separately.
 
 This produces a chain rather than a boolean label:
 

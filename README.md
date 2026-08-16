@@ -9,9 +9,11 @@ Persisting has two connected product domains:
 - pChronicle turns native and external trajectory Sources into durable,
   queryable Datasets with preserved origin, normalized views, and lineage.
 
-They integrate through stable Run identity, canonical events, artifacts,
-terminal facts, and Evidence, but each product also has a standalone entry
-path.
+The domains share stable Run identity where it is present. Today the configured
+pVisor-to-pChronicle path publishes Gateway trajectory events and pVisor
+lifecycle records, including the Evidence those records carry. The private Run
+Bundle, its Artifact references and lineage, staged Effects, and broader runtime
+Evidence remain local unless a separate adapter moves them.
 
 Gateway, OverlayFS, OverlayNet, and Control are pVisor runtime drivers. Queue,
 Search, and Tensor Memory are separate data capabilities; they are not
@@ -73,17 +75,15 @@ analysis belong to pChronicle.
 ### Explore a trajectory Dataset
 
 ```bash
-pchronicle ls examples/data/atif
-pchronicle analysis overview examples/data/atif
-pchronicle query examples/data/atif \
-  'SELECT source, COUNT(*) AS steps FROM dataset.steps GROUP BY source'
+pchronicle onboard
+pchronicle onboard query
 ```
 
-External Sources can enter pChronicle without pVisor. An explicit local path or
-S3 URI can be supplied instead of configuring a default Warehouse.
-`pchronicle import` and `export` exchange ATIF, ACTF, OpenAI Messages, and
-Storyline JSON; `pchronicle serve` starts the loopback-only, read-only Warehouse
-UI and API.
+The installed-product onboarding flow creates temporary example Datasets and
+does not require a source checkout. External Sources can enter pChronicle
+without pVisor. `pchronicle import` accepts ATIF, ACTF, and OpenAI Messages;
+`pchronicle export` supports those formats plus Storyline JSON.
+`pchronicle serve` starts the loopback-only, read-only Warehouse UI and API.
 
 ## pChronicle performance
 

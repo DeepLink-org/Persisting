@@ -11,7 +11,7 @@
         {% if config.theme.language == "zh" %}
         <p class="persisting-hero-copy">
           治理 Agent Run，并将原生或外部轨迹转化为持久、可查询的 Dataset，
-          具备明确的 identity、lineage 与 Evidence。
+          保留明确的 Source identity、lineage，以及 Source 实际携带的 Evidence。
         </p>
         <div class="persisting-actions">
           <a href="pvisor/get-started/" class="md-button md-button--primary">安全运行 Agent</a>
@@ -21,8 +21,8 @@
         {% else %}
         <p class="persisting-hero-copy">
           Govern Agent Runs and turn native or external trajectories into
-          durable, queryable Datasets with explicit identity, lineage, and
-          Evidence.
+          durable, queryable Datasets with explicit source identity and lineage,
+          preserving any Evidence a Source carries.
         </p>
         <div class="persisting-actions">
           <a href="pvisor/get-started/" class="md-button md-button--primary">Run an Agent safely</a>
@@ -75,16 +75,20 @@
             <span>INTEGRATION</span>
             {% if config.theme.language == "zh" %}
             <h3>集成路径</h3>
-            <p>pPilot 扩展治理后的 Run；event、Artifact、终态事实、lineage 与 Evidence 成为 pChronicle 的输入。</p>
+            <p>pPilot 保存持久结果与 task-to-Run mapping。另一条单独配置的 pVisor capture 只发布 Gateway 轨迹 event、lifecycle record 及其携带的 Evidence。</p>
             {% else %}
             <h3>Integrated path</h3>
-            <p>pPilot scales governed Runs; events, artifacts, terminal facts, lineage, and Evidence become pChronicle inputs.</p>
+            <p>pPilot persists results and task-to-Run mapping. Separately configured pVisor capture publishes Gateway trajectory events, lifecycle records, and their event-carried Evidence.</p>
             {% endif %}
           </article>
         </div>
 
         <figure class="persisting-architecture-figure">
+          {% if config.theme.language == "zh" %}
+          <img src="assets/diagrams/persisting/system-products.svg" alt="Persisting 产品域与集成关系" />
+          {% else %}
           <img src="assets/diagrams/persisting/system-products.svg" alt="Persisting product domains and integration" />
+          {% endif %}
         </figure>
       </div>
     </section>
@@ -119,17 +123,15 @@ pvisor apply last --all</code></pre>
           <article>
             {% if config.theme.language == "zh" %}
             <h3>查看轨迹 Dataset</h3>
-            <p>直接发现并查询示例 Source；这条路径不要求先通过 pVisor 运行 Agent。</p>
+            <p>使用安装包自带的临时示例探索 Dataset；这条路径不要求源码 checkout 或先通过 pVisor 运行 Agent。</p>
             <a href="pchronicle/get-started/">开始探索 Dataset →</a>
             {% else %}
             <h3>Explore a trajectory Dataset</h3>
-            <p>Discover and query an example Source directly; this path does not require a pVisor Run first.</p>
+            <p>Explore temporary examples included in the installed workflow; this path needs neither a source checkout nor a pVisor Run first.</p>
             <a href="pchronicle/get-started/">Start exploring a Dataset →</a>
             {% endif %}
-            <pre><code>pchronicle ls examples/data/atif
-pchronicle analysis overview examples/data/atif
-pchronicle query examples/data/atif \
-  'SELECT COUNT(*) AS steps FROM dataset.steps'</code></pre>
+            <pre><code>pchronicle onboard
+pchronicle onboard query</code></pre>
           </article>
         </div>
       </div>
@@ -174,7 +176,7 @@ pchronicle query examples/data/atif \
         <h2>保证取决于来源</h2>
         <p>
           pVisor 在 Run Bundle 中按维度报告实际机制与 Evidence；pChronicle 保留 Source
-          lineage，而 Dataset 能够提供的保证取决于各 Source 实际携带的事实与身份。
+          lineage，而 Dataset 能够提供的保证取决于各 Source 实际携带的事实、身份与 Evidence。
         </p>
         <a class="md-button md-button--primary" href="system-design/">查看架构与成熟度</a>
         {% else %}
@@ -182,7 +184,7 @@ pchronicle query examples/data/atif \
         <p>
           pVisor reports actual mechanisms and Evidence per dimension in the
           Run Bundle. pChronicle preserves Source lineage, while Dataset
-          guarantees depend on the facts and identity each Source actually carries.
+          guarantees depend on the facts, identity, and Evidence each Source actually carries.
         </p>
         <a class="md-button md-button--primary" href="system-design/">Review architecture and maturity</a>
         {% endif %}

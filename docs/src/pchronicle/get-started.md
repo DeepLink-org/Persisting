@@ -1,10 +1,12 @@
-# Explore durable Run history
+# Explore a trajectory Dataset
 
 `pChronicle` reads trajectory Datasets from local directories or S3, discovers
 supported source formats, and exposes normalized `runs`, `steps`, and
 `tool_calls` tables.
 
-It is the history layer after execution—not the runtime or scheduler.
+It is the data layer for captured runtime history and external trajectory
+files—not the runtime or scheduler. External files are pinned and normalized
+directly rather than converted into canonical runtime events.
 
 ## Start with a known Dataset
 

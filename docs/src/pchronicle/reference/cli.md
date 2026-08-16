@@ -19,8 +19,8 @@ product and storage boundary, see the [pChronicle product architecture](../desig
 | `query` | Execute one bounded, read-only SQL statement |
 | `analysis` | Run a built-in `overview`, `agents`, `models`, or `tools` report |
 | `find` | Locate Run, Session, or Step candidates by Source-local ID |
-| `import` | Create a new local Dataset from ATIF, ACTF, OpenAI Messages, or Storyline JSON |
-| `export` | Export complete trajectories to one of those exchange formats |
+| `import` | Create a new local Dataset from ATIF, ACTF, or OpenAI Messages |
+| `export` | Export complete trajectories as ATIF, ACTF, OpenAI Messages, or Storyline JSON |
 | `echo` | Run a deterministic loopback-only LLM upstream for Gateway tests |
 | `serve` | Serve statically configured Datasets through a loopback-only read API and Web UI |
 
@@ -169,7 +169,7 @@ Import creates a new local Dataset and refuses an existing target:
 pchronicle import --from input.json --output ./imported --format atif
 pchronicle import --from input.json
 cat input.json | pchronicle import --from - --stream \
-  --output ./imported --format storyline
+  --output ./imported --format openai-messages
 ```
 
 Regular files can be auto-detected. If `--output` is omitted, pChronicle derives
@@ -185,10 +185,10 @@ pchronicle export --from ./imported --output one.json --format actf \
   --source source.json --session-id session-42 --strict
 ```
 
-Supported exchange formats are `atif`, `actf`, `openai-messages`, and
-`storyline`. Output files are create-only unless `--overwrite` is explicit.
-`--strict` refuses a conversion that cannot preserve the original exchange
-document.
+Import supports `atif`, `actf`, and `openai-messages`. Export supports those
+three formats plus `storyline`. Output files are create-only unless
+`--overwrite` is explicit. `--strict` refuses a conversion that cannot preserve
+the original exchange document.
 
 ## Deterministic Echo upstream
 

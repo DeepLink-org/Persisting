@@ -6,23 +6,29 @@ Persisting 有两个主要产品域：
 - [pChronicle](../pchronicle/index.md) 把持久轨迹 Source 组织为可查询 Dataset。
 
 pPilot 把 pVisor 从一个 Run 扩展到多个 Run。Gateway、OverlayFS 与 OverlayNet 是 pVisor
-运行时机制。两个产品域通过稳定 Run identity、event、Artifact、终态事实、lineage 与
-Evidence 集成，但各自都有独立入口。
+运行时机制。存在稳定 Run identity 时，它会连接两个产品域，但二者也各有独立入口。
 
-![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
+![Persisting 产品域与集成关系](../assets/diagrams/persisting/system-products.svg)
 
 ## 跨产品契约
 
 ```text
-Agent goal -> pVisor / pPilot -> events + artifacts + terminal facts + Evidence
-                                                   |
-External Sources -> importer / adapter ------------+-> pChronicle Dataset
+Configured pVisor capture
+  Gateway trajectory events ─┐
+  pVisor lifecycle records ──┴─> canonical event Source ─┐
+Pinned external Sources                                  │
+  ATIF / ACTF / OpenAI Messages / Storyline ─────────────┴─> Catalog Snapshot
+                                                               └─> normalized Dataset views
 ```
 
-pVisor Run 可以在没有 pChronicle 的情况下，以可审查的 staged Effect 和私有、带版本的
-Run Bundle 结束。标准持久交接会把它观察到的事实与 Evidence 发送到 pChronicle。外部
-Source 无需经过 pVisor，也可通过受支持的 importer 或 adapter 进入同一 Dataset 模型。
-每条路径保留与 Source 对应的保证；ingestion 不会补充 Source 未提供的 Evidence。
+Attempt finalization 会写入私有、带版本的 Run Bundle，并保留 staged Effect，供之后执行
+review/apply/drop；这一过程不需要 pChronicle。配置后的 capture 会发送 Gateway 轨迹 event
+与 pVisor lifecycle record，包括这些 record 携带的 Evidence。完整 Bundle 及其中的 Artifact、
+lineage、Effect 与更完整的 Evidence 清单仍留在本地，除非另行搬运。
+
+外部文件与 Storyline Source 会被直接固定版本并规范化，无需经过 pVisor，也不会先变成
+canonical event。每条路径保留与 Source 对应的保证；ingestion 不会补充 Source 未提供的
+Evidence。
 
 | 关注点 | Owner |
 | --- | --- |

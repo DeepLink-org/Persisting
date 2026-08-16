@@ -41,12 +41,15 @@ pvisor apply last --all
 The standalone product loop is:
 
 ```text
-RunSpec -> admission -> Attempt -> Effect review/apply/drop -> Run Bundle
+RunSpec -> admission -> Attempt
+  -> terminal RunResult + private Run Bundle + staged Effects
+  -> later review/apply/drop
 ```
 
-A pVisor Run completes with reviewable staged Effects and a private, versioned
-Run Bundle. pChronicle is the standard durable Dataset and history handoff, not
-a runtime prerequisite for this loop.
+Attempt finalization writes the terminal RunResult and private, versioned Run
+Bundle while leaving filesystem Effects staged. Later `review`, `apply`, or
+`drop` operations read the Bundle and operate on the stage. pChronicle is not a
+runtime prerequisite for this loop.
 
 `--safe` associates the current directory with a new durable Run, gives the
 Agent a copy-on-write workspace, applies the strongest supported local boundary
@@ -112,8 +115,11 @@ CLI / pPilot / embedding host
         └── RunRecord + private versioned Run Bundle
 ```
 
-An optional pChronicle handoff persists the Run's events, artifacts, terminal
-facts, and Evidence as canonical Dataset history.
+When configured, pChronicle receives Gateway trajectory events and pVisor
+lifecycle records. Those records carry Run/Attempt identity, lifecycle facts,
+and available event-carried Evidence. Artifact references, lineage, staged
+filesystem Effects, AgentCtl/network/resource Evidence, and the full Run Bundle
+remain local unless a separate adapter moves them.
 
 The logical Run id survives placement and retry decisions. Each physical
 execution receives a distinct Attempt id and, when pPilot owns it, a fenced
@@ -155,7 +161,7 @@ pVisor is one part of the Persisting Agent infrastructure:
 
 - **pVisor** owns one Run, its Attempts, capabilities, effects, and evidence;
 - **pPilot** plans, leases, schedules, and reconciles many Runs;
-- **pChronicle** stores canonical Run history and derived views;
+- **pChronicle** stores configured canonical event history and derived views;
 - **Gateway, OverlayNet, Control, and OverlayFS** are pVisor runtime drivers.
 
 The product name remains **pVisor**. **AgentVisor** names the category and the

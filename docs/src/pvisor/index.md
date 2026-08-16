@@ -32,12 +32,15 @@ once.
 The standalone pVisor product loop is:
 
 ```text
-RunSpec -> admission -> Attempt -> Effect review/apply/drop -> Run Bundle
+RunSpec -> admission -> Attempt
+  -> terminal RunResult + private Run Bundle + staged Effects
+  -> later review/apply/drop
 ```
 
-A pVisor Run completes with reviewable staged Effects and a private, versioned
-Run Bundle. pChronicle is the standard durable Dataset and history handoff, not
-a runtime prerequisite for this loop.
+Attempt finalization writes the terminal RunResult and private, versioned Run
+Bundle while leaving filesystem Effects staged. Later `review`, `apply`, or
+`drop` operations read the Bundle and operate on the stage. pChronicle is not a
+runtime prerequisite for this loop.
 
 ## Read pVisor by purpose
 
@@ -49,5 +52,7 @@ a runtime prerequisite for this loop.
 | Inspect isolation and runtime mechanisms | [Design](design/index.md) |
 | Look up exact command syntax | [Reference](reference/index.md) |
 
-To make a pVisor Run's events, artifacts, terminal facts, and Evidence part of
-a durable, queryable Dataset, continue to [pChronicle](../pchronicle/index.md).
+To query configured Gateway trajectory events and pVisor lifecycle records as
+a durable Dataset, continue to [pChronicle](../pchronicle/index.md). The current
+handoff does not publish the full Run Bundle or its Artifact, lineage, Effect,
+and broader Evidence inventory.

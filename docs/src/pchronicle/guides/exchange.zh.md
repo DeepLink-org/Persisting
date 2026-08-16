@@ -1,7 +1,8 @@
 # 导入与导出轨迹
 
 Import 和 export 位于互操作边界。Import 创建新 Dataset；export 从一个 Catalog Snapshot
-重建完整轨迹。
+重建完整轨迹。Import 接受 ATIF、ACTF 与 OpenAI Messages；export 除上述格式外还支持
+Storyline JSON。
 
 ## 导入到新 Dataset
 
@@ -15,7 +16,7 @@ pchronicle import --from input.json \
 
 ```bash
 cat input.json | pchronicle import --from - --stream \
-  --output ./imported --format storyline
+  --output ./imported --format openai-messages
 ```
 
 导入后检查新边界：

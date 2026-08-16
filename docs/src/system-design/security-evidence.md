@@ -3,7 +3,9 @@
 Persisting does not compress security into one `safe` or `sandboxed` label.
 Every Run reports guarantees by capability dimension. pVisor owns admission
 and runtime enforcement; pPilot preserves authority and lease generations;
-pChronicle preserves evidence references and terminal facts.
+configured pChronicle capture preserves lifecycle facts and only the Evidence
+carried by Gateway or lifecycle event records. The full Run Bundle evidence
+inventory remains local unless moved separately.
 
 | Dimension | Example mechanism | Evidence question |
 | --- | --- | --- |
@@ -34,8 +36,12 @@ requested capability
   → provider evidence
   → observed Effect
   → terminal result
-  → durable history reference
+  → configured event-carried history
 ```
+
+This final event path is narrower than the Run Bundle: it does not currently
+publish the complete Artifact, lineage, filesystem Effect,
+AgentCtl/network/resource Evidence, output, or metrics inventory.
 
 Read [Capabilities and evidence](../pvisor/concepts/capabilities-and-evidence.md)
 for the user model, [pVisor isolation design](../pvisor/design/isolation.md) and
