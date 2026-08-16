@@ -10,7 +10,7 @@
 //! Driver --ask--> WorkerActor -- RunSpec --> pVisor --> plan.py::execute(item)
 //! ```
 
-use crate::agent_abi::{AgentCtlClient, AgentCtlClientConfig};
+use crate::agentctl::{AgentCtlClient, AgentCtlClientConfig};
 use crate::digest::sha256_hex;
 use crate::python_env;
 use crate::runtime_bridge::PilotRuntimeBridge;
@@ -22,7 +22,7 @@ use persisting_agentctl::{
     RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
 };
 use persisting_pvisor::{
-    AgentClientRole, AgentEffectOutcome, AgentProcessRegistration, AttemptContext, PVisor,
+    AgentClientRole, AgentOperationOutcome, AgentProcessRegistration, AttemptContext, PVisor,
     RunExecutor,
 };
 use serde_json::{json, Value};
@@ -368,7 +368,7 @@ impl RunExecutor for PlanExecuteExecutor {
             .and_then(Value::as_str)
             .unwrap_or("ppilot-worker")
             .to_string();
-        let agent_abi = match connect_agent_abi(&spec, &context, &worker_id) {
+        let agentctl = match connect_agentctl(&spec, &context, &worker_id) {
             Ok(client) => client,
             Err(error) => {
                 return failed_run_result(
@@ -376,14 +376,14 @@ impl RunExecutor for PlanExecuteExecutor {
                     &context,
                     started_at_unix_ms,
                     RunFailureKind::Infrastructure,
-                    format!("connect pPilot to pVisor Agent ABI: {error:#}"),
+                    format!("connect pPilot to pVisor AgentCtl: {error:#}"),
                     true,
                 );
             }
         };
         context.transition(RunState::Running, None).await;
-        let effect_id = format!("task:{}", task.id);
-        if let Some(bridge) = agent_abi.as_ref() {
+        let operation_id = format!("task:{}", task.id);
+        if let Some(bridge) = agentctl.as_ref() {
             let digest = format!(
                 "sha256:{}",
                 sha256_hex(serde_json::to_vec(&task).unwrap_or_default())
@@ -393,8 +393,8 @@ impl RunExecutor for PlanExecuteExecutor {
                 .get("ppilot.job_id")
                 .and_then(Value::as_str)
                 .unwrap_or("local");
-            if let Err(error) = bridge.begin_effect(
-                &effect_id,
+            if let Err(error) = bridge.begin_operation(
+                &operation_id,
                 "ppilot.task",
                 digest,
                 Some(format!("{job_id}/{}", task.id)),
@@ -413,15 +413,15 @@ impl RunExecutor for PlanExecuteExecutor {
             .run_with_cancel(task, &worker_id, context.cancellation())
             .await;
         let effect_outcome = if task_result.ok {
-            AgentEffectOutcome::Committed
+            AgentOperationOutcome::Committed
         } else if task_result.cancelled {
-            AgentEffectOutcome::Aborted
+            AgentOperationOutcome::Aborted
         } else {
-            AgentEffectOutcome::Unknown
+            AgentOperationOutcome::Unknown
         };
         let mut result = task_result_to_run_result(spec, context.attempt_id().clone(), task_result);
-        if let Some(bridge) = agent_abi {
-            if let Err(error) = bridge.complete_effect(&effect_id, effect_outcome) {
+        if let Some(bridge) = agentctl {
+            if let Err(error) = bridge.complete_operation(&operation_id, effect_outcome) {
                 result.state = RunState::Failed;
                 result.exit_code = None;
                 result.failure = Some(RunFailure {
@@ -436,7 +436,7 @@ impl RunExecutor for PlanExecuteExecutor {
     }
 }
 
-fn connect_agent_abi(
+fn connect_agentctl(
     spec: &RunSpec,
     context: &AttemptContext,
     worker_id: &str,

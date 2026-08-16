@@ -1,10 +1,10 @@
-//! Long-lived pPilot adapter for pVisor's semantic Agent ABI.
+//! Long-lived pPilot adapter for pVisor's semantic AgentCtl.
 
-use crate::agent_abi::AgentCtlClient;
+use crate::agentctl::AgentCtlClient;
 use anyhow::{bail, Context};
 use persisting_pvisor::{
-    AgentCheckpointQuiesced, AgentDirective, AgentEffectBegin, AgentEffectComplete,
-    AgentEffectOutcome, AgentLifecycleState, AgentProcessRegistration,
+    AgentCheckpointQuiesced, AgentDirective, AgentLifecycleState, AgentOperationBegin,
+    AgentOperationComplete, AgentOperationOutcome, AgentProcessRegistration,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -16,26 +16,26 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug)]
 struct BridgeState {
     lifecycle: AgentLifecycleState,
-    accepting_effects: bool,
+    accepting_operations: bool,
     directive: AgentDirective,
     directive_seq: u64,
     quiesced_checkpoint_id: Option<String>,
     quiesce_deadline_unix_ms: Option<u64>,
-    open_effects: BTreeSet<String>,
+    open_operations: BTreeSet<String>,
     warnings: Vec<String>,
 }
 
 impl BridgeState {
     fn new(directive: AgentDirective, directive_seq: u64) -> Self {
-        let accepting_effects = matches!(&directive, AgentDirective::Continue);
+        let accepting_operations = matches!(&directive, AgentDirective::Continue);
         Self {
             lifecycle: AgentLifecycleState::Starting,
-            accepting_effects,
+            accepting_operations,
             directive,
             directive_seq,
             quiesced_checkpoint_id: None,
             quiesce_deadline_unix_ms: None,
-            open_effects: BTreeSet::new(),
+            open_operations: BTreeSet::new(),
             warnings: Vec::new(),
         }
     }
@@ -50,7 +50,7 @@ struct BridgeInner {
 
 /// One Run-scoped pPilot client that continuously observes pVisor directives.
 ///
-/// The bridge stops admitting new semantic effects as soon as it observes a
+/// The bridge stops admitting new declared operations as soon as it observes a
 /// quiesce directive. It acknowledges the checkpoint only at an idle safe point
 /// with an empty local/pVisor effect journal.
 pub struct PilotRuntimeBridge {
@@ -65,10 +65,10 @@ impl PilotRuntimeBridge {
         registration: AgentProcessRegistration,
         cancellation: CancellationToken,
     ) -> anyhow::Result<Self> {
-        let welcome = client.connect().context("connect pPilot Agent ABI")?;
+        let welcome = client.connect().context("connect pPilot AgentCtl")?;
         if let AgentDirective::Shutdown { reason } = &welcome.directive {
             bail!(
-                "pVisor requested shutdown during Agent ABI handshake{}",
+                "pVisor requested shutdown during AgentCtl handshake{}",
                 reason
                     .as_deref()
                     .map(|reason| format!(": {reason}"))
@@ -97,7 +97,7 @@ impl PilotRuntimeBridge {
                     _ = loop_stop.cancelled() => break,
                     _ = ticker.tick() => {
                         if let Err(error) = heartbeat_once(&loop_inner) {
-                            push_warning(&loop_inner, format!("Agent ABI heartbeat failed: {error:#}"));
+                            push_warning(&loop_inner, format!("AgentCtl heartbeat failed: {error:#}"));
                         }
                     }
                 }
@@ -119,51 +119,51 @@ impl PilotRuntimeBridge {
         self.inner.changed.notify_waiters();
     }
 
-    pub fn begin_effect(
+    pub fn begin_operation(
         &self,
-        effect_id: impl Into<String>,
+        operation_id: impl Into<String>,
         kind: impl Into<String>,
         request_digest: impl Into<String>,
         idempotency_key: Option<String>,
     ) -> anyhow::Result<u64> {
-        let effect_id = effect_id.into();
+        let operation_id = operation_id.into();
         let mut state = lock(&self.inner.state);
-        if !state.accepting_effects {
-            bail!("pVisor is quiescing; refusing new effect {effect_id}");
+        if !state.accepting_operations {
+            bail!("pVisor is quiescing; refusing new operation {operation_id}");
         }
-        if state.open_effects.contains(&effect_id) {
-            bail!("effect {effect_id} is already open");
+        if state.open_operations.contains(&operation_id) {
+            bail!("operation {operation_id} is already open");
         }
-        let sequence = lock(&self.inner.client).begin_effect(AgentEffectBegin {
-            effect_id: effect_id.clone(),
+        let sequence = lock(&self.inner.client).begin_operation(AgentOperationBegin {
+            operation_id: operation_id.clone(),
             kind: kind.into(),
             request_digest: request_digest.into(),
             idempotency_key,
         })?;
-        state.open_effects.insert(effect_id);
+        state.open_operations.insert(operation_id);
         Ok(sequence)
     }
 
-    pub fn complete_effect(
+    pub fn complete_operation(
         &self,
-        effect_id: &str,
-        outcome: AgentEffectOutcome,
+        operation_id: &str,
+        outcome: AgentOperationOutcome,
     ) -> anyhow::Result<()> {
         let mut state = lock(&self.inner.state);
-        if !state.open_effects.contains(effect_id) {
-            bail!("effect {effect_id} is not open");
+        if !state.open_operations.contains(operation_id) {
+            bail!("operation {operation_id} is not open");
         }
-        lock(&self.inner.client).complete_effect(AgentEffectComplete {
-            effect_id: effect_id.to_owned(),
+        lock(&self.inner.client).complete_operation(AgentOperationComplete {
+            operation_id: operation_id.to_owned(),
             outcome,
         })?;
-        state.open_effects.remove(effect_id);
+        state.open_operations.remove(operation_id);
         self.inner.changed.notify_waiters();
         Ok(())
     }
 
-    pub fn open_effects(&self) -> BTreeSet<String> {
-        lock(&self.inner.state).open_effects.clone()
+    pub fn open_operations(&self) -> BTreeSet<String> {
+        lock(&self.inner.state).open_operations.clone()
     }
 
     pub fn directive(&self) -> AgentDirective {
@@ -177,7 +177,7 @@ impl PilotRuntimeBridge {
         if let Err(error) = heartbeat_once(&self.inner) {
             push_warning(
                 &self.inner,
-                format!("final Agent ABI heartbeat failed: {error:#}"),
+                format!("final AgentCtl heartbeat failed: {error:#}"),
             );
         }
 
@@ -205,10 +205,7 @@ impl PilotRuntimeBridge {
                 let _ = tokio::time::timeout(Duration::from_secs(5), notified).await;
             }
             if let Err(error) = heartbeat_once(&self.inner) {
-                push_warning(
-                    &self.inner,
-                    format!("Agent ABI heartbeat failed: {error:#}"),
-                );
+                push_warning(&self.inner, format!("AgentCtl heartbeat failed: {error:#}"));
             }
         }
 
@@ -228,7 +225,10 @@ impl PilotRuntimeBridge {
                 "directive_seq".into(),
                 serde_json::json!(state.directive_seq),
             ),
-            ("open_effects".into(), serde_json::json!(state.open_effects)),
+            (
+                "open_operations".into(),
+                serde_json::json!(state.open_operations),
+            ),
         ])
     }
 }
@@ -249,7 +249,7 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
         state.directive = ack.directive.clone();
         match ack.directive {
             AgentDirective::Continue => {
-                state.accepting_effects = true;
+                state.accepting_operations = true;
                 state.quiesce_deadline_unix_ms = None;
                 if state.quiesced_checkpoint_id.take().is_some() {
                     state.lifecycle = AgentLifecycleState::Idle;
@@ -257,7 +257,7 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
                 None
             }
             AgentDirective::Shutdown { .. } => {
-                state.accepting_effects = false;
+                state.accepting_operations = false;
                 state.lifecycle = AgentLifecycleState::Stopping;
                 inner.cancellation.cancel();
                 None
@@ -266,12 +266,12 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
                 checkpoint_id,
                 deadline_unix_ms,
             } => {
-                state.accepting_effects = false;
+                state.accepting_operations = false;
                 state.quiesce_deadline_unix_ms = deadline_unix_ms;
                 let at_safe_point = matches!(
                     state.lifecycle,
                     AgentLifecycleState::Idle | AgentLifecycleState::Quiesced
-                ) && state.open_effects.is_empty();
+                ) && state.open_operations.is_empty();
                 if at_safe_point && state.quiesced_checkpoint_id.as_deref() != Some(&checkpoint_id)
                 {
                     Some(AgentCheckpointQuiesced {
@@ -308,14 +308,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_abi::AgentCtlClientConfig;
+    use crate::agentctl::AgentCtlClientConfig;
     use persisting_agentctl::{AttemptId, RunId};
-    use persisting_pvisor::{AgentAbiServer, AgentClientRole};
+    use persisting_pvisor::{AgentClientRole, AgentCtlServer};
 
     #[tokio::test]
     async fn quiesce_waits_for_open_effect_then_acknowledges_safe_point() {
         let server =
-            AgentAbiServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
         let config = AgentCtlClientConfig::from_environment(
             &server.environment(),
             "pilot-1",
@@ -335,7 +335,7 @@ mod tests {
         )
         .unwrap();
         bridge
-            .begin_effect(
+            .begin_operation(
                 "task-1",
                 "ppilot.task",
                 "sha256:test",
@@ -352,7 +352,7 @@ mod tests {
             .is_none());
 
         bridge
-            .complete_effect("task-1", AgentEffectOutcome::Committed)
+            .complete_operation("task-1", AgentOperationOutcome::Committed)
             .unwrap();
         bridge.set_lifecycle(AgentLifecycleState::Idle);
         heartbeat_once(&bridge.inner).unwrap();
@@ -370,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_directive_cancels_the_owned_task_token() {
         let server =
-            AgentAbiServer::start(&RunId::new("run-2"), &AttemptId::new("attempt-2")).unwrap();
+            AgentCtlServer::start(&RunId::new("run-2"), &AttemptId::new("attempt-2")).unwrap();
         let config = AgentCtlClientConfig::from_environment(
             &server.environment(),
             "pilot-2",

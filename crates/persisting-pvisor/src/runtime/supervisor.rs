@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// proxy injection or a staged filesystem projection.
 #[derive(Debug, Clone)]
 pub struct RuntimeCapabilities {
-    pub agent_abi: bool,
+    pub agentctl: bool,
     pub gateway: bool,
     pub network: bool,
     pub filesystem: bool,
@@ -32,7 +32,7 @@ impl Default for RuntimeCapabilities {
         let vm_network = vm_network_supported();
         let mut providers = vec![
             "local-process",
-            "agent-abi-unix-v1",
+            "agentctl-unix-v2",
             "in-process-capture",
             "overlaynet-explicit-proxy",
             "fs-overlay-staging",
@@ -41,7 +41,7 @@ impl Default for RuntimeCapabilities {
             providers.push("overlaynet-vm-smoltcp");
         }
         Self {
-            agent_abi: true,
+            agentctl: true,
             gateway: true,
             network: false,
             filesystem: false,

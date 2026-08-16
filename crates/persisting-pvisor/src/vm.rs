@@ -233,10 +233,14 @@ impl RunExecutor for VmExecutor {
             BTreeMap::new()
         };
         for key in [
-            crate::AGENT_ABI_ENDPOINT_ENV,
-            crate::AGENT_ABI_TOKEN_ENV,
-            crate::AGENT_ABI_TRANSPORT_ENV,
-            crate::AGENT_ABI_VERSION_ENV,
+            crate::AGENTCTL_ENDPOINT_ENV,
+            crate::AGENTCTL_TOKEN_ENV,
+            crate::AGENTCTL_TRANSPORT_ENV,
+            crate::AGENTCTL_VERSION_ENV,
+            crate::LEGACY_AGENT_ABI_ENDPOINT_ENV,
+            crate::LEGACY_AGENT_ABI_TOKEN_ENV,
+            crate::LEGACY_AGENT_ABI_TRANSPORT_ENV,
+            crate::LEGACY_AGENT_ABI_VERSION_ENV,
         ] {
             env.remove(key);
         }

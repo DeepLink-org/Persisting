@@ -1,13 +1,13 @@
 use persisting_agentctl::{
     checkpoint_directive, AgentCheckpointQuiesced, AgentClientRole, AgentCtlClient,
-    AgentCtlClientConfig, AgentEffectBegin, AgentEffectComplete, AgentEffectOutcome,
-    AgentLifecycleState, AgentProcessRegistration, AttemptId, RunId,
+    AgentCtlClientConfig, AgentLifecycleState, AgentOperationBegin, AgentOperationComplete,
+    AgentOperationOutcome, AgentProcessRegistration, AttemptId, RunId,
 };
-use persisting_pvisor::AgentAbiServer;
+use persisting_pvisor::AgentCtlServer;
 
 #[test]
 fn client_drives_process_effect_and_quiescence_lifecycle() {
-    let server = AgentAbiServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+    let server = AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
     let config = AgentCtlClientConfig::from_environment(
         &server.environment(),
         "agent-1",
@@ -26,17 +26,17 @@ fn client_drives_process_effect_and_quiescence_lifecycle() {
         })
         .unwrap();
     client
-        .begin_effect(AgentEffectBegin {
-            effect_id: "effect-1".into(),
+        .begin_operation(AgentOperationBegin {
+            operation_id: "effect-1".into(),
             kind: "tool.call".into(),
             request_digest: "sha256:abc".into(),
             idempotency_key: Some("idem-1".into()),
         })
         .unwrap();
     client
-        .complete_effect(AgentEffectComplete {
-            effect_id: "effect-1".into(),
-            outcome: AgentEffectOutcome::Committed,
+        .complete_operation(AgentOperationComplete {
+            operation_id: "effect-1".into(),
+            outcome: AgentOperationOutcome::Committed,
         })
         .unwrap();
     let directive_seq = server.control().request_quiesce("checkpoint-1", None);
@@ -55,7 +55,7 @@ fn client_drives_process_effect_and_quiescence_lifecycle() {
     assert_eq!(snapshot.clients[0].client_id, "agent-1");
     assert_eq!(snapshot.processes[0].registration.pid, 7);
     assert_eq!(
-        snapshot.effects[0].completion.as_ref().unwrap().outcome,
-        AgentEffectOutcome::Committed
+        snapshot.operations[0].completion.as_ref().unwrap().outcome,
+        AgentOperationOutcome::Committed
     );
 }

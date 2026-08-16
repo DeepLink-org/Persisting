@@ -1,9 +1,13 @@
 # Persisting AgentCtl
 
-`persisting-agentctl` owns the runtime control state machine and policy-driven
-state transitions shared by pVisor execution points. It also owns the
-versioned Agent ABI wire contract and the small synchronous client SDK used by
-Agents and pPilot.
+`persisting-agentctl` owns the runtime control state machine, the versioned
+AgentCtl protocol, and its small synchronous client SDK.
+
+AgentCtl is an optional, cooperative channel between pVisor and a Run-local
+Agent. It carries heartbeats, desired state, process declarations, quiescence
+acknowledgements, and Agent-declared open operations. It is not a sandbox,
+does not discover unregistered processes or effects, and is never enforcement
+evidence by itself.
 
 ```text
 Requested -> Allowed / Denied -> Applied / Failed
@@ -13,11 +17,11 @@ Requested -> Allowed / Denied -> Applied / Failed
 - `ControlController` evaluates policy and returns the authorization transition.
 - `ControlMachine` validates transitions and retains the state/history.
 - pVisor runtime drivers such as OverlayNet and Gateway apply policy decisions.
-- `abi` contains the dependency-light request/response schema shared with
+- `protocol` contains the dependency-light request/response schema shared with
   pVisor's server.
 - `AgentCtlClient` discovers the authenticated Unix endpoint from the
   environment and drives heartbeats, process registration, checkpoint
-  quiescence, and semantic effect boundaries.
+  quiescence, and cooperative operation declarations.
 
 An `Applied { effect: Deny }` state means the driver successfully blocked an
 operation. It does not mean that a proxy-based driver is non-bypassable.
@@ -37,6 +41,6 @@ let welcome = client.connect()?;
 # Ok::<(), anyhow::Error>(())
 ```
 
-The SDK name is AgentCtl; the newline-delimited JSON protocol remains the
-versioned Agent ABI, and the existing `PERSISTING_AGENT_ABI_*` environment
-contract remains stable.
+The SDK and protocol are both named AgentCtl. New integrations use
+`PERSISTING_AGENTCTL_*`. The former `PERSISTING_AGENT_ABI_*` names remain
+accepted temporarily as migration aliases for wire-v2 clients.

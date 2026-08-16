@@ -5,7 +5,7 @@ use crate::runtime::{
 };
 use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::util::{atomic_write, sync_directory};
-use crate::{unix_now_ms, AgentAbiSnapshot};
+use crate::{unix_now_ms, AgentCtlSnapshot};
 use persisting_agentctl::{
     ArtifactRef, ExecutorDescriptor, IsolationKind, NetworkCapability, ProcessOutput,
     ResourceLimits, RunFailure, RunResult, RunState,
@@ -16,7 +16,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 1;
+pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 2;
 pub const RUN_BUNDLE_FILENAME: &str = "run-bundle.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +34,8 @@ pub struct RunBundle {
     pub environment: crate::runtime::EnvironmentProjection,
     #[serde(default)]
     pub resources: ResourceSummary,
-    pub agent_abi: AgentAbiSnapshot,
+    #[serde(alias = "agent_abi")]
+    pub agentctl: AgentCtlSnapshot,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -149,7 +150,7 @@ impl RunBundle {
     pub fn capture(
         record: &RunRecord,
         result: &RunResult,
-        agent_abi: AgentAbiSnapshot,
+        agentctl: AgentCtlSnapshot,
         safe_profile_requested: bool,
     ) -> anyhow::Result<Self> {
         let filesystem = record
@@ -326,7 +327,7 @@ impl RunBundle {
             },
             environment: environment_summary(record),
             resources,
-            agent_abi,
+            agentctl,
             orchestration: record.orchestration.clone(),
             artifacts,
         })
@@ -346,8 +347,8 @@ impl RunBundle {
         let path = Self::path(stage_dir);
         let bundle: Self = serde_json::from_slice(&fs::read(&path)?)?;
         anyhow::ensure!(
-            bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION,
-            "unsupported Run Bundle schema {}; expected {}",
+            matches!(bundle.schema_version, 1 | RUN_BUNDLE_SCHEMA_VERSION),
+            "unsupported Run Bundle schema {}; expected 1 or {}",
             bundle.schema_version,
             RUN_BUNDLE_SCHEMA_VERSION
         );
@@ -552,14 +553,14 @@ mod tests {
             event_stream_ref: None,
             warnings: vec![],
         };
-        let abi = AgentAbiSnapshot {
+        let abi = AgentCtlSnapshot {
             run_id: "run-1".into(),
             attempt_id: "attempt-1".into(),
             directive_seq: 0,
             directive: crate::AgentDirective::Continue,
             clients: vec![],
             processes: vec![],
-            effects: vec![],
+            operations: vec![],
         };
         let bundle = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
         let path = bundle.write(temp.path()).unwrap();

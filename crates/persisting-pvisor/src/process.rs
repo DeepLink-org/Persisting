@@ -627,7 +627,8 @@ fn platform_launcher_command(
         (
             invocation
                 .env
-                .get(crate::AGENT_ABI_ENDPOINT_ENV)
+                .get(crate::AGENTCTL_ENDPOINT_ENV)
+                .or_else(|| invocation.env.get(crate::LEGACY_AGENT_ABI_ENDPOINT_ENV))
                 .map(PathBuf::from)
                 .filter(|path| path.exists())
                 .into_iter()
@@ -737,11 +738,15 @@ fn rootless_plan(
         push_existing(&mut read_write, Path::new(path));
     }
 
-    // The Run-scoped Agent ABI and an explicitly supplied SSH agent are
+    // The Run-scoped AgentCtl and an explicitly supplied SSH agent are
     // capabilities represented by their exact socket inode, not by /tmp.
     // Merely inheriting the host environment must not project signing
     // authority into a safe Run.
-    for key in [crate::AGENT_ABI_ENDPOINT_ENV, "SSH_AUTH_SOCK"] {
+    for key in [
+        crate::AGENTCTL_ENDPOINT_ENV,
+        crate::LEGACY_AGENT_ABI_ENDPOINT_ENV,
+        "SSH_AUTH_SOCK",
+    ] {
         if let Some(path) = invocation.env.get(key) {
             push_existing(&mut read_write, Path::new(path));
         }

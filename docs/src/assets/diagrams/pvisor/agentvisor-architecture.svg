@@ -86,7 +86,7 @@
     <rect x="847" y="438" width="238" height="105" rx="16" class="inner"/>
     <circle cx="877" cy="468" r="9" fill="#38bdf8"/>
     <text x="897" y="475" class="label">Drivers</text>
-    <text x="868" y="505" class="small">Agent ABI · Gateway · Overlay*</text>
+    <text x="868" y="505" class="small">AgentCtl · Gateway · Overlay*</text>
     <text x="868" y="527" class="tiny">One policy context per Attempt</text>
   </g>
 
