@@ -403,7 +403,7 @@ impl RunExecutor for ContainerExecutor {
         if matches!(end, End::Exited(_)) && files.result_path.is_file() {
             match files.read_result(&spec.run_id, context.attempt_id(), spec.lease_epoch) {
                 Ok(mut output) => {
-                    context.import_delegated_agent_abi(output.agent_abi);
+                    context.import_delegated_agentctl(output.agentctl);
                     output.result.warnings.extend(warnings);
                     return output.result;
                 }

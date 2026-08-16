@@ -97,6 +97,40 @@ jobs:
           ./target/debug/ppilot produce --help
           ./target/debug/pchronicle query --help
 
+  pvisor-isolation-regression:
+    name: pVisor Isolation Regression (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+          components: ""
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Enable rootless isolation primitives
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          test -c /dev/fuse
+          unshare --user --map-root-user --mount --net /bin/true
+
+      - name: Run strict pVisor isolation regressions
+        env:
+          PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
+        run: cargo test -p persisting-pvisor --test rootless_local --locked -- --nocapture
+
   s3-contract:
     name: pChronicle S3 Contract (MinIO)
     runs-on: ubuntu-latest

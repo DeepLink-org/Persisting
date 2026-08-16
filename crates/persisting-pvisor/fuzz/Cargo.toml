@@ -12,8 +12,8 @@ libfuzzer-sys = "0.4"
 persisting-pvisor = { path = "..", features = ["fuzzing"] }
 
 [[bin]]
-name = "agent_abi_frame"
-path = "fuzz_targets/agent_abi_frame.rs"
+name = "agentctl_frame"
+path = "fuzz_targets/agentctl_frame.rs"
 test = false
 doc = false
 bench = false

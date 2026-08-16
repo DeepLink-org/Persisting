@@ -20,7 +20,7 @@ pub struct AttemptContext {
     cancel: CancellationToken,
     status: watch::Sender<RunStatus>,
     events: RunEventPublisher,
-    agent_abi: crate::AgentAbiControl,
+    agentctl: crate::AgentCtlControl,
     attachments: AttemptAttachments,
 }
 
@@ -31,7 +31,7 @@ impl AttemptContext {
         cancel: CancellationToken,
         status: watch::Sender<RunStatus>,
         events: RunEventPublisher,
-        agent_abi: crate::AgentAbiControl,
+        agentctl: crate::AgentCtlControl,
         attachments: AttemptAttachments,
     ) -> Self {
         Self {
@@ -40,7 +40,7 @@ impl AttemptContext {
             cancel,
             status,
             events,
-            agent_abi,
+            agentctl,
             attachments,
         }
     }
@@ -73,8 +73,8 @@ impl AttemptContext {
         &self.events
     }
 
-    pub(crate) fn import_delegated_agent_abi(&self, snapshot: crate::AgentAbiSnapshot) {
-        self.agent_abi.import_delegated_snapshot(snapshot);
+    pub(crate) fn import_delegated_agentctl(&self, snapshot: crate::AgentCtlSnapshot) {
+        self.agentctl.import_delegated_snapshot(snapshot);
     }
 
     pub async fn transition(&self, state: RunState, message: impl Into<Option<String>>) {

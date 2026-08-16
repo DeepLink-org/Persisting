@@ -1,11 +1,12 @@
-//! Reusable client for pVisor's versioned, low-frequency Agent ABI.
+//! Reusable client for pVisor's cooperative, low-frequency AgentCtl protocol.
 
 use crate::{
-    AgentCheckpointQuiesced, AgentClientRole, AgentDirective, AgentEffectBegin,
-    AgentEffectComplete, AgentHeartbeatAck, AgentHello, AgentLifecycleState,
-    AgentProcessRegistration, AgentRequest, AgentRequestBody, AgentResponse, AgentResponseBody,
-    AgentWelcome, AGENT_ABI_ENDPOINT_ENV, AGENT_ABI_MAX_FRAME_BYTES, AGENT_ABI_TOKEN_ENV,
-    AGENT_ABI_TRANSPORT_ENV, AGENT_ABI_VERSION, AGENT_ABI_VERSION_ENV,
+    AgentCheckpointQuiesced, AgentClientRole, AgentDirective, AgentHeartbeatAck, AgentHello,
+    AgentLifecycleState, AgentOperationBegin, AgentOperationComplete, AgentProcessRegistration,
+    AgentRequest, AgentRequestBody, AgentResponse, AgentResponseBody, AgentWelcome,
+    AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
+    AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, LEGACY_AGENT_ABI_ENDPOINT_ENV,
+    LEGACY_AGENT_ABI_TOKEN_ENV, LEGACY_AGENT_ABI_TRANSPORT_ENV, LEGACY_AGENT_ABI_VERSION_ENV,
 };
 use anyhow::{bail, Context};
 use std::collections::BTreeMap;
@@ -35,33 +36,39 @@ impl AgentCtlClientConfig {
         role: AgentClientRole,
         agent_name: impl Into<String>,
     ) -> anyhow::Result<Option<Self>> {
-        let Some(endpoint) = environment.get(AGENT_ABI_ENDPOINT_ENV) else {
+        let Some(endpoint) = environment
+            .get(AGENTCTL_ENDPOINT_ENV)
+            .or_else(|| environment.get(LEGACY_AGENT_ABI_ENDPOINT_ENV))
+        else {
             return Ok(None);
         };
         let transport = environment
-            .get(AGENT_ABI_TRANSPORT_ENV)
+            .get(AGENTCTL_TRANSPORT_ENV)
+            .or_else(|| environment.get(LEGACY_AGENT_ABI_TRANSPORT_ENV))
             .map(String::as_str)
             .unwrap_or("unix");
         if transport != "unix" {
-            bail!("unsupported Agent ABI transport {transport:?}");
+            bail!("unsupported AgentCtl transport {transport:?}");
         }
         let version = environment
-            .get(AGENT_ABI_VERSION_ENV)
-            .context("Agent ABI endpoint is present without a version")?
+            .get(AGENTCTL_VERSION_ENV)
+            .or_else(|| environment.get(LEGACY_AGENT_ABI_VERSION_ENV))
+            .context("AgentCtl endpoint is present without a version")?
             .parse::<u32>()
-            .context("parse Agent ABI version")?;
-        if version != AGENT_ABI_VERSION {
+            .context("parse AgentCtl version")?;
+        if version != AGENTCTL_VERSION {
             bail!(
-                "Agent ABI version mismatch: client expects {}, environment advertises {}",
-                AGENT_ABI_VERSION,
+                "AgentCtl version mismatch: client expects {}, environment advertises {}",
+                AGENTCTL_VERSION,
                 version
             );
         }
         Ok(Some(Self {
             endpoint: endpoint.into(),
             auth_token: environment
-                .get(AGENT_ABI_TOKEN_ENV)
-                .context("Agent ABI endpoint is present without an auth token")?
+                .get(AGENTCTL_TOKEN_ENV)
+                .or_else(|| environment.get(LEGACY_AGENT_ABI_TOKEN_ENV))
+                .context("AgentCtl endpoint is present without an auth token")?
                 .clone(),
             client_id: client_id.into(),
             role,
@@ -124,22 +131,32 @@ impl AgentCtlClient {
         expect_ack(self.request(AgentRequestBody::CheckpointQuiesced(value))?)
     }
 
-    pub fn begin_effect(&mut self, value: AgentEffectBegin) -> anyhow::Result<u64> {
+    pub fn begin_operation(&mut self, value: AgentOperationBegin) -> anyhow::Result<u64> {
         match self.request(AgentRequestBody::EffectBegin(value))? {
-            AgentResponseBody::EffectAccepted { sequence } => Ok(sequence),
+            AgentResponseBody::OperationAccepted { sequence } => Ok(sequence),
             body => unexpected("effect acceptance", body),
         }
     }
 
-    pub fn complete_effect(&mut self, value: AgentEffectComplete) -> anyhow::Result<()> {
+    pub fn complete_operation(&mut self, value: AgentOperationComplete) -> anyhow::Result<()> {
         expect_ack(self.request(AgentRequestBody::EffectComplete(value))?)
+    }
+
+    #[deprecated(note = "use begin_operation; AgentCtl reports are cooperative declarations")]
+    pub fn begin_effect(&mut self, value: AgentOperationBegin) -> anyhow::Result<u64> {
+        self.begin_operation(value)
+    }
+
+    #[deprecated(note = "use complete_operation; AgentCtl reports are cooperative declarations")]
+    pub fn complete_effect(&mut self, value: AgentOperationComplete) -> anyhow::Result<()> {
+        self.complete_operation(value)
     }
 
     fn request(&mut self, body: AgentRequestBody) -> anyhow::Result<AgentResponseBody> {
         let session_id = self
             .session_id
             .clone()
-            .context("Agent ABI client is not connected")?;
+            .context("AgentCtl client is not connected")?;
         Ok(exchange(
             &self.config.endpoint,
             &AgentRequest::authenticated(session_id, body),
@@ -159,7 +176,7 @@ pub fn checkpoint_directive(ack: &AgentHeartbeatAck) -> Option<(&str, u64)> {
 
 fn exchange(path: &Path, request: &AgentRequest) -> anyhow::Result<AgentResponse> {
     let mut stream = std::os::unix::net::UnixStream::connect(path)
-        .with_context(|| format!("connect Agent ABI endpoint {}", path.display()))?;
+        .with_context(|| format!("connect AgentCtl endpoint {}", path.display()))?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
     serde_json::to_writer(&mut stream, request)?;
@@ -167,14 +184,14 @@ fn exchange(path: &Path, request: &AgentRequest) -> anyhow::Result<AgentResponse
     let mut frame = Vec::new();
     std::io::BufReader::new(stream)
         .by_ref()
-        .take((AGENT_ABI_MAX_FRAME_BYTES + 1) as u64)
+        .take((AGENTCTL_MAX_FRAME_BYTES + 1) as u64)
         .read_until(b'\n', &mut frame)?;
-    if frame.len() > AGENT_ABI_MAX_FRAME_BYTES {
-        bail!("Agent ABI response exceeds {AGENT_ABI_MAX_FRAME_BYTES} bytes");
+    if frame.len() > AGENTCTL_MAX_FRAME_BYTES {
+        bail!("AgentCtl response exceeds {AGENTCTL_MAX_FRAME_BYTES} bytes");
     }
     let response: AgentResponse = serde_json::from_slice(&frame)?;
     if let AgentResponseBody::Error { message } = &response.body {
-        bail!("Agent ABI: {message}");
+        bail!("AgentCtl: {message}");
     }
     Ok(response)
 }
@@ -187,5 +204,5 @@ fn expect_ack(body: AgentResponseBody) -> anyhow::Result<()> {
 }
 
 fn unexpected<T>(expected: &str, body: AgentResponseBody) -> anyhow::Result<T> {
-    bail!("expected Agent ABI {expected}, got {body:?}")
+    bail!("expected AgentCtl {expected}, got {body:?}")
 }

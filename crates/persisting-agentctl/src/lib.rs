@@ -3,18 +3,24 @@
 //! Drivers such as OverlayNet and Capture submit typed resources to a
 //! [`ControlController`]. Authorization is represented as a state transition;
 //! the driver then records whether the authorized operation was applied or
-//! failed. [`AgentCtlClient`] implements the Run-scoped Unix Agent ABI, while
+//! failed. [`AgentCtlClient`] implements pVisor's optional cooperative
+//! AgentCtl protocol, while
 //! [`PVisorProcessClient`] submits a [`RunSpec`] to a standalone foreground
 //! pVisor binary. Supervisor messages are shared wire contracts rather than
 //! types owned by either pPilot or pVisor.
 
-pub mod abi;
 mod client;
 mod process;
+pub mod protocol;
 mod runtime;
 mod supervisor;
 
-pub use abi::*;
+pub use protocol::*;
+/// Deprecated module path retained for source compatibility.
+#[deprecated(note = "use persisting_agentctl::protocol")]
+pub mod abi {
+    pub use super::protocol::*;
+}
 pub use client::{checkpoint_directive, AgentCtlClient, AgentCtlClientConfig};
 use ipnet::IpNet;
 pub use process::{PVisorProcessClient, PVisorProcessOptions};

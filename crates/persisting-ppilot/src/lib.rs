@@ -15,7 +15,7 @@
 //! Most modules are `pub(crate)`; only embedding and integration-test surfaces
 //! are re-exported or left as `pub mod`.
 
-pub mod agent_abi;
+pub mod agentctl;
 pub mod batch;
 pub mod blocks;
 pub(crate) mod check;
@@ -47,7 +47,7 @@ pub(crate) mod worker;
 
 // ── Public surface (embedding + integration tests) ──────────────────
 
-pub use agent_abi::{checkpoint_directive, AgentCtlClient, AgentCtlClientConfig};
+pub use agentctl::{checkpoint_directive, AgentCtlClient, AgentCtlClientConfig};
 pub use batch::{
     produce_from_planner, produce_trajectories, BatchProductionManifest, BatchProductionOptions,
     BatchProductionReport, TrajectoryProductionRun,

@@ -1,10 +1,10 @@
-//! Long-lived pPilot adapter for pVisor's semantic Agent ABI.
+//! Long-lived pPilot adapter for pVisor's semantic AgentCtl protocol.
 
-use crate::agent_abi::AgentCtlClient;
+use crate::agentctl::AgentCtlClient;
 use anyhow::{bail, Context};
 use persisting_agentctl::{
-    AgentCheckpointQuiesced, AgentDirective, AgentEffectBegin, AgentEffectComplete,
-    AgentEffectOutcome, AgentLifecycleState, AgentProcessRegistration,
+    AgentCheckpointQuiesced, AgentDirective, AgentLifecycleState, AgentOperationBegin,
+    AgentOperationComplete, AgentOperationOutcome, AgentProcessRegistration,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -134,8 +134,8 @@ impl PilotRuntimeBridge {
         if state.open_effects.contains(&effect_id) {
             bail!("effect {effect_id} is already open");
         }
-        let sequence = lock(&self.inner.client).begin_effect(AgentEffectBegin {
-            effect_id: effect_id.clone(),
+        let sequence = lock(&self.inner.client).begin_operation(AgentOperationBegin {
+            operation_id: effect_id.clone(),
             kind: kind.into(),
             request_digest: request_digest.into(),
             idempotency_key,
@@ -147,14 +147,14 @@ impl PilotRuntimeBridge {
     pub fn complete_effect(
         &self,
         effect_id: &str,
-        outcome: AgentEffectOutcome,
+        outcome: AgentOperationOutcome,
     ) -> anyhow::Result<()> {
         let mut state = lock(&self.inner.state);
         if !state.open_effects.contains(effect_id) {
             bail!("effect {effect_id} is not open");
         }
-        lock(&self.inner.client).complete_effect(AgentEffectComplete {
-            effect_id: effect_id.to_owned(),
+        lock(&self.inner.client).complete_operation(AgentOperationComplete {
+            operation_id: effect_id.to_owned(),
             outcome,
         })?;
         state.open_effects.remove(effect_id);

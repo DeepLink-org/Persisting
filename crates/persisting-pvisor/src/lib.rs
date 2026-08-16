@@ -10,7 +10,7 @@
 pub mod cli;
 mod runtime;
 
-mod agent_abi;
+mod agentctl;
 mod artifact;
 mod bundle;
 mod checkpoint;
@@ -31,15 +31,14 @@ mod util;
 mod vm;
 
 #[cfg(feature = "fuzzing")]
-pub use agent_abi::decode_agent_abi_frame_for_fuzz;
-pub use agent_abi::{
-    AgentAbiControl, AgentAbiServer, AgentAbiSnapshot, AgentCheckpointQuiesced, AgentClientRole,
-    AgentClientSnapshot, AgentDirective, AgentEffectBegin, AgentEffectComplete, AgentEffectOutcome,
-    AgentEffectSnapshot, AgentHeartbeatAck, AgentHello, AgentLifecycleState,
-    AgentProcessRegistration, AgentProcessSnapshot, AgentRequest, AgentRequestBody, AgentResponse,
-    AgentResponseBody, AgentWelcome, AGENT_ABI_ENDPOINT_ENV, AGENT_ABI_MAX_EFFECTS,
-    AGENT_ABI_MAX_FRAME_BYTES, AGENT_ABI_MAX_PROCESSES, AGENT_ABI_MAX_SESSIONS,
-    AGENT_ABI_TOKEN_ENV, AGENT_ABI_TRANSPORT_ENV, AGENT_ABI_VERSION, AGENT_ABI_VERSION_ENV,
+pub use agentctl::decode_agentctl_frame_for_fuzz;
+pub use agentctl::{
+    AgentCheckpointQuiesced, AgentClientRole, AgentClientSnapshot, AgentCtlControl, AgentCtlServer,
+    AgentCtlSnapshot, AgentDirective, AgentHeartbeatAck, AgentHello, AgentLifecycleState,
+    AgentOperationSnapshot, AgentProcessRegistration, AgentProcessSnapshot, AgentRequest,
+    AgentRequestBody, AgentResponse, AgentResponseBody, AgentWelcome, AGENTCTL_MAX_OPERATIONS,
+    AGENTCTL_MAX_PROCESSES, AGENTCTL_MAX_SESSIONS, LEGACY_AGENT_ABI_ENDPOINT_ENV,
+    LEGACY_AGENT_ABI_TOKEN_ENV, LEGACY_AGENT_ABI_TRANSPORT_ENV, LEGACY_AGENT_ABI_VERSION_ENV,
 };
 pub use bundle::{
     BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, ResourceSummary, RunBundle,
@@ -69,9 +68,11 @@ pub use executor::{AttemptContext, RunExecutor};
 #[cfg(feature = "fuzzing")]
 pub use oci::fuzz_oci_layer;
 pub use persisting_agentctl::{
-    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveAck,
-    SupervisorDirectiveEnvelope, SupervisorHeartbeat, SupervisorNetworkQuotaGrant,
-    SupervisorRegistration, SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
+    AgentOperationBegin, AgentOperationComplete, AgentOperationOutcome, SupervisorClientMessage,
+    SupervisorDirective, SupervisorDirectiveAck, SupervisorDirectiveEnvelope, SupervisorHeartbeat,
+    SupervisorNetworkQuotaGrant, SupervisorRegistration, SupervisorServerMessage,
+    AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
+    AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, SUPERVISOR_PROTOCOL_VERSION,
 };
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;

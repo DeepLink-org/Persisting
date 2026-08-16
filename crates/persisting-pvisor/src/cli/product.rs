@@ -190,21 +190,21 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     }
 
     println!("\nObserved Agent state");
-    println!("  clients: {}", bundle.agent_abi.clients.len());
+    println!("  AgentCtl clients: {}", bundle.agentctl.clients.len());
     println!(
         "  registered processes: {}",
-        bundle.agent_abi.processes.len()
+        bundle.agentctl.processes.len()
     );
-    let open_effects = bundle
-        .agent_abi
-        .effects
+    let open_operations = bundle
+        .agentctl
+        .operations
         .iter()
-        .filter(|effect| effect.completion.is_none())
+        .filter(|operation| operation.completion.is_none())
         .count();
     println!(
-        "  effects: {} total, {} open",
-        bundle.agent_abi.effects.len(),
-        open_effects
+        "  declared operations: {} total, {} open",
+        bundle.agentctl.operations.len(),
+        open_operations
     );
     println!("\nEnvironment and resources");
     println!(

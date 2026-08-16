@@ -58,12 +58,12 @@ lifecycle APIs conflate:
 | Product area | Current responsibility |
 | --- | --- |
 | Agent lifecycle | One logical `Run`, one or more `Attempt`s, cancellation, deadlines, terminal publication, and parent lineage |
-| Agent control | A Run-scoped authenticated Agent ABI for process/effect registration, heartbeats, quiescence, and desired state |
+| Agent control | Optional authenticated AgentCtl for heartbeats, desired state, cooperative process/operation declarations, and quiescence |
 | Capabilities | Models, tools, filesystem read/write, network, secrets, subprocess, and resources, with evidence recorded per dimension |
 | Filesystem effects | Copy-on-write staging, classified review, logical checkpoint/fork, repeated selective apply, terminal apply/drop, and an apply ledger |
 | Network and model access | Gateway capture plus OverlayNet policy; enforcement strength depends on executor and is never inferred from a product label |
 | Execution placement | Host process, Docker/Podman transport, or libkrun VM using an OCI image, prepared rootfs, or Linux host rootfs |
-| Evidence | Run Bundle, lifecycle events, capability enforcement, filesystem changes, network counters, Agent ABI state, output, and artifact references |
+| Evidence | Run Bundle, lifecycle events, capability enforcement, filesystem changes, network counters, AgentCtl observations, output, and artifact references |
 
 pVisor deliberately does not own batch planning, global scheduling, Dataset
 query, or the implementation of every isolation backend. pPilot orchestrates
@@ -95,7 +95,7 @@ CLI / pPilot / embedding host
         │  RunSpec
         ▼
      pVisor
-        ├── Control + Agent ABI
+        ├── AgentCtl
         ├── WorkspaceOverlay ── review / checkpoint / apply / drop
         ├── Gateway + OverlayNet
         ├── execution provider ── host / container / libkrun VM
@@ -110,7 +110,7 @@ event-sink acceptance. Finalization failure is returned as infrastructure
 failure instead of being hidden behind a successful process exit.
 
 There is no required pVisor network daemon in the current local product. Hosts
-call the crate API directly; each live Run receives an owner-only Agent ABI Unix
+call the crate API directly; each live Run receives an owner-only AgentCtl Unix
 socket. pPilot currently embeds a job-scoped supervisor and can use durable
 leases and object-store control state, but a long-lived multi-node pVisor fleet
 controller remains a product gate rather than a current claim.
@@ -150,7 +150,7 @@ contract that another compatible implementation could also satisfy.
 | Module | Role |
 |--------|------|
 | `pvisor` | [`PVisor`] / [`PVisorBuilder`] / [`RunHandle`] |
-| `agent_abi` | Run-scoped Agent ABI server, desired state, and observations |
+| `agentctl` | Optional Run-scoped cooperative control server, desired state, and observations |
 | `config` | canonical `RunConfig` plus programmatic driver configuration |
 | `runtime` | Attempt preparation and driver ownership |
 | `control` | Re-export of the shared `persisting-agentctl` state protocol |
@@ -160,22 +160,22 @@ contract that another compatible implementation could also satisfy.
 | `container` | Docker/Podman transport that injects pVisor |
 | `vm` | libkrun VM backend over pVisor's full-root OverlayFS |
 
-## Agent ABI
+## AgentCtl
 
 pVisor injects a Run-scoped endpoint and bearer token into every process
 invocation:
 
 ```text
-PERSISTING_AGENT_ABI_ENDPOINT=/tmp/pvisor-agent-….sock
-PERSISTING_AGENT_ABI_TOKEN=…
-PERSISTING_AGENT_ABI_VERSION=2
-PERSISTING_AGENT_ABI_TRANSPORT=unix
+PERSISTING_AGENTCTL_ENDPOINT=/tmp/pvisor-agent-….sock
+PERSISTING_AGENTCTL_TOKEN=…
+PERSISTING_AGENTCTL_VERSION=2
+PERSISTING_AGENTCTL_TRANSPORT=unix
 ```
 
 The token is intentionally not written to Run metadata. The socket is mode
 `0600`, exists only for the Attempt lifetime, and accepts bounded JSON frames.
 Docker and VM placements start a complete pVisor inside the isolation
-boundary. That injected pVisor creates the Agent ABI locally and executes the
+boundary. That injected pVisor creates AgentCtl locally and executes the
 Agent through the same ProcessExecutor used by a native Run; the host ABI token
 is deliberately removed from the delegated RunSpec.
 The compact protocol is owned by pVisor and currently uses the injected Unix
@@ -184,8 +184,10 @@ Heartbeats return pVisor's current desired state (`continue`, `quiesce`, or
 `shutdown`). Quiesce acknowledgements must match the active directive
 generation and the server's open-effect view.
 
-Hosts use `RunHandle::agent_abi()` to publish desired state and inspect the
-registered clients, processes, and effects. The reusable
+Hosts use `RunHandle::agentctl()` to publish desired state and inspect the
+registered clients, declared processes, and declared open operations. These
+are cooperative observations, not proof that no unreported process or external
+effect exists. The reusable
 `persisting-agentctl` crate owns the client SDK; pPilot re-exports it for
 compatibility and remains the reference quiescence/effect integration.
 
@@ -305,7 +307,7 @@ their existing paths. Additional mounts use `--container-mount
 The injected pVisor currently runs as container root; `container.user` is
 rejected until Agent identity can be applied after pVisor bootstrap rather than
 to the control process itself. A read-only rootfs receives a private `/tmp`
-tmpfs for the inner Agent ABI socket.
+tmpfs for the inner AgentCtl socket.
 
 `network = "host"` is the default because Gateway and OverlayNet currently run
 inside pVisor and advertise loopback endpoints. Bridge or no-network modes are
@@ -560,7 +562,7 @@ to `overlay.json`. Successful apply batches are recorded in the mode-`0600`
 `apply-ledger.json`. Completed CLI Runs also write a mode-`0600`
 `run-bundle.json` containing outcome, safety boundary, filesystem summary,
 network profile, requested resource limits, environment-key projection,
-classified filesystem changes, Agent ABI clients/processes/effects, output,
+classified filesystem changes, AgentCtl clients/process declarations/operation declarations, output,
 metrics, and artifact references. `review` presents the complete A/M/D/T/O
 manifest; `--diff` adds bounded text diffs while marking binary, large,
 symlink, and opaque changes structurally. `status` remains the lower-level live
@@ -574,7 +576,7 @@ only a Run-scoped local placeholder. Bundles record names and provenance, never
 environment values.
 
 `checkpoint` copies the raw upper into `checkpoints/<id>/` only after a Run is
-stopped. `RunHandle::checkpoint` is the live API: it requests Agent ABI
+stopped. `RunHandle::checkpoint` is the live API: it requests AgentCtl
 quiescence, waits for every connected client to acknowledge the same directive
 generation with no open effects, snapshots the upper, and resumes clients.
 Both are logical Agent checkpoints; neither claims to preserve process memory.

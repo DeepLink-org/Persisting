@@ -19,7 +19,7 @@ const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub enum CheckpointConsistency {
     /// The process tree was no longer running when the filesystem was copied.
     Stopped,
-    /// Reserved for a live Agent ABI quiesce + effect-journal barrier.
+    /// Reserved for a live AgentCtl cooperative quiescence barrier.
     AgentQuiesced,
 }
 
