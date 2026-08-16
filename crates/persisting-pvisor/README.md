@@ -71,7 +71,7 @@ lifecycle APIs conflate:
 | Product area | Current responsibility |
 | --- | --- |
 | Agent lifecycle | One logical `Run`, one or more `Attempt`s, cancellation, deadlines, terminal publication, and parent lineage |
-| Agent control | Optional authenticated AgentCtl for heartbeats, desired state, cooperative process/operation declarations, and quiescence |
+| Agent control | Optional authenticated AgentCtl v1 for Sessions, client state, directives, and cooperative quiescence |
 | Capabilities | Models, tools, filesystem read/write, network, secrets, subprocess, and resources, with evidence recorded per dimension |
 | Filesystem effects | Copy-on-write staging, classified review, logical checkpoint/fork, repeated selective apply, terminal apply/drop, and an apply ledger |
 | Network and model access | Gateway capture plus OverlayNet policy; enforcement strength depends on executor and is never inferred from a product label |
@@ -190,7 +190,7 @@ invocation:
 ```text
 PERSISTING_AGENTCTL_ENDPOINT=/tmp/pvisor-agent-….sock
 PERSISTING_AGENTCTL_TOKEN=…
-PERSISTING_AGENTCTL_VERSION=2
+PERSISTING_AGENTCTL_VERSION=1
 PERSISTING_AGENTCTL_TRANSPORT=unix
 ```
 
@@ -198,20 +198,21 @@ The token is intentionally not written to Run metadata. The socket is mode
 `0600`, exists only for the Attempt lifetime, and accepts bounded JSON frames.
 Docker and VM placements start a complete pVisor inside the isolation
 boundary. That injected pVisor creates AgentCtl locally and executes the
-Agent through the same ProcessExecutor used by a native Run; the host ABI token
-is deliberately removed from the delegated RunSpec.
+Agent through the same ProcessExecutor used by a native Run; host AgentCtl
+credentials are deliberately removed from the delegated RunSpec.
 The compact protocol is owned by pVisor and currently uses the injected Unix
-socket directly. The v2 handshake authenticates the client and opens a session.
-Heartbeats return pVisor's current desired state (`continue`, `quiesce`, or
-`shutdown`). Quiesce acknowledgements must match the active directive
-generation and the server's open-effect view.
+socket directly. In v1, `Hello` authenticates the client and opens a Session;
+periodic `Sync` exchanges `active`, `idle`, or checkpoint-specific `quiesced`
+state for pVisor's current `continue`, `quiesce`, or `shutdown` directive.
 
 Hosts use `RunHandle::agentctl()` to publish desired state and inspect the
-registered clients, declared processes, and declared open operations. These
-are cooperative observations, not proof that no unreported process or external
-effect exists. The reusable
-`persisting-agentctl` crate owns the client SDK; pPilot re-exports it for
-compatibility and remains the reference quiescence/effect integration.
+registered clients and their latest state. These are cooperative observations,
+not an authoritative process inventory or proof that no external effect exists.
+The reusable
+`persisting-agentctl` crate owns the client SDK; pPilot re-exports it for its
+runtime bridge and remains the reference quiescence integration. Interactive
+terminal login is reserved for a future, separately authorized Debug protocol
+and Session rather than additional Control messages.
 
 ## Runtime configuration
 
@@ -588,7 +589,7 @@ to `overlay.json`. Successful apply batches are recorded in the mode-`0600`
 `apply-ledger.json`. Completed CLI Runs also write a mode-`0600`
 `run-bundle.json` containing outcome, safety boundary, filesystem summary,
 network profile, requested resource limits, environment-key projection,
-classified filesystem changes, AgentCtl clients/process declarations/operation declarations, output,
+classified filesystem changes, AgentCtl client states, output,
 metrics, and artifact references. `review` presents the complete A/M/D/T/O
 manifest; `--diff` adds bounded text diffs while marking binary, large,
 symlink, and opaque changes structurally. `status` remains the lower-level live
@@ -603,8 +604,8 @@ environment values.
 
 `checkpoint` copies the raw upper into `checkpoints/<id>/` only after a Run is
 stopped. `RunHandle::checkpoint` is the live API: it requests AgentCtl
-quiescence, waits for every connected client to acknowledge the same directive
-generation with no open effects, snapshots the upper, and resumes clients.
+quiescence, waits for every Session frozen into the checkpoint to report the
+matching quiesced state, snapshots the upper, and resumes clients.
 Both are logical Agent checkpoints; neither claims to preserve process memory.
 `fork` restores one of these checkpoints into a new directory upper and starts
 a new safe Run whose `run.json` and Run Bundle record the parent Run and
