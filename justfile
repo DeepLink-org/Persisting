@@ -314,20 +314,18 @@ pvisor profile="release":
     profile="{{ profile }}"
     case "$profile" in
       release)
-        cargo_args=(--release)
         binary="{{ repo }}/target/release/pvisor"
+        cargo build --locked -p persisting-pvisor --bin pvisor --release
         ;;
       debug)
-        cargo_args=()
         binary="{{ repo }}/target/debug/pvisor"
+        cargo build --locked -p persisting-pvisor --bin pvisor
         ;;
       *)
         echo "unsupported pVisor profile: $profile (expected release or debug)" >&2
         exit 2
         ;;
     esac
-
-    cargo build --locked -p persisting-pvisor --bin pvisor "${cargo_args[@]}"
 
     if [[ "$(uname -s)" == "Darwin" ]]; then
         entitlements="{{ repo }}/crates/persisting-pvisor/macos-hypervisor.entitlements"
