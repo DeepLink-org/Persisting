@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1325" height="620" viewBox="0 0 1325 620" role="img" aria-labelledby="title desc">
   <title id="title">pChronicle product boundary</title>
-  <desc id="desc">Canonical runtime event Sources and pinned local or S3 external trajectory Sources enter pChronicle through separate branches and converge at a Catalog Snapshot and normalized Dataset views. External files do not become canonical runtime events. CLI import is a separate inbound path that accepts ATIF, ACTF, and OpenAI Messages into a new Dataset. Outbound surfaces provide query and analysis, export including Storyline, revisions, and a read-only Warehouse API and Web interface.</desc>
+  <desc id="desc">Canonical runtime event Sources and pinned local or S3 external trajectory Sources from external evaluators and Agent frameworks enter pChronicle through separate branches and converge at a Catalog Snapshot and normalized Dataset views. Supported external files include ATIF, ACTF, OpenAI Messages, and Storyline Sources; they do not become canonical runtime events. CLI import is a separate inbound path that accepts ATIF, ACTF, and OpenAI Messages into a new Dataset. Outbound surfaces provide query and analysis, export including Storyline, revisions, and a read-only Warehouse API and Web interface.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop stop-color="#08111f"/>
@@ -42,10 +42,11 @@
   </g>
 
   <g id="external-sources">
-    <rect x="40" y="280" width="350" height="125" rx="18" class="box"/>
+    <rect x="40" y="280" width="350" height="140" rx="18" class="box"/>
     <text x="65" y="317" class="label">Pinned external Sources</text>
-    <text x="65" y="349" class="tiny">local/S3 ATIF · ACTF · OpenAI Messages</text>
-    <text x="65" y="376" class="tiny">Storyline · direct normalization</text>
+    <text x="65" y="344" class="tiny">External evaluators · Agent frameworks</text>
+    <text x="65" y="370" class="tiny">local/S3 ATIF · ACTF · OpenAI Messages</text>
+    <text x="65" y="396" class="tiny">Storyline Sources · direct normalization</text>
   </g>
 
   <g id="import-input">

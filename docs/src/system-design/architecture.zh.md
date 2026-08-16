@@ -161,9 +161,12 @@ pVisor 不再自行写 Lance。
 
 安全性按 capability 维度报告。pVisor 记录请求策略、实际机制、Provider identity、
 enforcement 结果与观察到的 Effect；pPilot 在 placement 间保存 authority generation 和
-lease history；配置后的 pChronicle capture 只保存 lifecycle fact，以及 Gateway 或 lifecycle
-event record 实际携带的 Evidence。更完整的 Run Bundle Evidence 清单仍留在本地，除非另行
-搬运。
+lease history。配置后的 pChronicle capture 会持久保存 Gateway 轨迹 event、pVisor lifecycle
+record，以及这些 event 实际携带的 Evidence。完整 Artifact、lineage、filesystem Effect、
+AgentCtl/network/resource Evidence 和 Run Bundle 仍留在本地，除非由单独 publisher 或
+adapter 搬运。
+
+下面保留 Evidence 的形成层级；它描述本地 Run 的证据链，不表示各层都会自动交接到持久历史：
 
 ```text
 requested policy
@@ -172,7 +175,11 @@ requested policy
   → provider-bound evidence
   → observed effects
   → terminal result
-  → durable history
+
+Optional configured persistence
+  Gateway trajectory events + pVisor lifecycle records
+    → event-carried Evidence only
+    → pChronicle durable history
 ```
 
 Evidence 层级见[安全与 Evidence](security-evidence.md)，可迁移要求见
