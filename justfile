@@ -21,6 +21,8 @@ default:
     @echo "  just py-dev              # 同步纯 Python 开发环境"
     @echo "  just install-cli         # 安装 pchronicle、pvisor 和 ppilot"
     @echo "  just pvisor              # 构建 release pVisor；macOS 自动签名"
+    @echo "  just examples-pvisor     # 构建并验证全部 pVisor examples"
+    @echo "  just benchmark-pvisor    # pVisor 进程启动与 Bundle 访问基准"
     @echo "  just chronicle-binary    # 构建可直接测试的 pChronicle UI binary"
     @echo "  just echo                # 启动确定性的本地 LLM Echo upstream"
     @echo "  just benchmark-gateway   # Gateway 转发与持久化黑盒压测"
@@ -49,20 +51,44 @@ test-list:
         just gateway-fuzz-storage / gateway-fuzz-network
 
       组件示例
-        just examples-pvisor / examples-pchronicle / examples-ppilot
+        just examples-pvisor              全部 pVisor 场景
+        just examples-pvisor-filesystem   需要 FUSE 的 01/02 场景
+        just examples-pvisor-portable     普通 runner 可跑的 03/04 场景
+        just example-pvisor 03-network-isolation
+        just examples-pchronicle / examples-ppilot
+
+      pVisor 回归 / 基准
+        just test-pvisor / test-pvisor-lance / test-pvisor-isolation
+        just smoke-pvisor-cli
+        just benchmark-pvisor             快速 smoke 基准
+        just benchmark-pvisor nightly     稳定分布基准
     EOF
 
-# Run the deterministic, quantitative pVisor examples.
+# Run and validate every deterministic, quantitative pVisor example.
 [group('test')]
-examples-pvisor:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo build --release -q -p persisting-pvisor --bin pvisor
-    for example in "{{ repo }}"/examples/pvisor/*; do
-        [[ -f "$example/run.sh" ]] || continue
-        echo "==> ${example#"{{ repo }}/"}/run.sh"
-        (cd "$example" && bash run.sh)
-    done
+examples-pvisor profile="release": (pvisor profile)
+    bash examples/pvisor/test.sh --profile "{{ profile }}" \
+      01-filesystem-isolation \
+      02-changeset-management \
+      03-network-isolation \
+      04-gateway-llm-control
+
+# Run and validate the FUSE-backed workspace and changeset examples.
+[group('test')]
+examples-pvisor-filesystem profile="release": (pvisor profile)
+    bash examples/pvisor/test.sh --profile "{{ profile }}" \
+      01-filesystem-isolation 02-changeset-management
+
+# Run and validate pVisor examples that do not require FUSE or user namespaces.
+[group('test')]
+examples-pvisor-portable profile="release": (pvisor profile)
+    bash examples/pvisor/test.sh --profile "{{ profile }}" \
+      03-network-isolation 04-gateway-llm-control
+
+# Run and validate one named pVisor example.
+[group('test')]
+example-pvisor scenario profile="release": (pvisor profile)
+    bash examples/pvisor/test.sh --profile "{{ profile }}" "{{ scenario }}"
 
 # Run the deterministic, quantitative pChronicle examples.
 [group('test')]
@@ -184,6 +210,30 @@ benchmark-pchronicle-compare baseline candidate output="target/pchronicle-benchm
       --baseline "{{ baseline }}" \
       --candidate "{{ candidate }}" \
       --output "{{ output }}"
+
+# Run pVisor's process-level startup and durable Run Bundle benchmark. The
+# smoke suite is intended for PR CI; nightly raises warmups and sample counts.
+[group('benchmark')]
+benchmark-pvisor suite="smoke" output="target/pvisor-benchmark/current" target_dir="target/pvisor-benchmark-build":
+    bash benchmark/pvisor/run.sh run \
+      --suite "{{ suite }}" \
+      --output "{{ output }}" \
+      --target-dir "{{ target_dir }}"
+
+# Compare reports from the same host. A missing baseline is valid for the first
+# commit that introduces the benchmark and produces a candidate-only report.
+[group('benchmark')]
+benchmark-pvisor-compare candidate baseline="" output="target/pvisor-benchmark/comparison" regression_threshold="15":
+    bash benchmark/pvisor/run.sh compare \
+      --candidate "{{ candidate }}" \
+      --baseline "{{ baseline }}" \
+      --output "{{ output }}" \
+      --regression-threshold "{{ regression_threshold }}"
+
+# Unit-test the benchmark report and comparison contract without running it.
+[group('test')]
+test-pvisor-benchmark:
+    PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_bench.py
 
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 
@@ -422,6 +472,30 @@ test-crate crate:
 
 test-rust:
     cargo test --workspace
+
+# Default pVisor crate profile, including CLI and integration regressions.
+[group('test')]
+test-pvisor:
+    cargo test -p persisting-pvisor --locked
+
+# Mandatory pVisor ↔ pChronicle capture bridge feature profile.
+[group('test')]
+test-pvisor-lance:
+    cargo test -p persisting-pvisor --features lance-chronicle --locked
+
+# Strict Linux rootless/FUSE boundary tests. This deliberately does not allow
+# the optional-userns skip used by the broad cross-platform workspace job.
+[group('test')]
+test-pvisor-isolation:
+    env -u PERSISTING_TEST_ALLOW_NO_USERNS \
+      cargo test -p persisting-pvisor --test rootless_local --locked -- --nocapture
+
+# Product CLI surface exercised by CI after the debug component build.
+[group('test')]
+smoke-pvisor-cli:
+    target/debug/pvisor run --help >/dev/null
+    target/debug/pvisor status --help >/dev/null
+    target/debug/pvisor review --help >/dev/null
 
 test-capture-claude:
     cargo test -p persisting-gateway --test capture_apps_claude

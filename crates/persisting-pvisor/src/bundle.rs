@@ -485,6 +485,47 @@ mod tests {
     use persisting_agentctl::{AttemptId, RunId};
     use std::os::unix::fs::PermissionsExt;
 
+    const V1_MINIMAL_FIXTURE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/bundles/v1-minimal.json"
+    ));
+
+    #[test]
+    fn legacy_v1_bundle_fixture_decodes_and_normalizes_agentctl() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join(RUN_BUNDLE_FILENAME), V1_MINIMAL_FIXTURE).unwrap();
+
+        let bundle = RunBundle::read(temp.path()).unwrap();
+        assert_eq!(bundle.schema_version, 1);
+        assert_eq!(bundle.run.run_id, "run-v1-fixture");
+        assert_eq!(bundle.run.state, RunState::Completed);
+        assert_eq!(bundle.agentctl.run_id, "run-v1-fixture");
+        assert!(bundle.agentctl.operations.is_empty());
+        assert!(!bundle.safety.filesystem_read_non_bypassable);
+        assert!(!bundle.safety.filesystem_write_non_bypassable);
+
+        let normalized = serde_json::to_value(bundle).unwrap();
+        assert!(normalized.get("agentctl").is_some());
+        assert!(normalized.get("agent_abi").is_none());
+    }
+
+    #[test]
+    fn unsupported_bundle_schema_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut fixture: serde_json::Value = serde_json::from_slice(V1_MINIMAL_FIXTURE).unwrap();
+        fixture["schema_version"] = serde_json::json!(999);
+        fs::write(
+            temp.path().join(RUN_BUNDLE_FILENAME),
+            serde_json::to_vec_pretty(&fixture).unwrap(),
+        )
+        .unwrap();
+
+        let error = RunBundle::read(temp.path()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported Run Bundle schema 999"));
+    }
+
     #[test]
     fn bundle_is_private_and_roundtrips() {
         let temp = tempfile::tempdir().unwrap();

@@ -4,6 +4,7 @@
 
 ```bash
 ./run.sh
+./test.sh  # 执行同一场景并验证预期结果
 ```
 
 脚本启动一个本地 HTTP server，然后平铺执行三个场景：
@@ -15,7 +16,7 @@
 核心命令就是普通的 pVisor CLI：
 
 ```bash
-pvisor run --overlaynet-allow 127.0.0.1:19111 -- \
+pvisor run --overlaynet-allow 127.0.0.1:<ephemeral-port> -- \
   agent-command
 
 pvisor run --overlaynet-deny-all -- \
@@ -25,14 +26,14 @@ pvisor run --overlaynet-deny-all -- \
 纯 OverlayNet 运行会将当前目录作为 Run 的项目关联路径；每次执行的 Run 记录和
 Bundle 则独立保存在 `PERSISTING_RUN_HOME` 下。
 
-`run.sh` 中的短 `bash -c` 用于让 curl 显式读取 pVisor 注入的 `$HTTP_PROXY`，并就地断言
-响应结果，没有额外测试框架或隐藏的辅助脚本。任一场景失败都会立即以非零状态退出。
+`run.sh` 中的短 `bash -c` 只负责让 curl 显式读取 pVisor 注入的 `$HTTP_PROXY`。
+它把 allow、deny 和 direct 三次执行的 stdout、stderr 与退出码保存在工作目录中，便于
+直接观察。`test.sh` 再检查响应、预期失败和三个 Run Bundle。
 
 预期结论：
 
 ```text
 Conclusion: OverlayNet controls cooperative proxy traffic; it is not a network sandbox.
-RESULT example=network-isolation allowed=true denied=true direct_bypass=true
 ```
 
 ## 安全边界

@@ -1,0 +1,102 @@
+name: pVisor Benchmark
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: pvisor-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Process and Run Bundle report
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+          components: ""
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pvisor-benchmark
+
+      - name: Resolve main baseline
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            baseline_ref="origin/${{ github.base_ref }}"
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            baseline_ref="HEAD^"
+          else
+            baseline_ref="HEAD"
+          fi
+          baseline_sha="$(git rev-parse "$baseline_ref")"
+          baseline_repo="${RUNNER_TEMP}/persisting-main"
+          git worktree add --detach "$baseline_repo" "$baseline_sha"
+          echo "repo=$baseline_repo" >> "$GITHUB_OUTPUT"
+          echo "sha=$baseline_sha" >> "$GITHUB_OUTPUT"
+          if [[ -x "$baseline_repo/benchmark/pvisor/run.sh" ]] && \
+             grep -q '^benchmark-pvisor ' "$baseline_repo/justfile"; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Benchmark main
+        if: steps.baseline.outputs.supported == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ steps.baseline.outputs.repo }}"
+          just benchmark-pvisor \
+            smoke \
+            "${RUNNER_TEMP}/pvisor-benchmark/main" \
+            "${GITHUB_WORKSPACE}/target/pvisor-benchmark-ci"
+
+      - name: Benchmark candidate
+        shell: bash
+        run: |
+          just benchmark-pvisor \
+            smoke \
+            "${RUNNER_TEMP}/pvisor-benchmark/candidate" \
+            "${GITHUB_WORKSPACE}/target/pvisor-benchmark-ci"
+
+      - name: Compare reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="${RUNNER_TEMP}/pvisor-benchmark/candidate/raw-report.json"
+          baseline="${RUNNER_TEMP}/pvisor-benchmark/main/raw-report.json"
+          output="${RUNNER_TEMP}/pvisor-benchmark/comparison"
+          if [[ -f "$baseline" ]]; then
+            just benchmark-pvisor-compare "$candidate" "$baseline" "$output"
+          else
+            just benchmark-pvisor-compare "$candidate" "" "$output"
+          fi
+          cat "$output/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark data and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvisor-benchmark-${{ github.run_id }}
+          path: ${{ runner.temp }}/pvisor-benchmark
+          retention-days: 30
+          if-no-files-found: error

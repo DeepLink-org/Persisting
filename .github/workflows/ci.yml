@@ -70,7 +70,7 @@ jobs:
       - name: Build Agent CLI component set
         run: |
           cargo build -p persisting-pchronicle-cli --bin pchronicle --locked
-          cargo build -p persisting-pvisor --bin pvisor --locked
+          just pvisor debug
           cargo build -p persisting-ppilot --bin ppilot --locked
 
       - name: Test
@@ -88,11 +88,11 @@ jobs:
         env:
           PERSISTING_TEST_ALLOW_NO_USERNS: "1"
           PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-lance-runs
-        run: cargo test -p persisting-pvisor --features lance-chronicle --locked
+        run: just test-pvisor-lance
 
       - name: Smoke product CLIs
         run: |
-          ./target/debug/pvisor run --help
+          just smoke-pvisor-cli
           ./target/debug/ppilot run --help
           ./target/debug/ppilot produce --help
           ./target/debug/pchronicle query --help
@@ -116,7 +116,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          sudo apt-get install -y -qq --no-install-recommends fuse3 jq util-linux
           if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
             sudo sysctl -w kernel.unprivileged_userns_clone=1
           fi
@@ -129,7 +129,12 @@ jobs:
       - name: Run strict pVisor isolation regressions
         env:
           PERSISTING_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
-        run: cargo test -p persisting-pvisor --test rootless_local --locked -- --nocapture
+        run: just test-pvisor-isolation
+
+      - name: Run pVisor filesystem examples
+        env:
+          WORK_ROOT: ${{ runner.temp }}/pvisor-filesystem-examples
+        run: just examples-pvisor-filesystem
 
   s3-contract:
     name: pChronicle S3 Contract (MinIO)
@@ -221,10 +226,16 @@ jobs:
       - name: Install jq
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
-      # The pVisor filesystem examples need macFUSE/FUSE3 and are not run here;
-      # they stay covered by local `just examples-pvisor`. The quantitative
-      # pPilot/pChronicle examples below use the release product binary built
-      # from this checkout.
+      - name: Validate pVisor benchmark contract
+        run: just test-pvisor-benchmark
+
+      - name: Run portable pVisor examples
+        env:
+          WORK_ROOT: ${{ runner.temp }}/pvisor-portable-examples
+        run: just examples-pvisor-portable
+
+      # pPilot/pChronicle retain their existing loops until those components
+      # receive the same `just`-first standardization as pVisor.
       - name: Run pPilot examples
         run: |
           cargo build --release -q -p persisting-ppilot --bin ppilot

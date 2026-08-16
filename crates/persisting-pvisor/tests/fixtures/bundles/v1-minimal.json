@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "generated_at_unix_ms": 20,
+  "run": {
+    "run_id": "run-v1-fixture",
+    "attempt_id": "attempt-v1-fixture",
+    "session_id": "run-v1-fixture",
+    "agent": "fixture-agent",
+    "command": ["/bin/true"],
+    "state": "completed",
+    "started_at_unix_ms": 10,
+    "finished_at_unix_ms": 20,
+    "duration_ms": 10,
+    "exit_code": 0
+  },
+  "safety": {
+    "safe_profile_requested": false,
+    "host_process": true,
+    "filesystem_changes_staged": false,
+    "filesystem_non_bypassable": false,
+    "network_non_bypassable": false,
+    "warnings": []
+  },
+  "network": {
+    "policy": {
+      "mode": "ambient"
+    }
+  },
+  "agent_abi": {
+    "run_id": "run-v1-fixture",
+    "attempt_id": "attempt-v1-fixture",
+    "directive_seq": 0,
+    "directive": {
+      "kind": "continue"
+    },
+    "clients": [],
+    "processes": [],
+    "effects": []
+  }
+}

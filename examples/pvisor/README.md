@@ -1,7 +1,8 @@
 # pVisor：轻量级隔离与 Agent Run 管控
 
 这组示例依次展示 pVisor 的事务工作区、changeset、显式网络代理和 Gateway。每个
-`run.sh` 都直接执行 pVisor 命令，并打印 lower/upper、Run Bundle 或 AgenticMD 等产物。
+`run.sh` 只保留场景准备、pVisor 命令和产物展示，让产品用法一目了然；对应的 `test.sh`
+调用同一个 `run.sh`，再对 lower/upper、Run Bundle、日志或 AgenticMD 执行回归断言。
 
 | 示例 | 可复现结论 |
 |---|---|
@@ -14,3 +15,15 @@
 事务工作区和示例中 cooperative public proxy 所覆盖的数据面；直接 socket 可绕过
 该代理。Host executor 的完整文件系统与 deny-all 网络边界因平台而异，以 Run Bundle
 和 pVisor 隔离文档为准。
+
+仓库统一入口会先构建一次 pVisor，再通过各场景的 `test.sh` 执行并验证 `run.sh`：
+
+```bash
+just examples-pvisor
+just examples-pvisor-filesystem  # 01/02，需要 FUSE
+just examples-pvisor-portable    # 03/04，普通 CI runner
+just example-pvisor 03-network-isolation
+```
+
+`examples/pvisor/run.sh` 可批量演示场景，`examples/pvisor/test.sh` 可批量验证场景。两者都
+能通过 `PVISOR_BIN` 复用已经构建好的 binary，并通过 `WORK_ROOT` 把临时产物放到指定目录。
