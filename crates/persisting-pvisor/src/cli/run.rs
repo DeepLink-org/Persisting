@@ -457,9 +457,12 @@ struct GatewayOverrides {
 struct ChronicleOverrides {
     #[arg(long, value_enum)]
     chronicle_mode: Option<ChronicleMode>,
-    /// Canonical Lance root; accepts a local directory or s3:// URI.
+    /// Canonical pChronicle storage root; accepts a local directory or s3:// URI.
     #[arg(long, value_name = "PATH|S3_URI")]
     chronicle_dir: Option<PathBuf>,
+    /// Standalone pChronicle executable used by the sidecar control client.
+    #[arg(long, env = "PERSISTING_PCHRONICLE_BIN", value_name = "PATH")]
+    pchronicle_binary: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -850,20 +853,23 @@ async fn execute_config(
         .dir
         .clone()
         .or_else(|| Some(storage.join("chronicle")));
-    let (sink, event_sink, writer): (
+    let (sink, event_sink, writer, chronicle_control): (
         Arc<dyn TrajectoryEventSink>,
         Arc<dyn crate::EventSink>,
         Option<ChronicleWriter>,
+        Option<Arc<dyn persisting_events::ChronicleControl>>,
     ) = match config.chronicle.mode {
         ChronicleMode::Off => (
             Arc::new(SeqOnlySink::new()),
             Arc::new(crate::NoopEventSink),
             None,
+            None,
         ),
-        ChronicleMode::Lance => {
+        ChronicleMode::Spawn | ChronicleMode::Lance => {
             let dir = chronicle_dir.context("pChronicle requires a storage location")?;
-            let (sink, event_sink, writer) = chronicle_sink(&dir, &config.run.agent, &run_id)?;
-            (sink, event_sink, Some(writer))
+            let (sink, event_sink, writer, control) =
+                chronicle_sink(&dir, &config.run.agent, &run_id, &config.chronicle.binary).await?;
+            (sink, event_sink, Some(writer), Some(control))
         }
     };
 
@@ -888,6 +894,7 @@ async fn execute_config(
         .storage(&storage)
         .trajectory_sink(sink)
         .event_sink(event_sink)
+        .pchronicle_binary(config.chronicle.binary.clone())
         .executors(vec![executor])
         .network(NetworkDriverConfig::new(
             config.overlaynet.mode,
@@ -903,6 +910,9 @@ async fn execute_config(
                 limits: config.overlaynet.limits.clone(),
             },
         ));
+    if let Some(control) = chronicle_control {
+        builder = builder.chronicle_control(control);
+    }
     if let Some(proxy) = proxy {
         builder = builder.gateway(
             GatewayDriverConfig::new(proxy)
@@ -1426,6 +1436,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     if let Some(value) = args.chronicle.chronicle_dir {
         config.chronicle.dir = Some(value);
     }
+    if let Some(value) = args.chronicle.pchronicle_binary {
+        config.chronicle.binary = value;
+    }
     Ok(())
 }
 
@@ -1810,9 +1823,11 @@ mod tests {
             "--gateway-route",
             r#"name="openai", upstream="https://api.openai.com/v1""#,
             "--chronicle-mode",
-            "lance",
+            "spawn",
             "--chronicle-dir",
             "s3://trajectory-bucket/pvisor-runs",
+            "--pchronicle-binary",
+            "/opt/persisting/bin/pchronicle",
             "--",
             "codex",
         ])

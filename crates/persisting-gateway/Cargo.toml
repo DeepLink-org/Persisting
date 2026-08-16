@@ -35,6 +35,7 @@ dashmap.workspace = true
 blake3.workspace = true
 hostname.workspace = true
 persisting-agentctl.workspace = true
+persisting-events.workspace = true
 persisting-overlaynet.workspace = true
 persisting-pchronicle = { workspace = true, default-features = false }
 

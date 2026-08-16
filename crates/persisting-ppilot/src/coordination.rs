@@ -13,10 +13,10 @@ use persisting_agentctl::{
     AttemptId, RunCommitRequest, RunId, RunLeaseRecord, RunResult, RunState,
 };
 #[cfg(not(test))]
-use persisting_pchronicle_client::ChronicleControlProcessClient;
+use persisting_events::ChronicleControlProcessClient;
 #[cfg(test)]
-use persisting_pchronicle_client::MemoryChronicleControl;
-use persisting_pchronicle_client::{
+use persisting_events::MemoryChronicleControl;
+use persisting_events::{
     AttemptRecordState, ChronicleControl, CommitRunOutcome, LeaseAcquireOutcome,
 };
 use serde::{Deserialize, Serialize};

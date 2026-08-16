@@ -171,12 +171,12 @@ pub struct TrajectoryDeadLetterEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session: Option<String>,
     #[serde(default)]
-    pub records: Vec<persisting_pchronicle::EventRecord>,
+    pub records: Vec<persisting_events::EventRecord>,
     pub error: String,
 }
 
 impl TrajectoryDeadLetterEntry {
-    pub fn decoded_records(&self) -> Result<Vec<persisting_pchronicle::EventRecord>> {
+    pub fn decoded_records(&self) -> Result<Vec<persisting_events::EventRecord>> {
         Ok(self.records.clone())
     }
 }
@@ -186,7 +186,7 @@ pub fn append_trajectory_dead_letter(
     agent_id: &str,
     session_id: &str,
     root_session: Option<&str>,
-    records: &[persisting_pchronicle::EventRecord],
+    records: &[persisting_events::EventRecord],
     error: &str,
 ) -> Result<()> {
     let entry = TrajectoryDeadLetterEntry {
@@ -610,7 +610,7 @@ mod tests {
             "agent",
             "sess",
             Some("run-1"),
-            &[persisting_pchronicle::EventRecord {
+            &[persisting_events::EventRecord {
                 identity: Default::default(),
                 seq: 1,
                 source: "test".into(),

@@ -9,9 +9,10 @@ pChronicle Design，命令属于各产品 Reference。
 
 | 产品或层次 | 拥有 | 不拥有 |
 | --- | --- | --- |
+| `persisting-events` 契约 | 存储无关的 `EventRecord` identity/envelope 与可选的版本化 pChronicle control 协议 | 物理 row、存储引擎、查询或 projection |
 | pVisor | 一个 Run、Attempt、执行环境、capability admission、Effect 与运行时 Evidence | 多 Run 调度或持久历史查询 |
 | pPilot | 多 Run planning 与 reconciliation、lease、有界并发、基础设施重试和结果收集 | Agent reasoning、Provider enforcement 或轨迹存储 |
-| pChronicle | canonical event、终态事实、Dataset discovery、规范化 projection、revision 与读取面 | 启动、调度或控制 Run |
+| pChronicle | 持久 canonical event log、物理 schema/backend、终态事实、Dataset discovery、规范化 projection、revision 与读取面 | 启动、调度或控制 Run；定义第二套事件信封 |
 | Runtime Provider | 一种物理执行机制 | 逻辑 Run identity 或产品策略 |
 
 Gateway、OverlayFS 和 OverlayNet 是 pVisor 运行时机制，不构成独立控制面。pPilot 扩展
@@ -45,9 +46,11 @@ User or Agent framework
   → capability-by-dimension provider selection
   → Attempt execution
   → runtime events and Artifact references
+  → persisting-events contract
+  → pChronicle sidecar durable acknowledgement（启用时）
   → Effect review or direct policy decision
   → terminal RunResult
-  → pChronicle canonical history
+  → pChronicle canonical history and projections
 ```
 
 Admission 比较请求的 capability 维度与选中 Provider 能提供的 Evidence。必需维度无法
@@ -80,11 +83,14 @@ job_id → task_id → run_id → attempt_id / lease_epoch → terminal result
 
 ## 历史路径
 
-pVisor、Gateway、Provider 和 importer 产生事实；ingestion 之后的持久解释由 pChronicle 拥有：
+pVisor、Gateway、Provider 和 importer 使用共享的 `persisting-events::EventRecord` 契约产生
+事实；pChronicle 拥有 durable ingestion、物理表示与持久解释：
 
 ```text
 producers
-  → canonical events
+  → EventRecord contract
+  → versioned pChronicle control protocol or in-process pChronicle API
+  → durable canonical event log
   → terminal fact and Artifact manifest
   → normalized Run / Step / ToolCall projections
   → exchange formats and lineage-bearing revisions
@@ -94,13 +100,19 @@ Canonical fact 采用 append-oriented 模型。Storyline 等规范化视图是�
 文件是互操作边界，不替代事实源。每次读取固定一个 Catalog Snapshot，但不会虚构跨无关
 Source 的全局事务。
 
+pVisor 默认构建不链接 Lance/DataFusion。Chronicle mode 为 `spawn` 时，pVisor 启动
+`pchronicle control`，通过带认证的 loopback IPC 提交生命周期与 Gateway 事件，并且只把
+sidecar 成功响应视为 durable acknowledgement。旧模式名 `lance` 是 `spawn` 的兼容别名；
+pVisor 不再自行写 Lance。
+
 ## 故障与恢复
 
 | 故障 | Owner | 必需行为 |
 | --- | --- | --- |
 | Attempt 退出或 Provider 消失 | pVisor | finalise Evidence；暴露失败或创建 fenced replacement Attempt |
 | Worker lease 过期 | pPilot | 阻止 stale terminal publication；reconcile 期望与实际状态 |
-| capture queue 饱和 | producer/Gateway | 永不阻塞请求 callback；按配置报告丢失或进入持久路径 |
+| sidecar append queue 饱和或关闭 | pVisor/Gateway producer | 提交前明确拒绝并报告失败；不得声称已经 durable |
+| append 连接或 ACK 丢失 | producer 与 pChronicle writer | 由于写入可能已经提交，保留 unknown 状态；不得按“明确拒绝”复用序号 |
 | 历史发布冲突 | pChronicle writer | 保留已发布 Snapshot；按 writer contract 报错或重试 |
 | 控制面重启 | pPilot | reconcile checkpoint、活跃 Attempt 与终态历史事实 |
 | 视图生成失败 | pChronicle | 保持 canonical fact 可读；重建派生视图 |
@@ -131,6 +143,7 @@ Evidence 层级见[安全与 Evidence](security-evidence.md)，可迁移要求�
 
 | 边界 | 契约 Owner | 详细文章 |
 | --- | --- | --- |
+| 逻辑运行事件与本地 Chronicle control 协议 | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
 | Agent 执行与 Effect review | pVisor | [pVisor 概念](../pvisor/concepts/index.md)与[指南](../pvisor/guides/index.md) |
 | Provider 与运行时机制 | pVisor | [pVisor Design](../pvisor/design/index.md) |
 | 多 Run 编排 | pVisor 中的 pPilot | [pPilot Design](../pvisor/design/orchestration.md) |

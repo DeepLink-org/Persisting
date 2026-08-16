@@ -8,11 +8,7 @@ description = "pVisor foreground Agent Run manager and portable execution runtim
 readme = "README.md"
 
 [features]
-default = ["local-lance-chronicle"]
-# Public full backend, retaining the historical local + S3 behavior.
-lance-chronicle = ["local-lance-chronicle", "persisting-pchronicle/s3-store"]
-# Default local-only backend used by pPilot without compiling cloud SDKs.
-local-lance-chronicle = ["persisting-pchronicle/lance-store"]
+default = []
 jujutsu-overlay = ["persisting-overlayfs/jujutsu"]
 fuzzing = []
 
@@ -27,11 +23,11 @@ globset.workspace = true
 libc.workspace = true
 libkrun = { workspace = true, features = ["net"] }
 persisting-agentctl.workspace = true
+persisting-events = { workspace = true, features = ["control"] }
 persisting-gateway.workspace = true
 persisting-overlaynet.workspace = true
 persisting-overlayfs = { workspace = true, default-features = false }
 persisting-overlay-core.workspace = true
-persisting-pchronicle = { workspace = true, default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

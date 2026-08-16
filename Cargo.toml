@@ -2,12 +2,12 @@
 resolver = "2"
 members = [
     "crates/persisting-agentctl",
+    "crates/persisting-events",
     "crates/persisting-gateway",
     "crates/persisting-dlcapt",
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
     "crates/persisting-pchronicle",
-    "crates/persisting-pchronicle-client",
     "crates/persisting-pchronicle-cli",
     "crates/persisting-overlayfs",
     "crates/persisting-overlay-core",
@@ -113,12 +113,12 @@ libkrun = "=1.19.3"
 log = "0.4"
 object_store = "0.13.2"
 persisting-agentctl = { path = "crates/persisting-agentctl" }
+persisting-events = { path = "crates/persisting-events" }
 persisting-gateway = { path = "crates/persisting-gateway" }
 persisting-overlayfs = { path = "crates/persisting-overlayfs", default-features = false }
 persisting-overlay-core = { path = "crates/persisting-overlay-core" }
 persisting-overlaynet = { path = "crates/persisting-overlaynet" }
 persisting-pchronicle = { path = "crates/persisting-pchronicle", default-features = false }
-persisting-pchronicle-client = { path = "crates/persisting-pchronicle-client" }
 persisting-pvisor = { path = "crates/persisting-pvisor" }
 pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }

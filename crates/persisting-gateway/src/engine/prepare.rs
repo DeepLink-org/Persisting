@@ -322,7 +322,7 @@ impl CapturePreparer {
         event: CancelEvent,
     ) -> Result<PreparedCapture> {
         let rec = crate::record::EventRecord {
-            identity: persisting_pchronicle::EventIdentity::default(),
+            identity: persisting_events::EventIdentity::default(),
             seq: 0,
             source: "capture".into(),
             kind: "llm.call.cancelled".into(),

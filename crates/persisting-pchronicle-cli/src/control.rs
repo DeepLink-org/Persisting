@@ -4,12 +4,12 @@
 //! protocol is intended for trusted local orchestrators such as pPilot.
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::{AttemptRegistry, RunControlStore};
-use persisting_pchronicle_client::{
+use persisting_events::{
     ChronicleControlEnvelope, ChronicleControlReady, ChronicleControlRequest,
     ChronicleControlResponse, ChronicleControlResponseEnvelope, CommitRunOutcome,
     LeaseAcquireOutcome, CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION,
 };
+use persisting_pchronicle::{AttemptRegistry, RunControlStore};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -191,6 +191,16 @@ async fn handle_request(
         } => Response::Boolean(
             attempts
                 .publish_active(&run_id, &attempt_id, lease_epoch, ttl_ms)
+                .await?,
+        ),
+        Request::HeartbeatAttempt {
+            run_id,
+            attempt_id,
+            lease_epoch,
+            ttl_ms,
+        } => Response::Boolean(
+            attempts
+                .heartbeat(&run_id, &attempt_id, lease_epoch, ttl_ms)
                 .await?,
         ),
         Request::PublishAttemptTerminal {

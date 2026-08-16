@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use persisting_agentctl::{AttemptId, RunId};
-use persisting_pchronicle::{EventIdentity, EventRecord};
+use persisting_events::{EventIdentity, EventRecord};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;

@@ -9,3 +9,4 @@ Persisting 格式与协议的 RFC 索引。
 | [0003](0003-pchronicle-ownership.md) | pChronicle 轨迹存储层所有权 | Accepted |
 | [0004](0004-actf-format.md) | ACTF v1.0 轨迹格式 | Accepted |
 | [0005](0005-pchronicle-revision-lineage.md) | pChronicle 派生 Revision Lineage | Accepted |
+| [0007](0007-events-contract-pchronicle-sidecar.md) | 事件契约与 pChronicle Sidecar 边界 | Accepted |

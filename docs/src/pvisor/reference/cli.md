@@ -100,9 +100,15 @@ pvisor run \
   --gateway-level dialogue \
   --gateway-route \
     'name="openai", provider="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \
-  --chronicle-mode lance \
+  --chronicle-mode spawn \
+  --pchronicle-binary pchronicle \
   -- codex
 ```
+
+`--chronicle-mode spawn` starts a `pchronicle control` sidecar; pVisor sends
+shared `EventRecord` values and waits for durable acknowledgements instead of
+opening Lance itself. `lance` remains accepted as a compatibility alias for
+`spawn`. The binary can also be selected with `PERSISTING_PCHRONICLE_BIN`.
 
 The equivalent TOML is:
 

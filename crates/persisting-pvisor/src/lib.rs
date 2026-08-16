@@ -4,8 +4,9 @@
 //! Hosts call [`PVisor::run`] directly; pVisor assembles execution, control,
 //! network, filesystem, and the optional internal Gateway driver.
 //!
-//! pChronicle is a peer history service, not a child module. A trajectory sink
-//! connects Gateway events to a pChronicle-backed adapter when requested.
+//! pChronicle is a peer history service, not a child module. When persistence
+//! is requested, pVisor talks to a standalone `pchronicle control` sidecar over
+//! the lightweight versioned client protocol.
 
 pub mod cli;
 mod runtime;

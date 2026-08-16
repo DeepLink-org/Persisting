@@ -16,7 +16,10 @@ use crate::{Error, Result};
 /// its routing identity first, so canonical storage remains deterministically
 /// session-scoped without rejecting producer metadata at ingest.
 pub fn project_event_records(records: &[EventRecord]) -> Result<StorylineDocument> {
-    records.iter().try_for_each(EventRecord::validate)?;
+    records
+        .iter()
+        .try_for_each(EventRecord::validate)
+        .map_err(|error| crate::Error::Other(error.to_string()))?;
     let session_id = records
         .iter()
         .rev()

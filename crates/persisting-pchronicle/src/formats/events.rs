@@ -12,66 +12,9 @@
 //! Use the pChronicle APIs to extract Lance events for inspection.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{Error, Result};
-
-/// Runtime identity shared by lifecycle and trajectory events.
-///
-/// The fields are flattened into [`EventRecord`] on the wire. Storage fills
-/// missing routing identities from [`crate::StoryCoords`] and rejects conflicts.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventIdentity {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storyline_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timestamp_unix_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub producer: Option<String>,
-}
-
-/// Canonical Agent trajectory event.
-///
-/// Capture uses this type directly and adds producer-specific payload
-/// interpretation through an extension trait rather than defining a second
-/// serialized record schema.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EventRecord {
-    #[serde(flatten)]
-    pub identity: EventIdentity,
-    pub seq: u64,
-    pub source: String,
-    pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_uuid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_call_id: Option<String>,
-    pub payload: Value,
-}
+pub use persisting_events::{EventIdentity, EventRecord};
 
 /// In-memory batch of events (not a file format).
 ///
@@ -102,21 +45,17 @@ impl EventsDocument {
     }
 }
 
-impl EventRecord {
-    /// Validate the canonical event envelope before persistence or projection.
-    pub fn validate(&self) -> Result<()> {
-        if self.source.trim().is_empty() {
-            return Err(Error::Other("event source is required".into()));
-        }
-        if self.kind.trim().is_empty() {
-            return Err(Error::Other("event kind is required".into()));
-        }
-        Ok(())
-    }
-
+pub trait ChronicleEventRecordExt {
     /// Decode the canonical typed semantics attached to an `llm.request` event.
     /// Wire-only and legacy events legitimately return `None`.
-    pub fn llm_request_payload(&self) -> Result<Option<super::llm::LlmRequestEventPayload>> {
+    fn llm_request_payload(&self) -> Result<Option<super::llm::LlmRequestEventPayload>>;
+
+    /// Decode the canonical typed semantics attached to an `llm.response` event.
+    fn llm_response_payload(&self) -> Result<Option<super::llm::LlmResponseEventPayload>>;
+}
+
+impl ChronicleEventRecordExt for EventRecord {
+    fn llm_request_payload(&self) -> Result<Option<super::llm::LlmRequestEventPayload>> {
         let Some(payload) = self.payload.get("llm_request") else {
             return Ok(None);
         };
@@ -125,8 +64,7 @@ impl EventRecord {
             .map_err(|error| Error::Other(format!("decode llm.request payload: {error}")))
     }
 
-    /// Decode the canonical typed semantics attached to an `llm.response` event.
-    pub fn llm_response_payload(&self) -> Result<Option<super::llm::LlmResponseEventPayload>> {
+    fn llm_response_payload(&self) -> Result<Option<super::llm::LlmResponseEventPayload>> {
         let Some(payload) = self.payload.get("llm_response") else {
             return Ok(None);
         };
@@ -182,6 +120,7 @@ pub fn parse_events_jsonl_for_test(input: &str) -> Result<EventsDocument> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn event_wire_has_no_schema_version() {

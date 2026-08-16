@@ -1,6 +1,6 @@
 use anyhow::Result;
 use persisting_agentctl::{AttemptId, RunCommitRequest, RunId, RunState};
-use persisting_pchronicle_client::{
+use persisting_events::{
     ChronicleControl, ChronicleControlProcessClient, CommitRunOutcome, LeaseAcquireOutcome,
     TrajectoryAppendRequest,
 };
