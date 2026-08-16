@@ -1,7 +1,7 @@
 //! Content-addressed storage for large Storyline cells.
 //!
 //! The normalized Storyline schemas remain unchanged. Large UTF-8 / JSON cells
-//! are replaced internally with a compact, versioned descriptor and stored once
+//! are replaced internally with a compact descriptor and stored once
 //! in `objects.lance`. Public pChronicle readers hydrate descriptors before they
 //! return data.
 
@@ -24,12 +24,12 @@ use lance_file::version::LanceFileVersion;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::IndexType;
 
-use super::storyline_datafusion::StorylineTableKind;
+use super::datafusion::StorylineTableKind;
 
 pub const STORYLINE_OBJECTS_DATASET: &str = "objects.lance";
 pub const DEFAULT_CONTENT_OFFLOAD_THRESHOLD: usize = 64 * 1024;
 pub const DEFAULT_CONTENT_PREVIEW_BYTES: usize = 256;
-pub(crate) const CONTENT_REF_MAGIC: &str = "\u{001e}PCHRONICLE-CONTENT-1:";
+pub(crate) const CONTENT_REF_MAGIC: &str = "\u{001e}PCHRONICLE-CONTENT:";
 const CONTENT_INDEX_NAME: &str = "pchronicle_content_id_idx";
 const CONTENT_ID_COLUMN: &str = "content_id";
 const PAYLOAD_COLUMN: &str = "payload";
@@ -503,7 +503,7 @@ async fn ensure_content_index(dataset: &mut Dataset) -> Result<()> {
     {
         return Ok(());
     }
-    let _admission = super::index_build_gate::acquire().await;
+    let _admission = super::super::index_build_gate::acquire().await;
     dataset
         .create_index(
             &[CONTENT_ID_COLUMN],
@@ -848,7 +848,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptor_is_versioned_and_strict() {
+    fn descriptor_is_strict() {
         let object = build_object(
             "你好 world".as_bytes(),
             LogicalType::Utf8,

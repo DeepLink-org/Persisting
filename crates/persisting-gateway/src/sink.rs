@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use serde_json::Value;
 
-use super::record::{now_rfc3339, CaptureRecord};
+use super::record::{now_rfc3339, EventRecord};
 use crate::config::CaptureLevel;
 use crate::projection::markdown_pipeline::stamp_request_payload;
 use crate::session::storage::CaptureRoute;
@@ -19,12 +19,7 @@ use crate::Call;
 
 pub trait CaptureEventSink: Send + Sync {
     /// Assign session-local `seq` on `record`, then persist. Mutates `record.seq` in place.
-    fn append(
-        &self,
-        route: &CaptureRoute,
-        agent_id: &str,
-        record: &mut CaptureRecord,
-    ) -> Result<()>;
+    fn append(&self, route: &CaptureRoute, agent_id: &str, record: &mut EventRecord) -> Result<()>;
 
     /// Next `seq` that [`Self::append`] would assign (does not increment).
     /// Returns `None` when the sink cannot predict seq (draft markdown preview unsupported).
@@ -52,7 +47,7 @@ impl SeqOnlySink {
         }
     }
 
-    fn assign_seq(&self, route: &CaptureRoute, record: &mut CaptureRecord) {
+    fn assign_seq(&self, route: &CaptureRoute, record: &mut EventRecord) {
         let mut guard = self.next_seq.lock().unwrap();
         let seq = guard.entry(route.seq_key()).or_insert(0);
         record.seq = *seq;
@@ -67,7 +62,7 @@ impl CaptureEventSink for SeqOnlySink {
         &self,
         route: &CaptureRoute,
         _agent_id: &str,
-        record: &mut CaptureRecord,
+        record: &mut EventRecord,
     ) -> Result<()> {
         self.assign_seq(route, record);
         Ok(())
@@ -85,18 +80,18 @@ impl CaptureEventSink for SeqOnlySink {
     }
 }
 
-/// Assigns monotonic `seq` per storage target and forwards records (RON encoding deferred to consumer).
+/// Assigns monotonic `seq` per storage target and forwards typed records.
 pub struct CallbackSink {
     agent_id: String,
     next_seq: Mutex<HashMap<String, Arc<Mutex<u64>>>>,
     #[allow(clippy::type_complexity)]
-    callback: Box<dyn Fn(&CaptureRoute, &str, CaptureRecord) -> Result<()> + Send + Sync>,
+    callback: Box<dyn Fn(&CaptureRoute, &str, EventRecord) -> Result<()> + Send + Sync>,
 }
 
 impl CallbackSink {
     pub fn new<F>(agent_id: impl Into<String>, callback: F) -> Self
     where
-        F: Fn(&CaptureRoute, &str, CaptureRecord) -> Result<()> + Send + Sync + 'static,
+        F: Fn(&CaptureRoute, &str, EventRecord) -> Result<()> + Send + Sync + 'static,
     {
         Self {
             agent_id: agent_id.into(),
@@ -107,12 +102,7 @@ impl CallbackSink {
 }
 
 impl CaptureEventSink for CallbackSink {
-    fn append(
-        &self,
-        route: &CaptureRoute,
-        agent_id: &str,
-        record: &mut CaptureRecord,
-    ) -> Result<()> {
+    fn append(&self, route: &CaptureRoute, agent_id: &str, record: &mut EventRecord) -> Result<()> {
         let sequence = {
             let mut guard = self.next_seq.lock().unwrap();
             Arc::clone(
@@ -153,8 +143,8 @@ mod sequence_tests {
 
     use super::*;
 
-    fn record() -> CaptureRecord {
-        CaptureRecord {
+    fn record() -> EventRecord {
+        EventRecord {
             identity: Default::default(),
             seq: 99,
             source: "test".into(),
@@ -570,7 +560,7 @@ pub fn attach_recorded_headers(payload: &mut Value, headers: &[(String, String)]
     }
 }
 
-fn attach_call_context(rec: &mut CaptureRecord, call: &Call) {
+fn attach_call_context(rec: &mut EventRecord, call: &Call) {
     rec.trace_id = Some(call.trace_id.clone());
     rec.call_id = Some(call.call_id.clone());
 }
@@ -589,7 +579,7 @@ pub fn llm_request_summary_record(
     call: &Call,
     level: CaptureLevel,
     body_json: Option<&Value>,
-) -> CaptureRecord {
+) -> EventRecord {
     let mut payload = serde_json::json!({
         "model": model,
         "path": path,
@@ -611,7 +601,7 @@ pub fn llm_request_summary_record(
             payload["body"] = body.clone();
         }
     }
-    let mut rec = CaptureRecord {
+    let mut rec = EventRecord {
         identity: persisting_pchronicle::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
@@ -640,8 +630,8 @@ pub fn llm_request_record(
     model: &str,
     path: &str,
     body: &serde_json::Value,
-) -> CaptureRecord {
-    CaptureRecord {
+) -> EventRecord {
+    EventRecord {
         identity: persisting_pchronicle::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
@@ -671,8 +661,8 @@ pub fn llm_response_record(
     body: &serde_json::Value,
     streaming: bool,
     call: &Call,
-) -> CaptureRecord {
-    let mut rec = CaptureRecord {
+) -> EventRecord {
+    let mut rec = EventRecord {
         identity: persisting_pchronicle::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
@@ -710,7 +700,7 @@ pub fn llm_response_record_with_content(
     assistant_content: Option<String>,
     call: &Call,
     level: CaptureLevel,
-) -> CaptureRecord {
+) -> EventRecord {
     let mut payload = payload.clone();
     payload["status"] = serde_json::json!(status);
     if level.includes_assistant_text() {
@@ -723,7 +713,7 @@ pub fn llm_response_record_with_content(
     } else {
         "llm.response"
     };
-    let mut rec = CaptureRecord {
+    let mut rec = EventRecord {
         identity: persisting_pchronicle::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),

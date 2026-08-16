@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use persisting_agentctl::{AttemptId, RunId};
-use persisting_pchronicle::{EventIdentity, EventRecord, EVENT_SCHEMA_VERSION};
+use persisting_pchronicle::{EventIdentity, EventRecord};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
@@ -117,7 +117,6 @@ impl RunEventPublisher {
         })?;
         let event = EventRecord {
             identity: EventIdentity {
-                schema_version: EVENT_SCHEMA_VERSION,
                 event_id: Some(format!("event-{}", uuid::Uuid::new_v4())),
                 run_id: Some(self.run_id.to_string()),
                 attempt_id: Some(self.attempt_id.to_string()),

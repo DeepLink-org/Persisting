@@ -27,7 +27,7 @@ impl Drop for DatasetWriteGuard {
 /// distributed mutex.
 pub(crate) async fn acquire(uri: &str) -> Result<DatasetWriteGuard> {
     let process = root_write_lock::for_root(uri).lock_owned().await;
-    let local_file = if super::raw_event_lance::is_object_store_uri(uri) {
+    let local_file = if super::events::is_object_store_uri(uri) {
         None
     } else {
         let lock_path = Path::new(uri).with_extension("lance.write.lock");

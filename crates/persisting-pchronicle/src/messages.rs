@@ -279,18 +279,6 @@ pub struct SearchImportLanceResponse {
 // Trajectory
 // ---------------------------------------------------------------------------
 
-/// Canonical physical storage selection for a session trajectory.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TrajectoryStorageFormat {
-    /// Use the canonical Lance event log. Kept distinct for request compatibility
-    /// and future canonical backends; it never selects a Markdown sidecar.
-    #[default]
-    Auto,
-    /// Lance raw event log (canonical).
-    Lance,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryAppendRequest {
     pub storage: String,
@@ -301,11 +289,8 @@ pub struct TrajectoryAppendRequest {
     /// When set, nested subagent sessions live under `{root_session_id}/subagents/{session_id}/`.
     #[serde(default)]
     pub root_session_id: Option<String>,
-    /// Typed canonical records. Serialization at process boundaries is the
-    /// caller's responsibility; pChronicle never uses RON as an internal RPC.
+    /// Typed canonical records.
     pub records: Vec<crate::EventRecord>,
-    #[serde(default)]
-    pub storage_format: TrajectoryStorageFormat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,8 +312,6 @@ pub struct TrajectoryReplayRequest {
     #[serde(default)]
     pub offset: usize,
     pub limit: Option<usize>,
-    #[serde(default)]
-    pub storage_format: TrajectoryStorageFormat,
     /// When set, read nested session at `{root_session_id}/subagents/{session_id}/`.
     #[serde(default)]
     pub root_session_id: Option<String>,
@@ -339,8 +322,7 @@ pub struct TrajectoryReplayResponse {
     pub storage: String,
     pub agent_id: String,
     pub session_id: String,
-    /// JSON object lines (one per step) when populated.
-    pub records: Vec<String>,
+    pub records: Vec<crate::EventRecord>,
     pub status: String,
     pub note: String,
 }
@@ -350,8 +332,6 @@ pub struct TrajectoryStatsRequest {
     pub storage: String,
     pub agent_id: String,
     pub session_id: String,
-    #[serde(default)]
-    pub storage_format: TrajectoryStorageFormat,
     /// When set, read nested session at `{root_session_id}/subagents/{session_id}/`.
     #[serde(default)]
     pub root_session_id: Option<String>,
@@ -384,8 +364,8 @@ pub struct TrajectoryStatsResponse {
     pub dataset: String,
     /// Row count in the event log (`0` when file is missing).
     pub row_count: usize,
-    /// Reserved for future versioning metadata (`None` for Lance).
-    pub manifest_version: Option<u64>,
+    /// Physical manifest revision observed by the stats read.
+    pub manifest_revision: Option<u64>,
     /// Extra physical rows sharing a non-null event_id. This is diagnostic
     /// only; canonical events remain at-least-once and are never hidden.
     #[serde(default)]
@@ -626,13 +606,6 @@ pub enum RequestBody {
     SearchIndexDelete(SearchIndexDeleteRequest),
     SearchIndexRebuild(SearchIndexRebuildRequest),
     SearchIndexReorder(SearchIndexReorderRequest),
-    TrajectoryAppend(TrajectoryAppendRequest),
-    TrajectoryReplay(TrajectoryReplayRequest),
-    TrajectoryStats(TrajectoryStatsRequest),
-    TrajectoryMaterialize(TrajectoryMaterializeRequest),
-    TrajectoryExtract(TrajectoryExtractRequest),
-    TrajectoryJudge(TrajectoryJudgeRequest),
-    TrajectoryJudgeStats(TrajectoryJudgeStatsRequest),
     SearchImportLance(SearchImportLanceRequest),
     SearchAddBatch(SearchAddBatchRequest),
 }
@@ -646,13 +619,6 @@ pub enum ResponseBody {
     SearchIndexDelete(SearchIndexDeleteResponse),
     SearchIndexRebuild(SearchIndexRebuildResponse),
     SearchIndexReorder(SearchIndexReorderResponse),
-    TrajectoryAppend(TrajectoryAppendResponse),
-    TrajectoryReplay(TrajectoryReplayResponse),
-    TrajectoryStats(TrajectoryStatsResponse),
-    TrajectoryMaterialize(TrajectoryMaterializeResponse),
-    TrajectoryExtract(TrajectoryExtractResponse),
-    TrajectoryJudge(TrajectoryJudgeResponse),
-    TrajectoryJudgeStats(TrajectoryJudgeStatsResponse),
     SearchImportLance(SearchImportLanceResponse),
     SearchAddBatch(SearchAddBatchResponse),
 }

@@ -19,32 +19,19 @@ pub struct AgenticmdClientMeta {
 /// Best-effort session rollup using Storyline-compatible field names.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgenticmdSessionFrontmatter {
-    #[serde(rename = "session_id", alias = "session")]
+    #[serde(rename = "session_id")]
     pub session: String,
-    #[serde(rename = "agent_id", alias = "agent")]
+    #[serde(rename = "agent_id")]
     pub agent: String,
-    #[serde(
-        rename = "model_name",
-        alias = "model",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "model_name", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    #[serde(
-        rename = "started_at",
-        alias = "started",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "started_at", skip_serializing_if = "Option::is_none")]
     pub started: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<String>,
-    #[serde(
-        rename = "turn_count",
-        alias = "turns",
-        default,
-        skip_serializing_if = "is_zero"
-    )]
+    #[serde(rename = "turn_count", default, skip_serializing_if = "is_zero")]
     pub turns: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub total_tokens: u64,
@@ -52,7 +39,6 @@ pub struct AgenticmdSessionFrontmatter {
     pub estimated_cost_usd: Option<f64>,
     #[serde(
         rename = "child_session_ids",
-        alias = "subagents",
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
@@ -103,10 +89,19 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert!(encoded.contains("format: persisting:1.0"));
+        assert!(encoded.contains("format: persisting"));
         assert!(encoded.contains("session_id: s1"));
         assert!(encoded.contains("turn_count: 2"));
         assert!(encoded.contains("client:"));
         assert!(!encoded.contains("total_tokens:"));
+    }
+
+    #[test]
+    fn legacy_short_frontmatter_names_are_rejected() {
+        let legacy = serde_json::json!({
+            "session": "s1",
+            "agent": "a1"
+        });
+        assert!(serde_json::from_value::<AgenticmdSessionFrontmatter>(legacy).is_err());
     }
 }

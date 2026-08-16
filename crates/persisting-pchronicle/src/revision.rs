@@ -11,7 +11,7 @@ use lance::Dataset;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::TrajectorySession;
+use crate::StoryCoords;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RevisionRow {
@@ -27,7 +27,7 @@ pub struct RevisionRow {
     pub output_refs: Vec<String>,
 }
 
-pub fn revision_dataset_path(session: &TrajectorySession) -> Result<String> {
+pub fn revision_dataset_path(session: &StoryCoords) -> Result<String> {
     Ok(session
         .run_dir()?
         .join("revisions.lance")
@@ -92,7 +92,7 @@ fn text(batch: &RecordBatch, column: &str, row: usize) -> Result<String> {
     Ok(array.value(row).to_string())
 }
 
-pub async fn read_revisions(session: &TrajectorySession) -> Result<Vec<RevisionRow>> {
+pub async fn read_revisions(session: &StoryCoords) -> Result<Vec<RevisionRow>> {
     let uri = revision_dataset_path(session)?;
     let dataset = match Dataset::open(&uri).await {
         Ok(dataset) => dataset,
@@ -132,7 +132,7 @@ pub async fn read_revisions(session: &TrajectorySession) -> Result<Vec<RevisionR
     Ok(rows)
 }
 
-pub async fn write_revisions(session: &TrajectorySession, rows: &[RevisionRow]) -> Result<String> {
+pub async fn write_revisions(session: &StoryCoords, rows: &[RevisionRow]) -> Result<String> {
     let uri = revision_dataset_path(session)?;
     if rows.is_empty() {
         return Ok(uri);
@@ -166,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn revision_catalog_upserts_by_id() {
         let dir = tempfile::tempdir().unwrap();
-        let session = TrajectorySession::new(dir.path().to_string_lossy(), "a", "s", None);
+        let session = StoryCoords::new(dir.path().to_string_lossy(), "a", "s", None);
         let mut row = RevisionRow {
             revision_id: "r1".into(),
             parent_revision_ids: vec![],

@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::config::CaptureLevel;
-use crate::record::CaptureRecordExt;
+use crate::record::EventRecordExt;
 use crate::sink::{
     llm_request_record, llm_request_summary_record, llm_response_record,
     llm_response_record_with_content,

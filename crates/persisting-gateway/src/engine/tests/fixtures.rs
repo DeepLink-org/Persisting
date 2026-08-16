@@ -5,14 +5,14 @@ use crate::config::CaptureLevel;
 use crate::engine::{CallContext, CaptureEngine};
 use crate::protocol::ProtocolKind;
 use crate::provider::ProviderKind;
-use crate::record::CaptureRecord;
+use crate::record::EventRecord;
 use crate::session::index::SessionIndexStore;
 use crate::session::storage::CaptureRoute;
 use crate::sink::CaptureEventSink;
 use crate::Call;
 
 pub(crate) struct RecordingSink {
-    records: Mutex<Vec<CaptureRecord>>,
+    records: Mutex<Vec<EventRecord>>,
     next_seq: Mutex<HashMap<String, u64>>,
 }
 
@@ -24,7 +24,7 @@ impl RecordingSink {
         })
     }
 
-    pub(crate) fn drain(&self) -> Vec<CaptureRecord> {
+    pub(crate) fn drain(&self) -> Vec<EventRecord> {
         self.records.lock().unwrap().drain(..).collect()
     }
 }
@@ -34,7 +34,7 @@ impl CaptureEventSink for RecordingSink {
         &self,
         route: &CaptureRoute,
         _agent_id: &str,
-        record: &mut CaptureRecord,
+        record: &mut EventRecord,
     ) -> anyhow::Result<()> {
         let mut guard = self.next_seq.lock().unwrap();
         let seq = guard.entry(route.seq_key()).or_insert(0);

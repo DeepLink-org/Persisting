@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use persisting_gateway::record::CaptureRecord;
+use persisting_gateway::record::EventRecord;
 use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::sink::{CallbackSink, CaptureEventSink};
 use persisting_pchronicle::{raw_event_append_queue, RawEventAppendWorker, StoryCoords};
@@ -28,7 +28,7 @@ pub(crate) fn gateway_capture_sink(
     let callback_tx = tx.clone();
     let callback = CallbackSink::new(
         default_agent_id,
-        move |route: &CaptureRoute, agent_id, record: CaptureRecord| {
+        move |route: &CaptureRoute, agent_id, record: EventRecord| {
             callback_tx.append_durable(
                 StoryCoords::new(
                     dataset_uri.clone(),
@@ -46,8 +46,8 @@ pub(crate) fn gateway_capture_sink(
 
 #[cfg(test)]
 mod tests {
-    use persisting_gateway::record::CaptureRecord;
-    use persisting_pchronicle::{RawEventLanceStore, StructuredStore};
+    use persisting_gateway::record::EventRecord;
+    use persisting_pchronicle::RawEventLanceStore;
 
     use super::*;
 
@@ -62,7 +62,7 @@ mod tests {
             storage_session_id: "session".into(),
             subagent_id: None,
         };
-        let mut record = CaptureRecord {
+        let mut record = EventRecord {
             identity: Default::default(),
             seq: 0,
             source: "gateway".into(),

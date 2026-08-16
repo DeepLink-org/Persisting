@@ -6,7 +6,7 @@ use serde_json::json;
 
 use super::ids::{CallId, StoryId, TurnId};
 use super::model::{CallPhase, Story, TextBlock, Turn, TurnCall, TurnKind};
-use crate::record::{CaptureRecord, CaptureRecordExt};
+use crate::record::{EventRecord, EventRecordExt};
 
 /// Outcome of observing one persisted capture record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +85,7 @@ impl TurnMachine {
         story_id: StoryId,
         agent_id: impl Into<String>,
         run_id: Option<super::ids::RunId>,
-        records: &[CaptureRecord],
+        records: &[EventRecord],
     ) -> Self {
         let mut tm = Self::with_context(story_id, agent_id, run_id);
         for rec in records {
@@ -96,7 +96,7 @@ impl TurnMachine {
     }
 
     /// Stamp `turn_id` / `turn_index` on the record and update in-memory story state.
-    pub fn observe_record(&mut self, rec: &mut CaptureRecord) -> TurnObserveOutcome {
+    pub fn observe_record(&mut self, rec: &mut EventRecord) -> TurnObserveOutcome {
         let outcome = self.apply_record(rec);
         if let Some(ref turn_id) = outcome.turn_id {
             rec.payload["turn_id"] = json!(turn_id.as_str());
@@ -107,7 +107,7 @@ impl TurnMachine {
         outcome
     }
 
-    fn apply_record(&mut self, rec: &CaptureRecord) -> TurnObserveOutcome {
+    fn apply_record(&mut self, rec: &EventRecord) -> TurnObserveOutcome {
         let call_id = rec
             .call_id
             .as_deref()
@@ -125,7 +125,7 @@ impl TurnMachine {
         }
     }
 
-    fn on_request(&mut self, call_id: &CallId, rec: &CaptureRecord) -> TurnObserveOutcome {
+    fn on_request(&mut self, call_id: &CallId, rec: &EventRecord) -> TurnObserveOutcome {
         if rec.is_internal_llm_request() {
             let turn_id = self.ensure_call_on_active_turn(call_id, CallPhase::Request);
             return TurnObserveOutcome {
@@ -184,7 +184,7 @@ impl TurnMachine {
         }
     }
 
-    fn on_response(&mut self, call_id: &CallId, rec: &CaptureRecord) -> TurnObserveOutcome {
+    fn on_response(&mut self, call_id: &CallId, rec: &EventRecord) -> TurnObserveOutcome {
         let turn_id = self.ensure_call_for_call(call_id, CallPhase::Complete);
         if let Some(text) = rec.visible_assistant_text() {
             if let Some(turn) = turn_id.as_ref().and_then(|id| self.turn_mut(id)) {

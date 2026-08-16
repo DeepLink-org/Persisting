@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::engine::story::{RunId, StoryId};
-use crate::record::CaptureRecord;
+use crate::record::EventRecord;
 use crate::session::storage::CaptureRoute;
 use crate::subagent_link::SpawnLinkBackfill;
 
@@ -46,7 +46,7 @@ pub(crate) enum RunReply {
 
 pub(crate) async fn run_enrich(
     run: &ActorRef,
-    rec: &mut CaptureRecord,
+    rec: &mut EventRecord,
     ctx: &CallContext,
     body_json: Option<&Value>,
     assistant_text: Option<&str>,

@@ -6,7 +6,7 @@ use crate::{
     build_llm_judge_prompt, dry_run_judge_rows, evaluation_units, judgment_dataset_path,
     manual_few_shot_examples, manual_judge_rows, parse_llm_judge_rows, pending_evaluation_units,
     read_judge_rows, write_judge_rows, JudgeRow, JudgmentScope, ManualJudgmentInput,
-    RawEventLanceStore, StoryCoords, StructuredStore,
+    RawEventLanceStore, StoryCoords,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

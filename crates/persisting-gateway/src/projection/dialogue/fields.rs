@@ -1,9 +1,9 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::record::{content_to_string, CaptureRecord, CaptureRecordExt};
+use crate::record::{content_to_string, EventRecord, EventRecordExt};
 
-pub(crate) fn role_and_body(rec: &CaptureRecord) -> Result<(String, String)> {
+pub(crate) fn role_and_body(rec: &EventRecord) -> Result<(String, String)> {
     Ok(match rec.kind.as_str() {
         "llm.request" => ("user".into(), rec.visible_user_text().unwrap_or_default()),
         "llm.response" | "llm.response.stream" => (

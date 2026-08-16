@@ -11,7 +11,7 @@ use super::match_::{
     apply_spawn_links, merge_string_array_payload, spawn_hint_to_json, spawn_link_to_json,
 };
 use super::types::{EnrichOutcome, SpawnLink, SubagentRegistry};
-use crate::record::CaptureRecord;
+use crate::record::EventRecord;
 use crate::session::chain::extract_claude_parent_agent_id;
 use crate::session::storage::CaptureRoute;
 
@@ -19,7 +19,7 @@ pub fn spawn_link_backfill_record(
     parent_call_id: &str,
     links: &[SpawnLink],
     call: &crate::Call,
-) -> CaptureRecord {
+) -> EventRecord {
     let mut payload = serde_json::json!({
         "parent_call_id": parent_call_id,
         "spawn_links": links.iter().map(spawn_link_to_json).collect::<Vec<_>>(),
@@ -32,7 +32,7 @@ pub fn spawn_link_backfill_record(
     payload["refs_subagent_ids"] = json!(ids);
     payload["subagent_trajectories"] = json!(paths);
 
-    CaptureRecord {
+    EventRecord {
         identity: persisting_pchronicle::EventIdentity::default(),
         seq: 0,
         source: "persisting-proxy".to_string(),
@@ -74,7 +74,7 @@ pub fn run_registry_key(route: &CaptureRoute) -> String {
 }
 /// Attach cross-reference fields to a capture record (metadata + payload).
 pub fn enrich_record(
-    rec: &mut CaptureRecord,
+    rec: &mut EventRecord,
     route: &CaptureRoute,
     headers: &HeaderMap,
     request_body: Option<&Value>,

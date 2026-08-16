@@ -6,54 +6,34 @@ use serde_json::json;
 
 use crate::convert::message_text;
 use crate::formats::events::{EventIdentity, EventRecord, EventsDocument};
-use crate::formats::storyline::{
-    StoryLink, StorylineAgent, StorylineDocument, StorylineTurn, STORYLINE_SCHEMA_VERSION,
-};
+use crate::formats::storyline::{StoryLink, StorylineAgent, StorylineDocument, StorylineTurn};
 use crate::{Error, Result};
-
-/// Version of the canonical events-to-Storyline projection semantics.
-pub const EVENTS_TO_STORYLINE_PROJECTOR_VERSION: &str = "events-storyline/v1";
 
 /// Resolve and project exactly one canonical Storyline from append-ordered events.
 ///
-/// Unlike the interchange helper, this rejects identity-free or mixed-session
-/// input so a durable projection cannot silently merge unrelated facts.
+/// Identity-free input is invalid, but conflicting claims are resolved in
+/// append order: the last non-empty value wins. Physical event replay overlays
+/// its routing identity first, so canonical storage remains deterministically
+/// session-scoped without rejecting producer metadata at ingest.
 pub fn project_event_records(records: &[EventRecord]) -> Result<StorylineDocument> {
-    let mut session_id: Option<String> = None;
-    let mut run_id: Option<String> = None;
-    for record in records {
-        let resolved = event_storyline_key(record).ok_or_else(|| {
+    records.iter().try_for_each(EventRecord::validate)?;
+    let session_id = records
+        .iter()
+        .rev()
+        .find_map(event_storyline_key)
+        .ok_or_else(|| {
             Error::Other("canonical event requires session_id, storyline_id, or run_id".into())
-        })?;
-        if let Some(existing) = &session_id {
-            if existing != resolved {
-                return Err(Error::Other(format!(
-                    "canonical event group mixes Storyline identities '{existing}' and '{resolved}'"
-                )));
-            }
-        } else {
-            session_id = Some(resolved.to_string());
-        }
-        if let Some(candidate) = record
+        })?
+        .to_string();
+    let run_id = records.iter().rev().find_map(|record| {
+        record
             .identity
             .run_id
             .as_deref()
             .filter(|id| !id.is_empty())
-        {
-            if let Some(existing) = &run_id {
-                if existing != candidate {
-                    return Err(Error::Other(format!(
-                        "canonical event group mixes run identities '{existing}' and '{candidate}'"
-                    )));
-                }
-            } else {
-                run_id = Some(candidate.to_string());
-            }
-        }
-    }
-    let session_id =
-        session_id.ok_or_else(|| Error::Other("canonical event group is empty".into()))?;
-    let mut story = events_to_storyline(&EventsDocument::new(records.to_vec()))?;
+            .map(str::to_string)
+    });
+    let mut story = events_to_storyline_unchecked(records)?;
     story.session_id = session_id.clone();
     story.run_id = run_id.clone().filter(|run_id| run_id != &session_id);
     if let Some(parent_session_id) = run_id.filter(|run_id| run_id != &session_id) {
@@ -89,21 +69,25 @@ pub(crate) fn event_storyline_key(record: &EventRecord) -> Option<&str> {
 }
 
 pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
-    let session_id = doc
-        .session_id
-        .clone()
-        .or_else(|| doc.events.iter().find_map(|e| e.session_id.clone()))
+    project_event_records(&doc.events)
+}
+
+fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocument> {
+    let session_id = events
+        .iter()
+        .rev()
+        .find_map(|event| event.session_id.clone())
         .unwrap_or_else(|| "unknown".into());
-    let agent_id = doc
-        .agent_id
-        .clone()
-        .or_else(|| doc.events.iter().find_map(|e| e.agent_id.clone()))
+    let agent_id = events
+        .iter()
+        .rev()
+        .find_map(|event| event.agent_id.clone())
         .unwrap_or_else(|| "unknown".into());
 
     let mut by_call: BTreeMap<String, Vec<&EventRecord>> = BTreeMap::new();
     let mut first_call_position = BTreeMap::<String, usize>::new();
     let mut orphans: Vec<&EventRecord> = Vec::new();
-    for (position, ev) in doc.events.iter().enumerate() {
+    for (position, ev) in events.iter().enumerate() {
         match &ev.call_id {
             Some(cid) if !cid.is_empty() => {
                 first_call_position.entry(cid.clone()).or_insert(position);
@@ -297,13 +281,12 @@ pub fn events_to_storyline(doc: &EventsDocument) -> Result<StorylineDocument> {
     }
 
     Ok(StorylineDocument {
-        schema_version: STORYLINE_SCHEMA_VERSION.into(),
         run_id: None,
         session_id,
         agent: StorylineAgent {
             id: agent_id.clone(),
             name: Some(agent_id),
-            version: Some("0".into()),
+            version: None,
             model_name: None,
             tool_definitions: None,
             extra: None,
@@ -690,5 +673,24 @@ mod projection_tests {
         let story = project_event_records(&records).unwrap();
         assert_eq!(story.turns[0].message, json!("first"));
         assert_eq!(story.turns[1].message, json!("second"));
+    }
+
+    #[test]
+    fn public_projection_resolves_conflicting_identity_in_append_order() {
+        let mut first = response(Some("first"), "call-1", 0, "one");
+        first.identity.run_id = Some("run-first".into());
+        first.agent_id = Some("agent-first".into());
+        let mut second = response(Some("second"), "call-2", 1, "two");
+        second.identity.run_id = Some("run-second".into());
+        second.agent_id = Some("agent-second".into());
+        let story = events_to_storyline(&EventsDocument::new(vec![first, second])).unwrap();
+        assert_eq!(story.session_id, "second");
+        assert_eq!(story.run_id.as_deref(), Some("run-second"));
+        assert_eq!(story.agent.id, "agent-second");
+
+        let mut conflicting = response(Some("session"), "call", 0, "text");
+        conflicting.identity.storyline_id = Some("other".into());
+        let story = project_event_records(&[conflicting]).unwrap();
+        assert_eq!(story.session_id, "session");
     }
 }

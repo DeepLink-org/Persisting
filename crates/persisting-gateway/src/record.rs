@@ -6,14 +6,13 @@ use serde_json::Value;
 use super::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use crate::protocol::ProtocolKind;
 
-/// Compatibility name for the producer-facing canonical pChronicle event type.
-pub type CaptureRecord = persisting_pchronicle::EventRecord;
+pub use persisting_pchronicle::EventRecord;
 
 /// Capture-only interpretation of raw proxy payloads.
 ///
 /// The record schema belongs to pChronicle; SSE and provider payload extraction
 /// remain producer concerns and are supplied as extension behavior.
-pub trait CaptureRecordExt {
+pub trait EventRecordExt {
     /// Internal traffic (e.g. `count_tokens`) — not a dialogue turn.
     fn is_internal_llm_request(&self) -> bool;
 
@@ -24,7 +23,7 @@ pub trait CaptureRecordExt {
     fn visible_assistant_text(&self) -> Option<String>;
 }
 
-impl CaptureRecordExt for CaptureRecord {
+impl EventRecordExt for EventRecord {
     fn is_internal_llm_request(&self) -> bool {
         if self.kind != "llm.request" {
             return false;
@@ -178,7 +177,7 @@ mod tests {
 
     #[test]
     fn visible_user_prefers_user_content_field() {
-        let rec = CaptureRecord {
+        let rec = EventRecord {
             identity: Default::default(),
             seq: 0,
             source: "test".into(),

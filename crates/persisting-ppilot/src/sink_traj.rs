@@ -1,4 +1,4 @@
-//! Lance trajectory sink: TaskResult → CaptureRecord → TrajectoryAppend.
+//! Lance trajectory sink: TaskResult → EventRecord → TrajectoryAppend.
 //!
 //! Enabled with feature `traj-sink`. Always Tee with [`JsonlFileSink`] so
 //! `--resume` keeps using the JSONL task_id ledger.
@@ -7,8 +7,8 @@ use crate::sink::ResultSink;
 use crate::task::TaskResult;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use persisting_pchronicle::{EventIdentity, EventRecord, EVENT_SCHEMA_VERSION};
-use persisting_pchronicle::{TrajectoryAppendRequest, TrajectoryStorageFormat};
+use persisting_pchronicle::TrajectoryAppendRequest;
+use persisting_pchronicle::{EventIdentity, EventRecord};
 use std::collections::HashSet;
 use std::sync::Mutex;
 
@@ -62,7 +62,6 @@ impl LanceResultSink {
         let payload = serde_json::to_value(result).context("TaskResult to JSON")?;
         Ok(EventRecord {
             identity: EventIdentity {
-                schema_version: EVENT_SCHEMA_VERSION,
                 event_id: Some(format!("event-{}", uuid::Uuid::new_v4())),
                 run_id: result.run_id.clone(),
                 attempt_id: result.attempt_id.clone(),
@@ -105,7 +104,6 @@ impl LanceResultSink {
                 session_id: self.session_id.clone(),
                 root_session_id: None,
                 records: vec![rec],
-                storage_format: TrajectoryStorageFormat::Lance,
             };
             let resp = persisting_pchronicle::operations::trajectory::append_async(req)
                 .await

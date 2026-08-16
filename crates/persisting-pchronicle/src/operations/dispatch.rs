@@ -1,11 +1,14 @@
 //! In-process dispatch for pChronicle request values.
 
+#[cfg(feature = "search")]
 use std::future::Future;
+#[cfg(feature = "search")]
 use std::sync::OnceLock;
 
 use crate::{RequestBody, ResponseBody};
 use anyhow::Result;
 
+#[cfg(feature = "search")]
 fn block_on<F, T>(future: F) -> Result<T>
 where
     F: Future<Output = Result<T>>,
@@ -58,27 +61,6 @@ fn dispatch_inner(body: RequestBody) -> Result<ResponseBody> {
         #[cfg(feature = "search")]
         RequestBody::SearchImportLance(r) => Ok(ResponseBody::SearchImportLance(block_on(
             crate::search::agent::import_from_lance(r),
-        )?)),
-        RequestBody::TrajectoryAppend(r) => Ok(ResponseBody::TrajectoryAppend(block_on(
-            super::trajectory::append_async(r),
-        )?)),
-        RequestBody::TrajectoryReplay(r) => Ok(ResponseBody::TrajectoryReplay(block_on(
-            super::trajectory::replay_async(r),
-        )?)),
-        RequestBody::TrajectoryStats(r) => Ok(ResponseBody::TrajectoryStats(block_on(
-            super::trajectory::stats_async(r),
-        )?)),
-        RequestBody::TrajectoryMaterialize(r) => Ok(ResponseBody::TrajectoryMaterialize(block_on(
-            super::trajectory::materialize_async(r),
-        )?)),
-        RequestBody::TrajectoryExtract(r) => Ok(ResponseBody::TrajectoryExtract(block_on(
-            super::trajectory::extract_async(r),
-        )?)),
-        RequestBody::TrajectoryJudge(r) => Ok(ResponseBody::TrajectoryJudge(block_on(
-            super::trajectory::judge_async(r),
-        )?)),
-        RequestBody::TrajectoryJudgeStats(r) => Ok(ResponseBody::TrajectoryJudgeStats(block_on(
-            super::trajectory::judge_stats_async(r),
         )?)),
         #[cfg(not(feature = "search"))]
         RequestBody::SearchAdd(_)

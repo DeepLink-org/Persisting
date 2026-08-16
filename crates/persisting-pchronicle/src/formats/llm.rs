@@ -9,8 +9,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const LLM_EVENT_SCHEMA_VERSION: &str = "llm/v1";
-
 pub type LlmExtensions = BTreeMap<String, Value>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,14 +258,8 @@ impl LlmRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmRequestEventPayload {
-    #[serde(default = "llm_event_schema_version")]
-    pub schema_version: String,
     pub input_format: LlmProtocol,
     pub request: LlmRequest,
-}
-
-fn llm_event_schema_version() -> String {
-    LLM_EVENT_SCHEMA_VERSION.into()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,8 +305,6 @@ pub struct LlmResponse {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmResponseEventPayload {
-    #[serde(default = "llm_event_schema_version")]
-    pub schema_version: String,
     pub output_format: LlmProtocol,
     pub response: LlmResponse,
 }
@@ -370,7 +360,6 @@ mod tests {
     #[test]
     fn request_payload_roundtrips_and_derives_summary() {
         let payload = LlmRequestEventPayload {
-            schema_version: LLM_EVENT_SCHEMA_VERSION.into(),
             input_format: LlmProtocol::Messages,
             request: LlmRequest {
                 model: Some("claude-test".into()),

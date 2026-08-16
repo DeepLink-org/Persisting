@@ -1,14 +1,12 @@
 //! `openai_msg` format — dlcapt session_steps with OpenAI Chat Completions messages.
 //!
 //! Matches the authoritative `session_steps.json` envelope produced by
-//! `persisting-dlcapt` (`format_version`, `session_steps`, …).
+//! `persisting-dlcapt`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{Error, Result};
-
-pub const OPENAI_MSG_FORMAT_VERSION: u32 = 1;
 
 /// One dlcapt / TransferQueue-compatible step with embedded OpenAI messages.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -96,7 +94,6 @@ impl OpenaiMsgStep {
 /// dlcapt `session_steps.json` envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenaiMsgDocument {
-    pub format_version: u32,
     pub session_id: String,
     #[serde(default)]
     pub session_dir: String,
@@ -136,7 +133,6 @@ impl OpenaiMsgDocument {
             .map(|s| s.run_bucket.clone())
             .unwrap_or_default();
         Self {
-            format_version: OPENAI_MSG_FORMAT_VERSION,
             session_id: session_id.clone(),
             session_dir: session_id,
             agent_id,

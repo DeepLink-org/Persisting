@@ -340,7 +340,7 @@ Snapshot，因此已打开的 Warehouse 不会自动把新 events 加入当前 S
 刷新 Catalog，或者调用本地 API：
 
 ```bash
-curl -X POST http://127.0.0.1:8080/api/v1/catalog
+curl -X POST http://127.0.0.1:8080/api/catalog
 ```
 
 刷新后即可通过 Web UI 或只读 API 查询目标 Dataset。收到 `SIGINT` 或 `SIGTERM` 时，

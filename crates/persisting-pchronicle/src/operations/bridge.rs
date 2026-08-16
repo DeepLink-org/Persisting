@@ -1,10 +1,7 @@
 //! Typed in-process API for pChronicle callers: no RON string at the Rust boundary.
 
-use crate::{
-    RequestBody, ResponseBody, TrajectoryAppendRequest, TrajectoryAppendResponse,
-    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
-    TrajectoryStatsResponse,
-};
+#[cfg(feature = "search")]
+use crate::{RequestBody, ResponseBody};
 #[cfg(feature = "search")]
 use crate::{
     SearchAddBatchRequest, SearchAddBatchResponse, SearchAddRequest, SearchAddResponse,
@@ -14,10 +11,13 @@ use crate::{
     SearchIndexReorderResponse, SearchIndexRequest, SearchIndexResponse, SearchQueryRequest,
     SearchQueryResponse,
 };
+#[cfg(feature = "search")]
 use anyhow::{anyhow, Result};
 
+#[cfg(feature = "search")]
 use super::dispatch::invoke_request_body;
 
+#[cfg(feature = "search")]
 fn map_body<T, F>(body: ResponseBody, f: F) -> Result<T>
 where
     F: FnOnce(ResponseBody) -> Option<T>,
@@ -134,45 +134,6 @@ pub fn search_import_lance(req: SearchImportLanceRequest) -> Result<SearchImport
         invoke_request_body(RequestBody::SearchImportLance(req))?,
         |b| {
             if let ResponseBody::SearchImportLance(r) = b {
-                Some(r)
-            } else {
-                None
-            }
-        },
-    )
-}
-
-pub fn trajectory_append(req: TrajectoryAppendRequest) -> Result<TrajectoryAppendResponse> {
-    map_body(
-        invoke_request_body(RequestBody::TrajectoryAppend(req))?,
-        |b| {
-            if let ResponseBody::TrajectoryAppend(r) = b {
-                Some(r)
-            } else {
-                None
-            }
-        },
-    )
-}
-
-pub fn trajectory_replay(req: TrajectoryReplayRequest) -> Result<TrajectoryReplayResponse> {
-    map_body(
-        invoke_request_body(RequestBody::TrajectoryReplay(req))?,
-        |b| {
-            if let ResponseBody::TrajectoryReplay(r) = b {
-                Some(r)
-            } else {
-                None
-            }
-        },
-    )
-}
-
-pub fn trajectory_stats(req: TrajectoryStatsRequest) -> Result<TrajectoryStatsResponse> {
-    map_body(
-        invoke_request_body(RequestBody::TrajectoryStats(req))?,
-        |b| {
-            if let ResponseBody::TrajectoryStats(r) = b {
                 Some(r)
             } else {
                 None

@@ -47,8 +47,8 @@ async fn grouped_analysis_subcommands_have_deterministic_semantics() -> Result<(
     assert_eq!(
         jsonl_rows(&agents.stdout)?,
         vec![
-            json!({"agent_id":"example-model","agent_name":"example-model","agent_version":"0","trajectories":2,"sources":1,"steps":4,"user_steps":2,"agent_steps":2,"tool_calls":0}),
-            json!({"agent_id":"actf-agent","agent_name":"ACTF Agent","agent_version":"ACTF_v1.0","trajectories":1,"sources":1,"steps":2,"user_steps":0,"agent_steps":2,"tool_calls":1}),
+            json!({"agent_id":"example-model","agent_name":"example-model","agent_version":"","trajectories":2,"sources":1,"steps":4,"user_steps":2,"agent_steps":2,"tool_calls":0}),
+            json!({"agent_id":"actf-agent","agent_name":"ACTF Agent","agent_version":"","trajectories":1,"sources":1,"steps":2,"user_steps":0,"agent_steps":2,"tool_calls":1}),
             json!({"agent_id":"support-agent","agent_name":"support-agent","agent_version":"1.0.0","trajectories":1,"sources":1,"steps":3,"user_steps":1,"agent_steps":2,"tool_calls":1}),
         ]
     );

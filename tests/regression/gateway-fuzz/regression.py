@@ -57,12 +57,7 @@ FORMAT_CONTRACT_SESSIONS = (
     "format-contract-responses-tool",
     "format-contract-error",
 )
-ALPHABET = (
-    string.ascii_letters
-    + string.digits
-    + " \n\r\t\\\"'{}[],:/"
-    + "中文日本語한국어🙂🚀éΩ"
-)
+ALPHABET = string.ascii_letters + string.digits + " \n\r\t\\\"'{}[],:/" + "中文日本語한국어🙂🚀éΩ"
 
 
 @dataclass(frozen=True)
@@ -122,17 +117,17 @@ def make_case(index: int, master: random.Random, max_chars: int, suite: str) -> 
         else ["chat_completions", "responses", "messages", "gemini"]
     )
     protocol = (
-        protocols[index % len(protocols)]
-        if index < len(protocols) * 4
-        else rng.choice(protocols)
+        protocols[index % len(protocols)] if index < len(protocols) * 4 else rng.choice(protocols)
     )
     matrix_round = index // len(protocols)
     streaming = protocol != "gemini" and (
         bool(matrix_round & 1) if index < len(protocols) * 4 else rng.choice([True, False])
     )
     encoding = (
-        "base64" if matrix_round & 2 else "plain"
-    ) if index < len(protocols) * 4 else rng.choice(["plain", "base64"])
+        ("base64" if matrix_round & 2 else "plain")
+        if index < len(protocols) * 4
+        else rng.choice(["plain", "base64"])
+    )
     session_id = f"fuzz-{index:08d}-{case_seed:016x}"
     if protocol == "chat_completions":
         client, model, provider = "openai", f"fuzz-openai-{rng.randrange(16)}", "openai"
@@ -510,8 +505,7 @@ def query_session_events(
     for batch_index, start in enumerate(range(0, len(session_ids), QUERY_SOURCE_BATCH_SIZE)):
         batch = session_ids[start : start + QUERY_SOURCE_BATCH_SIZE]
         source_filter = ", ".join(
-            sql_string(f"{FUZZ_AGENT_ID}/{session_id}/events.lance")
-            for session_id in batch
+            sql_string(f"{FUZZ_AGENT_ID}/{session_id}/events.lance") for session_id in batch
         )
         part_path = events_path.with_name(f"{events_path.stem}-{batch_index:05d}.jsonl")
         try:
@@ -641,18 +635,18 @@ uri = "{dataset}"
         encoding="utf-8",
     )
     if mode == "allowlist":
-        network = f'''[network]
+        network = f"""[network]
 mode = "allowlist"
 
 [[network.rules]]
 host = "127.0.0.1"
 ports = [{echo_port}]
 transports = ["http", "tcp_tunnel"]
-'''
+"""
     else:
-        network = '''[network]
+        network = """[network]
 mode = "no-network"
-'''
+"""
     gateway.write_text(
         f'''listen = "127.0.0.1:{gateway_port}"
 admin_listen = "127.0.0.1:{admin_port}"
@@ -712,9 +706,7 @@ def proxy_absolute_get(gateway_port: int, target: str, target_host: str) -> tupl
 
 def proxy_connect(gateway_port: int, authority: str) -> tuple[int, str]:
     with socket.create_connection(("127.0.0.1", gateway_port), timeout=5) as connection:
-        connection.sendall(
-            f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode()
-        )
+        connection.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode())
         response = bytearray()
         while b"\r\n\r\n" not in response and len(response) < 64 * 1024:
             chunk = connection.recv(4096)
@@ -845,16 +837,18 @@ def run_format_contract_cases(gateway: str, results_path: Path) -> int:
         "/v1/chat/completions",
         {
             "model": "fuzz-openai-0",
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "describe"},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
-                    },
-                ],
-            }],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                        },
+                    ],
+                }
+            ],
         },
         session_id="format-contract-multimodal",
         mode="inspect",
@@ -875,12 +869,14 @@ def run_format_contract_cases(gateway: str, results_path: Path) -> int:
             "model": "fuzz-responses-0",
             "input": "tool",
             "stream": True,
-            "tools": [{
-                "type": "function",
-                "name": "weather",
-                "description": "weather lookup",
-                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
-            }],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "weather",
+                    "description": "weather lookup",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                }
+            ],
         },
         session_id="format-contract-responses-tool",
         mode="tool",
@@ -1000,8 +996,7 @@ def validate_durable_content_contracts(events_path: Path, comparison_path: Path)
                 )
             elif session_id == "format-contract-reasoning":
                 checks["reasoning"] = any(
-                    part.get("type") == "reasoning"
-                    and part.get("text") == "echo-reasoning"
+                    part.get("type") == "reasoning" and part.get("text") == "echo-reasoning"
                     for part in response_parts
                 )
                 checks["visible_text"] = any(
@@ -1016,8 +1011,7 @@ def validate_durable_content_contracts(events_path: Path, comparison_path: Path)
                 checks["request_image"] = any(
                     part.get("type") == "image"
                     and part.get("source", {}).get("type") == "data"
-                    and part.get("source", {}).get("data")
-                    == "data:image/png;base64,iVBORw0KGgo="
+                    and part.get("source", {}).get("data") == "data:image/png;base64,iVBORw0KGgo="
                     for part in request_parts
                 )
                 checks["response_summary"] = canonical_response_text(response) == "text=1 image=1"
@@ -1093,9 +1087,7 @@ def run_network_fuzz(work_dir: Path, pchronicle: Path, seed: int) -> tuple[int, 
         assert echo_port is not None
         wait_http(f"{echo_url}/health", echo_process, "pChronicle Echo")
 
-        allow = write_network_configs(
-            work_dir, "allowlist", echo_url, echo_port, 0, 0, "allowlist"
-        )
+        allow = write_network_configs(work_dir, "allowlist", echo_url, echo_port, 0, 0, "allowlist")
         deny = write_network_configs(
             work_dir, "no-network", echo_url, echo_port, 0, 0, "no-network"
         )
@@ -1106,9 +1098,7 @@ def run_network_fuzz(work_dir: Path, pchronicle: Path, seed: int) -> tuple[int, 
             warehouse, gateway, _dataset, state = config
             serve_log = (logs / f"serve-{name}.log").open("w", encoding="utf-8")
             handles.append(serve_log)
-            process = start_pchronicle_serve(
-                pchronicle, warehouse, gateway, state, 0, serve_log
-            )
+            process = start_pchronicle_serve(pchronicle, warehouse, gateway, state, 0, serve_log)
             processes.append((f"pChronicle serve {name}", process))
             warehouse_url = wait_logged_url(
                 logs / f"serve-{name}.log",
@@ -1216,9 +1206,7 @@ def run_network_fuzz(work_dir: Path, pchronicle: Path, seed: int) -> tuple[int, 
             else:
                 input_text = f"network policy relative LLM {index} 中文🙂"
                 gateway_port = (
-                    allow_gateway_port
-                    if kind == "allow-relative-llm"
-                    else deny_gateway_port
+                    allow_gateway_port if kind == "allow-relative-llm" else deny_gateway_port
                 )
                 status, body = relative_llm_request(
                     gateway_port, f"network-fuzz-{index:08d}", input_text
@@ -1251,9 +1239,7 @@ def run_network_fuzz(work_dir: Path, pchronicle: Path, seed: int) -> tuple[int, 
             if kind == "allow-absolute":
                 health = json.loads(body)
                 if health != {"status": "ok", "service": "pchronicle-echo"}:
-                    raise AssertionError(
-                        f"network case {index} allow body mismatch: {health!r}"
-                    )
+                    raise AssertionError(f"network case {index} allow body mismatch: {health!r}")
             append_jsonl(
                 results_path,
                 {
@@ -1335,9 +1321,7 @@ def run_fuzz(work_dir: Path, pchronicle: Path, seed: int, suite: str) -> tuple[i
         )
         wait_http(f"{echo_url}/health", echo_process, "pChronicle Echo")
 
-        warehouse_config, gateway_config = write_configs(
-            work_dir, echo_url, 0, 0, suite
-        )
+        warehouse_config, gateway_config = write_configs(work_dir, echo_url, 0, 0, suite)
 
         serve_log = (logs / "serve.log").open("w", encoding="utf-8")
         handles.append(serve_log)
@@ -1413,9 +1397,7 @@ def run_fuzz(work_dir: Path, pchronicle: Path, seed: int, suite: str) -> tuple[i
                 next_submit = time.monotonic()
                 next_progress = started_at + 10
                 completed = 0
-                pending: dict[
-                    concurrent.futures.Future[dict[str, Any]], FuzzCase
-                ] = {}
+                pending: dict[concurrent.futures.Future[dict[str, Any]], FuzzCase] = {}
                 with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
                     while time.monotonic() < deadline or pending:
                         now = time.monotonic()
@@ -1505,9 +1487,7 @@ def main() -> None:
             f"PERSISTING_GATEWAY_FUZZ_SUITE must be one of {sorted(FUZZ_SUITES)}, got {suite!r}"
         )
     seed = int(os.environ.get("PERSISTING_FUZZ_SEED", secrets.randbits(64)))
-    work_dir = Path(
-        tempfile.mkdtemp(prefix=f"persisting-gateway-{suite}-fuzz-{seed}.")
-    )
+    work_dir = Path(tempfile.mkdtemp(prefix=f"persisting-gateway-{suite}-fuzz-{seed}."))
     success = False
     print(f"Gateway {suite} fuzz seed={seed} artifacts={work_dir}", flush=True)
     try:

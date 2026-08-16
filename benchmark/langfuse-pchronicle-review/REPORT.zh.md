@@ -124,13 +124,13 @@
 
 [COMPUTED, HIGH] 对 `web/`、`worker/`、`packages/shared/` 下 `.ts/.tsx` 的词法扫描得到 423 个文件含 ClickHouse 大小写变体；`LIMIT 1 BY` 53 次、`argMaxIf` 35 次、`sumMap` 38 次、`hasAllTokens` 16 次、`WITH FILL` 21 次。这些是包含测试/注释的 occurrence counts，不是迁移工期估算，但足以反驳“只替换一个数据库 client 即可”的假设。
 
-[KNOWN, HIGH] pChronicle 的 canonical Lance writer 自述为 at-least-once、append-only，重复 `event_id` 每次都成为物理行；重维护不在 ingestion path。见 `crates/persisting-pchronicle/src/store/raw_event_lance.rs:147`、`:219`。
+[KNOWN, HIGH] pChronicle 的 canonical Lance writer 自述为 at-least-once、append-only，重复 `event_id` 每次都成为物理行；重维护不在 ingestion path。见 `crates/persisting-pchronicle/src/store/events/mod.rs`。
 
 [KNOWN, HIGH] pChronicle `EventRow` 只有 seq、标识/时间、kind/source、agent/session/call/trace/model 等索引字段，其他内容进入 `payload_json`。见 `crates/persisting-pchronicle/src/store/event_row.rs:7`。
 
 [KNOWN, HIGH] query engine 是 read-only，只允许单条 `SELECT/VALUES/DESCRIBE/EXPLAIN`。见 `crates/persisting-pchronicle/src/store/query_engine.rs:93`、`:569`。
 
-[KNOWN, HIGH] 当前实验 catalog 会在 snapshot discovery 时打开每个 source，并对 event source 执行 `SELECT * FROM events ORDER BY seq`、collect 后物化 normalized MemTables。见 `crates/persisting-pchronicle/src/store/catalog.rs:1`、`:178`、`:681`、`:764`。
+[KNOWN, HIGH] 当前实验 catalog 会在 snapshot discovery 时打开每个 source，并对 event source 执行 `SELECT * FROM events ORDER BY seq`、collect 后物化 normalized MemTables。见 `crates/persisting-pchronicle/src/store/catalog/`。
 
 [INFERRED, HIGH] Langfuse 的主访问模式是 project/time 范围 OLAP；当前 pChronicle 以 Run 为物理单元并在 catalog cold path 打开、归一化每个 source。210 sources 尚可在 2.10 s 打开，但该机制没有给出 source 数量增长时的稳定上界，因此不能从本次小规模结果外推到长期多租户项目。
 

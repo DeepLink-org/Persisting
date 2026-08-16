@@ -42,7 +42,7 @@ pub(crate) enum StoryCommand {
     /// Append one record to Lance/sink and sync live markdown.
     PersistRecord {
         scope: StoryScope,
-        /// JSON-encoded [`crate::record::CaptureRecord`].
+        /// JSON-encoded [`crate::record::EventRecord`].
         record_bytes: Vec<u8>,
     },
     /// Upsert streaming assistant draft in live markdown only (no sink append).

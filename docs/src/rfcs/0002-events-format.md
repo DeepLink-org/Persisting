@@ -6,7 +6,7 @@
 | **Schema / format name** | `events`（逻辑文档）；物理存储常为 `events.lance` |
 | **Date** | 2026-07-30 |
 | **Component** | Gateway + pChronicle |
-| **Implements** | `persisting-gateway` `CaptureRecord` / `EventRow` · `persisting-pchronicle` `formats/events.rs` |
+| **Implements** | `persisting-gateway` `EventRecord` / `EventRow` · `persisting-pchronicle` `formats/events.rs` |
 | **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [Capture 管线](../pvisor/design/gateway.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ---
@@ -112,7 +112,6 @@ Persisting Gateway 的主入口是代理流量。`events` 应对齐这一现实�
 |---|---|
 | **Wire record** | 一次 HTTP（或同类）方向的原始交换描述：method/url/headers/body/status/timing… |
 | **EventRecord** | 逻辑事件 = 关联信封 + `kind` + wire-oriented `payload` |
-| **CaptureRecord** | Gateway 采集管线内部兼容表示（演进目标与本 RFC 对齐） |
 | **EventRow** | Lance 列存行：索引列 + `payload_json` |
 | **Summary fields** | `user_content` / `assistant_content` / `model` 等可选派生字段 |
 | **Replay** | 用 wire 字段重建并再次发出（或模拟）等价交换 |
@@ -121,15 +120,14 @@ Persisting Gateway 的主入口是代理流量。`events` 应对齐这一现实�
 
 ## Schema：逻辑事件 `EventRecord`
 
-编码：UTF-8 JSON object。`EventRecord` 由 pChronicle 唯一定义；Gateway 的
-`CaptureRecord` 只是该类型的兼容别名，pVisor 生命周期事件也直接使用同一类型。
+编码：UTF-8 JSON object。`EventRecord` 由 pChronicle 唯一定义；Gateway 与 pVisor
+生命周期事件直接使用同一类型。
 一行事件 MUST 包含 `seq`、`source`、`kind`、`payload`。
 
 ### 关联信封（顶栏）
 
 | Field | Type | Status | Description |
 |---|---|---|---|
-| `schema_version` | integer | Required for new writes | pChronicle event schema version |
 | `event_id` | string | Required for new writes | append 边界生成的稳定事件身份 |
 | `run_id` | string | Required for new writes | 事件所属逻辑 Run；旧 capture row 读取时可缺省 |
 | `attempt_id` | string | Optional | 生命周期事件所属 Attempt |
@@ -250,7 +248,12 @@ HTTP-first 回放不仅需要单次 request/response，还需要知道 **连接�
 | `seq` / `timestamp` / `kind` / `source` | 索引 |
 | `session_id` / `agent_id` / `call_id` / `trace_id` / `parent_call_id` | 关联过滤 |
 | `model` | 可选反规范化 |
-| `payload_json` | **完整 EventRecord/CaptureRecord JSON（含 wire）** |
+| `payload_json` | **完整 EventRecord JSON（含 wire）** |
+
+身份冲突采用 admission-first 合同：写入坐标不一致不会拒绝事实。`payload_json` 保留
+producer 原始声明；物理 `session_id` / `agent_id` 用于路由、过滤并在 replay 时覆盖同名
+声明。Storyline 投影对剩余冲突按物理 append order 采用最后一个非空值。该规则不需要
+读前写、去重表或额外索引。
 
 ---
 
@@ -267,16 +270,16 @@ HTTP-first 回放不仅需要单次 request/response，还需要知道 **连接�
 | `session.started` / `session.ended` | 会话生命周期（可无 http 块） |
 | `note` | 运维注解 |
 
-### 兼容别名（现有 Capture）
+### LLM producer kinds
 
 | 现有 kind | 视为 |
 |---|---|
-| `llm.request` | `http.request` 的语义别名（payload 仍应尽量含 path/body） |
+| `llm.request` | 带 LLM 协议理解的 HTTP 请求（payload 仍应尽量含 path/body） |
 | `llm.response` | `http.response` |
 | `llm.response.stream` | `http.response.stream` |
 
-新写入 SHOULD 使用 `http.*`；读路径 MUST 同时接受 `llm.*`。  
-`llm.*` **不**意味着可以只存对话摘要——即便使用别名，仍按 HTTP-first 要求保存 wire。
+通用 HTTP producer 使用 `http.*`，Gateway LLM producer 可以使用 `llm.*`。
+`llm.*` **不**意味着可以只存对话摘要，仍按 HTTP-first 要求保存 wire。
 
 ---
 
@@ -326,7 +329,7 @@ pChronicle：`into_storyline` / `convert` **不接受** events 的字符串输�
 | 方式 | 规则 |
 |---|---|
 | 路径 | 仅 `events.lance`（或 basename 含 `event` 的 `.lance`） |
-| 内容 | **不**把 CaptureRecord 形 JSON 判定为 `events` |
+| 内容 | **不**把 EventRecord 形 JSON 判定为 `events` |
 
 别名：`events` / `lance` / `bin` / `events.lance`。
 
@@ -545,7 +548,7 @@ key = events 字段，value = 在 Storyline 上求值的 JSONPath。
 | [RFC-0001 Storyline](0001-storyline-format.md) | 有损 Normal 视图 / hub |
 | [轨迹 Markdown 格式](../pchronicle/reference/agenticmd.md) | 人读投影，不是 SoT |
 
-实现现状：`CaptureRecord` 已具备 `path`/`body`/`status` 等扁平键；本 RFC 将其 **提升为明确的 HTTP-first 契约**，并引入 `http.*` kind 与 `payload.http` 嵌套作为演进目标。
+实现现状：`EventRecord` 已具备 `path`/`body`/`status` 等扁平键；本 RFC 将其 **提升为明确的 HTTP-first 契约**，并引入 `http.*` kind 与 `payload.http` 嵌套作为演进目标。
 
 ---
 

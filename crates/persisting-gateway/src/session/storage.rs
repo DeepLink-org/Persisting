@@ -16,7 +16,7 @@ pub struct CaptureRoute {
     /// Run directory name under `{storage}/{agent_id}/` (capture run or daily serve bucket).
     pub root_session: Option<String>,
     /// Logical session from request headers (stored on
-    /// [`CaptureRecord`](crate::record::CaptureRecord)).
+    /// [`EventRecord`](crate::record::EventRecord)).
     pub session_id: String,
     /// Markdown filename stem and event-log key (`{storage_session_id}.md`).
     pub storage_session_id: String,

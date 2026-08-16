@@ -1,5 +1,6 @@
 //! DataFusion datasource for the canonical Lance event log.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ use futures::TryStreamExt;
 use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 
-use super::raw_event_manifest::EventManifest;
+use super::manifest::EventManifest;
 use crate::{event_row_to_event_record, event_rows_from_batch, EventRecord};
 
 pub const DATAFUSION_EVENTS_TABLE: &str = "events";
@@ -126,6 +127,7 @@ pub struct RawEventDataSource {
     uri: String,
     snapshot: EventFactSnapshot,
     provider: Arc<RawEventTableProvider>,
+    segment_rows: Vec<u64>,
 }
 
 /// Stable logical and physical coordinates for one pinned canonical event view.
@@ -194,7 +196,7 @@ impl RawEventDataSource {
                 .to_string_lossy()
                 .into_owned()
         };
-        let manifest = super::raw_event_lance::pin_visible_snapshot(&uri)
+        let manifest = super::pin_visible_snapshot(&uri)
             .await?
             .with_context(|| format!("canonical event manifest does not exist at {uri}"))?;
         anyhow::ensure!(
@@ -208,14 +210,23 @@ impl RawEventDataSource {
         snapshot: RawEventSnapshot,
         options: RawEventDataSourceOptions,
     ) -> Result<Self> {
-        let datasets =
-            super::raw_event_lance::open_pinned_snapshot(snapshot.uri(), &snapshot.manifest)
-                .await?;
+        let segment_rows = snapshot
+            .manifest
+            .segments
+            .iter()
+            .map(|segment| segment.rows)
+            .collect::<Vec<_>>();
+        let datasets = super::open_pinned_snapshot(snapshot.uri(), &snapshot.manifest).await?;
+        anyhow::ensure!(
+            datasets.len() == segment_rows.len(),
+            "canonical event manifest segment count does not match opened datasets"
+        );
         let fact_snapshot = snapshot.fact_snapshot();
         Ok(Self {
             uri: snapshot.uri,
             snapshot: fact_snapshot,
             provider: Arc::new(RawEventTableProvider::new(datasets, options)?),
+            segment_rows,
         })
     }
 
@@ -258,10 +269,55 @@ impl RawEventDataSource {
 
     /// Read a pinned source in manifest segment and physical append order.
     pub async fn read_records_in_append_order(&self) -> Result<Vec<EventRecord>> {
+        self.read_records_range_in_append_order(0, self.snapshot.fact_rows)
+            .await
+    }
+
+    /// Read the half-open logical append range `[start, end)` from one pinned
+    /// manifest without scanning preceding or following event rows.
+    pub async fn read_records_range_in_append_order(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<EventRecord>> {
+        anyhow::ensure!(start <= end, "event append range start exceeds end");
+        anyhow::ensure!(
+            end <= self.snapshot.fact_rows,
+            "event append range end {end} exceeds pinned fact rows {}",
+            self.snapshot.fact_rows
+        );
+        if start == end {
+            return Ok(Vec::new());
+        }
+
         let mut records = Vec::new();
-        for dataset in self.provider.datasets() {
+        let mut segment_start = 0u64;
+        for (dataset, segment_rows) in self
+            .provider
+            .datasets()
+            .iter()
+            .zip(self.segment_rows.iter().copied())
+        {
+            let segment_end = segment_start
+                .checked_add(segment_rows)
+                .context("event segment row range overflow")?;
+            let overlap_start = start.max(segment_start);
+            let overlap_end = end.min(segment_end);
+            if overlap_start >= overlap_end {
+                segment_start = segment_end;
+                continue;
+            }
+            let offset = overlap_start - segment_start;
+            let limit = overlap_end - overlap_start;
             let mut scan = dataset.scan();
             scan.scan_in_order(true);
+            scan.limit(
+                Some(i64::try_from(limit).context("event range limit exceeds i64")?),
+                (offset > 0)
+                    .then(|| i64::try_from(offset).context("event range offset exceeds i64"))
+                    .transpose()?,
+            )
+            .context("apply pinned event append range")?;
             let batches = scan
                 .try_into_stream()
                 .await
@@ -274,7 +330,61 @@ impl RawEventDataSource {
                     records.push(event_row_to_event_record(&row)?);
                 }
             }
+            segment_start = segment_end;
         }
+        anyhow::ensure!(
+            records.len() == usize::try_from(end - start)?,
+            "pinned event append range returned {} rows; expected {}",
+            records.len(),
+            end - start
+        );
+        Ok(records)
+    }
+
+    /// Read complete append-ordered histories for selected Storyline identities
+    /// from the same pinned manifest used for suffix discovery.
+    pub async fn read_records_for_storylines(
+        &self,
+        session_ids: &BTreeSet<String>,
+    ) -> Result<Vec<EventRecord>> {
+        if session_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let predicate = format!(
+            "session_id IN ({})",
+            session_ids
+                .iter()
+                .map(|id| format!("'{}'", id.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut records = Vec::new();
+        for dataset in self.provider.datasets() {
+            let mut scan = dataset.scan();
+            scan.filter(&predicate)
+                .context("filter pinned events by Storyline identity")?;
+            scan.scan_in_order(true);
+            scan.use_scalar_index(true);
+            let batches = scan
+                .try_into_stream()
+                .await
+                .context("scan pinned Storyline event histories")?
+                .try_collect::<Vec<_>>()
+                .await
+                .context("collect pinned Storyline event histories")?;
+            for batch in &batches {
+                for row in event_rows_from_batch(batch)? {
+                    records.push(event_row_to_event_record(&row)?);
+                }
+            }
+        }
+        anyhow::ensure!(
+            records.iter().all(|record| record
+                .session_id
+                .as_ref()
+                .is_some_and(|id| session_ids.contains(id))),
+            "Storyline event history scan returned an unrequested identity"
+        );
         Ok(records)
     }
 }

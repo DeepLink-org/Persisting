@@ -2,9 +2,7 @@
 
 use crate::convert::message_text;
 use crate::formats::openai_msg::{OpenaiMsgDocument, OpenaiMsgStep};
-use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineTurn, STORYLINE_SCHEMA_VERSION,
-};
+use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
 use crate::Result;
 
 pub fn openai_msg_to_storyline(doc: &OpenaiMsgDocument) -> Result<StorylineDocument> {
@@ -79,13 +77,12 @@ pub fn openai_msg_to_storyline(doc: &OpenaiMsgDocument) -> Result<StorylineDocum
     }
 
     Ok(StorylineDocument {
-        schema_version: STORYLINE_SCHEMA_VERSION.into(),
         run_id: Some(doc.run_bucket.clone()).filter(|s| !s.is_empty()),
         session_id: doc.session_id.clone(),
         agent: StorylineAgent {
             id: doc.agent_id.clone(),
             name: Some(doc.agent_id.clone()),
-            version: Some("0".into()),
+            version: None,
             model_name: doc
                 .session_steps
                 .first()

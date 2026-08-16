@@ -5,7 +5,7 @@
 //! `step_id`); readers retain aliases for older capture documents.
 //! ```text
 //! ---
-//! format: persisting:1.0   # logical name in pChronicle: agenticmd
+//! format: persisting   # logical name in pChronicle: agenticmd
 //! session: ...
 //! ---
 //!
@@ -23,7 +23,7 @@ use serde_json::Value;
 use crate::{Error, Result};
 
 pub const AGENTICMD_FORMAT_NAME: &str = "agenticmd";
-pub const AGENTICMD_FRONTMATTER_FORMAT: &str = "persisting:1.0";
+pub const AGENTICMD_FRONTMATTER_FORMAT: &str = "persisting";
 pub const BLOCK_MARKER: &str = "<!-- persisting:block";
 /// Layout hint embedded in capture live-document YAML (`block:` field).
 pub const AGENTICMD_BLOCK_LAYOUT: &str =
@@ -87,7 +87,7 @@ impl AgenticmdBlock {
 pub struct AgenticmdDocument {
     /// Logical pChronicle format name (`agenticmd`).
     pub format: String,
-    /// Frontmatter `format:` value (usually `persisting:1.0`).
+    /// Frontmatter `format:` value (usually `persisting`).
     pub frontmatter_format: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,

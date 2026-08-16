@@ -8,7 +8,7 @@ use anyhow::Context;
 use thiserror::Error;
 
 use crate::store::compact_sealed_event_segment;
-use crate::{EventRecord, RawEventLanceAppender, StoryCoords};
+use crate::{raw_event_lance_path, EventRecord, RawEventLanceAppender, StoryCoords};
 
 pub const DEFAULT_RAW_EVENT_QUEUE_CAPACITY: usize = 256;
 pub const DEFAULT_RAW_EVENT_BATCH_SIZE: usize = 256;
@@ -19,6 +19,9 @@ pub const DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD: usize = 8;
 pub const DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT: usize =
     DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD;
 pub const DEFAULT_RAW_EVENT_HIERARCHY_FANOUT: usize = 8;
+/// Maintenance is best-effort and recoverable through explicit `maintain`.
+/// Bound its live backlog independently from durable capture admission.
+pub const DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY: usize = 64;
 
 #[derive(Debug)]
 struct RawEventAppendJob {
@@ -236,7 +239,8 @@ fn run_append_worker(
         .build()
         .context("create pChronicle append worker runtime")?;
     let mut appender = RawEventLanceAppender::default();
-    let (maintenance_tx, mut maintenance_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (maintenance_tx, mut maintenance_rx) =
+        tokio::sync::mpsc::channel(DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY);
     let maintenance_task = runtime.spawn(async move {
         while let Some(segment) = maintenance_rx.recv().await {
             if let Err(error) =
@@ -275,28 +279,46 @@ fn run_append_worker(
         }
 
         let mut completions = Vec::with_capacity(jobs.len());
-        let entries = jobs
-            .into_iter()
-            .map(|job| {
-                completions.push(job.completion);
-                (job.coords, job.record)
-            })
-            .collect::<Vec<_>>();
+        let mut entries = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            match raw_event_lance_path(&job.coords) {
+                Ok(path) => {
+                    completions.push((path.to_string_lossy().into_owned(), job.completion));
+                    entries.push((job.coords, job.record));
+                }
+                Err(error) => notify_completion(job.completion, Err(format!("{error:#}"))),
+            }
+        }
+        if entries.is_empty() {
+            continue;
+        }
         let append_result = runtime
-            .block_on(appender.append_event_batch(&entries))
+            .block_on(appender.append_event_batch_partitioned(&entries))
             .context("append event batch to pChronicle");
         match append_result {
-            Ok(_) => {
-                notify_completions(&completions, Ok(()));
+            Ok(report) => {
+                for (uri, completion) in completions {
+                    let result = match report.outcome_for(&uri) {
+                        Some(Ok(_)) => Ok(()),
+                        Some(Err(error)) => Err(error.clone()),
+                        None => Err(format!(
+                            "pChronicle append returned no partition outcome for {uri}"
+                        )),
+                    };
+                    if completion.is_none() {
+                        if let Err(error) = &result {
+                            tracing::warn!(
+                                target: "persisting_pchronicle",
+                                "non-durable raw-event append failed for {uri}: {error}"
+                            );
+                        }
+                    }
+                    notify_completion(completion, result);
+                }
                 match appender.seal_fragmented_segments(compaction_threshold) {
                     Ok(segments) => {
                         for segment in segments {
-                            if maintenance_tx.send(segment).is_err() {
-                                tracing::warn!(
-                                    target: "persisting_pchronicle",
-                                    "raw-event maintenance worker stopped unexpectedly"
-                                );
-                            }
+                            enqueue_maintenance(&maintenance_tx, segment);
                         }
                     }
                     Err(error) => {
@@ -318,7 +340,9 @@ fn run_append_worker(
                 // instead of racing into the drain path and receiving the same
                 // writer error again.
                 stop_and_reject_pending(&rx, &state, &message);
-                notify_completions(&completions, Err(message.clone()));
+                for (_, completion) in completions {
+                    notify_completion(completion, Err(message.clone()));
+                }
                 return Err(error);
             }
         }
@@ -328,12 +352,7 @@ fn run_append_worker(
     // post-shutdown readers from inheriting a tail of tiny live fragments.
     if let Ok(segments) = appender.seal_fragmented_segments(2) {
         for segment in segments {
-            if maintenance_tx.send(segment).is_err() {
-                tracing::warn!(
-                    target: "persisting_pchronicle",
-                    "raw-event maintenance worker stopped before final compaction"
-                );
-            }
+            enqueue_maintenance(&maintenance_tx, segment);
         }
     }
     drop(maintenance_tx);
@@ -359,6 +378,32 @@ fn notify_completions(
     }
 }
 
+fn notify_completion(
+    completion: Option<mpsc::SyncSender<Result<(), String>>>,
+    result: Result<(), String>,
+) {
+    if let Some(completion) = completion {
+        let _ = completion.send(result);
+    }
+}
+
+fn enqueue_maintenance(
+    sender: &tokio::sync::mpsc::Sender<crate::store::SealedEventSegment>,
+    segment: crate::store::SealedEventSegment,
+) {
+    match sender.try_send(segment) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => tracing::warn!(
+            target: "persisting_pchronicle",
+            "raw-event maintenance backlog is full; explicit maintenance will recover layout"
+        ),
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => tracing::warn!(
+            target: "persisting_pchronicle",
+            "raw-event maintenance worker stopped unexpectedly"
+        ),
+    }
+}
+
 fn stop_and_reject_pending(rx: &mpsc::Receiver<WriterMessage>, state: &SenderState, message: &str) {
     state.accepting.store(false, Ordering::SeqCst);
     while state.in_flight.load(Ordering::SeqCst) != 0 {
@@ -376,7 +421,7 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    use crate::{RawEventLanceStore, StructuredStore};
+    use crate::RawEventLanceStore;
 
     fn event() -> EventRecord {
         EventRecord {
@@ -438,22 +483,34 @@ mod tests {
     }
 
     #[test]
-    fn durable_append_reports_writer_failure_and_closes_queue() {
+    fn durable_append_isolates_one_partition_failure() {
         let dir = tempfile::tempdir().unwrap();
         let invalid_storage = dir.path().join("not-a-directory");
         std::fs::write(&invalid_storage, b"file").unwrap();
-        let coords = StoryCoords::new(invalid_storage.to_string_lossy(), "agent", "session", None);
+        let invalid = StoryCoords::new(invalid_storage.to_string_lossy(), "agent", "session", None);
+        let valid = StoryCoords::new(
+            dir.path().join("valid").to_string_lossy(),
+            "agent",
+            "session",
+            None,
+        );
         let (sender, worker) = raw_event_append_queue_with_capacity(1).unwrap();
 
         assert!(matches!(
-            sender.append_durable(coords.clone(), event()),
+            sender.append_durable(invalid, event()),
             Err(RawEventAppendQueueError::Write(_))
         ));
-        assert_eq!(
-            sender.append_durable(coords, event()),
-            Err(RawEventAppendQueueError::Closed)
-        );
-        assert!(worker.finish().is_err());
+        sender.append_durable(valid.clone(), event()).unwrap();
+        worker.finish().unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let replay = runtime
+            .block_on(RawEventLanceStore.replay(&valid, 0, None))
+            .unwrap();
+        assert_eq!(replay.records.len(), 1);
     }
 
     #[test]
@@ -526,7 +583,7 @@ mod tests {
         let sequences = replay
             .records
             .iter()
-            .map(|record| serde_json::from_str::<EventRecord>(record).unwrap().seq)
+            .map(|record| record.seq)
             .collect::<Vec<_>>();
         assert_eq!(sequences, (0..8).collect::<Vec<_>>());
     }

@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::{
     drop_lifecycle_run_partitions, expand_story_locations, judgment_dataset_path,
-    list_traj_read_locations, read_judge_rows, JudgeRow, StoryCoords, MANUAL_RATIONALE_PREFIX,
+    list_story_read_locations, read_judge_rows, JudgeRow, StoryCoords, MANUAL_RATIONALE_PREFIX,
     STORY_CALL_ID,
 };
 
@@ -100,7 +100,7 @@ pub async fn aggregate_judgments(
     session_id: Option<String>,
     root_session_id: Option<String>,
 ) -> Result<JudgmentAggregate> {
-    let mut locations = list_traj_read_locations(
+    let mut locations = list_story_read_locations(
         storage.clone(),
         agent_id,
         session_id.clone(),

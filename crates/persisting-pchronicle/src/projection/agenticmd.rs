@@ -7,9 +7,8 @@ use anyhow::{Context, Result};
 
 use crate::{
     agenticmd_block_count, encode_agenticmd_preamble, locate_session_markdown_for_key,
-    markdown_document_to_event_records, session_markdown_path_for_key, write_agenticmd_document,
-    EventRecord, RawEventLanceStore, StructuredStore, TrajectorySession, AGENTICMD_BLOCK_LAYOUT,
-    AGENTICMD_FRONTMATTER_FORMAT,
+    session_markdown_path_for_key, write_agenticmd_document, EventRecord, RawEventLanceStore,
+    StoryCoords, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,28 +131,14 @@ pub fn write_markdown_projection(path: &Path, records: &[EventRecord]) -> Result
     Ok(stats)
 }
 
-pub fn markdown_document_to_event_lines(document: &str) -> Result<Vec<String>> {
-    markdown_document_to_event_records(document)?
-        .into_iter()
-        .enumerate()
-        .map(|(index, record)| {
-            let value = serde_json::to_value(record)
-                .with_context(|| format!("serialize markdown event[{index}]"))?;
-            ron::to_string(&value).with_context(|| format!("encode markdown event[{index}] RON"))
-        })
-        .collect()
-}
-
-async fn load_events(session: &TrajectorySession) -> Result<Vec<EventRecord>> {
+async fn load_events(session: &StoryCoords) -> Result<Vec<EventRecord>> {
     RawEventLanceStore
         .read_events(session, 0, None)
         .await
         .context("read canonical events")
 }
 
-pub async fn materialize_lance_to_markdown(
-    session: &TrajectorySession,
-) -> Result<MaterializeOutcome> {
+pub async fn materialize_lance_to_markdown(session: &StoryCoords) -> Result<MaterializeOutcome> {
     if !RawEventLanceStore.exists(session).await? {
         anyhow::bail!(
             "canonical event log missing at {}",
@@ -177,7 +162,7 @@ pub async fn materialize_lance_to_markdown(
     })
 }
 
-pub async fn layer_stats(session: &TrajectorySession) -> Result<LayerStats> {
+pub async fn layer_stats(session: &StoryCoords) -> Result<LayerStats> {
     let event_rows = if RawEventLanceStore.exists(session).await? {
         RawEventLanceStore.stats(session).await?.row_count
     } else {

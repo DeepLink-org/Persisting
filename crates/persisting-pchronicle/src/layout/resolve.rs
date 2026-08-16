@@ -10,8 +10,6 @@ use anyhow::{Context, Result};
 use super::coords::StoryCoords;
 use super::markdown::{locate_session_markdown, session_markdown_path_for_key};
 
-pub type TrajLocation = StoryCoords;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoryLocationPartial {
     pub storage: String,
@@ -183,8 +181,6 @@ fn infer_from_storage_root(path_arg: &str) -> Option<ParsedTrajPath> {
     }
     None
 }
-
-pub type TrajLocationPartial = StoryLocationPartial;
 
 fn parsed_to_location(parsed: ParsedTrajPath) -> StoryCoords {
     StoryCoords {
@@ -444,12 +440,6 @@ pub fn resolve_story_read_location(
     }
 }
 
-pub use list_story_read_locations as list_traj_read_locations;
-/// Compatibility aliases for older CLI callers.
-pub use merge_story_location as merge_traj_location;
-pub use resolve_story_read_location as resolve_traj_read_location;
-pub use try_infer_story_location as try_infer_traj_location;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,7 +515,7 @@ mod tests {
         std::fs::create_dir_all(&session).unwrap();
         std::fs::write(session.join("run-abc.md"), "# test\n").unwrap();
 
-        let loc = resolve_traj_read_location(
+        let loc = resolve_story_read_location(
             "trajectory stats",
             session.to_str().unwrap().into(),
             None,
@@ -550,7 +540,7 @@ mod tests {
         std::fs::create_dir_all(session.join("events.lance")).unwrap();
         std::fs::write(session.join("run-1.md"), "# test\n").unwrap();
 
-        let loc = resolve_traj_read_location(
+        let loc = resolve_story_read_location(
             "trajectory stats",
             session.to_str().unwrap().into(),
             None,
@@ -563,7 +553,7 @@ mod tests {
         assert_eq!(loc.session_id, "run-1");
         assert_eq!(loc.root_session_id.as_deref(), Some("run-1"));
 
-        let loc = resolve_traj_read_location(
+        let loc = resolve_story_read_location(
             "trajectory stats",
             session.to_str().unwrap().into(),
             Some("agent".into()),
@@ -586,7 +576,7 @@ mod tests {
         std::fs::create_dir_all(session.join("events.lance")).unwrap();
         std::fs::write(session.join("uuid-story.md"), "# test\n").unwrap();
 
-        let loc = resolve_traj_read_location(
+        let loc = resolve_story_read_location(
             "trajectory stats",
             session.to_str().unwrap().into(),
             None,
@@ -606,7 +596,7 @@ mod tests {
         if !session.is_dir() {
             return;
         }
-        let loc = resolve_traj_read_location(
+        let loc = resolve_story_read_location(
             "trajectory stats",
             session.to_str().unwrap().into(),
             None,
@@ -623,7 +613,7 @@ mod tests {
 
     #[test]
     fn resolve_explicit_ids_with_storage_root() {
-        let loc = resolve_traj_read_location(
+        let loc = resolve_story_read_location(
             "trajectory stats",
             "store".into(),
             Some("a".into()),
@@ -650,7 +640,7 @@ mod tests {
         std::fs::create_dir_all(&session).unwrap();
         std::fs::create_dir_all(session.join("events.lance")).unwrap();
 
-        let loc = resolve_traj_read_location(
+        let loc = resolve_story_read_location(
             "trajectory stats",
             store.to_str().unwrap().into(),
             Some("agent-a".into()),
@@ -709,7 +699,7 @@ mod tests {
         std::fs::create_dir_all(run.join("events.lance")).unwrap();
         std::fs::write(run.join("header-session-uuid.md"), "# story\n").unwrap();
 
-        let resolved = resolve_traj_read_location(
+        let resolved = resolve_story_read_location(
             "trajectory stats",
             run.to_str().unwrap().into(),
             None,
@@ -768,7 +758,7 @@ mod tests {
     #[test]
     fn resolve_fails_without_ids_or_deep_path() {
         assert!(
-            resolve_traj_read_location("trajectory stats", "store".into(), None, None, None,)
+            resolve_story_read_location("trajectory stats", "store".into(), None, None, None,)
                 .is_err()
         );
     }
@@ -818,7 +808,7 @@ mod tests {
         std::fs::create_dir_all(&session).unwrap();
         std::fs::write(session.join("session-0001.md"), "# test\n").unwrap();
 
-        let loc = merge_traj_location(
+        let loc = merge_story_location(
             session.to_str().unwrap().into(),
             Some("override-agent".into()),
             None,

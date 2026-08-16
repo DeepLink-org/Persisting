@@ -39,9 +39,9 @@ async fn json_body(response: axum::response::Response) -> Result<Value> {
 async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<()> {
     let app = warehouse()?;
     for (path, assertion) in [
-        ("/api/v1/health", "health"),
-        ("/api/v1/catalog", "catalog"),
-        ("/api/v1/query/tables", "tables"),
+        ("/api/health", "health"),
+        ("/api/catalog", "catalog"),
+        ("/api/query/tables", "tables"),
     ] {
         let response = app
             .clone()
@@ -69,11 +69,11 @@ async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<
 async fn warehouse_write_route_matrix_never_exposes_dataset_mutations() -> Result<()> {
     let app = warehouse()?;
     for (method, path) in [
-        (Method::POST, "/api/v1/judgments"),
-        (Method::POST, "/api/v1/maintain"),
-        (Method::POST, "/api/v1/query"),
-        (Method::PUT, "/api/v1/events"),
-        (Method::DELETE, "/api/v1/catalog"),
+        (Method::POST, "/api/judgments"),
+        (Method::POST, "/api/maintain"),
+        (Method::POST, "/api/query"),
+        (Method::PUT, "/api/events"),
+        (Method::DELETE, "/api/catalog"),
     ] {
         let response = app
             .clone()
@@ -103,7 +103,7 @@ async fn catalog_refresh_is_the_only_allowed_read_side_post() -> Result<()> {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/api/v1/catalog")
+                .uri("/api/catalog")
                 .body(Body::empty())?,
         )
         .await?;
@@ -121,7 +121,7 @@ async fn evidence_query_is_read_only_and_server_bounded() -> Result<()> {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/api/v1/query/evidence")
+                .uri("/api/query/evidence")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     json!({
@@ -146,7 +146,7 @@ async fn evidence_query_is_read_only_and_server_bounded() -> Result<()> {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/api/v1/query/evidence")
+                    .uri("/api/query/evidence")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(json!({"sql": sql}).to_string()))?,
             )
@@ -175,7 +175,7 @@ async fn spa_fallback_never_masks_unknown_api_routes() -> Result<()> {
     let unknown = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/does-not-exist")
+                .uri("/api/does-not-exist")
                 .body(Body::empty())?,
         )
         .await?;

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use crate::formats::agenticmd::{AgenticmdBlock, AgenticmdHeader};
 use crate::formats::agenticmd_body::{
-    append_subagent_refs_footer, strip_subagent_footer_from_body, BLOCK_FORMAT_VERSION,
+    append_subagent_refs_footer, strip_subagent_footer_from_body,
 };
 use crate::formats::events::{EventIdentity, EventRecord};
 
@@ -40,7 +40,6 @@ pub fn event_record_to_agenticmd_block_with_text(
         _ => "system",
     };
     let mut fields = std::collections::BTreeMap::from([
-        ("v".into(), json!(BLOCK_FORMAT_VERSION)),
         ("kind".into(), json!(rec.kind)),
         ("source".into(), json!(source)),
         ("producer".into(), json!(rec.source)),

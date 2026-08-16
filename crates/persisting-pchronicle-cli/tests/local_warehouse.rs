@@ -29,7 +29,7 @@ async fn default_initializes_and_reports_a_local_warehouse() -> Result<()> {
     assert!(configured.stderr_text()?.contains("updated=true"));
 
     let stored = std::fs::read_to_string(&settings)?;
-    assert!(stored.contains("schema_version = 1"));
+    assert!(!stored.contains("schema_version"));
     assert!(stored.contains(warehouse.canonicalize()?.to_string_lossy().as_ref()));
 
     let reported = run_cli(["--settings", &settings, "default"]).await?;
@@ -247,11 +247,7 @@ async fn invalid_or_stale_settings_fail_closed() -> Result<()> {
     for (content, expected) in [
         ("not toml = [", "parse pChronicle settings"),
         (
-            "schema_version = 2\ndefault_warehouse = '/tmp'\n",
-            "unsupported settings schema_version",
-        ),
-        (
-            "schema_version = 1\ndefault_warehouse = 's3://bucket/path'\n",
+            "default_warehouse = 's3://bucket/path'\n",
             "configured default Warehouse must be a local directory",
         ),
     ] {

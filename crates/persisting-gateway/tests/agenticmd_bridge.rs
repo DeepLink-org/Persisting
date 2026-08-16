@@ -3,12 +3,12 @@
 use persisting_gateway::projection::dialogue::capture_record_to_agenticmd_block;
 use persisting_gateway::projection::markdown_pipeline::MarkdownPipeline;
 use persisting_gateway::projection::markdown_trajectory::format_document_preamble;
-use persisting_gateway::record::CaptureRecord;
+use persisting_gateway::record::EventRecord;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;
 use persisting_pchronicle::{
     agenticmd_block_to_event_record, agenticmd_blocks_to_event_records,
-    encode_agenticmd_block_validated, markdown_document_to_event_lines, parse_agenticmd_document,
+    encode_agenticmd_block_validated, markdown_document_to_event_records, parse_agenticmd_document,
     parse_agenticmd_document_validated, write_agenticmd_document,
 };
 use serde_json::json;
@@ -17,11 +17,11 @@ fn fixture() -> &'static str {
     include_str!("fixtures/agenticmd/demo-run-001.md")
 }
 
-fn fixture_records(document: &str) -> anyhow::Result<Vec<CaptureRecord>> {
+fn fixture_records(document: &str) -> anyhow::Result<Vec<EventRecord>> {
     agenticmd_blocks_to_event_records(&parse_agenticmd_document_validated(document)?)
 }
 
-fn materialize_records(path: &std::path::Path, records: &[CaptureRecord]) -> anyhow::Result<()> {
+fn materialize_records(path: &std::path::Path, records: &[EventRecord]) -> anyhow::Result<()> {
     let blocks = MarkdownPipeline::agenticmd_blocks_from_records(records)?;
     write_agenticmd_document(path, &format_document_preamble(None)?, &blocks)
 }
@@ -83,7 +83,7 @@ fn explicit_import_uses_chronicle_parse() {
 #[test]
 fn import_keeps_debug_view_metadata() {
     let doc = fixture();
-    let via_engine_lines = markdown_document_to_event_lines(doc).unwrap().join("\n");
+    let via_chronicle = markdown_document_to_event_records(doc).unwrap();
     let records = fixture_records(doc).unwrap();
     assert_eq!(records.len(), 2);
     for rec in &records {
@@ -105,7 +105,7 @@ fn import_keeps_debug_view_metadata() {
         records[1].payload["_agenticmd"]["block_fields"]["trace_id"].as_str(),
         Some("trace-demo-1")
     );
-    assert!(!via_engine_lines.is_empty());
+    assert_eq!(via_chronicle, records);
 }
 
 #[test]

@@ -1,10 +1,4 @@
-//! Agenticmd block body helpers (subagent footers, block schema version).
-
-/// Block-header JSON schema version (`"v"` field). Bump when breaking block JSON layout.
-pub const BLOCK_FORMAT_VERSION: u64 = 1;
-
-/// Optional string alias for tools that prefer semver-style labels (`"1.0"`).
-pub const BLOCK_FORMAT_BLOCK: &str = "1.0";
+//! Agenticmd block body helpers (subagent footers).
 
 /// Strip `<!-- persisting:subagent-* -->` footer lines from a block body.
 ///

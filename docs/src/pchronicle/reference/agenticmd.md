@@ -8,7 +8,7 @@ AgenticMD 是 pChronicle 的人读与调试视图：普通 Markdown 正文可以
 
 ```markdown
 ---
-format: persisting:1.0
+format: persisting
 block: speaker+json+markdown
 session_id: run-123
 agent_id: coding
@@ -81,6 +81,6 @@ Lance 重建 AgenticMD，但当前公共 `pchronicle` CLI 不提供 AgenticMD ma
 
 - Gateway 端到端定量示例：`examples/pvisor/04-gateway-llm-control/`
 - Lance/ATIF 存储与分析示例：`examples/pchronicle/`
-- 格式与视图实现：`crates/persisting-pchronicle/src/formats/`、`src/projection.rs`
+- 格式与视图实现：`crates/persisting-pchronicle/src/formats/`、`src/projection/`
 - [pChronicle 轨迹存储](../design/trajectory-storage.md)
 - [轨迹格式与交换边界](formats/index.md)

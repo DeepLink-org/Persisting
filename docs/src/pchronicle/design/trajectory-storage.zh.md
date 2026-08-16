@@ -118,11 +118,14 @@ storage/
 1. `EventRecord` 进入 Lance 前转换为 Arrow 行，一个有界微批对应当前 epoch segment 的一次
    Lance append，随后以 manifest CAS 发布精确 version。
 2. 热路径不读取旧行、row count 或 `event_id`，不执行查重、索引、压缩或 vacuum。
-3. `seq` 是 producer 定义的 Storyline 序号；replay cursor 使用不可变的物理 append 顺序。
-4. Run bucket 中不同 Story 共享 manifest 和 epoch segment，但 replay/stats 按 `session_id` 隔离。
-5. live Markdown 以 `call_id + source`（兼容旧 role）定位块，允许流式 agent 原地更新。
-6. canonical append 与派生投影分别报告结果；投影失败不能伪装成事件已持久化。
-7. 一个微批中不同 root URI 的 segment/manifest 最多 16 路并行发布；同一 URI 仍按
+3. producer 身份与写入坐标冲突时仍然 append；`payload_json` 保留原始声明，物理
+   `session_id` / `agent_id` 由调用方坐标决定并在 replay 时生效。投影对其余身份声明按
+   append order 采用最后一个非空值，不为冲突增加读前写、查重或索引成本。
+4. `seq` 是 producer 定义的 Storyline 序号；replay cursor 使用不可变的物理 append 顺序。
+5. Run bucket 中不同 Story 共享 manifest 和 epoch segment，但 replay/stats 按 `session_id` 隔离。
+6. live Markdown 以 `call_id + source`（兼容旧 role）定位块，允许流式 agent 原地更新。
+7. canonical append 与派生投影分别报告结果；投影失败不能伪装成事件已持久化。
+8. 一个微批中不同 root URI 的 segment/manifest 最多 16 路并行发布；同一 URI 仍按
    batch 顺序串行，因此不放宽单 Story 的物理 append 顺序。
 
 事件事实层提供 at-least-once append，不提供 exactly-once 或 ID 唯一性。truncate、overwrite

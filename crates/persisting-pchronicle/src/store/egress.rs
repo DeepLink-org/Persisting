@@ -1,4 +1,4 @@
-//! Offline trajectory egress: export bundles and parse append payloads.
+//! Offline trajectory bundle export.
 
 use std::path::{Path, PathBuf};
 
@@ -13,22 +13,6 @@ pub struct ExportOutcome {
     pub files_copied: usize,
     pub source_paths: Vec<String>,
     pub note: String,
-}
-
-/// Validate newline-separated RON event values before append.
-pub fn validate_event_lines(records_ronl: &str) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for (line_number, line) in records_ronl.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let _: ron::value::Value = ron::from_str(line).map_err(|err| {
-            anyhow::anyhow!("invalid record at line {}: {}", line_number + 1, err)
-        })?;
-        out.push(line.to_string());
-    }
-    Ok(out)
 }
 
 /// Directories to copy for [`export_story_bundle`].
@@ -124,12 +108,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn validate_event_lines_skips_blanks() {
-        let v = validate_event_lines("(a:1)\n\n(b:2)\n").unwrap();
-        assert_eq!(v.len(), 2);
-    }
 
     #[test]
     fn export_flat_session() {

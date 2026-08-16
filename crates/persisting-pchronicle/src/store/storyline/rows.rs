@@ -21,7 +21,6 @@ pub fn story_runs_arrow_schema() -> Arc<ArrowSchema> {
         field("run_id", DataType::Utf8, false),
         field("run_id_explicit", DataType::Boolean, false),
         field("session_id", DataType::Utf8, false),
-        field("schema_version", DataType::Utf8, false),
         field("agent_id", DataType::Utf8, false),
         field("agent_name", DataType::Utf8, true),
         field("agent_version", DataType::Utf8, true),
@@ -130,7 +129,6 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
                 rows.iter().map(|r| r.run_id_explicit).collect::<Vec<_>>(),
             )),
             Arc::new(req_utf8(rows.iter().map(|r| r.session_id.as_str()))),
-            Arc::new(req_utf8(rows.iter().map(|r| r.schema_version.as_str()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.agent_id.as_str()))),
             Arc::new(opt_utf8(rows.iter().map(|r| r.agent_name.as_deref()))),
             Arc::new(opt_utf8(rows.iter().map(|r| r.agent_version.as_deref()))),
@@ -356,7 +354,6 @@ pub fn story_runs_from_batch(batch: &RecordBatch) -> Result<Vec<StoryRunRow>> {
                 run_id: required_string_at(batch, "run_id", row)?,
                 run_id_explicit: required_bool_at(batch, "run_id_explicit", row)?,
                 session_id: required_string_at(batch, "session_id", row)?,
-                schema_version: required_string_at(batch, "schema_version", row)?,
                 agent_id: required_string_at(batch, "agent_id", row)?,
                 agent_name: string_at(batch, "agent_name", row)?,
                 agent_version: string_at(batch, "agent_version", row)?,
@@ -439,7 +436,7 @@ mod tests {
 
     #[test]
     fn empty_batches_keep_all_three_schemas() {
-        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 16);
+        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 15);
         assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 18);
         assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 10);
     }

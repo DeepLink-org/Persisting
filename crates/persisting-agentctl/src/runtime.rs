@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub const RUNTIME_SCHEMA_VERSION: u32 = 1;
-pub const RUN_CONTROL_SCHEMA_VERSION: u32 = 1;
 
 fn default_supervisor_connect_timeout_ms() -> u64 {
     500
@@ -837,18 +836,12 @@ pub struct RunCommit {
 /// commit update this same object, closing the stale-lease/commit race.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunControlRecord {
-    #[serde(default = "run_control_schema_version")]
-    pub schema_version: u32,
     pub revision: u64,
     pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<RunLeaseRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<RunCommit>,
-}
-
-fn run_control_schema_version() -> u32 {
-    RUN_CONTROL_SCHEMA_VERSION
 }
 
 #[cfg(test)]

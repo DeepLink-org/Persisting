@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
 
-use crate::{EventIdentity, EventRecord, EVENT_SCHEMA_VERSION};
+use crate::{EventIdentity, EventRecord};
 
 fn wire(record: &EventRecord) -> &Value {
     record.payload.get("http").unwrap_or(&record.payload)
@@ -137,7 +137,6 @@ pub fn otlp_json_to_events(document: &Value) -> Vec<EventRecord> {
                 let attrs = otlp_attributes(span.get("attributes"));
                 records.push(EventRecord {
                     identity: EventIdentity {
-                        schema_version: EVENT_SCHEMA_VERSION,
                         producer: Some("otel-import".into()),
                         ..EventIdentity::default()
                     },

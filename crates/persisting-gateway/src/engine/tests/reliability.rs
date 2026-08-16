@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::dead_letter::read_dead_letter_entries;
 use crate::engine::{CaptureEngine, Event, RequestEvent};
-use crate::record::CaptureRecord;
+use crate::record::EventRecord;
 use crate::session::index::SessionIndexStore;
 use crate::session::storage::CaptureRoute;
 use crate::sink::CaptureEventSink;
@@ -16,7 +16,7 @@ impl CaptureEventSink for FailingSink {
         &self,
         _route: &CaptureRoute,
         _agent_id: &str,
-        _record: &mut CaptureRecord,
+        _record: &mut EventRecord,
     ) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("sink unavailable"))
     }

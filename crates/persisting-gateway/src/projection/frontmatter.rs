@@ -238,10 +238,7 @@ mod tests {
         let md = dir.path().join("run-test.md");
         std::fs::write(
             &md,
-            format!(
-                "---\nformat: persisting:1.0\n---\n\n{}",
-                user_block("hello")
-            ),
+            format!("---\nformat: persisting\n---\n\n{}", user_block("hello")),
         )
         .unwrap();
         let route = CaptureRoute {
@@ -265,7 +262,7 @@ mod tests {
         std::fs::write(
             &md,
             format!(
-                "---\nformat: persisting:1.0\n---\n\n{}",
+                "---\nformat: persisting\n---\n\n{}",
                 user_block("only one block in md")
             ),
         )
@@ -322,10 +319,7 @@ mod tests {
         let md = run_dir.join(format!("{root}.md"));
         std::fs::write(
             &md,
-            format!(
-                "---\nformat: persisting:1.0\n---\n\n{}",
-                user_block("hello")
-            ),
+            format!("---\nformat: persisting\n---\n\n{}", user_block("hello")),
         )
         .unwrap();
 

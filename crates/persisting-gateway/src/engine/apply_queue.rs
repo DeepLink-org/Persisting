@@ -206,7 +206,7 @@ mod tests {
     use crate::engine::{CompleteEvent, Event, RequestEvent};
     use crate::protocol::ProtocolKind;
     use crate::provider::ProviderKind;
-    use crate::record::CaptureRecord;
+    use crate::record::EventRecord;
     use crate::session::index::SessionIndexStore;
     use crate::session::storage::CaptureRoute;
     use crate::sink::CaptureEventSink;
@@ -224,7 +224,7 @@ mod tests {
             &self,
             _route: &CaptureRoute,
             _agent_id: &str,
-            _record: &mut CaptureRecord,
+            _record: &mut EventRecord,
         ) -> anyhow::Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(400));
             Ok(())
@@ -249,7 +249,7 @@ mod tests {
             &self,
             route: &CaptureRoute,
             _agent_id: &str,
-            record: &mut CaptureRecord,
+            record: &mut EventRecord,
         ) -> anyhow::Result<()> {
             let mut guard = self.next_seq.lock().unwrap();
             let seq = guard.entry(route.seq_key()).or_insert(0);

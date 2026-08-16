@@ -1,7 +1,7 @@
 //! Golden AgenticMD document built through the production encoder.
 
 use persisting_gateway::projection::dialogue::capture_record_to_agenticmd_block;
-use persisting_gateway::record::CaptureRecordExt;
+use persisting_gateway::record::EventRecordExt;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;
 use persisting_pchronicle::{
@@ -84,15 +84,10 @@ fn demo_run_001_matches_golden_fixture() {
 }
 
 #[test]
-fn demo_blocks_carry_v_field_and_strip_subagent_footer_on_import() {
+fn demo_blocks_have_no_version_field_and_strip_subagent_footer_on_import() {
     let built = build_demo_document();
     let blocks = parse_document(&built).unwrap();
-    assert!(blocks[0]
-        .header
-        .fields
-        .get("v")
-        .and_then(|v| v.as_u64())
-        .is_some());
+    assert!(!blocks[0].header.fields.contains_key("v"));
 
     let mut block = blocks[1].clone();
     block

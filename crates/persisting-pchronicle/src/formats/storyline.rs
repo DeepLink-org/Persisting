@@ -9,43 +9,23 @@ use serde_json::Value;
 
 use crate::{Error, Result};
 
-pub const STORYLINE_SCHEMA_VERSION: &str = "storyline/v1";
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorylineDocument {
-    #[serde(rename = "spec", alias = "schema_version")]
-    pub schema_version: String,
-    #[serde(
-        rename = "run",
-        alias = "run_id",
-        alias = "trajectory_id",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "run", default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     /// Session id (≈ ATIF / Capture `session_id`). Wire key: `session`.
-    #[serde(rename = "session", alias = "session_id", alias = "story_id")]
+    #[serde(rename = "session")]
     pub session_id: String,
     pub agent: StorylineAgent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<StoryLink>,
-    #[serde(
-        rename = "children",
-        alias = "child_session_ids",
-        alias = "child_story_ids",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "children", default, skip_serializing_if = "Option::is_none")]
     pub child_session_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_metrics: Option<Value>,
-    #[serde(
-        alias = "continued_story_ref",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_trajectory_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
@@ -57,26 +37,11 @@ pub struct StorylineAgent {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(
-        rename = "ver",
-        alias = "version",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "ver", default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(
-        rename = "model",
-        alias = "model_name",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "model", default, skip_serializing_if = "Option::is_none")]
     pub model_name: Option<String>,
-    #[serde(
-        rename = "tools",
-        alias = "tool_definitions",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "tools", default, skip_serializing_if = "Option::is_none")]
     pub tool_definitions: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
@@ -85,29 +50,14 @@ pub struct StorylineAgent {
 /// Optional parent-session link (ATIF `subagent_trajectories` externalization).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoryLink {
-    #[serde(
-        rename = "psid",
-        alias = "parent_session_id",
-        alias = "parent_story_id"
-    )]
+    #[serde(rename = "psid")]
     pub parent_session_id: String,
-    #[serde(
-        rename = "scid",
-        alias = "spawn_call_id",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "scid", default, skip_serializing_if = "Option::is_none")]
     pub spawn_call_id: Option<String>,
-    #[serde(
-        rename = "ptid",
-        alias = "spawn_id",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "ptid", default, skip_serializing_if = "Option::is_none")]
     pub spawn_id: Option<i64>,
     #[serde(
         rename = "rel",
-        alias = "relation",
         default = "default_spawn",
         skip_serializing_if = "is_default_spawn"
     )]
@@ -127,30 +77,15 @@ pub struct StorylineTurn {
     pub id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    #[serde(
-        rename = "ts",
-        alias = "timestamp",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "ts", default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
-    #[serde(rename = "src", alias = "source")]
+    #[serde(rename = "src")]
     pub source: String,
-    #[serde(rename = "msg", alias = "message")]
+    #[serde(rename = "msg")]
     pub message: Value,
-    #[serde(
-        rename = "reason",
-        alias = "reasoning_content",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "reason", default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
-    #[serde(
-        rename = "effort",
-        alias = "reasoning_effort",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "effort", default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<StorylineToolCall>>,
@@ -158,26 +93,11 @@ pub struct StorylineTurn {
     pub observation: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<Value>,
-    #[serde(
-        rename = "model",
-        alias = "model_name",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "model", default, skip_serializing_if = "Option::is_none")]
     pub model_name: Option<String>,
-    #[serde(
-        rename = "nllm",
-        alias = "llm_call_count",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "nllm", default, skip_serializing_if = "Option::is_none")]
     pub llm_call_count: Option<i64>,
-    #[serde(
-        rename = "copied",
-        alias = "is_copied_context",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "copied", default, skip_serializing_if = "Option::is_none")]
     pub is_copied_context: Option<bool>,
     /// End-to-end LLM round-trip latency in milliseconds (peer response time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -213,11 +133,11 @@ impl StorylineTurn {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorylineToolCall {
-    #[serde(rename = "tcid", alias = "tool_call_id")]
+    #[serde(rename = "tcid")]
     pub tool_call_id: String,
-    #[serde(rename = "fn", alias = "function_name")]
+    #[serde(rename = "fn")]
     pub function_name: String,
-    #[serde(rename = "args", alias = "arguments")]
+    #[serde(rename = "args")]
     pub arguments: Value,
     /// Tool execution wall time in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -230,13 +150,12 @@ impl StorylineDocument {
     pub fn new(session_id: impl Into<String>, agent_id: impl Into<String>) -> Self {
         let agent_id = agent_id.into();
         Self {
-            schema_version: STORYLINE_SCHEMA_VERSION.into(),
             run_id: None,
             session_id: session_id.into(),
             agent: StorylineAgent {
                 id: agent_id.clone(),
                 name: Some(agent_id),
-                version: Some("0".into()),
+                version: None,
                 model_name: None,
                 tool_definitions: None,
                 extra: None,
@@ -283,4 +202,27 @@ impl StorylineDocument {
 
 pub fn parse_storyline_document(input: &str) -> Result<StorylineDocument> {
     StorylineDocument::from_json_str(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_long_field_names_are_rejected() {
+        let legacy = serde_json::json!({
+            "session_id": "session-1",
+            "agent": { "id": "agent-1" },
+            "turns": []
+        });
+        assert!(serde_json::from_value::<StorylineDocument>(legacy).is_err());
+    }
+
+    #[test]
+    fn storyline_wire_has_no_schema_marker() {
+        let document = StorylineDocument::new("session-1", "agent-1");
+        let value = serde_json::to_value(document).unwrap();
+        assert!(value.get("spec").is_none());
+        assert!(value.get("schema_version").is_none());
+    }
 }

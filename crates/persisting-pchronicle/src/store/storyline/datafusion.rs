@@ -26,7 +26,7 @@ use futures::StreamExt;
 use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 
-use super::storyline_content::{
+use super::content::{
     content_columns, hydrate_selected_batches, open_objects, preview_selected_batches,
 };
 use super::{StorylineLanceStore, StorylineTablePaths};

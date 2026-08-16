@@ -5,9 +5,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::{
-    EventIdentity, EventRecord, RawEventLanceStore, StoryCoords, StructuredStore,
-};
+use persisting_pchronicle::{EventIdentity, EventRecord, RawEventLanceStore, StoryCoords};
 
 const CHILD_MODE_ENV: &str = "PCHRONICLE_LANGFUSE_CRASH_CHILD";
 const STORAGE_ENV: &str = "PCHRONICLE_LANGFUSE_CRASH_STORAGE";

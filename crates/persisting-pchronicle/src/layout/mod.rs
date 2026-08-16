@@ -11,7 +11,6 @@ pub use markdown::{
     session_markdown_filename, session_markdown_path_for_key, session_markdown_write_path_for_key,
 };
 pub use resolve::{
-    list_story_read_locations, list_traj_read_locations, merge_story_location, merge_traj_location,
-    resolve_story_read_location, resolve_traj_read_location, try_infer_story_location,
-    try_infer_traj_location, StoryLocationPartial, TrajLocation, TrajLocationPartial,
+    list_story_read_locations, merge_story_location, resolve_story_read_location,
+    try_infer_story_location, StoryLocationPartial,
 };

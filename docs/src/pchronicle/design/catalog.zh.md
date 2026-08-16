@@ -389,8 +389,8 @@ Catalog 复用直接文件查询的资源参数：
 
 | API | 语义 |
 |---|---|
-| `GET /api/v1/catalog` | 返回当前 `snapshot_id`、创建时间、默认 Dataset、错误策略和 source 列表 |
-| `POST /api/v1/catalog` | 在锁外完整构建新快照，成功后原子替换，并清空轨迹缓存 |
+| `GET /api/catalog` | 返回当前 `snapshot_id`、创建时间、默认 Dataset、错误策略和 source 列表 |
+| `POST /api/catalog` | 在锁外完整构建新快照，成功后原子替换，并清空轨迹缓存 |
 
 刷新失败不会清空或部分更新旧 Catalog；正在处理的请求持有旧快照的 `Arc`，可以继续完成。
 Web Explorer 从 Catalog 获取 Dataset 列表，服务端过滤、URL 状态、Storyline 列表和
@@ -419,9 +419,9 @@ distinct value，超过边界即丢弃未发布的临时索引并回退原查询
 SQL 增加 `_file_ = ...` 或 `_file_ IN (...)`，原业务谓词仍由 DataFusion 执行。因此索引
 只能缩小物理 source 候选，不能改变结果语义。
 
-`GET /api/v1/catalog` 的 `acceleration` 字段报告索引是否已经构建及其行、source、distinct
+`GET /api/catalog` 的 `acceleration` 字段报告索引是否已经构建及其行、source、distinct
 value 数，并通过 `failed` 列出本 generation 已缓存的构建失败，避免每个请求重复全表扫描；
-`POST /api/v1/query/evidence` 用 `source_routing` 响应字段报告 `applied`、
+`POST /api/query/evidence` 用 `source_routing` 响应字段报告 `applied`、
 `already_pruned`、`not_applicable`、`not_selective` 或 `index_unavailable`。Catalog 刷新会把
 新快照、查询引擎和空加速结构作为同一个 runtime 原子发布；旧请求继续持有旧 runtime，
 索引不会跨 `snapshot_id` 复用。
@@ -537,12 +537,12 @@ basename 会受路径拼写、对象前缀和部署目录影响，不带 schema 
 
 ## 14. 相关实现
 
-- `crates/persisting-pchronicle/src/store/catalog.rs`：发现、固定、惰性 source、Catalog
+- `crates/persisting-pchronicle/src/store/catalog/`：发现、固定、惰性 source、Catalog
   provider、source pruning 和 Run 路由；
 - `crates/persisting-pchronicle/src/store/query_engine.rs`：Catalog DataFusion backend 与联接校验；
-- `crates/persisting-pchronicle/src/store/storyline_datafusion.rs`：Storyline 描述固定与按固定
+- `crates/persisting-pchronicle/src/store/storyline/datafusion.rs`：Storyline 描述固定与按固定
   generation 延迟打开；
-- `crates/persisting-pchronicle/src/store/raw_event_datafusion.rs`：canonical event manifest
+- `crates/persisting-pchronicle/src/store/events/datafusion.rs`：canonical event manifest
   固定与按固定 segment 延迟打开；
 - `crates/persisting-pchronicle-cli/src/lib.rs`：查询 CLI 挂载与默认 Dataset 解析；
 - `crates/persisting-pchronicle-cli/src/server/mod.rs`：惰性构建、原子刷新、读写路由；

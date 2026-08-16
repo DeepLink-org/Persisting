@@ -2,7 +2,7 @@
 
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn, STORYLINE_SCHEMA_VERSION,
+    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
 use crate::Result;
 
@@ -48,7 +48,6 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
                         .and_then(|v| v.as_i64());
                     let extra = Some(serde_json::json!({
                         ATIF_TOOL_CALL_PROVENANCE_KEY: {
-                            "version": 1,
                             "result_present": c.result.is_some(),
                             "result": c.result,
                             "extra": c.extra,
@@ -99,7 +98,6 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
     }
 
     Ok(StorylineDocument {
-        schema_version: STORYLINE_SCHEMA_VERSION.into(),
         run_id: traj.trajectory_id.clone(),
         session_id,
         agent: StorylineAgent {
@@ -140,8 +138,7 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
                     let provenance = c
                         .extra
                         .as_ref()
-                        .and_then(|extra| extra.get(ATIF_TOOL_CALL_PROVENANCE_KEY))
-                        .filter(|value| value.get("version").and_then(|v| v.as_u64()) == Some(1));
+                        .and_then(|extra| extra.get(ATIF_TOOL_CALL_PROVENANCE_KEY));
                     let result = provenance
                         .filter(|value| {
                             value.get("result_present").and_then(|v| v.as_bool()) == Some(true)
@@ -222,7 +219,7 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
                 .name
                 .clone()
                 .unwrap_or_else(|| story.agent.id.clone()),
-            version: story.agent.version.clone().unwrap_or_else(|| "0".into()),
+            version: story.agent.version.clone().unwrap_or_default(),
             model_name: story.agent.model_name.clone(),
             tool_definitions: story.agent.tool_definitions.clone(),
             extra: story.agent.extra.clone(),

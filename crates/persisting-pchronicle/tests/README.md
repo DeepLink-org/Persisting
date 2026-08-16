@@ -4,13 +4,13 @@ pChronicle 的测试分三层，放置位置与运行方式如下。
 
 | 层级 | 位置 | 覆盖对象 | 运行方式 |
 |---|---|---|---|
-| 单元测试 | `src/**` 内 `#[cfg(test)] mod tests` | 与代码同置：单模块/单函数行为、格式解析、存储协议、并发语义 | `cargo test -p persisting-pchronicle --lib` |
+| 单元测试 | `src/**/tests.rs` 或小模块内 `#[cfg(test)] mod tests` | 与被测模块同目录：单模块/单函数行为、格式解析、存储协议、并发语义 | `cargo test -p persisting-pchronicle --lib` |
 | 集成测试 | `tests/*.rs` | 跨模块/跨 crate 行为：存储往返、查询引擎、格式 corpus、真实 S3 契约 | `cargo test -p persisting-pchronicle` |
 | 基准 | `benches/*` | 转换与存储性能回归 | `cargo bench -p persisting-pchronicle` |
 
-单元测试遵循"与代码同文件"约定：`store/raw_event_lance.rs` 的 fencing/append 语义、
-`store/storyline_lance.rs` 的 CURRENT 原子性、`store/file_trajectory_datafusion.rs` 的
-`_file_` 裁剪、`store/agenticmd_fs.rs` 的文档改写都写在各自模块的 `mod tests` 里。
+大型存储模块使用邻接测试文件：`store/events/tests.rs` 覆盖 fencing/append，
+`store/storyline/tests.rs` 覆盖 CURRENT 原子性，`store/files/tests.rs` 覆盖 `_file_` 裁剪；
+较小模块（如 `store/agenticmd_fs.rs`）仍可保留内联 `mod tests`。
 crate 级门面行为（格式往返、detect、frontmatter 解析）集中在 `src/tests.rs`。
 
 ## 集成测试文件索引

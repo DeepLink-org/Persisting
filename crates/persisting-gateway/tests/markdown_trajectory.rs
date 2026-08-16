@@ -103,7 +103,7 @@ fn upsert_new_file_seeds_capture_preamble() {
     .unwrap());
     let raw = std::fs::read_to_string(&path).unwrap();
     assert!(raw.starts_with("---\n"));
-    assert!(raw.contains("persisting:1.0"));
+    assert!(raw.contains("persisting"));
     assert!(raw.contains("persisting:block:{speaker}"));
     let blocks = read_agenticmd_blocks_from_file(&path).unwrap();
     assert_eq!(blocks.len(), 1);
@@ -114,7 +114,7 @@ fn upsert_new_file_seeds_capture_preamble() {
 fn preamble_roundtrips_through_body_offset() {
     let preamble = format_document_preamble(None).unwrap();
     assert!(preamble.starts_with("---\n"));
-    assert!(preamble.contains("format: persisting:1.0"));
+    assert!(preamble.contains("format: persisting"));
     assert!(preamble.contains("block:"));
     let start = agenticmd_body_byte_offset(&preamble).unwrap();
     assert!(

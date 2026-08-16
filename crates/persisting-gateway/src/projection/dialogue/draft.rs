@@ -4,11 +4,11 @@ use serde_json::json;
 
 use super::block::capture_record_to_agenticmd_block;
 use super::skip_markdown_block;
-use crate::record::CaptureRecord;
+use crate::record::EventRecord;
 
 /// Build a streaming draft assistant block (markdown view only; not written to Lance).
 pub fn draft_stream_assistant_block(
-    rec: &CaptureRecord,
+    rec: &EventRecord,
     assistant_content: &str,
 ) -> Result<Option<AgenticmdBlock>> {
     if assistant_content.trim().is_empty() {
