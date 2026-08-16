@@ -151,13 +151,7 @@ impl RunHandle {
         self.agentctl.clone()
     }
 
-    #[deprecated(note = "use agentctl")]
-    pub fn agent_abi(&self) -> crate::AgentCtlControl {
-        self.agentctl()
-    }
-
-    /// Cooperatively quiesce every connected AgentCtl client, verify that no
-    /// registered client declares an open operation, and snapshot the upper.
+    /// Cooperatively quiesce every connected AgentCtl client and snapshot the upper.
     pub async fn checkpoint(
         &self,
         checkpoint_id: &str,
@@ -175,46 +169,18 @@ impl RunHandle {
             .checkpoint_record
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Run {} has no OverlayFS stage", self.run_id))?;
-        let initial_snapshot = self.agentctl.snapshot();
-        anyhow::ensure!(
-            !initial_snapshot.clients.is_empty(),
-            "live checkpoint requires at least one AgentCtl client; use the stopped `pvisor checkpoint` command after the Run exits"
-        );
-        if let Some(client) = initial_snapshot.clients.iter().find(|client| client.stale) {
-            anyhow::bail!(
-                "live checkpoint cannot quiesce stale AgentCtl client {}",
-                client.client_id
-            );
-        }
         let deadline = crate::unix_now_ms().saturating_add(timeout.as_millis() as u64);
-        self.agentctl
-            .request_quiesce(checkpoint_id.to_owned(), Some(deadline));
-        let outcome = async {
-            loop {
-                let snapshot = self.agentctl.snapshot();
-                if let Some(client) = snapshot.clients.iter().find(|client| client.stale) {
-                    anyhow::bail!(
-                        "checkpoint {checkpoint_id} lost AgentCtl client {} before quiescence",
-                        client.client_id
-                    );
-                }
-                if checkpoint_barrier_satisfied(&snapshot, checkpoint_id) {
-                    return crate::checkpoint::create_agent_quiesced_checkpoint(
-                        record,
-                        checkpoint_id,
-                    );
-                }
-                if crate::unix_now_ms() >= deadline {
-                    anyhow::bail!(
-                        "checkpoint {checkpoint_id} timed out waiting for all AgentCtl clients to quiesce with no declared open operations"
-                    );
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let checkpoint = self
+            .agentctl
+            .begin_checkpoint(checkpoint_id.to_owned(), Some(deadline))?;
+        loop {
+            if let Some(captured) = checkpoint.try_capture(|| {
+                crate::checkpoint::create_agent_quiesced_checkpoint(record, checkpoint_id)
+            })? {
+                return Ok(captured);
             }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        .await;
-        self.agentctl.continue_execution();
-        outcome
     }
 
     /// Cooperative cancel followed by executor-specific termination.
@@ -231,17 +197,6 @@ impl RunHandle {
     pub async fn wait(self) -> Result<RunResult, PVisorError> {
         Ok(self.join.await?)
     }
-}
-
-fn checkpoint_barrier_satisfied(snapshot: &crate::AgentCtlSnapshot, checkpoint_id: &str) -> bool {
-    !snapshot.clients.is_empty()
-        && snapshot.clients.iter().all(|client| {
-            !client.stale && client.quiesced_checkpoint_id.as_deref() == Some(checkpoint_id)
-        })
-        && snapshot
-            .operations
-            .iter()
-            .all(|effect| effect.completion.is_some())
 }
 
 /// Builder for a configured [`PVisor`].
@@ -816,11 +771,8 @@ fn empty_agentctl_snapshot(
     crate::AgentCtlSnapshot {
         run_id: run_id.as_str().to_owned(),
         attempt_id: attempt_id.as_str().to_owned(),
-        directive_seq: 0,
         directive: crate::AgentDirective::Continue,
         clients: Vec::new(),
-        processes: Vec::new(),
-        operations: Vec::new(),
     }
 }
 
@@ -983,45 +935,6 @@ mod tests {
     use persisting_agentctl::SupervisorBootstrap;
     use persisting_agentctl::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
     use std::sync::Mutex;
-
-    #[test]
-    fn logical_checkpoint_barrier_requires_quiesced_clients_and_closed_effects() {
-        let mut snapshot = crate::AgentCtlSnapshot {
-            run_id: "run".into(),
-            attempt_id: "attempt".into(),
-            directive_seq: 1,
-            directive: crate::AgentDirective::Quiesce {
-                checkpoint_id: "cp".into(),
-                deadline_unix_ms: None,
-            },
-            clients: vec![],
-            processes: vec![],
-            operations: vec![],
-        };
-        assert!(!checkpoint_barrier_satisfied(&snapshot, "cp"));
-        snapshot.clients.push(crate::AgentClientSnapshot {
-            client_id: "agent".into(),
-            agent_name: "agent".into(),
-            role: crate::AgentClientRole::Agent,
-            lifecycle: crate::AgentLifecycleState::Quiesced,
-            last_heartbeat_unix_ms: Some(1),
-            stale: false,
-            quiesced_checkpoint_id: Some("cp".into()),
-        });
-        assert!(checkpoint_barrier_satisfied(&snapshot, "cp"));
-        snapshot.operations.push(crate::AgentOperationSnapshot {
-            session_id: "session".into(),
-            sequence: 1,
-            begin: crate::AgentOperationBegin {
-                operation_id: "effect".into(),
-                kind: "write".into(),
-                request_digest: "digest".into(),
-                idempotency_key: None,
-            },
-            completion: None,
-        });
-        assert!(!checkpoint_barrier_satisfied(&snapshot, "cp"));
-    }
 
     #[derive(Default)]
     struct RejectCompletedSink {
@@ -1208,7 +1121,7 @@ mod tests {
             "-c".into(),
             "test -S \"$PERSISTING_AGENTCTL_ENDPOINT\" && \
              test -n \"$PERSISTING_AGENTCTL_TOKEN\" && \
-             test \"$PERSISTING_AGENTCTL_VERSION\" = 2 && \
+             test \"$PERSISTING_AGENTCTL_VERSION\" = 1 && \
              test \"$PERSISTING_AGENTCTL_TRANSPORT\" = unix"
                 .into(),
         ];

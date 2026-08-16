@@ -7,15 +7,47 @@
 //! newline-delimited JSON connection carries exactly one request and one
 //! response.
 //!
+//! # Session lifecycle and liveness
+//!
+//! `Hello` requires version 1, the Run-scoped token, and a non-empty
+//! `client_id` that is unique among live Sessions. `Welcome` returns an opaque
+//! Session ID, the recommended Sync interval, and the directive that the
+//! client must observe before admitting work. A successful `Sync` refreshes
+//! Session liveness and returns the latest directive.
+//!
+//! Outside a checkpoint, pVisor considers a Session stale after it misses
+//! three recommended Sync intervals. A later `Hello` may replace a stale
+//! Session. Live duplicates and capacity conflicts are rejected. Staleness is
+//! diagnostic and lifecycle state; it is not proof that the client process
+//! stopped.
+//!
 //! # Checkpoint protocol
 //!
 //! When pVisor publishes [`AgentDirective::Quiesce`], every runtime Session
 //! that was live at checkpoint start must stop accepting work, drain in-flight
 //! work, and report [`AgentState::Quiesced`] with the same checkpoint ID.
-//! Repeating that report is idempotent. Clients remain quiesced until they
+//! pVisor freezes that participant set, rejects every new or replacement
+//! `Hello`, and never expires a participant until the checkpoint completes or
+//! is abandoned. Each checkpoint attempt requires a fresh matching report;
+//! an acknowledgement retained from an earlier attempt cannot satisfy it.
+//!
+//! A new `Quiesced` report whose ID does not match the active checkpoint is a
+//! conflict. Repeating the exact accepted report is idempotent, including
+//! after pVisor publishes `Continue` or `Shutdown`, so a still-quiesced client
+//! can learn that new directive. Reporting `Active` or `Idle` while draining
+//! removes any current acknowledgement. Clients remain quiesced until they
 //! observe [`AgentDirective::Continue`] or [`AgentDirective::Shutdown`]. A
-//! missing or ambiguous acknowledgement must fail the checkpoint rather than
-//! produce an unsafe success.
+//! missing, late, or ambiguous acknowledgement fails the checkpoint rather
+//! than producing an unsafe success.
+//!
+//! # Errors
+//!
+//! [`AgentErrorCode::InvalidRequest`] covers malformed frames and values;
+//! [`AgentErrorCode::Unauthorized`] covers an invalid Run token or Session ID;
+//! [`AgentErrorCode::VersionMismatch`] covers every non-v1 request; and
+//! [`AgentErrorCode::Conflict`] covers live duplicates, capacity, checkpoint
+//! admission, and state that conflicts with the active checkpoint. The
+//! accompanying message is diagnostic text, not a machine contract.
 //!
 //! # Safety boundary
 //!
@@ -242,5 +274,59 @@ mod tests {
         for (code, expected) in cases {
             assert_eq!(serde_json::to_value(code).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn welcome_and_error_have_exact_v1_wire_shapes() {
+        let welcome = AgentResponse::Welcome {
+            session_id: "session-1".into(),
+            sync_interval_ms: 1_000,
+            directive: AgentDirective::Continue,
+        };
+        assert_eq!(
+            serde_json::to_value(welcome).unwrap(),
+            serde_json::json!({
+                "type": "welcome",
+                "session_id": "session-1",
+                "sync_interval_ms": 1_000,
+                "directive": { "kind": "continue" }
+            })
+        );
+
+        let error = AgentResponse::Error {
+            code: AgentErrorCode::Conflict,
+            message: "checkpoint is active".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "type": "error",
+                "code": "conflict",
+                "message": "checkpoint is active"
+            })
+        );
+    }
+
+    #[test]
+    fn idle_and_directive_variants_have_exact_v1_wire_shapes() {
+        assert_eq!(
+            serde_json::to_value(AgentState::Idle).unwrap(),
+            serde_json::json!({ "kind": "idle" })
+        );
+        assert_eq!(
+            serde_json::to_value(AgentDirective::Quiesce {
+                checkpoint_id: "cp".into(),
+                deadline_unix_ms: None,
+            })
+            .unwrap(),
+            serde_json::json!({ "kind": "quiesce", "checkpoint_id": "cp" })
+        );
+        assert_eq!(
+            serde_json::to_value(AgentDirective::Shutdown {
+                reason: Some("maintenance".into()),
+            })
+            .unwrap(),
+            serde_json::json!({ "kind": "shutdown", "reason": "maintenance" })
+        );
     }
 }

@@ -34,7 +34,6 @@ pub struct RunBundle {
     pub environment: crate::runtime::EnvironmentProjection,
     #[serde(default)]
     pub resources: ResourceSummary,
-    #[serde(alias = "agent_abi")]
     pub agentctl: AgentCtlSnapshot,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
@@ -461,10 +460,10 @@ fn environment_summary(record: &RunRecord) -> crate::runtime::EnvironmentProject
     summary.runtime_injected_keys.extend(
         [
             "PERSISTING_AGENT",
-            "PERSISTING_AGENT_ABI_ENDPOINT",
-            "PERSISTING_AGENT_ABI_TOKEN",
-            "PERSISTING_AGENT_ABI_TRANSPORT",
-            "PERSISTING_AGENT_ABI_VERSION",
+            "PERSISTING_AGENTCTL_ENDPOINT",
+            "PERSISTING_AGENTCTL_TOKEN",
+            "PERSISTING_AGENTCTL_TRANSPORT",
+            "PERSISTING_AGENTCTL_VERSION",
             "PERSISTING_PVISOR_ROLE",
             "PERSISTING_PVISOR_RUNTIME",
             "PERSISTING_PVISOR_STORAGE",
@@ -491,7 +490,7 @@ mod tests {
     ));
 
     #[test]
-    fn legacy_v1_bundle_fixture_decodes_and_normalizes_agentctl() {
+    fn minimal_v1_bundle_fixture_decodes_agentctl() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join(RUN_BUNDLE_FILENAME), V1_MINIMAL_FIXTURE).unwrap();
 
@@ -500,7 +499,6 @@ mod tests {
         assert_eq!(bundle.run.run_id, "run-v1-fixture");
         assert_eq!(bundle.run.state, RunState::Completed);
         assert_eq!(bundle.agentctl.run_id, "run-v1-fixture");
-        assert!(bundle.agentctl.operations.is_empty());
         assert!(!bundle.safety.filesystem_read_non_bypassable);
         assert!(!bundle.safety.filesystem_write_non_bypassable);
 
@@ -594,16 +592,13 @@ mod tests {
             event_stream_ref: None,
             warnings: vec![],
         };
-        let abi = AgentCtlSnapshot {
+        let agentctl = AgentCtlSnapshot {
             run_id: "run-1".into(),
             attempt_id: "attempt-1".into(),
-            directive_seq: 0,
             directive: crate::AgentDirective::Continue,
             clients: vec![],
-            processes: vec![],
-            operations: vec![],
         };
-        let bundle = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        let bundle = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         let path = bundle.write(temp.path()).unwrap();
         assert_eq!(RunBundle::read(temp.path()).unwrap().run.run_id, "run-1");
         assert_eq!(
@@ -615,6 +610,13 @@ mod tests {
         assert_eq!(bundle.run.parent_run_id.as_deref(), Some("job-1"));
         assert_eq!(bundle.run.task_id.as_deref(), Some("task-1"));
         assert_eq!(bundle.orchestration["ppilot.job_id"], "job-1");
+        assert!(
+            bundle
+                .environment
+                .runtime_injected_keys
+                .iter()
+                .any(|key| key == "PERSISTING_AGENTCTL_VERSION")
+        );
 
         record.executor = Some(ExecutorDescriptor {
             name: "libkrun-root-overlay-v1".into(),
@@ -625,10 +627,10 @@ mod tests {
             supports_migration: false,
         });
         record.network_interception = Some(InterceptionProfile::explicit_proxy());
-        let cooperative_vm = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        let cooperative_vm = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(!cooperative_vm.safety.network_non_bypassable);
         record.network_interception = Some(InterceptionProfile::vm_smoltcp());
-        let label_only_vm = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        let label_only_vm = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(!label_only_vm.safety.filesystem_non_bypassable);
         assert!(!label_only_vm.safety.network_non_bypassable);
         record.executor.as_mut().unwrap().capability_enforcement =
@@ -639,7 +641,7 @@ mod tests {
                     "test-vm-write-boundary",
                 )
                 .enforced(CapabilityDimension::Network, "test-vm-network-boundary");
-        let intercepted_vm = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        let intercepted_vm = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(intercepted_vm.safety.filesystem_non_bypassable);
         assert!(intercepted_vm.safety.network_non_bypassable);
 
@@ -652,7 +654,8 @@ mod tests {
             supports_migration: false,
         });
         record.network = serde_json::to_value(NetworkCapability::Deny).unwrap();
-        let label_only_rootless = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        let label_only_rootless =
+            RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(!label_only_rootless.safety.filesystem_non_bypassable);
         assert!(!label_only_rootless.safety.network_non_bypassable);
         record.executor.as_mut().unwrap().capability_enforcement =
@@ -669,7 +672,7 @@ mod tests {
                     CapabilityDimension::Network,
                     "test-rootless-network-boundary",
                 );
-        let denied = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        let denied = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         assert!(denied.safety.filesystem_non_bypassable);
         assert!(denied.safety.network_non_bypassable);
         assert!(denied
@@ -696,7 +699,7 @@ mod tests {
                     CapabilityDimension::Network,
                     "test-seatbelt-network-boundary",
                 );
-        let seatbelt = RunBundle::capture(&record, &result, abi, true).unwrap();
+        let seatbelt = RunBundle::capture(&record, &result, agentctl, true).unwrap();
         assert!(!seatbelt.safety.filesystem_non_bypassable);
         assert!(!seatbelt.safety.filesystem_read_non_bypassable);
         assert!(seatbelt.safety.filesystem_write_non_bypassable);

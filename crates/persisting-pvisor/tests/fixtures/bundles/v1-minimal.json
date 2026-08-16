@@ -26,15 +26,12 @@
       "mode": "ambient"
     }
   },
-  "agent_abi": {
+  "agentctl": {
     "run_id": "run-v1-fixture",
     "attempt_id": "attempt-v1-fixture",
-    "directive_seq": 0,
     "directive": {
       "kind": "continue"
     },
-    "clients": [],
-    "processes": [],
-    "effects": []
+    "clients": []
   }
 }

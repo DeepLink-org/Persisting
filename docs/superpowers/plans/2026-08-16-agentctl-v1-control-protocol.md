@@ -24,6 +24,9 @@
 **Execution order:** Run Task 1, Task 4, Task 2, Task 3, then Task 5. pVisor's
 test target has a development dependency on pPilot, so the bridge must consume
 the v1 client before the pVisor server's RED/GREEN cycle can compile.
+Task 2 and Task 3 form one compile-atomic implementation batch because the
+server, `RunHandle`, and Run Bundle construct the same public snapshot types;
+run all of their listed tests before committing either result.
 
 ---
 

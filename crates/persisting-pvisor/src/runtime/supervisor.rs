@@ -32,7 +32,7 @@ impl Default for RuntimeCapabilities {
         let vm_network = vm_network_supported();
         let mut providers = vec![
             "local-process",
-            "agentctl-unix-v2",
+            "agentctl-unix-v1",
             "in-process-capture",
             "overlaynet-explicit-proxy",
             "fs-overlay-staging",

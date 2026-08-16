@@ -33,12 +33,7 @@ mod vm;
 #[cfg(feature = "fuzzing")]
 pub use agentctl::decode_agentctl_frame_for_fuzz;
 pub use agentctl::{
-    AgentCheckpointQuiesced, AgentClientRole, AgentClientSnapshot, AgentCtlControl, AgentCtlServer,
-    AgentCtlSnapshot, AgentDirective, AgentHeartbeatAck, AgentHello, AgentLifecycleState,
-    AgentOperationSnapshot, AgentProcessRegistration, AgentProcessSnapshot, AgentRequest,
-    AgentRequestBody, AgentResponse, AgentResponseBody, AgentWelcome, AGENTCTL_MAX_OPERATIONS,
-    AGENTCTL_MAX_PROCESSES, AGENTCTL_MAX_SESSIONS, LEGACY_AGENT_ABI_ENDPOINT_ENV,
-    LEGACY_AGENT_ABI_TOKEN_ENV, LEGACY_AGENT_ABI_TRANSPORT_ENV, LEGACY_AGENT_ABI_VERSION_ENV,
+    AgentClientSnapshot, AgentCtlControl, AgentCtlServer, AgentCtlSnapshot, AGENTCTL_MAX_SESSIONS,
 };
 pub use bundle::{
     BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, ResourceSummary, RunBundle,
@@ -68,7 +63,7 @@ pub use executor::{AttemptContext, RunExecutor};
 #[cfg(feature = "fuzzing")]
 pub use oci::fuzz_oci_layer;
 pub use persisting_agentctl::{
-    AgentOperationBegin, AgentOperationComplete, AgentOperationOutcome, SupervisorClientMessage,
+    AgentDirective, AgentErrorCode, AgentRequest, AgentResponse, AgentState, SupervisorClientMessage,
     SupervisorDirective, SupervisorDirectiveAck, SupervisorDirectiveEnvelope, SupervisorHeartbeat,
     SupervisorNetworkQuotaGrant, SupervisorRegistration, SupervisorServerMessage,
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,

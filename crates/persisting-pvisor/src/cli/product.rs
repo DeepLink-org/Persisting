@@ -191,21 +191,6 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
 
     println!("\nObserved Agent state");
     println!("  AgentCtl clients: {}", bundle.agentctl.clients.len());
-    println!(
-        "  registered processes: {}",
-        bundle.agentctl.processes.len()
-    );
-    let open_operations = bundle
-        .agentctl
-        .operations
-        .iter()
-        .filter(|operation| operation.completion.is_none())
-        .count();
-    println!(
-        "  declared operations: {} total, {} open",
-        bundle.agentctl.operations.len(),
-        open_operations
-    );
     println!("\nEnvironment and resources");
     println!(
         "  host environment inherited: {}",

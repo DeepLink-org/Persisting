@@ -39,6 +39,7 @@ impl BridgeState {
 }
 
 struct BridgeInner {
+    sync: Mutex<()>,
     client: Mutex<AgentCtlClient>,
     state: Mutex<BridgeState>,
     cancellation: CancellationToken,
@@ -70,16 +71,19 @@ impl PilotRuntimeBridge {
         }
         let interval = Duration::from_millis(client.sync_interval_ms().unwrap_or(1_000).max(20));
         let inner = Arc::new(BridgeInner {
+            sync: Mutex::new(()),
             client: Mutex::new(client),
             state: Mutex::new(BridgeState::new(directive)),
             cancellation,
             changed: Notify::new(),
         });
+        sync_once(&inner)?;
         let stop = CancellationToken::new();
         let loop_stop = stop.clone();
         let loop_inner = Arc::clone(&inner);
         let sync_task = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
+            let mut ticker =
+                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
@@ -93,13 +97,11 @@ impl PilotRuntimeBridge {
             }
         });
 
-        let bridge = Self {
+        Ok(Self {
             inner,
             stop,
             sync_task: Some(sync_task),
-        };
-        sync_once(&bridge.inner)?;
-        Ok(bridge)
+        })
     }
 
     /// Mark the client active if pVisor currently permits work.
@@ -189,6 +191,10 @@ impl Drop for PilotRuntimeBridge {
 }
 
 fn sync_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
+    // The ticker and lifecycle calls may request synchronization concurrently.
+    // Serialize the complete snapshot/exchange/apply sequence so an older
+    // response can never overwrite a newer directive.
+    let _sync = lock(&inner.sync);
     let agent_state = lock(&inner.state).agent_state.clone();
     let directive = lock(&inner.client).sync(agent_state)?;
     let immediate_sync = {
@@ -233,7 +239,14 @@ fn apply_directive(state: &mut BridgeState, directive: AgentDirective) -> bool {
         } => {
             state.accepting_work = false;
             state.quiesce_deadline_unix_ms = *deadline_unix_ms;
-            if matches!(state.agent_state, AgentState::Idle) {
+            let reached_safe_point = matches!(state.agent_state, AgentState::Idle)
+                || matches!(
+                    &state.agent_state,
+                    AgentState::Quiesced {
+                        checkpoint_id: current
+                    } if current != checkpoint_id
+                );
+            if reached_safe_point {
                 state.agent_state = AgentState::Quiesced {
                     checkpoint_id: checkpoint_id.clone(),
                 };
@@ -318,6 +331,31 @@ mod tests {
         assert!(!apply_directive(&mut state, AgentDirective::Continue));
         assert_eq!(state.agent_state, AgentState::Idle);
         assert!(state.accepting_work);
+    }
+
+    #[test]
+    fn quiesced_client_rebinds_to_a_back_to_back_checkpoint() {
+        let mut state = BridgeState::new(AgentDirective::Quiesce {
+            checkpoint_id: "cp-1".into(),
+            deadline_unix_ms: None,
+        });
+        state.agent_state = AgentState::Quiesced {
+            checkpoint_id: "cp-1".into(),
+        };
+
+        assert!(apply_directive(
+            &mut state,
+            AgentDirective::Quiesce {
+                checkpoint_id: "cp-2".into(),
+                deadline_unix_ms: None,
+            },
+        ));
+        assert_eq!(
+            state.agent_state,
+            AgentState::Quiesced {
+                checkpoint_id: "cp-2".into()
+            }
+        );
     }
 
     #[test]
