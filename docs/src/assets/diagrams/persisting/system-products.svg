@@ -30,7 +30,15 @@
       .body { font-size: 16px; fill: #cbd5e1; }
       .small { font-size: 14px; fill: #94a3b8; }
       .input-card { fill: #111c2e; stroke: #40516a; stroke-width: 1.6; }
+      .domain-shell { stroke-width: 2; }
+      .pvisor-shell { fill: url(#visor-domain); stroke: #5eead4; }
+      .chronicle-shell { fill: url(#chronicle-domain); stroke: #86efac; }
       .inner-card { fill: #0b1728; stroke: #40516a; stroke-width: 1.5; }
+      .pilot-card { stroke: #70518e; }
+      .visor-card { stroke: #2b6170; }
+      .chronicle-card { stroke: #315944; }
+      .chronicle-accent { fill: #86efac; }
+      .handoff-label { fill: #bae6fd; }
       .input-line { fill: none; stroke: #7dd3fc; stroke-width: 2.4; marker-end: url(#arrow); }
       .handoff-line { fill: none; stroke: #7dd3fc; stroke-width: 3; marker-end: url(#arrow); }
     </style>
@@ -54,14 +62,15 @@
   <path d="M1080 211V246" class="input-line"/>
 
   <g id="pvisor-domain" filter="url(#shadow)">
-    <rect x="70" y="250" width="500" height="410" rx="24" fill="url(#visor-domain)" stroke="#5eead4" stroke-width="2"/>
+    <rect x="70" y="250" width="500" height="410" rx="24" class="domain-shell pvisor-shell"/>
     <text x="100" y="290" class="eyebrow">pVisor domain</text>
     <text x="100" y="324" class="domain-title">pVisor: governed execution</text>
 
-    <rect x="100" y="351" width="440" height="86" rx="16" class="inner-card" stroke="#70518e"/>
-    <text x="124" y="401" class="body">pPilot: plan · lease · retry · reconcile</text>
+    <rect x="100" y="351" width="440" height="86" rx="16" class="inner-card pilot-card"/>
+    <text x="124" y="383" class="card-title">Many-Run orchestration</text>
+    <text x="124" y="414" class="body">pPilot: plan · lease · retry · reconcile</text>
 
-    <rect x="100" y="456" width="440" height="91" rx="16" class="inner-card" stroke="#2b6170"/>
+    <rect x="100" y="456" width="440" height="91" rx="16" class="inner-card visor-card"/>
     <text x="124" y="509" class="body">pVisor: Run · Attempt · capabilities · Effects · Evidence</text>
 
     <rect x="100" y="566" width="440" height="66" rx="16" class="inner-card"/>
@@ -69,14 +78,14 @@
   </g>
 
   <g id="pchronicle-domain" filter="url(#shadow)">
-    <rect x="830" y="250" width="500" height="410" rx="24" fill="url(#chronicle-domain)" stroke="#86efac" stroke-width="2"/>
-    <text x="860" y="290" class="eyebrow" fill="#86efac">pChronicle domain</text>
+    <rect x="830" y="250" width="500" height="410" rx="24" class="domain-shell chronicle-shell"/>
+    <text x="860" y="290" class="eyebrow chronicle-accent">pChronicle domain</text>
     <text x="860" y="324" class="domain-title">pChronicle: trajectory Dataset data</text>
 
-    <rect x="860" y="351" width="440" height="106" rx="16" class="inner-card" stroke="#315944"/>
+    <rect x="860" y="351" width="440" height="106" rx="16" class="inner-card chronicle-card"/>
     <text x="884" y="411" class="body">Sources · canonical facts · Catalog Snapshot</text>
 
-    <rect x="860" y="518" width="440" height="114" rx="16" class="inner-card" stroke="#315944"/>
+    <rect x="860" y="518" width="440" height="114" rx="16" class="inner-card chronicle-card"/>
     <text x="884" y="583" class="body">normalized views · revisions · query · exchange</text>
   </g>
 
@@ -86,7 +95,7 @@
     <text x="700" y="407" text-anchor="middle" class="small">events · artifacts · terminal facts · <tspan x="700" dy="23">lineage · Evidence</tspan></text>
     <path d="M570 500H830" class="handoff-line"/>
     <rect x="612" y="483" width="176" height="34" rx="17" fill="#17233a" stroke="#60a5fa" stroke-width="1.4"/>
-    <text x="700" y="505" text-anchor="middle" class="small" fill="#bae6fd">data / evidence handoff</text>
+    <text x="700" y="505" text-anchor="middle" class="small handoff-label">data / evidence handoff</text>
   </g>
 
   <g id="shared-contract" filter="url(#shadow)">
