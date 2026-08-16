@@ -31,9 +31,12 @@ each Run and embed a job-scoped Supervisor; there is no separate Supervisor
 service to deploy. For `run --sink`, pPilot starts one authenticated,
 loopback-only `pchronicle control` child and uses its versioned client protocol
 as a storage/control implementation dependency. The child persists the selected
-coordination records and canonical trajectory events; pPilot retains ownership
-of lease and fencing decisions, recovery, reconciliation, and task-to-Run
-mapping. pPilot does not link pChronicle, Lance, Arrow, or DataFusion. Use
+coordination records. When pPilot is built with `traj-sink` and `--traj` is
+enabled, the same child also appends terminal `ppilot.result` / `ppilot.failure`
+trajectory events; it does not capture a general Run trajectory. pPilot retains
+ownership of lease and fencing decisions, recovery, reconciliation, and
+task-to-Run mapping. pPilot does not link pChronicle, Lance, Arrow, or
+DataFusion. Use
 `--pchronicle-binary PATH` or `PERSISTING_PCHRONICLE_BIN` when `pchronicle` is
 not installed beside `ppilot` or available on `PATH`. Similarly, use
 `--pvisor-binary PATH` or `PERSISTING_PVISOR_BIN` for pVisor.
