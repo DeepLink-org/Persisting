@@ -227,9 +227,12 @@ A participant is not silently removed if it misses sync intervals during the
 checkpoint. If every participant does not report the matching state before the
 deadline, the checkpoint fails rather than claiming an unsafe success.
 
-A `Quiesced` report whose checkpoint ID does not match the active directive
-returns `Conflict` and does not mutate Session state. Repeating a matching
-report leaves the state unchanged and returns the current directive.
+A new `Quiesced` report whose checkpoint ID does not match the active
+`Quiesce` directive returns `Conflict` and does not mutate Session state. Once
+the server has accepted a Session's `Quiesced` state, repeating that exact
+state remains valid after pVisor publishes `Continue` or `Shutdown`; this is
+how a still-quiesced client learns that it may resume or must terminate. A
+different checkpoint ID still returns `Conflict`.
 
 ## Error Handling
 

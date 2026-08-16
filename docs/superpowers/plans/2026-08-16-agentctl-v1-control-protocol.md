@@ -21,6 +21,10 @@
 - Remove all Agent ABI environment aliases, deprecated modules, methods, constants, and types.
 - Do not touch TTAS, tiered tensor memory, Queue, samplers, Search, or `persisting-dlcapt`.
 
+**Execution order:** Run Task 1, Task 4, Task 2, Task 3, then Task 5. pVisor's
+test target has a development dependency on pPilot, so the bridge must consume
+the v1 client before the pVisor server's RED/GREEN cycle can compile.
+
 ---
 
 ### Task 1: Define and document the v1 wire contract and client SDK
@@ -331,11 +335,12 @@ Replace wrapper/body dispatch with direct matching on `AgentRequest`.
 7. insert an initially `Active` Session and return `Welcome`.
 
 `Sync` must validate version and Session ID before mutation. `Active` and `Idle`
-are valid under any directive. `Quiesced { checkpoint_id }` is valid only when
-the current directive is `Quiesce` with the same ID; otherwise return
-`Conflict`. A valid sync updates Session state and timestamps, then returns
-`Synced` with the current directive. Repeating the same matching `Quiesced`
-state must succeed.
+are valid under any directive. A new `Quiesced { checkpoint_id }` is valid only
+when the current directive is `Quiesce` with the same ID. Once that state has
+been accepted, repeating the exact same `Quiesced` state must remain valid
+under `Continue` or `Shutdown`, allowing the stopped client to learn the new
+directive. A different checkpoint ID returns `Conflict`. A valid sync updates
+Session state and timestamps, then returns `Synced` with the current directive.
 
 - [ ] **Step 6: Return typed protocol errors and remove legacy environment projection**
 
