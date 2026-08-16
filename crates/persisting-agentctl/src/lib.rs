@@ -15,15 +15,10 @@ pub mod protocol;
 mod runtime;
 mod supervisor;
 
-pub use protocol::*;
-/// Deprecated module path retained for source compatibility.
-#[deprecated(note = "use persisting_agentctl::protocol")]
-pub mod abi {
-    pub use super::protocol::*;
-}
-pub use client::{checkpoint_directive, AgentCtlClient, AgentCtlClientConfig};
+pub use client::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError};
 use ipnet::IpNet;
 pub use process::{PVisorProcessClient, PVisorProcessOptions};
+pub use protocol::*;
 pub use runtime::*;
 pub use runtime::{AccessEffect as ControlEffect, AccessReason as ControlReason};
 use serde::{Deserialize, Serialize};
@@ -709,15 +704,17 @@ mod tests {
         let restored: ControlMachine = serde_json::from_str(&encoded).unwrap();
         assert_eq!(restored.state(), machine.state());
         assert_eq!(restored.history(), machine.history());
-        assert!(machine
-            .authorize(
-                &controller,
-                ControlRequest::Network {
-                    policy: &guard,
-                    request: &request,
-                },
-            )
-            .is_err());
+        assert!(
+            machine
+                .authorize(
+                    &controller,
+                    ControlRequest::Network {
+                        policy: &guard,
+                        request: &request,
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -731,12 +728,14 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        assert!(controller
-            .authorize(ControlRequest::Network {
-                policy: &guard,
-                request: &network_request("api.example.com"),
-            })
-            .is_allowed());
+        assert!(
+            controller
+                .authorize(ControlRequest::Network {
+                    policy: &guard,
+                    request: &network_request("api.example.com"),
+                })
+                .is_allowed()
+        );
 
         let policy = ModelAccessPolicy {
             allowed_models: vec!["claude-*".into()],
@@ -753,24 +752,28 @@ mod tests {
             protocol: "messages".into(),
             upstream_host: "api.anthropic.com".into(),
         };
-        assert!(controller
-            .authorize(ControlRequest::Model {
-                policy: &policy,
-                request: &request,
-            })
-            .is_allowed());
+        assert!(
+            controller
+                .authorize(ControlRequest::Model {
+                    policy: &policy,
+                    request: &request,
+                })
+                .is_allowed()
+        );
     }
 
     #[test]
     fn loopback_is_only_trusted_when_explicitly_configured() {
         let controller = PolicyControlController;
         let denied = NetworkGuard::compile(NetworkCapability::Deny, Vec::new()).unwrap();
-        assert!(!controller
-            .authorize(ControlRequest::Network {
-                policy: &denied,
-                request: &network_request("127.0.0.1"),
-            })
-            .is_allowed());
+        assert!(
+            !controller
+                .authorize(ControlRequest::Network {
+                    policy: &denied,
+                    request: &network_request("127.0.0.1"),
+                })
+                .is_allowed()
+        );
 
         let trusted = NetworkGuard::compile(NetworkCapability::Deny, ["127.0.0.1".into()]).unwrap();
         let transition = controller.authorize(ControlRequest::Network {
@@ -812,12 +815,14 @@ mod tests {
             })
         };
 
-        assert!(decide(
-            443,
-            NetworkTransport::Https,
-            Some("93.184.216.34".parse().unwrap())
-        )
-        .is_allowed());
+        assert!(
+            decide(
+                443,
+                NetworkTransport::Https,
+                Some("93.184.216.34".parse().unwrap())
+            )
+            .is_allowed()
+        );
         assert_eq!(
             decide(
                 8443,
