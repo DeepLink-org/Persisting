@@ -1,11 +1,11 @@
 use crate::executor::{AttemptContext, RunExecutor};
-#[cfg(target_os = "linux")]
-use crate::sandbox::SandboxPlan;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::sandbox::INTERNAL_SANDBOX_ARG;
 #[cfg(target_os = "macos")]
 use crate::sandbox::{seatbelt_profile, SeatbeltPlan, MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION};
-use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_EXIT_CODE, SANDBOX_SETUP_FAILED_WARNING};
+#[cfg(target_os = "linux")]
+use crate::sandbox::{SandboxPlan, ROOTLESS_ATTESTATION};
+use crate::sandbox::{SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
 use async_trait::async_trait;
 use persisting_agentctl::{
     CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
@@ -183,7 +183,10 @@ struct PreparedCommand {
 enum SandboxResources {
     None,
     #[cfg(target_os = "linux")]
-    LinuxRoot(PathBuf),
+    Linux {
+        root: PathBuf,
+        attestation: tempfile::NamedTempFile,
+    },
     #[cfg(target_os = "macos")]
     MacOS {
         scratch: tempfile::TempDir,
@@ -207,13 +210,27 @@ impl SandboxResources {
         ));
         std::fs::create_dir(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-        Ok(Self::LinuxRoot(path))
+        let attestation = tempfile::Builder::new()
+            .prefix("pvisor-rootless-attestation-")
+            .tempfile()?;
+        Ok(Self::Linux {
+            root: path,
+            attestation,
+        })
     }
 
     #[cfg(target_os = "linux")]
     fn path(&self) -> Option<&std::path::Path> {
         match self {
-            Self::LinuxRoot(path) => Some(path),
+            Self::Linux { root, .. } => Some(root),
+            Self::None => None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn attestation_path(&self) -> Option<&Path> {
+        match self {
+            Self::Linux { attestation, .. } => Some(attestation.path()),
             Self::None => None,
         }
     }
@@ -263,7 +280,22 @@ impl SandboxResources {
         file.read_to_end(&mut contents).is_ok() && contents == SEATBELT_ATTESTATION
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    fn setup_attested(&mut self) -> bool {
+        use std::io::{Read, Seek};
+
+        let Self::Linux { attestation, .. } = self else {
+            return true;
+        };
+        let file = attestation.as_file_mut();
+        if file.rewind().is_err() {
+            return false;
+        }
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).is_ok() && contents == ROOTLESS_ATTESTATION
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn setup_attested(&mut self) -> bool {
         true
     }
@@ -272,7 +304,7 @@ impl SandboxResources {
 impl Drop for SandboxResources {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
-        if let Self::LinuxRoot(path) = self {
+        if let Self::Linux { root: path, .. } = self {
             // Never recurse over a security-sensitive path.  A successful
             // launcher leaves an empty mountpoint; a non-empty directory is
             // retained for diagnosis instead of being removed destructively.
@@ -555,6 +587,10 @@ fn platform_launcher_command(
             .path()
             .expect("created sandbox root")
             .to_owned(),
+        sandbox_root
+            .attestation_path()
+            .expect("created rootless attestation")
+            .to_owned(),
     )?;
     let encoded = serde_json::to_string(&plan).map_err(std::io::Error::other)?;
     let mut command = Command::new(launcher);
@@ -702,6 +738,7 @@ fn rootless_plan(
     invocation: &ProcessInvocation,
     program: &Path,
     root: PathBuf,
+    attestation: PathBuf,
 ) -> std::io::Result<SandboxPlan> {
     let cwd = invocation
         .cwd
@@ -781,6 +818,7 @@ fn rootless_plan(
     Ok(SandboxPlan {
         root,
         cwd,
+        attestation,
         read_only,
         read_write,
         deny_network: matches!(spec.capabilities.network, NetworkCapability::Deny),
@@ -837,11 +875,11 @@ impl RunExecutor for ProcessExecutor {
             capability_enforcement = capability_enforcement
                 .enforced(
                     CapabilityDimension::FilesystemRead,
-                    "linux-user-mount-namespace",
+                    "linux-synthetic-root-landlock",
                 )
                 .enforced(
                     CapabilityDimension::FilesystemWrite,
-                    "linux-user-mount-namespace",
+                    "linux-synthetic-root-landlock",
                 );
         } else if self.is_seatbelt() {
             capability_enforcement = capability_enforcement.enforced(
@@ -1037,14 +1075,7 @@ impl RunExecutor for ProcessExecutor {
 
         let finished_at = crate::util::unix_now_ms();
         let sandbox_attested = resources.setup_attested();
-        let sandbox_setup_failed = self.is_sandboxed()
-            && (!sandbox_attested
-                || matches!(
-                    &end,
-                    End::Exited(Ok(status))
-                        if self.is_rootless()
-                            && status.code() == Some(SANDBOX_SETUP_EXIT_CODE)
-                ));
+        let sandbox_setup_failed = self.is_sandboxed() && !sandbox_attested;
         let (state, exit_code, failure) = if sandbox_setup_failed {
             (
                 RunState::Failed,

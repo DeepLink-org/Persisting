@@ -1,9 +1,11 @@
 use crate::sys;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io;
-use std::os::unix::ffi::OsStrExt;
+use std::io::{self, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +15,7 @@ use std::time::{Duration, UNIX_EPOCH};
 pub const WHITEOUT_PREFIX: &str = ".wh.";
 pub const OPAQUE_NAME: &str = ".wh..wh..opq";
 const TEMP_PREFIX: &str = ".wh..persisting-copyup-";
+const PREIMAGE_COMPLETE_MARKER: &str = "complete-v1";
 const OPAQUE_XATTRS: [&str; 3] = [
     "trusted.overlay.opaque",
     "user.overlay.opaque",
@@ -34,6 +37,53 @@ pub struct OverlayCore {
     work: Option<PathBuf>,
     excluded: BTreeSet<PathBuf>,
     copied_hard_links: Mutex<HashMap<(u64, u64), PathBuf>>,
+    preimage_dir: Option<PathBuf>,
+    preimage_lock: Mutex<()>,
+}
+
+/// Durable first-touch state of one apply target path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathPreimage {
+    /// Raw Unix path bytes relative to the overlay root.
+    pub path: Vec<u8>,
+    pub state: PathFingerprint,
+}
+
+impl PathPreimage {
+    pub fn relative_path(&self) -> PathBuf {
+        PathBuf::from(OsString::from_vec(self.path.clone()))
+    }
+}
+
+/// Content and metadata relevant to detecting a destructive apply conflict.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PathFingerprint {
+    Absent,
+    File {
+        sha256: String,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    },
+    Directory {
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        mtime_seconds: i64,
+        mtime_nanoseconds: i64,
+    },
+    Symlink {
+        target: Vec<u8>,
+        uid: u32,
+        gid: u32,
+    },
+    Other {
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u64,
+    },
 }
 
 fn error(errno: i32) -> io::Error {
@@ -57,6 +107,112 @@ fn ignorable_ownership_error(err: &io::Error) -> bool {
     ignorable_metadata_error(err) || err.raw_os_error() == Some(libc::EINVAL)
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+/// Fingerprint one path without following its final symlink.
+pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
+    OverlayCore::validate_rel(rel)?;
+    let path = if rel.as_os_str().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel)
+    };
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(PathFingerprint::Absent)
+        }
+        Err(error) => return Err(error),
+    };
+    let kind = metadata.file_type();
+    if kind.is_file() {
+        return Ok(PathFingerprint::File {
+            sha256: sha256_hex(&fs::read(&path)?),
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        });
+    }
+    if kind.is_dir() {
+        return Ok(PathFingerprint::Directory {
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            mtime_seconds: metadata.mtime(),
+            mtime_nanoseconds: metadata.mtime_nsec(),
+        });
+    }
+    if kind.is_symlink() {
+        return Ok(PathFingerprint::Symlink {
+            target: fs::read_link(&path)?.into_os_string().into_vec(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        });
+    }
+    Ok(PathFingerprint::Other {
+        mode: metadata.mode(),
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+        rdev: metadata.rdev(),
+    })
+}
+
+/// Load all durable first-touch entries from a preimage journal.
+pub fn load_preimages(directory: &Path) -> io::Result<Vec<PathPreimage>> {
+    let entries = directory.join("entries");
+    let iterator = match fs::read_dir(&entries) {
+        Ok(iterator) => iterator,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut preimages = Vec::new();
+    for entry in iterator {
+        let entry = entry?;
+        if entry.path().extension() != Some(OsStr::new("json")) {
+            continue;
+        }
+        let preimage = serde_json::from_slice::<PathPreimage>(&fs::read(entry.path())?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        OverlayCore::validate_rel(&preimage.relative_path())?;
+        preimages.push(preimage);
+    }
+    preimages.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(preimages)
+}
+
+pub fn preimage_journal_is_complete(directory: &Path) -> bool {
+    directory.join(PREIMAGE_COMPLETE_MARKER).is_file()
+}
+
+/// Consume journal entries after their corresponding target paths commit.
+pub fn remove_preimages(directory: &Path, paths: &[PathBuf]) -> io::Result<()> {
+    let entries = directory.join("entries");
+    for path in paths {
+        OverlayCore::validate_rel(path)?;
+        let journal_path =
+            entries.join(format!("{}.json", sha256_hex(path.as_os_str().as_bytes())));
+        match fs::remove_file(journal_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    match File::open(entries) {
+        Ok(directory) => directory.sync_all(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 impl OverlayCore {
     pub fn new(lowers: Vec<PathBuf>, upper: PathBuf, work: Option<PathBuf>) -> io::Result<Self> {
         Self::new_with_exclusions(lowers, upper, work, Vec::new())
@@ -68,6 +224,16 @@ impl OverlayCore {
         work: Option<PathBuf>,
         excluded: Vec<PathBuf>,
     ) -> io::Result<Self> {
+        Self::new_with_exclusions_and_preimages(lowers, upper, work, excluded, None)
+    }
+
+    pub fn new_with_exclusions_and_preimages(
+        lowers: Vec<PathBuf>,
+        upper: PathBuf,
+        work: Option<PathBuf>,
+        excluded: Vec<PathBuf>,
+        preimage_dir: Option<PathBuf>,
+    ) -> io::Result<Self> {
         if lowers.is_empty() {
             return Err(error(libc::EINVAL));
         }
@@ -77,6 +243,7 @@ impl OverlayCore {
             }
         }
         fs::create_dir_all(&upper)?;
+        let upper_was_empty = fs::read_dir(&upper)?.next().is_none();
         if let Some(work) = &work {
             fs::create_dir_all(work)?;
             if work == &upper || work.starts_with(&upper) || upper.starts_with(work) {
@@ -111,12 +278,28 @@ impl OverlayCore {
                 Ok(path)
             })
             .collect::<io::Result<BTreeSet<_>>>()?;
+        if let Some(directory) = &preimage_dir {
+            fs::create_dir_all(directory.join("entries"))?;
+            if upper_was_empty && !preimage_journal_is_complete(directory) {
+                let marker = directory.join(PREIMAGE_COMPLETE_MARKER);
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(marker)?;
+                file.write_all(b"pvisor-overlay-preimage-journal-v1\n")?;
+                file.sync_all()?;
+                File::open(directory)?.sync_all()?;
+            }
+        }
         let core = Self {
             lowers,
             upper,
             work,
             excluded,
             copied_hard_links: Mutex::new(HashMap::new()),
+            preimage_dir,
+            preimage_lock: Mutex::new(()),
         };
         if fs::read_dir(&core.upper)?.next().is_none() {
             if let Some(root) = core.lowers.first() {
@@ -125,6 +308,54 @@ impl OverlayCore {
             }
         }
         Ok(core)
+    }
+
+    fn record_preimage(&self, rel: &Path) -> io::Result<()> {
+        let Some(directory) = &self.preimage_dir else {
+            return Ok(());
+        };
+        Self::validate_rel(rel)?;
+        let _guard = self
+            .preimage_lock
+            .lock()
+            .map_err(|_| io::Error::other("preimage journal lock poisoned"))?;
+        let path_bytes = rel.as_os_str().as_bytes();
+        let destination = directory
+            .join("entries")
+            .join(format!("{}.json", sha256_hex(path_bytes)));
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let target = self.lowers.last().ok_or_else(|| error(libc::EINVAL))?;
+        let preimage = PathPreimage {
+            path: path_bytes.to_vec(),
+            state: fingerprint_at(target, rel)?,
+        };
+        let body = serde_json::to_vec_pretty(&preimage)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&destination)?;
+        file.write_all(&body)?;
+        file.sync_all()?;
+        File::open(directory.join("entries"))?.sync_all()
+    }
+
+    fn record_logical_tree_mapping(&self, source: &Path, destination: &Path) -> io::Result<()> {
+        self.record_preimage(destination)?;
+        if !self.metadata(source)?.is_dir() {
+            return Ok(());
+        }
+        for name in self.list_names(source)? {
+            let source_child = Self::child(source, &name)?;
+            let destination_child = Self::child(destination, &name)?;
+            self.record_logical_tree_mapping(&source_child, &destination_child)?;
+        }
+        Ok(())
     }
 
     pub fn upper(&self) -> &Path {
@@ -327,6 +558,10 @@ impl OverlayCore {
             if !metadata.is_dir() {
                 return Err(error(libc::ENOTDIR));
             }
+            // Creating a child changes this copied-up directory's metadata,
+            // and apply may promote that metadata even though the Agent did
+            // not issue an explicit setattr on the parent.
+            self.record_preimage(&current)?;
             fs::create_dir(&upper)?;
             self.copy_metadata(&resolved.path, &upper, &metadata)?;
         }
@@ -344,6 +579,7 @@ impl OverlayCore {
     pub fn copy_up(&self, rel: &Path) -> io::Result<PathBuf> {
         self.require_visible(rel)?;
         Self::validate_rel(rel)?;
+        self.record_preimage(rel)?;
         let upper = self.upper_path(rel);
         if exists(&upper) {
             return Ok(upper);
@@ -496,6 +732,7 @@ impl OverlayCore {
         if self.resolve(rel).is_some() {
             return Err(error(libc::EEXIST));
         }
+        self.record_preimage(rel)?;
         self.ensure_upper_parents(rel)?;
         self.clear_whiteout(rel)?;
         let access_mode = flags & libc::O_ACCMODE;
@@ -516,6 +753,7 @@ impl OverlayCore {
         if self.resolve(rel).is_some() {
             return Err(error(libc::EEXIST));
         }
+        self.record_preimage(rel)?;
         let shadows_lower = self.exists_in_lower(rel);
         self.ensure_upper_parents(rel)?;
         self.clear_whiteout(rel)?;
@@ -533,6 +771,7 @@ impl OverlayCore {
         if self.resolve(rel).is_some() {
             return Err(error(libc::EEXIST));
         }
+        self.record_preimage(rel)?;
         self.ensure_upper_parents(rel)?;
         self.clear_whiteout(rel)?;
         std::os::unix::fs::symlink(target, self.upper_path(rel))
@@ -543,6 +782,7 @@ impl OverlayCore {
         if self.resolve(rel).is_some() {
             return Err(error(libc::EEXIST));
         }
+        self.record_preimage(rel)?;
         self.ensure_upper_parents(rel)?;
         self.clear_whiteout(rel)?;
         sys::mknod(&self.upper_path(rel), mode, rdev)
@@ -562,6 +802,7 @@ impl OverlayCore {
         } else if metadata.is_dir() {
             return Err(error(libc::EISDIR));
         }
+        self.record_logical_tree_mapping(rel, rel)?;
 
         if resolved.is_upper {
             if directory {
@@ -688,6 +929,8 @@ impl OverlayCore {
             return Err(error(libc::EINVAL));
         }
         let replaced_upper = self.validate_replacement(old, new, no_replace)?;
+        self.record_logical_tree_mapping(old, old)?;
+        self.record_logical_tree_mapping(old, new)?;
         let source = if source_meta.is_dir() {
             self.materialize_tree(old)?
         } else {
@@ -741,6 +984,7 @@ impl OverlayCore {
         if self.resolve(destination).is_some() {
             return Err(error(libc::EEXIST));
         }
+        self.record_preimage(destination)?;
         let source = self.copy_up(source)?;
         self.ensure_upper_parents(destination)?;
         self.clear_whiteout(destination)?;
@@ -760,6 +1004,10 @@ impl OverlayCore {
         }
         let first_meta = self.metadata(first)?;
         let second_meta = self.metadata(second)?;
+        self.record_logical_tree_mapping(first, first)?;
+        self.record_logical_tree_mapping(second, second)?;
+        self.record_logical_tree_mapping(first, second)?;
+        self.record_logical_tree_mapping(second, first)?;
         let first_upper = if first_meta.is_dir() {
             self.materialize_tree(first)?
         } else {
@@ -1075,5 +1323,83 @@ mod tests {
             .expect("read"),
             b"data"
         );
+    }
+
+    #[test]
+    fn first_touch_preimage_is_durable_and_never_rebased() {
+        let temporary = tempfile::tempdir().unwrap();
+        let target = temporary.path().join("target");
+        let upper = temporary.path().join("upper");
+        let work = temporary.path().join("work");
+        let journal = temporary.path().join("preimages");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("value.txt"), b"original").unwrap();
+        let original = fingerprint_at(&target, Path::new("value.txt")).unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target.clone()],
+            upper.clone(),
+            Some(work),
+            Vec::new(),
+            Some(journal.clone()),
+        )
+        .unwrap();
+
+        core.copy_up(Path::new("value.txt")).unwrap();
+        fs::write(upper.join("value.txt"), b"staged").unwrap();
+        fs::write(target.join("value.txt"), b"concurrent").unwrap();
+        core.copy_up(Path::new("value.txt")).unwrap();
+
+        let entries = load_preimages(&journal).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].relative_path(), Path::new("value.txt"));
+        assert_eq!(entries[0].state, original);
+
+        remove_preimages(&journal, &[PathBuf::from("value.txt")]).unwrap();
+        fs::remove_file(upper.join("value.txt")).unwrap();
+        let rebased = fingerprint_at(&target, Path::new("value.txt")).unwrap();
+        core.copy_up(Path::new("value.txt")).unwrap();
+        let entries = load_preimages(&journal).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].state, rebased);
+    }
+
+    #[test]
+    fn preimage_journal_covers_create_remove_and_rename_destinations() {
+        let temporary = tempfile::tempdir().unwrap();
+        let target = temporary.path().join("target");
+        let upper = temporary.path().join("upper");
+        let work = temporary.path().join("work");
+        let journal = temporary.path().join("preimages");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("source"), b"source").unwrap();
+        fs::write(target.join("victim"), b"victim").unwrap();
+        let source = fingerprint_at(&target, Path::new("source")).unwrap();
+        let victim = fingerprint_at(&target, Path::new("victim")).unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![target],
+            upper,
+            Some(work),
+            Vec::new(),
+            Some(journal.clone()),
+        )
+        .unwrap();
+
+        drop(
+            core.create_file(Path::new("created"), 0o600, libc::O_RDWR)
+                .unwrap(),
+        );
+        core.remove(Path::new("victim"), false).unwrap();
+        core.rename(Path::new("source"), Path::new("moved"), false)
+            .unwrap();
+
+        let entries = load_preimages(&journal)
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.relative_path(), entry.state))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(entries[Path::new("created")], PathFingerprint::Absent);
+        assert_eq!(entries[Path::new("moved")], PathFingerprint::Absent);
+        assert_eq!(entries[Path::new("source")], source);
+        assert_eq!(entries[Path::new("victim")], victim);
     }
 }

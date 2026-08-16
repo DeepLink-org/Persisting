@@ -78,7 +78,7 @@ independently.
 
 | Placement | Current boundary | Suitable use | Important limit |
 | --- | --- | --- | --- |
-| Linux `host --safe` | Rootless user/mount namespaces, synthetic root, `chroot`, Landlock, dropped capabilities; optional private netns for deny-all | Same-owner local Agents that need the host toolchain | General public/allowlist network policy remains cooperative; seccomp and complete resource enforcement are not yet claimed |
+| Linux `host --safe` | Rootless user/mount/PID namespaces, a PID 1 descendant reaper, synthetic root, `chroot`, Landlock, dropped capabilities; optional private netns for deny-all | Same-owner local Agents that need the host toolchain | General public/allowlist network policy remains cooperative; seccomp and complete resource enforcement are not yet claimed |
 | macOS `host --safe` | Seatbelt-enforced writes and optional deny-all IP/ambient Unix-socket policy | Same-owner local Agents using the macOS toolchain | Host filesystem reads remain ambient for compatibility |
 | Container | Docker/Podman boundary with an injected pVisor | Packaged Linux userlands and stronger placement than a plain host process | Not every pVisor capability is compiled into an OCI restriction; enforced policy is rejected when evidence is incomplete |
 | libkrun VM | Dedicated Linux guest kernel through KVM or HVF; VM egress terminates in pVisor's smoltcp path | Reproducible Linux Agents and stronger kernel separation | The macOS VMM retains invoking-user host permissions and is not yet a hostile multi-tenant boundary |
@@ -126,7 +126,8 @@ controller remains a product gate rather than a current claim.
 | Per-dimension capability enforcement evidence | Implemented; mechanisms are runtime evidence strings, not signed attestation |
 | Non-bypassable VM IPv4 TCP/DNS policy | Implemented; general UDP, IPv6, ICMP, QUIC, and inbound forwarding are unsupported |
 | Transparent host allowlist interception | Planned; explicit host/container proxy mode is cooperative |
-| Crash-atomic multi-file apply with target preimage conflict detection | Open product gate |
+| Target preimage conflict detection and crash-recoverable apply | Implemented; first-touch journals reject concurrent target changes, individual file replacement is atomic, and prepared batches recover forward |
+| Globally atomic whole-tree apply | Open product gate; arbitrary multi-file host filesystem updates do not have a single commit point |
 | Warm-kernel pool and scrubbed reuse protocol | Open product gate |
 | Long-lived distributed pPilot controller and node reconciliation | Open product gate |
 
@@ -540,6 +541,10 @@ timestamps and xattrs, and processes opaque markers before staged children.
 accept git-style globs. Partial batches retain unselected changes in the stage,
 while opaque directories and hard-link groups remain dependency-closed atomic
 units. Every successful batch is recorded in `apply-ledger.json`.
+First-touch target fingerprints are stored under `preimages/`; apply refuses to
+overwrite a path that changed after staging. Prepared batches are recovered
+forward after interruption, and regular-file/symlink/device replacement uses a
+same-directory temporary entry followed by an atomic rename.
 
 ## Usage
 

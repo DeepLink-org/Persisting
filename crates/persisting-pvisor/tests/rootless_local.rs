@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use persisting_agentctl::IsolationKind;
+use persisting_agentctl::{IsolationKind, RunFailureKind};
 use persisting_pvisor::sandbox::SANDBOX_SETUP_EXIT_CODE;
 use persisting_pvisor::RunBundle;
 use std::fs;
@@ -11,7 +11,7 @@ use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn only_run(root: &Path) -> PathBuf {
     let runs = fs::read_dir(root)
@@ -56,7 +56,9 @@ fn skip_if_user_namespaces_are_explicitly_optional(
         return false;
     };
     if !user_namespaces_are_unavailable(&stderr) {
-        eprintln!("rootless sandbox failure was not skippable: {stderr}");
+        if !stderr.is_empty() {
+            eprintln!("rootless sandbox failure was not skippable: {stderr}");
+        }
         return false;
     }
     eprintln!("skipping: the test host disables unprivileged user namespaces: {stderr}");
@@ -144,15 +146,16 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
     assert!(bundle.safety.filesystem_non_bypassable);
     assert!(bundle.safety.filesystem_changes_staged);
     assert!(!bundle.safety.network_non_bypassable);
-    assert!(
-        bundle
-            .safety
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("host PID namespace")),
-        "safety warnings: {:?}",
-        bundle.safety.warnings
-    );
+    assert!(bundle
+        .safety
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("process-tree cleanup")));
+    assert!(bundle
+        .safety
+        .warnings
+        .iter()
+        .all(|warning| !warning.contains("host PID namespace")));
     let filesystem = bundle
         .filesystem
         .as_ref()
@@ -340,6 +343,52 @@ fn safe_run_selectively_applies_then_drops_remaining_changes() {
     assert_eq!(status["filesystem"]["state"], "discarded");
     assert_eq!(status["filesystem"]["changed_files"], 0);
     assert_eq!(status["apply_history"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let run_home = temporary.path().join("runs");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("value.txt"), b"original").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .args(["run", "--safe", "--stdio", "capture"])
+        .current_dir(&workspace)
+        .args(["--", "/bin/sh", "-c", "printf staged > value.txt"])
+        .output()
+        .unwrap();
+    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
+        return;
+    }
+    assert!(output.status.success());
+    assert_eq!(fs::read(workspace.join("value.txt")).unwrap(), b"original");
+    fs::write(workspace.join("value.txt"), b"concurrent").unwrap();
+
+    let run = only_run(&run_home);
+    let apply = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .arg("apply")
+        .arg(&run)
+        .output()
+        .unwrap();
+    assert!(!apply.status.success());
+    assert!(
+        String::from_utf8_lossy(&apply.stderr).contains("target changed after staging"),
+        "stderr: {}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    assert_eq!(
+        fs::read(workspace.join("value.txt")).unwrap(),
+        b"concurrent"
+    );
+    let bundle = RunBundle::read(&run).unwrap();
+    assert_eq!(
+        fs::read(bundle.filesystem.as_ref().unwrap().upper.join("value.txt")).unwrap(),
+        b"staged"
+    );
 }
 
 #[test]
@@ -542,6 +591,118 @@ fn synthetic_root_hides_ungranted_host_unix_sockets() {
     );
     let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
     assert!(bundle.safety.filesystem_non_bypassable);
+}
+
+#[test]
+fn safe_run_reaps_setsid_double_fork_descendants_after_success() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let run_home = temporary.path().join("runs");
+    fs::create_dir_all(&workspace).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .args(["run", "--safe", "--stdio", "capture"])
+        .current_dir(&workspace)
+        .arg("--")
+        .arg(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "daemon_escape_probe_agent"])
+        .output()
+        .unwrap();
+
+    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    let socket = bundle
+        .filesystem
+        .as_ref()
+        .expect("staged filesystem")
+        .upper
+        .join("daemon.sock");
+    assert!(socket.exists(), "daemon did not publish its socket");
+    let error = UnixStream::connect(&socket)
+        .expect_err("setsid/double-fork descendant survived successful Run completion");
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+    ));
+}
+
+/// Re-enter this integration-test executable as an Agent that deliberately
+/// escapes its process group and double-forks a long-lived Unix listener.
+#[test]
+#[ignore]
+fn daemon_escape_probe_agent() {
+    let status = Command::new("/usr/bin/setsid")
+        .arg("--fork")
+        .arg(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "daemon_listener_agent"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("launch setsid daemon");
+    assert!(status.success(), "setsid launcher failed: {status}");
+    for _ in 0..500 {
+        if Path::new("daemon.ready").is_file() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("daemon did not become ready");
+}
+
+#[test]
+#[ignore]
+fn daemon_listener_agent() {
+    let listener = UnixListener::bind("daemon.sock").expect("bind daemon socket");
+    fs::write("daemon.ready", b"ready").expect("publish daemon readiness");
+    loop {
+        match listener.accept() {
+            Ok((_stream, _address)) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => panic!("daemon listener failed: {error}"),
+        }
+    }
+}
+
+#[test]
+fn sandboxed_agent_may_legitimately_exit_with_reserved_launcher_code() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let run_home = temporary.path().join("runs");
+    fs::create_dir_all(&workspace).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PERSISTING_RUN_HOME", &run_home)
+        .args(["run", "--safe", "--stdio", "capture"])
+        .current_dir(&workspace)
+        .args(["--", "/bin/sh", "-c", "exit 125"])
+        .output()
+        .unwrap();
+    if skip_if_user_namespaces_are_explicitly_optional(&run_home, &output) {
+        return;
+    }
+
+    assert!(!output.status.success());
+    let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    assert_eq!(bundle.run.exit_code, Some(SANDBOX_SETUP_EXIT_CODE));
+    assert_eq!(
+        bundle.run.failure.as_ref().map(|failure| failure.kind),
+        Some(RunFailureKind::ProcessExit)
+    );
+    assert!(bundle
+        .run
+        .warnings
+        .iter()
+        .all(|warning| warning != "pvisor.sandbox.setup_failed"));
 }
 
 /// Re-enter this integration-test executable as the untrusted Agent so the

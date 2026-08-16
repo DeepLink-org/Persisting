@@ -104,14 +104,19 @@ impl OverlayFs {
         Self::from_core(OverlayCore::new(lowers, upper, work)?)
     }
 
-    pub fn new_with_exclusions(
+    pub fn new_with_exclusions_and_preimages(
         lowers: Vec<PathBuf>,
         upper: PathBuf,
         work: Option<PathBuf>,
         excluded: Vec<PathBuf>,
+        preimage_dir: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        Self::from_core(OverlayCore::new_with_exclusions(
-            lowers, upper, work, excluded,
+        Self::from_core(OverlayCore::new_with_exclusions_and_preimages(
+            lowers,
+            upper,
+            work,
+            excluded,
+            preimage_dir,
         )?)
     }
 

@@ -33,6 +33,7 @@ pub struct Config {
     pub lower_dirs: Vec<String>,
     pub upper_dir: String,
     pub work_dir: Option<String>,
+    pub preimage_dir: Option<String>,
     pub excluded_paths: Vec<String>,
     pub semantics: passthrough::PermissionSemantics,
 }
@@ -84,8 +85,15 @@ impl OverlayFs {
         let lowers = cfg.lower_dirs.iter().map(PathBuf::from).collect::<Vec<_>>();
         let upper = PathBuf::from(&cfg.upper_dir);
         let work = cfg.work_dir.as_ref().map(PathBuf::from);
+        let preimages = cfg.preimage_dir.as_ref().map(PathBuf::from);
         let excluded = cfg.excluded_paths.iter().map(PathBuf::from).collect();
-        let core = OverlayCore::new_with_exclusions(lowers.clone(), upper.clone(), work, excluded)?;
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            lowers.clone(),
+            upper.clone(),
+            work,
+            excluded,
+            preimages,
+        )?;
 
         let mut roots = Vec::with_capacity(lowers.len() + 1);
         roots.push(upper);
@@ -800,6 +808,7 @@ mod tests {
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
                 upper_dir: upper.to_string_lossy().into_owned(),
                 work_dir: Some(work.to_string_lossy().into_owned()),
+                preimage_dir: None,
                 excluded_paths: Vec::new(),
                 semantics: passthrough::PermissionSemantics::LinuxComplete,
             },
@@ -858,6 +867,7 @@ mod tests {
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
                 upper_dir: upper.to_string_lossy().into_owned(),
                 work_dir: None,
+                preimage_dir: None,
                 excluded_paths: Vec::new(),
                 semantics: passthrough::PermissionSemantics::LinuxComplete,
             },

@@ -7,7 +7,7 @@ use crate::sandbox::SANDBOX_SETUP_FAILED_WARNING;
 use crate::util::{atomic_write, sync_directory};
 use crate::{unix_now_ms, AgentCtlSnapshot};
 use persisting_agentctl::{
-    ArtifactRef, ExecutorDescriptor, IsolationKind, NetworkCapability, ProcessOutput,
+    ArtifactRef, CapabilityDimension, ExecutorDescriptor, IsolationKind, ProcessOutput,
     ResourceLimits, RunFailure, RunResult, RunState,
 };
 use persisting_overlaynet::{InterceptionProfile, InterceptionSnapshot};
@@ -200,25 +200,25 @@ impl RunBundle {
             .warnings
             .iter()
             .any(|warning| warning == SANDBOX_SETUP_FAILED_WARNING);
-        let rootless_network_denied = rootless_process
+        // Safety claims come from the concrete per-Run enforcement evidence
+        // persisted in the effective executor descriptor. Isolation labels and
+        // requested policies are descriptive and must never manufacture a
+        // non-bypassable claim.
+        let enforcement = record
+            .executor
+            .as_ref()
+            .map(|executor| &executor.capability_enforcement);
+        let network_non_bypassable = !sandbox_setup_failed
+            && enforcement
+                .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::Network));
+        let filesystem_read_non_bypassable = filesystem.is_some()
             && !sandbox_setup_failed
-            && serde_json::from_value::<NetworkCapability>(record.network.clone())
-                .is_ok_and(|capability| capability == NetworkCapability::Deny);
-        let seatbelt_network_denied = seatbelt_process
-            && !sandbox_setup_failed
-            && serde_json::from_value::<NetworkCapability>(record.network.clone())
-                .is_ok_and(|capability| capability == NetworkCapability::Deny);
-        let network_non_bypassable = rootless_network_denied
-            || seatbelt_network_denied
-            || record
-                .network_interception
-                .as_ref()
-                .is_some_and(InterceptionProfile::is_enforcing);
-        let filesystem_read_non_bypassable =
-            filesystem.is_some() && (rootless_process || virtual_machine) && !sandbox_setup_failed;
+            && enforcement
+                .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::FilesystemRead));
         let filesystem_write_non_bypassable = filesystem.is_some()
-            && (rootless_process || seatbelt_process || virtual_machine)
-            && !sandbox_setup_failed;
+            && !sandbox_setup_failed
+            && enforcement
+                .is_some_and(|evidence| evidence.is_enforced(CapabilityDimension::FilesystemWrite));
         let filesystem_non_bypassable =
             filesystem_read_non_bypassable && filesystem_write_non_bypassable;
         let resources = resource_summary(record, result);
@@ -238,7 +238,7 @@ impl RunBundle {
             }
             if rootless_process && !sandbox_setup_failed {
                 safety_warnings.push(
-                    "filesystem access is kernel-enforced; the host PID namespace, syscall surface, and resource limits remain shared"
+                    "filesystem access and process-tree cleanup are kernel-enforced; the host kernel and syscall surface remain shared"
                         .into(),
                 );
             }
@@ -482,7 +482,7 @@ fn environment_summary(record: &RunRecord) -> crate::runtime::EnvironmentProject
 mod tests {
     use super::*;
     use crate::runtime::{OverlayRecord, OverlayUpper};
-    use persisting_agentctl::{AttemptId, RunId};
+    use persisting_agentctl::{AttemptId, CapabilityEnforcementEvidence, NetworkCapability, RunId};
     use std::os::unix::fs::PermissionsExt;
 
     const V1_MINIMAL_FIXTURE: &[u8] = include_bytes!(concat!(
@@ -628,7 +628,19 @@ mod tests {
         let cooperative_vm = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
         assert!(!cooperative_vm.safety.network_non_bypassable);
         record.network_interception = Some(InterceptionProfile::vm_smoltcp());
+        let label_only_vm = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        assert!(!label_only_vm.safety.filesystem_non_bypassable);
+        assert!(!label_only_vm.safety.network_non_bypassable);
+        record.executor.as_mut().unwrap().capability_enforcement =
+            CapabilityEnforcementEvidence::default()
+                .enforced(CapabilityDimension::FilesystemRead, "test-vm-read-boundary")
+                .enforced(
+                    CapabilityDimension::FilesystemWrite,
+                    "test-vm-write-boundary",
+                )
+                .enforced(CapabilityDimension::Network, "test-vm-network-boundary");
         let intercepted_vm = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        assert!(intercepted_vm.safety.filesystem_non_bypassable);
         assert!(intercepted_vm.safety.network_non_bypassable);
 
         record.executor = Some(ExecutorDescriptor {
@@ -640,7 +652,25 @@ mod tests {
             supports_migration: false,
         });
         record.network = serde_json::to_value(NetworkCapability::Deny).unwrap();
+        let label_only_rootless = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        assert!(!label_only_rootless.safety.filesystem_non_bypassable);
+        assert!(!label_only_rootless.safety.network_non_bypassable);
+        record.executor.as_mut().unwrap().capability_enforcement =
+            CapabilityEnforcementEvidence::default()
+                .enforced(
+                    CapabilityDimension::FilesystemRead,
+                    "test-rootless-read-boundary",
+                )
+                .enforced(
+                    CapabilityDimension::FilesystemWrite,
+                    "test-rootless-write-boundary",
+                )
+                .enforced(
+                    CapabilityDimension::Network,
+                    "test-rootless-network-boundary",
+                );
         let denied = RunBundle::capture(&record, &result, abi.clone(), true).unwrap();
+        assert!(denied.safety.filesystem_non_bypassable);
         assert!(denied.safety.network_non_bypassable);
         assert!(denied
             .safety
@@ -656,6 +686,16 @@ mod tests {
             supports_checkpoint: false,
             supports_migration: false,
         });
+        record.executor.as_mut().unwrap().capability_enforcement =
+            CapabilityEnforcementEvidence::default()
+                .enforced(
+                    CapabilityDimension::FilesystemWrite,
+                    "test-seatbelt-write-boundary",
+                )
+                .enforced(
+                    CapabilityDimension::Network,
+                    "test-seatbelt-network-boundary",
+                );
         let seatbelt = RunBundle::capture(&record, &result, abi, true).unwrap();
         assert!(!seatbelt.safety.filesystem_non_bypassable);
         assert!(!seatbelt.safety.filesystem_read_non_bypassable);

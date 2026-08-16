@@ -1063,6 +1063,7 @@ fn inject_krun_overlay_metadata(
             "lowers": hint.lower_dirs,
             "upper": upper,
             "work": work,
+            "preimages": record.stage_dir.join("preimages"),
             "excluded": record.excluded_paths,
         }),
     );
