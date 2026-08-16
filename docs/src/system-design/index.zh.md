@@ -9,7 +9,7 @@ pPilot 把 pVisor 从一个 Run 扩展到多个 Run。Gateway、OverlayFS 与 Ov
 运行时机制。两个产品通过稳定 Run identity、capture event、Artifact、终态结果与 lineage
 连接。
 
-![Persisting 系统架构](../assets/diagrams/persisting/execution-story.svg)
+![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
 
 ## 跨产品契约
 

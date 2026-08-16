@@ -4,7 +4,7 @@ This document defines the contracts between Persisting products. Provider
 mechanisms belong to pVisor Design; storage layouts belong to pChronicle Design;
 commands belong to each product's Reference.
 
-![Persisting from one Run to orchestration and history](../assets/diagrams/persisting/execution-story.svg)
+![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
 
 ## Product ownership
 

@@ -9,7 +9,7 @@ pPilot extends pVisor from one Run to many. Gateway, OverlayFS, and OverlayNet
 are pVisor runtime mechanisms. The products meet at stable Run identity,
 captured events, artifacts, terminal results, and lineage.
 
-![Persisting system architecture](../assets/diagrams/persisting/execution-story.svg)
+![Persisting product domains and integration](../assets/diagrams/persisting/system-products.svg)
 
 ## Cross-product contract
 
