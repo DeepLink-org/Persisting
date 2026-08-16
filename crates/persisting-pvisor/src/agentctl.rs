@@ -1,8 +1,8 @@
 //! Optional, cooperative Run-scoped AgentCtl channel owned by pVisor.
 
 pub use persisting_agentctl::{
-    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION, AgentDirective, AgentErrorCode, AgentRequest,
-    AgentResponse, AgentState,
+    AgentDirective, AgentErrorCode, AgentRequest, AgentResponse, AgentState,
+    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION,
 };
 use persisting_agentctl::{AttemptId, RunId};
 use serde::{Deserialize, Serialize};
@@ -638,15 +638,13 @@ fn handle_sync(
         (
             AgentState::Quiesced { checkpoint_id },
             Some((generation, active_checkpoint_id, true)),
-        ) if checkpoint_id == &active_checkpoint_id => {
-            Some(match session.checkpoint_ack {
-                Some(ack) if ack.generation == generation => ack,
-                _ => CheckpointAcknowledgement {
-                    generation,
-                    acknowledged_at_unix_ms: now,
-                },
-            })
-        }
+        ) if checkpoint_id == &active_checkpoint_id => Some(match session.checkpoint_ack {
+            Some(ack) if ack.generation == generation => ack,
+            _ => CheckpointAcknowledgement {
+                generation,
+                acknowledged_at_unix_ms: now,
+            },
+        }),
         _ => None,
     };
     session.state = reported_state;
@@ -845,12 +843,12 @@ mod tests {
         let server =
             AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
         connect(&server, "participant");
-        let checkpoint = server
-            .control
-            .begin_checkpoint("cp".into(), None)
-            .unwrap();
+        let checkpoint = server.control.begin_checkpoint("cp".into(), None).unwrap();
         drop(checkpoint);
-        assert_eq!(server.control.snapshot().directive, AgentDirective::Continue);
+        assert_eq!(
+            server.control.snapshot().directive,
+            AgentDirective::Continue
+        );
 
         let checkpoint = server
             .control
@@ -874,10 +872,7 @@ mod tests {
         let server =
             AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
         let session_id = connect(&server, "participant");
-        let checkpoint = server
-            .control
-            .begin_checkpoint("cp".into(), None)
-            .unwrap();
+        let checkpoint = server.control.begin_checkpoint("cp".into(), None).unwrap();
         exchange(
             &server.socket_path,
             &AgentRequest::Sync {
@@ -908,11 +903,9 @@ mod tests {
             control.request_shutdown(Some("stop".into()));
             shutdown_done_tx.send(()).unwrap();
         });
-        assert!(
-            shutdown_done_rx
-                .recv_timeout(Duration::from_millis(30))
-                .is_err()
-        );
+        assert!(shutdown_done_rx
+            .recv_timeout(Duration::from_millis(30))
+            .is_err());
 
         release_capture_tx.send(()).unwrap();
         assert_eq!(capture.join().unwrap(), Some(()));

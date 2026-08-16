@@ -136,7 +136,10 @@ impl PilotRuntimeBridge {
     pub async fn finish(mut self) -> Vec<String> {
         self.set_idle();
         if let Err(error) = sync_once(&self.inner) {
-            push_warning(&self.inner, format!("final AgentCtl sync failed: {error:#}"));
+            push_warning(
+                &self.inner,
+                format!("final AgentCtl sync failed: {error:#}"),
+            );
         }
 
         loop {
@@ -201,7 +204,10 @@ fn sync_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
         let mut state = lock(&inner.state);
         apply_directive(&mut state, directive)
     };
-    if matches!(lock(&inner.state).directive, AgentDirective::Shutdown { .. }) {
+    if matches!(
+        lock(&inner.state).directive,
+        AgentDirective::Shutdown { .. }
+    ) {
         inner.cancellation.cancel();
     }
 

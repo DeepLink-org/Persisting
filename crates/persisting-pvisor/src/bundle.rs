@@ -610,13 +610,11 @@ mod tests {
         assert_eq!(bundle.run.parent_run_id.as_deref(), Some("job-1"));
         assert_eq!(bundle.run.task_id.as_deref(), Some("task-1"));
         assert_eq!(bundle.orchestration["ppilot.job_id"], "job-1");
-        assert!(
-            bundle
-                .environment
-                .runtime_injected_keys
-                .iter()
-                .any(|key| key == "PERSISTING_AGENTCTL_VERSION")
-        );
+        assert!(bundle
+            .environment
+            .runtime_injected_keys
+            .iter()
+            .any(|key| key == "PERSISTING_AGENTCTL_VERSION"));
 
         record.executor = Some(ExecutorDescriptor {
             name: "libkrun-root-overlay-v1".into(),

@@ -64,11 +64,12 @@ pub use executor::{AttemptContext, RunExecutor};
 #[cfg(feature = "fuzzing")]
 pub use oci::fuzz_oci_layer;
 pub use persisting_agentctl::{
-    AgentDirective, AgentErrorCode, AgentRequest, AgentResponse, AgentState, SupervisorClientMessage,
-    SupervisorDirective, SupervisorDirectiveAck, SupervisorDirectiveEnvelope, SupervisorHeartbeat,
-    SupervisorNetworkQuotaGrant, SupervisorRegistration, SupervisorServerMessage,
-    AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
-    AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, SUPERVISOR_PROTOCOL_VERSION,
+    AgentDirective, AgentErrorCode, AgentRequest, AgentResponse, AgentState,
+    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveAck,
+    SupervisorDirectiveEnvelope, SupervisorHeartbeat, SupervisorNetworkQuotaGrant,
+    SupervisorRegistration, SupervisorServerMessage, AGENTCTL_ENDPOINT_ENV,
+    AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV, AGENTCTL_VERSION,
+    AGENTCTL_VERSION_ENV, SUPERVISOR_PROTOCOL_VERSION,
 };
 pub use persisting_gateway::sink::CaptureEventSink as TrajectoryEventSink;
 pub use process::ProcessExecutor;
