@@ -48,7 +48,7 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           python-version: "3.12"
-          install-protoc: "true"
+          install-protoc: "false"
           install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
@@ -90,7 +90,7 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           python-version: "3.12"
-          install-protoc: "true"
+          install-protoc: "false"
           install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
@@ -126,6 +126,45 @@ jobs:
           name: nightly-wheels-macos-aarch64
           path: dist/*.whl
           retention-days: 14
+
+  benchmark:
+    name: pChronicle nightly benchmark
+    if: github.repository == 'DeepLink-org/Persisting'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-protoc: "false"
+
+      - name: Install hyperfine
+        uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine@1.20.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pchronicle-benchmark
+
+      - name: Run and render benchmark
+        run: |
+          python3 benchmark/pchronicle/bench.py run \
+            --suite nightly \
+            --target-dir "${GITHUB_WORKSPACE}/target/pchronicle-benchmark-ci" \
+            --output "${RUNNER_TEMP}/pchronicle-benchmark"
+          cat "${RUNNER_TEMP}/pchronicle-benchmark/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-pchronicle-benchmark
+          path: ${{ runner.temp }}/pchronicle-benchmark
+          retention-days: 30
+          if-no-files-found: error
 
   publish:
     name: Publish nightly release
@@ -166,3 +205,47 @@ jobs:
             ```
 
             The wheel includes the matched `pchronicle`, `pvisor`, and `ppilot` CLI component set. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).
+
+  publish-benchmark-readme:
+    name: Publish benchmark summary to README
+    if: github.repository == 'DeepLink-org/Persisting' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [benchmark, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Download benchmark report
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-pchronicle-benchmark
+          path: ${{ runner.temp }}/pchronicle-benchmark
+
+      - name: Update generated benchmark block
+        env:
+          REPORT_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 benchmark/pchronicle/bench.py jsonpath-set \
+            --document benchmark/pchronicle/nightly.json \
+            --path '$["latest"]' \
+            --value-file "${RUNNER_TEMP}/pchronicle-benchmark/raw-report.json" \
+            --replace
+          python3 benchmark/pchronicle/bench.py update-readme \
+            --report benchmark/pchronicle/nightly.json \
+            --report-jsonpath '$["latest"]' \
+            --readme README.md \
+            --report-url "$REPORT_URL"
+
+      - name: Commit nightly benchmark summary
+        run: |
+          if git diff --quiet -- README.md benchmark/pchronicle/nightly.json; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add README.md benchmark/pchronicle/nightly.json
+          git commit -m "docs: update pChronicle nightly benchmark [skip ci]"
+          git push origin "HEAD:${{ github.ref_name }}"

@@ -24,7 +24,7 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "true"
+          install-protoc: "false"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -54,7 +54,7 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          install-protoc: "true"
+          install-protoc: "false"
           install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2
@@ -162,7 +162,7 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           python-version: "3.12"
-          install-protoc: "true"
+          install-protoc: "false"
           install-dioxus: "true"
 
       - uses: Swatinem/rust-cache@v2

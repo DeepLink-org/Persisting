@@ -382,24 +382,27 @@ pchronicle query ./openai-data \
 这个门面执行 DDL/DML。Lance 引擎打开时固定 `CURRENT` 指向的三个版本，从而保证一次
 查询会话内三张表来自同一快照。
 
-仓库提供两组可执行 benchmark：
+仓库使用 Criterion.rs + hyperfine 的统一 benchmark runner。Criterion 负责 CPU-bound
+转换、events→Storyline 和三表 split/reconstruct 微基准；canonical event append、投影
+build/sync/verify、Lance/DataFusion 生命周期、JSON streaming 与 RSS 场景由 hyperfine
+重复执行独立进程，最终生成统一 JSON、Markdown 和 HTML：
 
 ```bash
-# scalar index 与 full scan A/B
-cargo bench -p persisting-pchronicle --bench atif_storyline_lance
+# PR/local smoke workload
+just benchmark-pchronicle
 
-# 导入、冷查询、点查、增量替换，以及 warm SQL 对比
-PCHRONICLE_BENCH_SCALE=128 PCHRONICLE_BENCH_ITERS=30 \
-  cargo bench -p persisting-pchronicle --bench lance_vs_json
+# larger nightly workload
+just benchmark-pchronicle nightly target/pchronicle-benchmark/nightly
 
-# 冷 datasource open + projected JSON SQL 的 allocation、rows/s、P95、进程 RSS 与输入缓冲上界
-PCHRONICLE_BENCH_SCALE=128 PCHRONICLE_BENCH_ITERS=30 \
-  cargo bench -p persisting-pchronicle --bench json_streaming
-
-# 同一基准切换为 pretty array，单独观察 element scanner + slice decoder
-PCHRONICLE_BENCH_JSON_SHAPE=array PCHRONICLE_BENCH_SCALE=128 \
-  PCHRONICLE_BENCH_ITERS=30 cargo bench -p persisting-pchronicle --bench json_streaming
+# compare two raw reports produced on the same testbed
+just benchmark-pchronicle-compare \
+  target/pchronicle-benchmark/main/raw-report.json \
+  target/pchronicle-benchmark/current/raw-report.json
 ```
+
+`raw-report.json` 以 `$["measurements"]...` JSONPath 地址保存原始指标和环境，
+`bencher.json` 是历史平台使用的扁平投影，
+`report.md` 写入 GitHub Actions Job Summary，`report.html` 与 Criterion 明细作为 artifact。
 
 JSON 对照使用单个 NDJSON 文件，避免大量小文件打开开销。ATIF `steps` 直接查询会把
 DataFusion projection 和可安全预裁剪的 `session_id`、`step_id`、`source` 谓词传给

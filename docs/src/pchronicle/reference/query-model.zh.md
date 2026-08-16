@@ -52,10 +52,14 @@ JOIN dataset.steps s
 | `snapshot_ref` | UTF-8, nullable | generation、manifest revision、fingerprint、version 或 ETag |
 | `size_bytes` | UInt64, nullable | 候选文件或 marker object 大小 |
 | `last_modified` | UTF-8, nullable | 可用时的 RFC 3339 timestamp |
+| `projection_status` | UTF-8, nullable | canonical events Source 关联投影的 `fresh` 或 `stale` 状态 |
+| `projection_generation` | UTF-8, nullable | 被选为读取加速投影的 generation |
+| `projection_candidates` | UInt64, non-null | 参与选择的关联投影候选数 |
 | `status` | UTF-8, non-null | `ready` 或 `error` |
 | `error` | UTF-8, nullable | 脱敏的 discovery 或 resolve 错误 |
 
 外围文件被惰性打开前，`format` 可以保持 null。使用 `_file_` 过滤可以避免打开无关 Source。
+`snapshot_ref` 只是展示投影；Rust/API 调用方应使用类型化的 `CatalogSourceRevision` 做一致性判断。
 
 ## Query 边界
 

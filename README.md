@@ -95,6 +95,16 @@ default Warehouse. `pchronicle import` and `export` exchange ATIF, ACTF, OpenAI
 Messages, and Storyline JSON; `pchronicle serve` starts the loopback-only,
 read-only Warehouse UI and API.
 
+## pChronicle performance
+
+Criterion.rs microbenchmarks and hyperfine lifecycle scenarios are compared
+against `main` in CI. Measurements use stable JSONPath addresses in the raw
+JSON report. See the [benchmark runner and report contract](benchmark/pchronicle/README.md).
+
+<!-- pchronicle-benchmark:start -->
+No nightly benchmark has been published with the unified report format yet.
+<!-- pchronicle-benchmark:end -->
+
 ## Command ownership
 
 | Command | Primary responsibility |

@@ -6,7 +6,7 @@ pChronicle 的测试分三层，放置位置与运行方式如下。
 |---|---|---|---|
 | 单元测试 | `src/**/tests.rs` 或小模块内 `#[cfg(test)] mod tests` | 与被测模块同目录：单模块/单函数行为、格式解析、存储协议、并发语义 | `cargo test -p persisting-pchronicle --lib` |
 | 集成测试 | `tests/*.rs` | 跨模块/跨 crate 行为：存储往返、查询引擎、格式 corpus、真实 S3 契约 | `cargo test -p persisting-pchronicle` |
-| 基准 | `benches/*` | 转换与存储性能回归 | `cargo bench -p persisting-pchronicle` |
+| 基准 | `benches/*`、`benchmark/pchronicle/` | 转换与存储性能回归 | `just benchmark-pchronicle` |
 
 大型存储模块使用邻接测试文件：`store/events/tests.rs` 覆盖 fencing/append，
 `store/storyline/tests.rs` 覆盖 CURRENT 原子性，`store/files/tests.rs` 覆盖 `_file_` 裁剪；
@@ -47,4 +47,5 @@ PCHRONICLE_S3_TEST_URI=s3://bucket/test-prefix \
    覆盖语义）归入 `s3_storage.rs` 的 `--ignored` 契约测试。
 5. **回归测试先证明 bug，再修代码**：修复离线语义/字节稳定性/路径穿越类问题时，先加
    能复现的失败测试，再让实现通过它。
-6. 基准用 `PCHRONICLE_BENCH_SCALE` / `PCHRONICLE_BENCH_ITERS` 控制规模，避免 CI 超时。
+6. 基准统一通过 `benchmark/pchronicle/bench.py` 运行；runner 负责设置规模与重复次数、
+   调度 Criterion/hyperfine，并生成可比较的 JSON、Markdown 和 HTML 报告。

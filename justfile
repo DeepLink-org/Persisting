@@ -169,6 +169,22 @@ benchmark-gateway-sweep duration="5" concurrencies="1 2 4 8 16 32" payload_bytes
         --output "benchmark/gateway/results/sweep-c${concurrency}.json"
     done
 
+# Run the unified Criterion + hyperfine pChronicle smoke benchmark and render
+# raw JSON, Markdown, HTML, and a Bencher-compatible metric projection.
+[group('benchmark')]
+benchmark-pchronicle suite="smoke" output="target/pchronicle-benchmark/current":
+    python3 benchmark/pchronicle/bench.py run \
+      --suite "{{ suite }}" \
+      --output "{{ output }}"
+
+# Compare two pChronicle raw reports generated on the same testbed.
+[group('benchmark')]
+benchmark-pchronicle-compare baseline candidate output="target/pchronicle-benchmark/comparison":
+    python3 benchmark/pchronicle/bench.py compare \
+      --baseline "{{ baseline }}" \
+      --candidate "{{ candidate }}" \
+      --output "{{ output }}"
+
 # ── 构建 ─────────────────────────────────────────────────────────────────────
 
 # Start the deterministic local LLM upstream used to test Gateway forwarding,

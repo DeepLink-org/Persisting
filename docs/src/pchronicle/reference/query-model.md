@@ -56,11 +56,16 @@ namespace.
 | `snapshot_ref` | UTF-8, nullable | generation, manifest revision, fingerprint, version, or ETag |
 | `size_bytes` | UInt64, nullable | candidate file or marker-object size |
 | `last_modified` | UTF-8, nullable | RFC 3339 timestamp when available |
+| `projection_status` | UTF-8, nullable | `fresh` or `stale` for a canonical events Source with a linked Storyline projection |
+| `projection_generation` | UTF-8, nullable | generation selected as the read acceleration projection |
+| `projection_candidates` | UInt64, non-null | number of linked projection candidates considered |
 | `status` | UTF-8, non-null | `ready` or `error` |
 | `error` | UTF-8, nullable | sanitized discovery or resolution error |
 
 `format` may remain null until a selected peripheral file is opened lazily.
 Filtering `_file_` can prevent unrelated Sources from being opened.
+`snapshot_ref` is a display projection; Rust/API consumers use the typed
+`CatalogSourceRevision` for consistency decisions.
 
 ## Query boundary
 

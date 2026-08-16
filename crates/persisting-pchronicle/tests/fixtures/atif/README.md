@@ -5,7 +5,8 @@ steps each. Together they cover plain dialogue, sparse optional fields, sequenti
 tool calls, observations linked by `source_call_id`, reasoning fields, Unicode, multimodal
 messages, and long context.
 
-The corpus is shared by `tests/atif_lance_corpus.rs` and the
-`atif_storyline_lance` benchmark. These are reviewed compatibility fixtures rather than a
-generated performance corpus. The runnable examples retain their structure but replace message
-text with deterministic samples from repository source code.
+The corpus is shared by `tests/atif_lance_corpus.rs`, the
+`pchronicle_criterion` microbenchmark, and the hyperfine storage/query/projection scenarios.
+These are reviewed compatibility fixtures rather than a generated performance corpus. The
+runnable examples retain their structure but replace message text with deterministic samples
+from repository source code.

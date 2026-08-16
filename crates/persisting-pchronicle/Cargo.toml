@@ -43,7 +43,6 @@ fs2.workspace = true
 lance = { workspace = true, optional = true }
 lance-core = { workspace = true, optional = true }
 lance-file = { workspace = true, optional = true }
-# Lance 9.0.1 does not forward `lance/protoc` to lance-datafusion.
 lance-datafusion = { workspace = true, optional = true }
 lance-index = { workspace = true, optional = true }
 lance-linalg = { workspace = true, optional = true }
@@ -61,11 +60,12 @@ uuid = { workspace = true, features = ["v4", "v5"] }
 zstd.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 libc.workspace = true
 tempfile.workspace = true
 
 [[bench]]
-name = "atif_storyline_lance"
+name = "pchronicle_criterion"
 harness = false
 
 [[bench]]
@@ -74,6 +74,10 @@ harness = false
 
 [[bench]]
 name = "json_streaming"
+harness = false
+
+[[bench]]
+name = "projection_pipeline"
 harness = false
 
 [[test]]

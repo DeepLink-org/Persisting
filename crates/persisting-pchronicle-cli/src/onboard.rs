@@ -1,5 +1,5 @@
 use std::fmt::Write as _;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -45,6 +45,10 @@ ORDER BY dataset_name, session_id"#;
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true)]
 pub(crate) struct OnboardArgs {
+    /// Print the complete walkthrough without waiting between steps.
+    #[arg(long, global = true)]
+    no_pause: bool,
+
     /// Explore this Dataset through the complete walkthrough.
     #[arg(value_name = "DATASET_URI")]
     dataset_uri: Option<String>,
@@ -114,27 +118,59 @@ impl OnboardArgs {
 
 pub(crate) async fn run(
     args: OnboardArgs,
+    stdin_is_terminal: bool,
     stdout_is_terminal: bool,
+    stdin: &mut dyn Read,
     stdout: &mut dyn Write,
 ) -> Result<()> {
+    let no_pause = args.no_pause;
     let selection = args.into_selection();
+    let interactive = matches!(&selection, Selection::All(_))
+        && stdin_is_terminal
+        && stdout_is_terminal
+        && !no_pause;
     let demo = DemoWorkspace::create()?;
     let selected_dataset = selection
         .dataset_uri()
         .map(str::to_owned)
         .unwrap_or_else(|| demo.atif_uri());
-    let mut renderer = MarkdownRenderer::for_output(stdout, stdout_is_terminal);
+    let mut renderer =
+        WalkthroughRenderer::for_output(stdout, stdout_is_terminal, interactive.then_some(stdin));
 
     match selection {
         Selection::All(_) => {
             render_concepts(&mut renderer, Some(&selected_dataset))?;
+            if renderer.stopped() {
+                return Ok(());
+            }
             render_inspect(&mut renderer, &selected_dataset).await?;
+            if renderer.stopped() {
+                return Ok(());
+            }
             render_analyze(&mut renderer, &selected_dataset).await?;
+            if renderer.stopped() {
+                return Ok(());
+            }
             render_query(&mut renderer, &selected_dataset).await?;
+            if renderer.stopped() {
+                return Ok(());
+            }
             render_formats(&mut renderer, &demo).await?;
+            if renderer.stopped() {
+                return Ok(());
+            }
             render_find(&mut renderer, &selected_dataset).await?;
+            if renderer.stopped() {
+                return Ok(());
+            }
             render_exchange(&mut renderer, &demo).await?;
+            if renderer.stopped() {
+                return Ok(());
+            }
             render_serve(&mut renderer)?;
+            if renderer.stopped() {
+                return Ok(());
+            }
             render_completion(&mut renderer)?;
         }
         Selection::Concepts => render_concepts(&mut renderer, None)?,
@@ -232,7 +268,10 @@ fn write_demo_source(root: &Path, dataset: &str, filename: &str, content: &str) 
     Ok(())
 }
 
-fn render_concepts(renderer: &mut MarkdownRenderer<'_>, dataset_uri: Option<&str>) -> Result<()> {
+fn render_concepts(
+    renderer: &mut WalkthroughRenderer<'_>,
+    dataset_uri: Option<&str>,
+) -> Result<()> {
     let dataset = dataset_uri
         .map(|uri| format!("本次完整流程将实际读取 `{uri}`。"))
         .unwrap_or_default();
@@ -260,11 +299,12 @@ pchronicle onboard serve
 ```
 
 "#,
-    ))
+    ))?;
+    renderer.pause()
 }
 
 fn render_section_header(
-    renderer: &mut MarkdownRenderer<'_>,
+    renderer: &mut WalkthroughRenderer<'_>,
     name: &str,
     target: &str,
 ) -> Result<()> {
@@ -273,13 +313,13 @@ fn render_section_header(
     ))
 }
 
-fn render_section_footer(renderer: &mut MarkdownRenderer<'_>) -> Result<()> {
+fn render_section_footer(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
     renderer.render(
         "其他章节可通过 `pchronicle onboard --help` 查看；运行 `pchronicle onboard` 可执行完整引导。\n",
     )
 }
 
-async fn render_inspect(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) -> Result<()> {
+async fn render_inspect(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str) -> Result<()> {
     let dataset = shell_quote(dataset_uri);
     let list = capture_list(dataset_uri.to_owned()).await?;
     renderer.render(&command_section(
@@ -288,16 +328,21 @@ async fn render_inspect(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) 
         &format!("pchronicle ls {dataset} --format table"),
         &list,
     ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
     let status = capture_status(dataset_uri.to_owned()).await?;
     renderer.render(&command_section(
         "Inspect · 检查健康状态",
         "`status` 汇总 Source 就绪情况以及轨迹、Step 和工具调用数量。",
         &format!("pchronicle status {dataset} --format table"),
         &status,
-    ))
+    ))?;
+    renderer.pause()
 }
 
-async fn render_analyze(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) -> Result<()> {
+async fn render_analyze(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str) -> Result<()> {
     let dataset = shell_quote(dataset_uri);
     let overview = capture_analysis(dataset_uri.to_owned(), AnalysisKind::Overview).await?;
     renderer.render(&command_section(
@@ -306,16 +351,21 @@ async fn render_analyze(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) 
         &format!("pchronicle analysis overview {dataset} --format table"),
         &overview,
     ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
     let tools = capture_analysis(dataset_uri.to_owned(), AnalysisKind::Tools).await?;
     renderer.render(&command_section(
         "Analyze · 工具使用",
         "工具分析按统一函数名聚合调用次数、轨迹覆盖和耗时覆盖。",
         &format!("pchronicle analysis tools {dataset} --format table"),
         &tools,
-    ))
+    ))?;
+    renderer.pause()
 }
 
-async fn render_query(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) -> Result<()> {
+async fn render_query(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str) -> Result<()> {
     let dataset = shell_quote(dataset_uri);
     let schema = capture_query(
         dataset_uri.to_owned(),
@@ -329,6 +379,10 @@ async fn render_query(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) ->
         &format!("pchronicle query {dataset} 'DESCRIBE dataset.steps' --format table"),
         &schema,
     ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
     let steps = capture_query(
         dataset_uri.to_owned(),
         STEP_SAMPLE_SQL,
@@ -344,6 +398,10 @@ async fn render_query(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) ->
         ),
         &steps,
     ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
     let tools = capture_query(
         dataset_uri.to_owned(),
         TOOL_SAMPLE_SQL,
@@ -359,12 +417,19 @@ async fn render_query(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) ->
         ),
         &tools,
     ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
     renderer.render(
         "需要把结果交给 Python、jq 或流水线时，改用 `--format jsonl`；每一行都是独立 JSON 对象。\n\n",
     )
 }
 
-async fn render_formats(renderer: &mut MarkdownRenderer<'_>, demo: &DemoWorkspace) -> Result<()> {
+async fn render_formats(
+    renderer: &mut WalkthroughRenderer<'_>,
+    demo: &DemoWorkspace,
+) -> Result<()> {
     let output = capture_named_query(demo).await?;
     let command = format!(
         "pchronicle query --dataset atif=./atif --dataset actf=./actf --dataset openai=./openai-messages {} --format table",
@@ -375,15 +440,17 @@ async fn render_formats(renderer: &mut MarkdownRenderer<'_>, demo: &DemoWorkspac
         "命名挂载允许一个只读 SQL 同时查询 ATIF、ACTF 和 OpenAI Messages，无需预先转换物理格式。",
         &command,
         &output,
-    ))
+    ))?;
+    renderer.pause()
 }
 
-async fn render_find(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) -> Result<()> {
+async fn render_find(renderer: &mut WalkthroughRenderer<'_>, dataset_uri: &str) -> Result<()> {
     let target = discover_find_target(dataset_uri.to_owned()).await?;
     let Some((session_id, step_id)) = target else {
-        return renderer.render(
+        renderer.render(
             "## Find · 没有可定位的 Step\n\n当前 Dataset 的 `steps` 表为空。导入轨迹后再使用 `find`。\n",
-        );
+        )?;
+        return renderer.pause();
     };
     let output = capture_find(dataset_uri.to_owned(), session_id.clone(), step_id).await?;
     renderer.render(&command_section(
@@ -395,10 +462,14 @@ async fn render_find(renderer: &mut MarkdownRenderer<'_>, dataset_uri: &str) -> 
             shell_quote(&session_id)
         ),
         &output,
-    ))
+    ))?;
+    renderer.pause()
 }
 
-async fn render_exchange(renderer: &mut MarkdownRenderer<'_>, demo: &DemoWorkspace) -> Result<()> {
+async fn render_exchange(
+    renderer: &mut WalkthroughRenderer<'_>,
+    demo: &DemoWorkspace,
+) -> Result<()> {
     renderer.render(
         "## Exchange · 本地 Warehouse\n\n默认 Warehouse 只是一个递归的本地 Dataset 根目录，不是守护进程或隐藏数据库。下面的真实演练使用隔离 settings 和临时目录，不修改用户配置。\n\n",
     )?;
@@ -409,21 +480,30 @@ async fn render_exchange(renderer: &mut MarkdownRenderer<'_>, demo: &DemoWorkspa
         "pchronicle default ./trajectory-data",
         &exchange.default_output,
     ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
     renderer.render(&command_section(
         "Exchange · 导入",
         "导入是 create-only；省略 `--output` 时，会在默认 Warehouse 下派生子目录名。",
         "pchronicle import --from ./support-ticket.json --format atif",
         &exchange.import_output,
     ))?;
+    renderer.pause()?;
+    if renderer.stopped() {
+        return Ok(());
+    }
     renderer.render(&command_section(
         "Exchange · 严格导出",
         "`--strict` 拒绝无法保留原交换文档的转换。本例导出的 JSON 与输入语义相等。",
         "pchronicle export --from ./trajectory-data/support-ticket --output ./restored.json --format atif --strict",
         &exchange.export_output,
-    ))
+    ))?;
+    renderer.pause()
 }
 
-fn render_serve(renderer: &mut MarkdownRenderer<'_>) -> Result<()> {
+fn render_serve(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
     renderer.render(
         r#"## Serve · 只读 Web/API
 
@@ -444,10 +524,11 @@ pchronicle serve --config warehouse.toml --listen 127.0.0.1:8080 --open
 服务只允许 loopback 地址，因为这个本地表面不提供认证；Dataset API 和 Web UI 都是只读的。
 
 "#,
-    )
+    )?;
+    renderer.pause()
 }
 
-fn render_completion(renderer: &mut MarkdownRenderer<'_>) -> Result<()> {
+fn render_completion(renderer: &mut WalkthroughRenderer<'_>) -> Result<()> {
     renderer.render(
         r#"# 完成
 
@@ -767,6 +848,82 @@ enum RenderMode {
     Terminal { ansi: bool },
 }
 
+struct WalkthroughRenderer<'a> {
+    markdown: MarkdownRenderer<'a>,
+    input: Option<&'a mut dyn Read>,
+    stopped: bool,
+}
+
+impl<'a> WalkthroughRenderer<'a> {
+    fn for_output(
+        output: &'a mut dyn Write,
+        is_terminal: bool,
+        input: Option<&'a mut dyn Read>,
+    ) -> Self {
+        Self {
+            markdown: MarkdownRenderer::for_output(output, is_terminal),
+            input,
+            stopped: false,
+        }
+    }
+
+    fn render(&mut self, markdown: &str) -> Result<()> {
+        self.markdown.render(markdown)
+    }
+
+    fn pause(&mut self) -> Result<()> {
+        let Some(input) = self.input.as_deref_mut() else {
+            return Ok(());
+        };
+
+        let prompt = "按 Enter 继续，输入 q 退出引导：";
+        match self.markdown.mode {
+            RenderMode::Terminal { ansi: true } => {
+                write!(self.markdown.output, "\x1b[2m{prompt}\x1b[0m ")?;
+            }
+            RenderMode::Markdown | RenderMode::Terminal { ansi: false } => {
+                write!(self.markdown.output, "{prompt} ")?;
+            }
+        }
+        self.markdown
+            .output
+            .flush()
+            .context("flush onboard prompt")?;
+
+        let mut answer = Vec::new();
+        let mut byte = [0_u8; 1];
+        loop {
+            match input.read(&mut byte).context("read onboard response")? {
+                0 => {
+                    self.stopped = true;
+                    break;
+                }
+                _ if matches!(byte[0], b'\n' | b'\r') => break,
+                _ => answer.push(byte[0]),
+            }
+        }
+
+        if answer
+            .iter()
+            .copied()
+            .find(|byte| !byte.is_ascii_whitespace())
+            .is_some_and(|byte| matches!(byte, b'q' | b'Q'))
+        {
+            self.stopped = true;
+        }
+        if self.stopped {
+            writeln!(self.markdown.output, "\n已退出引导；临时示例将自动清理。")?;
+        } else {
+            writeln!(self.markdown.output)?;
+        }
+        Ok(())
+    }
+
+    fn stopped(&self) -> bool {
+        self.stopped
+    }
+}
+
 struct MarkdownRenderer<'a> {
     output: &'a mut dyn Write,
     mode: RenderMode,
@@ -894,6 +1051,27 @@ mod tests {
         let output = String::from_utf8(output)?;
         assert!(output.contains("\x1b[1;34mQuery\x1b[0m"));
         assert!(output.contains("\x1b[36mquery\x1b[0m"));
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_walkthrough_waits_and_can_quit() -> Result<()> {
+        let mut output = Vec::new();
+        let mut input = std::io::Cursor::new(b"\nq\n");
+        let mut renderer = WalkthroughRenderer::for_output(&mut output, true, Some(&mut input));
+
+        renderer.render("## Inspect\n\nfirst result\n")?;
+        renderer.pause()?;
+        assert!(!renderer.stopped());
+        renderer.render("## Query\n\nsecond result\n")?;
+        renderer.pause()?;
+        assert!(renderer.stopped());
+
+        let output = String::from_utf8(output)?;
+        assert_eq!(output.matches("按 Enter 继续").count(), 2);
+        assert!(output.contains("first result"));
+        assert!(output.contains("second result"));
+        assert!(output.contains("已退出引导"));
         Ok(())
     }
 
