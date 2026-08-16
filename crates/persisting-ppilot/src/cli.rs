@@ -13,7 +13,7 @@ use crate::skip::SkipSet;
 use crate::task::TaskResult;
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
-use persisting_pchronicle_client::{ChronicleControl, ChronicleControlProcessClient};
+use persisting_events::{ChronicleControl, ChronicleControlProcessClient};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;

@@ -431,7 +431,9 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 
 ### 9.4 单 run dataset 多 `session_id`（Claude run bucket）
 
-一次 `pvisor run --chronicle-mode lance` 的 run 目录通常只有一个 `events.lance/` dataset，但行内 `session_id` **可能混存多个值**：
+一次 `pvisor run --chronicle-mode spawn` 的 pChronicle sidecar 通常在 run 目录写一个
+`events.lance/` dataset，但行内 `session_id` **可能混存多个值**。旧值 `lance` 是
+`spawn` 的兼容别名，pVisor 不直接打开 Lance：
 
 | 典型来源 | `session_id` 取值 |
 |----------|-------------------|
@@ -452,7 +454,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 ```text
 请求线程 ──► 发事件（WAL 非阻塞入队 + apply 入队）──► 继续转发
                     │
-                    └──► 后台：有序 apply ──► Lance / Markdown
+                    └──► 后台：有序 apply ──► pChronicle sidecar / Markdown
                               │
                               ├─ 成功 → 确认 WAL
                               └─ 失败 → dead letter + 保留 WAL（重启重放，不影响 HTTP）
@@ -461,7 +463,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 | 机制 | 目的 |
 |------|------|
 | **异步 apply** | 采集不占用上游连接线程 |
-| **Blocking sink 隔离** | Lance durable wait 运行在 blocking pool，不占用 Gateway Tokio HTTP worker |
+| **Blocking sink 隔离** | sidecar durable ACK wait 运行在 blocking pool，不占用 Gateway Tokio HTTP worker |
 | **Per-story 有序队列** | 同一故事线内事件顺序可复现 |
 | **事件 WAL** | 请求线程只做有界 `try_send`；后台最多等待 2 ms 合批并 `sync_data`，已落盘事件在崩溃后可重放 |
 | **ACK WAL** | 异步 best-effort 合批；丢 ACK 只会导致安全重放，flush/shutdown barrier 保证已接收 ACK 先落盘 |
@@ -475,7 +477,7 @@ Capture run 下，子 Agent 通常写入 `agent-{id}.md`；主会话写入 `run-
 | 形态 | 适用场景 |
 |------|----------|
 | **`pvisor run`** | 包装一次 Agent 命令（如 `claude`、`codex`）；注入代理环境变量并管理内嵌 Gateway |
-| **仅 Lance / 补 Markdown** | `--chronicle-mode lance` 落盘到 `events.lance/`；需要 live md 时同时启用 `--gateway-stream-markdown` |
+| **pChronicle sidecar / 补 Markdown** | `--chronicle-mode spawn` 由 sidecar 落盘到 `events.lance/`；需要 live md 时同时启用 `--gateway-stream-markdown` |
 | **Dead letter** | 保留在 Run storage 中供 pChronicle API 诊断 |
 
 配置示例（节选）：

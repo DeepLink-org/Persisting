@@ -32,8 +32,9 @@ pPilot does not link pChronicle, Lance, Arrow, or DataFusion. Use
 `--pchronicle-binary PATH` or `PERSISTING_PCHRONICLE_BIN` when `pchronicle` is
 not installed beside `ppilot` or available on `PATH`. Similarly, use
 `--pvisor-binary PATH` or `PERSISTING_PVISOR_BIN` for pVisor.
-The default pVisor build includes `local-lance-chronicle` for durable
-`run --sink` coordination; pPilot itself still does not link pVisor.
+The default pVisor build does not link Lance/DataFusion. Durable Attempt and
+trajectory writes use the same lightweight `pchronicle control` process
+protocol; pPilot itself still does not link pVisor.
 
 The CLI intentionally contains no Dataset catalog, query, conversion, or
 analysis commands. Use `pchronicle` for those operations.

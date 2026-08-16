@@ -24,7 +24,7 @@ include_dir = "=0.7.4"
 libc.workspace = true
 persisting-gateway.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store", "s3-store"] }
-persisting-pchronicle-client.workspace = true
+persisting-events = { workspace = true, features = ["control"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true

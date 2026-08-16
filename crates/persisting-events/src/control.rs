@@ -1,9 +1,10 @@
 //! Lightweight, versioned control-plane client for the standalone pChronicle process.
 //!
-//! This crate deliberately contains no storage engine. pChronicle implements
-//! the durable operations; orchestrators such as pPilot depend only on these
+//! This optional module contains no storage engine. pChronicle implements the
+//! durable operations; orchestrators such as pPilot depend only on these
 //! contracts and the long-lived process transport.
 
+use crate::EventRecord;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use persisting_agentctl::{
@@ -24,7 +25,7 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-pub const CHRONICLE_CONTROL_VERSION: u32 = 1;
+pub const CHRONICLE_CONTROL_VERSION: u32 = 2;
 pub const CHRONICLE_CONTROL_MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,54 +70,6 @@ impl AttemptRecord {
     pub fn is_live_at(&self, now_unix_ms: u64) -> bool {
         self.state == AttemptRecordState::Active && self.expires_at_unix_ms > now_unix_ms
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventIdentity {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storyline_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timestamp_unix_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub producer: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EventRecord {
-    #[serde(flatten)]
-    pub identity: EventIdentity,
-    pub seq: u64,
-    pub source: String,
-    pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_uuid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_call_id: Option<String>,
-    pub payload: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +137,12 @@ pub enum ChronicleControlRequest {
         run_id: String,
     },
     PublishAttemptActive {
+        run_id: String,
+        attempt_id: String,
+        lease_epoch: u64,
+        ttl_ms: u64,
+    },
+    HeartbeatAttempt {
         run_id: String,
         attempt_id: String,
         lease_epoch: u64,
@@ -258,6 +217,13 @@ pub trait ChronicleControl: Send + Sync {
     async fn list_runs(&self) -> Result<Vec<RunControlRecord>>;
     async fn get_attempt(&self, run_id: &str) -> Result<Option<AttemptRecord>>;
     async fn publish_attempt_active(
+        &self,
+        run_id: &str,
+        attempt_id: &str,
+        lease_epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<bool>;
+    async fn heartbeat_attempt(
         &self,
         run_id: &str,
         attempt_id: &str,
@@ -595,6 +561,27 @@ impl ChronicleControl for ChronicleControlProcessClient {
             "publish_attempt_active"
         )
     }
+
+    async fn heartbeat_attempt(
+        &self,
+        run_id: &str,
+        attempt_id: &str,
+        lease_epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<bool> {
+        expect_response!(
+            self.call(ChronicleControlRequest::HeartbeatAttempt {
+                run_id: run_id.to_owned(),
+                attempt_id: attempt_id.to_owned(),
+                lease_epoch,
+                ttl_ms
+            })
+            .await?,
+            ChronicleControlResponse::Boolean,
+            "heartbeat_attempt"
+        )
+    }
+
     async fn publish_attempt_terminal(
         &self,
         run_id: &str,
@@ -966,6 +953,33 @@ impl ChronicleControl for MemoryChronicleControl {
         Ok(true)
     }
 
+    async fn heartbeat_attempt(
+        &self,
+        run_id: &str,
+        attempt_id: &str,
+        lease_epoch: u64,
+        ttl_ms: u64,
+    ) -> Result<bool> {
+        let now = unix_now_ms();
+        let mut attempts = self
+            .attempts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Attempt registry lock poisoned"))?;
+        let Some(record) = attempts.get_mut(run_id) else {
+            return Ok(false);
+        };
+        if record.attempt_id != attempt_id
+            || record.lease_epoch != lease_epoch
+            || record.state != AttemptRecordState::Active
+        {
+            return Ok(false);
+        }
+        record.revision = record.revision.saturating_add(1);
+        record.heartbeat_at_unix_ms = now;
+        record.expires_at_unix_ms = now.saturating_add(ttl_ms.max(1));
+        Ok(true)
+    }
+
     async fn append_trajectory(
         &self,
         request: TrajectoryAppendRequest,
@@ -995,4 +1009,39 @@ fn unix_now_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn attempt_heartbeat_renews_only_the_active_fenced_attempt() {
+        let control = MemoryChronicleControl::new("memory");
+        assert!(control
+            .publish_attempt_active("run-1", "attempt-1", 3, 1_000)
+            .await
+            .unwrap());
+        let initial = control.get_attempt("run-1").await.unwrap().unwrap();
+        assert!(!control
+            .heartbeat_attempt("run-1", "attempt-old", 2, 2_000)
+            .await
+            .unwrap());
+        assert!(control
+            .heartbeat_attempt("run-1", "attempt-1", 3, 2_000)
+            .await
+            .unwrap());
+        let renewed = control.get_attempt("run-1").await.unwrap().unwrap();
+        assert_eq!(renewed.revision, initial.revision + 1);
+        assert!(renewed.expires_at_unix_ms >= initial.expires_at_unix_ms);
+
+        assert!(control
+            .publish_attempt_terminal("run-1", "attempt-1", 3, serde_json::json!({"ok": true}))
+            .await
+            .unwrap());
+        assert!(!control
+            .heartbeat_attempt("run-1", "attempt-1", 3, 2_000)
+            .await
+            .unwrap());
+    }
 }

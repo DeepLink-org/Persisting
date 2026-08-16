@@ -12,8 +12,14 @@ planner / plan()
       │ stable task identity + backpressure
       ▼
 pPilot ── RunSpec/file + process ──► pVisor ── RunResult ──► durable result journal
-      │                   │
-      └── lease / CAS ────┴───────────────► pChronicle Run control
+      │                                │
+      │ lease / CAS                    │ EventRecord + Attempt state
+      └──────────────┬─────────────────┘
+                     ▼
+             pChronicle control sidecar
+                     │
+                     ▼
+              durable history store
 ```
 
 pPilot owns planning, bounded concurrency, leases, infrastructure retries,
@@ -28,10 +34,19 @@ cancel messages are shared agentctl contracts. Process exit remains the
 lifecycle boundary; a Supervisor connection supplies live control without a
 resident pVisor daemon.
 
-The default pVisor build enables the `local-lance-chronicle` adapter so the
-standalone child can publish attempt state into pPilot's durable registry.
-This is a runtime-binary capability: it does not add pVisor or Gateway to
-pPilot's Cargo dependency graph, and it excludes cloud object-store SDKs.
+The default pVisor build has no embedded Chronicle storage adapter and does not
+link Lance or DataFusion. When durable publication is configured, pVisor starts
+`pchronicle control` and publishes Attempt state plus lifecycle/Gateway events
+through the shared `persisting-events` control contract. pPilot uses the same
+contract for lease/CAS and result-journal coordination; each command owns the
+sidecar process it starts. `--pchronicle-binary` or
+`PERSISTING_PCHRONICLE_BIN` selects the executable.
+
+The local control protocol is versioned, request-correlated, authenticated with
+a per-process token, and bound to loopback. It is a process boundary rather
+than a second storage implementation: pChronicle alone selects the physical
+backend and sends the durable acknowledgement. See
+[RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md).
 
 `run` executes a map-style `plan()` / `execute(item)` workload. `produce`
 streams complete Run descriptions from a planner and creates one independent

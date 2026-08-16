@@ -20,54 +20,12 @@ use persisting_agentctl::{
     ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
 };
-#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
-use persisting_pchronicle::AttemptRegistry;
-use persisting_pchronicle::EventRecord;
+use persisting_events::{ChronicleControl, ChronicleControlProcessClient, EventRecord};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-
-#[cfg(not(any(feature = "lance-chronicle", feature = "local-lance-chronicle")))]
-struct AttemptRegistry;
-
-#[cfg(not(any(feature = "lance-chronicle", feature = "local-lance-chronicle")))]
-impl AttemptRegistry {
-    async fn open(_root: impl AsRef<str>) -> anyhow::Result<Self> {
-        anyhow::bail!("durable remote Attempt registration requires the `lance-chronicle` feature")
-    }
-
-    async fn publish_active(
-        &self,
-        _run_id: &str,
-        _attempt_id: &str,
-        _lease_epoch: u64,
-        _ttl_ms: u64,
-    ) -> anyhow::Result<bool> {
-        anyhow::bail!("durable Attempt registry is unavailable")
-    }
-
-    async fn heartbeat(
-        &self,
-        _run_id: &str,
-        _attempt_id: &str,
-        _lease_epoch: u64,
-        _ttl_ms: u64,
-    ) -> anyhow::Result<bool> {
-        anyhow::bail!("durable Attempt registry is unavailable")
-    }
-
-    async fn publish_terminal(
-        &self,
-        _run_id: &str,
-        _attempt_id: &str,
-        _lease_epoch: u64,
-        _result: serde_json::Value,
-    ) -> anyhow::Result<bool> {
-        anyhow::bail!("durable Attempt registry is unavailable")
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PVisorError {
@@ -250,6 +208,8 @@ pub struct PVisorBuilder {
     runtime: RuntimeSupervisorBuilder,
     event_sink: Option<Arc<dyn EventSink>>,
     executors: Option<Vec<Arc<dyn RunExecutor>>>,
+    chronicle_control: Option<Arc<dyn ChronicleControl>>,
+    pchronicle_binary: std::path::PathBuf,
 }
 
 impl std::fmt::Debug for PVisorBuilder {
@@ -261,6 +221,14 @@ impl std::fmt::Debug for PVisorBuilder {
                 &self.event_sink.as_ref().map(|_| "<EventSink>"),
             )
             .field("executors", &self.executors.as_ref().map(|e| e.len()))
+            .field(
+                "chronicle_control",
+                &self
+                    .chronicle_control
+                    .as_ref()
+                    .map(|_| "<ChronicleControl>"),
+            )
+            .field("pchronicle_binary", &self.pchronicle_binary)
             .finish()
     }
 }
@@ -319,6 +287,20 @@ impl PVisorBuilder {
         self
     }
 
+    /// Inject the lightweight pChronicle control-plane port used for durable
+    /// Attempt registration. Storage engines remain outside the pVisor process.
+    pub fn chronicle_control(mut self, control: Arc<dyn ChronicleControl>) -> Self {
+        self.chronicle_control = Some(control);
+        self
+    }
+
+    /// Select the sidecar executable used when a Run requests durable Attempt
+    /// registration without an injected control connection.
+    pub fn pchronicle_binary(mut self, binary: impl Into<std::path::PathBuf>) -> Self {
+        self.pchronicle_binary = binary.into();
+        self
+    }
+
     pub fn executors(mut self, executors: Vec<Arc<dyn RunExecutor>>) -> Self {
         self.executors = Some(executors);
         self
@@ -333,6 +315,12 @@ impl PVisorBuilder {
                 .event_sink
                 .unwrap_or_else(|| Arc::new(NoopEventSink) as Arc<dyn EventSink>),
             runtime: self.runtime.build(),
+            chronicle_control: self.chronicle_control,
+            pchronicle_binary: if self.pchronicle_binary.as_os_str().is_empty() {
+                "pchronicle".into()
+            } else {
+                self.pchronicle_binary
+            },
         }
     }
 }
@@ -346,6 +334,8 @@ pub struct PVisor {
     executors: Arc<Vec<Arc<dyn RunExecutor>>>,
     event_sink: Arc<dyn EventSink>,
     runtime: RuntimeSupervisor,
+    chronicle_control: Option<Arc<dyn ChronicleControl>>,
+    pchronicle_binary: std::path::PathBuf,
 }
 
 impl Default for PVisor {
@@ -562,19 +552,26 @@ impl PVisor {
             .as_ref()
             .map(|bootstrap| bootstrap.attempt_ttl_ms.max(1_000))
             .unwrap_or(15_000);
-        let attempt_registry = match spec
+        let attempt_registry: Option<Arc<dyn ChronicleControl>> = match spec
             .supervisor
             .as_ref()
             .and_then(|bootstrap| bootstrap.attempt_registry_uri.as_deref())
         {
             Some(root) => {
-                let registry = Arc::new(
-                    AttemptRegistry::open(root)
-                        .await
-                        .map_err(PVisorError::AttemptRegistry)?,
-                );
+                let registry = match self
+                    .chronicle_control
+                    .as_ref()
+                    .filter(|control| control.root_uri() == root)
+                {
+                    Some(control) => Arc::clone(control),
+                    None => Arc::new(
+                        ChronicleControlProcessClient::spawn(&self.pchronicle_binary, root)
+                            .await
+                            .map_err(PVisorError::AttemptRegistry)?,
+                    ) as Arc<dyn ChronicleControl>,
+                };
                 let registered = registry
-                    .publish_active(
+                    .publish_attempt_active(
                         run_id.as_str(),
                         attempt_id.as_str(),
                         spec.lease_epoch,
@@ -610,7 +607,7 @@ impl PVisor {
                         _ = heartbeat_stop.cancelled() => break,
                         _ = interval.tick() => {
                             match registry
-                                .heartbeat(
+                                .heartbeat_attempt(
                                     &heartbeat_run_id,
                                     &heartbeat_attempt_id,
                                     heartbeat_epoch,
@@ -771,7 +768,7 @@ impl PVisor {
             if let Some(registry) = attempt_registry {
                 match serde_json::to_value(&result) {
                     Ok(value) => match registry
-                        .publish_terminal(
+                        .publish_attempt_terminal(
                             result.run_id.as_str(),
                             result.attempt_id.as_str(),
                             result.lease_epoch,
@@ -979,9 +976,9 @@ mod tests {
     use super::*;
     use crate::{EventSink, MemoryEventSink};
     use async_trait::async_trait;
-    #[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
     use persisting_agentctl::SupervisorBootstrap;
     use persisting_agentctl::{NetworkCapability, RunFailureKind, RunInvocation, StdioMode};
+    use persisting_events::{AttemptRecordState, MemoryChronicleControl};
     use std::sync::Mutex;
 
     #[test]
@@ -1161,13 +1158,13 @@ mod tests {
         assert!(kinds.iter().any(|kind| kind == "run.state_changed"));
     }
 
-    #[cfg(all(
-        unix,
-        any(feature = "lance-chronicle", feature = "local-lance-chronicle")
-    ))]
+    #[cfg(unix)]
     #[tokio::test]
     async fn durable_attempt_registry_receives_terminal_run_result() {
         let dir = tempfile::tempdir().unwrap();
+        let control = Arc::new(MemoryChronicleControl::new(
+            dir.path().display().to_string(),
+        ));
         let mut spec = RunSpec::process("run-durable-registry", "test-agent", "/bin/sh");
         spec.lease_epoch = 7;
         spec.supervisor = Some(SupervisorBootstrap {
@@ -1182,16 +1179,22 @@ mod tests {
         process.args = vec!["-c".into(), "printf durable".into()];
         process.stdout = StdioMode::Capture;
 
-        let result = PVisor::new().run(spec).await.unwrap().wait().await.unwrap();
-        assert_eq!(result.state, RunState::Completed);
-        let registry = AttemptRegistry::open(dir.path().display().to_string())
+        let result = PVisor::builder()
+            .chronicle_control(control.clone())
+            .build()
+            .run(spec)
+            .await
+            .unwrap()
+            .wait()
             .await
             .unwrap();
-        let record = registry.get("run-durable-registry").await.unwrap().unwrap();
-        assert_eq!(
-            record.state,
-            persisting_pchronicle::AttemptRecordState::Terminal
-        );
+        assert_eq!(result.state, RunState::Completed);
+        let record = control
+            .get_attempt("run-durable-registry")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.state, AttemptRecordState::Terminal);
         assert_eq!(record.lease_epoch, 7);
         let recovered: RunResult = serde_json::from_value(record.terminal_result.unwrap()).unwrap();
         assert_eq!(recovered.attempt_id, result.attempt_id);

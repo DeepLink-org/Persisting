@@ -33,8 +33,10 @@ child, waits for the child, flushes capture, and stops the Gateway. Each Run
 writes an independent directory below `PERSISTING_RUN_HOME`.
 
 Use `--gateway-stream-markdown` for a live human-readable projection and
-`--chronicle-mode lance` for canonical structured events. Dataset catalog,
-query, analysis, import/export, and the read-only Web UI are provided by
+`--chronicle-mode spawn` to start a pChronicle sidecar for canonical structured
+events. pVisor sends the shared event contract and does not write Lance itself;
+`lance` is retained only as a compatibility alias. Dataset catalog, query,
+analysis, import/export, and the read-only Web UI are provided by
 [`pchronicle`](../../pchronicle/get-started.md).
 
 Clients must use an injected proxy or base URL to be observed. Direct sockets

@@ -34,7 +34,7 @@ pub use agenticmd_validate::{
 pub use detect::detect_format;
 pub use events::{
     events_lance_only_error, events_lance_only_message, export_events_json_pretty,
-    export_events_jsonl, EventIdentity, EventRecord, EventsDocument,
+    export_events_jsonl, ChronicleEventRecordExt, EventIdentity, EventRecord, EventsDocument,
 };
 pub use llm::{
     LlmCandidate, LlmContentPart, LlmExtensions, LlmGenerationParams, LlmImageSource, LlmMessage,

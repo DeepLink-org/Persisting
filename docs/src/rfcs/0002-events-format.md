@@ -5,13 +5,17 @@
 | **Status** | Accepted |
 | **Schema / format name** | `events`（逻辑文档）；物理存储常为 `events.lance` |
 | **Date** | 2026-07-30 |
-| **Component** | Gateway + pChronicle |
-| **Implements** | `persisting-gateway` `EventRecord` / `EventRow` · `persisting-pchronicle` `formats/events.rs` |
-| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [Capture 管线](../pvisor/design/gateway.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
+| **Component** | `persisting-events` + Gateway + pChronicle |
+| **Implements** | `persisting-events::EventRecord` · `persisting-pchronicle` `formats/events.rs` / `EventRow` |
+| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0007 Events/Sidecar 边界](0007-events-contract-pchronicle-sidecar.md) · [Capture 管线](../pvisor/design/gateway.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ---
 
 ## 摘要
+
+> **Ownership amendment:** [RFC-0007](0007-events-contract-pchronicle-sidecar.md)
+> 将存储无关的 `EventRecord` 契约迁至 `persisting-events`。本 RFC 继续规定 events 的
+> wire 内容与物理表示；pChronicle 继续独占 `EventRow` 和持久化实现。
 
 **`events`** 是 Persisting 轨迹的 **canonical 事实流（SoT）**：按时间（`seq`）追加的底层记录，**优先刻画原始 HTTP（或等价传输层）交换**，而不是已经折叠好的对话轮次。
 
@@ -120,8 +124,9 @@ Persisting Gateway 的主入口是代理流量。`events` 应对齐这一现实�
 
 ## Schema：逻辑事件 `EventRecord`
 
-编码：UTF-8 JSON object。`EventRecord` 由 pChronicle 唯一定义；Gateway 与 pVisor
-生命周期事件直接使用同一类型。
+编码：UTF-8 JSON object。`EventRecord` 由存储无关的 `persisting-events` 唯一定义；
+Gateway、pVisor 与 pChronicle 直接使用同一类型。pChronicle 独占由该逻辑记录派生的
+物理 row schema 与存储实现。
 一行事件 MUST 包含 `seq`、`source`、`kind`、`payload`。
 
 ### 关联信封（顶栏）
@@ -572,4 +577,5 @@ key = events 字段，value = 在 Storyline 上求值的 JSONPath。
 | Draft | 2026-07-30 | **headers 与 body 同为记录 MUST**；缺 headers 亦为 degraded |
 | Draft | 2026-07-30 | 增补 **长连接 `connection.*` + 客户端 `client.*`（peer/pid/command）** 记录要求 |
 | Draft | 2026-07-30 | **events 仅 Lance**：JSON/JSONL 降为调试导出，非一等 wire |
+| Accepted amendment | 2026-08-16 | RFC-0007 将 `EventRecord` ownership 迁至 `persisting-events`；pChronicle 保留物理 schema 与持久化 ownership |
 | Accepted | 2026-08-09 | 裁定 payload、SSE、seq、非 HTTP、capture 默认值与 connection identity；保持 at-least-once append-only。 |

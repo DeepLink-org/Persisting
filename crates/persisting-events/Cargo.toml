@@ -1,0 +1,28 @@
+[package]
+name = "persisting-events"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shared runtime event contracts for Persisting components"
+
+[features]
+default = []
+control = [
+    "dep:anyhow",
+    "dep:async-trait",
+    "dep:persisting-agentctl",
+    "dep:tokio",
+]
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+persisting-agentctl = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "process", "sync"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

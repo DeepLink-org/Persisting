@@ -202,8 +202,8 @@ fn chronicle_object_store_uri_survives_toml_round_trip() {
     );
 }
 
-#[cfg(any(feature = "lance-chronicle", feature = "local-lance-chronicle"))]
 #[test]
+#[ignore = "requires a built pchronicle sidecar binary"]
 fn run_accepts_portable_object_store_chronicle_sink() {
     let temporary = tempfile::tempdir().expect("create CLI fixture");
     let workspace = temporary.path().join("workspace");

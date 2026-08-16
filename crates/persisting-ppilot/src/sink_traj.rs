@@ -7,9 +7,7 @@ use crate::sink::ResultSink;
 use crate::task::TaskResult;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use persisting_pchronicle_client::{
-    ChronicleControl, EventIdentity, EventRecord, TrajectoryAppendRequest,
-};
+use persisting_events::{ChronicleControl, EventIdentity, EventRecord, TrajectoryAppendRequest};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;

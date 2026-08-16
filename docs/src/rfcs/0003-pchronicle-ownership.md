@@ -5,11 +5,12 @@
 | **Status** | Accepted |
 | **Date** | 2026-07-31 |
 | **Component** | `persisting-pchronicle` |
+| **Amended by** | [RFC-0007 Events/Sidecar 边界](0007-events-contract-pchronicle-sidecar.md) |
 | **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0002 Events](0002-events-format.md) · [轨迹存储](../pchronicle/design/trajectory-storage.md) |
 
 ## 摘要
 
-`persisting-pchronicle` 是 Persisting 唯一的 **Agent 轨迹结构化存储与检索层**。轨迹的逻辑记录、格式 schema、目录布局、物理落盘、读取、回放、格式转换和派生视图 MUST 收敛到 pChronicle。
+`persisting-pchronicle` 是 Persisting 唯一的 **Agent 轨迹结构化存储与检索层**。轨迹的物理 schema、目录布局、物理落盘、读取、回放、格式转换和派生视图 MUST 收敛到 pChronicle。存储无关的逻辑事件信封由 `persisting-events` 定义，具体修订见 RFC-0007。
 
 Gateway 和 CLI 可以分别生产事件和适配输入，但 MUST NOT 定义第二套通用轨迹存储实现。
 
@@ -17,7 +18,7 @@ Gateway 和 CLI 可以分别生产事件和适配输入，但 MUST NOT 定义第
 
 ### 1. Canonical 记录
 
-`EventRecord` 是 crate 边界和 Gateway 采集管线共同使用的 canonical 逻辑记录。
+`persisting-events::EventRecord` 是 crate 边界和 Gateway 采集管线共同使用的 canonical 逻辑记录。
 provider/SSE payload 解释可作为 Gateway 扩展行为存在，但不得形成第二套可序列化轨迹类型。
 
 `EventRow` 是 `events.lance` 的稳定物理行。其 Arrow schema、行转换、序号和 session 分区语义由 pChronicle 独占维护。
@@ -42,9 +43,10 @@ CAS。索引、compaction 与 vacuum 必须由显式维护路径执行。
 
 ### 3. 格式层
 
-pChronicle MUST 统一拥有：
+pChronicle MUST 统一拥有除公共事件信封以外的轨迹格式与转换实现：
 
-- `events`、`storyline`、`agenticmd`、`openai_msg`、`atif`、`actf` 的 Rust 数据结构；
+- `EventRow` 以及 `storyline`、`agenticmd`、`openai_msg`、`atif`、`actf` 的 Rust 数据结构；
+- `EventRecord` 到物理 row 与外围格式的映射；
 - 格式识别、校验及转换；
 - event 与物理行、Markdown block、Storyline turn 之间的映射；
 - AgenticMD 的宽松解析、可视化生成、preamble 更新和调试索引；
@@ -56,8 +58,8 @@ pChronicle MUST 统一拥有：
 | 组件 | MUST | MUST NOT |
 |---|---|---|
 | Gateway | 作为 OverlayNet sink 解释并转发 Agent/LLM 协议；维护采集顺序与调用生命周期；产出 `EventRecord`；实现与实时流状态有关的 live projection 策略 | 自有网络数据面或轨迹记录 schema；把 AgenticMD 当作可恢复事实源 |
-| CLI | 解析参数和输入来源；进程内调用 pChronicle；展示结果 | 自有 Markdown/ATIF parser、落盘协议或动态 ABI |
-| pChronicle | 定义格式、存储、读取、转换和派生视图 | 依赖 Gateway 才能解释持久化数据 |
+| CLI / producer | 解析输入并产出公共事件；需要持久化时通过 pChronicle API 或 sidecar control 协议提交 | 自有 Markdown/ATIF parser、物理落盘协议或动态 ABI |
+| pChronicle | 定义物理格式、存储、读取、转换和派生视图；消费公共 `EventRecord` | 依赖 Gateway 才能解释持久化数据；复制一套公共事件信封 |
 
 Gateway 的 live Markdown 行为可以保留 producer-specific 策略，例如流式 draft upsert；它必须同时写 canonical events。通用 batch materialize 归 pChronicle，不提供 AgenticMD → events 的隐式 compact。
 
@@ -86,13 +88,14 @@ Run lease epoch MUST 通过 `EventWriterFence` 进入 canonical event 提交协�
 ## 收敛结果
 
 - 原 Engine 中的 Trajectory 适配、Lance、Markdown 和 Arrow row 实现全部迁入 pChronicle；Engine crate 删除。
-- Gateway 直接使用 pChronicle 的 `EventRecord`；Gateway extension 仅承载实时 payload 解释。
+- Gateway、pVisor 与 pChronicle 直接使用 `persisting-events::EventRecord`；Gateway extension 仅承载实时 payload 解释。
 - Gateway 仅保留实时 payload 解释、live Markdown eligibility/upsert orchestration 与运行时 reconcile；格式解析、文件 I/O、frontmatter 契约与索引实现委托 pChronicle。
-- 调用方直接依赖 pChronicle。
+- 只生产事件或调用 control 协议的组件依赖 `persisting-events`；需要存储、查询或格式转换的调用方依赖 pChronicle。
 - 旧 ATIF `sessions` / `steps` / `tool_calls`、`NormalizedStore`、内存联表视图及对应 Python 门面删除；ATIF 查询统一复用 Storyline 三表 schema。
 - append 边界直接传递 `EventRecord` 批次，不保留 RON/event-lines 字符串适配层。
 
-新代码 SHOULD 直接依赖 pChronicle 的类型与操作；Gateway 也直接使用 `EventRecord`。
+新代码 SHOULD 按能力选择依赖：事件 producer 使用 `persisting-events`，存储和读取调用方
+使用 pChronicle。Gateway 与 pVisor 不得为了构造 `EventRecord` 依赖 pChronicle。
 
 ## 验收条件
 
@@ -104,3 +107,9 @@ Run lease epoch MUST 通过 `EventWriterFence` 进入 canonical event 提交协�
 - ATIF 与 Lance 查询 MUST 注册相同的 `runs`、`steps`、`tool_calls` Arrow schema。
 - pChronicle 的物理后端、格式转换、WAL/投影相关边界行为有回归测试。
 - 文档和 crate metadata 均把 pChronicle 表述为结构化轨迹存储层。
+
+## Amendment history
+
+| Date | RFC | Change |
+|---|---|---|
+| 2026-08-16 | [RFC-0007](0007-events-contract-pchronicle-sidecar.md) | 将公共 `EventRecord` 契约迁至 `persisting-events`；pChronicle 保留全部物理存储、格式转换与读取 ownership |

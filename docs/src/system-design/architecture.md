@@ -10,9 +10,10 @@ commands belong to each product's Reference.
 
 | Product or layer | Owns | Does not own |
 | --- | --- | --- |
+| `persisting-events` contract | storage-independent `EventRecord` identity/envelope and the optional versioned pChronicle control protocol | storage rows, storage engines, query, or projection |
 | pVisor | one Run, its Attempts, execution environment, capability admission, effects, and runtime evidence | many-Run scheduling or durable history queries |
 | pPilot | planning and reconciling many Runs, leases, bounded concurrency, infrastructure retry, and result collection | Agent reasoning, provider enforcement, or trajectory storage |
-| pChronicle | canonical events, terminal facts, Dataset discovery, normalized projections, revisions, and read surfaces | starting, scheduling, or controlling a Run |
+| pChronicle | durable canonical event log, physical schemas/backends, terminal facts, Dataset discovery, normalized projections, revisions, and read surfaces | starting, scheduling, or controlling a Run; defining a second event envelope |
 | Runtime provider | one physical execution mechanism | logical Run identity or product policy |
 
 Gateway, OverlayFS, and OverlayNet are pVisor runtime mechanisms. They do not
@@ -49,9 +50,11 @@ User or Agent framework
   → capability-by-dimension provider selection
   → Attempt execution
   → runtime events and Artifact references
+  → persisting-events contract
+  → pChronicle sidecar durable acknowledgement (when enabled)
   → Effect review or direct policy decision
   → terminal RunResult
-  → pChronicle canonical history
+  → pChronicle canonical history and projections
 ```
 
 Admission compares requested capability dimensions with evidence the selected
@@ -90,12 +93,15 @@ for at-least-once Attempts with one visible Run result.
 
 ## History path
 
-pVisor, Gateway, providers, and importers emit facts. pChronicle owns their
-durable interpretation after ingestion:
+pVisor, Gateway, providers, and importers emit facts using the shared
+`persisting-events::EventRecord` contract. pChronicle owns durable ingestion,
+the physical representation, and interpretation:
 
 ```text
 producers
-  → canonical events
+  → EventRecord contract
+  → versioned pChronicle control protocol or in-process pChronicle API
+  → durable canonical event log
   → terminal fact and Artifact manifest
   → normalized Run / Step / ToolCall projections
   → exchange formats and lineage-bearing revisions
@@ -106,13 +112,20 @@ rebuildable projections. Exchange files are interoperability boundaries, not a
 replacement source of truth. Each read operation fixes a Catalog Snapshot; it
 does not invent a global transaction across unrelated Sources.
 
+The default pVisor build does not link Lance or DataFusion. With Chronicle mode
+`spawn`, pVisor starts `pchronicle control`, submits lifecycle and Gateway
+events over authenticated loopback IPC, and treats only a successful sidecar
+response as a durable acknowledgement. The legacy mode name `lance` is an
+alias for `spawn`; pVisor no longer writes Lance itself.
+
 ## Failure and recovery
 
 | Failure | Owner | Required behavior |
 | --- | --- | --- |
 | Attempt exits or provider disappears | pVisor | finalize evidence; expose failure or create a fenced replacement Attempt |
 | Worker lease expires | pPilot | prevent stale terminal publication; reconcile expected and observed state |
-| capture queue is saturated | producer/Gateway | never block the request callback; report loss or preserve through the configured durable path |
+| sidecar append queue is saturated or closed | pVisor/Gateway producer | reject before submission and report the failure; do not claim durability |
+| append connection or acknowledgement is lost | producer and pChronicle writer | preserve the write as unknown because it may have committed; do not reuse its sequence as if definitely rejected |
 | history publication conflicts | pChronicle writer | preserve the previously published Snapshot; surface or retry according to the writer contract |
 | control plane restarts | pPilot | reconcile checkpoint, active Attempts, and terminal history facts |
 | view generation fails | pChronicle | keep canonical facts readable; rebuild the derived view |
@@ -146,6 +159,7 @@ See [Security and evidence](security-evidence.md) for evidence levels and
 
 | Boundary | Contract owner | Detailed document |
 | --- | --- | --- |
+| logical runtime event and local Chronicle control protocol | `persisting-events` | [RFC-0007](../rfcs/0007-events-contract-pchronicle-sidecar.md) |
 | Agent execution and Effect review | pVisor | [pVisor concepts](../pvisor/concepts/index.md) and [guides](../pvisor/guides/index.md) |
 | provider and runtime mechanisms | pVisor | [pVisor design](../pvisor/design/index.md) |
 | many-Run orchestration | pPilot within pVisor | [pPilot design](../pvisor/design/orchestration.md) |

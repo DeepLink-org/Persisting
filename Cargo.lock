@@ -4898,8 +4898,6 @@ dependencies = [
 [[package]]
 name = "krun-init-blob"
 version = "0.1.0-1.19.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c90831a5abcb1c887fcd56b76c9970e1a6e36e6892e74fb672a731448473cd3b"
 
 [[package]]
 name = "krun-kernel"
@@ -6856,6 +6854,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "persisting-events"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "persisting-agentctl",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "persisting-gateway"
 version = "0.2.0"
 dependencies = [
@@ -6872,6 +6883,7 @@ dependencies = [
  "hostname",
  "http-body-util",
  "persisting-agentctl",
+ "persisting-events",
  "persisting-overlaynet",
  "persisting-pchronicle",
  "pulsing-actor",
@@ -6959,6 +6971,7 @@ dependencies = [
  "libc",
  "object_store",
  "persisting-agentctl",
+ "persisting-events",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -6986,9 +6999,9 @@ dependencies = [
  "include_dir",
  "libc",
  "persisting-agentctl",
+ "persisting-events",
  "persisting-gateway",
  "persisting-pchronicle",
- "persisting-pchronicle-client",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -7001,18 +7014,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "persisting-pchronicle-client"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "persisting-agentctl",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "persisting-ppilot"
 version = "0.2.0"
 dependencies = [
@@ -7022,7 +7023,7 @@ dependencies = [
  "clap",
  "futures",
  "persisting-agentctl",
- "persisting-pchronicle-client",
+ "persisting-events",
  "pulsing-actor",
  "serde",
  "serde_json",
@@ -7050,11 +7051,11 @@ dependencies = [
  "libc",
  "libkrun",
  "persisting-agentctl",
+ "persisting-events",
  "persisting-gateway",
  "persisting-overlay-core",
  "persisting-overlayfs",
  "persisting-overlaynet",
- "persisting-pchronicle",
  "persisting-ppilot",
  "reqwest 0.12.28",
  "serde",
