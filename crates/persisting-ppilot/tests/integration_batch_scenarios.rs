@@ -35,6 +35,7 @@ def plan():
         "integration".into(),
         BatchProductionOptions {
             output_dir: output.clone(),
+            pvisor_binary: PathBuf::from("pvisor"),
             parallelism: 2,
             capture_gateway: true,
             supervisor_network_limit_bytes_per_second: None,
@@ -49,24 +50,25 @@ def plan():
     assert!(output.join("production-report.json").is_file());
     for outcome in report.runs {
         assert_eq!(outcome.state, RunState::Completed);
-        let bundle = persisting_pvisor::RunBundle::read(&outcome.workspace).unwrap();
+        let bundle: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(outcome.workspace.join("run-bundle.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
-            bundle
-                .orchestration
-                .get("persisting.ppilot.supervisor.connected"),
+            bundle["orchestration"].get("persisting.ppilot.supervisor.connected"),
             Some(&serde_json::json!(true))
         );
         assert_eq!(
-            bundle.run.task_id.as_deref(),
-            Some(outcome.task_id.as_str())
+            bundle["run"]["task_id"].as_str(),
+            Some(outcome.task_id.as_str()),
         );
         assert_eq!(
-            bundle.run.parent_run_id.as_deref(),
+            bundle["run"]["parent_run_id"].as_str(),
             Some("ppilot-batch-integration")
         );
-        assert_eq!(bundle.orchestration["ppilot.batch_id"], "integration");
+        assert_eq!(bundle["orchestration"]["ppilot.batch_id"], "integration");
         assert_eq!(
-            bundle.orchestration["ppilot.scope"],
+            bundle["orchestration"]["ppilot.scope"],
             "trajectory-production"
         );
         assert!(outcome.workspace.join("run.json").is_file());

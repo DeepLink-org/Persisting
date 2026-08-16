@@ -11,7 +11,7 @@ commit boundary belongs to [System Design](../../system-design/architecture.md).
 planner / plan()
       │ stable task identity + backpressure
       ▼
-pPilot ── RunSpec ──► pVisor ── RunResult ──► durable result journal
+pPilot ── RunSpec/file + process ──► pVisor ── RunResult ──► durable result journal
       │                   │
       └── lease / CAS ────┴───────────────► pChronicle Run control
 ```
@@ -20,6 +20,18 @@ pPilot owns planning, bounded concurrency, leases, infrastructure retries,
 resume/reconciliation, and result collection. pVisor owns each Run/Attempt and
 its runtime drivers. pChronicle owns trajectory Dataset catalog, SQL, analysis,
 find, import/export, and serving.
+
+pPilot does not link the pVisor implementation crate. It launches one
+foreground `pvisor` binary per Run, submits a versioned `RunSpec`, and reads an
+atomic `RunResult`. The job Supervisor's registration, heartbeat, quota, and
+cancel messages are shared agentctl contracts. Process exit remains the
+lifecycle boundary; a Supervisor connection supplies live control without a
+resident pVisor daemon.
+
+The product build enables pVisor's `local-lance-chronicle` adapter so the
+standalone child can publish attempt state into pPilot's durable registry.
+This is a runtime-binary capability: it does not add pVisor or Gateway to
+pPilot's Cargo dependency graph, and it excludes cloud object-store SDKs.
 
 `run` executes a map-style `plan()` / `execute(item)` workload. `produce`
 streams complete Run descriptions from a planner and creates one independent

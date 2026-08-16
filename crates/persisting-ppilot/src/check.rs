@@ -18,6 +18,7 @@ use tokio::process::Command;
 pub struct CheckOptions {
     pub script: PathBuf,
     pub python: PathBuf,
+    pub pvisor_binary: PathBuf,
     /// Max tasks to actually execute (0 = all).
     pub limit: usize,
     pub workers: usize,
@@ -156,6 +157,7 @@ pub async fn run_check(opts: CheckOptions) -> Result<CheckReport> {
     let run_opts = RunOptions {
         script: opts.script.clone(),
         python: opts.python.clone(),
+        pvisor_binary: opts.pvisor_binary.clone(),
         workers: opts.workers.max(1),
         max_inflight: opts.workers.max(1),
         per_worker_inflight: 1,

@@ -50,3 +50,6 @@ reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 [[bin]]
 name = "pvisor"
 path = "src/bin/pvisor.rs"
+
+[dev-dependencies]
+persisting-ppilot = { path = "../persisting-ppilot" }

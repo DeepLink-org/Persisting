@@ -1,8 +1,9 @@
-//! pVisor executor provider used by pPilot workers while the Driver schedules TaskExpr.
+//! External pVisor process provider used by pPilot workers while the Driver schedules TaskExpr.
 //!
 //! Every TaskExpr is adapted to one stable RunSpec. The long-lived Python host
-//! implements [`RunExecutor`], so execution, cancellation and terminal state all
-//! pass through pVisor without paying one Python import per task.
+//! is reached through a small loopback client process, so execution,
+//! cancellation and terminal state pass through the standalone pVisor binary
+//! without paying one Python module import per task.
 //!
 //! **Primitive:** [`Executor`] trait · [`ExecutorRouter`] (product: `op=execute` only).
 //!
@@ -10,29 +11,27 @@
 //! Driver --ask--> WorkerActor -- RunSpec --> pVisor --> plan.py::execute(item)
 //! ```
 
-use crate::agent_abi::{AgentCtlClient, AgentCtlClientConfig};
-use crate::digest::sha256_hex;
 use crate::python_env;
-use crate::runtime_bridge::PilotRuntimeBridge;
 use crate::task::{unix_now, ErrorKind, TaskExpr, TaskResult};
 use anyhow::{bail, Context, Result};
-use async_trait::async_trait;
+#[cfg(test)]
+use persisting_agentctl::{ArtifactRef, ProcessOutput};
 use persisting_agentctl::{
-    ArtifactRef, ExecutorDescriptor, ExecutorKind, IsolationKind, ProcessOutput, RunFailure,
-    RunFailureKind, RunInvocation, RunResult, RunSpec, RunState,
+    PVisorProcessClient, PVisorProcessOptions, RunFailure, RunFailureKind, RunInvocation,
+    RunResult, RunSpec, RunState, StdioMode,
 };
-use persisting_pvisor::{
-    AgentClientRole, AgentEffectOutcome, AgentProcessRegistration, AttemptContext, PVisor,
-    RunExecutor,
-};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// Long-lived host: load plan module once, call `execute(item)`.
@@ -125,6 +124,42 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
+
+/// Short-lived workload process launched by the standalone pVisor. It only
+/// relays one task to the worker-local Python host and emits one TaskResult.
+const PLAN_HOST_CLIENT: &str = r#"
+import json, socket, sys
+
+endpoint, token, task_file, worker_id = sys.argv[1:5]
+host, port = endpoint.rsplit(":", 1)
+with open(task_file, "r", encoding="utf-8") as f:
+    task = json.load(f)
+with socket.create_connection((host, int(port)), timeout=5) as sock:
+    stream = sock.makefile("rwb", buffering=0)
+    request = json.dumps({"token": token, "task": task, "worker_id": worker_id})
+    stream.write(request.encode("utf-8") + b"\n")
+    reply = stream.readline()
+    if not reply:
+        raise RuntimeError("pPilot plan host closed without a result")
+result = json.loads(reply)["result"]
+print(json.dumps(result, separators=(",", ":")), flush=True)
+if result.get("cancelled"):
+    raise SystemExit(130)
+if not result.get("ok"):
+    raise SystemExit(1)
+"#;
+
+#[derive(Debug, Deserialize)]
+struct PlanHostRequest {
+    token: String,
+    task: TaskExpr,
+    worker_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanHostResponse {
+    result: TaskResult,
+}
 
 struct PlanHost {
     child: Child,
@@ -300,211 +335,154 @@ impl PlanHostExecutor {
     }
 }
 
-/// Default algo path: plan script's `execute(item)`.
-pub struct PlanExecuteExecutor {
+struct PlanHostService {
+    endpoint: String,
+    token: String,
+    task_dir: tempfile::TempDir,
+    stop: CancellationToken,
+    join: JoinHandle<()>,
+}
+
+impl PlanHostService {
+    fn start(
+        host: Arc<PlanHostExecutor>,
+        plan_script: PathBuf,
+        script_args: Vec<String>,
+    ) -> Result<Self> {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").context("bind pPilot plan-host relay")?;
+        listener.set_nonblocking(true)?;
+        let endpoint = listener.local_addr()?.to_string();
+        let listener = TcpListener::from_std(listener)?;
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let task_dir = tempfile::Builder::new()
+            .prefix("persisting-ppilot-worker-")
+            .tempdir()?;
+        let stop = CancellationToken::new();
+        let task_stop = stop.clone();
+        let expected_token = token.clone();
+        let join = tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    _ = task_stop.cancelled() => break,
+                    accepted = listener.accept() => accepted,
+                };
+                let Ok((stream, _)) = accepted else { continue };
+                let connection_host = Arc::clone(&host);
+                let connection_script = plan_script.clone();
+                let connection_args = script_args.clone();
+                let connection_token = expected_token.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = handle_plan_host_connection(
+                        stream,
+                        connection_host,
+                        connection_script,
+                        connection_args,
+                        connection_token,
+                    )
+                    .await
+                    {
+                        tracing::debug!(%error, "pPilot plan-host relay ended");
+                    }
+                });
+            }
+        });
+        Ok(Self {
+            endpoint,
+            token,
+            task_dir,
+            stop,
+            join,
+        })
+    }
+
+    async fn write_task(&self, task: &TaskExpr) -> Result<PathBuf> {
+        let path = self
+            .task_dir
+            .path()
+            .join(format!("task-{}.json", uuid::Uuid::new_v4().simple()));
+        tokio::fs::write(&path, serde_json::to_vec(task)?)
+            .await
+            .with_context(|| format!("write pPilot task relay file {}", path.display()))?;
+        Ok(path)
+    }
+}
+
+async fn handle_plan_host_connection(
+    stream: TcpStream,
     host: Arc<PlanHostExecutor>,
     plan_script: PathBuf,
     script_args: Vec<String>,
-}
-
-impl PlanExecuteExecutor {
-    async fn run_with_cancel(
-        &self,
-        task: TaskExpr,
-        worker_id: &str,
-        cancel: CancellationToken,
-    ) -> TaskResult {
-        self.host
-            .run_plan_execute(
-                &self.plan_script,
-                &self.script_args,
-                task,
-                worker_id,
-                cancel,
-            )
-            .await
+    expected_token: String,
+) -> Result<()> {
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    let line = lines
+        .next_line()
+        .await?
+        .context("plan-host client closed before request")?;
+    let request: PlanHostRequest = serde_json::from_str(&line)?;
+    if request.token != expected_token {
+        bail!("plan-host authentication failed");
     }
-}
-
-#[async_trait]
-impl RunExecutor for PlanExecuteExecutor {
-    fn descriptor(&self) -> ExecutorDescriptor {
-        ExecutorDescriptor {
-            name: "ppilot-plan-host-v1".into(),
-            kind: ExecutorKind::Process,
-            isolation: IsolationKind::HostProcess,
-            capability_enforcement: Default::default(),
-            supports_checkpoint: true,
-            supports_migration: false,
+    let cancellation = CancellationToken::new();
+    let execution = host.run_plan_execute(
+        &plan_script,
+        &script_args,
+        request.task,
+        &request.worker_id,
+        cancellation.clone(),
+    );
+    tokio::pin!(execution);
+    let result = tokio::select! {
+        result = &mut execution => result,
+        disconnected = lines.next_line() => {
+            cancellation.cancel();
+            let _ = disconnected;
+            execution.await
         }
-    }
-
-    fn supports(&self, invocation: &RunInvocation) -> bool {
-        matches!(invocation, RunInvocation::Process(_))
-    }
-
-    async fn execute(&self, context: AttemptContext) -> RunResult {
-        let spec = context.spec().clone();
-        let started_at_unix_ms = unix_ms();
-        context
-            .transition(RunState::Starting, Some("starting pPilot plan host".into()))
-            .await;
-        let task = match serde_json::from_value::<TaskExpr>(spec.input.clone()) {
-            Ok(task) => task,
-            Err(error) => {
-                return failed_run_result(
-                    &spec,
-                    &context,
-                    started_at_unix_ms,
-                    RunFailureKind::InvalidSpec,
-                    format!("decode pPilot TaskExpr from RunSpec.input: {error}"),
-                    false,
-                );
-            }
-        };
-        let worker_id = spec
-            .metadata
-            .get("ppilot.worker_id")
-            .and_then(Value::as_str)
-            .unwrap_or("ppilot-worker")
-            .to_string();
-        let agent_abi = match connect_agent_abi(&spec, &context, &worker_id) {
-            Ok(client) => client,
-            Err(error) => {
-                return failed_run_result(
-                    &spec,
-                    &context,
-                    started_at_unix_ms,
-                    RunFailureKind::Infrastructure,
-                    format!("connect pPilot to pVisor Agent ABI: {error:#}"),
-                    true,
-                );
-            }
-        };
-        context.transition(RunState::Running, None).await;
-        let effect_id = format!("task:{}", task.id);
-        if let Some(bridge) = agent_abi.as_ref() {
-            let digest = format!(
-                "sha256:{}",
-                sha256_hex(serde_json::to_vec(&task).unwrap_or_default())
-            );
-            let job_id = spec
-                .metadata
-                .get("ppilot.job_id")
-                .and_then(Value::as_str)
-                .unwrap_or("local");
-            if let Err(error) = bridge.begin_effect(
-                &effect_id,
-                "ppilot.task",
-                digest,
-                Some(format!("{job_id}/{}", task.id)),
-            ) {
-                return failed_run_result(
-                    &spec,
-                    &context,
-                    started_at_unix_ms,
-                    RunFailureKind::Infrastructure,
-                    format!("begin pPilot task effect: {error:#}"),
-                    true,
-                );
-            }
-        }
-        let task_result = self
-            .run_with_cancel(task, &worker_id, context.cancellation())
-            .await;
-        let effect_outcome = if task_result.ok {
-            AgentEffectOutcome::Committed
-        } else if task_result.cancelled {
-            AgentEffectOutcome::Aborted
-        } else {
-            AgentEffectOutcome::Unknown
-        };
-        let mut result = task_result_to_run_result(spec, context.attempt_id().clone(), task_result);
-        if let Some(bridge) = agent_abi {
-            if let Err(error) = bridge.complete_effect(&effect_id, effect_outcome) {
-                result.state = RunState::Failed;
-                result.exit_code = None;
-                result.failure = Some(RunFailure {
-                    kind: RunFailureKind::Infrastructure,
-                    message: format!("complete pPilot task effect: {error:#}"),
-                    retryable: true,
-                });
-            }
-            result.warnings.extend(bridge.finish().await);
-        }
-        result
-    }
-}
-
-fn connect_agent_abi(
-    spec: &RunSpec,
-    context: &AttemptContext,
-    worker_id: &str,
-) -> Result<Option<PilotRuntimeBridge>> {
-    let RunInvocation::Process(process) = &spec.invocation;
-    let Some(config) = AgentCtlClientConfig::from_environment(
-        &process.env,
-        format!("{worker_id}:{}", context.attempt_id()),
-        AgentClientRole::Pilot,
-        spec.agent.name.clone(),
-    )?
-    else {
-        return Ok(None);
     };
-    Ok(Some(PilotRuntimeBridge::start(
-        AgentCtlClient::new(config),
-        AgentProcessRegistration {
-            pid: std::process::id(),
-            role: "ppilot-worker".into(),
-            executable: std::env::current_exe()
-                .ok()
-                .map(|path| path.display().to_string()),
-        },
-        context.cancellation(),
-    )?))
+    write
+        .write_all(&serde_json::to_vec(&PlanHostResponse { result })?)
+        .await?;
+    write.write_all(b"\n").await?;
+    write.shutdown().await?;
+    Ok(())
 }
 
-/// Routes `op=execute` to [`PlanExecuteExecutor`]. Unknown ops fail clearly.
+/// Routes `op=execute` through a standalone foreground pVisor process.
 pub struct ExecutorRouter {
     host: Arc<PlanHostExecutor>,
-    pvisor: PVisor,
+    service: PlanHostService,
+    pvisor: PVisorProcessClient,
+    python: PathBuf,
     supervisor: Option<persisting_agentctl::SupervisorBootstrap>,
 }
 
 impl ExecutorRouter {
     /// Worker stack for the product surface (plan + execute only).
     pub fn local_stack(
+        pvisor_binary: PathBuf,
         python: PathBuf,
         pythonpath_extra: Vec<PathBuf>,
         plan_script: PathBuf,
         script_args: Vec<String>,
         worker_context: Value,
         supervisor: Option<persisting_agentctl::SupervisorBootstrap>,
-    ) -> Self {
+    ) -> Result<Self> {
         let host = Arc::new(PlanHostExecutor::new(
-            python,
+            python.clone(),
             pythonpath_extra,
             worker_context,
         ));
-        let execute = Arc::new(PlanExecuteExecutor {
-            host: Arc::clone(&host),
-            plan_script,
-            script_args,
-        });
-        let pvisor = PVisor::builder()
-            .executors(vec![Arc::clone(&execute) as Arc<dyn RunExecutor>])
-            .build();
-        Self {
+        let service = PlanHostService::start(Arc::clone(&host), plan_script, script_args)?;
+        Ok(Self {
             host,
-            pvisor,
+            service,
+            pvisor: PVisorProcessClient::new(pvisor_binary),
+            python,
             supervisor,
-        }
-    }
-
-    #[cfg(test)]
-    async fn run(&self, task: TaskExpr, worker_id: &str) -> TaskResult {
-        self.run_with_cancel(task, worker_id, CancellationToken::new(), 1)
-            .await
+        })
     }
 
     pub async fn run_with_cancel(
@@ -543,12 +521,12 @@ impl ExecutorRouter {
                 );
             }
         };
-        let handle = match self.pvisor.run(spec).await {
-            Ok(handle) => handle,
+        let task_path = match self.service.write_task(&task).await {
+            Ok(path) => path,
             Err(error) => {
                 return TaskResult::failure_with_kind(
                     task_id,
-                    format!("pVisor submit failed: {error}"),
+                    format!("prepare pVisor task input failed: {error}"),
                     Some(format!("{error:#}")),
                     worker_id,
                     started,
@@ -557,16 +535,25 @@ impl ExecutorRouter {
                 );
             }
         };
-        let cancellation = handle.cancellation();
-        let wait = handle.wait();
-        tokio::pin!(wait);
-        let result = tokio::select! {
-            result = &mut wait => result,
-            _ = cancel.cancelled() => {
-                cancellation.cancel();
-                wait.await
-            }
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.program = self.python.display().to_string();
+        process.args = vec![
+            "-u".into(),
+            "-c".into(),
+            PLAN_HOST_CLIENT.into(),
+            self.service.endpoint.clone(),
+            self.service.token.clone(),
+            task_path.display().to_string(),
+            worker_id.into(),
+        ];
+        process.stdout = StdioMode::Capture;
+        process.stderr = StdioMode::Capture;
+        let options = PVisorProcessOptions {
+            run_home: Some(self.service.task_dir.path().join("runs")),
+            run_args: Vec::new(),
         };
+        let result = self.pvisor.run(&spec, &options, cancel).await;
+        let _ = tokio::fs::remove_file(&task_path).await;
         match result {
             Ok(result) => run_result_to_task_result(result, &task_id, worker_id, started),
             Err(error) => TaskResult::failure_with_kind(
@@ -582,6 +569,8 @@ impl ExecutorRouter {
     }
 
     pub async fn shutdown(&self) {
+        self.service.stop.cancel();
+        self.service.join.abort();
         self.host.shutdown().await;
     }
 }
@@ -624,6 +613,7 @@ fn encode_run_id_part(value: &str) -> String {
     encoded
 }
 
+#[cfg(test)]
 pub(crate) fn task_result_to_run_result(
     spec: RunSpec,
     attempt_id: persisting_agentctl::AttemptId,
@@ -691,6 +681,17 @@ pub(crate) fn run_result_to_task_result(
     let run_id = result.run_id.as_str().to_string();
     let attempt_id = result.attempt_id.as_str().to_string();
     let lease_epoch = result.lease_epoch;
+    if let Some(mut task) = result
+        .output
+        .stdout
+        .as_deref()
+        .and_then(|stdout| serde_json::from_str::<TaskResult>(stdout.trim()).ok())
+    {
+        task.run_id = Some(run_id);
+        task.attempt_id = Some(attempt_id);
+        task.lease_epoch = lease_epoch;
+        return task;
+    }
     let started_at = if result.started_at_unix_ms == 0 {
         fallback_started
     } else {
@@ -734,42 +735,9 @@ pub(crate) fn run_result_to_task_result(
     task
 }
 
-fn failed_run_result(
-    spec: &RunSpec,
-    context: &AttemptContext,
-    started_at_unix_ms: u64,
-    kind: RunFailureKind,
-    message: String,
-    retryable: bool,
-) -> RunResult {
-    RunResult {
-        run_id: spec.run_id.clone(),
-        attempt_id: context.attempt_id().clone(),
-        lease_epoch: spec.lease_epoch,
-        state: RunState::Failed,
-        started_at_unix_ms,
-        finished_at_unix_ms: unix_ms(),
-        exit_code: None,
-        failure: Some(RunFailure {
-            kind,
-            message,
-            retryable,
-        }),
-        output: ProcessOutput::default(),
-        value: None,
-        metrics: BTreeMap::new(),
-        artifacts: Vec::new(),
-        event_stream_ref: None,
-        warnings: Vec::new(),
-    }
-}
-
+#[cfg(test)]
 fn seconds_to_millis(value: Option<f64>) -> u64 {
     value.unwrap_or_else(unix_now).max(0.0).mul_add(1000.0, 0.0) as u64
-}
-
-fn unix_ms() -> u64 {
-    seconds_to_millis(Some(unix_now()))
 }
 
 #[cfg(test)]
@@ -796,14 +764,7 @@ def execute(item):
 "#,
         )
         .unwrap();
-        let router = ExecutorRouter::local_stack(
-            PathBuf::from("python3"),
-            vec![],
-            script,
-            vec![],
-            json!({}),
-            None,
-        );
+        let host = PlanHostExecutor::new(PathBuf::from("python3"), vec![], json!({}));
         let cancel = CancellationToken::new();
         let bg = cancel.clone();
         tokio::spawn(async move {
@@ -812,10 +773,12 @@ def execute(item):
         });
         let task = TaskExpr::from_value(json!({"id": "t-0", "x": 1})).unwrap();
         let t0 = std::time::Instant::now();
-        let r = router.run_with_cancel(task, "w0", cancel, 1).await;
+        let r = host
+            .run_plan_execute(&script, &[], task, "w0", cancel)
+            .await;
         assert!(r.cancelled, "{r:?}");
         assert!(t0.elapsed().as_secs_f64() < 2.0);
-        router.shutdown().await;
+        host.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -833,20 +796,14 @@ def execute(item):
 "#,
         )
         .unwrap();
-        let router = ExecutorRouter::local_stack(
-            PathBuf::from("python3"),
-            vec![],
-            script,
-            vec![],
-            json!({}),
-            None,
-        );
+        let host = PlanHostExecutor::new(PathBuf::from("python3"), vec![], json!({}));
         let task = TaskExpr::from_value(json!({"id": "t-0", "x": 3})).unwrap();
-        let r = router.run(task, "w0").await;
+        let r = host
+            .run_plan_execute(&script, &[], task, "w0", CancellationToken::new())
+            .await;
         assert!(r.ok);
-        assert_eq!(r.run_id.as_deref(), Some("ppilot-local-t-0"));
         assert_eq!(r.value, Some(json!({"x2": 6})));
-        router.shutdown().await;
+        host.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -861,22 +818,16 @@ def execute(item):
 "#,
         )
         .unwrap();
-        let router = ExecutorRouter::local_stack(
-            PathBuf::from("python3"),
-            vec![],
-            script,
-            vec![],
-            json!({}),
-            None,
-        );
+        let host = PlanHostExecutor::new(PathBuf::from("python3"), vec![], json!({}));
         let task = TaskExpr::from_value(json!({"id": "bad/task"})).unwrap();
-        let result = router.run(task, "w0").await;
+        let result = host
+            .run_plan_execute(&script, &[], task, "w0", CancellationToken::new())
+            .await;
         assert!(!result.ok);
-        assert_eq!(result.run_id.as_deref(), Some("ppilot-local-bad~2ftask"));
         assert_eq!(result.error_kind, Some(ErrorKind::Execute));
         assert!(result.error.as_deref().unwrap().contains("bad item"));
         assert!(result.traceback.as_deref().unwrap().contains("ValueError"));
-        router.shutdown().await;
+        host.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -903,19 +854,18 @@ def teardown_worker():
 "#,
         )
         .unwrap();
-        let router = ExecutorRouter::local_stack(
+        let host = PlanHostExecutor::new(
             PathBuf::from("python3"),
             vec![],
-            script,
-            vec![],
             json!({"worker_id": "w-context", "rank": 3}),
-            None,
         );
         let task = TaskExpr::from_value(json!({"id": "t-0"})).unwrap();
-        let result = router.run(task, "w-context").await;
+        let result = host
+            .run_plan_execute(&script, &[], task, "w-context", CancellationToken::new())
+            .await;
         assert!(result.ok);
         assert_eq!(result.metrics.get("rank"), Some(&3.0));
         assert_eq!(result.artifacts.get("worker"), Some(&json!("w-context")));
-        router.shutdown().await;
+        host.shutdown().await;
     }
 }

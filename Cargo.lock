@@ -6822,8 +6822,12 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "ipnet",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -7000,9 +7004,7 @@ dependencies = [
  "clap",
  "futures",
  "persisting-agentctl",
- "persisting-gateway",
  "persisting-pchronicle",
- "persisting-pvisor",
  "pulsing-actor",
  "serde",
  "serde_json",
@@ -7035,6 +7037,7 @@ dependencies = [
  "persisting-overlayfs",
  "persisting-overlaynet",
  "persisting-pchronicle",
+ "persisting-ppilot",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

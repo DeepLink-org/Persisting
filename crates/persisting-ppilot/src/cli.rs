@@ -107,6 +107,10 @@ pub struct PPilotArgs {
     #[arg(long, env = "PERSISTING_PYTHON", default_value = "python3")]
     pub python: PathBuf,
 
+    /// Standalone pVisor executable used for each Run.
+    #[arg(long, env = "PERSISTING_PVISOR_BIN", default_value = "pvisor")]
+    pub pvisor_binary: PathBuf,
+
     /// Extra PYTHONPATH entries (plan dir is always added).
     #[arg(short = 'E', long = "pythonpath")]
     pub pythonpath: Vec<PathBuf>,
@@ -158,6 +162,7 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
         let report = run_check(CheckOptions {
             script,
             python: args.python,
+            pvisor_binary: args.pvisor_binary,
             limit: args.limit,
             workers: args.workers.max(1),
             verbose: args.verbose,
@@ -387,6 +392,7 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
     let opts = RunOptions {
         script,
         python: args.python,
+        pvisor_binary: args.pvisor_binary,
         workers: args.workers,
         max_inflight,
         per_worker_inflight: per_worker,

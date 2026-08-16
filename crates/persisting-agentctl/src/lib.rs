@@ -3,21 +3,27 @@
 //! Drivers such as OverlayNet and Capture submit typed resources to a
 //! [`ControlController`]. Authorization is represented as a state transition;
 //! the driver then records whether the authorized operation was applied or
-//! failed. The [`AgentCtlClient`] separately implements the low-frequency,
-//! Run-scoped Unix client for pVisor's versioned Agent ABI.
+//! failed. [`AgentCtlClient`] implements the Run-scoped Unix Agent ABI, while
+//! [`PVisorProcessClient`] submits a [`RunSpec`] to a standalone foreground
+//! pVisor binary. Supervisor messages are shared wire contracts rather than
+//! types owned by either pPilot or pVisor.
 
 pub mod abi;
 mod client;
+mod process;
 mod runtime;
+mod supervisor;
 
 pub use abi::*;
 pub use client::{checkpoint_directive, AgentCtlClient, AgentCtlClientConfig};
 use ipnet::IpNet;
+pub use process::{PVisorProcessClient, PVisorProcessOptions};
 pub use runtime::*;
 pub use runtime::{AccessEffect as ControlEffect, AccessReason as ControlReason};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::str::FromStr;
+pub use supervisor::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

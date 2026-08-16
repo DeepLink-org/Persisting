@@ -7,6 +7,8 @@ owns each Run and its workspace; pChronicle owns trajectory Dataset discovery,
 query, analysis, and exchange.
 
 ```bash
+cargo build -p persisting-pvisor --bin pvisor \
+  --features local-lance-chronicle
 cargo build -p persisting-ppilot --bin ppilot
 
 ppilot run plan.py --workers 8 --sink ./results
@@ -22,8 +24,12 @@ checkpoint/resume, infrastructure retry, and a durable result journal.
 
 `produce` consumes a Python planner (or compatibility JSON manifest), creates
 one independent pVisor workspace per emitted Run, and writes a durable
-production report. Both commands embed a job-scoped Supervisor; there is no
-separate Supervisor service to deploy.
+production report. Both commands invoke the standalone `pvisor` binary for
+each Run and embed a job-scoped Supervisor; there is no separate Supervisor
+service to deploy. Use `--pvisor-binary PATH` or `PERSISTING_PVISOR_BIN` when
+`pvisor` is not installed beside `ppilot` or available on `PATH`.
+For durable `run --sink` coordination, build that standalone binary with
+`local-lance-chronicle`; pPilot itself still does not link pVisor.
 
 The CLI intentionally contains no Dataset catalog, query, conversion, or
 analysis commands. Use `pchronicle` for those operations.

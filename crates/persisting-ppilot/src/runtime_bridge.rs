@@ -2,7 +2,7 @@
 
 use crate::agent_abi::AgentCtlClient;
 use anyhow::{bail, Context};
-use persisting_pvisor::{
+use persisting_agentctl::{
     AgentCheckpointQuiesced, AgentDirective, AgentEffectBegin, AgentEffectComplete,
     AgentEffectOutcome, AgentLifecycleState, AgentProcessRegistration,
 };
@@ -191,7 +191,7 @@ impl PilotRuntimeBridge {
             };
             let notified = self.inner.changed.notified();
             if let Some(deadline) = wait_until {
-                let now = persisting_pvisor::unix_now_ms();
+                let now = unix_now_ms();
                 if now >= deadline.saturating_add(1_000) {
                     push_warning(
                         &self.inner,
@@ -295,6 +295,14 @@ fn heartbeat_once(inner: &Arc<BridgeInner>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
 fn push_warning(inner: &Arc<BridgeInner>, warning: String) {
     lock(&inner.state).warnings.push(warning);
 }
@@ -303,96 +311,4 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::agent_abi::AgentCtlClientConfig;
-    use persisting_agentctl::{AttemptId, RunId};
-    use persisting_pvisor::{AgentAbiServer, AgentClientRole};
-
-    #[tokio::test]
-    async fn quiesce_waits_for_open_effect_then_acknowledges_safe_point() {
-        let server =
-            AgentAbiServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
-        let config = AgentCtlClientConfig::from_environment(
-            &server.environment(),
-            "pilot-1",
-            AgentClientRole::Pilot,
-            "ppilot",
-        )
-        .unwrap()
-        .unwrap();
-        let bridge = PilotRuntimeBridge::start(
-            AgentCtlClient::new(config),
-            AgentProcessRegistration {
-                pid: std::process::id(),
-                role: "ppilot-worker".into(),
-                executable: None,
-            },
-            CancellationToken::new(),
-        )
-        .unwrap();
-        bridge
-            .begin_effect(
-                "task-1",
-                "ppilot.task",
-                "sha256:test",
-                Some("task-1".into()),
-            )
-            .unwrap();
-        server.control().request_quiesce(
-            "checkpoint-1",
-            Some(persisting_pvisor::unix_now_ms() + 2_000),
-        );
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        assert!(server.control().snapshot().clients[0]
-            .quiesced_checkpoint_id
-            .is_none());
-
-        bridge
-            .complete_effect("task-1", AgentEffectOutcome::Committed)
-            .unwrap();
-        bridge.set_lifecycle(AgentLifecycleState::Idle);
-        heartbeat_once(&bridge.inner).unwrap();
-        assert_eq!(
-            server.control().snapshot().clients[0]
-                .quiesced_checkpoint_id
-                .as_deref(),
-            Some("checkpoint-1")
-        );
-        server.control().continue_execution();
-        let warnings = bridge.finish().await;
-        assert!(warnings.is_empty(), "{warnings:?}");
-    }
-
-    #[tokio::test]
-    async fn shutdown_directive_cancels_the_owned_task_token() {
-        let server =
-            AgentAbiServer::start(&RunId::new("run-2"), &AttemptId::new("attempt-2")).unwrap();
-        let config = AgentCtlClientConfig::from_environment(
-            &server.environment(),
-            "pilot-2",
-            AgentClientRole::Pilot,
-            "ppilot",
-        )
-        .unwrap()
-        .unwrap();
-        let cancellation = CancellationToken::new();
-        let bridge = PilotRuntimeBridge::start(
-            AgentCtlClient::new(config),
-            AgentProcessRegistration {
-                pid: std::process::id(),
-                role: "ppilot-worker".into(),
-                executable: None,
-            },
-            cancellation.clone(),
-        )
-        .unwrap();
-        server.control().request_shutdown(Some("test".into()));
-        heartbeat_once(&bridge.inner).unwrap();
-        assert!(cancellation.is_cancelled());
-        let _ = bridge.finish().await;
-    }
 }

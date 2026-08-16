@@ -158,6 +158,7 @@ def execute(item):
     let opts = RunOptions {
         script,
         python: PathBuf::from("python3"),
+        pvisor_binary: PathBuf::from("pvisor"),
         workers: 1,
         max_inflight: 1,
         per_worker_inflight: 1,

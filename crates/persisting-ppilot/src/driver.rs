@@ -32,6 +32,8 @@ use tokio_util::sync::CancellationToken;
 pub struct RunOptions {
     pub script: PathBuf,
     pub python: PathBuf,
+    /// Standalone pVisor executable used for every Run.
+    pub pvisor_binary: PathBuf,
     /// Local-only worker count when not under torchrun.
     pub workers: usize,
     /// Global cap on concurrent tasks (defaults to `workers * per_worker_inflight`).

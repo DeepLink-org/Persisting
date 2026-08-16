@@ -75,6 +75,7 @@ impl ShutdownGate {
 #[derive(Clone)]
 pub struct WorkerConfig {
     pub worker_id: String,
+    pub pvisor_binary: PathBuf,
     pub python: PathBuf,
     pub pythonpath_extra: Vec<PathBuf>,
     pub plan_script: PathBuf,
@@ -98,6 +99,7 @@ impl WorkerConfig {
     ) -> Self {
         Self {
             worker_id: worker_id.into(),
+            pvisor_binary: PathBuf::from("pvisor"),
             python,
             pythonpath_extra,
             plan_script,
@@ -114,22 +116,28 @@ impl WorkerConfig {
         self
     }
 
-    pub fn build(&self) -> WorkerActor {
-        WorkerActor {
+    pub fn with_pvisor_binary(mut self, binary: PathBuf) -> Self {
+        self.pvisor_binary = binary;
+        self
+    }
+
+    pub fn build(&self) -> anyhow::Result<WorkerActor> {
+        Ok(WorkerActor {
             worker_id: self.worker_id.clone(),
             executors: Arc::new(ExecutorRouter::local_stack(
+                self.pvisor_binary.clone(),
                 self.python.clone(),
                 self.pythonpath_extra.clone(),
                 self.plan_script.clone(),
                 self.script_args.clone(),
                 worker_context(&self.worker_id),
                 self.supervisor.clone(),
-            )),
+            )?),
             done: 0,
             shutdown_gate: self.shutdown_gate.clone(),
             job_cancel: self.job_cancel.clone(),
             result_cache: Arc::clone(&self.result_cache),
-        }
+        })
     }
 }
 
@@ -195,10 +203,11 @@ impl WorkerActor {
             None,
         )
         .build()
+        .expect("initialize pPilot worker")
     }
 
     pub fn from_config(cfg: &WorkerConfig) -> Self {
-        cfg.build()
+        cfg.build().expect("initialize pPilot worker")
     }
 
     async fn execute(&mut self, task: TaskExpr, lease_epoch: u64) -> TaskResult {
@@ -311,6 +320,7 @@ def execute(item):
         );
         let cfg = WorkerConfig {
             worker_id: "w0".into(),
+            pvisor_binary: PathBuf::from("pvisor"),
             python: PathBuf::from("python3"),
             pythonpath_extra: vec![],
             plan_script: path,
@@ -321,7 +331,13 @@ def execute(item):
             supervisor: None,
         };
         let w = crate::pulsing_ext::spawn_supervised(&system, "ppilot/worker/0", move || {
-            Ok(cfg.build())
+            cfg.build().map_err(|error| {
+                pulsing_actor::error::PulsingError::from(
+                    pulsing_actor::error::RuntimeError::ActorSpawnFailed {
+                        reason: format!("initialize test worker: {error:#}"),
+                    },
+                )
+            })
         })
         .await
         .unwrap();
@@ -372,11 +388,12 @@ def execute(item):
         h.await.unwrap();
     }
 
-    #[test]
-    fn shared_result_cache_survives_rebuild() {
+    #[tokio::test]
+    async fn shared_result_cache_survives_rebuild() {
         let cache = Arc::new(Mutex::new(ResultCache::new(8)));
         let cfg = WorkerConfig {
             worker_id: "w0".into(),
+            pvisor_binary: PathBuf::from("pvisor"),
             python: PathBuf::from("python3"),
             pythonpath_extra: vec![],
             plan_script: PathBuf::from("/dev/null"),
@@ -386,13 +403,13 @@ def execute(item):
             result_cache: Arc::clone(&cache),
             supervisor: None,
         };
-        let _a = cfg.build();
+        let _a = cfg.build().unwrap();
         cache
             .lock()
             .unwrap()
             .put("t-0", TaskResult::success("t-0", json!(1), "w0", 0.0));
         // Supervised restart = factory rebuild; same Arc must still hold entries.
-        let _b = cfg.build();
+        let _b = cfg.build().unwrap();
         assert!(cache.lock().unwrap().get("t-0").is_some());
         assert!(Arc::ptr_eq(&cfg.result_cache, &cache));
     }

@@ -17,14 +17,13 @@ async-trait.workspace = true
 chrono = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive", "env"] }
 futures.workspace = true
-persisting-gateway.workspace = true
 persisting-pchronicle = { workspace = true, features = ["lance-store"] }
 persisting-agentctl.workspace = true
-persisting-pvisor = { workspace = true, features = ["local-lance-chronicle"] }
 pulsing-actor = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "sync", "time", "signal", "fs", "net"] }
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
@@ -36,6 +35,3 @@ uuid = { workspace = true, features = ["v4"] }
 default = []
 # Append pPilot results to Lance via TrajectoryAppend (Tee with JsonlFileSink).
 traj-sink = ["dep:chrono"]
-
-[dev-dependencies]
-tempfile.workspace = true

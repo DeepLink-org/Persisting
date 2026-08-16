@@ -70,7 +70,7 @@ jobs:
       - name: Build Agent CLI component set
         run: |
           cargo build -p persisting-pchronicle-cli --bin pchronicle --locked
-          cargo build -p persisting-pvisor --bin pvisor --locked
+          cargo build -p persisting-pvisor --bin pvisor --features local-lance-chronicle --locked
           cargo build -p persisting-ppilot --bin ppilot --locked
 
       - name: Test
@@ -193,7 +193,11 @@ jobs:
       # from this checkout.
       - name: Run pPilot examples
         run: |
-          cargo build --release -q -p persisting-ppilot --bin ppilot
+          cargo build --release -q \
+            -p persisting-ppilot --bin ppilot
+          cargo build --release -q \
+            -p persisting-pvisor --bin pvisor \
+            --features local-lance-chronicle
           for example in examples/ppilot/*; do
             [ -f "$example/run.sh" ] || continue
             echo "==> ${example}/run.sh"

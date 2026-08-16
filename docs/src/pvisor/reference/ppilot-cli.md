@@ -17,6 +17,7 @@ owned by [`pchronicle`](../../pchronicle/reference/cli.md).
 ppilot run plan.py --workers 8 --per-worker 2 --sink ./results
 ppilot run plan.py --workers 8 --sink ./results --resume
 ppilot run plan.py --check
+ppilot run plan.py --pvisor-binary ./target/release/pvisor
 ```
 
 The script defines `plan()` and `execute(item)`. pPilot applies bounded
@@ -59,7 +60,11 @@ direct sockets that bypass the explicit proxy.
 
 Both commands start an in-process, job-scoped Supervisor. pPilot owns planning,
 leases, retries, reconciliation, and collection. pVisor owns Run execution and
-the embedded Gateway. pChronicle owns trajectory Dataset operations.
+the embedded Gateway. pPilot invokes one foreground `pvisor` process per Run;
+the two components share Run and Supervisor contracts through agentctl rather
+than linking pVisor into pPilot. `--pvisor-binary` and
+`PERSISTING_PVISOR_BIN` select an explicit executable. pChronicle owns
+trajectory Dataset operations.
 
 The executable's `--help` is authoritative for flags and defaults.
 

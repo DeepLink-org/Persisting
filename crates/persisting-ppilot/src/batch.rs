@@ -2,9 +2,9 @@
 
 use anyhow::{bail, Context};
 use futures::{stream, stream::FuturesUnordered, Stream, StreamExt};
-use persisting_agentctl::{RunId, RunInvocation, RunSpec, RunState, StdioMode};
-use persisting_gateway::config::{CaptureLevel, NetworkConfig, OverlayConfig, ProxyConfig};
-use persisting_pvisor::{GatewayDriverConfig, PVisor};
+use persisting_agentctl::{
+    PVisorProcessClient, PVisorProcessOptions, RunId, RunInvocation, RunSpec, RunState, StdioMode,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -35,6 +35,7 @@ pub struct TrajectoryProductionRun {
 #[derive(Debug, Clone)]
 pub struct BatchProductionOptions {
     pub output_dir: PathBuf,
+    pub pvisor_binary: PathBuf,
     pub parallelism: usize,
     pub capture_gateway: bool,
     pub supervisor_network_limit_bytes_per_second: Option<u64>,
@@ -161,6 +162,7 @@ async fn produce_trajectory_stream(
     let parallelism = options.parallelism.max(1);
     let output_dir = options.output_dir.clone();
     let capture_gateway = options.capture_gateway;
+    let pvisor_binary = options.pvisor_binary.clone();
     let parent_run_id = format!("ppilot-batch-{batch_id}");
     let supervisor =
         crate::supervisor::EmbeddedSupervisor::start(crate::supervisor::EmbeddedSupervisorConfig {
@@ -190,6 +192,7 @@ async fn produce_trajectory_stream(
                         let parent_run_id = parent_run_id.clone();
                         let batch_id = batch_id.clone();
                         let supervisor_bootstrap = supervisor_bootstrap.clone();
+                        let pvisor_binary = pvisor_binary.clone();
                         in_flight.push(async move {
                             run_production_entry(
                                 run,
@@ -198,6 +201,7 @@ async fn produce_trajectory_stream(
                                 &output_dir,
                                 capture_gateway,
                                 supervisor_bootstrap,
+                                pvisor_binary,
                             )
                             .await
                         });
@@ -247,6 +251,7 @@ async fn run_production_entry(
     output_dir: &Path,
     capture_gateway: bool,
     supervisor: persisting_agentctl::SupervisorBootstrap,
+    pvisor_binary: PathBuf,
 ) -> anyhow::Result<ProductionRunOutcome> {
     let workspace = output_dir.join(&run.id);
     if workspace.exists() {
@@ -256,26 +261,20 @@ async fn run_production_entry(
             workspace.display()
         );
     }
-    let mut builder = PVisor::builder().storage(&workspace);
+    let mut run_args = Vec::new();
     if capture_gateway {
-        let proxy = ProxyConfig {
-            listen: free_loopback_address()?,
-            admin_listen: free_loopback_address()?,
-            agent_id: run.agent.clone(),
-            session_header: "x-persisting-session-id".into(),
-            capture_level: CaptureLevel::Dialogue,
-            debug: false,
-            network: NetworkConfig::default(),
-            overlay: OverlayConfig::default(),
-            models: Vec::new(),
-        };
-        builder = builder.gateway(
-            GatewayDriverConfig::new(proxy)
-                .output_dir(&workspace)
-                .gateway_enabled(true),
-        );
+        run_args.extend([
+            "--gateway-mode".into(),
+            "capture".into(),
+            "--gateway-level".into(),
+            "dialogue".into(),
+            "--gateway-admin-listen".into(),
+            free_loopback_address()?.into(),
+            "--overlaynet-listen".into(),
+            free_loopback_address()?.into(),
+        ]);
     }
-    let pvisor = builder.build();
+    let pvisor = PVisorProcessClient::new(pvisor_binary);
     let (program, args) = run.command.split_first().expect("manifest was validated");
     let mut spec = RunSpec::process(run.id.as_str(), run.agent.as_str(), program);
     spec.supervisor = Some(supervisor);
@@ -294,14 +293,17 @@ async fn run_production_entry(
     process.stdout = StdioMode::Capture;
     process.stderr = StdioMode::Capture;
 
-    let handle = pvisor
-        .run(spec)
+    let result = pvisor
+        .run(
+            &spec,
+            &PVisorProcessOptions {
+                run_home: Some(output_dir.to_path_buf()),
+                run_args,
+            },
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
-        .with_context(|| format!("submit production Run {}", run.id))?;
-    let result = handle
-        .wait()
-        .await
-        .with_context(|| format!("wait for production Run {}", run.id))?;
+        .with_context(|| format!("execute production Run {} through pVisor", run.id))?;
     Ok(ProductionRunOutcome {
         run_id: result.run_id.to_string(),
         task_id: run.id,
@@ -427,6 +429,7 @@ def plan():
             "duplicates".into(),
             BatchProductionOptions {
                 output_dir: dir.path().join("runs"),
+                pvisor_binary: PathBuf::from("pvisor"),
                 parallelism: 2,
                 capture_gateway: false,
                 supervisor_network_limit_bytes_per_second: None,
@@ -455,6 +458,7 @@ def plan():
             manifest,
             BatchProductionOptions {
                 output_dir: output.path().join("runs"),
+                pvisor_binary: PathBuf::from("pvisor"),
                 parallelism: 1,
                 capture_gateway: false,
                 supervisor_network_limit_bytes_per_second: Some(1024),

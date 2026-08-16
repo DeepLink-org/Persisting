@@ -1,7 +1,13 @@
 //! Optional pPilot Supervisor client. The Run data plane never depends on it.
 
+#[cfg(test)]
+use persisting_agentctl::SupervisorNetworkQuotaGrant;
 use persisting_agentctl::{AttemptId, NetworkBandwidthLimit, RunId, SupervisorBootstrap};
-use serde::{Deserialize, Serialize};
+use persisting_agentctl::{
+    SupervisorClientMessage, SupervisorDirective, SupervisorDirectiveAck,
+    SupervisorDirectiveEnvelope, SupervisorHeartbeat, SupervisorRegistration,
+    SupervisorServerMessage, SUPERVISOR_PROTOCOL_VERSION,
+};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -12,8 +18,6 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-
-pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 1;
 
 #[cfg(feature = "fuzzing")]
 pub fn decode_supervisor_frame_for_fuzz(frame: &[u8]) -> anyhow::Result<()> {
@@ -27,77 +31,6 @@ pub fn decode_supervisor_frame_for_fuzz(frame: &[u8]) -> anyhow::Result<()> {
         anyhow::bail!("frame is neither a Supervisor client nor server message");
     }
     Ok(())
-}
-
-fn supervisor_protocol_version() -> u32 {
-    SUPERVISOR_PROTOCOL_VERSION
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SupervisorRegistration {
-    #[serde(default = "supervisor_protocol_version")]
-    pub protocol_version: u32,
-    pub token: String,
-    pub run_id: RunId,
-    pub attempt_id: AttemptId,
-    pub lease_epoch: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SupervisorHeartbeat {
-    pub last_applied_directive_seq: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SupervisorDirectiveAck {
-    pub directive_seq: u64,
-    pub applied: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SupervisorClientMessage {
-    Register(SupervisorRegistration),
-    Heartbeat(SupervisorHeartbeat),
-    Ack(SupervisorDirectiveAck),
-}
-
-/// A time-bounded rate grant. pVisor enforces it locally on intercepted proxy
-/// traffic, so consuming bytes never performs a synchronous control-plane RPC.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SupervisorNetworkQuotaGrant {
-    pub grant_id: String,
-    pub quota_epoch: u64,
-    pub valid_until_unix_ms: u64,
-    pub limit: NetworkBandwidthLimit,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SupervisorDirective {
-    GrantNetworkQuota(SupervisorNetworkQuotaGrant),
-    Cancel,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SupervisorDirectiveEnvelope {
-    pub controller_epoch: u64,
-    pub lease_epoch: u64,
-    pub directive_seq: u64,
-    pub directive: SupervisorDirective,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SupervisorServerMessage {
-    Registered {
-        controller_epoch: u64,
-        directives: Vec<SupervisorDirectiveEnvelope>,
-    },
-    Directive(SupervisorDirectiveEnvelope),
-    Error {
-        message: String,
-    },
 }
 
 pub(crate) struct SupervisorConnectOutcome {

@@ -16,6 +16,7 @@ pub fn run_opts(script: PathBuf) -> RunOptions {
     RunOptions {
         script,
         python: PathBuf::from("python3"),
+        pvisor_binary: PathBuf::from("pvisor"),
         workers: 2,
         max_inflight: 4,
         per_worker_inflight: 1,
