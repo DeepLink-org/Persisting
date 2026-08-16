@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Use the pVisor binary built from this checkout, even after the example enters
-# its isolated base directory below.
 example_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "$example_dir/../../.." && pwd)"
-export PATH="$repo_root/target/release:$PATH"
+source "$example_dir/../common.sh"
+pvisor_example_init "$example_dir" filesystem-isolation
+command -v jq >/dev/null
 
 # Create a clean host directory for the isolated command.
-rm -rf .work
-mkdir -p .work/base
-printf 'original\n' > .work/base/existing.txt
-export PERSISTING_RUN_HOME="$PWD/.work/runs"
-base="$PWD/.work/base"
+pvisor_example_reset
+mkdir -p "$work_dir/base"
+printf 'original\n' >"$work_dir/base/existing.txt"
+base="$work_dir/base"
 
 # The project workspace is reusable; pVisor creates an independent stage for this Run.
 (
   cd "$base"
-  pvisor run --overlayfs-base "$base" \
+  "$pvisor_bin" run --overlayfs-base "$base" \
     --overlayfs-commit manual --stdio capture -- \
     /bin/sh -c 'printf "changed\n" > existing.txt; printf "new\n" > new.txt'
 )
-run_dir="$(find "$PERSISTING_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' | head -n 1)"
+run_dir="$(find "$PERSISTING_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
+test -n "$run_dir"
 
 # Print the unchanged host file and the two staged files.
 echo 'Base directory:'
-cat .work/base/existing.txt
+cat "$base/existing.txt"
 
 echo 'Staged upper directory:'
 cat "$run_dir/upper/existing.txt"

@@ -441,7 +441,7 @@ impl PVisor {
                 json!(controller_epoch),
             );
         }
-        let session = self
+        let mut session = self
             .runtime
             .prepare(
                 &mut spec,
@@ -457,8 +457,29 @@ impl PVisor {
         let checkpoint_record = session
             .as_ref()
             .and_then(|session| session.checkpoint_record());
-        let agentctl_server =
-            AgentCtlServer::start(&spec.run_id, &attempt_id).map_err(PVisorError::AgentCtl)?;
+        let safe_profile_requested = spec
+            .metadata
+            .get("pvisor.safe")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let agentctl_server = match AgentCtlServer::start(&spec.run_id, &attempt_id) {
+            Ok(server) => server,
+            Err(error) => {
+                if let Some(session) = session.take() {
+                    let snapshot = empty_agentctl_snapshot(&spec.run_id, &attempt_id);
+                    if let Err(cleanup_error) = session.abort_startup(
+                        &attempt_id,
+                        spec.lease_epoch,
+                        snapshot,
+                        safe_profile_requested,
+                        format!("AgentCtl setup failed: {error:#}"),
+                    ) {
+                        tracing::warn!(%cleanup_error, "persist pVisor startup failure");
+                    }
+                }
+                return Err(PVisorError::AgentCtl(error));
+            }
+        };
         let agentctl = agentctl_server.control();
         let bundle_agentctl = agentctl.clone();
         let RunInvocation::Process(process) = &mut spec.invocation;
@@ -497,7 +518,7 @@ impl PVisor {
             Arc::clone(&self.event_sink),
             live_tx,
         );
-        events
+        if let Err(error) = events
             .publish(
                 "run.created",
                 "runtime",
@@ -511,7 +532,20 @@ impl PVisor {
                 }),
             )
             .await
-            .map_err(PVisorError::EventSink)?;
+        {
+            if let Some(session) = session.take() {
+                if let Err(cleanup_error) = session.abort_startup(
+                    &attempt_id,
+                    spec.lease_epoch,
+                    agentctl.snapshot(),
+                    safe_profile_requested,
+                    format!("event sink rejected run creation: {error:#}"),
+                ) {
+                    tracing::warn!(%cleanup_error, "persist pVisor startup failure");
+                }
+            }
+            return Err(PVisorError::EventSink(error));
+        }
 
         let attempt_ttl_ms = spec
             .supervisor
@@ -654,12 +688,6 @@ impl PVisor {
                     }
                 }
             }
-            let safe_profile_requested = context
-                .spec()
-                .metadata
-                .get("pvisor.safe")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
             if let Some(teardown) = teardown.as_mut() {
                 let bundle_result = crate::RunBundle::capture(
                     teardown.run_record(),
@@ -775,6 +803,21 @@ impl PVisor {
             checkpoint_record,
             join,
         })
+    }
+}
+
+fn empty_agentctl_snapshot(
+    run_id: &persisting_agentctl::RunId,
+    attempt_id: &AttemptId,
+) -> crate::AgentCtlSnapshot {
+    crate::AgentCtlSnapshot {
+        run_id: run_id.as_str().to_owned(),
+        attempt_id: attempt_id.as_str().to_owned(),
+        directive_seq: 0,
+        directive: crate::AgentDirective::Continue,
+        clients: Vec::new(),
+        processes: Vec::new(),
+        operations: Vec::new(),
     }
 }
 
@@ -1032,6 +1075,59 @@ mod tests {
         }
     }
 
+    struct RejectCreatedSink;
+
+    #[async_trait]
+    impl EventSink for RejectCreatedSink {
+        async fn append(&self, event: &EventRecord) -> anyhow::Result<()> {
+            if event.kind == "run.created" {
+                anyhow::bail!("simulated creation rejection");
+            }
+            Ok(())
+        }
+
+        fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {
+            crate::EventAppendErrorKind::Rejected
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejected_creation_finalizes_prepared_run_storage() {
+        let temporary = tempfile::tempdir().unwrap();
+        let storage = temporary.path().join("storage");
+        let runtime = PVisor::builder()
+            .storage(&storage)
+            .event_sink(Arc::new(RejectCreatedSink))
+            .build();
+        let spec = RunSpec::process("run-created-rejected", "test-agent", "/bin/true");
+
+        let error = match runtime.run(spec).await {
+            Ok(_) => panic!("run creation unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, PVisorError::EventSink(_)));
+
+        let record = crate::runtime::RunRecord::read(&storage).unwrap();
+        assert_eq!(record.state, "failed");
+        assert!(record.finished_at_unix_ms.is_some());
+        let bundle = crate::RunBundle::read(&storage).unwrap();
+        assert_eq!(bundle.run.state, RunState::Failed);
+        assert_eq!(
+            bundle.run.failure.as_ref().map(|failure| failure.kind),
+            Some(RunFailureKind::Infrastructure)
+        );
+        assert!(bundle
+            .run
+            .failure
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("event sink rejected run creation"));
+        assert!(!storage.join("control.sock").exists());
+        let _lease = crate::runtime::RunLease::acquire(&storage).unwrap();
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn process_run_completes_and_emits_lifecycle() {
@@ -1262,6 +1358,37 @@ mod tests {
             crate::runtime::RunRecord::read(&storage).unwrap().state,
             "completed"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn durable_run_metadata_records_environment_keys_without_secret_values() {
+        const SECRET: &str = "pvisor-secret-value-must-not-be-persisted";
+        let temporary = tempfile::tempdir().unwrap();
+        let storage = temporary.path().join("storage");
+        let runtime = PVisor::builder().storage(&storage).build();
+        let mut spec = RunSpec::process("run-secret-projection", "test-agent", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "exit 0".into()];
+        process.inherit_env = false;
+        process
+            .env
+            .insert("PRIVATE_API_TOKEN".into(), SECRET.into());
+
+        let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
+        assert_eq!(result.state, RunState::Completed);
+
+        let bundle_raw = std::fs::read_to_string(storage.join(crate::RUN_BUNDLE_FILENAME)).unwrap();
+        let record_raw = std::fs::read_to_string(storage.join("run.json")).unwrap();
+        assert!(!bundle_raw.contains(SECRET));
+        assert!(!record_raw.contains(SECRET));
+        let bundle = crate::RunBundle::read(&storage).unwrap();
+        assert!(!bundle.environment.inherits_host);
+        assert!(bundle
+            .environment
+            .projected_keys
+            .iter()
+            .any(|key| key == "PRIVATE_API_TOKEN"));
     }
 
     #[tokio::test]

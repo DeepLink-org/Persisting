@@ -1,5 +1,5 @@
 name: "Setup Build Environment"
-description: "Python, Rust, uv, and optional legacy protoc for Persisting CI"
+description: "Python, Rust, uv, just, and optional legacy protoc for Persisting CI"
 inputs:
   python-version:
     description: "Python version"
@@ -40,6 +40,11 @@ runs:
       uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
+
+    - name: Install just
+      uses: taiki-e/install-action@v2
+      with:
+        tool: just@1.57.0
 
     - name: Install Linux guest init cross-compiler
       if: runner.os == 'macOS'
