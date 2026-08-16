@@ -103,7 +103,16 @@ printf '%s:%s:%s\n' "$PERSISTING_SANDBOX_FILESYSTEM" "$PERSISTING_SANDBOX_LANDLO
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("OUTSIDE_SECRET", outside.join("secret.txt"))
         .env("OUTSIDE_WRITE", outside.join("escaped.txt"))
-        .args(["run", "--safe", "--stdio", "capture"])
+        .args([
+            "run",
+            "--safe",
+            "--stdio",
+            "capture",
+            "--pass-env",
+            "OUTSIDE_SECRET",
+            "--pass-env",
+            "OUTSIDE_WRITE",
+        ])
         .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", script])
         .output()
@@ -188,7 +197,16 @@ printf metadata-denied
         .env("PERSISTING_RUN_HOME", &run_home)
         .env("OUTSIDE_FILE", &protected)
         .env("OUTSIDE_DIR", &outside)
-        .args(["run", "--safe", "--stdio", "capture"])
+        .args([
+            "run",
+            "--safe",
+            "--stdio",
+            "capture",
+            "--pass-env",
+            "OUTSIDE_FILE",
+            "--pass-env",
+            "OUTSIDE_DIR",
+        ])
         .current_dir(&workspace)
         .args(["--", "/bin/sh", "-c", script])
         .output()
@@ -261,11 +279,20 @@ fn safe_launcher_closes_inherited_host_file_descriptors() {
             "--stdio",
             "capture",
             "--overlaynet-deny-all",
+            "--pass-env",
+            "PERSISTING_LEAKED_FD",
+            "--pass-env",
+            "PERSISTING_LEAKED_SOCKET_FD",
         ])
         .current_dir(&workspace)
         .arg("--")
         .arg(std::env::current_exe().unwrap())
-        .args(["--ignored", "--exact", "inherited_fd_probe_agent"])
+        .args([
+            "--ignored",
+            "--exact",
+            "inherited_fd_probe_agent",
+            "--nocapture",
+        ])
         .output()
         .unwrap();
 
@@ -341,6 +368,8 @@ printf 'network:%s\n' "$PERSISTING_SANDBOX_NETWORK"
             "--stdio",
             "capture",
             "--overlaynet-deny-all",
+            "--pass-env",
+            "HOST_PORT",
         ])
         .current_dir(&workspace)
         .args(["--", "/bin/bash", "-c", script])
