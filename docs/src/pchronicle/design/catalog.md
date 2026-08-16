@@ -273,9 +273,12 @@ provider。没有 `_file_` 条件时，Catalog 没有跨 source 的 `run_id`/时
 `LazySource` 使用异步 `OnceCell` 缓存解析结果，多个并发查询命中同一个 source 时只执行
 一次打开、远程物化或格式解析。source 解析阶段的失败也会缓存，以保证同一快照内行为
 稳定。canonical events 的原始 `events` 表可以直接扫描固定 segment。没有 fresh 投影时，
-带 `session_id = ...` 或 `session_id IN (...)` 的 `runs`、`steps`、`tool_calls` 查询只读取目标
-Storyline 的完整历史；无可证明的 session 约束时才读取固定快照的全部事件并缓存三表。
-`load_events` 点查直接读取目标 session，不构造 DataFusion MemTable。
+带可证明 `session_id = ...` 或 `session_id IN (...)` 的查询只读取目标 Storyline 的完整历史；
+宽查询读取固定 snapshot。两种 fallback 都受 `max_event_fallback_rows` 和
+`max_event_fallback_bytes` 约束，且只物化当前查询请求的关系表；超限时要求 build/sync
+Storyline 投影。
+`load_events` 点查直接读取目标 session，不构造 DataFusion MemTable，但使用相同的行数和
+字节预算。
 
 可以用 `EXPLAIN` 检查裁剪后的物理计划：精确命中一个 source 时，计划中不应出现
 `UnionExec`。
@@ -394,6 +397,8 @@ Catalog 复用直接文件查询的资源参数：
 - `max_file_bytes`：外围文件/对象大小上限；
 - `max_record_bytes`、`max_concurrent_files`、cache 参数：解析期边界；
 - `max_concurrent_sources`：单次物理 scan 同时解析的 source 上限；
+- `max_event_fallback_rows`、`max_event_fallback_bytes`：无 fresh 投影时单次定向
+  canonical→Storyline fallback 的内存边界；
 - DataFusion memory pool、spill path、spill bytes、timeout 与输出行数：查询期边界。
 
 `--query-metrics` 只聚合已经解析的外围文件 source 的读取、裁剪、缓存和 buffer 指标；

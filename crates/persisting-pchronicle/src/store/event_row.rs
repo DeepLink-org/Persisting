@@ -11,7 +11,10 @@ pub struct EventRow {
     pub seq: i64,
     /// Opaque business identity. Duplicates are valid appended facts.
     pub event_id: Option<String>,
-    pub timestamp: Option<String>,
+    /// Canonical event time in Unix epoch milliseconds. The Arrow physical
+    /// column is `Timestamp(Millisecond, UTC)`; the original textual timestamp
+    /// remains losslessly available in `payload_json`.
+    pub timestamp: i64,
     pub kind: String,
     pub source: String,
     pub agent_id: Option<String>,
@@ -35,7 +38,7 @@ pub fn event_record_to_event_row(rec: &EventRecord) -> Result<EventRow> {
     Ok(EventRow {
         seq: i64::try_from(rec.seq).context("EventRecord seq exceeds i64")?,
         event_id: rec.identity.event_id.clone(),
-        timestamp: rec.timestamp.clone(),
+        timestamp: canonical_timestamp_ms(rec)?,
         kind: rec.kind.clone(),
         source: rec.source.clone(),
         agent_id: rec.agent_id.clone(),
@@ -56,7 +59,10 @@ pub fn event_row_to_event_record(row: &EventRow) -> Result<EventRecord> {
     for (field, matches) in [
         ("seq", seq == row.seq),
         ("event_id", record.identity.event_id == row.event_id),
-        ("timestamp", record.timestamp == row.timestamp),
+        (
+            "timestamp",
+            canonical_timestamp_ms(&record)? == row.timestamp,
+        ),
         ("kind", record.kind == row.kind),
         ("source", record.source == row.source),
         ("call_id", record.call_id == row.call_id),
@@ -78,4 +84,14 @@ pub fn event_row_to_event_record(row: &EventRow) -> Result<EventRecord> {
     record.agent_id.clone_from(&row.agent_id);
     record.session_id.clone_from(&row.session_id);
     Ok(record)
+}
+
+fn canonical_timestamp_ms(record: &EventRecord) -> Result<i64> {
+    record
+        .identity
+        .timestamp_unix_ms
+        .context("canonical event is missing timestamp_unix_ms")
+        .and_then(|timestamp| {
+            i64::try_from(timestamp).context("canonical event timestamp exceeds i64 milliseconds")
+        })
 }

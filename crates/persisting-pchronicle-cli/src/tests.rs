@@ -24,6 +24,38 @@ fn example_source(format: &str) -> PathBuf {
     example_dataset(format).join(filename)
 }
 
+async fn append_canonical_note(storage: &std::path::Path) -> Result<()> {
+    let coords = persisting_pchronicle::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "session",
+        None,
+    );
+    persisting_pchronicle::RawEventLanceStore
+        .append_events(
+            &coords,
+            &[persisting_pchronicle::EventRecord {
+                identity: Default::default(),
+                seq: 0,
+                source: "test".into(),
+                kind: "note".into(),
+                timestamp: None,
+                session_id: None,
+                agent_id: None,
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: serde_json::json!({"content":"canonical"}),
+            }],
+        )
+        .await?;
+    Ok(())
+}
+
 #[test]
 fn command_tree_contains_the_product_commands() {
     let command = Cli::command();
@@ -207,6 +239,45 @@ async fn status_reports_exact_counts_as_json() -> Result<()> {
     assert_eq!(value["counts"]["events"], 0);
     assert!(value["source_errors"].as_array().unwrap().is_empty());
     assert!(String::from_utf8(stderr)?.contains("counts_complete=true"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn status_and_analysis_use_bounded_canonical_fallback() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+
+    let status = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        storage.to_str().unwrap(),
+        "--format",
+        "json",
+        "--errors",
+        "strict",
+    ])?;
+    let mut stdout = Vec::new();
+    run(status, false, &mut stdout, &mut Vec::new()).await?;
+    let status: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(status["counts_complete"], true);
+    assert_eq!(status["counts"]["trajectories"], 1);
+    assert_eq!(status["counts"]["steps"], 1);
+    assert_eq!(status["counts"]["events"], 1);
+
+    let analysis = Cli::try_parse_from([
+        "pchronicle",
+        "analysis",
+        "overview",
+        storage.to_str().unwrap(),
+        "--format",
+        "jsonl",
+    ])?;
+    let mut stdout = Vec::new();
+    run(analysis, false, &mut stdout, &mut Vec::new()).await?;
+    let overview: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(overview["trajectories"], 1);
+    assert_eq!(overview["steps"], 1);
     Ok(())
 }
 

@@ -483,17 +483,11 @@ async fn compact_event_hierarchy_locked(
 }
 
 pub(super) fn validate_event_schema(dataset: &Dataset, uri: &str) -> Result<()> {
-    let columns = dataset
-        .schema()
-        .fields
-        .iter()
-        .map(|field| field.name.as_str())
-        .collect::<Vec<_>>();
+    let actual = lance::deps::arrow_schema::Schema::from(dataset.schema());
+    let expected = raw_event_arrow_schema();
     anyhow::ensure!(
-        columns == crate::TRAJECTORY_COLS,
-        "trajectory dataset schema mismatch at {uri}: expected [{}], found [{}]",
-        crate::TRAJECTORY_COLS.join(", "),
-        columns.join(", ")
+        actual.fields() == expected.fields(),
+        "trajectory dataset schema mismatch at {uri}: expected {expected:?}, found {actual:?}"
     );
     Ok(())
 }

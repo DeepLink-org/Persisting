@@ -4,6 +4,9 @@
 //! - `storyline`: normalized three-table projection for `StorylineDocument`.
 //! - `search`: document retrieval storage lives outside this module.
 
+#[cfg(feature = "lance-store")]
+use anyhow::Context as _;
+
 mod agenticmd_fs;
 #[cfg(feature = "lance-store")]
 mod atif_datafusion;
@@ -56,7 +59,8 @@ pub use catalog::{
     CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind, CatalogSourceRevision,
     CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle, DatasetCatalogSnapshot,
     DatasetMount, DiscoveredSource, NamespacePath, CATALOG_SOURCES_TABLE,
-    CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME,
+    CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
+    DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
 #[cfg(feature = "lance-store")]
 pub use egress::{export_source_dirs, export_story_bundle, ExportOutcome};
@@ -175,10 +179,29 @@ fn canonicalize_event(
         .get_or_insert_with(|| record.source.clone());
     // `event_id` is optional opaque producer/business data. pChronicle neither
     // generates nor checks it and accepts duplicate IDs as appended facts.
-    record
-        .identity
-        .timestamp_unix_ms
-        .get_or_insert_with(attempt_registry_now_ms);
+    let textual_timestamp_ms = record
+        .timestamp
+        .as_deref()
+        .map(|timestamp| {
+            u64::try_from(
+                chrono::DateTime::parse_from_rfc3339(timestamp)
+                    .with_context(|| format!("parse event timestamp '{timestamp}' as RFC3339"))?
+                    .timestamp_millis(),
+            )
+            .context("event timestamp predates Unix epoch")
+        })
+        .transpose()?;
+    match (record.identity.timestamp_unix_ms, textual_timestamp_ms) {
+        (Some(canonical), Some(textual)) => anyhow::ensure!(
+            canonical == textual,
+            "event timestamp conflict: timestamp_unix_ms={canonical}, RFC3339 timestamp={textual}"
+        ),
+        (None, textual) => {
+            record.identity.timestamp_unix_ms =
+                Some(textual.unwrap_or_else(attempt_registry_now_ms));
+        }
+        (Some(_), None) => {}
+    }
     Ok(record)
 }
 
