@@ -92,8 +92,8 @@ pub use local_query_manifest::{
 };
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
-    ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions,
-    ExternalTableFormat, ExternalTableSpec,
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
+    QueryBackendInfo, QuerySnapshot,
 };
 #[cfg(feature = "lance-store")]
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};

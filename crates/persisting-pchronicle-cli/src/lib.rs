@@ -1359,7 +1359,7 @@ async fn run_status(
                 .unwrap_or_else(|| "Source discovery failed".into()),
         })
         .collect::<Vec<_>>();
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     let timeout = Duration::from_secs(args.timeout_seconds);
     let deadline = tokio::time::Instant::now() + timeout;
     let counts = match query_status_counts(&engine, None, deadline, timeout).await {
@@ -1465,7 +1465,8 @@ async fn run_query(
     .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot)
+    let engine = snapshot
+        .query_engine(Default::default())
         .await
         .map_err(|error| redact_query_error(&error, &dataset_uris, None))?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
@@ -1550,7 +1551,8 @@ async fn run_analysis(
             .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot)
+    let engine = snapshot
+        .query_engine(Default::default())
         .await
         .map_err(|error| redact_query_error(&error, &dataset_uris, None))?;
     let bounded_sql = format!("{sql}\nLIMIT {}", options.limit);
@@ -1731,7 +1733,8 @@ async fn run_find(
         .context("find Dataset URI missing after discovery")?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot)
+    let engine = snapshot
+        .query_engine(Default::default())
         .await
         .map_err(|error| redact_query_error(&error, std::slice::from_ref(&dataset_uri), None))?;
     let sql = find_sql(&args)?;

@@ -1401,7 +1401,7 @@ mod tests {
             )
             .await?,
         );
-        let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+        let engine = snapshot.clone().query_engine(Default::default()).await?;
         let acceleration = ServerAcceleration::default();
         let sql = "SELECT _file_, event_id FROM events WHERE agent_id = 'project-a' AND event_id = 'event-a'";
         let routed = acceleration.route_sql(&snapshot, &engine, sql).await;

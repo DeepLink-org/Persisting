@@ -6,9 +6,9 @@
 use anyhow::{Context, Result};
 use lance::io::ObjectStore;
 use persisting_pchronicle::{
-    into_storyline, AtifTrajectory, ChronicleFormat, ChronicleQueryEngine, EventRecord,
-    LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore, StoryCoords,
-    StorylineLanceStore,
+    into_storyline, AtifTrajectory, ChronicleFormat, ChronicleQueryEngine,
+    ChronicleQueryExecutionOptions, DocumentFormat, EventRecord, LanceMaintenanceOptions,
+    RawEventLanceAppender, RawEventLanceStore, StoryCoords, StorylineLanceStore,
 };
 
 fn unique_root() -> Result<String> {
@@ -104,7 +104,12 @@ async fn run_contract(root: &str) -> Result<()> {
     let store = StorylineLanceStore::open_uri(&storyline_root).await?;
     let first = fixture_storyline()?;
     store.replace_storyline(&first).await?;
-    let pinned = ChronicleQueryEngine::open_lance_uri(&storyline_root).await?;
+    let pinned = ChronicleQueryEngine::open(
+        DocumentFormat::Storyline,
+        std::path::Path::new(&storyline_root),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
 
     let mut second = first.clone();
     second.session_id = "s3-contract-second".into();
@@ -125,7 +130,12 @@ async fn run_contract(root: &str) -> Result<()> {
             .await?,
         [Some(first), Some(second)]
     );
-    let engine = ChronicleQueryEngine::open_lance_uri(&storyline_root).await?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Storyline,
+        std::path::Path::new(&storyline_root),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let output = engine
         .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
         .await?;
@@ -161,8 +171,10 @@ async fn run_append_scale_contract(root: &str) -> Result<()> {
         writer.append_event_batch(&entries).await?;
         if batch_index + 1 == BATCHES / 2 {
             pinned = Some(
-                ChronicleQueryEngine::open_events_uri(
-                    persisting_pchronicle::raw_event_lance_path(&session)?.to_string_lossy(),
+                ChronicleQueryEngine::open(
+                    DocumentFormat::CanonicalEvent,
+                    persisting_pchronicle::raw_event_lance_path(&session)?,
+                    ChronicleQueryExecutionOptions::default(),
                 )
                 .await?,
             );
@@ -179,8 +191,10 @@ async fn run_append_scale_contract(root: &str) -> Result<()> {
         (BATCHES * ROWS_PER_BATCH / 2) as u64
     );
 
-    let current = ChronicleQueryEngine::open_events_uri(
-        persisting_pchronicle::raw_event_lance_path(&session)?.to_string_lossy(),
+    let current = ChronicleQueryEngine::open(
+        DocumentFormat::CanonicalEvent,
+        persisting_pchronicle::raw_event_lance_path(&session)?,
+        ChronicleQueryExecutionOptions::default(),
     )
     .await?;
     let current_output = current

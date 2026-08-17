@@ -224,7 +224,7 @@ async fn build_catalog_runtime(
         )
         .await?,
     );
-    let engine = Arc::new(ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?);
+    let engine = Arc::new(snapshot.clone().query_engine(Default::default()).await?);
     Ok(Arc::new(CatalogRuntime {
         snapshot,
         engine,

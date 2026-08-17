@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
     build_storyline_projection, rebuild_storyline_projection, story_lance_event_path,
-    sync_storyline_projection, ChronicleQueryEngine, EventIdentity, RawEventLanceStore,
-    StoryCoords, StorylineAgent, StorylineLanceStore, StorylineProjectionSyncMode, StorylineTurn,
+    sync_storyline_projection, EventIdentity, RawEventLanceStore, StoryCoords, StorylineAgent,
+    StorylineLanceStore, StorylineProjectionSyncMode, StorylineTurn,
 };
 use object_store::ObjectStoreExt;
 
@@ -230,7 +230,7 @@ async fn report_mode_keeps_late_local_format_errors_lazy() -> Result<()> {
         0
     );
 
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     let error = engine
         .query("SELECT run_id FROM dataset.runs WHERE _file_ = 'broken.json'")
         .await
@@ -257,7 +257,7 @@ async fn empty_dataset_still_exposes_the_stable_catalog_tables() -> Result<()> {
         .await?,
     );
     assert_eq!(snapshot.datasets()[0].sources.len(), 0);
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot).await?;
+    let engine = snapshot.query_engine(Default::default()).await?;
     let output = engine
         .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
         .await?;
@@ -283,7 +283,7 @@ async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
         .iter()
         .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
 
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     assert!(snapshot.prepared[0]
         .sources
         .iter()
@@ -377,7 +377,7 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         .sources
         .iter()
         .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     let rows = engine
         .query_jsonl("SELECT run_id FROM dataset.runs WHERE _file_ = 'one.json'")
         .await?;
@@ -429,7 +429,7 @@ async fn catalog_prunes_storyline_sources_before_opening_lance() -> Result<()> {
         .await?
         .replace_storyline(&storyline("session-a-new", "run-a-new"))
         .await?;
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     assert!(snapshot.prepared[0]
         .sources
         .iter()
@@ -507,7 +507,7 @@ async fn one_source_keeps_storylines_with_a_shared_run_id_independent() -> Resul
         )
         .await?,
     );
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
 
     let rows = engine
         .query_jsonl(
@@ -568,7 +568,7 @@ async fn catalog_joins_require_file_keys_only_within_one_dataset() -> Result<()>
         )
         .await?,
     );
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot).await?;
+    let engine = snapshot.query_engine(Default::default()).await?;
 
     let unsafe_join = engine
         .query(
@@ -687,7 +687,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         .await?;
     let lazy = &snapshot.prepared[0].sources[0];
     assert_eq!(lazy.resolution_count.load(Ordering::Relaxed), 0);
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     assert_eq!(lazy.resolution_count.load(Ordering::Relaxed), 0);
     let event_count = engine
         .query_jsonl(
@@ -737,7 +737,10 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         stale_snapshot.datasets()[0].sources[0].projection_status,
         Some(CatalogProjectionStatus::Stale)
     );
-    let stale_engine = ChronicleQueryEngine::from_catalog_snapshot(stale_snapshot.clone()).await?;
+    let stale_engine = stale_snapshot
+        .clone()
+        .query_engine(Default::default())
+        .await?;
     let stale_resolved = stale_snapshot.prepared[0].sources[0].resolve().await?;
     let ResolvedSource::Events(stale_events) = stale_resolved.as_ref() else {
         panic!("stale projection did not fall back to canonical events");
@@ -775,7 +778,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         )
         .await?,
     );
-    let limited_engine = ChronicleQueryEngine::from_catalog_snapshot(limited_snapshot).await?;
+    let limited_engine = limited_snapshot.query_engine(Default::default()).await?;
     let limit_error = limited_engine
         .query("SELECT * FROM dataset.runs")
         .await

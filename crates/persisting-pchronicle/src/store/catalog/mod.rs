@@ -213,6 +213,14 @@ pub struct DatasetCatalogSnapshot {
 }
 
 impl DatasetCatalogSnapshot {
+    /// Build a read-only query engine over this catalog snapshot.
+    pub async fn query_engine(
+        self: Arc<Self>,
+        options: super::ChronicleQueryExecutionOptions,
+    ) -> Result<super::ChronicleQueryEngine> {
+        super::ChronicleQueryEngine::from_catalog_snapshot_with_options(self, options).await
+    }
+
     pub async fn discover(
         mounts: Vec<DatasetMount>,
         default_dataset: Option<String>,

@@ -17,8 +17,8 @@ use crate::{
 
 use super::{
     AgenticMdDataSource, AtifReader, FileTrajectoryDataSource, FileTrajectoryFormat,
-    LocalQueryManifest, RawEventDataSource, StorylineDataSource, StorylineLanceStore,
-    DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    LocalQueryManifest, RawEventDataSource, StorylineDataSource, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
+    DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
 
 pub(crate) trait QueryDocumentSource {
@@ -37,7 +37,6 @@ pub(crate) enum DocumentSourceImpl {
     Storyline {
         path: PathBuf,
         source: StorylineDataSource,
-        store: StorylineLanceStore,
     },
     AgenticMd {
         path: PathBuf,
@@ -64,17 +63,7 @@ pub(crate) async fn open_document_source(
         }),
         DocumentFormat::Storyline => {
             let source = StorylineDataSource::open(&path).await.map_err(other)?;
-            let root = path
-                .to_str()
-                .ok_or_else(|| Error::Other("Storyline path is not valid UTF-8".into()))?;
-            let store = StorylineLanceStore::open_uri_unchecked(root)
-                .await
-                .map_err(other)?;
-            Ok(DocumentSourceImpl::Storyline {
-                path,
-                source,
-                store,
-            })
+            Ok(DocumentSourceImpl::Storyline { path, source })
         }
         DocumentFormat::AgenticMd => {
             let input = std::fs::read_to_string(&path).map_err(Error::from)?;
@@ -170,7 +159,7 @@ impl DocumentSourceImpl {
             Self::Files {
                 format, manifest, ..
             } => for_each_file_storyline(*format, manifest, on_storyline),
-            Self::Storyline { source, store, .. } => {
+            Self::Storyline { source, .. } => {
                 let context = SessionContext::new();
                 source.register(&context).map_err(other)?;
                 for session_id in distinct_strings(
@@ -180,12 +169,7 @@ impl DocumentSourceImpl {
                 )
                 .await?
                 {
-                    let story = store
-                        .get_storyline_full(&session_id)
-                        .await
-                        .map_err(other)?
-                        .ok_or_else(|| Error::SessionNotFound(session_id.clone()))?;
-                    on_storyline(story)?;
+                    on_storyline(read_pinned_storyline(&context, &session_id).await?)?;
                 }
                 Ok(())
             }
@@ -231,6 +215,20 @@ impl DocumentSourceImpl {
     pub(crate) fn file_metrics(&self) -> Option<super::FileTrajectoryQueryMetrics> {
         match self {
             Self::Files { source, .. } => Some(source.metrics()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn event_snapshot(&self) -> Option<&super::EventFactSnapshot> {
+        match self {
+            Self::Events { source, .. } => Some(source.fact_snapshot()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn storyline_generation(&self) -> Option<&str> {
+        match self {
+            Self::Storyline { source, .. } => Some(source.generation()),
             _ => None,
         }
     }
@@ -382,6 +380,64 @@ async fn distinct_strings(
         }
     }
     Ok(values)
+}
+
+async fn read_pinned_storyline(
+    context: &SessionContext,
+    session_id: &str,
+) -> Result<StorylineDocument> {
+    let literal = session_id.replace('\'', "''");
+    let runs = context
+        .sql(&format!(
+            "SELECT * FROM runs WHERE session_id = '{literal}'"
+        ))
+        .await
+        .map_err(other)?
+        .collect()
+        .await
+        .map_err(other)?;
+    let steps = context
+        .sql(&format!(
+            "SELECT * FROM steps WHERE session_id = '{literal}' ORDER BY step_id"
+        ))
+        .await
+        .map_err(other)?
+        .collect()
+        .await
+        .map_err(other)?;
+    let tool_calls = context
+        .sql(&format!(
+            "SELECT * FROM tool_calls WHERE session_id = '{literal}' ORDER BY step_id, call_index"
+        ))
+        .await
+        .map_err(other)?
+        .collect()
+        .await
+        .map_err(other)?;
+
+    let mut run_rows = Vec::new();
+    for batch in &runs {
+        run_rows.extend(super::story_runs_from_batch(batch).map_err(other)?);
+    }
+    if run_rows.len() != 1 {
+        return Err(Error::Other(format!(
+            "pinned Storyline source returned {} run rows for session_id '{session_id}'",
+            run_rows.len()
+        )));
+    }
+    let mut step_rows = Vec::new();
+    for batch in &steps {
+        step_rows.extend(super::story_steps_from_batch(batch).map_err(other)?);
+    }
+    let mut tool_call_rows = Vec::new();
+    for batch in &tool_calls {
+        tool_call_rows.extend(super::story_tool_calls_from_batch(batch).map_err(other)?);
+    }
+    crate::reconstruct_storyline(crate::StorylineTables {
+        run: run_rows.remove(0),
+        steps: step_rows,
+        tool_calls: tool_call_rows,
+    })
 }
 
 fn story_rows(story: &StorylineDocument) -> usize {

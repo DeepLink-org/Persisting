@@ -1533,7 +1533,7 @@ upstream = "http://{upstream_addr}/v1"
         )
         .await?,
     );
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot).await?;
+    let engine = snapshot.query_engine(Default::default()).await?;
     let rows = engine
         .query_jsonl(
             "SELECT kind, COUNT(*) AS count FROM dataset.events GROUP BY kind ORDER BY kind",

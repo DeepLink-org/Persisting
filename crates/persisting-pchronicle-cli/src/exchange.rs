@@ -205,7 +205,9 @@ async fn export_from_snapshot(
     );
 
     let sql = export_address_sql(args)?;
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone())
+    let engine = snapshot
+        .clone()
+        .query_engine(Default::default())
         .await
         .map_err(|error| redact_query_error(&error, &[dataset_uri.to_string()], None))?;
     let row_limit = args
