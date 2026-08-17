@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::{StorylineDocument, StorylineTurn};
+use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
 use serde_json::Value;
 
 use super::dialogue::capture_record_to_storyline_turn;
@@ -16,7 +16,7 @@ use super::markdown_trajectory::upsert_storyline_turn;
 use crate::dialogue_extract::count_visible_user_messages;
 use crate::record::{EventRecord, EventRecordExt};
 use crate::session::storage::{trajectory_run_dir, CaptureRoute};
-use persisting_pchronicle::session_markdown_write_path_for_key;
+use persisting_pchronicle::storage::session_markdown_write_path_for_key;
 
 /// Per-session sequential state: static filters + Claude Code history-replay dedup.
 #[derive(Debug, Default)]
@@ -226,7 +226,7 @@ mod tests {
     use crate::session::storage::CaptureRoute;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
     use crate::Call;
-    use persisting_pchronicle::parse_agenticmd;
+    use persisting_pchronicle::document::parse_agenticmd;
     use serde_json::json;
 
     const LEVEL: CaptureLevel = CaptureLevel::Dialogue;

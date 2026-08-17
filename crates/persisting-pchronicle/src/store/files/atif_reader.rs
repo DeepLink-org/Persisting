@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::{AtifTrajectory, ChronicleFormat};
+use crate::atif::AtifTrajectory;
+use crate::format::DocumentFormat;
 
 use super::{LocalQueryInputFile, LocalQueryManifest};
 
@@ -32,7 +33,7 @@ enum AtifFileReader {
 
 impl AtifReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let manifest = LocalQueryManifest::for_format(path, ChronicleFormat::Atif)?;
+        let manifest = LocalQueryManifest::for_format(path, DocumentFormat::Atif)?;
         Ok(Self::from_files(manifest.files()))
     }
 

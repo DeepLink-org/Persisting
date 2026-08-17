@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use persisting_pchronicle::{
+use persisting_pchronicle::model::{
     LlmCandidate, LlmContentPart, LlmImageSource, LlmMessage, LlmProtocol, LlmRequest,
     LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload, LlmRole, LlmToolChoiceMode,
     LlmUsage,

@@ -225,7 +225,8 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
 #[cfg(test)]
 mod tests {
     use super::{atif_to_storyline, storyline_to_atif};
-    use crate::{AtifTrajectory, DocumentFormat, Error, FieldPresence};
+    use crate::atif::AtifTrajectory;
+    use crate::{DocumentFormat, Error, FieldPresence};
 
     #[test]
     fn malformed_atif_observation_is_not_silently_dropped() {

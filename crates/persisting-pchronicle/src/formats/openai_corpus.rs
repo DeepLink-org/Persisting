@@ -1127,7 +1127,7 @@ fn number_to_i64(value: &Value) -> Option<i64> {
 mod tests {
     use super::*;
     #[cfg(feature = "lance-store")]
-    use crate::StorylineLanceStore;
+    use crate::store::StorylineLanceStore;
 
     fn corpus() -> Value {
         json!([

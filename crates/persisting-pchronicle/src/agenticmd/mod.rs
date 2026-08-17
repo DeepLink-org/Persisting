@@ -21,7 +21,6 @@ pub use layout::{
 };
 #[cfg(feature = "lance-store")]
 pub use projection::{
-    event_records_to_storyline, layer_stats, materialize_lance_to_markdown,
-    materialize_markdown_path, write_markdown_projection, LayerStats, MaterializeOutcome,
-    MaterializeStats,
+    layer_stats, materialize_lance_to_markdown, materialize_markdown_path,
+    write_markdown_projection, LayerStats, MaterializeOutcome, MaterializeStats,
 };

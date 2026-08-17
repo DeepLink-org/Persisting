@@ -7,8 +7,10 @@ use std::time::Duration;
 use anyhow::Context;
 use thiserror::Error;
 
+use crate::formats::EventRecord;
+use crate::layout::StoryCoords;
 use crate::store::compact_sealed_event_segment;
-use crate::{raw_event_lance_path, EventRecord, RawEventLanceAppender, StoryCoords};
+use crate::store::{raw_event_lance_path, RawEventLanceAppender};
 
 pub const DEFAULT_RAW_EVENT_QUEUE_CAPACITY: usize = 256;
 pub const DEFAULT_RAW_EVENT_BATCH_SIZE: usize = 256;
@@ -421,7 +423,7 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    use crate::RawEventLanceStore;
+    use crate::store::RawEventLanceStore;
 
     fn event() -> EventRecord {
         EventRecord {

@@ -169,10 +169,6 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
     Ok(document)
 }
 
-pub fn is_actf_storyline(story: &StorylineDocument) -> bool {
-    residual(story).is_some()
-}
-
 fn attempt_to_storyline(
     document: &ActfDocument,
     attempt_id: &str,
@@ -650,9 +646,9 @@ fn residual(story: &StorylineDocument) -> Option<&Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_actf_document;
+    use crate::formats::parse_actf_document;
     #[cfg(feature = "lance-store")]
-    use crate::StorylineLanceStore;
+    use crate::store::StorylineLanceStore;
 
     const FIXTURE: &str = r#"{
       "task_id":"task-1","category":"software-engineering","k":1,

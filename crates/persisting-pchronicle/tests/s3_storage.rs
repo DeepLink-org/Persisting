@@ -5,10 +5,13 @@
 
 use anyhow::{Context, Result};
 use lance::io::ObjectStore;
-use persisting_pchronicle::{
-    into_storyline, AtifTrajectory, ChronicleFormat, ChronicleQueryEngine,
-    ChronicleQueryExecutionOptions, DocumentFormat, EventRecord, LanceMaintenanceOptions,
-    RawEventLanceAppender, RawEventLanceStore, StoryCoords, StorylineLanceStore,
+use persisting_pchronicle::document::atif_to_storyline;
+use persisting_pchronicle::document::DocumentFormat;
+use persisting_pchronicle::model::{AtifTrajectory, EventIdentity, EventRecord, StorylineDocument};
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
+use persisting_pchronicle::storage::{
+    raw_event_lance_path, LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore,
+    StoryCoords, StorylineLanceStore,
 };
 
 fn unique_root() -> Result<String> {
@@ -25,18 +28,18 @@ fn unique_root() -> Result<String> {
     ))
 }
 
-fn fixture_storyline() -> Result<persisting_pchronicle::StorylineDocument> {
+fn fixture_storyline() -> Result<StorylineDocument> {
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/atif/parallel_tools_14.json"),
     )?;
     let trajectory = AtifTrajectory::from_json_str(&source)?;
-    into_storyline(ChronicleFormat::Atif, &serde_json::to_string(&trajectory)?).map_err(Into::into)
+    atif_to_storyline(&trajectory).map_err(Into::into)
 }
 
 fn event(content: &str) -> EventRecord {
     EventRecord {
-        identity: persisting_pchronicle::EventIdentity::default(),
+        identity: EventIdentity::default(),
         seq: 0,
         source: "s3-contract".into(),
         kind: "note".into(),
@@ -173,7 +176,7 @@ async fn run_append_scale_contract(root: &str) -> Result<()> {
             pinned = Some(
                 ChronicleQueryEngine::open(
                     DocumentFormat::CanonicalEvent,
-                    persisting_pchronicle::raw_event_lance_path(&session)?,
+                    raw_event_lance_path(&session)?,
                     ChronicleQueryExecutionOptions::default(),
                 )
                 .await?,
@@ -193,7 +196,7 @@ async fn run_append_scale_contract(root: &str) -> Result<()> {
 
     let current = ChronicleQueryEngine::open(
         DocumentFormat::CanonicalEvent,
-        persisting_pchronicle::raw_event_lance_path(&session)?,
+        raw_event_lance_path(&session)?,
         ChronicleQueryExecutionOptions::default(),
     )
     .await?;

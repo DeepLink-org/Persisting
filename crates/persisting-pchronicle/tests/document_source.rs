@@ -2,11 +2,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
-use persisting_pchronicle::{
-    encode_agenticmd, open_document, DocumentFormat, Error, EventIdentity, EventRecord,
-    FilterPushdown, QueryTables, RawEventLanceStore, StoryCoords, StorylineDocument,
-    StorylineLanceStore, StorylineTurn, DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
+use persisting_pchronicle::document::{
+    encode_agenticmd, open_document, DocumentFormat, Error, FilterPushdown, QueryTables,
+    DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
 };
+use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument, StorylineTurn};
+use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
 use serde_json::json;
 
 fn fixture(relative: &str) -> PathBuf {
@@ -90,7 +91,7 @@ async fn opens_all_six_formats_and_reports_true_capabilities() -> Result<()> {
             }],
         )
         .await?;
-    let event_path = persisting_pchronicle::raw_event_lance_path(&event_coords)?;
+    let event_path = persisting_pchronicle::storage::raw_event_lance_path(&event_coords)?;
 
     let events = open_document(DocumentFormat::CanonicalEvent, &event_path).await?;
     assert_eq!(

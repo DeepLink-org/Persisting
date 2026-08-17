@@ -5,7 +5,7 @@ use std::sync::Arc;
 use persisting_gateway::record::EventRecord;
 use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::sink::{CallbackSink, CaptureEventSink};
-use persisting_pchronicle::{raw_event_append_queue, RawEventAppendWorker, StoryCoords};
+use persisting_pchronicle::storage::{raw_event_append_queue, RawEventAppendWorker, StoryCoords};
 
 pub(crate) struct GatewayCaptureWriter {
     worker: RawEventAppendWorker,
@@ -47,7 +47,7 @@ pub(crate) fn gateway_capture_sink(
 #[cfg(test)]
 mod tests {
     use persisting_gateway::record::EventRecord;
-    use persisting_pchronicle::RawEventLanceStore;
+    use persisting_pchronicle::storage::RawEventLanceStore;
 
     use super::*;
 

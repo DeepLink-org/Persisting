@@ -24,14 +24,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
-use persisting_pchronicle::convert::storyline_to_atif;
-use persisting_pchronicle::{
-    actf_to_storylines, build_storyline_projection, detect_format, load_atif_trajectories,
-    parse_actf_document, parse_openai_msg_corpus_value, rebuild_storyline_projection,
-    storyline_projection_status, storylines_to_actf, sync_storyline_projection,
-    verify_storyline_projection, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
-    CatalogSourceStatus, CatalogStorylineKey, ChronicleFormat, ChronicleQueryEngine,
-    DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions, StorylineDocument,
+use persisting_pchronicle::document::{
+    actf_to_storylines, detect_format, parse_actf_document, parse_openai_msg_corpus_value,
+    storyline_to_atif, storylines_to_actf, DocumentFormat,
+};
+use persisting_pchronicle::model::StorylineDocument;
+use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::storage::{
+    build_storyline_projection, load_atif_trajectories, rebuild_storyline_projection,
+    storyline_projection_status, sync_storyline_projection, verify_storyline_projection,
+    CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus,
+    CatalogStorylineKey, DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions,
     StorylineProjectionSyncReport, StorylineProjectionVerification, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
@@ -113,11 +116,11 @@ struct ListArgs {
     errors: ErrorMode,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -143,11 +146,11 @@ struct StatusArgs {
     errors: ErrorMode,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 
     /// Maximum time for trajectory count queries.
@@ -190,11 +193,11 @@ struct QueryArgs {
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -241,11 +244,11 @@ struct AnalysisOptions {
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -294,11 +297,11 @@ struct FindArgs {
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -310,6 +313,24 @@ enum ExchangeFormat {
     #[value(name = "openai-messages")]
     OpenaiMessages,
     Storyline,
+}
+
+impl ExchangeFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Atif => "atif",
+            Self::Actf => "actf",
+            Self::OpenaiMessages => "openai-messages",
+            Self::Storyline => "storyline",
+        }
+    }
+}
+
+impl std::fmt::Display for ExchangeFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Args)]
@@ -390,11 +411,11 @@ struct ExportArgs {
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 

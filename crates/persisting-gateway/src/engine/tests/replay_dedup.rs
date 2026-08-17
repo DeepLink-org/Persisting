@@ -17,7 +17,7 @@ fn claude_messages_body(user_lines: &[&str]) -> serde_json::Value {
 async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
     use crate::engine::tests::support::*;
     use crate::session::storage::trajectory_run_dir;
-    use persisting_pchronicle::parse_agenticmd;
+    use persisting_pchronicle::document::parse_agenticmd;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();

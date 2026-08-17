@@ -14,10 +14,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use persisting_pchronicle::{
-    events_to_har, events_to_otlp_json, read_revisions, CatalogErrorPolicy, CatalogSnapshotOptions,
-    CatalogStorylineKey, ChronicleQueryEngine, DatasetCatalogSnapshot, DatasetMount, EventRecord,
-    StoryCoords, StorylineTurn, DEFAULT_DATASET_NAME,
+use persisting_pchronicle::document::{events_to_har, events_to_otlp_json};
+use persisting_pchronicle::model::{EventRecord, StorylineTurn};
+use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::storage::{
+    read_revisions, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
+    DatasetCatalogSnapshot, DatasetMount, StoryCoords, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -78,7 +80,7 @@ impl IntoResponse for ApiError {
 }
 
 fn api_error(error: impl std::fmt::Display) -> ApiError {
-    let code = persisting_pchronicle::classify_error(&error).as_str();
+    let code = persisting_pchronicle::query::classify_error(&error).as_str();
     ApiError {
         code,
         message: error.to_string(),
@@ -249,7 +251,7 @@ struct CatalogResponse {
     created_at: String,
     default_dataset: Option<String>,
     error_policy: CatalogErrorPolicy,
-    datasets: Vec<persisting_pchronicle::CatalogDataset>,
+    datasets: Vec<persisting_pchronicle::storage::CatalogDataset>,
     acceleration: AccelerationStatus,
 }
 

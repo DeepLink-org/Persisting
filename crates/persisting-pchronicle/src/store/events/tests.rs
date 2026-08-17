@@ -1,5 +1,6 @@
 use super::*;
-use crate::{EventRecord, StoryCoords};
+use crate::layout::StoryCoords;
+use crate::EventRecord;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const CHUNK_ROWS: usize = 8192;

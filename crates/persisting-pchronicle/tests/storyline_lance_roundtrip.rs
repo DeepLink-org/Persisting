@@ -1,11 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::convert::{atif_to_storyline, storyline_to_atif};
-use persisting_pchronicle::{
-    actf_to_storylines, recover_openai_msg_files, storylines_to_actf, ActfDocument, AtifTrajectory,
-    OpenaiMsgCorpusReader, StorylineDocument, StorylineLanceStore,
+use persisting_pchronicle::document::{
+    actf_to_storylines, recover_openai_msg_files, storylines_to_actf,
 };
+use persisting_pchronicle::document::{atif_to_storyline, storyline_to_atif};
+use persisting_pchronicle::model::{
+    ActfDocument, AtifTrajectory, OpenaiMsgCorpusReader, StorylineDocument,
+};
+use persisting_pchronicle::storage::StorylineLanceStore;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -55,7 +58,7 @@ async fn atif_actf_and_openai_are_lossless_through_storyline_lance() -> Result<(
     let openai_path = fixture("cybergym_0729001_trimmed.json");
     let openai_expected: serde_json::Value = serde_json::from_slice(&std::fs::read(&openai_path)?)?;
     let openai_stories = OpenaiMsgCorpusReader::open(&openai_path)?
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
     let openai_restored = persist_and_restore(&openai_stories).await?;
     let recovered = recover_openai_msg_files(&openai_restored)?;
     assert_eq!(recovered.len(), 1);

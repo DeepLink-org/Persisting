@@ -11,7 +11,7 @@ use persisting_events::{
     LeaseAcquireOutcome, TrajectoryAppendRequest, TrajectoryAppendResponse,
     CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION,
 };
-use persisting_pchronicle::{
+use persisting_pchronicle::storage::{
     AttemptRecord, AttemptRecordState, AttemptRegistry, RawEventLanceStore, RunControlStore,
     StoryCoords,
 };
@@ -226,34 +226,38 @@ async fn handle_request(
     })
 }
 
-fn map_lease_outcome(value: persisting_pchronicle::LeaseAcquireOutcome) -> LeaseAcquireOutcome {
+fn map_lease_outcome(
+    value: persisting_pchronicle::storage::LeaseAcquireOutcome,
+) -> LeaseAcquireOutcome {
     match value {
-        persisting_pchronicle::LeaseAcquireOutcome::Acquired(value) => {
+        persisting_pchronicle::storage::LeaseAcquireOutcome::Acquired(value) => {
             LeaseAcquireOutcome::Acquired(value)
         }
-        persisting_pchronicle::LeaseAcquireOutcome::Held(value) => LeaseAcquireOutcome::Held(value),
-        persisting_pchronicle::LeaseAcquireOutcome::AlreadyCommitted(value) => {
+        persisting_pchronicle::storage::LeaseAcquireOutcome::Held(value) => {
+            LeaseAcquireOutcome::Held(value)
+        }
+        persisting_pchronicle::storage::LeaseAcquireOutcome::AlreadyCommitted(value) => {
             LeaseAcquireOutcome::AlreadyCommitted(value)
         }
     }
 }
 
-fn map_commit_outcome(value: persisting_pchronicle::CommitRunOutcome) -> CommitRunOutcome {
+fn map_commit_outcome(value: persisting_pchronicle::storage::CommitRunOutcome) -> CommitRunOutcome {
     match value {
-        persisting_pchronicle::CommitRunOutcome::Committed(value) => {
+        persisting_pchronicle::storage::CommitRunOutcome::Committed(value) => {
             CommitRunOutcome::Committed(value)
         }
-        persisting_pchronicle::CommitRunOutcome::AlreadyCommitted(value) => {
+        persisting_pchronicle::storage::CommitRunOutcome::AlreadyCommitted(value) => {
             CommitRunOutcome::AlreadyCommitted(value)
         }
-        persisting_pchronicle::CommitRunOutcome::StaleLease {
+        persisting_pchronicle::storage::CommitRunOutcome::StaleLease {
             supplied_epoch,
             current_epoch,
         } => CommitRunOutcome::StaleLease {
             supplied_epoch,
             current_epoch,
         },
-        persisting_pchronicle::CommitRunOutcome::Conflict(value) => {
+        persisting_pchronicle::storage::CommitRunOutcome::Conflict(value) => {
             CommitRunOutcome::Conflict(value)
         }
     }

@@ -5,4 +5,4 @@ pub(crate) use crate::engine::{
 };
 pub(crate) use crate::Call;
 pub(crate) use bytes::Bytes;
-pub(crate) use persisting_pchronicle::session_markdown_write_path_for_key;
+pub(crate) use persisting_pchronicle::storage::session_markdown_write_path_for_key;

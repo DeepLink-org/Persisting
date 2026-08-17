@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use persisting_pchronicle::{
+use persisting_pchronicle::model::{
     LlmCandidate, LlmContentPart, LlmMessage, LlmProtocol, LlmResponse, LlmResponseEventPayload,
     LlmRole, LlmStreamEvent, LlmUsage,
 };

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use persisting_pchronicle::EventRecord;
+use persisting_pchronicle::model::EventRecord;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -131,7 +131,7 @@ pub(crate) struct TurnSummary {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TurnDetail {
     pub(crate) summary: TurnSummary,
-    pub(crate) turn: persisting_pchronicle::StorylineTurn,
+    pub(crate) turn: persisting_pchronicle::model::StorylineTurn,
     pub(crate) wire_tool_calls: Vec<WireToolCall>,
     pub(crate) events: Vec<EventRecord>,
 }

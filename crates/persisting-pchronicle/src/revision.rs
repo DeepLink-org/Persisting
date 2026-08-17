@@ -11,7 +11,7 @@ use lance::Dataset;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::StoryCoords;
+use crate::layout::StoryCoords;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RevisionRow {

@@ -14,11 +14,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
-use persisting_pchronicle::{
-    raw_event_lance_path, CatalogSnapshotOptions, ChronicleQueryEngine,
-    ChronicleQueryExecutionOptions, DatasetCatalogSnapshot, DatasetMount, DocumentFormat,
-    EventIdentity, EventRecord, LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore,
-    StoryCoords,
+use persisting_pchronicle::document::DocumentFormat;
+use persisting_pchronicle::model::{EventIdentity, EventRecord};
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
+use persisting_pchronicle::storage::{
+    raw_event_lance_path, CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount,
+    LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore, StoryCoords,
 };
 use serde::Serialize;
 use serde_json::{json, Value};

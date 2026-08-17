@@ -8,17 +8,22 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use persisting_pchronicle::convert::storyline_to_events;
-use persisting_pchronicle::{
-    from_storyline, into_storyline, project_event_records, reconstruct_storyline, split_storyline,
-    ChronicleFormat,
+use persisting_pchronicle::document::{
+    atif_to_storyline, project_event_records, storyline_to_atif, storyline_to_events,
 };
+use persisting_pchronicle::model::{AtifTrajectory, StorylineDocument};
+use persisting_pchronicle::storage::{reconstruct_storyline, split_storyline};
+
+fn parse_atif(raw: &str) -> StorylineDocument {
+    let trajectory = AtifTrajectory::from_json_str(raw).expect("parse benchmark ATIF");
+    atif_to_storyline(&trajectory).expect("normalize benchmark ATIF")
+}
 
 fn conversion_benchmarks(criterion: &mut Criterion) {
     let fixtures = load_fixtures();
     let stories = fixtures
         .iter()
-        .map(|raw| into_storyline(ChronicleFormat::Atif, raw).expect("parse benchmark fixture"))
+        .map(|raw| parse_atif(raw))
         .collect::<Vec<_>>();
     let documents = fixtures.len() as u64;
 
@@ -27,22 +32,17 @@ fn conversion_benchmarks(criterion: &mut Criterion) {
     group.bench_function("parse_corpus", |bencher| {
         bencher.iter(|| {
             for raw in &fixtures {
-                black_box(
-                    into_storyline(ChronicleFormat::Atif, black_box(raw))
-                        .expect("parse benchmark fixture"),
-                );
+                black_box(parse_atif(black_box(raw)));
             }
         });
     });
     group.bench_function("roundtrip_corpus", |bencher| {
         bencher.iter(|| {
             for story in &stories {
-                let atif = from_storyline(ChronicleFormat::Atif, black_box(story))
+                let atif = storyline_to_atif(black_box(story))
+                    .and_then(|trajectory| serde_json::to_string(&trajectory).map_err(Into::into))
                     .expect("encode benchmark Storyline");
-                black_box(
-                    into_storyline(ChronicleFormat::Atif, black_box(&atif))
-                        .expect("reparse benchmark ATIF"),
-                );
+                black_box(parse_atif(black_box(&atif)));
             }
         });
     });
@@ -53,7 +53,7 @@ fn projection_cpu_benchmarks(criterion: &mut Criterion) {
     let fixtures = load_fixtures();
     let stories = fixtures
         .iter()
-        .map(|raw| into_storyline(ChronicleFormat::Atif, raw).expect("parse benchmark fixture"))
+        .map(|raw| parse_atif(raw))
         .collect::<Vec<_>>();
     let events = stories
         .iter()

@@ -30,7 +30,7 @@ pub const AGENTICMD_BLOCK_LAYOUT: &str =
     "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgenticmdHeader {
+pub struct MarkdownHeader {
     #[serde(rename = "type", default = "default_block_type")]
     pub type_name: String,
     #[serde(default)]
@@ -40,12 +40,12 @@ pub struct AgenticmdHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgenticmdBlock {
-    pub header: AgenticmdHeader,
+pub struct MarkdownBlock {
+    pub header: MarkdownHeader,
     pub body: String,
 }
 
-impl AgenticmdBlock {
+impl MarkdownBlock {
     /// Legacy presentation role, derived from Storyline `source` when absent.
     pub fn role(&self) -> Option<&str> {
         if let Some(role) = self.header.fields.get("role").and_then(|v| v.as_str()) {
@@ -80,7 +80,7 @@ impl AgenticmdBlock {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgenticmdDocument {
+pub struct MarkdownDocument {
     /// Logical pChronicle format name (`agenticmd`).
     pub format: String,
     /// Frontmatter `format:` value (usually `persisting`).
@@ -91,11 +91,11 @@ pub struct AgenticmdDocument {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub frontmatter: BTreeMap<String, Value>,
-    pub blocks: Vec<AgenticmdBlock>,
+    pub blocks: Vec<MarkdownBlock>,
 }
 
-impl AgenticmdDocument {
-    pub fn new(blocks: Vec<AgenticmdBlock>) -> Self {
+impl MarkdownDocument {
+    pub fn new(blocks: Vec<MarkdownBlock>) -> Self {
         Self {
             format: AGENTICMD_FORMAT_NAME.into(),
             frontmatter_format: AGENTICMD_FRONTMATTER_FORMAT.into(),
@@ -107,10 +107,10 @@ impl AgenticmdDocument {
     }
 }
 
-pub fn parse_agenticmd_document(input: &str) -> Result<AgenticmdDocument> {
+pub fn parse_agenticmd_document(input: &str) -> Result<MarkdownDocument> {
     let (frontmatter, _body, _off) = split_frontmatter_with_offset(input)?;
     let spans = parse_agenticmd_blocks_with_spans(input)?;
-    let mut doc = AgenticmdDocument::new(spans.into_iter().map(|s| s.block).collect());
+    let mut doc = MarkdownDocument::new(spans.into_iter().map(|s| s.block).collect());
     doc.frontmatter = frontmatter;
     if let Some(fmt) = doc.frontmatter.get("format").and_then(Value::as_str) {
         doc.frontmatter_format = fmt.to_string();
@@ -142,14 +142,14 @@ pub fn parse_agenticmd_document(input: &str) -> Result<AgenticmdDocument> {
 /// `start..end` covers the comment line through trailing blank lines — the same
 /// span capture uses for markdown upsert rewrites.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AgenticmdBlockSpan {
-    pub block: AgenticmdBlock,
+pub struct MarkdownBlockSpan {
+    pub block: MarkdownBlock,
     pub start: usize,
     pub end: usize,
 }
 
 /// Parse blocks with absolute byte spans (for capture upsert / diagnostics).
-pub fn parse_agenticmd_blocks_with_spans(input: &str) -> Result<Vec<AgenticmdBlockSpan>> {
+pub fn parse_agenticmd_blocks_with_spans(input: &str) -> Result<Vec<MarkdownBlockSpan>> {
     let (_frontmatter, body, body_offset) = split_frontmatter_with_offset(input)?;
     parse_blocks_with_spans(body, body_offset)
 }
@@ -176,8 +176,8 @@ pub fn encode_agenticmd_preamble<T: Serialize>(frontmatter: &T) -> Result<String
 /// Encode a single agenticmd / capture TLV block (comment header + body).
 ///
 /// Normative on-disk layout shared with `persisting-gateway` live write paths.
-pub fn encode_agenticmd_block(block: &AgenticmdBlock) -> Result<String> {
-    let header = AgenticmdHeader {
+pub fn encode_agenticmd_block(block: &MarkdownBlock) -> Result<String> {
+    let header = MarkdownHeader {
         type_name: block.header.type_name.clone(),
         length: block.body.len(),
         fields: block.header.fields.clone(),
@@ -235,16 +235,16 @@ mod strict_frontmatter_tests {
     }
 }
 
-fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<AgenticmdBlockSpan>> {
+fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<MarkdownBlockSpan>> {
     if input.trim().is_empty() {
         return Ok(Vec::new());
     }
     if !input.contains(BLOCK_MARKER) {
         let body = input.trim().to_string();
         let fields = BTreeMap::from([("source".into(), Value::String("system".into()))]);
-        return Ok(vec![AgenticmdBlockSpan {
-            block: AgenticmdBlock {
-                header: AgenticmdHeader {
+        return Ok(vec![MarkdownBlockSpan {
+            block: MarkdownBlock {
+                header: MarkdownHeader {
                     type_name: default_block_type(),
                     length: body.len(),
                     fields,
@@ -307,8 +307,8 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Agenti
         };
         header.length = body.len();
         let end = base_offset + skip_blank_lines(bytes, body_end);
-        blocks.push(AgenticmdBlockSpan {
-            block: AgenticmdBlock { header, body },
+        blocks.push(MarkdownBlockSpan {
+            block: MarkdownBlock { header, body },
             start,
             end,
         });
@@ -317,7 +317,7 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Agenti
     Ok(blocks)
 }
 
-fn parse_block_comment(line: &str) -> Result<(AgenticmdHeader, Option<usize>)> {
+fn parse_block_comment(line: &str) -> Result<(MarkdownHeader, Option<usize>)> {
     let after = line
         .strip_prefix(BLOCK_MARKER)
         .ok_or_else(|| Error::Other("missing persisting:block marker".into()))?;
@@ -335,7 +335,7 @@ fn parse_block_comment(line: &str) -> Result<(AgenticmdHeader, Option<usize>)> {
             );
         }
         return Ok((
-            AgenticmdHeader {
+            MarkdownHeader {
                 type_name: default_block_type(),
                 length: 0,
                 fields,
@@ -357,7 +357,7 @@ fn parse_block_comment(line: &str) -> Result<(AgenticmdHeader, Option<usize>)> {
         .get("length")
         .and_then(Value::as_u64)
         .map(|n| n as usize);
-    let mut header: AgenticmdHeader = serde_json::from_value(raw)?;
+    let mut header: MarkdownHeader = serde_json::from_value(raw)?;
     if !speaker.is_empty()
         && !header.fields.contains_key("source")
         && !header.fields.contains_key("role")

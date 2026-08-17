@@ -11,7 +11,8 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use lance::deps::arrow_schema::SchemaRef;
 
-use crate::{split_storyline, StorylineDocument};
+use crate::formats::StorylineDocument;
+use crate::store::split_storyline;
 
 use super::{
     story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema, story_steps_to_batch,

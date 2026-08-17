@@ -4,7 +4,8 @@ use persisting_gateway::projection::markdown_trajectory::upsert_storyline_turn;
 use persisting_gateway::session::client::{
     write_session_client_meta, SessionClientMeta, SESSION_CLIENT_META_FILENAME,
 };
-use persisting_pchronicle::{parse_agenticmd, StorylineDocument, StorylineTurn};
+use persisting_pchronicle::document::parse_agenticmd;
+use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
 use serde_json::json;
 
 fn turn(id: i64, source: &str, body: &str, draft: bool) -> StorylineTurn {

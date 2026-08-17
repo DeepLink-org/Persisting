@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::{
-    from_storyline, into_storyline, AtifTrajectory, ChronicleFormat, FileTrajectoryDataSource,
-    StorylineDataSource, StorylineDocument, StorylineLanceStore,
-};
+use persisting_pchronicle::document::{atif_to_storyline, storyline_to_atif};
+use persisting_pchronicle::model::{AtifTrajectory, StorylineDocument};
+use persisting_pchronicle::query::{FileTrajectoryDataSource, StorylineDataSource};
+use persisting_pchronicle::storage::StorylineLanceStore;
 
 const ANALYTICAL_SQL: &str =
     "SELECT source, COUNT(*) AS step_count FROM steps GROUP BY source ORDER BY source";
@@ -115,11 +115,11 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     let atif_lines = stories
         .iter()
         .map(|story| {
-            let pretty = from_storyline(ChronicleFormat::Atif, story)?;
+            let pretty = serde_json::to_string_pretty(&storyline_to_atif(story)?)?;
             let value: serde_json::Value = serde_json::from_str(&pretty)?;
             Ok(serde_json::to_string(&value)?)
         })
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
     let json_document = format!("{}\n", atif_lines.join("\n"));
     let dir = tempfile::tempdir()?;
     let json_path = dir.path().join("trajectories.ndjson");
@@ -133,7 +133,7 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     let parsed = atif_lines
         .iter()
         .map(|line| AtifTrajectory::from_json_str(line))
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
 
     let store = StorylineLanceStore::open(dir.path().join("storyline-lance")).await?;
     let lance_write_started = Instant::now();
@@ -273,7 +273,8 @@ fn load_base_stories() -> Result<Vec<StorylineDocument>> {
         .map(|path| {
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("read {}", path.display()))?;
-            into_storyline(ChronicleFormat::Atif, &raw).map_err(anyhow::Error::from)
+            let trajectory = AtifTrajectory::from_json_str(&raw)?;
+            atif_to_storyline(&trajectory).map_err(anyhow::Error::from)
         })
         .collect()
 }
@@ -283,7 +284,10 @@ fn load_atif_stories(path: &Path) -> Result<Vec<StorylineDocument>> {
         .with_context(|| format!("read benchmark ATIF input {}", path.display()))?;
     raw.lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| into_storyline(ChronicleFormat::Atif, line).map_err(anyhow::Error::from))
+        .map(|line| {
+            let trajectory = AtifTrajectory::from_json_str(line)?;
+            atif_to_storyline(&trajectory).map_err(anyhow::Error::from)
+        })
         .collect()
 }
 

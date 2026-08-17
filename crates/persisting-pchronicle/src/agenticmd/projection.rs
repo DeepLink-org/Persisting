@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::{
-    project_event_records, EventRecord, RawEventLanceStore, StoryCoords, StorylineDocument,
-};
+use crate::convert::project_event_records;
+use crate::formats::{EventRecord, StorylineDocument};
+use crate::layout::StoryCoords;
+use crate::store::RawEventLanceStore;
 
 use super::fs::{agenticmd_block_count, write_agenticmd_storyline};
 use super::layout::{locate_session_markdown_for_key, session_markdown_path_for_key};

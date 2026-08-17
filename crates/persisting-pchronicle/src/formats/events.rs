@@ -81,10 +81,6 @@ pub fn events_lance_only_message() -> &'static str {
      on in-memory EventRecord batches after loading Lance."
 }
 
-pub fn events_lance_only_error() -> Error {
-    Error::Other(events_lance_only_message().into())
-}
-
 /// Debug/export helper: serialize records as JSONL. **Not** a chronicle format.
 pub fn export_events_jsonl(events: &[EventRecord]) -> Result<String> {
     let mut out = String::new();

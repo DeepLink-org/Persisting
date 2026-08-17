@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use super::codec::{
     encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans,
-    parse_agenticmd_document, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdHeader,
+    parse_agenticmd_document, MarkdownBlock, MarkdownBlockSpan, MarkdownHeader,
     AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
 };
 use super::convert::{encode_storyline_preamble, storyline_turn_block};
@@ -42,7 +42,7 @@ fn default_document_preamble() -> Result<String> {
 }
 
 /// Encode one generated block after minimal comment-safety validation.
-pub fn encode_agenticmd_block_validated(block: &AgenticmdBlock) -> Result<String> {
+pub fn encode_agenticmd_block_validated(block: &MarkdownBlock) -> Result<String> {
     validate_type_name(&block.header.type_name)?;
     validate_speaker(block_speaker(&block.header))?;
     let mut block = block.clone();
@@ -51,7 +51,7 @@ pub fn encode_agenticmd_block_validated(block: &AgenticmdBlock) -> Result<String
 }
 
 /// Tolerant parse plus minimal safety checks for fields used in generated comments.
-pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<AgenticmdBlock>> {
+pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<MarkdownBlock>> {
     parse_agenticmd_document(input)
         .map_err(|e| anyhow::anyhow!("agenticmd parse: {e}"))?
         .blocks
@@ -65,14 +65,14 @@ pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<AgenticmdBl
 }
 
 /// Tolerant parse with absolute byte spans for live-view upsert ranges.
-pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(AgenticmdBlock, usize, usize)>> {
+pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(MarkdownBlock, usize, usize)>> {
     let spans = parse_agenticmd_blocks_with_spans(input)
         .map_err(|e| anyhow::anyhow!("agenticmd span parse: {e}"))?;
     spans
         .into_iter()
         .enumerate()
         .map(|(i, span)| {
-            let AgenticmdBlockSpan { block, start, end } = span;
+            let MarkdownBlockSpan { block, start, end } = span;
             validate_agenticmd_block(&block)
                 .with_context(|| format!("agenticmd span block[{i}]"))?;
             Ok((block, start, end))
@@ -86,7 +86,7 @@ pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(AgenticmdBloc
 /// `persisting` frontmatter when `None`).
 pub fn append_agenticmd_blocks(
     path: &Path,
-    blocks: &[AgenticmdBlock],
+    blocks: &[MarkdownBlock],
     empty_file_preamble: Option<&str>,
 ) -> Result<usize> {
     if blocks.is_empty() {
@@ -118,7 +118,7 @@ pub fn append_agenticmd_blocks(
 pub fn write_agenticmd_document(
     path: &Path,
     preamble: &str,
-    blocks: &[AgenticmdBlock],
+    blocks: &[MarkdownBlock],
 ) -> Result<()> {
     let mut output = preamble.to_string();
     for block in blocks {
@@ -257,7 +257,7 @@ pub fn count_agenticmd_role(path: &Path, role: &str) -> Result<u64> {
 /// Replace the block whose header `call_id` and presentation role match, or append when missing.
 ///
 /// Returns `true` when an existing block was rewritten.
-pub fn upsert_block_by_call_id(path: &Path, call_id: &str, block: AgenticmdBlock) -> Result<bool> {
+pub fn upsert_block_by_call_id(path: &Path, call_id: &str, block: MarkdownBlock) -> Result<bool> {
     if call_id.trim().is_empty() {
         bail!("call_id must not be empty for markdown upsert");
     }
@@ -284,7 +284,7 @@ pub fn find_block_by_call_id_and_role(
     bytes: &[u8],
     call_id: &str,
     role: &str,
-) -> Result<Option<(usize, usize, AgenticmdHeader)>> {
+) -> Result<Option<(usize, usize, MarkdownHeader)>> {
     let text = std::str::from_utf8(bytes).context("markdown upsert requires UTF-8 document")?;
     for (block, start, end) in parse_agenticmd_spans_validated(text)? {
         if block_matches_upsert_key(&block.header, call_id, role) {
@@ -294,12 +294,12 @@ pub fn find_block_by_call_id_and_role(
     Ok(None)
 }
 
-fn block_matches_upsert_key(header: &AgenticmdHeader, call_id: &str, role: &str) -> bool {
+fn block_matches_upsert_key(header: &MarkdownHeader, call_id: &str, role: &str) -> bool {
     header.fields.get("call_id").and_then(|v| v.as_str()) == Some(call_id)
         && header_role(header) == role
 }
 
-fn header_role(header: &AgenticmdHeader) -> &str {
+fn header_role(header: &MarkdownHeader) -> &str {
     if let Some(role) = header.fields.get("role").and_then(|v| v.as_str()) {
         return role;
     }
@@ -328,7 +328,7 @@ pub fn rewrite_block_range(path: &Path, start: usize, end: usize, new_block: &[u
 }
 
 /// Strict-parse all agenticmd blocks from a markdown file (empty if missing).
-pub fn read_agenticmd_blocks_from_file(path: &Path) -> Result<Vec<AgenticmdBlock>> {
+pub fn read_agenticmd_blocks_from_file(path: &Path) -> Result<Vec<MarkdownBlock>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -369,7 +369,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::super::codec::{
-        encode_agenticmd_preamble, AgenticmdHeader, AGENTICMD_BLOCK_LAYOUT,
+        encode_agenticmd_preamble, MarkdownHeader, AGENTICMD_BLOCK_LAYOUT,
         AGENTICMD_FRONTMATTER_FORMAT,
     };
     use super::*;
@@ -392,13 +392,13 @@ mod tests {
         .unwrap()
     }
 
-    fn block_with_call(call_id: &str, role: &str, body: &str) -> AgenticmdBlock {
+    fn block_with_call(call_id: &str, role: &str, body: &str) -> MarkdownBlock {
         let mut fields = BTreeMap::new();
         fields.insert("role".into(), json!(role));
         fields.insert("kind".into(), json!("llm.response.stream"));
         fields.insert("call_id".into(), json!(call_id));
-        AgenticmdBlock {
-            header: AgenticmdHeader {
+        MarkdownBlock {
+            header: MarkdownHeader {
                 type_name: "markdown".into(),
                 length: body.len(),
                 fields,
@@ -407,27 +407,27 @@ mod tests {
         }
     }
 
-    fn block_header(role: &str, kind: &str) -> AgenticmdHeader {
+    fn block_header(role: &str, kind: &str) -> MarkdownHeader {
         let mut fields = BTreeMap::new();
         fields.insert("role".into(), json!(role));
         fields.insert("kind".into(), json!(kind));
         fields.insert("session_id".into(), json!("test-session"));
-        AgenticmdHeader {
+        MarkdownHeader {
             type_name: "markdown".into(),
             length: 0,
             fields,
         }
     }
 
-    fn encode_block(header: AgenticmdHeader, body: &str) -> String {
-        encode_agenticmd_block_validated(&AgenticmdBlock {
+    fn encode_block(header: MarkdownHeader, body: &str) -> String {
+        encode_agenticmd_block_validated(&MarkdownBlock {
             header,
             body: body.into(),
         })
         .unwrap()
     }
 
-    fn canonical_doc(blocks: &[(AgenticmdHeader, &str)]) -> String {
+    fn canonical_doc(blocks: &[(MarkdownHeader, &str)]) -> String {
         let mut doc = baseline_preamble();
         for (header, body) in blocks {
             doc.push_str(&encode_block(header.clone(), body));
@@ -435,7 +435,7 @@ mod tests {
         doc
     }
 
-    fn read_blocks(path: &Path) -> Vec<AgenticmdBlock> {
+    fn read_blocks(path: &Path) -> Vec<MarkdownBlock> {
         let text = std::fs::read_to_string(path).unwrap();
         parse_agenticmd_document_validated(&text).unwrap()
     }
@@ -595,8 +595,8 @@ mod tests {
         fields.insert("kind".into(), json!("llm.response"));
         fields.insert("call_id".into(), json!("c1"));
         let body = "hello world";
-        let via_validated = encode_agenticmd_block_validated(&AgenticmdBlock {
-            header: AgenticmdHeader {
+        let via_validated = encode_agenticmd_block_validated(&MarkdownBlock {
+            header: MarkdownHeader {
                 type_name: "text".into(),
                 length: 0,
                 fields: fields.clone(),
@@ -604,8 +604,8 @@ mod tests {
             body: body.into(),
         })
         .unwrap();
-        let via_raw = super::super::codec::encode_agenticmd_block(&AgenticmdBlock {
-            header: AgenticmdHeader {
+        let via_raw = super::super::codec::encode_agenticmd_block(&MarkdownBlock {
+            header: MarkdownHeader {
                 type_name: "text".into(),
                 length: body.len(),
                 fields,

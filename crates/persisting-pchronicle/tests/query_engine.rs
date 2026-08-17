@@ -4,12 +4,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
-use persisting_pchronicle::{
-    into_storyline, AtifReader, AtifTrajectory, ChronicleFormat, ChronicleQueryEngine,
-    ChronicleQueryExecutionOptions, DocumentFormat, EventIdentity, EventRecord,
-    ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
-    FileTrajectoryDataSourceOptions, LocalQueryManifest, QuerySnapshot, QueryTables,
-    RawEventLanceStore, StoryCoords, StorylineDataFusionTableNames, StorylineLanceStore,
+use persisting_pchronicle::document::atif_to_storyline;
+use persisting_pchronicle::document::{DocumentFormat, QueryTables};
+use persisting_pchronicle::model::{AtifTrajectory, EventIdentity, EventRecord};
+use persisting_pchronicle::query::{
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
+    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, QuerySnapshot,
+    StorylineDataFusionTableNames,
+};
+use persisting_pchronicle::storage::{
+    AtifReader, LocalQueryManifest, RawEventLanceStore, StoryCoords, StorylineLanceStore,
 };
 
 const SHARED_SQL: &str =
@@ -229,7 +233,7 @@ async fn generic_atif_source_validates_inputs_and_custom_table_names() -> Result
 
     let selected = dir.path().join("selected.json");
     std::fs::write(&selected, serde_json::to_vec(&trajectories[..2])?)?;
-    let manifest = LocalQueryManifest::for_format(&selected, ChronicleFormat::Atif)?;
+    let manifest = LocalQueryManifest::for_format(&selected, DocumentFormat::Atif)?;
     assert!(FileTrajectoryDataSource::from_manifest_with_options(
         manifest.clone(),
         FileTrajectoryDataSourceOptions {
@@ -309,13 +313,8 @@ async fn same_sql_returns_identical_results_for_lance_and_atif() -> Result<()> {
     let store = StorylineLanceStore::open(dir.path()).await?;
     let stories = trajectories
         .iter()
-        .map(|trajectory| {
-            into_storyline(
-                ChronicleFormat::Atif,
-                &serde_json::to_string(trajectory).unwrap(),
-            )
-        })
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .map(atif_to_storyline)
+        .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
     store.replace_storylines(&stories).await?;
     let lance_engine = ChronicleQueryEngine::open(
         DocumentFormat::Storyline,
@@ -352,13 +351,8 @@ async fn timestamp_milliseconds_match_for_lance_and_direct_atif_queries() -> Res
     let store = StorylineLanceStore::open(dir.path()).await?;
     let stories = trajectories
         .iter()
-        .map(|trajectory| {
-            into_storyline(
-                ChronicleFormat::Atif,
-                &serde_json::to_string(trajectory).unwrap(),
-            )
-        })
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .map(atif_to_storyline)
+        .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
     store.replace_storylines(&stories).await?;
 
     let lance = ChronicleQueryEngine::open(
@@ -543,13 +537,8 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
     let trajectories = load_trajectories()?;
     let stories = trajectories[..2]
         .iter()
-        .map(|trajectory| {
-            into_storyline(
-                ChronicleFormat::Atif,
-                &serde_json::to_string(trajectory).unwrap(),
-            )
-        })
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .map(atif_to_storyline)
+        .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
     StorylineLanceStore::open_uri(&uri)
         .await?
         .replace_storylines(&stories)
@@ -574,10 +563,7 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
     let pinned_generation = engine.backend_info().cloned();
     StorylineLanceStore::open_uri(&uri)
         .await?
-        .replace_storyline(&into_storyline(
-            ChronicleFormat::Atif,
-            &serde_json::to_string(&trajectories[2])?,
-        )?)
+        .replace_storyline(&atif_to_storyline(&trajectories[2])?)
         .await?;
     let pinned_output = engine
         .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
@@ -658,7 +644,7 @@ async fn query_engine_exposes_canonical_events_table() -> Result<()> {
         .collect::<Vec<_>>();
     RawEventLanceStore.append_events(&session, &records).await?;
 
-    let path = persisting_pchronicle::raw_event_lance_path(&session)?;
+    let path = persisting_pchronicle::storage::raw_event_lance_path(&session)?;
     let engine = ChronicleQueryEngine::open(
         DocumentFormat::CanonicalEvent,
         &path,

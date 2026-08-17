@@ -3,11 +3,51 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::{
-    from_storyline, into_storyline, split_storyline, AtifTrajectory, ChronicleFormat,
-    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
-    StorylineLanceStore, StorylineTableKind,
+use persisting_pchronicle::document::{
+    atif_to_storyline, encode_agenticmd, openai_msg_to_storyline, parse_agenticmd,
+    parse_openai_msg_document, parse_storyline_document, storyline_to_atif,
+    storyline_to_openai_msg,
 };
+use persisting_pchronicle::model::{AtifTrajectory, StorylineDocument};
+use persisting_pchronicle::query::{
+    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
+    StorylineTableKind,
+};
+use persisting_pchronicle::storage::{split_storyline, StorylineLanceStore};
+
+#[derive(Clone, Copy)]
+enum TestFormat {
+    Storyline,
+    AgenticMd,
+    OpenaiMsg,
+    Atif,
+}
+
+fn into_storyline(
+    format: TestFormat,
+    input: &str,
+) -> persisting_pchronicle::document::Result<StorylineDocument> {
+    match format {
+        TestFormat::Storyline => parse_storyline_document(input),
+        TestFormat::AgenticMd => parse_agenticmd(input),
+        TestFormat::OpenaiMsg => openai_msg_to_storyline(&parse_openai_msg_document(input)?),
+        TestFormat::Atif => atif_to_storyline(&AtifTrajectory::from_json_str(input)?),
+    }
+}
+
+fn from_storyline(
+    format: TestFormat,
+    story: &StorylineDocument,
+) -> persisting_pchronicle::document::Result<String> {
+    match format {
+        TestFormat::Storyline => story.to_json_string_pretty(),
+        TestFormat::AgenticMd => encode_agenticmd(story),
+        TestFormat::OpenaiMsg => Ok(serde_json::to_string_pretty(&storyline_to_openai_msg(
+            story,
+        )?)?),
+        TestFormat::Atif => Ok(serde_json::to_string_pretty(&storyline_to_atif(story)?)?),
+    }
+}
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif")
@@ -49,9 +89,9 @@ fn corpus_has_expected_size_and_step_range() -> Result<()> {
 fn corpus_round_trips_through_storyline_and_atif() -> Result<()> {
     for path in fixture_paths()? {
         let (raw, _) = load(&path)?;
-        let story = into_storyline(ChronicleFormat::Atif, &raw)?;
-        let encoded = from_storyline(ChronicleFormat::Atif, &story)?;
-        let reconstructed = into_storyline(ChronicleFormat::Atif, &encoded)?;
+        let story = into_storyline(TestFormat::Atif, &raw)?;
+        let encoded = from_storyline(TestFormat::Atif, &story)?;
+        let reconstructed = into_storyline(TestFormat::Atif, &encoded)?;
         assert_eq!(
             reconstructed,
             story,
@@ -87,11 +127,11 @@ fn corpus_round_trips_through_storyline_and_atif() -> Result<()> {
 fn corpus_converts_to_all_text_formats() -> Result<()> {
     for path in fixture_paths()? {
         let (raw, _) = load(&path)?;
-        let story = into_storyline(ChronicleFormat::Atif, &raw)?;
+        let story = into_storyline(TestFormat::Atif, &raw)?;
         for format in [
-            ChronicleFormat::Storyline,
-            ChronicleFormat::Agenticmd,
-            ChronicleFormat::OpenaiMsg,
+            TestFormat::Storyline,
+            TestFormat::AgenticMd,
+            TestFormat::OpenaiMsg,
         ] {
             let encoded = from_storyline(format, &story)?;
             let parsed = into_storyline(format, &encoded)?;
@@ -108,7 +148,7 @@ async fn corpus_round_trips_through_three_lance_tables() -> Result<()> {
     let mut expected = Vec::new();
     for path in fixture_paths()? {
         let (raw, _) = load(&path)?;
-        let story = into_storyline(ChronicleFormat::Atif, &raw)?;
+        let story = into_storyline(TestFormat::Atif, &raw)?;
         store.replace_storyline(&story).await?;
         expected.push(story);
     }
@@ -135,7 +175,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     for path in fixture_paths()? {
         let (raw, _) = load(&path)?;
         store
-            .replace_storyline(&into_storyline(ChronicleFormat::Atif, &raw)?)
+            .replace_storyline(&into_storyline(TestFormat::Atif, &raw)?)
             .await?;
     }
 
@@ -230,7 +270,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
 
     // A registered datasource remains a consistent snapshot after CURRENT moves.
     let (raw, _) = load(&fixture_root().join("dialogue_10.json"))?;
-    let mut additional = into_storyline(ChronicleFormat::Atif, &raw)?;
+    let mut additional = into_storyline(TestFormat::Atif, &raw)?;
     additional.session_id = "fixture-added-after-open".into();
     additional.run_id = Some("run-added-after-open".into());
     store.replace_storyline(&additional).await?;
@@ -270,7 +310,7 @@ async fn lance_datasource_validates_store_state_and_custom_names() -> Result<()>
 
     let (raw, _) = load(&fixture_root().join("dialogue_10.json"))?;
     store
-        .replace_storyline(&into_storyline(ChronicleFormat::Atif, &raw)?)
+        .replace_storyline(&into_storyline(TestFormat::Atif, &raw)?)
         .await?;
     let source = StorylineDataSource::from_store(&store).await?;
     let context = datafusion::prelude::SessionContext::new();

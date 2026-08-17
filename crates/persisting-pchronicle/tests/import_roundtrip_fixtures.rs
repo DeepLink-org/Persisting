@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::{
-    actf_to_storylines, recover_openai_msg_files, storylines_to_actf, ActfDocument,
-    OpenaiMsgCorpusReader, StorylineDocument, StorylineLanceStore,
+use persisting_pchronicle::document::{
+    actf_to_storylines, recover_openai_msg_files, storylines_to_actf,
 };
+use persisting_pchronicle::model::{ActfDocument, OpenaiMsgCorpusReader, StorylineDocument};
+use persisting_pchronicle::storage::StorylineLanceStore;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -18,7 +19,7 @@ async fn assert_openai_fixture_roundtrip(name: &str, expected_sessions: usize) -
         &std::fs::read(&path).with_context(|| format!("read fixture {}", path.display()))?,
     )?;
     let stories = OpenaiMsgCorpusReader::open(&path)?
-        .collect::<persisting_pchronicle::Result<Vec<StorylineDocument>>>()?;
+        .collect::<persisting_pchronicle::document::Result<Vec<StorylineDocument>>>()?;
     assert_eq!(stories.len(), expected_sessions);
 
     let temporary = tempfile::tempdir()?;

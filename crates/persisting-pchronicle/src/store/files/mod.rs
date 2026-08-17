@@ -37,17 +37,17 @@ use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRe
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use tokio::sync::mpsc::Sender;
 
-use crate::convert::atif_to_storyline;
-use crate::{
-    actf_to_storylines, parse_openai_msg_corpus_value, split_storyline, ActfDocument,
-    ChronicleFormat, StoryRunRow, StoryStepRow, StoryToolCallRow,
-};
+use crate::convert::{actf_to_storylines, atif_to_storyline};
+use crate::format::DocumentFormat;
+use crate::formats::actf::ActfDocument;
+use crate::formats::parse_openai_msg_corpus_value;
 
 use super::storyline::rows::timestamp_array;
 use super::{
-    story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema, story_steps_to_batch,
-    story_tool_calls_arrow_schema, story_tool_calls_to_batch, LocalQueryInputFile,
-    LocalQueryManifest, StorylineDataFusionTableNames, StorylineTableKind,
+    split_storyline, story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema,
+    story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_to_batch,
+    LocalQueryInputFile, LocalQueryManifest, StoryRunRow, StoryStepRow, StoryToolCallRow,
+    StorylineDataFusionTableNames, StorylineTableKind,
 };
 
 /// Query-only source path column. This is not part of any Lance table schema.
@@ -172,19 +172,19 @@ impl FileTrajectoryFormat {
         }
     }
 
-    fn chronicle_format(self) -> ChronicleFormat {
+    fn document_format(self) -> DocumentFormat {
         match self {
-            Self::Atif => ChronicleFormat::Atif,
-            Self::OpenaiMsg => ChronicleFormat::OpenaiMsg,
-            Self::Actf => ChronicleFormat::Actf,
+            Self::Atif => DocumentFormat::Atif,
+            Self::OpenaiMsg => DocumentFormat::OpenaiMsg,
+            Self::Actf => DocumentFormat::Actf,
         }
     }
 
-    fn from_chronicle(format: ChronicleFormat) -> Result<Self> {
+    fn from_document(format: DocumentFormat) -> Result<Self> {
         match format {
-            ChronicleFormat::Atif => Ok(Self::Atif),
-            ChronicleFormat::OpenaiMsg => Ok(Self::OpenaiMsg),
-            ChronicleFormat::Actf => Ok(Self::Actf),
+            DocumentFormat::Atif => Ok(Self::Atif),
+            DocumentFormat::OpenaiMsg => Ok(Self::OpenaiMsg),
+            DocumentFormat::Actf => Ok(Self::Actf),
             _ => anyhow::bail!("file trajectory datasource does not support '{format}'"),
         }
     }
@@ -214,7 +214,7 @@ impl FileTrajectoryDataSource {
     }
 
     pub fn open(path: impl AsRef<std::path::Path>, format: FileTrajectoryFormat) -> Result<Self> {
-        let manifest = LocalQueryManifest::for_format(path, format.chronicle_format())?;
+        let manifest = LocalQueryManifest::for_format(path, format.document_format())?;
         Self::from_manifest(manifest)
     }
 
@@ -227,7 +227,7 @@ impl FileTrajectoryDataSource {
         options: FileTrajectoryDataSourceOptions,
     ) -> Result<Self> {
         validate_options(options)?;
-        let format = FileTrajectoryFormat::from_chronicle(manifest.format())?;
+        let format = FileTrajectoryFormat::from_document(manifest.format())?;
         let manifest = Arc::new(manifest);
         let file_count = manifest.file_count();
         let files = manifest

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use persisting_pchronicle::{EventRecord, StorylineTurn};
+use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use serde_json::{Map, Value};
 
 use super::fields::role_and_body;

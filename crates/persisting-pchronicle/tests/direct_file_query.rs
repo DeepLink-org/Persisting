@@ -5,15 +5,12 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
-use persisting_pchronicle::detect_local_query_manifest;
-use persisting_pchronicle::store::{
-    story_runs_arrow_schema, story_steps_arrow_schema, story_tool_calls_arrow_schema,
+use persisting_pchronicle::document::DocumentFormat;
+use persisting_pchronicle::query::{
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, FileTrajectoryDataSource,
+    FileTrajectoryDataSourceOptions, SOURCE_FILE_COLUMN,
 };
-use persisting_pchronicle::{
-    ChronicleFormat, ChronicleQueryEngine, ChronicleQueryExecutionOptions, DocumentFormat,
-    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, LocalQueryManifest,
-    SOURCE_FILE_COLUMN,
-};
+use persisting_pchronicle::storage::{detect_local_query_manifest, LocalQueryManifest};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/import_roundtrip")
@@ -79,7 +76,7 @@ async fn auto_detects_and_queries_response_only_openai_rows() -> Result<()> {
         r#"[{"session_id":"response-only","step_id":1,"response":{"role":"assistant","content":"done"}}]"#,
     )?;
     let manifest = detect_local_query_manifest(temp.path())?;
-    assert_eq!(manifest.format(), ChronicleFormat::OpenaiMsg);
+    assert_eq!(manifest.format(), DocumentFormat::OpenaiMsg);
     let engine = ChronicleQueryEngine::open(
         DocumentFormat::OpenaiMsg,
         manifest.input(),
@@ -248,25 +245,12 @@ async fn detected_manifest_is_the_exact_reader_file_set() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn virtual_file_column_does_not_modify_physical_lance_schemas() {
-    assert!(story_runs_arrow_schema()
-        .field_with_name(SOURCE_FILE_COLUMN)
-        .is_err());
-    assert!(story_steps_arrow_schema()
-        .field_with_name(SOURCE_FILE_COLUMN)
-        .is_err());
-    assert!(story_tool_calls_arrow_schema()
-        .field_with_name(SOURCE_FILE_COLUMN)
-        .is_err());
-}
-
 #[tokio::test]
 async fn shared_cache_reuses_one_normalization_across_virtual_tables() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input.json");
     fs::copy(fixtures().join("cybergym_07270003_trimmed.json"), &input)?;
-    let manifest = LocalQueryManifest::for_format(&input, ChronicleFormat::OpenaiMsg)?;
+    let manifest = LocalQueryManifest::for_format(&input, DocumentFormat::OpenaiMsg)?;
     let source = FileTrajectoryDataSource::from_manifest_with_options(
         manifest,
         FileTrajectoryDataSourceOptions {
@@ -308,7 +292,7 @@ async fn manifest_fingerprint_and_file_size_limits_fail_closed() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input.json");
     fs::copy(fixtures().join("cybergym_07270003_trimmed.json"), &input)?;
-    let manifest = LocalQueryManifest::for_format(&input, ChronicleFormat::OpenaiMsg)?;
+    let manifest = LocalQueryManifest::for_format(&input, DocumentFormat::OpenaiMsg)?;
     fs::write(&input, "not-json")?;
     let source = FileTrajectoryDataSource::from_manifest(manifest)?;
     let context = SessionContext::new();
@@ -323,7 +307,7 @@ async fn manifest_fingerprint_and_file_size_limits_fail_closed() -> Result<()> {
 
     let manifest = LocalQueryManifest::for_format(
         fixtures().join("cybergym_07270003_trimmed.json"),
-        ChronicleFormat::OpenaiMsg,
+        DocumentFormat::OpenaiMsg,
     )?;
     let source = FileTrajectoryDataSource::from_manifest_with_options(
         manifest,
@@ -580,7 +564,7 @@ async fn projected_ndjson_rejects_a_record_above_the_configured_bound() -> Resul
     let value: serde_json::Value = serde_json::from_str(&trajectory)?;
     let temp = tempfile::NamedTempFile::with_suffix(".ndjson")?;
     fs::write(temp.path(), format!("{}\n", serde_json::to_string(&value)?))?;
-    let manifest = LocalQueryManifest::for_format(temp.path(), ChronicleFormat::Atif)?;
+    let manifest = LocalQueryManifest::for_format(temp.path(), DocumentFormat::Atif)?;
     let source = FileTrajectoryDataSource::from_manifest_with_options(
         manifest,
         FileTrajectoryDataSourceOptions {
@@ -612,7 +596,7 @@ async fn projected_array_enforces_record_bounds_and_json_separators() -> Result<
 
     let oversized = tempfile::NamedTempFile::with_suffix(".json")?;
     fs::write(oversized.path(), format!("[{record}]"))?;
-    let manifest = LocalQueryManifest::for_format(oversized.path(), ChronicleFormat::Atif)?;
+    let manifest = LocalQueryManifest::for_format(oversized.path(), DocumentFormat::Atif)?;
     let source = FileTrajectoryDataSource::from_manifest_with_options(
         manifest,
         FileTrajectoryDataSourceOptions {

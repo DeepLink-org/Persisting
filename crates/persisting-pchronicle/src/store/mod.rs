@@ -113,7 +113,9 @@ pub use storyline_model::{
 use std::path::PathBuf;
 
 #[cfg(feature = "lance-store")]
-use crate::{story_lance_event_path, EventRecord, StoryCoords};
+use crate::formats::EventRecord;
+#[cfg(feature = "lance-store")]
+use crate::layout::{story_lance_event_path, StoryCoords};
 
 /// Producer-defined Storyline sequence. Physical replay order is the immutable
 /// Lance append order and does not require a read-before-write counter.

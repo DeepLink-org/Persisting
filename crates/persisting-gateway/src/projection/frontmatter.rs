@@ -12,10 +12,11 @@ use crate::session::client::resolve_client_meta_for_run_dir;
 use crate::session::index::{SessionIndexStore, SessionSummary};
 use crate::session::snapshots::load_snapshot_turn_counts;
 use crate::session::storage::{trajectory_run_dir, CaptureRoute};
-use persisting_pchronicle::{
-    encode_agenticmd, is_subagent_session_storage_key, parse_agenticmd,
-    rewrite_agenticmd_storyline_metadata, StorylineDocument,
+use persisting_pchronicle::document::{
+    encode_agenticmd, parse_agenticmd, rewrite_agenticmd_storyline_metadata,
 };
+use persisting_pchronicle::model::StorylineDocument;
+use persisting_pchronicle::storage::is_subagent_session_storage_key;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SessionFrontmatterSummary {
@@ -276,7 +277,7 @@ pub fn format_run_summary_line(md_path: &Path, summary: &SessionFrontmatterSumma
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_pchronicle::StorylineTurn;
+    use persisting_pchronicle::model::StorylineTurn;
 
     fn user_document(body: &str) -> String {
         let mut story = StorylineDocument::new("run-test", "agent");

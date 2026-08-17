@@ -192,7 +192,7 @@ struct EncodedExport {
 
 async fn export_from_snapshot(
     args: &ExportArgs,
-    format: ChronicleFormat,
+    format: ExchangeFormat,
     dataset_uri: &str,
     snapshot: Arc<DatasetCatalogSnapshot>,
 ) -> Result<EncodedExport> {
@@ -288,7 +288,7 @@ async fn export_from_snapshot(
 
 fn exact_local_file_export(
     args: &ExportArgs,
-    format: ChronicleFormat,
+    format: ExchangeFormat,
     dataset_uri: &str,
     snapshot: &DatasetCatalogSnapshot,
 ) -> Result<Option<EncodedExport>> {
@@ -329,7 +329,7 @@ fn exact_local_file_export(
     );
     let text = std::str::from_utf8(&input).context("exact export Source must be UTF-8")?;
     let detected = detect_format(Some(&source_path), Some(text)).map_err(anyhow::Error::from)?;
-    if detected != Some(format) {
+    if detected != exchange_document_format(format) {
         return Ok(None);
     }
     let trajectories = validate_import_source(format, &source_path, text)?;
@@ -375,22 +375,22 @@ fn export_address_sql(args: &ExportArgs) -> Result<String> {
     ))
 }
 
-fn encode_export(format: ChronicleFormat, stories: &[StorylineDocument]) -> Result<Vec<u8>> {
+fn encode_export(format: ExchangeFormat, stories: &[StorylineDocument]) -> Result<Vec<u8>> {
     let value = match format {
-        ChronicleFormat::Atif => {
+        ExchangeFormat::Atif => {
             let documents = stories
                 .iter()
                 .map(storyline_to_atif)
-                .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+                .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
             if documents.len() == 1 {
                 serde_json::to_value(&documents[0])?
             } else {
                 serde_json::to_value(documents)?
             }
         }
-        ChronicleFormat::Actf => serde_json::to_value(storylines_to_actf(stories)?)?,
-        ChronicleFormat::OpenaiMsg => encode_openai_export(stories)?,
-        ChronicleFormat::Storyline => {
+        ExchangeFormat::Actf => serde_json::to_value(storylines_to_actf(stories)?)?,
+        ExchangeFormat::OpenaiMessages => encode_openai_export(stories)?,
+        ExchangeFormat::Storyline => {
             if stories.len() == 1 {
                 serde_json::to_value(&stories[0])?
             } else {
@@ -405,7 +405,7 @@ fn encode_export(format: ChronicleFormat, stories: &[StorylineDocument]) -> Resu
 }
 
 fn encode_openai_export(stories: &[StorylineDocument]) -> Result<serde_json::Value> {
-    if let Ok(files) = persisting_pchronicle::recover_openai_msg_files(stories) {
+    if let Ok(files) = persisting_pchronicle::document::recover_openai_msg_files(stories) {
         anyhow::ensure!(
             files.len() == 1,
             "one export document cannot preserve {} OpenAI source files; select one Source",
@@ -415,8 +415,9 @@ fn encode_openai_export(stories: &[StorylineDocument]) -> Result<serde_json::Val
     }
     let mut records = Vec::new();
     for story in stories {
-        let document = persisting_pchronicle::from_storyline(ChronicleFormat::OpenaiMsg, story)?;
-        let document: serde_json::Value = serde_json::from_str(&document)?;
+        let document = serde_json::to_value(
+            persisting_pchronicle::document::storyline_to_openai_msg(story)?,
+        )?;
         records.extend(
             document
                 .get("session_steps")
@@ -429,14 +430,23 @@ fn encode_openai_export(stories: &[StorylineDocument]) -> Result<serde_json::Val
     Ok(serde_json::Value::Array(records))
 }
 
-fn export_format(format: ExchangeFormat) -> Result<ChronicleFormat> {
+fn export_format(format: ExchangeFormat) -> Result<ExchangeFormat> {
     Ok(match format {
         ExchangeFormat::Auto => bail!("export requires an explicit --format"),
-        ExchangeFormat::Atif => ChronicleFormat::Atif,
-        ExchangeFormat::Actf => ChronicleFormat::Actf,
-        ExchangeFormat::OpenaiMessages => ChronicleFormat::OpenaiMsg,
-        ExchangeFormat::Storyline => ChronicleFormat::Storyline,
+        ExchangeFormat::Atif => ExchangeFormat::Atif,
+        ExchangeFormat::Actf => ExchangeFormat::Actf,
+        ExchangeFormat::OpenaiMessages => ExchangeFormat::OpenaiMessages,
+        ExchangeFormat::Storyline => ExchangeFormat::Storyline,
     })
+}
+
+fn exchange_document_format(format: ExchangeFormat) -> Option<DocumentFormat> {
+    match format {
+        ExchangeFormat::Atif => Some(DocumentFormat::Atif),
+        ExchangeFormat::Actf => Some(DocumentFormat::Actf),
+        ExchangeFormat::OpenaiMessages => Some(DocumentFormat::OpenaiMsg),
+        ExchangeFormat::Auto | ExchangeFormat::Storyline => None,
+    }
 }
 
 fn write_export_output(
@@ -563,54 +573,60 @@ fn resolve_import_format(
     requested: ExchangeFormat,
     input_path: Option<&Path>,
     input: &str,
-) -> Result<ChronicleFormat> {
+) -> Result<ExchangeFormat> {
     let format = match requested {
-        ExchangeFormat::Auto => detect_format(input_path, Some(input))
+        ExchangeFormat::Auto => match detect_format(input_path, Some(input))
             .map_err(anyhow::Error::from)?
-            .context("cannot detect import format; pass --format explicitly")?,
-        ExchangeFormat::Atif => ChronicleFormat::Atif,
-        ExchangeFormat::Actf => ChronicleFormat::Actf,
-        ExchangeFormat::OpenaiMessages => ChronicleFormat::OpenaiMsg,
-        ExchangeFormat::Storyline => ChronicleFormat::Storyline,
+            .context("cannot detect import format; pass --format explicitly")?
+        {
+            DocumentFormat::Atif => ExchangeFormat::Atif,
+            DocumentFormat::Actf => ExchangeFormat::Actf,
+            DocumentFormat::OpenaiMsg => ExchangeFormat::OpenaiMessages,
+            format => bail!("detected import format '{format}' is not a queryable JSON format"),
+        },
+        ExchangeFormat::Atif => ExchangeFormat::Atif,
+        ExchangeFormat::Actf => ExchangeFormat::Actf,
+        ExchangeFormat::OpenaiMessages => ExchangeFormat::OpenaiMessages,
+        ExchangeFormat::Storyline => ExchangeFormat::Storyline,
     };
     anyhow::ensure!(
         matches!(
             format,
-            ChronicleFormat::Atif | ChronicleFormat::Actf | ChronicleFormat::OpenaiMsg
+            ExchangeFormat::Atif | ExchangeFormat::Actf | ExchangeFormat::OpenaiMessages
         ),
         "import format '{format}' is not supported by the first queryable import increment"
     );
     Ok(format)
 }
 
-fn import_source_name(format: ChronicleFormat) -> &'static str {
+fn import_source_name(format: ExchangeFormat) -> &'static str {
     match format {
-        ChronicleFormat::Atif => "trajectories.atif.json",
-        ChronicleFormat::Actf => "trajectories.actf.json",
-        ChronicleFormat::OpenaiMsg => "session_steps.json",
+        ExchangeFormat::Atif => "trajectories.atif.json",
+        ExchangeFormat::Actf => "trajectories.actf.json",
+        ExchangeFormat::OpenaiMessages => "session_steps.json",
         _ => unreachable!("unsupported import format was rejected"),
     }
 }
 
-fn validate_import_source(format: ChronicleFormat, path: &Path, input: &str) -> Result<usize> {
+fn validate_import_source(format: ExchangeFormat, path: &Path, input: &str) -> Result<usize> {
     match format {
-        ChronicleFormat::Atif => {
+        ExchangeFormat::Atif => {
             let trajectories = load_atif_trajectories(path)?;
             ensure_unique_session_ids(
                 trajectories
                     .iter()
                     .map(|trajectory| trajectory.effective_session_id())
-                    .collect::<persisting_pchronicle::Result<Vec<_>>>()?,
+                    .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?,
             )?;
             Ok(trajectories.len())
         }
-        ChronicleFormat::OpenaiMsg => {
+        ExchangeFormat::OpenaiMessages => {
             let document = serde_json::from_str(input).context("parse OpenAI Messages JSON")?;
             let stories = parse_openai_msg_corpus_value(&document, "session_steps.json")?;
             ensure_unique_session_ids(stories.iter().map(|story| story.session_id.as_str()))?;
             Ok(stories.len())
         }
-        ChronicleFormat::Actf => {
+        ExchangeFormat::Actf => {
             let document = parse_actf_document(input).map_err(anyhow::Error::from)?;
             let stories = actf_to_storylines(&document).map_err(anyhow::Error::from)?;
             ensure_unique_session_ids(stories.iter().map(|story| story.session_id.as_str()))?;

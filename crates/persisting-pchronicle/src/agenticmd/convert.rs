@@ -11,8 +11,8 @@ use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn
 use crate::{DocumentFormat, Error, Result};
 
 use super::codec::{
-    encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_document, AgenticmdBlock,
-    AgenticmdDocument, AgenticmdHeader, AGENTICMD_FRONTMATTER_FORMAT,
+    encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_document, MarkdownBlock,
+    MarkdownDocument, MarkdownHeader, AGENTICMD_FRONTMATTER_FORMAT,
 };
 
 const STORYLINE_METADATA_KEY: &str = "storyline";
@@ -120,7 +120,7 @@ pub(super) fn encode_storyline_preamble(story: &StorylineDocument) -> Result<Str
 pub(super) fn storyline_turn_block(
     turn: &StorylineTurn,
     edit_key: Option<&str>,
-) -> Result<AgenticmdBlock> {
+) -> Result<MarkdownBlock> {
     let mut turn_metadata = serde_json::to_value(turn)?
         .as_object()
         .cloned()
@@ -139,8 +139,8 @@ pub(super) fn storyline_turn_block(
     if let Some(edit_key) = edit_key {
         fields.insert("call_id".into(), Value::String(edit_key.into()));
     }
-    Ok(AgenticmdBlock {
-        header: AgenticmdHeader {
+    Ok(MarkdownBlock {
+        header: MarkdownHeader {
             type_name: type_name.into(),
             length: body.len(),
             fields,
@@ -149,7 +149,7 @@ pub(super) fn storyline_turn_block(
     })
 }
 
-fn agenticmd_to_storyline(doc: &AgenticmdDocument) -> Result<StorylineDocument> {
+fn agenticmd_to_storyline(doc: &MarkdownDocument) -> Result<StorylineDocument> {
     let session_id = doc.session_id.clone().unwrap_or_else(|| "unknown".into());
     let agent_id = doc.agent_id.clone().unwrap_or_else(|| "unknown".into());
 

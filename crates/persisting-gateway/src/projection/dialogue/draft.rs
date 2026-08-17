@@ -1,5 +1,5 @@
 use anyhow::Result;
-use persisting_pchronicle::StorylineTurn;
+use persisting_pchronicle::model::StorylineTurn;
 use serde_json::json;
 
 use super::block::capture_record_to_storyline_turn;

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use persisting_pchronicle::FileTrajectoryDataSource;
+use persisting_pchronicle::query::FileTrajectoryDataSource;
 
 struct CountingAllocator;
 

@@ -5,7 +5,8 @@ use persisting_gateway::projection::markdown_pipeline::MarkdownPipeline;
 use persisting_gateway::record::EventRecord;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;
-use persisting_pchronicle::{parse_agenticmd, write_agenticmd_storyline, StorylineDocument};
+use persisting_pchronicle::document::{parse_agenticmd, write_agenticmd_storyline};
+use persisting_pchronicle::model::StorylineDocument;
 use serde_json::json;
 
 fn fixture() -> &'static str {
@@ -58,7 +59,7 @@ fn capture_turns_roundtrip_through_public_storyline_api() {
         capture_record_to_storyline_turn(&resp).unwrap(),
     ];
 
-    let encoded = persisting_pchronicle::encode_agenticmd(&story).unwrap();
+    let encoded = persisting_pchronicle::document::encode_agenticmd(&story).unwrap();
     assert_eq!(parse_agenticmd(&encoded).unwrap(), story);
 }
 

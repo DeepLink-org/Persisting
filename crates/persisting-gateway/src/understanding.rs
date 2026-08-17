@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use persisting_pchronicle::{
+use persisting_pchronicle::model::{
     LlmCandidate, LlmContentPart, LlmGenerationParams, LlmImageSource, LlmMessage, LlmProtocol,
     LlmRequest, LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload, LlmResponseFormat,
     LlmRole, LlmToolChoice, LlmToolChoiceMode, LlmToolDefinition, LlmUsage,

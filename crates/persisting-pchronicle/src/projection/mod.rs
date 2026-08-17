@@ -3,9 +3,8 @@
 mod storyline;
 
 pub use crate::agenticmd::{
-    event_records_to_storyline, layer_stats, materialize_lance_to_markdown,
-    materialize_markdown_path, write_markdown_projection, LayerStats, MaterializeOutcome,
-    MaterializeStats,
+    layer_stats, materialize_lance_to_markdown, materialize_markdown_path,
+    write_markdown_projection, LayerStats, MaterializeOutcome, MaterializeStats,
 };
 pub use storyline::{
     build_storyline_projection, canonical_projection_lineage, projection_lineage_is_fresh,

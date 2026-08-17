@@ -59,11 +59,13 @@ pub(super) async fn load_storyline_from_source(
     for batch in &tool_batches {
         tool_calls.extend(story_tool_calls_from_batch(batch)?);
     }
-    Ok(Some(reconstruct_storyline(crate::StorylineTables {
-        run: runs.remove(0),
-        steps,
-        tool_calls,
-    })?))
+    Ok(Some(reconstruct_storyline(
+        crate::store::StorylineTables {
+            run: runs.remove(0),
+            steps,
+            tool_calls,
+        },
+    )?))
 }
 
 #[derive(Debug)]
@@ -130,12 +132,12 @@ pub(super) enum LazySourceSpec {
     LocalFile {
         root: PathBuf,
         file: LocalQueryInputFile,
-        format_hint: Option<ChronicleFormat>,
+        format_hint: Option<DocumentFormat>,
     },
     RemoteFile {
         store: Arc<LanceObjectStore>,
         meta: ObjectMeta,
-        format_hint: Option<ChronicleFormat>,
+        format_hint: Option<DocumentFormat>,
     },
 }
 

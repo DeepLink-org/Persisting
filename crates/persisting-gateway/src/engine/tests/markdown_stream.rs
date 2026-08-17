@@ -4,7 +4,7 @@ use super::fixtures::*;
 async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     use super::support::*;
     use crate::session::storage::trajectory_run_dir;
-    use persisting_pchronicle::parse_agenticmd;
+    use persisting_pchronicle::document::parse_agenticmd;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -76,7 +76,7 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
 async fn draft_markdown_uses_peeked_seq_and_matches_final() {
     use super::support::*;
     use crate::session::storage::trajectory_run_dir;
-    use persisting_pchronicle::parse_agenticmd;
+    use persisting_pchronicle::document::parse_agenticmd;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -147,7 +147,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
 async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     use super::support::*;
     use crate::session::storage::trajectory_run_dir;
-    use persisting_pchronicle::parse_agenticmd;
+    use persisting_pchronicle::document::parse_agenticmd;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();

@@ -58,16 +58,16 @@ fn example_source(format: &str) -> PathBuf {
 }
 
 async fn append_canonical_note(storage: &std::path::Path) -> Result<()> {
-    let coords = persisting_pchronicle::StoryCoords::new(
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
         storage.to_string_lossy(),
         "agent",
         "session",
         None,
     );
-    persisting_pchronicle::RawEventLanceStore
+    persisting_pchronicle::storage::RawEventLanceStore
         .append_events(
             &coords,
-            &[persisting_pchronicle::EventRecord {
+            &[persisting_pchronicle::model::EventRecord {
                 identity: Default::default(),
                 seq: 0,
                 source: "test".into(),
@@ -125,16 +125,16 @@ fn command_tree_contains_the_product_commands() {
 async fn project_watch_emits_sync_and_verification_state() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let storage = temp.path().join("capture");
-    let coords = persisting_pchronicle::StoryCoords::new(
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
         storage.to_string_lossy(),
         "agent",
         "session",
         None,
     );
-    persisting_pchronicle::RawEventLanceStore
+    persisting_pchronicle::storage::RawEventLanceStore
         .append_events(
             &coords,
-            &[persisting_pchronicle::EventRecord {
+            &[persisting_pchronicle::model::EventRecord {
                 identity: Default::default(),
                 seq: 0,
                 source: "test".into(),
@@ -153,9 +153,9 @@ async fn project_watch_emits_sync_and_verification_state() -> Result<()> {
             }],
         )
         .await?;
-    let events = persisting_pchronicle::raw_event_lance_path(&coords)?;
+    let events = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
     let projection = temp.path().join("storyline");
-    persisting_pchronicle::build_storyline_projection(
+    persisting_pchronicle::storage::build_storyline_projection(
         events.to_string_lossy(),
         projection.to_string_lossy(),
         "events.lance",
@@ -1108,7 +1108,7 @@ async fn export_converts_complete_trajectories_between_formats() -> Result<()> {
     ])?;
     let mut stdout = Vec::new();
     run(cli, false, &mut stdout, &mut Vec::new()).await?;
-    let story: persisting_pchronicle::StorylineDocument = serde_json::from_slice(&stdout)?;
+    let story: persisting_pchronicle::model::StorylineDocument = serde_json::from_slice(&stdout)?;
     assert_eq!(story.session_id, "support-001");
     assert_eq!(story.turns.len(), 3);
     Ok(())

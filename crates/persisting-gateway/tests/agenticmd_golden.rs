@@ -3,7 +3,8 @@
 use persisting_gateway::projection::dialogue::capture_record_to_storyline_turn;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;
-use persisting_pchronicle::{encode_agenticmd, parse_agenticmd, StorylineDocument};
+use persisting_pchronicle::document::{encode_agenticmd, parse_agenticmd};
+use persisting_pchronicle::model::StorylineDocument;
 use serde_json::json;
 
 fn demo_storyline() -> StorylineDocument {

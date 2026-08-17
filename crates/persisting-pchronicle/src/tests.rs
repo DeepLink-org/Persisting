@@ -2,6 +2,64 @@ use serde_json::json;
 
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TestFormat {
+    Storyline,
+    CanonicalEvent,
+    AgenticMd,
+    OpenaiMsg,
+    Atif,
+}
+
+impl TestFormat {
+    fn is_lance_only(self) -> bool {
+        self == Self::CanonicalEvent
+    }
+}
+
+fn into_storyline(format: TestFormat, input: &str) -> crate::Result<crate::StorylineDocument> {
+    match format {
+        TestFormat::Storyline => crate::document::parse_storyline_document(input),
+        TestFormat::CanonicalEvent => Err(lance_only_error()),
+        TestFormat::AgenticMd => crate::document::parse_agenticmd(input),
+        TestFormat::OpenaiMsg => crate::convert::openai_msg_to_storyline(
+            &crate::document::parse_openai_msg_document(input)?,
+        ),
+        TestFormat::Atif => {
+            crate::convert::atif_to_storyline(&AtifTrajectory::from_json_str(input)?)
+        }
+    }
+}
+
+fn from_storyline(format: TestFormat, story: &crate::StorylineDocument) -> crate::Result<String> {
+    match format {
+        TestFormat::Storyline => story.to_json_string_pretty(),
+        TestFormat::CanonicalEvent => Err(lance_only_error()),
+        TestFormat::AgenticMd => crate::document::encode_agenticmd(story),
+        TestFormat::OpenaiMsg => Ok(serde_json::to_string_pretty(
+            &crate::convert::storyline_to_openai_msg(story)?,
+        )?),
+        TestFormat::Atif => Ok(serde_json::to_string_pretty(
+            &crate::convert::storyline_to_atif(story)?,
+        )?),
+    }
+}
+
+fn convert(from: TestFormat, to: TestFormat, input: &str) -> crate::Result<String> {
+    if from == to {
+        return if from.is_lance_only() {
+            Err(lance_only_error())
+        } else {
+            Ok(input.to_string())
+        };
+    }
+    from_storyline(to, &into_storyline(from, input)?)
+}
+
+fn lance_only_error() -> crate::Error {
+    crate::Error::Other(crate::document::events_lance_only_message().into())
+}
+
 fn sample_traj() -> AtifTrajectory {
     AtifTrajectory {
         schema_version: "ATIF-v1.7".into(),
@@ -80,46 +138,9 @@ fn sample_traj() -> AtifTrajectory {
 }
 
 #[test]
-fn chronicle_format_names_are_canonical_only() {
-    use crate::ChronicleFormat;
-    use std::str::FromStr;
-    assert_eq!(
-        ChronicleFormat::from_str("storyline").unwrap(),
-        ChronicleFormat::Storyline
-    );
-    assert!(ChronicleFormat::Storyline.is_hub());
-    assert_eq!(
-        ChronicleFormat::from_str("events").unwrap(),
-        ChronicleFormat::Events
-    );
-    assert!(ChronicleFormat::from_str("lance").is_err());
-    assert!(ChronicleFormat::Events.is_lance_only());
-    assert_eq!(
-        ChronicleFormat::from_str("agenticmd").unwrap(),
-        ChronicleFormat::Agenticmd
-    );
-    assert!(ChronicleFormat::from_str("md").is_err());
-    assert_eq!(
-        ChronicleFormat::from_str("openai_msg").unwrap(),
-        ChronicleFormat::OpenaiMsg
-    );
-    assert!(ChronicleFormat::from_str("session_steps").is_err());
-    assert_eq!(
-        ChronicleFormat::from_str("atif").unwrap(),
-        ChronicleFormat::Atif
-    );
-    assert_eq!(
-        ChronicleFormat::from_str("actf").unwrap(),
-        ChronicleFormat::Actf
-    );
-}
-
-#[test]
 fn atif_storyline_hub_roundtrip() {
-    use crate::convert::{from_storyline, into_storyline};
-    use crate::ChronicleFormat;
     let raw = serde_json::to_string_pretty(&sample_traj()).unwrap();
-    let story = into_storyline(ChronicleFormat::Atif, &raw).unwrap();
+    let story = into_storyline(TestFormat::Atif, &raw).unwrap();
     assert_eq!(story.session_id, "sess-1");
     assert_eq!(story.turns.len(), 2);
     assert_eq!(story.turns[0].id, 1);
@@ -136,8 +157,8 @@ fn atif_storyline_hub_roundtrip() {
         Some(42)
     );
 
-    let out = from_storyline(ChronicleFormat::Atif, &story).unwrap();
-    let back: crate::AtifTrajectory = serde_json::from_str(&out).unwrap();
+    let out = from_storyline(TestFormat::Atif, &story).unwrap();
+    let back: crate::model::AtifTrajectory = serde_json::from_str(&out).unwrap();
     assert_eq!(back.effective_session_id().unwrap(), "sess-1");
     assert_eq!(back.steps.len(), 2);
     assert_eq!(back.steps[1].tool_calls.as_ref().unwrap().len(), 2);
@@ -167,14 +188,12 @@ fn atif_storyline_hub_roundtrip() {
 
 #[test]
 fn convert_peripheral_via_hub_only() {
-    use crate::convert::convert;
-    use crate::ChronicleFormat;
     let atif = serde_json::to_string(&sample_traj()).unwrap();
     // atif → openai_msg must go through storyline (API guarantees hub path).
-    let openai = convert(ChronicleFormat::Atif, ChronicleFormat::OpenaiMsg, &atif).unwrap();
+    let openai = convert(TestFormat::Atif, TestFormat::OpenaiMsg, &atif).unwrap();
     assert!(openai.contains("session_steps") || openai.contains("\"session_id\""));
-    let back = convert(ChronicleFormat::OpenaiMsg, ChronicleFormat::Atif, &openai).unwrap();
-    let traj: crate::AtifTrajectory = serde_json::from_str(&back).unwrap();
+    let back = convert(TestFormat::OpenaiMsg, TestFormat::Atif, &openai).unwrap();
+    let traj: crate::model::AtifTrajectory = serde_json::from_str(&back).unwrap();
     assert_eq!(traj.effective_session_id().unwrap(), "sess-1");
     assert!(!traj.steps.is_empty());
 }
@@ -230,7 +249,7 @@ fn events_in_memory_to_storyline() {
 
 #[test]
 fn http_event_aliases_project_to_storyline() {
-    let doc = crate::EventsDocument::new(vec![
+    let doc = crate::model::EventsDocument::new(vec![
         crate::EventRecord {
             identity: crate::EventIdentity::default(),
             seq: 0,
@@ -274,10 +293,8 @@ fn http_event_aliases_project_to_storyline() {
 
 #[test]
 fn events_string_convert_is_lance_only_error() {
-    use crate::convert::{convert, from_storyline, into_storyline};
     use crate::formats::events::events_lance_only_message;
-    use crate::ChronicleFormat;
-    let err = into_storyline(ChronicleFormat::Events, "[]").unwrap_err();
+    let err = into_storyline(TestFormat::CanonicalEvent, "[]").unwrap_err();
     assert!(
         err.to_string().contains("Lance-only")
             || err
@@ -285,9 +302,9 @@ fn events_string_convert_is_lance_only_error() {
                 .contains(events_lance_only_message().split(';').next().unwrap())
     );
     let story = crate::StorylineDocument::new("s", "a");
-    assert!(from_storyline(ChronicleFormat::Events, &story).is_err());
-    assert!(convert(ChronicleFormat::Atif, ChronicleFormat::Events, "{}").is_err());
-    assert!(ChronicleFormat::Events.is_lance_only());
+    assert!(from_storyline(TestFormat::CanonicalEvent, &story).is_err());
+    assert!(convert(TestFormat::Atif, TestFormat::CanonicalEvent, "{}").is_err());
+    assert!(TestFormat::CanonicalEvent.is_lance_only());
 }
 
 #[test]
@@ -363,65 +380,59 @@ fn parse_openai_msg_envelope() {
 #[test]
 fn detect_format_from_content_and_path() {
     use crate::formats::detect::{detect_format, detect_format_from_path};
-    use crate::ChronicleFormat;
     use std::path::Path;
     assert_eq!(
         detect_format_from_path(Path::new("/tmp/x/session_steps.json")),
-        Some(ChronicleFormat::OpenaiMsg)
+        Some(crate::DocumentFormat::OpenaiMsg)
     );
     assert_eq!(
         detect_format_from_path(Path::new("/tmp/x/events.lance")),
-        Some(ChronicleFormat::Events)
+        Some(crate::DocumentFormat::CanonicalEvent)
     );
     assert_eq!(
         detect_format_from_path(Path::new("/tmp/x/sess.md")),
-        Some(ChronicleFormat::Agenticmd)
+        Some(crate::DocumentFormat::AgenticMd)
     );
     assert_eq!(
         detect_format_from_path(Path::new("/tmp/x/storyline.json")),
-        Some(ChronicleFormat::Storyline)
+        None
     );
     assert_eq!(
         detect_format_from_path(Path::new("/tmp/x/task.actf.json")),
-        Some(ChronicleFormat::Actf)
+        Some(crate::DocumentFormat::Actf)
     );
     let atif = r#"{"schema_version":"ATIF-v1.7","session_id":"s","agent":{"name":"a","version":"1"},"steps":[]}"#;
     assert_eq!(
         detect_format(None, Some(atif)).unwrap(),
-        Some(ChronicleFormat::Atif)
+        Some(crate::DocumentFormat::Atif)
     );
     let atif_with_agenticmd_marker = r#"{"schema_version":"ATIF-v1.7","session_id":"s","agent":{"name":"a","version":"1"},"steps":[{"step_id":1,"source":"user","message":"source contains <!-- persisting:block but remains ATIF"}]}"#;
     assert_eq!(
         detect_format(None, Some(atif_with_agenticmd_marker)).unwrap(),
-        Some(ChronicleFormat::Atif)
+        Some(crate::DocumentFormat::Atif)
     );
     let atif_ndjson = format!("{atif_with_agenticmd_marker}\n{atif}");
     assert_eq!(
         detect_format(None, Some(&atif_ndjson)).unwrap(),
-        Some(ChronicleFormat::Atif)
+        Some(crate::DocumentFormat::Atif)
     );
     let story = r#"{"session":"s","agent":{"id":"a"},"turns":[]}"#;
-    assert_eq!(
-        detect_format(None, Some(story)).unwrap(),
-        Some(ChronicleFormat::Storyline)
-    );
+    assert_eq!(detect_format(None, Some(story)).unwrap(), None);
     let actf = r#"{"task_id":"t","category":"test","k":1,"correct":false,"attempts_tried":1,"solved_at":null,"attempts":{"1":{"trajectory":{"schema_version":"ACTF_v1.0","steps":[]}}}}"#;
     assert_eq!(
         detect_format(None, Some(actf)).unwrap(),
-        Some(ChronicleFormat::Actf)
+        Some(crate::DocumentFormat::Actf)
     );
     let response_only =
         r#"[{"session_id":"s","step_id":1,"response":{"role":"assistant","content":"ok"}}]"#;
     assert_eq!(
         detect_format(None, Some(response_only)).unwrap(),
-        Some(ChronicleFormat::OpenaiMsg)
+        Some(crate::DocumentFormat::OpenaiMsg)
     );
 }
 
 #[test]
 fn openai_msg_preserves_user_and_llm_turns() {
-    use crate::convert::into_storyline;
-    use crate::ChronicleFormat;
     let raw = r#"{
       "session_id": "s1",
       "session_dir": "s1",
@@ -451,7 +462,7 @@ fn openai_msg_preserves_user_and_llm_turns() {
         "call_id": "c1"
       }]
     }"#;
-    let story = into_storyline(ChronicleFormat::OpenaiMsg, raw).unwrap();
+    let story = into_storyline(TestFormat::OpenaiMsg, raw).unwrap();
     assert_eq!(story.turns.len(), 2);
     assert_eq!(story.turns[0].source, "user");
     assert_eq!(story.turns[0].message, serde_json::json!("ping"));
@@ -461,12 +472,10 @@ fn openai_msg_preserves_user_and_llm_turns() {
 
 #[test]
 fn storyline_wire_uses_short_keys() {
-    use crate::convert::{from_storyline, into_storyline};
-    use crate::ChronicleFormat;
     let atif = serde_json::to_string(&sample_traj()).unwrap();
     let out = from_storyline(
-        ChronicleFormat::Storyline,
-        &into_storyline(ChronicleFormat::Atif, &atif).unwrap(),
+        TestFormat::Storyline,
+        &into_storyline(TestFormat::Atif, &atif).unwrap(),
     )
     .unwrap();
     assert!(!out.contains(r#""spec""#));
@@ -490,8 +499,6 @@ fn storyline_wire_uses_short_keys() {
 
 #[test]
 fn convert_storyline_agenticmd_preserves_dialogue_and_timing() {
-    use crate::convert::convert;
-    use crate::ChronicleFormat;
     let story = r#"{
       "session": "sess-md",
       "agent": { "id": "agent-md", "name": "demo" },
@@ -500,17 +507,12 @@ fn convert_storyline_agenticmd_preserves_dialogue_and_timing() {
         { "id": 2, "src": "agent", "msg": "answer", "latency_ms": 42, "ttft_ms": 7, "model": "m1" }
       ]
     }"#;
-    let md = convert(
-        ChronicleFormat::Storyline,
-        ChronicleFormat::Agenticmd,
-        story,
-    )
-    .unwrap();
+    let md = convert(TestFormat::Storyline, TestFormat::AgenticMd, story).unwrap();
     assert!(md.contains("format: persisting"));
     assert!(md.contains("ask me"));
     assert!(md.contains("answer"));
     assert!(md.contains("latency_ms"));
-    let back = convert(ChronicleFormat::Agenticmd, ChronicleFormat::Storyline, &md).unwrap();
+    let back = convert(TestFormat::AgenticMd, TestFormat::Storyline, &md).unwrap();
     let v: serde_json::Value = serde_json::from_str(&back).unwrap();
     assert_eq!(v["session"], "sess-md");
     assert_eq!(v["agent"]["id"], "agent-md");
@@ -586,8 +588,6 @@ fn events_storyline_roundtrip_preserves_call_id_and_seq() {
 
 #[test]
 fn convert_openai_msg_storyline_roundtrip_messages() {
-    use crate::convert::convert;
-    use crate::ChronicleFormat;
     let raw = r#"{
       "session_id": "s-om",
       "session_dir": "s-om",
@@ -617,18 +617,13 @@ fn convert_openai_msg_storyline_roundtrip_messages() {
         "call_id": "c1"
       }]
     }"#;
-    let story = convert(ChronicleFormat::OpenaiMsg, ChronicleFormat::Storyline, raw).unwrap();
+    let story = convert(TestFormat::OpenaiMsg, TestFormat::Storyline, raw).unwrap();
     let v: serde_json::Value = serde_json::from_str(&story).unwrap();
     assert_eq!(v["session"], "s-om");
     assert_eq!(v["turns"][0]["msg"], "ping");
     assert_eq!(v["turns"][1]["msg"], "pong");
 
-    let back = convert(
-        ChronicleFormat::Storyline,
-        ChronicleFormat::OpenaiMsg,
-        &story,
-    )
-    .unwrap();
+    let back = convert(TestFormat::Storyline, TestFormat::OpenaiMsg, &story).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&back).unwrap();
     assert_eq!(doc["session_id"], "s-om");
     assert!(!doc["session_steps"].as_array().unwrap().is_empty());
@@ -699,15 +694,13 @@ fn events_storyline_roundtrip_preserves_call_dialogue() {
 
 #[test]
 fn convert_identity_and_cross_atif_storyline() {
-    use crate::convert::convert;
-    use crate::ChronicleFormat;
     let atif = serde_json::to_string_pretty(&sample_traj()).unwrap();
-    let same = convert(ChronicleFormat::Atif, ChronicleFormat::Atif, &atif).unwrap();
+    let same = convert(TestFormat::Atif, TestFormat::Atif, &atif).unwrap();
     assert_eq!(same, atif);
 
-    let story = convert(ChronicleFormat::Atif, ChronicleFormat::Storyline, &atif).unwrap();
-    let back = convert(ChronicleFormat::Storyline, ChronicleFormat::Atif, &story).unwrap();
-    let traj: crate::AtifTrajectory = serde_json::from_str(&back).unwrap();
+    let story = convert(TestFormat::Atif, TestFormat::Storyline, &atif).unwrap();
+    let back = convert(TestFormat::Storyline, TestFormat::Atif, &story).unwrap();
+    let traj: crate::model::AtifTrajectory = serde_json::from_str(&back).unwrap();
     assert_eq!(traj.effective_session_id().unwrap(), "sess-1");
     assert_eq!(traj.steps.len(), 2);
     assert_eq!(traj.steps[0].source, "user");
@@ -793,13 +786,11 @@ fn storyline_to_events_assigns_call_id_for_paired_turns() {
 
 #[test]
 fn convert_atif_to_agenticmd_keeps_user_agent_text() {
-    use crate::convert::convert;
-    use crate::ChronicleFormat;
     let atif = serde_json::to_string(&sample_traj()).unwrap();
-    let md = convert(ChronicleFormat::Atif, ChronicleFormat::Agenticmd, &atif).unwrap();
+    let md = convert(TestFormat::Atif, TestFormat::AgenticMd, &atif).unwrap();
     assert!(md.contains("What is the price of GOOGL?"));
     assert!(md.contains("I will search."));
-    let story = convert(ChronicleFormat::Agenticmd, ChronicleFormat::Storyline, &md).unwrap();
+    let story = convert(TestFormat::AgenticMd, TestFormat::Storyline, &md).unwrap();
     let v: serde_json::Value = serde_json::from_str(&story).unwrap();
     assert_eq!(v["session"], "sess-1");
     assert!(v["turns"].as_array().unwrap().len() >= 2);

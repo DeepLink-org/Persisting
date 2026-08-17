@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::{
+use persisting_pchronicle::model::{EventIdentity, EventRecord};
+use persisting_pchronicle::storage::{
     event_record_to_event_row, event_row_to_event_record, event_rows_from_batch,
-    event_rows_to_batch, raw_event_arrow_schema, EventRecord, RawEventLanceStore, StoryCoords,
+    event_rows_to_batch, raw_event_arrow_schema, RawEventLanceStore, StoryCoords,
 };
 use serde_json::{json, Value};
 
@@ -72,7 +73,7 @@ fn capture_payload_records() -> Result<(Vec<EventRecord>, usize, usize)> {
                 .to_string_lossy()
                 .replace('\\', "/");
             Ok(EventRecord {
-                identity: persisting_pchronicle::EventIdentity::default(),
+                identity: EventIdentity::default(),
                 seq: index as u64,
                 source: "persisting-gateway-fixture".into(),
                 kind: "fixture.capture_payload".into(),
@@ -164,7 +165,7 @@ async fn capture_payload_corpus_roundtrips_through_lance() -> Result<()> {
             && record.identity.producer.as_deref() == Some("persisting-gateway-fixture")
     }));
     for record in &mut restored {
-        record.identity = persisting_pchronicle::EventIdentity::default();
+        record.identity = EventIdentity::default();
     }
     assert_eq!(restored, records);
     Ok(())

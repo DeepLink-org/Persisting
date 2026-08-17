@@ -38,7 +38,7 @@ impl Candidate {
                 ..
             } => (
                 file.clone(),
-                Some(ChronicleFormat::Storyline.as_str().to_string()),
+                Some(DocumentFormat::Storyline.as_str().to_string()),
                 CatalogSourceKind::Store,
                 *size_bytes,
                 last_modified.clone(),
@@ -51,7 +51,7 @@ impl Candidate {
                 ..
             } => (
                 file.clone(),
-                Some(ChronicleFormat::Events.as_str().to_string()),
+                Some(DocumentFormat::CanonicalEvent.as_str().to_string()),
                 CatalogSourceKind::Store,
                 *size_bytes,
                 last_modified.clone(),
@@ -107,7 +107,7 @@ pub(super) async fn freeze_candidate(
     let mut source_row = candidate.source_stub();
     match candidate {
         Candidate::Storyline { file, uri, .. } => {
-            ensure_format_hint(mount, ChronicleFormat::Storyline, &file)?;
+            ensure_format_hint(mount, DocumentFormat::Storyline, &file)?;
             let paths = StorylineDataSource::pin_uri(&uri)
                 .await
                 .with_context(|| format!("pin Storyline source {uri}"))?;
@@ -125,7 +125,7 @@ pub(super) async fn freeze_candidate(
             ))
         }
         Candidate::Events { file, uri, .. } => {
-            ensure_format_hint(mount, ChronicleFormat::Events, &file)?;
+            ensure_format_hint(mount, DocumentFormat::CanonicalEvent, &file)?;
             let snapshot = RawEventDataSource::pin_uri(&uri)
                 .await
                 .with_context(|| format!("pin canonical event source {uri}"))?;
@@ -318,7 +318,7 @@ pub(super) fn bind_canonical_storyline_projections(
     Ok(())
 }
 
-fn ensure_format_hint(mount: &DatasetMount, actual: ChronicleFormat, file: &str) -> Result<()> {
+fn ensure_format_hint(mount: &DatasetMount, actual: DocumentFormat, file: &str) -> Result<()> {
     if let Some(expected) = mount.format_hint {
         anyhow::ensure!(
             expected == actual,

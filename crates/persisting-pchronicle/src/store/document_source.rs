@@ -6,14 +6,16 @@ use std::path::{Path, PathBuf};
 use datafusion::arrow::array::{Array, StringArray};
 use datafusion::prelude::SessionContext;
 
+use crate::agenticmd::parse_agenticmd;
+use crate::convert::{actf_to_storylines, project_event_records};
 use crate::document::{
     FilterPushdown, QueryCapabilities, QueryTables, DEFAULT_DOCUMENT_MATERIALIZE_BYTES,
     DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
 };
-use crate::{
-    actf_to_storylines, parse_agenticmd, parse_openai_msg_corpus_value, project_event_records,
-    ChronicleFormat, DocumentFormat, Error, Result, StorylineDocument,
-};
+use crate::error::{Error, Result};
+use crate::format::DocumentFormat;
+use crate::formats::actf::ActfDocument;
+use crate::formats::{parse_openai_msg_corpus_value, StorylineDocument};
 
 use super::{
     AgenticMdDataSource, AtifReader, FileTrajectoryDataSource, FileTrajectoryFormat,
@@ -76,19 +78,13 @@ pub(crate) async fn open_document_source(
             })
         }
         DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf => {
-            let legacy_format = match format {
-                DocumentFormat::Atif => ChronicleFormat::Atif,
-                DocumentFormat::OpenaiMsg => ChronicleFormat::OpenaiMsg,
-                DocumentFormat::Actf => ChronicleFormat::Actf,
-                _ => unreachable!(),
-            };
             let provider_format = match format {
                 DocumentFormat::Atif => FileTrajectoryFormat::Atif,
                 DocumentFormat::OpenaiMsg => FileTrajectoryFormat::OpenaiMsg,
                 DocumentFormat::Actf => FileTrajectoryFormat::Actf,
                 _ => unreachable!(),
             };
-            let manifest = LocalQueryManifest::for_format(&path, legacy_format).map_err(other)?;
+            let manifest = LocalQueryManifest::for_format(&path, format).map_err(other)?;
             let source =
                 FileTrajectoryDataSource::from_manifest(manifest.clone()).map_err(other)?;
             debug_assert_eq!(source.format(), provider_format);
@@ -340,8 +336,7 @@ where
         DocumentFormat::Actf => {
             for file in manifest.files() {
                 file.validate_unchanged().map_err(other)?;
-                let document =
-                    crate::ActfDocument::from_json_str(&std::fs::read_to_string(file.path())?)?;
+                let document = ActfDocument::from_json_str(&std::fs::read_to_string(file.path())?)?;
                 for story in actf_to_storylines(&document)? {
                     on_storyline(story)?;
                 }
@@ -433,7 +428,7 @@ async fn read_pinned_storyline(
     for batch in &tool_calls {
         tool_call_rows.extend(super::story_tool_calls_from_batch(batch).map_err(other)?);
     }
-    crate::reconstruct_storyline(crate::StorylineTables {
+    crate::store::reconstruct_storyline(crate::store::StorylineTables {
         run: run_rows.remove(0),
         steps: step_rows,
         tool_calls: tool_call_rows,

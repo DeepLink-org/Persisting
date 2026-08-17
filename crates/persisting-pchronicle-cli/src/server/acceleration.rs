@@ -19,7 +19,8 @@ use datafusion::sql::sqlparser::ast::{
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 use futures::TryStreamExt;
-use persisting_pchronicle::{ChronicleQueryEngine, DatasetCatalogSnapshot};
+use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::storage::DatasetCatalogSnapshot;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, OnceCell};
@@ -1206,9 +1207,13 @@ fn required_json_u64(row: &JsonValue, field: &str) -> Result<u64> {
 mod tests {
     use super::*;
 
-    fn event(event_id: &str, trace_id: &str, agent_id: &str) -> persisting_pchronicle::EventRecord {
-        persisting_pchronicle::EventRecord {
-            identity: persisting_pchronicle::EventIdentity {
+    fn event(
+        event_id: &str,
+        trace_id: &str,
+        agent_id: &str,
+    ) -> persisting_pchronicle::model::EventRecord {
+        persisting_pchronicle::model::EventRecord {
+            identity: persisting_pchronicle::model::EventIdentity {
                 event_id: Some(event_id.into()),
                 ..Default::default()
             },
@@ -1359,7 +1364,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_index_routes_to_one_catalog_source_without_changing_results() -> Result<()> {
-        use persisting_pchronicle::{
+        use persisting_pchronicle::storage::{
             CatalogSnapshotOptions, DatasetMount, RawEventLanceAppender, StoryCoords,
             DEFAULT_DATASET_NAME,
         };

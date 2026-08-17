@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::{upsert_agenticmd_turn, StorylineDocument, StorylineTurn};
+use persisting_pchronicle::document::upsert_agenticmd_turn;
+use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
 use serde_json::{Map, Value};
 
 use crate::session::client::resolve_client_meta_for_run_dir;

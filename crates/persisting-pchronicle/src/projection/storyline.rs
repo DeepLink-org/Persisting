@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::convert::event_storyline_key;
-use crate::{
-    project_event_records, EventFactSnapshot, EventRecord, ProjectionSourceSnapshot,
-    RawEventDataSource, StorylineDocument, StorylineLanceStore, StorylineProjectionLineage,
+use crate::convert::{event_storyline_key, project_event_records};
+use crate::formats::{EventRecord, StorylineDocument};
+use crate::store::{
+    EventFactSnapshot, ProjectionSourceSnapshot, RawEventDataSource, StorylineLanceStore,
+    StorylineProjectionLineage,
 };
 
 pub const STORYLINE_PROJECTOR_NAME: &str = "canonical-events-to-storyline";

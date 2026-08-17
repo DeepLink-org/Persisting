@@ -1,9 +1,11 @@
 use super::*;
-use crate::{
-    build_storyline_projection, rebuild_storyline_projection, story_lance_event_path,
-    sync_storyline_projection, EventIdentity, RawEventLanceStore, StoryCoords, StorylineAgent,
-    StorylineLanceStore, StorylineProjectionSyncMode, StorylineTurn,
+use crate::layout::{story_lance_event_path, StoryCoords};
+use crate::projection::{
+    build_storyline_projection, rebuild_storyline_projection, sync_storyline_projection,
+    StorylineProjectionSyncMode,
 };
+use crate::store::{RawEventLanceStore, StorylineLanceStore};
+use crate::{EventIdentity, StorylineAgent, StorylineTurn};
 use object_store::ObjectStoreExt;
 
 fn write_openai_source(path: &Path, event_id: &str) -> Result<()> {

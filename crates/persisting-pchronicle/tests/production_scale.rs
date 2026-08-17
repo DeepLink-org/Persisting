@@ -17,9 +17,11 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use persisting_agentctl::RunId;
-use persisting_pchronicle::{
-    raw_event_lance_path, ChronicleQueryEngine, ChronicleQueryExecutionOptions, DocumentFormat,
-    EventIdentity, EventRecord, EventWriterFence, LanceMaintenanceOptions, LeaseAcquireOutcome,
+use persisting_pchronicle::document::DocumentFormat;
+use persisting_pchronicle::model::{EventIdentity, EventRecord};
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
+use persisting_pchronicle::storage::{
+    raw_event_lance_path, EventWriterFence, LanceMaintenanceOptions, LeaseAcquireOutcome,
     RawEventLanceAppender, RawEventLanceStore, RunControlStore, StoryCoords,
 };
 

@@ -53,20 +53,20 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::OnceCell;
 
 use crate::convert::{event_storyline_key, project_event_records, storyline_to_events};
-use crate::{
-    projection_lineage_is_fresh, reconstruct_storyline, split_storyline, ChronicleFormat,
-    EventRecord, EventsDocument, ProjectionSourceSnapshot, StoryRunRow, StoryStepRow,
-    StoryToolCallRow, StorylineDocument,
-};
+use crate::format::DocumentFormat;
+use crate::formats::events::EventsDocument;
+use crate::formats::{EventRecord, StorylineDocument};
+use crate::projection::projection_lineage_is_fresh;
 
 use super::events::datafusion::{RawEventDataSourceOptions, RawEventSnapshot};
 use super::files::matches_file_filter;
 use super::{
-    raw_event_arrow_schema, story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch,
-    story_steps_arrow_schema, story_steps_from_batch, story_steps_to_batch,
-    story_tool_calls_arrow_schema, story_tool_calls_from_batch, story_tool_calls_to_batch,
-    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryQueryMetrics,
-    LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions, RawEventDataSource,
+    raw_event_arrow_schema, reconstruct_storyline, split_storyline, story_runs_arrow_schema,
+    story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema, story_steps_from_batch,
+    story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_from_batch,
+    story_tool_calls_to_batch, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
+    FileTrajectoryQueryMetrics, LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
+    ProjectionSourceSnapshot, RawEventDataSource, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineDataSource, StorylineDataSourceOptions, StorylineTableKind, StorylineTablePaths,
     SOURCE_FILE_COLUMN,
 };

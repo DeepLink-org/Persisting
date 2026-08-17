@@ -8,11 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::{rebuild_session_story, story_call_ids, story_user_turn_count};
 use crate::record::EventRecord;
-use persisting_pchronicle::index_agenticmd_path;
+use persisting_pchronicle::document::index_agenticmd_path;
 
 use super::markdown_pipeline::MarkdownPipeline;
 
-pub use persisting_pchronicle::list_agenticmd_paths as list_run_markdown_paths;
+pub use persisting_pchronicle::document::list_agenticmd_paths as list_run_markdown_paths;
 
 /// Per-session reconcile outcome.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,7 +169,8 @@ mod tests {
     use crate::projection::dialogue::capture_record_to_storyline_turn;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
     use crate::Call;
-    use persisting_pchronicle::{upsert_agenticmd_turn, StorylineDocument, StorylineTurn};
+    use persisting_pchronicle::document::upsert_agenticmd_turn;
+    use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
     use std::collections::BTreeMap as Map;
 
     fn write_turns(path: &Path, turns: &[(&str, &str, &str)]) {
@@ -279,10 +280,10 @@ mod tests {
     #[test]
     fn structural_issue_flags_excessive_blank_lines() {
         assert!(
-            persisting_pchronicle::agenticmd_structural_issues("a\n\n\n\nb")
+            persisting_pchronicle::document::agenticmd_structural_issues("a\n\n\n\nb")
                 .contains(&"excessive_blank_lines".into())
         );
-        assert!(persisting_pchronicle::agenticmd_structural_issues("a\n\nb").is_empty());
+        assert!(persisting_pchronicle::document::agenticmd_structural_issues("a\n\nb").is_empty());
     }
 
     #[test]
