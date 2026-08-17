@@ -1,5 +1,8 @@
 //! Error types for pChronicle.
 
+use std::path::PathBuf;
+
+use crate::format::DocumentFormat;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -66,6 +69,27 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("invalid {format} document (path={path:?}, location={location:?}): {message}")]
+    InvalidDocument {
+        format: DocumentFormat,
+        path: Option<PathBuf>,
+        location: Option<String>,
+        message: String,
+    },
+
+    #[error("{format} document cannot represent {stories} storylines")]
+    UnsupportedCardinality {
+        format: DocumentFormat,
+        stories: usize,
+    },
+
+    #[error("{format} source budget exceeded (path={path:?}, budget={budget})")]
+    SourceBudgetExceeded {
+        format: DocumentFormat,
+        path: Option<PathBuf>,
+        budget: String,
+    },
+
     #[error("invalid ATIF: {0}")]
     InvalidAtif(String),
 
@@ -104,7 +128,10 @@ pub enum Error {
 impl Error {
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::InvalidAtif(_)
+            Self::InvalidDocument { .. }
+            | Self::UnsupportedCardinality { .. }
+            | Self::SourceBudgetExceeded { .. }
+            | Self::InvalidAtif(_)
             | Self::DuplicateSession(_)
             | Self::DuplicateStep { .. }
             | Self::DuplicateToolCall { .. }
@@ -114,5 +141,27 @@ impl Error {
             Self::Json(_) => ErrorCode::InvalidInput,
             Self::Other(message) => classify_error(message),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+    use crate::format::DocumentFormat;
+
+    #[test]
+    fn invalid_document_error_identifies_format_and_location() {
+        let error = Error::InvalidDocument {
+            format: DocumentFormat::OpenaiMsg,
+            path: Some("sessions.json".into()),
+            location: Some("record[2].messages".into()),
+            message: "expected an array".into(),
+        };
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("openai-msg"));
+        assert!(rendered.contains("sessions.json"));
+        assert!(rendered.contains("record[2].messages"));
+        assert_eq!(error.code(), super::ErrorCode::InvalidInput);
     }
 }

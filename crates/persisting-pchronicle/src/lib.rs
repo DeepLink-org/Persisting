@@ -67,7 +67,7 @@ pub use discovery::{
     drop_lifecycle_run_partitions, expand_story_locations, expand_story_locations_blocking,
 };
 pub use error::{classify_error, Error, ErrorCode, Result};
-pub use format::ChronicleFormat;
+pub use format::{ChronicleFormat, DocumentFormat};
 pub use formats::{
     agenticmd_body_byte_offset, append_subagent_refs_footer, block_speaker, detect_format,
     encode_agenticmd_block, encode_agenticmd_document, encode_agenticmd_preamble,
