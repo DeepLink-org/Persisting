@@ -6,8 +6,6 @@ use crate::formats::storyline::{
 };
 use crate::{DocumentFormat, Error, Result};
 
-const ATIF_TOOL_CALL_PROVENANCE_KEY: &str = "_pchronicle_atif_tool_call";
-
 fn timing_from_metrics(metrics: &Option<serde_json::Value>) -> (Option<i64>, Option<i64>) {
     let Some(m) = metrics else {
         return (None, None);
@@ -46,19 +44,13 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
                         .as_ref()
                         .and_then(|x| x.get("duration_ms"))
                         .and_then(|v| v.as_i64());
-                    let extra = Some(serde_json::json!({
-                        ATIF_TOOL_CALL_PROVENANCE_KEY: {
-                            "result_present": c.result.is_some(),
-                            "result": c.result,
-                            "extra": c.extra,
-                        }
-                    }));
                     StorylineToolCall {
                         tool_call_id: c.tool_call_id.clone(),
                         function_name: c.function_name.clone(),
                         arguments: c.arguments.clone(),
+                        result: c.result.clone(),
                         duration_ms,
-                        extra,
+                        extra: c.extra.clone(),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -98,7 +90,9 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
     }
 
     Ok(StorylineDocument {
+        schema_version: Some(traj.schema_version.clone()),
         run_id: traj.trajectory_id.clone(),
+        attempt_id: None,
         session_id,
         agent: StorylineAgent {
             id: traj.agent.name.clone(),
@@ -145,25 +139,7 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
             calls
                 .iter()
                 .map(|c| {
-                    let provenance = c
-                        .extra
-                        .as_ref()
-                        .and_then(|extra| extra.get(ATIF_TOOL_CALL_PROVENANCE_KEY));
-                    let result = provenance
-                        .filter(|value| {
-                            value.get("result_present").and_then(|v| v.as_bool()) == Some(true)
-                        })
-                        .and_then(|value| value.get("result"))
-                        .cloned();
-                    let mut extra = if let Some(provenance) = provenance {
-                        provenance
-                            .get("extra")
-                            .filter(|value| !value.is_null())
-                            .cloned()
-                    } else {
-                        c.extra.clone()
-                    }
-                    .unwrap_or(serde_json::json!({}));
+                    let mut extra = c.extra.clone().unwrap_or(serde_json::json!({}));
                     if let Some(ms) = c.duration_ms {
                         if let Some(obj) = extra.as_object_mut() {
                             obj.insert("duration_ms".into(), serde_json::json!(ms));
@@ -178,7 +154,7 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
                         tool_call_id: c.tool_call_id.clone(),
                         function_name: c.function_name.clone(),
                         arguments: c.arguments.clone(),
-                        result,
+                        result: c.result.clone(),
                         extra,
                     }
                 })
@@ -220,7 +196,10 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
     }
 
     Ok(AtifTrajectory {
-        schema_version: "ATIF-v1.7".into(),
+        schema_version: story
+            .schema_version
+            .clone()
+            .unwrap_or_else(|| "ATIF-v1.7".into()),
         session_id: Some(story.session_id.clone()),
         trajectory_id: story.run_id.clone(),
         agent: AtifAgent {
@@ -246,7 +225,7 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
 #[cfg(test)]
 mod tests {
     use super::{atif_to_storyline, storyline_to_atif};
-    use crate::{AtifTrajectory, DocumentFormat, Error};
+    use crate::{AtifTrajectory, DocumentFormat, Error, FieldPresence};
 
     #[test]
     fn malformed_atif_observation_is_not_silently_dropped() {
@@ -271,5 +250,49 @@ mod tests {
                 ..
             } if location == "step[0].observation"
         ));
+    }
+
+    #[test]
+    fn atif_tool_result_presence_round_trips_without_provenance() {
+        let trajectory = AtifTrajectory::from_json_str(
+            r#"{
+                "schema_version":"ATIF-v1.7",
+                "session_id":"session-1",
+                "agent":{"name":"agent-1","version":"1"},
+                "steps":[{
+                    "step_id":1,
+                    "source":"agent",
+                    "message":"done",
+                    "tool_calls":[
+                        {"tool_call_id":"missing","function_name":"a","arguments":{}},
+                        {"tool_call_id":"null","function_name":"b","arguments":{},"result":null},
+                        {"tool_call_id":"value","function_name":"c","arguments":{},"result":{"ok":true}}
+                    ]
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let story = atif_to_storyline(&trajectory).unwrap();
+        assert_eq!(story.schema_version.as_deref(), Some("ATIF-v1.7"));
+        let calls = story.turns[0].tool_calls.as_ref().unwrap();
+        assert_eq!(calls[0].result, FieldPresence::Missing);
+        assert_eq!(calls[1].result, FieldPresence::Null);
+        assert_eq!(
+            calls[2].result,
+            FieldPresence::Value(serde_json::json!({"ok": true}))
+        );
+        assert!(calls.iter().all(|call| {
+            !call
+                .extra
+                .as_ref()
+                .is_some_and(|extra| extra.to_string().contains("_pchronicle_"))
+        }));
+
+        let encoded = serde_json::to_value(storyline_to_atif(&story).unwrap()).unwrap();
+        let calls = encoded["steps"][0]["tool_calls"].as_array().unwrap();
+        assert!(calls[0].get("result").is_none());
+        assert_eq!(calls[1]["result"], serde_json::Value::Null);
+        assert_eq!(calls[2]["result"], serde_json::json!({"ok": true}));
     }
 }

@@ -470,7 +470,9 @@ fn rows_to_storyline(
         .or_else(|| first_model.clone())
         .unwrap_or_else(|| "openai-import".into());
     Ok(StorylineDocument {
+        schema_version: None,
         run_id,
+        attempt_id: None,
         session_id: session_id.to_string(),
         agent: StorylineAgent {
             id: agent_id.clone(),
@@ -652,6 +654,7 @@ fn parse_tool_calls(value: Option<&Value>) -> Option<Vec<StorylineToolCall>> {
                 tool_call_id,
                 function_name,
                 arguments,
+                result: Default::default(),
                 duration_ms: None,
                 extra: Some(Value::Object(call.clone())),
             })
@@ -694,6 +697,7 @@ fn parse_embedded_tool_call(
         tool_call_id: format!("embedded-{step_id}-{name}"),
         function_name: name.to_string(),
         arguments: Value::Object(arguments),
+        result: Default::default(),
         duration_ms: None,
         extra: Some(json!({"encoding":"embedded_text"})),
     }])

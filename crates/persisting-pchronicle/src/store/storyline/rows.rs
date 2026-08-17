@@ -11,6 +11,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::super::storyline_model::{StoryRunRow, StoryStepRow, StoryToolCallRow};
+use crate::FieldPresence;
 
 fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
     Field::new(name, data_type, nullable)
@@ -18,8 +19,10 @@ fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
 
 pub fn story_runs_arrow_schema() -> Arc<ArrowSchema> {
     Arc::new(ArrowSchema::new(vec![
+        field("schema_version", DataType::Utf8, true),
         field("run_id", DataType::Utf8, false),
         field("run_id_explicit", DataType::Boolean, false),
+        field("attempt_id", DataType::Utf8, true),
         field("session_id", DataType::Utf8, false),
         field("agent_id", DataType::Utf8, false),
         field("agent_name", DataType::Utf8, true),
@@ -72,6 +75,8 @@ pub fn story_tool_calls_arrow_schema() -> Arc<ArrowSchema> {
         field("tool_call_id", DataType::Utf8, false),
         field("function_name", DataType::Utf8, false),
         field("arguments_json", DataType::Utf8, false),
+        field("result_present", DataType::Boolean, false),
+        field("result_json", DataType::Utf8, true),
         field("results_json", DataType::Utf8, false),
         field("duration_ms", DataType::Int64, true),
         field("extra_json", DataType::Utf8, true),
@@ -124,10 +129,12 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         story_runs_arrow_schema(),
         vec![
+            Arc::new(opt_utf8(rows.iter().map(|r| r.schema_version.as_deref()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.run_id.as_str()))),
             Arc::new(BooleanArray::from(
                 rows.iter().map(|r| r.run_id_explicit).collect::<Vec<_>>(),
             )),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.attempt_id.as_deref()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.session_id.as_str()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.agent_id.as_str()))),
             Arc::new(opt_utf8(rows.iter().map(|r| r.agent_name.as_deref()))),
@@ -250,6 +257,19 @@ pub fn story_tool_calls_to_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatc
                     .map(|r| json(&r.arguments))
                     .collect::<Result<_>>()?,
             )),
+            Arc::new(BooleanArray::from(
+                rows.iter()
+                    .map(|r| !r.result.is_missing())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| match &r.result {
+                        FieldPresence::Value(value) => json(value).map(Some),
+                        FieldPresence::Missing | FieldPresence::Null => Ok(None),
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
             Arc::new(req_utf8_owned(
                 rows.iter()
                     .map(|r| json(&r.results))
@@ -351,8 +371,10 @@ pub fn story_runs_from_batch(batch: &RecordBatch) -> Result<Vec<StoryRunRow>> {
     (0..batch.num_rows())
         .map(|row| {
             Ok(StoryRunRow {
+                schema_version: string_at(batch, "schema_version", row)?,
                 run_id: required_string_at(batch, "run_id", row)?,
                 run_id_explicit: required_bool_at(batch, "run_id_explicit", row)?,
+                attempt_id: string_at(batch, "attempt_id", row)?,
                 session_id: required_string_at(batch, "session_id", row)?,
                 agent_id: required_string_at(batch, "agent_id", row)?,
                 agent_name: string_at(batch, "agent_name", row)?,
@@ -419,6 +441,14 @@ pub fn story_tool_calls_from_batch(batch: &RecordBatch) -> Result<Vec<StoryToolC
                     required_string_at(batch, "arguments_json", row)?,
                     "arguments_json",
                 )?,
+                result: if required_bool_at(batch, "result_present", row)? {
+                    match string_at(batch, "result_json", row)? {
+                        Some(value) => FieldPresence::Value(parse_json(value, "result_json")?),
+                        None => FieldPresence::Null,
+                    }
+                } else {
+                    FieldPresence::Missing
+                },
                 results: parse_json(
                     required_string_at(batch, "results_json", row)?,
                     "results_json",
@@ -436,9 +466,9 @@ mod tests {
 
     #[test]
     fn empty_batches_keep_all_three_schemas() {
-        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 15);
+        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 17);
         assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 18);
-        assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 10);
+        assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 12);
     }
 
     #[test]
@@ -512,6 +542,7 @@ mod tests {
             tool_call_id: "c".into(),
             function_name: "lookup".into(),
             arguments: serde_json::json!({"q": "x"}),
+            result: FieldPresence::Null,
             results: vec![serde_json::json!({"source_call_id": "c", "content": "y"})],
             duration_ms: Some(8),
             extra: None,

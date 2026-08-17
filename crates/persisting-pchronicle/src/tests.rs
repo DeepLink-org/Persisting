@@ -48,14 +48,14 @@ fn sample_traj() -> AtifTrajectory {
                         tool_call_id: "call_price_1".into(),
                         function_name: "financial_search".into(),
                         arguments: json!({"ticker":"GOOGL","metric":"price"}),
-                        result: Some(json!({"price": 185.35})),
+                        result: crate::FieldPresence::Value(json!({"price": 185.35})),
                         extra: Some(json!({"duration_ms": 42})),
                     },
                     AtifToolCall {
                         tool_call_id: "call_volume_2".into(),
                         function_name: "financial_search".into(),
                         arguments: json!({"ticker":"GOOGL","metric":"volume"}),
-                        result: None,
+                        result: crate::FieldPresence::Missing,
                         extra: Some(json!({"duration_ms": 37})),
                     },
                 ]),
@@ -143,7 +143,7 @@ fn atif_storyline_hub_roundtrip() {
     assert_eq!(back.steps[1].tool_calls.as_ref().unwrap().len(), 2);
     assert_eq!(
         back.steps[1].tool_calls.as_ref().unwrap()[0].result,
-        Some(serde_json::json!({"price": 185.35}))
+        crate::FieldPresence::Value(serde_json::json!({"price": 185.35}))
     );
     assert_eq!(
         back.steps[1]
@@ -602,7 +602,7 @@ fn storyline_wire_uses_short_keys() {
     assert!(!out.contains(r#""agt""#));
     assert!(!out.contains(r#""fm""#));
     assert!(!out.contains(r#""kids""#));
-    assert!(!out.contains(r#""schema_version""#));
+    assert!(out.contains(r#""schema_version": "ATIF-v1.7""#));
     assert!(!out.contains(r#""source""#));
     assert!(!out.contains(r#""message""#));
 }
@@ -912,7 +912,9 @@ fn storyline_to_events_assigns_call_id_for_paired_turns() {
     use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
     use serde_json::json;
     let story = StorylineDocument {
+        schema_version: None,
         run_id: None,
+        attempt_id: None,
         session_id: "s-pair".into(),
         agent: StorylineAgent {
             id: "a1".into(),

@@ -33,7 +33,9 @@ async fn put_remote_object(uri: &str, relative: &str, contents: &[u8]) {
 
 fn story(session_id: &str) -> StorylineDocument {
     StorylineDocument {
+        schema_version: None,
         run_id: Some("run-1".into()),
+        attempt_id: None,
         session_id: session_id.into(),
         agent: StorylineAgent {
             id: "agent-1".into(),
@@ -80,6 +82,7 @@ fn story(session_id: &str) -> StorylineDocument {
                     tool_call_id: "call-1".into(),
                     function_name: "lookup".into(),
                     arguments: serde_json::json!({"symbol": "ACME"}),
+                    result: Default::default(),
                     duration_ms: Some(12),
                     extra: None,
                 }]),

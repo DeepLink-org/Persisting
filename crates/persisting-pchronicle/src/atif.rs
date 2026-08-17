@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::formats::storyline::FieldPresence;
+
 /// Root ATIF trajectory document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtifTrajectory {
@@ -74,9 +76,9 @@ pub struct AtifToolCall {
     pub tool_call_id: String,
     pub function_name: String,
     pub arguments: Value,
-    /// Optional inline result used by some ATIF producers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
+    /// Inline result. ATIF distinguishes an omitted result from explicit null.
+    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
+    pub result: FieldPresence<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }

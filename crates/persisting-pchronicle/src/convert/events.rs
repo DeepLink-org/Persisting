@@ -290,7 +290,9 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
     }
 
     Ok(StorylineDocument {
+        schema_version: None,
         run_id: None,
+        attempt_id: None,
         session_id,
         agent: StorylineAgent {
             id: agent_id.clone(),

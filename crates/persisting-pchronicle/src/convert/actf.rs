@@ -163,6 +163,7 @@ fn attempt_to_storyline(
                     tool_call_id: call.id.clone(),
                     function_name: actf_tool_name(call),
                     arguments: actf_tool_arguments(call),
+                    result: Default::default(),
                     duration_ms: if step.tools.len() == 1 {
                         step.metric.env_action_ms.as_f64().map(|value| value as i64)
                     } else {
@@ -219,7 +220,9 @@ fn attempt_to_storyline(
         document.task_id.clone()
     };
     Ok(StorylineDocument {
+        schema_version: None,
         run_id: Some(document.task_id.clone()),
+        attempt_id: None,
         session_id,
         agent: StorylineAgent {
             id: "actf-agent".into(),

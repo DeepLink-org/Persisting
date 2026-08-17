@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Error, Result, StoryLink, StorylineDocument, StorylineToolCall, StorylineTurn};
+use crate::{
+    Error, FieldPresence, Result, StoryLink, StorylineDocument, StorylineToolCall, StorylineTurn,
+};
 
 pub const STORY_RUNS_TABLE: &str = "runs";
 pub const STORY_STEPS_TABLE: &str = "steps";
@@ -17,10 +19,12 @@ pub const STORY_TOOL_CALLS_TABLE: &str = "tool_calls";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoryRunRow {
+    pub schema_version: Option<String>,
     pub run_id: String,
     /// Whether `run_id` was present in the source document. When false,
     /// `run_id` contains the effective value (`session_id`) used for joins.
     pub run_id_explicit: bool,
+    pub attempt_id: Option<String>,
     pub session_id: String,
     pub agent_id: String,
     pub agent_name: Option<String>,
@@ -70,6 +74,7 @@ pub struct StoryToolCallRow {
     pub tool_call_id: String,
     pub function_name: String,
     pub arguments: Value,
+    pub result: FieldPresence<Value>,
     pub results: Vec<Value>,
     pub duration_ms: Option<i64>,
     pub extra: Option<Value>,
@@ -108,8 +113,10 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
         .clone()
         .unwrap_or_else(|| story.session_id.clone());
     let run = StoryRunRow {
+        schema_version: story.schema_version.clone(),
         run_id: run_id.clone(),
         run_id_explicit: story.run_id.is_some(),
+        attempt_id: story.attempt_id.clone(),
         session_id: story.session_id.clone(),
         agent_id: story.agent.id.clone(),
         agent_name: story.agent.name.clone(),
@@ -174,6 +181,7 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
                     tool_call_id: call.tool_call_id.clone(),
                     function_name: call.function_name.clone(),
                     arguments: call.arguments.clone(),
+                    result: call.result.clone(),
                     results: Vec::new(),
                     duration_ms: call.duration_ms,
                     extra: call.extra.clone(),
@@ -278,6 +286,7 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                         tool_call_id: call.tool_call_id,
                         function_name: call.function_name,
                         arguments: call.arguments,
+                        result: call.result,
                         duration_ms: call.duration_ms,
                         extra: call.extra,
                     }
@@ -306,7 +315,9 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         })
         .collect();
     let story = StorylineDocument {
+        schema_version: run.schema_version,
         run_id: run.run_id_explicit.then_some(run.run_id),
+        attempt_id: run.attempt_id,
         session_id: run.session_id,
         agent: crate::StorylineAgent {
             id: run.agent_id,
@@ -361,6 +372,7 @@ mod tests {
             tool_call_id: "call-1".into(),
             function_name: "lookup".into(),
             arguments: json!({"query": "answer"}),
+            result: FieldPresence::Missing,
             duration_ms: Some(7),
             extra: Some(json!({"provider": "test"})),
         }]);
@@ -368,7 +380,9 @@ mod tests {
             "results": [{"source_call_id": "call-1", "content": "42"}]
         }));
         StorylineDocument {
+            schema_version: None,
             run_id: Some("run-1".into()),
+            attempt_id: None,
             session_id: "session-1".into(),
             agent: StorylineAgent {
                 id: "agent-1".into(),
@@ -390,12 +404,16 @@ mod tests {
 
     #[test]
     fn three_table_roundtrip_preserves_run_and_observation_semantics() {
-        let expected = story();
+        let mut expected = story();
+        expected.schema_version = Some("ATIF-v1.7".into());
+        expected.attempt_id = Some("attempt-1".into());
+        expected.turns[1].tool_calls.as_mut().unwrap()[0].result = crate::FieldPresence::Null;
         let tables = split_storyline(&expected).unwrap();
         assert!(tables.run.run_id_explicit);
         assert_eq!(tables.steps.len(), 2);
         assert_eq!(tables.tool_calls.len(), 1);
         assert_eq!(tables.tool_calls[0].results.len(), 1);
+        assert_eq!(tables.tool_calls[0].result, crate::FieldPresence::Null);
         assert_eq!(reconstruct_storyline(tables).unwrap(), expected);
 
         let mut implicit_run = story();

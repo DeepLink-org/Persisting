@@ -18,7 +18,9 @@ fn write_openai_source(path: &Path, event_id: &str) -> Result<()> {
 
 fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
     StorylineDocument {
+        schema_version: None,
         run_id: Some(run_id.into()),
+        attempt_id: None,
         session_id: session_id.into(),
         agent: StorylineAgent {
             id: "agent".into(),

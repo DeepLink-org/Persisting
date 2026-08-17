@@ -44,6 +44,6 @@ pub use openai_corpus::{
 };
 pub use openai_msg::{parse_openai_msg_document, OpenaiMsgDocument, OpenaiMsgStep};
 pub use storyline::{
-    parse_storyline_document, StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall,
-    StorylineTurn,
+    parse_storyline_document, FieldPresence, StoryLink, StorylineAgent, StorylineDocument,
+    StorylineToolCall, StorylineTurn,
 };

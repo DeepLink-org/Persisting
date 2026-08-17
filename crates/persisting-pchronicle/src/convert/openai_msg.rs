@@ -92,7 +92,9 @@ pub fn openai_msg_to_storyline(doc: &OpenaiMsgDocument) -> Result<StorylineDocum
     }
 
     Ok(StorylineDocument {
+        schema_version: None,
         run_id: Some(doc.run_bucket.clone()).filter(|s| !s.is_empty()),
+        attempt_id: None,
         session_id: doc.session_id.clone(),
         agent: StorylineAgent {
             id: doc.agent_id.clone(),
