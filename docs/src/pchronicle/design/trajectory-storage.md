@@ -13,7 +13,7 @@
 - Lance canonical events 的读写、统计和维护；
 - AgenticMD 人读/调试视图的生成与宽松解析；
 - events、Storyline、ATIF、ACTF、OpenAI messages、AgenticMD 之间的格式转换；
-- materialize、judgment 和标准查询视图。
+- materialize、revision lineage 和标准查询视图。
 
 `persisting-events` 拥有存储无关的逻辑事件信封。Gateway 与 pVisor 负责产出事件；CLI
 可以在进程内调用 pChronicle，pVisor 也可以通过 `pchronicle control` sidecar 提交。
@@ -58,9 +58,8 @@ vacuum，避免破坏已经固定旧快照的 reader。
 `timestamp` 或接收时间补齐；两者同时存在时必须在毫秒级一致。Storyline 投影也从
 `timestamp_unix_ms` 生成 UTC 毫秒文本，输入文本时间戳保存在 `payload_json`。事实层不检查
 `event_id` 唯一性，也不为它维护索引；
-重复 ID 和重试行是合法事实。完整 `EventRecord` 仍保存在 `payload_json`，因此回放不丢字段。评测结果写入同 Run 的
-`judgments.lance/`，不会随 rubric 增加而演化事实表 schema。需要审计保真度的工作流应
-使用 canonical events 层。
+重复 ID 和重试行是合法事实。完整 `EventRecord` 仍保存在 `payload_json`，因此回放不丢字段。
+需要审计保真度的工作流应使用 canonical events 层。
 
 ### AgenticMD
 
@@ -163,7 +162,7 @@ OpenAI msg ┘
 | 组件 | 负责 | 不负责 |
 |---|---|---|
 | Gateway | 协议解析、调用生命周期、采集顺序、live projection 策略 | 通用 store、格式 schema、离线转换 |
-| pChronicle | 格式、路径、落盘、读取、转换、judgment 与 revision lineage | 网络转发、Agent 生命周期 |
+| pChronicle | 格式、路径、落盘、读取、转换与 revision lineage | 网络转发、Agent 生命周期 |
 | pVisor | Run 生命周期及 Gateway/OverlayNet/OverlayFS 装配 | 长期轨迹 schema |
 
 ## 8. 相关文档

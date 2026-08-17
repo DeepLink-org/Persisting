@@ -310,9 +310,12 @@ fn rows_to_storyline(
     let mut next_turn_id = 1_i64;
 
     for (ordinal, raw) in records {
-        let row = raw
-            .as_object()
-            .expect("rows were validated as objects during grouping");
+        let row = raw.as_object().ok_or_else(|| {
+            Error::Other(format!(
+                "OpenAI corpus {} row {} must be an object",
+                relative_path, ordinal
+            ))
+        })?;
         let step_id = row.get("step_id").and_then(Value::as_i64).ok_or_else(|| {
             Error::Other(format!(
                 "OpenAI corpus {} row {} requires integer step_id",

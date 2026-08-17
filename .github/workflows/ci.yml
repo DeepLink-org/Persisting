@@ -34,9 +34,9 @@ jobs:
           cargo fmt --manifest-path pchronicle-web/Cargo.toml -- --check
 
       - name: Rust clippy
-        # Match local `just clippy` for now; tighten to `-D warnings` once the
-        # workspace is clean (same bar as Pulsing).
-        run: cargo clippy --workspace --all-targets --locked
+        run: |
+          cargo clippy --workspace --exclude persisting-dlcapt --all-targets --locked -- -D warnings
+          cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
 
       - name: Python lint (ruff)
         run: uvx ruff check persisting/

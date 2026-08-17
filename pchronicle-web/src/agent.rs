@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::api;
 use crate::components::{table_fence, trajectory_fence};
-use crate::model::{Judgment, RunAnalysis, RunSummary, TurnDetail, TurnSummary};
+use crate::model::{RunAnalysis, RunSummary, TurnDetail, TurnSummary};
 
 const STORAGE_KEY: &str = "pchronicle_llm_config";
 const DEFAULT_CONTEXT_LIMIT: usize = 32 * 1024;
@@ -52,7 +52,6 @@ pub struct AnswerRequest<'a> {
     pub analysis: &'a RunAnalysis,
     pub turns: &'a [TurnSummary],
     pub selected: Option<&'a TurnDetail>,
-    pub judgments: &'a [Judgment],
     pub include_full_turn: bool,
 }
 
@@ -99,7 +98,6 @@ pub fn skill_ids() -> &'static [&'static str] {
         "latency_hotspots",
         "tool_usage",
         "cohort_compare",
-        "judgment_review",
     ]
 }
 
@@ -111,15 +109,14 @@ pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
         analysis,
         turns,
         selected,
-        judgments,
         include_full_turn,
     } = request;
     let (base_context, context_truncated) =
-        evidence_context(run, analysis, turns, selected, judgments, include_full_turn);
+        evidence_context(run, analysis, turns, selected, include_full_turn);
     let explicit_skill = resolve_skill(user_message);
     if !config.is_configured() {
         let skill = explicit_skill.unwrap_or("trajectory_summary");
-        let (evidence, sql) = run_skill(skill, run, analysis, turns, judgments).await?;
+        let (evidence, sql) = run_skill(skill, run, analysis, turns).await?;
         let evidence = decorate_skill_evidence(skill, evidence, turns);
         return Ok(AgentAnswer {
             text: format!(
@@ -182,7 +179,7 @@ pub async fn answer(request: AnswerRequest<'_>) -> Result<AgentAnswer, String> {
                 .as_deref()
                 .filter(|skill| skill_ids().contains(skill))
                 .unwrap_or("trajectory_summary");
-            let (evidence, sql) = run_skill(skill, run, analysis, turns, judgments).await?;
+            let (evidence, sql) = run_skill(skill, run, analysis, turns).await?;
             let evidence = decorate_skill_evidence(skill, evidence, turns);
             let components = component_fences(&evidence);
             let summary = summarize(config, user_message, &base_context, &evidence).await?;
@@ -205,7 +202,6 @@ async fn run_skill(
     run: &RunSummary,
     analysis: &RunAnalysis,
     turns: &[TurnSummary],
-    judgments: &[Judgment],
 ) -> Result<(String, Option<String>), String> {
     match skill {
         "failure_locator" => {
@@ -304,23 +300,6 @@ async fn run_skill(
                 Some(sql),
             ))
         }
-        "judgment_review" => Ok((
-            if judgments.is_empty() {
-                "No persisted judgments exist for this session.".into()
-            } else {
-                judgments
-                    .iter()
-                    .map(|row| {
-                        format!(
-                            "- target={} rubric={} score={} verdict={} rationale={}",
-                            row.call_id, row.rubric_id, row.score, row.verdict, row.rationale
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            },
-            None,
-        )),
         _ => Ok((overview_evidence(run, analysis, turns), None)),
     }
 }
@@ -389,7 +368,7 @@ fn overview_evidence(run: &RunSummary, analysis: &RunAnalysis, turns: &[TurnSumm
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "Run: agent={} session={} status={}\nEvents={} turns={} tools={} explicit_errors={}\nTokens: prompt={} completion={} total={}\nLatency: samples={}/{} p50={} p95={} max={}\nJudgments={} average_score={}\nTurn evidence:\n{}",
+        "Run: agent={} session={} status={}\nEvents={} turns={} tools={} explicit_errors={}\nTokens: prompt={} completion={} total={}\nLatency: samples={}/{} p50={} p95={} max={}\nTurn evidence:\n{}",
         run.agent_id,
         run.session_id,
         run.status,
@@ -405,8 +384,6 @@ fn overview_evidence(run: &RunSummary, analysis: &RunAnalysis, turns: &[TurnSumm
         optional_number(analysis.latency_ms.p50),
         optional_number(analysis.latency_ms.p95),
         optional_number(analysis.latency_ms.max),
-        analysis.judgment_count,
-        optional_number(analysis.average_score),
         top
     )
 }
@@ -416,19 +393,9 @@ fn evidence_context(
     analysis: &RunAnalysis,
     turns: &[TurnSummary],
     selected: Option<&TurnDetail>,
-    judgments: &[Judgment],
     include_full_turn: bool,
 ) -> (String, bool) {
     let mut context = overview_evidence(run, analysis, turns);
-    if !judgments.is_empty() {
-        context.push_str("\n\nPersisted judgments:\n");
-        for row in judgments.iter().take(20) {
-            context.push_str(&format!(
-                "- target={} rubric={} score={} verdict={} rationale={}\n",
-                row.call_id, row.rubric_id, row.score, row.verdict, row.rationale
-            ));
-        }
-    }
     if let Some(detail) = selected {
         context.push_str(&format!(
             "\nSelected [turn:{}]: source={} kind={} model={} latency={} tools={}\n",
@@ -485,7 +452,7 @@ async fn select_action(
         .map(|catalog| catalog.database.as_str())
         .unwrap_or("data");
     let system = format!(
-        "You are pChronicle Copilot for local agent trajectory debugging. Select exactly one action. Return JSON only: {{\"action\":\"skill|sql|answer\",\"skill_id\":\"trajectory_summary|failure_locator|latency_hotspots|tool_usage|cohort_compare|judgment_review|null\",\"sql\":null,\"reply\":\"\"}}. For SQL, emit exactly one read-only SELECT/WITH/EXPLAIN over {database}.runs, {database}.steps, {database}.tool_calls, or {database}.trajectories. Prefer a built-in skill. Never claim missing data is zero and never infer an error from arbitrary message text.\n\nWorkspace evidence:\n{context}"
+        "You are pChronicle Copilot for local agent trajectory debugging. Select exactly one action. Return JSON only: {{\"action\":\"skill|sql|answer\",\"skill_id\":\"trajectory_summary|failure_locator|latency_hotspots|tool_usage|cohort_compare|null\",\"sql\":null,\"reply\":\"\"}}. For SQL, emit exactly one read-only SELECT/WITH/EXPLAIN over {database}.runs, {database}.steps, {database}.tool_calls, or {database}.trajectories. Prefer a built-in skill. Never claim missing data is zero and never infer an error from arbitrary message text.\n\nWorkspace evidence:\n{context}"
     );
     let text = chat(config, &system, user_message, true).await?;
     serde_json::from_str(extract_json(&text))
@@ -559,9 +526,6 @@ fn resolve_skill(message: &str) -> Option<&'static str> {
                 "latency_hotspots" => normalized.contains("slow") || normalized.contains("latency"),
                 "tool_usage" => normalized.contains("tool"),
                 "cohort_compare" => normalized.contains("compare") || normalized.contains("cohort"),
-                "judgment_review" => {
-                    normalized.contains("judgment") || normalized.contains("score")
-                }
                 _ => false,
             }
     })
@@ -573,7 +537,6 @@ fn skill_title(skill: &str) -> &'static str {
         "latency_hotspots" => "Latency hotspots",
         "tool_usage" => "Tool usage",
         "cohort_compare" => "Cohort compare",
-        "judgment_review" => "Judgment review",
         _ => "Trajectory summary",
     }
 }

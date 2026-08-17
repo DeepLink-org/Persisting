@@ -7,7 +7,7 @@ use crate::agent::{self, AgentAnswer, LlmConfig};
 use crate::api;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
 use crate::model::{
-    DimensionAggregate, HistogramBucket, Judgment, QueryCatalog, QueryDatasetSummary, RunAnalysis,
+    DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary, RunAnalysis,
     RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
 };
 
@@ -78,7 +78,6 @@ pub fn App() -> Element {
     let mut selected_run = use_signal(move || initial_run);
     let mut analysis = use_signal(|| None::<RunAnalysis>);
     let mut turns = use_signal(Vec::<TurnSummary>::new);
-    let mut judgments = use_signal(Vec::<Judgment>::new);
     let mut selected_turn = use_signal(|| None::<TurnDetail>);
     let mut expanded_turn_id =
         use_signal(|| url_param("turn").and_then(|value| value.parse::<i64>().ok()));
@@ -113,7 +112,7 @@ pub fn App() -> Element {
     use_effect(move || {
         if analysis().is_none() {
             if let Some(run) = selected_run() {
-                load_workspace(run, analysis, turns, judgments, detail_loading, error);
+                load_workspace(run, analysis, turns, detail_loading, error);
             }
         }
     });
@@ -208,14 +207,13 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-detail-layout",
                             PathExplorer { runs: path_runs, selected_path, loading: runs_loading(), filter_folders: false,
                                 on_path: move |value| { run_path.set(value); offset.set(0); page.set("runs".into()); },
-                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); judgments.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); },
+                                on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); },
                             }
                             if let (Some(_run), Some(value)) = (selected_run(), analysis()) {
                                 RunDetailWorkspace {
                                     run: value.run.clone(),
                                     analysis: value,
                                     turns: turns(),
-                                    judgments: judgments(),
                                     selected: selected_turn(),
                                     expanded_turn_id: expanded_turn_id(),
                                     loading: detail_loading(),
@@ -257,7 +255,7 @@ pub fn App() -> Element {
                         rsx! { div { class: "pc2-runs-layout",
                         PathExplorer { runs: path_runs, selected_path: run_path(), loading: runs_loading(), filter_folders: true,
                             on_path: move |value| { run_path.set(value); offset.set(0); },
-                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); judgments.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
+                            on_select: move |run: RunSummary| { selected_run.set(Some(run)); analysis.set(None); turns.set(Vec::new()); selected_turn.set(None); expanded_turn_id.set(None); detail_mode.set("trace".into()); page.set("detail".into()); },
                         }
                         RunsExplorer {
                             page: runs(),
@@ -301,7 +299,6 @@ pub fn App() -> Element {
                                 selected_run.set(Some(run.clone()));
                                 analysis.set(None);
                                 turns.set(Vec::new());
-                                judgments.set(Vec::new());
                                 selected_turn.set(None);
                                 expanded_turn_id.set(None);
                                 detail_mode.set("trace".into());
@@ -320,7 +317,6 @@ pub fn App() -> Element {
                         analysis: value,
                         turns: turns(),
                         selected: selected_turn(),
-                        judgments: judgments(),
                         on_close: move |_| copilot_open.set(false),
                         on_turn: move |id| {
                             if let Some(run) = selected_run() {
@@ -373,29 +369,19 @@ fn load_workspace(
     run: RunSummary,
     mut analysis: Signal<Option<RunAnalysis>>,
     mut turns: Signal<Vec<TurnSummary>>,
-    mut judgments: Signal<Vec<Judgment>>,
     mut loading: Signal<bool>,
     mut error: Signal<Option<String>>,
 ) {
     loading.set(true);
     spawn(async move {
-        let (next_analysis, next_turns, next_judgments) = futures_util::join!(
-            api::run_analysis(&run),
-            api::turns(&run, "", "all"),
-            api::judgments(&run),
-        );
-        match (next_analysis, next_turns, next_judgments) {
-            (Ok(next_analysis), Ok(next_turns), Ok(next_judgments)) => {
+        let (next_analysis, next_turns) =
+            futures_util::join!(api::run_analysis(&run), api::turns(&run, "", "all"),);
+        match (next_analysis, next_turns) {
+            (Ok(next_analysis), Ok(next_turns)) => {
                 analysis.set(Some(next_analysis));
                 turns.set(next_turns.records);
-                judgments.set(
-                    next_judgments
-                        .into_iter()
-                        .filter(|row| row.session_id == run.session_id)
-                        .collect(),
-                );
             }
-            (Err(message), _, _) | (_, Err(message), _) | (_, _, Err(message)) => {
+            (Err(message), _) | (_, Err(message)) => {
                 error.set(Some(message));
             }
         }
@@ -584,7 +570,7 @@ fn RunsExplorer(
     rsx! {
         section { class: "pc2-page",
             header { class: "pc2-page-head",
-                div { p { class: "eyebrow", "pChronicle" } h1 { "Trajectory runs" } p { "Inspect agent execution, captured latency, explicit failures, and human judgments." } }
+                div { p { class: "eyebrow", "pChronicle" } h1 { "Trajectory runs" } p { "Inspect agent execution, captured latency, and explicit failures." } }
                 button { class: "button", onclick: on_refresh, "↻ Refresh" }
             }
             div { class: "pc2-filterbar",
@@ -594,19 +580,19 @@ fn RunsExplorer(
                     for mounted in datasets { option { value: "{mounted.name}", "{mounted.name}" } }
                 }
                 select { value: "{status}", aria_label: "Filter by run status", onchange: move |event| on_status.call(event.value()), option { value: "all", "All statuses" } option { value: "active", "Active" } option { value: "completed", "Completed" } option { value: "failed", "Failed" } }
-                select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", "Session" } option { value: "events", "Events" } option { value: "score", "Score" } option { value: "status", "Status" } option { value: "agent", "Agent" } }
+                select { value: "{sort}", aria_label: "Sort runs", onchange: move |event| on_sort.call(event.value()), option { value: "session", "Session" } option { value: "events", "Events" } option { value: "status", "Status" } option { value: "agent", "Agent" } }
                 button { class: "pc2-sort", aria_label: "Toggle sort direction", onclick: move |_| on_direction.call(if direction == "asc" { "desc".into() } else { "asc".into() }), if direction == "asc" { "↑ Asc" } else { "↓ Desc" } }
                 if !path.is_empty() { button { class: "pc2-path-filter", title: "{path}", onclick: move |_| on_path.call(String::new()), "⌁ {short(&path, 24)} ×" } }
                 span { class: "pc2-result-count", "{total} runs" }
             }
             div { class: "pc2-table-wrap",
                 table { class: "pc2-run-table",
-                    thead { tr { th { "Session" } th { "Agent / model" } th { "Status" } th { "Events" } th { "Judgments" } th { "Score" } th { "Root" } } }
+                    thead { tr { th { "Session" } th { "Agent / model" } th { "Status" } th { "Events" } th { "Root" } } }
                     tbody {
                         if loading && page.is_none() {
-                            for _ in 0..6 { tr { class: "pc2-table-skeleton", td { colspan: "7" } } }
+                            for _ in 0..6 { tr { class: "pc2-table-skeleton", td { colspan: "5" } } }
                         } else if page.as_ref().is_none_or(|page| page.records.is_empty()) {
-                            tr { td { colspan: "7", div { class: "pc2-empty", strong { "No matching trajectories" } span { "Adjust the filters or refresh the local store." } } } }
+                            tr { td { colspan: "5", div { class: "pc2-empty", strong { "No matching trajectories" } span { "Adjust the filters or refresh the local store." } } } }
                         } else {
                             for item in page.as_ref().unwrap().records.iter() {
                                 RunTableRow { key: "{item.run.dataset}/{item.run.file}/{item.run.session_id}", item: item.clone(), on_select }
@@ -630,10 +616,6 @@ fn RunsExplorer(
 fn RunTableRow(item: RunExplorerItem, on_select: EventHandler<RunSummary>) -> Element {
     let run = item.run.clone();
     let keyboard_run = item.run.clone();
-    let score_text = item
-        .average_score
-        .map(|value| format!("{value:.1}"))
-        .unwrap_or_else(|| "—".into());
     let root_text = short(item.run.root_session_id.as_deref().unwrap_or("—"), 18);
     let model_text = item.model.clone().unwrap_or_else(|| "unavailable".into());
     rsx! {
@@ -642,8 +624,6 @@ fn RunTableRow(item: RunExplorerItem, on_select: EventHandler<RunSummary>) -> El
             td { div { class: "pc2-session-cell", strong { "{item.run.agent_id}" } span { "{model_text}" } } }
             td { StatusBadge { value: item.run.status.clone() } }
             td { class: "pc2-number", "{item.run.row_count}" }
-            td { class: "pc2-number", "{item.judgment_count}" }
-            td { class: "pc2-number", "{score_text}" }
             td { code { title: "{item.run.root_session_id.as_deref().unwrap_or_default()}", "{root_text}" } }
         }
     }
@@ -666,7 +646,6 @@ fn RunDetailWorkspace(
     run: RunSummary,
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
-    judgments: Vec<Judgment>,
     selected: Option<TurnDetail>,
     expanded_turn_id: Option<i64>,
     loading: bool,
@@ -698,7 +677,6 @@ fn RunDetailWorkspace(
                 AnalysisWorkspace {
                     analysis: analysis.clone(),
                     turns: turns.clone(),
-                    judgments,
                     on_turn: move |id| {
                         on_turn.call(id);
                         on_detail_mode.call("trace".into());
@@ -733,7 +711,6 @@ fn MetricsStrip(analysis: RunAnalysis) -> Element {
         Metric { label: "Explicit errors", value: analysis.error_count.to_string(), detail: "Captured signals only" }
         Metric { label: "Tokens", value: analysis.total_tokens.map(|value| value.to_string()).unwrap_or_else(|| "—".into()), detail: format!("in {} · out {}", optional_u64(analysis.prompt_tokens), optional_u64(analysis.completion_tokens)) }
         Metric { label: "Latency P95", value: analysis.latency_ms.p95.map(format_ms).unwrap_or_else(|| "—".into()), detail: format!("{}/{} samples", analysis.latency_ms.sample_count, analysis.latency_ms.total_count) }
-        Metric { label: "Score", value: analysis.average_score.map(|value| format!("{value:.1}")).unwrap_or_else(|| "—".into()), detail: format!("{} judgments", analysis.judgment_count) }
     } }
 }
 
@@ -746,7 +723,6 @@ fn Metric(label: String, value: String, detail: String) -> Element {
 fn AnalysisWorkspace(
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
-    judgments: Vec<Judgment>,
     on_turn: EventHandler<i64>,
 ) -> Element {
     let mut tab = use_signal(|| "overview".to_string());
@@ -757,14 +733,12 @@ fn AnalysisWorkspace(
             AnalysisTab { value: "performance", label: "Performance", active: active.clone(), on_select: move |value| tab.set(value) }
             AnalysisTab { value: "tokens", label: "Tokens", active: active.clone(), on_select: move |value| tab.set(value) }
             AnalysisTab { value: "tools", label: "Tools", active: active.clone(), on_select: move |value| tab.set(value) }
-            AnalysisTab { value: "quality", label: "Quality", active: active.clone(), on_select: move |value| tab.set(value) }
         }
         div { class: "pc2-analysis-scroll",
             match active.as_str() {
                 "performance" => rsx! { PerformanceAnalysis { analysis: analysis.clone(), turns: turns.clone(), on_turn } },
                 "tokens" => rsx! { TokenAnalysis { analysis: analysis.clone(), turns: turns.clone(), on_turn } },
                 "tools" => rsx! { ToolAnalysis { tools: analysis.tools.clone() } },
-                "quality" => rsx! { QualityAnalysis { analysis: analysis.clone(), judgments } },
                 _ => rsx! { OverviewAnalysis { analysis, turns } },
             }
         }
@@ -814,7 +788,6 @@ fn OverviewAnalysis(analysis: RunAnalysis, turns: Vec<TurnSummary>) -> Element {
                 span { strong { "{analysis.models.len()}" } " models" }
                 span { strong { "{analysis.event_count}" } " events" }
                 span { strong { "{analysis.error_count}" } " explicit-error turns" }
-                span { strong { "{analysis.judgment_count}" } " judgments" }
             }
         }
     } }
@@ -927,33 +900,6 @@ fn ToolAnalysis(tools: Vec<ToolAggregate>) -> Element {
 }
 
 #[component]
-fn QualityAnalysis(analysis: RunAnalysis, judgments: Vec<Judgment>) -> Element {
-    let verdicts = verdict_counts(&judgments);
-    let rubrics = rubric_summaries(&judgments);
-    rsx! { div { class: "pc2-analysis-grid quality",
-        AnalysisCard { title: "Explicit errors by source", subtitle: "Captured signals only; message text is not guessed",
-            ErrorDimensionBars { items: analysis.source_breakdown.clone() }
-        }
-        AnalysisCard { title: "Judgment verdicts", subtitle: "Run- and turn-level human evaluation",
-            div { class: "pc2-verdict-grid",
-                VerdictCount { label: "Pass", count: verdicts.0, tone: "pass" }
-                VerdictCount { label: "Partial", count: verdicts.1, tone: "partial" }
-                VerdictCount { label: "Fail", count: verdicts.2, tone: "fail" }
-            }
-        }
-        article { class: "pc2-analysis-card wide",
-            header { div { h3 { "Rubric scores" } p { "Average and range across saved judgments" } } }
-            div { class: "pc2-rubric-list",
-                if rubrics.is_empty() { EmptyAnalysis { label: "No judgments have been saved" } }
-                for rubric in rubrics {
-                    div { div { strong { "{rubric.name}" } span { "{rubric.count} judgments · {rubric.min}–{rubric.max}" } } span { class: "pc2-score-track", i { style: format!("width:{}%", rubric.average.clamp(0.0, 100.0)) } } code { "{rubric.average:.1}" } }
-                }
-            }
-        }
-    } }
-}
-
-#[component]
 fn AnalysisCard(title: &'static str, subtitle: &'static str, children: Element) -> Element {
     rsx! { article { class: "pc2-analysis-card", header { div { h3 { "{title}" } p { "{subtitle}" } } } {children} } }
 }
@@ -987,21 +933,6 @@ fn TokenDimensionBars(items: Vec<DimensionAggregate>) -> Element {
                 div { span { title: "{item.name}", "{item.name}" } code { {item.total_tokens.unwrap_or_default().to_string()} } }
                 span { class: "pc2-dimension-track", i { style: format!("width:{}%", percent(item.total_tokens.unwrap_or_default() as f64, max as f64)) } }
                 small { "Across {item.turn_count} turns" }
-            }
-        }
-    } }
-}
-
-#[component]
-fn ErrorDimensionBars(items: Vec<DimensionAggregate>) -> Element {
-    let max = items.iter().map(|item| item.error_count).max().unwrap_or(0);
-    rsx! { div { class: "pc2-dimension-list red",
-        if max == 0 { EmptyAnalysis { label: "No explicit errors captured" } }
-        for item in items.into_iter().filter(|item| item.error_count > 0) {
-            div { class: "pc2-dimension-row",
-                div { span { "{item.name}" } code { "{item.error_count}" } }
-                span { class: "pc2-dimension-track", i { style: format!("width:{}%", percent(item.error_count as f64, max as f64)) } }
-                small { {format!("{:.1}% of this source", percent(item.error_count as f64, item.turn_count as f64))} }
             }
         }
     } }
@@ -1061,22 +992,8 @@ fn TurnMetricChart(
 }
 
 #[component]
-fn VerdictCount(label: &'static str, count: usize, tone: &'static str) -> Element {
-    rsx! { div { class: "pc2-verdict {tone}", span {} strong { "{count}" } small { "{label}" } } }
-}
-
-#[component]
 fn EmptyAnalysis(label: &'static str) -> Element {
     rsx! { div { class: "pc2-analysis-empty", "{label}" } }
-}
-
-#[derive(Clone)]
-struct RubricSummary {
-    name: String,
-    count: usize,
-    average: f64,
-    min: i64,
-    max: i64,
 }
 
 #[component]
@@ -1085,7 +1002,6 @@ fn CopilotPanel(
     analysis: RunAnalysis,
     turns: Vec<TurnSummary>,
     selected: Option<TurnDetail>,
-    judgments: Vec<Judgment>,
     on_close: EventHandler<MouseEvent>,
     on_turn: EventHandler<i64>,
 ) -> Element {
@@ -1100,7 +1016,7 @@ fn CopilotPanel(
         div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } label { input { r#type: "checkbox", checked: include_full(), disabled: selected.is_none(), onchange: move |event| include_full.set(event.checked()) } "Include selected turn content once (max 64 KiB)" } }
         div { class: "pc2-skill-chips", for skill in agent::skill_ids() { button { disabled: busy(), onclick: move |_| input.set(format!("/{skill}")), "{skill_label(skill)}" } } }
         div { class: "pc2-chat",
-            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask from captured evidence" } p { "Copilot can summarize this run, locate explicit failures, rank latency, inspect tool usage, compare cohorts, or review judgments." } } }
+            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask from captured evidence" } p { "Copilot can summarize this run, locate explicit failures, rank latency, inspect tool usage, or compare cohorts." } } }
             for (index, message) in messages().iter().enumerate() { ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn } }
             if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "Selecting one read-only analysis action…" } }
         }
@@ -1116,7 +1032,6 @@ fn CopilotPanel(
             let analysis_value = analysis.clone();
             let turns_value = turns.clone();
             let selected_value = selected.clone();
-            let judgments_value = judgments.clone();
             let include_value = include_full();
             spawn(async move {
                 let result = agent::answer(agent::AnswerRequest {
@@ -1126,7 +1041,6 @@ fn CopilotPanel(
                     analysis: &analysis_value,
                     turns: &turns_value,
                     selected: selected_value.as_ref(),
-                    judgments: &judgments_value,
                     include_full_turn: include_value,
                 }).await;
                 let message = match result {
@@ -1248,36 +1162,6 @@ fn metric_value(turn: &TurnSummary, metric: &str) -> String {
             .map(format_ms)
             .unwrap_or_else(|| "no latency sample".into()),
     }
-}
-fn verdict_counts(judgments: &[Judgment]) -> (usize, usize, usize) {
-    judgments.iter().fold((0, 0, 0), |mut counts, row| {
-        match row.verdict.as_str() {
-            "pass" => counts.0 += 1,
-            "partial" => counts.1 += 1,
-            "fail" => counts.2 += 1,
-            _ => {}
-        }
-        counts
-    })
-}
-fn rubric_summaries(judgments: &[Judgment]) -> Vec<RubricSummary> {
-    let mut grouped = BTreeMap::<String, Vec<i64>>::new();
-    for judgment in judgments {
-        grouped
-            .entry(judgment.rubric_id.clone())
-            .or_default()
-            .push(judgment.score);
-    }
-    grouped
-        .into_iter()
-        .map(|(name, scores)| RubricSummary {
-            name,
-            count: scores.len(),
-            average: scores.iter().sum::<i64>() as f64 / scores.len() as f64,
-            min: scores.iter().copied().min().unwrap_or_default(),
-            max: scores.iter().copied().max().unwrap_or_default(),
-        })
-        .collect()
 }
 fn clean_markdown(value: &str) -> String {
     value.replace("**", "").replace('`', "")
@@ -1419,32 +1303,5 @@ mod tests {
         assert_eq!(percent(25.0, 100.0), 25.0);
         assert_eq!(percent(10.0, 0.0), 0.0);
         assert_eq!(percent(150.0, 100.0), 100.0);
-    }
-
-    #[test]
-    fn judgment_dimensions_preserve_verdicts_and_rubrics() {
-        let judgments = vec![
-            Judgment {
-                session_id: "s".into(),
-                call_id: "a".into(),
-                rubric_id: "quality".into(),
-                score: 80,
-                verdict: "pass".into(),
-                rationale: "ok".into(),
-            },
-            Judgment {
-                session_id: "s".into(),
-                call_id: "b".into(),
-                rubric_id: "quality".into(),
-                score: 40,
-                verdict: "fail".into(),
-                rationale: "bad".into(),
-            },
-        ];
-        assert_eq!(verdict_counts(&judgments), (1, 0, 1));
-        let rubrics = rubric_summaries(&judgments);
-        assert_eq!(rubrics.len(), 1);
-        assert_eq!(rubrics[0].average, 60.0);
-        assert_eq!((rubrics[0].min, rubrics[0].max), (40, 80));
     }
 }

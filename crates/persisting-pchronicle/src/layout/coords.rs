@@ -48,15 +48,6 @@ impl StoryCoords {
             self.root_session_id.as_deref(),
         )
     }
-
-    pub fn lance_judgment_path(&self) -> Result<PathBuf> {
-        story_lance_judgment_path(
-            &self.storage,
-            &self.agent_id,
-            &self.session_id,
-            self.root_session_id.as_deref(),
-        )
-    }
 }
 
 fn validate_storage(storage: &str) -> Result<()> {
@@ -112,20 +103,6 @@ pub fn story_lance_event_path(
     Ok(run.join("events.lance"))
 }
 
-/// Normalized judgment dataset at `{run}/judgments.lance/`.
-///
-/// Judgments are derived annotations and intentionally do not evolve the
-/// canonical `events.lance` schema.
-pub fn story_lance_judgment_path(
-    storage: &str,
-    agent_id: &str,
-    session_id: &str,
-    root_session_id: Option<&str>,
-) -> Result<PathBuf> {
-    let run = story_run_dir(storage, agent_id, session_id, root_session_id)?;
-    Ok(run.join("judgments.lance"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,12 +128,6 @@ mod tests {
             coords.lance_event_path().unwrap(),
             story_lance_event_path("/store", "agent", "run-x", Some("run-x")).unwrap()
         );
-    }
-
-    #[test]
-    fn judgments_are_run_scoped_but_physically_separate_from_events() {
-        let path = story_lance_judgment_path("/store", "agent", "child", Some("run-x")).unwrap();
-        assert!(path.ends_with("agent/run-x/judgments.lance"));
     }
 
     #[test]

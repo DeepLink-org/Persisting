@@ -55,25 +55,25 @@ fn schema() -> Arc<Schema> {
 
 fn batch(rows: &[RevisionRow]) -> Result<RecordBatch> {
     let strings = |values: Vec<String>| Arc::new(StringArray::from(values)) as _;
+    let parent_revision_ids = rows
+        .iter()
+        .map(|row| serde_json::to_string(&row.parent_revision_ids))
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    let output_refs = rows
+        .iter()
+        .map(|row| serde_json::to_string(&row.output_refs))
+        .collect::<serde_json::Result<Vec<_>>>()?;
     RecordBatch::try_new(
         schema(),
         vec![
             strings(rows.iter().map(|r| r.revision_id.clone()).collect()),
-            strings(
-                rows.iter()
-                    .map(|r| serde_json::to_string(&r.parent_revision_ids).unwrap())
-                    .collect(),
-            ),
+            strings(parent_revision_ids),
             strings(rows.iter().map(|r| r.kind.clone()).collect()),
             strings(rows.iter().map(|r| r.canonical_snapshot.clone()).collect()),
             strings(rows.iter().map(|r| r.recipe.to_string()).collect()),
             strings(rows.iter().map(|r| r.status.clone()).collect()),
             strings(rows.iter().map(|r| r.created_at.clone()).collect()),
-            strings(
-                rows.iter()
-                    .map(|r| serde_json::to_string(&r.output_refs).unwrap())
-                    .collect(),
-            ),
+            strings(output_refs),
         ],
     )
     .context("build revision catalog batch")

@@ -512,10 +512,9 @@ fn discover_local_candidates(
                         last_modified: modified_string(&metadata),
                     });
                 } else if is_lance_directory(&path) {
-                    // Derived Lance datasets such as judgments.lance and
-                    // revisions.lance are sidecars of a canonical Run, not
-                    // trajectory sources. Never descend into their internal
-                    // JSON metadata and register it as an outer file source.
+                    // Derived Lance datasets are sidecars of a canonical Run,
+                    // not trajectory sources. Never descend into their internal
+                    // metadata and register it as an outer file source.
                 } else {
                     pending.push(path);
                 }

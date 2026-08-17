@@ -254,12 +254,13 @@ impl ActfTrajectory {
                     .get("tool_use_id")
                     .or_else(|| observation.extra.get("id"))
                     .and_then(Value::as_str);
-                if referenced_id.is_some_and(|id| !step_call_ids.contains(id)) {
-                    return Err(Error::Other(format!(
-                        "ACTF step {} observation references unknown tool id '{}'",
-                        step.step_id,
-                        referenced_id.expect("checked above")
-                    )));
+                if let Some(referenced_id) = referenced_id {
+                    if !step_call_ids.contains(referenced_id) {
+                        return Err(Error::Other(format!(
+                            "ACTF step {} observation references unknown tool id '{}'",
+                            step.step_id, referenced_id
+                        )));
+                    }
                 }
             }
         }

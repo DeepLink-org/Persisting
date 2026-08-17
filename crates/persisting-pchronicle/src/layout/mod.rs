@@ -4,7 +4,7 @@ mod coords;
 mod markdown;
 mod resolve;
 
-pub use coords::{story_lance_event_path, story_lance_judgment_path, story_run_dir, StoryCoords};
+pub use coords::{story_lance_event_path, story_run_dir, StoryCoords};
 pub use markdown::{
     is_subagent_session_storage_key, is_trajectory_markdown_path, locate_run_bucket_markdown,
     locate_session_markdown, locate_session_markdown_for_key, sanitize_session_filename,

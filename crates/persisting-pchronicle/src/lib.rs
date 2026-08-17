@@ -1,7 +1,7 @@
 //! pChronicle — Persisting's structured storage layer for Agent trajectories.
 //!
 //! pChronicle owns the trajectory formats, physical schemas, storage backends,
-//! replay, conversion, search, judgment, and rebuildable views. Capture and
+//! replay, conversion, search, and rebuildable views. Capture and
 //! clients call pChronicle directly; there is no separate storage engine layer.
 //!
 //! # Format architecture
@@ -29,12 +29,6 @@ pub mod error;
 pub mod format;
 pub mod formats;
 pub mod interop;
-#[cfg(feature = "lance-store")]
-pub mod judge_service;
-#[cfg(feature = "lance-store")]
-pub mod judgment;
-#[cfg(feature = "lance-store")]
-pub mod judgment_summary;
 pub mod layout;
 pub mod mapping;
 mod messages;
@@ -94,30 +88,13 @@ pub use formats::{
     ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
 };
 pub use interop::{events_to_har, events_to_otlp_json, otlp_json_to_events};
-#[cfg(feature = "lance-store")]
-pub use judge_service::{
-    judge_trajectory, JudgeTrajectoryOutcome, JudgeTrajectoryRequest, JudgingMethod,
-};
-#[cfg(feature = "lance-store")]
-pub use judgment::{
-    build_llm_judge_prompt, dataset_path as judgment_dataset_path, dialogue_judge_units,
-    dry_run_judge_rows, evaluation_units, has_judgment, manual_few_shot_examples,
-    manual_judge_rows, parse_llm_judge_rows, pending_evaluation_units, read_judge_rows,
-    story_judge_body, write_judge_rows, EvaluationUnit, JudgeDialogueUnit, JudgeRow, JudgmentScope,
-    ManualJudgmentInput, MANUAL_RATIONALE_PREFIX, STORY_CALL_ID,
-};
-#[cfg(feature = "lance-store")]
-pub use judgment_summary::{
-    aggregate_judgments, session_judgment_summary, JudgmentAggregate, JudgmentRubricSummary,
-    JudgmentSessionSummary,
-};
 pub use layout::{
     is_subagent_session_storage_key, is_trajectory_markdown_path, list_story_read_locations,
     locate_run_bucket_markdown, locate_session_markdown, locate_session_markdown_for_key,
     merge_story_location, resolve_story_read_location, sanitize_session_filename,
     session_markdown_filename, session_markdown_path_for_key, session_markdown_write_path_for_key,
-    story_lance_event_path, story_lance_judgment_path, story_run_dir, try_infer_story_location,
-    StoryCoords, StoryLocationPartial,
+    story_lance_event_path, story_run_dir, try_infer_story_location, StoryCoords,
+    StoryLocationPartial,
 };
 pub use mapping::{
     agenticmd_block_to_event_record, agenticmd_block_to_replay_json,

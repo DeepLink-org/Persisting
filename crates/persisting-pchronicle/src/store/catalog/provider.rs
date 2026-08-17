@@ -155,7 +155,11 @@ impl TableProvider for CatalogTableProvider {
         let selected_source_count = plans.len();
         let plan: Arc<dyn ExecutionPlan> = match selected_source_count {
             0 => Arc::new(EmptyExec::new(output_schema)),
-            1 => plans.pop().expect("one Catalog source plan"),
+            1 => plans.pop().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "Catalog planned one source but produced no execution plan".into(),
+                )
+            })?,
             _ => UnionExec::try_new(plans)?,
         };
         Ok(match limit {

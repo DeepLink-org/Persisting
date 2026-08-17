@@ -9,7 +9,7 @@
 
 ## 摘要
 
-clean、judge、augment 和格式化数据集是 canonical events 的派生产物。它们不得覆写或
+clean、redact、augment 和格式化数据集是 canonical events 的派生产物。它们不得覆写或
 去重事实流，也不得把 catalog 语义塞入 Storyline `extra_json`。每个 Run 使用独立的
 `revisions.lance` 记录 lineage；canonical `events.lance` 继续维持 at-least-once、
 append-only 契约。
@@ -19,7 +19,7 @@ append-only 契约。
 每个 revision 以 `revision_id` 为 upsert key，包含：
 
 - `parent_revision_ids`：零个或多个父 revision；
-- `kind`：`clean`、`judge`、`augment`、`export` 或扩展 kind；
+- `kind`：`clean`、`redact`、`augment`、`export` 或扩展 kind；
 - `canonical_snapshot`：输入 event manifest revision或 Storyline snapshot；
 - `recipe`：可重放的程序、版本、参数和输入摘要 JSON；
 - `status`：`building`、`ready` 或 `failed`；

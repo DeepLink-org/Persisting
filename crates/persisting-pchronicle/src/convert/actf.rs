@@ -74,7 +74,8 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
         ));
     }
 
-    let first = provenance(&stories[0]).expect("provenance count checked above");
+    let first = provenance(&stories[0])
+        .ok_or_else(|| Error::Other("ACTF provenance disappeared during conversion".into()))?;
     let root_value = first
         .get("root")
         .and_then(Value::as_object)
@@ -83,7 +84,8 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
     let mut attempts = Map::new();
     for story in stories {
         story.validate()?;
-        let metadata = provenance(story).expect("provenance count checked above");
+        let metadata = provenance(story)
+            .ok_or_else(|| Error::Other("ACTF provenance disappeared during conversion".into()))?;
         if metadata.get("root").and_then(Value::as_object) != Some(&root_value) {
             return Err(Error::Other(
                 "ACTF Storylines have conflicting root metadata".into(),
@@ -450,7 +452,7 @@ fn root_metadata(document: &ActfDocument) -> Result<Value> {
     let mut value = serde_json::to_value(document)?;
     value
         .as_object_mut()
-        .expect("ActfDocument serializes as an object")
+        .ok_or_else(|| Error::Other("serialized ACTF document must be an object".into()))?
         .remove("attempts");
     Ok(value)
 }
@@ -459,7 +461,7 @@ fn attempt_metadata(attempt: &ActfAttempt) -> Result<Value> {
     let mut value = serde_json::to_value(attempt)?;
     value
         .as_object_mut()
-        .expect("ActfAttempt serializes as an object")
+        .ok_or_else(|| Error::Other("serialized ACTF attempt must be an object".into()))?
         .remove("trajectory");
     Ok(value)
 }
@@ -468,7 +470,7 @@ fn trajectory_metadata(trajectory: &ActfTrajectory) -> Result<Value> {
     let mut value = serde_json::to_value(trajectory)?;
     value
         .as_object_mut()
-        .expect("ActfTrajectory serializes as an object")
+        .ok_or_else(|| Error::Other("serialized ACTF trajectory must be an object".into()))?
         .remove("steps");
     Ok(value)
 }

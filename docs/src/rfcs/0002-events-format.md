@@ -68,7 +68,7 @@ Persisting Gateway 的主入口是代理流量。`events` 应对齐这一现实�
 | **Replayable** | 在凭证策略允许的前提下，应能从 events 重建「对同一 endpoint 再发一次等价请求」所需信息 |
 | **Re-derivable views** | Storyline / Markdown / ATIF 视为可从 events **重新投影**的视图 |
 | **Correlation envelope** | 顶栏保留 `session_id` / `call_id` / `trace_id` 等关联键，不把故事语义塞进 wire |
-| **Append-only** | `seq` 单调；不原地改写既有 wire payload（旁路列如 judge 除外） |
+| **Append-only** | `seq` 单调；不原地改写既有 wire payload |
 | **Hub via storyline** | 与其它外围格式互转 MUST 经 storyline；无损路径仍是读 events |
 
 非目标：

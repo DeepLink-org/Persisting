@@ -27,9 +27,6 @@ pub struct RunExplorerItem {
     #[serde(flatten)]
     pub run: RunSummary,
     pub model: Option<String>,
-    pub judgment_count: usize,
-    pub average_score: Option<f64>,
-    pub verdict: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -233,8 +230,6 @@ pub struct RunAnalysis {
     pub kind_breakdown: Vec<DimensionAggregate>,
     pub model_breakdown: Vec<DimensionAggregate>,
     pub tools: Vec<ToolAggregate>,
-    pub judgment_count: usize,
-    pub average_score: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -254,7 +249,6 @@ pub struct TurnSummary {
     pub tool_names: Vec<String>,
     pub event_seqs: Vec<u64>,
     pub has_error: bool,
-    pub judgment_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -263,23 +257,12 @@ pub struct TurnPage {
     pub records: Vec<TurnSummary>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct Judgment {
-    pub session_id: String,
-    pub call_id: String,
-    pub rubric_id: String,
-    pub score: i64,
-    pub verdict: String,
-    pub rationale: String,
-}
-
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct TurnDetail {
     pub summary: TurnSummary,
     pub turn: StorylineTurn,
     pub wire_tool_calls: Vec<WireToolCall>,
     pub events: Vec<EventRecord>,
-    pub judgments: Vec<Judgment>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

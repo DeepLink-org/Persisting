@@ -184,10 +184,10 @@ async fn discovers_mixed_local_files_and_exposes_sources() -> Result<()> {
 #[tokio::test]
 async fn ignores_derived_lance_sidecars_during_discovery() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    fs::create_dir_all(temp.path().join("run/judgments.lance/_versions"))?;
+    fs::create_dir_all(temp.path().join("run/derived-metrics.lance/_versions"))?;
     fs::write(
         temp.path()
-            .join("run/judgments.lance/_versions/latest_version_hint.json"),
+            .join("run/derived-metrics.lance/_versions/latest_version_hint.json"),
         "{}",
     )?;
     write_openai_source(&temp.path().join("trajectory.json"), "event-1")?;

@@ -403,8 +403,7 @@ fmt-check-py:
 # clippy + ruff（不改写）
 lint: lint-rust lint-py
 
-lint-rust:
-    cargo clippy --workspace --all-targets --locked
+lint-rust: clippy-deny clippy-pchronicle-panics
 
 lint-py:
     uvx ruff check {{ ruff_lint_paths }}
@@ -413,9 +412,11 @@ lint-py:
 lint-py-all:
     uvx ruff check {{ ruff_paths }}
 
-# 与 Pulsing 同级的严格 clippy（workspace 未清干净前慎用）
 clippy-deny:
-    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo clippy --workspace --exclude persisting-dlcapt --all-targets --locked -- -D warnings
+
+clippy-pchronicle-panics:
+    cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
 
 # 兼容旧名
 clippy:

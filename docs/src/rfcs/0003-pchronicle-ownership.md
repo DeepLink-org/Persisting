@@ -31,7 +31,6 @@ provider/SSE payload 解释可作为 Gateway 扩展行为存在，但不得形�
 | 人读/调试视图 | `materialize_lance_to_markdown`, AgenticMD 文件 helpers | 从 canonical events 单向生成，可随时删除和重建 |
 | 发现 | `expand_story_locations` | 发现 canonical Run/Story 分区；Markdown 不参与存储层选择 |
 | 数据维护 | `RawEventLanceStore::maintain` | 显式离线 compaction、session 索引和 vacuum；事实层不支持 truncate/overwrite |
-| judgment 持久化 | `JudgeRow`, `read_judge_rows`, `write_judge_rows` | 独立 `judgments.lance` 的规范化 upsert 及 judge unit 投影 |
 | Storyline 三表 | `StorylineLanceStore`, `StorylineDataSource` | 原子提交并查询 `runs` / `steps` / `tool_calls` |
 
 `events.lance` 是事实源。AgenticMD 和 Storyline 三表均可重建，不可被当作协议级审计或回放的事实源；ATIF 是互操作文档格式，不是独立存储模型。append、replay、stats 不得回退到 AgenticMD。
@@ -100,7 +99,7 @@ Run lease epoch MUST 通过 `EventWriterFence` 进入 canonical event 提交协�
 ## 验收条件
 
 - Workspace 不再包含 `persisting-engine` crate、动态库、C ABI 或 Engine RPC 信封。
-- append、replay、stats、judge 等轨迹流程均由 pChronicle 提供。
+- append、replay、stats 等轨迹流程均由 pChronicle 提供。
 - CLI 不再实现 AgenticMD 到 event 的独立解析。
 - Gateway 不再定义与 `EventRecord` 同构的序列化 struct，也不再独立实现 AgenticMD 文档重写或索引。
 - pChronicle MUST 使用 Gateway 的真实 AgenticMD、request/response、provider snapshot 与 SSE fixture 验证 wire、Arrow、Lance 和投影兼容性。

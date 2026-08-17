@@ -69,7 +69,6 @@ async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<
 async fn warehouse_write_route_matrix_never_exposes_dataset_mutations() -> Result<()> {
     let app = warehouse()?;
     for (method, path) in [
-        (Method::POST, "/api/judgments"),
         (Method::POST, "/api/maintain"),
         (Method::POST, "/api/query"),
         (Method::PUT, "/api/events"),

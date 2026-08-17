@@ -12,15 +12,12 @@ use crate::{
 };
 pub use crate::{
     TrajectoryAppendRequest, TrajectoryAppendResponse, TrajectoryExtractRequest,
-    TrajectoryExtractResponse, TrajectoryJudgeRequest, TrajectoryJudgeResponse,
-    TrajectoryJudgeStatsRequest, TrajectoryJudgeStatsResponse, TrajectoryMaterializeRequest,
-    TrajectoryMaterializeResponse, TrajectoryReplayRequest, TrajectoryReplayResponse,
-    TrajectoryStatsRequest, TrajectoryStatsResponse,
+    TrajectoryExtractResponse, TrajectoryMaterializeRequest, TrajectoryMaterializeResponse,
+    TrajectoryReplayRequest, TrajectoryReplayResponse, TrajectoryStatsRequest,
+    TrajectoryStatsResponse,
 };
 use anyhow::Result;
 
-mod judge;
-mod judge_stats;
 fn session_from_request(
     storage: &str,
     agent_id: &str,
@@ -140,25 +137,20 @@ pub async fn stats_async(request: TrajectoryStatsRequest) -> Result<TrajectorySt
         "; no AgenticMD debug view".to_string()
     };
     let duplicate_event_ids = duplicate_event_id_count(&session).await?;
-    Ok(stats_response_with_judge(
-        TrajectoryStatsResponse {
-            dataset: layers.event_log_path,
-            storage: request.storage,
-            agent_id: request.agent_id,
-            session_id: request.session_id,
-            row_count: layers.event_rows,
-            manifest_revision: RawEventLanceStore.stats(&session).await?.manifest_revision,
-            duplicate_event_ids,
-            judge: None,
-            status: if layers.event_rows > 0 { "ok" } else { "empty" }.into(),
-            note: format!(
-                "Canonical Lance event log: {} row(s){projection_note}",
-                layers.event_rows
-            ),
-        },
-        &session,
-    )
-    .await)
+    Ok(TrajectoryStatsResponse {
+        dataset: layers.event_log_path,
+        storage: request.storage,
+        agent_id: request.agent_id,
+        session_id: request.session_id,
+        row_count: layers.event_rows,
+        manifest_revision: RawEventLanceStore.stats(&session).await?.manifest_revision,
+        duplicate_event_ids,
+        status: if layers.event_rows > 0 { "ok" } else { "empty" }.into(),
+        note: format!(
+            "Canonical Lance event log: {} row(s){projection_note}",
+            layers.event_rows
+        ),
+    })
 }
 
 async fn duplicate_event_id_count(session: &StoryCoords) -> Result<usize> {
@@ -173,24 +165,6 @@ async fn duplicate_event_id_count(session: &StoryCoords) -> Result<usize> {
         *counts.entry(event_id).or_default() += 1;
     }
     Ok(counts.values().map(|count| count.saturating_sub(1)).sum())
-}
-
-async fn stats_response_with_judge(
-    mut response: TrajectoryStatsResponse,
-    session: &StoryCoords,
-) -> TrajectoryStatsResponse {
-    response.judge = Some(judge_stats::session_judge_stats(session).await);
-    response
-}
-
-pub async fn judge_async(request: TrajectoryJudgeRequest) -> Result<TrajectoryJudgeResponse> {
-    judge::judge_async(request).await
-}
-
-pub async fn judge_stats_async(
-    request: TrajectoryJudgeStatsRequest,
-) -> Result<TrajectoryJudgeStatsResponse> {
-    judge_stats::judge_stats_async(request).await
 }
 
 pub async fn extract_async(request: TrajectoryExtractRequest) -> Result<TrajectoryExtractResponse> {
