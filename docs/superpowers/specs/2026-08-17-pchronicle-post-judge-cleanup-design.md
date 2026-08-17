@@ -1,76 +1,72 @@
-# pChronicle Post-Judge Cleanup Design
+# pChronicle Judge 删除后的清理设计
 
-## Goal
+## 目标
 
-Finish the cleanup selected after removing pChronicle's judge subsystem:
-remove orphaned Web CSS, replace the remaining production `unreachable!` calls
-with explicit errors, verify supported non-search feature combinations, and
-co-locate the fragmented AgenticMD and Storyline row-model implementations.
+完成 pChronicle 删除 Judge 子系统后的收尾清理：删除 Web 中失去消费者的
+CSS，使用显式错误替换剩余的生产代码 `unreachable!`，验证所有受支持的非
+Search feature 组合，并将分散的 AgenticMD 实现与 Storyline 行模型分别收拢到
+清晰的领域目录中。
 
-## Scope
+## 范围
 
-This change includes only:
+本次变更仅包括：
 
-- pChronicle Web CSS class selectors with no static consumer anywhere under
-  `pchronicle-web/src`;
-- the four production `unreachable!` sites currently reported by
-  `clippy::unreachable` in default-feature pChronicle builds;
-- pChronicle feature checks for core-only, local Lance, default S3, and OSS
-  builds;
-- the local `just` lint entry point and the matching GitHub Actions lint step;
-- the AgenticMD codecs, mapping, layout, file operations, conversion, and
-  projection code currently spread across six crate areas;
-- the Storyline logical row model currently separated from its Arrow codecs.
+- 删除 `pchronicle-web/src` 中没有任何静态消费者的 pChronicle Web CSS class
+  selector；
+- 处理默认 feature 构建中由 `clippy::unreachable` 报告的 4 处生产代码
+  `unreachable!`；
+- 检查 pChronicle 的纯核心、本地 Lance、默认 S3 和 OSS 构建组合；
+- 统一本地 `just` lint 入口与对应的 GitHub Actions lint 步骤；
+- 收拢当前分散在六个 crate 区域中的 AgenticMD codec、映射、路径、文件操作、
+  转换和投影代码；
+- 将 Storyline 逻辑行模型与其 Arrow codec 移到同一个目录。
 
-Search, TTAS, queues and samplers, and `persisting-dlcapt` remain out of scope.
-The source-only `pc2-token-composition` class is also out of scope because it is
-not an orphaned CSS selector and removing or styling it would be a UI decision.
+Search、TTAS、Queue 与 Sampler，以及 `persisting-dlcapt` 均不在本次范围内。
+只存在于源码中的 `pc2-token-composition` class 也不在范围内，因为它不是孤儿
+CSS selector；删除它或为它补充样式都属于新的 UI 决策。
 
-## Web CSS Cleanup
+## Web CSS 清理
 
-The cleanup is conservative and token-based. A `.pc2-*` selector is removable
-only when its class token does not occur in any Rust source under
-`pchronicle-web/src`. This removes the four definite judge remnants
-(`pc2-verdict-grid`, `pc2-verdict`, `pc2-rubric-list`, and `pc2-score-track`)
-and the other selectors left behind by superseded Explorer layouts.
+清理采用保守的 class token 比对。只有当一个 `.pc2-*` selector 的 class token
+在 `pchronicle-web/src` 的全部 Rust 源码中均不存在时，才允许删除它。该规则会
+删除 4 个确定的 Judge 残留：`pc2-verdict-grid`、`pc2-verdict`、
+`pc2-rubric-list` 和 `pc2-score-track`，并删除旧版 Explorer 布局遗留的其他无
+消费者 selector。
 
-No retained selector is renamed, no layout value is changed, and no source
-markup is changed. Verification repeats the cross-file class-token comparison
-and runs the Web test suite and build checks.
+本次不会重命名保留的 selector，不会修改任何布局参数，也不会修改源码 markup。
+验证阶段会重新执行跨文件 class token 比对，并运行 Web 测试与构建检查。
 
-## Explicit Error Semantics
+## 显式错误语义
 
-Each remaining production `unreachable!` becomes an ordinary error at the
-same abstraction boundary:
+剩余的每处生产代码 `unreachable!` 都在原抽象边界转为普通错误：
 
-- projection sync reports incompatible non-canonical lineage;
-- local manifest construction rejects an unsupported query format;
-- Catalog projection binding reports a source-kind inconsistency;
-- OpenAI corpus recovery rejects an unknown retained document kind.
+- Projection 同步在遇到非 canonical lineage 时报告不兼容错误；
+- 本地 manifest 构建拒绝不受支持的查询格式；
+- Catalog projection 绑定报告 source kind 内部不一致；
+- OpenAI corpus 恢复拒绝未知的已保留文档类型。
 
-The successful path remains unchanged. After conversion, the pChronicle panic
-lint also denies `clippy::unreachable`, alongside `unwrap_used` and
-`expect_used`.
+成功路径的行为保持不变。转换完成后，pChronicle panic 门禁在现有
+`clippy::unwrap_used` 和 `clippy::expect_used` 之外继续 deny
+`clippy::unreachable`。
 
-## Feature Matrix
+## Feature 矩阵
 
-The local lint entry point and CI verify these non-search configurations:
+本地 lint 入口与 CI 验证以下非 Search 配置：
 
-1. `--no-default-features` for the lightweight format/event surface;
-2. `--no-default-features --features lance-store` for local storage;
-3. default features for the S3-compatible product build;
-4. `--no-default-features --features oss-store` for the OSS backend.
+1. 使用 `--no-default-features` 验证轻量格式与事件表面；
+2. 使用 `--no-default-features --features lance-store` 验证本地存储；
+3. 使用默认 feature 验证兼容 S3 的产品构建；
+4. 使用 `--no-default-features --features oss-store` 验证 OSS 后端。
 
-Each variant builds the library with warnings denied and the production panic
-lints enabled. The workspace-wide strict Clippy command remains the first gate.
-CI invokes the same `just lint-rust` recipe used locally, avoiding two copies of
-the feature policy.
+每种配置都以 warnings deny 和生产 panic lint 开启的方式构建 library。
+workspace 级严格 Clippy 仍是第一道门禁。CI 调用与本地相同的
+`just lint-rust` recipe，避免维护两份 feature 策略。
 
-## AgenticMD Domain Consolidation
+## AgenticMD 领域收拢
 
-AgenticMD currently spans roughly 2,465 lines across `formats`, `mapping`,
-`layout`, `store`, `convert`, and `projection`. The implementation moves into a
-single private root subtree with responsibility-oriented files:
+AgenticMD 当前约有 2,465 行实现，分散在 `formats`、`mapping`、`layout`、
+`store`、`convert` 和 `projection` 六处。实现统一迁移到 crate 根部的一个私有
+子树，并继续按职责拆分文件：
 
 ```text
 agenticmd/
@@ -89,44 +85,37 @@ agenticmd/
 └── projection.rs
 ```
 
-`projection.rs` remains gated by `lance-store`. The move changes no wire
-format, path rule, mapping rule, filesystem behavior, or projection behavior.
-The crate root continues to re-export the existing public AgenticMD functions,
-constants, and types, so current Gateway and CLI consumers remain source
-compatible.
+`projection.rs` 继续受 `lance-store` feature 门控。本次迁移不改变 wire 格式、
+路径规则、映射规则、文件系统行为或投影行为。crate 根继续 re-export 现有公开的
+AgenticMD 函数、常量与类型，因此当前 Gateway 和 CLI 消费者保持源码兼容。
 
-Old implementation-oriented module paths such as
-`persisting_pchronicle::formats::agenticmd::*` are intentionally not retained
-through compatibility wrappers. No workspace consumer uses those paths, the
-crate remains pre-1.0, and retaining them would preserve the structure this
-change is meant to remove. `formats`, `convert`, `projection`, and `store` may
-re-export domain functions at their existing module root where that requires no
-wrapper module, but they no longer own AgenticMD implementation files.
+不通过兼容 wrapper 保留 `persisting_pchronicle::formats::agenticmd::*` 等旧的
+实现导向模块路径。workspace 中没有消费者使用这些路径；crate 仍处于 1.0 之前；
+保留这些路径也会把本次需要消除的旧结构永久固化。只要无需新增 wrapper 模块，
+`formats`、`convert`、`projection` 和 `store` 可以继续在各自模块根 re-export
+领域函数，但不再拥有 AgenticMD 实现文件。
 
-## Storyline Row-Model Consolidation
+## Storyline 行模型收拢
 
-The logical Storyline three-table model moves from root-level
-`storyline_schema.rs` to `store/storyline/model.rs`. It remains separate from
-`store/storyline/rows.rs`: `model.rs` owns normalization, reconstruction, and
-logical row types, while `rows.rs` owns Arrow schemas and codecs. Co-location,
-not a thousand-line file merge, is the goal.
+Storyline 三表逻辑模型从 crate 根部的 `storyline_schema.rs` 移至
+`store/storyline/model.rs`。它与 `store/storyline/rows.rs` 保持为两个文件：
+`model.rs` 负责规范化、重建和逻辑行类型，`rows.rs` 负责 Arrow schema 与 codec。
+本次目标是同域代码同目录，而不是合并成一个上千行文件。
 
-The crate root continues to export `split_storyline`, `reconstruct_storyline`,
-`StoryRunRow`, `StoryStepRow`, `StoryToolCallRow`, `StorylineTables`, and the
-three table-name constants. The root-level `storyline_schema` module is removed,
-and internal Storyline storage code imports the model through its local module.
+crate 根继续导出 `split_storyline`、`reconstruct_storyline`、`StoryRunRow`、
+`StoryStepRow`、`StoryToolCallRow`、`StorylineTables` 和三个表名常量。删除根级
+`storyline_schema` 模块，Storyline 存储内部通过同目录模块导入逻辑模型。
 
-## Verification
+## 验收与验证
 
-- The CSS/source class-token difference contains no CSS-only `.pc2-*` class.
-- `clippy::unwrap_used`, `clippy::expect_used`, and `clippy::unreachable` are
-  clean for all four supported pChronicle feature combinations.
-- Workspace strict Clippy remains green with `persisting-dlcapt` excluded.
-- pChronicle library, pChronicle CLI, and pChronicle Web tests remain green.
-- Gateway tests that consume the root-level AgenticMD API remain green.
-- No AgenticMD implementation file remains under `formats`, `mapping`,
-  `layout`, `store`, `convert`, or `projection`; only the private
-  `agenticmd/` subtree owns that domain.
-- `storyline_schema.rs` is gone and Storyline model/Arrow code lives together
-  under `store/storyline/` while root-level item exports remain available.
-- Existing user-owned untracked review and RFC files remain untouched.
+- CSS 与源码 class token 的差集不再包含任何仅存在于 CSS 的 `.pc2-*` class；
+- `clippy::unwrap_used`、`clippy::expect_used` 和 `clippy::unreachable` 在四种
+  pChronicle feature 组合中均通过；
+- 排除 `persisting-dlcapt` 的 workspace 严格 Clippy 保持通过；
+- pChronicle library、pChronicle CLI 和 pChronicle Web 测试保持通过；
+- 使用 AgenticMD 根级 API 的 Gateway 测试保持通过；
+- `formats`、`mapping`、`layout`、`store`、`convert` 和 `projection` 下不再保留
+  AgenticMD 实现文件，只有私有 `agenticmd/` 子树拥有该领域实现；
+- `storyline_schema.rs` 被删除，Storyline 模型与 Arrow 代码共同位于
+  `store/storyline/`，同时保留根级 item 导出；
+- 现有用户未跟踪的评审稿和 RFC 文件保持不变。
