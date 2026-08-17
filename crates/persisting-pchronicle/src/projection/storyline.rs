@@ -183,7 +183,7 @@ pub async fn sync_storyline_projection(
         ..
     } = &previous.source
     else {
-        unreachable!()
+        anyhow::bail!("projection source is not canonical events; use `project rebuild`")
     };
 
     if projection_lineage_is_fresh(&snapshot, previous) {

@@ -237,7 +237,10 @@ pub(super) fn bind_canonical_storyline_projections(
             continue;
         };
         let LazySourceSpec::Events { snapshot, .. } = &events.spec else {
-            unreachable!()
+            anyhow::bail!(
+                "catalog source '{}' matched canonical event URI but is not an events source",
+                events.file
+            )
         };
         let last_modified = source_rows
             .iter()

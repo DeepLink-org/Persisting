@@ -162,7 +162,13 @@ impl LocalQueryManifest {
         let extensions: &[&str] = match format {
             ChronicleFormat::Atif => &["json", "jsonl", "ndjson"],
             ChronicleFormat::OpenaiMsg | ChronicleFormat::Actf => &["json"],
-            _ => unreachable!("query format was validated above"),
+            _ => {
+                anyhow::bail!(
+                    "unsupported direct query format '{}' in {}",
+                    format,
+                    input.display()
+                )
+            }
         };
         let paths = input_files_with_extensions(input, extensions, options)?;
         anyhow::ensure!(

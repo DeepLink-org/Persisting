@@ -274,7 +274,13 @@ pub fn recover_openai_msg_files(
                 envelope.insert("session_steps".into(), Value::Array(records));
                 Value::Object(envelope)
             }
-            _ => unreachable!("document kind validated above"),
+            kind => {
+                return Err(Error::Other(format!(
+                    "invalid OpenAI document kind '{}' while recovering {}",
+                    kind,
+                    relative_path.display()
+                )))
+            }
         };
         output.push(RecoveredOpenaiMsgFile {
             relative_path,
