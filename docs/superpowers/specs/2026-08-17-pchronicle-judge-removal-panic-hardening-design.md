@@ -14,6 +14,10 @@ This change covers:
   protocol types, trajectory adapters, and public exports;
 - `persisting-pchronicle-cli` judgment HTTP endpoints, Explorer projections,
   and their tests;
+- the standalone `pchronicle-web` judgment models, API client, analysis skill,
+  workspace UI, styling, and tests;
+- current pChronicle architecture documentation that describes judgment as an
+  active product capability;
 - the twelve `clippy::unwrap_used` or `clippy::expect_used` findings compiled
   by the default-feature `persisting-pchronicle` library target;
 - the existing pVisor `clippy::type_complexity` finding that blocks workspace
@@ -40,7 +44,9 @@ The implementation will remove:
 - pChronicle's direct `reqwest` dependency;
 - the CLI server's `/api/judgments` endpoint;
 - judgment loading, aggregation, and presentation in Explorer responses;
-- judgment-specific server tests and judgment-specific catalog fixture names.
+- judgment-specific server tests and judgment-specific catalog fixture names;
+- the Web client's judgment fetch path, judgment-aware analysis context and
+  skill, score/verdict panels, and judgment-specific model fields.
 
 Existing `judgments.lance` directories on disk are left untouched. The new
 code contains no judgment-specific discovery or interpretation and does not
@@ -118,9 +124,13 @@ The implementation is accepted when all of the following hold:
 3. The pChronicle library passes the production panic Clippy command.
 4. pChronicle and pChronicle CLI targeted tests pass after obsolete judgment
    tests are removed and affected stats/Explorer fixtures are updated.
-5. The active workspace passes all-target Clippy with `-D warnings`, excluding
+5. The standalone pChronicle Web tests and build pass with no judgment API or
+   model references.
+6. Current architecture documentation no longer presents judgment as an
+   active pChronicle capability; historical data remains explicitly untouched.
+7. The active workspace passes all-target Clippy with `-D warnings`, excluding
    only `persisting-dlcapt`, which retains its separate strict workflow.
-6. Rust formatting checks pass for all modified Rust files.
+8. Rust formatting checks pass for all modified Rust files.
 
 ## Non-Goals
 
