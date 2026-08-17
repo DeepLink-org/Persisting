@@ -403,7 +403,7 @@ fmt-check-py:
 # clippy + ruff（不改写）
 lint: lint-rust lint-py
 
-lint-rust: clippy-deny clippy-pchronicle-panics
+lint-rust: clippy-deny clippy-pchronicle-panics clippy-pchronicle-features
 
 lint-py:
     uvx ruff check {{ ruff_lint_paths }}
@@ -416,7 +416,12 @@ clippy-deny:
     cargo clippy --workspace --exclude persisting-dlcapt --all-targets --locked -- -D warnings
 
 clippy-pchronicle-panics:
-    cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+    cargo clippy -p persisting-pchronicle --lib --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
+
+clippy-pchronicle-features:
+    cargo clippy -p persisting-pchronicle --lib --no-default-features --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
+    cargo clippy -p persisting-pchronicle --lib --no-default-features --features lance-store --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
+    cargo clippy -p persisting-pchronicle --lib --no-default-features --features oss-store --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::unreachable
 
 # 兼容旧名
 clippy:
