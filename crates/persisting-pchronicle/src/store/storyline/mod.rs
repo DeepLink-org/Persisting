@@ -1018,9 +1018,10 @@ async fn write_local_current(path: PathBuf, contents: Vec<u8>) -> Result<()> {
             .with_context(|| format!("sync Storyline CURRENT temp {}", temporary.display()))?;
         std::fs::rename(&temporary, &path)
             .with_context(|| format!("publish Storyline CURRENT {}", path.display()))?;
-        if let Ok(directory) = File::open(parent) {
-            let _ = directory.sync_all();
-        }
+        File::open(parent)
+            .with_context(|| format!("open Storyline root {} for sync", parent.display()))?
+            .sync_all()
+            .with_context(|| format!("sync Storyline root {}", parent.display()))?;
         Ok(())
     })
     .await

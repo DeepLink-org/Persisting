@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Error, Result};
+use crate::{DocumentFormat, Error, Result};
 
 pub const AGENTICMD_FORMAT_NAME: &str = "agenticmd";
 pub const AGENTICMD_FRONTMATTER_FORMAT: &str = "persisting";
@@ -229,9 +229,35 @@ fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, Value>
     let yaml = &rest[..end];
     let after = &rest[end + "\n---".len()..];
     let body = after.strip_prefix('\n').unwrap_or(after);
-    let map = serde_yaml::from_str::<BTreeMap<String, Value>>(yaml).unwrap_or_default();
+    let map = serde_yaml::from_str::<BTreeMap<String, Value>>(yaml).map_err(|error| {
+        Error::InvalidDocument {
+            format: DocumentFormat::AgenticMd,
+            path: None,
+            location: Some("frontmatter".into()),
+            message: error.to_string(),
+        }
+    })?;
     let body_offset = input.len() - body.len();
     Ok((map, body, body_offset))
+}
+
+#[cfg(test)]
+mod strict_frontmatter_tests {
+    use super::parse_agenticmd_document;
+    use crate::{DocumentFormat, Error};
+
+    #[test]
+    fn malformed_agenticmd_yaml_is_not_silently_replaced() {
+        let error = parse_agenticmd_document("---\nformat: [\n---\n\n").unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidDocument {
+                format: DocumentFormat::AgenticMd,
+                location: Some(ref location),
+                ..
+            } if location == "frontmatter"
+        ));
+    }
 }
 
 fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<AgenticmdBlockSpan>> {

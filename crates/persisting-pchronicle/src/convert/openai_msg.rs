@@ -3,15 +3,30 @@
 use crate::convert::message_text;
 use crate::formats::openai_msg::{OpenaiMsgDocument, OpenaiMsgStep};
 use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
-use crate::Result;
+use crate::{DocumentFormat, Error, Result};
 
 pub fn openai_msg_to_storyline(doc: &OpenaiMsgDocument) -> Result<StorylineDocument> {
     let mut turns = Vec::new();
     let mut next_id = 1i64;
 
-    for step in &doc.session_steps {
-        let messages = step.messages_value().ok();
-        let response = step.response_value().ok().flatten();
+    for (record_index, step) in doc.session_steps.iter().enumerate() {
+        let messages = Some(
+            step.messages_value()
+                .map_err(|error| Error::InvalidDocument {
+                    format: DocumentFormat::OpenaiMsg,
+                    path: None,
+                    location: Some(format!("record[{record_index}].messages")),
+                    message: error.to_string(),
+                })?,
+        );
+        let response = step
+            .response_value()
+            .map_err(|error| Error::InvalidDocument {
+                format: DocumentFormat::OpenaiMsg,
+                path: None,
+                location: Some(format!("record[{record_index}].response")),
+                message: error.to_string(),
+            })?;
         let ts = Some(step.created_at.clone()).filter(|s| !s.is_empty());
 
         if let Some(user_msg) = last_user_content(messages.as_ref()) {
@@ -228,4 +243,72 @@ fn last_user_content(messages: Option<&serde_json::Value>) -> Option<serde_json:
             None
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openai_msg_to_storyline;
+    use crate::formats::openai_msg::{OpenaiMsgDocument, OpenaiMsgStep};
+    use crate::{DocumentFormat, Error};
+
+    fn step() -> OpenaiMsgStep {
+        OpenaiMsgStep {
+            id: "record-7".into(),
+            session_id: "session-1".into(),
+            step_id: 7,
+            job_id: String::new(),
+            agent_id: "agent-1".into(),
+            group_id: String::new(),
+            env_name: String::new(),
+            llm_model: String::new(),
+            step_reward: 0.0,
+            reward: 0.0,
+            is_terminal: false,
+            is_truncated: false,
+            is_session_completed: false,
+            is_trainable: true,
+            created_at: String::new(),
+            messages: None,
+            response: None,
+            messages_json: Some("{".into()),
+            response_json: None,
+            env_state_json: None,
+            extensions_json: None,
+            capture_json: None,
+            run_bucket: String::new(),
+            call_id: String::new(),
+            source_export_id: None,
+        }
+    }
+
+    #[test]
+    fn malformed_openai_messages_are_not_silently_dropped() {
+        let document = OpenaiMsgDocument::new("session-1", vec![step()]);
+        let error = openai_msg_to_storyline(&document).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidDocument {
+                format: DocumentFormat::OpenaiMsg,
+                location: Some(ref location),
+                ..
+            } if location == "record[0].messages"
+        ));
+    }
+
+    #[test]
+    fn malformed_openai_response_is_not_silently_dropped() {
+        let mut record = step();
+        record.messages_json = Some("[]".into());
+        record.response_json = Some("{".into());
+        let document = OpenaiMsgDocument::new("session-1", vec![record]);
+        let error = openai_msg_to_storyline(&document).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidDocument {
+                format: DocumentFormat::OpenaiMsg,
+                location: Some(ref location),
+                ..
+            } if location == "record[0].response"
+        ));
+    }
 }

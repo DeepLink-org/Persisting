@@ -4,7 +4,7 @@ use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajec
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
-use crate::Result;
+use crate::{DocumentFormat, Error, Result};
 
 const ATIF_TOOL_CALL_PROVENANCE_KEY: &str = "_pchronicle_atif_tool_call";
 
@@ -125,11 +125,21 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
 pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
     story.validate()?;
     let mut steps = Vec::new();
-    for turn in &story.turns {
+    for (step_index, turn) in story.turns.iter().enumerate() {
         let observation = turn
             .observation
             .as_ref()
-            .and_then(|v| serde_json::from_value::<AtifObservation>(v.clone()).ok());
+            .map(|value| {
+                serde_json::from_value::<AtifObservation>(value.clone()).map_err(|error| {
+                    Error::InvalidDocument {
+                        format: DocumentFormat::Atif,
+                        path: None,
+                        location: Some(format!("step[{step_index}].observation")),
+                        message: error.to_string(),
+                    }
+                })
+            })
+            .transpose()?;
 
         let tool_calls = turn.tool_calls.as_ref().map(|calls| {
             calls
@@ -231,4 +241,35 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
         extra: story.extra.clone(),
         subagent_trajectories: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{atif_to_storyline, storyline_to_atif};
+    use crate::{AtifTrajectory, DocumentFormat, Error};
+
+    #[test]
+    fn malformed_atif_observation_is_not_silently_dropped() {
+        let trajectory = AtifTrajectory::from_json_str(
+            r#"{
+                "schema_version":"ATIF-v1.7",
+                "session_id":"session-1",
+                "agent":{"name":"agent-1","version":"1"},
+                "steps":[{"step_id":1,"source":"agent","message":"done"}]
+            }"#,
+        )
+        .unwrap();
+        let mut story = atif_to_storyline(&trajectory).unwrap();
+        story.turns[0].observation = Some(serde_json::json!({"results":"not-an-array"}));
+
+        let error = storyline_to_atif(&story).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidDocument {
+                format: DocumentFormat::Atif,
+                location: Some(ref location),
+                ..
+            } if location == "step[0].observation"
+        ));
+    }
 }
