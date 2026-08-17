@@ -38,14 +38,6 @@ mod storyline;
 #[path = "storyline/model.rs"]
 mod storyline_model;
 
-pub use crate::agenticmd::{
-    agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
-    append_agenticmd_blocks, count_agenticmd_role, encode_agenticmd_block_validated,
-    find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,
-    parse_agenticmd_document_validated, parse_agenticmd_spans_validated,
-    read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
-    upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
-};
 #[cfg(feature = "lance-store")]
 pub use atif_datafusion::{
     load_atif_trajectories, AtifDataSource, AtifDataSourceOptions, AtifReader,

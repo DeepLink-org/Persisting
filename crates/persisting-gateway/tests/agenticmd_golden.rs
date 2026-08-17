@@ -1,101 +1,63 @@
-//! Golden AgenticMD document built through the production encoder.
+//! Golden AgenticMD semantics through the public Storyline API.
 
-use persisting_gateway::projection::dialogue::capture_record_to_agenticmd_block;
-use persisting_gateway::record::EventRecordExt;
+use persisting_gateway::projection::dialogue::capture_record_to_storyline_turn;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;
-use persisting_pchronicle::{
-    agenticmd_block_to_event_record, encode_agenticmd_block_validated,
-    encode_agenticmd_session_frontmatter, parse_agenticmd_document_validated as parse_document,
-    AgenticmdSessionFrontmatter,
-};
+use persisting_pchronicle::{encode_agenticmd, parse_agenticmd, StorylineDocument};
 use serde_json::json;
 
-fn demo_call() -> Call {
-    Call {
+fn demo_storyline() -> StorylineDocument {
+    let call = Call {
         call_id: "call-demo-1".into(),
         trace_id: "trace-demo-1".into(),
         started_at: "2026-01-01T00:00:00Z".into(),
-    }
-}
-
-const DEMO_TIMESTAMP: &str = "2026-01-01T00:00:00Z";
-
-fn build_demo_document() -> String {
+    };
     let mut req = llm_request_record(
         Some("demo-run-001".into()),
-        None,
+        Some("demo-agent".into()),
         "deepseek-chat",
         "/v1/chat/completions",
         &json!({"messages":[{"role":"user","content":"你好"}]}),
     );
     req.seq = 1;
     req.call_id = Some("call-demo-1".into());
-    req.timestamp = Some(DEMO_TIMESTAMP.into());
+    req.timestamp = Some("2026-01-01T00:00:00Z".into());
     let mut resp = llm_response_record(
         Some("demo-run-001".into()),
-        None,
+        Some("demo-agent".into()),
         200,
         &json!({
             "choices":[{"message":{"role":"assistant","content":"你好！有什么可以帮你的？"}}],
             "usage":{"prompt_tokens":12,"completion_tokens":18,"total_tokens":30}
         }),
         false,
-        &demo_call(),
+        &call,
     );
-    resp.call_id = Some("call-demo-1".into());
     resp.seq = 2;
     resp.timestamp = Some("2026-01-01T00:00:01Z".into());
 
-    let mut out = encode_agenticmd_session_frontmatter(&AgenticmdSessionFrontmatter {
-        session: "demo-run-001".into(),
-        agent: "demo-agent".into(),
-        turns: 1,
-        ..Default::default()
-    })
-    .unwrap();
-    for rec in [req, resp] {
-        let block = capture_record_to_agenticmd_block(&rec).unwrap();
-        out.push_str(&encode_agenticmd_block_validated(&block).unwrap());
-    }
-    // A block keeps a blank separator for append; a closed document ends in
-    // exactly one newline so the checked-in golden has no trailing blank line.
-    debug_assert!(out.ends_with("\n\n"));
-    out.pop();
-    out
+    let mut story = StorylineDocument::new("demo-run-001", "demo-agent");
+    story.turns = vec![
+        capture_record_to_storyline_turn(&req).unwrap(),
+        capture_record_to_storyline_turn(&resp).unwrap(),
+    ];
+    story
 }
 
 #[test]
-fn demo_run_001_matches_golden_fixture() {
-    let built = build_demo_document();
-    if std::env::var("WRITE_AGENTICMD_GOLDEN").is_ok() {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/agenticmd/demo-run-001.md");
-        std::fs::write(&fixture, &built).unwrap();
-    }
+fn generated_agenticmd_preserves_golden_storyline_semantics() {
+    let story = demo_storyline();
+    let encoded = encode_agenticmd(&story).unwrap();
+    assert_eq!(parse_agenticmd(&encoded).unwrap(), story);
+}
+
+#[test]
+fn checked_in_legacy_golden_remains_readable() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/agenticmd/demo-run-001.md");
-    let golden = std::fs::read_to_string(&fixture)
-        .unwrap_or_else(|e| panic!("read {}: {e}", fixture.display()));
-    assert_eq!(
-        built, golden,
-        "regenerate: WRITE_AGENTICMD_GOLDEN=1 cargo test -p persisting-gateway --test agenticmd_golden demo_run_001_matches_golden_fixture"
-    );
-}
-
-#[test]
-fn demo_blocks_have_no_version_field_and_strip_subagent_footer_on_import() {
-    let built = build_demo_document();
-    let blocks = parse_document(&built).unwrap();
-    assert!(!blocks[0].header.fields.contains_key("v"));
-
-    let mut block = blocks[1].clone();
-    block
-        .body
-        .push_str("\n<!-- persisting:subagent-self agent-abc.md -->\n");
-    block.header.length = block.body.len();
-    let rec = agenticmd_block_to_event_record(&block).unwrap();
-    let content = rec.visible_assistant_text().unwrap_or_default();
-    assert!(!content.contains("persisting:subagent"));
-    assert!(content.contains("你好"));
+    let story = parse_agenticmd(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
+    assert_eq!(story.session_id, "demo-run-001");
+    assert_eq!(story.turns.len(), 2);
+    assert_eq!(story.turns[0].message, json!("你好"));
+    assert_eq!(story.turns[1].message, json!("你好！有什么可以帮你的？"));
 }

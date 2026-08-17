@@ -87,3 +87,35 @@ required-features = ["search"]
 [[test]]
 name = "storyline_lance_roundtrip"
 required-features = ["lance-store"]
+
+[[test]]
+name = "atif_lance_corpus"
+required-features = ["lance-store"]
+
+[[test]]
+name = "capture_fixture_corpus"
+required-features = ["lance-store"]
+
+[[test]]
+name = "direct_file_query"
+required-features = ["lance-store"]
+
+[[test]]
+name = "import_roundtrip_fixtures"
+required-features = ["lance-store"]
+
+[[test]]
+name = "langfuse_backend_faults"
+required-features = ["lance-store"]
+
+[[test]]
+name = "production_scale"
+required-features = ["lance-store"]
+
+[[test]]
+name = "query_engine"
+required-features = ["lance-store"]
+
+[[test]]
+name = "s3_storage"
+required-features = ["s3-store"]

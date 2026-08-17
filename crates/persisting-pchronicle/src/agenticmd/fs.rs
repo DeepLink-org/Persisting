@@ -13,10 +13,11 @@ use super::codec::{
     parse_agenticmd_document, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdHeader,
     AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
 };
-use super::mapping::agenticmd_block_to_replay_json;
+use super::convert::{encode_storyline_preamble, storyline_turn_block};
 use super::validate::{
     block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
 };
+use crate::{StorylineDocument, StorylineTurn};
 
 /// Diagnostic index of one AgenticMD document.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -126,6 +127,43 @@ pub fn write_agenticmd_document(
     write_atomic(path, output.as_bytes())
 }
 
+/// Atomically replace an AgenticMD view from its authoritative Storyline model.
+pub fn write_agenticmd_storyline(path: &Path, story: &StorylineDocument) -> Result<()> {
+    let encoded = super::convert::encode_agenticmd(story)
+        .map_err(|error| anyhow::anyhow!("agenticmd encode: {error}"))?;
+    write_atomic(path, encoded.as_bytes())
+}
+
+/// Insert or replace one Storyline turn in a live AgenticMD view.
+///
+/// `edit_key` is a syntax-only locator used for streaming draft replacement. It
+/// is never copied into the parsed [`StorylineTurn`] or its `extra` field.
+pub fn upsert_agenticmd_turn(
+    path: &Path,
+    document_meta: &StorylineDocument,
+    turn: &StorylineTurn,
+    edit_key: &str,
+) -> Result<bool> {
+    if edit_key.trim().is_empty() {
+        bail!("edit_key must not be empty for AgenticMD upsert");
+    }
+    let mut candidate = document_meta.clone();
+    candidate.turns = vec![turn.clone()];
+    candidate
+        .validate()
+        .map_err(|error| anyhow::anyhow!("invalid Storyline turn: {error}"))?;
+
+    let block = storyline_turn_block(turn, Some(edit_key))
+        .map_err(|error| anyhow::anyhow!("agenticmd turn encode: {error}"))?;
+    if !path.exists() {
+        let preamble = encode_storyline_preamble(document_meta)
+            .map_err(|error| anyhow::anyhow!("agenticmd preamble encode: {error}"))?;
+        write_agenticmd_document(path, &preamble, std::slice::from_ref(&block))?;
+        return Ok(false);
+    }
+    upsert_block_by_call_id(path, edit_key, block)
+}
+
 /// Replace only the YAML preamble while preserving every encoded block byte-for-byte.
 pub fn rewrite_agenticmd_preamble(path: &Path, preamble: &str) -> Result<()> {
     let content =
@@ -137,21 +175,17 @@ pub fn rewrite_agenticmd_preamble(path: &Path, preamble: &str) -> Result<()> {
     write_atomic(path, &output)
 }
 
-/// Convert a page of parsed AgenticMD blocks to canonical replay JSON records.
-pub fn agenticmd_replay_json_lines(
-    blocks: &[AgenticmdBlock],
-    offset: usize,
-    limit: Option<usize>,
-) -> Result<Vec<String>> {
-    let end = limit
-        .map(|limit| offset.saturating_add(limit).min(blocks.len()))
-        .unwrap_or(blocks.len());
-    blocks
-        .get(offset..end)
-        .unwrap_or(&[])
-        .iter()
-        .map(agenticmd_block_to_replay_json)
-        .collect()
+/// Replace only the Storyline document metadata in an AgenticMD file.
+///
+/// Existing encoded turns remain byte-for-byte intact, including private live
+/// edit locators used to replace streaming drafts.
+pub fn rewrite_agenticmd_storyline_metadata(
+    path: &Path,
+    document_meta: &StorylineDocument,
+) -> Result<()> {
+    let preamble = encode_storyline_preamble(document_meta)
+        .map_err(|error| anyhow::anyhow!("agenticmd preamble encode: {error}"))?;
+    rewrite_agenticmd_preamble(path, &preamble)
 }
 
 /// List AgenticMD candidates directly below a run directory.
@@ -715,20 +749,54 @@ mod tests {
     }
 
     #[test]
-    fn structural_scan_and_replay_paging_are_storage_primitives() {
+    fn structural_scan_reports_excessive_blank_lines() {
         assert_eq!(
             agenticmd_structural_issues("a\n\n\n\nb"),
             vec!["excessive_blank_lines"]
         );
-        let blocks = vec![
-            block_with_call("c1", "user", "one"),
-            block_with_call("c2", "assistant", "two"),
-        ];
-        let replay = agenticmd_replay_json_lines(&blocks, 1, Some(1)).unwrap();
-        assert_eq!(replay.len(), 1);
-        assert!(replay[0].contains("\"call_id\":\"c2\""));
-        assert!(agenticmd_replay_json_lines(&blocks, usize::MAX, None)
+    }
+
+    #[test]
+    fn storyline_upsert_replaces_draft_without_exposing_edit_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.md");
+        let story = crate::StorylineDocument::new("session-1", "agent-1");
+        let mut turn = crate::StorylineTurn {
+            id: 7,
+            kind: Some("llm.response.stream".into()),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+            source: "agent".into(),
+            message: serde_json::json!("draft"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: None,
+            observation: None,
+            metrics: None,
+            model_name: Some("model-1".into()),
+            llm_call_count: Some(1),
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: Some(12),
+            extra: Some(serde_json::json!({"domain": "kept"})),
+        };
+
+        assert!(!upsert_agenticmd_turn(&path, &story, &turn, "call-7").unwrap());
+        turn.kind = Some("llm.response".into());
+        turn.message = serde_json::json!("complete");
+        turn.latency_ms = Some(42);
+        assert!(upsert_agenticmd_turn(&path, &story, &turn, "call-7").unwrap());
+
+        let parsed =
+            super::super::convert::parse_agenticmd(&std::fs::read_to_string(&path).unwrap())
+                .unwrap();
+        assert_eq!(parsed.turns, vec![turn]);
+        assert_eq!(
+            parsed.turns[0].extra,
+            Some(serde_json::json!({"domain": "kept"}))
+        );
+        assert!(index_agenticmd_path(&path)
             .unwrap()
-            .is_empty());
+            .call_ids
+            .contains("call-7"));
     }
 }

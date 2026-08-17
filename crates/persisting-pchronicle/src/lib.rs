@@ -43,10 +43,10 @@ pub mod search;
 pub mod store;
 
 pub use agenticmd::{
-    agenticmd_block_to_event_record, agenticmd_block_to_replay_json,
-    agenticmd_blocks_to_event_records, enrich_event_from_agenticmd_block,
-    event_record_to_agenticmd_block, event_record_to_agenticmd_block_with_text,
-    markdown_document_to_event_records,
+    agenticmd_block_count, agenticmd_structural_issues, count_agenticmd_role, encode_agenticmd,
+    index_agenticmd_path, list_agenticmd_paths, parse_agenticmd,
+    rewrite_agenticmd_storyline_metadata, upsert_agenticmd_turn, write_agenticmd_storyline,
+    AgenticmdFileIndex,
 };
 #[cfg(feature = "lance-store")]
 pub use append_queue::{
@@ -69,21 +69,14 @@ pub use discovery::{
 pub use error::{classify_error, Error, ErrorCode, Result};
 pub use format::{ChronicleFormat, DocumentFormat};
 pub use formats::{
-    agenticmd_body_byte_offset, append_subagent_refs_footer, block_speaker, detect_format,
-    encode_agenticmd_block, encode_agenticmd_document, encode_agenticmd_preamble,
-    encode_agenticmd_session_frontmatter, events_lance_only_message, export_events_json_pretty,
-    export_events_jsonl, is_subagent_footer_line, parse_agenticmd_blocks_with_spans,
-    parse_agenticmd_document, parse_openai_msg_document, parse_storyline_document,
-    strip_subagent_footer_from_body, validate_agenticmd_block, validate_speaker,
-    validate_type_name, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdClientMeta, AgenticmdDocument,
-    AgenticmdHeader, AgenticmdSessionFrontmatter, ChronicleEventRecordExt, EventIdentity,
+    detect_format, events_lance_only_message, export_events_json_pretty, export_events_jsonl,
+    parse_openai_msg_document, parse_storyline_document, ChronicleEventRecordExt, EventIdentity,
     EventRecord, EventsDocument, FieldPresence, LlmCandidate, LlmContentPart, LlmExtensions,
     LlmGenerationParams, LlmImageSource, LlmMessage, LlmProtocol, LlmRequest,
     LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload, LlmResponseFormat, LlmRole,
     LlmStreamEvent, LlmToolChoice, LlmToolChoiceMode, LlmToolDefinition, LlmUsage,
     OpenaiMsgCorpusReader, OpenaiMsgDocument, OpenaiMsgStep, RecoveredOpenaiMsgFile, StoryLink,
-    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn, AGENTICMD_BLOCK_LAYOUT,
-    AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT, BLOCK_MARKER,
+    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
 pub use formats::{
     is_lossless_openai_storyline, parse_openai_msg_corpus_value, recover_openai_msg_files,
@@ -111,7 +104,7 @@ pub use operations::bridge::{
 pub use operations::dispatch::invoke_request_body;
 #[cfg(feature = "lance-store")]
 pub use projection::{
-    build_storyline_projection, canonical_projection_lineage, event_records_to_markdown_blocks,
+    build_storyline_projection, canonical_projection_lineage, event_records_to_storyline,
     layer_stats, materialize_lance_to_markdown, materialize_markdown_path,
     projection_lineage_is_fresh, rebuild_storyline_projection, storyline_projection_status,
     sync_storyline_projection, verify_storyline_projection, write_markdown_projection, LayerStats,
@@ -125,16 +118,6 @@ pub use revision::{read_revisions, revision_dataset_path, write_revisions, Revis
 pub use search::agent as agent_search;
 #[cfg(feature = "lance-store")]
 pub use store::maintain_raw_events;
-pub use store::{
-    agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
-    append_agenticmd_blocks, count_agenticmd_role, encode_agenticmd_block_validated,
-    find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,
-    parse_agenticmd_document_validated, parse_agenticmd_spans_validated,
-    read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
-    upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex, StoryRunRow,
-    StoryStepRow, StoryToolCallRow, StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE,
-    STORY_TOOL_CALLS_TABLE,
-};
 #[cfg(feature = "lance-store")]
 pub use store::{
     attempt_registry_now_ms, distinct_session_ids_in_run, event_record_to_event_row,
@@ -173,6 +156,10 @@ pub use store::{
 #[cfg(feature = "lance-store")]
 pub use store::{detect_local_query_format, detect_local_query_manifest};
 pub use store::{reconstruct_storyline, split_storyline};
+pub use store::{
+    StoryRunRow, StoryStepRow, StoryToolCallRow, StorylineTables, STORY_RUNS_TABLE,
+    STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
+};
 
 #[cfg(feature = "search")]
 pub const PERSISTING_VECTOR_INDEX_NAME: &str = search::search_lance::PERSISTING_VECTOR_INDEX_NAME;

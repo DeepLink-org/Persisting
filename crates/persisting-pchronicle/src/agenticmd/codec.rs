@@ -77,10 +77,6 @@ impl AgenticmdBlock {
             .iter()
             .find_map(|key| self.header.fields.get(*key).and_then(|v| v.as_i64()))
     }
-
-    pub fn kind(&self) -> Option<&str> {
-        self.header.fields.get("kind").and_then(|v| v.as_str())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -170,32 +166,11 @@ pub fn agenticmd_body_byte_offset(input: &str) -> Result<usize> {
 
 /// Encode a YAML frontmatter fence (`---\n…\n---\n\n`) from any serializable mapping.
 ///
-/// Used by capture for live document / session-rollup preambles (nested `client`, etc.).
-/// Distinct from [`encode_agenticmd_document`], which emits a flat string frontmatter
-/// suitable for hub interchange.
+/// Storyline metadata encoding is layered on top by `agenticmd::convert`.
 pub fn encode_agenticmd_preamble<T: Serialize>(frontmatter: &T) -> Result<String> {
     let yaml = serde_yaml::to_string(frontmatter)
         .map_err(|e| Error::Other(format!("agenticmd frontmatter yaml: {e}")))?;
     Ok(format!("---\n{yaml}---\n\n"))
-}
-
-pub fn encode_agenticmd_document(doc: &AgenticmdDocument) -> Result<String> {
-    let mut frontmatter = doc.frontmatter.clone();
-    frontmatter.insert(
-        "format".into(),
-        Value::String(doc.frontmatter_format.clone()),
-    );
-    if let Some(session) = &doc.session_id {
-        frontmatter.insert("session_id".into(), Value::String(session.clone()));
-    }
-    if let Some(agent) = &doc.agent_id {
-        frontmatter.insert("agent_id".into(), Value::String(agent.clone()));
-    }
-    let mut out = encode_agenticmd_preamble(&frontmatter)?;
-    for block in &doc.blocks {
-        out.push_str(&encode_agenticmd_block(block)?);
-    }
-    Ok(out)
 }
 
 /// Encode a single agenticmd / capture TLV block (comment header + body).

@@ -12,5 +12,5 @@ mod fields;
 mod tests;
 
 pub use super::markdown_pipeline::skip_markdown_block;
-pub use block::capture_record_to_agenticmd_block;
-pub use draft::draft_stream_assistant_block;
+pub use block::capture_record_to_storyline_turn;
+pub use draft::draft_stream_assistant_turn;

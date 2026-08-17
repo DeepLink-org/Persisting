@@ -1,36 +1,41 @@
-//! Capture-owned client-meta preamble and live upsert seed.
+//! Capture-owned metadata and semantic live upsert tests.
 
-use std::collections::BTreeMap;
-
-use persisting_gateway::projection::markdown_trajectory::{
-    format_document_preamble, upsert_block_by_call_id,
-};
+use persisting_gateway::projection::markdown_trajectory::upsert_storyline_turn;
 use persisting_gateway::session::client::{
     write_session_client_meta, SessionClientMeta, SESSION_CLIENT_META_FILENAME,
 };
-use persisting_pchronicle::{
-    agenticmd_body_byte_offset, encode_agenticmd_block_validated,
-    parse_agenticmd_document_validated as parse_document, read_agenticmd_blocks_from_file,
-    AgenticmdBlock, AgenticmdHeader,
-};
+use persisting_pchronicle::{parse_agenticmd, StorylineDocument, StorylineTurn};
+use serde_json::json;
 
-fn block_with_call(call_id: &str, role: &str, body: &str) -> AgenticmdBlock {
-    let mut fields = BTreeMap::new();
-    fields.insert("role".into(), serde_json::json!(role));
-    fields.insert("kind".into(), serde_json::json!("llm.response.stream"));
-    fields.insert("call_id".into(), serde_json::json!(call_id));
-    AgenticmdBlock {
-        header: AgenticmdHeader {
-            type_name: "markdown".into(),
-            length: body.len(),
-            fields,
-        },
-        body: body.into(),
+fn turn(id: i64, source: &str, body: &str, draft: bool) -> StorylineTurn {
+    StorylineTurn {
+        id,
+        kind: Some(if draft {
+            "llm.response.stream".into()
+        } else if source == "user" {
+            "llm.request".into()
+        } else {
+            "llm.response".into()
+        }),
+        timestamp: None,
+        source: source.into(),
+        message: json!(body),
+        reasoning_content: None,
+        reasoning_effort: None,
+        tool_calls: None,
+        observation: None,
+        metrics: None,
+        model_name: None,
+        llm_call_count: (source == "agent").then_some(1),
+        is_copied_context: None,
+        latency_ms: None,
+        ttft_ms: None,
+        extra: None,
     }
 }
 
 #[test]
-fn preamble_includes_session_client_meta() {
+fn new_document_includes_session_client_metadata() {
     let dir = tempfile::tempdir().unwrap();
     let session_dir = dir.path().join("demo-agent").join("sess-1");
     std::fs::create_dir_all(&session_dir).unwrap();
@@ -46,95 +51,45 @@ fn preamble_includes_session_client_meta() {
     )
     .unwrap();
 
-    let md_path = session_dir.join("sess-1.md");
-    upsert_block_by_call_id(
-        &md_path,
-        "call-1",
-        block_with_call("call-1", "assistant", "hi"),
-    )
-    .unwrap();
+    let path = session_dir.join("sess-1.md");
+    let story = StorylineDocument::new("sess-1", "demo-agent");
+    upsert_storyline_turn(&path, &story, "call-1", &turn(1, "agent", "hi", false)).unwrap();
 
-    let text = std::fs::read_to_string(&md_path).unwrap();
-    assert!(text.contains("client:"));
-    assert!(text.contains("peer_port: 54321"));
-    assert!(text.contains("claude --model deepseek"));
-
-    let blocks = parse_document(&text).unwrap();
-    assert_eq!(blocks.len(), 1);
-}
-
-#[test]
-fn parse_document_with_client_frontmatter() {
-    let preamble = format_document_preamble(Some(&SessionClientMeta {
-        peer: "127.0.0.1:40000".into(),
-        peer_port: 40000,
-        pid: 42,
-        command: "python3 agent.py".into(),
-        machine_fp: None,
-    }))
-    .unwrap();
-    let mut fields = BTreeMap::new();
-    fields.insert("role".into(), serde_json::json!("user"));
-    fields.insert("kind".into(), serde_json::json!("llm.request"));
-    let block = encode_agenticmd_block_validated(&AgenticmdBlock {
-        header: AgenticmdHeader {
-            type_name: "markdown".into(),
-            length: 2,
-            fields,
-        },
-        body: "hi".into(),
-    })
-    .unwrap();
-    let doc = format!("{preamble}{block}");
-    let blocks = parse_document(&doc).unwrap();
-    assert_eq!(blocks.len(), 1);
-    assert_eq!(blocks[0].body, "hi");
-}
-
-#[test]
-fn upsert_new_file_seeds_capture_preamble() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sess.md");
-    assert!(!upsert_block_by_call_id(
-        &path,
-        "call-1",
-        block_with_call("call-1", "assistant", "hello"),
-    )
-    .unwrap());
-    let raw = std::fs::read_to_string(&path).unwrap();
-    assert!(raw.starts_with("---\n"));
-    assert!(raw.contains("persisting"));
-    assert!(raw.contains("persisting:block:{speaker}"));
-    let blocks = read_agenticmd_blocks_from_file(&path).unwrap();
-    assert_eq!(blocks.len(), 1);
-    assert_eq!(blocks[0].body, "hello");
-}
-
-#[test]
-fn preamble_roundtrips_through_body_offset() {
-    let preamble = format_document_preamble(None).unwrap();
-    assert!(preamble.starts_with("---\n"));
-    assert!(preamble.contains("format: persisting"));
-    assert!(preamble.contains("block:"));
-    let start = agenticmd_body_byte_offset(&preamble).unwrap();
-    assert!(
-        preamble[start..].trim().is_empty(),
-        "body after document preamble should be blank, got {:?}",
-        &preamble[start..]
+    let parsed = parse_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(parsed.turns[0].message, json!("hi"));
+    assert_eq!(
+        parsed.agent.extra.as_ref().unwrap()["client"]["peer_port"],
+        54321
+    );
+    assert_eq!(
+        parsed.agent.extra.as_ref().unwrap()["client"]["command"],
+        "claude --model deepseek"
     );
 }
 
 #[test]
-fn preamble_embeds_nested_client() {
-    let preamble = format_document_preamble(Some(&SessionClientMeta {
-        peer: "127.0.0.1:1".into(),
-        peer_port: 1,
-        pid: 2,
-        command: "demo".into(),
-        machine_fp: None,
-    }))
-    .unwrap();
-    assert!(preamble.contains("client:"));
-    assert!(preamble.contains("peer_port: 1"));
-    assert!(preamble.contains("demo"));
+fn live_upsert_replaces_draft_by_edit_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sess.md");
+    let story = StorylineDocument::new("sess-1", "demo-agent");
+    assert!(
+        !upsert_storyline_turn(&path, &story, "call-1", &turn(1, "agent", "draft", true),).unwrap()
+    );
+    assert!(upsert_storyline_turn(
+        &path,
+        &story,
+        "call-1",
+        &turn(1, "agent", "complete", false),
+    )
+    .unwrap());
+
+    let parsed = parse_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(parsed.turns.len(), 1);
+    assert_eq!(parsed.turns[0].message, json!("complete"));
+    assert_eq!(parsed.turns[0].kind.as_deref(), Some("llm.response"));
+    assert!(parsed.turns[0]
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("call_id"))
+        .is_none());
 }

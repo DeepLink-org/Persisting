@@ -17,7 +17,7 @@ mod atif;
 mod events;
 mod openai_msg;
 
-pub use crate::agenticmd::{agenticmd_to_storyline, storyline_to_agenticmd};
+pub use crate::agenticmd::{encode_agenticmd, parse_agenticmd};
 pub use actf::{
     actf_to_storyline, actf_to_storylines, is_actf_storyline, storyline_to_actf, storylines_to_actf,
 };
@@ -32,9 +32,7 @@ use crate::format::ChronicleFormat;
 use crate::formats::actf::ActfDocument;
 use crate::formats::events::events_lance_only_error;
 use crate::formats::storyline::StorylineDocument;
-use crate::formats::{
-    parse_agenticmd_document, parse_openai_msg_document, parse_storyline_document,
-};
+use crate::formats::{parse_openai_msg_document, parse_storyline_document};
 use crate::Result;
 
 /// Parse a supported **string** document into the storyline hub.
@@ -53,10 +51,7 @@ pub fn into_storyline(format: ChronicleFormat, input: &str) -> Result<StorylineD
             actf_to_storyline(&document)
         }
         ChronicleFormat::Events => Err(events_lance_only_error()),
-        ChronicleFormat::Agenticmd => {
-            let doc = parse_agenticmd_document(input)?;
-            agenticmd_to_storyline(&doc)
-        }
+        ChronicleFormat::Agenticmd => parse_agenticmd(input),
         ChronicleFormat::OpenaiMsg => {
             let doc = parse_openai_msg_document(input)?;
             openai_msg_to_storyline(&doc)
@@ -74,10 +69,7 @@ pub fn from_storyline(format: ChronicleFormat, story: &StorylineDocument) -> Res
         ChronicleFormat::Atif => Ok(serde_json::to_string_pretty(&storyline_to_atif(story)?)?),
         ChronicleFormat::Actf => storyline_to_actf(story)?.to_json_string_pretty(),
         ChronicleFormat::Events => Err(events_lance_only_error()),
-        ChronicleFormat::Agenticmd => {
-            let doc = storyline_to_agenticmd(story)?;
-            crate::formats::encode_agenticmd_document(&doc)
-        }
+        ChronicleFormat::Agenticmd => encode_agenticmd(story),
         ChronicleFormat::OpenaiMsg => {
             let doc = storyline_to_openai_msg(story)?;
             Ok(serde_json::to_string_pretty(&doc)?)

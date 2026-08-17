@@ -5,14 +5,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::{EventRecord, RawEventLanceStore, StoryCoords};
-
-use super::codec::{
-    encode_agenticmd_preamble, AgenticmdBlock, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
+use crate::{
+    project_event_records, EventRecord, RawEventLanceStore, StoryCoords, StorylineDocument,
 };
-use super::fs::{agenticmd_block_count, write_agenticmd_document};
+
+use super::fs::{agenticmd_block_count, write_agenticmd_storyline};
 use super::layout::{locate_session_markdown_for_key, session_markdown_path_for_key};
-use super::mapping::event_record_to_agenticmd_block;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializeStats {
@@ -37,27 +35,36 @@ pub struct LayerStats {
     pub note: String,
 }
 
-#[derive(serde::Serialize)]
-struct ProjectionPreamble {
-    format: &'static str,
-    block: &'static str,
-}
-
 pub fn materialize_markdown_path(run_dir: &Path, session_key: &str) -> PathBuf {
     locate_session_markdown_for_key(run_dir, session_key)
         .unwrap_or_else(|| session_markdown_path_for_key(run_dir, session_key))
 }
 
-pub fn event_records_to_markdown_blocks(
+pub fn event_records_to_storyline(
     records: &[EventRecord],
-) -> Result<(Vec<AgenticmdBlock>, MaterializeStats)> {
-    let blocks = project_dialogue_blocks(records)?;
+) -> Result<(StorylineDocument, MaterializeStats)> {
+    let eligible = project_dialogue_records(records);
+    let story = if eligible.is_empty() {
+        let session_id = records
+            .iter()
+            .rev()
+            .find_map(|record| record.session_id.as_deref())
+            .unwrap_or("unknown");
+        let agent_id = records
+            .iter()
+            .rev()
+            .find_map(|record| record.agent_id.as_deref())
+            .unwrap_or("unknown");
+        StorylineDocument::new(session_id, agent_id)
+    } else {
+        project_event_records(&eligible)?
+    };
     let stats = MaterializeStats {
         source_events: records.len(),
-        markdown_blocks: blocks.len(),
-        skipped_events: records.len().saturating_sub(blocks.len()),
+        markdown_blocks: story.turns.len(),
+        skipped_events: records.len().saturating_sub(eligible.len()),
     };
-    Ok((blocks, stats))
+    Ok((story, stats))
 }
 
 /// Best-effort event → dialogue projection for human inspection.
@@ -65,10 +72,10 @@ pub fn event_records_to_markdown_blocks(
 /// This deliberately drops transport-only and duplicate streaming events.
 /// AgenticMD is not a persistence boundary, so callers must retain the source
 /// events or Storyline document when lossless replay is required.
-fn project_dialogue_blocks(records: &[EventRecord]) -> Result<Vec<AgenticmdBlock>> {
+fn project_dialogue_records(records: &[EventRecord]) -> Vec<EventRecord> {
     let mut last_user_message_count = 0usize;
     let mut skipped_call_ids = HashSet::new();
-    let mut blocks = Vec::new();
+    let mut eligible = Vec::new();
     for record in records {
         let skip = match record.kind.as_str() {
             "llm.request" | "http.request" => {
@@ -114,22 +121,15 @@ fn project_dialogue_blocks(records: &[EventRecord]) -> Result<Vec<AgenticmdBlock
             _ => false,
         };
         if !skip {
-            let block = event_record_to_agenticmd_block(record)?;
-            if !block.body.trim().is_empty() || record.kind == "llm.spawn_link" {
-                blocks.push(block);
-            }
+            eligible.push(record.clone());
         }
     }
-    Ok(blocks)
+    eligible
 }
 
 pub fn write_markdown_projection(path: &Path, records: &[EventRecord]) -> Result<MaterializeStats> {
-    let (blocks, stats) = event_records_to_markdown_blocks(records)?;
-    let preamble = encode_agenticmd_preamble(&ProjectionPreamble {
-        format: AGENTICMD_FRONTMATTER_FORMAT,
-        block: AGENTICMD_BLOCK_LAYOUT,
-    })?;
-    write_agenticmd_document(path, &preamble, &blocks)
+    let (story, stats) = event_records_to_storyline(records)?;
+    write_agenticmd_storyline(path, &story)
         .with_context(|| format!("write markdown projection {}", path.display()))?;
     Ok(stats)
 }

@@ -3,7 +3,7 @@
 mod storyline;
 
 pub use crate::agenticmd::{
-    event_records_to_markdown_blocks, layer_stats, materialize_lance_to_markdown,
+    event_records_to_storyline, layer_stats, materialize_lance_to_markdown,
     materialize_markdown_path, write_markdown_projection, LayerStats, MaterializeOutcome,
     MaterializeStats,
 };

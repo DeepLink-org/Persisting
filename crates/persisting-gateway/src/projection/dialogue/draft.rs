@@ -1,16 +1,16 @@
 use anyhow::Result;
-use persisting_pchronicle::AgenticmdBlock;
+use persisting_pchronicle::StorylineTurn;
 use serde_json::json;
 
-use super::block::capture_record_to_agenticmd_block;
+use super::block::capture_record_to_storyline_turn;
 use super::skip_markdown_block;
 use crate::record::EventRecord;
 
 /// Build a streaming draft assistant block (markdown view only; not written to Lance).
-pub fn draft_stream_assistant_block(
+pub fn draft_stream_assistant_turn(
     rec: &EventRecord,
     assistant_content: &str,
-) -> Result<Option<AgenticmdBlock>> {
+) -> Result<Option<StorylineTurn>> {
     if assistant_content.trim().is_empty() {
         return Ok(None);
     }
@@ -24,5 +24,5 @@ pub fn draft_stream_assistant_block(
     if skip_markdown_block(&draft) {
         return Ok(None);
     }
-    Ok(Some(capture_record_to_agenticmd_block(&draft)?))
+    Ok(Some(capture_record_to_storyline_turn(&draft)?))
 }
