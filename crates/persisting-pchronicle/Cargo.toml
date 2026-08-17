@@ -83,3 +83,7 @@ harness = false
 [[test]]
 name = "search_integration"
 required-features = ["search"]
+
+[[test]]
+name = "storyline_lance_roundtrip"
+required-features = ["lance-store"]
