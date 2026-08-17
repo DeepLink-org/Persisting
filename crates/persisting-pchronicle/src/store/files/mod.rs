@@ -3,8 +3,11 @@
 //! Each source file is one streaming partition. Query-only `_file_` predicates
 //! are evaluated against the frozen manifest before partitions are opened.
 
+mod atif_reader;
 mod atif_stream;
 
+pub(crate) use atif_reader::parse_documents as parse_atif_documents;
+pub use atif_reader::{load_atif_trajectories, AtifReader};
 use atif_stream::stream_projected_atif_steps;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -197,14 +200,6 @@ pub struct FileTrajectoryDataSource {
     metrics: FileTrajectoryQueryMetrics,
 }
 
-pub(crate) type FileTrajectoryProviderParts = (
-    Arc<dyn TableProvider>,
-    Arc<dyn TableProvider>,
-    Arc<dyn TableProvider>,
-    usize,
-    FileTrajectoryQueryMetrics,
-);
-
 impl FileTrajectoryDataSource {
     pub fn open_openai_msg(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::open(path, FileTrajectoryFormat::OpenaiMsg)
@@ -267,16 +262,6 @@ impl FileTrajectoryDataSource {
             file_count,
             metrics,
         })
-    }
-
-    pub(crate) fn into_providers(self) -> FileTrajectoryProviderParts {
-        (
-            self.runs,
-            self.steps,
-            self.tool_calls,
-            self.file_count,
-            self.metrics,
-        )
     }
 
     pub fn format(&self) -> FileTrajectoryFormat {
@@ -897,7 +882,7 @@ fn parse_file(
     batch_size: usize,
 ) -> Result<ParsedFile> {
     let stories = match format {
-        FileTrajectoryFormat::Atif => super::atif_datafusion::parse_documents(content)
+        FileTrajectoryFormat::Atif => parse_atif_documents(content)
             .with_context(|| format!("parse ATIF input {}", file.path().display()))?
             .into_iter()
             .map(|trajectory| atif_to_storyline(&trajectory).map_err(anyhow::Error::from))

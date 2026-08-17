@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
 use persisting_pchronicle::{
-    into_storyline, AtifDataSource, AtifDataSourceOptions, AtifReader, AtifTrajectory,
-    ChronicleFormat, ChronicleQueryEngine, ChronicleQueryExecutionOptions, DocumentFormat,
-    EventIdentity, EventRecord, ExternalTableFormat, ExternalTableSpec, QuerySnapshot, QueryTables,
+    into_storyline, AtifReader, AtifTrajectory, ChronicleFormat, ChronicleQueryEngine,
+    ChronicleQueryExecutionOptions, DocumentFormat, EventIdentity, EventRecord,
+    ExternalTableFormat, ExternalTableSpec, FileTrajectoryDataSource,
+    FileTrajectoryDataSourceOptions, LocalQueryManifest, QuerySnapshot, QueryTables,
     RawEventLanceStore, StoryCoords, StorylineDataFusionTableNames, StorylineLanceStore,
 };
 
@@ -72,30 +73,36 @@ async fn unified_open_reports_backend_capabilities() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn atif_datasource_accepts_json_array_jsonl_and_directory() -> Result<()> {
+#[tokio::test]
+async fn generic_atif_source_accepts_json_array_jsonl_and_directory() -> Result<()> {
     let trajectories = load_trajectories()?;
-    let array = serde_json::to_string(&trajectories)?;
-    let from_array = AtifDataSource::from_json(&array)?;
-    assert_eq!(from_array.document_count(), Some(8));
-    assert_eq!(from_array.step_count(), Some(118));
-    assert_eq!(from_array.tool_call_count(), Some(23));
-
     let dir = tempfile::tempdir()?;
+    let array = dir.path().join("atif-array.json");
+    std::fs::write(&array, serde_json::to_vec(&trajectories)?)?;
+    let from_array = FileTrajectoryDataSource::open_atif(&array)?;
+    let context = from_array.session_context()?;
+    let counts = context
+        .sql("SELECT (SELECT COUNT(*) FROM runs) AS runs, (SELECT COUNT(*) FROM steps) AS steps, (SELECT COUNT(*) FROM tool_calls) AS tool_calls")
+        .await?
+        .collect()
+        .await?;
+    assert_eq!(
+        counts.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        1
+    );
+
     let ndjson = dir.path().join("atif.ndjson");
     write_ndjson(&ndjson, &trajectories)?;
-    let from_jsonl = AtifDataSource::open(&ndjson)?;
-    assert_eq!(from_jsonl.document_count(), None);
-    assert_eq!(from_jsonl.step_count(), None);
+    let from_jsonl = FileTrajectoryDataSource::open_atif(&ndjson)?;
+    assert_eq!(from_jsonl.file_count(), 1);
 
-    let from_directory = AtifDataSource::open(fixture_root())?;
-    assert_eq!(from_directory.document_count(), None);
-    assert_eq!(from_directory.step_count(), None);
+    let from_directory = FileTrajectoryDataSource::open_atif(fixture_root())?;
+    assert_eq!(from_directory.file_count(), 8);
     Ok(())
 }
 
 #[test]
-fn atif_datasource_and_reader_share_the_recursive_manifest() -> Result<()> {
+fn generic_atif_source_and_reader_share_the_recursive_manifest() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let nested = temp.path().join("nested");
     std::fs::create_dir(&nested)?;
@@ -104,15 +111,15 @@ fn atif_datasource_and_reader_share_the_recursive_manifest() -> Result<()> {
         nested.join("input.json"),
     )?;
 
-    let source = AtifDataSource::open(temp.path())?;
-    assert_eq!(source.document_count(), None);
+    let source = FileTrajectoryDataSource::open_atif(temp.path())?;
+    assert_eq!(source.file_count(), 1);
     assert_eq!(AtifReader::open(temp.path())?.count(), 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn default_atif_file_datasource_uses_repeatable_streaming_plan() -> Result<()> {
-    let source = AtifDataSource::open(fixture_root())?;
+    let source = FileTrajectoryDataSource::open_atif(fixture_root())?;
     let context = source.session_context()?;
     let dataframe = context.sql("SELECT COUNT(*) AS steps FROM steps").await?;
     let plan = dataframe.clone().create_physical_plan().await?;
@@ -186,32 +193,17 @@ fn atif_reader_streams_ndjson_and_directories_in_path_order() -> Result<()> {
 }
 
 #[tokio::test]
-async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()> {
-    assert!(AtifDataSource::from_json("").is_err());
-    assert!(AtifDataSource::from_json("[]").is_err());
-    assert!(
-        AtifDataSource::from_json_with_options("{}", AtifDataSourceOptions { batch_size: 0 })
-            .unwrap_err()
-            .to_string()
-            .contains("batch_size")
-    );
-
+async fn generic_atif_source_validates_inputs_and_custom_table_names() -> Result<()> {
     let trajectories = load_trajectories()?;
-    let duplicate = vec![trajectories[0].clone(), trajectories[0].clone()];
-    assert!(AtifDataSource::from_trajectories(&duplicate)
-        .unwrap_err()
-        .to_string()
-        .contains("duplicate ATIF session_id"));
-
     let dir = tempfile::tempdir()?;
-    assert!(AtifDataSource::open(dir.path()).is_err());
+    assert!(FileTrajectoryDataSource::open_atif(dir.path()).is_err());
     let duplicate_jsonl = dir.path().join("duplicate.ndjson");
     let duplicate_line = serde_json::to_string(&trajectories[0])?;
     std::fs::write(
         &duplicate_jsonl,
         format!("{duplicate_line}\n{duplicate_line}\n"),
     )?;
-    let duplicate_source = AtifDataSource::open(&duplicate_jsonl)?;
+    let duplicate_source = FileTrajectoryDataSource::open_atif(&duplicate_jsonl)?;
     let duplicate_error = duplicate_source
         .session_context()?
         .sql("SELECT * FROM runs")
@@ -222,7 +214,7 @@ async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()>
     assert!(format!("{duplicate_error:#}").contains("duplicate atif session_id"));
     let invalid_jsonl = dir.path().join("invalid.jsonl");
     std::fs::write(&invalid_jsonl, "{}\nnot-json\n")?;
-    let invalid_source = AtifDataSource::open(&invalid_jsonl)?;
+    let invalid_source = FileTrajectoryDataSource::open_atif(&invalid_jsonl)?;
     let invalid_error = invalid_source
         .session_context()?
         .sql("SELECT * FROM runs")
@@ -235,9 +227,25 @@ async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()>
         "{invalid_error:#}"
     );
 
-    let source = AtifDataSource::from_trajectories_with_options(
-        &trajectories[..2],
-        AtifDataSourceOptions { batch_size: 3 },
+    let selected = dir.path().join("selected.json");
+    std::fs::write(&selected, serde_json::to_vec(&trajectories[..2])?)?;
+    let manifest = LocalQueryManifest::for_format(&selected, ChronicleFormat::Atif)?;
+    assert!(FileTrajectoryDataSource::from_manifest_with_options(
+        manifest.clone(),
+        FileTrajectoryDataSourceOptions {
+            batch_size: 0,
+            ..FileTrajectoryDataSourceOptions::default()
+        },
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("batch_size"));
+    let source = FileTrajectoryDataSource::from_manifest_with_options(
+        manifest,
+        FileTrajectoryDataSourceOptions {
+            batch_size: 3,
+            ..FileTrajectoryDataSourceOptions::default()
+        },
     )?;
     let context = SessionContext::new();
     source.register_as(
@@ -272,8 +280,11 @@ async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()>
     assert!(source.register_as(&context, &empty_name).is_err());
 
     let missing = dir.path().join("missing.json");
-    assert!(AtifDataSource::open(missing).is_err());
-    assert_eq!(AtifDataSource::open(dir.path())?.file_count(), 2);
+    assert!(FileTrajectoryDataSource::open_atif(missing).is_err());
+    assert_eq!(
+        FileTrajectoryDataSource::open_atif(dir.path())?.file_count(),
+        3
+    );
     Ok(())
 }
 

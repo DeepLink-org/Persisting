@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::{
-    from_storyline, into_storyline, AtifDataSource, AtifTrajectory, ChronicleFormat,
+    from_storyline, into_storyline, AtifTrajectory, ChronicleFormat, FileTrajectoryDataSource,
     StorylineDataSource, StorylineDocument, StorylineLanceStore,
 };
 
@@ -73,7 +73,7 @@ fn main() -> Result<()> {
 
 struct Comparison {
     lance: Duration,
-    atif_datafusion: Duration,
+    atif_file: Duration,
     json_scan: Duration,
     json_memory: Duration,
 }
@@ -127,7 +127,7 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     std::fs::write(&json_path, json_document.as_bytes())?;
     let json_write = json_write_started.elapsed();
     let atif_open_started = Instant::now();
-    let atif_source = AtifDataSource::open(&json_path)?;
+    let atif_source = FileTrajectoryDataSource::open_atif(&json_path)?;
     let atif_open = atif_open_started.elapsed();
     let atif_context = atif_source.session_context()?;
     let parsed = atif_lines
@@ -191,7 +191,7 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
 
     let selective = Comparison {
         lance: time_async_query(&selective_query, iterations).await?,
-        atif_datafusion: time_async_query(&atif_selective_query, iterations).await?,
+        atif_file: time_async_query(&atif_selective_query, iterations).await?,
         json_scan: time_sync(iterations, || {
             json_selective_query(&json_path, &target_session)
         })?,
@@ -201,7 +201,7 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     };
     let analytical = Comparison {
         lance: time_async_query(&analytical_query, iterations).await?,
-        atif_datafusion: time_async_query(&atif_analytical_query, iterations).await?,
+        atif_file: time_async_query(&atif_analytical_query, iterations).await?,
         json_scan: time_sync(iterations, || json_analysis(&json_path))?,
         json_memory: time_sync(iterations, || Ok(json_memory_analysis(&parsed)))?,
     };
@@ -378,9 +378,8 @@ fn time_sync<T>(iterations: usize, mut operation: impl FnMut() -> Result<T>) -> 
 
 fn print_comparison(id: &str, name: &str, iterations: usize, comparison: &Comparison) {
     let lance_qps = iterations as f64 / comparison.lance.as_secs_f64();
-    let atif_qps = iterations as f64 / comparison.atif_datafusion.as_secs_f64();
-    let atif_over_lance_time =
-        comparison.atif_datafusion.as_secs_f64() / comparison.lance.as_secs_f64();
+    let atif_qps = iterations as f64 / comparison.atif_file.as_secs_f64();
+    let atif_over_lance_time = comparison.atif_file.as_secs_f64() / comparison.lance.as_secs_f64();
     println!("{name}:");
     println!(
         "  Lance/DataFusion indexed: {:?} ({:.1} queries/s)",
@@ -388,7 +387,7 @@ fn print_comparison(id: &str, name: &str, iterations: usize, comparison: &Compar
     );
     println!(
         "  ATIF/DataFusion stream:   {:?} ({:.1} queries/s, Lance speed ratio {:.2}x)",
-        comparison.atif_datafusion, atif_qps, atif_over_lance_time
+        comparison.atif_file, atif_qps, atif_over_lance_time
     );
     println!(
         "  JSON read+Serde scan:     {:?} ({:.1} queries/s, Lance {:.2}x faster)",
@@ -416,9 +415,9 @@ fn print_conclusion(result: &BenchmarkResult) {
     let group_disk_speedup =
         result.analytical.json_scan.as_secs_f64() / result.analytical.lance.as_secs_f64();
     let selective_memory_ratio =
-        result.selective.atif_datafusion.as_secs_f64() / result.selective.lance.as_secs_f64();
+        result.selective.atif_file.as_secs_f64() / result.selective.lance.as_secs_f64();
     let group_memory_ratio =
-        result.analytical.atif_datafusion.as_secs_f64() / result.analytical.lance.as_secs_f64();
+        result.analytical.atif_file.as_secs_f64() / result.analytical.lance.as_secs_f64();
     println!("Conclusion:");
     println!(
         "  Storage: Lance uses {:.2}% of JSON space, saving {:.2}%.",

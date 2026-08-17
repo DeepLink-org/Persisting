@@ -80,7 +80,7 @@ use self::content::{
     hydrate_batches, open_objects, prune_unreferenced_objects, PendingContent,
     STORYLINE_OBJECTS_DATASET,
 };
-use super::atif_datafusion::AtifReader;
+use super::AtifReader;
 use super::{root_write_lock, LanceMaintenanceOptions, LanceMaintenanceReport};
 
 const CURRENT_FILE: &str = "CURRENT";

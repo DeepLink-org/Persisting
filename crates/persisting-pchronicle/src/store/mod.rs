@@ -10,8 +10,6 @@ use anyhow::Context as _;
 #[cfg(feature = "lance-store")]
 mod agenticmd_datafusion;
 #[cfg(feature = "lance-store")]
-mod atif_datafusion;
-#[cfg(feature = "lance-store")]
 mod attempt_registry;
 #[cfg(feature = "lance-store")]
 mod catalog;
@@ -45,10 +43,6 @@ mod storyline_model;
 #[cfg(feature = "lance-store")]
 pub(crate) use agenticmd_datafusion::AgenticMdDataSource;
 #[cfg(feature = "lance-store")]
-pub use atif_datafusion::{
-    load_atif_trajectories, AtifDataSource, AtifDataSourceOptions, AtifReader,
-};
-#[cfg(feature = "lance-store")]
 pub use attempt_registry::{
     unix_now_ms as attempt_registry_now_ms, AttemptRecord, AttemptRecordState, AttemptRegistry,
 };
@@ -79,10 +73,11 @@ pub use events::{
 };
 #[cfg(feature = "lance-store")]
 pub use files::{
-    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryFormat,
-    FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot, DEFAULT_LOCAL_QUERY_BATCH_SIZE,
-    DEFAULT_LOCAL_QUERY_CACHE_BYTES, DEFAULT_LOCAL_QUERY_CACHE_FILES,
-    DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, SOURCE_FILE_COLUMN,
+    load_atif_trajectories, AtifReader, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
+    FileTrajectoryFormat, FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot,
+    DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
+    DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+    DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, SOURCE_FILE_COLUMN,
 };
 #[cfg(feature = "lance-store")]
 pub use local_query_manifest::{
