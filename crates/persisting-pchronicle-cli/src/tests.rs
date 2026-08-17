@@ -1,4 +1,37 @@
 use super::*;
+
+#[tokio::test]
+async fn trajectory_append_uses_persisting_events_protocol_directly() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let request = persisting_events::TrajectoryAppendRequest {
+        storage: temporary.path().to_string_lossy().into_owned(),
+        agent_id: "agent".into(),
+        session_id: "session".into(),
+        root_session_id: None,
+        records: vec![persisting_events::EventRecord {
+            identity: persisting_events::EventIdentity::default(),
+            seq: 1,
+            source: "test".into(),
+            kind: "note".into(),
+            timestamp: None,
+            session_id: Some("session".into()),
+            agent_id: Some("agent".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: serde_json::json!({"content": "hello"}),
+        }],
+    };
+    let response: persisting_events::TrajectoryAppendResponse =
+        crate::control::append_trajectory(request).await?;
+    assert_eq!(response.accepted_records, 1);
+    assert_eq!(response.status, "ok");
+    Ok(())
+}
 use clap::CommandFactory;
 use serde_json::Value;
 use std::fs;

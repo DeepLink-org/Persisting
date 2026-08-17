@@ -5,11 +5,16 @@
 
 use anyhow::{Context, Result};
 use persisting_events::{
+    AttemptRecord as ProtocolAttemptRecord, AttemptRecordState as ProtocolAttemptRecordState,
     ChronicleControlEnvelope, ChronicleControlReady, ChronicleControlRequest,
     ChronicleControlResponse, ChronicleControlResponseEnvelope, CommitRunOutcome,
-    LeaseAcquireOutcome, CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION,
+    LeaseAcquireOutcome, TrajectoryAppendRequest, TrajectoryAppendResponse,
+    CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION,
 };
-use persisting_pchronicle::{AttemptRegistry, RunControlStore};
+use persisting_pchronicle::{
+    AttemptRecord, AttemptRecordState, AttemptRegistry, RawEventLanceStore, RunControlStore,
+    StoryCoords,
+};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -181,7 +186,7 @@ async fn handle_request(
         Request::GetRun { run_id } => Response::Run(control.get(&run_id).await?),
         Request::ListRuns => Response::Runs(control.list().await?),
         Request::GetAttempt { run_id } => {
-            Response::Attempt(transcode(attempts.get(&run_id).await?)?)
+            Response::Attempt(attempts.get(&run_id).await?.map(map_attempt_record))
         }
         Request::PublishAttemptActive {
             run_id,
@@ -213,13 +218,11 @@ async fn handle_request(
                 .publish_terminal(&run_id, &attempt_id, lease_epoch, result)
                 .await?,
         ),
-        Request::AppendTrajectory(request) => {
-            let request = transcode(request)?;
-            let response = persisting_pchronicle::operations::trajectory::append_async(request)
+        Request::AppendTrajectory(request) => Response::TrajectoryAppend(
+            append_trajectory(request)
                 .await
-                .context("append trajectory")?;
-            Response::TrajectoryAppend(transcode(response)?)
-        }
+                .context("append trajectory")?,
+        ),
     })
 }
 
@@ -256,6 +259,46 @@ fn map_commit_outcome(value: persisting_pchronicle::CommitRunOutcome) -> CommitR
     }
 }
 
-fn transcode<T: serde::Serialize, U: serde::de::DeserializeOwned>(value: T) -> Result<U> {
-    serde_json::from_value(serde_json::to_value(value)?).context("translate control protocol value")
+fn map_attempt_record(value: AttemptRecord) -> ProtocolAttemptRecord {
+    ProtocolAttemptRecord {
+        revision: value.revision,
+        run_id: value.run_id,
+        attempt_id: value.attempt_id,
+        lease_epoch: value.lease_epoch,
+        state: match value.state {
+            AttemptRecordState::Active => ProtocolAttemptRecordState::Active,
+            AttemptRecordState::Terminal => ProtocolAttemptRecordState::Terminal,
+        },
+        heartbeat_at_unix_ms: value.heartbeat_at_unix_ms,
+        expires_at_unix_ms: value.expires_at_unix_ms,
+        terminal_result: value.terminal_result,
+    }
+}
+
+pub(crate) async fn append_trajectory(
+    request: TrajectoryAppendRequest,
+) -> Result<TrajectoryAppendResponse> {
+    let session = StoryCoords::new(
+        &request.storage,
+        &request.agent_id,
+        &request.session_id,
+        request.root_session_id.clone(),
+    );
+    let store = RawEventLanceStore;
+    let accepted_records = request.records.len();
+    let note = if request.records.is_empty() {
+        "No non-empty records; storage unchanged.".to_string()
+    } else {
+        let outcome = store.append_events(&session, &request.records).await?;
+        format!("canonical Lance event log. {}", outcome.note)
+    };
+    Ok(TrajectoryAppendResponse {
+        dataset: store.display_path(&session)?,
+        storage: request.storage,
+        agent_id: request.agent_id,
+        session_id: request.session_id,
+        accepted_records,
+        status: "ok".into(),
+        note,
+    })
 }
