@@ -5,16 +5,15 @@ use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 
 use crate::formats::actf::{
-    ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric, ActfObservation, ActfStep,
-    ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
+    ActfAttempt, ActfDocument, ActfObservation, ActfStep, ActfToolCall, ActfTrajectory,
+    ACTF_SCHEMA_VERSION,
 };
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
 use crate::{Error, Result};
 
-const ACTF_PROVENANCE_KEY: &str = "_pchronicle_actf";
-const ACTF_STEP_KEY: &str = "_pchronicle_actf_step";
+const ACTF_EXTENSION_KEY: &str = "persisting.dev/actf/v1";
 
 pub fn actf_to_storyline(document: &ActfDocument) -> Result<StorylineDocument> {
     let mut stories = actf_to_storylines(document)?;
@@ -56,73 +55,84 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
             "ACTF conversion requires at least one Storyline".into(),
         ));
     }
-    let provenance_count = stories
+    let residual_count = stories
         .iter()
-        .filter(|story| provenance(story).is_some())
+        .filter(|story| residual(story).is_some())
         .count();
-    if provenance_count == 0 {
+    if residual_count == 0 {
         if stories.len() != 1 {
             return Err(Error::Other(
-                "synthesizing ACTF without provenance requires one Storyline".into(),
+                "synthesizing ACTF without residual metadata requires one Storyline".into(),
             ));
         }
         return synthesize_actf(&stories[0]);
     }
-    if provenance_count != stories.len() {
+    if residual_count != stories.len() {
         return Err(Error::Other(
-            "cannot mix ACTF-provenance and unrelated Storylines".into(),
+            "cannot mix ACTF residual and unrelated Storylines".into(),
         ));
     }
 
-    let first = provenance(&stories[0])
-        .ok_or_else(|| Error::Other("ACTF provenance disappeared during conversion".into()))?;
+    let first = residual(&stories[0])
+        .ok_or_else(|| Error::Other("ACTF residual disappeared during conversion".into()))?;
     let root_value = first
         .get("root")
         .and_then(Value::as_object)
-        .ok_or_else(|| Error::Other("ACTF provenance missing root metadata".into()))?
+        .ok_or_else(|| Error::Other("ACTF residual missing root metadata".into()))?
         .clone();
     let mut attempts = Map::new();
     for story in stories {
         story.validate()?;
-        let metadata = provenance(story)
-            .ok_or_else(|| Error::Other("ACTF provenance disappeared during conversion".into()))?;
+        let metadata = residual(story)
+            .ok_or_else(|| Error::Other("ACTF residual disappeared during conversion".into()))?;
         if metadata.get("root").and_then(Value::as_object) != Some(&root_value) {
             return Err(Error::Other(
-                "ACTF Storylines have conflicting root metadata".into(),
+                "ACTF Storylines have conflicting root residual".into(),
             ));
         }
         let attempt_id = metadata
             .get("attempt_id")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::Other("ACTF provenance missing attempt_id".into()))?;
+            .ok_or_else(|| Error::Other("ACTF residual missing attempt_id".into()))?;
         let mut attempt = metadata
             .get("attempt")
             .and_then(Value::as_object)
             .cloned()
-            .ok_or_else(|| Error::Other("ACTF provenance missing attempt metadata".into()))?;
+            .ok_or_else(|| Error::Other("ACTF residual missing attempt metadata".into()))?;
         let mut trajectory = metadata
             .get("trajectory")
             .and_then(Value::as_object)
             .cloned()
-            .ok_or_else(|| Error::Other("ACTF provenance missing trajectory metadata".into()))?;
+            .ok_or_else(|| Error::Other("ACTF residual missing trajectory metadata".into()))?;
         let steps = story
             .turns
             .iter()
-            .map(|turn| {
-                turn.extra
-                    .as_ref()
-                    .and_then(|extra| extra.get(ACTF_STEP_KEY))
-                    .cloned()
-                    .ok_or_else(|| {
-                        Error::Other(format!(
-                            "Storyline '{}' step {} lacks ACTF lossless step metadata",
-                            story.session_id, turn.id
-                        ))
-                    })
-            })
+            .map(storyline_step_value)
             .collect::<Result<Vec<_>>>()?;
         trajectory.insert("steps".into(), Value::Array(steps));
+        let metrics = story.final_metrics.as_ref().and_then(Value::as_object);
+        attempt.insert(
+            "correct".into(),
+            metrics
+                .and_then(|value| value.get("correct"))
+                .cloned()
+                .unwrap_or(Value::Bool(false)),
+        );
+        attempt.insert(
+            "score".into(),
+            metrics
+                .and_then(|value| value.get("score"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        attempt.insert(
+            "status".into(),
+            metrics
+                .and_then(|value| value.get("status"))
+                .cloned()
+                .unwrap_or_else(|| Value::String("completed".into())),
+        );
         attempt.insert("trajectory".into(), Value::Object(trajectory));
         if attempts
             .insert(attempt_id.to_string(), Value::Object(attempt))
@@ -135,6 +145,24 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
     }
 
     let mut root = root_value;
+    root.insert(
+        "task_id".into(),
+        Value::String(
+            stories[0]
+                .run_id
+                .clone()
+                .unwrap_or_else(|| stories[0].session_id.clone()),
+        ),
+    );
+    root.insert(
+        "correct".into(),
+        stories[0]
+            .final_metrics
+            .as_ref()
+            .and_then(|value| value.get("task_correct"))
+            .cloned()
+            .unwrap_or(Value::Bool(false)),
+    );
     root.insert("attempts".into(), Value::Object(attempts));
     let document: ActfDocument = serde_json::from_value(Value::Object(root))?;
     document.validate()?;
@@ -142,7 +170,7 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
 }
 
 pub fn is_actf_storyline(story: &StorylineDocument) -> bool {
-    provenance(story).is_some()
+    residual(story).is_some()
 }
 
 fn attempt_to_storyline(
@@ -152,27 +180,33 @@ fn attempt_to_storyline(
     root_metadata: &Value,
     multiple_attempts: bool,
 ) -> Result<StorylineDocument> {
-    let attempt_metadata = attempt_metadata(attempt)?;
-    let trajectory_metadata = trajectory_metadata(&attempt.trajectory)?;
+    let attempt_metadata = attempt_residual(attempt)?;
+    let trajectory_metadata = trajectory_residual(&attempt.trajectory)?;
     let mut turns = Vec::with_capacity(attempt.trajectory.steps.len());
     for step in &attempt.trajectory.steps {
-        let tool_calls = (!step.tools.is_empty()).then(|| {
-            step.tools
-                .iter()
-                .map(|call| StorylineToolCall {
-                    tool_call_id: call.id.clone(),
-                    function_name: actf_tool_name(call),
-                    arguments: actf_tool_arguments(call),
-                    result: Default::default(),
-                    duration_ms: if step.tools.len() == 1 {
-                        step.metric.env_action_ms.as_f64().map(|value| value as i64)
-                    } else {
-                        None
-                    },
-                    extra: Some(json!({"actf_type": call.kind, "actf_extra": call.extra})),
-                })
-                .collect::<Vec<_>>()
-        });
+        let tool_calls = (!step.tools.is_empty())
+            .then(|| {
+                step.tools
+                    .iter()
+                    .map(|call| {
+                        Ok(StorylineToolCall {
+                            tool_call_id: call.id.clone(),
+                            function_name: actf_tool_name(call),
+                            arguments: actf_tool_arguments(call),
+                            result: Default::default(),
+                            duration_ms: if step.tools.len() == 1 {
+                                step.metric.env_action_ms.as_f64().map(|value| value as i64)
+                            } else {
+                                None
+                            },
+                            extra: Some(json!({
+                                ACTF_EXTENSION_KEY: tool_residual(call)?,
+                            })),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?;
         let observation = (!step.observation.is_empty()).then(|| {
             let results = step
                 .observation
@@ -210,7 +244,9 @@ fn attempt_to_storyline(
             is_copied_context: None,
             latency_ms: step.metric.llm_infer_ms.as_f64().map(|value| value as i64),
             ttft_ms: None,
-            extra: Some(json!({ "_pchronicle_actf_step": step })),
+            extra: Some(json!({
+                ACTF_EXTENSION_KEY: step_residual(step)?,
+            })),
         });
     }
 
@@ -243,7 +279,7 @@ fn attempt_to_storyline(
         })),
         continued_trajectory_ref: None,
         extra: Some(json!({
-            "_pchronicle_actf": {
+            ACTF_EXTENSION_KEY: {
                 "root": root_metadata,
                 "attempt_id": attempt_id,
                 "attempt": attempt_metadata,
@@ -339,24 +375,59 @@ fn synthesize_actf(story: &StorylineDocument) -> Result<ActfDocument> {
 }
 
 fn synthesize_step(turn: &StorylineTurn) -> Result<ActfStep> {
+    serde_json::from_value(storyline_step_value(turn)?)
+        .map_err(|error| Error::Other(format!("build ACTF step {}: {error}", turn.id)))
+}
+
+fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
     let tools = turn
         .tool_calls
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .map(|call| ActfToolCall {
-            kind: call
+        .map(|call| {
+            let metadata = call
                 .extra
                 .as_ref()
-                .and_then(|extra| extra.get("actf_type"))
+                .and_then(|extra| extra.get(ACTF_EXTENSION_KEY))
+                .and_then(Value::as_object);
+            let mut tool = metadata
+                .and_then(|value| value.get("residual"))
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let kind = metadata
+                .and_then(|value| value.get("kind"))
                 .and_then(Value::as_str)
-                .unwrap_or("tool_use")
-                .to_string(),
-            id: call.tool_call_id.clone(),
-            extra: Map::from_iter([
-                ("name".into(), Value::String(call.function_name.clone())),
-                ("input".into(), call.arguments.clone()),
-            ]),
+                .unwrap_or("tool_use");
+            tool.insert("type".into(), Value::String(kind.into()));
+            tool.insert("id".into(), Value::String(call.tool_call_id.clone()));
+            if metadata
+                .and_then(|value| value.get("name_present"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+            {
+                tool.insert("name".into(), Value::String(call.function_name.clone()));
+            }
+            match metadata
+                .and_then(|value| value.get("arguments_key"))
+                .and_then(Value::as_str)
+                .unwrap_or("input")
+            {
+                "command" => {
+                    let command = call
+                        .arguments
+                        .get("command")
+                        .cloned()
+                        .unwrap_or_else(|| call.arguments.clone());
+                    tool.insert("command".into(), command);
+                }
+                "none" => {}
+                _ => {
+                    tool.insert("input".into(), call.arguments.clone());
+                }
+            }
+            Value::Object(tool)
         })
         .collect::<Vec<_>>();
     let observations = turn
@@ -367,61 +438,58 @@ fn synthesize_step(turn: &StorylineTurn) -> Result<ActfStep> {
         .into_iter()
         .flatten()
         .map(|result| {
-            let tool_use_id = result
-                .get("tool_use_id")
-                .or_else(|| result.get("source_call_id"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
             let mut extra = result.as_object().cloned().unwrap_or_default();
-            extra.remove("type");
             extra.remove("source_call_id");
-            extra
-                .entry("tool_use_id")
-                .or_insert(Value::String(tool_use_id));
-            ActfObservation {
-                kind: result
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool_result")
-                    .to_string(),
-                extra,
-            }
+            Value::Object(extra)
         })
         .collect::<Vec<_>>();
-    let metric = turn
-        .metrics
-        .clone()
-        .and_then(|value| serde_json::from_value::<ActfMetric>(value).ok())
-        .unwrap_or(ActfMetric {
-            prompt_tokens_len: json!(0),
-            completion_tokens_len: json!(0),
-            llm_infer_ms: turn.latency_ms.map_or(Value::Null, |value| json!(value)),
-            env_action_ms: Value::Null,
-            stop_reason: Value::Null,
-            extra: Map::new(),
-        });
+    let metric = turn.metrics.clone().unwrap_or_else(|| {
+        json!({
+            "prompt_tokens_len": 0,
+            "completion_tokens_len": 0,
+            "llm_infer_ms": turn.latency_ms.map_or(Value::Null, |value| json!(value)),
+            "env_action_ms": Value::Null,
+            "stop_reason": Value::Null,
+        })
+    });
     let timestamp = turn
         .timestamp
         .clone()
         .unwrap_or_else(|| "1970-01-01 00:00:00+00:00".into());
-    Ok(ActfStep {
-        step_id: turn.id,
-        assistant_content: ActfAssistantContent {
-            content: turn.message.as_str().unwrap_or("").to_string(),
-            reasoning_content: turn.reasoning_content.clone().unwrap_or_default(),
-            tool_calls: tools.clone(),
-            extra: Map::new(),
-        },
-        metric,
-        system_prompt: String::new(),
-        user_content: String::new(),
-        tools,
-        observation: observations,
-        started_at: timestamp.clone(),
-        finished_at: timestamp,
-        extra: Map::new(),
-    })
+    let metadata = turn
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get(ACTF_EXTENSION_KEY))
+        .and_then(Value::as_object);
+    let mut assistant = metadata
+        .and_then(|value| value.get("assistant_content"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    assistant.insert(
+        "content".into(),
+        Value::String(turn.message.as_str().unwrap_or("").to_string()),
+    );
+    assistant.insert(
+        "reasoning_content".into(),
+        Value::String(turn.reasoning_content.clone().unwrap_or_default()),
+    );
+    assistant.insert("tool_calls".into(), Value::Array(tools.clone()));
+
+    let mut step = Map::new();
+    step.insert("step_id".into(), json!(turn.id));
+    step.insert("assistant_content".into(), Value::Object(assistant));
+    step.insert("metric".into(), metric);
+    step.insert("tools".into(), Value::Array(tools));
+    step.insert("observation".into(), Value::Array(observations));
+    step.insert("started_at".into(), Value::String(timestamp));
+    if let Some(residual) = metadata
+        .and_then(|value| value.get("step"))
+        .and_then(Value::as_object)
+    {
+        merge_residual(&mut step, residual, "step");
+    }
+    Ok(Value::Object(step))
 }
 
 fn actf_tool_name(call: &ActfToolCall) -> String {
@@ -453,23 +521,27 @@ fn actf_observation_call_id(observation: &ActfObservation) -> Option<&str> {
 
 fn root_metadata(document: &ActfDocument) -> Result<Value> {
     let mut value = serde_json::to_value(document)?;
-    value
+    let object = value
         .as_object_mut()
-        .ok_or_else(|| Error::Other("serialized ACTF document must be an object".into()))?
-        .remove("attempts");
+        .ok_or_else(|| Error::Other("serialized ACTF document must be an object".into()))?;
+    for key in ["task_id", "correct", "attempts"] {
+        object.remove(key);
+    }
     Ok(value)
 }
 
-fn attempt_metadata(attempt: &ActfAttempt) -> Result<Value> {
+fn attempt_residual(attempt: &ActfAttempt) -> Result<Value> {
     let mut value = serde_json::to_value(attempt)?;
-    value
+    let object = value
         .as_object_mut()
-        .ok_or_else(|| Error::Other("serialized ACTF attempt must be an object".into()))?
-        .remove("trajectory");
+        .ok_or_else(|| Error::Other("serialized ACTF attempt must be an object".into()))?;
+    for key in ["correct", "score", "status", "trajectory"] {
+        object.remove(key);
+    }
     Ok(value)
 }
 
-fn trajectory_metadata(trajectory: &ActfTrajectory) -> Result<Value> {
+fn trajectory_residual(trajectory: &ActfTrajectory) -> Result<Value> {
     let mut value = serde_json::to_value(trajectory)?;
     value
         .as_object_mut()
@@ -478,8 +550,68 @@ fn trajectory_metadata(trajectory: &ActfTrajectory) -> Result<Value> {
     Ok(value)
 }
 
-fn provenance(story: &StorylineDocument) -> Option<&Map<String, Value>> {
-    story.extra.as_ref()?.get(ACTF_PROVENANCE_KEY)?.as_object()
+fn step_residual(step: &ActfStep) -> Result<Value> {
+    let mut value = serde_json::to_value(step)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| Error::Other("serialized ACTF step must be an object".into()))?;
+    let mut assistant = object
+        .remove("assistant_content")
+        .and_then(|value| value.as_object().cloned())
+        .ok_or_else(|| {
+            Error::Other("serialized ACTF assistant_content must be an object".into())
+        })?;
+    for key in ["content", "reasoning_content", "tool_calls"] {
+        assistant.remove(key);
+    }
+    for key in ["step_id", "metric", "tools", "observation", "started_at"] {
+        object.remove(key);
+    }
+    let mut residual = Map::new();
+    residual.insert("step".into(), Value::Object(object.clone()));
+    residual.insert("assistant_content".into(), Value::Object(assistant));
+    Ok(Value::Object(residual))
+}
+
+fn tool_residual(call: &ActfToolCall) -> Result<Value> {
+    let name_present = call.extra.contains_key("name");
+    let arguments_key = if call.extra.contains_key("input") {
+        "input"
+    } else if call.extra.contains_key("command") {
+        "command"
+    } else {
+        "none"
+    };
+    let mut residual = call.extra.clone();
+    residual.remove("name");
+    residual.remove("input");
+    residual.remove("command");
+    Ok(json!({
+        "kind": call.kind,
+        "name_present": name_present,
+        "arguments_key": arguments_key,
+        "residual": residual,
+    }))
+}
+
+fn merge_residual(target: &mut Map<String, Value>, residual: &Map<String, Value>, scope: &str) {
+    for (key, value) in residual {
+        if target.contains_key(key) {
+            tracing::warn!(
+                source_format = "actf",
+                source_key = %key,
+                target_key = %key,
+                scope,
+                "ACTF residual conflicts with an authoritative Storyline field"
+            );
+            continue;
+        }
+        target.insert(key.clone(), value.clone());
+    }
+}
+
+fn residual(story: &StorylineDocument) -> Option<&Map<String, Value>> {
+    story.extra.as_ref()?.get(ACTF_EXTENSION_KEY)?.as_object()
 }
 
 #[cfg(test)]
@@ -516,6 +648,49 @@ mod tests {
             "/app"
         );
         assert_eq!(storyline_to_actf(&story).unwrap(), document);
+    }
+
+    #[test]
+    fn actf_residual_preserves_unknowns_but_storyline_fields_are_authoritative() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["root_unknown"] = Value::Null;
+        value["attempts"]["1"]["attempt_unknown"] = json!([3, 2, 1]);
+        value["attempts"]["1"]["trajectory"]["trajectory_unknown"] = json!({"x": 1});
+        value["attempts"]["1"]["trajectory"]["steps"][0]["step_unknown"] = Value::Null;
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]
+            ["assistant_unknown"] = json!("kept");
+        value["attempts"]["1"]["trajectory"]["steps"][0]["tools"][0]["tool_unknown"] = Value::Null;
+        value["attempts"]["1"]["trajectory"]["steps"][0]["assistant_content"]["tool_calls"][0]
+            ["tool_unknown"] = Value::Null;
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+
+        let mut story = actf_to_storyline(&document).unwrap();
+        assert!(!serde_json::to_string(&story)
+            .unwrap()
+            .contains("_pchronicle_"));
+        story.turns[0].message = json!("changed by Storyline");
+        story.turns[0].reasoning_content = Some("new reasoning".into());
+
+        let recovered = storyline_to_actf(&story).unwrap();
+        let recovered = serde_json::to_value(recovered).unwrap();
+        let step = &recovered["attempts"]["1"]["trajectory"]["steps"][0];
+        assert_eq!(step["assistant_content"]["content"], "changed by Storyline");
+        assert_eq!(
+            step["assistant_content"]["reasoning_content"],
+            "new reasoning"
+        );
+        assert_eq!(recovered["root_unknown"], Value::Null);
+        assert_eq!(
+            recovered["attempts"]["1"]["attempt_unknown"],
+            json!([3, 2, 1])
+        );
+        assert_eq!(
+            recovered["attempts"]["1"]["trajectory"]["trajectory_unknown"],
+            json!({"x": 1})
+        );
+        assert_eq!(step["step_unknown"], Value::Null);
+        assert_eq!(step["assistant_content"]["assistant_unknown"], "kept");
+        assert_eq!(step["tools"][0]["tool_unknown"], Value::Null);
     }
 
     #[test]
