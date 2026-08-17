@@ -482,7 +482,13 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
     step.insert("metric".into(), metric);
     step.insert("tools".into(), Value::Array(tools));
     step.insert("observation".into(), Value::Array(observations));
-    step.insert("started_at".into(), Value::String(timestamp));
+    let timestamp_style = metadata
+        .and_then(|value| value.get("started_at_style"))
+        .and_then(Value::as_str);
+    step.insert(
+        "started_at".into(),
+        Value::String(format_actf_timestamp(&timestamp, timestamp_style)?),
+    );
     if let Some(residual) = metadata
         .and_then(|value| value.get("step"))
         .and_then(Value::as_object)
@@ -570,6 +576,10 @@ fn step_residual(step: &ActfStep) -> Result<Value> {
     let mut residual = Map::new();
     residual.insert("step".into(), Value::Object(object.clone()));
     residual.insert("assistant_content".into(), Value::Object(assistant));
+    residual.insert(
+        "started_at_style".into(),
+        Value::String(timestamp_style(&step.started_at).into()),
+    );
     Ok(Value::Object(residual))
 }
 
@@ -608,6 +618,29 @@ fn merge_residual(target: &mut Map<String, Value>, residual: &Map<String, Value>
         }
         target.insert(key.clone(), value.clone());
     }
+}
+
+fn timestamp_style(value: &str) -> &'static str {
+    if value.contains(' ') {
+        "space-offset"
+    } else if value.ends_with('Z') {
+        "rfc3339-z"
+    } else {
+        "rfc3339-offset"
+    }
+}
+
+fn format_actf_timestamp(value: &str, style: Option<&str>) -> Result<String> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(value).map_err(|error| {
+        Error::Other(format!(
+            "format ACTF timestamp '{value}' from Storyline: {error}"
+        ))
+    })?;
+    Ok(match style {
+        Some("space-offset") => timestamp.format("%Y-%m-%d %H:%M:%S%:z").to_string(),
+        Some("rfc3339-offset") => timestamp.to_rfc3339(),
+        _ => timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+    })
 }
 
 fn residual(story: &StorylineDocument) -> Option<&Map<String, Value>> {

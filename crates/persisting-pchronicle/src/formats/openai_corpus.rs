@@ -2,9 +2,8 @@
 //!
 //! Unlike [`super::openai_msg`], which models one `session_steps.json`
 //! document, this adapter accepts a top-level array containing rows from many
-//! sessions.  The original row is retained in Storyline `extra`, so the
-//! normalized three-table projection remains queryable without making the
-//! reverse conversion depend on that projection.
+//! sessions. Unmapped container and row fields are retained as hierarchical
+//! residuals; mapped content is always regenerated from Storyline.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -18,9 +17,15 @@ use crate::formats::storyline::{
 };
 use crate::{Error, Result};
 
-const LOSSLESS_FILE_KEY: &str = "_pchronicle_openai_file";
-const LOSSLESS_RECORD_KEY: &str = "_pchronicle_openai_record";
-const NORMALIZED_CONTEXT_KEY: &str = "_pchronicle_openai_context";
+const OPENAI_EXTENSION_KEY: &str = "persisting.dev/openai-msg/v1";
+const ROW_METRIC_FIELDS: &[&str] = &[
+    "reward",
+    "step_reward",
+    "is_terminal",
+    "is_truncated",
+    "is_session_completed",
+    "is_trainable",
+];
 
 /// One source JSON file reconstructed from lossless OpenAI import metadata.
 #[derive(Debug, Clone, PartialEq)]
@@ -159,7 +164,7 @@ pub fn recover_openai_msg_files(
         let file = story
             .extra
             .as_ref()
-            .and_then(|extra| extra.get(LOSSLESS_FILE_KEY))
+            .and_then(|extra| extra.get(OPENAI_EXTENSION_KEY))
             .and_then(Value::as_object)
             .ok_or_else(|| {
                 Error::Other(format!(
@@ -195,18 +200,18 @@ pub fn recover_openai_msg_files(
         }
 
         for turn in &story.turns {
+            if turn.source == "user" {
+                continue;
+            }
             let extra = turn.extra.as_ref().ok_or_else(|| {
                 Error::Other(format!(
                     "Storyline '{}' step {} has no OpenAI provenance",
                     story.session_id, turn.id
                 ))
             })?;
-            let Some(record) = extra.get(LOSSLESS_RECORD_KEY).and_then(Value::as_object) else {
-                if extra.get(NORMALIZED_CONTEXT_KEY).is_some() {
-                    continue;
-                }
+            let Some(record) = extra.get(OPENAI_EXTENSION_KEY).and_then(Value::as_object) else {
                 return Err(Error::Other(format!(
-                    "Storyline '{}' step {} has no lossless OpenAI record",
+                    "Storyline '{}' step {} has no OpenAI residual",
                     story.session_id, turn.id
                 )));
             };
@@ -224,10 +229,7 @@ pub fn recover_openai_msg_files(
                 .get("ordinal")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| Error::Other("OpenAI record missing ordinal".into()))?;
-            let raw = record
-                .get("value")
-                .cloned()
-                .ok_or_else(|| Error::Other("OpenAI record missing value".into()))?;
+            let raw = recover_record(story, turn, record)?;
             group.records.push((ordinal, raw));
         }
     }
@@ -296,7 +298,7 @@ pub fn is_lossless_openai_storyline(story: &StorylineDocument) -> bool {
     story
         .extra
         .as_ref()
-        .and_then(|extra| extra.get(LOSSLESS_FILE_KEY))
+        .and_then(|extra| extra.get(OPENAI_EXTENSION_KEY))
         .and_then(Value::as_object)
         .is_some()
 }
@@ -373,7 +375,7 @@ fn rows_to_storyline(
             }
         }
 
-        let output = select_output_message(row).ok_or_else(|| {
+        let (output, output_location) = select_output_message(row).ok_or_else(|| {
             Error::Other(format!(
                 "OpenAI corpus {} row {} has no assistant output",
                 relative_path, ordinal
@@ -405,13 +407,15 @@ fn rows_to_storyline(
             .map(str::to_string)
             .unwrap_or_else(|| format!("step-{step_id}"));
         let request_messages = row.get("messages").cloned();
-        if let Some(message) = last_user_message(request_messages.as_ref()) {
+        let user_message = last_user_message(request_messages.as_ref());
+        let user_turn_id = user_message.as_ref().map(|_| next_turn_id);
+        if let Some((_, message)) = user_message.as_ref() {
             turns.push(StorylineTurn {
                 id: next_turn_id,
                 kind: Some("llm.request".into()),
                 timestamp: timestamp.clone(),
                 source: "user".into(),
-                message,
+                message: message.clone(),
                 reasoning_content: None,
                 reasoning_effort: None,
                 tool_calls: None,
@@ -424,7 +428,8 @@ fn rows_to_storyline(
                 ttft_ms: None,
                 extra: Some(json!({
                     "call_id": call_id,
-                    NORMALIZED_CONTEXT_KEY: {
+                    OPENAI_EXTENSION_KEY: {
+                        "kind": "request",
                         "openai_step_id": step_id,
                     }
                 })),
@@ -454,12 +459,16 @@ fn rows_to_storyline(
             ttft_ms,
             extra: Some(json!({
                 "call_id": call_id,
-                "request_messages": request_messages,
-                "_pchronicle_openai_record": {
-                    "relative_path": relative_path,
-                    "ordinal": ordinal,
-                    "value": raw,
-                }
+                OPENAI_EXTENSION_KEY: record_residual(
+                    row,
+                    relative_path,
+                    ordinal,
+                    step_id,
+                    user_message.as_ref().map(|(index, _)| *index),
+                    user_turn_id,
+                    output_location,
+                    env_state.as_ref(),
+                )?
             })),
         });
         next_turn_id += 1;
@@ -487,19 +496,294 @@ fn rows_to_storyline(
         notes: None,
         final_metrics,
         continued_trajectory_ref: None,
-        extra: Some(json!({ "_pchronicle_openai_file": file_metadata })),
+        extra: Some(json!({ OPENAI_EXTENSION_KEY: file_metadata })),
         turns,
     })
 }
 
-fn last_user_message(messages: Option<&Value>) -> Option<Value> {
+fn last_user_message(messages: Option<&Value>) -> Option<(usize, Value)> {
     messages?
         .as_array()?
         .iter()
+        .enumerate()
         .rev()
-        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
-        .and_then(|message| message.get("content"))
+        .find(|(_, message)| message.get("role").and_then(Value::as_str) == Some("user"))
+        .and_then(|(index, message)| message.get("content").cloned().map(|value| (index, value)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_residual(
+    row: &Map<String, Value>,
+    relative_path: &str,
+    ordinal: usize,
+    step_id: i64,
+    user_message_index: Option<usize>,
+    user_turn_id: Option<i64>,
+    output_location: OutputLocation,
+    env_state: Option<&Value>,
+) -> Result<Value> {
+    let mut residual = row.clone();
+    for key in ["session_id", "step_id", "messages", "response"] {
+        residual.remove(key);
+    }
+
+    let id_present = residual.remove("id").is_some();
+    let model_key = ["agent_model", "llm_model"]
+        .into_iter()
+        .find(|key| row.get(*key).and_then(Value::as_str).is_some())
+        .map(str::to_string);
+    if let Some(key) = &model_key {
+        residual.remove(key);
+    }
+    let run_key = ["run_id", "run_bucket", "job_id"]
+        .into_iter()
+        .find(|key| {
+            row.get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+        .map(str::to_string);
+    if let Some(key) = &run_key {
+        residual.remove(key);
+    }
+
+    let metric_fields = ROW_METRIC_FIELDS
+        .iter()
+        .filter(|field| row.contains_key(**field))
+        .map(|field| Value::String((*field).to_string()))
+        .collect::<Vec<_>>();
+    for field in ROW_METRIC_FIELDS {
+        residual.remove(*field);
+    }
+
+    let timestamp_from_env = env_state
+        .and_then(|value| value.get("created_at"))
+        .and_then(Value::as_str)
+        .is_some();
+    let created_at_kind = if timestamp_from_env {
+        None
+    } else {
+        row.get("created_at").map(|value| {
+            residual.remove("created_at");
+            match value {
+                Value::String(_) => "string",
+                Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
+                Value::Number(_) => "float",
+                _ => "other",
+            }
+        })
+    };
+
+    let mut messages = row.get("messages").cloned();
+    if let Some(values) = messages.as_mut().and_then(Value::as_array_mut) {
+        if let Some(index) = user_message_index {
+            if let Some(message) = values.get_mut(index).and_then(Value::as_object_mut) {
+                message.remove("content");
+            }
+        }
+        if let OutputLocation::Message(index) = output_location {
+            if let Some(message) = values.get_mut(index).and_then(Value::as_object_mut) {
+                message.remove("content");
+                if parse_tool_calls(message.get("tool_calls")).is_some() {
+                    message.remove("tool_calls");
+                }
+            }
+        }
+    }
+    let mut response = row.get("response").cloned();
+    if matches!(output_location, OutputLocation::Response) {
+        if let Some(message) = response.as_mut().and_then(Value::as_object_mut) {
+            message.remove("content");
+            if parse_tool_calls(message.get("tool_calls")).is_some() {
+                message.remove("tool_calls");
+            }
+        }
+    }
+
+    let (output_kind, output_index) = match output_location {
+        OutputLocation::Response => ("response", None),
+        OutputLocation::Message(index) => ("message", Some(index)),
+    };
+    Ok(json!({
+        "relative_path": relative_path,
+        "ordinal": ordinal,
+        "step_id": step_id,
+        "user_message_index": user_message_index,
+        "user_turn_id": user_turn_id,
+        "output_kind": output_kind,
+        "output_index": output_index,
+        "id_present": id_present,
+        "model_key": model_key,
+        "run_key": run_key,
+        "metric_fields": metric_fields,
+        "created_at_kind": created_at_kind,
+        "messages": messages,
+        "response": response,
+        "residual": residual,
+    }))
+}
+
+fn recover_record(
+    story: &StorylineDocument,
+    agent_turn: &StorylineTurn,
+    metadata: &Map<String, Value>,
+) -> Result<Value> {
+    let mut record = metadata
+        .get("residual")
+        .and_then(Value::as_object)
         .cloned()
+        .ok_or_else(|| Error::Other("OpenAI record residual must be an object".into()))?;
+    let step_id = metadata
+        .get("step_id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| Error::Other("OpenAI record residual missing step_id".into()))?;
+    insert_authoritative(
+        &mut record,
+        "session_id",
+        Value::String(story.session_id.clone()),
+        "record",
+    );
+    insert_authoritative(&mut record, "step_id", json!(step_id), "record");
+
+    if metadata
+        .get("id_present")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let call_id = agent_turn
+            .extra
+            .as_ref()
+            .and_then(|value| value.get("call_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| "");
+        insert_authoritative(
+            &mut record,
+            "id",
+            Value::String(call_id.to_string()),
+            "record",
+        );
+    }
+    if let Some(key) = metadata.get("model_key").and_then(Value::as_str) {
+        if let Some(model) = &agent_turn.model_name {
+            insert_authoritative(&mut record, key, Value::String(model.clone()), "record");
+        }
+    }
+    if let Some(key) = metadata.get("run_key").and_then(Value::as_str) {
+        if let Some(run_id) = &story.run_id {
+            insert_authoritative(&mut record, key, Value::String(run_id.clone()), "record");
+        }
+    }
+    if let Some(fields) = metadata.get("metric_fields").and_then(Value::as_array) {
+        for field in fields.iter().filter_map(Value::as_str) {
+            if let Some(value) = agent_turn
+                .metrics
+                .as_ref()
+                .and_then(|value| value.get(field))
+            {
+                insert_authoritative(&mut record, field, value.clone(), "record");
+            }
+        }
+    }
+    if let Some(kind) = metadata.get("created_at_kind").and_then(Value::as_str) {
+        if let Some(timestamp) = agent_turn.timestamp.as_deref() {
+            insert_authoritative(
+                &mut record,
+                "created_at",
+                encode_timestamp(timestamp, kind)?,
+                "record",
+            );
+        }
+    }
+
+    let user_turn = metadata
+        .get("user_turn_id")
+        .and_then(Value::as_i64)
+        .and_then(|id| story.turns.iter().find(|turn| turn.id == id));
+    let output_kind = metadata
+        .get("output_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Other("OpenAI record residual missing output_kind".into()))?;
+    let output_index = metadata.get("output_index").and_then(Value::as_u64);
+
+    if let Some(mut messages) = metadata.get("messages").filter(|v| !v.is_null()).cloned() {
+        let values = messages
+            .as_array_mut()
+            .ok_or_else(|| Error::Other("OpenAI messages residual must be an array".into()))?;
+        if let (Some(index), Some(user_turn)) = (
+            metadata
+                .get("user_message_index")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize),
+            user_turn,
+        ) {
+            let message = values
+                .get_mut(index)
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| Error::Other("OpenAI user message residual is invalid".into()))?;
+            message.insert("content".into(), user_turn.message.clone());
+        }
+        if output_kind == "message" {
+            let index = output_index
+                .ok_or_else(|| Error::Other("OpenAI output message index is missing".into()))?
+                as usize;
+            let message = values
+                .get_mut(index)
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| Error::Other("OpenAI output message residual is invalid".into()))?;
+            apply_output(message, agent_turn)?;
+        }
+        insert_authoritative(&mut record, "messages", messages, "record");
+    }
+
+    if let Some(mut response) = metadata.get("response").filter(|v| !v.is_null()).cloned() {
+        if output_kind == "response" {
+            let message = response
+                .as_object_mut()
+                .ok_or_else(|| Error::Other("OpenAI response residual must be an object".into()))?;
+            apply_output(message, agent_turn)?;
+        }
+        insert_authoritative(&mut record, "response", response, "record");
+    }
+    Ok(Value::Object(record))
+}
+
+fn apply_output(message: &mut Map<String, Value>, turn: &StorylineTurn) -> Result<()> {
+    message.insert("content".into(), turn.message.clone());
+    if let Some(calls) = &turn.tool_calls {
+        message.insert("tool_calls".into(), encode_tool_calls(calls)?);
+    }
+    Ok(())
+}
+
+fn insert_authoritative(target: &mut Map<String, Value>, key: &str, value: Value, scope: &str) {
+    if target.contains_key(key) {
+        tracing::warn!(
+            source_format = "openai-msg",
+            source_key = key,
+            target_key = key,
+            scope,
+            "OpenAI residual conflicts with an authoritative Storyline field"
+        );
+    }
+    target.insert(key.to_string(), value);
+}
+
+fn encode_timestamp(timestamp: &str, kind: &str) -> Result<Value> {
+    if kind == "string" {
+        return Ok(Value::String(timestamp.to_string()));
+    }
+    if kind == "other" {
+        return Ok(Value::String(timestamp.to_string()));
+    }
+    let parsed = chrono::DateTime::parse_from_rfc3339(timestamp).map_err(|error| {
+        Error::Other(format!("encode OpenAI created_at '{timestamp}': {error}"))
+    })?;
+    let millis = parsed.timestamp_millis();
+    if kind == "integer" && millis % 1_000 == 0 {
+        Ok(json!(millis / 1_000))
+    } else {
+        Ok(json!(millis as f64 / 1_000.0))
+    }
 }
 
 fn input_files(input: &Path) -> Result<Vec<PathBuf>> {
@@ -595,20 +879,30 @@ fn parsed_env_state(meta: Option<&Value>) -> Option<Value> {
     }
 }
 
-fn select_output_message(row: &Map<String, Value>) -> Option<&Map<String, Value>> {
+#[derive(Debug, Clone, Copy)]
+enum OutputLocation {
+    Response,
+    Message(usize),
+}
+
+fn select_output_message(
+    row: &Map<String, Value>,
+) -> Option<(&Map<String, Value>, OutputLocation)> {
     let response = row.get("response").and_then(Value::as_object);
     if response.is_some_and(message_has_output) {
-        return response;
+        return response.map(|value| (value, OutputLocation::Response));
     }
     row.get("messages")?
         .as_array()?
         .iter()
+        .enumerate()
         .rev()
-        .filter_map(Value::as_object)
-        .find(|message| {
+        .filter_map(|(index, value)| value.as_object().map(|message| (index, message)))
+        .find(|(_, message)| {
             message.get("role").and_then(Value::as_str) == Some("assistant")
                 && message_has_output(message)
         })
+        .map(|(index, message)| (message, OutputLocation::Message(index)))
 }
 
 fn message_has_output(message: &Map<String, Value>) -> bool {
@@ -650,17 +944,73 @@ fn parse_tool_calls(value: Option<&Value>) -> Option<Vec<StorylineToolCall>> {
                 }
                 _ => arguments,
             };
+            let mut call_residual = call.clone();
+            call_residual.remove("id");
+            call_residual.remove("type");
+            call_residual.remove("function");
+            let mut function_residual = function.clone();
+            function_residual.remove("name");
+            let raw_arguments = function_residual.remove("arguments");
             Some(StorylineToolCall {
                 tool_call_id,
                 function_name,
                 arguments,
                 result: Default::default(),
                 duration_ms: None,
-                extra: Some(Value::Object(call.clone())),
+                extra: Some(json!({
+                    OPENAI_EXTENSION_KEY: {
+                        "kind": "tool_call",
+                        "type": call.get("type"),
+                        "call": call_residual,
+                        "function": function_residual,
+                        "arguments_were_string": raw_arguments.is_some_and(|value| value.is_string()),
+                    }
+                })),
             })
         })
         .collect::<Vec<_>>();
     (!parsed.is_empty()).then_some(parsed)
+}
+
+fn encode_tool_calls(calls: &[StorylineToolCall]) -> Result<Value> {
+    calls
+        .iter()
+        .map(|call| {
+            let metadata = call
+                .extra
+                .as_ref()
+                .and_then(|value| value.get(OPENAI_EXTENSION_KEY))
+                .and_then(Value::as_object);
+            let mut output = metadata
+                .and_then(|value| value.get("call"))
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            output.insert("id".into(), Value::String(call.tool_call_id.clone()));
+            if let Some(kind) = metadata.and_then(|value| value.get("type")) {
+                output.insert("type".into(), kind.clone());
+            }
+            let mut function = metadata
+                .and_then(|value| value.get("function"))
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            function.insert("name".into(), Value::String(call.function_name.clone()));
+            let arguments = if metadata
+                .and_then(|value| value.get("arguments_were_string"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                Value::String(serde_json::to_string(&call.arguments)?)
+            } else {
+                call.arguments.clone()
+            };
+            function.insert("arguments".into(), arguments);
+            output.insert("function".into(), Value::Object(function));
+            Ok(Value::Object(output))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Value::Array)
 }
 
 fn parse_embedded_tool_call(
@@ -726,14 +1076,6 @@ fn message_text(content: &Value) -> Option<String> {
 }
 
 fn normalized_metrics(row: &Map<String, Value>, env_state: Option<&Value>) -> Option<Value> {
-    const ROW_FIELDS: &[&str] = &[
-        "reward",
-        "step_reward",
-        "is_terminal",
-        "is_truncated",
-        "is_session_completed",
-        "is_trainable",
-    ];
     const ENV_FIELDS: &[&str] = &[
         "prompt_tokens",
         "completion_tokens",
@@ -747,7 +1089,7 @@ fn normalized_metrics(row: &Map<String, Value>, env_state: Option<&Value>) -> Op
         "ttft_ms",
     ];
     let mut metrics = Map::new();
-    for field in ROW_FIELDS {
+    for field in ROW_METRIC_FIELDS {
         if let Some(value) = row.get(*field) {
             metrics.insert((*field).to_string(), value.clone());
         }
@@ -852,6 +1194,27 @@ mod tests {
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].relative_path, PathBuf::from("corpus.json"));
         assert_eq!(recovered[0].document, input);
+    }
+
+    #[test]
+    fn openai_residual_preserves_unknowns_but_storyline_content_is_authoritative() {
+        let input = corpus();
+        let mut stories = parse_openai_msg_corpus_value(&input, "corpus.json").unwrap();
+        assert!(!serde_json::to_string(&stories)
+            .unwrap()
+            .contains("_pchronicle_"));
+
+        stories[0].turns[0].message = json!("edited user");
+        stories[0].turns[1].message = json!("edited assistant");
+        let recovered = recover_openai_msg_files(&stories).unwrap();
+        let rows = recovered[0].document.as_array().unwrap();
+        let first_session_row = rows.iter().find(|row| row["id"] == "evt-1").unwrap();
+        assert_eq!(first_session_row["messages"][1]["content"], "edited user");
+        assert_eq!(
+            first_session_row["messages"][2]["content"],
+            "edited assistant"
+        );
+        assert_eq!(rows[0]["unknown"], Value::Null);
     }
 
     #[test]
