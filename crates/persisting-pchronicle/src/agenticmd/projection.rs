@@ -5,11 +5,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::{
-    agenticmd_block_count, encode_agenticmd_preamble, locate_session_markdown_for_key,
-    session_markdown_path_for_key, write_agenticmd_document, EventRecord, RawEventLanceStore,
-    StoryCoords, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
+use crate::{EventRecord, RawEventLanceStore, StoryCoords};
+
+use super::codec::{
+    encode_agenticmd_preamble, AgenticmdBlock, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
 };
+use super::fs::{agenticmd_block_count, write_agenticmd_document};
+use super::layout::{locate_session_markdown_for_key, session_markdown_path_for_key};
+use super::mapping::event_record_to_agenticmd_block;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializeStats {
@@ -47,7 +50,7 @@ pub fn materialize_markdown_path(run_dir: &Path, session_key: &str) -> PathBuf {
 
 pub fn event_records_to_markdown_blocks(
     records: &[EventRecord],
-) -> Result<(Vec<crate::AgenticmdBlock>, MaterializeStats)> {
+) -> Result<(Vec<AgenticmdBlock>, MaterializeStats)> {
     let blocks = project_dialogue_blocks(records)?;
     let stats = MaterializeStats {
         source_events: records.len(),
@@ -62,7 +65,7 @@ pub fn event_records_to_markdown_blocks(
 /// This deliberately drops transport-only and duplicate streaming events.
 /// AgenticMD is not a persistence boundary, so callers must retain the source
 /// events or Storyline document when lossless replay is required.
-fn project_dialogue_blocks(records: &[EventRecord]) -> Result<Vec<crate::AgenticmdBlock>> {
+fn project_dialogue_blocks(records: &[EventRecord]) -> Result<Vec<AgenticmdBlock>> {
     let mut last_user_message_count = 0usize;
     let mut skipped_call_ids = HashSet::new();
     let mut blocks = Vec::new();
@@ -111,7 +114,7 @@ fn project_dialogue_blocks(records: &[EventRecord]) -> Result<Vec<crate::Agentic
             _ => false,
         };
         if !skip {
-            let block = crate::event_record_to_agenticmd_block(record)?;
+            let block = event_record_to_agenticmd_block(record)?;
             if !block.body.trim().is_empty() || record.kind == "llm.spawn_link" {
                 blocks.push(block);
             }

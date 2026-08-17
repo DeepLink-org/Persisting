@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{encode_agenticmd_preamble, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT};
+use super::codec::{
+    encode_agenticmd_preamble, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
+};
 use crate::Result;
 
 /// Producer/client provenance embedded in an AgenticMD document.

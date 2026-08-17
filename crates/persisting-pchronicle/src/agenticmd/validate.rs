@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Result};
 
-use super::agenticmd::{AgenticmdBlock, AgenticmdHeader};
+use super::codec::{AgenticmdBlock, AgenticmdHeader};
 
 pub fn block_speaker(header: &AgenticmdHeader) -> &str {
     header

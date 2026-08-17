@@ -323,7 +323,7 @@ fn export_events_jsonl_debug_roundtrip_via_test_parser() {
 
 #[test]
 fn parse_agenticmd_document_roundtrip() {
-    use crate::formats::agenticmd::{
+    use crate::formats::{
         encode_agenticmd_document, parse_agenticmd_document, AgenticmdBlock, AgenticmdDocument,
         AgenticmdHeader,
     };
@@ -646,7 +646,7 @@ fn convert_storyline_agenticmd_preserves_dialogue_and_timing() {
 #[test]
 fn convert_agenticmd_storyline_preserves_call_id_and_seq() {
     use crate::convert::{agenticmd_to_storyline, storyline_to_agenticmd};
-    use crate::formats::agenticmd::{AgenticmdBlock, AgenticmdDocument, AgenticmdHeader};
+    use crate::formats::{AgenticmdBlock, AgenticmdDocument, AgenticmdHeader};
     use serde_json::json;
     use std::collections::BTreeMap;
 

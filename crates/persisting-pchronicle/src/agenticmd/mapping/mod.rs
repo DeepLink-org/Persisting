@@ -9,11 +9,10 @@ mod text;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::formats::agenticmd::{AgenticmdBlock, AgenticmdHeader};
-use crate::formats::agenticmd_body::{
-    append_subagent_refs_footer, strip_subagent_footer_from_body,
-};
 use crate::formats::events::{EventIdentity, EventRecord};
+
+use super::body::{append_subagent_refs_footer, strip_subagent_footer_from_body};
+use super::codec::{AgenticmdBlock, AgenticmdHeader};
 
 use fields::{attach_llm_fields, attach_subagent_link_fields, role_and_body};
 
@@ -232,6 +231,6 @@ pub fn agenticmd_blocks_to_event_records(blocks: &[AgenticmdBlock]) -> Result<Ve
 
 /// Parse agenticmd markdown (lenient) into enriched event records.
 pub fn markdown_document_to_event_records(doc: &str) -> Result<Vec<EventRecord>> {
-    let parsed = crate::formats::agenticmd::parse_agenticmd_document(doc)?;
+    let parsed = super::codec::parse_agenticmd_document(doc)?;
     agenticmd_blocks_to_event_records(&parsed.blocks)
 }

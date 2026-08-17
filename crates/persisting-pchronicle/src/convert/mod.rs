@@ -13,15 +13,14 @@
 //! [`storyline_to_events`] after loading Lance rows into [`EventsDocument`].
 
 mod actf;
-mod agenticmd;
 mod atif;
 mod events;
 mod openai_msg;
 
+pub use crate::agenticmd::{agenticmd_to_storyline, storyline_to_agenticmd};
 pub use actf::{
     actf_to_storyline, actf_to_storylines, is_actf_storyline, storyline_to_actf, storylines_to_actf,
 };
-pub use agenticmd::{agenticmd_to_storyline, storyline_to_agenticmd};
 pub use atif::{atif_to_storyline, storyline_to_atif};
 #[cfg(feature = "lance-store")]
 pub(crate) use events::event_storyline_key;

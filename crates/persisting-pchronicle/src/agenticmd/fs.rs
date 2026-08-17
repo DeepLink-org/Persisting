@@ -8,15 +8,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::formats::agenticmd::{
+use super::codec::{
     encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans,
     parse_agenticmd_document, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdHeader,
     AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
 };
-use crate::formats::agenticmd_validate::{
+use super::mapping::agenticmd_block_to_replay_json;
+use super::validate::{
     block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
 };
-use crate::mapping::agenticmd_block_to_replay_json;
 
 /// Diagnostic index of one AgenticMD document.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -130,7 +130,7 @@ pub fn write_agenticmd_document(
 pub fn rewrite_agenticmd_preamble(path: &Path, preamble: &str) -> Result<()> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let body_start = crate::formats::agenticmd_body_byte_offset(&content)
+    let body_start = super::codec::agenticmd_body_byte_offset(&content)
         .map_err(|e| anyhow::anyhow!("agenticmd body offset: {e}"))?;
     let mut output = preamble.as_bytes().to_vec();
     output.extend_from_slice(&content.as_bytes()[body_start..]);
@@ -334,11 +334,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::formats::agenticmd::{
+    use super::super::codec::{
         encode_agenticmd_preamble, AgenticmdHeader, AGENTICMD_BLOCK_LAYOUT,
         AGENTICMD_FRONTMATTER_FORMAT,
     };
+    use super::*;
     use serde::Serialize;
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -570,7 +570,7 @@ mod tests {
             body: body.into(),
         })
         .unwrap();
-        let via_raw = crate::formats::agenticmd::encode_agenticmd_block(&AgenticmdBlock {
+        let via_raw = super::super::codec::encode_agenticmd_block(&AgenticmdBlock {
             header: AgenticmdHeader {
                 type_name: "text".into(),
                 length: body.len(),

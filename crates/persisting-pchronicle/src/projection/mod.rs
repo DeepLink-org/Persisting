@@ -1,9 +1,8 @@
 //! Rebuildable views derived from canonical trajectory facts.
 
-mod agenticmd;
 mod storyline;
 
-pub use agenticmd::{
+pub use crate::agenticmd::{
     event_records_to_markdown_blocks, layer_stats, materialize_lance_to_markdown,
     materialize_markdown_path, write_markdown_projection, LayerStats, MaterializeOutcome,
     MaterializeStats,

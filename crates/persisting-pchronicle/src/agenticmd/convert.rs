@@ -8,12 +8,13 @@ use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 
 use crate::convert::message_text;
-use crate::formats::agenticmd::{
+use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
+use crate::Result;
+
+use super::codec::{
     AgenticmdBlock, AgenticmdDocument, AgenticmdHeader, AGENTICMD_FORMAT_NAME,
     AGENTICMD_FRONTMATTER_FORMAT,
 };
-use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
-use crate::Result;
 
 /// Header field names preserved via `turn.extra` for hub round-trips.
 const EXTRA_CORRELATION_KEYS: &[&str] = &[

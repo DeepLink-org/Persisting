@@ -8,7 +8,7 @@ use std::path::{Component, Path};
 use anyhow::{Context, Result};
 
 use super::coords::StoryCoords;
-use super::markdown::{locate_session_markdown, session_markdown_path_for_key};
+use crate::agenticmd::{locate_session_markdown, session_markdown_path_for_key};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoryLocationPartial {

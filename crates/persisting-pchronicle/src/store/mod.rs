@@ -7,7 +7,6 @@
 #[cfg(feature = "lance-store")]
 use anyhow::Context as _;
 
-mod agenticmd_fs;
 #[cfg(feature = "lance-store")]
 mod atif_datafusion;
 #[cfg(feature = "lance-store")]
@@ -39,7 +38,7 @@ mod storyline;
 #[path = "storyline/model.rs"]
 mod storyline_model;
 
-pub use agenticmd_fs::{
+pub use crate::agenticmd::{
     agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
     append_agenticmd_blocks, count_agenticmd_role, encode_agenticmd_block_validated,
     find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,

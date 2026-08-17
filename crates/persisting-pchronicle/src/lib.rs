@@ -19,6 +19,7 @@
 //!
 //! Use [`convert::into_storyline`] / [`convert::from_storyline`] / [`convert::convert`].
 
+mod agenticmd;
 #[cfg(feature = "lance-store")]
 mod append_queue;
 pub mod atif;
@@ -30,7 +31,6 @@ pub mod format;
 pub mod formats;
 pub mod interop;
 pub mod layout;
-pub mod mapping;
 mod messages;
 #[cfg(feature = "lance-store")]
 pub mod operations;
@@ -42,6 +42,12 @@ pub mod revision;
 pub mod search;
 pub mod store;
 
+pub use agenticmd::{
+    agenticmd_block_to_event_record, agenticmd_block_to_replay_json,
+    agenticmd_blocks_to_event_records, enrich_event_from_agenticmd_block,
+    event_record_to_agenticmd_block, event_record_to_agenticmd_block_with_text,
+    markdown_document_to_event_records,
+};
 #[cfg(feature = "lance-store")]
 pub use append_queue::{
     raw_event_append_queue, raw_event_append_queue_with_capacity, RawEventAppendQueueError,
@@ -94,12 +100,6 @@ pub use layout::{
     session_markdown_filename, session_markdown_path_for_key, session_markdown_write_path_for_key,
     story_lance_event_path, story_run_dir, try_infer_story_location, StoryCoords,
     StoryLocationPartial,
-};
-pub use mapping::{
-    agenticmd_block_to_event_record, agenticmd_block_to_replay_json,
-    agenticmd_blocks_to_event_records, enrich_event_from_agenticmd_block,
-    event_record_to_agenticmd_block, event_record_to_agenticmd_block_with_text,
-    markdown_document_to_event_records,
 };
 pub use messages::*;
 #[cfg(feature = "search")]

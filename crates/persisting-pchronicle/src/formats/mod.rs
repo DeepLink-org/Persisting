@@ -1,10 +1,6 @@
 //! Codecs for each [`crate::ChronicleFormat`].
 
 pub mod actf;
-pub mod agenticmd;
-pub mod agenticmd_body;
-pub mod agenticmd_frontmatter;
-pub mod agenticmd_validate;
 pub mod detect;
 pub mod events;
 pub mod llm;
@@ -12,24 +8,24 @@ pub mod openai_corpus;
 pub mod openai_msg;
 pub mod storyline;
 
-pub use actf::{
-    parse_actf_document, ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric,
-    ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
-};
-pub use agenticmd::{
+pub use crate::agenticmd::{
     agenticmd_body_byte_offset, encode_agenticmd_block, encode_agenticmd_document,
     encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans, parse_agenticmd_document,
     AgenticmdBlock, AgenticmdBlockSpan, AgenticmdDocument, AgenticmdHeader, AGENTICMD_BLOCK_LAYOUT,
     AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT, BLOCK_MARKER,
 };
-pub use agenticmd_body::{
+pub use crate::agenticmd::{
     append_subagent_refs_footer, is_subagent_footer_line, strip_subagent_footer_from_body,
 };
-pub use agenticmd_frontmatter::{
+pub use crate::agenticmd::{
+    block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
+};
+pub use crate::agenticmd::{
     encode_agenticmd_session_frontmatter, AgenticmdClientMeta, AgenticmdSessionFrontmatter,
 };
-pub use agenticmd_validate::{
-    block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
+pub use actf::{
+    parse_actf_document, ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric,
+    ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
 };
 pub use detect::detect_format;
 pub use events::{
