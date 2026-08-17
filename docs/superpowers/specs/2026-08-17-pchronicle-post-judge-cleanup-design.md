@@ -104,7 +104,10 @@ Storyline 三表逻辑模型从 crate 根部的 `storyline_schema.rs` 移至
 
 crate 根继续导出 `split_storyline`、`reconstruct_storyline`、`StoryRunRow`、
 `StoryStepRow`、`StoryToolCallRow`、`StorylineTables` 和三个表名常量。删除根级
-`storyline_schema` 模块，Storyline 存储内部通过同目录模块导入逻辑模型。
+`storyline_schema` 模块。为保证这些 item 在 `--no-default-features` 下仍然可用，
+`store/mod.rs` 在不受 `lance-store` 门控的位置注册物理上同目录的模型模块；受
+feature 门控的 Storyline 存储和 Arrow codec 从该兄弟模块导入。这样同时保留
+feature 边界与目录收拢，不把纯逻辑模型错误地绑定到 Lance。
 
 ## 验收与验证
 

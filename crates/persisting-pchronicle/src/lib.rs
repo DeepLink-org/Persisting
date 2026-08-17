@@ -41,7 +41,6 @@ pub mod revision;
 #[cfg(feature = "search")]
 pub mod search;
 pub mod store;
-pub mod storyline_schema;
 
 #[cfg(feature = "lance-store")]
 pub use append_queue::{
@@ -132,7 +131,9 @@ pub use store::{
     find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,
     parse_agenticmd_document_validated, parse_agenticmd_spans_validated,
     read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
-    upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
+    upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex, StoryRunRow,
+    StoryStepRow, StoryToolCallRow, StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE,
+    STORY_TOOL_CALLS_TABLE,
 };
 #[cfg(feature = "lance-store")]
 pub use store::{
@@ -171,10 +172,7 @@ pub use store::{
 };
 #[cfg(feature = "lance-store")]
 pub use store::{detect_local_query_format, detect_local_query_manifest};
-pub use storyline_schema::{
-    reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
-    StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
-};
+pub use store::{reconstruct_storyline, split_storyline};
 
 #[cfg(feature = "search")]
 pub const PERSISTING_VECTOR_INDEX_NAME: &str = search::search_lance::PERSISTING_VECTOR_INDEX_NAME;

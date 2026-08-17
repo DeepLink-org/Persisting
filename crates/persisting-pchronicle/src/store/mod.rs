@@ -36,6 +36,8 @@ mod root_write_lock;
 mod run_control;
 #[cfg(feature = "lance-store")]
 mod storyline;
+#[path = "storyline/model.rs"]
+mod storyline_model;
 
 pub use agenticmd_fs::{
     agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
@@ -107,6 +109,10 @@ pub use storyline::{
     StorylineTableKind, StorylineTablePaths, StorylineTableProvider, DATAFUSION_RUNS_TABLE,
     DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
     DEFAULT_CONTENT_PREVIEW_BYTES,
+};
+pub use storyline_model::{
+    reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
+    StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
 
 #[cfg(feature = "lance-store")]

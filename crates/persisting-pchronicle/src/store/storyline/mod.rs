@@ -68,11 +68,11 @@ use object_store::path::Path as ObjectPath;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
-use crate::convert::atif_to_storyline;
-use crate::storyline_schema::{
+use super::storyline_model::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
+use crate::convert::atif_to_storyline;
 use crate::StorylineDocument;
 
 use self::content::{

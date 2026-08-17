@@ -10,7 +10,7 @@ use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::storyline_schema::{StoryRunRow, StoryStepRow, StoryToolCallRow};
+use super::super::storyline_model::{StoryRunRow, StoryStepRow, StoryToolCallRow};
 
 fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
     Field::new(name, data_type, nullable)

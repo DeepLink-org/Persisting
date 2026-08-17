@@ -171,24 +171,23 @@ cargo test -p persisting-pchronicle storyline_schema::tests --locked
 
 - [ ] **步骤 2：移动逻辑模型并改为同目录引用**
 
-将文件移动为 `store/storyline/model.rs`；在 `store/storyline/mod.rs` 声明
-`mod model;`，并从本地 `model` 导入类型与函数。`rows.rs` 使用
-`super::model::{StoryRunRow, StoryStepRow, StoryToolCallRow}`。
+将文件移动为 `store/storyline/model.rs`。为保留无 Lance feature 时的根级 API，
+在 `store/mod.rs` 用 `#[path = "storyline/model.rs"]` 注册不受 feature 门控的
+`storyline_model`；`store/storyline/mod.rs` 与 `rows.rs` 从该兄弟模块导入。
 
 - [ ] **步骤 3：保持根级 item 导出并删除根模块**
 
-由 `store/storyline/mod.rs` re-export：
+由 `store/mod.rs` re-export：
 
 ```rust
-pub use model::{
+pub use storyline_model::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow,
     StoryToolCallRow, StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE,
     STORY_TOOL_CALLS_TABLE,
 };
 ```
 
-`store/mod.rs` 将这些 item 向上 re-export；`lib.rs` 从 `store` 导出它们并删除
-`pub mod storyline_schema` 及对应导出块。
+`lib.rs` 从 `store` 导出这些 item，并删除 `pub mod storyline_schema` 及对应导出块。
 
 - [ ] **步骤 4：运行迁移后的测试与编译**
 
