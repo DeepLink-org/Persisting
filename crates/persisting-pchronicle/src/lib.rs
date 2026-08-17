@@ -26,6 +26,8 @@ pub mod atif;
 pub mod convert;
 #[cfg(feature = "lance-store")]
 pub mod discovery;
+#[cfg(feature = "lance-store")]
+pub mod document;
 pub mod error;
 pub mod format;
 pub mod formats;
@@ -65,6 +67,11 @@ pub use convert::{
 #[cfg(feature = "lance-store")]
 pub use discovery::{
     drop_lifecycle_run_partitions, expand_story_locations, expand_story_locations_blocking,
+};
+#[cfg(feature = "lance-store")]
+pub use document::{
+    open_document, DocumentSource, FilterPushdown, QueryCapabilities, QueryTables,
+    DEFAULT_DOCUMENT_MATERIALIZE_BYTES, DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
 };
 pub use error::{classify_error, Error, ErrorCode, Result};
 pub use format::{ChronicleFormat, DocumentFormat};

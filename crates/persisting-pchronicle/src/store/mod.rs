@@ -8,6 +8,8 @@
 use anyhow::Context as _;
 
 #[cfg(feature = "lance-store")]
+mod agenticmd_datafusion;
+#[cfg(feature = "lance-store")]
 mod atif_datafusion;
 #[cfg(feature = "lance-store")]
 mod attempt_registry;
@@ -15,6 +17,8 @@ mod attempt_registry;
 mod catalog;
 #[cfg(feature = "lance-store")]
 pub(crate) mod dataset_write_lock;
+#[cfg(feature = "lance-store")]
+mod document_source;
 #[cfg(feature = "lance-store")]
 mod egress;
 #[cfg(feature = "lance-store")]
@@ -39,6 +43,8 @@ mod storyline;
 mod storyline_model;
 
 #[cfg(feature = "lance-store")]
+pub(crate) use agenticmd_datafusion::AgenticMdDataSource;
+#[cfg(feature = "lance-store")]
 pub use atif_datafusion::{
     load_atif_trajectories, AtifDataSource, AtifDataSourceOptions, AtifReader,
 };
@@ -55,6 +61,8 @@ pub use catalog::{
     CATALOG_TRAJECTORIES_TABLE, DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
     DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
+#[cfg(feature = "lance-store")]
+pub(crate) use document_source::{open_document_source, DocumentSourceImpl};
 #[cfg(feature = "lance-store")]
 pub use egress::{export_source_dirs, export_story_bundle, ExportOutcome};
 #[cfg(feature = "lance-store")]

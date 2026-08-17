@@ -249,6 +249,10 @@ impl AtifReader {
         Ok(Self::from_files(manifest.files()))
     }
 
+    pub(crate) fn from_manifest(manifest: &LocalQueryManifest) -> Self {
+        Self::from_files(manifest.files())
+    }
+
     fn from_files(files: &[LocalQueryInputFile]) -> Self {
         Self {
             files: files

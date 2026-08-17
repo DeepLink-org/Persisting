@@ -1,0 +1,435 @@
+//! Private provider variants behind the public `DocumentSource` API.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use datafusion::arrow::array::{Array, StringArray};
+use datafusion::prelude::SessionContext;
+
+use crate::document::{
+    FilterPushdown, QueryCapabilities, QueryTables, DEFAULT_DOCUMENT_MATERIALIZE_BYTES,
+    DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
+};
+use crate::{
+    actf_to_storylines, parse_agenticmd, parse_openai_msg_corpus_value, project_event_records,
+    ChronicleFormat, DocumentFormat, Error, Result, StorylineDocument,
+};
+
+use super::{
+    AgenticMdDataSource, AtifReader, FileTrajectoryDataSource, FileTrajectoryFormat,
+    LocalQueryManifest, RawEventDataSource, StorylineDataSource, StorylineLanceStore,
+    DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+};
+
+pub(crate) trait QueryDocumentSource {
+    fn format(&self) -> DocumentFormat;
+    fn tables(&self) -> QueryTables;
+    fn capabilities(&self) -> QueryCapabilities;
+    fn register(&self, context: &SessionContext) -> Result<()>;
+}
+
+#[derive(Debug)]
+pub(crate) enum DocumentSourceImpl {
+    Events {
+        path: PathBuf,
+        source: RawEventDataSource,
+    },
+    Storyline {
+        path: PathBuf,
+        source: StorylineDataSource,
+        store: StorylineLanceStore,
+    },
+    AgenticMd {
+        path: PathBuf,
+        story: StorylineDocument,
+        source: AgenticMdDataSource,
+    },
+    Files {
+        format: DocumentFormat,
+        path: PathBuf,
+        manifest: LocalQueryManifest,
+        source: FileTrajectoryDataSource,
+    },
+}
+
+pub(crate) async fn open_document_source(
+    format: DocumentFormat,
+    path: &Path,
+) -> Result<DocumentSourceImpl> {
+    let path = path.to_path_buf();
+    match format {
+        DocumentFormat::CanonicalEvent => Ok(DocumentSourceImpl::Events {
+            source: RawEventDataSource::open(&path).await.map_err(other)?,
+            path,
+        }),
+        DocumentFormat::Storyline => {
+            let source = StorylineDataSource::open(&path).await.map_err(other)?;
+            let root = path
+                .to_str()
+                .ok_or_else(|| Error::Other("Storyline path is not valid UTF-8".into()))?;
+            let store = StorylineLanceStore::open_uri_unchecked(root)
+                .await
+                .map_err(other)?;
+            Ok(DocumentSourceImpl::Storyline {
+                path,
+                source,
+                store,
+            })
+        }
+        DocumentFormat::AgenticMd => {
+            let input = std::fs::read_to_string(&path).map_err(Error::from)?;
+            let story = parse_agenticmd(&input).map_err(|error| with_path(error, &path))?;
+            let source = AgenticMdDataSource::new(&story).map_err(other)?;
+            Ok(DocumentSourceImpl::AgenticMd {
+                path,
+                story,
+                source,
+            })
+        }
+        DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf => {
+            let legacy_format = match format {
+                DocumentFormat::Atif => ChronicleFormat::Atif,
+                DocumentFormat::OpenaiMsg => ChronicleFormat::OpenaiMsg,
+                DocumentFormat::Actf => ChronicleFormat::Actf,
+                _ => unreachable!(),
+            };
+            let provider_format = match format {
+                DocumentFormat::Atif => FileTrajectoryFormat::Atif,
+                DocumentFormat::OpenaiMsg => FileTrajectoryFormat::OpenaiMsg,
+                DocumentFormat::Actf => FileTrajectoryFormat::Actf,
+                _ => unreachable!(),
+            };
+            let manifest = LocalQueryManifest::for_format(&path, legacy_format).map_err(other)?;
+            let source =
+                FileTrajectoryDataSource::from_manifest(manifest.clone()).map_err(other)?;
+            debug_assert_eq!(source.format(), provider_format);
+            Ok(DocumentSourceImpl::Files {
+                format,
+                path,
+                manifest,
+                source,
+            })
+        }
+    }
+}
+
+impl DocumentSourceImpl {
+    pub(crate) fn format(&self) -> DocumentFormat {
+        QueryDocumentSource::format(self)
+    }
+
+    pub(crate) fn capabilities(&self) -> QueryCapabilities {
+        QueryDocumentSource::capabilities(self)
+    }
+
+    pub(crate) fn register_datafusion(&self, context: &SessionContext) -> Result<QueryTables> {
+        QueryDocumentSource::register(self, context)?;
+        Ok(QueryDocumentSource::tables(self))
+    }
+
+    pub(crate) async fn project_storylines(&self) -> Result<Vec<StorylineDocument>> {
+        let mut stories = Vec::new();
+        let mut retained_rows = 0usize;
+        let mut retained_bytes = 0usize;
+        self.for_each_storyline(|story| {
+            retained_rows = retained_rows
+                .checked_add(story_rows(&story))
+                .ok_or_else(|| budget_error(self, "row count overflow"))?;
+            if retained_rows > DEFAULT_DOCUMENT_MATERIALIZE_ROWS {
+                return Err(budget_error(
+                    self,
+                    &format!(
+                        "materialized rows {retained_rows} exceed {DEFAULT_DOCUMENT_MATERIALIZE_ROWS}"
+                    ),
+                ));
+            }
+            retained_bytes = retained_bytes
+                .checked_add(serde_json::to_vec(&story)?.len())
+                .ok_or_else(|| budget_error(self, "byte count overflow"))?;
+            if retained_bytes > DEFAULT_DOCUMENT_MATERIALIZE_BYTES {
+                return Err(budget_error(
+                    self,
+                    &format!(
+                        "materialized bytes {retained_bytes} exceed {DEFAULT_DOCUMENT_MATERIALIZE_BYTES}"
+                    ),
+                ));
+            }
+            stories.push(story);
+            Ok(())
+        })
+        .await?;
+        Ok(stories)
+    }
+
+    pub(crate) async fn for_each_storyline<F>(&self, mut on_storyline: F) -> Result<()>
+    where
+        F: FnMut(StorylineDocument) -> Result<()>,
+    {
+        match self {
+            Self::AgenticMd { story, .. } => on_storyline(story.clone()),
+            Self::Files {
+                format, manifest, ..
+            } => for_each_file_storyline(*format, manifest, on_storyline),
+            Self::Storyline { source, store, .. } => {
+                let context = SessionContext::new();
+                source.register(&context).map_err(other)?;
+                for session_id in distinct_strings(
+                    &context,
+                    "SELECT session_id FROM runs ORDER BY session_id",
+                    "session_id",
+                )
+                .await?
+                {
+                    let story = store
+                        .get_storyline_full(&session_id)
+                        .await
+                        .map_err(other)?
+                        .ok_or_else(|| Error::SessionNotFound(session_id.clone()))?;
+                    on_storyline(story)?;
+                }
+                Ok(())
+            }
+            Self::Events { source, .. } => {
+                let context = SessionContext::new();
+                source.register(&context).map_err(other)?;
+                for session_id in distinct_strings(
+                    &context,
+                    "SELECT DISTINCT session_id FROM events WHERE session_id IS NOT NULL ORDER BY session_id",
+                    "session_id",
+                )
+                .await?
+                {
+                    let requested = BTreeSet::from([session_id]);
+                    let records = source
+                        .read_records_for_storylines_bounded(
+                            &requested,
+                            DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+                            DEFAULT_MAX_EVENT_FALLBACK_BYTES,
+                        )
+                        .await
+                        .map_err(|error| {
+                            if error.to_string().contains("exceeds max_event_fallback") {
+                                budget_error(self, &error.to_string())
+                            } else {
+                                other(error)
+                            }
+                        })?;
+                    on_storyline(project_event_records(&records)?)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn source_count(&self) -> usize {
+        match self {
+            Self::Files { source, .. } => source.file_count(),
+            _ => 1,
+        }
+    }
+
+    pub(crate) fn file_metrics(&self) -> Option<super::FileTrajectoryQueryMetrics> {
+        match self {
+            Self::Files { source, .. } => Some(source.metrics()),
+            _ => None,
+        }
+    }
+}
+
+impl QueryDocumentSource for DocumentSourceImpl {
+    fn format(&self) -> DocumentFormat {
+        match self {
+            Self::Events { .. } => DocumentFormat::CanonicalEvent,
+            Self::Storyline { .. } => DocumentFormat::Storyline,
+            Self::AgenticMd { .. } => DocumentFormat::AgenticMd,
+            Self::Files { format, .. } => *format,
+        }
+    }
+
+    fn tables(&self) -> QueryTables {
+        match self {
+            Self::Events { .. } => QueryTables::Events,
+            _ => QueryTables::Storyline,
+        }
+    }
+
+    fn capabilities(&self) -> QueryCapabilities {
+        match self.format() {
+            DocumentFormat::CanonicalEvent => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Exact,
+                limit_pushdown: true,
+                scalar_indexes: true,
+                streaming_decode: true,
+                late_content_materialization: false,
+                snapshot_consistent: true,
+            },
+            DocumentFormat::Storyline => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::ExpressionDependent,
+                limit_pushdown: true,
+                scalar_indexes: true,
+                streaming_decode: false,
+                late_content_materialization: true,
+                snapshot_consistent: true,
+            },
+            DocumentFormat::Atif => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Inexact,
+                limit_pushdown: true,
+                scalar_indexes: false,
+                streaming_decode: true,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+            DocumentFormat::OpenaiMsg | DocumentFormat::Actf => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Unsupported,
+                limit_pushdown: true,
+                scalar_indexes: false,
+                streaming_decode: false,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+            DocumentFormat::AgenticMd => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Unsupported,
+                limit_pushdown: false,
+                scalar_indexes: false,
+                streaming_decode: false,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+        }
+    }
+
+    fn register(&self, context: &SessionContext) -> Result<()> {
+        match self {
+            Self::Events { source, .. } => source.register(context).map_err(other),
+            Self::Storyline { source, .. } => source.register(context).map_err(other),
+            Self::AgenticMd { source, .. } => source.register(context).map_err(other),
+            Self::Files { source, .. } => source.register(context).map_err(other),
+        }
+    }
+}
+
+fn for_each_file_storyline<F>(
+    format: DocumentFormat,
+    manifest: &LocalQueryManifest,
+    mut on_storyline: F,
+) -> Result<()>
+where
+    F: FnMut(StorylineDocument) -> Result<()>,
+{
+    match format {
+        DocumentFormat::Atif => {
+            for trajectory in AtifReader::from_manifest(manifest) {
+                on_storyline(crate::convert::atif_to_storyline(
+                    &trajectory.map_err(other)?,
+                )?)?;
+            }
+        }
+        DocumentFormat::OpenaiMsg => {
+            for file in manifest.files() {
+                file.validate_unchanged().map_err(other)?;
+                let document = serde_json::from_slice(&std::fs::read(file.path())?)?;
+                for story in parse_openai_msg_corpus_value(&document, file.relative_path())? {
+                    on_storyline(story)?;
+                }
+                file.validate_unchanged().map_err(other)?;
+            }
+        }
+        DocumentFormat::Actf => {
+            for file in manifest.files() {
+                file.validate_unchanged().map_err(other)?;
+                let document =
+                    crate::ActfDocument::from_json_str(&std::fs::read_to_string(file.path())?)?;
+                for story in actf_to_storylines(&document)? {
+                    on_storyline(story)?;
+                }
+                file.validate_unchanged().map_err(other)?;
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+async fn distinct_strings(
+    context: &SessionContext,
+    sql: &str,
+    column: &str,
+) -> Result<Vec<String>> {
+    let batches = context
+        .sql(sql)
+        .await
+        .map_err(other)?
+        .collect()
+        .await
+        .map_err(other)?;
+    let mut values = Vec::new();
+    for batch in batches {
+        let index = batch.schema().index_of(column).map_err(other)?;
+        let array = batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| Error::Other(format!("query column '{column}' is not Utf8")))?;
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                values.push(array.value(row).to_string());
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn story_rows(story: &StorylineDocument) -> usize {
+    1usize.saturating_add(story.turns.len()).saturating_add(
+        story
+            .turns
+            .iter()
+            .map(|turn| turn.tool_calls.as_ref().map_or(0, Vec::len))
+            .sum::<usize>(),
+    )
+}
+
+fn budget_error(source: &DocumentSourceImpl, budget: &str) -> Error {
+    Error::SourceBudgetExceeded {
+        format: source.format(),
+        path: Some(source.path().to_path_buf()),
+        budget: budget.into(),
+    }
+}
+
+impl DocumentSourceImpl {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Events { path, .. }
+            | Self::Storyline { path, .. }
+            | Self::AgenticMd { path, .. }
+            | Self::Files { path, .. } => path,
+        }
+    }
+}
+
+fn other(error: impl std::fmt::Display) -> Error {
+    Error::Other(error.to_string())
+}
+
+fn with_path(error: Error, path: &Path) -> Error {
+    match error {
+        Error::InvalidDocument {
+            format,
+            location,
+            message,
+            ..
+        } => Error::InvalidDocument {
+            format,
+            path: Some(path.to_path_buf()),
+            location,
+            message,
+        },
+        error => error,
+    }
+}
