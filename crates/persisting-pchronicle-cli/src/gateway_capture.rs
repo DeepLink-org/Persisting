@@ -10,6 +10,8 @@ use persisting_pchronicle::storage::{
     StoryCoords,
 };
 
+use crate::{cli_boundary_error, server::problem::BoundaryCode};
+
 pub(crate) struct GatewayCaptureWriter {
     worker: RawEventAppendWorker,
 }
@@ -60,10 +62,14 @@ where
 fn map_append_outcome(outcome: RawEventAppendOutcome) -> anyhow::Result<()> {
     match outcome {
         RawEventAppendOutcome::Accepted => Ok(()),
-        RawEventAppendOutcome::Full => anyhow::bail!("pChronicle append capacity exhausted"),
-        RawEventAppendOutcome::Unavailable => {
-            anyhow::bail!("pChronicle append queue is unavailable")
-        }
+        RawEventAppendOutcome::Full => Err(cli_boundary_error(
+            BoundaryCode::ResourceExhausted,
+            "pChronicle append capacity exhausted",
+        )),
+        RawEventAppendOutcome::Unavailable => Err(cli_boundary_error(
+            BoundaryCode::Unavailable,
+            "service unavailable",
+        )),
     }
 }
 
@@ -120,14 +126,18 @@ mod tests {
     #[test]
     fn gateway_maps_only_explicit_append_rejections() {
         map_append_outcome(RawEventAppendOutcome::Accepted).unwrap();
-        assert!(map_append_outcome(RawEventAppendOutcome::Full)
-            .unwrap_err()
-            .to_string()
-            .contains("capacity"));
-        assert!(map_append_outcome(RawEventAppendOutcome::Unavailable)
-            .unwrap_err()
-            .to_string()
-            .contains("unavailable"));
+        assert_eq!(
+            map_append_outcome(RawEventAppendOutcome::Full)
+                .unwrap_err()
+                .to_string(),
+            "resource_exhausted: pChronicle append capacity exhausted"
+        );
+        assert_eq!(
+            map_append_outcome(RawEventAppendOutcome::Unavailable)
+                .unwrap_err()
+                .to_string(),
+            "unavailable: service unavailable"
+        );
     }
 
     #[test]

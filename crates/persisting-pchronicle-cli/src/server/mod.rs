@@ -3,18 +3,20 @@
 mod acceleration;
 mod asset;
 mod explorer;
+pub(crate) mod problem;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use persisting_pchronicle::document::{events_to_har, events_to_otlp_json};
+use persisting_pchronicle::document::{events_to_har, events_to_otlp_json, InputIssue};
 use persisting_pchronicle::model::{EventRecord, StorylineTurn};
 use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::{
@@ -25,6 +27,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use acceleration::{AccelerationStatus, ServerAcceleration};
+use problem::ApiError;
+
+#[cfg(test)]
+use problem::BoundaryCode;
 
 #[derive(Clone)]
 struct AppState {
@@ -65,26 +71,6 @@ struct CatalogRuntime {
     snapshot: Arc<DatasetCatalogSnapshot>,
     engine: Arc<ChronicleQueryEngine>,
     acceleration: ServerAcceleration,
-}
-
-#[derive(Debug, Serialize)]
-struct ApiError {
-    code: &'static str,
-    message: String,
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (StatusCode::BAD_REQUEST, Json(self)).into_response()
-    }
-}
-
-fn api_error(error: impl std::fmt::Display) -> ApiError {
-    let code = persisting_pchronicle::query::classify_error(&error).as_str();
-    ApiError {
-        code,
-        message: error.to_string(),
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -241,7 +227,7 @@ async fn current_catalog(state: &AppState) -> Result<Arc<CatalogRuntime>, ApiErr
     }
     let runtime = build_catalog_runtime(&state.config)
         .await
-        .map_err(api_error)?;
+        .map_err(ApiError::internal)?;
     let mut catalog = state.catalog.write().await;
     Ok(catalog.get_or_insert_with(|| runtime.clone()).clone())
 }
@@ -277,7 +263,7 @@ async fn refresh_catalog(State(state): State<AppState>) -> Result<Json<CatalogRe
     // previously published snapshot untouched.
     let runtime = build_catalog_runtime(&state.config)
         .await
-        .map_err(api_error)?;
+        .map_err(ApiError::internal)?;
     *state.catalog.write().await = Some(runtime.clone());
     *state.trajectory_cache.write().await = None;
     Ok(Json(catalog_response(&state, &runtime)))
@@ -294,7 +280,7 @@ async fn load_run_summaries(state: &AppState) -> Result<Vec<RunSummary>, ApiErro
         .run_summaries(&runtime.snapshot, &runtime.engine)
         .await
         .map(|summaries| summaries.as_ref().clone())
-        .map_err(api_error)
+        .map_err(ApiError::internal)
 }
 
 async fn explorer_runs(
@@ -342,11 +328,13 @@ async fn resolve_run_summary(
             matches.retain(|run| run.root_session_id.as_ref() == Some(root));
         }
     }
-    if matches.len() != 1 {
-        return Err(api_error(format!(
-            "trajectory selector resolved {} Storylines; include dataset, _file_, and session_id",
-            matches.len()
-        )));
+    if matches.is_empty() {
+        return Err(ApiError::not_found("trajectory was not found"));
+    }
+    if matches.len() > 1 {
+        return Err(ApiError::conflict(
+            "trajectory selector is ambiguous; include dataset, _file_, and session_id",
+        ));
     }
     Ok(matches.into_iter().next().expect("one matching run"))
 }
@@ -376,9 +364,9 @@ async fn canonical_run_coords_for_summary(
     let event_uri = runtime
         .snapshot
         .canonical_event_uri(&catalog_storyline_key(run))
-        .map_err(api_error)?;
+        .map_err(ApiError::internal)?;
     event_uri
-        .map(|event_uri| event_uri_coords(event_uri, run).map_err(api_error))
+        .map(|event_uri| event_uri_coords(event_uri, run).map_err(ApiError::internal))
         .transpose()
 }
 
@@ -413,8 +401,8 @@ async fn load_events(state: &AppState, query: &SessionQuery) -> Result<Vec<Event
         .snapshot
         .load_events(&catalog_storyline_key(&run))
         .await
-        .map_err(api_error)?
-        .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?;
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("trajectory was not found"))?;
     let offset = query.offset.unwrap_or(0).min(document.events.len());
     let end = query
         .limit
@@ -462,9 +450,13 @@ async fn storyline(
         .snapshot
         .load_storyline(&catalog_storyline_key(&run))
         .await
-        .map_err(api_error)?
-        .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?;
-    Ok(Json(serde_json::to_value(document).map_err(api_error)?))
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("trajectory was not found"))?;
+    Ok(Json(
+        serde_json::to_value(document)
+            .map_err(anyhow::Error::from)
+            .map_err(ApiError::internal)?,
+    ))
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -626,8 +618,8 @@ async fn load_trajectory(
         .snapshot
         .load_trajectory_bundle(&key)
         .await
-        .map_err(api_error)?
-        .ok_or_else(|| api_error("trajectory was not found in the active Catalog snapshot"))?;
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("trajectory was not found"))?;
     let records = bundle.events.events;
     let document = bundle.storyline;
     let mut by_call = BTreeMap::<String, Vec<u64>>::new();
@@ -779,10 +771,7 @@ async fn explorer_turn(
         .turns
         .iter()
         .find(|item| item.turn.id == query.turn_id)
-        .ok_or_else(|| ApiError {
-            code: "turn_not_found",
-            message: format!("turn {} was not found", query.turn_id),
-        })?;
+        .ok_or_else(|| ApiError::not_found(format!("turn {} was not found", query.turn_id)))?;
     Ok(Json(explorer::turn_detail(item, &loaded.records)))
 }
 
@@ -807,11 +796,12 @@ async fn revisions(
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let Some(coords) = canonical_run_coords(&state, &query).await? else {
-        return Ok(Json(json!([])));
+        return Err(ApiError::not_found("canonical event source was not found"));
     };
     Ok(Json(
-        serde_json::to_value(read_revisions(&coords).await.map_err(api_error)?)
-            .map_err(api_error)?,
+        serde_json::to_value(read_revisions(&coords).await.map_err(ApiError::internal)?)
+            .map_err(anyhow::Error::from)
+            .map_err(ApiError::internal)?,
     ))
 }
 
@@ -1129,9 +1119,11 @@ struct QueryEvidence {
 
 async fn query_evidence(
     State(state): State<AppState>,
-    Json(request): Json<QueryEvidenceRequest>,
+    request: Result<Json<QueryEvidenceRequest>, JsonRejection>,
 ) -> Result<Json<QueryEvidence>, ApiError> {
-    validate_read_only_sql(&request.sql)?;
+    let Json(request) =
+        request.map_err(|_| ApiError::invalid_request("request body must be valid JSON"))?;
+    validate_read_only_sql(&request.sql).map_err(ApiError::input)?;
     let max_rows = request.max_rows.unwrap_or(50).clamp(1, 200);
     let max_bytes = request
         .max_bytes
@@ -1143,17 +1135,26 @@ async fn query_evidence(
         .route_sql(&runtime.snapshot, &runtime.engine, &request.sql)
         .await;
     let bounded_sql = bounded_evidence_sql(&routed.sql, max_rows);
-    let mut body = BoundedOutput::new(max_bytes);
-    runtime
+    let mut output = BoundedOutput::new(max_bytes);
+    let write_result = runtime
         .engine
         .write_query_jsonl_with_max_rows(
             &bounded_sql,
-            &mut body,
+            &mut output,
             Some(max_rows.saturating_add(1) as u64),
         )
-        .await
-        .map_err(api_error)?;
-    let body = String::from_utf8(body.into_inner()).map_err(api_error)?;
+        .await;
+    let bytes = match output.finish(write_result).map_err(ApiError::internal)? {
+        QueryEvidenceWriteOutcome::Complete(bytes) => bytes,
+        QueryEvidenceWriteOutcome::LimitExceeded => {
+            return Err(ApiError::resource_exhausted(
+                "query evidence exceeds max_bytes limit",
+            ));
+        }
+    };
+    let body = String::from_utf8(bytes)
+        .map_err(anyhow::Error::from)
+        .map_err(ApiError::internal)?;
     let mut rows = Vec::new();
     let mut bytes = 0usize;
     let mut truncated = false;
@@ -1162,7 +1163,11 @@ async fn query_evidence(
             truncated = true;
             break;
         }
-        rows.push(serde_json::from_str(line).map_err(api_error)?);
+        rows.push(
+            serde_json::from_str(line)
+                .map_err(anyhow::Error::from)
+                .map_err(ApiError::internal)?,
+        );
         bytes += line.len();
     }
     Ok(Json(QueryEvidence {
@@ -1179,6 +1184,13 @@ async fn query_evidence(
 struct BoundedOutput {
     bytes: Vec<u8>,
     max_bytes: usize,
+    exhausted: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QueryEvidenceWriteOutcome {
+    Complete(Vec<u8>),
+    LimitExceeded,
 }
 
 impl BoundedOutput {
@@ -1186,21 +1198,28 @@ impl BoundedOutput {
         Self {
             bytes: Vec::new(),
             max_bytes,
+            exhausted: false,
         }
     }
 
-    fn into_inner(self) -> Vec<u8> {
-        self.bytes
+    fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+
+    fn finish(self, write_result: anyhow::Result<()>) -> anyhow::Result<QueryEvidenceWriteOutcome> {
+        match (write_result, self.exhausted()) {
+            (_, true) => Ok(QueryEvidenceWriteOutcome::LimitExceeded),
+            (Ok(()), false) => Ok(QueryEvidenceWriteOutcome::Complete(self.bytes)),
+            (Err(error), false) => Err(error),
+        }
     }
 }
 
 impl std::io::Write for BoundedOutput {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         if self.bytes.len().saturating_add(buffer.len()) > self.max_bytes {
-            return Err(std::io::Error::other(format!(
-                "query evidence exceeds max_bytes limit of {}",
-                self.max_bytes
-            )));
+            self.exhausted = true;
+            return Err(std::io::Error::other("bounded query output exhausted"));
         }
         self.bytes.extend_from_slice(buffer);
         Ok(buffer.len())
@@ -1227,14 +1246,13 @@ fn bounded_evidence_sql(sql: &str, max_rows: usize) -> String {
     }
 }
 
-fn validate_read_only_sql(sql: &str) -> Result<(), ApiError> {
+fn validate_read_only_sql(sql: &str) -> std::result::Result<(), InputIssue> {
     let statement = sql.trim();
     let statement = statement.strip_suffix(';').unwrap_or(statement).trim_end();
     if statement.is_empty() || statement.contains(';') {
-        return Err(ApiError {
-            code: "read_only_sql",
-            message: "exactly one read-only SQL statement is required".into(),
-        });
+        return Err(InputIssue::invalid(
+            "exactly one read-only SQL statement is required",
+        ));
     }
     let normalized = statement.trim_start().to_ascii_lowercase();
     let has_keyword = |value: &str, keyword: &str| {
@@ -1250,10 +1268,9 @@ fn validate_read_only_sql(sql: &str) -> Result<(), ApiError> {
             .map(str::trim_start)
             .is_some_and(|rest| has_keyword(rest, "select") || has_keyword(rest, "with"));
     if !read_only {
-        return Err(ApiError {
-            code: "read_only_sql",
-            message: "only SELECT, WITH, EXPLAIN SELECT, and EXPLAIN WITH are allowed".into(),
-        });
+        return Err(InputIssue::unsupported(
+            "only SELECT, WITH, EXPLAIN SELECT, and EXPLAIN WITH are allowed",
+        ));
     }
     Ok(())
 }

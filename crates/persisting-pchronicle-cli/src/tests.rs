@@ -193,6 +193,50 @@ async fn project_watch_emits_sync_and_verification_state() -> Result<()> {
 }
 
 #[tokio::test]
+async fn project_watch_labels_missing_projection_without_diagnostic_text() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "session",
+        None,
+    );
+    let source = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
+    let projection = temp.path().join("missing-projection");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "project",
+        "watch",
+        "--from",
+        projection.to_str().unwrap(),
+        "--source",
+        source.to_str().unwrap(),
+        "--iterations",
+        "1",
+        "--interval-seconds",
+        "1",
+        "--max-backoff-seconds",
+        "1",
+        "--verify-every",
+        "1",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+    let event: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(event["status"], "error");
+    assert_eq!(event["code"], "not_found");
+    assert_eq!(event["message"], "projection was not found");
+    assert!(event.get("error").is_none());
+    assert!(!event
+        .to_string()
+        .contains(source.to_string_lossy().as_ref()));
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_discovers_nested_sources_as_json() -> Result<()> {
     let temp = tempfile::tempdir()?;
     fs::create_dir(temp.path().join("nested"))?;
@@ -562,24 +606,24 @@ async fn query_rejects_writes_and_bounded_output_without_partial_stdout() -> Res
         let error = run(cli, false, &mut stdout, &mut Vec::new())
             .await
             .unwrap_err();
-        assert!(error.to_string().contains(expected), "{error:#}");
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
         assert!(stdout.is_empty());
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn query_errors_redact_sql_and_dataset_path() -> Result<()> {
+async fn query_errors_preserve_the_operational_source_chain() -> Result<()> {
     let dataset = example_dataset("atif");
     let sql = "SELECT secret_column FROM dataset.runs";
     let cli = Cli::try_parse_from(["pchronicle", "query", dataset.to_str().unwrap(), sql])?;
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    let message = format!("{error:#}");
-    assert!(!message.contains(sql));
-    assert!(!message.contains(dataset.to_str().unwrap()));
-    assert!(message.contains("<sql>"));
+    assert!(
+        error.chain().count() >= 2,
+        "missing source chain: {error:#}"
+    );
     Ok(())
 }
 
@@ -816,7 +860,10 @@ async fn find_enforces_output_byte_limit_without_partial_stdout() -> Result<()> 
     let error = run(cli, false, &mut stdout, &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("max_output_bytes"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("max_output_bytes"),
+        "{error:#}"
+    );
     assert!(stdout.is_empty());
     Ok(())
 }
@@ -968,10 +1015,14 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
     let invalid = temp.path().join("invalid.json");
     fs::write(&invalid, "not json")?;
 
-    for (name, extra) in [
-        ("invalid", vec![]),
-        ("oversized", vec!["--max-input-bytes", "1"]),
-        ("storyline", vec!["--format", "storyline"]),
+    for (name, extra, code) in [
+        ("invalid", vec![], "invalid_request"),
+        (
+            "oversized",
+            vec!["--max-input-bytes", "1"],
+            "resource_exhausted",
+        ),
+        ("storyline", vec!["--format", "storyline"], "unsupported"),
     ] {
         let output = temp.path().join(name);
         let mut args = vec![
@@ -985,7 +1036,10 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
         args.extend(extra);
         let cli = Cli::try_parse_from(args)?;
         let mut stdout = Vec::new();
-        assert!(run(cli, false, &mut stdout, &mut Vec::new()).await.is_err());
+        let error = run(cli, false, &mut stdout, &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().starts_with(code), "{error:#}");
         assert!(stdout.is_empty());
         assert!(!output.exists());
     }

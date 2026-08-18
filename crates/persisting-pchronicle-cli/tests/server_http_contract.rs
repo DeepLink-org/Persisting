@@ -139,7 +139,19 @@ async fn evidence_query_is_read_only_and_server_bounded() -> Result<()> {
     assert_eq!(body["max_rows"], 1);
     assert_eq!(body["rows"].as_array().map(Vec::len), Some(1));
 
-    for sql in ["", "DELETE FROM dataset.runs", "SELECT 1; SELECT 2"] {
+    for (sql, status, code) in [
+        ("", StatusCode::BAD_REQUEST, "invalid_request"),
+        (
+            "DELETE FROM dataset.runs",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported",
+        ),
+        (
+            "SELECT 1; SELECT 2",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+    ] {
         let response = app
             .clone()
             .oneshot(
@@ -150,8 +162,8 @@ async fn evidence_query_is_read_only_and_server_bounded() -> Result<()> {
                     .body(Body::from(json!({"sql": sql}).to_string()))?,
             )
             .await?;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "sql={sql:?}");
-        assert_eq!(json_body(response).await?["code"], "read_only_sql");
+        assert_eq!(response.status(), status, "sql={sql:?}");
+        assert_eq!(json_body(response).await?["code"], code);
     }
     Ok(())
 }

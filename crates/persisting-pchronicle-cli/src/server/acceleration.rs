@@ -44,8 +44,8 @@ pub(crate) struct ServerAcceleration {
     event_partitions: OnceCell<CachedRoutingIndex>,
 }
 
-type CachedRunSummaries = std::result::Result<Arc<Vec<RunSummary>>, String>;
-type CachedRoutingIndex = std::result::Result<Arc<SourceRoutingIndex>, String>;
+type CachedRunSummaries = Arc<Vec<RunSummary>>;
+type CachedRoutingIndex = Arc<SourceRoutingIndex>;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct AccelerationStatus {
@@ -53,7 +53,6 @@ pub(crate) struct AccelerationStatus {
     pub(crate) run_index: Option<RoutingIndexStatus>,
     pub(crate) event_identity_index: Option<RoutingIndexStatus>,
     pub(crate) event_partition_index: Option<RoutingIndexStatus>,
-    pub(crate) failed: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -103,25 +102,11 @@ impl RoutedQuery {
 
 impl ServerAcceleration {
     pub(crate) fn status(&self) -> AccelerationStatus {
-        let mut failed = Vec::new();
-        if self.run_summaries.get().is_some_and(Result::is_err) {
-            failed.push("run_summaries");
-        }
-        if self.runs.get().is_some_and(Result::is_err) {
-            failed.push("run_index");
-        }
-        if self.event_identities.get().is_some_and(Result::is_err) {
-            failed.push("event_identity_index");
-        }
-        if self.event_partitions.get().is_some_and(Result::is_err) {
-            failed.push("event_partition_index");
-        }
         AccelerationStatus {
-            run_summaries_ready: self.run_summaries.get().is_some_and(Result::is_ok),
+            run_summaries_ready: self.run_summaries.get().is_some(),
             run_index: cached_index_status(&self.runs),
             event_identity_index: cached_index_status(&self.event_identities),
             event_partition_index: cached_index_status(&self.event_partitions),
-            failed,
         }
     }
 
@@ -130,19 +115,13 @@ impl ServerAcceleration {
         snapshot: &DatasetCatalogSnapshot,
         engine: &ChronicleQueryEngine,
     ) -> Result<Arc<Vec<RunSummary>>> {
-        match self
-            .run_summaries
-            .get_or_init(|| async {
+        self.run_summaries
+            .get_or_try_init(|| async {
                 let _admission = self.build_gate.lock().await;
-                build_run_summaries(snapshot, engine)
-                    .await
-                    .map_err(cache_error)
+                build_run_summaries(snapshot, engine).await
             })
             .await
-        {
-            Ok(summaries) => Ok(summaries.clone()),
-            Err(error) => anyhow::bail!(error.clone()),
-        }
+            .cloned()
     }
 
     pub(crate) async fn route_sql(
@@ -164,9 +143,9 @@ impl ServerAcceleration {
         let index = match query.index_kind {
             RoutingIndexKind::Runs => match self
                 .runs
-                .get_or_init(|| async {
+                .get_or_try_init(|| async {
                     let _admission = self.build_gate.lock().await;
-                    build_run_index(snapshot, engine).await.map_err(cache_error)
+                    build_run_index(snapshot, engine).await
                 })
                 .await
             {
@@ -177,11 +156,9 @@ impl ServerAcceleration {
             },
             RoutingIndexKind::EventIdentities => match self
                 .event_identities
-                .get_or_init(|| async {
+                .get_or_try_init(|| async {
                     let _admission = self.build_gate.lock().await;
-                    build_event_identity_index(snapshot, engine)
-                        .await
-                        .map_err(cache_error)
+                    build_event_identity_index(snapshot, engine).await
                 })
                 .await
             {
@@ -192,11 +169,9 @@ impl ServerAcceleration {
             },
             RoutingIndexKind::EventPartitions => match self
                 .event_partitions
-                .get_or_init(|| async {
+                .get_or_try_init(|| async {
                     let _admission = self.build_gate.lock().await;
-                    build_event_partition_index(snapshot, engine)
-                        .await
-                        .map_err(cache_error)
+                    build_event_partition_index(snapshot, engine).await
                 })
                 .await
             {
@@ -228,13 +203,7 @@ impl ServerAcceleration {
 }
 
 fn cached_index_status(cell: &OnceCell<CachedRoutingIndex>) -> Option<RoutingIndexStatus> {
-    cell.get()
-        .and_then(|result| result.as_ref().ok())
-        .map(|index| index.status())
-}
-
-fn cache_error(error: anyhow::Error) -> String {
-    format!("{error:#}")
+    cell.get().map(|index| index.status())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1347,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_index_limits_and_failed_status_are_explicit() {
+    fn routing_index_limits_are_explicit() {
         let mut builder = SourceRoutingIndexBuilder::new(EVENT_IDENTITY_COLUMNS);
         builder.add(
             "live",
@@ -1356,15 +1325,6 @@ mod tests {
         );
         assert!(builder.ensure_limits(0, usize::MAX).is_err());
         assert!(builder.ensure_limits(usize::MAX, 1).is_err());
-
-        let acceleration = ServerAcceleration::default();
-        acceleration
-            .event_identities
-            .set(Err("bounded build failed".into()))
-            .unwrap();
-        let status = acceleration.status();
-        assert!(status.event_identity_index.is_none());
-        assert_eq!(status.failed, vec!["event_identity_index"]);
     }
 
     #[tokio::test]

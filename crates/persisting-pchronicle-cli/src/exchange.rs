@@ -42,6 +42,17 @@ pub(super) async fn run_import(
     let text = std::str::from_utf8(&input).context("import input must be UTF-8")?;
     let format = resolve_import_format(args.format, input_path, text)?;
     let source_path = import_source_name(format);
+    let relative_path = input_path
+        .and_then(Path::file_name)
+        .map(Path::new)
+        .unwrap_or_else(|| Path::new(source_path));
+    decode_json_storylines(
+        exchange_document_format(format)
+            .context("supported import format must map to a physical document format")?,
+        text,
+        relative_path,
+    )
+    .map_err(cli_input_error)?;
     let parent = output
         .parent()
         .context("import output must have a parent directory")?;
@@ -210,11 +221,7 @@ async fn export_from_snapshot(
     );
 
     let sql = export_address_sql(args)?;
-    let engine = snapshot
-        .clone()
-        .query_engine(Default::default())
-        .await
-        .map_err(|error| redact_query_error(&error, &[dataset_uri.to_string()], None))?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     let row_limit = args
         .max_trajectories
         .checked_add(1)
@@ -222,8 +229,7 @@ async fn export_from_snapshot(
     let mut addresses = LimitedBuffer::new(args.max_output_bytes);
     engine
         .write_query_jsonl_with_max_rows(&sql, &mut addresses, Some(row_limit))
-        .await
-        .map_err(|error| redact_query_error(&error, &[dataset_uri.to_string()], Some(&sql)))?;
+        .await?;
     let mut addresses = addresses
         .into_inner()
         .split(|byte| *byte == b'\n')
@@ -537,18 +543,30 @@ fn read_bounded(mut reader: impl Read, max_bytes: usize, label: &str) -> Result<
     let limit = u64::try_from(max_bytes)
         .ok()
         .and_then(|limit| limit.checked_add(1))
-        .context("--max-input-bytes is too large")?;
+        .ok_or_else(|| {
+            cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                "--max-input-bytes is too large",
+            )
+        })?;
     let mut input = Vec::new();
     reader
         .by_ref()
         .take(limit)
         .read_to_end(&mut input)
         .with_context(|| format!("read {label}"))?;
-    anyhow::ensure!(
-        input.len() <= max_bytes,
-        "{label} exceeds max_input_bytes limit of {max_bytes}"
-    );
-    anyhow::ensure!(!input.is_empty(), "{label} is empty");
+    if input.len() > max_bytes {
+        return Err(cli_boundary_error(
+            BoundaryCode::ResourceExhausted,
+            format!("{label} exceeds max_input_bytes limit of {max_bytes}"),
+        ));
+    }
+    if input.is_empty() {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("{label} is empty"),
+        ));
+    }
     Ok(input)
 }
 
@@ -560,25 +578,38 @@ fn resolve_import_format(
     let format = match requested {
         ExchangeFormat::Auto => match detect_format(input_path, Some(input))
             .map_err(anyhow::Error::from)?
-            .context("cannot detect import format; pass --format explicitly")?
-        {
+            .ok_or_else(|| {
+                cli_boundary_error(
+                    BoundaryCode::InvalidRequest,
+                    "cannot detect import format; pass --format explicitly",
+                )
+            })? {
             DocumentFormat::Atif => ExchangeFormat::Atif,
             DocumentFormat::Actf => ExchangeFormat::Actf,
             DocumentFormat::OpenaiMsg => ExchangeFormat::OpenaiMessages,
-            format => bail!("detected import format '{format}' is not a queryable JSON format"),
+            format => {
+                return Err(cli_boundary_error(
+                    BoundaryCode::Unsupported,
+                    format!("detected import format '{format}' is not a queryable JSON format"),
+                ));
+            }
         },
         ExchangeFormat::Atif => ExchangeFormat::Atif,
         ExchangeFormat::Actf => ExchangeFormat::Actf,
         ExchangeFormat::OpenaiMessages => ExchangeFormat::OpenaiMessages,
         ExchangeFormat::Storyline => ExchangeFormat::Storyline,
     };
-    anyhow::ensure!(
-        matches!(
-            format,
-            ExchangeFormat::Atif | ExchangeFormat::Actf | ExchangeFormat::OpenaiMessages
-        ),
-        "import format '{format}' is not supported by the first queryable import increment"
-    );
+    if !matches!(
+        format,
+        ExchangeFormat::Atif | ExchangeFormat::Actf | ExchangeFormat::OpenaiMessages
+    ) {
+        return Err(cli_boundary_error(
+            BoundaryCode::Unsupported,
+            format!(
+                "import format '{format}' is not supported by the first queryable import increment"
+            ),
+        ));
+    }
     Ok(format)
 }
 
@@ -601,15 +632,11 @@ pub(super) async fn validate_import_source(format: ExchangeFormat, path: &Path) 
         .for_each_storyline(|story| {
             let document_id = story.document_id();
             if !seen.insert(document_id.to_string()) {
-                return Err(persisting_pchronicle::document::Error::Other(format!(
-                    "duplicate document_id: {document_id}"
-                )));
+                anyhow::bail!("duplicate document_id: {document_id}");
             }
-            document_count = document_count.checked_add(1).ok_or_else(|| {
-                persisting_pchronicle::document::Error::Other(
-                    "import document count overflow".to_string(),
-                )
-            })?;
+            document_count = document_count
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("import document count overflow"))?;
             Ok(())
         })
         .await?;

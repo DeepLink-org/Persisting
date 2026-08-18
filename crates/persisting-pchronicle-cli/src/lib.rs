@@ -25,7 +25,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use persisting_pchronicle::document::{
-    detect_format, encode_json_storylines, open_document, DocumentFormat,
+    decode_json_storylines, detect_format, encode_json_storylines, open_document, DocumentFormat,
+    InputIssue, InputIssueKind,
 };
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::ChronicleQueryEngine;
@@ -33,11 +34,43 @@ use persisting_pchronicle::storage::{
     build_storyline_projection, rebuild_storyline_projection, storyline_projection_status,
     sync_storyline_projection, verify_storyline_projection, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, StorylineProjectionSyncReport,
-    StorylineProjectionVerification, DEFAULT_DATASET_NAME,
+    DatasetCatalogSnapshot, DatasetMount, StorylineProjectionBuildOutcome,
+    StorylineProjectionSyncOutcome, StorylineProjectionSyncReport, StorylineProjectionVerification,
+    DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+use server::problem::BoundaryCode;
+
+#[derive(Debug)]
+struct CliBoundaryError {
+    code: BoundaryCode,
+    message: String,
+}
+
+impl std::fmt::Display for CliBoundaryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code.as_str(), self.message)
+    }
+}
+
+impl std::error::Error for CliBoundaryError {}
+
+fn cli_boundary_error(code: BoundaryCode, message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(CliBoundaryError {
+        code,
+        message: message.into(),
+    })
+}
+
+fn cli_input_error(issue: InputIssue) -> anyhow::Error {
+    let code = match issue.kind() {
+        InputIssueKind::Invalid => BoundaryCode::InvalidRequest,
+        InputIssueKind::Unsupported => BoundaryCode::Unsupported,
+    };
+    cli_boundary_error(code, issue.message())
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -531,11 +564,24 @@ struct ProjectWatchEvent {
     duration_ms: u64,
     consecutive_failures: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<BoundaryCode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sync: Option<StorylineProjectionSyncReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     verification: Option<StorylineProjectionVerification>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+}
+
+enum ProjectWatchAttempt {
+    Synced {
+        sync: StorylineProjectionSyncReport,
+        verification: Box<Option<StorylineProjectionVerification>>,
+    },
+    Rejected {
+        code: BoundaryCode,
+        message: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -836,7 +882,16 @@ async fn run_project(
     match args.command {
         ProjectCommand::Build(args) => {
             let report =
-                build_storyline_projection(&args.from, &args.output, args.source_file).await?;
+                match build_storyline_projection(&args.from, &args.output, args.source_file).await?
+                {
+                    StorylineProjectionBuildOutcome::Built(report) => report,
+                    StorylineProjectionBuildOutcome::OutputNotEmpty => {
+                        return Err(cli_boundary_error(
+                            BoundaryCode::Conflict,
+                            "projection output is not empty",
+                        ));
+                    }
+                };
             serde_json::to_writer_pretty(&mut *stdout, &report)
                 .context("encode projection build report")?;
             writeln!(stdout).context("write projection build report")?;
@@ -861,7 +916,21 @@ async fn run_project(
             anyhow::ensure!(verification.fresh, "{}", verification.reason);
         }
         ProjectCommand::Sync(args) => {
-            let report = sync_storyline_projection(&args.source, &args.from).await?;
+            let report = match sync_storyline_projection(&args.source, &args.from).await? {
+                StorylineProjectionSyncOutcome::Synced(report) => report,
+                StorylineProjectionSyncOutcome::MissingProjection => {
+                    return Err(cli_boundary_error(
+                        BoundaryCode::NotFound,
+                        "projection was not found",
+                    ));
+                }
+                StorylineProjectionSyncOutcome::RequiresRebuild(_) => {
+                    return Err(cli_boundary_error(
+                        BoundaryCode::Conflict,
+                        "projection requires rebuild",
+                    ));
+                }
+            };
             serde_json::to_writer_pretty(&mut *stdout, &report)
                 .context("encode projection sync report")?;
             writeln!(stdout).context("write projection sync report")?;
@@ -903,47 +972,95 @@ async fn run_project_watch(
         let started = Instant::now();
         let verify_this_iteration = (iteration - 1).is_multiple_of(args.verify_every);
         let outcome = async {
-            let sync = sync_storyline_projection(&args.source, &args.from).await?;
+            let sync = match sync_storyline_projection(&args.source, &args.from).await? {
+                StorylineProjectionSyncOutcome::Synced(sync) => sync,
+                StorylineProjectionSyncOutcome::MissingProjection => {
+                    return Ok(ProjectWatchAttempt::Rejected {
+                        code: BoundaryCode::NotFound,
+                        message: "projection was not found".into(),
+                    });
+                }
+                StorylineProjectionSyncOutcome::RequiresRebuild(_) => {
+                    return Ok(ProjectWatchAttempt::Rejected {
+                        code: BoundaryCode::Conflict,
+                        message: "projection requires rebuild".into(),
+                    });
+                }
+            };
             let verification = if verify_this_iteration {
                 let verification = verify_storyline_projection(&args.source, &args.from).await?;
-                anyhow::ensure!(verification.fresh, "{}", verification.reason);
+                if !verification.fresh {
+                    return Ok(ProjectWatchAttempt::Rejected {
+                        code: BoundaryCode::Conflict,
+                        message: "projection verification is not fresh".into(),
+                    });
+                }
                 Some(verification)
             } else {
                 None
             };
-            Ok::<_, anyhow::Error>((sync, verification))
+            Ok::<_, anyhow::Error>(ProjectWatchAttempt::Synced {
+                sync,
+                verification: Box::new(verification),
+            })
         }
         .await;
 
-        let failed = outcome.is_err();
-        let event = match outcome {
-            Ok((sync, verification)) => {
+        let (event, operational_error) = match outcome {
+            Ok(ProjectWatchAttempt::Synced { sync, verification }) => {
                 consecutive_failures = 0;
-                ProjectWatchEvent {
-                    iteration,
-                    observed_at_unix_ms: unix_now_ms(),
-                    status: "ok",
-                    duration_ms: elapsed_ms(started),
-                    consecutive_failures,
-                    sync: Some(sync),
-                    verification,
-                    error: None,
-                }
+                (
+                    ProjectWatchEvent {
+                        iteration,
+                        observed_at_unix_ms: unix_now_ms(),
+                        status: "ok",
+                        duration_ms: elapsed_ms(started),
+                        consecutive_failures,
+                        code: None,
+                        message: None,
+                        sync: Some(sync),
+                        verification: *verification,
+                    },
+                    None,
+                )
+            }
+            Ok(ProjectWatchAttempt::Rejected { code, message }) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                (
+                    ProjectWatchEvent {
+                        iteration,
+                        observed_at_unix_ms: unix_now_ms(),
+                        status: "error",
+                        duration_ms: elapsed_ms(started),
+                        consecutive_failures,
+                        code: Some(code),
+                        message: Some(message),
+                        sync: None,
+                        verification: None,
+                    },
+                    None,
+                )
             }
             Err(error) => {
+                tracing::error!(error = ?error, "pChronicle project watch iteration failed");
                 consecutive_failures = consecutive_failures.saturating_add(1);
-                ProjectWatchEvent {
-                    iteration,
-                    observed_at_unix_ms: unix_now_ms(),
-                    status: "error",
-                    duration_ms: elapsed_ms(started),
-                    consecutive_failures,
-                    sync: None,
-                    verification: None,
-                    error: Some(format!("{error:#}")),
-                }
+                (
+                    ProjectWatchEvent {
+                        iteration,
+                        observed_at_unix_ms: unix_now_ms(),
+                        status: "error",
+                        duration_ms: elapsed_ms(started),
+                        consecutive_failures,
+                        code: Some(BoundaryCode::Internal),
+                        message: Some("internal error".into()),
+                        sync: None,
+                        verification: None,
+                    },
+                    Some(error),
+                )
             }
         };
+        let failed = event.code.is_some();
         serde_json::to_writer(&mut *stdout, &event).context("encode project watch event")?;
         writeln!(stdout).context("write project watch event")?;
         stdout.flush().context("flush project watch event")?;
@@ -955,10 +1072,13 @@ async fn run_project_watch(
         .context("write project watch metadata")?;
 
         if failed && args.exit_on_error {
-            anyhow::bail!(
-                "{}",
-                event.error.as_deref().unwrap_or("project watch failed")
-            );
+            if let Some(error) = operational_error {
+                return Err(error);
+            }
+            return Err(cli_boundary_error(
+                event.code.expect("failed watch event has a boundary code"),
+                event.message.as_deref().unwrap_or("project watch failed"),
+            ));
         }
         if args.iterations.is_some_and(|limit| iteration >= limit) {
             return Ok(());
@@ -1488,7 +1608,7 @@ async fn run_query(
         args.timeout_seconds > 0,
         "--timeout-seconds must be greater than zero"
     );
-    let (dataset_label, dataset_uris, snapshot) = discover_query_snapshot(
+    let (dataset_label, _, snapshot) = discover_query_snapshot(
         dataset_uri.as_deref(),
         &args.datasets,
         args.max_files,
@@ -1497,10 +1617,7 @@ async fn run_query(
     .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot
-        .query_engine(Default::default())
-        .await
-        .map_err(|error| redact_query_error(&error, &dataset_uris, None))?;
+    let engine = snapshot.query_engine(Default::default()).await?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let query_result = tokio::time::timeout(
         Duration::from_secs(args.timeout_seconds),
@@ -1509,9 +1626,7 @@ async fn run_query(
     .await;
     match query_result {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            return Err(redact_query_error(&error, &dataset_uris, Some(sql)));
-        }
+        Ok(Err(error)) => return Err(error),
         Err(_) => bail!(
             "Dataset query timed out after {} seconds",
             args.timeout_seconds
@@ -1578,15 +1693,12 @@ async fn run_analysis(
         "--timeout-seconds must be greater than zero"
     );
     let dataset = resolve_dataset_uri(options.dataset_uri.as_deref(), settings_override)?;
-    let (_, dataset_uris, snapshot) =
+    let (_, _, snapshot) =
         discover_query_snapshot(Some(&dataset), &[], options.max_files, options.max_entries)
             .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot
-        .query_engine(Default::default())
-        .await
-        .map_err(|error| redact_query_error(&error, &dataset_uris, None))?;
+    let engine = snapshot.query_engine(Default::default()).await?;
     let bounded_sql = format!("{sql}\nLIMIT {}", options.limit);
     let mut buffer = LimitedBuffer::new(options.max_output_bytes);
     let query_result = tokio::time::timeout(
@@ -1596,13 +1708,7 @@ async fn run_analysis(
     .await;
     match query_result {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            return Err(redact_query_error(
-                &error,
-                &dataset_uris,
-                Some(&bounded_sql),
-            ));
-        }
+        Ok(Err(error)) => return Err(error),
         Err(_) => bail!(
             "Dataset analysis timed out after {} seconds",
             options.timeout_seconds
@@ -1768,10 +1874,7 @@ async fn run_find(
         .context("find Dataset URI missing after discovery")?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = snapshot
-        .query_engine(Default::default())
-        .await
-        .map_err(|error| redact_query_error(&error, std::slice::from_ref(&dataset_uri), None))?;
+    let engine = snapshot.query_engine(Default::default()).await?;
     let sql = find_sql(&args)?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let max_query_rows = args
@@ -1786,13 +1889,7 @@ async fn run_find(
     .await;
     let jsonl = match query_result {
         Ok(Ok(())) => String::from_utf8(buffer.into_inner()).context("find JSONL is not UTF-8")?,
-        Ok(Err(error)) => {
-            return Err(redact_query_error(
-                &error,
-                std::slice::from_ref(&dataset_uri),
-                Some(&sql),
-            ));
-        }
+        Ok(Err(error)) => return Err(error),
         Err(_) => bail!(
             "Dataset find timed out after {} seconds",
             args.timeout_seconds
@@ -2004,21 +2101,6 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
     Ok(())
 }
 
-fn redact_query_error(
-    error: &anyhow::Error,
-    dataset_uris: &[String],
-    sql: Option<&str>,
-) -> anyhow::Error {
-    let mut message = format!("{error:#}");
-    if let Some(sql) = sql {
-        message = message.replace(sql, "<sql>");
-    }
-    for dataset_uri in dataset_uris {
-        message = redact_message(&message, dataset_uri);
-    }
-    anyhow!(message)
-}
-
 fn query_inputs<'a>(
     args: &'a QueryArgs,
     settings_override: Option<&Path>,
@@ -2085,7 +2167,6 @@ async fn discover_query_snapshot(
             .with_discovery_limits(max_files, max_entries),
     )
     .await
-    .map_err(|error| redact_query_error(&error, &dataset_uris, None))
     .context("discover query Dataset Sources")?;
     Ok((dataset_label, dataset_uris, snapshot))
 }
