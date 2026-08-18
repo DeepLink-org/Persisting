@@ -354,6 +354,29 @@ async fn list_alias_and_table_output_work() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn list_source_status_does_not_serialize_catalog_diagnostics() -> Result<()> {
+    let source = persisting_pchronicle::storage::DiscoveredSource {
+        file: "broken.json".into(),
+        format: None,
+        kind: CatalogSourceKind::File,
+        revision: None,
+        projection_status: None,
+        projection_generation: None,
+        projection_candidates: 0,
+        size_bytes: None,
+        last_modified: None,
+        status: CatalogSourceStatus::Error,
+        error: Some("list-secret-sentinel /private/list/path".into()),
+    };
+
+    let output = serde_json::to_string(&source_response(&source))?;
+    assert!(output.contains("Source discovery failed"), "{output}");
+    assert!(!output.contains("list-secret-sentinel"), "{output}");
+    assert!(!output.contains("/private/list/path"), "{output}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn status_reports_exact_counts_as_json() -> Result<()> {
     let cli = Cli::try_parse_from([
@@ -473,7 +496,10 @@ async fn status_strict_mode_rejects_bad_sources() -> Result<()> {
 #[tokio::test]
 async fn status_report_mode_marks_an_unreadable_dataset_as_error() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    fs::write(temp.path().join("broken.json"), "{not-json")?;
+    fs::write(
+        temp.path().join("broken.json"),
+        "{status-secret-sentinel:/private/status/path",
+    )?;
     let cli = Cli::try_parse_from([
         "pchronicle",
         "status",
@@ -491,8 +517,42 @@ async fn status_report_mode_marks_an_unreadable_dataset_as_error() -> Result<()>
     assert_eq!(value["sources"]["ready"], 0);
     assert_eq!(value["sources"]["error"], 1);
     let error = value["source_errors"][0]["error"].as_str().unwrap();
-    assert!(error.contains("<dataset>/broken.json"));
-    assert!(!error.contains(temp.path().to_str().unwrap()));
+    assert_eq!(error, "Source status query failed");
+    let output = String::from_utf8(stdout)?;
+    assert!(!output.contains("status-secret-sentinel"), "{output}");
+    assert!(!output.contains("/private/status/path"), "{output}");
+    Ok(())
+}
+
+#[test]
+fn limited_buffer_labels_byte_exhaustion_without_swallowing_writer_errors() -> Result<()> {
+    use persisting_pchronicle::query::QueryWriteOutcome;
+
+    let mut buffer = LimitedBuffer::new(3);
+    let write_error = buffer.write_all(b"four").unwrap_err();
+    let outcome = buffer.finish(Err(anyhow::Error::new(write_error)))?;
+    assert_eq!(outcome, QueryOutputBudgetOutcome::ByteLimitExceeded);
+
+    let buffer = LimitedBuffer::new(3);
+    let writer_error = anyhow::Error::new(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "limited-writer-source-sentinel",
+    ));
+    let error = buffer
+        .finish(Err(writer_error))
+        .expect_err("ordinary writer errors must remain operational");
+    let source = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<std::io::Error>())
+        .context("writer I/O source was not preserved")?;
+    assert_eq!(source.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(source.to_string(), "limited-writer-source-sentinel");
+
+    let buffer = LimitedBuffer::new(3);
+    assert_eq!(
+        buffer.finish(Ok(QueryWriteOutcome::LimitExceeded))?,
+        QueryOutputBudgetOutcome::RowLimitExceeded
+    );
     Ok(())
 }
 
@@ -639,24 +699,27 @@ async fn query_writes_new_files_without_overwriting() -> Result<()> {
 
 #[tokio::test]
 async fn query_rejects_writes_and_bounded_output_without_partial_stdout() -> Result<()> {
-    for (sql, limit_flag, limit, expected) in [
+    for (sql, limit_flag, limit, expected, boundary_code) in [
         (
             "DELETE FROM dataset.runs",
             "--max-output-rows",
             "100",
             "only accepts SELECT",
+            None,
         ),
         (
             "SELECT * FROM dataset.steps",
             "--max-output-rows",
             "1",
             "max_output_rows",
+            Some("resource_exhausted"),
         ),
         (
             "SELECT * FROM dataset.steps",
             "--max-output-bytes",
             "8",
             "max_output_bytes",
+            Some("resource_exhausted"),
         ),
     ] {
         let cli = Cli::try_parse_from([
@@ -672,6 +735,9 @@ async fn query_rejects_writes_and_bounded_output_without_partial_stdout() -> Res
             .await
             .unwrap_err();
         assert!(format!("{error:#}").contains(expected), "{error:#}");
+        if let Some(boundary_code) = boundary_code {
+            assert!(error.to_string().starts_with(boundary_code), "{error:#}");
+        }
         assert!(stdout.is_empty());
     }
     Ok(())

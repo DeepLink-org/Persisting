@@ -34,7 +34,7 @@ use persisting_pchronicle::storage::{
     build_storyline_projection, rebuild_storyline_projection, storyline_projection_status,
     sync_storyline_projection, verify_storyline_projection, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, StorylineProjectionBuildOutcome,
+    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, StorylineProjectionBuildOutcome,
     StorylineProjectionSyncOutcome, StorylineProjectionSyncReport, StorylineProjectionVerification,
     DEFAULT_DATASET_NAME,
 };
@@ -83,8 +83,18 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     settings: Option<PathBuf>,
 
+    /// Show complete error source chains instead of concise errors.
+    #[arg(long, global = true)]
+    debug_errors: bool,
+
     #[command(subcommand)]
     command: Command,
+}
+
+impl Cli {
+    pub fn debug_errors(&self) -> bool {
+        self.debug_errors
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -1441,20 +1451,7 @@ async fn run_list(
         dataset_uri,
         snapshot_id: snapshot.snapshot_id().to_string(),
         created_at: snapshot.created_at().to_string(),
-        sources: dataset
-            .sources
-            .iter()
-            .map(|source| SourceResponse {
-                source_path: source.file.clone(),
-                format: source.format.clone(),
-                kind: source.kind,
-                snapshot_ref: source.snapshot_ref(),
-                size_bytes: source.size_bytes,
-                last_modified: source.last_modified.clone(),
-                status: source.status,
-                error: source.error.clone(),
-            })
-            .collect(),
+        sources: dataset.sources.iter().map(source_response).collect(),
     };
 
     let output_format = match args.format {
@@ -1484,6 +1481,20 @@ async fn run_list(
     Ok(())
 }
 
+fn source_response(source: &DiscoveredSource) -> SourceResponse {
+    SourceResponse {
+        source_path: source.file.clone(),
+        format: source.format.clone(),
+        kind: source.kind,
+        snapshot_ref: source.snapshot_ref(),
+        size_bytes: source.size_bytes,
+        last_modified: source.last_modified.clone(),
+        status: source.status,
+        error: (source.status == CatalogSourceStatus::Error)
+            .then(|| "Source discovery failed".into()),
+    }
+}
+
 async fn run_status(
     args: StatusArgs,
     settings_override: Option<&Path>,
@@ -1509,11 +1520,7 @@ async fn run_status(
         .filter(|source| source.status == CatalogSourceStatus::Error)
         .map(|source| StatusSourceError {
             source_path: source.file.clone(),
-            error: source
-                .error
-                .as_deref()
-                .map(|error| redact_message(error, &dataset_uri))
-                .unwrap_or_else(|| "Source discovery failed".into()),
+            error: "Source discovery failed".into(),
         })
         .collect::<Vec<_>>();
     let engine = snapshot.clone().query_engine(Default::default()).await?;
@@ -1521,28 +1528,29 @@ async fn run_status(
     let deadline = tokio::time::Instant::now() + timeout;
     let counts = match query_status_counts(&engine, None, deadline, timeout).await {
         Ok(counts) if source_errors.is_empty() => counts,
-        Ok(_) | Err(_) if args.errors == ErrorMode::Report => {
-            let mut counts = StatusCounts::default();
-            for source in dataset
-                .sources
-                .iter()
-                .filter(|source| source.status == CatalogSourceStatus::Ready)
-            {
-                if source_errors
-                    .iter()
-                    .any(|error| error.source_path == source.file)
-                {
-                    continue;
-                }
-                match query_status_counts(&engine, Some(&source.file), deadline, timeout).await {
-                    Ok(source_counts) => counts += source_counts,
-                    Err(error) => source_errors.push(StatusSourceError {
-                        source_path: source.file.clone(),
-                        error: redact_message(&format!("{error:#}"), &dataset_uri),
-                    }),
-                }
-            }
-            counts
+        Ok(_) if args.errors == ErrorMode::Report => {
+            query_reported_status_counts(
+                &engine,
+                &dataset.sources,
+                &mut source_errors,
+                deadline,
+                timeout,
+            )
+            .await
+        }
+        Err(error) if args.errors == ErrorMode::Report => {
+            tracing::error!(
+                error = ?error,
+                "pChronicle aggregate Dataset status query failed"
+            );
+            query_reported_status_counts(
+                &engine,
+                &dataset.sources,
+                &mut source_errors,
+                deadline,
+                timeout,
+            )
+            .await
         }
         Err(error) => return Err(error),
         Ok(counts) => counts,
@@ -1593,6 +1601,46 @@ async fn run_status(
     Ok(())
 }
 
+fn reported_status_source_failure(source_path: String, error: anyhow::Error) -> StatusSourceError {
+    tracing::error!(
+        error = ?error,
+        source = %source_path,
+        "pChronicle Dataset source status query failed"
+    );
+    StatusSourceError {
+        source_path,
+        error: "Source status query failed".into(),
+    }
+}
+
+async fn query_reported_status_counts(
+    engine: &ChronicleQueryEngine,
+    sources: &[DiscoveredSource],
+    source_errors: &mut Vec<StatusSourceError>,
+    deadline: tokio::time::Instant,
+    timeout: Duration,
+) -> StatusCounts {
+    let mut counts = StatusCounts::default();
+    for source in sources
+        .iter()
+        .filter(|source| source.status == CatalogSourceStatus::Ready)
+    {
+        if source_errors
+            .iter()
+            .any(|error| error.source_path == source.file)
+        {
+            continue;
+        }
+        match query_status_counts(engine, Some(&source.file), deadline, timeout).await {
+            Ok(source_counts) => counts += source_counts,
+            Err(error) => {
+                source_errors.push(reported_status_source_failure(source.file.clone(), error))
+            }
+        }
+    }
+    counts
+}
+
 async fn run_query(
     args: QueryArgs,
     settings_override: Option<&Path>,
@@ -1626,18 +1674,39 @@ async fn run_query(
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
     let query_result = tokio::time::timeout(
         Duration::from_secs(args.timeout_seconds),
-        engine.write_query_jsonl_with_max_rows(sql, &mut buffer, Some(args.max_output_rows)),
+        engine.write_query_jsonl_bounded(sql, &mut buffer, Some(args.max_output_rows)),
     )
     .await;
-    match query_result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error),
+    let output = match query_result {
+        Ok(result) => buffer.finish(result)?,
         Err(_) => bail!(
             "Dataset query timed out after {} seconds",
             args.timeout_seconds
         ),
-    }
-    let jsonl = String::from_utf8(buffer.into_inner()).context("query JSONL is not UTF-8")?;
+    };
+    let jsonl = match output {
+        QueryOutputBudgetOutcome::Complete(bytes) => {
+            String::from_utf8(bytes).context("query JSONL is not UTF-8")?
+        }
+        QueryOutputBudgetOutcome::RowLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!(
+                    "SQL result exceeds max_output_rows limit of {}",
+                    args.max_output_rows
+                ),
+            ));
+        }
+        QueryOutputBudgetOutcome::ByteLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!(
+                    "SQL result exceeds max_output_bytes limit of {}",
+                    args.max_output_bytes
+                ),
+            ));
+        }
+    };
     let rows = parse_jsonl_rows(&jsonl)?;
     let format = match args.format {
         QueryOutputFormat::Auto if stdout_is_terminal && args.output == "-" => {
@@ -1652,11 +1721,7 @@ async fn run_query(
         QueryOutputFormat::Csv => encode_query_csv(&rows),
         QueryOutputFormat::Auto => unreachable!("auto output format was resolved"),
     };
-    anyhow::ensure!(
-        output.len() <= args.max_output_bytes,
-        "encoded SQL result exceeds max_output_bytes limit of {}",
-        args.max_output_bytes
-    );
+    ensure_output_byte_budget(output.len(), args.max_output_bytes, "encoded SQL result")?;
     write_query_output(&args.output, &output, stdout)?;
     writeln!(
         stderr,
@@ -1708,18 +1773,36 @@ async fn run_analysis(
     let mut buffer = LimitedBuffer::new(options.max_output_bytes);
     let query_result = tokio::time::timeout(
         Duration::from_secs(options.timeout_seconds),
-        engine.write_query_jsonl_with_max_rows(&bounded_sql, &mut buffer, Some(options.limit)),
+        engine.write_query_jsonl_bounded(&bounded_sql, &mut buffer, Some(options.limit)),
     )
     .await;
-    match query_result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error),
+    let output = match query_result {
+        Ok(result) => buffer.finish(result)?,
         Err(_) => bail!(
             "Dataset analysis timed out after {} seconds",
             options.timeout_seconds
         ),
-    }
-    let jsonl = String::from_utf8(buffer.into_inner()).context("analysis JSONL is not UTF-8")?;
+    };
+    let jsonl = match output {
+        QueryOutputBudgetOutcome::Complete(bytes) => {
+            String::from_utf8(bytes).context("analysis JSONL is not UTF-8")?
+        }
+        QueryOutputBudgetOutcome::RowLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!("analysis result exceeds row limit of {}", options.limit),
+            ));
+        }
+        QueryOutputBudgetOutcome::ByteLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!(
+                    "analysis result exceeds max_output_bytes limit of {}",
+                    options.max_output_bytes
+                ),
+            ));
+        }
+    };
     let rows = parse_jsonl_rows(&jsonl)?;
     let format = match options.format {
         QueryOutputFormat::Auto if stdout_is_terminal => QueryOutputFormat::Table,
@@ -1732,11 +1815,11 @@ async fn run_analysis(
         QueryOutputFormat::Csv => encode_query_csv(&rows),
         QueryOutputFormat::Auto => unreachable!("auto output format was resolved"),
     };
-    anyhow::ensure!(
-        output.len() <= options.max_output_bytes,
-        "encoded analysis result exceeds max_output_bytes limit of {}",
-        options.max_output_bytes
-    );
+    ensure_output_byte_budget(
+        output.len(),
+        options.max_output_bytes,
+        "encoded analysis result",
+    )?;
     stdout
         .write_all(&output)
         .context("write pChronicle analysis output")?;
@@ -1889,16 +1972,35 @@ async fn run_find(
         .context("--max-results is too large")?;
     let query_result = tokio::time::timeout(
         Duration::from_secs(args.timeout_seconds),
-        engine.write_query_jsonl_with_max_rows(&sql, &mut buffer, Some(max_query_rows)),
+        engine.write_query_jsonl_bounded(&sql, &mut buffer, Some(max_query_rows)),
     )
     .await;
-    let jsonl = match query_result {
-        Ok(Ok(())) => String::from_utf8(buffer.into_inner()).context("find JSONL is not UTF-8")?,
-        Ok(Err(error)) => return Err(error),
+    let output = match query_result {
+        Ok(result) => buffer.finish(result)?,
         Err(_) => bail!(
             "Dataset find timed out after {} seconds",
             args.timeout_seconds
         ),
+    };
+    let jsonl = match output {
+        QueryOutputBudgetOutcome::Complete(bytes) => {
+            String::from_utf8(bytes).context("find JSONL is not UTF-8")?
+        }
+        QueryOutputBudgetOutcome::RowLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!("find result exceeds row limit of {max_query_rows}"),
+            ));
+        }
+        QueryOutputBudgetOutcome::ByteLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!(
+                    "find result exceeds max_output_bytes limit of {}",
+                    args.max_output_bytes
+                ),
+            ));
+        }
     };
     let mut matches = jsonl
         .lines()
@@ -1930,11 +2032,7 @@ async fn run_find(
         OutputFormat::Table => {
             let mut output = Vec::new();
             write_find_table(&mut output, &response)?;
-            anyhow::ensure!(
-                output.len() <= args.max_output_bytes,
-                "encoded find result exceeds max_output_bytes limit of {}",
-                args.max_output_bytes
-            );
+            ensure_output_byte_budget(output.len(), args.max_output_bytes, "encoded find result")?;
             stdout
                 .write_all(&output)
                 .context("write pChronicle find table")?;
@@ -1943,11 +2041,7 @@ async fn run_find(
             let mut output =
                 serde_json::to_vec_pretty(&response).context("encode pChronicle find JSON")?;
             output.push(b'\n');
-            anyhow::ensure!(
-                output.len() <= args.max_output_bytes,
-                "encoded find result exceeds max_output_bytes limit of {}",
-                args.max_output_bytes
-            );
+            ensure_output_byte_budget(output.len(), args.max_output_bytes, "encoded find result")?;
             stdout
                 .write_all(&output)
                 .context("write pChronicle find JSON")?;
@@ -1962,6 +2056,16 @@ async fn run_find(
         response.truncated,
     )
     .context("write pChronicle find metadata")?;
+    Ok(())
+}
+
+fn ensure_output_byte_budget(size: usize, max_bytes: usize, label: &str) -> Result<()> {
+    if size > max_bytes {
+        return Err(cli_boundary_error(
+            BoundaryCode::ResourceExhausted,
+            format!("{label} exceeds max_output_bytes limit of {max_bytes}"),
+        ));
+    }
     Ok(())
 }
 

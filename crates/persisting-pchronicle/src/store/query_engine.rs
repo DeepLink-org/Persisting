@@ -70,6 +70,12 @@ pub struct ChronicleQueryExecutionOptions {
     pub max_spill_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryWriteOutcome {
+    Complete,
+    LimitExceeded,
+}
+
 impl ExternalTableSpec {
     pub fn new(
         name: impl Into<String>,
@@ -312,9 +318,29 @@ impl ChronicleQueryEngine {
     pub async fn write_query_jsonl_with_max_rows<W: std::io::Write>(
         &self,
         sql: &str,
-        mut output: W,
+        output: W,
         max_rows: Option<u64>,
     ) -> Result<()> {
+        match self
+            .write_query_jsonl_bounded(sql, output, max_rows)
+            .await?
+        {
+            QueryWriteOutcome::Complete => Ok(()),
+            QueryWriteOutcome::LimitExceeded => {
+                let max_rows = max_rows.context("bounded query row limit is missing")?;
+                anyhow::bail!("SQL result exceeds max_output_rows limit of {max_rows}")
+            }
+        }
+    }
+
+    /// Stream JSONL and return row-budget exhaustion through an explicit
+    /// outcome. Ordinary execution and writer failures remain errors.
+    pub async fn write_query_jsonl_bounded<W: std::io::Write>(
+        &self,
+        sql: &str,
+        mut output: W,
+        max_rows: Option<u64>,
+    ) -> Result<QueryWriteOutcome> {
         if let Some(max_rows) = max_rows {
             anyhow::ensure!(max_rows > 0, "query max_rows must be greater than zero");
         }
@@ -335,16 +361,18 @@ impl ChronicleQueryEngine {
                 .checked_add(batch.num_rows() as u64)
                 .context("streaming SQL result row count overflow")?;
             if let Some(max_rows) = max_rows {
-                anyhow::ensure!(
-                    rows_written <= max_rows,
-                    "SQL result exceeds max_output_rows limit of {max_rows}"
-                );
+                if rows_written > max_rows {
+                    return Ok(QueryWriteOutcome::LimitExceeded);
+                }
             }
             writer
                 .write(&batch)
                 .context("encode streaming SQL result batch as JSONL")?;
         }
-        writer.finish().context("finish streaming SQL JSONL output")
+        writer
+            .finish()
+            .context("finish streaming SQL JSONL output")?;
+        Ok(QueryWriteOutcome::Complete)
     }
 }
 

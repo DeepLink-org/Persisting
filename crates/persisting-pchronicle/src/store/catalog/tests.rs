@@ -961,3 +961,34 @@ async fn multiple_fresh_projections_choose_one_without_hiding_canonical_events()
     ));
     Ok(())
 }
+
+#[test]
+fn report_mode_source_status_does_not_serialize_operational_diagnostics() -> Result<()> {
+    let stub = DiscoveredSource {
+        file: "broken.json".into(),
+        format: None,
+        kind: CatalogSourceKind::File,
+        revision: None,
+        projection_status: None,
+        projection_generation: None,
+        projection_candidates: 0,
+        size_bytes: None,
+        last_modified: None,
+        status: CatalogSourceStatus::Ready,
+        error: None,
+    };
+    let source = reported_source_failure(
+        stub,
+        anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "catalog-secret-sentinel /private/catalog/path",
+        ))
+        .context("freeze catalog source"),
+    );
+
+    let output = serde_json::to_string(&source)?;
+    assert_eq!(source.error.as_deref(), Some("Source discovery failed"));
+    assert!(!output.contains("catalog-secret-sentinel"), "{output}");
+    assert!(!output.contains("/private/catalog/path"), "{output}");
+    Ok(())
+}

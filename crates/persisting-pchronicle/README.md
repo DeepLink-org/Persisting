@@ -99,6 +99,10 @@ lookup 用 `Result<Option<T>>` 表达缺失；parser/validator 只通过
 projection 等调用方需要分支的状态使用所属模块的局部 Outcome。公共 API 不提供全局
 `Error`、错误码、分类器或传播上下文协议。
 
+查询流的行预算通过 `query::QueryWriteOutcome::{Complete, LimitExceeded}` 显式返回；
+写入器或查询执行失败仍作为保留原始 source chain 的 `anyhow::Error` 返回。现有
+`write_query_jsonl_with_max_rows` 便捷方法继续为不需要分支处理的调用方提供错误式兼容接口。
+
 ## 组件边界
 
 | 组件 | 职责 |
