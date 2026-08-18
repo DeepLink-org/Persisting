@@ -1551,7 +1551,7 @@ upstream = "http://{upstream_addr}/v1"
     config.listen = gateway_addr.to_string();
     config.admin_listen = admin_addr.to_string();
     let (sink, writer) =
-        gateway_capture::gateway_capture_sink(&dataset.path().to_string_lossy(), &config.agent_id);
+        gateway_capture::gateway_capture_sink(&dataset.path().to_string_lossy(), &config.agent_id)?;
     let warehouse_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let warehouse_addr = warehouse_listener.local_addr()?;
     let warehouse_config = server::ChronicleServerConfig::mounted(vec![DatasetMount::default(

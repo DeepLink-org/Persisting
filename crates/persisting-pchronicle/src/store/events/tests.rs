@@ -306,7 +306,7 @@ async fn partitioned_append_reports_one_root_failure_without_losing_other_root()
         .await
         .unwrap();
     assert!(report.outcome_for(&invalid_uri).unwrap().is_err());
-    assert_eq!(report.outcome_for(&valid_uri), Some(&Ok(1)));
+    assert!(matches!(report.outcome_for(&valid_uri), Some(Ok(1))));
     assert_eq!(replay(&valid, 0, None).await.unwrap().records.len(), 1);
 }
 

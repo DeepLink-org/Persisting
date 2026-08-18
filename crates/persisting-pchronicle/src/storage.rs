@@ -4,7 +4,7 @@ pub use crate::error::{classify_error, Error, ErrorCode, Result};
 
 #[cfg(feature = "lance-store")]
 pub use crate::append_queue::{
-    raw_event_append_queue, raw_event_append_queue_with_capacity, RawEventAppendQueueError,
+    raw_event_append_queue, raw_event_append_queue_with_capacity, RawEventAppendOutcome,
     RawEventAppendSender, RawEventAppendWorker, DEFAULT_RAW_EVENT_BATCH_DELAY,
     DEFAULT_RAW_EVENT_BATCH_SIZE, DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
     DEFAULT_RAW_EVENT_HIERARCHY_FANOUT, DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY,

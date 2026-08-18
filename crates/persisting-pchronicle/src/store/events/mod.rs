@@ -103,15 +103,17 @@ struct CachedRawDataset {
 
 #[derive(Debug, Default)]
 pub(crate) struct EventAppendBatchReport {
-    outcomes: BTreeMap<String, std::result::Result<usize, String>>,
+    outcomes: BTreeMap<String, Result<usize>>,
 }
 
 impl EventAppendBatchReport {
-    pub(crate) fn outcome_for(
-        &self,
-        root_uri: &str,
-    ) -> Option<&std::result::Result<usize, String>> {
+    #[cfg(test)]
+    pub(crate) fn outcome_for(&self, root_uri: &str) -> Option<&Result<usize>> {
         self.outcomes.get(root_uri)
+    }
+
+    pub(crate) fn take_outcome(&mut self, root_uri: &str) -> Option<Result<usize>> {
+        self.outcomes.remove(root_uri)
     }
 
     fn accepted_records(&self) -> usize {
@@ -121,13 +123,18 @@ impl EventAppendBatchReport {
             .sum()
     }
 
-    fn failures(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.outcomes.iter().filter_map(|(uri, outcome)| {
-            outcome
-                .as_ref()
-                .err()
-                .map(|error| (uri.as_str(), error.as_str()))
-        })
+    fn take_failure(&mut self) -> Option<(String, anyhow::Error)> {
+        let uri = self
+            .outcomes
+            .iter()
+            .find(|(_, outcome)| outcome.is_err())
+            .map(|(uri, _)| uri.clone())?;
+        let error = self
+            .outcomes
+            .remove(&uri)
+            .expect("failure URI came from this report")
+            .expect_err("failure URI selected an error outcome");
+        Some((uri, error))
     }
 }
 
@@ -205,16 +212,10 @@ impl RawEventLanceAppender {
         &mut self,
         entries: &[(StoryCoords, crate::EventRecord)],
     ) -> Result<AppendOutcome> {
-        let report = self.append_event_batch_partitioned(entries).await?;
-        let failures = report
-            .failures()
-            .map(|(uri, error)| format!("{uri}: {error}"))
-            .collect::<Vec<_>>();
-        anyhow::ensure!(
-            failures.is_empty(),
-            "one or more canonical event partitions failed: {}",
-            failures.join("; ")
-        );
+        let mut report = self.append_event_batch_partitioned(entries).await?;
+        if let Some((uri, error)) = report.take_failure() {
+            return Err(error.context(format!("append canonical event partition {uri}")));
+        }
         let accepted_records = report.accepted_records();
         Ok(AppendOutcome {
             accepted_records,
@@ -256,7 +257,7 @@ impl RawEventLanceAppender {
             let rows = match rows {
                 Ok(rows) => rows,
                 Err(error) => {
-                    report.outcomes.insert(uri, Err(format!("{error:#}")));
+                    report.outcomes.insert(uri, Err(error));
                     continue;
                 }
             };
@@ -265,7 +266,7 @@ impl RawEventLanceAppender {
                 None => match self.new_state(&uri).await {
                     Ok(state) => state,
                     Err(error) => {
-                        report.outcomes.insert(uri, Err(format!("{error:#}")));
+                        report.outcomes.insert(uri, Err(error));
                         continue;
                     }
                 },
@@ -293,7 +294,7 @@ impl RawEventLanceAppender {
                     report.outcomes.insert(uri, Ok(appended_rows));
                 }
                 Err(error) => {
-                    report.outcomes.insert(uri, Err(format!("{error:#}")));
+                    report.outcomes.insert(uri, Err(error));
                 }
             }
         }

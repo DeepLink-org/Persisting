@@ -17,7 +17,8 @@ fn materialize_records(path: &std::path::Path, records: &[EventRecord]) -> anyho
     let turns = MarkdownPipeline::storyline_turns_from_records(records)?;
     let mut story = StorylineDocument::new("s1", "gateway");
     story.turns = turns;
-    write_agenticmd_storyline(path, &story)
+    write_agenticmd_storyline(path, &story)?;
+    Ok(())
 }
 
 fn pair() -> [EventRecord; 2] {

@@ -1091,7 +1091,7 @@ async fn prepare_gateway(
         .local_addr()
         .context("read pChronicle Gateway admin listen address")?
         .to_string();
-    let (sink, writer) = gateway_capture::gateway_capture_sink(&dataset.uri, &config.agent_id);
+    let (sink, writer) = gateway_capture::gateway_capture_sink(&dataset.uri, &config.agent_id)?;
     Ok(Some(PreparedGateway {
         config,
         state_dir,
