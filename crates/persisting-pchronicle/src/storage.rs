@@ -49,8 +49,9 @@ pub use crate::store::{
 #[cfg(feature = "lance-store")]
 pub use crate::projection::{
     build_storyline_projection, rebuild_storyline_projection, storyline_projection_status,
-    sync_storyline_projection, verify_storyline_projection, StorylineProjectionBuildReport,
-    StorylineProjectionStatus, StorylineProjectionSyncMode, StorylineProjectionSyncReport,
+    sync_storyline_projection, verify_storyline_projection, ProjectionRebuildReason,
+    StorylineProjectionBuildOutcome, StorylineProjectionBuildReport, StorylineProjectionStatus,
+    StorylineProjectionSyncMode, StorylineProjectionSyncOutcome, StorylineProjectionSyncReport,
     StorylineProjectionVerification,
 };
 

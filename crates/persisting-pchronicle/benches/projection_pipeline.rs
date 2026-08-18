@@ -10,7 +10,8 @@ use persisting_pchronicle::document::{
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
 use persisting_pchronicle::storage::{
     build_storyline_projection, sync_storyline_projection, verify_storyline_projection,
-    RawEventLanceAppender, StoryCoords,
+    RawEventLanceAppender, StoryCoords, StorylineProjectionBuildOutcome,
+    StorylineProjectionSyncOutcome,
 };
 
 fn main() -> Result<()> {
@@ -98,7 +99,11 @@ async fn run(scale: usize) -> Result<BenchmarkResult> {
     anyhow::ensure!(appended.accepted_records == events);
 
     let started = Instant::now();
-    let build = build_storyline_projection(&source_uri, &output_uri, "events.lance").await?;
+    let StorylineProjectionBuildOutcome::Built(build) =
+        build_storyline_projection(&source_uri, &output_uri, "events.lance").await?
+    else {
+        anyhow::bail!("benchmark projection output was unexpectedly nonempty")
+    };
     let projection_build = started.elapsed();
     anyhow::ensure!(build.storylines == stories.len());
 
@@ -130,7 +135,11 @@ async fn run(scale: usize) -> Result<BenchmarkResult> {
     let suffix_append = started.elapsed();
 
     let started = Instant::now();
-    let sync = sync_storyline_projection(&source_uri, &output_uri).await?;
+    let StorylineProjectionSyncOutcome::Synced(sync) =
+        sync_storyline_projection(&source_uri, &output_uri).await?
+    else {
+        anyhow::bail!("benchmark projection unexpectedly required a rebuild")
+    };
     let projection_sync = started.elapsed();
     anyhow::ensure!(sync.affected_storylines == 1 && sync.suffix_rows_scanned == 1);
 

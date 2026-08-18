@@ -2,7 +2,7 @@ use super::*;
 use crate::layout::{story_lance_event_path, StoryCoords};
 use crate::projection::{
     build_storyline_projection, rebuild_storyline_projection, sync_storyline_projection,
-    StorylineProjectionSyncMode,
+    StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
 };
 use crate::store::{RawEventLanceStore, StorylineLanceStore};
 use crate::{EventIdentity, StorylineAgent, StorylineTurn};
@@ -830,20 +830,26 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         .unwrap_err();
     assert!(format!("{limit_error:#}").contains("max_event_fallback_rows 1"));
 
-    let sync = sync_storyline_projection(
+    let StorylineProjectionSyncOutcome::Synced(sync) = sync_storyline_projection(
         events_uri.to_string_lossy(),
         projection_uri.to_string_lossy(),
     )
-    .await?;
+    .await?
+    else {
+        panic!("incremental sync returned a non-success outcome")
+    };
     assert_eq!(sync.mode, StorylineProjectionSyncMode::Incremental);
     assert_eq!(sync.affected_storylines, 1);
     assert_eq!(sync.suffix_rows_scanned, 1);
     assert_eq!(sync.history_rows_scanned, 2);
-    let noop = sync_storyline_projection(
+    let StorylineProjectionSyncOutcome::Synced(noop) = sync_storyline_projection(
         events_uri.to_string_lossy(),
         projection_uri.to_string_lossy(),
     )
-    .await?;
+    .await?
+    else {
+        panic!("noop sync returned a non-success outcome")
+    };
     assert_eq!(noop.mode, StorylineProjectionSyncMode::Noop);
     assert_eq!(noop.generation, sync.generation);
     assert_eq!(noop.suffix_rows_scanned, 0);

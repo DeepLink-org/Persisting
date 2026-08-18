@@ -30,6 +30,12 @@ pub struct StorylineProjectionBuildReport {
     pub tool_calls: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorylineProjectionBuildOutcome {
+    Built(StorylineProjectionBuildReport),
+    OutputNotEmpty,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorylineProjectionStatus {
     pub output_uri: String,
@@ -70,22 +76,35 @@ pub struct StorylineProjectionSyncReport {
     pub history_rows_scanned: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionRebuildReason {
+    MissingLineage,
+    IncompatibleLineage,
+    NonMonotonicWatermark,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorylineProjectionSyncOutcome {
+    Synced(StorylineProjectionSyncReport),
+    MissingProjection,
+    RequiresRebuild(ProjectionRebuildReason),
+}
+
 /// Build a complete, pinned Storyline projection into an empty output store.
 pub async fn build_storyline_projection(
     source_uri: impl AsRef<str>,
     output_uri: impl AsRef<str>,
     source_file: impl Into<String>,
-) -> Result<StorylineProjectionBuildReport> {
+) -> Result<StorylineProjectionBuildOutcome> {
     let source = RawEventDataSource::open_uri(source_uri.as_ref())
         .await
         .with_context(|| format!("open canonical event source {}", source_uri.as_ref()))?;
     let output = StorylineLanceStore::open_uri(output_uri.as_ref())
         .await
         .with_context(|| format!("open Storyline projection output {}", output_uri.as_ref()))?;
-    anyhow::ensure!(
-        output.current_table_paths().await?.is_none(),
-        "Storyline projection output is not empty; use `project sync` or `project rebuild`"
-    );
+    if output.current_table_paths().await?.is_some() {
+        return Ok(StorylineProjectionBuildOutcome::OutputNotEmpty);
+    }
 
     let snapshot = source.fact_snapshot().clone();
     let lineage = canonical_projection_lineage(&snapshot, source_file.into());
@@ -97,17 +116,19 @@ pub async fn build_storyline_projection(
         )
         .await
         .context("publish Storyline projection")?;
-    Ok(StorylineProjectionBuildReport {
-        source_uri: snapshot.source_uri,
-        output_uri: output.root_uri().to_string(),
-        source_id: lineage.source_id,
-        generation: report.generation,
-        fact_version: snapshot.fact_version,
-        fact_rows: snapshot.fact_rows,
-        storylines: report.storylines,
-        steps: report.steps,
-        tool_calls: report.tool_calls,
-    })
+    Ok(StorylineProjectionBuildOutcome::Built(
+        StorylineProjectionBuildReport {
+            source_uri: snapshot.source_uri,
+            output_uri: output.root_uri().to_string(),
+            source_id: lineage.source_id,
+            generation: report.generation,
+            fact_version: snapshot.fact_version,
+            fact_rows: snapshot.fact_rows,
+            storylines: report.storylines,
+            steps: report.steps,
+            tool_calls: report.tool_calls,
+        },
+    ))
 }
 
 pub async fn storyline_projection_status(
@@ -165,19 +186,23 @@ pub async fn rebuild_storyline_projection(
 pub async fn sync_storyline_projection(
     source_uri: impl AsRef<str>,
     output_uri: impl AsRef<str>,
-) -> Result<StorylineProjectionSyncReport> {
+) -> Result<StorylineProjectionSyncOutcome> {
     let source = RawEventDataSource::open_uri(source_uri.as_ref()).await?;
     let output = StorylineLanceStore::open_uri(output_uri.as_ref()).await?;
     let snapshot = source.fact_snapshot().clone();
-    let paths = output
-        .current_table_paths()
-        .await?
-        .context("Storyline projection is empty; use `project build`")?;
-    let previous = paths
-        .projection
-        .as_ref()
-        .context("Storyline store has no canonical lineage; use `project rebuild`")?;
-    ensure_incremental_compatibility(&snapshot, previous)?;
+    let Some(paths) = output.current_table_paths().await? else {
+        return Ok(StorylineProjectionSyncOutcome::MissingProjection);
+    };
+    let Some(previous) = paths.projection.as_ref() else {
+        return Ok(StorylineProjectionSyncOutcome::RequiresRebuild(
+            ProjectionRebuildReason::MissingLineage,
+        ));
+    };
+    if !incremental_lineage_is_compatible(&snapshot, previous) {
+        return Ok(StorylineProjectionSyncOutcome::RequiresRebuild(
+            ProjectionRebuildReason::IncompatibleLineage,
+        ));
+    }
     let ProjectionSourceSnapshot::CanonicalEvents {
         fact_version: previous_fact_version,
         fact_rows: previous_fact_rows,
@@ -188,26 +213,28 @@ pub async fn sync_storyline_projection(
     };
 
     if projection_lineage_is_fresh(&snapshot, previous) {
-        return Ok(StorylineProjectionSyncReport {
-            mode: StorylineProjectionSyncMode::Noop,
-            source_uri: snapshot.source_uri,
-            output_uri: output.root_uri().to_string(),
-            generation: paths.generation,
-            previous_fact_version: Some(*previous_fact_version),
-            fact_version: snapshot.fact_version,
-            previous_fact_rows: Some(*previous_fact_rows),
-            fact_rows: snapshot.fact_rows,
-            affected_storylines: 0,
-            suffix_rows_scanned: 0,
-            history_rows_scanned: 0,
-        });
+        return Ok(StorylineProjectionSyncOutcome::Synced(
+            StorylineProjectionSyncReport {
+                mode: StorylineProjectionSyncMode::Noop,
+                source_uri: snapshot.source_uri,
+                output_uri: output.root_uri().to_string(),
+                generation: paths.generation,
+                previous_fact_version: Some(*previous_fact_version),
+                fact_version: snapshot.fact_version,
+                previous_fact_rows: Some(*previous_fact_rows),
+                fact_rows: snapshot.fact_rows,
+                affected_storylines: 0,
+                suffix_rows_scanned: 0,
+                history_rows_scanned: 0,
+            },
+        ));
     }
 
-    anyhow::ensure!(
-        *previous_fact_rows <= snapshot.fact_rows
-            && *previous_fact_version <= snapshot.fact_version,
-        "canonical fact watermark is non-monotonic; use `project rebuild`"
-    );
+    if *previous_fact_rows > snapshot.fact_rows || *previous_fact_version > snapshot.fact_version {
+        return Ok(StorylineProjectionSyncOutcome::RequiresRebuild(
+            ProjectionRebuildReason::NonMonotonicWatermark,
+        ));
+    }
     let suffix = source
         .read_records_range_in_append_order(*previous_fact_rows, snapshot.fact_rows)
         .await?;
@@ -241,19 +268,21 @@ pub async fn sync_storyline_projection(
         .await?
         .context("incremental projection committed no CURRENT generation")?
         .generation;
-    Ok(StorylineProjectionSyncReport {
-        mode: StorylineProjectionSyncMode::Incremental,
-        source_uri: snapshot.source_uri,
-        output_uri: output.root_uri().to_string(),
-        generation,
-        previous_fact_version: Some(*previous_fact_version),
-        fact_version: snapshot.fact_version,
-        previous_fact_rows: Some(*previous_fact_rows),
-        fact_rows: snapshot.fact_rows,
-        affected_storylines: affected_count,
-        suffix_rows_scanned,
-        history_rows_scanned,
-    })
+    Ok(StorylineProjectionSyncOutcome::Synced(
+        StorylineProjectionSyncReport {
+            mode: StorylineProjectionSyncMode::Incremental,
+            source_uri: snapshot.source_uri,
+            output_uri: output.root_uri().to_string(),
+            generation,
+            previous_fact_version: Some(*previous_fact_version),
+            fact_version: snapshot.fact_version,
+            previous_fact_rows: Some(*previous_fact_rows),
+            fact_rows: snapshot.fact_rows,
+            affected_storylines: affected_count,
+            suffix_rows_scanned,
+            history_rows_scanned,
+        },
+    ))
 }
 
 pub async fn verify_storyline_projection(
@@ -304,23 +333,19 @@ pub fn projection_lineage_is_fresh(
     projection_lineage_freshness(snapshot, Some(lineage)).0
 }
 
-fn ensure_incremental_compatibility(
+fn incremental_lineage_is_compatible(
     snapshot: &EventFactSnapshot,
     lineage: &StorylineProjectionLineage,
-) -> Result<()> {
+) -> bool {
     let expected = canonical_projection_lineage(snapshot, lineage.source_file.clone());
     let ProjectionSourceSnapshot::CanonicalEvents { source_uri, .. } = &lineage.source else {
-        anyhow::bail!("projection source is not canonical events; use `project rebuild`");
+        return false;
     };
-    anyhow::ensure!(
-        source_uri == &snapshot.source_uri
-            && lineage.source_id == expected.source_id
-            && lineage.projector_name == expected.projector_name
-            && lineage.recipe_hash == expected.recipe_hash
-            && lineage.completeness == STORYLINE_PROJECTION_COMPLETENESS,
-        "projection lineage is incompatible with incremental sync; use `project rebuild`"
-    );
-    Ok(())
+    source_uri == &snapshot.source_uri
+        && lineage.source_id == expected.source_id
+        && lineage.projector_name == expected.projector_name
+        && lineage.recipe_hash == expected.recipe_hash
+        && lineage.completeness == STORYLINE_PROJECTION_COMPLETENESS
 }
 
 fn lineage_fact_watermark(
@@ -405,7 +430,11 @@ fn project_canonical_event_records(records: Vec<EventRecord>) -> Result<Vec<Stor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EventIdentity;
+    use crate::{
+        layout::StoryCoords,
+        store::{raw_event_lance_path, RawEventLanceStore},
+        EventIdentity,
+    };
     use serde_json::json;
 
     fn event(session_id: &str, seq: u64) -> EventRecord {
@@ -429,6 +458,151 @@ mod tests {
             parent_call_id: None,
             payload: json!({"content": format!("{session_id}-{seq}")}),
         }
+    }
+
+    async fn canonical_source(temp: &tempfile::TempDir) -> (String, String) {
+        let storage = temp.path().join("capture");
+        let coords = StoryCoords::new(
+            storage.to_string_lossy(),
+            "agent",
+            "session",
+            Some("run".into()),
+        );
+        RawEventLanceStore
+            .append_events(&coords, &[event("session", 1)])
+            .await
+            .unwrap();
+        let source = raw_event_lance_path(&coords)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let output = temp.path().join("storyline").to_string_lossy().into_owned();
+        (source, output)
+    }
+
+    #[tokio::test]
+    async fn building_into_nonempty_output_is_an_explicit_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let (source, output) = canonical_source(&temp).await;
+        build_storyline_projection(&source, &output, "events.lance")
+            .await
+            .unwrap();
+
+        let outcome = build_storyline_projection(&source, &output, "events.lance")
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            outcome,
+            StorylineProjectionBuildOutcome::OutputNotEmpty
+        ));
+    }
+
+    #[tokio::test]
+    async fn empty_projection_is_an_explicit_missing_result() {
+        let temp = tempfile::tempdir().unwrap();
+        let (source, output) = canonical_source(&temp).await;
+
+        let outcome = sync_storyline_projection(&source, &output).await.unwrap();
+
+        assert!(matches!(
+            outcome,
+            StorylineProjectionSyncOutcome::MissingProjection
+        ));
+    }
+
+    #[tokio::test]
+    async fn projection_without_lineage_requires_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let (source, output) = canonical_source(&temp).await;
+        let output_store = StorylineLanceStore::open_uri(&output).await.unwrap();
+        output_store
+            .replace_storyline_stream(
+                project_canonical_event_records(vec![event("session", 1)])
+                    .unwrap()
+                    .into_iter()
+                    .map(Ok),
+            )
+            .await
+            .unwrap();
+
+        let outcome = sync_storyline_projection(&source, &output).await.unwrap();
+
+        assert!(matches!(
+            outcome,
+            StorylineProjectionSyncOutcome::RequiresRebuild(
+                ProjectionRebuildReason::MissingLineage
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn incompatible_projection_lineage_requires_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let (source, output) = canonical_source(&temp).await;
+        let source_store = RawEventDataSource::open_uri(&source).await.unwrap();
+        let mut lineage =
+            canonical_projection_lineage(source_store.fact_snapshot(), "events.lance");
+        lineage.recipe_hash = "different-recipe".into();
+        let output_store = StorylineLanceStore::open_uri(&output).await.unwrap();
+        output_store
+            .replace_projected_storyline_stream(
+                project_canonical_event_records(vec![event("session", 1)])
+                    .unwrap()
+                    .into_iter()
+                    .map(Ok),
+                lineage,
+            )
+            .await
+            .unwrap();
+
+        let outcome = sync_storyline_projection(&source, &output).await.unwrap();
+
+        assert!(matches!(
+            outcome,
+            StorylineProjectionSyncOutcome::RequiresRebuild(
+                ProjectionRebuildReason::IncompatibleLineage
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_monotonic_projection_watermark_requires_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let (source, output) = canonical_source(&temp).await;
+        let source_store = RawEventDataSource::open_uri(&source).await.unwrap();
+        let mut lineage =
+            canonical_projection_lineage(source_store.fact_snapshot(), "events.lance");
+        let ProjectionSourceSnapshot::CanonicalEvents {
+            fact_version,
+            fact_rows,
+            ..
+        } = &mut lineage.source
+        else {
+            unreachable!()
+        };
+        *fact_version += 1;
+        *fact_rows += 1;
+        let output_store = StorylineLanceStore::open_uri(&output).await.unwrap();
+        output_store
+            .replace_projected_storyline_stream(
+                project_canonical_event_records(vec![event("session", 1)])
+                    .unwrap()
+                    .into_iter()
+                    .map(Ok),
+                lineage,
+            )
+            .await
+            .unwrap();
+
+        let outcome = sync_storyline_projection(&source, &output).await.unwrap();
+
+        assert!(matches!(
+            outcome,
+            StorylineProjectionSyncOutcome::RequiresRebuild(
+                ProjectionRebuildReason::NonMonotonicWatermark
+            )
+        ));
     }
 
     #[test]
