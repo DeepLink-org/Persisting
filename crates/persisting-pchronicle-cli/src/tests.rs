@@ -237,6 +237,71 @@ async fn project_watch_labels_missing_projection_without_diagnostic_text() -> Re
 }
 
 #[tokio::test]
+async fn project_verify_labels_stale_projection_as_conflict() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "session",
+        None,
+    );
+    let source = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
+    let projection = temp.path().join("storyline");
+    persisting_pchronicle::storage::build_storyline_projection(
+        source.to_string_lossy(),
+        projection.to_string_lossy(),
+        "events.lance",
+    )
+    .await?;
+    persisting_pchronicle::storage::RawEventLanceStore
+        .append_events(
+            &coords,
+            &[persisting_pchronicle::model::EventRecord {
+                identity: Default::default(),
+                seq: 1,
+                source: "test".into(),
+                kind: "note".into(),
+                timestamp: None,
+                session_id: None,
+                agent_id: None,
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: serde_json::json!({"content":"stale"}),
+            }],
+        )
+        .await?;
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "project",
+        "verify",
+        "--from",
+        projection.to_str().unwrap(),
+        "--source",
+        source.to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    let error = run(cli, false, &mut stdout, &mut Vec::new())
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "conflict: projection verification is not fresh"
+    );
+    let verification: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(verification["fresh"], false);
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_discovers_nested_sources_as_json() -> Result<()> {
     let temp = tempfile::tempdir()?;
     fs::create_dir(temp.path().join("nested"))?;
@@ -1091,11 +1156,17 @@ async fn import_is_create_only_and_rejects_duplicate_documents() -> Result<()> {
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(
-        error.to_string().contains("duplicate document_id"),
-        "{error:#}"
+    assert_eq!(
+        error.to_string(),
+        "invalid_request: import contains duplicate document_id"
     );
     assert!(!duplicate_output.exists());
+    assert!(!fs::read_dir(temp.path())?.any(|entry| {
+        entry
+            .ok()
+            .and_then(|entry| entry.file_name().into_string().ok())
+            .is_some_and(|name| name.starts_with(".pchronicle-import-"))
+    }));
 
     let mut first: Value = serde_json::from_slice(&fs::read(example_source("atif"))?)?;
     first["trajectory_id"] = serde_json::json!("document-a");

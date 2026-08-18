@@ -913,7 +913,12 @@ async fn run_project(
             serde_json::to_writer_pretty(&mut *stdout, &verification)
                 .context("encode projection verification")?;
             writeln!(stdout).context("write projection verification")?;
-            anyhow::ensure!(verification.fresh, "{}", verification.reason);
+            if !verification.fresh {
+                return Err(cli_boundary_error(
+                    BoundaryCode::Conflict,
+                    "projection verification is not fresh",
+                ));
+            }
         }
         ProjectCommand::Sync(args) => {
             let report = match sync_storyline_projection(&args.source, &args.from).await? {

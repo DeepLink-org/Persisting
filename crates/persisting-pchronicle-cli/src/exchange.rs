@@ -46,13 +46,14 @@ pub(super) async fn run_import(
         .and_then(Path::file_name)
         .map(Path::new)
         .unwrap_or_else(|| Path::new(source_path));
-    decode_json_storylines(
+    let storylines = decode_json_storylines(
         exchange_document_format(format)
             .context("supported import format must map to a physical document format")?,
         text,
         relative_path,
     )
     .map_err(cli_input_error)?;
+    let trajectories = validate_import_storylines(&storylines)?;
     let parent = output
         .parent()
         .context("import output must have a parent directory")?;
@@ -69,7 +70,7 @@ pub(super) async fn run_import(
     file.write_all(&input)
         .context("write staged import Source")?;
     file.sync_all().context("sync staged import Source")?;
-    let trajectories = validate_import_source(format, &staged_source).await?;
+    validate_import_source(format, &staged_source).await?;
     std::fs::File::open(staging.path())
         .and_then(|directory| directory.sync_all())
         .context("sync import staging directory")?;
@@ -622,6 +623,19 @@ fn import_source_name(format: ExchangeFormat) -> &'static str {
     }
 }
 
+fn validate_import_storylines(storylines: &[StorylineDocument]) -> Result<usize> {
+    let mut seen = HashSet::new();
+    for storyline in storylines {
+        if !seen.insert(storyline.document_id()) {
+            return Err(cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                "import contains duplicate document_id",
+            ));
+        }
+    }
+    Ok(storylines.len())
+}
+
 pub(super) async fn validate_import_source(format: ExchangeFormat, path: &Path) -> Result<usize> {
     let format = exchange_document_format(format)
         .context("supported import format must map to a physical document format")?;
@@ -632,7 +646,10 @@ pub(super) async fn validate_import_source(format: ExchangeFormat, path: &Path) 
         .for_each_storyline(|story| {
             let document_id = story.document_id();
             if !seen.insert(document_id.to_string()) {
-                anyhow::bail!("duplicate document_id: {document_id}");
+                return Err(cli_boundary_error(
+                    BoundaryCode::InvalidRequest,
+                    "import contains duplicate document_id",
+                ));
             }
             document_count = document_count
                 .checked_add(1)

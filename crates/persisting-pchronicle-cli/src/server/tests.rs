@@ -452,6 +452,12 @@ async fn catalog_refresh_is_atomic_and_dataset_filtering_is_explicit() -> anyhow
         )
         .await?;
     assert_eq!(failed_refresh.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let failed_refresh = response_json(failed_refresh).await;
+    assert_eq!(failed_refresh["code"], "internal");
+    assert_eq!(failed_refresh["message"], "internal server error");
+    let failed_refresh = failed_refresh.to_string();
+    assert!(!failed_refresh.contains(live.to_string_lossy().as_ref()));
+    assert!(!failed_refresh.contains("broken-store"));
 
     let preserved = app
         .clone()
@@ -696,6 +702,27 @@ async fn boundary_missing_lookup_returns_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = response_json(response).await;
     assert_eq!(body["code"], "not_found");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn boundary_malformed_query_parameters_return_json() {
+    use tower::ServiceExt as _;
+
+    let root = json_dataset_root();
+    let response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/runs?limit=not-a-number")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_request");
+    assert_eq!(body["message"], "query parameters must be valid");
     std::fs::remove_dir_all(root).unwrap();
 }
 

@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -283,10 +283,17 @@ async fn load_run_summaries(state: &AppState) -> Result<Vec<RunSummary>, ApiErro
         .map_err(ApiError::internal)
 }
 
+fn api_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
+    query
+        .map(|Query(query)| query)
+        .map_err(|_| ApiError::invalid_request("query parameters must be valid"))
+}
+
 async fn explorer_runs(
     State(state): State<AppState>,
-    Query(query): Query<explorer::ExplorerRunsQuery>,
+    query: Result<Query<explorer::ExplorerRunsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
+    let query = api_query(query)?;
     let summaries = load_run_summaries(&state).await?;
     Ok(Json(explorer::run_page(summaries, &query)))
 }
@@ -413,8 +420,9 @@ async fn load_events(state: &AppState, query: &SessionQuery) -> Result<Vec<Event
 
 async fn events(
     State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
+    query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    let query = api_query(query)?;
     let offset = query.offset.unwrap_or(0);
     let requested_limit = query.limit.unwrap_or(1000);
     let full_query = SessionQuery {
@@ -442,8 +450,9 @@ async fn events(
 
 async fn storyline(
     State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
+    query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    let query = api_query(query)?;
     let run = resolve_run_summary(&state, &query).await?;
     let runtime = current_catalog(&state).await?;
     let document = runtime
@@ -667,8 +676,9 @@ async fn load_trajectory(
 
 async fn trajectory_view(
     State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
+    query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<TrajectoryView>, ApiError> {
+    let query = api_query(query)?;
     let loaded = load_trajectory(&state, &query).await?;
     let mut event_kind_counts = BTreeMap::new();
     let mut tool_call_count = 0;
@@ -686,8 +696,9 @@ async fn trajectory_view(
 
 async fn explorer_run(
     State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
+    query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<explorer::RunAnalysis>, ApiError> {
+    let query = api_query(query)?;
     let loaded = load_trajectory(&state, &query).await?;
     Ok(Json(explorer::analyze(
         loaded.run,
@@ -727,8 +738,9 @@ impl TurnsQuery {
 
 async fn explorer_turns(
     State(state): State<AppState>,
-    Query(query): Query<TurnsQuery>,
+    query: Result<Query<TurnsQuery>, QueryRejection>,
 ) -> Result<Json<explorer::ExplorerPage<explorer::TurnSummary>>, ApiError> {
+    let query = api_query(query)?;
     let session = query.session();
     let loaded = load_trajectory(&state, &session).await?;
     Ok(Json(explorer::turn_page(
@@ -754,8 +766,9 @@ struct TurnDetailQuery {
 
 async fn explorer_turn(
     State(state): State<AppState>,
-    Query(query): Query<TurnDetailQuery>,
+    query: Result<Query<TurnDetailQuery>, QueryRejection>,
 ) -> Result<Json<explorer::TurnDetail>, ApiError> {
+    let query = api_query(query)?;
     let session = SessionQuery {
         dataset: query.dataset,
         file: query.file,
@@ -777,15 +790,17 @@ async fn explorer_turn(
 
 async fn export_har(
     State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
+    query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    let query = api_query(query)?;
     Ok(Json(events_to_har(&load_events(&state, &query).await?)))
 }
 
 async fn export_otlp(
     State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
+    query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    let query = api_query(query)?;
     Ok(Json(events_to_otlp_json(
         &load_events(&state, &query).await?,
     )))
@@ -793,8 +808,9 @@ async fn export_otlp(
 
 async fn revisions(
     State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
+    query: Result<Query<SessionQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    let query = api_query(query)?;
     let Some(coords) = canonical_run_coords(&state, &query).await? else {
         return Err(ApiError::not_found("canonical event source was not found"));
     };
