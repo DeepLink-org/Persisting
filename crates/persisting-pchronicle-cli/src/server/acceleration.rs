@@ -1293,12 +1293,73 @@ fn required_json_u64(row: &JsonValue, field: &str) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    #[derive(Debug)]
+    struct RecordedEvent {
+        level: tracing::Level,
+        fields: String,
+    }
+
+    struct RecordingSubscriber {
+        events: Arc<std::sync::Mutex<Vec<RecordedEvent>>>,
+        next_span: AtomicUsize,
+    }
+
+    impl RecordingSubscriber {
+        fn new(events: Arc<std::sync::Mutex<Vec<RecordedEvent>>>) -> Self {
+            Self {
+                events,
+                next_span: AtomicUsize::new(1),
+            }
+        }
+    }
+
+    impl tracing::Subscriber for RecordingSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(self.next_span.fetch_add(1, Ordering::Relaxed) as u64)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            #[derive(Default)]
+            struct FieldVisitor(Vec<String>);
+
+            impl tracing::field::Visit for FieldVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push(format!("{}={value:?}", field.name()));
+                }
+            }
+
+            let mut fields = FieldVisitor::default();
+            event.record(&mut fields);
+            self.events.lock().unwrap().push(RecordedEvent {
+                level: *event.metadata().level(),
+                fields: fields.0.join(" "),
+            });
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
 
     #[tokio::test]
     async fn required_summary_failure_is_cached_and_preserves_sources_at_http_boundary() {
         use std::io;
-        use std::sync::atomic::{AtomicUsize, Ordering};
 
         use axum::response::IntoResponse as _;
         use futures::future::join_all;
@@ -1324,12 +1385,14 @@ mod tests {
         assert!(status.run_summaries_failed);
 
         for failure in &failures {
-            let chain = failure
-                .as_ref()
-                .unwrap_err()
-                .chain()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
+            let failure = failure.as_ref().unwrap_err();
+            let source = failure
+                .root_cause()
+                .downcast_ref::<io::Error>()
+                .expect("cached failure must retain the concrete root source");
+            assert_eq!(source.kind(), io::ErrorKind::Other);
+            assert_eq!(source.to_string(), "required-summary-source-diagnostic");
+            let chain = failure.chain().map(ToString::to_string).collect::<Vec<_>>();
             assert!(chain
                 .iter()
                 .any(|entry| entry == "build required summaries"));
@@ -1351,10 +1414,8 @@ mod tests {
             .contains("required-summary-source-diagnostic"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn optional_index_failure_is_cached_and_falls_back_without_diagnostics() -> Result<()> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
         use futures::future::join_all;
         use persisting_pchronicle::storage::{
             CatalogSnapshotOptions, DatasetMount, DEFAULT_DATASET_NAME,
@@ -1369,6 +1430,9 @@ mod tests {
         .await?;
         let acceleration = ServerAcceleration::default();
         let attempts = AtomicUsize::new(0);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let _subscriber =
+            tracing::subscriber::set_default(RecordingSubscriber::new(events.clone()));
         let sql = "SELECT session_id FROM runs WHERE session_id = 'session-a'";
         let routed = join_all((0..8).map(|_| {
             acceleration.route_sql_with(&snapshot, sql, |_| async {
@@ -1380,6 +1444,16 @@ mod tests {
         .await;
 
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let diagnostics = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.level == tracing::Level::ERROR)
+            .map(|event| event.fields.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(diagnostics.len(), 1, "error diagnostics: {diagnostics:?}");
+        assert!(diagnostics[0].contains("acceleration_index=\"run\""));
+        assert!(diagnostics[0].contains("optional-index-source-diagnostic"));
         assert!(routed.iter().all(|query| {
             query.sql == sql
                 && query.outcome == RoutingOutcome::IndexUnavailable
@@ -1399,6 +1473,25 @@ mod tests {
                     .as_str()
                     .contains("optional-index-source-diagnostic")
         }));
+
+        let later = acceleration
+            .route_sql_with(&snapshot, sql, |_| async {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                anyhow::bail!("unexpected optional index rebuild")
+            })
+            .await;
+        assert_eq!(later.sql, sql);
+        assert_eq!(later.outcome, RoutingOutcome::IndexUnavailable);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.level == tracing::Level::ERROR)
+                .count(),
+            1
+        );
         Ok(())
     }
 
