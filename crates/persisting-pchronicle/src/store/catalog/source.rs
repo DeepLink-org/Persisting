@@ -109,13 +109,35 @@ pub(super) struct PreparedDataset {
     pub(super) max_concurrent_sources: usize,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct SharedResolutionFailure(Arc<dyn std::error::Error + Send + Sync>);
+
+impl SharedResolutionFailure {
+    fn new(error: anyhow::Error) -> Self {
+        Self(Arc::from(error.into_boxed_dyn_error()))
+    }
+}
+
+impl std::fmt::Display for SharedResolutionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("cached Dataset source resolution failure")
+    }
+}
+
+impl std::error::Error for SharedResolutionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct LazySource {
     pub(super) file: String,
     pub(super) spec: LazySourceSpec,
     pub(super) options: CatalogSnapshotOptions,
     pub(super) temporary_files: Arc<SnapshotTempDir>,
-    pub(super) resolved: OnceCell<std::result::Result<Arc<ResolvedSource>, String>>,
+    pub(super) resolved:
+        OnceCell<std::result::Result<Arc<ResolvedSource>, SharedResolutionFailure>>,
     pub(super) resolution_count: AtomicUsize,
 }
 
@@ -185,12 +207,12 @@ impl LazySource {
                 self.resolve_inner()
                     .await
                     .map(Arc::new)
-                    .map_err(|error| redact_error(&format!("{error:#}")))
+                    .map_err(SharedResolutionFailure::new)
             })
             .await;
         match result {
             Ok(source) => Ok(source.clone()),
-            Err(error) => anyhow::bail!("{error}"),
+            Err(error) => Err(anyhow::Error::new(error.clone())),
         }
     }
 

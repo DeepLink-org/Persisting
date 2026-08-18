@@ -402,6 +402,19 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("two.json"));
+    let chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+    let logical_context = chain
+        .iter()
+        .position(|source| source == "detect format for remote trajectory object two.json")
+        .expect("logical remote source context must remain a distinct error-chain entry");
+    let detector_source = chain
+        .iter()
+        .position(|source| source.starts_with("cannot detect trajectory format:"))
+        .expect("format detector failure must remain in the error source chain");
+    assert!(
+        detector_source > logical_context,
+        "format detector failure must be below the logical remote source context: {chain:?}"
+    );
     assert_eq!(
         snapshot.prepared[0]
             .sources
