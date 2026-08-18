@@ -36,6 +36,8 @@ use clap::CommandFactory;
 use serde_json::Value;
 use std::fs;
 
+static STATUS_REPORT_TRACING_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn atif_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../persisting-pchronicle/tests/fixtures/atif/dialogue_10.json")
@@ -448,6 +450,7 @@ async fn status_and_analysis_use_bounded_canonical_fallback() -> Result<()> {
 
 #[tokio::test]
 async fn status_reports_partial_counts_for_bad_sources() -> Result<()> {
+    let _tracing_guard = STATUS_REPORT_TRACING_LOCK.lock().await;
     let temp = tempfile::tempdir()?;
     fs::copy(atif_fixture(), temp.path().join("valid.json"))?;
     fs::write(temp.path().join("broken.json"), "{not-json")?;
@@ -495,6 +498,7 @@ async fn status_strict_mode_rejects_bad_sources() -> Result<()> {
 
 #[tokio::test]
 async fn status_report_mode_marks_an_unreadable_dataset_as_error() -> Result<()> {
+    let _tracing_guard = STATUS_REPORT_TRACING_LOCK.lock().await;
     let temp = tempfile::tempdir()?;
     fs::write(
         temp.path().join("broken.json"),
@@ -521,6 +525,88 @@ async fn status_report_mode_marks_an_unreadable_dataset_as_error() -> Result<()>
     let output = String::from_utf8(stdout)?;
     assert!(!output.contains("status-secret-sentinel"), "{output}");
     assert!(!output.contains("/private/status/path"), "{output}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn status_report_mode_logs_each_cached_source_failure_once() -> Result<()> {
+    use std::fmt::Write as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use tracing::field::{Field, Visit};
+    use tracing::instrument::WithSubscriber as _;
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
+    use tracing_subscriber::Layer;
+
+    const SENTINEL: &str = "status-duplicate-log-sentinel";
+
+    let _tracing_guard = STATUS_REPORT_TRACING_LOCK.lock().await;
+
+    #[derive(Clone)]
+    struct SentinelLayer {
+        events: Arc<AtomicUsize>,
+    }
+
+    impl<S> Layer<S> for SentinelLayer
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _context: LayerContext<'_, S>) {
+            #[derive(Default)]
+            struct Fields(String);
+
+            impl Visit for Fields {
+                fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                    let _ = write!(self.0, "{}={value:?};", field.name());
+                }
+            }
+
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            if fields.0.contains(SENTINEL) {
+                self.events.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir()?;
+    fs::write(
+        temp.path().join(format!("{SENTINEL}.json")),
+        "{private-status-diagnostic:/private/status/path",
+    )?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        temp.path().to_str().unwrap(),
+        "--format",
+        "json",
+        "--errors",
+        "report",
+    ])?;
+    let events = Arc::new(AtomicUsize::new(0));
+    let subscriber = tracing_subscriber::registry().with(SentinelLayer {
+        events: events.clone(),
+    });
+    let mut stdout = Vec::new();
+
+    async {
+        tracing::callsite::rebuild_interest_cache();
+        run(cli, false, &mut stdout, &mut Vec::new()).await
+    }
+    .with_subscriber(subscriber)
+    .await?;
+
+    assert_eq!(events.load(Ordering::Relaxed), 1);
+    let value: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(
+        value["source_errors"][0]["error"],
+        "Source status query failed"
+    );
+    let public_error = value["source_errors"][0]["error"].as_str().unwrap();
+    assert!(!public_error.contains("private-status-diagnostic"));
+    assert!(!public_error.contains("/private/status/path"));
     Ok(())
 }
 

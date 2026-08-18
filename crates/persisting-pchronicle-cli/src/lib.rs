@@ -1538,11 +1538,7 @@ async fn run_status(
             )
             .await
         }
-        Err(error) if args.errors == ErrorMode::Report => {
-            tracing::error!(
-                error = ?error,
-                "pChronicle aggregate Dataset status query failed"
-            );
+        Err(_) if args.errors == ErrorMode::Report => {
             query_reported_status_counts(
                 &engine,
                 &dataset.sources,
