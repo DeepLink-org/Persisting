@@ -1,9 +1,11 @@
 use super::*;
-use crate::{
-    build_storyline_projection, rebuild_storyline_projection, story_lance_event_path,
-    sync_storyline_projection, ChronicleQueryEngine, EventIdentity, RawEventLanceStore,
-    StoryCoords, StorylineAgent, StorylineLanceStore, StorylineProjectionSyncMode, StorylineTurn,
+use crate::layout::{story_lance_event_path, StoryCoords};
+use crate::projection::{
+    build_storyline_projection, rebuild_storyline_projection, sync_storyline_projection,
+    StorylineProjectionSyncMode,
 };
+use crate::store::{RawEventLanceStore, StorylineLanceStore};
+use crate::{EventIdentity, StorylineAgent, StorylineTurn};
 use object_store::ObjectStoreExt;
 
 fn write_openai_source(path: &Path, event_id: &str) -> Result<()> {
@@ -18,7 +20,10 @@ fn write_openai_source(path: &Path, event_id: &str) -> Result<()> {
 
 fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
     StorylineDocument {
+        schema_version: None,
         run_id: Some(run_id.into()),
+        trajectory_id: None,
+        attempt_id: None,
         session_id: session_id.into(),
         agent: StorylineAgent {
             id: "agent".into(),
@@ -34,6 +39,7 @@ fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
+        presence: Default::default(),
         turns: vec![StorylineTurn {
             id: 1,
             kind: None,
@@ -184,10 +190,10 @@ async fn discovers_mixed_local_files_and_exposes_sources() -> Result<()> {
 #[tokio::test]
 async fn ignores_derived_lance_sidecars_during_discovery() -> Result<()> {
     let temp = tempfile::tempdir()?;
-    fs::create_dir_all(temp.path().join("run/judgments.lance/_versions"))?;
+    fs::create_dir_all(temp.path().join("run/derived-metrics.lance/_versions"))?;
     fs::write(
         temp.path()
-            .join("run/judgments.lance/_versions/latest_version_hint.json"),
+            .join("run/derived-metrics.lance/_versions/latest_version_hint.json"),
         "{}",
     )?;
     write_openai_source(&temp.path().join("trajectory.json"), "event-1")?;
@@ -228,7 +234,7 @@ async fn report_mode_keeps_late_local_format_errors_lazy() -> Result<()> {
         0
     );
 
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     let error = engine
         .query("SELECT run_id FROM dataset.runs WHERE _file_ = 'broken.json'")
         .await
@@ -255,7 +261,7 @@ async fn empty_dataset_still_exposes_the_stable_catalog_tables() -> Result<()> {
         .await?,
     );
     assert_eq!(snapshot.datasets()[0].sources.len(), 0);
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot).await?;
+    let engine = snapshot.query_engine(Default::default()).await?;
     let output = engine
         .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
         .await?;
@@ -281,7 +287,7 @@ async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
         .iter()
         .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
 
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     assert!(snapshot.prepared[0]
         .sources
         .iter()
@@ -307,11 +313,14 @@ async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
     assert!(format!("{unsafe_mixed_join:#}").contains("must include"));
     let rows = engine
         .query_jsonl(
-            "SELECT run_id, step_count FROM dataset.trajectories \
-                 WHERE _file_ LIKE 'one.%' AND run_id = 'shared-session'",
+            "SELECT document_id, step_count FROM dataset.trajectories \
+                 WHERE _file_ LIKE 'one.%' AND document_id = 'shared-session'",
         )
         .await?;
-    assert_eq!(rows.trim(), r#"{"run_id":"shared-session","step_count":2}"#);
+    assert_eq!(
+        rows.trim(),
+        r#"{"document_id":"shared-session","step_count":2}"#
+    );
     assert_eq!(
         snapshot.prepared[0]
             .sources
@@ -321,12 +330,12 @@ async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
         vec![1, 0]
     );
     let explain = engine
-        .query_jsonl("EXPLAIN SELECT run_id FROM dataset.runs WHERE _file_ = 'one.json'")
+        .query_jsonl("EXPLAIN SELECT document_id FROM dataset.runs WHERE _file_ = 'one.json'")
         .await?;
     assert!(!explain.contains("UnionExec"));
     assert_eq!(engine.local_file_metrics().unwrap().files_parsed, 1);
     let error = engine
-        .query("SELECT run_id FROM dataset.runs WHERE _file_ = 'two.json'")
+        .query("SELECT document_id FROM dataset.runs WHERE _file_ = 'two.json'")
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("two.json"));
@@ -375,11 +384,11 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         .sources
         .iter()
         .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     let rows = engine
-        .query_jsonl("SELECT run_id FROM dataset.runs WHERE _file_ = 'one.json'")
+        .query_jsonl("SELECT document_id FROM dataset.runs WHERE _file_ = 'one.json'")
         .await?;
-    assert_eq!(rows.trim(), r#"{"run_id":"shared-session"}"#);
+    assert_eq!(rows.trim(), r#"{"document_id":"shared-session"}"#);
     assert_eq!(
         snapshot.prepared[0]
             .sources
@@ -389,7 +398,7 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         vec![1, 0]
     );
     let error = engine
-        .query("SELECT run_id FROM dataset.runs WHERE _file_ = 'two.json'")
+        .query("SELECT document_id FROM dataset.runs WHERE _file_ = 'two.json'")
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("two.json"));
@@ -427,7 +436,7 @@ async fn catalog_prunes_storyline_sources_before_opening_lance() -> Result<()> {
         .await?
         .replace_storyline(&storyline("session-a-new", "run-a-new"))
         .await?;
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     assert!(snapshot.prepared[0]
         .sources
         .iter()
@@ -468,6 +477,7 @@ async fn trajectory_bundle_derives_events_from_one_storyline_source_resolution()
     let key = CatalogStorylineKey {
         dataset: DEFAULT_DATASET_NAME.into(),
         file: ".".into(),
+        document_id: expected.session_id.clone(),
         session_id: expected.session_id.clone(),
     };
 
@@ -505,7 +515,7 @@ async fn one_source_keeps_storylines_with_a_shared_run_id_independent() -> Resul
         )
         .await?,
     );
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
 
     let rows = engine
         .query_jsonl(
@@ -536,6 +546,7 @@ async fn one_source_keeps_storylines_with_a_shared_run_id_independent() -> Resul
             .load_storyline(&CatalogStorylineKey {
                 dataset: DEFAULT_DATASET_NAME.into(),
                 file: ".".into(),
+                document_id: session_id.into(),
                 session_id: session_id.into(),
             })
             .await?
@@ -543,6 +554,38 @@ async fn one_source_keeps_storylines_with_a_shared_run_id_independent() -> Resul
         assert_eq!(story.session_id, session_id);
         assert_eq!(story.run_id.as_deref(), Some("shared-run"));
         assert_eq!(story.turns.len(), 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn catalog_point_load_uses_document_id_when_sessions_are_shared() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let store = StorylineLanceStore::open(temp.path()).await?;
+    let mut first = storyline("shared-session", "run-a");
+    first.trajectory_id = Some("document-a".into());
+    let mut second = storyline("shared-session", "run-b");
+    second.trajectory_id = Some("document-b".into());
+    store.replace_storylines(&[first, second]).await?;
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+
+    for (document_id, run_id) in [("document-a", "run-a"), ("document-b", "run-b")] {
+        let story = snapshot
+            .load_storyline(&CatalogStorylineKey {
+                dataset: DEFAULT_DATASET_NAME.into(),
+                file: ".".into(),
+                document_id: document_id.into(),
+                session_id: "shared-session".into(),
+            })
+            .await?
+            .context("Catalog Storyline must resolve by document_id")?;
+        assert_eq!(story.trajectory_id.as_deref(), Some(document_id));
+        assert_eq!(story.run_id.as_deref(), Some(run_id));
     }
     Ok(())
 }
@@ -566,7 +609,7 @@ async fn catalog_joins_require_file_keys_only_within_one_dataset() -> Result<()>
         )
         .await?,
     );
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot).await?;
+    let engine = snapshot.query_engine(Default::default()).await?;
 
     let unsafe_join = engine
         .query(
@@ -685,7 +728,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         .await?;
     let lazy = &snapshot.prepared[0].sources[0];
     assert_eq!(lazy.resolution_count.load(Ordering::Relaxed), 0);
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     assert_eq!(lazy.resolution_count.load(Ordering::Relaxed), 0);
     let event_count = engine
         .query_jsonl(
@@ -701,7 +744,9 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
     };
     assert_eq!(events.normalization_count.load(Ordering::Relaxed), 0);
     let runs = engine
-        .query_jsonl("SELECT _file_, run_id, session_id FROM dataset.runs ORDER BY session_id")
+        .query_jsonl(
+            "SELECT _file_, document_id, run_id, session_id FROM dataset.runs ORDER BY session_id",
+        )
         .await?;
     assert_eq!(events.normalization_count.load(Ordering::Relaxed), 0);
     let keys = runs
@@ -714,6 +759,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
             .load_events(&CatalogStorylineKey {
                 dataset: DEFAULT_DATASET_NAME.into(),
                 file: row["_file_"].as_str().unwrap().into(),
+                document_id: row["document_id"].as_str().unwrap().into(),
                 session_id: row["session_id"].as_str().unwrap().into(),
             })
             .await?
@@ -735,7 +781,10 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         stale_snapshot.datasets()[0].sources[0].projection_status,
         Some(CatalogProjectionStatus::Stale)
     );
-    let stale_engine = ChronicleQueryEngine::from_catalog_snapshot(stale_snapshot.clone()).await?;
+    let stale_engine = stale_snapshot
+        .clone()
+        .query_engine(Default::default())
+        .await?;
     let stale_resolved = stale_snapshot.prepared[0].sources[0].resolve().await?;
     let ResolvedSource::Events(stale_events) = stale_resolved.as_ref() else {
         panic!("stale projection did not fall back to canonical events");
@@ -744,6 +793,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         .load_events(&CatalogStorylineKey {
             dataset: DEFAULT_DATASET_NAME.into(),
             file: "agent/run-1/events.lance".into(),
+            document_id: "root".into(),
             session_id: "root".into(),
         })
         .await?
@@ -773,7 +823,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         )
         .await?,
     );
-    let limited_engine = ChronicleQueryEngine::from_catalog_snapshot(limited_snapshot).await?;
+    let limited_engine = limited_snapshot.query_engine(Default::default()).await?;
     let limit_error = limited_engine
         .query("SELECT * FROM dataset.runs")
         .await

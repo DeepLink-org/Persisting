@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 
-use crate::{distinct_session_ids_in_run, StoryCoords};
+use crate::layout::StoryCoords;
+use crate::store::distinct_session_ids_in_run;
 
 fn is_shared_lance_run_bucket(location: &StoryCoords) -> bool {
     location

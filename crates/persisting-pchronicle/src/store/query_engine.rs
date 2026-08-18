@@ -17,36 +17,30 @@ use datafusion::sql::sqlparser::ast::Statement as SqlStatement;
 use futures::TryStreamExt;
 
 use super::{
-    AtifDataSource, DatasetCatalogSnapshot, FileTrajectoryDataSource,
-    FileTrajectoryDataSourceOptions, FileTrajectoryFormat, FileTrajectoryQueryMetrics,
-    FileTrajectoryQueryMetricsSnapshot, LocalQueryManifest, RawEventDataSource,
-    StorylineDataSource, SOURCE_FILE_COLUMN,
+    DatasetCatalogSnapshot, FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot,
+    SOURCE_FILE_COLUMN,
 };
+use crate::{DocumentFormat, QueryCapabilities, QueryTables};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChronicleQueryBackend {
-    Catalog {
-        snapshot_id: String,
-        datasets: usize,
-        sources: usize,
+pub struct QueryBackendInfo {
+    pub format: DocumentFormat,
+    pub tables: QueryTables,
+    pub capabilities: QueryCapabilities,
+    pub source_count: usize,
+    pub snapshot: Option<QuerySnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuerySnapshot {
+    CanonicalEvent {
+        format_version: u32,
+        fact_version: u64,
+        fact_rows: u64,
+        layout_revision: u64,
     },
-    Lance {
+    Storyline {
         generation: String,
-    },
-    Events {
-        version: u64,
-    },
-    Atif {
-        files: usize,
-        documents: Option<usize>,
-        steps: Option<usize>,
-        tool_calls: Option<usize>,
-    },
-    OpenaiMsg {
-        files: usize,
-    },
-    Actf {
-        files: usize,
     },
 }
 
@@ -93,7 +87,7 @@ impl ExternalTableSpec {
 /// Read-only SQL engine exposing the same normalized tables for all sources.
 pub struct ChronicleQueryEngine {
     context: SessionContext,
-    backend: ChronicleQueryBackend,
+    backend_info: Option<QueryBackendInfo>,
     require_file_join_key: bool,
     local_file_metrics: Vec<FileTrajectoryQueryMetrics>,
     // Keeps pinned remote-file materializations alive for the complete query.
@@ -104,210 +98,67 @@ impl std::fmt::Debug for ChronicleQueryEngine {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ChronicleQueryEngine")
-            .field("backend", &self.backend)
+            .field("backend_info", &self.backend_info)
             .finish_non_exhaustive()
     }
 }
 
 impl ChronicleQueryEngine {
-    pub async fn from_catalog_snapshot(snapshot: Arc<DatasetCatalogSnapshot>) -> Result<Self> {
-        Self::from_catalog_snapshot_with_options(
-            snapshot,
-            ChronicleQueryExecutionOptions::default(),
-        )
-        .await
+    pub async fn open(
+        format: DocumentFormat,
+        path: impl AsRef<Path>,
+        options: ChronicleQueryExecutionOptions,
+    ) -> Result<Self> {
+        let source = crate::document::open_document(format, path.as_ref()).await?;
+        let context = query_session_context(&options)?;
+        let tables = source.register_datafusion(&context)?;
+        let capabilities = source.capabilities();
+        let source_count = source.inner.source_count();
+        let snapshot = if let Some(snapshot) = source.inner.event_snapshot() {
+            Some(QuerySnapshot::CanonicalEvent {
+                // Existing canonical manifests predate explicit format versioning.
+                format_version: 1,
+                fact_version: snapshot.fact_version,
+                fact_rows: snapshot.fact_rows,
+                layout_revision: snapshot.layout_revision,
+            })
+        } else {
+            source
+                .inner
+                .storyline_generation()
+                .map(|generation| QuerySnapshot::Storyline {
+                    generation: generation.to_string(),
+                })
+        };
+        let local_file_metrics = source.inner.file_metrics().into_iter().collect();
+        Ok(Self {
+            context,
+            backend_info: Some(QueryBackendInfo {
+                format,
+                tables,
+                capabilities,
+                source_count,
+                snapshot,
+            }),
+            require_file_join_key: source_count > 1,
+            local_file_metrics,
+            _catalog_snapshot: None,
+        })
     }
 
-    pub async fn from_catalog_snapshot_with_options(
+    pub(crate) async fn from_catalog_snapshot_with_options(
         snapshot: Arc<DatasetCatalogSnapshot>,
         options: ChronicleQueryExecutionOptions,
     ) -> Result<Self> {
         let context = query_session_context(&options)?;
         snapshot.register(&context).await?;
-        let datasets = snapshot.datasets().len();
-        let sources = snapshot
-            .datasets()
-            .iter()
-            .map(|dataset| dataset.ready_source_count())
-            .sum();
         let require_file_join_key = snapshot.requires_file_join_key();
-        let snapshot_id = snapshot.snapshot_id().to_string();
         Ok(Self {
             context,
-            backend: ChronicleQueryBackend::Catalog {
-                snapshot_id,
-                datasets,
-                sources,
-            },
+            backend_info: None,
             require_file_join_key,
             local_file_metrics: Vec::new(),
             _catalog_snapshot: Some(snapshot),
-        })
-    }
-
-    pub async fn open_lance(root: impl AsRef<Path>) -> Result<Self> {
-        let source = StorylineDataSource::open(root).await?;
-        Self::from_lance_source(source)
-    }
-
-    /// Open a Lance store from a local path or object-store URI such as S3.
-    pub async fn open_lance_uri(root: impl AsRef<str>) -> Result<Self> {
-        Self::open_lance_uri_with_options(root, ChronicleQueryExecutionOptions::default()).await
-    }
-
-    pub async fn open_lance_uri_with_options(
-        root: impl AsRef<str>,
-        options: ChronicleQueryExecutionOptions,
-    ) -> Result<Self> {
-        let source = StorylineDataSource::open_uri(root).await?;
-        Self::from_lance_source_with_options(source, options)
-    }
-
-    /// Open one canonical fenced `events.lance` manifest as the SQL table `events`.
-    pub async fn open_events(path: impl AsRef<Path>) -> Result<Self> {
-        let source = RawEventDataSource::open(path).await?;
-        Self::from_events_source(source)
-    }
-
-    pub async fn open_events_uri(uri: impl AsRef<str>) -> Result<Self> {
-        Self::open_events_uri_with_options(uri, ChronicleQueryExecutionOptions::default()).await
-    }
-
-    pub async fn open_events_uri_with_options(
-        uri: impl AsRef<str>,
-        options: ChronicleQueryExecutionOptions,
-    ) -> Result<Self> {
-        let source = RawEventDataSource::open_uri(uri).await?;
-        Self::from_events_source_with_options(source, options)
-    }
-
-    pub fn open_atif(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_file_trajectory_source(FileTrajectoryDataSource::open_atif(path)?)
-    }
-
-    pub fn open_openai_msg(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_file_trajectory_source(FileTrajectoryDataSource::open_openai_msg(path)?)
-    }
-
-    pub fn open_actf(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_file_trajectory_source(FileTrajectoryDataSource::open_actf(path)?)
-    }
-
-    pub fn open_local_manifest(manifest: LocalQueryManifest) -> Result<Self> {
-        Self::open_local_manifest_with_options(manifest, FileTrajectoryDataSourceOptions::default())
-    }
-
-    pub fn open_local_manifest_with_options(
-        manifest: LocalQueryManifest,
-        options: FileTrajectoryDataSourceOptions,
-    ) -> Result<Self> {
-        Self::open_local_manifest_with_execution_options(
-            manifest,
-            options,
-            ChronicleQueryExecutionOptions::default(),
-        )
-    }
-
-    pub fn open_local_manifest_with_execution_options(
-        manifest: LocalQueryManifest,
-        file_options: FileTrajectoryDataSourceOptions,
-        execution_options: ChronicleQueryExecutionOptions,
-    ) -> Result<Self> {
-        Self::from_file_trajectory_source_with_options(
-            FileTrajectoryDataSource::from_manifest_with_options(manifest, file_options)?,
-            execution_options,
-        )
-    }
-
-    pub fn from_lance_source(source: StorylineDataSource) -> Result<Self> {
-        Self::from_lance_source_with_options(source, ChronicleQueryExecutionOptions::default())
-    }
-
-    pub fn from_lance_source_with_options(
-        source: StorylineDataSource,
-        options: ChronicleQueryExecutionOptions,
-    ) -> Result<Self> {
-        let generation = source.generation().to_string();
-        let context = query_session_context(&options)?;
-        source.register(&context)?;
-        Ok(Self {
-            context,
-            backend: ChronicleQueryBackend::Lance { generation },
-            require_file_join_key: false,
-            local_file_metrics: Vec::new(),
-            _catalog_snapshot: None,
-        })
-    }
-
-    pub fn from_events_source(source: RawEventDataSource) -> Result<Self> {
-        Self::from_events_source_with_options(source, ChronicleQueryExecutionOptions::default())
-    }
-
-    pub fn from_events_source_with_options(
-        source: RawEventDataSource,
-        options: ChronicleQueryExecutionOptions,
-    ) -> Result<Self> {
-        let version = source.version();
-        let context = query_session_context(&options)?;
-        source.register(&context)?;
-        Ok(Self {
-            context,
-            backend: ChronicleQueryBackend::Events { version },
-            require_file_join_key: false,
-            local_file_metrics: Vec::new(),
-            _catalog_snapshot: None,
-        })
-    }
-
-    pub fn from_atif_source(source: AtifDataSource) -> Result<Self> {
-        let files = source.file_count();
-        let backend = ChronicleQueryBackend::Atif {
-            files,
-            documents: source.document_count(),
-            steps: source.step_count(),
-            tool_calls: source.tool_call_count(),
-        };
-        let context = source.session_context()?;
-        Ok(Self {
-            context,
-            backend,
-            require_file_join_key: files > 1,
-            local_file_metrics: Vec::new(),
-            _catalog_snapshot: None,
-        })
-    }
-
-    pub fn from_file_trajectory_source(source: FileTrajectoryDataSource) -> Result<Self> {
-        Self::from_file_trajectory_source_with_options(
-            source,
-            ChronicleQueryExecutionOptions::default(),
-        )
-    }
-
-    pub fn from_file_trajectory_source_with_options(
-        source: FileTrajectoryDataSource,
-        options: ChronicleQueryExecutionOptions,
-    ) -> Result<Self> {
-        let files = source.file_count();
-        let metrics = source.metrics();
-        let backend = match source.format() {
-            FileTrajectoryFormat::Atif => ChronicleQueryBackend::Atif {
-                files,
-                documents: None,
-                steps: None,
-                tool_calls: None,
-            },
-            FileTrajectoryFormat::OpenaiMsg => ChronicleQueryBackend::OpenaiMsg { files },
-            FileTrajectoryFormat::Actf => ChronicleQueryBackend::Actf { files },
-        };
-        let context = query_session_context(&options)?;
-        source.register(&context)?;
-        Ok(Self {
-            context,
-            backend,
-            require_file_join_key: files > 1,
-            local_file_metrics: vec![metrics],
-            _catalog_snapshot: None,
         })
     }
 
@@ -315,8 +166,8 @@ impl ChronicleQueryEngine {
         &self.context
     }
 
-    pub fn backend(&self) -> &ChronicleQueryBackend {
-        &self.backend
+    pub fn backend_info(&self) -> Option<&QueryBackendInfo> {
+        self.backend_info.as_ref()
     }
 
     pub fn local_file_metrics(&self) -> Option<FileTrajectoryQueryMetricsSnapshot> {

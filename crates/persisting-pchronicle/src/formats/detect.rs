@@ -2,33 +2,30 @@
 
 use std::path::Path;
 
-use crate::format::ChronicleFormat;
+use crate::format::DocumentFormat;
 use crate::Result;
 
 /// Detect format from a file path (extension / basename).
 ///
 /// `events` is detected only as a Lance dataset path (`events.lance`), never as `.json` / `.jsonl`.
-pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<ChronicleFormat> {
+pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<DocumentFormat> {
     let path = path.as_ref();
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if name == "storyline.json" || name.ends_with(".storyline.json") {
-        return Some(ChronicleFormat::Storyline);
-    }
     if name == "events.lance" || (name.ends_with(".lance") && name.contains("event")) {
-        return Some(ChronicleFormat::Events);
+        return Some(DocumentFormat::CanonicalEvent);
     }
-    if name == "session_steps.json" || name == "session_steps.lance" {
-        return Some(ChronicleFormat::OpenaiMsg);
+    if name == "session_steps.json" {
+        return Some(DocumentFormat::OpenaiMsg);
     }
     if name.ends_with(".actf.json") {
-        return Some(ChronicleFormat::Actf);
+        return Some(DocumentFormat::Actf);
     }
     if name.ends_with(".md") {
-        return Some(ChronicleFormat::Agenticmd);
+        return Some(DocumentFormat::AgenticMd);
     }
     None
 }
@@ -36,14 +33,14 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<ChronicleFormat
 /// Detect format from document text when path is unavailable.
 ///
 /// Does **not** classify EventRecord-shaped JSON as `events` (Lance-only).
-pub fn detect_format_from_content(input: &str) -> Result<Option<ChronicleFormat>> {
+pub fn detect_format_from_content(input: &str) -> Result<Option<DocumentFormat>> {
     let trimmed = input.trim_start();
     if trimmed.starts_with("---")
         && trimmed
             .lines()
             .any(|line| line.trim() == "format: persisting")
     {
-        return Ok(Some(ChronicleFormat::Agenticmd));
+        return Ok(Some(DocumentFormat::AgenticMd));
     }
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
@@ -60,12 +57,12 @@ pub fn detect_format_from_content(input: &str) -> Result<Option<ChronicleFormat>
         }
     }
     if trimmed.contains("<!-- persisting:block") {
-        return Ok(Some(ChronicleFormat::Agenticmd));
+        return Ok(Some(DocumentFormat::AgenticMd));
     }
     Ok(None)
 }
 
-fn detect_json_format(v: &serde_json::Value) -> Option<ChronicleFormat> {
+fn detect_json_format(v: &serde_json::Value) -> Option<DocumentFormat> {
     let candidate = v.as_array().and_then(|values| values.first()).unwrap_or(v);
     let is_actf_document = v
         .get("attempts")
@@ -81,7 +78,7 @@ fn detect_json_format(v: &serde_json::Value) -> Option<ChronicleFormat> {
                 })
         });
     if is_actf_document {
-        return Some(ChronicleFormat::Actf);
+        return Some(DocumentFormat::Actf);
     }
     if candidate.get("session_id").is_some()
         && candidate.get("step_id").is_some()
@@ -89,36 +86,19 @@ fn detect_json_format(v: &serde_json::Value) -> Option<ChronicleFormat> {
             .iter()
             .any(|field| candidate.get(*field).is_some())
     {
-        return Some(ChronicleFormat::OpenaiMsg);
-    }
-    let spec = v
-        .get("spec")
-        .or_else(|| v.get("sv"))
-        .or_else(|| v.get("schema_version"));
-    if spec
-        .and_then(|value| value.as_str())
-        .is_some_and(|value| value.starts_with("storyline/"))
-    {
-        return Some(ChronicleFormat::Storyline);
+        return Some(DocumentFormat::OpenaiMsg);
     }
     if v.get("schema_version")
         .and_then(|value| value.as_str())
         .is_some_and(|value| value.starts_with("ATIF"))
     {
-        return Some(ChronicleFormat::Atif);
+        return Some(DocumentFormat::Atif);
     }
     if v.get("session_steps").is_some() {
-        return Some(ChronicleFormat::OpenaiMsg);
-    }
-    if v.get("turns").is_some()
-        && (v.get("session").is_some()
-            || v.get("session_id").is_some()
-            || v.get("story_id").is_some())
-    {
-        return Some(ChronicleFormat::Storyline);
+        return Some(DocumentFormat::OpenaiMsg);
     }
     if v.get("steps").is_some() && v.get("agent").is_some() {
-        return Some(ChronicleFormat::Atif);
+        return Some(DocumentFormat::Atif);
     }
     if candidate
         .get("schema_version")
@@ -129,16 +109,13 @@ fn detect_json_format(v: &serde_json::Value) -> Option<ChronicleFormat> {
             && candidate.get("step_id").is_some()
             && candidate.get("agent_name").is_some())
     {
-        return Some(ChronicleFormat::Atif);
+        return Some(DocumentFormat::Atif);
     }
     None
 }
 
 /// Prefer path detection; fall back to content.
-pub fn detect_format(
-    path: Option<&Path>,
-    content: Option<&str>,
-) -> Result<Option<ChronicleFormat>> {
+pub fn detect_format(path: Option<&Path>, content: Option<&str>) -> Result<Option<DocumentFormat>> {
     if let Some(p) = path {
         if let Some(fmt) = detect_format_from_path(p) {
             return Ok(Some(fmt));

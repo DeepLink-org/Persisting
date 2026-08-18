@@ -1,6 +1,5 @@
 use super::*;
 use axum::http::header;
-use persisting_pchronicle::write_judge_rows;
 
 fn router(storage: impl Into<String>) -> Router {
     let config = ChronicleServerConfig::mounted(vec![
@@ -114,7 +113,8 @@ fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
     let run = RunSummary {
         dataset: "live".into(),
         file: "agent/run-1/events.lance".into(),
-        run_id: "child".into(),
+        document_id: "child".into(),
+        run_id: Some("child".into()),
         agent_id: "agent".into(),
         model_name: None,
         session_id: "child".into(),
@@ -539,82 +539,7 @@ async fn explorer_uses_terminal_metadata_for_run_status() {
 }
 
 #[tokio::test]
-async fn read_only_mounts_expose_existing_judgments() -> anyhow::Result<()> {
-    use http_body_util::BodyExt;
-    use persisting_pchronicle::RawEventLanceStore;
-    use tower::ServiceExt;
-
-    let root = tempfile::tempdir()?;
-    let coords = StoryCoords::new(
-        root.path().to_string_lossy(),
-        "agent",
-        "child-session",
-        Some("shared-run".into()),
-    );
-    RawEventLanceStore
-        .append_events(
-            &coords,
-            &[EventRecord {
-                identity: Default::default(),
-                seq: 0,
-                source: "test".into(),
-                kind: "note".into(),
-                timestamp: None,
-                session_id: Some("child-session".into()),
-                agent_id: Some("agent".into()),
-                parent_uuid: None,
-                trace_id: None,
-                call_id: None,
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: json!({"content":"captured"}),
-            }],
-        )
-        .await?;
-    write_judge_rows(
-        &coords,
-        &[JudgeRow {
-            session_id: "child-session".into(),
-            call_id: "__story__".into(),
-            rubric_id: "quality".into(),
-            score: 91,
-            verdict: "pass".into(),
-            rationale: "stored before mounting read-only".into(),
-        }],
-    )
-    .await?;
-
-    let app = test_router_with_config(ChronicleServerConfig::mounted(vec![DatasetMount::new(
-        "archive",
-        root.path().to_string_lossy(),
-    )?])?);
-    let response = app
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri(
-                        "/api/judgments?dataset=archive&file=agent%2Fshared-run%2Fevents.lance&run_id=shared-run&agent_id=agent&session_id=child-session",
-                    )
-                    .body(axum::body::Body::empty())?,
-            )
-            .await?;
-    let response_status = response.status();
-    let response_body = response.into_body().collect().await?.to_bytes();
-    assert_eq!(
-        response_status,
-        StatusCode::OK,
-        "judgment read failed: {}",
-        String::from_utf8_lossy(&response_body)
-    );
-    let rows: Value = serde_json::from_slice(&response_body)?;
-    assert_eq!(rows[0]["score"], 91);
-    assert_eq!(rows[0]["session_id"], "child-session");
-    Ok(())
-}
-
-#[tokio::test]
-async fn limited_query_and_read_only_judgments_enforce_copilot_boundaries() {
+async fn limited_query_enforces_copilot_boundaries() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -654,49 +579,6 @@ async fn limited_query_and_read_only_judgments_enforce_copilot_boundaries() {
     assert_eq!(evidence["returned_rows"], 1);
     assert_eq!(evidence["max_rows"], 1);
     assert_eq!(evidence["max_bytes"], 1_048_576);
-
-    let write = app
-        .clone()
-        .oneshot(
-            axum::http::Request::builder()
-                .method("POST")
-                .uri("/api/judgments")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(axum::body::Body::from(
-                    json!({
-                        "agent_id":"model-json","session_id":"json-session",
-                        "root_session_id":"json-job","call_id":"__story__",
-                        "rubric_id":"quality","score":88,"verdict":"pass",
-                        "rationale":"Evidence supports the trajectory-level verdict."
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(write.status(), StatusCode::METHOD_NOT_ALLOWED);
-
-    let saved = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/api/judgments?agent_id=model-json&session_id=json-session&root_session_id=json-job")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-    let saved_status = saved.status();
-    let saved_body = saved.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(
-        saved_status,
-        StatusCode::OK,
-        "judgments failed: {}",
-        String::from_utf8_lossy(&saved_body)
-    );
-    let saved: Value = serde_json::from_slice(&saved_body).unwrap();
-    assert_eq!(saved, json!([]));
 
     std::fs::remove_dir_all(root).unwrap();
 }

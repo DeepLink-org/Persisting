@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) struct StorylineStreamChunk {
-    pub(super) session_ids: HashSet<String>,
+    pub(super) document_ids: HashSet<String>,
     pub(super) runs: Vec<StoryRunRow>,
     pub(super) steps: Vec<StoryStepRow>,
     pub(super) tool_calls: Vec<StoryToolCallRow>,
@@ -9,12 +9,13 @@ pub(super) struct StorylineStreamChunk {
 
 pub(super) fn next_storyline_stream_chunk<I>(
     iterator: &mut I,
-    all_session_ids: &mut HashSet<String>,
+    all_document_ids: &mut HashSet<String>,
+    next_storage_ordinal: &mut i64,
 ) -> Result<Option<StorylineStreamChunk>>
 where
     I: Iterator<Item = Result<StorylineDocument>>,
 {
-    let mut session_ids = HashSet::with_capacity(STREAM_IMPORT_STORIES);
+    let mut document_ids = HashSet::with_capacity(STREAM_IMPORT_STORIES);
     let mut runs = Vec::with_capacity(STREAM_IMPORT_STORIES);
     let mut steps = Vec::new();
     let mut tool_calls = Vec::new();
@@ -22,12 +23,17 @@ where
         let Some(story) = iterator.next() else {
             break;
         };
-        let tables = split_storyline(&story?).map_err(anyhow::Error::from)?;
-        let session_id = tables.run.session_id.clone();
-        if !all_session_ids.insert(session_id.clone()) {
-            anyhow::bail!("duplicate session_id '{session_id}' in Storyline stream");
+        let story = story?;
+        let mut tables = split_storyline(&story).map_err(anyhow::Error::from)?;
+        let document_id = tables.run.document_id.clone();
+        tables.run.storage_ordinal = *next_storage_ordinal;
+        *next_storage_ordinal = next_storage_ordinal
+            .checked_add(1)
+            .context("Storyline storage ordinal overflow")?;
+        if !all_document_ids.insert(document_id.clone()) {
+            anyhow::bail!("duplicate document_id '{document_id}' in Storyline stream");
         }
-        session_ids.insert(session_id);
+        document_ids.insert(document_id);
         runs.push(tables.run);
         steps.extend(tables.steps);
         tool_calls.extend(tables.tool_calls);
@@ -37,7 +43,7 @@ where
     }
     sort_rows(&mut runs, &mut steps, &mut tool_calls);
     Ok(Some(StorylineStreamChunk {
-        session_ids,
+        document_ids,
         runs,
         steps,
         tool_calls,

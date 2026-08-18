@@ -24,15 +24,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
-use persisting_pchronicle::convert::storyline_to_atif;
-use persisting_pchronicle::{
-    actf_to_storylines, build_storyline_projection, detect_format, load_atif_trajectories,
-    parse_actf_document, parse_openai_msg_corpus_value, rebuild_storyline_projection,
-    storyline_projection_status, storylines_to_actf, sync_storyline_projection,
-    verify_storyline_projection, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
-    CatalogSourceStatus, CatalogStorylineKey, ChronicleFormat, ChronicleQueryEngine,
-    DatasetCatalogSnapshot, DatasetMount, LocalQueryManifestOptions, StorylineDocument,
-    StorylineProjectionSyncReport, StorylineProjectionVerification, DEFAULT_DATASET_NAME,
+use persisting_pchronicle::document::{
+    detect_format, encode_json_storylines, open_document, DocumentFormat,
+};
+use persisting_pchronicle::model::StorylineDocument;
+use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::storage::{
+    build_storyline_projection, rebuild_storyline_projection, storyline_projection_status,
+    sync_storyline_projection, verify_storyline_projection, CatalogErrorPolicy,
+    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
+    DatasetCatalogSnapshot, DatasetMount, StorylineProjectionSyncReport,
+    StorylineProjectionVerification, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -113,11 +115,11 @@ struct ListArgs {
     errors: ErrorMode,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -143,11 +145,11 @@ struct StatusArgs {
     errors: ErrorMode,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 
     /// Maximum time for trajectory count queries.
@@ -190,11 +192,11 @@ struct QueryArgs {
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -241,11 +243,11 @@ struct AnalysisOptions {
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -254,7 +256,7 @@ struct AnalysisOptions {
     ArgGroup::new("identity")
         .required(true)
         .multiple(false)
-        .args(["run_id", "session_id"])
+        .args(["document_id", "run_id", "session_id"])
 ))]
 struct FindArgs {
     /// Local path or object-store URI. Uses the default Warehouse when omitted.
@@ -268,6 +270,10 @@ struct FindArgs {
     /// Find Run or Trajectory candidates by Source-local Run ID.
     #[arg(long)]
     run_id: Option<String>,
+
+    /// Find one trajectory by its stable Source-local document ID.
+    #[arg(long)]
+    document_id: Option<String>,
 
     /// Find Trajectory or Step candidates by Source-local Session ID.
     #[arg(long)]
@@ -294,11 +300,11 @@ struct FindArgs {
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -310,6 +316,24 @@ enum ExchangeFormat {
     #[value(name = "openai-messages")]
     OpenaiMessages,
     Storyline,
+}
+
+impl ExchangeFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Atif => "atif",
+            Self::Actf => "actf",
+            Self::OpenaiMessages => "openai-messages",
+            Self::Storyline => "storyline",
+        }
+    }
+}
+
+impl std::fmt::Display for ExchangeFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Args)]
@@ -357,6 +381,10 @@ struct ExportArgs {
     #[arg(long)]
     run_id: Option<String>,
 
+    /// Export one Source-local document ID.
+    #[arg(long)]
+    document_id: Option<String>,
+
     /// Export one Source-local Session ID.
     #[arg(long)]
     session_id: Option<String>,
@@ -390,11 +418,11 @@ struct ExportArgs {
     timeout_seconds: u64,
 
     /// Maximum number of trajectory Sources to discover.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES)]
     max_files: usize,
 
     /// Maximum number of filesystem entries or objects to inspect.
-    #[arg(long, default_value_t = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
+    #[arg(long, default_value_t = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES)]
     max_entries: usize,
 }
 
@@ -702,6 +730,7 @@ struct FindResponse {
 #[derive(Debug, Serialize)]
 struct FindQueryResponse {
     source: Option<String>,
+    document_id: Option<String>,
     run_id: Option<String>,
     session_id: Option<String>,
     step_id: Option<i64>,
@@ -710,7 +739,9 @@ struct FindQueryResponse {
 #[derive(Debug, Deserialize, Serialize)]
 struct FindMatch {
     source_path: String,
-    run_id: String,
+    document_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
     session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     step_id: Option<i64>,
@@ -734,7 +765,8 @@ struct ImportResponse {
 #[derive(Debug, Deserialize)]
 struct ExportAddress {
     source_path: String,
-    run_id: String,
+    document_id: String,
+    run_id: Option<String>,
     session_id: String,
 }
 
@@ -1359,7 +1391,7 @@ async fn run_status(
                 .unwrap_or_else(|| "Source discovery failed".into()),
         })
         .collect::<Vec<_>>();
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     let timeout = Duration::from_secs(args.timeout_seconds);
     let deadline = tokio::time::Instant::now() + timeout;
     let counts = match query_status_counts(&engine, None, deadline, timeout).await {
@@ -1465,7 +1497,8 @@ async fn run_query(
     .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot)
+    let engine = snapshot
+        .query_engine(Default::default())
         .await
         .map_err(|error| redact_query_error(&error, &dataset_uris, None))?;
     let mut buffer = LimitedBuffer::new(args.max_output_bytes);
@@ -1550,7 +1583,8 @@ async fn run_analysis(
             .await?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot)
+    let engine = snapshot
+        .query_engine(Default::default())
         .await
         .map_err(|error| redact_query_error(&error, &dataset_uris, None))?;
     let bounded_sql = format!("{sql}\nLIMIT {}", options.limit);
@@ -1628,16 +1662,16 @@ SELECT
 
 const ANALYSIS_AGENTS_SQL: &str = r#"
 WITH step_stats AS (
-  SELECT _file_, session_id,
+  SELECT _file_, document_id,
          COUNT(*) AS steps,
          SUM(CASE WHEN source = 'user' THEN 1 ELSE 0 END) AS user_steps,
          SUM(CASE WHEN source = 'agent' THEN 1 ELSE 0 END) AS agent_steps
   FROM dataset.steps
-  GROUP BY _file_, session_id
+  GROUP BY _file_, document_id
 ), tool_stats AS (
-  SELECT _file_, session_id, COUNT(*) AS tool_calls
+  SELECT _file_, document_id, COUNT(*) AS tool_calls
   FROM dataset.tool_calls
-  GROUP BY _file_, session_id
+  GROUP BY _file_, document_id
 )
 SELECT r.agent_id,
        COALESCE(r.agent_name, '') AS agent_name,
@@ -1649,8 +1683,8 @@ SELECT r.agent_id,
        SUM(COALESCE(s.agent_steps, 0)) AS agent_steps,
        SUM(COALESCE(t.tool_calls, 0)) AS tool_calls
 FROM dataset.runs r
-LEFT JOIN step_stats s ON r._file_ = s._file_ AND r.session_id = s.session_id
-LEFT JOIN tool_stats t ON r._file_ = t._file_ AND r.session_id = t.session_id
+LEFT JOIN step_stats s ON r._file_ = s._file_ AND r.document_id = s.document_id
+LEFT JOIN tool_stats t ON r._file_ = t._file_ AND r.document_id = t.document_id
 GROUP BY r.agent_id, r.agent_name, r.agent_version
 ORDER BY trajectories DESC, r.agent_id ASC
 "#;
@@ -1676,12 +1710,12 @@ ORDER BY observed_steps DESC, declared_trajectories DESC, model ASC
 
 const ANALYSIS_TOOLS_SQL: &str = r#"
 WITH per_trajectory AS (
-  SELECT _file_, session_id, function_name,
+  SELECT _file_, document_id, function_name,
          COUNT(*) AS calls,
          COUNT(duration_ms) AS duration_samples,
          SUM(COALESCE(duration_ms, 0)) AS total_duration_ms
   FROM dataset.tool_calls
-  GROUP BY _file_, session_id, function_name
+  GROUP BY _file_, document_id, function_name
 )
 SELECT function_name,
        SUM(calls) AS calls,
@@ -1719,6 +1753,9 @@ async fn run_find(
     if let Some(run_id) = &args.run_id {
         validate_find_id("--run-id", run_id)?;
     }
+    if let Some(document_id) = &args.document_id {
+        validate_find_id("--document-id", document_id)?;
+    }
     if let Some(session_id) = &args.session_id {
         validate_find_id("--session-id", session_id)?;
     }
@@ -1731,7 +1768,8 @@ async fn run_find(
         .context("find Dataset URI missing after discovery")?;
     let snapshot = Arc::new(snapshot);
     let snapshot_id = snapshot.snapshot_id().to_string();
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot)
+    let engine = snapshot
+        .query_engine(Default::default())
         .await
         .map_err(|error| redact_query_error(&error, std::slice::from_ref(&dataset_uri), None))?;
     let sql = find_sql(&args)?;
@@ -1772,6 +1810,7 @@ async fn run_find(
         snapshot_id,
         query: FindQueryResponse {
             source: args.source,
+            document_id: args.document_id,
             run_id: args.run_id,
             session_id: args.session_id,
             step_id: args.step_id,
@@ -1832,6 +1871,9 @@ fn find_sql(args: &FindArgs) -> Result<String> {
     if let Some(run_id) = &args.run_id {
         predicates.push(format!("run_id = {}", sql_string(run_id)));
     }
+    if let Some(document_id) = &args.document_id {
+        predicates.push(format!("document_id = {}", sql_string(document_id)));
+    }
     if let Some(session_id) = &args.session_id {
         predicates.push(format!("session_id = {}", sql_string(session_id)));
     }
@@ -1848,10 +1890,10 @@ fn find_sql(args: &FindArgs) -> Result<String> {
         "runs"
     };
     let projection = if args.step_id.is_some() {
-        "_file_ AS source_path, run_id, session_id, step_id, \
+        "_file_ AS source_path, document_id, run_id, session_id, step_id, \
          source AS step_source, effective_kind, timestamp"
     } else {
-        "_file_ AS source_path, run_id, session_id, \
+        "_file_ AS source_path, document_id, run_id, session_id, \
          CAST(NULL AS BIGINT) AS step_id, \
          CAST(NULL AS VARCHAR) AS step_source, \
          CAST(NULL AS VARCHAR) AS effective_kind, \
@@ -1909,6 +1951,7 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
         rows.push(
             [
                 "SOURCE",
+                "DOCUMENT ID",
                 "RUN ID",
                 "SESSION ID",
                 "STEP ID",
@@ -1922,7 +1965,7 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
         );
     } else {
         rows.push(
-            ["SOURCE", "RUN ID", "SESSION ID"]
+            ["SOURCE", "DOCUMENT ID", "RUN ID", "SESSION ID"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -1931,7 +1974,8 @@ fn write_find_table(stdout: &mut dyn Write, response: &FindResponse) -> Result<(
     for candidate in &response.matches {
         let mut row = vec![
             truncate(&candidate.source_path, 64),
-            candidate.run_id.clone(),
+            candidate.document_id.clone(),
+            candidate.run_id.as_deref().unwrap_or("-").to_string(),
             candidate.session_id.clone(),
         ];
         if step_lookup {
@@ -2036,15 +2080,9 @@ async fn discover_query_snapshot(
     let snapshot = DatasetCatalogSnapshot::discover(
         mounts,
         default_dataset,
-        CatalogSnapshotOptions {
-            error_policy: CatalogErrorPolicy::Strict,
-            manifest: LocalQueryManifestOptions {
-                max_files,
-                max_entries,
-                ..LocalQueryManifestOptions::default()
-            },
-            ..CatalogSnapshotOptions::default()
-        },
+        CatalogSnapshotOptions::default()
+            .with_error_policy(CatalogErrorPolicy::Strict)
+            .with_discovery_limits(max_files, max_entries),
     )
     .await
     .map_err(|error| redact_query_error(&error, &dataset_uris, None))
@@ -2063,15 +2101,9 @@ async fn discover_snapshot(
     let snapshot = DatasetCatalogSnapshot::discover(
         vec![mount],
         Some(DEFAULT_DATASET_NAME.into()),
-        CatalogSnapshotOptions {
-            error_policy: errors.into(),
-            manifest: LocalQueryManifestOptions {
-                max_files,
-                max_entries,
-                ..LocalQueryManifestOptions::default()
-            },
-            ..CatalogSnapshotOptions::default()
-        },
+        CatalogSnapshotOptions::default()
+            .with_error_policy(errors.into())
+            .with_discovery_limits(max_files, max_entries),
     )
     .await
     .with_context(|| "discover Dataset Sources")?;

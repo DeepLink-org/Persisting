@@ -1,6 +1,12 @@
 use super::*;
 use datafusion::logical_expr::{col, lit};
 
+fn atif_fixture(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/atif")
+        .join(name)
+}
+
 #[test]
 fn virtual_column_does_not_change_lance_schemas() {
     assert!(story_runs_arrow_schema()
@@ -46,4 +52,99 @@ fn atif_step_filter_compilation_is_conservative() {
     assert!(!scan.matches_step(4, "agent"));
     assert!(!scan.matches_step(16, "agent"));
     assert!(atif_step_filters(&col("message_json").eq(lit("x"))).is_none());
+}
+
+#[test]
+fn private_provider_options_and_table_names_fail_closed() {
+    let manifest =
+        LocalQueryManifest::for_format(atif_fixture("dialogue_10.json"), DocumentFormat::Atif)
+            .unwrap();
+    let error = FileTrajectoryDataSource::from_manifest_with_options(
+        manifest,
+        FileTrajectoryDataSourceOptions {
+            batch_size: 0,
+            ..FileTrajectoryDataSourceOptions::default()
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("batch_size"));
+
+    assert!(validate_table_names(&StorylineDataFusionTableNames {
+        runs: "same".into(),
+        steps: "same".into(),
+        tool_calls: "tools".into(),
+    })
+    .is_err());
+    assert!(validate_table_names(&StorylineDataFusionTableNames {
+        runs: "".into(),
+        steps: "steps".into(),
+        tool_calls: "tools".into(),
+    })
+    .is_err());
+}
+
+#[tokio::test]
+async fn projected_ndjson_enforces_private_record_bound() {
+    let trajectory = std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&trajectory).unwrap();
+    let input = tempfile::NamedTempFile::with_suffix(".ndjson").unwrap();
+    std::fs::write(
+        input.path(),
+        format!("{}\n", serde_json::to_string(&value).unwrap()),
+    )
+    .unwrap();
+    let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Atif).unwrap();
+    let source = FileTrajectoryDataSource::from_manifest_with_options(
+        manifest,
+        FileTrajectoryDataSourceOptions {
+            max_record_bytes: 512,
+            ..FileTrajectoryDataSourceOptions::default()
+        },
+    )
+    .unwrap();
+    let context = SessionContext::new();
+    source.register(&context).unwrap();
+    let error = context
+        .sql("SELECT COUNT(*) FROM steps")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("max_record_bytes 512"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn projected_atif_pushdown_matches_session_id_not_document_id() {
+    let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
+    std::fs::write(
+        input.path(),
+        r#"{
+          "schema_version":"ATIF-v1.6",
+          "session_id":"session-a",
+          "trajectory_id":"document-a",
+          "agent":{"name":"agent","version":"1"},
+          "steps":[{"step_id":2,"timestamp":"2026-01-01T00:00:00Z","source":"agent","message":{"role":"assistant","content":"ok"}}]
+        }"#,
+    )
+    .unwrap();
+    let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Atif).unwrap();
+    let source = FileTrajectoryDataSource::from_manifest(manifest).unwrap();
+    let context = SessionContext::new();
+    source.register(&context).unwrap();
+
+    let batches = context
+        .sql(
+            "SELECT document_id, step_id FROM steps WHERE session_id = 'session-a' AND step_id = 2",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
 }

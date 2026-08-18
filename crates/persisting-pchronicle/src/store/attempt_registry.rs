@@ -342,9 +342,7 @@ fn write_local_record(path: &Path, record: &AttemptRecord) -> anyhow::Result<()>
     file.write_all(&serde_json::to_vec_pretty(record)?)?;
     file.sync_all()?;
     std::fs::rename(&temporary, path)?;
-    if let Ok(directory) = File::open(parent) {
-        let _ = directory.sync_all();
-    }
+    File::open(parent)?.sync_all()?;
     Ok(())
 }
 

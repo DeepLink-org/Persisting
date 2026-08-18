@@ -13,14 +13,19 @@ struct ProjectedAtifTrajectory {
     trajectory_id: Option<String>,
     agent: ProjectedAtifAgent,
     steps: Vec<ProjectedAtifStep>,
+    subagent_trajectories: Vec<ProjectedAtifTrajectory>,
     skipped_steps: usize,
 }
 
 impl ProjectedAtifTrajectory {
-    fn effective_session_id(&self) -> Result<&str> {
+    fn effective_session_id<'a>(
+        &'a self,
+        inherited_session_id: Option<&'a str>,
+    ) -> Result<&'a str> {
         self.session_id
             .as_deref()
             .filter(|value| !value.is_empty())
+            .or(inherited_session_id)
             .or_else(|| {
                 self.trajectory_id
                     .as_deref()
@@ -59,6 +64,7 @@ enum ProjectedAtifTrajectoryField {
     TrajectoryId,
     Agent,
     Steps,
+    SubagentTrajectories,
     #[serde(other)]
     Other,
 }
@@ -71,6 +77,7 @@ impl ProjectedAtifTrajectoryField {
             Self::TrajectoryId => "trajectory_id",
             Self::Agent => "agent",
             Self::Steps => "steps",
+            Self::SubagentTrajectories => "subagent_trajectories",
             Self::Other => "<unknown>",
         }
     }
@@ -153,6 +160,7 @@ impl<'de> Visitor<'de> for ProjectedAtifTrajectoryVisitor<'_> {
         let mut trajectory_id = None;
         let mut agent = None;
         let mut steps = None;
+        let mut subagent_trajectories = Vec::new();
         let mut skipped_steps = 0;
 
         while let Some(field) = map.next_key::<ProjectedAtifTrajectoryField>()? {
@@ -173,10 +181,7 @@ impl<'de> Visitor<'de> for ProjectedAtifTrajectoryVisitor<'_> {
                     agent = Some(map.next_value::<ProjectedAtifAgent>()?);
                 }
                 ProjectedAtifTrajectoryField::Steps => {
-                    let known_session = session_id
-                        .as_deref()
-                        .filter(|value| !value.is_empty())
-                        .or_else(|| trajectory_id.as_deref().filter(|value| !value.is_empty()));
+                    let known_session = session_id.as_deref().filter(|value| !value.is_empty());
                     if known_session.is_some_and(|value| !self.scan.matches_document(value)) {
                         skipped_steps = map.next_value_seed(CountSequenceSeed)?;
                         steps = Some(Vec::new());
@@ -184,6 +189,12 @@ impl<'de> Visitor<'de> for ProjectedAtifTrajectoryVisitor<'_> {
                         steps =
                             Some(map.next_value_seed(ProjectedAtifStepsSeed { scan: self.scan })?);
                     }
+                }
+                ProjectedAtifTrajectoryField::SubagentTrajectories => {
+                    subagent_trajectories =
+                        map.next_value_seed(OptionalProjectedAtifTrajectoriesSeed {
+                            scan: self.scan,
+                        })?;
                 }
                 ProjectedAtifTrajectoryField::Other => {
                     map.next_value::<IgnoredAny>()?;
@@ -198,8 +209,83 @@ impl<'de> Visitor<'de> for ProjectedAtifTrajectoryVisitor<'_> {
             trajectory_id,
             agent: agent.ok_or_else(|| de::Error::missing_field("agent"))?,
             steps: steps.ok_or_else(|| de::Error::missing_field("steps"))?,
+            subagent_trajectories,
             skipped_steps,
         })
+    }
+}
+
+struct OptionalProjectedAtifTrajectoriesSeed<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> DeserializeSeed<'de> for OptionalProjectedAtifTrajectoriesSeed<'_> {
+    type Value = Vec<ProjectedAtifTrajectory>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer
+            .deserialize_option(OptionalProjectedAtifTrajectoriesVisitor { scan: self.scan })
+    }
+}
+
+struct OptionalProjectedAtifTrajectoriesVisitor<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> Visitor<'de> for OptionalProjectedAtifTrajectoriesVisitor<'_> {
+    type Value = Vec<ProjectedAtifTrajectory>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("null or an array of embedded ATIF trajectories")
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Vec::new())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ProjectedAtifTrajectoriesVisitor { scan: self.scan })
+    }
+}
+
+struct ProjectedAtifTrajectoriesVisitor<'a> {
+    scan: &'a FileScanSpec,
+}
+
+impl<'de> Visitor<'de> for ProjectedAtifTrajectoriesVisitor<'_> {
+    type Value = Vec<ProjectedAtifTrajectory>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an array of embedded ATIF trajectories")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut trajectories = Vec::with_capacity(sequence.size_hint().unwrap_or_default());
+        while let Some(trajectory) =
+            sequence.next_element_seed(ProjectedAtifTrajectorySeed { scan: self.scan })?
+        {
+            trajectories.push(trajectory);
+        }
+        Ok(trajectories)
     }
 }
 
@@ -449,7 +535,7 @@ struct ProjectedAtifStream<'a> {
     scan: &'a FileScanSpec,
     tx: &'a Sender<datafusion::common::Result<RecordBatch>>,
     pending: Vec<StoryStepRow>,
-    session_ids: HashSet<String>,
+    document_ids: HashSet<String>,
     cancelled: bool,
 }
 
@@ -470,7 +556,7 @@ impl<'a> ProjectedAtifStream<'a> {
             scan,
             tx,
             pending: Vec::with_capacity(batch_size),
-            session_ids: HashSet::new(),
+            document_ids: HashSet::new(),
             cancelled: false,
         }
     }
@@ -490,7 +576,9 @@ impl<'a> ProjectedAtifStream<'a> {
             self.scan,
             self.tx,
             &mut self.pending,
-            &mut self.session_ids,
+            &mut self.document_ids,
+            None,
+            false,
         )? {
             self.cancelled = true;
             anyhow::bail!(PROJECTED_QUERY_CANCELLED);
@@ -915,14 +1003,26 @@ fn project_atif_trajectory(
     scan: &FileScanSpec,
     tx: &Sender<datafusion::common::Result<RecordBatch>>,
     pending: &mut Vec<StoryStepRow>,
-    session_ids: &mut HashSet<String>,
+    document_ids: &mut HashSet<String>,
+    inherited_session_id: Option<&str>,
+    embedded: bool,
 ) -> Result<bool> {
-    let session_id = trajectory.effective_session_id()?.to_string();
-    let run_id = trajectory
+    let session_id = trajectory
+        .effective_session_id(inherited_session_id)?
+        .to_string();
+    let document_id = trajectory
         .trajectory_id
         .as_deref()
         .unwrap_or(&session_id)
         .to_string();
+    anyhow::ensure!(
+        !embedded
+            || trajectory
+                .trajectory_id
+                .as_deref()
+                .is_some_and(|id| !id.is_empty()),
+        "embedded ATIF trajectory requires trajectory_id"
+    );
     anyhow::ensure!(
         !trajectory.agent.name.is_empty(),
         "ATIF agent.name is required"
@@ -933,9 +1033,9 @@ fn project_atif_trajectory(
     );
     let _ = &trajectory.schema_version;
     anyhow::ensure!(
-        session_ids.insert(session_id.clone()),
-        "duplicate ATIF session_id '{}' in {}",
-        session_id,
+        document_ids.insert(document_id.clone()),
+        "duplicate ATIF document_id '{}' in {}",
+        document_id,
         file.file.path().display()
     );
     runtime
@@ -959,40 +1059,57 @@ fn project_atif_trajectory(
             .inner
             .rows_pruned
             .fetch_add(trajectory.step_count() as u64, Ordering::Relaxed);
-        return Ok(true);
+    } else {
+        let mut rows = Vec::with_capacity(trajectory.steps.len());
+        let mut step_ids = HashSet::with_capacity(trajectory.steps.len());
+        for step in trajectory.steps {
+            anyhow::ensure!(step.step_id >= 1, "ATIF step_id must start from 1");
+            anyhow::ensure!(
+                step_ids.insert(step.step_id),
+                "duplicate ATIF step_id {} in document {}",
+                step.step_id,
+                document_id
+            );
+            if !scan.matches_step(step.step_id, &step.source) {
+                runtime
+                    .metrics
+                    .inner
+                    .rows_pruned
+                    .fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            rows.push(project_atif_step(&document_id, &session_id, step, scan));
+        }
+        rows.sort_by_key(|row| row.step_id);
+        runtime
+            .metrics
+            .inner
+            .rows_emitted
+            .fetch_add(rows.len() as u64, Ordering::Relaxed);
+        for row in rows {
+            pending.push(row);
+            if pending.len() == batch_size
+                && !emit_projected_step_batch(pending, file, runtime, schema, tx)?
+            {
+                return Ok(false);
+            }
+        }
     }
 
-    let mut rows = Vec::with_capacity(trajectory.steps.len());
-    let mut step_ids = HashSet::with_capacity(trajectory.steps.len());
-    for step in trajectory.steps {
-        anyhow::ensure!(step.step_id >= 1, "ATIF step_id must start from 1");
-        anyhow::ensure!(
-            step_ids.insert(step.step_id),
-            "duplicate ATIF step_id {} in session {}",
-            step.step_id,
-            session_id
-        );
-        if !scan.matches_step(step.step_id, &step.source) {
-            runtime
-                .metrics
-                .inner
-                .rows_pruned
-                .fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-        rows.push(project_atif_step(&run_id, &session_id, step, scan));
-    }
-    rows.sort_by_key(|row| row.step_id);
-    runtime
-        .metrics
-        .inner
-        .rows_emitted
-        .fetch_add(rows.len() as u64, Ordering::Relaxed);
-    for row in rows {
-        pending.push(row);
-        if pending.len() == batch_size
-            && !emit_projected_step_batch(pending, file, runtime, schema, tx)?
-        {
+    for child in trajectory.subagent_trajectories {
+        if !project_atif_trajectory(
+            child,
+            file,
+            runtime,
+            schema,
+            batch_size,
+            scan,
+            tx,
+            pending,
+            document_ids,
+            Some(&session_id),
+            true,
+        )? {
             return Ok(false);
         }
     }
@@ -1000,7 +1117,7 @@ fn project_atif_trajectory(
 }
 
 fn project_atif_step(
-    run_id: &str,
+    document_id: &str,
     session_id: &str,
     step: ProjectedAtifStep,
     scan: &FileScanSpec,
@@ -1024,11 +1141,12 @@ fn project_atif_step(
 
     let (latency_ms, ttft_ms) = projected_timing_from_metrics(step.metrics.as_ref());
     StoryStepRow {
-        run_id: if scan.wants("run_id") {
-            run_id.to_string()
+        document_id: if scan.wants("document_id") {
+            document_id.to_string()
         } else {
             String::new()
         },
+        run_id: None,
         session_id: if scan.wants("session_id") {
             session_id.to_string()
         } else {
@@ -1131,8 +1249,11 @@ fn projected_step_rows_to_batch(
     let mut columns = Vec::<ArrayRef>::with_capacity(schema.fields().len());
     for field in schema.fields() {
         let column: ArrayRef = match field.name().as_str() {
-            "run_id" => Arc::new(StringArray::from_iter_values(
-                rows.iter().map(|row| row.run_id.as_str()),
+            "document_id" => Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|row| row.document_id.as_str()),
+            )),
+            "run_id" => Arc::new(StringArray::from_iter(
+                rows.iter().map(|row| row.run_id.as_deref()),
             )),
             "session_id" => Arc::new(StringArray::from_iter_values(
                 rows.iter().map(|row| row.session_id.as_str()),
@@ -1149,6 +1270,9 @@ fn projected_step_rows_to_batch(
             "timestamp" => Arc::new(timestamp_array(
                 rows.iter().map(|row| row.timestamp.as_deref()),
             )?),
+            "timestamp_rfc3339" => Arc::new(StringArray::from_iter(
+                rows.iter().map(|row| row.timestamp.as_deref()),
+            )),
             "source" => Arc::new(StringArray::from_iter_values(
                 rows.iter().map(|row| row.source.as_str()),
             )),

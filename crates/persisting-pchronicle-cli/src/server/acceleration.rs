@@ -19,7 +19,8 @@ use datafusion::sql::sqlparser::ast::{
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 use futures::TryStreamExt;
-use persisting_pchronicle::{ChronicleQueryEngine, DatasetCatalogSnapshot};
+use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::storage::DatasetCatalogSnapshot;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, OnceCell};
@@ -787,17 +788,21 @@ async fn build_run_summaries(
         let name = &dataset.mount.name;
         let event_stats = build_event_stats(engine, name).await?;
         let sql = format!(
-            "SELECT r._file_, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
+            "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
                     r.parent_json, r.final_metrics_json, r.extra_json, \
                     (SELECT COUNT(*) FROM {name}.steps s \
-                      WHERE s._file_ = r._file_ AND s.session_id = r.session_id) AS row_count \
+                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS row_count \
              FROM {name}.runs r"
         );
         let body = engine.query_jsonl(&sql).await?;
         for line in body.lines().filter(|line| !line.trim().is_empty()) {
             let row: JsonValue = serde_json::from_str(line).context("decode run index row")?;
             let file = required_json_string(&row, "_file_")?.to_string();
-            let run_id = required_json_string(&row, "run_id")?.to_string();
+            let document_id = required_json_string(&row, "document_id")?.to_string();
+            let run_id = row
+                .get("run_id")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned);
             let session_id = required_json_string(&row, "session_id")?.to_string();
             let agent_id = required_json_string(&row, "agent_id")?.to_string();
             let model_name = row
@@ -817,7 +822,7 @@ async fn build_run_summaries(
                 });
             let root_session_id = parent_session_id
                 .clone()
-                .or_else(|| (run_id != session_id).then(|| run_id.clone()));
+                .or_else(|| run_id.as_ref().filter(|id| *id != &session_id).cloned());
             let path = if file == "." {
                 match root_session_id.as_deref() {
                     Some(root) if root != session_id => {
@@ -845,6 +850,7 @@ async fn build_run_summaries(
             summaries.push(RunSummary {
                 dataset: name.clone(),
                 file,
+                document_id,
                 run_id,
                 agent_id,
                 model_name,
@@ -1206,9 +1212,13 @@ fn required_json_u64(row: &JsonValue, field: &str) -> Result<u64> {
 mod tests {
     use super::*;
 
-    fn event(event_id: &str, trace_id: &str, agent_id: &str) -> persisting_pchronicle::EventRecord {
-        persisting_pchronicle::EventRecord {
-            identity: persisting_pchronicle::EventIdentity {
+    fn event(
+        event_id: &str,
+        trace_id: &str,
+        agent_id: &str,
+    ) -> persisting_pchronicle::model::EventRecord {
+        persisting_pchronicle::model::EventRecord {
+            identity: persisting_pchronicle::model::EventIdentity {
                 event_id: Some(event_id.into()),
                 ..Default::default()
             },
@@ -1359,7 +1369,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_index_routes_to_one_catalog_source_without_changing_results() -> Result<()> {
-        use persisting_pchronicle::{
+        use persisting_pchronicle::storage::{
             CatalogSnapshotOptions, DatasetMount, RawEventLanceAppender, StoryCoords,
             DEFAULT_DATASET_NAME,
         };
@@ -1401,7 +1411,7 @@ mod tests {
             )
             .await?,
         );
-        let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?;
+        let engine = snapshot.clone().query_engine(Default::default()).await?;
         let acceleration = ServerAcceleration::default();
         let sql = "SELECT _file_, event_id FROM events WHERE agent_id = 'project-a' AND event_id = 'event-a'";
         let routed = acceleration.route_sql(&snapshot, &engine, sql).await;

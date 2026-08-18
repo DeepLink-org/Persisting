@@ -1,53 +1,16 @@
-//! Codecs for each [`crate::ChronicleFormat`].
+//! Codecs for each [`crate::DocumentFormat`].
 
 pub mod actf;
-pub mod agenticmd;
-pub mod agenticmd_body;
-pub mod agenticmd_frontmatter;
-pub mod agenticmd_validate;
 pub mod detect;
 pub mod events;
 pub mod llm;
 pub mod openai_corpus;
-pub mod openai_msg;
 pub mod storyline;
 
-pub use actf::{
-    parse_actf_document, ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric,
-    ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
-};
-pub use agenticmd::{
-    agenticmd_body_byte_offset, encode_agenticmd_block, encode_agenticmd_document,
-    encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans, parse_agenticmd_document,
-    AgenticmdBlock, AgenticmdBlockSpan, AgenticmdDocument, AgenticmdHeader, AGENTICMD_BLOCK_LAYOUT,
-    AGENTICMD_FORMAT_NAME, AGENTICMD_FRONTMATTER_FORMAT, BLOCK_MARKER,
-};
-pub use agenticmd_body::{
-    append_subagent_refs_footer, is_subagent_footer_line, strip_subagent_footer_from_body,
-};
-pub use agenticmd_frontmatter::{
-    encode_agenticmd_session_frontmatter, AgenticmdClientMeta, AgenticmdSessionFrontmatter,
-};
-pub use agenticmd_validate::{
-    block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
-};
 pub use detect::detect_format;
-pub use events::{
-    events_lance_only_error, events_lance_only_message, export_events_json_pretty,
-    export_events_jsonl, ChronicleEventRecordExt, EventIdentity, EventRecord, EventsDocument,
-};
-pub use llm::{
-    LlmCandidate, LlmContentPart, LlmExtensions, LlmGenerationParams, LlmImageSource, LlmMessage,
-    LlmProtocol, LlmRequest, LlmRequestEventPayload, LlmResponse, LlmResponseEventPayload,
-    LlmResponseFormat, LlmRole, LlmStreamEvent, LlmToolChoice, LlmToolChoiceMode,
-    LlmToolDefinition, LlmUsage,
-};
+pub use events::{EventIdentity, EventRecord};
+pub(crate) use openai_corpus::has_openai_provenance;
 pub use openai_corpus::{
-    is_lossless_openai_storyline, parse_openai_msg_corpus_value, recover_openai_msg_files,
-    OpenaiMsgCorpusReader, RecoveredOpenaiMsgFile,
+    parse_openai_msg_corpus_value, recover_openai_msg_files, synthesize_openai_msg_corpus,
 };
-pub use openai_msg::{parse_openai_msg_document, OpenaiMsgDocument, OpenaiMsgStep};
-pub use storyline::{
-    parse_storyline_document, StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall,
-    StorylineTurn,
-};
+pub use storyline::{StorylineCollectionShape, StorylineDocument};

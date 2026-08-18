@@ -18,7 +18,15 @@ use super::storage::{trajectory_run_dir, CaptureRoute};
 /// Sidecar metadata for `capture serve` (no `run_session`). `capture run` uses `run_child.yaml` + markdown frontmatter instead.
 pub const SESSION_CLIENT_META_FILENAME: &str = "session-meta.yaml";
 
-pub use persisting_pchronicle::AgenticmdClientMeta as SessionClientMeta;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionClientMeta {
+    pub peer: String,
+    pub peer_port: u16,
+    pub pid: u32,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_fp: Option<String>,
+}
 
 fn finalize_client_meta(mut meta: SessionClientMeta, peer: SocketAddr) -> SessionClientMeta {
     if meta.machine_fp.is_none() {

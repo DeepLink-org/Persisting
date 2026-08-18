@@ -17,10 +17,12 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use persisting_agentctl::RunId;
-use persisting_pchronicle::{
-    raw_event_lance_path, ChronicleQueryEngine, EventIdentity, EventRecord, EventWriterFence,
-    LanceMaintenanceOptions, LeaseAcquireOutcome, RawEventLanceAppender, RawEventLanceStore,
-    RunControlStore, StoryCoords,
+use persisting_pchronicle::document::DocumentFormat;
+use persisting_pchronicle::model::{EventIdentity, EventRecord};
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
+use persisting_pchronicle::storage::{
+    raw_event_lance_path, EventWriterFence, LanceMaintenanceOptions, LeaseAcquireOutcome,
+    RawEventLanceAppender, RawEventLanceStore, RunControlStore, StoryCoords,
 };
 
 const CI_STORIES: usize = 4;
@@ -228,7 +230,12 @@ async fn event_queries_pin_a_snapshot_while_append_continues() -> Result<()> {
 
     append_batches(&sessions, 0, half, 64).await?;
     let path = raw_event_lance_path(&session)?;
-    let pinned = ChronicleQueryEngine::open_events(&path).await?;
+    let pinned = ChronicleQueryEngine::open(
+        DocumentFormat::CanonicalEvent,
+        &path,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     append_batches(&sessions, half, half, 64).await?;
 
     let pinned_count = count_from_jsonl(
@@ -238,14 +245,19 @@ async fn event_queries_pin_a_snapshot_while_append_continues() -> Result<()> {
     )?;
     assert_eq!(pinned_count, (half * 64) as u64);
 
-    let current = ChronicleQueryEngine::open_events(&path).await?;
+    let current = ChronicleQueryEngine::open(
+        DocumentFormat::CanonicalEvent,
+        &path,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let current_count = count_from_jsonl(
         &current
             .query_jsonl("SELECT COUNT(*) AS row_count FROM events")
             .await?,
     )?;
     assert_eq!(current_count, (half * 2 * 64) as u64);
-    assert_ne!(pinned.backend(), current.backend());
+    assert_ne!(pinned.backend_info(), current.backend_info());
     Ok(())
 }
 

@@ -1,7 +1,6 @@
-//! Search adapters and typed trajectory operations.
+//! Search adapters.
 
 #[cfg(feature = "search")]
 pub mod bridge;
 #[cfg(feature = "search")]
 pub mod dispatch;
-pub mod trajectory;

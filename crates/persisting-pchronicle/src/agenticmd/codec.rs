@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Error, Result};
+use crate::{DocumentFormat, Error, Result};
 
 pub const AGENTICMD_FORMAT_NAME: &str = "agenticmd";
 pub const AGENTICMD_FRONTMATTER_FORMAT: &str = "persisting";
@@ -30,7 +30,7 @@ pub const AGENTICMD_BLOCK_LAYOUT: &str =
     "<!-- persisting:block:{speaker} {json} -->\n\nmessage body\n\n";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgenticmdHeader {
+pub struct MarkdownHeader {
     #[serde(rename = "type", default = "default_block_type")]
     pub type_name: String,
     #[serde(default)]
@@ -40,12 +40,12 @@ pub struct AgenticmdHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgenticmdBlock {
-    pub header: AgenticmdHeader,
+pub struct MarkdownBlock {
+    pub header: MarkdownHeader,
     pub body: String,
 }
 
-impl AgenticmdBlock {
+impl MarkdownBlock {
     /// Legacy presentation role, derived from Storyline `source` when absent.
     pub fn role(&self) -> Option<&str> {
         if let Some(role) = self.header.fields.get("role").and_then(|v| v.as_str()) {
@@ -77,14 +77,10 @@ impl AgenticmdBlock {
             .iter()
             .find_map(|key| self.header.fields.get(*key).and_then(|v| v.as_i64()))
     }
-
-    pub fn kind(&self) -> Option<&str> {
-        self.header.fields.get("kind").and_then(|v| v.as_str())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgenticmdDocument {
+pub struct MarkdownDocument {
     /// Logical pChronicle format name (`agenticmd`).
     pub format: String,
     /// Frontmatter `format:` value (usually `persisting`).
@@ -95,11 +91,11 @@ pub struct AgenticmdDocument {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub frontmatter: BTreeMap<String, Value>,
-    pub blocks: Vec<AgenticmdBlock>,
+    pub blocks: Vec<MarkdownBlock>,
 }
 
-impl AgenticmdDocument {
-    pub fn new(blocks: Vec<AgenticmdBlock>) -> Self {
+impl MarkdownDocument {
+    pub fn new(blocks: Vec<MarkdownBlock>) -> Self {
         Self {
             format: AGENTICMD_FORMAT_NAME.into(),
             frontmatter_format: AGENTICMD_FRONTMATTER_FORMAT.into(),
@@ -111,10 +107,10 @@ impl AgenticmdDocument {
     }
 }
 
-pub fn parse_agenticmd_document(input: &str) -> Result<AgenticmdDocument> {
+pub fn parse_agenticmd_document(input: &str) -> Result<MarkdownDocument> {
     let (frontmatter, _body, _off) = split_frontmatter_with_offset(input)?;
     let spans = parse_agenticmd_blocks_with_spans(input)?;
-    let mut doc = AgenticmdDocument::new(spans.into_iter().map(|s| s.block).collect());
+    let mut doc = MarkdownDocument::new(spans.into_iter().map(|s| s.block).collect());
     doc.frontmatter = frontmatter;
     if let Some(fmt) = doc.frontmatter.get("format").and_then(Value::as_str) {
         doc.frontmatter_format = fmt.to_string();
@@ -146,14 +142,14 @@ pub fn parse_agenticmd_document(input: &str) -> Result<AgenticmdDocument> {
 /// `start..end` covers the comment line through trailing blank lines — the same
 /// span capture uses for markdown upsert rewrites.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AgenticmdBlockSpan {
-    pub block: AgenticmdBlock,
+pub struct MarkdownBlockSpan {
+    pub block: MarkdownBlock,
     pub start: usize,
     pub end: usize,
 }
 
 /// Parse blocks with absolute byte spans (for capture upsert / diagnostics).
-pub fn parse_agenticmd_blocks_with_spans(input: &str) -> Result<Vec<AgenticmdBlockSpan>> {
+pub fn parse_agenticmd_blocks_with_spans(input: &str) -> Result<Vec<MarkdownBlockSpan>> {
     let (_frontmatter, body, body_offset) = split_frontmatter_with_offset(input)?;
     parse_blocks_with_spans(body, body_offset)
 }
@@ -170,39 +166,18 @@ pub fn agenticmd_body_byte_offset(input: &str) -> Result<usize> {
 
 /// Encode a YAML frontmatter fence (`---\n…\n---\n\n`) from any serializable mapping.
 ///
-/// Used by capture for live document / session-rollup preambles (nested `client`, etc.).
-/// Distinct from [`encode_agenticmd_document`], which emits a flat string frontmatter
-/// suitable for hub interchange.
+/// Storyline metadata encoding is layered on top by `agenticmd::convert`.
 pub fn encode_agenticmd_preamble<T: Serialize>(frontmatter: &T) -> Result<String> {
     let yaml = serde_yaml::to_string(frontmatter)
         .map_err(|e| Error::Other(format!("agenticmd frontmatter yaml: {e}")))?;
     Ok(format!("---\n{yaml}---\n\n"))
 }
 
-pub fn encode_agenticmd_document(doc: &AgenticmdDocument) -> Result<String> {
-    let mut frontmatter = doc.frontmatter.clone();
-    frontmatter.insert(
-        "format".into(),
-        Value::String(doc.frontmatter_format.clone()),
-    );
-    if let Some(session) = &doc.session_id {
-        frontmatter.insert("session_id".into(), Value::String(session.clone()));
-    }
-    if let Some(agent) = &doc.agent_id {
-        frontmatter.insert("agent_id".into(), Value::String(agent.clone()));
-    }
-    let mut out = encode_agenticmd_preamble(&frontmatter)?;
-    for block in &doc.blocks {
-        out.push_str(&encode_agenticmd_block(block)?);
-    }
-    Ok(out)
-}
-
 /// Encode a single agenticmd / capture TLV block (comment header + body).
 ///
 /// Normative on-disk layout shared with `persisting-gateway` live write paths.
-pub fn encode_agenticmd_block(block: &AgenticmdBlock) -> Result<String> {
-    let header = AgenticmdHeader {
+pub fn encode_agenticmd_block(block: &MarkdownBlock) -> Result<String> {
+    let header = MarkdownHeader {
         type_name: block.header.type_name.clone(),
         length: block.body.len(),
         fields: block.header.fields.clone(),
@@ -229,21 +204,28 @@ fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, Value>
     let yaml = &rest[..end];
     let after = &rest[end + "\n---".len()..];
     let body = after.strip_prefix('\n').unwrap_or(after);
-    let map = serde_yaml::from_str::<BTreeMap<String, Value>>(yaml).unwrap_or_default();
+    let map = serde_yaml::from_str::<BTreeMap<String, Value>>(yaml).map_err(|error| {
+        Error::InvalidDocument {
+            format: DocumentFormat::AgenticMd,
+            path: None,
+            location: Some("frontmatter".into()),
+            message: error.to_string(),
+        }
+    })?;
     let body_offset = input.len() - body.len();
     Ok((map, body, body_offset))
 }
 
-fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<AgenticmdBlockSpan>> {
+fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<MarkdownBlockSpan>> {
     if input.trim().is_empty() {
         return Ok(Vec::new());
     }
     if !input.contains(BLOCK_MARKER) {
         let body = input.trim().to_string();
         let fields = BTreeMap::from([("source".into(), Value::String("system".into()))]);
-        return Ok(vec![AgenticmdBlockSpan {
-            block: AgenticmdBlock {
-                header: AgenticmdHeader {
+        return Ok(vec![MarkdownBlockSpan {
+            block: MarkdownBlock {
+                header: MarkdownHeader {
                     type_name: default_block_type(),
                     length: body.len(),
                     fields,
@@ -282,7 +264,11 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Agenti
         } else {
             line_end
         };
-        next = skip_blank_lines(bytes, next);
+        next = if declared_length.is_some() {
+            consume_one_line_break(bytes, next)
+        } else {
+            skip_blank_lines(bytes, next)
+        };
         let body_end = declared_length
             .map(|length| next + length)
             .unwrap_or_else(|| {
@@ -306,8 +292,8 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Agenti
         };
         header.length = body.len();
         let end = base_offset + skip_blank_lines(bytes, body_end);
-        blocks.push(AgenticmdBlockSpan {
-            block: AgenticmdBlock { header, body },
+        blocks.push(MarkdownBlockSpan {
+            block: MarkdownBlock { header, body },
             start,
             end,
         });
@@ -316,7 +302,7 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Agenti
     Ok(blocks)
 }
 
-fn parse_block_comment(line: &str) -> Result<(AgenticmdHeader, Option<usize>)> {
+fn parse_block_comment(line: &str) -> Result<(MarkdownHeader, Option<usize>)> {
     let after = line
         .strip_prefix(BLOCK_MARKER)
         .ok_or_else(|| Error::Other("missing persisting:block marker".into()))?;
@@ -334,7 +320,7 @@ fn parse_block_comment(line: &str) -> Result<(AgenticmdHeader, Option<usize>)> {
             );
         }
         return Ok((
-            AgenticmdHeader {
+            MarkdownHeader {
                 type_name: default_block_type(),
                 length: 0,
                 fields,
@@ -356,7 +342,7 @@ fn parse_block_comment(line: &str) -> Result<(AgenticmdHeader, Option<usize>)> {
         .get("length")
         .and_then(Value::as_u64)
         .map(|n| n as usize);
-    let mut header: AgenticmdHeader = serde_json::from_value(raw)?;
+    let mut header: MarkdownHeader = serde_json::from_value(raw)?;
     if !speaker.is_empty()
         && !header.fields.contains_key("source")
         && !header.fields.contains_key("role")
@@ -430,4 +416,69 @@ fn skip_blank_lines(bytes: &[u8], mut pos: usize) -> usize {
         break;
     }
     pos
+}
+
+fn consume_one_line_break(bytes: &[u8], pos: usize) -> usize {
+    if bytes.get(pos..pos.saturating_add(2)) == Some(b"\r\n") {
+        pos + 2
+    } else if bytes.get(pos) == Some(&b'\n') {
+        pos + 1
+    } else {
+        pos
+    }
+}
+
+#[cfg(test)]
+mod strict_frontmatter_tests {
+    use std::collections::BTreeMap;
+
+    use super::{encode_agenticmd_block, parse_agenticmd_document, MarkdownBlock, MarkdownHeader};
+    use crate::{DocumentFormat, Error};
+
+    #[test]
+    fn malformed_agenticmd_yaml_is_not_silently_replaced() {
+        let error = parse_agenticmd_document("---\nformat: [\n---\n\n").unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidDocument {
+                format: DocumentFormat::AgenticMd,
+                location: Some(ref location),
+                ..
+            } if location == "frontmatter"
+        ));
+    }
+
+    #[test]
+    fn declared_length_preserves_leading_newlines_and_adjacent_blocks() {
+        let block = |body: &str| MarkdownBlock {
+            header: MarkdownHeader {
+                type_name: "text".into(),
+                length: 0,
+                fields: BTreeMap::from([(
+                    "source".into(),
+                    serde_json::Value::String("user".into()),
+                )]),
+            },
+            body: body.into(),
+        };
+        let expected = [block("\nleading-lf"), block("\r\nleading-crlf"), block("")];
+        let encoded = expected
+            .iter()
+            .map(encode_agenticmd_block)
+            .collect::<crate::Result<String>>()
+            .unwrap();
+
+        let decoded = parse_agenticmd_document(&encoded).unwrap();
+        assert_eq!(
+            decoded
+                .blocks
+                .iter()
+                .map(|block| block.body.as_str())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|block| block.body.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
 }

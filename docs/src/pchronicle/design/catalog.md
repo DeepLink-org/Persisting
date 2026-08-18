@@ -416,8 +416,8 @@ Catalog 复用直接文件查询的资源参数：
 | `POST /api/catalog` | 在锁外完整构建新快照，成功后原子替换，并清空轨迹缓存 |
 
 刷新失败不会清空或部分更新旧 Catalog；正在处理的请求持有旧快照的 `Arc`，可以继续完成。
-Web Explorer 从 Catalog 获取 Dataset 列表，服务端过滤、URL 状态、Storyline 列表和
-judgment key 均携带完整 `(dataset, _file_, session_id)`；`run_id` 作为物理 Run 分组信息
+Web Explorer 从 Catalog 获取 Dataset 列表，服务端过滤、URL 状态和 Storyline 列表
+均携带完整 `(dataset, _file_, session_id)`；`run_id` 作为物理 Run 分组信息
 单独返回。Catalog 是不可变快照，新增数据只在显式 refresh 后进入 Web 视图。
 
 ### 9.1 Server source-routing 加速
@@ -454,8 +454,8 @@ value 数，并通过 `failed` 列出本 generation 已缓存的构建失败，�
 
 ### 9.2 写入边界
 
-`pchronicle serve` 只提供读取、Catalog 刷新和有界 evidence query，不暴露 judgment 写入、
-maintenance、导入或任意 SQL 写接口。服务强制限制为 loopback；Gateway 和原生 writer
+`pchronicle serve` 只提供读取、Catalog 刷新和有界 evidence query，不暴露 maintenance、
+导入或任意 SQL 写接口。服务强制限制为 loopback；Gateway 和原生 writer
 直接写 Dataset，不经过 Warehouse API。
 
 ## 10. Rust API 边界

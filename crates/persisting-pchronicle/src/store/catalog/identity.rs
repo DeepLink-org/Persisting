@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::ChronicleFormat;
+use crate::DocumentFormat;
 
 use super::DEFAULT_DATASET_NAME;
 
@@ -47,7 +47,7 @@ pub struct DatasetMount {
     pub uri: String,
     pub namespace: NamespacePath,
     #[serde(skip)]
-    pub(super) format_hint: Option<ChronicleFormat>,
+    pub(super) format_hint: Option<DocumentFormat>,
 }
 
 impl DatasetMount {
@@ -80,7 +80,7 @@ impl DatasetMount {
         Self::new(DEFAULT_DATASET_NAME, uri)
     }
 
-    pub fn with_format_hint(mut self, format: ChronicleFormat) -> Self {
+    pub fn with_format_hint(mut self, format: DocumentFormat) -> Self {
         self.format_hint = Some(format);
         self
     }

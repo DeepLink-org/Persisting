@@ -8,11 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::{rebuild_session_story, story_call_ids, story_user_turn_count};
 use crate::record::EventRecord;
-use persisting_pchronicle::index_agenticmd_path;
+use persisting_pchronicle::document::index_agenticmd_path;
 
 use super::markdown_pipeline::MarkdownPipeline;
 
-pub use persisting_pchronicle::list_agenticmd_paths as list_run_markdown_paths;
+pub use persisting_pchronicle::document::list_agenticmd_paths as list_run_markdown_paths;
 
 /// Per-session reconcile outcome.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -166,47 +166,54 @@ pub fn write_run_reconcile_report(storage: &Path, report: &RunReconcileReport) -
 mod tests {
     use super::*;
     use crate::config::CaptureLevel;
+    use crate::projection::dialogue::capture_record_to_storyline_turn;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
     use crate::Call;
-    use persisting_pchronicle::AgenticmdBlock;
-    use persisting_pchronicle::{encode_agenticmd_block_validated, AgenticmdHeader};
+    use persisting_pchronicle::document::upsert_agenticmd_turn;
+    use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
     use std::collections::BTreeMap as Map;
 
-    fn block(call_id: &str, role: &str, body: &str) -> String {
-        let mut fields = Map::new();
-        fields.insert("call_id".into(), serde_json::json!(call_id));
-        fields.insert("role".into(), serde_json::json!(role));
-        encode_agenticmd_block_validated(&AgenticmdBlock {
-            header: AgenticmdHeader {
-                type_name: "dialogue".into(),
-                length: body.len(),
-                fields,
-            },
-            body: body.to_string(),
-        })
-        .unwrap()
+    fn write_turns(path: &Path, turns: &[(&str, &str, &str)]) {
+        let story = StorylineDocument::new("run-test", "agent");
+        for (index, (call_id, role, body)) in turns.iter().enumerate() {
+            let source = if *role == "assistant" { "agent" } else { *role };
+            let turn = StorylineTurn {
+                id: index as i64 + 1,
+                kind: Some(if source == "user" {
+                    "llm.request".into()
+                } else {
+                    "llm.response".into()
+                }),
+                timestamp: None,
+                source: source.into(),
+                message: serde_json::json!(body),
+                reasoning_content: None,
+                reasoning_effort: None,
+                tool_calls: None,
+                observation: None,
+                metrics: None,
+                model_name: None,
+                llm_call_count: (source == "agent").then_some(1),
+                is_copied_context: None,
+                latency_ms: None,
+                ttft_ms: None,
+                extra: None,
+            };
+            upsert_agenticmd_turn(path, &story, &turn, call_id).unwrap();
+        }
     }
 
     #[test]
     fn reconcile_detects_missing_and_extra_call_ids() {
         let dir = tempfile::tempdir().unwrap();
         let md = dir.path().join("run-test.md");
-        std::fs::write(
-            &md,
-            format!(
-                "{}\n{}",
-                block("call-a", "user", "hello"),
-                block("call-a", "assistant", "hi")
-            ),
-        )
-        .unwrap();
 
         let call = Call {
             call_id: "call-a".into(),
             trace_id: "t".into(),
             started_at: "2026-01-01T00:00:00Z".into(),
         };
-        let req = llm_request_summary_record(
+        let mut req = llm_request_summary_record(
             Some("run-test".into()),
             Some("agent".into()),
             "m",
@@ -220,7 +227,8 @@ mod tests {
             CaptureLevel::Dialogue,
             None,
         );
-        let resp = llm_response_record_with_content(
+        req.seq = 1;
+        let mut resp = llm_response_record_with_content(
             Some("run-test".into()),
             Some("agent".into()),
             200,
@@ -230,6 +238,22 @@ mod tests {
             &call,
             CaptureLevel::Dialogue,
         );
+        resp.seq = 2;
+        let story = StorylineDocument::new("run-test", "agent");
+        upsert_agenticmd_turn(
+            &md,
+            &story,
+            &capture_record_to_storyline_turn(&req).unwrap(),
+            "call-a",
+        )
+        .unwrap();
+        upsert_agenticmd_turn(
+            &md,
+            &story,
+            &capture_record_to_storyline_turn(&resp).unwrap(),
+            "call-a",
+        )
+        .unwrap();
         let mut extra_call = call;
         extra_call.call_id = "call-b".into();
         let orphan = llm_request_summary_record(
@@ -256,10 +280,10 @@ mod tests {
     #[test]
     fn structural_issue_flags_excessive_blank_lines() {
         assert!(
-            persisting_pchronicle::agenticmd_structural_issues("a\n\n\n\nb")
+            persisting_pchronicle::document::agenticmd_structural_issues("a\n\n\n\nb")
                 .contains(&"excessive_blank_lines".into())
         );
-        assert!(persisting_pchronicle::agenticmd_structural_issues("a\n\nb").is_empty());
+        assert!(persisting_pchronicle::document::agenticmd_structural_issues("a\n\nb").is_empty());
     }
 
     #[test]
@@ -305,15 +329,10 @@ mod tests {
     fn reconcile_story_projection_aligns_when_md_matches() {
         let dir = tempfile::tempdir().unwrap();
         let md = dir.path().join("run-test.md");
-        std::fs::write(
+        write_turns(
             &md,
-            format!(
-                "{}\n{}",
-                block("call-a", "user", "hello"),
-                block("call-a", "assistant", "hi")
-            ),
-        )
-        .unwrap();
+            &[("call-a", "user", "hello"), ("call-a", "assistant", "hi")],
+        );
 
         let call = Call {
             call_id: "call-a".into(),
@@ -357,16 +376,14 @@ mod tests {
     fn reconcile_story_detects_extra_md_call_id() {
         let dir = tempfile::tempdir().unwrap();
         let md = dir.path().join("run-test.md");
-        std::fs::write(
+        write_turns(
             &md,
-            format!(
-                "{}\n{}\n{}",
-                block("call-a", "user", "hello"),
-                block("call-a", "assistant", "hi"),
-                block("call-ghost", "user", "phantom")
-            ),
-        )
-        .unwrap();
+            &[
+                ("call-a", "user", "hello"),
+                ("call-a", "assistant", "hi"),
+                ("call-ghost", "user", "phantom"),
+            ],
+        );
 
         let call = Call {
             call_id: "call-a".into(),
@@ -409,15 +426,10 @@ mod tests {
         let run_dir = dir.path().join("run-test");
         std::fs::create_dir_all(&run_dir).unwrap();
         let md = run_dir.join("run-test.md");
-        std::fs::write(
+        write_turns(
             &md,
-            format!(
-                "{}\n{}",
-                block("call-a", "user", "hello"),
-                block("call-a", "assistant", "hi")
-            ),
-        )
-        .unwrap();
+            &[("call-a", "user", "hello"), ("call-a", "assistant", "hi")],
+        );
 
         let call = Call {
             call_id: "call-a".into(),

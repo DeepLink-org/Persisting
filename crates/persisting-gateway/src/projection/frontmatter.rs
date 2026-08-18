@@ -4,23 +4,39 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 
 use super::markdown_trajectory::format_duration_human;
 use crate::session::client::resolve_client_meta_for_run_dir;
 use crate::session::index::{SessionIndexStore, SessionSummary};
 use crate::session::snapshots::load_snapshot_turn_counts;
 use crate::session::storage::{trajectory_run_dir, CaptureRoute};
-use persisting_pchronicle::{
-    count_agenticmd_role, encode_agenticmd_session_frontmatter, is_subagent_session_storage_key,
-    rewrite_agenticmd_preamble,
+use persisting_pchronicle::document::{
+    decode_agenticmd, encode_agenticmd, rewrite_agenticmd_storyline_metadata,
 };
+use persisting_pchronicle::model::StorylineDocument;
+use persisting_pchronicle::storage::is_subagent_session_storage_key;
 
-pub use persisting_pchronicle::AgenticmdSessionFrontmatter as SessionFrontmatterSummary;
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SessionFrontmatterSummary {
+    pub session: String,
+    pub agent: String,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub started: Option<String>,
+    pub duration: Option<String>,
+    pub turns: u64,
+    pub total_tokens: u64,
+    pub estimated_cost_usd: Option<f64>,
+    pub subagents: Vec<String>,
+    pub client: Option<crate::session::client::SessionClientMeta>,
+}
 
 /// Serialize YAML frontmatter block (including opening/closing `---`).
 pub fn format_session_frontmatter(summary: &SessionFrontmatterSummary) -> Result<String> {
-    encode_agenticmd_session_frontmatter(summary)
-        .map_err(|e| anyhow::anyhow!("pchronicle agenticmd session frontmatter: {e}"))
+    encode_agenticmd(&storyline_metadata(summary))
+        .map_err(|e| anyhow::anyhow!("pchronicle AgenticMD Storyline metadata: {e}"))
 }
 
 /// Build rollup from markdown blocks + `sessions.json` + run directory siblings.
@@ -64,7 +80,12 @@ fn count_user_turns(md_path: &Path) -> Result<u64> {
     if !md_path.is_file() {
         return Ok(0);
     }
-    count_agenticmd_role(md_path, "user")
+    let story = decode_agenticmd(&std::fs::read_to_string(md_path)?)?;
+    Ok(story
+        .turns
+        .iter()
+        .filter(|turn| turn.source == "user")
+        .count() as u64)
 }
 
 fn lookup_session_index(
@@ -147,10 +168,53 @@ pub fn refresh_document_frontmatter(
         md_path,
         story_user_turn_count,
     )?;
-    let header = format_session_frontmatter(&summary)?;
-    rewrite_agenticmd_preamble(md_path, &header)
+    let raw =
+        std::fs::read_to_string(md_path).with_context(|| format!("read {}", md_path.display()))?;
+    let mut document =
+        decode_agenticmd(&raw).with_context(|| format!("parse AgenticMD {}", md_path.display()))?;
+    apply_summary(&mut document, &summary);
+    rewrite_agenticmd_storyline_metadata(md_path, &document)
         .with_context(|| format!("refresh frontmatter {}", md_path.display()))?;
     Ok(summary)
+}
+
+fn storyline_metadata(summary: &SessionFrontmatterSummary) -> StorylineDocument {
+    let mut document = StorylineDocument::new(&summary.session, &summary.agent);
+    apply_summary(&mut document, summary);
+    document
+}
+
+fn apply_summary(document: &mut StorylineDocument, summary: &SessionFrontmatterSummary) {
+    document.session_id = summary.session.clone();
+    document.agent.id = summary.agent.clone();
+    document.agent.name = Some(summary.agent.clone());
+    document.agent.model_name = summary.model.clone();
+    document.child_session_ids = (!summary.subagents.is_empty()).then(|| summary.subagents.clone());
+
+    let mut agent_extra = Map::new();
+    if let Some(provider) = &summary.provider {
+        agent_extra.insert("provider".into(), json!(provider));
+    }
+    if let Some(client) = &summary.client {
+        if let Ok(value) = serde_json::to_value(client) {
+            agent_extra.insert("client".into(), value);
+        }
+    }
+    document.agent.extra = (!agent_extra.is_empty()).then_some(Value::Object(agent_extra));
+
+    let mut run_extra = Map::new();
+    if let Some(started) = &summary.started {
+        run_extra.insert("started_at".into(), json!(started));
+    }
+    if let Some(duration) = &summary.duration {
+        run_extra.insert("duration".into(), json!(duration));
+    }
+    document.extra = (!run_extra.is_empty()).then_some(Value::Object(run_extra));
+    document.final_metrics = Some(json!({
+        "turn_count": summary.turns,
+        "total_tokens": summary.total_tokens,
+        "estimated_cost_usd": summary.estimated_cost_usd,
+    }));
 }
 
 /// Refresh frontmatter for every `{run_dir}/*.md` file.
@@ -213,34 +277,36 @@ pub fn format_run_summary_line(md_path: &Path, summary: &SessionFrontmatterSumma
 #[cfg(test)]
 mod tests {
     use super::*;
-    use persisting_pchronicle::{
-        encode_agenticmd_block_validated, AgenticmdBlock, AgenticmdHeader,
-    };
-    use std::collections::BTreeMap;
+    use persisting_pchronicle::model::StorylineTurn;
 
-    fn user_block(body: &str) -> String {
-        let mut fields = BTreeMap::new();
-        fields.insert("role".into(), serde_json::json!("user"));
-        encode_agenticmd_block_validated(&AgenticmdBlock {
-            header: AgenticmdHeader {
-                type_name: "dialogue".into(),
-                length: body.len(),
-                fields,
-            },
-            body: body.to_string(),
-        })
-        .unwrap()
+    fn user_document(body: &str) -> String {
+        let mut story = StorylineDocument::new("run-test", "agent");
+        story.turns.push(StorylineTurn {
+            id: 1,
+            kind: Some("llm.request".into()),
+            timestamp: None,
+            source: "user".into(),
+            message: serde_json::json!(body),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: None,
+            observation: None,
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: None,
+        });
+        encode_agenticmd(&story).unwrap()
     }
 
     #[test]
     fn refresh_frontmatter_preserves_blocks() {
         let dir = tempfile::tempdir().unwrap();
         let md = dir.path().join("run-test.md");
-        std::fs::write(
-            &md,
-            format!("---\nformat: persisting\n---\n\n{}", user_block("hello")),
-        )
-        .unwrap();
+        std::fs::write(&md, user_document("hello")).unwrap();
         let route = CaptureRoute {
             root_session: Some("run-test".into()),
             session_id: "run-test".into(),
@@ -259,14 +325,7 @@ mod tests {
     fn frontmatter_prefers_story_turn_count_over_markdown_blocks() {
         let dir = tempfile::tempdir().unwrap();
         let md = dir.path().join("run-test.md");
-        std::fs::write(
-            &md,
-            format!(
-                "---\nformat: persisting\n---\n\n{}",
-                user_block("only one block in md")
-            ),
-        )
-        .unwrap();
+        std::fs::write(&md, user_document("only one block in md")).unwrap();
         let route = CaptureRoute {
             root_session: Some("run-test".into()),
             session_id: "run-test".into(),
@@ -317,11 +376,7 @@ mod tests {
         let run_dir = dir.path().join(agent).join(root);
         std::fs::create_dir_all(&run_dir).unwrap();
         let md = run_dir.join(format!("{root}.md"));
-        std::fs::write(
-            &md,
-            format!("---\nformat: persisting\n---\n\n{}", user_block("hello")),
-        )
-        .unwrap();
+        std::fs::write(&md, user_document("hello")).unwrap();
 
         let call = crate::Call {
             call_id: "c1".into(),

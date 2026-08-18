@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use http_body_util::BodyExt;
-use persisting_pchronicle::{DatasetMount, DEFAULT_DATASET_NAME};
+use persisting_pchronicle::storage::{DatasetMount, DEFAULT_DATASET_NAME};
 use persisting_pchronicle_cli::server::{warehouse_router, ChronicleServerConfig};
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -69,7 +69,6 @@ async fn warehouse_read_route_matrix_exposes_the_documented_surface() -> Result<
 async fn warehouse_write_route_matrix_never_exposes_dataset_mutations() -> Result<()> {
     let app = warehouse()?;
     for (method, path) in [
-        (Method::POST, "/api/judgments"),
         (Method::POST, "/api/maintain"),
         (Method::POST, "/api/query"),
         (Method::PUT, "/api/events"),

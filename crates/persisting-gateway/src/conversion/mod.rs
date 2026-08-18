@@ -133,7 +133,7 @@ impl ProtocolBridge {
 /// Translate client request body to upstream wire format for [`ProtocolBridge`].
 pub fn translate_request_for_bridge(
     bridge: ProtocolBridge,
-    semantic: &persisting_pchronicle::LlmRequestEventPayload,
+    semantic: &persisting_pchronicle::model::LlmRequestEventPayload,
     upstream_model: &str,
     reasoning_cache: Option<&crate::gateway::ReasoningCacheHandle>,
 ) -> anyhow::Result<Bytes> {
@@ -153,7 +153,7 @@ pub fn translate_request_for_bridge(
 /// A provider response after its single parse into Chronicle semantics.
 pub struct TranslatedResponse {
     pub body: Bytes,
-    pub semantic: std::sync::Arc<persisting_pchronicle::LlmResponseEventPayload>,
+    pub semantic: std::sync::Arc<persisting_pchronicle::model::LlmResponseEventPayload>,
 }
 
 /// Parse an upstream response once and render it to the client wire protocol.
@@ -377,7 +377,7 @@ upstream = "https://generativelanguage.googleapis.com/v1beta"
         assert_eq!(wire["content"][0]["text"], "hello");
         assert_eq!(
             translated.semantic.output_format,
-            persisting_pchronicle::LlmProtocol::ChatCompletions
+            persisting_pchronicle::model::LlmProtocol::ChatCompletions
         );
         assert_eq!(
             translated
@@ -408,7 +408,7 @@ upstream = "https://generativelanguage.googleapis.com/v1beta"
         assert_eq!(wire["output"][0]["content"][0]["text"], "hello");
         assert_eq!(
             translated.semantic.output_format,
-            persisting_pchronicle::LlmProtocol::Gemini
+            persisting_pchronicle::model::LlmProtocol::Gemini
         );
     }
 }

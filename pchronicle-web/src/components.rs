@@ -426,7 +426,6 @@ fn InlineTurnDetail(value: TurnDetail) -> Element {
         if !value.wire_tool_calls.is_empty() { EvidenceBlock { title: "Tool calls", value: serde_json::to_string_pretty(&value.wire_tool_calls).unwrap_or_default() } }
         if let Some(observation) = &value.turn.observation { EvidenceBlock { title: "Observation", value: serde_json::to_string_pretty(observation).unwrap_or_default() } }
         if !value.events.is_empty() { EvidenceBlock { title: "Raw linked events", value: serde_json::to_string_pretty(&value.events).unwrap_or_default() } }
-        if !value.judgments.is_empty() { div { class: "pc2-judgment-list", h3 { "Judgments" } for row in value.judgments { div { strong { "{row.rubric_id}" } span { class: "pc2-status {status_tone(&row.verdict)}", span {} "{row.verdict}" } span { "{row.score}/100" } p { "{row.rationale}" } } } } }
     }
 }
 
@@ -452,15 +451,6 @@ fn optional_u64(value: Option<u64>) -> String {
         .map(|value| value.to_string())
         .unwrap_or_else(|| "—".into())
 }
-fn status_tone(value: &str) -> &'static str {
-    match value {
-        "completed" | "ok" | "pass" => "good",
-        "failed" | "error" | "fail" => "bad",
-        "active" => "live",
-        _ => "neutral",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

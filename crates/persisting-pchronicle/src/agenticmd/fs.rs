@@ -8,15 +8,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::formats::agenticmd::{
+use super::codec::{
     encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_blocks_with_spans,
-    parse_agenticmd_document, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdHeader,
+    parse_agenticmd_document, MarkdownBlock, MarkdownBlockSpan, MarkdownHeader,
     AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FRONTMATTER_FORMAT,
 };
-use crate::formats::agenticmd_validate::{
+use super::convert::{encode_storyline_preamble, storyline_turn_block};
+use super::validate::{
     block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
 };
-use crate::mapping::agenticmd_block_to_replay_json;
+use crate::{StorylineDocument, StorylineTurn};
 
 /// Diagnostic index of one AgenticMD document.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -41,7 +42,7 @@ fn default_document_preamble() -> Result<String> {
 }
 
 /// Encode one generated block after minimal comment-safety validation.
-pub fn encode_agenticmd_block_validated(block: &AgenticmdBlock) -> Result<String> {
+pub fn encode_agenticmd_block_validated(block: &MarkdownBlock) -> Result<String> {
     validate_type_name(&block.header.type_name)?;
     validate_speaker(block_speaker(&block.header))?;
     let mut block = block.clone();
@@ -50,7 +51,7 @@ pub fn encode_agenticmd_block_validated(block: &AgenticmdBlock) -> Result<String
 }
 
 /// Tolerant parse plus minimal safety checks for fields used in generated comments.
-pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<AgenticmdBlock>> {
+pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<MarkdownBlock>> {
     parse_agenticmd_document(input)
         .map_err(|e| anyhow::anyhow!("agenticmd parse: {e}"))?
         .blocks
@@ -64,14 +65,14 @@ pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<AgenticmdBl
 }
 
 /// Tolerant parse with absolute byte spans for live-view upsert ranges.
-pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(AgenticmdBlock, usize, usize)>> {
+pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(MarkdownBlock, usize, usize)>> {
     let spans = parse_agenticmd_blocks_with_spans(input)
         .map_err(|e| anyhow::anyhow!("agenticmd span parse: {e}"))?;
     spans
         .into_iter()
         .enumerate()
         .map(|(i, span)| {
-            let AgenticmdBlockSpan { block, start, end } = span;
+            let MarkdownBlockSpan { block, start, end } = span;
             validate_agenticmd_block(&block)
                 .with_context(|| format!("agenticmd span block[{i}]"))?;
             Ok((block, start, end))
@@ -85,7 +86,7 @@ pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(AgenticmdBloc
 /// `persisting` frontmatter when `None`).
 pub fn append_agenticmd_blocks(
     path: &Path,
-    blocks: &[AgenticmdBlock],
+    blocks: &[MarkdownBlock],
     empty_file_preamble: Option<&str>,
 ) -> Result<usize> {
     if blocks.is_empty() {
@@ -117,7 +118,7 @@ pub fn append_agenticmd_blocks(
 pub fn write_agenticmd_document(
     path: &Path,
     preamble: &str,
-    blocks: &[AgenticmdBlock],
+    blocks: &[MarkdownBlock],
 ) -> Result<()> {
     let mut output = preamble.to_string();
     for block in blocks {
@@ -126,32 +127,65 @@ pub fn write_agenticmd_document(
     write_atomic(path, output.as_bytes())
 }
 
+/// Atomically replace an AgenticMD view from its authoritative Storyline model.
+pub fn write_agenticmd_storyline(path: &Path, story: &StorylineDocument) -> Result<()> {
+    let encoded = super::convert::encode_agenticmd(story)
+        .map_err(|error| anyhow::anyhow!("agenticmd encode: {error}"))?;
+    write_atomic(path, encoded.as_bytes())
+}
+
+/// Insert or replace one Storyline turn in a live AgenticMD view.
+///
+/// `edit_key` is a syntax-only locator used for streaming draft replacement. It
+/// is never copied into the parsed [`StorylineTurn`] or its `extra` field.
+pub fn upsert_agenticmd_turn(
+    path: &Path,
+    document_meta: &StorylineDocument,
+    turn: &StorylineTurn,
+    edit_key: &str,
+) -> Result<bool> {
+    if edit_key.trim().is_empty() {
+        bail!("edit_key must not be empty for AgenticMD upsert");
+    }
+    let mut candidate = document_meta.clone();
+    candidate.turns = vec![turn.clone()];
+    candidate
+        .validate()
+        .map_err(|error| anyhow::anyhow!("invalid Storyline turn: {error}"))?;
+
+    let block = storyline_turn_block(turn, Some(edit_key))
+        .map_err(|error| anyhow::anyhow!("agenticmd turn encode: {error}"))?;
+    if !path.exists() {
+        let preamble = encode_storyline_preamble(document_meta)
+            .map_err(|error| anyhow::anyhow!("agenticmd preamble encode: {error}"))?;
+        write_agenticmd_document(path, &preamble, std::slice::from_ref(&block))?;
+        return Ok(false);
+    }
+    upsert_block_by_call_id(path, edit_key, block)
+}
+
 /// Replace only the YAML preamble while preserving every encoded block byte-for-byte.
 pub fn rewrite_agenticmd_preamble(path: &Path, preamble: &str) -> Result<()> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let body_start = crate::formats::agenticmd_body_byte_offset(&content)
+    let body_start = super::codec::agenticmd_body_byte_offset(&content)
         .map_err(|e| anyhow::anyhow!("agenticmd body offset: {e}"))?;
     let mut output = preamble.as_bytes().to_vec();
     output.extend_from_slice(&content.as_bytes()[body_start..]);
     write_atomic(path, &output)
 }
 
-/// Convert a page of parsed AgenticMD blocks to canonical replay JSON records.
-pub fn agenticmd_replay_json_lines(
-    blocks: &[AgenticmdBlock],
-    offset: usize,
-    limit: Option<usize>,
-) -> Result<Vec<String>> {
-    let end = limit
-        .map(|limit| offset.saturating_add(limit).min(blocks.len()))
-        .unwrap_or(blocks.len());
-    blocks
-        .get(offset..end)
-        .unwrap_or(&[])
-        .iter()
-        .map(agenticmd_block_to_replay_json)
-        .collect()
+/// Replace only the Storyline document metadata in an AgenticMD file.
+///
+/// Existing encoded turns remain byte-for-byte intact, including private live
+/// edit locators used to replace streaming drafts.
+pub fn rewrite_agenticmd_storyline_metadata(
+    path: &Path,
+    document_meta: &StorylineDocument,
+) -> Result<()> {
+    let preamble = encode_storyline_preamble(document_meta)
+        .map_err(|error| anyhow::anyhow!("agenticmd preamble encode: {error}"))?;
+    rewrite_agenticmd_preamble(path, &preamble)
 }
 
 /// List AgenticMD candidates directly below a run directory.
@@ -223,7 +257,7 @@ pub fn count_agenticmd_role(path: &Path, role: &str) -> Result<u64> {
 /// Replace the block whose header `call_id` and presentation role match, or append when missing.
 ///
 /// Returns `true` when an existing block was rewritten.
-pub fn upsert_block_by_call_id(path: &Path, call_id: &str, block: AgenticmdBlock) -> Result<bool> {
+pub fn upsert_block_by_call_id(path: &Path, call_id: &str, block: MarkdownBlock) -> Result<bool> {
     if call_id.trim().is_empty() {
         bail!("call_id must not be empty for markdown upsert");
     }
@@ -250,7 +284,7 @@ pub fn find_block_by_call_id_and_role(
     bytes: &[u8],
     call_id: &str,
     role: &str,
-) -> Result<Option<(usize, usize, AgenticmdHeader)>> {
+) -> Result<Option<(usize, usize, MarkdownHeader)>> {
     let text = std::str::from_utf8(bytes).context("markdown upsert requires UTF-8 document")?;
     for (block, start, end) in parse_agenticmd_spans_validated(text)? {
         if block_matches_upsert_key(&block.header, call_id, role) {
@@ -260,12 +294,12 @@ pub fn find_block_by_call_id_and_role(
     Ok(None)
 }
 
-fn block_matches_upsert_key(header: &AgenticmdHeader, call_id: &str, role: &str) -> bool {
+fn block_matches_upsert_key(header: &MarkdownHeader, call_id: &str, role: &str) -> bool {
     header.fields.get("call_id").and_then(|v| v.as_str()) == Some(call_id)
         && header_role(header) == role
 }
 
-fn header_role(header: &AgenticmdHeader) -> &str {
+fn header_role(header: &MarkdownHeader) -> &str {
     if let Some(role) = header.fields.get("role").and_then(|v| v.as_str()) {
         return role;
     }
@@ -294,7 +328,7 @@ pub fn rewrite_block_range(path: &Path, start: usize, end: usize, new_block: &[u
 }
 
 /// Strict-parse all agenticmd blocks from a markdown file (empty if missing).
-pub fn read_agenticmd_blocks_from_file(path: &Path) -> Result<Vec<AgenticmdBlock>> {
+pub fn read_agenticmd_blocks_from_file(path: &Path) -> Result<Vec<MarkdownBlock>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -334,11 +368,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::formats::agenticmd::{
-        encode_agenticmd_preamble, AgenticmdHeader, AGENTICMD_BLOCK_LAYOUT,
+    use super::super::codec::{
+        encode_agenticmd_preamble, MarkdownHeader, AGENTICMD_BLOCK_LAYOUT,
         AGENTICMD_FRONTMATTER_FORMAT,
     };
+    use super::*;
     use serde::Serialize;
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -358,13 +392,13 @@ mod tests {
         .unwrap()
     }
 
-    fn block_with_call(call_id: &str, role: &str, body: &str) -> AgenticmdBlock {
+    fn block_with_call(call_id: &str, role: &str, body: &str) -> MarkdownBlock {
         let mut fields = BTreeMap::new();
         fields.insert("role".into(), json!(role));
         fields.insert("kind".into(), json!("llm.response.stream"));
         fields.insert("call_id".into(), json!(call_id));
-        AgenticmdBlock {
-            header: AgenticmdHeader {
+        MarkdownBlock {
+            header: MarkdownHeader {
                 type_name: "markdown".into(),
                 length: body.len(),
                 fields,
@@ -373,27 +407,27 @@ mod tests {
         }
     }
 
-    fn block_header(role: &str, kind: &str) -> AgenticmdHeader {
+    fn block_header(role: &str, kind: &str) -> MarkdownHeader {
         let mut fields = BTreeMap::new();
         fields.insert("role".into(), json!(role));
         fields.insert("kind".into(), json!(kind));
         fields.insert("session_id".into(), json!("test-session"));
-        AgenticmdHeader {
+        MarkdownHeader {
             type_name: "markdown".into(),
             length: 0,
             fields,
         }
     }
 
-    fn encode_block(header: AgenticmdHeader, body: &str) -> String {
-        encode_agenticmd_block_validated(&AgenticmdBlock {
+    fn encode_block(header: MarkdownHeader, body: &str) -> String {
+        encode_agenticmd_block_validated(&MarkdownBlock {
             header,
             body: body.into(),
         })
         .unwrap()
     }
 
-    fn canonical_doc(blocks: &[(AgenticmdHeader, &str)]) -> String {
+    fn canonical_doc(blocks: &[(MarkdownHeader, &str)]) -> String {
         let mut doc = baseline_preamble();
         for (header, body) in blocks {
             doc.push_str(&encode_block(header.clone(), body));
@@ -401,7 +435,7 @@ mod tests {
         doc
     }
 
-    fn read_blocks(path: &Path) -> Vec<AgenticmdBlock> {
+    fn read_blocks(path: &Path) -> Vec<MarkdownBlock> {
         let text = std::fs::read_to_string(path).unwrap();
         parse_agenticmd_document_validated(&text).unwrap()
     }
@@ -561,8 +595,8 @@ mod tests {
         fields.insert("kind".into(), json!("llm.response"));
         fields.insert("call_id".into(), json!("c1"));
         let body = "hello world";
-        let via_validated = encode_agenticmd_block_validated(&AgenticmdBlock {
-            header: AgenticmdHeader {
+        let via_validated = encode_agenticmd_block_validated(&MarkdownBlock {
+            header: MarkdownHeader {
                 type_name: "text".into(),
                 length: 0,
                 fields: fields.clone(),
@@ -570,8 +604,8 @@ mod tests {
             body: body.into(),
         })
         .unwrap();
-        let via_raw = crate::formats::agenticmd::encode_agenticmd_block(&AgenticmdBlock {
-            header: AgenticmdHeader {
+        let via_raw = super::super::codec::encode_agenticmd_block(&MarkdownBlock {
+            header: MarkdownHeader {
                 type_name: "text".into(),
                 length: body.len(),
                 fields,
@@ -715,20 +749,54 @@ mod tests {
     }
 
     #[test]
-    fn structural_scan_and_replay_paging_are_storage_primitives() {
+    fn structural_scan_reports_excessive_blank_lines() {
         assert_eq!(
             agenticmd_structural_issues("a\n\n\n\nb"),
             vec!["excessive_blank_lines"]
         );
-        let blocks = vec![
-            block_with_call("c1", "user", "one"),
-            block_with_call("c2", "assistant", "two"),
-        ];
-        let replay = agenticmd_replay_json_lines(&blocks, 1, Some(1)).unwrap();
-        assert_eq!(replay.len(), 1);
-        assert!(replay[0].contains("\"call_id\":\"c2\""));
-        assert!(agenticmd_replay_json_lines(&blocks, usize::MAX, None)
+    }
+
+    #[test]
+    fn storyline_upsert_replaces_draft_without_exposing_edit_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.md");
+        let story = crate::StorylineDocument::new("session-1", "agent-1");
+        let mut turn = crate::StorylineTurn {
+            id: 7,
+            kind: Some("llm.response.stream".into()),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+            source: "agent".into(),
+            message: serde_json::json!("draft"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: None,
+            observation: None,
+            metrics: None,
+            model_name: Some("model-1".into()),
+            llm_call_count: Some(1),
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: Some(12),
+            extra: Some(serde_json::json!({"domain": "kept"})),
+        };
+
+        assert!(!upsert_agenticmd_turn(&path, &story, &turn, "call-7").unwrap());
+        turn.kind = Some("llm.response".into());
+        turn.message = serde_json::json!("complete");
+        turn.latency_ms = Some(42);
+        assert!(upsert_agenticmd_turn(&path, &story, &turn, "call-7").unwrap());
+
+        let parsed =
+            super::super::convert::parse_agenticmd(&std::fs::read_to_string(&path).unwrap())
+                .unwrap();
+        assert_eq!(parsed.turns, vec![turn]);
+        assert_eq!(
+            parsed.turns[0].extra,
+            Some(serde_json::json!({"domain": "kept"}))
+        );
+        assert!(index_agenticmd_path(&path)
             .unwrap()
-            .is_empty());
+            .call_ids
+            .contains("call-7"));
     }
 }

@@ -4,15 +4,172 @@
 //! Short wire keys (`src`, `msg`, `ts`, …); timing convenience fields
 //! (`latency_ms` / `ttft_ms` / `duration_ms`) lift common metrics.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{Error, Result};
 
+/// Presence semantics for interchange fields where missing and explicit null
+/// carry different meanings.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum FieldPresence<T> {
+    #[default]
+    Missing,
+    Null,
+    Value(T),
+}
+
+impl<T> FieldPresence<T> {
+    pub fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
+    pub fn value(&self) -> Option<&T> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Missing | Self::Null => None,
+        }
+    }
+
+    pub fn as_ref(&self) -> Option<&T> {
+        self.value()
+    }
+
+    pub fn into_option(self) -> Option<T> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Missing | Self::Null => None,
+        }
+    }
+}
+
+impl<T: Serialize> Serialize for FieldPresence<T> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Missing | Self::Null => serializer.serialize_none(),
+            Self::Value(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for FieldPresence<T> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Value(value),
+            None => Self::Null,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PresenceState {
+    Missing,
+    Null,
+    #[default]
+    Value,
+}
+
+/// Shape of the physical document collection that contained a Storyline.
+///
+/// This is format-neutral collection semantics, not an editable
+/// format-specific residual. It allows collection shape and ordering to pass
+/// through the authoritative Storyline model and Lance storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorylineCollectionShape {
+    Single,
+    Sequence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorylineRootField {
+    TrajectoryId,
+    Notes,
+    FinalMetrics,
+    ContinuedTrajectoryRef,
+    Extra,
+    SubagentTrajectories,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorylineAgentField {
+    ModelName,
+    ToolDefinitions,
+    Extra,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorylineTurnField {
+    Timestamp,
+    ModelName,
+    ReasoningEffort,
+    ReasoningContent,
+    ToolCalls,
+    Observation,
+    Metrics,
+    Extra,
+    LlmCallCount,
+    IsCopiedContext,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorylinePresence {
+    #[serde(default, skip_serializing_if = "is_value_presence")]
+    pub session_id: PresenceState,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub root_nulls: BTreeSet<StorylineRootField>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub agent_nulls: BTreeSet<StorylineAgentField>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub turn_nulls: BTreeMap<i64, BTreeSet<StorylineTurnField>>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub tool_call_extra_nulls: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_shape: Option<StorylineCollectionShape>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_ordinal: Option<i64>,
+}
+
+fn is_value_presence(value: &PresenceState) -> bool {
+    *value == PresenceState::Value
+}
+
+impl StorylinePresence {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorylineDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
     #[serde(rename = "run", default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    #[serde(
+        rename = "trajectory",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub trajectory_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
     /// Session id (≈ ATIF / Capture `session_id`). Wire key: `session`.
     #[serde(rename = "session")]
     pub session_id: String,
@@ -29,6 +186,8 @@ pub struct StorylineDocument {
     pub continued_trajectory_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
+    #[serde(default, skip_serializing_if = "StorylinePresence::is_default")]
+    pub presence: StorylinePresence,
     pub turns: Vec<StorylineTurn>,
 }
 
@@ -139,6 +298,8 @@ pub struct StorylineToolCall {
     pub function_name: String,
     #[serde(rename = "args")]
     pub arguments: Value,
+    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
+    pub result: FieldPresence<Value>,
     /// Tool execution wall time in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
@@ -150,7 +311,10 @@ impl StorylineDocument {
     pub fn new(session_id: impl Into<String>, agent_id: impl Into<String>) -> Self {
         let agent_id = agent_id.into();
         Self {
+            schema_version: None,
             run_id: None,
+            trajectory_id: None,
+            attempt_id: None,
             session_id: session_id.into(),
             agent: StorylineAgent {
                 id: agent_id.clone(),
@@ -166,8 +330,17 @@ impl StorylineDocument {
             final_metrics: None,
             continued_trajectory_ref: None,
             extra: None,
+            presence: StorylinePresence::default(),
             turns: Vec::new(),
         }
+    }
+
+    /// Stable identity used by Storyline storage and normalized table joins.
+    pub fn document_id(&self) -> &str {
+        self.trajectory_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&self.session_id)
     }
 
     pub fn from_json_str(s: &str) -> Result<Self> {
@@ -187,6 +360,25 @@ impl StorylineDocument {
         if self.agent.id.is_empty() {
             return Err(Error::Other("storyline.agent.id is required".into()));
         }
+        if self
+            .presence
+            .collection_ordinal
+            .is_some_and(|ordinal| ordinal < 0)
+        {
+            return Err(Error::Other(
+                "storyline collection ordinal cannot be negative".into(),
+            ));
+        }
+        if self.presence.collection_shape == Some(StorylineCollectionShape::Single)
+            && self
+                .presence
+                .collection_ordinal
+                .is_some_and(|ordinal| ordinal != 0)
+        {
+            return Err(Error::Other(
+                "single-document Storyline collection ordinal must be zero".into(),
+            ));
+        }
         let mut seen = std::collections::HashSet::new();
         for turn in &self.turns {
             if turn.source.is_empty() {
@@ -200,6 +392,7 @@ impl StorylineDocument {
     }
 }
 
+#[cfg(all(test, feature = "lance-store"))]
 pub fn parse_storyline_document(input: &str) -> Result<StorylineDocument> {
     StorylineDocument::from_json_str(input)
 }
@@ -219,10 +412,32 @@ mod tests {
     }
 
     #[test]
-    fn storyline_wire_has_no_schema_marker() {
-        let document = StorylineDocument::new("session-1", "agent-1");
-        let value = serde_json::to_value(document).unwrap();
-        assert!(value.get("spec").is_none());
-        assert!(value.get("schema_version").is_none());
+    fn tool_result_presence_distinguishes_missing_null_and_value() {
+        let base = serde_json::json!({"tcid":"call-1","fn":"lookup","args":{}});
+
+        let missing: StorylineToolCall = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(missing.result, FieldPresence::Missing);
+        assert!(serde_json::to_value(missing)
+            .unwrap()
+            .get("result")
+            .is_none());
+
+        let mut null = base.clone();
+        null["result"] = Value::Null;
+        let null: StorylineToolCall = serde_json::from_value(null).unwrap();
+        assert_eq!(null.result, FieldPresence::Null);
+        assert_eq!(serde_json::to_value(null).unwrap()["result"], Value::Null);
+
+        let mut value = base;
+        value["result"] = serde_json::json!({"answer": 42});
+        let value: StorylineToolCall = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            value.result,
+            FieldPresence::Value(serde_json::json!({"answer": 42}))
+        );
+        assert_eq!(
+            serde_json::to_value(value).unwrap()["result"],
+            serde_json::json!({"answer": 42})
+        );
     }
 }

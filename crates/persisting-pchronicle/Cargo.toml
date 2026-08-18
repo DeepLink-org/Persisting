@@ -50,7 +50,6 @@ lance-table = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
 persisting-agentctl.workspace = true
 persisting-events.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
 serde_yaml.workspace = true
@@ -81,6 +80,50 @@ harness = false
 name = "projection_pipeline"
 harness = false
 
+[[example]]
+name = "langfuse_backend_feasibility"
+required-features = ["lance-store"]
+
 [[test]]
 name = "search_integration"
 required-features = ["search"]
+
+[[test]]
+name = "storyline_lance_roundtrip"
+required-features = ["lance-store"]
+
+[[test]]
+name = "atif_lance_corpus"
+required-features = ["lance-store"]
+
+[[test]]
+name = "capture_fixture_corpus"
+required-features = ["lance-store"]
+
+[[test]]
+name = "direct_file_query"
+required-features = ["lance-store"]
+
+[[test]]
+name = "document_source"
+required-features = ["lance-store"]
+
+[[test]]
+name = "import_roundtrip_fixtures"
+required-features = ["lance-store"]
+
+[[test]]
+name = "langfuse_backend_faults"
+required-features = ["lance-store"]
+
+[[test]]
+name = "production_scale"
+required-features = ["lance-store"]
+
+[[test]]
+name = "query_engine"
+required-features = ["lance-store"]
+
+[[test]]
+name = "s3_storage"
+required-features = ["s3-store"]

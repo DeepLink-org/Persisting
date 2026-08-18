@@ -155,7 +155,11 @@ impl TableProvider for CatalogTableProvider {
         let selected_source_count = plans.len();
         let plan: Arc<dyn ExecutionPlan> = match selected_source_count {
             0 => Arc::new(EmptyExec::new(output_schema)),
-            1 => plans.pop().expect("one Catalog source plan"),
+            1 => plans.pop().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "Catalog planned one source but produced no execution plan".into(),
+                )
+            })?,
             _ => UnionExec::try_new(plans)?,
         };
         Ok(match limit {
@@ -384,21 +388,21 @@ pub(super) async fn create_trajectories_view(
             "CREATE VIEW {dataset}.trajectories AS \
              SELECT r.*, \
                     (SELECT COUNT(*) FROM {dataset}.steps s \
-                      WHERE s._file_ = r._file_ AND s.session_id = r.session_id) AS step_count, \
+                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS step_count, \
                     (SELECT array_agg(s.step_id ORDER BY s.step_id) FROM {dataset}.steps s \
-                      WHERE s._file_ = r._file_ AND s.session_id = r.session_id) AS step_ids, \
+                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS step_ids, \
                     (SELECT array_agg(s.source ORDER BY s.step_id) FROM {dataset}.steps s \
-                      WHERE s._file_ = r._file_ AND s.session_id = r.session_id) AS step_sources, \
+                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS step_sources, \
                     (SELECT array_agg(s.message_json ORDER BY s.step_id) FROM {dataset}.steps s \
-                      WHERE s._file_ = r._file_ AND s.session_id = r.session_id) AS messages_json, \
+                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS messages_json, \
                     (SELECT COUNT(*) FROM {dataset}.tool_calls t \
-                      WHERE t._file_ = r._file_ AND t.session_id = r.session_id) AS tool_call_count, \
+                      WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_call_count, \
                     (SELECT array_agg(t.function_name ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
-                      WHERE t._file_ = r._file_ AND t.session_id = r.session_id) AS tool_names, \
+                      WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_names, \
                     (SELECT array_agg(t.arguments_json ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
-                      WHERE t._file_ = r._file_ AND t.session_id = r.session_id) AS tool_arguments_json, \
+                      WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_arguments_json, \
                     (SELECT array_agg(t.results_json ORDER BY t.step_id, t.call_index) FROM {dataset}.tool_calls t \
-                      WHERE t._file_ = r._file_ AND t.session_id = r.session_id) AS tool_results_json \
+                      WHERE t._file_ = r._file_ AND t.document_id = r.document_id) AS tool_results_json \
              FROM {dataset}.runs r"
         ),
     )

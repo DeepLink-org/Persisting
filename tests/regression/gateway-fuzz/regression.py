@@ -1123,7 +1123,7 @@ def run_network_fuzz(work_dir: Path, pchronicle: Path, seed: int) -> tuple[int, 
             assert gateway_port is not None and admin_port is not None
             listeners[name] = (gateway_port, admin_port)
             wait_http(
-                f"{warehouse_url}/api/v1/health",
+                f"{warehouse_url}/api/health",
                 process,
                 f"pChronicle Warehouse {name}",
             )
@@ -1363,7 +1363,7 @@ def run_fuzz(work_dir: Path, pchronicle: Path, seed: int, suite: str) -> tuple[i
             "pChronicle Gateway admin",
         )
         wait_http(
-            f"{warehouse_url}/api/v1/health",
+            f"{warehouse_url}/api/health",
             serve_process,
             "pChronicle Warehouse",
         )

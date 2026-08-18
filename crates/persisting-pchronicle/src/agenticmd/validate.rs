@@ -5,9 +5,9 @@
 
 use anyhow::{bail, Result};
 
-use super::agenticmd::{AgenticmdBlock, AgenticmdHeader};
+use super::codec::{MarkdownBlock, MarkdownHeader};
 
-pub fn block_speaker(header: &AgenticmdHeader) -> &str {
+pub fn block_speaker(header: &MarkdownHeader) -> &str {
     header
         .fields
         .get("source")
@@ -47,7 +47,7 @@ pub fn validate_type_name(type_name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn validate_agenticmd_block(block: &AgenticmdBlock) -> Result<()> {
+pub fn validate_agenticmd_block(block: &MarkdownBlock) -> Result<()> {
     validate_type_name(&block.header.type_name)?;
     validate_speaker(block_speaker(&block.header))?;
     Ok(())

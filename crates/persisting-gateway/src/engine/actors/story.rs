@@ -9,7 +9,7 @@ use pulsing_actor::prelude::*;
 
 use super::super::story::{StoryId, TurnMachine};
 use super::super::wire::{CaptureAck, DraftPayload, StoryCommand, StoryReply, StoryScope};
-use crate::projection::dialogue::draft_stream_assistant_block;
+use crate::projection::dialogue::draft_stream_assistant_turn;
 use crate::projection::frontmatter::refresh_document_frontmatter;
 use crate::projection::markdown_pipeline::{LiveMarkdownWriter, MarkdownTarget};
 use crate::projection::markdown_policy::should_refresh_frontmatter;
@@ -184,9 +184,9 @@ impl StoryActor {
                     .sink
                     .peek_next_seq(scope.route())
                     .context("draft markdown requires sink peek_next_seq")?;
-                if let Some(block) = draft_stream_assistant_block(&rec, &draft.assistant_content)? {
+                if let Some(turn) = draft_stream_assistant_turn(&rec, &draft.assistant_content)? {
                     self.md_writer(&scope)
-                        .write_draft(rec.call_id.as_deref().unwrap_or(""), block)?;
+                        .write_draft(rec.call_id.as_deref().unwrap_or(""), turn)?;
                 }
             }
             StoryCommand::Flush | StoryCommand::Snapshot { .. } | StoryCommand::LocalSnapshot => {

@@ -7,18 +7,25 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use persisting_pchronicle::convert::storyline_to_events;
-use persisting_pchronicle::{
-    from_storyline, into_storyline, project_event_records, reconstruct_storyline, split_storyline,
-    ChronicleFormat,
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use persisting_pchronicle::document::{
+    decode_json_storylines, encode_json_storylines, project_event_records, storyline_to_events,
+    DocumentFormat,
 };
+use persisting_pchronicle::model::StorylineDocument;
+
+fn parse_atif(raw: &str) -> StorylineDocument {
+    decode_json_storylines(DocumentFormat::Atif, raw, "benchmark.json")
+        .expect("parse benchmark ATIF")
+        .pop()
+        .expect("benchmark fixture contains one Storyline")
+}
 
 fn conversion_benchmarks(criterion: &mut Criterion) {
     let fixtures = load_fixtures();
     let stories = fixtures
         .iter()
-        .map(|raw| into_storyline(ChronicleFormat::Atif, raw).expect("parse benchmark fixture"))
+        .map(|raw| parse_atif(raw))
         .collect::<Vec<_>>();
     let documents = fixtures.len() as u64;
 
@@ -27,22 +34,22 @@ fn conversion_benchmarks(criterion: &mut Criterion) {
     group.bench_function("parse_corpus", |bencher| {
         bencher.iter(|| {
             for raw in &fixtures {
-                black_box(
-                    into_storyline(ChronicleFormat::Atif, black_box(raw))
-                        .expect("parse benchmark fixture"),
-                );
+                black_box(parse_atif(black_box(raw)));
             }
         });
     });
     group.bench_function("roundtrip_corpus", |bencher| {
         bencher.iter(|| {
             for story in &stories {
-                let atif = from_storyline(ChronicleFormat::Atif, black_box(story))
-                    .expect("encode benchmark Storyline");
-                black_box(
-                    into_storyline(ChronicleFormat::Atif, black_box(&atif))
-                        .expect("reparse benchmark ATIF"),
-                );
+                let atif = serde_json::to_string(
+                    &encode_json_storylines(
+                        DocumentFormat::Atif,
+                        std::slice::from_ref(black_box(story)),
+                    )
+                    .expect("encode benchmark Storyline"),
+                )
+                .expect("serialize benchmark ATIF");
+                black_box(parse_atif(black_box(&atif)));
             }
         });
     });
@@ -53,17 +60,12 @@ fn projection_cpu_benchmarks(criterion: &mut Criterion) {
     let fixtures = load_fixtures();
     let stories = fixtures
         .iter()
-        .map(|raw| into_storyline(ChronicleFormat::Atif, raw).expect("parse benchmark fixture"))
+        .map(|raw| parse_atif(raw))
         .collect::<Vec<_>>();
     let events = stories
         .iter()
         .map(|story| storyline_to_events(story).expect("project fixture to canonical events"))
         .collect::<Vec<_>>();
-    let tables = stories
-        .iter()
-        .map(|story| split_storyline(story).expect("split benchmark Storyline"))
-        .collect::<Vec<_>>();
-
     let mut group = criterion.benchmark_group("projection_cpu");
     group.throughput(Throughput::Elements(stories.len() as u64));
     group.bench_function("events_to_storyline_corpus", |bencher| {
@@ -75,27 +77,6 @@ fn projection_cpu_benchmarks(criterion: &mut Criterion) {
                 );
             }
         });
-    });
-    group.bench_function("split_storyline_corpus", |bencher| {
-        bencher.iter(|| {
-            for story in &stories {
-                black_box(split_storyline(black_box(story)).expect("split benchmark Storyline"));
-            }
-        });
-    });
-    group.bench_function("reconstruct_storyline_corpus", |bencher| {
-        bencher.iter_batched(
-            || tables.clone(),
-            |tables| {
-                for tables in tables {
-                    black_box(
-                        reconstruct_storyline(black_box(tables))
-                            .expect("reconstruct benchmark Storyline"),
-                    );
-                }
-            },
-            BatchSize::SmallInput,
-        );
     });
     group.finish();
 }

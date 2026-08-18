@@ -7,15 +7,16 @@
 #[cfg(feature = "lance-store")]
 use anyhow::Context as _;
 
-mod agenticmd_fs;
 #[cfg(feature = "lance-store")]
-mod atif_datafusion;
+mod agenticmd_datafusion;
 #[cfg(feature = "lance-store")]
 mod attempt_registry;
 #[cfg(feature = "lance-store")]
 mod catalog;
 #[cfg(feature = "lance-store")]
 pub(crate) mod dataset_write_lock;
+#[cfg(feature = "lance-store")]
+mod document_source;
 #[cfg(feature = "lance-store")]
 mod egress;
 #[cfg(feature = "lance-store")]
@@ -36,19 +37,12 @@ mod root_write_lock;
 mod run_control;
 #[cfg(feature = "lance-store")]
 mod storyline;
-
-pub use agenticmd_fs::{
-    agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
-    append_agenticmd_blocks, count_agenticmd_role, encode_agenticmd_block_validated,
-    find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,
-    parse_agenticmd_document_validated, parse_agenticmd_spans_validated,
-    read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
-    upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
-};
 #[cfg(feature = "lance-store")]
-pub use atif_datafusion::{
-    load_atif_trajectories, AtifDataSource, AtifDataSourceOptions, AtifReader,
-};
+#[path = "storyline/model.rs"]
+mod storyline_model;
+
+#[cfg(feature = "lance-store")]
+pub(crate) use agenticmd_datafusion::AgenticMdDataSource;
 #[cfg(feature = "lance-store")]
 pub use attempt_registry::{
     unix_now_ms as attempt_registry_now_ms, AttemptRecord, AttemptRecordState, AttemptRegistry,
@@ -63,6 +57,8 @@ pub use catalog::{
     DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
 #[cfg(feature = "lance-store")]
+pub(crate) use document_source::{open_document_source, DocumentSourceImpl};
+#[cfg(feature = "lance-store")]
 pub use egress::{export_source_dirs, export_story_bundle, ExportOutcome};
 #[cfg(feature = "lance-store")]
 pub use event_row::{event_record_to_event_row, event_row_to_event_record, EventRow};
@@ -70,29 +66,28 @@ pub use event_row::{event_record_to_event_row, event_row_to_event_record, EventR
 pub(crate) use events::{compact_sealed_event_segment, SealedEventSegment};
 #[cfg(feature = "lance-store")]
 pub use events::{
-    distinct_session_ids_in_run, event_records_from_batch, event_row_from_batch,
-    event_rows_from_batch, event_rows_to_batch, maintain as maintain_raw_events,
+    distinct_session_ids_in_run, event_rows_from_batch, maintain as maintain_raw_events,
     raw_event_arrow_schema, EventFactSnapshot, EventLogLayoutStats, EventWriterFence,
-    LanceMaintenanceOptions, LanceMaintenanceReport, RawEventDataSource, RawEventDataSourceOptions,
-    RawEventLanceAppender, RawEventTableProvider, DATAFUSION_EVENTS_TABLE,
+    LanceMaintenanceOptions, LanceMaintenanceReport, RawEventDataSource, RawEventLanceAppender,
+    DATAFUSION_EVENTS_TABLE,
 };
 #[cfg(feature = "lance-store")]
-pub use files::{
-    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryFormat,
-    FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot, DEFAULT_LOCAL_QUERY_BATCH_SIZE,
-    DEFAULT_LOCAL_QUERY_CACHE_BYTES, DEFAULT_LOCAL_QUERY_CACHE_FILES,
-    DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, SOURCE_FILE_COLUMN,
+pub(crate) use files::{
+    AtifReader, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
+    FileTrajectoryQueryMetrics,
 };
 #[cfg(feature = "lance-store")]
-pub use local_query_manifest::{
-    detect_local_query_format, detect_local_query_manifest, LocalQueryInputFile,
-    LocalQueryManifest, LocalQueryManifestOptions, DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES,
-    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES,
+pub use files::{FileTrajectoryQueryMetricsSnapshot, SOURCE_FILE_COLUMN};
+#[cfg(feature = "lance-store")]
+pub(crate) use local_query_manifest::{
+    LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
 };
+#[cfg(feature = "lance-store")]
+pub use local_query_manifest::{DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES};
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
-    ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions,
-    ExternalTableFormat, ExternalTableSpec,
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
+    QueryBackendInfo, QuerySnapshot,
 };
 #[cfg(feature = "lance-store")]
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
@@ -104,16 +99,22 @@ pub use storyline::{
     StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, StorylineTableProvider, DATAFUSION_RUNS_TABLE,
-    DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
-    DEFAULT_CONTENT_PREVIEW_BYTES,
+    StorylineTableKind, StorylineTablePaths, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
+    DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
+};
+#[cfg(feature = "lance-store")]
+pub use storyline_model::{
+    reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
+    StorylineTables,
 };
 
 #[cfg(feature = "lance-store")]
 use std::path::PathBuf;
 
 #[cfg(feature = "lance-store")]
-use crate::{story_lance_event_path, EventRecord, StoryCoords};
+use crate::formats::EventRecord;
+#[cfg(feature = "lance-store")]
+use crate::layout::{story_lance_event_path, StoryCoords};
 
 /// Producer-defined Storyline sequence. Physical replay order is the immutable
 /// Lance append order and does not require a read-before-write counter.

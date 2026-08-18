@@ -9,8 +9,12 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::Mutex;
 
-const BLOCK_MARKER: &str = persisting_pchronicle::BLOCK_MARKER;
-const BLOCK_LAYOUT: &str = persisting_pchronicle::AGENTICMD_BLOCK_LAYOUT;
+// dlcapt is a standalone capture binary, so its production writer owns the
+// small wire spelling it emits instead of depending on pChronicle internals.
+// The integration test below guards compatibility with pChronicle's semantic
+// AgenticMD decoder.
+const BLOCK_MARKER: &str = "<!-- persisting:block";
+const BLOCK_LAYOUT: &str = "<!-- persisting:block:{speaker} {json} -->\n\n  message body\n";
 const BLOCK_FORMAT_VERSION: u64 = 1;
 
 #[derive(Debug, Clone)]
@@ -275,21 +279,29 @@ fn flatten_block_header(header: &Value) -> Result<Map<String, Value>> {
 }
 
 fn format_document_preamble(session_id: &str, agent_id: &str, turns: u64) -> Result<String> {
+    let session_id = serde_json::to_string(session_id).context("serialize tlv session id")?;
+    let agent_id = serde_json::to_string(agent_id).context("serialize tlv agent id")?;
     Ok(format!(
-        "---\n\
-format: persisting:1.0\n\
-block: |+\n\
-  {BLOCK_LAYOUT}\n\
-session: {session_id}\n\
-agent: {agent_id}\n\
-turns: {turns}\n\
-client:\n\
-  peer: ''\n\
-  peer_port: 0\n\
-  pid: 0\n\
-  command: openclaw\n\
-  machine_fp: ''\n\
----\n\n"
+        concat!(
+            "---\n",
+            "format: persisting:1.0\n",
+            "block: |+\n",
+            "  {BLOCK_LAYOUT}\n",
+            "session: {session_id}\n",
+            "agent: {agent_id}\n",
+            "turns: {turns}\n",
+            "client:\n",
+            "  peer: ''\n",
+            "  peer_port: 0\n",
+            "  pid: 0\n",
+            "  command: openclaw\n",
+            "  machine_fp: ''\n",
+            "---\n\n",
+        ),
+        BLOCK_LAYOUT = BLOCK_LAYOUT,
+        session_id = session_id,
+        agent_id = agent_id,
+        turns = turns,
     ))
 }
 

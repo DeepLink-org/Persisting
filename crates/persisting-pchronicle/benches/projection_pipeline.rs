@@ -4,11 +4,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::convert::storyline_to_events;
-use persisting_pchronicle::{
-    build_storyline_projection, into_storyline, sync_storyline_projection,
-    verify_storyline_projection, ChronicleFormat, EventIdentity, EventRecord,
-    RawEventLanceAppender, StoryCoords, StorylineDocument,
+use persisting_pchronicle::document::{
+    decode_json_storylines, storyline_to_events, DocumentFormat,
+};
+use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
+use persisting_pchronicle::storage::{
+    build_storyline_projection, sync_storyline_projection, verify_storyline_projection,
+    RawEventLanceAppender, StoryCoords,
 };
 
 fn main() -> Result<()> {
@@ -159,7 +161,9 @@ fn load_base_stories() -> Result<Vec<StorylineDocument>> {
         .into_iter()
         .map(|path| {
             let raw = std::fs::read_to_string(&path)?;
-            into_storyline(ChronicleFormat::Atif, &raw).map_err(anyhow::Error::from)
+            decode_json_storylines(DocumentFormat::Atif, &raw, &path)?
+                .pop()
+                .context("missing benchmark Storyline")
         })
         .collect()
 }

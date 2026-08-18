@@ -279,30 +279,57 @@ Blob payload I/O；为避免把 preview 当成完整值产生错误结果，内�
 
 ## 统一查询引擎
 
-`ChronicleQueryEngine` 是对外的只读 SQL 门面。Lance 与 ATIF 后端注册完全相同的
-`runs`、`steps`、`tool_calls` 表，因此查询语句不需要随物理格式改变：
+`ChronicleQueryEngine` 是对外的只读 SQL 门面。All six disk formats (Canonical
+Event, Storyline Lance, AgenticMD, ATIF, OpenAI Msg, ACTF) open through the
+single entry `ChronicleQueryEngine::open(format, path, options)` and register
+the semantically matching query tables, so SQL does not change with the
+physical format:
 
 ```rust
-let lance = ChronicleQueryEngine::open_lance("./storyline-store").await?;
-let batches = lance.query(
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
+use persisting_pchronicle::document::DocumentFormat;
+
+let engine = ChronicleQueryEngine::open(
+    DocumentFormat::Storyline,
+    "./storyline-store",
+    ChronicleQueryExecutionOptions::default(),
+).await?;
+let batches = engine.query(
     "SELECT session_id, step_id, source FROM steps WHERE step_id >= 10"
 ).await?;
 
-let atif = ChronicleQueryEngine::open_atif("./trajectories.ndjson")?;
+let atif = ChronicleQueryEngine::open(
+    DocumentFormat::Atif,
+    "./trajectories.ndjson",
+    ChronicleQueryExecutionOptions::default(),
+).await?;
 let jsonl = atif.query_jsonl(
     "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source"
 ).await?;
 ```
 
+`DocumentFormat::CanonicalEvent` registers the `events` table;
+`runs`/`steps`/`tool_calls` are not registered live by default — Storyline
+query surfaces prefer the lineage-fresh Storyline Lance projection, and
+without one a bounded row/byte-budget fallback runs (budget exhaustion is an
+explicit error, never a silent truncation). The other five formats register
+`runs`/`steps`/`tool_calls`.
+
 `query` 返回 Arrow `RecordBatch`，适合服务端继续处理；`dataframe` 返回 lazy DataFrame，
 适合追加 DataFusion 变换或查看计划；`query_jsonl` 用于 CLI/API 边界。调用者也可通过
-`context()` 取得 `SessionContext` 注册 UDF 或额外表。
+`context()` 取得 `SessionContext` 注册 UDF 或额外表。`backend_info()` returns a
+`QueryBackendInfo` that reports `format` / `tables` / `capabilities` /
+`snapshot` per the provider's real implementation; filter pushdown capability
+distinguishes `Unsupported` / `Inexact` / `Exact` / `ExpressionDependent` and
+is never overstated.
 
-`AtifDataSource` 接受单个 ATIF JSON 对象、JSON 数组、每行一个完整 trajectory 的
-JSONL/NDJSON，以及包含这些 ATIF 文档的目录。文件路径默认注册为按文件 lazy 的
-`StreamingTable`：manifest 在打开时冻结路径和文件身份，scan 才读取命中文件；目录按
-稳定顺序发现，每个文件是独立 partition，并以固定大小 Arrow batch 提供背压。显式
-`from_json` / `from_trajectories` 因为调用者已经持有完整输入，仍使用 `MemTable`。
+The unified document source entry `open_document(format, path)` accepts a
+single ATIF JSON object, a JSON array, JSONL/NDJSON with one complete
+trajectory per line, and directories containing such ATIF documents. File
+paths register as per-file lazy `StreamingTable`s by default: the manifest
+freezes paths and file identities at open time and scans read only the hit
+files; directories are discovered in stable order, each file is an
+independent partition, and fixed-size Arrow batches provide backpressure.
 
 ### pChronicle + JSON 投影查询快路径
 

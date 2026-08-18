@@ -14,10 +14,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use persisting_pchronicle::{
-    events_to_har, events_to_otlp_json, read_judge_rows, read_revisions, CatalogErrorPolicy,
-    CatalogSnapshotOptions, CatalogStorylineKey, ChronicleQueryEngine, DatasetCatalogSnapshot,
-    DatasetMount, EventRecord, JudgeRow, StoryCoords, StorylineTurn, DEFAULT_DATASET_NAME,
+use persisting_pchronicle::document::{events_to_har, events_to_otlp_json};
+use persisting_pchronicle::model::{EventRecord, StorylineTurn};
+use persisting_pchronicle::query::ChronicleQueryEngine;
+use persisting_pchronicle::storage::{
+    read_revisions, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogStorylineKey,
+    DatasetCatalogSnapshot, DatasetMount, StoryCoords, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -78,7 +80,7 @@ impl IntoResponse for ApiError {
 }
 
 fn api_error(error: impl std::fmt::Display) -> ApiError {
-    let code = persisting_pchronicle::classify_error(&error).as_str();
+    let code = persisting_pchronicle::query::classify_error(&error).as_str();
     ApiError {
         code,
         message: error.to_string(),
@@ -89,7 +91,8 @@ fn api_error(error: impl std::fmt::Display) -> ApiError {
 pub(crate) struct RunSummary {
     pub(crate) dataset: String,
     pub(crate) file: String,
-    pub(crate) run_id: String,
+    pub(crate) document_id: String,
+    pub(crate) run_id: Option<String>,
     pub(crate) agent_id: String,
     pub(crate) model_name: Option<String>,
     pub(crate) session_id: String,
@@ -141,7 +144,6 @@ fn read_routes() -> Router<AppState> {
         .route("/api/trajectory-view", get(trajectory_view))
         .route("/api/export/har", get(export_har))
         .route("/api/export/otlp", get(export_otlp))
-        .route("/api/judgments", get(judgments))
         .route("/api/revisions", get(revisions))
         .route("/api/catalog", get(catalog).post(refresh_catalog))
         .route("/api/query/tables", get(query_tables))
@@ -225,7 +227,7 @@ async fn build_catalog_runtime(
         )
         .await?,
     );
-    let engine = Arc::new(ChronicleQueryEngine::from_catalog_snapshot(snapshot.clone()).await?);
+    let engine = Arc::new(snapshot.clone().query_engine(Default::default()).await?);
     Ok(Arc::new(CatalogRuntime {
         snapshot,
         engine,
@@ -250,7 +252,7 @@ struct CatalogResponse {
     created_at: String,
     default_dataset: Option<String>,
     error_policy: CatalogErrorPolicy,
-    datasets: Vec<persisting_pchronicle::CatalogDataset>,
+    datasets: Vec<persisting_pchronicle::storage::CatalogDataset>,
     acceleration: AccelerationStatus,
 }
 
@@ -300,28 +302,7 @@ async fn explorer_runs(
     Query(query): Query<explorer::ExplorerRunsQuery>,
 ) -> Result<Json<explorer::RunExplorerPage>, ApiError> {
     let summaries = load_run_summaries(&state).await?;
-    let mut judgments_by_run = BTreeMap::new();
-    for run in &summaries {
-        let session_query = SessionQuery {
-            dataset: Some(run.dataset.clone()),
-            file: Some(run.file.clone()),
-            run_id: Some(run.run_id.clone()),
-            agent_id: run.agent_id.clone(),
-            session_id: run.session_id.clone(),
-            root_session_id: run.root_session_id.clone(),
-            offset: None,
-            limit: None,
-        };
-        let rows = session_judgments(&state, &session_query)
-            .await
-            .unwrap_or_default();
-        judgments_by_run.insert(explorer::run_key(run), rows);
-    }
-    Ok(Json(explorer::run_page(
-        summaries,
-        &judgments_by_run,
-        &query,
-    )))
+    Ok(Json(explorer::run_page(summaries, &query)))
 }
 
 async fn resolve_run_summary(
@@ -346,7 +327,7 @@ async fn resolve_run_summary(
                     .run_id
                     .as_ref()
                     .filter(|value| !value.is_empty())
-                    .is_none_or(|value| value == &run.run_id)
+                    .is_none_or(|value| run.run_id.as_ref() == Some(value))
                 && (run.agent_id == query.agent_id
                     || run.model_name.as_deref() == Some(query.agent_id.as_str()))
                 && run.session_id == query.session_id
@@ -374,6 +355,7 @@ fn catalog_storyline_key(run: &RunSummary) -> CatalogStorylineKey {
     CatalogStorylineKey {
         dataset: run.dataset.clone(),
         file: run.file.clone(),
+        document_id: run.document_id.clone(),
         session_id: run.session_id.clone(),
     }
 }
@@ -710,32 +692,15 @@ async fn trajectory_view(
     }))
 }
 
-async fn session_judgments(
-    state: &AppState,
-    query: &SessionQuery,
-) -> Result<Vec<JudgeRow>, ApiError> {
-    let Some(coords) = canonical_run_coords(state, query).await? else {
-        return Ok(Vec::new());
-    };
-    Ok(read_judge_rows(&coords)
-        .await
-        .map_err(api_error)?
-        .into_iter()
-        .filter(|row| row.session_id == query.session_id)
-        .collect())
-}
-
 async fn explorer_run(
     State(state): State<AppState>,
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<explorer::RunAnalysis>, ApiError> {
     let loaded = load_trajectory(&state, &query).await?;
-    let judgments = session_judgments(&state, &query).await?;
     Ok(Json(explorer::analyze(
         loaded.run,
         &loaded.turns,
         &loaded.records,
-        &judgments,
     )))
 }
 
@@ -774,11 +739,9 @@ async fn explorer_turns(
 ) -> Result<Json<explorer::ExplorerPage<explorer::TurnSummary>>, ApiError> {
     let session = query.session();
     let loaded = load_trajectory(&state, &session).await?;
-    let judgments = session_judgments(&state, &session).await?;
     Ok(Json(explorer::turn_page(
         &loaded.turns,
         &loaded.records,
-        &judgments,
         query.q.as_deref(),
         query.source.as_deref(),
         query.offset.unwrap_or(0),
@@ -820,12 +783,7 @@ async fn explorer_turn(
             code: "turn_not_found",
             message: format!("turn {} was not found", query.turn_id),
         })?;
-    let judgments = session_judgments(&state, &session).await?;
-    Ok(Json(explorer::turn_detail(
-        item,
-        &loaded.records,
-        &judgments,
-    )))
+    Ok(Json(explorer::turn_detail(item, &loaded.records)))
 }
 
 async fn export_har(
@@ -841,23 +799,6 @@ async fn export_otlp(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(events_to_otlp_json(
         &load_events(&state, &query).await?,
-    )))
-}
-
-async fn judgments(
-    State(state): State<AppState>,
-    Query(query): Query<SessionQuery>,
-) -> Result<Json<Value>, ApiError> {
-    let rows = session_judgments(&state, &query).await?;
-    Ok(Json(Value::Array(
-        rows.into_iter()
-            .map(|row| {
-                json!({
-                    "session_id":row.session_id,"call_id":row.call_id,"rubric_id":row.rubric_id,
-                    "score":row.score,"verdict":row.verdict,"rationale":row.rationale
-                })
-            })
-            .collect(),
     )))
 }
 

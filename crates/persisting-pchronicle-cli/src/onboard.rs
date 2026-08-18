@@ -15,8 +15,8 @@ use super::{
 const DEMO_ATIF: &str = include_str!("../assets/onboard/support-ticket.json");
 const DEMO_ACTF: &str = include_str!("../assets/onboard/code-repair.actf.json");
 const DEMO_OPENAI: &str = include_str!("../assets/onboard/training.json");
-const MAX_FILES: usize = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_FILES;
-const MAX_ENTRIES: usize = persisting_pchronicle::DEFAULT_MAX_LOCAL_QUERY_ENTRIES;
+const MAX_FILES: usize = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_FILES;
+const MAX_ENTRIES: usize = persisting_pchronicle::storage::DEFAULT_MAX_LOCAL_QUERY_ENTRIES;
 const STEP_SAMPLE_SQL: &str = r#"SELECT session_id, step_id, source, model_name, message_json
 FROM dataset.steps
 ORDER BY session_id, step_id
@@ -703,6 +703,7 @@ async fn capture_find(dataset_uri: String, session_id: String, step_id: i64) -> 
         FindArgs {
             dataset_uri: Some(dataset_uri),
             source: None,
+            document_id: None,
             run_id: None,
             session_id: Some(session_id),
             step_id: Some(step_id),
@@ -773,6 +774,7 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
             output: exported.to_string_lossy().into_owned(),
             format: ExchangeFormat::Atif,
             source: None,
+            document_id: None,
             run_id: None,
             session_id: None,
             r#where: None,

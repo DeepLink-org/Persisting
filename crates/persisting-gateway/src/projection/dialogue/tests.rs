@@ -2,16 +2,11 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::config::CaptureLevel;
-use crate::record::EventRecordExt;
 use crate::sink::{
     llm_request_record, llm_request_summary_record, llm_response_record,
     llm_response_record_with_content,
 };
 use crate::Call;
-use persisting_pchronicle::agenticmd_block_to_replay_json;
-use persisting_pchronicle::{
-    encode_agenticmd_block_validated, parse_agenticmd_document_validated as parse_document,
-};
 fn test_call() -> Call {
     Call {
         call_id: "call-test".into(),
@@ -50,14 +45,14 @@ fn proxy_nested_body_writes_plain_content() {
         false,
         &test_call(),
     );
-    let b1 = capture_record_to_agenticmd_block(&req).unwrap();
-    let b2 = capture_record_to_agenticmd_block(&resp).unwrap();
-    assert_eq!(b1.body, "你好");
-    assert_eq!(b2.body, "你好！");
+    let t1 = capture_record_to_storyline_turn(&req).unwrap();
+    let t2 = capture_record_to_storyline_turn(&resp).unwrap();
+    assert_eq!(t1.message, json!("你好"));
+    assert_eq!(t2.message, json!("你好！"));
 }
 
 #[test]
-fn llm_pair_writes_and_replays() {
+fn llm_pair_projects_to_storyline_semantics() {
     let req = llm_request_record(
         Some("sess".into()),
         None,
@@ -76,18 +71,20 @@ fn llm_pair_writes_and_replays() {
         false,
         &test_call(),
     );
-    let b1 = capture_record_to_agenticmd_block(&req).unwrap();
-    let b2 = capture_record_to_agenticmd_block(&resp).unwrap();
-    let doc = format!(
-        "{}{}",
-        encode_agenticmd_block_validated(&b1).unwrap(),
-        encode_agenticmd_block_validated(&b2).unwrap(),
+    let user = capture_record_to_storyline_turn(&req).unwrap();
+    let assistant = capture_record_to_storyline_turn(&resp).unwrap();
+    assert_eq!(user.source, "user");
+    assert_eq!(user.message, json!("你好"));
+    assert_eq!(assistant.source, "agent");
+    assert_eq!(assistant.message, json!("你好！"));
+    assert_eq!(
+        assistant.metrics,
+        Some(json!({
+            "prompt_tokens": 12,
+            "completion_tokens": 18,
+            "total_tokens": 30
+        }))
     );
-    let blocks = parse_document(&doc).unwrap();
-    let row: Value =
-        serde_json::from_str(&agenticmd_block_to_replay_json(&blocks[0]).unwrap()).unwrap();
-    assert_eq!(row["source"], "user");
-    assert_eq!(row["content"], "你好");
 }
 
 #[test]
@@ -106,8 +103,8 @@ fn summary_request_writes_user_content_not_json() {
         LEVEL,
         None,
     );
-    let block = capture_record_to_agenticmd_block(&req).unwrap();
-    assert_eq!(block.body, "hi");
+    let turn = capture_record_to_storyline_turn(&req).unwrap();
+    assert_eq!(turn.message, json!("hi"));
 }
 
 #[test]
@@ -122,8 +119,8 @@ fn stream_response_with_assistant_content_writes_plain_text() {
         &test_call(),
         LEVEL,
     );
-    let block = capture_record_to_agenticmd_block(&resp).unwrap();
-    assert_eq!(block.body, "Hi! How can I help you?");
+    let turn = capture_record_to_storyline_turn(&resp).unwrap();
+    assert_eq!(turn.message, json!("Hi! How can I help you?"));
 }
 
 #[test]
@@ -205,29 +202,24 @@ fn subagent_link_fields_in_markdown_block() {
         Some("done"),
         &mut registry,
     );
-    let block = capture_record_to_agenticmd_block(&rec).unwrap();
+    let turn = capture_record_to_storyline_turn(&rec).unwrap();
     assert_eq!(
-        block
-            .header
-            .fields
-            .get("subagent_id")
+        turn.extra
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|extra| extra.get("subagent_id"))
             .and_then(|v| v.as_str()),
         Some("abc")
     );
     assert_eq!(
-        block
-            .header
-            .fields
-            .get("subagent_trajectory")
+        turn.extra
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|extra| extra.get("subagent_trajectory"))
             .and_then(|v| v.as_str()),
         Some("agent-abc.md")
     );
-    assert!(block.body.contains("persisting:subagent-self"));
-
-    let imported = persisting_pchronicle::agenticmd_block_to_event_record(&block).unwrap();
-    let visible = imported.visible_assistant_text().unwrap_or_default();
-    assert_eq!(visible, "done");
-    assert!(!visible.contains("persisting:subagent"));
+    assert_eq!(turn.message, json!("done"));
 }
 
 #[test]

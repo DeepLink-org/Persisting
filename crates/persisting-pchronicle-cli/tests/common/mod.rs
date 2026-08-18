@@ -38,7 +38,7 @@ pub const EXAMPLE_FIXTURES: [ExampleFixture; 3] = [
         name: "openai-messages",
         source_file: "openai-messages/training.json",
         imported_source: "session_steps.json",
-        detected_format: "openai_msg",
+        detected_format: "openai-msg",
         identity_flag: "--session-id",
         identity: "training-002",
         session_id: "training-002",

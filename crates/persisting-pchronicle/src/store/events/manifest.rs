@@ -524,9 +524,7 @@ fn write_local_manifest(path: &Path, manifest: &EventManifest) -> Result<()> {
     file.write_all(&serde_json::to_vec_pretty(manifest)?)?;
     file.sync_all()?;
     std::fs::rename(&temporary, path)?;
-    if let Ok(directory) = File::open(parent) {
-        let _ = directory.sync_all();
-    }
+    File::open(parent)?.sync_all()?;
     Ok(())
 }
 

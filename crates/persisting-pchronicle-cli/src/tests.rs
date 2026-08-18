@@ -1,4 +1,37 @@
 use super::*;
+
+#[tokio::test]
+async fn trajectory_append_uses_persisting_events_protocol_directly() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let request = persisting_events::TrajectoryAppendRequest {
+        storage: temporary.path().to_string_lossy().into_owned(),
+        agent_id: "agent".into(),
+        session_id: "session".into(),
+        root_session_id: None,
+        records: vec![persisting_events::EventRecord {
+            identity: persisting_events::EventIdentity::default(),
+            seq: 1,
+            source: "test".into(),
+            kind: "note".into(),
+            timestamp: None,
+            session_id: Some("session".into()),
+            agent_id: Some("agent".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: None,
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: serde_json::json!({"content": "hello"}),
+        }],
+    };
+    let response: persisting_events::TrajectoryAppendResponse =
+        crate::control::append_trajectory(request).await?;
+    assert_eq!(response.accepted_records, 1);
+    assert_eq!(response.status, "ok");
+    Ok(())
+}
 use clap::CommandFactory;
 use serde_json::Value;
 use std::fs;
@@ -25,16 +58,16 @@ fn example_source(format: &str) -> PathBuf {
 }
 
 async fn append_canonical_note(storage: &std::path::Path) -> Result<()> {
-    let coords = persisting_pchronicle::StoryCoords::new(
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
         storage.to_string_lossy(),
         "agent",
         "session",
         None,
     );
-    persisting_pchronicle::RawEventLanceStore
+    persisting_pchronicle::storage::RawEventLanceStore
         .append_events(
             &coords,
-            &[persisting_pchronicle::EventRecord {
+            &[persisting_pchronicle::model::EventRecord {
                 identity: Default::default(),
                 seq: 0,
                 source: "test".into(),
@@ -92,16 +125,16 @@ fn command_tree_contains_the_product_commands() {
 async fn project_watch_emits_sync_and_verification_state() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let storage = temp.path().join("capture");
-    let coords = persisting_pchronicle::StoryCoords::new(
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
         storage.to_string_lossy(),
         "agent",
         "session",
         None,
     );
-    persisting_pchronicle::RawEventLanceStore
+    persisting_pchronicle::storage::RawEventLanceStore
         .append_events(
             &coords,
-            &[persisting_pchronicle::EventRecord {
+            &[persisting_pchronicle::model::EventRecord {
                 identity: Default::default(),
                 seq: 0,
                 source: "test".into(),
@@ -120,9 +153,9 @@ async fn project_watch_emits_sync_and_verification_state() -> Result<()> {
             }],
         )
         .await?;
-    let events = persisting_pchronicle::raw_event_lance_path(&coords)?;
+    let events = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
     let projection = temp.path().join("storyline");
-    persisting_pchronicle::build_storyline_projection(
+    persisting_pchronicle::storage::build_storyline_projection(
         events.to_string_lossy(),
         projection.to_string_lossy(),
         "events.lance",
@@ -670,7 +703,7 @@ async fn find_reports_truncation_and_empty_results() -> Result<()> {
         "pchronicle",
         "find",
         example_dataset("openai-messages").to_str().unwrap(),
-        "--run-id",
+        "--document-id",
         "training-001",
         "--max-results",
         "1",
@@ -826,7 +859,7 @@ async fn import_creates_queryable_lossless_datasets_for_all_example_formats() ->
     let temp = tempfile::tempdir()?;
     for (format, expected_format, source_name, expected_runs) in [
         ("atif", "atif", "trajectories.atif.json", 1),
-        ("openai-messages", "openai_msg", "session_steps.json", 2),
+        ("openai-messages", "openai-msg", "session_steps.json", 2),
         ("actf", "actf", "trajectories.actf.json", 1),
     ] {
         let input = example_source(format);
@@ -966,7 +999,7 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
 }
 
 #[tokio::test]
-async fn import_is_create_only_and_rejects_duplicate_sessions() -> Result<()> {
+async fn import_is_create_only_and_rejects_duplicate_documents() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("existing");
     fs::create_dir(&output)?;
@@ -1005,10 +1038,64 @@ async fn import_is_create_only_and_rejects_duplicate_sessions() -> Result<()> {
         .await
         .unwrap_err();
     assert!(
-        error.to_string().contains("duplicate session_id"),
+        error.to_string().contains("duplicate document_id"),
         "{error:#}"
     );
     assert!(!duplicate_output.exists());
+
+    let mut first: Value = serde_json::from_slice(&fs::read(example_source("atif"))?)?;
+    first["trajectory_id"] = serde_json::json!("document-a");
+    let mut second = first.clone();
+    second["trajectory_id"] = serde_json::json!("document-b");
+    let shared_input = temp.path().join("shared-session.json");
+    fs::write(
+        &shared_input,
+        serde_json::to_vec(&serde_json::json!([first, second]))?,
+    )?;
+    let shared_output = temp.path().join("shared-session");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        shared_input.to_str().unwrap(),
+        "--output",
+        shared_output.to_str().unwrap(),
+        "--format",
+        "atif",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(shared_output.is_dir());
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_validation_does_not_inherit_the_materialization_row_limit() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("large-valid.atif.json");
+    let steps = (1..=10_000)
+        .map(|step_id| {
+            serde_json::json!({
+                "step_id": step_id,
+                "source": "agent",
+                "message": "ok"
+            })
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        &input,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": "ATIF-v1.7",
+            "trajectory_id": "large-document",
+            "session_id": "large-session",
+            "agent": {"name": "test", "version": "1"},
+            "steps": steps
+        }))?,
+    )?;
+
+    assert_eq!(
+        exchange::validate_import_source(ExchangeFormat::Atif, &input).await?,
+        1
+    );
     Ok(())
 }
 
@@ -1075,7 +1162,7 @@ async fn export_converts_complete_trajectories_between_formats() -> Result<()> {
     ])?;
     let mut stdout = Vec::new();
     run(cli, false, &mut stdout, &mut Vec::new()).await?;
-    let story: persisting_pchronicle::StorylineDocument = serde_json::from_slice(&stdout)?;
+    let story: persisting_pchronicle::model::StorylineDocument = serde_json::from_slice(&stdout)?;
     assert_eq!(story.session_id, "support-001");
     assert_eq!(story.turns.len(), 3);
     Ok(())
@@ -1533,7 +1620,7 @@ upstream = "http://{upstream_addr}/v1"
         )
         .await?,
     );
-    let engine = ChronicleQueryEngine::from_catalog_snapshot(snapshot).await?;
+    let engine = snapshot.query_engine(Default::default()).await?;
     let rows = engine
         .query_jsonl(
             "SELECT kind, COUNT(*) AS count FROM dataset.events GROUP BY kind ORDER BY kind",

@@ -4,13 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use persisting_pchronicle::detect_local_query_manifest;
-use persisting_pchronicle::store::{
-    story_runs_arrow_schema, story_steps_arrow_schema, story_tool_calls_arrow_schema,
-};
-use persisting_pchronicle::{
-    ChronicleFormat, ChronicleQueryBackend, ChronicleQueryEngine, FileTrajectoryDataSourceOptions,
-    LocalQueryManifest, SOURCE_FILE_COLUMN,
+use persisting_pchronicle::document::{detect_format, DocumentFormat};
+use persisting_pchronicle::query::{
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, SOURCE_FILE_COLUMN,
 };
 
 fn fixtures() -> PathBuf {
@@ -32,11 +28,19 @@ fn json_rows(output: &str) -> Result<Vec<serde_json::Value>> {
 #[tokio::test]
 async fn queries_one_openai_json_with_the_virtual_file_column() -> Result<()> {
     let input = fixtures().join("cybergym_0729001_trimmed.json");
-    let engine = ChronicleQueryEngine::open_openai_msg(&input)?;
-    assert!(matches!(
-        engine.backend(),
-        ChronicleQueryBackend::OpenaiMsg { files: 1 }
-    ));
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::OpenaiMsg,
+        &input,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    assert_eq!(
+        engine
+            .backend_info()
+            .expect("document backend info")
+            .source_count,
+        1
+    );
 
     let rows = json_rows(
         &engine
@@ -68,9 +72,17 @@ async fn auto_detects_and_queries_response_only_openai_rows() -> Result<()> {
         temp.path(),
         r#"[{"session_id":"response-only","step_id":1,"response":{"role":"assistant","content":"done"}}]"#,
     )?;
-    let manifest = detect_local_query_manifest(temp.path())?;
-    assert_eq!(manifest.format(), ChronicleFormat::OpenaiMsg);
-    let engine = ChronicleQueryEngine::open_local_manifest(manifest)?;
+    let input = fs::read_to_string(temp.path())?;
+    assert_eq!(
+        detect_format(Some(temp.path()), Some(&input))?,
+        Some(DocumentFormat::OpenaiMsg)
+    );
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::OpenaiMsg,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let rows = json_rows(&engine.query_jsonl("SELECT session_id FROM runs").await?)?;
     assert_eq!(rows[0]["session_id"], "response-only");
     Ok(())
@@ -90,11 +102,19 @@ async fn openai_directory_uses_relative_paths_for_like_narrowing() -> Result<()>
         nested.join("second.json"),
     )?;
 
-    let engine = ChronicleQueryEngine::open_openai_msg(temp.path())?;
-    assert!(matches!(
-        engine.backend(),
-        ChronicleQueryBackend::OpenaiMsg { files: 2 }
-    ));
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::OpenaiMsg,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    assert_eq!(
+        engine
+            .backend_info()
+            .expect("document backend info")
+            .source_count,
+        2
+    );
     let rows = json_rows(
         &engine
             .query_jsonl(
@@ -127,11 +147,19 @@ async fn actf_directory_can_be_narrowed_by_filename_wildcard() -> Result<()> {
         temp.path().join("protein.actf.json"),
     )?;
 
-    let engine = ChronicleQueryEngine::open_actf(temp.path())?;
-    assert!(matches!(
-        engine.backend(),
-        ChronicleQueryBackend::Actf { files: 2 }
-    ));
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Actf,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    assert_eq!(
+        engine
+            .backend_info()
+            .expect("document backend info")
+            .source_count,
+        2
+    );
     let rows = json_rows(
         &engine
             .query_jsonl(
@@ -154,7 +182,12 @@ async fn file_like_filter_prunes_unmatched_files_before_they_are_opened() -> Res
     )?;
     fs::write(temp.path().join("unmatched.json"), "not-json\n")?;
 
-    let engine = ChronicleQueryEngine::open_openai_msg(temp.path())?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::OpenaiMsg,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let rows = json_rows(
         &engine
             .query_jsonl(
@@ -188,87 +221,19 @@ async fn file_like_filter_prunes_unmatched_files_before_they_are_opened() -> Res
 }
 
 #[tokio::test]
-async fn detected_manifest_is_the_exact_reader_file_set() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    fs::copy(
-        fixtures().join("cybergym_07270003_trimmed.json"),
-        temp.path().join("first.json"),
-    )?;
-    let manifest = detect_local_query_manifest(temp.path())?;
-    fs::write(temp.path().join("added-after-detection.json"), "not-json\n")?;
-
-    let engine = ChronicleQueryEngine::open_local_manifest(manifest)?;
-    let rows = json_rows(&engine.query_jsonl("SELECT session_id FROM runs").await?)?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["session_id"], "cyber-a");
-    Ok(())
-}
-
-#[test]
-fn virtual_file_column_does_not_modify_physical_lance_schemas() {
-    assert!(story_runs_arrow_schema()
-        .field_with_name(SOURCE_FILE_COLUMN)
-        .is_err());
-    assert!(story_steps_arrow_schema()
-        .field_with_name(SOURCE_FILE_COLUMN)
-        .is_err());
-    assert!(story_tool_calls_arrow_schema()
-        .field_with_name(SOURCE_FILE_COLUMN)
-        .is_err());
-}
-
-#[tokio::test]
-async fn shared_cache_reuses_one_normalization_across_virtual_tables() -> Result<()> {
+async fn opened_file_fingerprint_fails_closed_after_mutation() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input.json");
     fs::copy(fixtures().join("cybergym_07270003_trimmed.json"), &input)?;
-    let manifest = LocalQueryManifest::for_format(&input, ChronicleFormat::OpenaiMsg)?;
-    let engine = ChronicleQueryEngine::open_local_manifest_with_options(
-        manifest,
-        FileTrajectoryDataSourceOptions {
-            cache_files: 1,
-            cache_bytes: 16 * 1024 * 1024,
-            ..FileTrajectoryDataSourceOptions::default()
-        },
-    )?;
-    assert_eq!(
-        json_rows(&engine.query_jsonl("SELECT * FROM runs").await?)?.len(),
-        1
-    );
-
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::OpenaiMsg,
+        &input,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     fs::write(&input, "not-json")?;
-    assert!(!engine.query_jsonl("SELECT * FROM steps").await?.is_empty());
-    let metrics = engine.local_file_metrics().expect("local metrics");
-    assert_eq!(metrics.files_parsed, 1);
-    assert!(metrics.cache_hits >= 1);
-    assert!(metrics.source_bytes_read > 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn manifest_fingerprint_and_file_size_limits_fail_closed() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let input = temp.path().join("input.json");
-    fs::copy(fixtures().join("cybergym_07270003_trimmed.json"), &input)?;
-    let manifest = LocalQueryManifest::for_format(&input, ChronicleFormat::OpenaiMsg)?;
-    fs::write(&input, "not-json")?;
-    let engine = ChronicleQueryEngine::open_local_manifest(manifest)?;
     let changed = engine.query("SELECT * FROM runs").await.unwrap_err();
     assert!(format!("{changed:#}").contains("changed after manifest"));
-
-    let manifest = LocalQueryManifest::for_format(
-        fixtures().join("cybergym_07270003_trimmed.json"),
-        ChronicleFormat::OpenaiMsg,
-    )?;
-    let engine = ChronicleQueryEngine::open_local_manifest_with_options(
-        manifest,
-        FileTrajectoryDataSourceOptions {
-            max_file_bytes: 1,
-            ..FileTrajectoryDataSourceOptions::default()
-        },
-    )?;
-    let oversized = engine.query("SELECT * FROM runs").await.unwrap_err();
-    assert!(format!("{oversized:#}").contains("max_file_bytes"));
     Ok(())
 }
 
@@ -283,7 +248,12 @@ async fn multi_file_joins_require_the_file_key() -> Result<()> {
         fixtures().join("cybergym_07270003_trimmed.json"),
         temp.path().join("two.json"),
     )?;
-    let engine = ChronicleQueryEngine::open_openai_msg(temp.path())?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::OpenaiMsg,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let unsafe_join = engine
         .query(
             "SELECT * FROM steps s JOIN tool_calls t \
@@ -346,8 +316,18 @@ async fn atif_steps_projection_matches_full_normalization_and_prunes_rows() -> R
         serde_json::to_vec_pretty(&vec![first, second])?,
     )?;
 
-    let projected = ChronicleQueryEngine::open_atif(&ndjson)?;
-    let full = ChronicleQueryEngine::open_atif(&compatibility)?;
+    let projected = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &ndjson,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let full = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &compatibility,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let queries = [
         "SELECT COUNT(*) AS steps FROM steps",
         "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source",
@@ -412,12 +392,27 @@ async fn projected_atif_streams_ndjson_pretty_object_and_pretty_array() -> Resul
     fs::write(&array, serde_json::to_vec_pretty(&documents)?)?;
 
     let sql = "SELECT session_id, step_id, source FROM steps ORDER BY session_id, step_id";
-    let ndjson_engine = ChronicleQueryEngine::open_atif(&ndjson)?;
+    let ndjson_engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &ndjson,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let ndjson_rows = ndjson_engine.query_jsonl(sql).await?;
-    let array_engine = ChronicleQueryEngine::open_atif(&array)?;
+    let array_engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &array,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     assert_eq!(array_engine.query_jsonl(sql).await?, ndjson_rows);
 
-    let object_engine = ChronicleQueryEngine::open_atif(&object)?;
+    let object_engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &object,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let object_rows = object_engine.query_jsonl(sql).await?;
     assert_eq!(json_rows(&object_rows)?.len(), 10);
     assert_eq!(json_rows(&ndjson_rows)?.len(), 170);
@@ -442,6 +437,62 @@ async fn projected_atif_streams_ndjson_pretty_object_and_pretty_array() -> Resul
 }
 
 #[tokio::test]
+async fn projected_atif_includes_embedded_subagent_steps_by_document_id() -> Result<()> {
+    let input = serde_json::json!({
+        "schema_version": "ATIF-v1.7",
+        "session_id": "shared-run",
+        "trajectory_id": "root",
+        "agent": {"name": "root", "version": "1"},
+        "steps": [{"step_id": 1, "source": "agent", "message": "root"}],
+        "subagent_trajectories": [{
+            "schema_version": "ATIF-v1.7",
+            "trajectory_id": "child",
+            "agent": {"name": "child", "version": "1"},
+            "steps": [{"step_id": 1, "source": "agent", "message": "child"}]
+        }]
+    });
+    let file = tempfile::NamedTempFile::with_suffix(".json")?;
+    fs::write(file.path(), serde_json::to_vec(&input)?)?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        file.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+
+    let documents = engine
+        .query_jsonl("SELECT document_id, session_id FROM runs ORDER BY document_id")
+        .await?;
+    assert_eq!(
+        json_rows(&documents)?,
+        vec![
+            serde_json::json!({"document_id": "child", "session_id": "shared-run"}),
+            serde_json::json!({"document_id": "root", "session_id": "shared-run"}),
+        ]
+    );
+
+    let rows = engine
+        .query_jsonl("SELECT document_id, session_id, message_json FROM steps ORDER BY document_id")
+        .await?;
+    assert_eq!(
+        json_rows(&rows)?,
+        vec![
+            serde_json::json!({
+                "document_id": "child",
+                "session_id": "shared-run",
+                "message_json": "\"child\""
+            }),
+            serde_json::json!({
+                "document_id": "root",
+                "session_id": "shared-run",
+                "message_json": "\"root\""
+            }),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn projected_atif_ignores_unselected_large_values_without_materializing_the_file(
 ) -> Result<()> {
     let mut trajectory: serde_json::Value = serde_json::from_str(&fs::read_to_string(
@@ -453,7 +504,12 @@ async fn projected_atif_ignores_unselected_large_values_without_materializing_th
     let temp = tempfile::NamedTempFile::with_suffix(".json")?;
     fs::write(temp.path(), serde_json::to_vec_pretty(&trajectory)?)?;
 
-    let engine = ChronicleQueryEngine::open_atif(temp.path())?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let rows = json_rows(
         &engine
             .query_jsonl("SELECT step_id FROM steps ORDER BY step_id")
@@ -468,59 +524,20 @@ async fn projected_atif_ignores_unselected_large_values_without_materializing_th
 }
 
 #[tokio::test]
-async fn projected_ndjson_rejects_a_record_above_the_configured_bound() -> Result<()> {
-    let trajectory = fs::read_to_string(atif_fixtures().join("dialogue_10.json"))?;
-    let value: serde_json::Value = serde_json::from_str(&trajectory)?;
-    let temp = tempfile::NamedTempFile::with_suffix(".ndjson")?;
-    fs::write(temp.path(), format!("{}\n", serde_json::to_string(&value)?))?;
-    let manifest = LocalQueryManifest::for_format(temp.path(), ChronicleFormat::Atif)?;
-    let engine = ChronicleQueryEngine::open_local_manifest_with_options(
-        manifest,
-        FileTrajectoryDataSourceOptions {
-            max_record_bytes: 512,
-            ..FileTrajectoryDataSourceOptions::default()
-        },
-    )?;
-    let error = engine
-        .query("SELECT COUNT(*) FROM steps")
-        .await
-        .unwrap_err();
-    assert!(
-        format!("{error:#}").contains("max_record_bytes 512"),
-        "{error:#}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn projected_array_enforces_record_bounds_and_json_separators() -> Result<()> {
+async fn projected_array_enforces_json_separators() -> Result<()> {
     let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(
         atif_fixtures().join("dialogue_10.json"),
     )?)?;
     let record = serde_json::to_string(&value)?;
 
-    let oversized = tempfile::NamedTempFile::with_suffix(".json")?;
-    fs::write(oversized.path(), format!("[{record}]"))?;
-    let manifest = LocalQueryManifest::for_format(oversized.path(), ChronicleFormat::Atif)?;
-    let engine = ChronicleQueryEngine::open_local_manifest_with_options(
-        manifest,
-        FileTrajectoryDataSourceOptions {
-            max_record_bytes: 512,
-            ..FileTrajectoryDataSourceOptions::default()
-        },
-    )?;
-    let error = engine
-        .query("SELECT COUNT(*) FROM steps")
-        .await
-        .unwrap_err();
-    assert!(
-        format!("{error:#}").contains("max_record_bytes 512"),
-        "{error:#}"
-    );
-
     let missing_comma = tempfile::NamedTempFile::with_suffix(".json")?;
     fs::write(missing_comma.path(), format!("[{record} {record}]"))?;
-    let engine = ChronicleQueryEngine::open_atif(missing_comma.path())?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        missing_comma.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let error = engine
         .query("SELECT COUNT(*) FROM steps")
         .await
@@ -529,7 +546,12 @@ async fn projected_array_enforces_record_bounds_and_json_separators() -> Result<
 
     let trailing_comma = tempfile::NamedTempFile::with_suffix(".json")?;
     fs::write(trailing_comma.path(), format!("[{record},]"))?;
-    let engine = ChronicleQueryEngine::open_atif(trailing_comma.path())?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        trailing_comma.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let error = engine
         .query("SELECT COUNT(*) FROM steps")
         .await

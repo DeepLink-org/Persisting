@@ -27,6 +27,13 @@ use crate::{
 
 use super::trajectory::{chronicle_sink, ChronicleWriter};
 
+type ChronicleSinks = (
+    Arc<dyn TrajectoryEventSink>,
+    Arc<dyn crate::EventSink>,
+    Option<ChronicleWriter>,
+    Option<Arc<dyn persisting_events::ChronicleControl>>,
+);
+
 #[cfg(target_os = "linux")]
 pub(super) const RUN_COMMAND_ABOUT: &str =
     "Execute one Agent Run; --safe selects the rootless Linux sandbox";
@@ -853,12 +860,8 @@ async fn execute_config(
         .dir
         .clone()
         .or_else(|| Some(storage.join("chronicle")));
-    let (sink, event_sink, writer, chronicle_control): (
-        Arc<dyn TrajectoryEventSink>,
-        Arc<dyn crate::EventSink>,
-        Option<ChronicleWriter>,
-        Option<Arc<dyn persisting_events::ChronicleControl>>,
-    ) = match config.chronicle.mode {
+    let (sink, event_sink, writer, chronicle_control): ChronicleSinks = match config.chronicle.mode
+    {
         ChronicleMode::Off => (
             Arc::new(SeqOnlySink::new()),
             Arc::new(crate::NoopEventSink),

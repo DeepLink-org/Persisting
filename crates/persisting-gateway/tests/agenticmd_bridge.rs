@@ -1,33 +1,26 @@
-//! Capture ↔ pChronicle bridge: debug-view mapping, materialize, and explicit import.
+//! Capture → Storyline → AgenticMD bridge tests.
 
-use persisting_gateway::projection::dialogue::capture_record_to_agenticmd_block;
+use persisting_gateway::projection::dialogue::capture_record_to_storyline_turn;
 use persisting_gateway::projection::markdown_pipeline::MarkdownPipeline;
-use persisting_gateway::projection::markdown_trajectory::format_document_preamble;
 use persisting_gateway::record::EventRecord;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;
-use persisting_pchronicle::{
-    agenticmd_block_to_event_record, agenticmd_blocks_to_event_records,
-    encode_agenticmd_block_validated, markdown_document_to_event_records, parse_agenticmd_document,
-    parse_agenticmd_document_validated, write_agenticmd_document,
-};
+use persisting_pchronicle::document::{decode_agenticmd, write_agenticmd_storyline};
+use persisting_pchronicle::model::StorylineDocument;
 use serde_json::json;
 
 fn fixture() -> &'static str {
     include_str!("fixtures/agenticmd/demo-run-001.md")
 }
 
-fn fixture_records(document: &str) -> anyhow::Result<Vec<EventRecord>> {
-    agenticmd_blocks_to_event_records(&parse_agenticmd_document_validated(document)?)
-}
-
 fn materialize_records(path: &std::path::Path, records: &[EventRecord]) -> anyhow::Result<()> {
-    let blocks = MarkdownPipeline::agenticmd_blocks_from_records(records)?;
-    write_agenticmd_document(path, &format_document_preamble(None)?, &blocks)
+    let turns = MarkdownPipeline::storyline_turns_from_records(records)?;
+    let mut story = StorylineDocument::new("s1", "gateway");
+    story.turns = turns;
+    write_agenticmd_storyline(path, &story)
 }
 
-#[test]
-fn encoded_document_is_accepted_by_both_parser_surfaces() {
+fn pair() -> [EventRecord; 2] {
     let call = Call {
         call_id: "c1".into(),
         trace_id: "t1".into(),
@@ -35,134 +28,59 @@ fn encoded_document_is_accepted_by_both_parser_surfaces() {
     };
     let mut req = llm_request_record(
         Some("s1".into()),
-        None,
+        Some("gateway".into()),
         "m",
         "/v1/chat/completions",
         &json!({"messages":[{"role":"user","content":"hi"}]}),
     );
+    req.seq = 1;
+    req.call_id = Some("c1".into());
     req.timestamp = Some("2026-01-01T00:00:00Z".into());
     let mut resp = llm_response_record(
         Some("s1".into()),
-        None,
+        Some("gateway".into()),
         200,
         &json!({"choices":[{"message":{"role":"assistant","content":"yo"}}]}),
         false,
         &call,
     );
+    resp.seq = 2;
     resp.call_id = Some("c1".into());
-    resp.timestamp = Some("2026-01-01T00:00:00Z".into());
-
-    let mut out = format_document_preamble(None).unwrap();
-    for rec in [req, resp] {
-        let block = capture_record_to_agenticmd_block(&rec).unwrap();
-        out.push_str(&encode_agenticmd_block_validated(&block).unwrap());
-    }
-
-    let a = parse_agenticmd_document_validated(&out).unwrap();
-    let b = parse_agenticmd_document(&out).unwrap().blocks;
-    assert_eq!(a.len(), b.len());
-    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-        assert_eq!(x.body, y.body, "encoded body[{i}]");
-        agenticmd_block_to_event_record(x).unwrap_or_else(|e| panic!("block[{i}]: {e:#}"));
-    }
+    resp.timestamp = Some("2026-01-01T00:00:01Z".into());
+    [req, resp]
 }
 
 #[test]
-fn explicit_import_uses_chronicle_parse() {
-    let records = fixture_records(fixture()).expect("AgenticMD import parse");
-    assert_eq!(records.len(), 2);
-    assert!(records.iter().any(|r| {
-        r.payload
-            .get("_agenticmd")
-            .and_then(|v| v.get("source"))
-            .and_then(|v| v.as_str())
-            == Some("user")
-    }));
+fn capture_turns_roundtrip_through_public_storyline_api() {
+    let [req, resp] = pair();
+    let mut story = StorylineDocument::new("s1", "gateway");
+    story.turns = vec![
+        capture_record_to_storyline_turn(&req).unwrap(),
+        capture_record_to_storyline_turn(&resp).unwrap(),
+    ];
+
+    let encoded = persisting_pchronicle::document::encode_agenticmd(&story).unwrap();
+    assert_eq!(decode_agenticmd(&encoded).unwrap(), story);
 }
 
 #[test]
-fn import_keeps_debug_view_metadata() {
-    let doc = fixture();
-    let via_chronicle = markdown_document_to_event_records(doc).unwrap();
-    let records = fixture_records(doc).unwrap();
-    assert_eq!(records.len(), 2);
-    for rec in &records {
-        assert!(
-            rec.payload
-                .get("_agenticmd")
-                .and_then(|v| v.get("block_fields"))
-                .is_some(),
-            "expected _agenticmd.block_fields on seq={}",
-            rec.seq
-        );
-    }
-    assert_eq!(
-        records[1].call_id.as_deref(),
-        Some("call-demo-1"),
-        "assistant call_id preserved"
-    );
-    assert_eq!(
-        records[1].payload["_agenticmd"]["block_fields"]["trace_id"].as_str(),
-        Some("trace-demo-1")
-    );
-    assert_eq!(via_chronicle, records);
+fn legacy_fixture_still_imports_as_storyline() {
+    let story = decode_agenticmd(fixture()).expect("legacy AgenticMD import parse");
+    assert_eq!(story.turns.len(), 2);
+    assert_eq!(story.turns[0].source, "user");
+    assert_eq!(story.turns[0].message, json!("你好"));
+    assert_eq!(story.turns[1].source, "agent");
 }
 
 #[test]
-fn capture_record_maps_through_agenticmd_block() {
-    use persisting_pchronicle::encode_agenticmd_block;
-
-    let mut req = llm_request_record(
-        Some("s1".into()),
-        None,
-        "m",
-        "/v1/chat/completions",
-        &json!({"messages":[{"role":"user","content":"hi"}]}),
-    );
-    req.seq = 7;
-    req.call_id = Some("c7".into());
-    let block = capture_record_to_agenticmd_block(&req).unwrap();
-    assert_eq!(block.header.type_name, "markdown");
-    assert_eq!(block.role(), Some("user"));
-    let wire = encode_agenticmd_block(&block).unwrap();
-    assert!(wire.contains("\"event_seq\":7") || wire.contains("\"event_seq\": 7"));
-    let back = agenticmd_block_to_event_record(&block).unwrap();
-    assert_eq!(back.seq, 7);
-    assert_eq!(back.call_id.as_deref(), Some("c7"));
-}
-
-#[test]
-fn materialize_writes_chronicle_parseable_markdown() {
-    let call = Call {
-        call_id: "c1".into(),
-        trace_id: "t1".into(),
-        started_at: "2026-01-01T00:00:00Z".into(),
-    };
-    let mut req = llm_request_record(
-        Some("s1".into()),
-        None,
-        "m",
-        "/v1/chat/completions",
-        &json!({"messages":[{"role":"user","content":"hi"}]}),
-    );
-    req.timestamp = Some("2026-01-01T00:00:00Z".into());
-    let mut resp = llm_response_record(
-        Some("s1".into()),
-        None,
-        200,
-        &json!({"choices":[{"message":{"role":"assistant","content":"yo"}}]}),
-        false,
-        &call,
-    );
-    resp.call_id = Some("c1".into());
-    resp.timestamp = Some("2026-01-01T00:00:00Z".into());
-
+fn materialize_writes_storyline_parseable_markdown() {
+    let records = pair();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sess.md");
-    materialize_records(&path, &[req, resp]).unwrap();
-    let text = std::fs::read_to_string(&path).unwrap();
-    let blocks = parse_agenticmd_document_validated(&text).unwrap();
-    assert_eq!(blocks.len(), 2);
-    let chronicle = parse_agenticmd_document(&text).unwrap();
-    assert_eq!(chronicle.blocks.len(), 2);
+    materialize_records(&path, &records).unwrap();
+    let story = decode_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(story.session_id, "s1");
+    assert_eq!(story.turns.len(), 2);
+    assert_eq!(story.turns[0].message, json!("hi"));
+    assert_eq!(story.turns[1].message, json!("yo"));
 }

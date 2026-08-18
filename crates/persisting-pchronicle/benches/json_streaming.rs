@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use persisting_pchronicle::FileTrajectoryDataSource;
+use persisting_pchronicle::document::DocumentFormat;
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 
 struct CountingAllocator;
 
@@ -147,15 +148,16 @@ fn main() -> Result<()> {
 }
 
 async fn run_query(input: &std::path::Path) -> Result<(u64, u64)> {
-    let source = FileTrajectoryDataSource::open_atif(input)?;
-    let metrics = source.metrics();
-    let context = source.session_context()?;
-    context
-        .sql("SELECT source, COUNT(*) FROM steps GROUP BY source")
-        .await?
-        .collect()
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        input,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    engine
+        .query("SELECT source, COUNT(*) FROM steps GROUP BY source")
         .await?;
-    let metrics = metrics.snapshot();
+    let metrics = engine.local_file_metrics().expect("ATIF file metrics");
     Ok((metrics.rows_scanned, metrics.streaming_buffer_peak_bytes))
 }
 

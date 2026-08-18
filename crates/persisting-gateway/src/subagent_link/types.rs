@@ -62,5 +62,5 @@ pub struct EnrichOutcome {
 }
 
 pub fn subagent_trajectory_path(storage_leaf: &str) -> String {
-    persisting_pchronicle::session_markdown_filename(storage_leaf)
+    persisting_pchronicle::storage::session_markdown_filename(storage_leaf)
 }

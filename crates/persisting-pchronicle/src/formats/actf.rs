@@ -106,14 +106,13 @@ pub struct ActfObservation {
 }
 
 impl ActfDocument {
-    pub const FORMAT_NAME: &'static str = "actf";
-
     pub fn from_json_str(input: &str) -> Result<Self> {
         let document: Self = serde_json::from_str(input)?;
         document.validate()?;
         Ok(document)
     }
 
+    #[cfg(test)]
     pub fn to_json_string_pretty(&self) -> Result<String> {
         self.validate()?;
         Ok(serde_json::to_string_pretty(self)?)
@@ -254,12 +253,13 @@ impl ActfTrajectory {
                     .get("tool_use_id")
                     .or_else(|| observation.extra.get("id"))
                     .and_then(Value::as_str);
-                if referenced_id.is_some_and(|id| !step_call_ids.contains(id)) {
-                    return Err(Error::Other(format!(
-                        "ACTF step {} observation references unknown tool id '{}'",
-                        step.step_id,
-                        referenced_id.expect("checked above")
-                    )));
+                if let Some(referenced_id) = referenced_id {
+                    if !step_call_ids.contains(referenced_id) {
+                        return Err(Error::Other(format!(
+                            "ACTF step {} observation references unknown tool id '{}'",
+                            step.step_id, referenced_id
+                        )));
+                    }
                 }
             }
         }
@@ -267,6 +267,7 @@ impl ActfTrajectory {
     }
 }
 
+#[cfg(test)]
 pub fn parse_actf_document(input: &str) -> Result<ActfDocument> {
     ActfDocument::from_json_str(input)
 }

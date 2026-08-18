@@ -7,7 +7,8 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 
-use crate::{detect_format, ChronicleFormat};
+use crate::format::DocumentFormat;
+use crate::formats::detect_format;
 
 pub const DEFAULT_MAX_LOCAL_QUERY_FILES: usize = 1_000_000;
 pub const DEFAULT_MAX_LOCAL_QUERY_ENTRIES: usize = 2_000_000;
@@ -85,7 +86,7 @@ impl LocalQueryInputFile {
     pub(crate) fn detect_format_with_options(
         &self,
         options: LocalQueryManifestOptions,
-    ) -> Result<ChronicleFormat> {
+    ) -> Result<DocumentFormat> {
         validate_options(options)?;
         self.validate_unchanged()?;
         let format = detect_query_format(&self.path, options)?;
@@ -119,8 +120,7 @@ impl LocalQueryInputFile {
 
 #[derive(Debug, Clone)]
 pub struct LocalQueryManifest {
-    input: PathBuf,
-    format: ChronicleFormat,
+    format: DocumentFormat,
     files: Arc<[LocalQueryInputFile]>,
 }
 
@@ -128,6 +128,7 @@ impl LocalQueryManifest {
     /// Freeze the candidate file list and infer its format from the first file
     /// in stable relative-path order. Each selected file is fully validated by
     /// its format reader when a query scans it.
+    #[cfg(test)]
     pub fn detect(path: impl AsRef<Path>) -> Result<Self> {
         Self::detect_with_options(path, LocalQueryManifestOptions::default())
     }
@@ -147,22 +148,28 @@ impl LocalQueryManifest {
     }
 
     /// Freeze a local input for an explicitly selected query format.
-    pub fn for_format(path: impl AsRef<Path>, format: ChronicleFormat) -> Result<Self> {
+    pub fn for_format(path: impl AsRef<Path>, format: DocumentFormat) -> Result<Self> {
         Self::for_format_with_options(path, format, LocalQueryManifestOptions::default())
     }
 
     pub fn for_format_with_options(
         path: impl AsRef<Path>,
-        format: ChronicleFormat,
+        format: DocumentFormat,
         options: LocalQueryManifestOptions,
     ) -> Result<Self> {
         let input = path.as_ref();
         validate_options(options)?;
         validate_query_format(format, input)?;
         let extensions: &[&str] = match format {
-            ChronicleFormat::Atif => &["json", "jsonl", "ndjson"],
-            ChronicleFormat::OpenaiMsg | ChronicleFormat::Actf => &["json"],
-            _ => unreachable!("query format was validated above"),
+            DocumentFormat::Atif => &["json", "jsonl", "ndjson"],
+            DocumentFormat::OpenaiMsg | DocumentFormat::Actf => &["json"],
+            _ => {
+                anyhow::bail!(
+                    "unsupported direct query format '{}' in {}",
+                    format,
+                    input.display()
+                )
+            }
         };
         let paths = input_files_with_extensions(input, extensions, options)?;
         anyhow::ensure!(
@@ -174,7 +181,7 @@ impl LocalQueryManifest {
         Self::from_paths(input, format, paths)
     }
 
-    fn from_paths(input: &Path, format: ChronicleFormat, paths: Vec<PathBuf>) -> Result<Self> {
+    fn from_paths(input: &Path, format: DocumentFormat, paths: Vec<PathBuf>) -> Result<Self> {
         let root = input.is_dir().then_some(input);
         let files = paths
             .into_iter()
@@ -188,7 +195,6 @@ impl LocalQueryManifest {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            input: input.to_path_buf(),
             format,
             files: files.into(),
         })
@@ -199,7 +205,7 @@ impl LocalQueryManifest {
     /// exposed to SQL as `_file_`.
     pub(crate) fn from_explicit_files(
         input: impl AsRef<Path>,
-        format: ChronicleFormat,
+        format: DocumentFormat,
         files: Vec<(PathBuf, String)>,
     ) -> Result<Self> {
         let files = files
@@ -214,7 +220,7 @@ impl LocalQueryManifest {
     /// `_file_` pruning without weakening its immutable snapshot boundary.
     pub(crate) fn from_frozen_files(
         input: impl AsRef<Path>,
-        format: ChronicleFormat,
+        format: DocumentFormat,
         files: Vec<LocalQueryInputFile>,
     ) -> Result<Self> {
         validate_query_format(format, input.as_ref())?;
@@ -224,17 +230,12 @@ impl LocalQueryManifest {
             file.validate_unchanged()?;
         }
         Ok(Self {
-            input: input.as_ref().to_path_buf(),
             format,
             files: files.into(),
         })
     }
 
-    pub fn input(&self) -> &Path {
-        &self.input
-    }
-
-    pub fn format(&self) -> ChronicleFormat {
+    pub fn format(&self) -> DocumentFormat {
         self.format
     }
 
@@ -247,19 +248,11 @@ impl LocalQueryManifest {
     }
 }
 
-pub fn detect_local_query_manifest(path: impl AsRef<Path>) -> Result<LocalQueryManifest> {
-    LocalQueryManifest::detect(path)
-}
-
-pub fn detect_local_query_format(path: impl AsRef<Path>) -> Result<ChronicleFormat> {
-    Ok(LocalQueryManifest::detect(path)?.format())
-}
-
-fn validate_query_format(format: ChronicleFormat, path: &Path) -> Result<()> {
+fn validate_query_format(format: DocumentFormat, path: &Path) -> Result<()> {
     anyhow::ensure!(
         matches!(
             format,
-            ChronicleFormat::Atif | ChronicleFormat::OpenaiMsg | ChronicleFormat::Actf
+            DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf
         ),
         "unsupported direct query format '{}' in {}",
         format,
@@ -268,7 +261,7 @@ fn validate_query_format(format: ChronicleFormat, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn detect_query_format(path: &Path, options: LocalQueryManifestOptions) -> Result<ChronicleFormat> {
+fn detect_query_format(path: &Path, options: LocalQueryManifestOptions) -> Result<DocumentFormat> {
     let format =
         if let Some(format) = detect_format(Some(path), None).map_err(anyhow::Error::from)? {
             format
@@ -442,7 +435,7 @@ mod tests {
             r#"[{"session_id":"s1","step_id":0,"messages":[]}]"#,
         )?;
         let manifest = LocalQueryManifest::detect(temp.path())?;
-        assert_eq!(manifest.format(), ChronicleFormat::OpenaiMsg);
+        assert_eq!(manifest.format(), DocumentFormat::OpenaiMsg);
         assert_eq!(manifest.files()[0].relative_path(), "nested/input.json");
         Ok(())
     }
@@ -487,7 +480,7 @@ mod tests {
         assert!(error.to_string().contains("max_detection_bytes"));
 
         let file = temp.path().join("one.json");
-        let manifest = LocalQueryManifest::for_format(&file, ChronicleFormat::OpenaiMsg)?;
+        let manifest = LocalQueryManifest::for_format(&file, DocumentFormat::OpenaiMsg)?;
         fs::write(&file, "[]")?;
         assert!(manifest.files()[0].validate_unchanged().is_err());
         Ok(())
@@ -501,7 +494,7 @@ mod tests {
         let file = LocalQueryInputFile::freeze(path.clone(), "input.json".into())?;
         assert_eq!(
             file.detect_format_with_options(LocalQueryManifestOptions::default())?,
-            ChronicleFormat::OpenaiMsg
+            DocumentFormat::OpenaiMsg
         );
 
         fs::write(&path, "[]")?;

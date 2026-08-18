@@ -27,16 +27,12 @@ use lance_index::optimize::OptimizeOptions;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::IndexType;
 
-pub use self::datafusion::{
-    EventFactSnapshot, RawEventDataSource, RawEventDataSourceOptions, RawEventTableProvider,
-    DATAFUSION_EVENTS_TABLE,
-};
+pub use self::datafusion::{EventFactSnapshot, RawEventDataSource, DATAFUSION_EVENTS_TABLE};
 use self::manifest as raw_event_manifest;
 pub use self::manifest::EventWriterFence;
 use self::manifest::{EventManifest, EventSegment};
 pub use self::rows::{
-    event_records_from_batch, event_row_from_batch, event_rows_from_batch, event_rows_to_batch,
-    raw_event_arrow_schema,
+    event_records_from_batch, event_rows_from_batch, event_rows_to_batch, raw_event_arrow_schema,
 };
 use self::rows::{event_row_for_storage, schema_columns_note};
 use super::{

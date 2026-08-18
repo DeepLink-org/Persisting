@@ -1,105 +1,97 @@
-//! Named storage formats supported by pChronicle.
-//!
-//! [`ChronicleFormat::Storyline`] is the **hub** interchange format.
-//! Peripheral formats convert only to/from storyline — never pairwise.
-//!
-//! [`ChronicleFormat::Events`] is **Lance-only** (`events.lance`); it is not a
-//! JSON/JSONL string format for convert APIs.
+//! pChronicle 支持的具名物理文档格式。
 
 use crate::{Error, Result};
 use std::fmt;
 use std::str::FromStr;
 
-/// First-class trajectory storage formats.
+/// pChronicle 能够打开的磁盘文档格式。
+///
+/// 枚举只描述物理表示，不暗示所有格式支持相同的读写操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChronicleFormat {
-    /// ATIF-enhanced Run→Storyline→Turn hub (`storyline`).
+pub enum DocumentFormat {
+    /// Lance 中 append-only 的 Canonical Event 事实。
+    CanonicalEvent,
+    /// Lance 中的 Storyline runs、steps、tool calls 和 objects。
     Storyline,
-    /// Capture canonical event log — **Lance dataset only** (`events`).
-    Events,
-    /// Capture TLV markdown dialogue view (`agenticmd`).
-    Agenticmd,
-    /// dlcapt OpenAI-messages step table (`openai_msg`).
-    OpenaiMsg,
-    /// Harbor ATIF JSON interchange (`atif`).
+    /// 人类可读的 Storyline Markdown。
+    AgenticMd,
+    /// ATIF JSON、JSONL 或 NDJSON。
     Atif,
-    /// ACTF v1.0 benchmark task/attempt trajectory document (`actf`).
+    /// OpenAI message corpus JSON。
+    OpenaiMsg,
+    /// ACTF JSON。
     Actf,
 }
 
-impl ChronicleFormat {
-    pub const ALL: &[ChronicleFormat] = &[
+impl DocumentFormat {
+    pub const ALL: &[Self] = &[
+        Self::CanonicalEvent,
         Self::Storyline,
-        Self::Events,
-        Self::Agenticmd,
-        Self::OpenaiMsg,
+        Self::AgenticMd,
         Self::Atif,
+        Self::OpenaiMsg,
         Self::Actf,
     ];
 
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
+            Self::CanonicalEvent => "canonical-event",
             Self::Storyline => "storyline",
-            Self::Events => "events",
-            Self::Agenticmd => "agenticmd",
-            Self::OpenaiMsg => "openai_msg",
+            Self::AgenticMd => "agenticmd",
             Self::Atif => "atif",
+            Self::OpenaiMsg => "openai-msg",
             Self::Actf => "actf",
-        }
-    }
-
-    pub fn is_hub(self) -> bool {
-        matches!(self, Self::Storyline)
-    }
-
-    /// `events` has no string wire form (Lance-only).
-    pub fn is_lance_only(self) -> bool {
-        matches!(self, Self::Events)
-    }
-
-    pub fn origin(self) -> &'static str {
-        match self {
-            Self::Storyline => "pchronicle (hub)",
-            Self::Events => "persisting-gateway (Lance)",
-            Self::Agenticmd => "persisting-gateway",
-            Self::OpenaiMsg => "dlcapt",
-            Self::Atif => "Harbor ATIF",
-            Self::Actf => "ACTF v1.0",
-        }
-    }
-
-    pub fn primary_artifact(self) -> &'static str {
-        match self {
-            Self::Storyline => "storyline.json",
-            Self::Events => "events.lance",
-            Self::Agenticmd => "*.md",
-            Self::OpenaiMsg => "session_steps.json",
-            Self::Atif => "*.atif.json / *.atif.jsonl",
-            Self::Actf => "*.actf.json",
         }
     }
 }
 
-impl fmt::Display for ChronicleFormat {
+impl fmt::Display for DocumentFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl FromStr for ChronicleFormat {
+impl FromStr for DocumentFormat {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
+    fn from_str(input: &str) -> Result<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "canonical-event" => Ok(Self::CanonicalEvent),
             "storyline" => Ok(Self::Storyline),
-            "events" => Ok(Self::Events),
-            "agenticmd" => Ok(Self::Agenticmd),
-            "openai_msg" => Ok(Self::OpenaiMsg),
+            "agenticmd" => Ok(Self::AgenticMd),
             "atif" => Ok(Self::Atif),
+            "openai-msg" => Ok(Self::OpenaiMsg),
             "actf" => Ok(Self::Actf),
             other => Err(Error::Other(format!(
-                "unknown chronicle format '{other}'; expected storyline|events|agenticmd|openai_msg|atif|actf"
+                "unknown document format '{other}'; expected canonical-event|storyline|agenticmd|atif|openai-msg|actf"
             ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DocumentFormat;
+    use std::str::FromStr;
+
+    #[test]
+    fn document_format_names_are_canonical_only() {
+        let cases = [
+            ("canonical-event", DocumentFormat::CanonicalEvent),
+            ("storyline", DocumentFormat::Storyline),
+            ("agenticmd", DocumentFormat::AgenticMd),
+            ("atif", DocumentFormat::Atif),
+            ("openai-msg", DocumentFormat::OpenaiMsg),
+            ("actf", DocumentFormat::Actf),
+        ];
+
+        for (name, expected) in cases {
+            assert_eq!(DocumentFormat::from_str(name).unwrap(), expected);
+            assert_eq!(expected.to_string(), name);
+        }
+
+        for alias in ["events", "lance", "md", "openai_msg", "session_steps"] {
+            assert!(DocumentFormat::from_str(alias).is_err(), "accepted {alias}");
         }
     }
 }

@@ -62,7 +62,7 @@ Storyline: Document    →  turns[]  →  tool_calls / observation / metrics (+ 
 | ATIF | Storyline wire | 说明 |
 |---|---|---|
 | `session_id` | `session` | 同义；Storyline Required |
-| `trajectory_id` | `run` | 近似映射 |
+| `trajectory_id` | `trajectory` | 文档级身份；与 run-scoped `session_id` 分离 |
 | `agent.name` / `version` / `model_name` / `tool_definitions` / `extra` | `agent.name` / `ver` / `model` / `tools` / `extra` | 另有 Required `agent.id` |
 | `notes` / `final_metrics` / `extra` | 同名（全名） | |
 | `continued_trajectory_ref` | `continued_trajectory_ref` | 同名 |
@@ -97,8 +97,9 @@ Storyline: Document    →  turns[]  →  tool_calls / observation / metrics (+ 
 
 | 方向 | 目标 |
 |---|---|
-| ATIF ↔ storyline | Step 折叠字段 + 时延字段可 roundtrip |
-| 其他外围 ↔ storyline | 对话级保真；协议细节可能有损 |
+| ATIF ↔ storyline | JSON 数据模型级无损；保留三态、嵌套 subagent、身份和 RFC3339 原文 |
+| ACTF/OpenAI Msg ↔ storyline | 同源恢复使用受控 residual，保证 JSON 数据模型级无损 |
+| 跨外围格式 | 输出目标格式可表达的全部语义；目标无对应字段时显式使用合成 API |
 
 ---
 
@@ -112,7 +113,8 @@ JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不
 
 | 短名 | 字段概念 | 位置 |
 |---|---|---|
-| `run` | `run_id` / `trajectory_id` | root |
+| `run` | `run_id` | root |
+| `trajectory` | `trajectory_id` | root |
 | `session` | `session_id` / `story_id` | root |
 | `children` | `child_session_ids` / `child_story_ids` | root |
 | `ver` | `version` | agent |

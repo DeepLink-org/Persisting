@@ -1,130 +1,69 @@
-//! pChronicle — Persisting's structured storage layer for Agent trajectories.
+//! pChronicle：Persisting 的结构化 Agent 轨迹存储与查询层。
 //!
-//! pChronicle owns the trajectory formats, physical schemas, storage backends,
-//! replay, conversion, search, judgment, and rebuildable views. Capture and
-//! clients call pChronicle directly; there is no separate storage engine layer.
+//! # 权威边界
 //!
-//! # Format architecture
-//!
-//! [`ChronicleFormat::Storyline`] is the **hub** (ATIF-aligned interchange).
-//! All other formats convert only through storyline:
+//! Canonical Event 是 append-only 运行时事实；[`model::StorylineDocument`] 是与 ATIF v1.7
+//! 对齐的交换和规范化查询模型。两者通过单向投影连接，Storyline 不承诺反建原始事件事实。
+//! ATIF、ACTF、OpenAI Msg 和 AgenticMD 只经 Storyline 互转；AgenticMD 是 Storyline 的
+//! Markdown 编码，不是另一套领域模型。
 //!
 //! ```text
-//! events ──┐
-//! agenticmd ┼──► storyline ──► events / agenticmd / openai_msg / atif / actf
-//! openai_msg┤
-//! atif ─────┤
-//! actf ─────┘
+//! events.lance ──单向投影──► StorylineDocument ──► Storyline 三表 Lance
+//!                                  ├──◄──► AgenticMD
+//!                                  ├──◄──► ATIF
+//!                                  ├──◄──► OpenAI Msg
+//!                                  └──◄──► ACTF
 //! ```
 //!
-//! Use [`convert::into_storyline`] / [`convert::from_storyline`] / [`convert::convert`].
+//! # 公共入口
+//!
+//! - [`model`]：Storyline、Canonical Event 与 LLM payload 权威类型；
+//! - [`document`]：六种磁盘格式、Storyline 语义 codec 与统一读取入口；
+//! - [`storage`]：Catalog、Lance store、append、投影和 revision；
+//! - [`query`]：DataFusion 查询引擎与能力快照。
+//!
+//! 外围 wire DTO、低层 parser、Markdown AST、Arrow codec、provider、manifest 与锁均不公开。
+//! `search` 是单独的 feature，其既有 API 不属于本次门面收敛范围。
 
+mod agenticmd;
 #[cfg(feature = "lance-store")]
 mod append_queue;
-pub mod atif;
-pub mod convert;
+mod atif;
+mod convert;
 #[cfg(feature = "lance-store")]
-pub mod discovery;
-pub mod error;
-pub mod format;
-pub mod formats;
-pub mod interop;
-#[cfg(feature = "lance-store")]
-pub mod judge_service;
-#[cfg(feature = "lance-store")]
-pub mod judgment;
-#[cfg(feature = "lance-store")]
-pub mod judgment_summary;
-pub mod layout;
-pub mod mapping;
+mod discovery;
+pub mod document;
+mod error;
+mod format;
+mod formats;
+mod interop;
+mod layout;
+#[cfg(feature = "search")]
 mod messages;
+pub mod model;
+#[cfg(feature = "search")]
+mod operations;
 #[cfg(feature = "lance-store")]
-pub mod operations;
+mod projection;
+pub mod query;
 #[cfg(feature = "lance-store")]
-pub mod projection;
-#[cfg(feature = "lance-store")]
-pub mod revision;
+mod revision;
 #[cfg(feature = "search")]
 pub mod search;
-pub mod store;
-pub mod storyline_schema;
+pub mod storage;
+mod store;
 
 #[cfg(feature = "lance-store")]
-pub use append_queue::{
-    raw_event_append_queue, raw_event_append_queue_with_capacity, RawEventAppendQueueError,
-    RawEventAppendSender, RawEventAppendWorker, DEFAULT_RAW_EVENT_BATCH_DELAY,
-    DEFAULT_RAW_EVENT_BATCH_SIZE, DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
-    DEFAULT_RAW_EVENT_HIERARCHY_FANOUT, DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY,
-    DEFAULT_RAW_EVENT_QUEUE_CAPACITY, DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
-};
-pub use atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
-pub use convert::{
-    actf_to_storyline, actf_to_storylines, convert, events_to_storyline, from_storyline,
-    into_storyline, is_actf_storyline, project_event_records, storyline_to_actf,
-    storylines_to_actf,
-};
+pub(crate) use document::{QueryCapabilities, QueryTables};
+pub(crate) use error::{Error, Result};
+pub(crate) use format::DocumentFormat;
+pub(crate) use formats::storyline::StorylineTurn;
+#[cfg(any(feature = "lance-store", test))]
+pub(crate) use formats::storyline::{FieldPresence, StoryLink, StorylineToolCall};
 #[cfg(feature = "lance-store")]
-pub use discovery::{
-    drop_lifecycle_run_partitions, expand_story_locations, expand_story_locations_blocking,
-};
-pub use error::{classify_error, Error, ErrorCode, Result};
-pub use format::ChronicleFormat;
-pub use formats::{
-    agenticmd_body_byte_offset, append_subagent_refs_footer, block_speaker, detect_format,
-    encode_agenticmd_block, encode_agenticmd_document, encode_agenticmd_preamble,
-    encode_agenticmd_session_frontmatter, events_lance_only_message, export_events_json_pretty,
-    export_events_jsonl, is_subagent_footer_line, parse_agenticmd_blocks_with_spans,
-    parse_agenticmd_document, parse_openai_msg_document, parse_storyline_document,
-    strip_subagent_footer_from_body, validate_agenticmd_block, validate_speaker,
-    validate_type_name, AgenticmdBlock, AgenticmdBlockSpan, AgenticmdClientMeta, AgenticmdDocument,
-    AgenticmdHeader, AgenticmdSessionFrontmatter, ChronicleEventRecordExt, EventIdentity,
-    EventRecord, EventsDocument, LlmCandidate, LlmContentPart, LlmExtensions, LlmGenerationParams,
-    LlmImageSource, LlmMessage, LlmProtocol, LlmRequest, LlmRequestEventPayload, LlmResponse,
-    LlmResponseEventPayload, LlmResponseFormat, LlmRole, LlmStreamEvent, LlmToolChoice,
-    LlmToolChoiceMode, LlmToolDefinition, LlmUsage, OpenaiMsgCorpusReader, OpenaiMsgDocument,
-    OpenaiMsgStep, RecoveredOpenaiMsgFile, StoryLink, StorylineAgent, StorylineDocument,
-    StorylineToolCall, StorylineTurn, AGENTICMD_BLOCK_LAYOUT, AGENTICMD_FORMAT_NAME,
-    AGENTICMD_FRONTMATTER_FORMAT, BLOCK_MARKER,
-};
-pub use formats::{
-    is_lossless_openai_storyline, parse_openai_msg_corpus_value, recover_openai_msg_files,
-};
-pub use formats::{
-    parse_actf_document, ActfAssistantContent, ActfAttempt, ActfDocument, ActfMetric,
-    ActfObservation, ActfStep, ActfToolCall, ActfTrajectory, ACTF_SCHEMA_VERSION,
-};
-pub use interop::{events_to_har, events_to_otlp_json, otlp_json_to_events};
-#[cfg(feature = "lance-store")]
-pub use judge_service::{
-    judge_trajectory, JudgeTrajectoryOutcome, JudgeTrajectoryRequest, JudgingMethod,
-};
-#[cfg(feature = "lance-store")]
-pub use judgment::{
-    build_llm_judge_prompt, dataset_path as judgment_dataset_path, dialogue_judge_units,
-    dry_run_judge_rows, evaluation_units, has_judgment, manual_few_shot_examples,
-    manual_judge_rows, parse_llm_judge_rows, pending_evaluation_units, read_judge_rows,
-    story_judge_body, write_judge_rows, EvaluationUnit, JudgeDialogueUnit, JudgeRow, JudgmentScope,
-    ManualJudgmentInput, MANUAL_RATIONALE_PREFIX, STORY_CALL_ID,
-};
-#[cfg(feature = "lance-store")]
-pub use judgment_summary::{
-    aggregate_judgments, session_judgment_summary, JudgmentAggregate, JudgmentRubricSummary,
-    JudgmentSessionSummary,
-};
-pub use layout::{
-    is_subagent_session_storage_key, is_trajectory_markdown_path, list_story_read_locations,
-    locate_run_bucket_markdown, locate_session_markdown, locate_session_markdown_for_key,
-    merge_story_location, resolve_story_read_location, sanitize_session_filename,
-    session_markdown_filename, session_markdown_path_for_key, session_markdown_write_path_for_key,
-    story_lance_event_path, story_lance_judgment_path, story_run_dir, try_infer_story_location,
-    StoryCoords, StoryLocationPartial,
-};
-pub use mapping::{
-    agenticmd_block_to_event_record, agenticmd_block_to_replay_json,
-    agenticmd_blocks_to_event_records, enrich_event_from_agenticmd_block,
-    event_record_to_agenticmd_block, event_record_to_agenticmd_block_with_text,
-    markdown_document_to_event_records,
-};
+pub(crate) use formats::storyline::{StorylineAgent, StorylinePresence};
+pub(crate) use formats::{EventIdentity, EventRecord, StorylineDocument};
+#[cfg(feature = "search")]
 pub use messages::*;
 #[cfg(feature = "search")]
 pub use operations::bridge::{
@@ -133,72 +72,16 @@ pub use operations::bridge::{
 };
 #[cfg(feature = "search")]
 pub use operations::dispatch::invoke_request_body;
-#[cfg(feature = "lance-store")]
-pub use projection::{
-    build_storyline_projection, canonical_projection_lineage, event_records_to_markdown_blocks,
-    layer_stats, materialize_lance_to_markdown, materialize_markdown_path,
-    projection_lineage_is_fresh, rebuild_storyline_projection, storyline_projection_status,
-    sync_storyline_projection, verify_storyline_projection, write_markdown_projection, LayerStats,
-    MaterializeOutcome, MaterializeStats, StorylineProjectionBuildReport,
-    StorylineProjectionStatus, StorylineProjectionSyncMode, StorylineProjectionSyncReport,
-    StorylineProjectionVerification, STORYLINE_PROJECTION_COMPLETENESS, STORYLINE_PROJECTOR_NAME,
-};
-#[cfg(feature = "lance-store")]
-pub use revision::{read_revisions, revision_dataset_path, write_revisions, RevisionRow};
 #[cfg(feature = "search")]
 pub use search::agent as agent_search;
 #[cfg(feature = "lance-store")]
-pub use store::maintain_raw_events;
-pub use store::{
-    agenticmd_block_count, agenticmd_replay_json_lines, agenticmd_structural_issues,
-    append_agenticmd_blocks, count_agenticmd_role, encode_agenticmd_block_validated,
-    find_block_by_call_id_and_role, index_agenticmd_path, list_agenticmd_paths,
-    parse_agenticmd_document_validated, parse_agenticmd_spans_validated,
-    read_agenticmd_blocks_from_file, rewrite_agenticmd_preamble, rewrite_block_range,
-    upsert_block_by_call_id, write_agenticmd_document, AgenticmdFileIndex,
-};
-#[cfg(feature = "lance-store")]
-pub use store::{
-    attempt_registry_now_ms, distinct_session_ids_in_run, event_record_to_event_row,
-    event_records_from_batch, event_row_from_batch, event_row_to_event_record,
-    event_rows_from_batch, event_rows_to_batch, export_source_dirs, export_story_bundle,
-    load_atif_trajectories, raw_event_arrow_schema, raw_event_lance_path, AppendOutcome,
-    AtifDataSource, AtifDataSourceOptions, AtifReader, AttemptRecord, AttemptRecordState,
-    AttemptRegistry, CatalogDataset, CatalogErrorPolicy, CatalogNamespace, CatalogPage,
-    CatalogProjectionStatus, CatalogSnapshotOptions, CatalogSourceDescription, CatalogSourceKind,
-    CatalogSourceRevision, CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle,
-    ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions, CommitRunOutcome,
-    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, EventFactSnapshot, EventLogLayoutStats,
-    EventRow, EventWriterFence, ExportOutcome, ExternalTableFormat, ExternalTableSpec,
-    FileTrajectoryDataSource, FileTrajectoryDataSourceOptions, FileTrajectoryFormat,
-    FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot, LanceMaintenanceOptions,
-    LanceMaintenanceReport, LeaseAcquireOutcome, LocalQueryInputFile, LocalQueryManifest,
-    LocalQueryManifestOptions, NamespacePath, ProjectionSourceSnapshot, RawEventDataSource,
-    RawEventDataSourceOptions, RawEventLanceAppender, RawEventLanceStore, RawEventTableProvider,
-    ReplayOutcome, RunControlStore, StorylineContentOptions, StorylineContentReadMode,
-    StorylineDataFusionTableNames, StorylineDataSource, StorylineDataSourceOptions,
-    StorylineLanceStore, StorylineMaintenanceReport, StorylineProjectionLineage,
-    StorylineStreamImportReport, StorylineTableKind, StorylineTablePaths, StorylineTableProvider,
-    TrajectoryStats, CATALOG_SOURCES_TABLE, CATALOG_TRAJECTORIES_TABLE, DATAFUSION_EVENTS_TABLE,
-    DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
-    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME,
-    DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
-    DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
-    DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_ROWS, DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES,
-    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES, SOURCE_FILE_COLUMN,
+pub(crate) use store::{
+    event_record_to_event_row, event_row_to_event_record, event_rows_from_batch, EventRow,
     TRAJECTORY_AGENT_ID_COL, TRAJECTORY_CALL_ID_COL, TRAJECTORY_COLS, TRAJECTORY_EVENT_ID_COL,
     TRAJECTORY_KIND_COL, TRAJECTORY_MODEL_COL, TRAJECTORY_PARENT_CALL_ID_COL,
     TRAJECTORY_PAYLOAD_JSON_COL, TRAJECTORY_SEQ_COL, TRAJECTORY_SESSION_ID_COL,
     TRAJECTORY_SOURCE_COL, TRAJECTORY_TIMESTAMP_COL, TRAJECTORY_TRACE_ID_COL,
 };
-#[cfg(feature = "lance-store")]
-pub use store::{detect_local_query_format, detect_local_query_manifest};
-pub use storyline_schema::{
-    reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
-    StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
-};
-
 #[cfg(feature = "search")]
 pub const PERSISTING_VECTOR_INDEX_NAME: &str = search::search_lance::PERSISTING_VECTOR_INDEX_NAME;
 #[cfg(feature = "search")]

@@ -3,20 +3,20 @@
 //! All paths (live `-f md`, materialize, reconcile) go through [`MarkdownPipeline`].
 //! Live session actors hold [`LiveMarkdownWriter`] (pipeline + target path + upsert).
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::AgenticmdBlock;
+use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
 use serde_json::Value;
 
-use super::dialogue::capture_record_to_agenticmd_block;
+use super::dialogue::capture_record_to_storyline_turn;
 use super::markdown_policy::should_skip_record;
-use super::markdown_trajectory::upsert_block_by_call_id;
+use super::markdown_trajectory::upsert_storyline_turn;
 use crate::dialogue_extract::count_visible_user_messages;
 use crate::record::{EventRecord, EventRecordExt};
 use crate::session::storage::{trajectory_run_dir, CaptureRoute};
-use persisting_pchronicle::session_markdown_write_path_for_key;
+use persisting_pchronicle::storage::session_markdown_write_path_for_key;
 
 /// Per-session sequential state: static filters + Claude Code history-replay dedup.
 #[derive(Debug, Default)]
@@ -41,22 +41,23 @@ impl MarkdownPipeline {
         self.skipped_call_ids.contains(call_id)
     }
 
-    pub fn try_agenticmd_block(&mut self, rec: &EventRecord) -> Result<Option<AgenticmdBlock>> {
+    pub fn try_storyline_turn(&mut self, rec: &EventRecord) -> Result<Option<StorylineTurn>> {
         if self.should_skip(rec) {
             return Ok(None);
         }
-        Ok(Some(capture_record_to_agenticmd_block(rec)?))
+        Ok(Some(capture_record_to_storyline_turn(rec)?))
     }
 
-    pub fn agenticmd_blocks_from_records(records: &[EventRecord]) -> Result<Vec<AgenticmdBlock>> {
+    pub fn storyline_turns_from_records(records: &[EventRecord]) -> Result<Vec<StorylineTurn>> {
         let mut pipeline = Self::default();
-        let mut blocks = Vec::new();
+        let mut turns = Vec::new();
         for rec in records {
-            if let Some(block) = pipeline.try_agenticmd_block(rec)? {
-                blocks.push(block);
+            if let Some(mut turn) = pipeline.try_storyline_turn(rec)? {
+                turn.id = turns.len() as i64 + 1;
+                turns.push(turn);
             }
         }
-        Ok(blocks)
+        Ok(turns)
     }
 
     pub fn call_ids_from_records(records: &[EventRecord]) -> BTreeSet<String> {
@@ -142,14 +143,25 @@ pub struct LiveMarkdownWriter {
     target: MarkdownTarget,
     enabled: bool,
     pipeline: MarkdownPipeline,
+    document: StorylineDocument,
+    turn_ids: HashMap<(String, String), i64>,
+    next_turn_id: i64,
 }
 
 impl LiveMarkdownWriter {
     pub fn new(target: MarkdownTarget, enabled: bool) -> Self {
+        let mut document = StorylineDocument::new(
+            target.route.storage_session_id.clone(),
+            target.agent_id.clone(),
+        );
+        document.run_id = target.route.root_session.clone();
         Self {
             target,
             enabled,
             pipeline: MarkdownPipeline::default(),
+            document,
+            turn_ids: HashMap::new(),
+            next_turn_id: 1,
         }
     }
 
@@ -161,24 +173,37 @@ impl LiveMarkdownWriter {
         if !self.enabled {
             return Ok(());
         }
-        let Some(block) = self.pipeline.try_agenticmd_block(rec)? else {
+        let Some(mut turn) = self.pipeline.try_storyline_turn(rec)? else {
             return Ok(());
         };
         let call_id = rec.call_id.as_deref().unwrap_or("");
+        turn.id = self.turn_id(call_id, &turn.source);
         let path = self.target.path();
-        upsert_block_by_call_id(&path, call_id, block)
+        upsert_storyline_turn(&path, &self.document, call_id, &turn)
             .with_context(|| format!("markdown upsert {}", path.display()))?;
         Ok(())
     }
 
-    pub fn write_draft(&mut self, call_id: &str, block: AgenticmdBlock) -> Result<()> {
+    pub fn write_draft(&mut self, call_id: &str, mut turn: StorylineTurn) -> Result<()> {
         if !self.enabled || self.pipeline.skips_draft(call_id) {
             return Ok(());
         }
+        turn.id = self.turn_id(call_id, &turn.source);
         let path = self.target.path();
-        upsert_block_by_call_id(&path, call_id, block)
+        upsert_storyline_turn(&path, &self.document, call_id, &turn)
             .with_context(|| format!("markdown draft upsert {}", path.display()))?;
         Ok(())
+    }
+
+    fn turn_id(&mut self, edit_key: &str, source: &str) -> i64 {
+        let key = (edit_key.to_string(), source.to_string());
+        if let Some(id) = self.turn_ids.get(&key) {
+            return *id;
+        }
+        let id = self.next_turn_id;
+        self.next_turn_id = self.next_turn_id.saturating_add(1);
+        self.turn_ids.insert(key, id);
+        id
     }
 }
 
@@ -201,7 +226,7 @@ mod tests {
     use crate::session::storage::CaptureRoute;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
     use crate::Call;
-    use persisting_pchronicle::read_agenticmd_blocks_from_file as read_blocks_from_file;
+    use persisting_pchronicle::document::decode_agenticmd;
     use serde_json::json;
 
     const LEVEL: CaptureLevel = CaptureLevel::Dialogue;
@@ -352,19 +377,19 @@ mod tests {
     fn intentional_duplicate_user_text_with_increasing_count_both_kept() {
         let mut p = MarkdownPipeline::default();
         assert!(p
-            .try_agenticmd_block(&request("c1", "hi", 1, None))
+            .try_storyline_turn(&request("c1", "hi", 1, None))
             .unwrap()
             .is_some());
         assert!(p
-            .try_agenticmd_block(&response("c1", "Hello"))
+            .try_storyline_turn(&response("c1", "Hello"))
             .unwrap()
             .is_some());
         assert!(p
-            .try_agenticmd_block(&request("c2", "hi", 2, None))
+            .try_storyline_turn(&request("c2", "hi", 2, None))
             .unwrap()
             .is_some());
         assert!(p
-            .try_agenticmd_block(&response("c2", "Hi again"))
+            .try_storyline_turn(&response("c2", "Hi again"))
             .unwrap()
             .is_some());
     }
@@ -373,19 +398,19 @@ mod tests {
     fn skips_history_replay_without_new_user_turn() {
         let mut p = MarkdownPipeline::default();
         assert!(p
-            .try_agenticmd_block(&request("c1", "hi", 1, None))
+            .try_storyline_turn(&request("c1", "hi", 1, None))
             .unwrap()
             .is_some());
         assert!(p
-            .try_agenticmd_block(&response("c1", "Hello"))
+            .try_storyline_turn(&response("c1", "Hello"))
             .unwrap()
             .is_some());
 
         let replay = request("c3", "hi", 1, None);
-        assert!(p.try_agenticmd_block(&replay).unwrap().is_none());
+        assert!(p.try_storyline_turn(&replay).unwrap().is_none());
         assert!(p.skips_draft("c3"));
         assert!(p
-            .try_agenticmd_block(&response("c3", "internal"))
+            .try_storyline_turn(&response("c3", "internal"))
             .unwrap()
             .is_none());
     }
@@ -397,28 +422,28 @@ mod tests {
 
         let mut p = MarkdownPipeline::default();
         assert!(p
-            .try_agenticmd_block(&request("c1", "hi", 1, None))
+            .try_storyline_turn(&request("c1", "hi", 1, None))
             .unwrap()
             .is_some());
         assert!(p
-            .try_agenticmd_block(&response("c1", "Hello"))
+            .try_storyline_turn(&response("c1", "Hello"))
             .unwrap()
             .is_some());
         assert!(p
-            .try_agenticmd_block(&request("c2", "review", 2, None))
+            .try_storyline_turn(&request("c2", "review", 2, None))
             .unwrap()
             .is_some());
         assert!(p
-            .try_agenticmd_block(&response("c2", "running tools"))
+            .try_storyline_turn(&response("c2", "running tools"))
             .unwrap()
             .is_some());
-        assert!(p.try_agenticmd_block(&tool_req).unwrap().is_some());
+        assert!(p.try_storyline_turn(&tool_req).unwrap().is_some());
         assert!(p
-            .try_agenticmd_block(&response("c-tool", "Let me dig in."))
+            .try_storyline_turn(&response("c-tool", "Let me dig in."))
             .unwrap()
             .is_some());
         assert!(p
-            .try_agenticmd_block(&response("c-final", "Full design review."))
+            .try_storyline_turn(&response("c-final", "Full design review."))
             .unwrap()
             .is_some());
     }
@@ -438,8 +463,11 @@ mod tests {
             request("call-4", "你好", 3, None),
             response("call-4", "你好！有什么我可以帮你的吗？"),
         ];
-        let blocks = MarkdownPipeline::agenticmd_blocks_from_records(&records).unwrap();
-        let bodies: Vec<_> = blocks.iter().map(|b| b.body.clone()).collect();
+        let turns = MarkdownPipeline::storyline_turns_from_records(&records).unwrap();
+        let bodies: Vec<_> = turns
+            .iter()
+            .map(|turn| turn.message.as_str().unwrap_or_default().to_string())
+            .collect();
         assert_eq!(
             bodies,
             vec![
@@ -522,14 +550,14 @@ mod tests {
             .unwrap();
         writer.write_record(&response("c4", "你好！")).unwrap();
 
-        let blocks = read_blocks_from_file(&path).unwrap();
-        assert_eq!(blocks.len(), 6);
-        assert_eq!(blocks[0].body, "hi");
-        assert_eq!(blocks[1].body, "Hello");
-        assert_eq!(blocks[2].body, "hi");
-        assert_eq!(blocks[3].body, "Hi again");
-        assert_eq!(blocks[4].body, "你好");
-        assert_eq!(blocks[5].body, "你好！");
+        let story = decode_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(story.turns.len(), 6);
+        assert_eq!(story.turns[0].message, json!("hi"));
+        assert_eq!(story.turns[1].message, json!("Hello"));
+        assert_eq!(story.turns[2].message, json!("hi"));
+        assert_eq!(story.turns[3].message, json!("Hi again"));
+        assert_eq!(story.turns[4].message, json!("你好"));
+        assert_eq!(story.turns[5].message, json!("你好！"));
     }
 
     #[test]
@@ -542,18 +570,11 @@ mod tests {
         writer.write_record(&request("c1", "hi", 1, None)).unwrap();
         writer.write_record(&request("c2", "hi", 1, None)).unwrap();
 
-        let draft_block = capture_record_to_agenticmd_block(&response("c2", "draft text")).unwrap();
-        writer.write_draft("c2", draft_block).unwrap();
+        let draft_turn = capture_record_to_storyline_turn(&response("c2", "draft text")).unwrap();
+        writer.write_draft("c2", draft_turn).unwrap();
 
-        let blocks = read_blocks_from_file(&path).unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(
-            blocks[0]
-                .header
-                .fields
-                .get("call_id")
-                .and_then(|v| v.as_str()),
-            Some("c1")
-        );
+        let story = decode_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(story.turns.len(), 1);
+        assert_eq!(story.turns[0].message, json!("hi"));
     }
 }

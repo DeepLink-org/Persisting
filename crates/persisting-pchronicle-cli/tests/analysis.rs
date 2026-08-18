@@ -5,6 +5,7 @@ mod common;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use std::fs;
 
 use common::{examples_root, run_cli};
 
@@ -71,6 +72,45 @@ async fn grouped_analysis_subcommands_have_deterministic_semantics() -> Result<(
             json!({"function_name":"deployment_status","calls":1,"trajectories":1,"sources":1,"duration_samples":0,"total_duration_ms":0}),
         ]
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn grouped_analysis_uses_document_identity_when_sessions_are_shared() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let trajectory = |document_id: &str, step_id: i64| {
+        json!({
+            "schema_version": "ATIF-v1.7",
+            "session_id": "shared-session",
+            "trajectory_id": document_id,
+            "agent": {"name": "shared-agent", "version": "1"},
+            "steps": [{
+                "step_id": step_id,
+                "source": "agent",
+                "message": "ok",
+                "tool_calls": [{"tool_call_id": format!("call-{step_id}"), "function_name": "lookup", "arguments": {}}]
+            }]
+        })
+    };
+    fs::write(
+        temp.path().join("shared.json"),
+        serde_json::to_vec(&json!([
+            trajectory("document-a", 1),
+            trajectory("document-b", 2)
+        ]))?,
+    )?;
+    let dataset = temp.path().to_string_lossy().into_owned();
+
+    let agents = run_cli(["analysis", "agents", &dataset, "--format", "jsonl"]).await?;
+    let agent_rows = jsonl_rows(&agents.stdout)?;
+    assert_eq!(agent_rows[0]["trajectories"], 2);
+    assert_eq!(agent_rows[0]["steps"], 2);
+    assert_eq!(agent_rows[0]["tool_calls"], 2);
+
+    let tools = run_cli(["analysis", "tools", &dataset, "--format", "jsonl"]).await?;
+    let tool_rows = jsonl_rows(&tools.stdout)?;
+    assert_eq!(tool_rows[0]["calls"], 2);
+    assert_eq!(tool_rows[0]["trajectories"], 2);
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use persisting_pchronicle::{EventRecord, JudgeRow};
+use persisting_pchronicle::model::EventRecord;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -13,7 +13,6 @@ pub(crate) struct ExplorerRunsQuery {
     pub(crate) status: Option<String>,
     pub(crate) agent: Option<String>,
     pub(crate) model: Option<String>,
-    pub(crate) verdict: Option<String>,
     pub(crate) path: Option<String>,
     pub(crate) sort: Option<String>,
     pub(crate) direction: Option<String>,
@@ -48,9 +47,6 @@ pub(crate) struct RunExplorerItem {
     #[serde(flatten)]
     pub(crate) run: RunSummary,
     pub(crate) model: Option<String>,
-    pub(crate) judgment_count: usize,
-    pub(crate) average_score: Option<f64>,
-    pub(crate) verdict: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -111,8 +107,6 @@ pub(crate) struct RunAnalysis {
     pub(crate) kind_breakdown: Vec<DimensionAggregate>,
     pub(crate) model_breakdown: Vec<DimensionAggregate>,
     pub(crate) tools: Vec<ToolAggregate>,
-    pub(crate) judgment_count: usize,
-    pub(crate) average_score: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -132,46 +126,17 @@ pub(crate) struct TurnSummary {
     pub(crate) tool_names: Vec<String>,
     pub(crate) event_seqs: Vec<u64>,
     pub(crate) has_error: bool,
-    pub(crate) judgment_count: usize,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct JudgmentView {
-    pub(crate) session_id: String,
-    pub(crate) call_id: String,
-    pub(crate) rubric_id: String,
-    pub(crate) score: i64,
-    pub(crate) verdict: String,
-    pub(crate) rationale: String,
-}
-
-impl From<&JudgeRow> for JudgmentView {
-    fn from(row: &JudgeRow) -> Self {
-        Self {
-            session_id: row.session_id.clone(),
-            call_id: row.call_id.clone(),
-            rubric_id: row.rubric_id.clone(),
-            score: row.score,
-            verdict: row.verdict.clone(),
-            rationale: row.rationale.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TurnDetail {
     pub(crate) summary: TurnSummary,
-    pub(crate) turn: persisting_pchronicle::StorylineTurn,
+    pub(crate) turn: persisting_pchronicle::model::StorylineTurn,
     pub(crate) wire_tool_calls: Vec<WireToolCall>,
     pub(crate) events: Vec<EventRecord>,
-    pub(crate) judgments: Vec<JudgmentView>,
 }
 
-pub(crate) fn run_page(
-    summaries: Vec<RunSummary>,
-    judgments: &BTreeMap<String, Vec<JudgeRow>>,
-    query: &ExplorerRunsQuery,
-) -> RunExplorerPage {
+pub(crate) fn run_page(summaries: Vec<RunSummary>, query: &ExplorerRunsQuery) -> RunExplorerPage {
     let needle = query
         .q
         .as_deref()
@@ -180,18 +145,9 @@ pub(crate) fn run_page(
         .to_ascii_lowercase();
     let mut records = summaries
         .into_iter()
-        .map(|run| {
-            let rows = judgments.get(&run_key(&run)).cloned().unwrap_or_default();
-            let average_score = average_score(&rows);
-            let verdict = aggregate_verdict(&rows);
-            let model = run.model_name.clone();
-            RunExplorerItem {
-                run,
-                model,
-                judgment_count: rows.len(),
-                average_score,
-                verdict,
-            }
+        .map(|run| RunExplorerItem {
+            model: run.model_name.clone(),
+            run,
         })
         .filter(|item| {
             (needle.is_empty()
@@ -212,10 +168,6 @@ pub(crate) fn run_page(
                     item.model.as_deref().unwrap_or_default(),
                     query.model.as_deref(),
                 )
-                && matches_filter(
-                    item.verdict.as_deref().unwrap_or_default(),
-                    query.verdict.as_deref(),
-                )
         })
         .collect::<Vec<_>>();
     let path_index = records.iter().map(|item| item.run.clone()).collect();
@@ -232,10 +184,6 @@ pub(crate) fn run_page(
     records.sort_by(
         |left, right| match query.sort.as_deref().unwrap_or("session") {
             "events" => left.run.row_count.cmp(&right.run.row_count),
-            "score" => left
-                .average_score
-                .partial_cmp(&right.average_score)
-                .unwrap_or(std::cmp::Ordering::Equal),
             "status" => left.run.status.cmp(&right.run.status),
             "agent" => left.run.agent_id.cmp(&right.run.agent_id),
             _ => left.run.session_id.cmp(&right.run.session_id),
@@ -261,7 +209,6 @@ pub(crate) fn analyze(
     run: RunSummary,
     turns: &[TrajectoryTurnView],
     events: &[EventRecord],
-    judgments: &[JudgeRow],
 ) -> RunAnalysis {
     let mut latencies = Vec::new();
     let mut ttfts = Vec::new();
@@ -436,8 +383,6 @@ pub(crate) fn analyze(
         kind_breakdown: dimension_aggregates(kinds),
         model_breakdown: dimension_aggregates(model_groups),
         tools,
-        judgment_count: judgments.len(),
-        average_score: average_score(judgments),
         run,
     }
 }
@@ -445,7 +390,6 @@ pub(crate) fn analyze(
 pub(crate) fn turn_page(
     turns: &[TrajectoryTurnView],
     events: &[EventRecord],
-    judgments: &[JudgeRow],
     q: Option<&str>,
     source: Option<&str>,
     offset: usize,
@@ -456,44 +400,26 @@ pub(crate) fn turn_page(
         .iter()
         .filter(|item| source.is_none_or(|source| source == "all" || item.turn.source == source))
         .filter(|item| needle.is_empty() || searchable_turn(item).contains(&needle))
-        .map(|item| turn_summary(item, events, judgments))
+        .map(|item| turn_summary(item, events))
         .collect();
     paginate(records, offset, limit.clamp(1, 500))
 }
 
-pub(crate) fn turn_detail(
-    item: &TrajectoryTurnView,
-    events: &[EventRecord],
-    judgments: &[JudgeRow],
-) -> TurnDetail {
+pub(crate) fn turn_detail(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnDetail {
     let linked = events
         .iter()
         .filter(|event| item.event_seqs.contains(&event.seq))
         .cloned()
         .collect::<Vec<_>>();
-    let scoped = judgments
-        .iter()
-        .filter(|row| item.call_id.as_deref() == Some(row.call_id.as_str()))
-        .map(JudgmentView::from)
-        .collect();
     TurnDetail {
-        summary: turn_summary(item, events, judgments),
+        summary: turn_summary(item, events),
         turn: item.turn.clone(),
         wire_tool_calls: item.wire_tool_calls.clone(),
         events: linked,
-        judgments: scoped,
     }
 }
 
-pub(crate) fn run_key(run: &RunSummary) -> String {
-    format!("{}\u{1f}{}\u{1f}{}", run.dataset, run.file, run.session_id)
-}
-
-fn turn_summary(
-    item: &TrajectoryTurnView,
-    events: &[EventRecord],
-    judgments: &[JudgeRow],
-) -> TurnSummary {
+fn turn_summary(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnSummary {
     let linked = events
         .iter()
         .filter(|event| item.event_seqs.contains(&event.seq))
@@ -549,10 +475,6 @@ fn turn_summary(
             .collect(),
         event_seqs: item.event_seqs.clone(),
         has_error: turn_has_error(item, &linked),
-        judgment_count: judgments
-            .iter()
-            .filter(|row| item.call_id.as_deref() == Some(row.call_id.as_str()))
-            .count(),
     }
 }
 
@@ -582,23 +504,6 @@ fn matches_filter(value: &str, filter: Option<&str>) -> bool {
         .map(str::trim)
         .filter(|filter| !filter.is_empty() && *filter != "all")
         .is_none_or(|filter| value.eq_ignore_ascii_case(filter))
-}
-
-fn aggregate_verdict(rows: &[JudgeRow]) -> Option<String> {
-    if rows.is_empty() {
-        None
-    } else if rows.iter().any(|row| row.verdict == "fail") {
-        Some("fail".into())
-    } else if rows.iter().any(|row| row.verdict == "partial") {
-        Some("partial".into())
-    } else {
-        Some("pass".into())
-    }
-}
-
-fn average_score(rows: &[JudgeRow]) -> Option<f64> {
-    (!rows.is_empty())
-        .then(|| rows.iter().map(|row| row.score as f64).sum::<f64>() / rows.len() as f64)
 }
 
 #[derive(Default)]

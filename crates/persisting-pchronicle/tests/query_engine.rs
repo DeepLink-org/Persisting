@@ -2,15 +2,15 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-use datafusion::prelude::SessionContext;
-use persisting_pchronicle::{
-    into_storyline, AtifDataSource, AtifDataSourceOptions, AtifReader, AtifTrajectory,
-    ChronicleFormat, ChronicleQueryBackend, ChronicleQueryEngine, ChronicleQueryExecutionOptions,
-    EventIdentity, EventRecord, ExternalTableFormat, ExternalTableSpec,
-    FileTrajectoryDataSourceOptions, LocalQueryManifest, RawEventLanceStore, StoryCoords,
-    StorylineDataFusionTableNames, StorylineLanceStore,
+use anyhow::{Context, Result};
+use persisting_pchronicle::document::{decode_json_storylines, open_document};
+use persisting_pchronicle::document::{DocumentFormat, QueryTables};
+use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
+use persisting_pchronicle::query::{
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
+    QuerySnapshot,
 };
+use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
 
 const SHARED_SQL: &str =
     "SELECT s.session_id, s.step_id, s.source, t.tool_call_id, t.function_name \
@@ -32,16 +32,21 @@ fn fixture_paths() -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn load_trajectories() -> Result<Vec<AtifTrajectory>> {
+fn load_trajectories() -> Result<Vec<serde_json::Value>> {
     fixture_paths()?
         .into_iter()
-        .map(|path| {
-            AtifTrajectory::from_json_str(&std::fs::read_to_string(path)?).map_err(Into::into)
-        })
+        .map(|path| serde_json::from_str(&std::fs::read_to_string(path)?).map_err(Into::into))
         .collect()
 }
 
-fn write_ndjson(path: &Path, trajectories: &[AtifTrajectory]) -> Result<()> {
+fn story_from_atif(value: &serde_json::Value) -> Result<StorylineDocument> {
+    let mut stories =
+        decode_json_storylines(DocumentFormat::Atif, &value.to_string(), "test.json")?;
+    anyhow::ensure!(stories.len() == 1, "expected one flat ATIF fixture");
+    stories.pop().context("missing decoded ATIF Storyline")
+}
+
+fn write_ndjson(path: &Path, trajectories: &[serde_json::Value]) -> Result<()> {
     let mut lines = trajectories
         .iter()
         .map(serde_json::to_string)
@@ -52,30 +57,69 @@ fn write_ndjson(path: &Path, trajectories: &[AtifTrajectory]) -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn atif_datasource_accepts_json_array_jsonl_and_directory() -> Result<()> {
-    let trajectories = load_trajectories()?;
-    let array = serde_json::to_string(&trajectories)?;
-    let from_array = AtifDataSource::from_json(&array)?;
-    assert_eq!(from_array.document_count(), Some(8));
-    assert_eq!(from_array.step_count(), Some(118));
-    assert_eq!(from_array.tool_call_count(), Some(23));
-
-    let dir = tempfile::tempdir()?;
-    let ndjson = dir.path().join("atif.ndjson");
-    write_ndjson(&ndjson, &trajectories)?;
-    let from_jsonl = AtifDataSource::open(&ndjson)?;
-    assert_eq!(from_jsonl.document_count(), None);
-    assert_eq!(from_jsonl.step_count(), None);
-
-    let from_directory = AtifDataSource::open(fixture_root())?;
-    assert_eq!(from_directory.document_count(), None);
-    assert_eq!(from_directory.step_count(), None);
+#[tokio::test]
+async fn unified_open_reports_backend_capabilities() -> Result<()> {
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        fixture_root(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let backend = engine.backend_info().expect("document backend info");
+    assert_eq!(backend.format, DocumentFormat::Atif);
+    assert_eq!(backend.tables, QueryTables::Storyline);
+    assert!(backend.capabilities.streaming_decode);
+    assert_eq!(backend.source_count, 8);
+    assert_eq!(backend.snapshot, None);
+    assert!(!matches!(
+        backend.snapshot,
+        Some(QuerySnapshot::Storyline { .. })
+    ));
     Ok(())
 }
 
-#[test]
-fn atif_datasource_and_reader_share_the_recursive_manifest() -> Result<()> {
+#[tokio::test]
+async fn generic_atif_source_accepts_json_array_jsonl_and_directory() -> Result<()> {
+    let trajectories = load_trajectories()?;
+    let dir = tempfile::tempdir()?;
+    let array = dir.path().join("atif-array.json");
+    std::fs::write(&array, serde_json::to_vec(&trajectories)?)?;
+    let from_array = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &array,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let counts = from_array
+        .query("SELECT (SELECT COUNT(*) FROM runs) AS runs, (SELECT COUNT(*) FROM steps) AS steps, (SELECT COUNT(*) FROM tool_calls) AS tool_calls")
+        .await?;
+    assert_eq!(
+        counts.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        1
+    );
+
+    let ndjson = dir.path().join("atif.ndjson");
+    write_ndjson(&ndjson, &trajectories)?;
+    let from_jsonl = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &ndjson,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    assert_eq!(from_jsonl.backend_info().unwrap().source_count, 1);
+
+    let from_directory = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        fixture_root(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    assert_eq!(from_directory.backend_info().unwrap().source_count, 8);
+    Ok(())
+}
+
+#[tokio::test]
+async fn generic_atif_source_uses_the_recursive_manifest() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let nested = temp.path().join("nested");
     std::fs::create_dir(&nested)?;
@@ -84,17 +128,35 @@ fn atif_datasource_and_reader_share_the_recursive_manifest() -> Result<()> {
         nested.join("input.json"),
     )?;
 
-    let source = AtifDataSource::open(temp.path())?;
-    assert_eq!(source.document_count(), None);
-    assert_eq!(AtifReader::open(temp.path())?.count(), 1);
+    let source = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    assert_eq!(source.backend_info().unwrap().source_count, 1);
+    assert_eq!(
+        open_document(DocumentFormat::Atif, temp.path())
+            .await?
+            .project_storylines()
+            .await?
+            .len(),
+        1
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn default_atif_file_datasource_uses_repeatable_streaming_plan() -> Result<()> {
-    let source = AtifDataSource::open(fixture_root())?;
-    let context = source.session_context()?;
-    let dataframe = context.sql("SELECT COUNT(*) AS steps FROM steps").await?;
+    let source = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        fixture_root(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let dataframe = source
+        .dataframe("SELECT COUNT(*) AS steps FROM steps")
+        .await?;
     let plan = dataframe.clone().create_physical_plan().await?;
     let plan_text = datafusion::physical_plan::displayable(plan.as_ref())
         .indent(true)
@@ -120,7 +182,12 @@ async fn atif_file_filter_prunes_before_validation_and_exposes_relative_path() -
         temp.path().join("good.json"),
     )?;
     std::fs::write(temp.path().join("unmatched.json"), "not-json")?;
-    let engine = ChronicleQueryEngine::open_atif(temp.path())?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        temp.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let output = engine
         .query_jsonl("SELECT _file_ FROM runs WHERE _file_ = 'good.json'")
         .await?;
@@ -130,79 +197,77 @@ async fn atif_file_filter_prunes_before_validation_and_exposes_relative_path() -
     Ok(())
 }
 
-#[test]
-fn atif_reader_streams_ndjson_and_directories_in_path_order() -> Result<()> {
+#[tokio::test]
+async fn atif_document_source_streams_ndjson_and_directories_in_path_order() -> Result<()> {
     let mut trajectories = load_trajectories()?;
     let mut first = trajectories.remove(0);
-    first.session_id = Some("first-file".into());
+    first["session_id"] = serde_json::json!("first-file");
     let mut second = trajectories.remove(0);
-    second.session_id = Some("second-file".into());
+    second["session_id"] = serde_json::json!("second-file");
     let dir = tempfile::tempdir()?;
     write_ndjson(&dir.path().join("02.ndjson"), &[second])?;
     write_ndjson(&dir.path().join("01.ndjson"), &[first])?;
 
-    let ids = AtifReader::open(dir.path())?
-        .map(|trajectory| {
-            trajectory.map(|trajectory| trajectory.session_id.expect("fixture session_id"))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let ids = open_document(DocumentFormat::Atif, dir.path())
+        .await?
+        .project_storylines()
+        .await?
+        .into_iter()
+        .map(|story| story.session_id)
+        .collect::<Vec<_>>();
     assert_eq!(ids, ["first-file", "second-file"]);
 
     let invalid = dir.path().join("03.ndjson");
     let mut valid = serde_json::to_string(&load_trajectories()?[0])?;
     valid.push_str("\nnot-json\n");
     std::fs::write(&invalid, valid)?;
-    let error = AtifReader::open(&invalid)?
-        .nth(1)
-        .expect("second line")
+    let error = open_document(DocumentFormat::Atif, &invalid)
+        .await?
+        .project_storylines()
+        .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("line 2"), "{error:#}");
     Ok(())
 }
 
 #[tokio::test]
-async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()> {
-    assert!(AtifDataSource::from_json("").is_err());
-    assert!(AtifDataSource::from_json("[]").is_err());
-    assert!(
-        AtifDataSource::from_json_with_options("{}", AtifDataSourceOptions { batch_size: 0 })
-            .unwrap_err()
-            .to_string()
-            .contains("batch_size")
-    );
-
+async fn generic_atif_source_validates_inputs() -> Result<()> {
     let trajectories = load_trajectories()?;
-    let duplicate = vec![trajectories[0].clone(), trajectories[0].clone()];
-    assert!(AtifDataSource::from_trajectories(&duplicate)
-        .unwrap_err()
-        .to_string()
-        .contains("duplicate ATIF session_id"));
-
     let dir = tempfile::tempdir()?;
-    assert!(AtifDataSource::open(dir.path()).is_err());
+    assert!(ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        dir.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await
+    .is_err());
     let duplicate_jsonl = dir.path().join("duplicate.ndjson");
     let duplicate_line = serde_json::to_string(&trajectories[0])?;
     std::fs::write(
         &duplicate_jsonl,
         format!("{duplicate_line}\n{duplicate_line}\n"),
     )?;
-    let duplicate_source = AtifDataSource::open(&duplicate_jsonl)?;
+    let duplicate_source = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &duplicate_jsonl,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let duplicate_error = duplicate_source
-        .session_context()?
-        .sql("SELECT * FROM runs")
-        .await?
-        .collect()
+        .query("SELECT * FROM runs")
         .await
         .unwrap_err();
-    assert!(format!("{duplicate_error:#}").contains("duplicate atif session_id"));
+    assert!(format!("{duplicate_error:#}").contains("duplicate atif document_id"));
     let invalid_jsonl = dir.path().join("invalid.jsonl");
     std::fs::write(&invalid_jsonl, "{}\nnot-json\n")?;
-    let invalid_source = AtifDataSource::open(&invalid_jsonl)?;
+    let invalid_source = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &invalid_jsonl,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let invalid_error = invalid_source
-        .session_context()?
-        .sql("SELECT * FROM runs")
-        .await?
-        .collect()
+        .query("SELECT * FROM runs")
         .await
         .unwrap_err();
     assert!(
@@ -210,79 +275,52 @@ async fn atif_datasource_validates_inputs_and_custom_table_names() -> Result<()>
         "{invalid_error:#}"
     );
 
-    let source = AtifDataSource::from_trajectories_with_options(
-        &trajectories[..2],
-        AtifDataSourceOptions { batch_size: 3 },
-    )?;
-    let context = SessionContext::new();
-    source.register_as(
-        &context,
-        &StorylineDataFusionTableNames {
-            runs: "atif_runs".into(),
-            steps: "atif_steps".into(),
-            tool_calls: "atif_tools".into(),
-        },
-    )?;
-    let batches = context
-        .sql("SELECT COUNT(*) AS count FROM atif_steps")
-        .await?
-        .collect()
-        .await?;
-    assert_eq!(
-        batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-        1
-    );
-
-    let duplicate_names = StorylineDataFusionTableNames {
-        runs: "same".into(),
-        steps: "same".into(),
-        tool_calls: "tools".into(),
-    };
-    assert!(source.register_as(&context, &duplicate_names).is_err());
-    let empty_name = StorylineDataFusionTableNames {
-        runs: "".into(),
-        steps: "steps".into(),
-        tool_calls: "tools".into(),
-    };
-    assert!(source.register_as(&context, &empty_name).is_err());
-
     let missing = dir.path().join("missing.json");
-    assert!(AtifDataSource::open(missing).is_err());
-    assert_eq!(AtifDataSource::open(dir.path())?.file_count(), 2);
+    assert!(ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        missing,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await
+    .is_err());
     Ok(())
 }
 
 #[tokio::test]
 async fn same_sql_returns_identical_results_for_lance_and_atif() -> Result<()> {
     let trajectories = load_trajectories()?;
-    let atif_engine =
-        ChronicleQueryEngine::from_atif_source(AtifDataSource::from_trajectories(&trajectories)?)?;
-    assert!(matches!(
-        atif_engine.backend(),
-        ChronicleQueryBackend::Atif {
-            files: 0,
-            documents: Some(8),
-            steps: Some(118),
-            tool_calls: Some(23)
-        }
-    ));
+    let atif_dir = tempfile::tempdir()?;
+    let atif_path = atif_dir.path().join("input.ndjson");
+    write_ndjson(&atif_path, &trajectories)?;
+    let atif_engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &atif_path,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let atif_backend = atif_engine.backend_info().expect("document backend info");
+    assert_eq!(atif_backend.format, DocumentFormat::Atif);
+    assert_eq!(atif_backend.source_count, 1);
+    assert_eq!(atif_backend.snapshot, None);
 
     let dir = tempfile::tempdir()?;
     let store = StorylineLanceStore::open(dir.path()).await?;
     let stories = trajectories
         .iter()
-        .map(|trajectory| {
-            into_storyline(
-                ChronicleFormat::Atif,
-                &serde_json::to_string(trajectory).unwrap(),
-            )
-        })
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .map(story_from_atif)
+        .collect::<Result<Vec<_>>>()?;
     store.replace_storylines(&stories).await?;
-    let lance_engine = ChronicleQueryEngine::open_lance(dir.path()).await?;
+    let lance_engine = ChronicleQueryEngine::open(
+        DocumentFormat::Storyline,
+        dir.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     assert!(matches!(
-        lance_engine.backend(),
-        ChronicleQueryBackend::Lance { .. }
+        lance_engine
+            .backend_info()
+            .and_then(|backend| backend.snapshot.as_ref()),
+        Some(QuerySnapshot::Storyline { .. })
     ));
 
     let atif_jsonl = atif_engine.query_jsonl(SHARED_SQL).await?;
@@ -307,17 +345,22 @@ async fn timestamp_milliseconds_match_for_lance_and_direct_atif_queries() -> Res
     let store = StorylineLanceStore::open(dir.path()).await?;
     let stories = trajectories
         .iter()
-        .map(|trajectory| {
-            into_storyline(
-                ChronicleFormat::Atif,
-                &serde_json::to_string(trajectory).unwrap(),
-            )
-        })
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .map(story_from_atif)
+        .collect::<Result<Vec<_>>>()?;
     store.replace_storylines(&stories).await?;
 
-    let lance = ChronicleQueryEngine::open_lance(dir.path()).await?;
-    let atif = ChronicleQueryEngine::open_atif(fixture_root())?;
+    let lance = ChronicleQueryEngine::open(
+        DocumentFormat::Storyline,
+        dir.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let atif = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        fixture_root(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let sql = "SELECT session_id, step_id, timestamp \
                FROM steps \
                WHERE timestamp >= TIMESTAMP '2026-06-15T09:00:10Z' \
@@ -333,9 +376,14 @@ async fn timestamp_milliseconds_match_for_lance_and_direct_atif_queries() -> Res
 #[tokio::test]
 async fn streaming_jsonl_matches_collected_jsonl() -> Result<()> {
     let trajectories = load_trajectories()?;
-    let engine = ChronicleQueryEngine::from_atif_source(AtifDataSource::from_trajectories(
-        &trajectories[..1],
-    )?)?;
+    let input = tempfile::NamedTempFile::with_suffix(".json")?;
+    std::fs::write(input.path(), serde_json::to_vec(&trajectories[..1])?)?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        input.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let sql = "SELECT session_id, step_id FROM steps ORDER BY step_id";
     let collected = engine.query_jsonl(sql).await?;
     let mut streamed = Vec::new();
@@ -354,28 +402,29 @@ async fn streaming_jsonl_matches_collected_jsonl() -> Result<()> {
 #[tokio::test]
 async fn query_runtime_validates_memory_and_spill_limits() -> Result<()> {
     let input = fixture_root().join("dialogue_10.json");
-    let manifest = LocalQueryManifest::for_format(&input, ChronicleFormat::Atif)?;
-    let invalid = ChronicleQueryEngine::open_local_manifest_with_execution_options(
-        manifest.clone(),
-        FileTrajectoryDataSourceOptions::default(),
+    let invalid = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &input,
         ChronicleQueryExecutionOptions {
             memory_limit_bytes: Some(0),
             ..ChronicleQueryExecutionOptions::default()
         },
     )
+    .await
     .unwrap_err();
     assert!(invalid.to_string().contains("memory_limit_bytes"));
 
     let spill = tempfile::tempdir()?;
-    let engine = ChronicleQueryEngine::open_local_manifest_with_execution_options(
-        manifest,
-        FileTrajectoryDataSourceOptions::default(),
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &input,
         ChronicleQueryExecutionOptions {
             memory_limit_bytes: Some(64 * 1024 * 1024),
             spill_path: Some(spill.path().to_path_buf()),
             max_spill_bytes: Some(256 * 1024 * 1024),
         },
-    )?;
+    )
+    .await?;
     assert!(!engine
         .query_jsonl("SELECT COUNT(*) FROM steps")
         .await?
@@ -385,7 +434,12 @@ async fn query_runtime_validates_memory_and_spill_limits() -> Result<()> {
 
 #[tokio::test]
 async fn query_engine_joins_csv_and_json_external_tables() -> Result<()> {
-    let engine = ChronicleQueryEngine::open_atif(fixture_root())?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        fixture_root(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let temp = tempfile::tempdir()?;
     let labels = temp.path().join("labels.csv");
     std::fs::write(
@@ -477,19 +531,19 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
     let trajectories = load_trajectories()?;
     let stories = trajectories[..2]
         .iter()
-        .map(|trajectory| {
-            into_storyline(
-                ChronicleFormat::Atif,
-                &serde_json::to_string(trajectory).unwrap(),
-            )
-        })
-        .collect::<persisting_pchronicle::Result<Vec<_>>>()?;
+        .map(story_from_atif)
+        .collect::<Result<Vec<_>>>()?;
     StorylineLanceStore::open_uri(&uri)
         .await?
         .replace_storylines(&stories)
         .await?;
 
-    let engine = ChronicleQueryEngine::open_lance_uri(&uri).await?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Storyline,
+        Path::new(&uri),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let output = engine
         .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
         .await?;
@@ -500,13 +554,10 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
 
     // An engine pins one immutable version tuple. Moving CURRENT must not change
     // the result of an already planned federated/long-running query.
-    let pinned_generation = engine.backend().clone();
+    let pinned_generation = engine.backend_info().cloned();
     StorylineLanceStore::open_uri(&uri)
         .await?
-        .replace_storyline(&into_storyline(
-            ChronicleFormat::Atif,
-            &serde_json::to_string(&trajectories[2])?,
-        )?)
+        .replace_storyline(&story_from_atif(&trajectories[2])?)
         .await?;
     let pinned_output = engine
         .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
@@ -515,9 +566,14 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
         serde_json::from_str::<serde_json::Value>(pinned_output.trim())?["runs"],
         2
     );
-    assert_eq!(engine.backend(), &pinned_generation);
+    assert_eq!(engine.backend_info(), pinned_generation.as_ref());
 
-    let reopened = ChronicleQueryEngine::open_lance_uri(&uri).await?;
+    let reopened = ChronicleQueryEngine::open(
+        DocumentFormat::Storyline,
+        Path::new(&uri),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let current_output = reopened
         .query_jsonl("SELECT COUNT(*) AS runs FROM runs")
         .await?;
@@ -525,7 +581,7 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
         serde_json::from_str::<serde_json::Value>(current_output.trim())?["runs"],
         3
     );
-    assert_ne!(reopened.backend(), &pinned_generation);
+    assert_ne!(reopened.backend_info(), pinned_generation.as_ref());
     Ok(())
 }
 
@@ -538,9 +594,13 @@ async fn query_engine_rejects_empty_object_store_without_current() -> Result<()>
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     );
-    let error = ChronicleQueryEngine::open_lance_uri(&uri)
-        .await
-        .unwrap_err();
+    let error = ChronicleQueryEngine::open(
+        DocumentFormat::Storyline,
+        Path::new(&uri),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await
+    .unwrap_err();
     assert!(
         error.to_string().contains("no committed generation"),
         "{error:#}"
@@ -578,11 +638,23 @@ async fn query_engine_exposes_canonical_events_table() -> Result<()> {
         .collect::<Vec<_>>();
     RawEventLanceStore.append_events(&session, &records).await?;
 
-    let path = persisting_pchronicle::raw_event_lance_path(&session)?;
-    let engine = ChronicleQueryEngine::open_events(&path).await?;
+    let path = persisting_pchronicle::storage::raw_event_lance_path(&session)?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::CanonicalEvent,
+        &path,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     assert!(matches!(
-        engine.backend(),
-        ChronicleQueryBackend::Events { version } if *version > 0
+        engine
+            .backend_info()
+            .and_then(|backend| backend.snapshot.as_ref()),
+        Some(QuerySnapshot::CanonicalEvent {
+            format_version: 1,
+            fact_version,
+            fact_rows: 2,
+            layout_revision,
+        }) if *fact_version > 0 && *layout_revision > 0
     ));
     let output = engine
         .query_jsonl("SELECT seq, session_id, kind, payload_json FROM events ORDER BY seq")
@@ -600,36 +672,44 @@ async fn query_engine_exposes_canonical_events_table() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn query_engine_rejects_writes_and_multiple_statements() -> Result<()> {
-    let engine = ChronicleQueryEngine::open_atif(fixture_root())?;
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+#[tokio::test]
+async fn query_engine_rejects_writes_and_multiple_statements() -> Result<()> {
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        fixture_root(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
 
-    let copy_error = runtime
-        .block_on(engine.dataframe("COPY steps TO '/tmp/pchronicle.parquet' STORED AS PARQUET"))
+    let copy_error = engine
+        .dataframe("COPY steps TO '/tmp/pchronicle.parquet' STORED AS PARQUET")
+        .await
         .expect_err("COPY must be rejected");
     assert!(copy_error.to_string().contains("only accepts"));
 
-    let multi_error = runtime
-        .block_on(engine.dataframe("SELECT 1; SELECT 2"))
+    let multi_error = engine
+        .dataframe("SELECT 1; SELECT 2")
+        .await
         .expect_err("multiple statements must be rejected");
     assert!(multi_error.to_string().contains("exactly one"));
 
-    let empty_error = runtime
-        .block_on(engine.dataframe(""))
+    let empty_error = engine
+        .dataframe("")
+        .await
         .expect_err("empty SQL must be rejected");
     assert!(empty_error.to_string().contains("exactly one"));
 
-    let insert_error = runtime
-        .block_on(engine.dataframe("INSERT INTO steps VALUES (1)"))
+    let insert_error = engine
+        .dataframe("INSERT INTO steps VALUES (1)")
+        .await
         .expect_err("INSERT must be rejected");
     assert!(insert_error.to_string().contains("only accepts"));
 
-    let values = runtime.block_on(engine.query_jsonl("VALUES (1), (2)"))?;
+    let values = engine.query_jsonl("VALUES (1), (2)").await?;
     assert_eq!(values.lines().count(), 2);
-    let explain = runtime.block_on(engine.query("EXPLAIN SELECT * FROM runs"))?;
+    let explain = engine.query("EXPLAIN SELECT * FROM runs").await?;
     assert!(!explain.is_empty());
-    let empty_result = runtime.block_on(engine.query_jsonl("SELECT * FROM runs WHERE 1 = 0"))?;
+    let empty_result = engine.query_jsonl("SELECT * FROM runs WHERE 1 = 0").await?;
     assert!(empty_result.is_empty());
     Ok(())
 }

@@ -185,7 +185,7 @@ async fn tlv_writer_should_append_same_session_into_one_markdown_file() {
         .await
         .expect("read markdown");
     assert!(content.contains("format: persisting:1.0"));
-    assert!(content.contains("session: feishu-main-abc"));
+    assert!(content.contains("session: \"feishu-main-abc\""));
     assert!(content.contains("turns: 2"));
     assert!(content.contains("<!-- persisting:block:user"));
     assert!(content.contains("<!-- persisting:block:assistant"));
@@ -195,6 +195,14 @@ async fn tlv_writer_should_append_same_session_into_one_markdown_file() {
     assert!(content.contains("sure"));
     assert!(content.contains("\"path\":\"/v1/sessions/feishu-main-abc/chat/completions\""));
     assert!(content.contains("\"session_id\":\"feishu-main-abc\""));
+
+    let storyline =
+        persisting_pchronicle::document::decode_agenticmd(&content).unwrap_or_else(|error| {
+            panic!("dlcapt output remains valid AgenticMD: {error}\n--- output ---\n{content}")
+        });
+    assert_eq!(storyline.session_id, "feishu-main-abc");
+    assert_eq!(storyline.agent.id, "openclaw");
+    assert_eq!(storyline.turns.len(), 4);
 }
 
 #[tokio::test]

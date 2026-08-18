@@ -11,7 +11,7 @@ use super::reasoning::ReasoningCacheHandle;
 /// Build the request body sent to the upstream LLM after routing.
 pub fn prepare_upstream_body(
     client_body: &Bytes,
-    semantic: Option<&persisting_pchronicle::LlmRequestEventPayload>,
+    semantic: Option<&persisting_pchronicle::model::LlmRequestEventPayload>,
     model_rewritten: bool,
     upstream_model: &str,
     bridge: ProtocolBridge,

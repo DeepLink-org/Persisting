@@ -28,8 +28,8 @@
 | 层 | 角色 | 可否有损 |
 |---|---|---|
 | **`events`** | 原始交换日志（HTTP-first） | **SoT，目标可回放** |
-| **`storyline`** | Normal / 互操作枢纽 | 可有损投影 |
-| `agenticmd` / `openai_msg` / `atif` / `actf` | 外围视图 / 训练交换 | 可有损；带 ACTF provenance 时可无损恢复 ACTF 数据模型 |
+| **`storyline`** | Normal / 互操作枢纽 | 从 events 投影时有损；自身存储必须无损 |
+| `agenticmd` / `openai_msg` / `atif` / `actf` | 外围视图 / 训练交换 | 同源 Storyline 往返必须无损；跨格式仅承诺目标可表达语义 |
 
 `events` 进出其它 chronicle 格式时仍 **只经 storyline**；但 **回放、重放、审计、协议级恢复 MUST 读 events**，MUST NOT 依赖 storyline roundtrip。
 
@@ -68,7 +68,7 @@ Persisting Gateway 的主入口是代理流量。`events` 应对齐这一现实�
 | **Replayable** | 在凭证策略允许的前提下，应能从 events 重建「对同一 endpoint 再发一次等价请求」所需信息 |
 | **Re-derivable views** | Storyline / Markdown / ATIF 视为可从 events **重新投影**的视图 |
 | **Correlation envelope** | 顶栏保留 `session_id` / `call_id` / `trace_id` 等关联键，不把故事语义塞进 wire |
-| **Append-only** | `seq` 单调；不原地改写既有 wire payload（旁路列如 judge 除外） |
+| **Append-only** | `seq` 单调；不原地改写既有 wire payload |
 | **Hub via storyline** | 与其它外围格式互转 MUST 经 storyline；无损路径仍是读 events |
 
 非目标：

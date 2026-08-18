@@ -14,10 +14,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
-use persisting_pchronicle::{
-    raw_event_lance_path, CatalogSnapshotOptions, ChronicleQueryEngine, DatasetCatalogSnapshot,
-    DatasetMount, EventIdentity, EventRecord, LanceMaintenanceOptions, RawEventLanceAppender,
-    RawEventLanceStore, StoryCoords,
+use persisting_pchronicle::document::DocumentFormat;
+use persisting_pchronicle::model::{EventIdentity, EventRecord};
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
+use persisting_pchronicle::storage::{
+    raw_event_lance_path, CatalogSnapshotOptions, DatasetCatalogSnapshot, DatasetMount,
+    LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore, StoryCoords,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -189,7 +191,7 @@ impl PChronicleBackend {
             .iter()
             .map(|dataset| dataset.ready_source_count())
             .sum();
-        self.engine = Some(ChronicleQueryEngine::from_catalog_snapshot(snapshot).await?);
+        self.engine = Some(snapshot.query_engine(Default::default()).await?);
         Ok(started.elapsed())
     }
 }
@@ -433,16 +435,20 @@ async fn main() -> Result<()> {
     let rss_after_unpruned_queries = current_rss_bytes();
 
     let fresh_global_point_setup_started = Instant::now();
-    let fresh_global_point_engine =
-        ChronicleQueryEngine::from_catalog_snapshot(discover_catalog(&storage).await?).await?;
+    let fresh_global_point_engine = discover_catalog(&storage)
+        .await?
+        .query_engine(Default::default())
+        .await?;
     let fresh_global_point_setup_ms = duration_ms(fresh_global_point_setup_started.elapsed());
     let fresh_global_point_metric =
         measure_query(&fresh_global_point_engine, &point_sql, 7).await?;
     drop(fresh_global_point_engine);
 
     let fresh_global_list_setup_started = Instant::now();
-    let fresh_global_list_engine =
-        ChronicleQueryEngine::from_catalog_snapshot(discover_catalog(&storage).await?).await?;
+    let fresh_global_list_engine = discover_catalog(&storage)
+        .await?
+        .query_engine(Default::default())
+        .await?;
     let fresh_global_list_setup_ms = duration_ms(fresh_global_list_setup_started.elapsed());
     let fresh_global_list_metric = measure_query(&fresh_global_list_engine, &list_sql, 7).await?;
     drop(fresh_global_list_engine);
@@ -452,9 +458,12 @@ async fn main() -> Result<()> {
         .find(|row| row.logical_id == point_id)
         .context("fixture contains no point-query row")?;
     let direct_open_started = Instant::now();
-    let direct_engine =
-        ChronicleQueryEngine::open_events(raw_event_lance_path(&point_row.coords(&storage))?)
-            .await?;
+    let direct_engine = ChronicleQueryEngine::open(
+        DocumentFormat::CanonicalEvent,
+        raw_event_lance_path(&point_row.coords(&storage))?,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let direct_open_ms = duration_ms(direct_open_started.elapsed());
     let direct_point_metric = measure_query(
         &direct_engine,
@@ -469,8 +478,10 @@ async fn main() -> Result<()> {
     drop(direct_engine);
 
     let exact_file_setup_started = Instant::now();
-    let exact_file_engine =
-        ChronicleQueryEngine::from_catalog_snapshot(discover_catalog(&storage).await?).await?;
+    let exact_file_engine = discover_catalog(&storage)
+        .await?
+        .query_engine(Default::default())
+        .await?;
     let exact_file_setup_ms = duration_ms(exact_file_setup_started.elapsed());
     let exact_file = format!(
         "{}/{}/events.lance",
@@ -492,8 +503,10 @@ async fn main() -> Result<()> {
     drop(exact_file_engine);
 
     let project_file_setup_started = Instant::now();
-    let project_file_engine =
-        ChronicleQueryEngine::from_catalog_snapshot(discover_catalog(&storage).await?).await?;
+    let project_file_engine = discover_catalog(&storage)
+        .await?
+        .query_engine(Default::default())
+        .await?;
     let project_file_setup_ms = duration_ms(project_file_setup_started.elapsed());
     let project_file_list_metric = measure_query(
         &project_file_engine,
@@ -527,7 +540,7 @@ async fn main() -> Result<()> {
 
     let base_count = health.physical_rows;
     let pinned_snapshot = discover_catalog(&storage).await?;
-    let pinned_engine = ChronicleQueryEngine::from_catalog_snapshot(pinned_snapshot).await?;
+    let pinned_engine = pinned_snapshot.query_engine(Default::default()).await?;
     let load_rows = generate_load_rows(&config);
     let load_query = async {
         let mut query_samples = Vec::new();
@@ -563,7 +576,12 @@ async fn main() -> Result<()> {
             ack_samples.push(duration_ms(started.elapsed()));
             let visibility_started = Instant::now();
             let path = raw_event_lance_path(&row.coords(&storage))?;
-            let fresh = ChronicleQueryEngine::open_events(path).await?;
+            let fresh = ChronicleQueryEngine::open(
+                DocumentFormat::CanonicalEvent,
+                path,
+                ChronicleQueryExecutionOptions::default(),
+            )
+            .await?;
             let visible = count_query(&fresh, "SELECT COUNT(*) AS row_count FROM events").await?;
             anyhow::ensure!(
                 visible == (index + 1) as u64,

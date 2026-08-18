@@ -254,7 +254,7 @@ impl CapturePreparer {
                         ctx.protocol,
                         &ctx.client_model,
                         assistant_content.as_deref(),
-                        persisting_pchronicle::LlmUsage {
+                        persisting_pchronicle::model::LlmUsage {
                             input_tokens: usage.input_tokens,
                             output_tokens: usage.output_tokens,
                             total_tokens: usage.total_tokens,

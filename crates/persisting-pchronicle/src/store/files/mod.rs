@@ -3,8 +3,11 @@
 //! Each source file is one streaming partition. Query-only `_file_` predicates
 //! are evaluated against the frozen manifest before partitions are opened.
 
+mod atif_reader;
 mod atif_stream;
 
+pub(crate) use atif_reader::parse_storylines as parse_atif_storylines;
+pub(crate) use atif_reader::AtifReader;
 use atif_stream::stream_projected_atif_steps;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -34,17 +37,17 @@ use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRe
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use tokio::sync::mpsc::Sender;
 
-use crate::convert::atif_to_storyline;
-use crate::{
-    actf_to_storylines, parse_openai_msg_corpus_value, split_storyline, ActfDocument,
-    ChronicleFormat, StoryRunRow, StoryStepRow, StoryToolCallRow,
-};
+use crate::convert::actf_to_storylines;
+use crate::format::DocumentFormat;
+use crate::formats::actf::ActfDocument;
+use crate::formats::parse_openai_msg_corpus_value;
 
 use super::storyline::rows::timestamp_array;
 use super::{
-    story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema, story_steps_to_batch,
-    story_tool_calls_arrow_schema, story_tool_calls_to_batch, LocalQueryInputFile,
-    LocalQueryManifest, StorylineDataFusionTableNames, StorylineTableKind,
+    split_storyline, story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema,
+    story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_to_batch,
+    LocalQueryInputFile, LocalQueryManifest, StoryRunRow, StoryStepRow, StoryToolCallRow,
+    StorylineDataFusionTableNames, StorylineTableKind,
 };
 
 /// Query-only source path column. This is not part of any Lance table schema.
@@ -153,76 +156,18 @@ struct FileTrajectoryQueryMetricCounters {
     streaming_buffer_peak_bytes: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileTrajectoryFormat {
-    Atif,
-    OpenaiMsg,
-    Actf,
-}
-
-impl FileTrajectoryFormat {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Atif => "atif",
-            Self::OpenaiMsg => "openai_msg",
-            Self::Actf => "actf",
-        }
-    }
-
-    fn chronicle_format(self) -> ChronicleFormat {
-        match self {
-            Self::Atif => ChronicleFormat::Atif,
-            Self::OpenaiMsg => ChronicleFormat::OpenaiMsg,
-            Self::Actf => ChronicleFormat::Actf,
-        }
-    }
-
-    fn from_chronicle(format: ChronicleFormat) -> Result<Self> {
-        match format {
-            ChronicleFormat::Atif => Ok(Self::Atif),
-            ChronicleFormat::OpenaiMsg => Ok(Self::OpenaiMsg),
-            ChronicleFormat::Actf => Ok(Self::Actf),
-            _ => anyhow::bail!("file trajectory datasource does not support '{format}'"),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct FileTrajectoryDataSource {
-    format: FileTrajectoryFormat,
+    format: DocumentFormat,
     runs: Arc<dyn TableProvider>,
     steps: Arc<dyn TableProvider>,
     tool_calls: Arc<dyn TableProvider>,
     file_count: usize,
+    max_file_bytes: u64,
     metrics: FileTrajectoryQueryMetrics,
 }
 
-pub(crate) type FileTrajectoryProviderParts = (
-    Arc<dyn TableProvider>,
-    Arc<dyn TableProvider>,
-    Arc<dyn TableProvider>,
-    usize,
-    FileTrajectoryQueryMetrics,
-);
-
 impl FileTrajectoryDataSource {
-    pub fn open_openai_msg(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        Self::open(path, FileTrajectoryFormat::OpenaiMsg)
-    }
-
-    pub fn open_actf(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        Self::open(path, FileTrajectoryFormat::Actf)
-    }
-
-    pub fn open_atif(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        Self::open(path, FileTrajectoryFormat::Atif)
-    }
-
-    pub fn open(path: impl AsRef<std::path::Path>, format: FileTrajectoryFormat) -> Result<Self> {
-        let manifest = LocalQueryManifest::for_format(path, format.chronicle_format())?;
-        Self::from_manifest(manifest)
-    }
-
     pub fn from_manifest(manifest: LocalQueryManifest) -> Result<Self> {
         Self::from_manifest_with_options(manifest, FileTrajectoryDataSourceOptions::default())
     }
@@ -232,7 +177,14 @@ impl FileTrajectoryDataSource {
         options: FileTrajectoryDataSourceOptions,
     ) -> Result<Self> {
         validate_options(options)?;
-        let format = FileTrajectoryFormat::from_chronicle(manifest.format())?;
+        let format = manifest.format();
+        anyhow::ensure!(
+            matches!(
+                format,
+                DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf
+            ),
+            "file trajectory datasource does not support '{format}'"
+        );
         let manifest = Arc::new(manifest);
         let file_count = manifest.file_count();
         let files = manifest
@@ -265,26 +217,21 @@ impl FileTrajectoryDataSource {
                 StorylineTableKind::ToolCalls,
             )),
             file_count,
+            max_file_bytes: options.max_file_bytes,
             metrics,
         })
     }
 
-    pub(crate) fn into_providers(self) -> FileTrajectoryProviderParts {
-        (
-            self.runs,
-            self.steps,
-            self.tool_calls,
-            self.file_count,
-            self.metrics,
-        )
-    }
-
-    pub fn format(&self) -> FileTrajectoryFormat {
+    pub fn format(&self) -> DocumentFormat {
         self.format
     }
 
     pub fn file_count(&self) -> usize {
         self.file_count
+    }
+
+    pub(crate) fn max_file_bytes(&self) -> u64 {
+        self.max_file_bytes
     }
 
     pub fn metrics(&self) -> FileTrajectoryQueryMetrics {
@@ -319,12 +266,6 @@ impl FileTrajectoryDataSource {
             .register_table(&names.tool_calls, self.tool_calls.clone())
             .context("register file-backed tool_calls query table")?;
         Ok(())
-    }
-
-    pub fn session_context(&self) -> Result<SessionContext> {
-        let context = SessionContext::new();
-        self.register(&context)?;
-        Ok(context)
     }
 }
 
@@ -454,7 +395,7 @@ impl IntPredicate {
 struct FileTrajectoryTableProvider {
     files: Arc<[Arc<FileState>]>,
     runtime: Arc<FileTrajectoryRuntime>,
-    format: FileTrajectoryFormat,
+    format: DocumentFormat,
     kind: StorylineTableKind,
     schema: SchemaRef,
     batch_size: usize,
@@ -464,7 +405,7 @@ impl FileTrajectoryTableProvider {
     fn new(
         files: Arc<[Arc<FileState>]>,
         runtime: Arc<FileTrajectoryRuntime>,
-        format: FileTrajectoryFormat,
+        format: DocumentFormat,
         kind: StorylineTableKind,
     ) -> Self {
         let batch_size = runtime.options.batch_size;
@@ -539,7 +480,7 @@ impl TableProvider for FileTrajectoryTableProvider {
             .map(|filter| {
                 if matches_file_filter(filter, "").is_some() {
                     TableProviderFilterPushDown::Exact
-                } else if self.format == FileTrajectoryFormat::Atif
+                } else if self.format == DocumentFormat::Atif
                     && self.kind == StorylineTableKind::Steps
                     && atif_step_filters(filter).is_some()
                 {
@@ -559,7 +500,7 @@ impl TableProvider for FileTrajectoryTableProvider {
 struct FileTrajectoryPartition {
     file: Arc<FileState>,
     runtime: Arc<FileTrajectoryRuntime>,
-    format: FileTrajectoryFormat,
+    format: DocumentFormat,
     kind: StorylineTableKind,
     source_schema: SchemaRef,
     schema: SchemaRef,
@@ -605,7 +546,7 @@ impl PartitionStream for FileTrajectoryPartition {
 fn stream_file(
     file: &Arc<FileState>,
     runtime: &Arc<FileTrajectoryRuntime>,
-    format: FileTrajectoryFormat,
+    format: DocumentFormat,
     kind: StorylineTableKind,
     source_schema: SchemaRef,
     schema: SchemaRef,
@@ -613,7 +554,7 @@ fn stream_file(
     scan: &FileScanSpec,
     tx: &Sender<datafusion::common::Result<RecordBatch>>,
 ) -> Result<()> {
-    if format == FileTrajectoryFormat::Atif
+    if format == DocumentFormat::Atif
         && kind == StorylineTableKind::Steps
         && scan.can_project_atif_steps(&source_schema)
     {
@@ -788,7 +729,7 @@ fn lock<'a, T>(mutex: &'a Mutex<T>, name: &str) -> Result<MutexGuard<'a, T>> {
 fn load_file(
     state: &Arc<FileState>,
     runtime: &Arc<FileTrajectoryRuntime>,
-    format: FileTrajectoryFormat,
+    format: DocumentFormat,
 ) -> Result<Arc<ParsedFile>> {
     if let Some(parsed) =
         lock(&runtime.cache, "local query parsed-file cache")?.get(state.file.path())
@@ -892,25 +833,21 @@ fn load_file(
 
 fn parse_file(
     file: &LocalQueryInputFile,
-    format: FileTrajectoryFormat,
+    format: DocumentFormat,
     content: &str,
     batch_size: usize,
 ) -> Result<ParsedFile> {
     let stories = match format {
-        FileTrajectoryFormat::Atif => super::atif_datafusion::parse_documents(content)
-            .with_context(|| format!("parse ATIF input {}", file.path().display()))?
-            .into_iter()
-            .map(|trajectory| atif_to_storyline(&trajectory).map_err(anyhow::Error::from))
-            .collect::<Result<Vec<_>>>()
-            .with_context(|| format!("normalize ATIF input {}", file.path().display()))?,
-        FileTrajectoryFormat::OpenaiMsg => {
+        DocumentFormat::Atif => parse_atif_storylines(content)
+            .with_context(|| format!("parse ATIF input {}", file.path().display()))?,
+        DocumentFormat::OpenaiMsg => {
             let value = serde_json::from_str(content)
                 .with_context(|| format!("parse OpenAI JSON input {}", file.path().display()))?;
             parse_openai_msg_corpus_value(&value, file.relative_path())
                 .map_err(anyhow::Error::from)
                 .with_context(|| format!("normalize OpenAI input {}", file.path().display()))?
         }
-        FileTrajectoryFormat::Actf => {
+        DocumentFormat::Actf => {
             let document = ActfDocument::from_json_str(content)
                 .map_err(anyhow::Error::from)
                 .with_context(|| format!("parse ACTF input {}", file.path().display()))?;
@@ -918,19 +855,24 @@ fn parse_file(
                 .map_err(anyhow::Error::from)
                 .with_context(|| format!("normalize ACTF input {}", file.path().display()))?
         }
+        unsupported => {
+            anyhow::bail!("file trajectory datasource does not support '{unsupported}'")
+        }
     };
 
-    let mut session_ids = HashSet::with_capacity(stories.len());
+    let mut document_ids = HashSet::with_capacity(stories.len());
     let mut runs = Vec::<StoryRunRow>::with_capacity(stories.len());
     let mut steps = Vec::<StoryStepRow>::new();
     let mut tool_calls = Vec::<StoryToolCallRow>::new();
-    for story in stories {
-        let tables = split_storyline(&story).map_err(anyhow::Error::from)?;
+    for (ordinal, story) in stories.into_iter().enumerate() {
+        let mut tables = split_storyline(&story).map_err(anyhow::Error::from)?;
+        tables.run.storage_ordinal =
+            i64::try_from(ordinal).context("local query Storyline storage ordinal overflow")?;
         anyhow::ensure!(
-            session_ids.insert(tables.run.session_id.clone()),
-            "duplicate {} session_id '{}' in {}",
+            document_ids.insert(tables.run.document_id.clone()),
+            "duplicate {} document_id '{}' in {}",
             format.as_str(),
-            tables.run.session_id,
+            tables.run.document_id,
             file.path().display()
         );
         runs.push(tables.run);
