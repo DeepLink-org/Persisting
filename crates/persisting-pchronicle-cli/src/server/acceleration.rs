@@ -4,9 +4,13 @@
 //! in-memory value-to-source routing index from one immutable Catalog snapshot
 //! and only uses it to add conservative `_file_` predicates. Unsupported SQL,
 //! failed index builds, and non-selective lookups retain the original query.
+//! Each cell records one terminal build result for its owning Catalog generation;
+//! the status `*_failed` and `*_unavailable` booleans distinguish that result
+//! from a cell that has not been requested yet without exposing diagnostics.
 
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future::Future;
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
@@ -38,21 +42,62 @@ const EVENT_PARTITION_COLUMNS: &[&str] = &["session_id", "agent_id"];
 #[derive(Debug, Default)]
 pub(crate) struct ServerAcceleration {
     build_gate: Mutex<()>,
-    run_summaries: OnceCell<CachedRunSummaries>,
-    runs: OnceCell<CachedRoutingIndex>,
-    event_identities: OnceCell<CachedRoutingIndex>,
-    event_partitions: OnceCell<CachedRoutingIndex>,
+    run_summaries: OnceCell<RequiredAcceleration<CachedRunSummaries>>,
+    runs: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
+    event_identities: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
+    event_partitions: OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
 }
 
 type CachedRunSummaries = Arc<Vec<RunSummary>>;
 type CachedRoutingIndex = Arc<SourceRoutingIndex>;
 
+#[derive(Debug)]
+enum RequiredAcceleration<T> {
+    Ready(T),
+    Failed(SharedAccelerationFailure),
+}
+
+#[derive(Debug)]
+enum OptionalAcceleration<T> {
+    Ready(T),
+    Unavailable,
+}
+
+#[derive(Clone, Debug)]
+struct SharedAccelerationFailure(Arc<dyn std::error::Error + Send + Sync>);
+
+impl SharedAccelerationFailure {
+    fn new(error: anyhow::Error) -> Self {
+        Self(Arc::from(error.into_boxed_dyn_error()))
+    }
+}
+
+impl std::fmt::Display for SharedAccelerationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("cached acceleration build failure")
+    }
+}
+
+impl std::error::Error for SharedAccelerationFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct AccelerationStatus {
     pub(crate) run_summaries_ready: bool,
+    /// The generation's required summary build reached a terminal failure.
+    pub(crate) run_summaries_failed: bool,
     pub(crate) run_index: Option<RoutingIndexStatus>,
+    /// The generation's optional run index reached a terminal unavailable state.
+    pub(crate) run_index_unavailable: bool,
     pub(crate) event_identity_index: Option<RoutingIndexStatus>,
+    /// The generation's optional identity index reached a terminal unavailable state.
+    pub(crate) event_identity_index_unavailable: bool,
     pub(crate) event_partition_index: Option<RoutingIndexStatus>,
+    /// The generation's optional partition index reached a terminal unavailable state.
+    pub(crate) event_partition_index_unavailable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -102,11 +147,22 @@ impl RoutedQuery {
 
 impl ServerAcceleration {
     pub(crate) fn status(&self) -> AccelerationStatus {
+        let (run_summaries_ready, run_summaries_failed) =
+            required_acceleration_status(&self.run_summaries);
+        let (run_index, run_index_unavailable) = cached_index_status(&self.runs);
+        let (event_identity_index, event_identity_index_unavailable) =
+            cached_index_status(&self.event_identities);
+        let (event_partition_index, event_partition_index_unavailable) =
+            cached_index_status(&self.event_partitions);
         AccelerationStatus {
-            run_summaries_ready: self.run_summaries.get().is_some(),
-            run_index: cached_index_status(&self.runs),
-            event_identity_index: cached_index_status(&self.event_identities),
-            event_partition_index: cached_index_status(&self.event_partitions),
+            run_summaries_ready,
+            run_summaries_failed,
+            run_index,
+            run_index_unavailable,
+            event_identity_index,
+            event_identity_index_unavailable,
+            event_partition_index,
+            event_partition_index_unavailable,
         }
     }
 
@@ -115,13 +171,31 @@ impl ServerAcceleration {
         snapshot: &DatasetCatalogSnapshot,
         engine: &ChronicleQueryEngine,
     ) -> Result<Arc<Vec<RunSummary>>> {
-        self.run_summaries
-            .get_or_try_init(|| async {
+        self.run_summaries_with(|| async { build_run_summaries(snapshot, engine).await })
+            .await
+    }
+
+    async fn run_summaries_with<F, Fut>(&self, build: F) -> Result<CachedRunSummaries>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<CachedRunSummaries>>,
+    {
+        match self
+            .run_summaries
+            .get_or_init(|| async {
                 let _admission = self.build_gate.lock().await;
-                build_run_summaries(snapshot, engine).await
+                match build().await {
+                    Ok(summaries) => RequiredAcceleration::Ready(summaries),
+                    Err(error) => {
+                        RequiredAcceleration::Failed(SharedAccelerationFailure::new(error))
+                    }
+                }
             })
             .await
-            .cloned()
+        {
+            RequiredAcceleration::Ready(summaries) => Ok(summaries.clone()),
+            RequiredAcceleration::Failed(error) => Err(anyhow::Error::new(error.clone())),
+        }
     }
 
     pub(crate) async fn route_sql(
@@ -130,6 +204,30 @@ impl ServerAcceleration {
         engine: &ChronicleQueryEngine,
         sql: &str,
     ) -> RoutedQuery {
+        self.route_sql_with(snapshot, sql, |kind| async move {
+            match kind {
+                RoutingIndexKind::Runs => build_run_index(snapshot, engine).await,
+                RoutingIndexKind::EventIdentities => {
+                    build_event_identity_index(snapshot, engine).await
+                }
+                RoutingIndexKind::EventPartitions => {
+                    build_event_partition_index(snapshot, engine).await
+                }
+            }
+        })
+        .await
+    }
+
+    async fn route_sql_with<F, Fut>(
+        &self,
+        snapshot: &DatasetCatalogSnapshot,
+        sql: &str,
+        build: F,
+    ) -> RoutedQuery
+    where
+        F: FnOnce(RoutingIndexKind) -> Fut,
+        Fut: Future<Output = Result<CachedRoutingIndex>>,
+    {
         let Some(mut query) = AnalyzedQuery::parse(snapshot, sql) else {
             return RoutedQuery::unchanged(sql, RoutingOutcome::NotApplicable);
         };
@@ -140,46 +238,16 @@ impl ServerAcceleration {
             return RoutedQuery::unchanged(sql, RoutingOutcome::NotApplicable);
         }
 
-        let index = match query.index_kind {
-            RoutingIndexKind::Runs => match self
-                .runs
-                .get_or_try_init(|| async {
-                    let _admission = self.build_gate.lock().await;
-                    build_run_index(snapshot, engine).await
-                })
-                .await
-            {
-                Ok(index) => index.as_ref(),
-                Err(_) => {
-                    return RoutedQuery::unchanged(sql, RoutingOutcome::IndexUnavailable);
-                }
-            },
-            RoutingIndexKind::EventIdentities => match self
-                .event_identities
-                .get_or_try_init(|| async {
-                    let _admission = self.build_gate.lock().await;
-                    build_event_identity_index(snapshot, engine).await
-                })
-                .await
-            {
-                Ok(index) => index.as_ref(),
-                Err(_) => {
-                    return RoutedQuery::unchanged(sql, RoutingOutcome::IndexUnavailable);
-                }
-            },
-            RoutingIndexKind::EventPartitions => match self
-                .event_partitions
-                .get_or_try_init(|| async {
-                    let _admission = self.build_gate.lock().await;
-                    build_event_partition_index(snapshot, engine).await
-                })
-                .await
-            {
-                Ok(index) => index.as_ref(),
-                Err(_) => {
-                    return RoutedQuery::unchanged(sql, RoutingOutcome::IndexUnavailable);
-                }
-            },
+        let (cell, name) = match query.index_kind {
+            RoutingIndexKind::Runs => (&self.runs, "run"),
+            RoutingIndexKind::EventIdentities => (&self.event_identities, "event_identity"),
+            RoutingIndexKind::EventPartitions => (&self.event_partitions, "event_partition"),
+        };
+        let Some(index) = self
+            .optional_index_with(cell, name, || build(query.index_kind))
+            .await
+        else {
+            return RoutedQuery::unchanged(sql, RoutingOutcome::IndexUnavailable);
         };
 
         let Some(candidates) = index.candidates(&query.dataset, &query.constraints) else {
@@ -200,10 +268,56 @@ impl ServerAcceleration {
             candidate_sources: Some(candidate_sources),
         }
     }
+
+    async fn optional_index_with<F, Fut>(
+        &self,
+        cell: &OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
+        name: &'static str,
+        build: F,
+    ) -> Option<CachedRoutingIndex>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<CachedRoutingIndex>>,
+    {
+        match cell
+            .get_or_init(|| async {
+                let _admission = self.build_gate.lock().await;
+                match build().await {
+                    Ok(index) => OptionalAcceleration::Ready(index),
+                    Err(error) => {
+                        tracing::error!(
+                            error = ?error,
+                            acceleration_index = name,
+                            "pChronicle acceleration index build failed"
+                        );
+                        OptionalAcceleration::Unavailable
+                    }
+                }
+            })
+            .await
+        {
+            OptionalAcceleration::Ready(index) => Some(index.clone()),
+            OptionalAcceleration::Unavailable => None,
+        }
+    }
 }
 
-fn cached_index_status(cell: &OnceCell<CachedRoutingIndex>) -> Option<RoutingIndexStatus> {
-    cell.get().map(|index| index.status())
+fn required_acceleration_status<T>(cell: &OnceCell<RequiredAcceleration<T>>) -> (bool, bool) {
+    match cell.get() {
+        None => (false, false),
+        Some(RequiredAcceleration::Ready(_)) => (true, false),
+        Some(RequiredAcceleration::Failed(_)) => (false, true),
+    }
+}
+
+fn cached_index_status(
+    cell: &OnceCell<OptionalAcceleration<CachedRoutingIndex>>,
+) -> (Option<RoutingIndexStatus>, bool) {
+    match cell.get() {
+        None => (None, false),
+        Some(OptionalAcceleration::Ready(index)) => (Some(index.status()), false),
+        Some(OptionalAcceleration::Unavailable) => (None, true),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1180,6 +1294,113 @@ fn required_json_u64(row: &JsonValue, field: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn required_summary_failure_is_cached_and_preserves_sources_at_http_boundary() {
+        use std::io;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::response::IntoResponse as _;
+        use futures::future::join_all;
+        use http_body_util::BodyExt as _;
+
+        let acceleration = ServerAcceleration::default();
+        let attempts = AtomicUsize::new(0);
+        let failures = join_all((0..8).map(|_| {
+            acceleration.run_summaries_with(|| async {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                Err(
+                    anyhow::Error::new(io::Error::other("required-summary-source-diagnostic"))
+                        .context("build required summaries"),
+                )
+            })
+        }))
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let status = acceleration.status();
+        assert!(!status.run_summaries_ready);
+        assert!(status.run_summaries_failed);
+
+        for failure in &failures {
+            let chain = failure
+                .as_ref()
+                .unwrap_err()
+                .chain()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            assert!(chain
+                .iter()
+                .any(|entry| entry == "build required summaries"));
+            assert!(chain
+                .iter()
+                .any(|entry| entry == "required-summary-source-diagnostic"));
+        }
+
+        let response = super::super::problem::ApiError::internal(
+            failures.into_iter().next().unwrap().unwrap_err(),
+        )
+        .into_response();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: JsonValue = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["code"], "internal");
+        assert_eq!(body["message"], "internal server error");
+        assert!(!body
+            .to_string()
+            .contains("required-summary-source-diagnostic"));
+    }
+
+    #[tokio::test]
+    async fn optional_index_failure_is_cached_and_falls_back_without_diagnostics() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use futures::future::join_all;
+        use persisting_pchronicle::storage::{
+            CatalogSnapshotOptions, DatasetMount, DEFAULT_DATASET_NAME,
+        };
+
+        let root = tempfile::tempdir()?;
+        let snapshot = DatasetCatalogSnapshot::discover(
+            vec![DatasetMount::default(root.path().to_string_lossy())?],
+            Some(DEFAULT_DATASET_NAME.into()),
+            CatalogSnapshotOptions::default(),
+        )
+        .await?;
+        let acceleration = ServerAcceleration::default();
+        let attempts = AtomicUsize::new(0);
+        let sql = "SELECT session_id FROM runs WHERE session_id = 'session-a'";
+        let routed = join_all((0..8).map(|_| {
+            acceleration.route_sql_with(&snapshot, sql, |_| async {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                anyhow::bail!("optional-index-source-diagnostic")
+            })
+        }))
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(routed.iter().all(|query| {
+            query.sql == sql
+                && query.outcome == RoutingOutcome::IndexUnavailable
+                && query.candidate_sources.is_none()
+        }));
+        let status = acceleration.status();
+        assert!(status.run_index.is_none());
+        assert!(status.run_index_unavailable);
+        assert!(!status.event_identity_index_unavailable);
+        assert!(!status.event_partition_index_unavailable);
+        let status = serde_json::to_string(&status)?;
+        assert!(!status.contains("optional-index-source-diagnostic"));
+        assert!(!routed.iter().any(|query| {
+            query.sql.contains("optional-index-source-diagnostic")
+                || query
+                    .outcome
+                    .as_str()
+                    .contains("optional-index-source-diagnostic")
+        }));
+        Ok(())
+    }
 
     fn event(
         event_id: &str,
