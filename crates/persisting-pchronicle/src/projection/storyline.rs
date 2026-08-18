@@ -29,6 +29,9 @@ static BUILD_BEFORE_PUBLICATION_BARRIER: std::sync::Mutex<Option<BuildPublicatio
     std::sync::Mutex::new(None);
 
 #[cfg(test)]
+static PROJECT_SOURCE_READ_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
 async fn wait_before_build_publication(output_uri: &str) {
     let barrier = BUILD_BEFORE_PUBLICATION_BARRIER
         .lock()
@@ -126,6 +129,11 @@ pub async fn build_storyline_projection(
     let output = StorylineLanceStore::open_uri(output_uri.as_ref())
         .await
         .with_context(|| format!("open Storyline projection output {}", output_uri.as_ref()))?;
+    // Fast-path known conflicts before reading the full source. Publication
+    // still rechecks under the store write guard and object-store CURRENT CAS.
+    if output.current_table_paths().await?.is_some() {
+        return Ok(StorylineProjectionBuildOutcome::OutputNotEmpty);
+    }
     let snapshot = source.fact_snapshot().clone();
     let lineage = canonical_projection_lineage(&snapshot, source_file.into());
     let stories = project_canonical_event_source(&source).await?;
@@ -436,6 +444,15 @@ fn projection_lineage_freshness(
 async fn project_canonical_event_source(
     source: &RawEventDataSource,
 ) -> Result<Vec<StorylineDocument>> {
+    #[cfg(test)]
+    if PROJECT_SOURCE_READ_FAILURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_deref()
+        == Some(source.fact_snapshot().source_uri.as_str())
+    {
+        anyhow::bail!("injected canonical source read failure");
+    }
     let records = source.read_records_in_append_order().await?;
     project_canonical_event_records(records)
 }
@@ -466,6 +483,25 @@ mod tests {
     use serde_json::json;
 
     struct BuildPublicationBarrier;
+
+    struct ProjectSourceReadFailure;
+
+    impl ProjectSourceReadFailure {
+        fn install(source_uri: impl Into<String>) -> Self {
+            *PROJECT_SOURCE_READ_FAILURE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source_uri.into());
+            Self
+        }
+    }
+
+    impl Drop for ProjectSourceReadFailure {
+        fn drop(&mut self) {
+            *PROJECT_SOURCE_READ_FAILURE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
 
     impl BuildPublicationBarrier {
         fn install(output_uri: &str, parties: usize) -> Self {
@@ -552,6 +588,30 @@ mod tests {
         );
         assert_eq!(report.fact_rows, 1);
         assert_eq!(report.storylines, 1);
+
+        let outcome = build_storyline_projection(&source, &output, "events.lance")
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            outcome,
+            StorylineProjectionBuildOutcome::OutputNotEmpty
+        ));
+    }
+
+    #[tokio::test]
+    async fn known_nonempty_output_skips_source_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let (source, output) = canonical_source(&temp).await;
+        let initial = build_storyline_projection(&source, &output, "events.lance")
+            .await
+            .unwrap();
+        assert!(matches!(initial, StorylineProjectionBuildOutcome::Built(_)));
+        let canonical_source = std::fs::canonicalize(&source)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let _failure = ProjectSourceReadFailure::install(canonical_source);
 
         let outcome = build_storyline_projection(&source, &output, "events.lance")
             .await

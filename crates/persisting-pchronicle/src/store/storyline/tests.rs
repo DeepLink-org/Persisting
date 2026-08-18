@@ -31,6 +31,31 @@ async fn put_remote_object(uri: &str, relative: &str, contents: &[u8]) {
     store.put(&root.join(relative), contents).await.unwrap();
 }
 
+struct CreateAfterEmptyReadBarrier;
+
+impl CreateAfterEmptyReadBarrier {
+    fn install(root_uri: &str, parties: usize) -> Self {
+        *CREATE_AFTER_EMPTY_READ_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(CreateAfterEmptyReadBarrierHook {
+                root_uri: root_uri.to_string(),
+                barrier: Arc::new(tokio::sync::Barrier::new(parties)),
+                content_arrivals: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                content_created: Arc::new(tokio::sync::Notify::new()),
+            });
+        Self
+    }
+}
+
+impl Drop for CreateAfterEmptyReadBarrier {
+    fn drop(&mut self) {
+        *CREATE_AFTER_EMPTY_READ_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
 fn story(session_id: &str) -> StorylineDocument {
     StorylineDocument {
         schema_version: None,
@@ -839,6 +864,60 @@ async fn concurrent_object_store_replacements_do_not_lose_sessions() {
         .map(|story| story.unwrap().session_id)
         .collect::<Vec<_>>();
     assert_eq!(sessions, expected);
+}
+
+#[tokio::test]
+async fn independent_object_store_creates_publish_one_projection_without_operational_error() {
+    let uri = remote_uri("independent-concurrent-create");
+    let mut left = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    let mut right = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    left.write_lock = Arc::new(tokio::sync::Mutex::new(()));
+    right.write_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let _barrier = CreateAfterEmptyReadBarrier::install(&uri, 2);
+    let mut left_lineage = projection_lineage();
+    left_lineage.source_file = "left-events.lance".into();
+    let mut right_lineage = projection_lineage();
+    right_lineage.source_file = "right-events.lance".into();
+
+    let (left_outcome, right_outcome) = tokio::join!(
+        left.create_projected_storyline_stream(
+            std::iter::once(Ok(story("left-winner"))),
+            left_lineage,
+        ),
+        right.create_projected_storyline_stream(
+            std::iter::once(Ok(story("right-winner"))),
+            right_lineage,
+        )
+    );
+    let left_outcome = left_outcome.unwrap();
+    let right_outcome = right_outcome.unwrap();
+
+    let (report, source_file, winner, loser) = match (&left_outcome, &right_outcome) {
+        (StorylineProjectionPublicationOutcome::Published(report), _) => {
+            (report, "left-events.lance", "left-winner", "right-winner")
+        }
+        (_, StorylineProjectionPublicationOutcome::Published(report)) => {
+            (report, "right-events.lance", "right-winner", "left-winner")
+        }
+        _ => panic!("exactly one independent create must publish"),
+    };
+    assert!(matches!(
+        (&left_outcome, &right_outcome),
+        (
+            StorylineProjectionPublicationOutcome::Published(_),
+            StorylineProjectionPublicationOutcome::OutputNotEmpty
+        ) | (
+            StorylineProjectionPublicationOutcome::OutputNotEmpty,
+            StorylineProjectionPublicationOutcome::Published(_)
+        )
+    ));
+
+    let reopened = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    let current = reopened.current_table_paths().await.unwrap().unwrap();
+    assert_eq!(current.generation, report.generation);
+    assert_eq!(current.projection.unwrap().source_file, source_file);
+    assert!(reopened.get_storyline_full(winner).await.unwrap().is_some());
+    assert!(reopened.get_storyline_full(loser).await.unwrap().is_none());
 }
 
 #[tokio::test]

@@ -432,15 +432,28 @@ pub(crate) async fn commit_pending_content(
     path: &Path,
     snapshot_version: Option<u64>,
     pending: PendingContent,
+    reopen_concurrent_create: bool,
 ) -> Result<u64> {
     let mut objects = pending.objects.into_values().collect::<Vec<_>>();
     objects.sort_by(|left, right| left.reference.content_id.cmp(&right.reference.content_id));
     let uri = path.to_string_lossy().into_owned();
 
-    let Some(snapshot_version) = snapshot_version else {
+    let mut dataset = if let Some(snapshot_version) = snapshot_version {
+        let mut dataset = open_objects(path, snapshot_version).await?;
+        let latest = Dataset::open(&uri).await?.version_id();
+        if latest != snapshot_version {
+            dataset.restore().await.with_context(|| {
+                format!(
+                    "restore Storyline content store {} to version {snapshot_version}",
+                    path.display()
+                )
+            })?;
+        }
+        dataset
+    } else {
         let batch = objects_to_batch(&objects)?;
         let reader = RecordBatchIterator::new(vec![Ok(batch)], objects_arrow_schema());
-        let mut dataset = InsertBuilder::new(&uri)
+        match InsertBuilder::new(&uri)
             .with_params(&WriteParams {
                 mode: WriteMode::Create,
                 data_storage_version: Some(LanceFileVersion::V2_2),
@@ -448,21 +461,25 @@ pub(crate) async fn commit_pending_content(
             })
             .execute_stream(reader)
             .await
-            .with_context(|| format!("create Storyline content store {}", path.display()))?;
-        ensure_content_index(&mut dataset).await?;
-        return Ok(dataset.version_id());
+        {
+            Ok(mut dataset) => {
+                ensure_content_index(&mut dataset).await?;
+                return Ok(dataset.version_id());
+            }
+            Err(lance::Error::DatasetAlreadyExists { .. }) if reopen_concurrent_create => {
+                Dataset::open(&uri).await.with_context(|| {
+                    format!(
+                        "reopen concurrently created Storyline content store {}",
+                        path.display()
+                    )
+                })?
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("create Storyline content store {}", path.display()));
+            }
+        }
     };
-
-    let mut dataset = open_objects(path, snapshot_version).await?;
-    let latest = Dataset::open(&uri).await?.version_id();
-    if latest != snapshot_version {
-        dataset.restore().await.with_context(|| {
-            format!(
-                "restore Storyline content store {} to version {snapshot_version}",
-                path.display()
-            )
-        })?;
-    }
     if objects.is_empty() {
         return Ok(dataset.version_id());
     }

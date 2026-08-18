@@ -271,6 +271,71 @@ enum StorylineStreamWriteMode {
     CreateProjection,
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+struct CreateAfterEmptyReadBarrierHook {
+    root_uri: String,
+    barrier: Arc<tokio::sync::Barrier>,
+    content_arrivals: Arc<std::sync::atomic::AtomicUsize>,
+    content_created: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+static CREATE_AFTER_EMPTY_READ_BARRIER: std::sync::Mutex<Option<CreateAfterEmptyReadBarrierHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+async fn wait_after_empty_current_read(root_uri: &str) {
+    let barrier = CREATE_AFTER_EMPTY_READ_BARRIER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|hook| hook.root_uri == root_uri)
+        .map(|hook| hook.barrier.clone());
+    if let Some(barrier) = barrier {
+        barrier.wait().await;
+    }
+}
+
+#[cfg(test)]
+async fn wait_for_first_content_create(root_uri: &str) -> bool {
+    let hook = CREATE_AFTER_EMPTY_READ_BARRIER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|hook| hook.root_uri == root_uri)
+        .cloned();
+    let Some(hook) = hook else {
+        return false;
+    };
+    if hook
+        .content_arrivals
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        == 0
+    {
+        true
+    } else {
+        hook.content_created.notified().await;
+        false
+    }
+}
+
+#[cfg(test)]
+fn release_waiting_content_create(root_uri: &str, first: bool) {
+    if !first {
+        return;
+    }
+    let notify = CREATE_AFTER_EMPTY_READ_BARRIER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|hook| hook.root_uri == root_uri)
+        .map(|hook| hook.content_created.clone());
+    if let Some(notify) = notify {
+        notify.notify_one();
+    }
+}
+
 impl StorylineLanceStore {
     pub async fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
@@ -604,6 +669,10 @@ impl StorylineLanceStore {
         if mode == StorylineStreamWriteMode::CreateProjection && original.is_some() {
             return Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty);
         }
+        #[cfg(test)]
+        if mode == StorylineStreamWriteMode::CreateProjection {
+            wait_after_empty_current_read(&self.root_uri).await;
+        }
         let expected_generation = original.as_ref().map(|paths| paths.generation.clone());
         let rebuild = mode == StorylineStreamWriteMode::Rebuild;
         let mut paths = if rebuild { None } else { original.clone() };
@@ -661,12 +730,23 @@ impl StorylineLanceStore {
                     None => {
                         let generation = next_generation();
                         let mut created = self.paths_for_generation(&generation);
-                        let objects_version = commit_pending_content(
+                        #[cfg(test)]
+                        let first_content_create =
+                            if mode == StorylineStreamWriteMode::CreateProjection {
+                                wait_for_first_content_create(&self.root_uri).await
+                            } else {
+                                false
+                            };
+                        let objects_result = commit_pending_content(
                             &created.objects,
                             original.as_ref().map(|paths| paths.objects_version),
                             pending,
+                            mode == StorylineStreamWriteMode::CreateProjection,
                         )
-                        .await?;
+                        .await;
+                        #[cfg(test)]
+                        release_waiting_content_create(&self.root_uri, first_content_create);
+                        let objects_version = objects_result?;
                         let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
                             write_batches(
                                 &created.runs,
@@ -700,6 +780,7 @@ impl StorylineLanceStore {
                             &current.objects,
                             Some(current.objects_version),
                             pending,
+                            false,
                         )
                         .await?;
                         let (runs_version, steps_version, tool_calls_version) = tokio::try_join!(
