@@ -349,7 +349,7 @@ async fn exact_local_file_export(
         args.max_output_bytes
     );
     let text = std::str::from_utf8(&input).context("exact export Source must be UTF-8")?;
-    let detected = detect_format(Some(&source_path), Some(text)).map_err(anyhow::Error::from)?;
+    let detected = detect_format(Some(&source_path), Some(text))?;
     if detected != exchange_document_format(format) {
         return Ok(None);
     }
@@ -577,14 +577,12 @@ fn resolve_import_format(
     input: &str,
 ) -> Result<ExchangeFormat> {
     let format = match requested {
-        ExchangeFormat::Auto => match detect_format(input_path, Some(input))
-            .map_err(anyhow::Error::from)?
-            .ok_or_else(|| {
-                cli_boundary_error(
-                    BoundaryCode::InvalidRequest,
-                    "cannot detect import format; pass --format explicitly",
-                )
-            })? {
+        ExchangeFormat::Auto => match detect_format(input_path, Some(input))?.ok_or_else(|| {
+            cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                "cannot detect import format; pass --format explicitly",
+            )
+        })? {
             DocumentFormat::Atif => ExchangeFormat::Atif,
             DocumentFormat::Actf => ExchangeFormat::Actf,
             DocumentFormat::OpenaiMsg => ExchangeFormat::OpenaiMessages,

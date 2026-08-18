@@ -24,13 +24,16 @@ TTAS、tiered tensor memory、通用 Queue/Sampler、Search 和独立的 dlcapt 
 
 ### 2.1 操作失败
 
-pChronicle 的普通失败使用 `anyhow::Result<T>`。crate 可以保留便捷别名：
+pChronicle 的普通失败使用 `anyhow::Result<T>`。crate 根以及 `document`、`storage`、
+`query` 公共门面只保留下列完全相同的便捷别名：
 
 ```rust
 pub type Result<T> = anyhow::Result<T>;
 ```
 
-该别名不定义新的 `Error` 类型，不附加错误码，也不改变 source。文件系统、serde、Lance、
+该别名不定义新的 `Error` 类型，不附加错误码，也不改变 source。`InputIssue`、
+`InputIssueKind` 和 `InputResult<T>` 只从 `document` 公开；其他错误构造器、分类器和传播
+helper 均不属于公共门面。文件系统、serde、Lance、
 DataFusion、Arrow、Tokio 和其他依赖错误通过 `?` 自然进入 source chain。
 
 上下文只在以下位置添加一次：
@@ -221,8 +224,8 @@ queue admission 返回局部 `AppendOutcome`。durable append 已被接受后的
 - 删除以分类或复制诊断元数据为目的的 `map_err`；
 - 不提供字符串分类器、source-chain 分类器或后端 variant 到协议 code 的中央映射器；
 - 全局错误构造器数量为零；
-- `store/error_adapter.rs` 删除，或缩减为约百行以内的纯 DataFusion source 桥接；
-- `pchronicle::Result<T>` 若保留，只能是 `anyhow::Result<T>` 的别名；
+- `store/error_adapter.rs` 已删除；DataFusion 只保留私有的纯 source 桥接；
+- `pchronicle::Result<T>` 以及公共模块的同名别名只能是 `anyhow::Result<T>`；
 - 正常业务函数不得引用 `BoundaryCode`、HTTP status 或边界响应类型；
 - tracing 字段不得为了构造错误而再次复制到错误对象。
 

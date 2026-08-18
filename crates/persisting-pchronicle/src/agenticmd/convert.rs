@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
-use crate::{Error, InputIssue, InputResult, Result};
+use crate::{InputIssue, InputResult, Result};
 
 use super::codec::{
     encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_document, MarkdownBlock,
@@ -84,7 +84,7 @@ pub(super) fn encode_storyline_preamble(story: &StorylineDocument) -> Result<Str
     let mut metadata = serde_json::to_value(story)?
         .as_object()
         .cloned()
-        .ok_or_else(|| Error::Other("serialized Storyline must be an object".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("serialized Storyline must be an object"))?;
     metadata.remove("turns");
     let frontmatter: BTreeMap<String, Value> = BTreeMap::from([
         (
@@ -103,7 +103,7 @@ pub(super) fn storyline_turn_block(
     let mut turn_metadata = serde_json::to_value(turn)?
         .as_object()
         .cloned()
-        .ok_or_else(|| Error::Other("serialized Storyline turn must be an object".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("serialized Storyline turn must be an object"))?;
     turn_metadata.remove("msg");
     let (body, encoding, type_name) = match &turn.message {
         Value::String(text) => (text.clone(), "text", "text"),

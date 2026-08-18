@@ -855,7 +855,6 @@ fn parse_file(
                 .map_err(anyhow::Error::from)
                 .with_context(|| format!("parse ACTF input {}", file.path().display()))?;
             actf_to_storylines(&document)
-                .map_err(anyhow::Error::from)
                 .with_context(|| format!("normalize ACTF input {}", file.path().display()))?
         }
         unsupported => {
@@ -868,7 +867,7 @@ fn parse_file(
     let mut steps = Vec::<StoryStepRow>::new();
     let mut tool_calls = Vec::<StoryToolCallRow>::new();
     for (ordinal, story) in stories.into_iter().enumerate() {
-        let mut tables = split_storyline(&story).map_err(anyhow::Error::from)?;
+        let mut tables = split_storyline(&story)?;
         tables.run.storage_ordinal =
             i64::try_from(ordinal).context("local query Storyline storage ordinal overflow")?;
         anyhow::ensure!(

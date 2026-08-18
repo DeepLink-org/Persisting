@@ -139,9 +139,7 @@ impl Iterator for AtifReader {
                                 &trajectory,
                                 StorylineCollectionShape::Sequence,
                                 ordinal,
-                            )
-                            .map_err(anyhow::Error::from)
-                            {
+                            ) {
                                 Ok(stories) => stories,
                                 Err(error) => return Some(Err(error)),
                             };
@@ -172,10 +170,7 @@ pub(crate) fn parse_storylines(input: &str) -> Result<Vec<StorylineDocument>> {
     let mut stories = Vec::new();
     for (ordinal, trajectory) in documents.into_iter().enumerate() {
         let ordinal = i64::try_from(ordinal).context("ATIF collection ordinal overflow")?;
-        stories.extend(
-            atif_collection_to_storylines(&trajectory, shape, ordinal)
-                .map_err(anyhow::Error::from)?,
-        );
+        stories.extend(atif_collection_to_storylines(&trajectory, shape, ordinal)?);
     }
     Ok(stories)
 }

@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Error, InputIssue, InputResult, Result};
+use crate::{InputIssue, InputResult, Result};
 
 pub const AGENTICMD_FORMAT_NAME: &str = "agenticmd";
 pub const AGENTICMD_FRONTMATTER_FORMAT: &str = "persisting";
@@ -168,8 +168,7 @@ pub fn agenticmd_body_byte_offset(input: &str) -> InputResult<usize> {
 ///
 /// Storyline metadata encoding is layered on top by `agenticmd::convert`.
 pub fn encode_agenticmd_preamble<T: Serialize>(frontmatter: &T) -> Result<String> {
-    let yaml = serde_yaml::to_string(frontmatter)
-        .map_err(|e| Error::Other(format!("agenticmd frontmatter yaml: {e}")))?;
+    let yaml = serde_yaml::to_string(frontmatter)?;
     Ok(format!("---\n{yaml}---\n\n"))
 }
 

@@ -2,9 +2,10 @@
 
 use persisting_pchronicle::document::{
     decode_json_storylines, encode_json_storylines, DocumentFormat, InputIssue, InputIssueKind,
-    InputResult, Result as DocumentResult,
+    InputResult,
 };
 use persisting_pchronicle::model::{EventRecord, StorylineDocument};
+use persisting_pchronicle::Result;
 
 #[cfg(feature = "lance-store")]
 use persisting_pchronicle::query::{ChronicleQueryEngine, QueryCapabilities};
@@ -14,7 +15,7 @@ fn approved_facade_paths_compile() {
     let _: DocumentFormat = DocumentFormat::Atif;
     let _: InputResult<Vec<StorylineDocument>> =
         decode_json_storylines(DocumentFormat::Atif, "{}", "compile-only.json");
-    let _: fn(DocumentFormat, &[StorylineDocument]) -> DocumentResult<serde_json::Value> =
+    let _: fn(DocumentFormat, &[StorylineDocument]) -> Result<serde_json::Value> =
         encode_json_storylines;
     let _: Option<EventRecord> = None;
 
@@ -23,6 +24,16 @@ fn approved_facade_paths_compile() {
         let _: Option<ChronicleQueryEngine> = None;
         let _: Option<QueryCapabilities> = None;
     }
+}
+
+fn accepts_anyhow<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
+    result
+}
+
+#[test]
+fn result_alias_is_anyhow() {
+    let result: Result<()> = Ok(());
+    let _: anyhow::Result<()> = accepts_anyhow(result);
 }
 
 #[test]

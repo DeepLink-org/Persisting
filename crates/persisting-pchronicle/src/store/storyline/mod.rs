@@ -954,7 +954,6 @@ impl StorylineLanceStore {
                     tool_calls: tool_calls.remove(id).unwrap_or_default(),
                 })
                 .map(Some)
-                .map_err(anyhow::Error::from)
             })
             .collect()
     }

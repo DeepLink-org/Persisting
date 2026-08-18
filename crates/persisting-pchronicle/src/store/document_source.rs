@@ -454,13 +454,11 @@ async fn read_pinned_storyline(
     for batch in &tool_calls {
         tool_call_rows.extend(super::story_tool_calls_from_batch(batch)?);
     }
-    Ok(crate::store::reconstruct_storyline(
-        crate::store::StorylineTables {
-            run: run_rows.remove(0),
-            steps: step_rows,
-            tool_calls: tool_call_rows,
-        },
-    )?)
+    crate::store::reconstruct_storyline(crate::store::StorylineTables {
+        run: run_rows.remove(0),
+        steps: step_rows,
+        tool_calls: tool_call_rows,
+    })
 }
 
 fn story_rows(story: &StorylineDocument) -> usize {

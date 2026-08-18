@@ -1104,7 +1104,7 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
         let error = run(cli, false, &mut stdout, &mut Vec::new())
             .await
             .unwrap_err();
-        assert!(error.to_string().starts_with(code), "{error:#}");
+        assert!(format!("{error:#}").starts_with(code), "{error:#}");
         assert!(stdout.is_empty());
         assert!(!output.exists());
     }

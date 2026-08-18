@@ -423,7 +423,7 @@ fn project_canonical_event_records(records: Vec<EventRecord>) -> Result<Vec<Stor
     anyhow::ensure!(!groups.is_empty(), "canonical event source is empty");
     groups
         .into_values()
-        .map(|records| project_event_records(&records).map_err(anyhow::Error::from))
+        .map(|records| project_event_records(&records))
         .collect()
 }
 

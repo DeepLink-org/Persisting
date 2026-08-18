@@ -26,10 +26,11 @@ fn into_storyline(format: TestFormat, input: &str) -> crate::Result<crate::Story
             let value = serde_json::from_str(input)?;
             let mut stories = crate::formats::parse_openai_msg_corpus_value(&value, "corpus.json")?;
             if stories.len() != 1 {
-                return Err(crate::Error::UnsupportedCardinality {
-                    format: crate::DocumentFormat::OpenaiMsg,
-                    stories: stories.len(),
-                });
+                anyhow::bail!(
+                    "{} document cannot represent {} storylines",
+                    crate::DocumentFormat::OpenaiMsg,
+                    stories.len()
+                );
             }
             Ok(stories.remove(0))
         }
@@ -64,8 +65,8 @@ fn convert(from: TestFormat, to: TestFormat, input: &str) -> crate::Result<Strin
     from_storyline(to, &into_storyline(from, input)?)
 }
 
-fn lance_only_error() -> crate::Error {
-    crate::Error::Other(crate::formats::events::events_lance_only_message().into())
+fn lance_only_error() -> anyhow::Error {
+    anyhow::anyhow!(crate::formats::events::events_lance_only_message())
 }
 
 fn sample_traj() -> AtifTrajectory {

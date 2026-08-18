@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    Error, FieldPresence, Result, StoryLink, StorylineDocument, StorylinePresence,
-    StorylineToolCall, StorylineTurn,
+    FieldPresence, Result, StoryLink, StorylineDocument, StorylinePresence, StorylineToolCall,
+    StorylineTurn,
 };
 
 #[cfg(feature = "lance-store")]
@@ -106,7 +106,7 @@ fn observation_results(observation: &Option<Value>) -> Result<&[Value]> {
         .get("results")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .ok_or_else(|| Error::Other("storyline observation must contain a results array".into()))
+        .ok_or_else(|| anyhow::anyhow!("storyline observation must contain a results array"))
 }
 
 fn source_call_id(result: &Value) -> Option<&str> {
@@ -181,10 +181,11 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
             .enumerate()
         {
             if !seen_calls.insert(call.tool_call_id.clone()) {
-                return Err(Error::DuplicateToolCall {
-                    session_id: story.session_id.clone(),
-                    tool_call_id: call.tool_call_id.clone(),
-                });
+                anyhow::bail!(
+                    "duplicate tool_call ({}, {})",
+                    story.session_id,
+                    call.tool_call_id
+                );
             }
             calls.insert(
                 call.tool_call_id.clone(),
@@ -206,18 +207,18 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
         }
         for result in observation_results(&turn.observation)? {
             let call_id = source_call_id(result).ok_or_else(|| {
-                Error::Other(format!(
+                anyhow::anyhow!(
                     "observation result in step {} requires source_call_id",
                     turn.id
-                ))
+                )
             })?;
-            let call = calls
-                .get_mut(call_id)
-                .ok_or_else(|| Error::OrphanToolCall {
-                    session_id: story.session_id.clone(),
-                    step_id: turn.id,
-                    tool_call_id: call_id.to_string(),
-                })?;
+            let call = calls.get_mut(call_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "tool_call {call_id} references missing step {} in session {}",
+                    turn.id,
+                    story.session_id
+                )
+            })?;
             call.results.push(result.clone());
         }
         tool_calls.extend(calls.into_values());
@@ -247,16 +248,15 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
             || step.document_id != run.document_id
             || step.run_id != run.run_id
         {
-            return Err(Error::Other(format!(
+            anyhow::bail!(
                 "step {} does not belong to document/session {}/{}",
-                step.step_id, run.document_id, run.session_id
-            )));
+                step.step_id,
+                run.document_id,
+                run.session_id
+            );
         }
         if !step_ids.insert(step.step_id) {
-            return Err(Error::DuplicateStep {
-                session_id: run.session_id.clone(),
-                step_id: step.step_id,
-            });
+            anyhow::bail!("duplicate step ({}, {})", run.session_id, step.step_id);
         }
     }
     let mut call_ids = HashSet::new();
@@ -266,24 +266,26 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
             || call.run_id != run.run_id
             || !step_ids.contains(&call.step_id)
         {
-            return Err(Error::OrphanToolCall {
-                session_id: run.session_id.clone(),
-                step_id: call.step_id,
-                tool_call_id: call.tool_call_id.clone(),
-            });
+            anyhow::bail!(
+                "tool_call {} references missing step {} in session {}",
+                call.tool_call_id,
+                call.step_id,
+                run.session_id
+            );
         }
         if !call_ids.insert(call.tool_call_id.clone()) {
-            return Err(Error::DuplicateToolCall {
-                session_id: run.session_id.clone(),
-                tool_call_id: call.tool_call_id.clone(),
-            });
+            anyhow::bail!(
+                "duplicate tool_call ({}, {})",
+                run.session_id,
+                call.tool_call_id
+            );
         }
         for result in &call.results {
             if source_call_id(result) != Some(call.tool_call_id.as_str()) {
-                return Err(Error::Other(format!(
+                anyhow::bail!(
                     "result in tool_call '{}' has a mismatched source_call_id",
                     call.tool_call_id
-                )));
+                );
             }
         }
     }
@@ -472,20 +474,14 @@ mod tests {
 
         let mut orphan = story();
         orphan.turns[1].observation = Some(json!({"results": [{"source_call_id": "missing"}]}));
-        assert!(matches!(
-            split_storyline(&orphan),
-            Err(Error::OrphanToolCall { .. })
-        ));
+        assert!(split_storyline(&orphan).is_err());
 
         let mut duplicate = story();
         let mut second = duplicate.turns[1].clone();
         second.id = 3;
         second.observation = None;
         duplicate.turns.push(second);
-        assert!(matches!(
-            split_storyline(&duplicate),
-            Err(Error::DuplicateToolCall { .. })
-        ));
+        assert!(split_storyline(&duplicate).is_err());
     }
 
     #[test]
@@ -498,26 +494,17 @@ mod tests {
 
         let mut duplicate_step = valid.clone();
         duplicate_step.steps.push(duplicate_step.steps[0].clone());
-        assert!(matches!(
-            reconstruct_storyline(duplicate_step),
-            Err(Error::DuplicateStep { .. })
-        ));
+        assert!(reconstruct_storyline(duplicate_step).is_err());
 
         let mut orphan_call = valid.clone();
         orphan_call.tool_calls[0].step_id = 99;
-        assert!(matches!(
-            reconstruct_storyline(orphan_call),
-            Err(Error::OrphanToolCall { .. })
-        ));
+        assert!(reconstruct_storyline(orphan_call).is_err());
 
         let mut duplicate_call = valid.clone();
         duplicate_call
             .tool_calls
             .push(duplicate_call.tool_calls[0].clone());
-        assert!(matches!(
-            reconstruct_storyline(duplicate_call),
-            Err(Error::DuplicateToolCall { .. })
-        ));
+        assert!(reconstruct_storyline(duplicate_call).is_err());
 
         let mut mismatched_result = valid;
         mismatched_result.tool_calls[0].results[0]["source_call_id"] = json!("other-call");

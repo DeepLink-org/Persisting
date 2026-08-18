@@ -11,7 +11,7 @@ use crate::formats::actf::{
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
-use crate::{Error, Result};
+use crate::Result;
 
 const ACTF_EXTENSION_KEY: &str = "persisting.dev/actf/v1";
 
@@ -19,10 +19,10 @@ const ACTF_EXTENSION_KEY: &str = "persisting.dev/actf/v1";
 pub fn actf_to_storyline(document: &ActfDocument) -> Result<StorylineDocument> {
     let mut stories = actf_to_storylines(document)?;
     if stories.len() != 1 {
-        return Err(Error::Other(format!(
+        anyhow::bail!(
             "ACTF document contains {} attempts; use actf_to_storylines",
             stories.len()
-        )));
+        );
     }
     Ok(stories.remove(0))
 }
@@ -53,9 +53,7 @@ pub fn storyline_to_actf(story: &StorylineDocument) -> Result<ActfDocument> {
 
 pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument> {
     if stories.is_empty() {
-        return Err(Error::Other(
-            "ACTF conversion requires at least one Storyline".into(),
-        ));
+        anyhow::bail!("ACTF conversion requires at least one Storyline");
     }
     let residual_count = stories
         .iter()
@@ -63,50 +61,44 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
         .count();
     if residual_count == 0 {
         if stories.len() != 1 {
-            return Err(Error::Other(
-                "synthesizing ACTF without residual metadata requires one Storyline".into(),
-            ));
+            anyhow::bail!("synthesizing ACTF without residual metadata requires one Storyline");
         }
         return synthesize_actf(&stories[0]);
     }
     if residual_count != stories.len() {
-        return Err(Error::Other(
-            "cannot mix ACTF residual and unrelated Storylines".into(),
-        ));
+        anyhow::bail!("cannot mix ACTF residual and unrelated Storylines");
     }
 
     let first = residual(&stories[0])
-        .ok_or_else(|| Error::Other("ACTF residual disappeared during conversion".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("ACTF residual disappeared during conversion"))?;
     let root_value = first
         .get("root")
         .and_then(Value::as_object)
-        .ok_or_else(|| Error::Other("ACTF residual missing root metadata".into()))?
+        .ok_or_else(|| anyhow::anyhow!("ACTF residual missing root metadata"))?
         .clone();
     let mut attempts = Map::new();
     for story in stories {
         story.validate()?;
         let metadata = residual(story)
-            .ok_or_else(|| Error::Other("ACTF residual disappeared during conversion".into()))?;
+            .ok_or_else(|| anyhow::anyhow!("ACTF residual disappeared during conversion"))?;
         if metadata.get("root").and_then(Value::as_object) != Some(&root_value) {
-            return Err(Error::Other(
-                "ACTF Storylines have conflicting root residual".into(),
-            ));
+            anyhow::bail!("ACTF Storylines have conflicting root residual");
         }
         let attempt_id = metadata
             .get("attempt_id")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::Other("ACTF residual missing attempt_id".into()))?;
+            .ok_or_else(|| anyhow::anyhow!("ACTF residual missing attempt_id"))?;
         let mut attempt = metadata
             .get("attempt")
             .and_then(Value::as_object)
             .cloned()
-            .ok_or_else(|| Error::Other("ACTF residual missing attempt metadata".into()))?;
+            .ok_or_else(|| anyhow::anyhow!("ACTF residual missing attempt metadata"))?;
         let mut trajectory = metadata
             .get("trajectory")
             .and_then(Value::as_object)
             .cloned()
-            .ok_or_else(|| Error::Other("ACTF residual missing trajectory metadata".into()))?;
+            .ok_or_else(|| anyhow::anyhow!("ACTF residual missing trajectory metadata"))?;
         let steps = story
             .turns
             .iter()
@@ -140,9 +132,7 @@ pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument>
             .insert(attempt_id.to_string(), Value::Object(attempt))
             .is_some()
         {
-            return Err(Error::Other(format!(
-                "duplicate ACTF attempt id '{attempt_id}'"
-            )));
+            anyhow::bail!("duplicate ACTF attempt id '{attempt_id}'");
         }
     }
 
@@ -375,8 +365,8 @@ fn synthesize_actf(story: &StorylineDocument) -> Result<ActfDocument> {
 }
 
 fn synthesize_step(turn: &StorylineTurn) -> Result<ActfStep> {
-    serde_json::from_value(storyline_step_value(turn)?)
-        .map_err(|error| Error::Other(format!("build ACTF step {}: {error}", turn.id)))
+    let step = serde_json::from_value(storyline_step_value(turn)?)?;
+    Ok(step)
 }
 
 fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
@@ -532,7 +522,7 @@ fn root_metadata(document: &ActfDocument) -> Result<Value> {
     let mut value = serde_json::to_value(document)?;
     let object = value
         .as_object_mut()
-        .ok_or_else(|| Error::Other("serialized ACTF document must be an object".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("serialized ACTF document must be an object"))?;
     for key in ["task_id", "correct", "attempts"] {
         object.remove(key);
     }
@@ -543,7 +533,7 @@ fn attempt_residual(attempt: &ActfAttempt) -> Result<Value> {
     let mut value = serde_json::to_value(attempt)?;
     let object = value
         .as_object_mut()
-        .ok_or_else(|| Error::Other("serialized ACTF attempt must be an object".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("serialized ACTF attempt must be an object"))?;
     for key in ["correct", "score", "status", "trajectory"] {
         object.remove(key);
     }
@@ -554,7 +544,7 @@ fn trajectory_residual(trajectory: &ActfTrajectory) -> Result<Value> {
     let mut value = serde_json::to_value(trajectory)?;
     value
         .as_object_mut()
-        .ok_or_else(|| Error::Other("serialized ACTF trajectory must be an object".into()))?
+        .ok_or_else(|| anyhow::anyhow!("serialized ACTF trajectory must be an object"))?
         .remove("steps");
     Ok(value)
 }
@@ -563,13 +553,11 @@ fn step_residual(step: &ActfStep) -> Result<Value> {
     let mut value = serde_json::to_value(step)?;
     let object = value
         .as_object_mut()
-        .ok_or_else(|| Error::Other("serialized ACTF step must be an object".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("serialized ACTF step must be an object"))?;
     let mut assistant = object
         .remove("assistant_content")
         .and_then(|value| value.as_object().cloned())
-        .ok_or_else(|| {
-            Error::Other("serialized ACTF assistant_content must be an object".into())
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("serialized ACTF assistant_content must be an object"))?;
     for key in ["content", "reasoning_content", "tool_calls"] {
         assistant.remove(key);
     }
@@ -638,11 +626,7 @@ fn timestamp_style(value: &str) -> &'static str {
 }
 
 fn format_actf_timestamp(value: &str, style: Option<&str>) -> Result<String> {
-    let timestamp = chrono::DateTime::parse_from_rfc3339(value).map_err(|error| {
-        Error::Other(format!(
-            "format ACTF timestamp '{value}' from Storyline: {error}"
-        ))
-    })?;
+    let timestamp = chrono::DateTime::parse_from_rfc3339(value)?;
     Ok(match style {
         Some("space-offset") => timestamp.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string(),
         Some("rfc3339-offset") => timestamp.to_rfc3339(),

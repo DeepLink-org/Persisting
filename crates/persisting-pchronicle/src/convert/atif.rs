@@ -6,7 +6,9 @@ use crate::formats::storyline::{
     StorylineCollectionShape, StorylineDocument, StorylinePresence, StorylineRootField,
     StorylineToolCall, StorylineTurn, StorylineTurnField,
 };
-use crate::{DocumentFormat, Error, Result};
+use anyhow::Context as _;
+
+use crate::Result;
 
 fn timing_from_metrics(metrics: &FieldPresence<serde_json::Value>) -> (Option<i64>, Option<i64>) {
     let Some(m) = metrics.value() else {
@@ -76,9 +78,7 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
         .value()
         .is_some_and(|children| !children.is_empty())
     {
-        return Err(Error::Other(
-            "embedded ATIF subagent trajectories require atif_to_storylines".into(),
-        ));
+        anyhow::bail!("embedded ATIF subagent trajectories require atif_to_storylines");
     }
     atif_to_storyline_node(traj, None, None)
 }
@@ -129,9 +129,7 @@ pub(crate) fn atif_collection_to_storylines(
     ordinal: i64,
 ) -> Result<Vec<StorylineDocument>> {
     if ordinal < 0 {
-        return Err(Error::Other(
-            "ATIF collection ordinal cannot be negative".into(),
-        ));
+        anyhow::bail!("ATIF collection ordinal cannot be negative");
     }
     let mut stories = atif_to_storylines(traj)?;
     for story in &mut stories {
@@ -158,9 +156,7 @@ fn atif_to_storyline_node(
                 .map(String::as_str)
                 .filter(|value| !value.is_empty())
         })
-        .ok_or_else(|| {
-            Error::InvalidAtif("ATIF trajectory requires an effective storage identity".into())
-        })?
+        .ok_or_else(|| anyhow::anyhow!("ATIF trajectory requires an effective storage identity"))?
         .to_string();
     let child_ids = traj.subagent_trajectories.value().map(|children| {
         children
@@ -170,9 +166,7 @@ fn atif_to_storyline_node(
                     .trajectory_id
                     .value()
                     .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        Error::InvalidAtif("embedded ATIF subagent requires trajectory_id".into())
-                    })
+                    .ok_or_else(|| anyhow::anyhow!("embedded ATIF subagent requires trajectory_id"))
                     .cloned()
             })
             .collect::<Result<Vec<_>>>()
@@ -343,9 +337,7 @@ pub fn storyline_to_atif(story: &StorylineDocument) -> Result<AtifTrajectory> {
         .as_ref()
         .is_some_and(|children| !children.is_empty())
     {
-        return Err(Error::Other(
-            "Storyline with child documents requires storylines_to_atif".into(),
-        ));
+        anyhow::bail!("Storyline with child documents requires storylines_to_atif");
     }
     storyline_to_atif_node(story, None)
 }
@@ -361,13 +353,8 @@ fn storyline_to_atif_node(
             .observation
             .as_ref()
             .map(|value| {
-                serde_json::from_value::<AtifObservation>(value.clone()).map_err(|error| {
-                    Error::InvalidDocument {
-                        format: DocumentFormat::Atif,
-                        path: None,
-                        location: Some(format!("step[{step_index}].observation")),
-                        message: error.to_string(),
-                    }
+                serde_json::from_value::<AtifObservation>(value.clone()).with_context(|| {
+                    format!("decode ATIF step[{step_index}].observation from Storyline")
                 })
             })
             .transpose()?;
@@ -552,13 +539,11 @@ pub fn storylines_to_atif(stories: &[StorylineDocument]) -> Result<Vec<AtifTraje
         emitted: &mut HashSet<String>,
     ) -> Result<AtifTrajectory> {
         if !visiting.insert(key.to_string()) {
-            return Err(Error::Other(format!(
-                "Storyline child graph contains a cycle at '{key}'"
-            )));
+            anyhow::bail!("Storyline child graph contains a cycle at '{key}'");
         }
-        let index = indexes.get(key).ok_or_else(|| {
-            Error::Other(format!("Storyline child '{key}' has no matching document"))
-        })?;
+        let index = indexes
+            .get(key)
+            .ok_or_else(|| anyhow::anyhow!("Storyline child '{key}' has no matching document"))?;
         let story = &stories[*index];
         let children = match &story.child_session_ids {
             Some(child_keys) => {
@@ -580,16 +565,12 @@ pub fn storylines_to_atif(stories: &[StorylineDocument]) -> Result<Vec<AtifTraje
     for (index, story) in stories.iter().enumerate() {
         let identity = key(story).to_string();
         if indexes.insert(identity.clone(), index).is_some() {
-            return Err(Error::Other(format!(
-                "duplicate Storyline document identity '{identity}'"
-            )));
+            anyhow::bail!("duplicate Storyline document identity '{identity}'");
         }
         if let Some(children) = &story.child_session_ids {
             for child in children {
                 if !referenced.insert(child.clone()) {
-                    return Err(Error::Other(format!(
-                        "Storyline child '{child}' has multiple parents"
-                    )));
+                    anyhow::bail!("Storyline child '{child}' has multiple parents");
                 }
             }
         }
@@ -602,9 +583,7 @@ pub fn storylines_to_atif(stories: &[StorylineDocument]) -> Result<Vec<AtifTraje
         .map(str::to_string)
         .collect::<Vec<_>>();
     if !stories.is_empty() && roots.is_empty() {
-        return Err(Error::Other(
-            "Storyline child graph has no root document".into(),
-        ));
+        anyhow::bail!("Storyline child graph has no root document");
     }
 
     let mut visiting = HashSet::new();
@@ -620,9 +599,7 @@ pub fn storylines_to_atif(stories: &[StorylineDocument]) -> Result<Vec<AtifTraje
         )?);
     }
     if emitted.len() != stories.len() {
-        return Err(Error::Other(
-            "Storyline child graph contains unreachable documents".into(),
-        ));
+        anyhow::bail!("Storyline child graph contains unreachable documents");
     }
     Ok(output)
 }
@@ -631,7 +608,7 @@ pub fn storylines_to_atif(stories: &[StorylineDocument]) -> Result<Vec<AtifTraje
 mod tests {
     use super::{atif_to_storyline, atif_to_storylines, storyline_to_atif, storylines_to_atif};
     use crate::atif::AtifTrajectory;
-    use crate::{DocumentFormat, Error, FieldPresence};
+    use crate::FieldPresence;
 
     #[test]
     fn malformed_atif_observation_is_not_silently_dropped() {
@@ -648,14 +625,16 @@ mod tests {
         story.turns[0].observation = Some(serde_json::json!({"results":"not-an-array"}));
 
         let error = storyline_to_atif(&story).unwrap_err();
-        assert!(matches!(
-            error,
-            Error::InvalidDocument {
-                format: DocumentFormat::Atif,
-                location: Some(ref location),
-                ..
-            } if location == "step[0].observation"
-        ));
+        assert!(
+            error
+                .to_string()
+                .contains("decode ATIF step[0].observation from Storyline"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.chain().count() >= 2,
+            "missing source chain: {error:#}"
+        );
     }
 
     #[test]

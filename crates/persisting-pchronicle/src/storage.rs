@@ -1,6 +1,6 @@
 //! pChronicle 的持久化存储入口。
 
-pub use crate::error::{classify_error, Error, ErrorCode, Result};
+pub type Result<T> = anyhow::Result<T>;
 
 #[cfg(feature = "lance-store")]
 pub use crate::append_queue::{

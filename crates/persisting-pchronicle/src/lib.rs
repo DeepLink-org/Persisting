@@ -33,7 +33,6 @@ mod convert;
 #[cfg(feature = "lance-store")]
 mod discovery;
 pub mod document;
-mod error;
 mod format;
 mod formats;
 mod input;
@@ -56,7 +55,7 @@ mod store;
 
 #[cfg(feature = "lance-store")]
 pub(crate) use document::{QueryCapabilities, QueryTables};
-pub(crate) use error::{Error, Result};
+#[cfg(any(feature = "lance-store", test))]
 pub(crate) use format::DocumentFormat;
 pub(crate) use formats::storyline::StorylineTurn;
 #[cfg(any(feature = "lance-store", test))]
@@ -65,6 +64,7 @@ pub(crate) use formats::storyline::{FieldPresence, StoryLink, StorylineToolCall}
 pub(crate) use formats::storyline::{StorylineAgent, StorylinePresence};
 pub(crate) use formats::{EventIdentity, EventRecord, StorylineDocument};
 pub(crate) use input::{InputIssue, InputResult};
+pub type Result<T> = anyhow::Result<T>;
 #[cfg(feature = "search")]
 pub use messages::*;
 #[cfg(feature = "search")]

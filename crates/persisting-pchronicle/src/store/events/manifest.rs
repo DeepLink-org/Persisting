@@ -865,7 +865,7 @@ mod tests {
         activate(uri, None, "writer").await.unwrap();
         std::fs::write(root.join(MANIFEST_FILE), b"{truncated").unwrap();
         let error = read(uri).await.unwrap_err();
-        assert!(error.to_string().contains("decode event manifest"));
+        assert!(format!("{error:#}").contains("decode event manifest"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! pChronicle 的只读 DataFusion 查询入口与能力快照。
 
-pub use crate::error::{classify_error, Error, ErrorCode, Result};
+pub type Result<T> = anyhow::Result<T>;
 
 #[cfg(feature = "lance-store")]
 pub use crate::document::{FilterPushdown, QueryCapabilities, QueryTables};
