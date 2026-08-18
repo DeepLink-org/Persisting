@@ -866,40 +866,55 @@ async fn concurrent_object_store_replacements_do_not_lose_sessions() {
     assert_eq!(sessions, expected);
 }
 
-#[tokio::test]
-async fn independent_object_store_creates_publish_one_projection_without_operational_error() {
-    let uri = remote_uri("independent-concurrent-create");
-    let mut left = StorylineLanceStore::open_uri(&uri).await.unwrap();
-    let mut right = StorylineLanceStore::open_uri(&uri).await.unwrap();
+async fn assert_independent_object_store_create_case(
+    label: &str,
+    content_options: StorylineContentOptions,
+    left_story: StorylineDocument,
+    right_story: StorylineDocument,
+    expect_offloaded_content: bool,
+) {
+    let uri = remote_uri(label);
+    let mut left = StorylineLanceStore::open_uri_with_content_options(&uri, content_options)
+        .await
+        .unwrap();
+    let mut right = StorylineLanceStore::open_uri_with_content_options(&uri, content_options)
+        .await
+        .unwrap();
     left.write_lock = Arc::new(tokio::sync::Mutex::new(()));
     right.write_lock = Arc::new(tokio::sync::Mutex::new(()));
     let _barrier = CreateAfterEmptyReadBarrier::install(&uri, 2);
     let mut left_lineage = projection_lineage();
-    left_lineage.source_file = "left-events.lance".into();
+    left_lineage.source_file = format!("left-{label}.lance");
     let mut right_lineage = projection_lineage();
-    right_lineage.source_file = "right-events.lance".into();
+    right_lineage.source_file = format!("right-{label}.lance");
 
     let (left_outcome, right_outcome) = tokio::join!(
         left.create_projected_storyline_stream(
-            std::iter::once(Ok(story("left-winner"))),
-            left_lineage,
+            std::iter::once(Ok(left_story.clone())),
+            left_lineage.clone(),
         ),
         right.create_projected_storyline_stream(
-            std::iter::once(Ok(story("right-winner"))),
-            right_lineage,
+            std::iter::once(Ok(right_story.clone())),
+            right_lineage.clone(),
         )
     );
     let left_outcome = left_outcome.unwrap();
     let right_outcome = right_outcome.unwrap();
 
-    let (report, source_file, winner, loser) = match (&left_outcome, &right_outcome) {
-        (StorylineProjectionPublicationOutcome::Published(report), _) => {
-            (report, "left-events.lance", "left-winner", "right-winner")
-        }
-        (_, StorylineProjectionPublicationOutcome::Published(report)) => {
-            (report, "right-events.lance", "right-winner", "left-winner")
-        }
-        _ => panic!("exactly one independent create must publish"),
+    let (report, winner_lineage, winner, loser_session_id) = match (&left_outcome, &right_outcome) {
+        (StorylineProjectionPublicationOutcome::Published(report), _) => (
+            report,
+            &left_lineage,
+            &left_story,
+            right_story.session_id.as_str(),
+        ),
+        (_, StorylineProjectionPublicationOutcome::Published(report)) => (
+            report,
+            &right_lineage,
+            &right_story,
+            left_story.session_id.as_str(),
+        ),
+        _ => panic!("exactly one independent create must publish for {label}"),
     };
     assert!(matches!(
         (&left_outcome, &right_outcome),
@@ -915,9 +930,53 @@ async fn independent_object_store_creates_publish_one_projection_without_operati
     let reopened = StorylineLanceStore::open_uri(&uri).await.unwrap();
     let current = reopened.current_table_paths().await.unwrap().unwrap();
     assert_eq!(current.generation, report.generation);
-    assert_eq!(current.projection.unwrap().source_file, source_file);
-    assert!(reopened.get_storyline_full(winner).await.unwrap().is_some());
-    assert!(reopened.get_storyline_full(loser).await.unwrap().is_none());
+    assert_eq!(current.projection.as_ref(), Some(winner_lineage));
+    if expect_offloaded_content {
+        let objects = open_objects(&current.objects, current.objects_version)
+            .await
+            .unwrap();
+        assert!(objects.count_rows(None).await.unwrap() > 0);
+    }
+    assert_eq!(
+        reopened
+            .get_storyline_full(&winner.session_id)
+            .await
+            .unwrap(),
+        Some(winner.clone())
+    );
+    assert!(reopened
+        .get_storyline_full(loser_session_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn independent_object_store_creates_publish_one_inline_or_offloaded_projection() {
+    assert_independent_object_store_create_case(
+        "independent-concurrent-create-inline",
+        StorylineContentOptions::default(),
+        story("left-inline-winner"),
+        story("right-inline-winner"),
+        false,
+    )
+    .await;
+
+    let mut left_story = story("left-offloaded-winner");
+    left_story.notes = Some("left projection content ".repeat(256));
+    let mut right_story = story("right-offloaded-winner");
+    right_story.notes = Some("right projection content ".repeat(256));
+    assert_independent_object_store_create_case(
+        "independent-concurrent-create-offloaded",
+        StorylineContentOptions {
+            offload_threshold: 1,
+            ..Default::default()
+        },
+        left_story,
+        right_story,
+        true,
+    )
+    .await;
 }
 
 #[tokio::test]
