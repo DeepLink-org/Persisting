@@ -484,9 +484,23 @@ mod tests {
     async fn building_into_nonempty_output_is_an_explicit_conflict() {
         let temp = tempfile::tempdir().unwrap();
         let (source, output) = canonical_source(&temp).await;
-        build_storyline_projection(&source, &output, "events.lance")
-            .await
-            .unwrap();
+        let StorylineProjectionBuildOutcome::Built(report) =
+            build_storyline_projection(&source, &output, "events.lance")
+                .await
+                .unwrap()
+        else {
+            panic!("initial build unexpectedly reported nonempty output")
+        };
+        assert_eq!(
+            std::fs::canonicalize(&report.source_uri).unwrap(),
+            std::fs::canonicalize(&source).unwrap()
+        );
+        assert_eq!(
+            std::fs::canonicalize(&report.output_uri).unwrap(),
+            std::fs::canonicalize(&output).unwrap()
+        );
+        assert_eq!(report.fact_rows, 1);
+        assert_eq!(report.storylines, 1);
 
         let outcome = build_storyline_projection(&source, &output, "events.lance")
             .await

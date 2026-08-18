@@ -2,7 +2,7 @@ use super::*;
 use crate::layout::{story_lance_event_path, StoryCoords};
 use crate::projection::{
     build_storyline_projection, rebuild_storyline_projection, sync_storyline_projection,
-    StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
+    StorylineProjectionBuildOutcome, StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
 };
 use crate::store::{RawEventLanceStore, StorylineLanceStore};
 use crate::{EventIdentity, StorylineAgent, StorylineTurn};
@@ -674,12 +674,15 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
     let events_uri =
         story_lance_event_path(&storage.to_string_lossy(), "agent", "root", Some("run-1"))?;
     let projection_uri = storage.join("agent/run-1/storyline");
-    build_storyline_projection(
+    let StorylineProjectionBuildOutcome::Built(_) = build_storyline_projection(
         events_uri.to_string_lossy(),
         projection_uri.to_string_lossy(),
         "agent/run-1/events.lance",
     )
-    .await?;
+    .await?
+    else {
+        panic!("initial catalog projection build unexpectedly reported nonempty output")
+    };
 
     let snapshot = Arc::new(
         DatasetCatalogSnapshot::discover(
@@ -914,12 +917,15 @@ async fn multiple_fresh_projections_choose_one_without_hiding_canonical_events()
     let events_uri =
         story_lance_event_path(&storage.to_string_lossy(), "agent", "root", Some("run-1"))?;
     for name in ["storyline-a", "storyline-b"] {
-        build_storyline_projection(
+        let StorylineProjectionBuildOutcome::Built(_) = build_storyline_projection(
             events_uri.to_string_lossy(),
             storage.join("agent/run-1").join(name).to_string_lossy(),
             "agent/run-1/events.lance",
         )
-        .await?;
+        .await?
+        else {
+            panic!("catalog projection candidate build unexpectedly reported nonempty output")
+        };
     }
 
     let snapshot = DatasetCatalogSnapshot::discover(
