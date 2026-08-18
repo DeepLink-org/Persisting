@@ -14,6 +14,8 @@ mod attempt_registry;
 #[cfg(feature = "lance-store")]
 mod catalog;
 #[cfg(feature = "lance-store")]
+mod datafusion_bridge;
+#[cfg(feature = "lance-store")]
 pub(crate) mod dataset_write_lock;
 #[cfg(feature = "lance-store")]
 mod document_source;

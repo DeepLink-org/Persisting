@@ -268,7 +268,7 @@ pub struct DocumentSource {
 
 /// 打开六种 pChronicle 物理文档格式之一。
 #[cfg(feature = "lance-store")]
-pub async fn open_document(format: DocumentFormat, path: &Path) -> Result<DocumentSource> {
+pub async fn open_document(format: DocumentFormat, path: &Path) -> anyhow::Result<DocumentSource> {
     Ok(DocumentSource {
         inner: crate::store::open_document_source(format, path).await?,
     })
@@ -285,19 +285,19 @@ impl DocumentSource {
     }
 
     /// 物化全部 Storyline；累计行数或字节数超出预算时 fail closed。
-    pub async fn project_storylines(&self) -> Result<Vec<StorylineDocument>> {
+    pub async fn project_storylines(&self) -> anyhow::Result<Vec<StorylineDocument>> {
         self.inner.project_storylines().await
     }
 
     /// 逐条访问 Storyline，不在内存中保留完整数据源。
-    pub async fn for_each_storyline<F>(&self, on_storyline: F) -> Result<()>
+    pub async fn for_each_storyline<F>(&self, on_storyline: F) -> anyhow::Result<()>
     where
-        F: FnMut(StorylineDocument) -> Result<()>,
+        F: FnMut(StorylineDocument) -> anyhow::Result<()>,
     {
         self.inner.for_each_storyline(on_storyline).await
     }
 
-    pub fn register_datafusion(&self, context: &SessionContext) -> Result<QueryTables> {
+    pub fn register_datafusion(&self, context: &SessionContext) -> anyhow::Result<QueryTables> {
         self.inner.register_datafusion(context)
     }
 }

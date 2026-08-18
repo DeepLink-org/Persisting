@@ -194,6 +194,12 @@ async fn atif_file_filter_prunes_before_validation_and_exposes_relative_path() -
     assert!(output.contains("good.json"));
     let error = engine.query("SELECT * FROM runs").await.unwrap_err();
     assert!(format!("{error:#}").contains("unmatched.json"));
+    assert!(
+        error.chain().any(|source| source
+            .downcast_ref::<persisting_pchronicle::document::InputIssue>()
+            .is_some()),
+        "missing InputIssue source: {error:#}"
+    );
     Ok(())
 }
 

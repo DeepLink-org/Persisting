@@ -44,6 +44,7 @@ use crate::formats::parse_openai_msg_corpus_value;
 
 use super::storyline::rows::timestamp_array;
 use super::{
+    datafusion_bridge::{from_datafusion, into_datafusion},
     split_storyline, story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema,
     story_steps_to_batch, story_tool_calls_arrow_schema, story_tool_calls_to_batch,
     LocalQueryInputFile, LocalQueryManifest, StoryRunRow, StoryStepRow, StoryToolCallRow,
@@ -258,13 +259,15 @@ impl FileTrajectoryDataSource {
         validate_table_names(names)?;
         context
             .register_table(&names.runs, self.runs.clone())
-            .context("register file-backed runs query table")?;
+            .map_err(|error| from_datafusion("register file-backed runs query table", error))?;
         context
             .register_table(&names.steps, self.steps.clone())
-            .context("register file-backed steps query table")?;
+            .map_err(|error| from_datafusion("register file-backed steps query table", error))?;
         context
             .register_table(&names.tool_calls, self.tool_calls.clone())
-            .context("register file-backed tool_calls query table")?;
+            .map_err(|error| {
+                from_datafusion("register file-backed tool_calls query table", error)
+            })?;
         Ok(())
     }
 }
@@ -536,7 +539,7 @@ impl PartitionStream for FileTrajectoryPartition {
                 &scan,
                 &tx,
             )
-            .map_err(datafusion_error)
+            .map_err(into_datafusion)
         });
         builder.build()
     }
@@ -1211,10 +1214,6 @@ fn like_tokens(pattern: &str, escape: Option<char>) -> Option<Vec<LikeToken>> {
         }
     }
     Some(tokens)
-}
-
-fn datafusion_error(error: anyhow::Error) -> DataFusionError {
-    DataFusionError::Execution(format!("{error:#}"))
 }
 
 fn validate_table_names(names: &StorylineDataFusionTableNames) -> Result<()> {
