@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{DocumentFormat, Error, Result};
+use crate::{Error, InputIssue, InputResult, Result};
 
 pub const AGENTICMD_FORMAT_NAME: &str = "agenticmd";
 pub const AGENTICMD_FRONTMATTER_FORMAT: &str = "persisting";
@@ -107,7 +107,7 @@ impl MarkdownDocument {
     }
 }
 
-pub fn parse_agenticmd_document(input: &str) -> Result<MarkdownDocument> {
+pub fn parse_agenticmd_document(input: &str) -> InputResult<MarkdownDocument> {
     let (frontmatter, _body, _off) = split_frontmatter_with_offset(input)?;
     let spans = parse_agenticmd_blocks_with_spans(input)?;
     let mut doc = MarkdownDocument::new(spans.into_iter().map(|s| s.block).collect());
@@ -149,7 +149,7 @@ pub struct MarkdownBlockSpan {
 }
 
 /// Parse blocks with absolute byte spans (for capture upsert / diagnostics).
-pub fn parse_agenticmd_blocks_with_spans(input: &str) -> Result<Vec<MarkdownBlockSpan>> {
+pub fn parse_agenticmd_blocks_with_spans(input: &str) -> InputResult<Vec<MarkdownBlockSpan>> {
     let (_frontmatter, body, body_offset) = split_frontmatter_with_offset(input)?;
     parse_blocks_with_spans(body, body_offset)
 }
@@ -159,7 +159,7 @@ pub fn parse_agenticmd_blocks_with_spans(input: &str) -> Result<Vec<MarkdownBloc
 /// Returns `0` when there is no opening `---` frontmatter. Errors on unclosed
 /// frontmatter. Does **not** skip `#` comment lines — callers that rewrite
 /// session rollup frontmatter should preserve everything after this offset.
-pub fn agenticmd_body_byte_offset(input: &str) -> Result<usize> {
+pub fn agenticmd_body_byte_offset(input: &str) -> InputResult<usize> {
     let (_fm, _body, offset) = split_frontmatter_with_offset(input)?;
     Ok(offset)
 }
@@ -190,7 +190,9 @@ pub fn encode_agenticmd_block(block: &MarkdownBlock) -> Result<String> {
     ))
 }
 
-fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, Value>, &str, usize)> {
+fn split_frontmatter_with_offset(
+    input: &str,
+) -> InputResult<(BTreeMap<String, Value>, &str, usize)> {
     if !input.starts_with("---") {
         return Ok((BTreeMap::new(), input, 0));
     }
@@ -199,24 +201,18 @@ fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, Value>
     };
     let rest = rest.strip_prefix('\n').unwrap_or(rest);
     let Some(end) = rest.find("\n---") else {
-        return Err(Error::Other("unclosed YAML frontmatter".into()));
+        return Err(InputIssue::invalid("unclosed YAML frontmatter"));
     };
     let yaml = &rest[..end];
     let after = &rest[end + "\n---".len()..];
     let body = after.strip_prefix('\n').unwrap_or(after);
-    let map = serde_yaml::from_str::<BTreeMap<String, Value>>(yaml).map_err(|error| {
-        Error::InvalidDocument {
-            format: DocumentFormat::AgenticMd,
-            path: None,
-            location: Some("frontmatter".into()),
-            message: error.to_string(),
-        }
-    })?;
+    let map = serde_yaml::from_str::<BTreeMap<String, Value>>(yaml)
+        .map_err(|error| InputIssue::invalid(error.to_string()).at("frontmatter"))?;
     let body_offset = input.len() - body.len();
     Ok((map, body, body_offset))
 }
 
-fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<MarkdownBlockSpan>> {
+fn parse_blocks_with_spans(input: &str, base_offset: usize) -> InputResult<Vec<MarkdownBlockSpan>> {
     if input.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -250,9 +246,9 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Markdo
             .map(|i| pos + i)
             .unwrap_or(bytes.len());
         let line = std::str::from_utf8(&bytes[pos..line_end])
-            .map_err(|e| Error::Other(format!("agenticmd utf8: {e}")))?;
+            .map_err(|e| InputIssue::invalid(format!("agenticmd utf8: {e}")))?;
         if !line.trim_start().starts_with(BLOCK_MARKER) {
-            return Err(Error::Other(format!(
+            return Err(InputIssue::invalid(format!(
                 "expected `{BLOCK_MARKER}:{{speaker}} {{json}} -->` at offset {}",
                 base_offset + pos
             )));
@@ -278,13 +274,13 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Markdo
                     .unwrap_or(bytes.len())
             });
         if body_end > bytes.len() {
-            return Err(Error::Other(format!(
+            return Err(InputIssue::invalid(format!(
                 "agenticmd block body past EOF (need {} bytes)",
                 declared_length.unwrap_or_default()
             )));
         }
         let raw_body = std::str::from_utf8(&bytes[next..body_end])
-            .map_err(|e| Error::Other(format!("agenticmd body utf8: {e}")))?;
+            .map_err(|e| InputIssue::invalid(format!("agenticmd body utf8: {e}")))?;
         let body = if declared_length.is_some() {
             raw_body.to_string()
         } else {
@@ -302,10 +298,10 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Markdo
     Ok(blocks)
 }
 
-fn parse_block_comment(line: &str) -> Result<(MarkdownHeader, Option<usize>)> {
+fn parse_block_comment(line: &str) -> InputResult<(MarkdownHeader, Option<usize>)> {
     let after = line
         .strip_prefix(BLOCK_MARKER)
-        .ok_or_else(|| Error::Other("missing persisting:block marker".into()))?;
+        .ok_or_else(|| InputIssue::invalid("missing persisting:block marker"))?;
     let after = after.strip_prefix(':').unwrap_or(after).trim_start();
     let json_start = after.find('{');
     let speaker = json_start
@@ -331,18 +327,20 @@ fn parse_block_comment(line: &str) -> Result<(MarkdownHeader, Option<usize>)> {
     let after = &after[json_start..];
     let json_part = after
         .strip_suffix("-->")
-        .ok_or_else(|| Error::Other("unclosed block comment".into()))?
+        .ok_or_else(|| InputIssue::invalid("unclosed block comment"))?
         .trim();
     let json_start = json_part
         .find('{')
-        .ok_or_else(|| Error::Other("block JSON object missing".into()))?;
+        .ok_or_else(|| InputIssue::invalid("block JSON object missing"))?;
     let json_str = extract_json_object(&json_part[json_start..])?;
-    let raw: Value = serde_json::from_str(json_str)?;
+    let raw: Value =
+        serde_json::from_str(json_str).map_err(|error| InputIssue::invalid(error.to_string()))?;
     let declared_length = raw
         .get("length")
         .and_then(Value::as_u64)
         .map(|n| n as usize);
-    let mut header: MarkdownHeader = serde_json::from_value(raw)?;
+    let mut header: MarkdownHeader =
+        serde_json::from_value(raw).map_err(|error| InputIssue::invalid(error.to_string()))?;
     if !speaker.is_empty()
         && !header.fields.contains_key("source")
         && !header.fields.contains_key("role")
@@ -367,10 +365,10 @@ fn normalize_source(speaker: &str) -> &str {
     }
 }
 
-fn extract_json_object(s: &str) -> Result<&str> {
+fn extract_json_object(s: &str) -> InputResult<&str> {
     let bytes = s.as_bytes();
     if bytes.first() != Some(&b'{') {
-        return Err(Error::Other("expected JSON object".into()));
+        return Err(InputIssue::invalid("expected JSON object"));
     }
     let mut depth = 0i32;
     let mut in_str = false;
@@ -398,8 +396,8 @@ fn extract_json_object(s: &str) -> Result<&str> {
             _ => {}
         }
     }
-    Err(Error::Other(
-        "unbalanced JSON object in block header".into(),
+    Err(InputIssue::invalid(
+        "unbalanced JSON object in block header",
     ))
 }
 
@@ -433,19 +431,11 @@ mod strict_frontmatter_tests {
     use std::collections::BTreeMap;
 
     use super::{encode_agenticmd_block, parse_agenticmd_document, MarkdownBlock, MarkdownHeader};
-    use crate::{DocumentFormat, Error};
 
     #[test]
     fn malformed_agenticmd_yaml_is_not_silently_replaced() {
         let error = parse_agenticmd_document("---\nformat: [\n---\n\n").unwrap_err();
-        assert!(matches!(
-            error,
-            Error::InvalidDocument {
-                format: DocumentFormat::AgenticMd,
-                location: Some(ref location),
-                ..
-            } if location == "frontmatter"
-        ));
+        assert_eq!(error.location(), Some("frontmatter"));
     }
 
     #[test]

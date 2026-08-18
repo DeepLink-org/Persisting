@@ -72,7 +72,7 @@ pub(crate) async fn open_document_source(
         }
         DocumentFormat::AgenticMd => {
             let input = std::fs::read_to_string(&path).map_err(Error::from)?;
-            let story = parse_agenticmd(&input).map_err(|error| with_path(error, &path))?;
+            let story = parse_agenticmd(&input).map_err(|error| with_path(error.into(), &path))?;
             let source = AgenticMdDataSource::new(&story).map_err(other)?;
             Ok(DocumentSourceImpl::AgenticMd {
                 path,

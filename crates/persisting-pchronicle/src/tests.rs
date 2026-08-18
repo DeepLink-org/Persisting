@@ -21,7 +21,7 @@ fn into_storyline(format: TestFormat, input: &str) -> crate::Result<crate::Story
     match format {
         TestFormat::Storyline => crate::formats::storyline::parse_storyline_document(input),
         TestFormat::CanonicalEvent => Err(lance_only_error()),
-        TestFormat::AgenticMd => crate::document::decode_agenticmd(input),
+        TestFormat::AgenticMd => Ok(crate::document::decode_agenticmd(input)?),
         TestFormat::OpenaiMsg => {
             let value = serde_json::from_str(input)?;
             let mut stories = crate::formats::parse_openai_msg_corpus_value(&value, "corpus.json")?;

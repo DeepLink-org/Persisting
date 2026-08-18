@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::{Error, Result};
+use crate::{InputIssue, InputResult};
 
 pub const ACTF_SCHEMA_VERSION: &str = "ACTF_v1.0";
 
@@ -106,109 +106,109 @@ pub struct ActfObservation {
 }
 
 impl ActfDocument {
-    pub fn from_json_str(input: &str) -> Result<Self> {
-        let document: Self = serde_json::from_str(input)?;
+    pub fn from_json_str(input: &str) -> InputResult<Self> {
+        let document: Self =
+            serde_json::from_str(input).map_err(|error| InputIssue::invalid(error.to_string()))?;
         document.validate()?;
         Ok(document)
     }
 
     #[cfg(test)]
-    pub fn to_json_string_pretty(&self) -> Result<String> {
+    pub fn to_json_string_pretty(&self) -> InputResult<String> {
         self.validate()?;
-        Ok(serde_json::to_string_pretty(self)?)
+        serde_json::to_string_pretty(self).map_err(|error| InputIssue::invalid(error.to_string()))
     }
 
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> InputResult<()> {
         if self.task_id.trim().is_empty() {
-            return Err(Error::Other("ACTF task_id is required".into()));
+            return Err(InputIssue::invalid("ACTF task_id is required"));
         }
         if self.category.trim().is_empty() {
-            return Err(Error::Other("ACTF category is required".into()));
+            return Err(InputIssue::invalid("ACTF category is required"));
         }
         if !(self.solved_at.is_null() || self.solved_at.is_string()) {
-            return Err(Error::Other(
-                "ACTF solved_at must be a string or null".into(),
+            return Err(InputIssue::invalid(
+                "ACTF solved_at must be a string or null",
             ));
         }
         if self.k == 0 {
-            return Err(Error::Other("ACTF k must be positive".into()));
+            return Err(InputIssue::invalid("ACTF k must be positive"));
         }
         if self.attempts.is_empty() {
-            return Err(Error::Other("ACTF attempts must not be empty".into()));
+            return Err(InputIssue::invalid("ACTF attempts must not be empty"));
         }
         if self.attempts_tried != self.attempts.len() as u64 {
-            return Err(Error::Other(format!(
+            return Err(InputIssue::invalid(format!(
                 "ACTF attempts_tried={} does not match attempts length {}",
                 self.attempts_tried,
                 self.attempts.len()
             )));
         }
         if self.attempts_tried > self.k {
-            return Err(Error::Other(format!(
+            return Err(InputIssue::invalid(format!(
                 "ACTF attempts_tried={} exceeds k={}",
                 self.attempts_tried, self.k
             )));
         }
         for (attempt_id, attempt) in &self.attempts {
             if attempt_id.trim().is_empty() {
-                return Err(Error::Other("ACTF attempt id must not be empty".into()));
+                return Err(InputIssue::invalid("ACTF attempt id must not be empty"));
             }
             if attempt.status.trim().is_empty() {
-                return Err(Error::Other(format!(
+                return Err(InputIssue::invalid(format!(
                     "ACTF attempt '{attempt_id}' status is required"
                 )));
             }
-            attempt
-                .trajectory
-                .validate()
-                .map_err(|error| Error::Other(format!("ACTF attempt '{attempt_id}': {error}")))?;
+            attempt.trajectory.validate().map_err(|error| {
+                InputIssue::invalid(format!("ACTF attempt '{attempt_id}': {error}"))
+            })?;
         }
         Ok(())
     }
 }
 
 impl ActfTrajectory {
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> InputResult<()> {
         if self.schema_version != ACTF_SCHEMA_VERSION {
-            return Err(Error::Other(format!(
+            return Err(InputIssue::unsupported(format!(
                 "unsupported ACTF schema_version '{}'; expected {}",
                 self.schema_version, ACTF_SCHEMA_VERSION
             )));
         }
         if self.started_at.trim().is_empty() || self.finished_at.trim().is_empty() {
-            return Err(Error::Other(
-                "ACTF trajectory started_at and finished_at are required".into(),
+            return Err(InputIssue::invalid(
+                "ACTF trajectory started_at and finished_at are required",
             ));
         }
         if self.steps.is_empty() {
-            return Err(Error::Other(
-                "ACTF trajectory steps must not be empty".into(),
+            return Err(InputIssue::invalid(
+                "ACTF trajectory steps must not be empty",
             ));
         }
 
         let mut previous_step = None;
         for step in &self.steps {
             if step.step_id < 1 {
-                return Err(Error::Other(format!(
+                return Err(InputIssue::invalid(format!(
                     "ACTF step_id must be positive, got {}",
                     step.step_id
                 )));
             }
             if previous_step.is_some_and(|previous| step.step_id <= previous) {
-                return Err(Error::Other(format!(
+                return Err(InputIssue::invalid(format!(
                     "ACTF step_id {} is not strictly increasing",
                     step.step_id
                 )));
             }
             previous_step = Some(step.step_id);
             if step.started_at.trim().is_empty() || step.finished_at.trim().is_empty() {
-                return Err(Error::Other(format!(
+                return Err(InputIssue::invalid(format!(
                     "ACTF step {} requires started_at and finished_at",
                     step.step_id
                 )));
             }
             if step.assistant_content.tool_calls != step.tools {
-                return Err(Error::Other(format!(
+                return Err(InputIssue::invalid(format!(
                     "ACTF step {} assistant_content.tool_calls must equal tools",
                     step.step_id
                 )));
@@ -220,7 +220,7 @@ impl ActfTrajectory {
                 || !(step.metric.llm_infer_ms.is_null() || step.metric.llm_infer_ms.is_number())
                 || !(step.metric.env_action_ms.is_null() || step.metric.env_action_ms.is_number())
             {
-                return Err(Error::Other(format!(
+                return Err(InputIssue::invalid(format!(
                     "ACTF step {} token and latency metrics must be numbers or null",
                     step.step_id
                 )));
@@ -229,13 +229,13 @@ impl ActfTrajectory {
             let mut step_call_ids = HashSet::new();
             for call in &step.tools {
                 if call.kind.trim().is_empty() || call.id.trim().is_empty() {
-                    return Err(Error::Other(format!(
+                    return Err(InputIssue::invalid(format!(
                         "ACTF step {} tool calls require type and id",
                         step.step_id
                     )));
                 }
                 if !step_call_ids.insert(call.id.as_str()) {
-                    return Err(Error::Other(format!(
+                    return Err(InputIssue::invalid(format!(
                         "duplicate ACTF tool call id '{}'",
                         call.id
                     )));
@@ -243,7 +243,7 @@ impl ActfTrajectory {
             }
             for observation in &step.observation {
                 if observation.kind.trim().is_empty() {
-                    return Err(Error::Other(format!(
+                    return Err(InputIssue::invalid(format!(
                         "ACTF step {} observation type is required",
                         step.step_id
                     )));
@@ -255,7 +255,7 @@ impl ActfTrajectory {
                     .and_then(Value::as_str);
                 if let Some(referenced_id) = referenced_id {
                     if !step_call_ids.contains(referenced_id) {
-                        return Err(Error::Other(format!(
+                        return Err(InputIssue::invalid(format!(
                             "ACTF step {} observation references unknown tool id '{}'",
                             step.step_id, referenced_id
                         )));
@@ -268,7 +268,7 @@ impl ActfTrajectory {
 }
 
 #[cfg(test)]
-pub fn parse_actf_document(input: &str) -> Result<ActfDocument> {
+pub fn parse_actf_document(input: &str) -> InputResult<ActfDocument> {
     ActfDocument::from_json_str(input)
 }
 

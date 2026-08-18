@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
-use crate::{Error, Result};
+use crate::{Error, InputIssue, InputResult, Result};
 
 const OPENAI_EXTENSION_KEY: &str = "persisting.dev/openai-msg/v1";
 const ROW_METRIC_FIELDS: &[&str] = &[
@@ -37,8 +37,9 @@ pub struct RecoveredOpenaiMsgFile {
 pub fn parse_openai_msg_corpus_value(
     document: &Value,
     relative_path: impl AsRef<Path>,
-) -> Result<Vec<StorylineDocument>> {
-    let relative_path = validate_relative_path(relative_path.as_ref())?
+) -> InputResult<Vec<StorylineDocument>> {
+    let relative_path = validate_relative_path(relative_path.as_ref())
+        .map_err(|error| InputIssue::invalid(error.to_string()))?
         .to_string_lossy()
         .into_owned();
     let (kind, envelope, records) = match document {
@@ -48,7 +49,7 @@ pub fn parse_openai_msg_corpus_value(
                 .get("session_steps")
                 .and_then(Value::as_array)
                 .ok_or_else(|| {
-                    Error::Other("OpenAI corpus object requires a session_steps array".to_string())
+                    InputIssue::invalid("OpenAI corpus object requires a session_steps array")
                 })?
                 .clone();
             let mut metadata = root.clone();
@@ -56,8 +57,8 @@ pub fn parse_openai_msg_corpus_value(
             ("envelope", Some(Value::Object(metadata)), records)
         }
         _ => {
-            return Err(Error::Other(
-                "OpenAI corpus must be a JSON array or session_steps object".to_string(),
+            return Err(InputIssue::invalid(
+                "OpenAI corpus must be a JSON array or session_steps object",
             ));
         }
     };
@@ -71,12 +72,13 @@ pub fn parse_openai_msg_corpus_value(
     let mut group_indexes = HashMap::<String, usize>::new();
     for (ordinal, record) in records.into_iter().enumerate() {
         let object = record.as_object().ok_or_else(|| {
-            Error::Other(format!(
+            InputIssue::invalid(format!(
                 "OpenAI corpus {} row {} must be an object",
                 relative_path, ordinal
             ))
         })?;
-        let session_id = required_string(object, "session_id", &relative_path, ordinal)?;
+        let session_id = required_string(object, "session_id", &relative_path, ordinal)
+            .map_err(|error| InputIssue::invalid(error.to_string()))?;
         let index = if let Some(index) = group_indexes.get(&session_id) {
             *index
         } else {
@@ -89,16 +91,14 @@ pub fn parse_openai_msg_corpus_value(
     }
 
     if groups.is_empty() {
-        return Err(Error::UnsupportedCardinality {
-            format: crate::DocumentFormat::OpenaiMsg,
-            stories: 0,
-        });
+        return Err(InputIssue::unsupported("OpenAI corpus cannot be empty"));
     }
 
     groups
         .into_iter()
         .map(|(session_id, records)| {
             rows_to_storyline(&session_id, records, &relative_path, &file_metadata)
+                .map_err(|error| InputIssue::invalid(error.to_string()))
         })
         .collect()
 }

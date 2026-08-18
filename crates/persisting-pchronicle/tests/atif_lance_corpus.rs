@@ -27,7 +27,7 @@ fn into_storyline(
 ) -> persisting_pchronicle::document::Result<StorylineDocument> {
     match format {
         TestFormat::Storyline => serde_json::from_str(input).map_err(Into::into),
-        TestFormat::AgenticMd => decode_agenticmd(input),
+        TestFormat::AgenticMd => Ok(decode_agenticmd(input)?),
         TestFormat::OpenaiMsg => {
             let mut stories =
                 decode_json_storylines(DocumentFormat::OpenaiMsg, input, "corpus.json")?;

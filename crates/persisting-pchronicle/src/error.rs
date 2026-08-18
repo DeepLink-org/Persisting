@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::format::DocumentFormat;
+use crate::{InputIssue, InputIssueKind};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -69,6 +70,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    Input(#[from] InputIssue),
+
     #[error("invalid {format} document (path={path:?}, location={location:?}): {message}")]
     InvalidDocument {
         format: DocumentFormat,
@@ -128,6 +132,10 @@ pub enum Error {
 impl Error {
     pub fn code(&self) -> ErrorCode {
         match self {
+            Self::Input(issue) => match issue.kind() {
+                InputIssueKind::Invalid => ErrorCode::InvalidInput,
+                InputIssueKind::Unsupported => ErrorCode::Unsupported,
+            },
             Self::InvalidDocument { .. }
             | Self::UnsupportedCardinality { .. }
             | Self::SourceBudgetExceeded { .. }

@@ -15,6 +15,7 @@ pub use crate::convert::{events_to_storyline, project_event_records, storyline_t
 pub use crate::error::{classify_error, Error, ErrorCode, Result};
 pub use crate::format::DocumentFormat;
 pub use crate::formats::detect_format;
+pub use crate::input::{InputIssue, InputIssueKind, InputResult};
 pub use crate::interop::{events_to_har, events_to_otlp_json, otlp_json_to_events};
 
 use crate::atif::AtifTrajectory;
@@ -26,7 +27,7 @@ use crate::formats::{
 };
 
 /// 将 AgenticMD 语义文档解码为权威 Storyline，不暴露 Markdown AST。
-pub fn decode_agenticmd(input: &str) -> Result<StorylineDocument> {
+pub fn decode_agenticmd(input: &str) -> InputResult<StorylineDocument> {
     crate::agenticmd::parse_agenticmd(input)
 }
 
@@ -38,40 +39,47 @@ pub fn decode_json_storylines(
     format: DocumentFormat,
     input: &str,
     relative_path: impl AsRef<Path>,
-) -> Result<Vec<StorylineDocument>> {
+) -> InputResult<Vec<StorylineDocument>> {
     match format {
         DocumentFormat::Atif => {
-            let value: serde_json::Value = serde_json::from_str(input).map_err(Error::from)?;
+            let value: serde_json::Value = serde_json::from_str(input)
+                .map_err(|error| InputIssue::invalid(error.to_string()))?;
             let (values, array) = match value {
                 serde_json::Value::Array(values) => (values, true),
                 value => (vec![value], false),
             };
             if values.is_empty() {
-                return Err(Error::UnsupportedCardinality { format, stories: 0 });
+                return Err(InputIssue::unsupported("ATIF document cannot be empty"));
             }
             let mut stories = Vec::new();
             for (ordinal, value) in values.into_iter().enumerate() {
                 let trajectory = AtifTrajectory::from_json_str(&value.to_string())?;
                 let ordinal = i64::try_from(ordinal)
-                    .map_err(|_| Error::Other("ATIF collection ordinal overflow".into()))?;
+                    .map_err(|_| InputIssue::invalid("ATIF collection ordinal overflow"))?;
                 let shape = if array {
                     StorylineCollectionShape::Sequence
                 } else {
                     StorylineCollectionShape::Single
                 };
-                stories.extend(atif_collection_to_storylines(&trajectory, shape, ordinal)?);
+                stories.extend(
+                    atif_collection_to_storylines(&trajectory, shape, ordinal)
+                        .map_err(|error| InputIssue::invalid(error.to_string()))?,
+                );
             }
             Ok(stories)
         }
         DocumentFormat::Actf => {
             let document = ActfDocument::from_json_str(input)?;
             crate::convert::actf_to_storylines(&document)
+                .map_err(|error| InputIssue::invalid(error.to_string()))
         }
         DocumentFormat::OpenaiMsg => {
-            let value = serde_json::from_str(input).map_err(Error::from)?;
+            let value = serde_json::from_str(input)
+                .map_err(|error| InputIssue::invalid(error.to_string()))?;
             parse_openai_msg_corpus_value(&value, relative_path)
+                .map_err(|error| InputIssue::invalid(error.to_string()))
         }
-        unsupported => Err(Error::Other(format!(
+        unsupported => Err(InputIssue::unsupported(format!(
             "'{unsupported}' is not a peripheral JSON document format"
         ))),
     }

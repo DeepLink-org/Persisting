@@ -36,6 +36,7 @@ pub mod document;
 mod error;
 mod format;
 mod formats;
+mod input;
 mod interop;
 mod layout;
 #[cfg(feature = "search")]
@@ -63,6 +64,7 @@ pub(crate) use formats::storyline::{FieldPresence, StoryLink, StorylineToolCall}
 #[cfg(feature = "lance-store")]
 pub(crate) use formats::storyline::{StorylineAgent, StorylinePresence};
 pub(crate) use formats::{EventIdentity, EventRecord, StorylineDocument};
+pub(crate) use input::{InputIssue, InputIssueKind, InputResult};
 #[cfg(feature = "search")]
 pub use messages::*;
 #[cfg(feature = "search")]
