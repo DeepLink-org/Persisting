@@ -2,9 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::document::{
-    actf_to_storylines, recover_openai_msg_files, storylines_to_actf,
+    decode_json_storylines, encode_json_storylines, open_document, DocumentFormat,
 };
-use persisting_pchronicle::model::{ActfDocument, OpenaiMsgCorpusReader, StorylineDocument};
 use persisting_pchronicle::storage::StorylineLanceStore;
 
 fn fixture(name: &str) -> PathBuf {
@@ -18,8 +17,10 @@ async fn assert_openai_fixture_roundtrip(name: &str, expected_sessions: usize) -
     let expected: serde_json::Value = serde_json::from_slice(
         &std::fs::read(&path).with_context(|| format!("read fixture {}", path.display()))?,
     )?;
-    let stories = OpenaiMsgCorpusReader::open(&path)?
-        .collect::<persisting_pchronicle::document::Result<Vec<StorylineDocument>>>()?;
+    let stories = open_document(DocumentFormat::OpenaiMsg, &path)
+        .await?
+        .project_storylines()
+        .await?;
     assert_eq!(stories.len(), expected_sessions);
 
     let temporary = tempfile::tempdir()?;
@@ -36,10 +37,10 @@ async fn assert_openai_fixture_roundtrip(name: &str, expected_sessions: usize) -
         .map(|story| story.context("missing restored OpenAI Storyline"))
         .collect::<Result<Vec<_>>>()?;
 
-    let recovered = recover_openai_msg_files(&restored)?;
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].relative_path, PathBuf::from(name));
-    assert_eq!(recovered[0].document, expected);
+    assert_eq!(
+        encode_json_storylines(DocumentFormat::OpenaiMsg, &restored)?,
+        expected
+    );
     Ok(())
 }
 
@@ -48,8 +49,7 @@ async fn assert_actf_fixture_roundtrip(name: &str) -> Result<()> {
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("read fixture {}", path.display()))?;
     let expected: serde_json::Value = serde_json::from_str(&raw)?;
-    let document = ActfDocument::from_json_str(&raw)?;
-    let stories = actf_to_storylines(&document)?;
+    let stories = decode_json_storylines(DocumentFormat::Actf, &raw, name)?;
 
     let temporary = tempfile::tempdir()?;
     let store = StorylineLanceStore::open(temporary.path()).await?;
@@ -65,8 +65,10 @@ async fn assert_actf_fixture_roundtrip(name: &str) -> Result<()> {
         .map(|story| story.context("missing restored ACTF Storyline"))
         .collect::<Result<Vec<_>>>()?;
 
-    let recovered = storylines_to_actf(&restored)?;
-    assert_eq!(serde_json::to_value(recovered)?, expected);
+    assert_eq!(
+        encode_json_storylines(DocumentFormat::Actf, &restored)?,
+        expected
+    );
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use persisting_gateway::projection::markdown_trajectory::upsert_storyline_turn;
 use persisting_gateway::session::client::{
     write_session_client_meta, SessionClientMeta, SESSION_CLIENT_META_FILENAME,
 };
-use persisting_pchronicle::document::parse_agenticmd;
+use persisting_pchronicle::document::decode_agenticmd;
 use persisting_pchronicle::model::{StorylineDocument, StorylineTurn};
 use serde_json::json;
 
@@ -56,7 +56,7 @@ fn new_document_includes_session_client_metadata() {
     let story = StorylineDocument::new("sess-1", "demo-agent");
     upsert_storyline_turn(&path, &story, "call-1", &turn(1, "agent", "hi", false)).unwrap();
 
-    let parsed = parse_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let parsed = decode_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(parsed.turns[0].message, json!("hi"));
     assert_eq!(
         parsed.agent.extra.as_ref().unwrap()["client"]["peer_port"],
@@ -84,7 +84,7 @@ fn live_upsert_replaces_draft_by_edit_key() {
     )
     .unwrap());
 
-    let parsed = parse_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let parsed = decode_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(parsed.turns.len(), 1);
     assert_eq!(parsed.turns[0].message, json!("complete"));
     assert_eq!(parsed.turns[0].kind.as_deref(), Some("llm.response"));

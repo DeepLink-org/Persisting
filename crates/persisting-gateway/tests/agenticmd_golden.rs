@@ -3,7 +3,7 @@
 use persisting_gateway::projection::dialogue::capture_record_to_storyline_turn;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;
-use persisting_pchronicle::document::{encode_agenticmd, parse_agenticmd};
+use persisting_pchronicle::document::{decode_agenticmd, encode_agenticmd};
 use persisting_pchronicle::model::StorylineDocument;
 use serde_json::json;
 
@@ -49,14 +49,14 @@ fn demo_storyline() -> StorylineDocument {
 fn generated_agenticmd_preserves_golden_storyline_semantics() {
     let story = demo_storyline();
     let encoded = encode_agenticmd(&story).unwrap();
-    assert_eq!(parse_agenticmd(&encoded).unwrap(), story);
+    assert_eq!(decode_agenticmd(&encoded).unwrap(), story);
 }
 
 #[test]
 fn checked_in_legacy_golden_remains_readable() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/agenticmd/demo-run-001.md");
-    let story = parse_agenticmd(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
+    let story = decode_agenticmd(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
     assert_eq!(story.session_id, "demo-run-001");
     assert_eq!(story.turns.len(), 2);
     assert_eq!(story.turns[0].message, json!("你好"));

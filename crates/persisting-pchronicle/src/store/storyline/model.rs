@@ -10,20 +10,28 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    Error, FieldPresence, Result, StoryLink, StorylineDocument, StorylineToolCall, StorylineTurn,
+    Error, FieldPresence, Result, StoryLink, StorylineDocument, StorylinePresence,
+    StorylineToolCall, StorylineTurn,
 };
 
+#[cfg(feature = "lance-store")]
 pub const STORY_RUNS_TABLE: &str = "runs";
+#[cfg(feature = "lance-store")]
 pub const STORY_STEPS_TABLE: &str = "steps";
+#[cfg(feature = "lance-store")]
 pub const STORY_TOOL_CALLS_TABLE: &str = "tool_calls";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoryRunRow {
     pub schema_version: Option<String>,
-    pub run_id: String,
-    /// Whether `run_id` was present in the source document. When false,
-    /// `run_id` contains the effective value (`session_id`) used for joins.
-    pub run_id_explicit: bool,
+    /// Stable per-document storage identity. Explicit ATIF `trajectory_id`
+    /// wins; otherwise the effective `session_id` is used.
+    pub document_id: String,
+    /// Stable global order inside this Storyline store. This is deliberately
+    /// distinct from source-container ordinals retained in `presence`.
+    pub storage_ordinal: i64,
+    pub trajectory_id_explicit: bool,
+    pub run_id: Option<String>,
     pub attempt_id: Option<String>,
     pub session_id: String,
     pub agent_id: String,
@@ -38,11 +46,13 @@ pub struct StoryRunRow {
     pub final_metrics: Option<Value>,
     pub continued_trajectory_ref: Option<String>,
     pub extra: Option<Value>,
+    pub presence: StorylinePresence,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoryStepRow {
-    pub run_id: String,
+    pub document_id: String,
+    pub run_id: Option<String>,
     pub session_id: String,
     pub step_id: i64,
     pub kind: Option<String>,
@@ -67,7 +77,8 @@ pub struct StoryStepRow {
 /// objects correlated by `source_call_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoryToolCallRow {
-    pub run_id: String,
+    pub document_id: String,
+    pub run_id: Option<String>,
     pub session_id: String,
     pub step_id: i64,
     pub call_index: i64,
@@ -108,14 +119,16 @@ fn source_call_id(result: &Value) -> Option<&str> {
 
 pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
     story.validate()?;
-    let run_id = story
-        .run_id
+    let document_id = story
+        .trajectory_id
         .clone()
         .unwrap_or_else(|| story.session_id.clone());
     let run = StoryRunRow {
         schema_version: story.schema_version.clone(),
-        run_id: run_id.clone(),
-        run_id_explicit: story.run_id.is_some(),
+        document_id: document_id.clone(),
+        storage_ordinal: 0,
+        trajectory_id_explicit: story.trajectory_id.is_some(),
+        run_id: story.run_id.clone(),
         attempt_id: story.attempt_id.clone(),
         session_id: story.session_id.clone(),
         agent_id: story.agent.id.clone(),
@@ -130,6 +143,7 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
         final_metrics: story.final_metrics.clone(),
         continued_trajectory_ref: story.continued_trajectory_ref.clone(),
         extra: story.extra.clone(),
+        presence: story.presence.clone(),
     };
 
     let mut seen_calls = HashSet::new();
@@ -137,7 +151,8 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
     let mut tool_calls = Vec::new();
     for turn in &story.turns {
         steps.push(StoryStepRow {
-            run_id: run_id.clone(),
+            document_id: document_id.clone(),
+            run_id: story.run_id.clone(),
             session_id: story.session_id.clone(),
             step_id: turn.id,
             kind: turn.kind.clone(),
@@ -174,7 +189,8 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
             calls.insert(
                 call.tool_call_id.clone(),
                 StoryToolCallRow {
-                    run_id: run_id.clone(),
+                    document_id: document_id.clone(),
+                    run_id: story.run_id.clone(),
                     session_id: story.session_id.clone(),
                     step_id: turn.id,
                     call_index: call_index as i64,
@@ -227,10 +243,13 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
     } = tables;
     let mut step_ids = HashSet::new();
     for step in &steps {
-        if step.session_id != run.session_id || step.run_id != run.run_id {
+        if step.session_id != run.session_id
+            || step.document_id != run.document_id
+            || step.run_id != run.run_id
+        {
             return Err(Error::Other(format!(
-                "step {} does not belong to run/session {}/{}",
-                step.step_id, run.run_id, run.session_id
+                "step {} does not belong to document/session {}/{}",
+                step.step_id, run.document_id, run.session_id
             )));
         }
         if !step_ids.insert(step.step_id) {
@@ -243,6 +262,7 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
     let mut call_ids = HashSet::new();
     for call in &tool_calls {
         if call.session_id != run.session_id
+            || call.document_id != run.document_id
             || call.run_id != run.run_id
             || !step_ids.contains(&call.step_id)
         {
@@ -314,9 +334,11 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
             }
         })
         .collect();
+    let presence = run.presence;
     let story = StorylineDocument {
         schema_version: run.schema_version,
-        run_id: run.run_id_explicit.then_some(run.run_id),
+        run_id: run.run_id,
+        trajectory_id: run.trajectory_id_explicit.then_some(run.document_id),
         attempt_id: run.attempt_id,
         session_id: run.session_id,
         agent: crate::StorylineAgent {
@@ -333,6 +355,7 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         final_metrics: run.final_metrics,
         continued_trajectory_ref: run.continued_trajectory_ref,
         extra: run.extra,
+        presence,
         turns,
     };
     story.validate()?;
@@ -382,6 +405,7 @@ mod tests {
         StorylineDocument {
             schema_version: None,
             run_id: Some("run-1".into()),
+            trajectory_id: None,
             attempt_id: None,
             session_id: "session-1".into(),
             agent: StorylineAgent {
@@ -398,6 +422,7 @@ mod tests {
             final_metrics: Some(json!({"score": 1})),
             continued_trajectory_ref: None,
             extra: Some(json!({"case": "roundtrip"})),
+            presence: Default::default(),
             turns: vec![turn(1, "user"), tool_turn],
         }
     }
@@ -409,7 +434,9 @@ mod tests {
         expected.attempt_id = Some("attempt-1".into());
         expected.turns[1].tool_calls.as_mut().unwrap()[0].result = crate::FieldPresence::Null;
         let tables = split_storyline(&expected).unwrap();
-        assert!(tables.run.run_id_explicit);
+        assert!(!tables.run.trajectory_id_explicit);
+        assert_eq!(tables.run.run_id.as_deref(), Some("run-1"));
+        assert_eq!(tables.run.document_id, "session-1");
         assert_eq!(tables.steps.len(), 2);
         assert_eq!(tables.tool_calls.len(), 1);
         assert_eq!(tables.tool_calls[0].results.len(), 1);
@@ -420,8 +447,9 @@ mod tests {
         implicit_run.run_id = None;
         implicit_run.turns[0].observation = Some(json!({"results": []}));
         let tables = split_storyline(&implicit_run).unwrap();
-        assert!(!tables.run.run_id_explicit);
-        assert_eq!(tables.run.run_id, implicit_run.session_id);
+        assert!(!tables.run.trajectory_id_explicit);
+        assert_eq!(tables.run.run_id, None);
+        assert_eq!(tables.run.document_id, implicit_run.session_id);
         assert!(tables.steps[0].had_observation);
         assert_eq!(reconstruct_storyline(tables).unwrap(), implicit_run);
     }

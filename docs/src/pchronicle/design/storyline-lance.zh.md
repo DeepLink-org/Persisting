@@ -278,30 +278,51 @@ Blob payload I/O；为避免把 preview 当成完整值产生错误结果，内�
 
 ## 统一查询引擎
 
-`ChronicleQueryEngine` 是对外的只读 SQL 门面。Lance 与 ATIF 后端注册完全相同的
-`runs`、`steps`、`tool_calls` 表，因此查询语句不需要随物理格式改变：
+`ChronicleQueryEngine` 是对外的只读 SQL 门面。六种磁盘格式（Canonical Event、
+Storyline Lance、AgenticMD、ATIF、OpenAI Msg、ACTF）通过同一个入口
+`ChronicleQueryEngine::open(format, path, options)` 打开，注册语义对应的查询表，
+查询语句不随物理格式改变：
 
 ```rust
-let lance = ChronicleQueryEngine::open_lance("./storyline-store").await?;
-let batches = lance.query(
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
+use persisting_pchronicle::document::DocumentFormat;
+
+let engine = ChronicleQueryEngine::open(
+    DocumentFormat::Storyline,
+    "./storyline-store",
+    ChronicleQueryExecutionOptions::default(),
+).await?;
+let batches = engine.query(
     "SELECT session_id, step_id, source FROM steps WHERE step_id >= 10"
 ).await?;
 
-let atif = ChronicleQueryEngine::open_atif("./trajectories.ndjson")?;
+let atif = ChronicleQueryEngine::open(
+    DocumentFormat::Atif,
+    "./trajectories.ndjson",
+    ChronicleQueryExecutionOptions::default(),
+).await?;
 let jsonl = atif.query_jsonl(
     "SELECT source, COUNT(*) AS steps FROM steps GROUP BY source ORDER BY source"
 ).await?;
 ```
 
+`DocumentFormat::CanonicalEvent` 注册 `events` 表；`runs`/`steps`/`tool_calls`
+默认不实时注册，需要 Storyline 查询面时优先使用 lineage 新鲜的 Storyline Lance
+投影，无投影时在行/字节预算内执行 bounded fallback（预算耗尽显式报错，不静默
+截断）。其余五种格式注册 `runs`/`steps`/`tool_calls`。
+
 `query` 返回 Arrow `RecordBatch`，适合服务端继续处理；`dataframe` 返回 lazy DataFrame，
 适合追加 DataFusion 变换或查看计划；`query_jsonl` 用于 CLI/API 边界。调用者也可通过
-`context()` 取得 `SessionContext` 注册 UDF 或额外表。
+`context()` 取得 `SessionContext` 注册 UDF 或额外表。`backend_info()` 返回
+`QueryBackendInfo`，按 provider 真实实现报告 `format` / `tables` / `capabilities` /
+`snapshot`；filter pushdown 能力区分 `Unsupported` / `Inexact` / `Exact` /
+`ExpressionDependent`，不虚报。
 
-`AtifDataSource` 接受单个 ATIF JSON 对象、JSON 数组、每行一个完整 trajectory 的
-JSONL/NDJSON，以及包含这些 ATIF 文档的目录。文件路径默认注册为按文件 lazy 的
-`StreamingTable`：manifest 在打开时冻结路径和文件身份，scan 才读取命中文件；目录按
-稳定顺序发现，每个文件是独立 partition，并以固定大小 Arrow batch 提供背压。显式
-`from_json` / `from_trajectories` 因为调用者已经持有完整输入，仍使用 `MemTable`。
+统一的文档源入口 `open_document(format, path)` 接受单个 ATIF JSON 对象、JSON 数组、
+每行一个完整 trajectory 的 JSONL/NDJSON，以及包含这些 ATIF 文档的目录。文件路径默认
+注册为按文件 lazy 的 `StreamingTable`：manifest 在打开时冻结路径和文件身份，scan 才
+读取命中文件；目录按稳定顺序发现，每个文件是独立 partition，并以固定大小 Arrow
+batch 提供背压。
 
 ### pChronicle + JSON 投影查询快路径
 

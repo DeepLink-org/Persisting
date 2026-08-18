@@ -7,7 +7,7 @@
 //! - [`EventRecord`] / [`EventsDocument`]: in-memory shape aligned with EventRecord
 //! - [`events_to_storyline`](crate::convert::events_to_storyline) / storyline→events
 //!   (programmatic, after you already loaded rows from Lance)
-//! - [`export_events_jsonl`] / [`export_events_json_pretty`]: **debug export only**
+//! - [`export_events_jsonl`]: **test/debug export only**
 //!
 //! Use the pChronicle APIs to extract Lance events for inspection.
 
@@ -75,6 +75,7 @@ impl ChronicleEventRecordExt for EventRecord {
 }
 
 /// Error message shared by string-based convert APIs.
+#[cfg(all(test, feature = "lance-store"))]
 pub fn events_lance_only_message() -> &'static str {
     "events is Lance-only (events.lance); JSON/JSONL is not a supported wire format. \
      Extract with traj/export tools, or call events_to_storyline / storyline_to_events \
@@ -82,6 +83,7 @@ pub fn events_lance_only_message() -> &'static str {
 }
 
 /// Debug/export helper: serialize records as JSONL. **Not** a chronicle format.
+#[cfg(all(test, feature = "lance-store"))]
 pub fn export_events_jsonl(events: &[EventRecord]) -> Result<String> {
     let mut out = String::new();
     for event in events {
@@ -92,13 +94,9 @@ pub fn export_events_jsonl(events: &[EventRecord]) -> Result<String> {
 }
 
 /// Debug/export helper: pretty JSON document. **Not** a chronicle format.
-pub fn export_events_json_pretty(doc: &EventsDocument) -> Result<String> {
-    Ok(serde_json::to_string_pretty(doc)?)
-}
-
 /// Test/fixture helper: parse JSONL into memory. **Not** part of the public format API surface
 /// for `into_storyline` / `convert`.
-#[cfg(test)]
+#[cfg(all(test, feature = "lance-store"))]
 pub fn parse_events_jsonl_for_test(input: &str) -> Result<EventsDocument> {
     let mut events = Vec::new();
     for (idx, line) in input.lines().enumerate() {

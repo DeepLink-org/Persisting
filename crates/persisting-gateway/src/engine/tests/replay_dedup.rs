@@ -17,7 +17,7 @@ fn claude_messages_body(user_lines: &[&str]) -> serde_json::Value {
 async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
     use crate::engine::tests::support::*;
     use crate::session::storage::trajectory_run_dir;
-    use persisting_pchronicle::document::parse_agenticmd;
+    use persisting_pchronicle::document::decode_agenticmd;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -102,7 +102,7 @@ async fn replay_dedup_omits_internal_claude_history_request_from_markdown() {
     flush_engine(&engine).await;
     let run_dir = trajectory_run_dir(storage.as_path(), ctx.agent_id(), ctx.route());
     let md_path = session_markdown_write_path_for_key(&run_dir, &ctx.route().storage_session_id);
-    let story = parse_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
+    let story = decode_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
     let bodies: Vec<_> = story
         .turns
         .iter()

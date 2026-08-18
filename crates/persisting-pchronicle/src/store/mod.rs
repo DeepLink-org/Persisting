@@ -37,6 +37,7 @@ mod root_write_lock;
 mod run_control;
 #[cfg(feature = "lance-store")]
 mod storyline;
+#[cfg(feature = "lance-store")]
 #[path = "storyline/model.rs"]
 mod storyline_model;
 
@@ -65,26 +66,24 @@ pub use event_row::{event_record_to_event_row, event_row_to_event_record, EventR
 pub(crate) use events::{compact_sealed_event_segment, SealedEventSegment};
 #[cfg(feature = "lance-store")]
 pub use events::{
-    distinct_session_ids_in_run, event_records_from_batch, event_row_from_batch,
-    event_rows_from_batch, event_rows_to_batch, maintain as maintain_raw_events,
+    distinct_session_ids_in_run, event_rows_from_batch, maintain as maintain_raw_events,
     raw_event_arrow_schema, EventFactSnapshot, EventLogLayoutStats, EventWriterFence,
-    LanceMaintenanceOptions, LanceMaintenanceReport, RawEventDataSource, RawEventDataSourceOptions,
-    RawEventLanceAppender, RawEventTableProvider, DATAFUSION_EVENTS_TABLE,
+    LanceMaintenanceOptions, LanceMaintenanceReport, RawEventDataSource, RawEventLanceAppender,
+    DATAFUSION_EVENTS_TABLE,
 };
 #[cfg(feature = "lance-store")]
-pub use files::{
-    load_atif_trajectories, AtifReader, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
-    FileTrajectoryFormat, FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot,
-    DEFAULT_LOCAL_QUERY_BATCH_SIZE, DEFAULT_LOCAL_QUERY_CACHE_BYTES,
-    DEFAULT_LOCAL_QUERY_CACHE_FILES, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
-    DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES, SOURCE_FILE_COLUMN,
+pub(crate) use files::{
+    AtifReader, FileTrajectoryDataSource, FileTrajectoryDataSourceOptions,
+    FileTrajectoryQueryMetrics,
 };
 #[cfg(feature = "lance-store")]
-pub use local_query_manifest::{
-    detect_local_query_format, detect_local_query_manifest, LocalQueryInputFile,
-    LocalQueryManifest, LocalQueryManifestOptions, DEFAULT_MAX_LOCAL_QUERY_DETECTION_BYTES,
-    DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES,
+pub use files::{FileTrajectoryQueryMetricsSnapshot, SOURCE_FILE_COLUMN};
+#[cfg(feature = "lance-store")]
+pub(crate) use local_query_manifest::{
+    LocalQueryInputFile, LocalQueryManifest, LocalQueryManifestOptions,
 };
+#[cfg(feature = "lance-store")]
+pub use local_query_manifest::{DEFAULT_MAX_LOCAL_QUERY_ENTRIES, DEFAULT_MAX_LOCAL_QUERY_FILES};
 #[cfg(feature = "lance-store")]
 pub use query_engine::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
@@ -100,13 +99,13 @@ pub use storyline::{
     StorylineContentOptions, StorylineContentReadMode, StorylineDataFusionTableNames,
     StorylineDataSource, StorylineDataSourceOptions, StorylineLanceStore,
     StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
-    StorylineTableKind, StorylineTablePaths, StorylineTableProvider, DATAFUSION_RUNS_TABLE,
-    DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
-    DEFAULT_CONTENT_PREVIEW_BYTES,
+    StorylineTableKind, StorylineTablePaths, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
+    DATAFUSION_TOOL_CALLS_TABLE, DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES,
 };
+#[cfg(feature = "lance-store")]
 pub use storyline_model::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
-    StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
+    StorylineTables,
 };
 
 #[cfg(feature = "lance-store")]

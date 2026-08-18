@@ -226,7 +226,7 @@ mod tests {
     use crate::session::storage::CaptureRoute;
     use crate::sink::{llm_request_summary_record, llm_response_record_with_content};
     use crate::Call;
-    use persisting_pchronicle::document::parse_agenticmd;
+    use persisting_pchronicle::document::decode_agenticmd;
     use serde_json::json;
 
     const LEVEL: CaptureLevel = CaptureLevel::Dialogue;
@@ -550,7 +550,7 @@ mod tests {
             .unwrap();
         writer.write_record(&response("c4", "你好！")).unwrap();
 
-        let story = parse_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let story = decode_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(story.turns.len(), 6);
         assert_eq!(story.turns[0].message, json!("hi"));
         assert_eq!(story.turns[1].message, json!("Hello"));
@@ -573,7 +573,7 @@ mod tests {
         let draft_turn = capture_record_to_storyline_turn(&response("c2", "draft text")).unwrap();
         writer.write_draft("c2", draft_turn).unwrap();
 
-        let story = parse_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let story = decode_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(story.turns.len(), 1);
         assert_eq!(story.turns[0].message, json!("hi"));
     }

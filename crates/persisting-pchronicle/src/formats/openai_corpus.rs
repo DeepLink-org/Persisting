@@ -1,12 +1,11 @@
 //! Lossless JSON-model import/export for OpenAI-message trajectory corpora.
 //!
-//! Unlike [`super::openai_msg`], which models one `session_steps.json`
-//! document, this adapter accepts a top-level array containing rows from many
-//! sessions. Unmapped container and row fields are retained as hierarchical
-//! residuals; mapped content is always regenerated from Storyline.
+//! The reader accepts either a top-level row array or a `session_steps`
+//! envelope containing rows from many sessions. Unmapped container and row
+//! fields are retained as controlled residuals so strict recovery can rebuild
+//! the original source document.
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{SecondsFormat, TimeZone, Utc};
@@ -32,54 +31,6 @@ const ROW_METRIC_FIELDS: &[&str] = &[
 pub struct RecoveredOpenaiMsgFile {
     pub relative_path: PathBuf,
     pub document: Value,
-}
-
-/// Replayable reader that converts OpenAI corpus files into Storylines.
-///
-/// Regular JSON files may be a bare row array or a `session_steps` envelope.
-/// Directories are traversed in stable relative-path order.
-pub struct OpenaiMsgCorpusReader {
-    stories: std::vec::IntoIter<StorylineDocument>,
-}
-
-impl OpenaiMsgCorpusReader {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let input = path.as_ref();
-        let files = input_files(input)?;
-        let directory_root = input.is_dir().then_some(input);
-        let mut stories = Vec::new();
-        let mut session_ids = HashSet::new();
-
-        for file in files {
-            let relative_path = source_relative_path(directory_root, &file)?;
-            let text = fs::read_to_string(&file)?;
-            let document: Value = serde_json::from_str(&text)?;
-            for story in parse_openai_msg_corpus_value(&document, &relative_path)? {
-                if !session_ids.insert(story.session_id.clone()) {
-                    return Err(Error::DuplicateSession(story.session_id));
-                }
-                stories.push(story);
-            }
-        }
-
-        if stories.is_empty() {
-            return Err(Error::Other(format!(
-                "OpenAI corpus requires at least one trajectory: {}",
-                input.display()
-            )));
-        }
-        Ok(Self {
-            stories: stories.into_iter(),
-        })
-    }
-}
-
-impl Iterator for OpenaiMsgCorpusReader {
-    type Item = Result<StorylineDocument>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.stories.next().map(Ok)
-    }
 }
 
 /// Parse one OpenAI corpus JSON value into one Storyline per session.
@@ -135,6 +86,13 @@ pub fn parse_openai_msg_corpus_value(
             index
         };
         groups[index].1.push((ordinal, record));
+    }
+
+    if groups.is_empty() {
+        return Err(Error::UnsupportedCardinality {
+            format: crate::DocumentFormat::OpenaiMsg,
+            stories: 0,
+        });
     }
 
     groups
@@ -246,16 +204,9 @@ pub fn recover_openai_msg_files(
                 )));
             }
         }
-        for (expected, (actual, _)) in group.records.iter().enumerate() {
-            if *actual != expected as u64 {
-                return Err(Error::Other(format!(
-                    "missing OpenAI row ordinal {} in {} (found {})",
-                    expected,
-                    relative_path.display(),
-                    actual
-                )));
-            }
-        }
+        // Ordinals are ordering keys, not a completeness proof. Callers may
+        // intentionally export a filtered set of complete trajectories from
+        // one source file, so gaps are valid while duplicates are not.
         let records = group
             .records
             .into_iter()
@@ -293,14 +244,100 @@ pub fn recover_openai_msg_files(
     Ok(output)
 }
 
-/// Whether a Storyline carries the provenance required for strict OpenAI corpus recovery.
-pub fn is_lossless_openai_storyline(story: &StorylineDocument) -> bool {
+pub(crate) fn has_openai_provenance(story: &StorylineDocument) -> bool {
     story
         .extra
         .as_ref()
         .and_then(|extra| extra.get(OPENAI_EXTENSION_KEY))
         .and_then(Value::as_object)
         .is_some()
+}
+
+/// Explicitly synthesize an OpenAI message row array from Storyline semantics.
+///
+/// This is a cross-format projection, not a lossless recovery operation. Use
+/// [`recover_openai_msg_files`] when the Storylines originated from an OpenAI
+/// corpus and exact JSON-model recovery is required.
+pub fn synthesize_openai_msg_corpus(stories: &[StorylineDocument]) -> Result<Value> {
+    let mut records = Vec::new();
+    for story in stories {
+        story.validate()?;
+        let mut index = 0usize;
+        while index < story.turns.len() {
+            let turn = &story.turns[index];
+            let (user, agent) = if turn.source == "user" {
+                let agent = story
+                    .turns
+                    .get(index + 1)
+                    .filter(|turn| turn.source == "agent");
+                index += if agent.is_some() { 2 } else { 1 };
+                (Some(turn), agent)
+            } else if turn.source == "agent" {
+                index += 1;
+                (None, Some(turn))
+            } else {
+                return Err(Error::Other(format!(
+                    "OpenAI synthesis cannot represent Storyline turn {} source '{}'",
+                    turn.id, turn.source
+                )));
+            };
+            if user.is_some() && agent.is_none() {
+                return Err(Error::Other(format!(
+                    "OpenAI synthesis requires an agent response after user turn {}",
+                    turn.id
+                )));
+            }
+            let output = agent.or(user).ok_or_else(|| {
+                Error::Other("cannot synthesize an empty OpenAI message step".into())
+            })?;
+            let mut messages = agent
+                .and_then(|turn| turn.extra.as_ref())
+                .and_then(|extra| extra.get("request_messages"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if messages.is_empty() {
+                if let Some(user) = user {
+                    messages.push(json!({"role": "user", "content": user.message}));
+                }
+            }
+            let response = agent.map(|turn| {
+                json!({
+                    "role": "assistant",
+                    "content": crate::convert::message_text(&turn.message)
+                        .map(Value::String)
+                        .unwrap_or_else(|| turn.message.clone()),
+                })
+            });
+            let call_id = agent
+                .and_then(|turn| turn.extra.as_ref())
+                .and_then(|extra| extra.get("call_id"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            records.push(json!({
+                "id": format!("step-{}", output.id),
+                "session_id": story.session_id,
+                "step_id": output.id,
+                "job_id": "",
+                "agent_id": story.agent.id,
+                "group_id": "",
+                "env_name": "",
+                "llm_model": agent.and_then(|turn| turn.model_name.clone()).unwrap_or_default(),
+                "step_reward": 0.0,
+                "reward": 0.0,
+                "is_terminal": index >= story.turns.len(),
+                "is_truncated": false,
+                "is_session_completed": index >= story.turns.len(),
+                "is_trainable": true,
+                "created_at": output.timestamp.clone().unwrap_or_default(),
+                "messages": messages,
+                "response": response,
+                "run_bucket": story.run_id.clone().unwrap_or_default(),
+                "call_id": call_id,
+            }));
+        }
+    }
+    Ok(Value::Array(records))
 }
 
 fn rows_to_storyline(
@@ -481,6 +518,7 @@ fn rows_to_storyline(
     Ok(StorylineDocument {
         schema_version: None,
         run_id,
+        trajectory_id: None,
         attempt_id: None,
         session_id: session_id.to_string(),
         agent: StorylineAgent {
@@ -497,6 +535,7 @@ fn rows_to_storyline(
         final_metrics,
         continued_trajectory_ref: None,
         extra: Some(json!({ OPENAI_EXTENSION_KEY: file_metadata })),
+        presence: Default::default(),
         turns,
     })
 }
@@ -527,7 +566,14 @@ fn record_residual(
         residual.remove(key);
     }
 
-    let id_present = residual.remove("id").is_some();
+    let id_original = residual.remove("id");
+    let id_present = id_original.is_some();
+    let id_normalized = row
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("step-{step_id}"));
     let model_key = ["agent_model", "llm_model"]
         .into_iter()
         .find(|key| row.get(*key).and_then(Value::as_str).is_some())
@@ -560,17 +606,22 @@ fn record_residual(
         .and_then(|value| value.get("created_at"))
         .and_then(Value::as_str)
         .is_some();
-    let created_at_kind = if timestamp_from_env {
-        None
+    let (created_at_kind, created_at_original, created_at_normalized) = if timestamp_from_env {
+        (None, None, None)
     } else {
-        row.get("created_at").map(|value| {
+        row.get("created_at").map_or((None, None, None), |value| {
             residual.remove("created_at");
-            match value {
+            let kind = match value {
                 Value::String(_) => "string",
                 Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
                 Value::Number(_) => "float",
                 _ => "other",
-            }
+            };
+            (
+                Some(kind),
+                Some(value.clone()),
+                normalize_timestamp(value).map(Value::String),
+            )
         })
     };
 
@@ -613,10 +664,14 @@ fn record_residual(
         "output_kind": output_kind,
         "output_index": output_index,
         "id_present": id_present,
+        "id_original": id_original,
+        "id_normalized": id_normalized,
         "model_key": model_key,
         "run_key": run_key,
         "metric_fields": metric_fields,
         "created_at_kind": created_at_kind,
+        "created_at_original": created_at_original,
+        "created_at_normalized": created_at_normalized,
         "messages": messages,
         "response": response,
         "residual": residual,
@@ -654,14 +709,14 @@ fn recover_record(
             .extra
             .as_ref()
             .and_then(|value| value.get("call_id"))
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| "");
-        insert_authoritative(
-            &mut record,
-            "id",
-            Value::String(call_id.to_string()),
-            "record",
-        );
+            .and_then(Value::as_str);
+        let normalized = metadata.get("id_normalized").and_then(Value::as_str);
+        let value = if call_id == normalized {
+            metadata.get("id_original").cloned().unwrap_or(Value::Null)
+        } else {
+            call_id.map_or(Value::Null, |value| Value::String(value.to_string()))
+        };
+        insert_authoritative(&mut record, "id", value, "record");
     }
     if let Some(key) = metadata.get("model_key").and_then(Value::as_str) {
         if let Some(model) = &agent_turn.model_name {
@@ -685,14 +740,25 @@ fn recover_record(
         }
     }
     if let Some(kind) = metadata.get("created_at_kind").and_then(Value::as_str) {
-        if let Some(timestamp) = agent_turn.timestamp.as_deref() {
-            insert_authoritative(
-                &mut record,
-                "created_at",
-                encode_timestamp(timestamp, kind)?,
-                "record",
-            );
-        }
+        let encoded = match agent_turn.timestamp.as_deref() {
+            Some(timestamp)
+                if metadata
+                    .get("created_at_normalized")
+                    .and_then(Value::as_str)
+                    == Some(timestamp) =>
+            {
+                metadata
+                    .get("created_at_original")
+                    .cloned()
+                    .unwrap_or(encode_timestamp(timestamp, kind)?)
+            }
+            Some(timestamp) => encode_timestamp(timestamp, kind)?,
+            None => metadata
+                .get("created_at_original")
+                .cloned()
+                .unwrap_or(Value::Null),
+        };
+        insert_authoritative(&mut record, "created_at", encoded, "record");
     }
 
     let user_turn = metadata
@@ -778,52 +844,14 @@ fn encode_timestamp(timestamp: &str, kind: &str) -> Result<Value> {
     let parsed = chrono::DateTime::parse_from_rfc3339(timestamp).map_err(|error| {
         Error::Other(format!("encode OpenAI created_at '{timestamp}': {error}"))
     })?;
-    let millis = parsed.timestamp_millis();
-    if kind == "integer" && millis % 1_000 == 0 {
-        Ok(json!(millis / 1_000))
+    if kind == "integer" && parsed.timestamp_subsec_nanos() == 0 {
+        Ok(json!(parsed.timestamp()))
     } else {
-        Ok(json!(millis as f64 / 1_000.0))
+        Ok(json!(
+            parsed.timestamp() as f64
+                + f64::from(parsed.timestamp_subsec_nanos()) / 1_000_000_000.0
+        ))
     }
-}
-
-fn input_files(input: &Path) -> Result<Vec<PathBuf>> {
-    if input.is_file() {
-        return Ok(vec![input.to_path_buf()]);
-    }
-    if !input.is_dir() {
-        return Err(Error::Other(format!(
-            "OpenAI corpus path does not exist: {}",
-            input.display()
-        )));
-    }
-    let mut files = fs::read_dir(input)?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    files.retain(|path| path.extension().and_then(|value| value.to_str()) == Some("json"));
-    files.sort();
-    if files.is_empty() {
-        return Err(Error::Other(format!(
-            "OpenAI corpus directory contains no JSON files: {}",
-            input.display()
-        )));
-    }
-    Ok(files)
-}
-
-fn source_relative_path(root: Option<&Path>, file: &Path) -> Result<String> {
-    let path = match root {
-        Some(root) => file.strip_prefix(root).map_err(|_| {
-            Error::Other(format!(
-                "cannot make {} relative to {}",
-                file.display(),
-                root.display()
-            ))
-        })?,
-        None => Path::new(file.file_name().ok_or_else(|| {
-            Error::Other(format!("input file has no filename: {}", file.display()))
-        })?),
-    };
-    validate_relative_path(path).map(|path| path.to_string_lossy().into_owned())
 }
 
 fn validate_relative_path(path: &Path) -> Result<PathBuf> {
@@ -1109,11 +1137,15 @@ fn normalize_timestamp(value: &Value) -> Option<String> {
         return Some(value.to_string());
     }
     let seconds = value.as_f64()?;
-    let whole = seconds.trunc() as i64;
-    let nanos = ((seconds.fract().abs()) * 1_000_000_000.0).round() as u32;
+    let mut whole = seconds.floor() as i64;
+    let mut nanos = ((seconds - whole as f64) * 1_000_000_000.0).round() as u32;
+    if nanos == 1_000_000_000 {
+        whole = whole.checked_add(1)?;
+        nanos = 0;
+    }
     Utc.timestamp_opt(whole, nanos)
         .single()
-        .map(|timestamp| timestamp.to_rfc3339_opts(SecondsFormat::Millis, true))
+        .map(|timestamp| timestamp.to_rfc3339_opts(SecondsFormat::AutoSi, true))
 }
 
 fn number_to_i64(value: &Value) -> Option<i64> {
@@ -1197,12 +1229,29 @@ mod tests {
     }
 
     #[test]
+    fn synthesis_rejects_user_turn_without_agent_response() {
+        let mut stories = parse_openai_msg_corpus_value(&corpus(), "corpus.json").unwrap();
+        stories[0].turns.truncate(1);
+
+        let error = synthesize_openai_msg_corpus(&stories[..1]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("OpenAI synthesis requires an agent response after user turn 1"));
+
+        stories[0].turns[0].source = "system".into();
+        let error = synthesize_openai_msg_corpus(&stories[..1]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("OpenAI synthesis cannot represent Storyline turn 1 source 'system'"));
+    }
+
+    #[test]
     fn openai_residual_preserves_unknowns_but_storyline_content_is_authoritative() {
         let input = corpus();
         let mut stories = parse_openai_msg_corpus_value(&input, "corpus.json").unwrap();
         assert!(!serde_json::to_string(&stories)
             .unwrap()
-            .contains("_pchronicle_"));
+            .contains(&["_pchron", "icle_"].concat()));
 
         stories[0].turns[0].message = json!("edited user");
         stories[0].turns[1].message = json!("edited assistant");
@@ -1252,6 +1301,23 @@ mod tests {
     }
 
     #[test]
+    fn semantic_encoder_does_not_silently_synthesize_mixed_provenance() {
+        let mut stories = parse_openai_msg_corpus_value(&corpus(), "corpus.json").unwrap();
+        let mut unrelated = stories[0].clone();
+        unrelated.session_id = "unrelated".into();
+        unrelated.trajectory_id = Some("unrelated".into());
+        unrelated.extra = None;
+        stories.push(unrelated);
+
+        let error = crate::document::encode_json_storylines(
+            crate::format::DocumentFormat::OpenaiMsg,
+            &stories,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("OpenAI"), "{error}");
+    }
+
+    #[test]
     fn recovery_rejects_unsafe_paths() {
         let error = parse_openai_msg_corpus_value(&corpus(), "../escape.json").unwrap_err();
         assert!(error.to_string().contains("unsafe"));
@@ -1297,5 +1363,66 @@ mod tests {
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].relative_path, PathBuf::from("corpus.json"));
         assert_eq!(recovered[0].document, input);
+    }
+
+    #[cfg(feature = "lance-store")]
+    #[tokio::test]
+    async fn fractional_created_at_is_lossless_through_lance() {
+        let mut input = corpus();
+        input[0]["created_at"] = json!(1_700_000_001.123_456_f64);
+        let expected = parse_openai_msg_corpus_value(&input, "fractional.json").unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
+        store.replace_storylines(&expected).await.unwrap();
+
+        let session_ids = expected
+            .iter()
+            .map(|story| story.session_id.clone())
+            .collect::<Vec<_>>();
+        let restored = store
+            .get_storylines_full(&session_ids)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(Option::unwrap)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            recover_openai_msg_files(&restored).unwrap()[0].document,
+            input
+        );
+    }
+
+    #[cfg(feature = "lance-store")]
+    #[tokio::test]
+    async fn explicit_null_id_and_created_at_are_lossless_through_lance() {
+        let input = json!([{
+            "id": null,
+            "session_id": "s-null",
+            "step_id": 1,
+            "created_at": null,
+            "messages": [{"role": "assistant", "content": "ok"}]
+        }]);
+        let expected = parse_openai_msg_corpus_value(&input, "nulls.json").unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
+        store.replace_storylines(&expected).await.unwrap();
+
+        let document_ids = expected
+            .iter()
+            .map(|story| story.document_id().to_string())
+            .collect::<Vec<_>>();
+        let restored = store
+            .get_storylines_by_document_ids(&document_ids)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(Option::unwrap)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            recover_openai_msg_files(&restored).unwrap()[0].document,
+            input
+        );
     }
 }

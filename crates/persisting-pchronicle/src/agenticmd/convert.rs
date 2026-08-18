@@ -205,6 +205,7 @@ fn agenticmd_to_storyline(doc: &MarkdownDocument) -> Result<StorylineDocument> {
     Ok(StorylineDocument {
         schema_version: None,
         run_id: None,
+        trajectory_id: None,
         attempt_id: None,
         session_id,
         agent: StorylineAgent {
@@ -221,6 +222,7 @@ fn agenticmd_to_storyline(doc: &MarkdownDocument) -> Result<StorylineDocument> {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
+        presence: Default::default(),
         turns,
     })
 }

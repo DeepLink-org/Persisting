@@ -1,23 +1,29 @@
-//! pChronicle — Persisting's structured storage layer for Agent trajectories.
+//! pChronicle：Persisting 的结构化 Agent 轨迹存储与查询层。
 //!
-//! pChronicle owns the trajectory formats, physical schemas, storage backends,
-//! replay, conversion, search, and rebuildable views. Capture and
-//! clients call pChronicle directly; there is no separate storage engine layer.
+//! # 权威边界
 //!
-//! # Format architecture
-//!
-//! Storyline is the **hub** (ATIF-aligned authoritative model).
-//! All other formats convert only through storyline:
+//! Canonical Event 是 append-only 运行时事实；[`model::StorylineDocument`] 是与 ATIF v1.7
+//! 对齐的交换和规范化查询模型。两者通过单向投影连接，Storyline 不承诺反建原始事件事实。
+//! ATIF、ACTF、OpenAI Msg 和 AgenticMD 只经 Storyline 互转；AgenticMD 是 Storyline 的
+//! Markdown 编码，不是另一套领域模型。
 //!
 //! ```text
-//! events ──┐
-//! agenticmd ┼──► storyline ──► events / agenticmd / openai_msg / atif / actf
-//! openai_msg┤
-//! atif ─────┤
-//! actf ─────┘
+//! events.lance ──单向投影──► StorylineDocument ──► Storyline 三表 Lance
+//!                                  ├──◄──► AgenticMD
+//!                                  ├──◄──► ATIF
+//!                                  ├──◄──► OpenAI Msg
+//!                                  └──◄──► ACTF
 //! ```
 //!
-//! Peripheral formats expose explicit parse/encode functions around Storyline.
+//! # 公共入口
+//!
+//! - [`model`]：Storyline、Canonical Event 与 LLM payload 权威类型；
+//! - [`document`]：六种磁盘格式、Storyline 语义 codec 与统一读取入口；
+//! - [`storage`]：Catalog、Lance store、append、投影和 revision；
+//! - [`query`]：DataFusion 查询引擎与能力快照。
+//!
+//! 外围 wire DTO、低层 parser、Markdown AST、Arrow codec、provider、manifest 与锁均不公开。
+//! `search` 是单独的 feature，其既有 API 不属于本次门面收敛范围。
 
 mod agenticmd;
 #[cfg(feature = "lance-store")]
@@ -51,10 +57,12 @@ mod store;
 pub(crate) use document::{QueryCapabilities, QueryTables};
 pub(crate) use error::{Error, Result};
 pub(crate) use format::DocumentFormat;
-pub(crate) use formats::{
-    EventIdentity, EventRecord, FieldPresence, StoryLink, StorylineAgent, StorylineDocument,
-    StorylineToolCall, StorylineTurn,
-};
+pub(crate) use formats::storyline::StorylineTurn;
+#[cfg(any(feature = "lance-store", test))]
+pub(crate) use formats::storyline::{FieldPresence, StoryLink, StorylineToolCall};
+#[cfg(feature = "lance-store")]
+pub(crate) use formats::storyline::{StorylineAgent, StorylinePresence};
+pub(crate) use formats::{EventIdentity, EventRecord, StorylineDocument};
 #[cfg(feature = "search")]
 pub use messages::*;
 #[cfg(feature = "search")]

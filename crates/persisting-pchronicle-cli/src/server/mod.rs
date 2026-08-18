@@ -91,7 +91,8 @@ fn api_error(error: impl std::fmt::Display) -> ApiError {
 pub(crate) struct RunSummary {
     pub(crate) dataset: String,
     pub(crate) file: String,
-    pub(crate) run_id: String,
+    pub(crate) document_id: String,
+    pub(crate) run_id: Option<String>,
     pub(crate) agent_id: String,
     pub(crate) model_name: Option<String>,
     pub(crate) session_id: String,
@@ -326,7 +327,7 @@ async fn resolve_run_summary(
                     .run_id
                     .as_ref()
                     .filter(|value| !value.is_empty())
-                    .is_none_or(|value| value == &run.run_id)
+                    .is_none_or(|value| run.run_id.as_ref() == Some(value))
                 && (run.agent_id == query.agent_id
                     || run.model_name.as_deref() == Some(query.agent_id.as_str()))
                 && run.session_id == query.session_id
@@ -354,6 +355,7 @@ fn catalog_storyline_key(run: &RunSummary) -> CatalogStorylineKey {
     CatalogStorylineKey {
         dataset: run.dataset.clone(),
         file: run.file.clone(),
+        document_id: run.document_id.clone(),
         session_id: run.session_id.clone(),
     }
 }

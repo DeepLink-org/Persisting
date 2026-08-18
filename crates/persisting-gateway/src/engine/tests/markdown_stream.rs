@@ -4,7 +4,7 @@ use super::fixtures::*;
 async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     use super::support::*;
     use crate::session::storage::trajectory_run_dir;
-    use persisting_pchronicle::document::parse_agenticmd;
+    use persisting_pchronicle::document::decode_agenticmd;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -58,7 +58,7 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     flush_engine(&engine).await;
     let run_dir = trajectory_run_dir(storage.as_path(), ctx.agent_id(), ctx.route());
     let md_path = session_markdown_write_path_for_key(&run_dir, &ctx.route().storage_session_id);
-    let story = parse_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
+    let story = decode_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
     let records = sink.drain();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].seq, 0);
@@ -66,17 +66,17 @@ async fn stream_markdown_keeps_user_block_when_assistant_upserts() {
     assert_eq!(story.turns.len(), 2);
     assert_eq!(story.turns[0].source, "user");
     assert_eq!(story.turns[0].message, serde_json::json!("hello user"));
-    assert_eq!(story.turns[0].id, 0);
+    assert_eq!(story.turns[0].id, 1);
     assert_eq!(story.turns[1].source, "agent");
     assert_eq!(story.turns[1].message, serde_json::json!("final assistant"));
-    assert_eq!(story.turns[1].id, 1);
+    assert_eq!(story.turns[1].id, 2);
 }
 
 #[tokio::test]
 async fn draft_markdown_uses_peeked_seq_and_matches_final() {
     use super::support::*;
     use crate::session::storage::trajectory_run_dir;
-    use persisting_pchronicle::document::parse_agenticmd;
+    use persisting_pchronicle::document::decode_agenticmd;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -115,9 +115,9 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
     flush_engine(&engine).await;
     let run_dir = trajectory_run_dir(storage.as_path(), ctx.agent_id(), ctx.route());
     let md_path = session_markdown_write_path_for_key(&run_dir, &ctx.route().storage_session_id);
-    let draft_story = parse_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
+    let draft_story = decode_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
     assert_eq!(draft_story.turns.len(), 2);
-    assert_eq!(draft_story.turns[1].id, 1);
+    assert_eq!(draft_story.turns[1].id, 2);
     assert_eq!(draft_story.turns[1].message, serde_json::json!("wip"));
 
     engine
@@ -137,8 +137,8 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
         .unwrap();
 
     flush_engine(&engine).await;
-    let final_story = parse_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
-    assert_eq!(final_story.turns[1].id, 1);
+    let final_story = decode_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
+    assert_eq!(final_story.turns[1].id, 2);
     assert_eq!(final_story.turns[1].message, serde_json::json!("done"));
     assert_eq!(sink.drain()[1].seq, 1);
 }
@@ -147,7 +147,7 @@ async fn draft_markdown_uses_peeked_seq_and_matches_final() {
 async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     use super::support::*;
     use crate::session::storage::trajectory_run_dir;
-    use persisting_pchronicle::document::parse_agenticmd;
+    use persisting_pchronicle::document::decode_agenticmd;
 
     let sink = RecordingSink::new();
     let dir = tempfile::tempdir().unwrap();
@@ -231,7 +231,7 @@ async fn overlapping_calls_preserve_later_user_block_in_markdown() {
     flush_engine(&engine).await;
     let run_dir = trajectory_run_dir(storage.as_path(), ctx_a.agent_id(), ctx_a.route());
     let md_path = session_markdown_write_path_for_key(&run_dir, &ctx_a.route().storage_session_id);
-    let story = parse_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
+    let story = decode_agenticmd(&std::fs::read_to_string(&md_path).unwrap()).unwrap();
     assert_eq!(story.turns.len(), 3);
     assert_eq!(story.turns[0].message, serde_json::json!("req-a"));
     assert_eq!(story.turns[1].message, serde_json::json!("final-a"));

@@ -120,7 +120,6 @@ impl LocalQueryInputFile {
 
 #[derive(Debug, Clone)]
 pub struct LocalQueryManifest {
-    input: PathBuf,
     format: DocumentFormat,
     files: Arc<[LocalQueryInputFile]>,
 }
@@ -129,6 +128,7 @@ impl LocalQueryManifest {
     /// Freeze the candidate file list and infer its format from the first file
     /// in stable relative-path order. Each selected file is fully validated by
     /// its format reader when a query scans it.
+    #[cfg(test)]
     pub fn detect(path: impl AsRef<Path>) -> Result<Self> {
         Self::detect_with_options(path, LocalQueryManifestOptions::default())
     }
@@ -195,7 +195,6 @@ impl LocalQueryManifest {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            input: input.to_path_buf(),
             format,
             files: files.into(),
         })
@@ -231,14 +230,9 @@ impl LocalQueryManifest {
             file.validate_unchanged()?;
         }
         Ok(Self {
-            input: input.as_ref().to_path_buf(),
             format,
             files: files.into(),
         })
-    }
-
-    pub fn input(&self) -> &Path {
-        &self.input
     }
 
     pub fn format(&self) -> DocumentFormat {
@@ -252,14 +246,6 @@ impl LocalQueryManifest {
     pub fn file_count(&self) -> usize {
         self.files.len()
     }
-}
-
-pub fn detect_local_query_manifest(path: impl AsRef<Path>) -> Result<LocalQueryManifest> {
-    LocalQueryManifest::detect(path)
-}
-
-pub fn detect_local_query_format(path: impl AsRef<Path>) -> Result<DocumentFormat> {
-    Ok(LocalQueryManifest::detect(path)?.format())
 }
 
 fn validate_query_format(format: DocumentFormat, path: &Path) -> Result<()> {

@@ -58,7 +58,7 @@ pub(super) async fn run_import(
     file.write_all(&input)
         .context("write staged import Source")?;
     file.sync_all().context("sync staged import Source")?;
-    let trajectories = validate_import_source(format, &staged_source, text)?;
+    let trajectories = validate_import_source(format, &staged_source).await?;
     std::fs::File::open(staging.path())
         .and_then(|directory| directory.sync_all())
         .context("sync import staging directory")?;
@@ -73,10 +73,12 @@ pub(super) async fn run_import(
         .with_context(|| format!("sync Dataset parent {}", parent.display()))?;
     cleanup.disarm();
 
+    let document_format = exchange_document_format(format)
+        .context("supported import format must map to a physical document format")?;
     let response = ImportResponse {
         dataset_uri: output.to_string_lossy().into_owned(),
         source_path: source_path.into(),
-        format: format.as_str().into(),
+        format: document_format.as_str().into(),
         trajectories,
         input_bytes: input.len(),
     };
@@ -131,6 +133,9 @@ pub(super) async fn run_export(
     }
     if let Some(run_id) = &args.run_id {
         validate_find_id("--run-id", run_id)?;
+    }
+    if let Some(document_id) = &args.document_id {
+        validate_find_id("--document-id", document_id)?;
     }
     if let Some(session_id) = &args.session_id {
         validate_find_id("--session-id", session_id)?;
@@ -196,7 +201,7 @@ async fn export_from_snapshot(
     dataset_uri: &str,
     snapshot: Arc<DatasetCatalogSnapshot>,
 ) -> Result<EncodedExport> {
-    if let Some(export) = exact_local_file_export(args, format, dataset_uri, &snapshot)? {
+    if let Some(export) = exact_local_file_export(args, format, dataset_uri, &snapshot).await? {
         return Ok(export);
     }
     anyhow::ensure!(
@@ -235,10 +240,10 @@ async fn export_from_snapshot(
         "export selection matched no Trajectories"
     );
     addresses.sort_by(|left, right| {
-        (&left.source_path, &left.session_id, &left.run_id).cmp(&(
+        (&left.source_path, &left.document_id, &left.session_id).cmp(&(
             &right.source_path,
+            &right.document_id,
             &right.session_id,
-            &right.run_id,
         ))
     });
     let mut stories = Vec::with_capacity(addresses.len());
@@ -247,6 +252,7 @@ async fn export_from_snapshot(
         let key = CatalogStorylineKey {
             dataset: DEFAULT_DATASET_NAME.into(),
             file: address.source_path.clone(),
+            document_id: address.document_id.clone(),
             session_id: address.session_id.clone(),
         };
         let story = snapshot
@@ -265,7 +271,11 @@ async fn export_from_snapshot(
                 )
             })?;
         anyhow::ensure!(
-            story.run_id.as_deref().unwrap_or(&story.session_id) == address.run_id,
+            story.trajectory_id.as_deref().unwrap_or(&story.session_id) == address.document_id,
+            "export Trajectory document ID changed within the snapshot"
+        );
+        anyhow::ensure!(
+            story.run_id == address.run_id,
             "export Trajectory Run ID changed within the snapshot"
         );
         normalized_bytes = normalized_bytes
@@ -286,13 +296,17 @@ async fn export_from_snapshot(
     })
 }
 
-fn exact_local_file_export(
+async fn exact_local_file_export(
     args: &ExportArgs,
     format: ExchangeFormat,
     dataset_uri: &str,
     snapshot: &DatasetCatalogSnapshot,
 ) -> Result<Option<EncodedExport>> {
-    if args.run_id.is_some() || args.session_id.is_some() || args.r#where.is_some() {
+    if args.document_id.is_some()
+        || args.run_id.is_some()
+        || args.session_id.is_some()
+        || args.r#where.is_some()
+    {
         return Ok(None);
     }
     let Some(dataset) = snapshot.dataset(DEFAULT_DATASET_NAME) else {
@@ -332,7 +346,7 @@ fn exact_local_file_export(
     if detected != exchange_document_format(format) {
         return Ok(None);
     }
-    let trajectories = validate_import_source(format, &source_path, text)?;
+    let trajectories = validate_import_source(format, &source_path).await?;
     anyhow::ensure!(
         sources[0].size_bytes == Some(input.len() as u64)
             && sources[0].snapshot_ref().as_deref() == Some(&local_file_snapshot_ref(&source_path)),
@@ -353,6 +367,9 @@ fn export_address_sql(args: &ExportArgs) -> Result<String> {
     if let Some(run_id) = &args.run_id {
         predicates.push(format!("run_id = {}", sql_string(run_id)));
     }
+    if let Some(document_id) = &args.document_id {
+        predicates.push(format!("document_id = {}", sql_string(document_id)));
+    }
     if let Some(session_id) = &args.session_id {
         predicates.push(format!("session_id = {}", sql_string(session_id)));
     }
@@ -369,27 +386,19 @@ fn export_address_sql(args: &ExportArgs) -> Result<String> {
         .checked_add(1)
         .context("--max-trajectories is too large")?;
     Ok(format!(
-        "SELECT _file_ AS source_path, run_id, session_id \
+        "SELECT _file_ AS source_path, document_id, run_id, session_id \
          FROM dataset.trajectories{predicate} \
-         ORDER BY _file_, session_id, run_id LIMIT {limit}"
+         ORDER BY _file_, document_id, session_id LIMIT {limit}"
     ))
 }
 
 fn encode_export(format: ExchangeFormat, stories: &[StorylineDocument]) -> Result<Vec<u8>> {
     let value = match format {
-        ExchangeFormat::Atif => {
-            let documents = stories
-                .iter()
-                .map(storyline_to_atif)
-                .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
-            if documents.len() == 1 {
-                serde_json::to_value(&documents[0])?
-            } else {
-                serde_json::to_value(documents)?
-            }
+        ExchangeFormat::Atif => encode_json_storylines(DocumentFormat::Atif, stories)?,
+        ExchangeFormat::Actf => encode_json_storylines(DocumentFormat::Actf, stories)?,
+        ExchangeFormat::OpenaiMessages => {
+            encode_json_storylines(DocumentFormat::OpenaiMsg, stories)?
         }
-        ExchangeFormat::Actf => serde_json::to_value(storylines_to_actf(stories)?)?,
-        ExchangeFormat::OpenaiMessages => encode_openai_export(stories)?,
         ExchangeFormat::Storyline => {
             if stories.len() == 1 {
                 serde_json::to_value(&stories[0])?
@@ -402,32 +411,6 @@ fn encode_export(format: ExchangeFormat, stories: &[StorylineDocument]) -> Resul
     let mut output = serde_json::to_vec_pretty(&value).context("encode export JSON")?;
     output.push(b'\n');
     Ok(output)
-}
-
-fn encode_openai_export(stories: &[StorylineDocument]) -> Result<serde_json::Value> {
-    if let Ok(files) = persisting_pchronicle::document::recover_openai_msg_files(stories) {
-        anyhow::ensure!(
-            files.len() == 1,
-            "one export document cannot preserve {} OpenAI source files; select one Source",
-            files.len()
-        );
-        return Ok(files.into_iter().next().expect("one file checked").document);
-    }
-    let mut records = Vec::new();
-    for story in stories {
-        let document = serde_json::to_value(
-            persisting_pchronicle::document::storyline_to_openai_msg(story)?,
-        )?;
-        records.extend(
-            document
-                .get("session_steps")
-                .and_then(serde_json::Value::as_array)
-                .context("synthesized OpenAI export has no session_steps array")?
-                .iter()
-                .cloned(),
-        );
-    }
-    Ok(serde_json::Value::Array(records))
 }
 
 fn export_format(format: ExchangeFormat) -> Result<ExchangeFormat> {
@@ -608,43 +591,29 @@ fn import_source_name(format: ExchangeFormat) -> &'static str {
     }
 }
 
-fn validate_import_source(format: ExchangeFormat, path: &Path, input: &str) -> Result<usize> {
-    match format {
-        ExchangeFormat::Atif => {
-            let trajectories = load_atif_trajectories(path)?;
-            ensure_unique_session_ids(
-                trajectories
-                    .iter()
-                    .map(|trajectory| trajectory.effective_session_id())
-                    .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?,
-            )?;
-            Ok(trajectories.len())
-        }
-        ExchangeFormat::OpenaiMessages => {
-            let document = serde_json::from_str(input).context("parse OpenAI Messages JSON")?;
-            let stories = parse_openai_msg_corpus_value(&document, "session_steps.json")?;
-            ensure_unique_session_ids(stories.iter().map(|story| story.session_id.as_str()))?;
-            Ok(stories.len())
-        }
-        ExchangeFormat::Actf => {
-            let document = parse_actf_document(input).map_err(anyhow::Error::from)?;
-            let stories = actf_to_storylines(&document).map_err(anyhow::Error::from)?;
-            ensure_unique_session_ids(stories.iter().map(|story| story.session_id.as_str()))?;
-            Ok(stories.len())
-        }
-        _ => unreachable!("unsupported import format was rejected"),
-    }
-}
-
-fn ensure_unique_session_ids<'a>(session_ids: impl IntoIterator<Item = &'a str>) -> Result<()> {
+pub(super) async fn validate_import_source(format: ExchangeFormat, path: &Path) -> Result<usize> {
+    let format = exchange_document_format(format)
+        .context("supported import format must map to a physical document format")?;
+    let source = open_document(format, path).await?;
     let mut seen = HashSet::new();
-    for session_id in session_ids {
-        anyhow::ensure!(
-            seen.insert(session_id),
-            "duplicate session_id: {session_id}"
-        );
-    }
-    Ok(())
+    let mut document_count = 0usize;
+    source
+        .for_each_storyline(|story| {
+            let document_id = story.document_id();
+            if !seen.insert(document_id.to_string()) {
+                return Err(persisting_pchronicle::document::Error::Other(format!(
+                    "duplicate document_id: {document_id}"
+                )));
+            }
+            document_count = document_count.checked_add(1).ok_or_else(|| {
+                persisting_pchronicle::document::Error::Other(
+                    "import document count overflow".to_string(),
+                )
+            })?;
+            Ok(())
+        })
+        .await?;
+    Ok(document_count)
 }
 
 fn validate_new_local_dataset_path(input: &str) -> Result<PathBuf> {

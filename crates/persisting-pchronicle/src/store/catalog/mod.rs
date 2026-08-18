@@ -137,6 +137,9 @@ impl DiscoveredSource {
 pub struct CatalogStorylineKey {
     pub dataset: String,
     pub file: String,
+    /// Stable identity of one document within `file`.
+    pub document_id: String,
+    /// Session partition used when the source is Canonical Event storage.
     pub session_id: String,
 }
 
@@ -172,9 +175,9 @@ impl CatalogDataset {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CatalogSnapshotOptions {
     pub error_policy: CatalogErrorPolicy,
-    pub manifest: LocalQueryManifestOptions,
-    pub files: FileTrajectoryDataSourceOptions,
-    pub storyline: StorylineDataSourceOptions,
+    pub(crate) manifest: LocalQueryManifestOptions,
+    pub(crate) files: FileTrajectoryDataSourceOptions,
+    pub(crate) storyline: StorylineDataSourceOptions,
     /// Maximum physical Sources opened concurrently while planning one scan.
     pub max_concurrent_sources: usize,
     /// Maximum selected canonical rows that may be normalized in memory when a
@@ -182,6 +185,20 @@ pub struct CatalogSnapshotOptions {
     pub max_event_fallback_rows: usize,
     /// Maximum Arrow bytes retained while normalizing selected canonical rows.
     pub max_event_fallback_bytes: usize,
+}
+
+impl CatalogSnapshotOptions {
+    /// Configure bounded source discovery without exposing provider manifests.
+    pub fn with_discovery_limits(mut self, max_files: usize, max_entries: usize) -> Self {
+        self.manifest.max_files = max_files;
+        self.manifest.max_entries = max_entries;
+        self
+    }
+
+    pub fn with_error_policy(mut self, error_policy: CatalogErrorPolicy) -> Self {
+        self.error_policy = error_policy;
+        self
+    }
 }
 
 impl Default for CatalogSnapshotOptions {

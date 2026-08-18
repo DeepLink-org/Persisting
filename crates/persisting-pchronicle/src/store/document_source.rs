@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use datafusion::arrow::array::{Array, StringArray};
 use datafusion::prelude::SessionContext;
+use futures::TryStreamExt;
 
 use crate::agenticmd::parse_agenticmd;
 use crate::convert::{actf_to_storylines, project_event_records};
@@ -18,9 +19,8 @@ use crate::formats::actf::ActfDocument;
 use crate::formats::{parse_openai_msg_corpus_value, StorylineDocument};
 
 use super::{
-    AgenticMdDataSource, AtifReader, FileTrajectoryDataSource, FileTrajectoryFormat,
-    LocalQueryManifest, RawEventDataSource, StorylineDataSource, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-    DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    AgenticMdDataSource, FileTrajectoryDataSource, LocalQueryManifest, RawEventDataSource,
+    StorylineDataSource, DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
 
 pub(crate) trait QueryDocumentSource {
@@ -38,11 +38,11 @@ pub(crate) enum DocumentSourceImpl {
     },
     Storyline {
         path: PathBuf,
-        source: StorylineDataSource,
+        source: Box<StorylineDataSource>,
     },
     AgenticMd {
         path: PathBuf,
-        story: StorylineDocument,
+        story: Box<StorylineDocument>,
         source: AgenticMdDataSource,
     },
     Files {
@@ -65,7 +65,10 @@ pub(crate) async fn open_document_source(
         }),
         DocumentFormat::Storyline => {
             let source = StorylineDataSource::open(&path).await.map_err(other)?;
-            Ok(DocumentSourceImpl::Storyline { path, source })
+            Ok(DocumentSourceImpl::Storyline {
+                path,
+                source: Box::new(source),
+            })
         }
         DocumentFormat::AgenticMd => {
             let input = std::fs::read_to_string(&path).map_err(Error::from)?;
@@ -73,21 +76,15 @@ pub(crate) async fn open_document_source(
             let source = AgenticMdDataSource::new(&story).map_err(other)?;
             Ok(DocumentSourceImpl::AgenticMd {
                 path,
-                story,
+                story: Box::new(story),
                 source,
             })
         }
         DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf => {
-            let provider_format = match format {
-                DocumentFormat::Atif => FileTrajectoryFormat::Atif,
-                DocumentFormat::OpenaiMsg => FileTrajectoryFormat::OpenaiMsg,
-                DocumentFormat::Actf => FileTrajectoryFormat::Actf,
-                _ => unreachable!(),
-            };
             let manifest = LocalQueryManifest::for_format(&path, format).map_err(other)?;
             let source =
                 FileTrajectoryDataSource::from_manifest(manifest.clone()).map_err(other)?;
-            debug_assert_eq!(source.format(), provider_format);
+            debug_assert_eq!(source.format(), format);
             Ok(DocumentSourceImpl::Files {
                 format,
                 path,
@@ -151,50 +148,65 @@ impl DocumentSourceImpl {
         F: FnMut(StorylineDocument) -> Result<()>,
     {
         match self {
-            Self::AgenticMd { story, .. } => on_storyline(story.clone()),
+            Self::AgenticMd { story, .. } => on_storyline(story.as_ref().clone()),
             Self::Files {
-                format, manifest, ..
-            } => for_each_file_storyline(*format, manifest, on_storyline),
+                format,
+                manifest,
+                source,
+                ..
+            } => for_each_file_storyline(*format, manifest, source.max_file_bytes(), on_storyline),
             Self::Storyline { source, .. } => {
                 let context = SessionContext::new();
                 source.register(&context).map_err(other)?;
-                for session_id in distinct_strings(
-                    &context,
-                    "SELECT session_id FROM runs ORDER BY session_id",
-                    "session_id",
-                )
-                .await?
-                {
-                    on_storyline(read_pinned_storyline(&context, &session_id).await?)?;
+                let mut batches = context
+                    .sql(
+                        "SELECT document_id FROM runs \
+                         ORDER BY storage_ordinal, document_id",
+                    )
+                    .await
+                    .map_err(other)?
+                    .execute_stream()
+                    .await
+                    .map_err(other)?;
+                while let Some(batch) = batches.try_next().await.map_err(other)? {
+                    for document_id in strings_from_batch(&batch, "document_id")? {
+                        on_storyline(read_pinned_storyline(&context, &document_id).await?)?;
+                    }
                 }
                 Ok(())
             }
             Self::Events { source, .. } => {
                 let context = SessionContext::new();
                 source.register(&context).map_err(other)?;
-                for session_id in distinct_strings(
-                    &context,
-                    "SELECT DISTINCT session_id FROM events WHERE session_id IS NOT NULL ORDER BY session_id",
-                    "session_id",
-                )
-                .await?
-                {
-                    let requested = BTreeSet::from([session_id]);
-                    let records = source
-                        .read_records_for_storylines_bounded(
-                            &requested,
-                            DEFAULT_MAX_EVENT_FALLBACK_ROWS,
-                            DEFAULT_MAX_EVENT_FALLBACK_BYTES,
-                        )
-                        .await
-                        .map_err(|error| {
-                            if error.to_string().contains("exceeds max_event_fallback") {
-                                budget_error(self, &error.to_string())
-                            } else {
-                                other(error)
-                            }
-                        })?;
-                    on_storyline(project_event_records(&records)?)?;
+                let mut batches = context
+                    .sql(
+                        "SELECT DISTINCT session_id FROM events \
+                         WHERE session_id IS NOT NULL ORDER BY session_id",
+                    )
+                    .await
+                    .map_err(other)?
+                    .execute_stream()
+                    .await
+                    .map_err(other)?;
+                while let Some(batch) = batches.try_next().await.map_err(other)? {
+                    for session_id in strings_from_batch(&batch, "session_id")? {
+                        let requested = BTreeSet::from([session_id]);
+                        let records = source
+                            .read_records_for_storylines_bounded(
+                                &requested,
+                                DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+                                DEFAULT_MAX_EVENT_FALLBACK_BYTES,
+                            )
+                            .await
+                            .map_err(|error| {
+                                if error.to_string().contains("exceeds max_event_fallback") {
+                                    budget_error(self, &error.to_string())
+                                } else {
+                                    other(error)
+                                }
+                            })?;
+                        on_storyline(project_event_records(&records)?)?;
+                    }
                 }
                 Ok(())
             }
@@ -310,6 +322,7 @@ impl QueryDocumentSource for DocumentSourceImpl {
 fn for_each_file_storyline<F>(
     format: DocumentFormat,
     manifest: &LocalQueryManifest,
+    max_file_bytes: u64,
     mut on_storyline: F,
 ) -> Result<()>
 where
@@ -317,30 +330,33 @@ where
 {
     match format {
         DocumentFormat::Atif => {
-            for trajectory in AtifReader::from_manifest(manifest) {
-                on_storyline(crate::convert::atif_to_storyline(
-                    &trajectory.map_err(other)?,
-                )?)?;
+            for file in manifest.files() {
+                let input = read_bounded_file(file, max_file_bytes, format)?;
+                let input = std::str::from_utf8(&input)
+                    .map_err(|error| Error::Other(format!("ATIF input is not UTF-8: {error}")))?;
+                for story in super::files::parse_atif_storylines(input).map_err(other)? {
+                    on_storyline(story)?;
+                }
             }
         }
         DocumentFormat::OpenaiMsg => {
             for file in manifest.files() {
-                file.validate_unchanged().map_err(other)?;
-                let document = serde_json::from_slice(&std::fs::read(file.path())?)?;
+                let input = read_bounded_file(file, max_file_bytes, format)?;
+                let document = serde_json::from_slice(&input)?;
                 for story in parse_openai_msg_corpus_value(&document, file.relative_path())? {
                     on_storyline(story)?;
                 }
-                file.validate_unchanged().map_err(other)?;
             }
         }
         DocumentFormat::Actf => {
             for file in manifest.files() {
-                file.validate_unchanged().map_err(other)?;
-                let document = ActfDocument::from_json_str(&std::fs::read_to_string(file.path())?)?;
+                let input = read_bounded_file(file, max_file_bytes, format)?;
+                let input = std::str::from_utf8(&input)
+                    .map_err(|error| Error::Other(format!("ACTF input is not UTF-8: {error}")))?;
+                let document = ActfDocument::from_json_str(input)?;
                 for story in actf_to_storylines(&document)? {
                     on_storyline(story)?;
                 }
-                file.validate_unchanged().map_err(other)?;
             }
         }
         _ => unreachable!(),
@@ -348,30 +364,44 @@ where
     Ok(())
 }
 
-async fn distinct_strings(
-    context: &SessionContext,
-    sql: &str,
+fn read_bounded_file(
+    file: &super::LocalQueryInputFile,
+    max_file_bytes: u64,
+    format: DocumentFormat,
+) -> Result<Vec<u8>> {
+    file.validate_unchanged().map_err(other)?;
+    if file.size_bytes() > max_file_bytes {
+        return Err(Error::Other(format!(
+            "{format} input {} is {} bytes, exceeding max_file_bytes {max_file_bytes}",
+            file.path().display(),
+            file.size_bytes()
+        )));
+    }
+    let input = std::fs::read(file.path())?;
+    if input.len() as u64 > max_file_bytes {
+        return Err(Error::Other(format!(
+            "{format} input {} exceeded max_file_bytes {max_file_bytes} while reading",
+            file.path().display()
+        )));
+    }
+    file.validate_unchanged().map_err(other)?;
+    Ok(input)
+}
+
+fn strings_from_batch(
+    batch: &datafusion::arrow::record_batch::RecordBatch,
     column: &str,
 ) -> Result<Vec<String>> {
-    let batches = context
-        .sql(sql)
-        .await
-        .map_err(other)?
-        .collect()
-        .await
-        .map_err(other)?;
     let mut values = Vec::new();
-    for batch in batches {
-        let index = batch.schema().index_of(column).map_err(other)?;
-        let array = batch
-            .column(index)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::Other(format!("query column '{column}' is not Utf8")))?;
-        for row in 0..array.len() {
-            if !array.is_null(row) {
-                values.push(array.value(row).to_string());
-            }
+    let index = batch.schema().index_of(column).map_err(other)?;
+    let array = batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| Error::Other(format!("query column '{column}' is not Utf8")))?;
+    for row in 0..array.len() {
+        if !array.is_null(row) {
+            values.push(array.value(row).to_string());
         }
     }
     Ok(values)
@@ -379,12 +409,12 @@ async fn distinct_strings(
 
 async fn read_pinned_storyline(
     context: &SessionContext,
-    session_id: &str,
+    document_id: &str,
 ) -> Result<StorylineDocument> {
-    let literal = session_id.replace('\'', "''");
+    let literal = document_id.replace('\'', "''");
     let runs = context
         .sql(&format!(
-            "SELECT * FROM runs WHERE session_id = '{literal}'"
+            "SELECT * FROM runs WHERE document_id = '{literal}'"
         ))
         .await
         .map_err(other)?
@@ -393,7 +423,7 @@ async fn read_pinned_storyline(
         .map_err(other)?;
     let steps = context
         .sql(&format!(
-            "SELECT * FROM steps WHERE session_id = '{literal}' ORDER BY step_id"
+            "SELECT * FROM steps WHERE document_id = '{literal}' ORDER BY step_id"
         ))
         .await
         .map_err(other)?
@@ -402,7 +432,7 @@ async fn read_pinned_storyline(
         .map_err(other)?;
     let tool_calls = context
         .sql(&format!(
-            "SELECT * FROM tool_calls WHERE session_id = '{literal}' ORDER BY step_id, call_index"
+            "SELECT * FROM tool_calls WHERE document_id = '{literal}' ORDER BY step_id, call_index"
         ))
         .await
         .map_err(other)?
@@ -416,7 +446,7 @@ async fn read_pinned_storyline(
     }
     if run_rows.len() != 1 {
         return Err(Error::Other(format!(
-            "pinned Storyline source returned {} run rows for session_id '{session_id}'",
+            "pinned Storyline source returned {} run rows for document_id '{document_id}'",
             run_rows.len()
         )));
     }

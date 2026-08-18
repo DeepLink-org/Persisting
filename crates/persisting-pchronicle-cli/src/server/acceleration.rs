@@ -788,17 +788,21 @@ async fn build_run_summaries(
         let name = &dataset.mount.name;
         let event_stats = build_event_stats(engine, name).await?;
         let sql = format!(
-            "SELECT r._file_, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
+            "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
                     r.parent_json, r.final_metrics_json, r.extra_json, \
                     (SELECT COUNT(*) FROM {name}.steps s \
-                      WHERE s._file_ = r._file_ AND s.session_id = r.session_id) AS row_count \
+                      WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS row_count \
              FROM {name}.runs r"
         );
         let body = engine.query_jsonl(&sql).await?;
         for line in body.lines().filter(|line| !line.trim().is_empty()) {
             let row: JsonValue = serde_json::from_str(line).context("decode run index row")?;
             let file = required_json_string(&row, "_file_")?.to_string();
-            let run_id = required_json_string(&row, "run_id")?.to_string();
+            let document_id = required_json_string(&row, "document_id")?.to_string();
+            let run_id = row
+                .get("run_id")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned);
             let session_id = required_json_string(&row, "session_id")?.to_string();
             let agent_id = required_json_string(&row, "agent_id")?.to_string();
             let model_name = row
@@ -818,7 +822,7 @@ async fn build_run_summaries(
                 });
             let root_session_id = parent_session_id
                 .clone()
-                .or_else(|| (run_id != session_id).then(|| run_id.clone()));
+                .or_else(|| run_id.as_ref().filter(|id| *id != &session_id).cloned());
             let path = if file == "." {
                 match root_session_id.as_deref() {
                     Some(root) if root != session_id => {
@@ -846,6 +850,7 @@ async fn build_run_summaries(
             summaries.push(RunSummary {
                 dataset: name.clone(),
                 file,
+                document_id,
                 run_id,
                 agent_id,
                 model_name,
