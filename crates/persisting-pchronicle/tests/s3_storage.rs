@@ -115,6 +115,7 @@ async fn run_contract(root: &str) -> Result<()> {
     .await?;
 
     let mut second = first.clone();
+    second.trajectory_id = Some("s3-contract-second".into());
     second.session_id = "s3-contract-second".into();
     second.run_id = Some("s3-contract-second".into());
     store.replace_storyline(&second).await?;

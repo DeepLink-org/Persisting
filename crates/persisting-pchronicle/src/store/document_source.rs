@@ -359,7 +359,11 @@ where
                 }
             }
         }
-        _ => unreachable!(),
+        DocumentFormat::CanonicalEvent | DocumentFormat::Storyline | DocumentFormat::AgenticMd => {
+            return Err(Error::Other(format!(
+                "{format} is not a file-backed trajectory document format"
+            )));
+        }
     }
     Ok(())
 }
