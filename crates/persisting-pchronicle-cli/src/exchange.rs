@@ -182,11 +182,8 @@ pub(super) async fn run_export(
             args.timeout_seconds
         )
     })??;
-    anyhow::ensure!(
-        export.bytes.len() <= args.max_output_bytes,
-        "encoded export exceeds max_output_bytes limit of {}",
-        args.max_output_bytes
-    );
+    ensure_export_trajectory_budget(export.trajectories, args.max_trajectories)?;
+    ensure_output_byte_budget(export.bytes.len(), args.max_output_bytes, "encoded export")?;
     write_export_output(&args.output, &export.bytes, args.overwrite, stdout)?;
     writeln!(
         stderr,
@@ -228,20 +225,36 @@ async fn export_from_snapshot(
         .checked_add(1)
         .context("--max-trajectories is too large")?;
     let mut addresses = LimitedBuffer::new(args.max_output_bytes);
-    engine
-        .write_query_jsonl_with_max_rows(&sql, &mut addresses, Some(row_limit))
-        .await?;
-    let mut addresses = addresses
-        .into_inner()
+    let write_result = engine
+        .write_query_jsonl_bounded(&sql, &mut addresses, Some(row_limit))
+        .await;
+    let address_bytes = match addresses.finish(write_result)? {
+        QueryOutputBudgetOutcome::Complete(bytes) => bytes,
+        QueryOutputBudgetOutcome::RowLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!(
+                    "export exceeds max_trajectories limit of {}",
+                    args.max_trajectories
+                ),
+            ));
+        }
+        QueryOutputBudgetOutcome::ByteLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!(
+                    "export address selection exceeds max_output_bytes limit of {}",
+                    args.max_output_bytes
+                ),
+            ));
+        }
+    };
+    let mut addresses = address_bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_slice(line).context("decode export Trajectory address"))
         .collect::<Result<Vec<ExportAddress>>>()?;
-    anyhow::ensure!(
-        addresses.len() <= usize::try_from(args.max_trajectories).unwrap_or(usize::MAX),
-        "export exceeds max_trajectories limit of {}",
-        args.max_trajectories
-    );
+    ensure_export_trajectory_budget(addresses.len(), args.max_trajectories)?;
     anyhow::ensure!(
         !addresses.is_empty(),
         "export selection matched no Trajectories"
@@ -285,14 +298,8 @@ async fn export_from_snapshot(
             story.run_id == address.run_id,
             "export Trajectory Run ID changed within the snapshot"
         );
-        normalized_bytes = normalized_bytes
-            .checked_add(serde_json::to_vec(&story)?.len())
-            .context("normalized export size overflow")?;
-        anyhow::ensure!(
-            normalized_bytes <= args.max_output_bytes,
-            "normalized export exceeds max_output_bytes limit of {}",
-            args.max_output_bytes
-        );
+        normalized_bytes = normalized_bytes.saturating_add(serde_json::to_vec(&story)?.len());
+        ensure_output_byte_budget(normalized_bytes, args.max_output_bytes, "normalized export")?;
         stories.push(story);
     }
     let bytes = encode_export(format, &stories)?;
@@ -343,11 +350,7 @@ async fn exact_local_file_export(
         "export Source resolves outside the local Dataset"
     );
     let input = std::fs::read(&source_path).context("read exact export Source")?;
-    anyhow::ensure!(
-        input.len() <= args.max_output_bytes,
-        "exact export exceeds max_output_bytes limit of {}",
-        args.max_output_bytes
-    );
+    ensure_output_byte_budget(input.len(), args.max_output_bytes, "exact export")?;
     let text = std::str::from_utf8(&input).context("exact export Source must be UTF-8")?;
     let detected = detect_format(Some(&source_path), Some(text))?;
     if detected != exchange_document_format(format) {
@@ -364,6 +367,16 @@ async fn exact_local_file_export(
         trajectories,
         exact: true,
     }))
+}
+
+fn ensure_export_trajectory_budget(trajectories: usize, max_trajectories: u64) -> Result<()> {
+    if usize::try_from(max_trajectories).is_ok_and(|limit| trajectories > limit) {
+        return Err(cli_boundary_error(
+            BoundaryCode::ResourceExhausted,
+            format!("export exceeds max_trajectories limit of {max_trajectories}"),
+        ));
+    }
+    Ok(())
 }
 
 fn export_address_sql(args: &ExportArgs) -> Result<String> {

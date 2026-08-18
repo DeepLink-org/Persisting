@@ -1486,9 +1486,14 @@ async fn export_is_bounded_create_only_and_has_no_partial_output() -> Result<()>
         "--max-output-bytes",
         "8",
     ])?;
-    assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
-        .is_err());
+        .unwrap_err();
+    assert!(
+        error.to_string().starts_with("resource_exhausted:"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("exact export"), "{error:#}");
     assert!(!limited.exists());
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry
@@ -1496,6 +1501,125 @@ async fn export_is_bounded_create_only_and_has_no_partial_output() -> Result<()>
             .and_then(|entry| entry.file_name().into_string().ok())
             .is_some_and(|name| name.starts_with(".pchronicle-export-"))
     }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_stream_preserves_an_ordinary_writer_error_source() -> Result<()> {
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "export-writer-source-sentinel",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("atif").to_str().unwrap(),
+        "--output",
+        "-",
+        "--stream",
+        "--format",
+        "atif",
+    ])?;
+    let error = run(cli, false, &mut FailingWriter, &mut Vec::new())
+        .await
+        .unwrap_err();
+    let source = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<std::io::Error>())
+        .context("export stream failure did not retain its I/O source")?;
+    assert_eq!(source.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(source.to_string(), "export-writer-source-sentinel");
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_normalized_budgets_are_resource_exhausted_without_partial_output() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+
+    let trajectory_limited = temp.path().join("trajectory-limited.json");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("openai-messages").to_str().unwrap(),
+        "--output",
+        trajectory_limited.to_str().unwrap(),
+        "--format",
+        "openai-messages",
+        "--where",
+        "TRUE",
+        "--max-trajectories",
+        "1",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().starts_with("resource_exhausted:"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("max_trajectories"), "{error:#}");
+    assert!(!trajectory_limited.exists());
+
+    let exact_trajectory_limited = temp.path().join("exact-trajectory-limited.json");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("openai-messages").to_str().unwrap(),
+        "--output",
+        exact_trajectory_limited.to_str().unwrap(),
+        "--format",
+        "openai-messages",
+        "--max-trajectories",
+        "1",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().starts_with("resource_exhausted:"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("max_trajectories"), "{error:#}");
+    assert!(!exact_trajectory_limited.exists());
+
+    let byte_limited = temp.path().join("normalized-byte-limited.json");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("atif").to_str().unwrap(),
+        "--output",
+        byte_limited.to_str().unwrap(),
+        "--format",
+        "atif",
+        "--where",
+        "TRUE",
+        "--max-output-bytes",
+        "512",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().starts_with("resource_exhausted:"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("normalized export"), "{error:#}");
+    assert!(!byte_limited.exists());
     Ok(())
 }
 

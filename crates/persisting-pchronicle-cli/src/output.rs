@@ -39,10 +39,6 @@ impl LimitedBuffer {
             Err(error) => Err(error),
         }
     }
-
-    pub(super) fn into_inner(self) -> Vec<u8> {
-        self.bytes
-    }
 }
 
 impl Write for LimitedBuffer {
