@@ -38,8 +38,7 @@ pub fn parse_openai_msg_corpus_value(
     document: &Value,
     relative_path: impl AsRef<Path>,
 ) -> InputResult<Vec<StorylineDocument>> {
-    let relative_path = validate_relative_path(relative_path.as_ref())
-        .map_err(|_| InputIssue::invalid("source path must be non-empty and relative").at("path"))?
+    let relative_path = validate_input_relative_path(relative_path.as_ref())?
         .to_string_lossy()
         .into_owned();
     let (kind, envelope, records) = match document {
@@ -862,6 +861,19 @@ fn validate_relative_path(path: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+fn validate_input_relative_path(path: &Path) -> InputResult<PathBuf> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err(InputIssue::invalid("source path must be non-empty and relative").at("path"));
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(InputIssue::invalid("source path contains unsafe components").at("path"));
+    }
+    Ok(path.to_path_buf())
+}
+
 fn required_string(row: &Map<String, Value>, field: &str) -> InputResult<String> {
     row.get(field)
         .and_then(Value::as_str)
@@ -1300,6 +1312,9 @@ mod tests {
     fn recovery_rejects_unsafe_paths() {
         let error = parse_openai_msg_corpus_value(&corpus(), "../escape.json").unwrap_err();
         assert!(error.to_string().contains("unsafe"));
+        assert_eq!(error.kind(), crate::input::InputIssueKind::Invalid);
+        assert_eq!(error.location(), Some("path"));
+        assert!(!error.message().contains("../escape.json"));
     }
 
     #[test]
