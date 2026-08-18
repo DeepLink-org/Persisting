@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::format::DocumentFormat;
-use crate::{InputIssue, InputIssueKind};
+use crate::InputIssue;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -132,10 +132,7 @@ pub enum Error {
 impl Error {
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::Input(issue) => match issue.kind() {
-                InputIssueKind::Invalid => ErrorCode::InvalidInput,
-                InputIssueKind::Unsupported => ErrorCode::Unsupported,
-            },
+            Self::Input(_) => ErrorCode::Internal,
             Self::InvalidDocument { .. }
             | Self::UnsupportedCardinality { .. }
             | Self::SourceBudgetExceeded { .. }
@@ -155,7 +152,7 @@ impl Error {
 #[cfg(test)]
 mod tests {
     use super::Error;
-    use crate::format::DocumentFormat;
+    use crate::{format::DocumentFormat, InputIssue};
 
     #[test]
     fn invalid_document_error_identifies_format_and_location() {
@@ -171,5 +168,12 @@ mod tests {
         assert!(rendered.contains("sessions.json"));
         assert!(rendered.contains("record[2].messages"));
         assert_eq!(error.code(), super::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn input_bridge_is_not_a_legacy_semantic_classifier() {
+        let error = Error::from(InputIssue::unsupported("new parser feature"));
+
+        assert_eq!(error.code(), super::ErrorCode::Internal);
     }
 }

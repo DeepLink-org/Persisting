@@ -77,7 +77,6 @@ pub fn decode_json_storylines(
             let value = serde_json::from_str(input)
                 .map_err(|error| InputIssue::invalid(error.to_string()))?;
             parse_openai_msg_corpus_value(&value, relative_path)
-                .map_err(|error| InputIssue::invalid(error.to_string()))
         }
         unsupported => Err(InputIssue::unsupported(format!(
             "'{unsupported}' is not a peripheral JSON document format"

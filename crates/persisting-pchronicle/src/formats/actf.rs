@@ -159,9 +159,10 @@ impl ActfDocument {
                     "ACTF attempt '{attempt_id}' status is required"
                 )));
             }
-            attempt.trajectory.validate().map_err(|error| {
-                InputIssue::invalid(format!("ACTF attempt '{attempt_id}': {error}"))
-            })?;
+            attempt
+                .trajectory
+                .validate()
+                .map_err(|error| error.at(format!("attempts.{attempt_id}.trajectory")))?;
         }
         Ok(())
     }

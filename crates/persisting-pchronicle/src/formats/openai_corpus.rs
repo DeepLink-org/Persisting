@@ -39,7 +39,7 @@ pub fn parse_openai_msg_corpus_value(
     relative_path: impl AsRef<Path>,
 ) -> InputResult<Vec<StorylineDocument>> {
     let relative_path = validate_relative_path(relative_path.as_ref())
-        .map_err(|error| InputIssue::invalid(error.to_string()))?
+        .map_err(|_| InputIssue::invalid("source path must be non-empty and relative").at("path"))?
         .to_string_lossy()
         .into_owned();
     let (kind, envelope, records) = match document {
@@ -72,13 +72,11 @@ pub fn parse_openai_msg_corpus_value(
     let mut group_indexes = HashMap::<String, usize>::new();
     for (ordinal, record) in records.into_iter().enumerate() {
         let object = record.as_object().ok_or_else(|| {
-            InputIssue::invalid(format!(
-                "OpenAI corpus {} row {} must be an object",
-                relative_path, ordinal
-            ))
+            InputIssue::invalid("OpenAI corpus row must be an object")
+                .at(format!("rows[{ordinal}]"))
         })?;
-        let session_id = required_string(object, "session_id", &relative_path, ordinal)
-            .map_err(|error| InputIssue::invalid(error.to_string()))?;
+        let session_id = required_string(object, "session_id")
+            .map_err(|error| error.at(format!("rows[{ordinal}].session_id")))?;
         let index = if let Some(index) = group_indexes.get(&session_id) {
             *index
         } else {
@@ -98,7 +96,6 @@ pub fn parse_openai_msg_corpus_value(
         .into_iter()
         .map(|(session_id, records)| {
             rows_to_storyline(&session_id, records, &relative_path, &file_metadata)
-                .map_err(|error| InputIssue::invalid(error.to_string()))
         })
         .collect()
 }
@@ -345,7 +342,7 @@ fn rows_to_storyline(
     mut records: Vec<(usize, Value)>,
     relative_path: &str,
     file_metadata: &Value,
-) -> Result<StorylineDocument> {
+) -> InputResult<StorylineDocument> {
     records.sort_by_key(|(_, row)| row.get("step_id").and_then(Value::as_i64));
     let mut seen_steps = HashSet::new();
     let mut turns = Vec::with_capacity(records.len().saturating_mul(2));
@@ -356,22 +353,16 @@ fn rows_to_storyline(
 
     for (ordinal, raw) in records {
         let row = raw.as_object().ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} must be an object",
-                relative_path, ordinal
-            ))
+            InputIssue::invalid("OpenAI corpus row must be an object")
+                .at(format!("rows[{ordinal}]"))
         })?;
         let step_id = row.get("step_id").and_then(Value::as_i64).ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} requires integer step_id",
-                relative_path, ordinal
-            ))
+            InputIssue::invalid("OpenAI corpus row requires integer step_id")
+                .at(format!("rows[{ordinal}].step_id"))
         })?;
         if !seen_steps.insert(step_id) {
-            return Err(Error::DuplicateStep {
-                session_id: session_id.to_string(),
-                step_id,
-            });
+            return Err(InputIssue::invalid(format!("duplicate step_id {step_id}"))
+                .at(format!("rows[{ordinal}].step_id")));
         }
         let meta = parsed_meta(row);
         let env_state = parsed_env_state(meta.as_ref());
@@ -402,10 +393,10 @@ fn rows_to_storyline(
         {
             if let Some(existing) = &run_id {
                 if existing != candidate {
-                    return Err(Error::Other(format!(
-                        "OpenAI corpus {} session {} has conflicting Run ids '{}' and '{}'",
-                        relative_path, session_id, existing, candidate
-                    )));
+                    return Err(InputIssue::invalid(
+                        "OpenAI corpus session has conflicting run ids",
+                    )
+                    .at(format!("rows[{ordinal}]")));
                 }
             } else {
                 run_id = Some(candidate.to_string());
@@ -413,10 +404,8 @@ fn rows_to_storyline(
         }
 
         let (output, output_location) = select_output_message(row).ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} has no assistant output",
-                relative_path, ordinal
-            ))
+            InputIssue::invalid("OpenAI corpus row has no assistant output")
+                .at(format!("rows[{ordinal}]"))
         })?;
         let tool_calls = parse_tool_calls(output.get("tool_calls"))
             .or_else(|| parse_embedded_tool_call(output.get("content"), step_id));
@@ -505,7 +494,7 @@ fn rows_to_storyline(
                     user_turn_id,
                     output_location,
                     env_state.as_ref(),
-                )?
+                )
             })),
         });
         next_turn_id += 1;
@@ -560,7 +549,7 @@ fn record_residual(
     user_turn_id: Option<i64>,
     output_location: OutputLocation,
     env_state: Option<&Value>,
-) -> Result<Value> {
+) -> Value {
     let mut residual = row.clone();
     for key in ["session_id", "step_id", "messages", "response"] {
         residual.remove(key);
@@ -655,7 +644,7 @@ fn record_residual(
         OutputLocation::Response => ("response", None),
         OutputLocation::Message(index) => ("message", Some(index)),
     };
-    Ok(json!({
+    json!({
         "relative_path": relative_path,
         "ordinal": ordinal,
         "step_id": step_id,
@@ -675,7 +664,7 @@ fn record_residual(
         "messages": messages,
         "response": response,
         "residual": residual,
-    }))
+    })
 }
 
 fn recover_record(
@@ -873,22 +862,12 @@ fn validate_relative_path(path: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn required_string(
-    row: &Map<String, Value>,
-    field: &str,
-    path: &str,
-    ordinal: usize,
-) -> Result<String> {
+fn required_string(row: &Map<String, Value>, field: &str) -> InputResult<String> {
     row.get(field)
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} requires non-empty {}",
-                path, ordinal, field
-            ))
-        })
+        .ok_or_else(|| InputIssue::invalid(format!("OpenAI corpus row requires non-empty {field}")))
 }
 
 fn parsed_meta(row: &Map<String, Value>) -> Option<Value> {

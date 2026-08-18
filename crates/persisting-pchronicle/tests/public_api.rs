@@ -33,3 +33,58 @@ fn public_errors_are_operational_or_input_local() {
     assert_eq!(issue.location(), Some("turns[0]"));
     let _: InputResult<()> = Err(issue);
 }
+
+#[test]
+fn public_decoder_preserves_unsupported_input_issues() {
+    let actf = serde_json::json!({
+        "task_id": "task",
+        "category": "category",
+        "k": 1,
+        "correct": false,
+        "attempts_tried": 1,
+        "solved_at": null,
+        "attempts": {
+            "attempt": {
+                "correct": false,
+                "final_answer": null,
+                "ground_truth": "",
+                "trajectory": {
+                    "schema_version": "ACTF_v0.9",
+                    "steps": [],
+                    "started_at": "start",
+                    "finished_at": "end"
+                },
+                "status": "failed",
+                "score": null,
+                "error": "",
+                "artifacts": null,
+                "extra": null,
+                "analysis_result": null,
+                "meta": null
+            }
+        }
+    });
+    let actf_error =
+        decode_json_storylines(DocumentFormat::Actf, &actf.to_string(), "task.json").unwrap_err();
+    assert_eq!(actf_error.kind(), InputIssueKind::Unsupported);
+
+    let openai_error = decode_json_storylines(
+        DocumentFormat::OpenaiMsg,
+        r#"{"session_steps":[]}"#,
+        "empty.json",
+    )
+    .unwrap_err();
+    assert_eq!(openai_error.kind(), InputIssueKind::Unsupported);
+}
+
+#[test]
+fn public_openai_decode_issues_do_not_include_source_paths() {
+    let error = decode_json_storylines(
+        DocumentFormat::OpenaiMsg,
+        r#"{"session_steps":[{}]}"#,
+        "sentinel-private-path.json",
+    )
+    .unwrap_err();
+    assert_eq!(error.location(), Some("rows[0].session_id"));
+    assert!(!error.message().contains("sentinel-private-path.json"));
+}
