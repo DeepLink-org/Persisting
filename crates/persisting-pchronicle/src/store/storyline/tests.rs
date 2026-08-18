@@ -35,6 +35,7 @@ fn story(session_id: &str) -> StorylineDocument {
     StorylineDocument {
         schema_version: None,
         run_id: Some("run-1".into()),
+        trajectory_id: None,
         attempt_id: None,
         session_id: session_id.into(),
         agent: StorylineAgent {
@@ -51,6 +52,7 @@ fn story(session_id: &str) -> StorylineDocument {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
+        presence: Default::default(),
         turns: vec![
             StorylineTurn {
                 id: 1,
@@ -555,6 +557,45 @@ async fn atif_stream_create_writes_one_fragment_per_table() {
         .turns
         .iter()
         .all(|turn| turn.tool_calls.as_ref().is_none_or(Vec::is_empty)));
+}
+
+#[tokio::test]
+async fn atif_stream_preserves_nested_documents_with_shared_session() {
+    let input = serde_json::json!({
+        "schema_version": "ATIF-v1.7",
+        "session_id": "shared-run",
+        "trajectory_id": "root",
+        "agent": {"name": "root", "version": "1"},
+        "steps": [],
+        "subagent_trajectories": [{
+            "schema_version": "ATIF-v1.7",
+            "trajectory_id": "child",
+            "agent": {"name": "child", "version": "1"},
+            "steps": [{
+                "step_id": 1,
+                "timestamp": "2026-08-14T12:34:56.789123+08:00",
+                "source": "agent",
+                "message": "done",
+                "metrics": null
+            }]
+        }]
+    });
+    let file = tempfile::NamedTempFile::with_suffix(".json").unwrap();
+    std::fs::write(file.path(), serde_json::to_vec(&input).unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(dir.path()).await.unwrap();
+
+    let report = store.import_atif_stream(file.path()).await.unwrap();
+    assert_eq!(report.storylines, 2);
+    let stories = store
+        .get_storylines_by_document_ids(&["root".into(), "child".into()])
+        .await
+        .unwrap()
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .unwrap();
+    let rebuilt = crate::convert::storylines_to_atif(&stories).unwrap();
+    assert_eq!(serde_json::to_value(&rebuilt[0]).unwrap(), input);
 }
 
 #[tokio::test]

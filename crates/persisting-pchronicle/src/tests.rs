@@ -19,12 +19,20 @@ impl TestFormat {
 
 fn into_storyline(format: TestFormat, input: &str) -> crate::Result<crate::StorylineDocument> {
     match format {
-        TestFormat::Storyline => crate::document::parse_storyline_document(input),
+        TestFormat::Storyline => crate::formats::storyline::parse_storyline_document(input),
         TestFormat::CanonicalEvent => Err(lance_only_error()),
-        TestFormat::AgenticMd => crate::document::parse_agenticmd(input),
-        TestFormat::OpenaiMsg => crate::convert::openai_msg_to_storyline(
-            &crate::document::parse_openai_msg_document(input)?,
-        ),
+        TestFormat::AgenticMd => crate::document::decode_agenticmd(input),
+        TestFormat::OpenaiMsg => {
+            let value = serde_json::from_str(input)?;
+            let mut stories = crate::formats::parse_openai_msg_corpus_value(&value, "corpus.json")?;
+            if stories.len() != 1 {
+                return Err(crate::Error::UnsupportedCardinality {
+                    format: crate::DocumentFormat::OpenaiMsg,
+                    stories: stories.len(),
+                });
+            }
+            Ok(stories.remove(0))
+        }
         TestFormat::Atif => {
             crate::convert::atif_to_storyline(&AtifTrajectory::from_json_str(input)?)
         }
@@ -37,7 +45,7 @@ fn from_storyline(format: TestFormat, story: &crate::StorylineDocument) -> crate
         TestFormat::CanonicalEvent => Err(lance_only_error()),
         TestFormat::AgenticMd => crate::document::encode_agenticmd(story),
         TestFormat::OpenaiMsg => Ok(serde_json::to_string_pretty(
-            &crate::convert::storyline_to_openai_msg(story)?,
+            &crate::formats::synthesize_openai_msg_corpus(std::slice::from_ref(story))?,
         )?),
         TestFormat::Atif => Ok(serde_json::to_string_pretty(
             &crate::convert::storyline_to_atif(story)?,
@@ -57,81 +65,81 @@ fn convert(from: TestFormat, to: TestFormat, input: &str) -> crate::Result<Strin
 }
 
 fn lance_only_error() -> crate::Error {
-    crate::Error::Other(crate::document::events_lance_only_message().into())
+    crate::Error::Other(crate::formats::events::events_lance_only_message().into())
 }
 
 fn sample_traj() -> AtifTrajectory {
     AtifTrajectory {
         schema_version: "ATIF-v1.7".into(),
-        session_id: Some("sess-1".into()),
-        trajectory_id: Some("traj-1".into()),
+        session_id: crate::FieldPresence::Value("sess-1".into()),
+        trajectory_id: crate::FieldPresence::Value("traj-1".into()),
         agent: AtifAgent {
             name: "harbor-agent".into(),
             version: "1.0.0".into(),
-            model_name: Some("gemini-2.5-flash".into()),
-            tool_definitions: None,
-            extra: None,
+            model_name: crate::FieldPresence::Value("gemini-2.5-flash".into()),
+            tool_definitions: crate::FieldPresence::Missing,
+            extra: crate::FieldPresence::Missing,
         },
-        notes: Some("unit test".into()),
-        final_metrics: Some(json!({"total_steps": 2})),
-        continued_trajectory_ref: None,
-        extra: None,
-        subagent_trajectories: None,
+        notes: crate::FieldPresence::Value("unit test".into()),
+        final_metrics: crate::FieldPresence::Value(json!({"total_steps": 2})),
+        continued_trajectory_ref: crate::FieldPresence::Missing,
+        extra: crate::FieldPresence::Missing,
+        subagent_trajectories: crate::FieldPresence::Missing,
         steps: vec![
             AtifStep {
                 step_id: 1,
-                timestamp: Some("2025-10-11T10:30:00Z".into()),
+                timestamp: crate::FieldPresence::Value("2025-10-11T10:30:00Z".into()),
                 source: "user".into(),
-                model_name: None,
-                reasoning_effort: None,
+                model_name: crate::FieldPresence::Missing,
+                reasoning_effort: crate::FieldPresence::Missing,
                 message: json!("What is the price of GOOGL?"),
-                reasoning_content: None,
-                tool_calls: None,
-                observation: None,
-                metrics: None,
-                extra: None,
-                llm_call_count: None,
-                is_copied_context: None,
+                reasoning_content: crate::FieldPresence::Missing,
+                tool_calls: crate::FieldPresence::Missing,
+                observation: crate::FieldPresence::Missing,
+                metrics: crate::FieldPresence::Missing,
+                extra: crate::FieldPresence::Missing,
+                llm_call_count: crate::FieldPresence::Missing,
+                is_copied_context: crate::FieldPresence::Missing,
             },
             AtifStep {
                 step_id: 2,
-                timestamp: Some("2025-10-11T10:30:02Z".into()),
+                timestamp: crate::FieldPresence::Value("2025-10-11T10:30:02Z".into()),
                 source: "agent".into(),
-                model_name: Some("gemini-2.5-flash".into()),
-                reasoning_effort: Some(json!("medium")),
+                model_name: crate::FieldPresence::Value("gemini-2.5-flash".into()),
+                reasoning_effort: crate::FieldPresence::Value(json!("medium")),
                 message: json!("I will search."),
-                reasoning_content: Some("Need price and volume.".into()),
-                tool_calls: Some(vec![
+                reasoning_content: crate::FieldPresence::Value("Need price and volume.".into()),
+                tool_calls: crate::FieldPresence::Value(vec![
                     AtifToolCall {
                         tool_call_id: "call_price_1".into(),
                         function_name: "financial_search".into(),
                         arguments: json!({"ticker":"GOOGL","metric":"price"}),
                         result: crate::FieldPresence::Value(json!({"price": 185.35})),
-                        extra: Some(json!({"duration_ms": 42})),
+                        extra: crate::FieldPresence::Value(json!({"duration_ms": 42})),
                     },
                     AtifToolCall {
                         tool_call_id: "call_volume_2".into(),
                         function_name: "financial_search".into(),
                         arguments: json!({"ticker":"GOOGL","metric":"volume"}),
                         result: crate::FieldPresence::Missing,
-                        extra: Some(json!({"duration_ms": 37})),
+                        extra: crate::FieldPresence::Value(json!({"duration_ms": 37})),
                     },
                 ]),
-                observation: Some(AtifObservation {
+                observation: crate::FieldPresence::Value(AtifObservation {
                     results: vec![
                         json!({"source_call_id":"call_price_1","content":"$185.35"}),
                         json!({"source_call_id":"call_volume_2","content":"1.5M"}),
                     ],
                 }),
-                metrics: Some(json!({
+                metrics: crate::FieldPresence::Value(json!({
                     "prompt_tokens": 520,
                     "completion_tokens": 80,
                     "latency_ms": 1850,
                     "ttft_ms": 210
                 })),
-                extra: None,
-                llm_call_count: Some(1),
-                is_copied_context: None,
+                extra: crate::FieldPresence::Missing,
+                llm_call_count: crate::FieldPresence::Value(1),
+                is_copied_context: crate::FieldPresence::Missing,
             },
         ],
     }
@@ -158,7 +166,7 @@ fn atif_storyline_hub_roundtrip() {
     );
 
     let out = from_storyline(TestFormat::Atif, &story).unwrap();
-    let back: crate::model::AtifTrajectory = serde_json::from_str(&out).unwrap();
+    let back: crate::atif::AtifTrajectory = serde_json::from_str(&out).unwrap();
     assert_eq!(back.effective_session_id().unwrap(), "sess-1");
     assert_eq!(back.steps.len(), 2);
     assert_eq!(back.steps[1].tool_calls.as_ref().unwrap().len(), 2);
@@ -193,7 +201,7 @@ fn convert_peripheral_via_hub_only() {
     let openai = convert(TestFormat::Atif, TestFormat::OpenaiMsg, &atif).unwrap();
     assert!(openai.contains("session_steps") || openai.contains("\"session_id\""));
     let back = convert(TestFormat::OpenaiMsg, TestFormat::Atif, &openai).unwrap();
-    let traj: crate::model::AtifTrajectory = serde_json::from_str(&back).unwrap();
+    let traj: crate::atif::AtifTrajectory = serde_json::from_str(&back).unwrap();
     assert_eq!(traj.effective_session_id().unwrap(), "sess-1");
     assert!(!traj.steps.is_empty());
 }
@@ -340,7 +348,6 @@ fn export_events_jsonl_debug_roundtrip_via_test_parser() {
 
 #[test]
 fn parse_openai_msg_envelope() {
-    use crate::formats::openai_msg::parse_openai_msg_document;
     let raw = r#"{
       "session_id": "s1",
       "session_dir": "s1",
@@ -370,11 +377,12 @@ fn parse_openai_msg_envelope() {
         "call_id": "c1"
       }]
     }"#;
-    let doc = parse_openai_msg_document(raw).unwrap();
-    assert_eq!(doc.session_id, "s1");
-    assert_eq!(doc.session_steps.len(), 1);
-    let msgs = doc.session_steps[0].messages_value().unwrap();
-    assert_eq!(msgs[0]["content"], "ping");
+    let value = serde_json::from_str(raw).unwrap();
+    let stories =
+        crate::formats::parse_openai_msg_corpus_value(&value, "session_steps.json").unwrap();
+    assert_eq!(stories.len(), 1);
+    assert_eq!(stories[0].session_id, "s1");
+    assert_eq!(stories[0].turns[0].message, json!("ping"));
 }
 
 #[test]
@@ -625,8 +633,9 @@ fn convert_openai_msg_storyline_roundtrip_messages() {
 
     let back = convert(TestFormat::Storyline, TestFormat::OpenaiMsg, &story).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&back).unwrap();
-    assert_eq!(doc["session_id"], "s-om");
-    assert!(!doc["session_steps"].as_array().unwrap().is_empty());
+    let rows = doc.as_array().unwrap();
+    assert_eq!(rows[0]["session_id"], "s-om");
+    assert!(!rows.is_empty());
 }
 
 #[test]
@@ -700,7 +709,7 @@ fn convert_identity_and_cross_atif_storyline() {
 
     let story = convert(TestFormat::Atif, TestFormat::Storyline, &atif).unwrap();
     let back = convert(TestFormat::Storyline, TestFormat::Atif, &story).unwrap();
-    let traj: crate::model::AtifTrajectory = serde_json::from_str(&back).unwrap();
+    let traj: crate::atif::AtifTrajectory = serde_json::from_str(&back).unwrap();
     assert_eq!(traj.effective_session_id().unwrap(), "sess-1");
     assert_eq!(traj.steps.len(), 2);
     assert_eq!(traj.steps[0].source, "user");
@@ -719,6 +728,7 @@ fn storyline_to_events_assigns_call_id_for_paired_turns() {
     let story = StorylineDocument {
         schema_version: None,
         run_id: None,
+        trajectory_id: None,
         attempt_id: None,
         session_id: "s-pair".into(),
         agent: StorylineAgent {
@@ -735,6 +745,7 @@ fn storyline_to_events_assigns_call_id_for_paired_turns() {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
+        presence: Default::default(),
         turns: vec![
             StorylineTurn {
                 id: 1,

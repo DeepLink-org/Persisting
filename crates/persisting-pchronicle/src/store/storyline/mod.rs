@@ -31,8 +31,8 @@ pub use content::{
 };
 pub use datafusion::{
     StorylineContentReadMode, StorylineDataFusionTableNames, StorylineDataSource,
-    StorylineDataSourceOptions, StorylineTableKind, StorylineTableProvider, DATAFUSION_RUNS_TABLE,
-    DATAFUSION_STEPS_TABLE, DATAFUSION_TOOL_CALLS_TABLE,
+    StorylineDataSourceOptions, StorylineTableKind, DATAFUSION_RUNS_TABLE, DATAFUSION_STEPS_TABLE,
+    DATAFUSION_TOOL_CALLS_TABLE,
 };
 pub use rows::{
     story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
@@ -56,7 +56,9 @@ use lance::dataset::{
     InsertBuilder, MergeInsertBuilder, WhenMatched, WhenNotMatched, WhenNotMatchedBySource,
     WriteMode, WriteParams,
 };
-use lance::deps::arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use lance::deps::arrow_array::{
+    Array, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
+};
 use lance::deps::arrow_schema::{ArrowError, SchemaRef};
 use lance::index::DatasetIndexExt;
 use lance::io::ObjectStore;
@@ -72,7 +74,6 @@ use super::storyline_model::{
     reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
     StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
-use crate::convert::atif_to_storyline;
 use crate::StorylineDocument;
 
 use self::content::{
@@ -87,20 +88,23 @@ const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
 const WRITE_BATCH_ROWS: usize = 8192;
 const STREAM_IMPORT_STORIES: usize = 256;
-const RUN_INDEXES: [(&str, IndexType); 2] = [
+const RUN_INDEXES: [(&str, IndexType); 3] = [
+    ("document_id", IndexType::BTree),
     ("session_id", IndexType::BTree),
     ("run_id", IndexType::BTree),
 ];
 // `step_id` restarts inside every Storyline and has low global selectivity.
 // `session_id` first narrows a lookup to one short Storyline, after which a
 // step range is cheaper to filter than maintaining another BTree.
-const STEP_INDEXES: [(&str, IndexType); 4] = [
+const STEP_INDEXES: [(&str, IndexType); 5] = [
+    ("document_id", IndexType::BTree),
     ("session_id", IndexType::BTree),
     ("timestamp", IndexType::BTree),
     ("effective_kind", IndexType::Bitmap),
     ("source", IndexType::Bitmap),
 ];
-const TOOL_CALL_INDEXES: [(&str, IndexType); 3] = [
+const TOOL_CALL_INDEXES: [(&str, IndexType); 4] = [
+    ("document_id", IndexType::BTree),
     ("session_id", IndexType::BTree),
     ("tool_call_id", IndexType::BTree),
     ("function_name", IndexType::Bitmap),
@@ -476,21 +480,15 @@ impl StorylineLanceStore {
             self.resolve_current_table_paths().await?.is_none(),
             "streaming ATIF create requires an empty Storyline store"
         );
-        let stories = AtifReader::open(input.as_ref())?.map(|trajectory| {
-            let trajectory = trajectory?;
-            atif_to_storyline(&trajectory).map_err(anyhow::Error::from)
-        });
+        let stories = AtifReader::open(input.as_ref())?;
         self.replace_storyline_stream(stories).await
     }
 
-    /// Atomically replace a stream of Storylines without retaining the whole
-    /// import in memory.
+    /// 以流式方式原子替换 Storyline，不在内存中保留完整导入集。
     ///
-    /// At most [`STREAM_IMPORT_STORIES`] documents plus their normalized rows
-    /// are materialized at once. Lance versions may advance while the stream is
-    /// consumed, but `CURRENT` moves only after every chunk and final index
-    /// maintenance succeed, so readers keep seeing the previous snapshot on
-    /// failure.
+    /// 每次只物化一个固定大小的有界文档批次及其规范化行。消费流期间 Lance version
+    /// 可以前进，但只有全部批次和最终索引维护成功后才移动 `CURRENT`；失败时读者仍看到
+    /// 上一个完整快照。
     pub async fn replace_storyline_stream<I>(
         &self,
         stories: I,
@@ -546,15 +544,38 @@ impl StorylineLanceStore {
         let mut paths = if rebuild { None } else { original.clone() };
         let mut new_table_generation = None;
         let mut iterator = stories.into_iter();
-        let mut session_ids = HashSet::new();
+        let mut document_ids = HashSet::new();
+        let mut next_storage_ordinal = if rebuild {
+            0
+        } else if let Some(paths) = &original {
+            next_storage_ordinal(paths).await?
+        } else {
+            0
+        };
         let mut report = StorylineStreamImportReport::default();
 
         let result = async {
             loop {
-                let Some(chunk) = next_storyline_stream_chunk(&mut iterator, &mut session_ids)?
+                let Some(mut chunk) = next_storyline_stream_chunk(
+                    &mut iterator,
+                    &mut document_ids,
+                    &mut next_storage_ordinal,
+                )?
                 else {
                     break;
                 };
+                if !rebuild {
+                    if let Some(original) = &original {
+                        let existing =
+                            read_storage_ordinals_for_document_ids(original, &chunk.document_ids)
+                                .await?;
+                        for run in &mut chunk.runs {
+                            if let Some(ordinal) = existing.get(&run.document_id) {
+                                run.storage_ordinal = *ordinal;
+                            }
+                        }
+                    }
+                }
                 report.storylines += chunk.runs.len();
                 report.steps += chunk.steps.len();
                 report.tool_calls += chunk.tool_calls.len();
@@ -609,7 +630,7 @@ impl StorylineLanceStore {
                         created
                     }
                     Some(mut current) => {
-                        let predicate = session_set_predicate(&chunk.session_ids);
+                        let predicate = document_set_predicate(&chunk.document_ids);
                         let objects_version = commit_pending_content(
                             &current.objects,
                             Some(current.objects_version),
@@ -621,7 +642,7 @@ impl StorylineLanceStore {
                                 &current.runs,
                                 current.runs_version,
                                 &predicate,
-                                &["session_id"],
+                                &["document_id"],
                                 run_batches,
                                 story_runs_arrow_schema(),
                             ),
@@ -629,7 +650,7 @@ impl StorylineLanceStore {
                                 &current.steps,
                                 current.steps_version,
                                 &predicate,
-                                &["session_id", "step_id"],
+                                &["document_id", "step_id"],
                                 step_batches,
                                 story_steps_arrow_schema(),
                             ),
@@ -637,7 +658,7 @@ impl StorylineLanceStore {
                                 &current.tool_calls,
                                 current.tool_calls_version,
                                 &predicate,
-                                &["session_id", "step_id", "call_index"],
+                                &["document_id", "step_id", "call_index"],
                                 tool_call_batches,
                                 story_tool_calls_arrow_schema(),
                             ),
@@ -857,18 +878,38 @@ impl StorylineLanceStore {
         &self,
         session_ids: &[String],
     ) -> Result<Vec<Option<StorylineDocument>>> {
-        if session_ids.is_empty() {
+        self.get_storylines_full_by("session_id", session_ids).await
+    }
+
+    /// Read multiple Storylines by stable per-document identity.
+    ///
+    /// Unlike session lookup, this remains unambiguous when ATIF v1.7 sibling
+    /// trajectories share one run-scoped `session_id`.
+    pub async fn get_storylines_by_document_ids(
+        &self,
+        document_ids: &[String],
+    ) -> Result<Vec<Option<StorylineDocument>>> {
+        self.get_storylines_full_by("document_id", document_ids)
+            .await
+    }
+
+    async fn get_storylines_full_by(
+        &self,
+        column: &str,
+        ids: &[String],
+    ) -> Result<Vec<Option<StorylineDocument>>> {
+        if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let requested = session_ids.iter().cloned().collect::<HashSet<_>>();
+        let requested = ids.iter().cloned().collect::<HashSet<_>>();
         anyhow::ensure!(
-            requested.len() == session_ids.len(),
-            "duplicate session_id in Storyline point batch"
+            requested.len() == ids.len(),
+            "duplicate {column} in Storyline point batch"
         );
         let Some(paths) = self.resolve_current_table_paths().await? else {
-            return Ok(vec![None; session_ids.len()]);
+            return Ok(vec![None; ids.len()]);
         };
-        let predicate = session_set_predicate(&requested);
+        let predicate = id_set_predicate(column, &requested);
         let (run_batches, step_batches, tool_call_batches) = tokio::try_join!(
             read_filtered_batches(&paths.runs, paths.runs_version, &predicate),
             read_filtered_batches(&paths.steps, paths.steps_version, &predicate),
@@ -880,35 +921,37 @@ impl StorylineLanceStore {
             hydrate_batches(&objects, step_batches, StorylineTableKind::Steps),
             hydrate_batches(&objects, tool_call_batches, StorylineTableKind::ToolCalls,),
         )?;
-        let mut runs = HashMap::with_capacity(session_ids.len());
+        let row_key = |document_id: &str, session_id: &str| match column {
+            "document_id" => document_id.to_string(),
+            _ => session_id.to_string(),
+        };
+        let mut runs = HashMap::with_capacity(ids.len());
         for run in decode_run_batches(&run_batches)? {
-            let session_id = run.session_id.clone();
-            if runs.insert(session_id.clone(), run).is_some() {
-                anyhow::bail!("duplicate runs rows for session_id '{session_id}'");
+            let key = row_key(&run.document_id, &run.session_id);
+            if runs.insert(key.clone(), run).is_some() {
+                anyhow::bail!("duplicate runs rows for {column} '{key}'");
             }
         }
         let mut steps = HashMap::<String, Vec<StoryStepRow>>::new();
         for step in decode_step_batches(&step_batches)? {
-            steps.entry(step.session_id.clone()).or_default().push(step);
+            let key = row_key(&step.document_id, &step.session_id);
+            steps.entry(key).or_default().push(step);
         }
         let mut tool_calls = HashMap::<String, Vec<StoryToolCallRow>>::new();
         for tool_call in decode_tool_call_batches(&tool_call_batches)? {
-            tool_calls
-                .entry(tool_call.session_id.clone())
-                .or_default()
-                .push(tool_call);
+            let key = row_key(&tool_call.document_id, &tool_call.session_id);
+            tool_calls.entry(key).or_default().push(tool_call);
         }
 
-        session_ids
-            .iter()
-            .map(|session_id| {
-                let Some(run) = runs.remove(session_id) else {
+        ids.iter()
+            .map(|id| {
+                let Some(run) = runs.remove(id) else {
                     return Ok(None);
                 };
                 reconstruct_storyline(StorylineTables {
                     run,
-                    steps: steps.remove(session_id).unwrap_or_default(),
-                    tool_calls: tool_calls.remove(session_id).unwrap_or_default(),
+                    steps: steps.remove(id).unwrap_or_default(),
+                    tool_calls: tool_calls.remove(id).unwrap_or_default(),
                 })
                 .map(Some)
                 .map_err(anyhow::Error::from)
@@ -1097,15 +1140,15 @@ fn sort_rows(
     steps: &mut [StoryStepRow],
     tool_calls: &mut [StoryToolCallRow],
 ) {
-    runs.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    runs.sort_by(|a, b| a.document_id.cmp(&b.document_id));
     steps.sort_by(|a, b| {
-        a.session_id
-            .cmp(&b.session_id)
+        a.document_id
+            .cmp(&b.document_id)
             .then(a.step_id.cmp(&b.step_id))
     });
     tool_calls.sort_by(|a, b| {
-        a.session_id
-            .cmp(&b.session_id)
+        a.document_id
+            .cmp(&b.document_id)
             .then(a.step_id.cmp(&b.step_id))
             .then(a.call_index.cmp(&b.call_index))
     });
@@ -1240,6 +1283,77 @@ fn content_column_projection(kind: StorylineTableKind) -> Vec<&'static str> {
         .collect()
 }
 
+async fn next_storage_ordinal(paths: &StorylineTablePaths) -> Result<i64> {
+    let dataset = open_table_version(&paths.runs, paths.runs_version).await?;
+    let mut scan = dataset.scan();
+    scan.project(&["storage_ordinal"])
+        .with_context(|| format!("project Storyline Lance table {}", paths.runs.display()))?;
+    let mut batches = scan
+        .try_into_stream()
+        .await
+        .with_context(|| format!("scan Storyline Lance table {}", paths.runs.display()))?;
+    let mut maximum = None::<i64>;
+    while let Some(batch) = batches
+        .try_next()
+        .await
+        .with_context(|| format!("read Storyline Lance table {}", paths.runs.display()))?
+    {
+        let ordinals = batch
+            .column_by_name("storage_ordinal")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .context("Storyline runs storage_ordinal column is missing or invalid")?;
+        for row in 0..ordinals.len() {
+            let ordinal = ordinals.value(row);
+            anyhow::ensure!(ordinal >= 0, "negative Storyline storage ordinal");
+            maximum = Some(maximum.map_or(ordinal, |current| current.max(ordinal)));
+        }
+    }
+    maximum.map_or(Ok(0), |ordinal| {
+        ordinal
+            .checked_add(1)
+            .context("Storyline storage ordinal overflow")
+    })
+}
+
+async fn read_storage_ordinals_for_document_ids(
+    paths: &StorylineTablePaths,
+    document_ids: &HashSet<String>,
+) -> Result<HashMap<String, i64>> {
+    let predicate = document_set_predicate(document_ids);
+    let batches = read_projected_batches(
+        &paths.runs,
+        paths.runs_version,
+        &["document_id", "storage_ordinal"],
+        Some(&predicate),
+    )
+    .await?;
+    let mut ordinals = HashMap::new();
+    for batch in batches {
+        let document_ids = batch
+            .column_by_name("document_id")
+            .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+            .context("Storyline runs document_id column is missing or invalid")?;
+        let storage_ordinals = batch
+            .column_by_name("storage_ordinal")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .context("Storyline runs storage_ordinal column is missing or invalid")?;
+        anyhow::ensure!(
+            document_ids.len() == storage_ordinals.len(),
+            "Storyline storage ordinal projection has inconsistent lengths"
+        );
+        for row in 0..batch.num_rows() {
+            let document_id = document_ids.value(row).to_string();
+            let ordinal = storage_ordinals.value(row);
+            anyhow::ensure!(ordinal >= 0, "negative storage ordinal for '{document_id}'");
+            anyhow::ensure!(
+                ordinals.insert(document_id.clone(), ordinal).is_none(),
+                "duplicate Storyline run for document_id '{document_id}'"
+            );
+        }
+    }
+    Ok(ordinals)
+}
+
 async fn read_projected_batches(
     path: &Path,
     version: u64,
@@ -1273,13 +1387,18 @@ async fn read_filtered_batches(
     read_projected_batches(path, version, &[], Some(predicate)).await
 }
 
-fn session_set_predicate(session_ids: &HashSet<String>) -> String {
-    let mut values = session_ids
+fn document_set_predicate(document_ids: &HashSet<String>) -> String {
+    id_set_predicate("document_id", document_ids)
+}
+
+fn id_set_predicate(column: &str, ids: &HashSet<String>) -> String {
+    debug_assert!(matches!(column, "document_id" | "session_id"));
+    let mut values = ids
         .iter()
-        .map(|session_id| format!("'{}'", session_id.replace('\'', "''")))
+        .map(|id| format!("'{}'", id.replace('\'', "''")))
         .collect::<Vec<_>>();
     values.sort();
-    format!("session_id IN ({})", values.join(", "))
+    format!("{column} IN ({})", values.join(", "))
 }
 
 fn decode_run_batches(batches: &[RecordBatch]) -> Result<Vec<StoryRunRow>> {

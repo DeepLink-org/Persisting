@@ -14,14 +14,14 @@
 mod actf;
 mod atif;
 mod events;
-mod openai_msg;
 
-pub use actf::{actf_to_storyline, actf_to_storylines, storyline_to_actf, storylines_to_actf};
-pub use atif::{atif_to_storyline, storyline_to_atif};
+pub(crate) use actf::{actf_to_storylines, storylines_to_actf};
+pub(crate) use atif::{atif_collection_to_storylines, storylines_to_atif};
+#[cfg(all(test, feature = "lance-store"))]
+pub(crate) use atif::{atif_to_storyline, storyline_to_atif};
 #[cfg(feature = "lance-store")]
 pub(crate) use events::event_storyline_key;
 pub use events::{events_to_storyline, project_event_records, storyline_to_events};
-pub use openai_msg::{openai_msg_to_storyline, storyline_to_openai_msg};
 
 pub(crate) fn message_text(message: &serde_json::Value) -> Option<String> {
     match message {

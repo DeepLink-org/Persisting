@@ -4,10 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use persisting_pchronicle::model::{EventIdentity, EventRecord};
-use persisting_pchronicle::storage::{
-    event_record_to_event_row, event_row_to_event_record, event_rows_from_batch,
-    event_rows_to_batch, raw_event_arrow_schema, RawEventLanceStore, StoryCoords,
-};
+use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords};
 use serde_json::{json, Value};
 
 fn capture_fixture_root() -> PathBuf {
@@ -99,7 +96,7 @@ fn capture_payload_records() -> Result<(Vec<EventRecord>, usize, usize)> {
 }
 
 #[test]
-fn capture_payload_corpus_roundtrips_through_wire_and_arrow() -> Result<()> {
+fn capture_payload_corpus_roundtrips_through_public_wire() -> Result<()> {
     let (mut records, json_documents, raw_streams) = capture_payload_records()?;
     for (index, record) in records.iter_mut().enumerate() {
         record.identity.event_id = Some(format!("fixture-event-{index}"));
@@ -124,21 +121,8 @@ fn capture_payload_corpus_roundtrips_through_wire_and_arrow() -> Result<()> {
         "expected snapshots and SSE fixtures to be preserved as raw payloads"
     );
 
-    let rows = records
-        .iter()
-        .map(event_record_to_event_row)
-        .collect::<Result<Vec<_>>>()?;
-    for (row, expected) in rows.iter().zip(&records) {
-        assert_eq!(event_row_to_event_record(row)?, *expected);
-    }
-
-    let batch = event_rows_to_batch(raw_event_arrow_schema(), &rows)?;
-    let restored_rows = event_rows_from_batch(&batch)?;
-    assert_eq!(restored_rows, rows);
-    let restored_records = restored_rows
-        .iter()
-        .map(event_row_to_event_record)
-        .collect::<Result<Vec<_>>>()?;
+    let wire = serde_json::to_vec(&records)?;
+    let restored_records: Vec<EventRecord> = serde_json::from_slice(&wire)?;
     assert_eq!(restored_records, records);
     Ok(())
 }

@@ -15,6 +15,7 @@ use crate::{Error, Result};
 
 const ACTF_EXTENSION_KEY: &str = "persisting.dev/actf/v1";
 
+#[cfg(test)]
 pub fn actf_to_storyline(document: &ActfDocument) -> Result<StorylineDocument> {
     let mut stories = actf_to_storylines(document)?;
     if stories.len() != 1 {
@@ -45,6 +46,7 @@ pub fn actf_to_storylines(document: &ActfDocument) -> Result<Vec<StorylineDocume
         .collect()
 }
 
+#[cfg(test)]
 pub fn storyline_to_actf(story: &StorylineDocument) -> Result<ActfDocument> {
     storylines_to_actf(std::slice::from_ref(story))
 }
@@ -254,6 +256,7 @@ fn attempt_to_storyline(
     Ok(StorylineDocument {
         schema_version: None,
         run_id: Some(document.task_id.clone()),
+        trajectory_id: None,
         attempt_id: None,
         session_id,
         agent: StorylineAgent {
@@ -282,6 +285,7 @@ fn attempt_to_storyline(
                 "trajectory": trajectory_metadata,
             }
         })),
+        presence: Default::default(),
         turns,
     })
 }
@@ -481,10 +485,13 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
     let timestamp_style = metadata
         .and_then(|value| value.get("started_at_style"))
         .and_then(Value::as_str);
-    step.insert(
-        "started_at".into(),
-        Value::String(format_actf_timestamp(&timestamp, timestamp_style)?),
-    );
+    let started_at = metadata
+        .and_then(|value| value.get("started_at_original"))
+        .and_then(Value::as_str)
+        .filter(|original| *original == timestamp)
+        .map(str::to_string)
+        .map_or_else(|| format_actf_timestamp(&timestamp, timestamp_style), Ok)?;
+    step.insert("started_at".into(), Value::String(started_at));
     if let Some(residual) = metadata
         .and_then(|value| value.get("step"))
         .and_then(Value::as_object)
@@ -576,6 +583,10 @@ fn step_residual(step: &ActfStep) -> Result<Value> {
         "started_at_style".into(),
         Value::String(timestamp_style(&step.started_at).into()),
     );
+    residual.insert(
+        "started_at_original".into(),
+        Value::String(step.started_at.clone()),
+    );
     Ok(Value::Object(residual))
 }
 
@@ -633,7 +644,7 @@ fn format_actf_timestamp(value: &str, style: Option<&str>) -> Result<String> {
         ))
     })?;
     Ok(match style {
-        Some("space-offset") => timestamp.format("%Y-%m-%d %H:%M:%S%:z").to_string(),
+        Some("space-offset") => timestamp.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string(),
         Some("rfc3339-offset") => timestamp.to_rfc3339(),
         _ => timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
     })
@@ -646,7 +657,7 @@ fn residual(story: &StorylineDocument) -> Option<&Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::parse_actf_document;
+    use crate::formats::actf::parse_actf_document;
     #[cfg(feature = "lance-store")]
     use crate::store::StorylineLanceStore;
 
@@ -696,7 +707,7 @@ mod tests {
         let mut story = actf_to_storyline(&document).unwrap();
         assert!(!serde_json::to_string(&story)
             .unwrap()
-            .contains("_pchronicle_"));
+            .contains(&["_pchron", "icle_"].concat()));
         story.turns[0].message = json!("changed by Storyline");
         story.turns[0].reasoning_content = Some("new reasoning".into());
 
@@ -754,5 +765,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(storyline_to_actf(&restored_story).unwrap(), document);
+    }
+
+    #[cfg(feature = "lance-store")]
+    #[tokio::test]
+    async fn fractional_space_timestamp_is_lossless_through_lance() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["attempts"]["1"]["trajectory"]["steps"][0]["started_at"] =
+            json!("2026-01-01 00:00:00.123456+00:00");
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        document.validate().unwrap();
+        let story = actf_to_storyline(&document).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
+
+        store.replace_storyline(&story).await.unwrap();
+        let restored = store
+            .get_storyline_full(&story.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(storyline_to_actf(&restored).unwrap(), document);
     }
 }

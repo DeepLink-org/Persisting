@@ -703,7 +703,7 @@ async fn find_reports_truncation_and_empty_results() -> Result<()> {
         "pchronicle",
         "find",
         example_dataset("openai-messages").to_str().unwrap(),
-        "--run-id",
+        "--document-id",
         "training-001",
         "--max-results",
         "1",
@@ -859,7 +859,7 @@ async fn import_creates_queryable_lossless_datasets_for_all_example_formats() ->
     let temp = tempfile::tempdir()?;
     for (format, expected_format, source_name, expected_runs) in [
         ("atif", "atif", "trajectories.atif.json", 1),
-        ("openai-messages", "openai_msg", "session_steps.json", 2),
+        ("openai-messages", "openai-msg", "session_steps.json", 2),
         ("actf", "actf", "trajectories.actf.json", 1),
     ] {
         let input = example_source(format);
@@ -999,7 +999,7 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
 }
 
 #[tokio::test]
-async fn import_is_create_only_and_rejects_duplicate_sessions() -> Result<()> {
+async fn import_is_create_only_and_rejects_duplicate_documents() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("existing");
     fs::create_dir(&output)?;
@@ -1038,10 +1038,64 @@ async fn import_is_create_only_and_rejects_duplicate_sessions() -> Result<()> {
         .await
         .unwrap_err();
     assert!(
-        error.to_string().contains("duplicate session_id"),
+        error.to_string().contains("duplicate document_id"),
         "{error:#}"
     );
     assert!(!duplicate_output.exists());
+
+    let mut first: Value = serde_json::from_slice(&fs::read(example_source("atif"))?)?;
+    first["trajectory_id"] = serde_json::json!("document-a");
+    let mut second = first.clone();
+    second["trajectory_id"] = serde_json::json!("document-b");
+    let shared_input = temp.path().join("shared-session.json");
+    fs::write(
+        &shared_input,
+        serde_json::to_vec(&serde_json::json!([first, second]))?,
+    )?;
+    let shared_output = temp.path().join("shared-session");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        shared_input.to_str().unwrap(),
+        "--output",
+        shared_output.to_str().unwrap(),
+        "--format",
+        "atif",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(shared_output.is_dir());
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_validation_does_not_inherit_the_materialization_row_limit() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("large-valid.atif.json");
+    let steps = (1..=10_000)
+        .map(|step_id| {
+            serde_json::json!({
+                "step_id": step_id,
+                "source": "agent",
+                "message": "ok"
+            })
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        &input,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": "ATIF-v1.7",
+            "trajectory_id": "large-document",
+            "session_id": "large-session",
+            "agent": {"name": "test", "version": "1"},
+            "steps": steps
+        }))?,
+    )?;
+
+    assert_eq!(
+        exchange::validate_import_source(ExchangeFormat::Atif, &input).await?,
+        1
+    );
     Ok(())
 }
 

@@ -20,8 +20,10 @@ fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
 pub fn story_runs_arrow_schema() -> Arc<ArrowSchema> {
     Arc::new(ArrowSchema::new(vec![
         field("schema_version", DataType::Utf8, true),
-        field("run_id", DataType::Utf8, false),
-        field("run_id_explicit", DataType::Boolean, false),
+        field("document_id", DataType::Utf8, false),
+        field("storage_ordinal", DataType::Int64, false),
+        field("trajectory_id_explicit", DataType::Boolean, false),
+        field("run_id", DataType::Utf8, true),
         field("attempt_id", DataType::Utf8, true),
         field("session_id", DataType::Utf8, false),
         field("agent_id", DataType::Utf8, false),
@@ -36,12 +38,14 @@ pub fn story_runs_arrow_schema() -> Arc<ArrowSchema> {
         field("final_metrics_json", DataType::Utf8, true),
         field("continued_trajectory_ref", DataType::Utf8, true),
         field("extra_json", DataType::Utf8, true),
+        field("presence_json", DataType::Utf8, true),
     ]))
 }
 
 pub fn story_steps_arrow_schema() -> Arc<ArrowSchema> {
     Arc::new(ArrowSchema::new(vec![
-        field("run_id", DataType::Utf8, false),
+        field("document_id", DataType::Utf8, false),
+        field("run_id", DataType::Utf8, true),
         field("session_id", DataType::Utf8, false),
         field("step_id", DataType::Int64, false),
         field("kind", DataType::Utf8, true),
@@ -51,6 +55,9 @@ pub fn story_steps_arrow_schema() -> Arc<ArrowSchema> {
             DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
             true,
         ),
+        // Keep the exact wire spelling for lossless reconstruction. `timestamp`
+        // remains the normalized query column used by DataFusion.
+        field("timestamp_rfc3339", DataType::Utf8, true),
         field("source", DataType::Utf8, false),
         field("message_json", DataType::Utf8, false),
         field("reasoning_content", DataType::Utf8, true),
@@ -68,7 +75,8 @@ pub fn story_steps_arrow_schema() -> Arc<ArrowSchema> {
 
 pub fn story_tool_calls_arrow_schema() -> Arc<ArrowSchema> {
     Arc::new(ArrowSchema::new(vec![
-        field("run_id", DataType::Utf8, false),
+        field("document_id", DataType::Utf8, false),
+        field("run_id", DataType::Utf8, true),
         field("session_id", DataType::Utf8, false),
         field("step_id", DataType::Int64, false),
         field("call_index", DataType::Int64, false),
@@ -130,10 +138,16 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
         story_runs_arrow_schema(),
         vec![
             Arc::new(opt_utf8(rows.iter().map(|r| r.schema_version.as_deref()))),
-            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.as_str()))),
-            Arc::new(BooleanArray::from(
-                rows.iter().map(|r| r.run_id_explicit).collect::<Vec<_>>(),
+            Arc::new(req_utf8(rows.iter().map(|r| r.document_id.as_str()))),
+            Arc::new(Int64Array::from(
+                rows.iter().map(|r| r.storage_ordinal).collect::<Vec<_>>(),
             )),
+            Arc::new(BooleanArray::from(
+                rows.iter()
+                    .map(|r| r.trajectory_id_explicit)
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.run_id.as_deref()))),
             Arc::new(opt_utf8(rows.iter().map(|r| r.attempt_id.as_deref()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.session_id.as_str()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.agent_id.as_str()))),
@@ -174,6 +188,11 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
                     .map(|r| opt_json(&r.extra))
                     .collect::<Result<Vec<_>>>()?,
             )),
+            Arc::new(req_utf8_owned(
+                rows.iter()
+                    .map(|r| json(&r.presence))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
         ],
     )
     .context("build runs Lance batch")
@@ -183,7 +202,8 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         story_steps_arrow_schema(),
         vec![
-            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.as_str()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.document_id.as_str()))),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.run_id.as_deref()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.session_id.as_str()))),
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.step_id).collect::<Vec<_>>(),
@@ -193,6 +213,7 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
             Arc::new(timestamp_array(
                 rows.iter().map(|r| r.timestamp.as_deref()),
             )?),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.timestamp.as_deref()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.source.as_str()))),
             Arc::new(req_utf8_owned(
                 rows.iter()
@@ -242,7 +263,8 @@ pub fn story_tool_calls_to_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatc
     RecordBatch::try_new(
         story_tool_calls_arrow_schema(),
         vec![
-            Arc::new(req_utf8(rows.iter().map(|r| r.run_id.as_str()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.document_id.as_str()))),
+            Arc::new(opt_utf8(rows.iter().map(|r| r.run_id.as_deref()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.session_id.as_str()))),
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.step_id).collect::<Vec<_>>(),
@@ -306,6 +328,13 @@ fn string_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<Strin
     Ok((!array.is_null(row)).then(|| array.value(row).to_string()))
 }
 
+fn string_at_if_present(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<String>> {
+    if batch.schema().field_with_name(name).is_err() {
+        return Ok(None);
+    }
+    string_at(batch, name, row)
+}
+
 fn required_string_at(batch: &RecordBatch, name: &str, row: usize) -> Result<String> {
     string_at(batch, name, row)?.ok_or_else(|| anyhow::anyhow!("null required column '{name}'"))
 }
@@ -367,13 +396,25 @@ fn optional_json_at<T: DeserializeOwned>(
         .transpose()
 }
 
+fn optional_json_if_present<T: DeserializeOwned>(
+    batch: &RecordBatch,
+    name: &str,
+    row: usize,
+) -> Result<Option<T>> {
+    string_at_if_present(batch, name, row)?
+        .map(|value| parse_json(value, name))
+        .transpose()
+}
+
 pub fn story_runs_from_batch(batch: &RecordBatch) -> Result<Vec<StoryRunRow>> {
     (0..batch.num_rows())
         .map(|row| {
             Ok(StoryRunRow {
                 schema_version: string_at(batch, "schema_version", row)?,
-                run_id: required_string_at(batch, "run_id", row)?,
-                run_id_explicit: required_bool_at(batch, "run_id_explicit", row)?,
+                document_id: required_string_at(batch, "document_id", row)?,
+                storage_ordinal: required_i64_at(batch, "storage_ordinal", row)?,
+                trajectory_id_explicit: required_bool_at(batch, "trajectory_id_explicit", row)?,
+                run_id: string_at(batch, "run_id", row)?,
                 attempt_id: string_at(batch, "attempt_id", row)?,
                 session_id: required_string_at(batch, "session_id", row)?,
                 agent_id: required_string_at(batch, "agent_id", row)?,
@@ -392,6 +433,8 @@ pub fn story_runs_from_batch(batch: &RecordBatch) -> Result<Vec<StoryRunRow>> {
                 final_metrics: optional_json_at(batch, "final_metrics_json", row)?,
                 continued_trajectory_ref: string_at(batch, "continued_trajectory_ref", row)?,
                 extra: optional_json_at(batch, "extra_json", row)?,
+                presence: optional_json_if_present(batch, "presence_json", row)?
+                    .unwrap_or_default(),
             })
         })
         .collect()
@@ -401,12 +444,16 @@ pub fn story_steps_from_batch(batch: &RecordBatch) -> Result<Vec<StoryStepRow>> 
     (0..batch.num_rows())
         .map(|row| {
             Ok(StoryStepRow {
-                run_id: required_string_at(batch, "run_id", row)?,
+                document_id: required_string_at(batch, "document_id", row)?,
+                run_id: string_at(batch, "run_id", row)?,
                 session_id: required_string_at(batch, "session_id", row)?,
                 step_id: required_i64_at(batch, "step_id", row)?,
                 kind: string_at(batch, "kind", row)?,
                 effective_kind: required_string_at(batch, "effective_kind", row)?,
-                timestamp: timestamp_at(batch, "timestamp", row)?,
+                timestamp: match string_at_if_present(batch, "timestamp_rfc3339", row)? {
+                    Some(value) => Some(value),
+                    None => timestamp_at(batch, "timestamp", row)?,
+                },
                 source: required_string_at(batch, "source", row)?,
                 message: parse_json(
                     required_string_at(batch, "message_json", row)?,
@@ -431,7 +478,8 @@ pub fn story_tool_calls_from_batch(batch: &RecordBatch) -> Result<Vec<StoryToolC
     (0..batch.num_rows())
         .map(|row| {
             Ok(StoryToolCallRow {
-                run_id: required_string_at(batch, "run_id", row)?,
+                document_id: required_string_at(batch, "document_id", row)?,
+                run_id: string_at(batch, "run_id", row)?,
                 session_id: required_string_at(batch, "session_id", row)?,
                 step_id: required_i64_at(batch, "step_id", row)?,
                 call_index: required_i64_at(batch, "call_index", row)?,
@@ -466,19 +514,25 @@ mod tests {
 
     #[test]
     fn empty_batches_keep_all_three_schemas() {
-        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 17);
-        assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 18);
-        assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 12);
+        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 20);
+        assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 20);
+        assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 13);
     }
 
     #[test]
-    fn step_timestamps_normalize_to_utc_milliseconds() {
+    fn step_timestamps_preserve_rfc3339_lexical_value() {
         let schema = story_steps_arrow_schema();
         assert_eq!(
             schema.field_with_name("timestamp").unwrap().data_type(),
             &DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))
         );
-        assert!(schema.field_with_name("timestamp_ms").is_err());
+        assert_eq!(
+            schema
+                .field_with_name("timestamp_rfc3339")
+                .unwrap()
+                .data_type(),
+            &DataType::Utf8
+        );
 
         let mut rows = Vec::new();
         for (step_id, timestamp) in [
@@ -486,7 +540,8 @@ mod tests {
             (2, "2026-08-14T04:34:56.789Z"),
         ] {
             rows.push(StoryStepRow {
-                run_id: "r".into(),
+                document_id: "d".into(),
+                run_id: Some("r".into()),
                 session_id: "s".into(),
                 step_id,
                 kind: None,
@@ -518,7 +573,7 @@ mod tests {
         let decoded = story_steps_from_batch(&batch).unwrap();
         assert_eq!(
             decoded[0].timestamp.as_deref(),
-            Some("2026-08-14T04:34:56.789Z")
+            Some("2026-08-14T12:34:56.789123+08:00")
         );
         assert_eq!(
             decoded[1].timestamp.as_deref(),
@@ -535,7 +590,8 @@ mod tests {
     #[test]
     fn tool_call_batch_round_trip() {
         let rows = vec![StoryToolCallRow {
-            run_id: "r".into(),
+            document_id: "d".into(),
+            run_id: Some("r".into()),
             session_id: "s".into(),
             step_id: 2,
             call_index: 0,

@@ -13,7 +13,7 @@ use crate::session::index::{SessionIndexStore, SessionSummary};
 use crate::session::snapshots::load_snapshot_turn_counts;
 use crate::session::storage::{trajectory_run_dir, CaptureRoute};
 use persisting_pchronicle::document::{
-    encode_agenticmd, parse_agenticmd, rewrite_agenticmd_storyline_metadata,
+    decode_agenticmd, encode_agenticmd, rewrite_agenticmd_storyline_metadata,
 };
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::storage::is_subagent_session_storage_key;
@@ -80,7 +80,7 @@ fn count_user_turns(md_path: &Path) -> Result<u64> {
     if !md_path.is_file() {
         return Ok(0);
     }
-    let story = parse_agenticmd(&std::fs::read_to_string(md_path)?)?;
+    let story = decode_agenticmd(&std::fs::read_to_string(md_path)?)?;
     Ok(story
         .turns
         .iter()
@@ -171,7 +171,7 @@ pub fn refresh_document_frontmatter(
     let raw =
         std::fs::read_to_string(md_path).with_context(|| format!("read {}", md_path.display()))?;
     let mut document =
-        parse_agenticmd(&raw).with_context(|| format!("parse AgenticMD {}", md_path.display()))?;
+        decode_agenticmd(&raw).with_context(|| format!("parse AgenticMD {}", md_path.display()))?;
     apply_summary(&mut document, &summary);
     rewrite_agenticmd_storyline_metadata(md_path, &document)
         .with_context(|| format!("refresh frontmatter {}", md_path.display()))?;

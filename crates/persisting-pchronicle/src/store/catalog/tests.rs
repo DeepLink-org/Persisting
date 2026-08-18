@@ -22,6 +22,7 @@ fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
     StorylineDocument {
         schema_version: None,
         run_id: Some(run_id.into()),
+        trajectory_id: None,
         attempt_id: None,
         session_id: session_id.into(),
         agent: StorylineAgent {
@@ -38,6 +39,7 @@ fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
+        presence: Default::default(),
         turns: vec![StorylineTurn {
             id: 1,
             kind: None,
@@ -311,11 +313,14 @@ async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
     assert!(format!("{unsafe_mixed_join:#}").contains("must include"));
     let rows = engine
         .query_jsonl(
-            "SELECT run_id, step_count FROM dataset.trajectories \
-                 WHERE _file_ LIKE 'one.%' AND run_id = 'shared-session'",
+            "SELECT document_id, step_count FROM dataset.trajectories \
+                 WHERE _file_ LIKE 'one.%' AND document_id = 'shared-session'",
         )
         .await?;
-    assert_eq!(rows.trim(), r#"{"run_id":"shared-session","step_count":2}"#);
+    assert_eq!(
+        rows.trim(),
+        r#"{"document_id":"shared-session","step_count":2}"#
+    );
     assert_eq!(
         snapshot.prepared[0]
             .sources
@@ -325,12 +330,12 @@ async fn catalog_prunes_file_sources_before_lazy_resolution() -> Result<()> {
         vec![1, 0]
     );
     let explain = engine
-        .query_jsonl("EXPLAIN SELECT run_id FROM dataset.runs WHERE _file_ = 'one.json'")
+        .query_jsonl("EXPLAIN SELECT document_id FROM dataset.runs WHERE _file_ = 'one.json'")
         .await?;
     assert!(!explain.contains("UnionExec"));
     assert_eq!(engine.local_file_metrics().unwrap().files_parsed, 1);
     let error = engine
-        .query("SELECT run_id FROM dataset.runs WHERE _file_ = 'two.json'")
+        .query("SELECT document_id FROM dataset.runs WHERE _file_ = 'two.json'")
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("two.json"));
@@ -381,9 +386,9 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         .all(|source| source.resolution_count.load(Ordering::Relaxed) == 0));
     let engine = snapshot.clone().query_engine(Default::default()).await?;
     let rows = engine
-        .query_jsonl("SELECT run_id FROM dataset.runs WHERE _file_ = 'one.json'")
+        .query_jsonl("SELECT document_id FROM dataset.runs WHERE _file_ = 'one.json'")
         .await?;
-    assert_eq!(rows.trim(), r#"{"run_id":"shared-session"}"#);
+    assert_eq!(rows.trim(), r#"{"document_id":"shared-session"}"#);
     assert_eq!(
         snapshot.prepared[0]
             .sources
@@ -393,7 +398,7 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         vec![1, 0]
     );
     let error = engine
-        .query("SELECT run_id FROM dataset.runs WHERE _file_ = 'two.json'")
+        .query("SELECT document_id FROM dataset.runs WHERE _file_ = 'two.json'")
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("two.json"));
@@ -472,6 +477,7 @@ async fn trajectory_bundle_derives_events_from_one_storyline_source_resolution()
     let key = CatalogStorylineKey {
         dataset: DEFAULT_DATASET_NAME.into(),
         file: ".".into(),
+        document_id: expected.session_id.clone(),
         session_id: expected.session_id.clone(),
     };
 
@@ -540,6 +546,7 @@ async fn one_source_keeps_storylines_with_a_shared_run_id_independent() -> Resul
             .load_storyline(&CatalogStorylineKey {
                 dataset: DEFAULT_DATASET_NAME.into(),
                 file: ".".into(),
+                document_id: session_id.into(),
                 session_id: session_id.into(),
             })
             .await?
@@ -547,6 +554,38 @@ async fn one_source_keeps_storylines_with_a_shared_run_id_independent() -> Resul
         assert_eq!(story.session_id, session_id);
         assert_eq!(story.run_id.as_deref(), Some("shared-run"));
         assert_eq!(story.turns.len(), 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn catalog_point_load_uses_document_id_when_sessions_are_shared() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let store = StorylineLanceStore::open(temp.path()).await?;
+    let mut first = storyline("shared-session", "run-a");
+    first.trajectory_id = Some("document-a".into());
+    let mut second = storyline("shared-session", "run-b");
+    second.trajectory_id = Some("document-b".into());
+    store.replace_storylines(&[first, second]).await?;
+    let snapshot = DatasetCatalogSnapshot::discover(
+        vec![DatasetMount::default(temp.path().to_string_lossy())?],
+        Some(DEFAULT_DATASET_NAME.into()),
+        CatalogSnapshotOptions::default(),
+    )
+    .await?;
+
+    for (document_id, run_id) in [("document-a", "run-a"), ("document-b", "run-b")] {
+        let story = snapshot
+            .load_storyline(&CatalogStorylineKey {
+                dataset: DEFAULT_DATASET_NAME.into(),
+                file: ".".into(),
+                document_id: document_id.into(),
+                session_id: "shared-session".into(),
+            })
+            .await?
+            .context("Catalog Storyline must resolve by document_id")?;
+        assert_eq!(story.trajectory_id.as_deref(), Some(document_id));
+        assert_eq!(story.run_id.as_deref(), Some(run_id));
     }
     Ok(())
 }
@@ -705,7 +744,9 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
     };
     assert_eq!(events.normalization_count.load(Ordering::Relaxed), 0);
     let runs = engine
-        .query_jsonl("SELECT _file_, run_id, session_id FROM dataset.runs ORDER BY session_id")
+        .query_jsonl(
+            "SELECT _file_, document_id, run_id, session_id FROM dataset.runs ORDER BY session_id",
+        )
         .await?;
     assert_eq!(events.normalization_count.load(Ordering::Relaxed), 0);
     let keys = runs
@@ -718,6 +759,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
             .load_events(&CatalogStorylineKey {
                 dataset: DEFAULT_DATASET_NAME.into(),
                 file: row["_file_"].as_str().unwrap().into(),
+                document_id: row["document_id"].as_str().unwrap().into(),
                 session_id: row["session_id"].as_str().unwrap().into(),
             })
             .await?
@@ -751,6 +793,7 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         .load_events(&CatalogStorylineKey {
             dataset: DEFAULT_DATASET_NAME.into(),
             file: "agent/run-1/events.lance".into(),
+            document_id: "root".into(),
             session_id: "root".into(),
         })
         .await?

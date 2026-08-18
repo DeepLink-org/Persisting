@@ -216,25 +216,6 @@ fn split_frontmatter_with_offset(input: &str) -> Result<(BTreeMap<String, Value>
     Ok((map, body, body_offset))
 }
 
-#[cfg(test)]
-mod strict_frontmatter_tests {
-    use super::parse_agenticmd_document;
-    use crate::{DocumentFormat, Error};
-
-    #[test]
-    fn malformed_agenticmd_yaml_is_not_silently_replaced() {
-        let error = parse_agenticmd_document("---\nformat: [\n---\n\n").unwrap_err();
-        assert!(matches!(
-            error,
-            Error::InvalidDocument {
-                format: DocumentFormat::AgenticMd,
-                location: Some(ref location),
-                ..
-            } if location == "frontmatter"
-        ));
-    }
-}
-
 fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<MarkdownBlockSpan>> {
     if input.trim().is_empty() {
         return Ok(Vec::new());
@@ -283,7 +264,11 @@ fn parse_blocks_with_spans(input: &str, base_offset: usize) -> Result<Vec<Markdo
         } else {
             line_end
         };
-        next = skip_blank_lines(bytes, next);
+        next = if declared_length.is_some() {
+            consume_one_line_break(bytes, next)
+        } else {
+            skip_blank_lines(bytes, next)
+        };
         let body_end = declared_length
             .map(|length| next + length)
             .unwrap_or_else(|| {
@@ -431,4 +416,69 @@ fn skip_blank_lines(bytes: &[u8], mut pos: usize) -> usize {
         break;
     }
     pos
+}
+
+fn consume_one_line_break(bytes: &[u8], pos: usize) -> usize {
+    if bytes.get(pos..pos.saturating_add(2)) == Some(b"\r\n") {
+        pos + 2
+    } else if bytes.get(pos) == Some(&b'\n') {
+        pos + 1
+    } else {
+        pos
+    }
+}
+
+#[cfg(test)]
+mod strict_frontmatter_tests {
+    use std::collections::BTreeMap;
+
+    use super::{encode_agenticmd_block, parse_agenticmd_document, MarkdownBlock, MarkdownHeader};
+    use crate::{DocumentFormat, Error};
+
+    #[test]
+    fn malformed_agenticmd_yaml_is_not_silently_replaced() {
+        let error = parse_agenticmd_document("---\nformat: [\n---\n\n").unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidDocument {
+                format: DocumentFormat::AgenticMd,
+                location: Some(ref location),
+                ..
+            } if location == "frontmatter"
+        ));
+    }
+
+    #[test]
+    fn declared_length_preserves_leading_newlines_and_adjacent_blocks() {
+        let block = |body: &str| MarkdownBlock {
+            header: MarkdownHeader {
+                type_name: "text".into(),
+                length: 0,
+                fields: BTreeMap::from([(
+                    "source".into(),
+                    serde_json::Value::String("user".into()),
+                )]),
+            },
+            body: body.into(),
+        };
+        let expected = [block("\nleading-lf"), block("\r\nleading-crlf"), block("")];
+        let encoded = expected
+            .iter()
+            .map(encode_agenticmd_block)
+            .collect::<crate::Result<String>>()
+            .unwrap();
+
+        let decoded = parse_agenticmd_document(&encoded).unwrap();
+        assert_eq!(
+            decoded
+                .blocks
+                .iter()
+                .map(|block| block.body.as_str())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|block| block.body.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
 }

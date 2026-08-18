@@ -5,9 +5,8 @@
 
 use anyhow::{Context, Result};
 use lance::io::ObjectStore;
-use persisting_pchronicle::document::atif_to_storyline;
-use persisting_pchronicle::document::DocumentFormat;
-use persisting_pchronicle::model::{AtifTrajectory, EventIdentity, EventRecord, StorylineDocument};
+use persisting_pchronicle::document::{decode_json_storylines, DocumentFormat};
+use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::storage::{
     raw_event_lance_path, LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore,
@@ -33,8 +32,9 @@ fn fixture_storyline() -> Result<StorylineDocument> {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/atif/parallel_tools_14.json"),
     )?;
-    let trajectory = AtifTrajectory::from_json_str(&source)?;
-    atif_to_storyline(&trajectory).map_err(Into::into)
+    decode_json_storylines(DocumentFormat::Atif, &source, "fixture.json")?
+        .pop()
+        .context("missing fixture Storyline")
 }
 
 fn event(content: &str) -> EventRecord {
@@ -115,6 +115,7 @@ async fn run_contract(root: &str) -> Result<()> {
     .await?;
 
     let mut second = first.clone();
+    second.trajectory_id = Some("s3-contract-second".into());
     second.session_id = "s3-contract-second".into();
     second.run_id = Some("s3-contract-second".into());
     store.replace_storyline(&second).await?;

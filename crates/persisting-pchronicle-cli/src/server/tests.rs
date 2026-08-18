@@ -113,7 +113,8 @@ fn canonical_event_uri_resolves_write_coordinates_independent_of_mount_root() {
     let run = RunSummary {
         dataset: "live".into(),
         file: "agent/run-1/events.lance".into(),
-        run_id: "child".into(),
+        document_id: "child".into(),
+        run_id: Some("child".into()),
         agent_id: "agent".into(),
         model_name: None,
         session_id: "child".into(),

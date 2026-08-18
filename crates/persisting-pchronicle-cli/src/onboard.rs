@@ -703,6 +703,7 @@ async fn capture_find(dataset_uri: String, session_id: String, step_id: i64) -> 
         FindArgs {
             dataset_uri: Some(dataset_uri),
             source: None,
+            document_id: None,
             run_id: None,
             session_id: Some(session_id),
             step_id: Some(step_id),
@@ -773,6 +774,7 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
             output: exported.to_string_lossy().into_owned(),
             format: ExchangeFormat::Atif,
             source: None,
+            document_id: None,
             run_id: None,
             session_id: None,
             r#where: None,

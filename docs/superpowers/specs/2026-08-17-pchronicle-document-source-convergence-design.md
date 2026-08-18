@@ -1,6 +1,6 @@
 # pChronicle 文档源与查询面收敛设计
 
-状态：已通过会话设计审查，待书面复核
+状态：已实施（2026-08-18）；最终验收见本轮提交记录
 
 日期：2026-08-17
 
@@ -103,15 +103,31 @@ Storyline 只保留以下已接受增量：
 - `kind`；
 - `latency_ms` 与 `ttft_ms`；
 - tool call `duration_ms`；
-- pChronicle 现有存储所需的 run/session 对应关系。
+- pChronicle 现有存储所需的 run/session 对应关系；
+- `attempt_id`（可选）：Attempt 作用域身份。外部格式导入时为 null；该字段为
+  canonical v2 的运行时投影预留，不参与 ATIF 对齐字段。
+
+`session_id` 维持当前会话身份语义（≈ ATIF Trajectory 的 `session_id`，子轨迹走
+parent/children 外链），不表示 pChronicle Run；Run 关联使用 `run_id`。
+
+**ATIF 基线版本策略**：本设计将 Storyline 正式字段的 ATIF 语义基线显式声明为
+v1.7。ATIF 发布新版本时，必须先做字段 diff 评审，再更新本文声明的基线与增量
+清单，并同步扩展 §14 的无损往返测试；Storyline 字段集自身携带模型版本信息，
+禁止在未评审的情况下隐式跟随外部规范演进。
 
 ### 4.2 必须补齐的 ATIF 语义
 
 - `StorylineToolCall` 增加 ATIF inline `result`；
-- 对 ATIF 要求保真的值使用能区分“字段缺失”“显式 null”“实际值”的表示；
+- 对 ATIF 要求保真的值使用能区分"字段缺失""显式 null""实际值"的表示；
 - ATIF observation 解析失败必须返回错误，不能删除 observation；
 - ATIF schema/version 信息必须能经过 Storyline 三表 split/reconstruct 保留；
 - ATIF adapter 必须是近似结构映射，不保存 `_pchronicle_atif_tool_call` 等原始对象副本。
+
+**三态表示的类型设计**：缺失/显式 null/实际值必须使用一个命名的公共三态类型
+（如 `pub enum Field<T> { Missing, Null, Value(T) }`），禁止 `Option<Option<T>>`
+等隐式嵌套。serde 映射固定为：缺失 = 字段不出现在 JSON；显式 null = 键存在且为
+null；值 = 正常序列化。Arrow 三表落盘用可空列加显式存在性表达，split/reconstruct
+与无损往返测试必须逐字段覆盖全部三态。
 
 `AtifTrajectory`、`AtifStep` 等可以保留为私有 wire DTO，但不再与 Storyline 一起构成两套公开领域模型。
 
@@ -136,7 +152,7 @@ Storyline 自身必须包含目标转换器所需的全部信息。禁止使用�
 - OpenAI 文件容器、相对路径等文件级信息进入 document `extra`；
 - OpenAI ordinal 与未映射 record 字段进入 turn `extra`。
 
-每个 adapter 必须先从源对象移除已经映射的键，再保存 residual。导出时先根据 Storyline 正式字段生成目标对象，再合并无冲突 residual。若 residual 与正式字段映射到同一目标键，正式字段获胜。
+每个 adapter 必须先从源对象移除已经映射的键，再保存 residual。导出时先根据 Storyline 正式字段生成目标对象，再合并无冲突 residual。若 residual 与正式字段映射到同一目标键，正式字段获胜，并必须记录一条结构化诊断（源键、目标键、来源格式），不得静默丢弃——与本设计"消除静默丢字段"的目标一致。
 
 ### 5.3 保真边界
 
@@ -197,7 +213,11 @@ pub async fn open_document(
 ```rust
 impl DocumentSource {
     pub fn format(&self) -> DocumentFormat;
+    /// 物化全部 Storyline。源规模超过配置的行/字节预算时返回
+    /// `Error::SourceBudgetExceeded`（fail closed），不做无界分配。
     pub async fn project_storylines(&self) -> Result<Vec<StorylineDocument>>;
+    /// 流式投影：逐条回调，内存保持有界。大源必须使用此入口。
+    pub async fn for_each_storyline<F>(&self, on_storyline: F) -> Result<()>;
     pub fn register_datafusion(
         &self,
         context: &SessionContext,
@@ -205,7 +225,8 @@ impl DocumentSource {
 }
 ```
 
-六种磁盘源都能打开、查询并投影为 Storyline。
+六种磁盘源都能打开、查询并投影为 Storyline。物化入口与流式入口共用同一
+provider 管道；预算耗尽是显式错误，不是静默截断。
 
 ### 7.2 类型化写入
 
@@ -277,7 +298,8 @@ pub enum FilterPushdown {
 - 保留 Lance projection、exact filter pushdown、scalar index、segment union、pinned manifest、append-order range scan；
 - 默认不实时注册 `runs/steps/tool_calls`；
 - 需要 Storyline 查询面时，优先使用 lineage 新鲜的 Storyline Lance 投影；
-- 无投影时只能在已有 row/byte budget 内执行 bounded fallback。
+- 无投影时只能在已有 row/byte budget 内执行 bounded fallback；预算耗尽必须返回
+  `Error::SourceBudgetExceeded`（fail closed），不得静默截断结果集。
 
 #### Storyline Lance
 
@@ -333,6 +355,7 @@ pub struct QueryBackendInfo {
 ```rust
 pub enum QuerySnapshot {
     CanonicalEvent {
+        format_version: u32,
         fact_version: u64,
         fact_rows: u64,
         layout_revision: u64,
@@ -342,6 +365,10 @@ pub enum QuerySnapshot {
     },
 }
 ```
+
+`format_version` 透出 canonical 事件的 manifest 格式版本：当前无版本标记的既有
+manifest 报告为 `1`；canonical v2 落地后写入 `2`。快照消费方据此区分事实格式，
+不伪装成统一版本。
 
 文本文件源没有独立事务快照，`snapshot` 为 `None`；Catalog 自己保留跨数据集 snapshot
 标识，不伪装成单一文档源快照。
@@ -371,6 +398,12 @@ Error::InvalidDocument {
 Error::UnsupportedCardinality {
     format: DocumentFormat,
     stories: usize,
+}
+
+Error::SourceBudgetExceeded {
+    format: DocumentFormat,
+    path: Option<PathBuf>,
+    budget: String,
 }
 ```
 
@@ -468,7 +501,9 @@ Arrow row codec、Markdown AST、格式 parser、provider、lock、manifest 实�
 9. OpenAI/ACTF 不虚报 exact row filter pushdown；
 10. AgenticMD provider 复用 Storyline 三表 schema；
 11. CLI append 不再执行 serde transcode；
-12. rustdoc 不再平铺或链接内部实现细节。
+12. rustdoc 不再平铺或链接内部实现细节；
+13. 物化与 bounded fallback 的预算耗尽返回 `SourceBudgetExceeded`，不产生静默截断；
+14. residual 与正式字段冲突时产生结构化诊断，且正式字段获胜。
 
 ### 14.2 最终验证命令
 

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
 use persisting_pchronicle::document::{
-    encode_agenticmd, open_document, DocumentFormat, Error, FilterPushdown, QueryTables,
-    DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
+    encode_agenticmd, encode_json_storylines, open_document, DocumentFormat, Error, FilterPushdown,
+    QueryTables, DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
 };
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument, StorylineTurn};
 use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
@@ -171,6 +171,40 @@ async fn materialization_budget_fails_closed_but_callback_visits_the_complete_st
     assert_eq!(
         visited,
         vec![("large".to_string(), DEFAULT_DOCUMENT_MATERIALIZE_ROWS + 1)]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn file_document_callback_enforces_the_provider_file_budget() -> Result<()> {
+    let input = tempfile::NamedTempFile::with_suffix(".json")?;
+    input.as_file().set_len(1024 * 1024 * 1024)?;
+    let source = open_document(DocumentFormat::OpenaiMsg, input.path()).await?;
+
+    let error = source.for_each_storyline(|_| Ok(())).await.unwrap_err();
+
+    assert!(error.to_string().contains("exceeding max_file_bytes"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn atif_document_source_preserves_singleton_array_shape() -> Result<()> {
+    let input = tempfile::NamedTempFile::with_suffix(".json")?;
+    let expected = json!([{
+        "schema_version": "ATIF-v1.7",
+        "trajectory_id": "one",
+        "agent": {"name": "agent", "version": "1"},
+        "steps": []
+    }]);
+    std::fs::write(input.path(), expected.to_string())?;
+
+    let stories = open_document(DocumentFormat::Atif, input.path())
+        .await?
+        .project_storylines()
+        .await?;
+    assert_eq!(
+        encode_json_storylines(DocumentFormat::Atif, &stories)?,
+        expected
     );
     Ok(())
 }

@@ -7,16 +7,18 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use persisting_pchronicle::document::{
-    atif_to_storyline, project_event_records, storyline_to_atif, storyline_to_events,
+    decode_json_storylines, encode_json_storylines, project_event_records, storyline_to_events,
+    DocumentFormat,
 };
-use persisting_pchronicle::model::{AtifTrajectory, StorylineDocument};
-use persisting_pchronicle::storage::{reconstruct_storyline, split_storyline};
+use persisting_pchronicle::model::StorylineDocument;
 
 fn parse_atif(raw: &str) -> StorylineDocument {
-    let trajectory = AtifTrajectory::from_json_str(raw).expect("parse benchmark ATIF");
-    atif_to_storyline(&trajectory).expect("normalize benchmark ATIF")
+    decode_json_storylines(DocumentFormat::Atif, raw, "benchmark.json")
+        .expect("parse benchmark ATIF")
+        .pop()
+        .expect("benchmark fixture contains one Storyline")
 }
 
 fn conversion_benchmarks(criterion: &mut Criterion) {
@@ -39,9 +41,14 @@ fn conversion_benchmarks(criterion: &mut Criterion) {
     group.bench_function("roundtrip_corpus", |bencher| {
         bencher.iter(|| {
             for story in &stories {
-                let atif = storyline_to_atif(black_box(story))
-                    .and_then(|trajectory| serde_json::to_string(&trajectory).map_err(Into::into))
-                    .expect("encode benchmark Storyline");
+                let atif = serde_json::to_string(
+                    &encode_json_storylines(
+                        DocumentFormat::Atif,
+                        std::slice::from_ref(black_box(story)),
+                    )
+                    .expect("encode benchmark Storyline"),
+                )
+                .expect("serialize benchmark ATIF");
                 black_box(parse_atif(black_box(&atif)));
             }
         });
@@ -59,11 +66,6 @@ fn projection_cpu_benchmarks(criterion: &mut Criterion) {
         .iter()
         .map(|story| storyline_to_events(story).expect("project fixture to canonical events"))
         .collect::<Vec<_>>();
-    let tables = stories
-        .iter()
-        .map(|story| split_storyline(story).expect("split benchmark Storyline"))
-        .collect::<Vec<_>>();
-
     let mut group = criterion.benchmark_group("projection_cpu");
     group.throughput(Throughput::Elements(stories.len() as u64));
     group.bench_function("events_to_storyline_corpus", |bencher| {
@@ -75,27 +77,6 @@ fn projection_cpu_benchmarks(criterion: &mut Criterion) {
                 );
             }
         });
-    });
-    group.bench_function("split_storyline_corpus", |bencher| {
-        bencher.iter(|| {
-            for story in &stories {
-                black_box(split_storyline(black_box(story)).expect("split benchmark Storyline"));
-            }
-        });
-    });
-    group.bench_function("reconstruct_storyline_corpus", |bencher| {
-        bencher.iter_batched(
-            || tables.clone(),
-            |tables| {
-                for tables in tables {
-                    black_box(
-                        reconstruct_storyline(black_box(tables))
-                            .expect("reconstruct benchmark Storyline"),
-                    );
-                }
-            },
-            BatchSize::SmallInput,
-        );
     });
     group.finish();
 }

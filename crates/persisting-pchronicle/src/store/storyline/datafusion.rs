@@ -93,7 +93,7 @@ impl Default for StorylineDataFusionTableNames {
 /// is logical (`step_id`, `call_index`) and should be requested explicitly;
 /// unordered scans allow DataFusion to consume fragments in parallel.
 #[derive(Debug)]
-pub struct StorylineTableProvider {
+pub(crate) struct StorylineTableProvider {
     kind: StorylineTableKind,
     dataset: Arc<Dataset>,
     objects: Arc<Dataset>,
@@ -116,14 +116,6 @@ impl StorylineTableProvider {
             schema,
             options,
         }
-    }
-
-    pub fn kind(&self) -> StorylineTableKind {
-        self.kind
-    }
-
-    pub fn dataset(&self) -> Arc<Dataset> {
-        self.dataset.clone()
     }
 }
 
@@ -392,6 +384,7 @@ impl StorylineDataSource {
         Self::from_store(&store).await
     }
 
+    #[cfg(test)]
     pub async fn open_with_options(
         root: impl AsRef<Path>,
         options: StorylineDataSourceOptions,
@@ -400,19 +393,6 @@ impl StorylineDataSource {
         let root = root
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Storyline Lance root is not valid UTF-8"))?;
-        let store = StorylineLanceStore::open_uri_unchecked(root).await?;
-        Self::from_store_with_options(&store, options).await
-    }
-
-    pub async fn open_uri(root: impl AsRef<str>) -> Result<Self> {
-        let store = StorylineLanceStore::open_uri_unchecked(root).await?;
-        Self::from_store(&store).await
-    }
-
-    pub async fn open_uri_with_options(
-        root: impl AsRef<str>,
-        options: StorylineDataSourceOptions,
-    ) -> Result<Self> {
         let store = StorylineLanceStore::open_uri_unchecked(root).await?;
         Self::from_store_with_options(&store, options).await
     }
@@ -483,11 +463,7 @@ impl StorylineDataSource {
         &self.paths.generation
     }
 
-    pub fn paths(&self) -> &StorylineTablePaths {
-        &self.paths
-    }
-
-    pub fn provider(&self, kind: StorylineTableKind) -> Arc<StorylineTableProvider> {
+    pub(crate) fn provider(&self, kind: StorylineTableKind) -> Arc<StorylineTableProvider> {
         match kind {
             StorylineTableKind::Runs => self.runs.clone(),
             StorylineTableKind::Steps => self.steps.clone(),
@@ -517,6 +493,7 @@ impl StorylineDataSource {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn session_context(&self) -> Result<SessionContext> {
         let context = SessionContext::new();
         self.register(&context)?;

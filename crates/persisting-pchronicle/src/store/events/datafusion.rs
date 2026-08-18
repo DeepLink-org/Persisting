@@ -124,7 +124,6 @@ impl TableProvider for RawEventTableProvider {
 
 #[derive(Debug)]
 pub struct RawEventDataSource {
-    uri: String,
     snapshot: EventFactSnapshot,
     provider: Arc<RawEventTableProvider>,
     segment_rows: Vec<u64>,
@@ -219,19 +218,10 @@ impl RawEventDataSource {
         );
         let fact_snapshot = snapshot.fact_snapshot();
         Ok(Self {
-            uri: snapshot.uri,
             snapshot: fact_snapshot,
             provider: Arc::new(RawEventTableProvider::new(datasets, options)?),
             segment_rows,
         })
-    }
-
-    pub fn uri(&self) -> &str {
-        &self.uri
-    }
-
-    pub fn version(&self) -> u64 {
-        self.snapshot.layout_revision
     }
 
     pub fn fact_snapshot(&self) -> &EventFactSnapshot {
@@ -255,12 +245,6 @@ impl RawEventDataSource {
             .register_table(table_name, self.provider.clone())
             .with_context(|| format!("register DataFusion table '{table_name}'"))?;
         Ok(())
-    }
-
-    pub fn session_context(&self) -> Result<SessionContext> {
-        let context = SessionContext::new();
-        self.register(&context)?;
-        Ok(context)
     }
 
     /// Read a pinned source in manifest segment and physical append order.

@@ -5,7 +5,7 @@ use persisting_gateway::projection::markdown_pipeline::MarkdownPipeline;
 use persisting_gateway::record::EventRecord;
 use persisting_gateway::sink::{llm_request_record, llm_response_record};
 use persisting_gateway::Call;
-use persisting_pchronicle::document::{parse_agenticmd, write_agenticmd_storyline};
+use persisting_pchronicle::document::{decode_agenticmd, write_agenticmd_storyline};
 use persisting_pchronicle::model::StorylineDocument;
 use serde_json::json;
 
@@ -60,12 +60,12 @@ fn capture_turns_roundtrip_through_public_storyline_api() {
     ];
 
     let encoded = persisting_pchronicle::document::encode_agenticmd(&story).unwrap();
-    assert_eq!(parse_agenticmd(&encoded).unwrap(), story);
+    assert_eq!(decode_agenticmd(&encoded).unwrap(), story);
 }
 
 #[test]
 fn legacy_fixture_still_imports_as_storyline() {
-    let story = parse_agenticmd(fixture()).expect("legacy AgenticMD import parse");
+    let story = decode_agenticmd(fixture()).expect("legacy AgenticMD import parse");
     assert_eq!(story.turns.len(), 2);
     assert_eq!(story.turns[0].source, "user");
     assert_eq!(story.turns[0].message, json!("你好"));
@@ -78,7 +78,7 @@ fn materialize_writes_storyline_parseable_markdown() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sess.md");
     materialize_records(&path, &records).unwrap();
-    let story = parse_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let story = decode_agenticmd(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(story.session_id, "s1");
     assert_eq!(story.turns.len(), 2);
     assert_eq!(story.turns[0].message, json!("hi"));

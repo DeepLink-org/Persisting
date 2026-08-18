@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use persisting_pchronicle::document::{atif_to_storyline, storyline_to_atif};
-use persisting_pchronicle::model::{AtifTrajectory, StorylineDocument};
-use persisting_pchronicle::query::{FileTrajectoryDataSource, StorylineDataSource};
+use persisting_pchronicle::document::{
+    decode_json_storylines, encode_json_storylines, DocumentFormat,
+};
+use persisting_pchronicle::model::StorylineDocument;
+use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::storage::StorylineLanceStore;
 
 const ANALYTICAL_SQL: &str =
@@ -115,11 +117,10 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     let atif_lines = stories
         .iter()
         .map(|story| {
-            let pretty = serde_json::to_string_pretty(&storyline_to_atif(story)?)?;
-            let value: serde_json::Value = serde_json::from_str(&pretty)?;
-            Ok(serde_json::to_string(&value)?)
+            let value = encode_json_storylines(DocumentFormat::Atif, std::slice::from_ref(story))?;
+            Ok::<_, anyhow::Error>(serde_json::to_string(&value)?)
         })
-        .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
     let json_document = format!("{}\n", atif_lines.join("\n"));
     let dir = tempfile::tempdir()?;
     let json_path = dir.path().join("trajectories.ndjson");
@@ -127,22 +128,32 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     std::fs::write(&json_path, json_document.as_bytes())?;
     let json_write = json_write_started.elapsed();
     let atif_open_started = Instant::now();
-    let atif_source = FileTrajectoryDataSource::open_atif(&json_path)?;
+    let atif_source = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        &json_path,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let atif_open = atif_open_started.elapsed();
-    let atif_context = atif_source.session_context()?;
+    let atif_context = atif_source.context();
     let parsed = atif_lines
         .iter()
-        .map(|line| AtifTrajectory::from_json_str(line))
-        .collect::<persisting_pchronicle::document::Result<Vec<_>>>()?;
+        .map(|line| serde_json::from_str(line))
+        .collect::<serde_json::Result<Vec<serde_json::Value>>>()?;
 
     let store = StorylineLanceStore::open(dir.path().join("storyline-lance")).await?;
     let lance_write_started = Instant::now();
     store.replace_storylines(&stories).await?;
     let lance_write = lance_write_started.elapsed();
     let lance_open_started = Instant::now();
-    let source = StorylineDataSource::from_store(&store).await?;
+    let source = ChronicleQueryEngine::open(
+        DocumentFormat::Storyline,
+        store.root(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
     let lance_open = lance_open_started.elapsed();
-    let context = source.session_context()?;
+    let context = source.context();
     // Pick the last longest Storyline so the in-memory JSON baseline cannot win
     // by finding the target in the first few documents.
     let target_session = stories
@@ -254,9 +265,13 @@ async fn time_lance_cold_query(
 ) -> Result<Duration> {
     let started = Instant::now();
     for _ in 0..iterations {
-        let source = StorylineDataSource::from_store(store).await?;
-        let context = source.session_context()?;
-        black_box(context.sql(sql).await?.collect().await?);
+        let source = ChronicleQueryEngine::open(
+            DocumentFormat::Storyline,
+            store.root(),
+            ChronicleQueryExecutionOptions::default(),
+        )
+        .await?;
+        black_box(source.query(sql).await?);
     }
     Ok(started.elapsed())
 }
@@ -273,8 +288,9 @@ fn load_base_stories() -> Result<Vec<StorylineDocument>> {
         .map(|path| {
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("read {}", path.display()))?;
-            let trajectory = AtifTrajectory::from_json_str(&raw)?;
-            atif_to_storyline(&trajectory).map_err(anyhow::Error::from)
+            decode_json_storylines(DocumentFormat::Atif, &raw, &path)?
+                .pop()
+                .context("missing benchmark Storyline")
         })
         .collect()
 }
@@ -285,8 +301,9 @@ fn load_atif_stories(path: &Path) -> Result<Vec<StorylineDocument>> {
     raw.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            let trajectory = AtifTrajectory::from_json_str(line)?;
-            atif_to_storyline(&trajectory).map_err(anyhow::Error::from)
+            decode_json_storylines(DocumentFormat::Atif, line, path)?
+                .pop()
+                .context("missing benchmark Storyline")
         })
         .collect()
 }
@@ -313,27 +330,46 @@ fn json_selective_query(path: &Path, target_session: &str) -> Result<usize> {
     let raw = std::fs::read_to_string(path)?;
     let mut matches = 0;
     for line in raw.lines() {
-        let trajectory = AtifTrajectory::from_json_str(line)?;
-        if trajectory.session_id.as_deref() == Some(target_session) {
-            matches += trajectory
-                .steps
-                .iter()
-                .filter(|step| (5..=15).contains(&step.step_id))
+        let trajectory: serde_json::Value = serde_json::from_str(line)?;
+        if trajectory
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(target_session)
+        {
+            matches += trajectory["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|step| {
+                    step.get("step_id")
+                        .and_then(serde_json::Value::as_i64)
+                        .is_some_and(|step_id| (5..=15).contains(&step_id))
+                })
                 .count();
         }
     }
     Ok(matches)
 }
 
-fn json_memory_selective(trajectories: &[AtifTrajectory], target_session: &str) -> usize {
+fn json_memory_selective(trajectories: &[serde_json::Value], target_session: &str) -> usize {
     trajectories
         .iter()
-        .find(|trajectory| trajectory.session_id.as_deref() == Some(target_session))
-        .map(|trajectory| {
+        .find(|trajectory| {
             trajectory
-                .steps
-                .iter()
-                .filter(|step| (5..=15).contains(&step.step_id))
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(target_session)
+        })
+        .map(|trajectory| {
+            trajectory["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|step| {
+                    step.get("step_id")
+                        .and_then(serde_json::Value::as_i64)
+                        .is_some_and(|step_id| (5..=15).contains(&step_id))
+                })
                 .count()
         })
         .unwrap_or_default()
@@ -343,19 +379,23 @@ fn json_analysis(path: &Path) -> Result<BTreeMap<String, usize>> {
     let raw = std::fs::read_to_string(path)?;
     let mut counts = BTreeMap::new();
     for line in raw.lines() {
-        let trajectory = AtifTrajectory::from_json_str(line)?;
-        for step in trajectory.steps {
-            *counts.entry(step.source).or_default() += 1;
+        let trajectory: serde_json::Value = serde_json::from_str(line)?;
+        for step in trajectory["steps"].as_array().into_iter().flatten() {
+            if let Some(source) = step.get("source").and_then(serde_json::Value::as_str) {
+                *counts.entry(source.to_string()).or_default() += 1;
+            }
         }
     }
     Ok(counts)
 }
 
-fn json_memory_analysis(trajectories: &[AtifTrajectory]) -> BTreeMap<String, usize> {
+fn json_memory_analysis(trajectories: &[serde_json::Value]) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for trajectory in trajectories {
-        for step in &trajectory.steps {
-            *counts.entry(step.source.clone()).or_default() += 1;
+        for step in trajectory["steps"].as_array().into_iter().flatten() {
+            if let Some(source) = step.get("source").and_then(serde_json::Value::as_str) {
+                *counts.entry(source.to_string()).or_default() += 1;
+            }
         }
     }
     counts

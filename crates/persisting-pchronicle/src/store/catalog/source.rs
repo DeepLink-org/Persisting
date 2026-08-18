@@ -14,10 +14,10 @@ pub(super) async fn load_storyline_from_source(
     }
     let context = SessionContext::new();
     register_normalized_source(&context, source).await?;
-    let session_predicate = sql_string(&key.session_id);
+    let document_predicate = sql_string(&key.document_id);
     let run_batches = context
         .sql(&format!(
-            "SELECT * FROM runs WHERE session_id = {session_predicate}"
+            "SELECT * FROM runs WHERE document_id = {document_predicate}"
         ))
         .await?
         .collect()
@@ -35,18 +35,18 @@ pub(super) async fn load_storyline_from_source(
         runs.len(),
         key.dataset,
         key.file,
-        key.session_id
+        key.document_id
     );
     let step_batches = context
         .sql(&format!(
-            "SELECT * FROM steps WHERE session_id = {session_predicate} ORDER BY step_id"
+            "SELECT * FROM steps WHERE document_id = {document_predicate} ORDER BY step_id"
         ))
         .await?
         .collect()
         .await?;
     let tool_batches = context
         .sql(&format!(
-            "SELECT * FROM tool_calls WHERE session_id = {session_predicate} ORDER BY step_id, call_index"
+            "SELECT * FROM tool_calls WHERE document_id = {document_predicate} ORDER BY step_id, call_index"
         ))
         .await?
         .collect()

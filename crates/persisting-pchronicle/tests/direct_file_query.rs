@@ -4,13 +4,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use datafusion::prelude::SessionContext;
-use persisting_pchronicle::document::DocumentFormat;
+use persisting_pchronicle::document::{detect_format, DocumentFormat};
 use persisting_pchronicle::query::{
-    ChronicleQueryEngine, ChronicleQueryExecutionOptions, FileTrajectoryDataSource,
-    FileTrajectoryDataSourceOptions, SOURCE_FILE_COLUMN,
+    ChronicleQueryEngine, ChronicleQueryExecutionOptions, SOURCE_FILE_COLUMN,
 };
-use persisting_pchronicle::storage::{detect_local_query_manifest, LocalQueryManifest};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/import_roundtrip")
@@ -75,11 +72,14 @@ async fn auto_detects_and_queries_response_only_openai_rows() -> Result<()> {
         temp.path(),
         r#"[{"session_id":"response-only","step_id":1,"response":{"role":"assistant","content":"done"}}]"#,
     )?;
-    let manifest = detect_local_query_manifest(temp.path())?;
-    assert_eq!(manifest.format(), DocumentFormat::OpenaiMsg);
+    let input = fs::read_to_string(temp.path())?;
+    assert_eq!(
+        detect_format(Some(temp.path()), Some(&input))?,
+        Some(DocumentFormat::OpenaiMsg)
+    );
     let engine = ChronicleQueryEngine::open(
         DocumentFormat::OpenaiMsg,
-        manifest.input(),
+        temp.path(),
         ChronicleQueryExecutionOptions::default(),
     )
     .await?;
@@ -221,110 +221,19 @@ async fn file_like_filter_prunes_unmatched_files_before_they_are_opened() -> Res
 }
 
 #[tokio::test]
-async fn detected_manifest_is_the_exact_reader_file_set() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    fs::copy(
-        fixtures().join("cybergym_07270003_trimmed.json"),
-        temp.path().join("first.json"),
-    )?;
-    let manifest = detect_local_query_manifest(temp.path())?;
-    fs::write(temp.path().join("added-after-detection.json"), "not-json\n")?;
-
-    let source = FileTrajectoryDataSource::from_manifest(manifest)?;
-    let context = SessionContext::new();
-    source.register(&context)?;
-    let batches = context
-        .sql("SELECT session_id FROM runs")
-        .await?
-        .collect()
-        .await?;
-    assert_eq!(
-        batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-        1
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn shared_cache_reuses_one_normalization_across_virtual_tables() -> Result<()> {
+async fn opened_file_fingerprint_fails_closed_after_mutation() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input.json");
     fs::copy(fixtures().join("cybergym_07270003_trimmed.json"), &input)?;
-    let manifest = LocalQueryManifest::for_format(&input, DocumentFormat::OpenaiMsg)?;
-    let source = FileTrajectoryDataSource::from_manifest_with_options(
-        manifest,
-        FileTrajectoryDataSourceOptions {
-            cache_files: 1,
-            cache_bytes: 16 * 1024 * 1024,
-            ..FileTrajectoryDataSourceOptions::default()
-        },
-    )?;
-    let context = SessionContext::new();
-    source.register(&context)?;
-    assert_eq!(
-        context
-            .sql("SELECT * FROM runs")
-            .await?
-            .collect()
-            .await?
-            .iter()
-            .map(|batch| batch.num_rows())
-            .sum::<usize>(),
-        1
-    );
-
-    fs::write(&input, "not-json")?;
-    assert!(!context
-        .sql("SELECT * FROM steps")
-        .await?
-        .collect()
-        .await?
-        .is_empty());
-    let metrics = source.metrics().snapshot();
-    assert_eq!(metrics.files_parsed, 1);
-    assert!(metrics.cache_hits >= 1);
-    assert!(metrics.source_bytes_read > 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn manifest_fingerprint_and_file_size_limits_fail_closed() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let input = temp.path().join("input.json");
-    fs::copy(fixtures().join("cybergym_07270003_trimmed.json"), &input)?;
-    let manifest = LocalQueryManifest::for_format(&input, DocumentFormat::OpenaiMsg)?;
-    fs::write(&input, "not-json")?;
-    let source = FileTrajectoryDataSource::from_manifest(manifest)?;
-    let context = SessionContext::new();
-    source.register(&context)?;
-    let changed = context
-        .sql("SELECT * FROM runs")
-        .await?
-        .collect()
-        .await
-        .unwrap_err();
-    assert!(format!("{changed:#}").contains("changed after manifest"));
-
-    let manifest = LocalQueryManifest::for_format(
-        fixtures().join("cybergym_07270003_trimmed.json"),
+    let engine = ChronicleQueryEngine::open(
         DocumentFormat::OpenaiMsg,
-    )?;
-    let source = FileTrajectoryDataSource::from_manifest_with_options(
-        manifest,
-        FileTrajectoryDataSourceOptions {
-            max_file_bytes: 1,
-            ..FileTrajectoryDataSourceOptions::default()
-        },
-    )?;
-    let context = SessionContext::new();
-    source.register(&context)?;
-    let oversized = context
-        .sql("SELECT * FROM runs")
-        .await?
-        .collect()
-        .await
-        .unwrap_err();
-    assert!(format!("{oversized:#}").contains("max_file_bytes"));
+        &input,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    fs::write(&input, "not-json")?;
+    let changed = engine.query("SELECT * FROM runs").await.unwrap_err();
+    assert!(format!("{changed:#}").contains("changed after manifest"));
     Ok(())
 }
 
@@ -528,6 +437,62 @@ async fn projected_atif_streams_ndjson_pretty_object_and_pretty_array() -> Resul
 }
 
 #[tokio::test]
+async fn projected_atif_includes_embedded_subagent_steps_by_document_id() -> Result<()> {
+    let input = serde_json::json!({
+        "schema_version": "ATIF-v1.7",
+        "session_id": "shared-run",
+        "trajectory_id": "root",
+        "agent": {"name": "root", "version": "1"},
+        "steps": [{"step_id": 1, "source": "agent", "message": "root"}],
+        "subagent_trajectories": [{
+            "schema_version": "ATIF-v1.7",
+            "trajectory_id": "child",
+            "agent": {"name": "child", "version": "1"},
+            "steps": [{"step_id": 1, "source": "agent", "message": "child"}]
+        }]
+    });
+    let file = tempfile::NamedTempFile::with_suffix(".json")?;
+    fs::write(file.path(), serde_json::to_vec(&input)?)?;
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        file.path(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+
+    let documents = engine
+        .query_jsonl("SELECT document_id, session_id FROM runs ORDER BY document_id")
+        .await?;
+    assert_eq!(
+        json_rows(&documents)?,
+        vec![
+            serde_json::json!({"document_id": "child", "session_id": "shared-run"}),
+            serde_json::json!({"document_id": "root", "session_id": "shared-run"}),
+        ]
+    );
+
+    let rows = engine
+        .query_jsonl("SELECT document_id, session_id, message_json FROM steps ORDER BY document_id")
+        .await?;
+    assert_eq!(
+        json_rows(&rows)?,
+        vec![
+            serde_json::json!({
+                "document_id": "child",
+                "session_id": "shared-run",
+                "message_json": "\"child\""
+            }),
+            serde_json::json!({
+                "document_id": "root",
+                "session_id": "shared-run",
+                "message_json": "\"root\""
+            }),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn projected_atif_ignores_unselected_large_values_without_materializing_the_file(
 ) -> Result<()> {
     let mut trajectory: serde_json::Value = serde_json::from_str(&fs::read_to_string(
@@ -559,63 +524,11 @@ async fn projected_atif_ignores_unselected_large_values_without_materializing_th
 }
 
 #[tokio::test]
-async fn projected_ndjson_rejects_a_record_above_the_configured_bound() -> Result<()> {
-    let trajectory = fs::read_to_string(atif_fixtures().join("dialogue_10.json"))?;
-    let value: serde_json::Value = serde_json::from_str(&trajectory)?;
-    let temp = tempfile::NamedTempFile::with_suffix(".ndjson")?;
-    fs::write(temp.path(), format!("{}\n", serde_json::to_string(&value)?))?;
-    let manifest = LocalQueryManifest::for_format(temp.path(), DocumentFormat::Atif)?;
-    let source = FileTrajectoryDataSource::from_manifest_with_options(
-        manifest,
-        FileTrajectoryDataSourceOptions {
-            max_record_bytes: 512,
-            ..FileTrajectoryDataSourceOptions::default()
-        },
-    )?;
-    let context = SessionContext::new();
-    source.register(&context)?;
-    let error = context
-        .sql("SELECT COUNT(*) FROM steps")
-        .await?
-        .collect()
-        .await
-        .unwrap_err();
-    assert!(
-        format!("{error:#}").contains("max_record_bytes 512"),
-        "{error:#}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn projected_array_enforces_record_bounds_and_json_separators() -> Result<()> {
+async fn projected_array_enforces_json_separators() -> Result<()> {
     let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(
         atif_fixtures().join("dialogue_10.json"),
     )?)?;
     let record = serde_json::to_string(&value)?;
-
-    let oversized = tempfile::NamedTempFile::with_suffix(".json")?;
-    fs::write(oversized.path(), format!("[{record}]"))?;
-    let manifest = LocalQueryManifest::for_format(oversized.path(), DocumentFormat::Atif)?;
-    let source = FileTrajectoryDataSource::from_manifest_with_options(
-        manifest,
-        FileTrajectoryDataSourceOptions {
-            max_record_bytes: 512,
-            ..FileTrajectoryDataSourceOptions::default()
-        },
-    )?;
-    let context = SessionContext::new();
-    source.register(&context)?;
-    let error = context
-        .sql("SELECT COUNT(*) FROM steps")
-        .await?
-        .collect()
-        .await
-        .unwrap_err();
-    assert!(
-        format!("{error:#}").contains("max_record_bytes 512"),
-        "{error:#}"
-    );
 
     let missing_comma = tempfile::NamedTempFile::with_suffix(".json")?;
     fs::write(missing_comma.path(), format!("[{record} {record}]"))?;

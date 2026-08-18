@@ -161,7 +161,7 @@ def run_regression(work_dir: Path, pchronicle: Path) -> None:
             serve_process,
             "pChronicle Gateway admin",
         )
-        wait_http(f"{warehouse_url}/api/v1/health", serve_process, "pChronicle Warehouse")
+        wait_http(f"{warehouse_url}/api/health", serve_process, "pChronicle Warehouse")
         wait_http(f"{admin_url}/admin/status", serve_process, "pChronicle Gateway admin")
 
         print("Running OpenAI, Anthropic, and Google Gen AI Python clients...", flush=True)

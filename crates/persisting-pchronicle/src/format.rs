@@ -1,26 +1,25 @@
-//! Named physical document formats supported by pChronicle.
+//! pChronicle 支持的具名物理文档格式。
 
 use crate::{Error, Result};
 use std::fmt;
 use std::str::FromStr;
 
-/// On-disk document formats understood by pChronicle.
+/// pChronicle 能够打开的磁盘文档格式。
 ///
-/// This enum describes physical representations. It does not imply that all
-/// formats support the same read or write operations.
+/// 枚举只描述物理表示，不暗示所有格式支持相同的读写操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DocumentFormat {
-    /// Canonical append-only event facts stored in Lance.
+    /// Lance 中 append-only 的 Canonical Event 事实。
     CanonicalEvent,
-    /// Storyline runs, steps, tool calls, and objects stored in Lance.
+    /// Lance 中的 Storyline runs、steps、tool calls 和 objects。
     Storyline,
-    /// Human-readable Storyline Markdown.
+    /// 人类可读的 Storyline Markdown。
     AgenticMd,
-    /// ATIF JSON, JSONL, or NDJSON.
+    /// ATIF JSON、JSONL 或 NDJSON。
     Atif,
-    /// OpenAI message corpus JSON.
+    /// OpenAI message corpus JSON。
     OpenaiMsg,
-    /// ACTF JSON.
+    /// ACTF JSON。
     Actf,
 }
 
