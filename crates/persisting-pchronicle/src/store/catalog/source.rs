@@ -270,7 +270,10 @@ impl LazySource {
                     })?;
                 let format = match format_hint {
                     Some(format) => *format,
-                    None => LocalQueryManifest::detect_with_options(&local, self.options.manifest)?
+                    None => LocalQueryManifest::detect_with_options(&local, self.options.manifest)
+                        .with_context(|| {
+                            format!("detect format for remote trajectory object {}", self.file)
+                        })?
                         .format(),
                 };
                 let manifest = LocalQueryManifest::from_explicit_files(
