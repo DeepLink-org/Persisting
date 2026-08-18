@@ -247,6 +247,30 @@ pub struct StorylineStreamImportReport {
     pub tool_calls: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StorylineProjectionPublicationOutcome {
+    Published(StorylineStreamImportReport),
+    OutputNotEmpty,
+}
+
+fn published_storyline_report(
+    outcome: StorylineProjectionPublicationOutcome,
+) -> StorylineStreamImportReport {
+    match outcome {
+        StorylineProjectionPublicationOutcome::Published(report) => report,
+        StorylineProjectionPublicationOutcome::OutputNotEmpty => {
+            unreachable!("non-create Storyline publication reported nonempty output")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorylineStreamWriteMode {
+    Replace,
+    Rebuild,
+    CreateProjection,
+}
+
 impl StorylineLanceStore {
     pub async fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
@@ -458,12 +482,14 @@ impl StorylineLanceStore {
             return Ok(());
         }
         projection.validate()?;
-        self.replace_storyline_stream_with_projection(
-            stories.iter().cloned().map(Ok::<_, anyhow::Error>),
-            Some(projection),
-            false,
-        )
-        .await?;
+        let outcome = self
+            .replace_storyline_stream_with_projection(
+                stories.iter().cloned().map(Ok::<_, anyhow::Error>),
+                Some(projection),
+                StorylineStreamWriteMode::Replace,
+            )
+            .await?;
+        published_storyline_report(outcome);
         Ok(())
     }
 
@@ -496,8 +522,14 @@ impl StorylineLanceStore {
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
-        self.replace_storyline_stream_with_projection(stories, None, false)
-            .await
+        let outcome = self
+            .replace_storyline_stream_with_projection(
+                stories,
+                None,
+                StorylineStreamWriteMode::Replace,
+            )
+            .await?;
+        Ok(published_storyline_report(outcome))
     }
 
     pub async fn replace_projected_storyline_stream<I>(
@@ -509,8 +541,31 @@ impl StorylineLanceStore {
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
         projection.validate()?;
-        self.replace_storyline_stream_with_projection(stories, Some(projection), false)
-            .await
+        let outcome = self
+            .replace_storyline_stream_with_projection(
+                stories,
+                Some(projection),
+                StorylineStreamWriteMode::Replace,
+            )
+            .await?;
+        Ok(published_storyline_report(outcome))
+    }
+
+    pub(crate) async fn create_projected_storyline_stream<I>(
+        &self,
+        stories: I,
+        projection: StorylineProjectionLineage,
+    ) -> Result<StorylineProjectionPublicationOutcome>
+    where
+        I: IntoIterator<Item = Result<StorylineDocument>>,
+    {
+        projection.validate()?;
+        self.replace_storyline_stream_with_projection(
+            stories,
+            Some(projection),
+            StorylineStreamWriteMode::CreateProjection,
+        )
+        .await
     }
 
     /// Rebuild every normalized table into a new physical generation, then
@@ -525,22 +580,32 @@ impl StorylineLanceStore {
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
         projection.validate()?;
-        self.replace_storyline_stream_with_projection(stories, Some(projection), true)
-            .await
+        let outcome = self
+            .replace_storyline_stream_with_projection(
+                stories,
+                Some(projection),
+                StorylineStreamWriteMode::Rebuild,
+            )
+            .await?;
+        Ok(published_storyline_report(outcome))
     }
 
     async fn replace_storyline_stream_with_projection<I>(
         &self,
         stories: I,
         projection: Option<StorylineProjectionLineage>,
-        rebuild: bool,
-    ) -> Result<StorylineStreamImportReport>
+        mode: StorylineStreamWriteMode,
+    ) -> Result<StorylineProjectionPublicationOutcome>
     where
         I: IntoIterator<Item = Result<StorylineDocument>>,
     {
         let _guard = self.acquire_write_guard().await?;
         let original = self.resolve_current_table_paths().await?;
+        if mode == StorylineStreamWriteMode::CreateProjection && original.is_some() {
+            return Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty);
+        }
         let expected_generation = original.as_ref().map(|paths| paths.generation.clone());
+        let rebuild = mode == StorylineStreamWriteMode::Rebuild;
         let mut paths = if rebuild { None } else { original.clone() };
         let mut new_table_generation = None;
         let mut iterator = stories.into_iter();
@@ -725,26 +790,38 @@ impl StorylineLanceStore {
                     )
                 };
             let generation = next_generation();
-            self.commit_snapshot(
-                &StorylineSnapshotPointer {
-                    generation: generation.clone(),
-                    parent_generation: expected_generation.clone(),
-                    table_generation: current.table_generation.clone(),
-                    runs_version,
-                    steps_version,
-                    tool_calls_version,
-                    objects_version: current.objects_version,
-                    projection,
-                },
-                expected_generation.as_deref(),
-            )
-            .await?;
+            let snapshot = StorylineSnapshotPointer {
+                generation: generation.clone(),
+                parent_generation: expected_generation.clone(),
+                table_generation: current.table_generation.clone(),
+                runs_version,
+                steps_version,
+                tool_calls_version,
+                objects_version: current.objects_version,
+                projection,
+            };
+            let published = if mode == StorylineStreamWriteMode::CreateProjection {
+                self.try_commit_snapshot(&snapshot, expected_generation.as_deref())
+                    .await?
+            } else {
+                self.commit_snapshot(&snapshot, expected_generation.as_deref())
+                    .await?;
+                true
+            };
+            if !published {
+                return Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty);
+            }
             report.generation = generation;
-            Ok(report)
+            Ok(StorylineProjectionPublicationOutcome::Published(report))
         }
         .await;
 
-        if result.is_err() {
+        if result.is_err()
+            || matches!(
+                &result,
+                Ok(StorylineProjectionPublicationOutcome::OutputNotEmpty)
+            )
+        {
             if let Some(generation) = new_table_generation {
                 let _ = self
                     .object_store
@@ -852,9 +929,10 @@ impl StorylineLanceStore {
         self.replace_storyline_stream_with_projection(
             stories.iter().cloned().map(Ok::<_, anyhow::Error>),
             None,
-            false,
+            StorylineStreamWriteMode::Replace,
         )
-        .await?;
+        .await
+        .map(published_storyline_report)?;
         Ok(())
     }
 
@@ -996,6 +1074,23 @@ impl StorylineLanceStore {
         snapshot: &StorylineSnapshotPointer,
         expected_generation: Option<&str>,
     ) -> Result<()> {
+        if self
+            .try_commit_snapshot(snapshot, expected_generation)
+            .await?
+        {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "Storyline commit conflict while publishing generation {}",
+            snapshot.generation
+        )
+    }
+
+    async fn try_commit_snapshot(
+        &self,
+        snapshot: &StorylineSnapshotPointer,
+        expected_generation: Option<&str>,
+    ) -> Result<bool> {
         let pointer = self.object_root.clone().join(CURRENT_FILE);
         let contents = serde_json::to_vec(snapshot).context("encode Storyline snapshot pointer")?;
         let current = self.read_current_pointer().await?;
@@ -1003,16 +1098,13 @@ impl StorylineLanceStore {
             .pointer
             .as_ref()
             .map(|pointer| pointer.generation.as_str());
-        anyhow::ensure!(
-            actual_generation == expected_generation,
-            "Storyline commit conflict: expected CURRENT generation {:?}, found {:?}",
-            expected_generation,
-            actual_generation
-        );
+        if actual_generation != expected_generation {
+            return Ok(false);
+        }
 
         if matches!(self.storage_scheme(), "file" | "file+uring") {
             write_local_current(self.root.join(CURRENT_FILE), contents).await?;
-            return Ok(());
+            return Ok(true);
         }
 
         let mode = match current.version {
@@ -1025,12 +1117,9 @@ impl StorylineLanceStore {
             .put_opts(&pointer, contents.into(), mode.into())
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(true),
             Err(ObjectStoreError::AlreadyExists { .. })
-            | Err(ObjectStoreError::Precondition { .. }) => anyhow::bail!(
-                "Storyline commit conflict while publishing generation {}",
-                snapshot.generation
-            ),
+            | Err(ObjectStoreError::Precondition { .. }) => Ok(false),
             Err(error) => Err(error)
                 .with_context(|| format!("commit Storyline generation {}", snapshot.generation)),
         }

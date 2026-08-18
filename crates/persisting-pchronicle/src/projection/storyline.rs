@@ -9,13 +9,37 @@ use crate::convert::{event_storyline_key, project_event_records};
 use crate::formats::{EventRecord, StorylineDocument};
 use crate::store::{
     EventFactSnapshot, ProjectionSourceSnapshot, RawEventDataSource, StorylineLanceStore,
-    StorylineProjectionLineage,
+    StorylineProjectionLineage, StorylineProjectionPublicationOutcome,
 };
 
 pub const STORYLINE_PROJECTOR_NAME: &str = "canonical-events-to-storyline";
 pub const STORYLINE_PROJECTION_COMPLETENESS: &str = "full";
 const STORYLINE_PROJECTION_RECIPE: &str =
     "group=storyline_identity;order=manifest_append;projection=events-storyline";
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BuildPublicationBarrierHook {
+    output_uri: String,
+    barrier: std::sync::Arc<tokio::sync::Barrier>,
+}
+
+#[cfg(test)]
+static BUILD_BEFORE_PUBLICATION_BARRIER: std::sync::Mutex<Option<BuildPublicationBarrierHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+async fn wait_before_build_publication(output_uri: &str) {
+    let barrier = BUILD_BEFORE_PUBLICATION_BARRIER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|hook| hook.output_uri == output_uri)
+        .map(|hook| hook.barrier.clone());
+    if let Some(barrier) = barrier {
+        barrier.wait().await;
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorylineProjectionBuildReport {
@@ -102,20 +126,24 @@ pub async fn build_storyline_projection(
     let output = StorylineLanceStore::open_uri(output_uri.as_ref())
         .await
         .with_context(|| format!("open Storyline projection output {}", output_uri.as_ref()))?;
-    if output.current_table_paths().await?.is_some() {
-        return Ok(StorylineProjectionBuildOutcome::OutputNotEmpty);
-    }
-
     let snapshot = source.fact_snapshot().clone();
     let lineage = canonical_projection_lineage(&snapshot, source_file.into());
     let stories = project_canonical_event_source(&source).await?;
-    let report = output
-        .replace_projected_storyline_stream(
+    #[cfg(test)]
+    wait_before_build_publication(output.root_uri()).await;
+    let report = match output
+        .create_projected_storyline_stream(
             stories.into_iter().map(Ok::<_, anyhow::Error>),
             lineage.clone(),
         )
         .await
-        .context("publish Storyline projection")?;
+        .context("publish Storyline projection")?
+    {
+        StorylineProjectionPublicationOutcome::Published(report) => report,
+        StorylineProjectionPublicationOutcome::OutputNotEmpty => {
+            return Ok(StorylineProjectionBuildOutcome::OutputNotEmpty);
+        }
+    };
     Ok(StorylineProjectionBuildOutcome::Built(
         StorylineProjectionBuildReport {
             source_uri: snapshot.source_uri,
@@ -437,6 +465,29 @@ mod tests {
     };
     use serde_json::json;
 
+    struct BuildPublicationBarrier;
+
+    impl BuildPublicationBarrier {
+        fn install(output_uri: &str, parties: usize) -> Self {
+            *BUILD_BEFORE_PUBLICATION_BARRIER
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(BuildPublicationBarrierHook {
+                    output_uri: output_uri.to_string(),
+                    barrier: std::sync::Arc::new(tokio::sync::Barrier::new(parties)),
+                });
+            Self
+        }
+    }
+
+    impl Drop for BuildPublicationBarrier {
+        fn drop(&mut self) {
+            *BUILD_BEFORE_PUBLICATION_BARRIER
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+
     fn event(session_id: &str, seq: u64) -> EventRecord {
         EventRecord {
             identity: EventIdentity {
@@ -510,6 +561,45 @@ mod tests {
             outcome,
             StorylineProjectionBuildOutcome::OutputNotEmpty
         ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_builds_publish_exactly_one_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let (source, output) = canonical_source(&temp).await;
+        let _barrier = BuildPublicationBarrier::install(&output, 2);
+
+        let (left, right) = tokio::join!(
+            build_storyline_projection(&source, &output, "left-events.lance"),
+            build_storyline_projection(&source, &output, "right-events.lance")
+        );
+        let left = left.unwrap();
+        let right = right.unwrap();
+
+        let built = usize::from(matches!(left, StorylineProjectionBuildOutcome::Built(_)))
+            + usize::from(matches!(right, StorylineProjectionBuildOutcome::Built(_)));
+        let conflicts = usize::from(matches!(
+            left,
+            StorylineProjectionBuildOutcome::OutputNotEmpty
+        )) + usize::from(matches!(
+            right,
+            StorylineProjectionBuildOutcome::OutputNotEmpty
+        ));
+        assert_eq!(built, 1);
+        assert_eq!(conflicts, 1);
+
+        let (report, source_file) = match (&left, &right) {
+            (StorylineProjectionBuildOutcome::Built(report), _) => (report, "left-events.lance"),
+            (_, StorylineProjectionBuildOutcome::Built(report)) => (report, "right-events.lance"),
+            _ => unreachable!("exactly one build succeeded"),
+        };
+        let store = StorylineLanceStore::open_uri(&output).await.unwrap();
+        let current = store.current_table_paths().await.unwrap().unwrap();
+        assert_eq!(current.generation, report.generation);
+        assert_eq!(current.projection.unwrap().source_file, source_file);
+        let story = store.get_storyline_full("session").await.unwrap().unwrap();
+        assert_eq!(story.session_id, "session");
+        assert_eq!(story.turns.len(), 1);
     }
 
     #[tokio::test]

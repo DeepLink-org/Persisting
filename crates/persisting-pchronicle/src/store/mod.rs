@@ -94,6 +94,8 @@ pub use query_engine::{
 #[cfg(feature = "lance-store")]
 pub use run_control::{CommitRunOutcome, LeaseAcquireOutcome, RunControlStore};
 #[cfg(feature = "lance-store")]
+pub(crate) use storyline::StorylineProjectionPublicationOutcome;
+#[cfg(feature = "lance-store")]
 pub use storyline::{
     story_runs_arrow_schema, story_runs_from_batch, story_runs_to_batch, story_steps_arrow_schema,
     story_steps_from_batch, story_steps_to_batch, story_tool_calls_arrow_schema,
