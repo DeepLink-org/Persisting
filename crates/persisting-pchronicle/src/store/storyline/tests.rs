@@ -58,6 +58,29 @@ impl CreateAfterEmptyReadBarrier {
     }
 }
 
+struct ReplacementAfterCurrentReadBarrier;
+
+impl ReplacementAfterCurrentReadBarrier {
+    fn install(root_uri: &str, parties: usize) -> Self {
+        *REPLACEMENT_AFTER_CURRENT_READ_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(ReplacementAfterCurrentReadBarrierHook {
+                root_uri: root_uri.to_string(),
+                barrier: Arc::new(tokio::sync::Barrier::new(parties)),
+            });
+        Self
+    }
+}
+
+impl Drop for ReplacementAfterCurrentReadBarrier {
+    fn drop(&mut self) {
+        *REPLACEMENT_AFTER_CURRENT_READ_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
 impl Drop for CreateAfterEmptyReadBarrier {
     fn drop(&mut self) {
         *CREATE_AFTER_EMPTY_READ_BARRIER
@@ -1248,6 +1271,72 @@ async fn concurrent_object_store_replacements_do_not_lose_sessions() {
         .map(|story| story.unwrap().session_id)
         .collect::<Vec<_>>();
     assert_eq!(sessions, expected);
+}
+
+#[tokio::test]
+async fn independent_replacements_conflict_at_current_cas_and_retry_cleanly() {
+    let uri = remote_uri("independent-replacement-cas");
+    let baseline = story("replacement-baseline");
+    let seed = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    seed.replace_storyline(&baseline).await.unwrap();
+
+    let mut left = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    let mut right = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    left.write_lock = Arc::new(tokio::sync::Mutex::new(()));
+    right.write_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let barrier = ReplacementAfterCurrentReadBarrier::install(&uri, 2);
+    let left_story = story("replacement-left");
+    let right_story = story("replacement-right");
+
+    let (left_result, right_result) = tokio::join!(
+        left.replace_storyline(&left_story),
+        right.replace_storyline(&right_story)
+    );
+    drop(barrier);
+
+    let (winner, loser, conflict) = match (left_result, right_result) {
+        (Ok(()), Err(error)) => (&left_story, &right_story, error),
+        (Err(error), Ok(())) => (&right_story, &left_story, error),
+        (left, right) => panic!("expected one success and one conflict: {left:?}, {right:?}"),
+    };
+    assert!(
+        conflict.to_string().contains("commit conflict"),
+        "{conflict:#}"
+    );
+
+    let reopened = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    assert_eq!(
+        reopened
+            .get_storyline_full(&baseline.session_id)
+            .await
+            .unwrap(),
+        Some(baseline.clone())
+    );
+    assert_eq!(
+        reopened
+            .get_storyline_full(&winner.session_id)
+            .await
+            .unwrap(),
+        Some(winner.clone())
+    );
+    assert!(reopened
+        .get_storyline_full(&loser.session_id)
+        .await
+        .unwrap()
+        .is_none());
+
+    reopened.replace_storyline(loser).await.unwrap();
+    assert_eq!(
+        reopened
+            .get_storylines_full(&[
+                baseline.session_id.clone(),
+                winner.session_id.clone(),
+                loser.session_id.clone(),
+            ])
+            .await
+            .unwrap(),
+        [Some(baseline), Some(winner.clone()), Some(loser.clone())]
+    );
 }
 
 async fn assert_independent_object_store_create_case(

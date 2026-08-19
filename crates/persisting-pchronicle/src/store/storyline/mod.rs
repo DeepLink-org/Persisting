@@ -287,8 +287,33 @@ static CREATE_AFTER_EMPTY_READ_BARRIER: std::sync::Mutex<Option<CreateAfterEmpty
     std::sync::Mutex::new(None);
 
 #[cfg(test)]
+#[derive(Clone)]
+struct ReplacementAfterCurrentReadBarrierHook {
+    root_uri: String,
+    barrier: Arc<tokio::sync::Barrier>,
+}
+
+#[cfg(test)]
+static REPLACEMENT_AFTER_CURRENT_READ_BARRIER: std::sync::Mutex<
+    Option<ReplacementAfterCurrentReadBarrierHook>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
 async fn wait_after_empty_current_read(root_uri: &str) {
     let barrier = CREATE_AFTER_EMPTY_READ_BARRIER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|hook| hook.root_uri == root_uri)
+        .map(|hook| hook.barrier.clone());
+    if let Some(barrier) = barrier {
+        barrier.wait().await;
+    }
+}
+
+#[cfg(test)]
+async fn wait_after_replacement_current_read(root_uri: &str) {
+    let barrier = REPLACEMENT_AFTER_CURRENT_READ_BARRIER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
@@ -676,6 +701,10 @@ impl StorylineLanceStore {
             wait_after_empty_current_read(&self.root_uri).await;
         }
         let expected_generation = original.as_ref().map(|paths| paths.generation.clone());
+        #[cfg(test)]
+        if mode == StorylineStreamWriteMode::Replace {
+            wait_after_replacement_current_read(&self.root_uri).await;
+        }
         let rebuild = mode == StorylineStreamWriteMode::Rebuild;
         let mut paths = if rebuild { None } else { original.clone() };
         let mut new_table_generation = None;
