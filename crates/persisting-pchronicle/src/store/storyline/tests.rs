@@ -26,6 +26,18 @@ fn projection_lineage() -> StorylineProjectionLineage {
     }
 }
 
+#[test]
+fn non_create_publication_mismatch_is_an_operational_error() {
+    let error = published_storyline_report(StorylineProjectionPublicationOutcome::OutputNotEmpty)
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("non-create Storyline publication reported nonempty output")
+    );
+}
+
 async fn put_remote_object(uri: &str, relative: &str, contents: &[u8]) {
     let (store, root) = ObjectStore::from_uri(uri).await.unwrap();
     store.put(&root.join(relative), contents).await.unwrap();

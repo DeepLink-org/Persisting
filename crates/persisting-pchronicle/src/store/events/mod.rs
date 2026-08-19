@@ -129,12 +129,13 @@ impl EventAppendBatchReport {
             .iter()
             .find(|(_, outcome)| outcome.is_err())
             .map(|(uri, _)| uri.clone())?;
-        let error = self
-            .outcomes
-            .remove(&uri)
-            .expect("failure URI came from this report")
-            .expect_err("failure URI selected an error outcome");
-        Some((uri, error))
+        match self.outcomes.remove(&uri)? {
+            Err(error) => Some((uri, error)),
+            Ok(records) => {
+                self.outcomes.insert(uri, Ok(records));
+                None
+            }
+        }
     }
 }
 

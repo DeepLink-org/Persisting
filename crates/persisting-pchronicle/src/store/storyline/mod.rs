@@ -255,12 +255,12 @@ pub(crate) enum StorylineProjectionPublicationOutcome {
 
 fn published_storyline_report(
     outcome: StorylineProjectionPublicationOutcome,
-) -> StorylineStreamImportReport {
+) -> Result<StorylineStreamImportReport> {
     match outcome {
-        StorylineProjectionPublicationOutcome::Published(report) => report,
-        StorylineProjectionPublicationOutcome::OutputNotEmpty => {
-            unreachable!("non-create Storyline publication reported nonempty output")
-        }
+        StorylineProjectionPublicationOutcome::Published(report) => Ok(report),
+        StorylineProjectionPublicationOutcome::OutputNotEmpty => anyhow::bail!(
+            "non-create Storyline publication reported nonempty output"
+        ),
     }
 }
 
@@ -554,7 +554,7 @@ impl StorylineLanceStore {
                 StorylineStreamWriteMode::Replace,
             )
             .await?;
-        published_storyline_report(outcome);
+        published_storyline_report(outcome)?;
         Ok(())
     }
 
@@ -594,7 +594,7 @@ impl StorylineLanceStore {
                 StorylineStreamWriteMode::Replace,
             )
             .await?;
-        Ok(published_storyline_report(outcome))
+        published_storyline_report(outcome)
     }
 
     pub async fn replace_projected_storyline_stream<I>(
@@ -613,7 +613,7 @@ impl StorylineLanceStore {
                 StorylineStreamWriteMode::Replace,
             )
             .await?;
-        Ok(published_storyline_report(outcome))
+        published_storyline_report(outcome)
     }
 
     pub(crate) async fn create_projected_storyline_stream<I>(
@@ -652,7 +652,7 @@ impl StorylineLanceStore {
                 StorylineStreamWriteMode::Rebuild,
             )
             .await?;
-        Ok(published_storyline_report(outcome))
+        published_storyline_report(outcome)
     }
 
     async fn replace_storyline_stream_with_projection<I>(
@@ -1007,13 +1007,14 @@ impl StorylineLanceStore {
         if stories.is_empty() {
             return Ok(());
         }
-        self.replace_storyline_stream_with_projection(
-            stories.iter().cloned().map(Ok::<_, anyhow::Error>),
-            None,
-            StorylineStreamWriteMode::Replace,
-        )
-        .await
-        .map(published_storyline_report)?;
+        let outcome = self
+            .replace_storyline_stream_with_projection(
+                stories.iter().cloned().map(Ok::<_, anyhow::Error>),
+                None,
+                StorylineStreamWriteMode::Replace,
+            )
+            .await?;
+        published_storyline_report(outcome)?;
         Ok(())
     }
 
