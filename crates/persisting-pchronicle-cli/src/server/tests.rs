@@ -1,5 +1,101 @@
 use super::*;
 use axum::http::header;
+use axum::response::Response;
+
+fn assert_problem(error: ApiError, status: StatusCode, code: BoundaryCode) {
+    assert_eq!(error.status, status);
+    assert_eq!(error.code, code);
+}
+
+async fn response_json(response: Response) -> Value {
+    use http_body_util::BodyExt as _;
+
+    serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+}
+
+#[tokio::test]
+async fn boundary_maps_explicit_results_and_redacts_failures() {
+    assert_eq!(
+        serde_json::to_value([
+            BoundaryCode::InvalidRequest,
+            BoundaryCode::NotFound,
+            BoundaryCode::Conflict,
+            BoundaryCode::Unsupported,
+            BoundaryCode::ResourceExhausted,
+            BoundaryCode::Unavailable,
+            BoundaryCode::Internal,
+        ])
+        .unwrap(),
+        json!([
+            "invalid_request",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "resource_exhausted",
+            "unavailable",
+            "internal"
+        ])
+    );
+    assert_problem(
+        ApiError::invalid_request("bad input"),
+        StatusCode::BAD_REQUEST,
+        BoundaryCode::InvalidRequest,
+    );
+    assert_problem(
+        ApiError::not_found("missing"),
+        StatusCode::NOT_FOUND,
+        BoundaryCode::NotFound,
+    );
+    assert_problem(
+        ApiError::conflict("stale"),
+        StatusCode::CONFLICT,
+        BoundaryCode::Conflict,
+    );
+    assert_problem(
+        ApiError::unsupported("format"),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        BoundaryCode::Unsupported,
+    );
+    assert_problem(
+        ApiError::resource_exhausted("limit"),
+        StatusCode::TOO_MANY_REQUESTS,
+        BoundaryCode::ResourceExhausted,
+    );
+    assert_problem(
+        ApiError::unavailable(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        BoundaryCode::Unavailable,
+    );
+
+    let response = ApiError::internal(anyhow::anyhow!("/secret/backend")).into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "internal");
+    assert_eq!(body["message"], "internal server error");
+    assert!(!body.to_string().contains("/secret/backend"));
+}
+
+#[test]
+fn boundary_writer_exhaustion_is_an_explicit_outcome() {
+    use std::io::Write as _;
+
+    let mut output = BoundedOutput::new(3);
+    let write_result = output
+        .write_all(b"four")
+        .map_err(anyhow::Error::from)
+        .context("opaque writer context");
+    assert!(output.exhausted());
+    assert!(matches!(
+        output.finish(write_result).unwrap(),
+        QueryEvidenceWriteOutcome::LimitExceeded
+    ));
+
+    let output = BoundedOutput::new(3);
+    let error = output
+        .finish(Err(anyhow::anyhow!("ordinary writer failure")))
+        .unwrap_err();
+    assert!(error.to_string().contains("ordinary writer failure"));
+}
 
 fn router(storage: impl Into<String>) -> Router {
     let config = ChronicleServerConfig::mounted(vec![
@@ -355,7 +451,13 @@ async fn catalog_refresh_is_atomic_and_dataset_filtering_is_explicit() -> anyhow
                 .body(axum::body::Body::empty())?,
         )
         .await?;
-    assert_eq!(failed_refresh.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(failed_refresh.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let failed_refresh = response_json(failed_refresh).await;
+    assert_eq!(failed_refresh["code"], "internal");
+    assert_eq!(failed_refresh["message"], "internal server error");
+    let failed_refresh = failed_refresh.to_string();
+    assert!(!failed_refresh.contains(live.to_string_lossy().as_ref()));
+    assert!(!failed_refresh.contains("broken-store"));
 
     let preserved = app
         .clone()
@@ -580,6 +682,96 @@ async fn limited_query_enforces_copilot_boundaries() {
     assert_eq!(evidence["max_rows"], 1);
     assert_eq!(evidence["max_bytes"], 1_048_576);
 
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn boundary_missing_lookup_returns_not_found() {
+    use tower::ServiceExt as _;
+
+    let root = json_dataset_root();
+    let response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/turn?dataset=dataset&file=gateway.json&run_id=json-job&agent_id=model-json&session_id=json-session&root_session_id=json-job&turn_id=999")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "not_found");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn boundary_malformed_query_parameters_return_json() {
+    use tower::ServiceExt as _;
+
+    let root = json_dataset_root();
+    let response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/runs?limit=not-a-number")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_request");
+    assert_eq!(body["message"], "query parameters must be valid");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn boundary_unsupported_query_input_returns_unprocessable_entity() {
+    use tower::ServiceExt as _;
+
+    let root = json_dataset_root();
+    let response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/query/evidence")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    json!({"sql":"DELETE FROM runs"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "unsupported");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn query_evidence_byte_budget_uses_writer_exhaustion_outcome() {
+    use tower::ServiceExt as _;
+
+    let root = json_dataset_root();
+    let response = router(root.to_string_lossy().to_string())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/query/evidence")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    json!({"sql":"SELECT repeat('x', 2048) AS payload","max_bytes":1024})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "resource_exhausted");
     std::fs::remove_dir_all(root).unwrap();
 }
 

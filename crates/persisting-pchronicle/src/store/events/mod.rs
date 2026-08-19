@@ -30,7 +30,7 @@ use lance_index::IndexType;
 pub use self::datafusion::{EventFactSnapshot, RawEventDataSource, DATAFUSION_EVENTS_TABLE};
 use self::manifest as raw_event_manifest;
 pub use self::manifest::EventWriterFence;
-use self::manifest::{EventManifest, EventSegment};
+use self::manifest::{EventManifest, EventSegment, EventWriterConflict, ManifestWriteOutcome};
 pub use self::rows::{
     event_records_from_batch, event_rows_from_batch, event_rows_to_batch, raw_event_arrow_schema,
 };
@@ -103,15 +103,17 @@ struct CachedRawDataset {
 
 #[derive(Debug, Default)]
 pub(crate) struct EventAppendBatchReport {
-    outcomes: BTreeMap<String, std::result::Result<usize, String>>,
+    outcomes: BTreeMap<String, Result<usize>>,
 }
 
 impl EventAppendBatchReport {
-    pub(crate) fn outcome_for(
-        &self,
-        root_uri: &str,
-    ) -> Option<&std::result::Result<usize, String>> {
+    #[cfg(test)]
+    pub(crate) fn outcome_for(&self, root_uri: &str) -> Option<&Result<usize>> {
         self.outcomes.get(root_uri)
+    }
+
+    pub(crate) fn take_outcome(&mut self, root_uri: &str) -> Option<Result<usize>> {
+        self.outcomes.remove(root_uri)
     }
 
     fn accepted_records(&self) -> usize {
@@ -121,13 +123,19 @@ impl EventAppendBatchReport {
             .sum()
     }
 
-    fn failures(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.outcomes.iter().filter_map(|(uri, outcome)| {
-            outcome
-                .as_ref()
-                .err()
-                .map(|error| (uri.as_str(), error.as_str()))
-        })
+    fn take_failure(&mut self) -> Option<(String, anyhow::Error)> {
+        let uri = self
+            .outcomes
+            .iter()
+            .find(|(_, outcome)| outcome.is_err())
+            .map(|(uri, _)| uri.clone())?;
+        match self.outcomes.remove(&uri)? {
+            Err(error) => Some((uri, error)),
+            Ok(records) => {
+                self.outcomes.insert(uri, Ok(records));
+                None
+            }
+        }
     }
 }
 
@@ -178,9 +186,10 @@ impl RawEventLanceAppender {
     }
 
     async fn new_state(&self, uri: &str) -> Result<CachedRawDataset> {
-        let manifest =
+        let manifest = manifest_write_applied(
             raw_event_manifest::activate(uri, self.requested_fence.as_ref(), &self.auto_writer_id)
-                .await?;
+                .await?,
+        )?;
         let fence = manifest.active_writer.clone();
         let segment_id = format!("e{}-{}", fence.epoch, uuid::Uuid::new_v4());
         Ok(CachedRawDataset {
@@ -204,16 +213,10 @@ impl RawEventLanceAppender {
         &mut self,
         entries: &[(StoryCoords, crate::EventRecord)],
     ) -> Result<AppendOutcome> {
-        let report = self.append_event_batch_partitioned(entries).await?;
-        let failures = report
-            .failures()
-            .map(|(uri, error)| format!("{uri}: {error}"))
-            .collect::<Vec<_>>();
-        anyhow::ensure!(
-            failures.is_empty(),
-            "one or more canonical event partitions failed: {}",
-            failures.join("; ")
-        );
+        let mut report = self.append_event_batch_partitioned(entries).await?;
+        if let Some((uri, error)) = report.take_failure() {
+            return Err(error.context(format!("append canonical event partition {uri}")));
+        }
         let accepted_records = report.accepted_records();
         Ok(AppendOutcome {
             accepted_records,
@@ -255,7 +258,7 @@ impl RawEventLanceAppender {
             let rows = match rows {
                 Ok(rows) => rows,
                 Err(error) => {
-                    report.outcomes.insert(uri, Err(format!("{error:#}")));
+                    report.outcomes.insert(uri, Err(error));
                     continue;
                 }
             };
@@ -264,7 +267,7 @@ impl RawEventLanceAppender {
                 None => match self.new_state(&uri).await {
                     Ok(state) => state,
                     Err(error) => {
-                        report.outcomes.insert(uri, Err(format!("{error:#}")));
+                        report.outcomes.insert(uri, Err(error));
                         continue;
                     }
                 },
@@ -292,7 +295,7 @@ impl RawEventLanceAppender {
                     report.outcomes.insert(uri, Ok(appended_rows));
                 }
                 Err(error) => {
-                    report.outcomes.insert(uri, Err(format!("{error:#}")));
+                    report.outcomes.insert(uri, Err(error));
                 }
             }
         }
@@ -367,18 +370,20 @@ async fn append_event_group(
         .checked_add(appended_rows as u64)
         .context("event segment row count overflow")?;
     state.pending_fragments = state.pending_fragments.saturating_add(1);
-    let manifest = raw_event_manifest::publish_segment(
-        &uri,
-        &state.fence,
-        EventSegment {
-            id: state.segment_id.clone(),
-            version: dataset.version_id(),
-            rows: state.rows,
-            level: 0,
-            sealed: false,
-        },
-    )
-    .await?;
+    let manifest = manifest_write_applied(
+        raw_event_manifest::publish_segment(
+            &uri,
+            &state.fence,
+            EventSegment {
+                id: state.segment_id.clone(),
+                version: dataset.version_id(),
+                rows: state.rows,
+                level: 0,
+                sealed: false,
+            },
+        )
+        .await?,
+    )?;
     state.manifest_revision = manifest.revision;
     state.dataset = Some(dataset);
     Ok((uri, state, appended_rows))
@@ -422,7 +427,10 @@ pub(crate) async fn compact_sealed_event_segment(
         published_segment.version = dataset.version_id();
     }
     published_segment.sealed = true;
-    raw_event_manifest::publish_segment(&sealed.root_uri, &sealed.fence, published_segment).await?;
+    manifest_write_applied(
+        raw_event_manifest::publish_segment(&sealed.root_uri, &sealed.fence, published_segment)
+            .await?,
+    )?;
     compact_event_hierarchy_locked(&sealed.root_uri, &sealed.fence, hierarchy_fanout).await?;
     Ok(())
 }
@@ -474,7 +482,9 @@ async fn compact_event_hierarchy_locked(
         replacement.version = dataset.version_id();
         replacement.level = next_level;
         replacement.sealed = true;
-        raw_event_manifest::replace_segment_group(root_uri, fence, &group, replacement).await?;
+        manifest_write_applied(
+            raw_event_manifest::replace_segment_group(root_uri, fence, &group, replacement).await?,
+        )?;
     }
 }
 
@@ -640,7 +650,9 @@ pub async fn maintain(
         });
     }
     let maintenance_writer_id = format!("maintenance-{}", uuid::Uuid::new_v4());
-    let active = raw_event_manifest::activate(&uri, None, &maintenance_writer_id).await?;
+    let active = manifest_write_applied(
+        raw_event_manifest::activate(&uri, None, &maintenance_writer_id).await?,
+    )?;
     let fence = active.active_writer.clone();
     let fragments_before = datasets
         .iter()
@@ -662,7 +674,9 @@ pub async fn maintain(
         )
         .await?;
         segment.version = compacted.version_id();
-        let published = raw_event_manifest::replace_segments(&uri, &fence, vec![segment]).await?;
+        let published = manifest_write_applied(
+            raw_event_manifest::replace_segments(&uri, &fence, vec![segment]).await?,
+        )?;
         report.fragments_removed = fragments_before;
         report.fragments_added = compacted.get_fragments().len();
         report.final_version = Some(published.revision);
@@ -689,8 +703,9 @@ pub async fn maintain(
             segment.version = dataset.version_id();
             updated_segments.push(segment);
         }
-        let published =
-            raw_event_manifest::replace_segments(&uri, &fence, updated_segments).await?;
+        let published = manifest_write_applied(
+            raw_event_manifest::replace_segments(&uri, &fence, updated_segments).await?,
+        )?;
         report.final_version = Some(published.revision);
     }
     if let Some(retention) = options.vacuum_older_than {
@@ -866,6 +881,21 @@ pub async fn append_events(
 
 pub(super) fn is_object_store_uri(uri: &str) -> bool {
     uri.contains("://")
+}
+
+fn manifest_write_applied<T>(outcome: ManifestWriteOutcome<T>) -> Result<T> {
+    match outcome {
+        ManifestWriteOutcome::Applied(value) => Ok(value),
+        ManifestWriteOutcome::Conflict(EventWriterConflict::StaleFence) => {
+            anyhow::bail!("stale event writer fence")
+        }
+        ManifestWriteOutcome::Conflict(EventWriterConflict::EpochAlreadyOwned) => {
+            anyhow::bail!("event writer epoch is already owned")
+        }
+        ManifestWriteOutcome::Conflict(EventWriterConflict::PublicationChanged) => {
+            anyhow::bail!("event manifest publication changed")
+        }
+    }
 }
 
 pub async fn replay(

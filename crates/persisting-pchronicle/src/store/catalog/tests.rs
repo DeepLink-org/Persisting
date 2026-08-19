@@ -2,7 +2,7 @@ use super::*;
 use crate::layout::{story_lance_event_path, StoryCoords};
 use crate::projection::{
     build_storyline_projection, rebuild_storyline_projection, sync_storyline_projection,
-    StorylineProjectionSyncMode,
+    StorylineProjectionBuildOutcome, StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
 };
 use crate::store::{RawEventLanceStore, StorylineLanceStore};
 use crate::{EventIdentity, StorylineAgent, StorylineTurn};
@@ -402,6 +402,19 @@ async fn catalog_downloads_only_selected_remote_file_source() -> Result<()> {
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("two.json"));
+    let chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+    let logical_context = chain
+        .iter()
+        .position(|source| source == "detect format for remote trajectory object two.json")
+        .expect("logical remote source context must remain a distinct error-chain entry");
+    let detector_source = chain
+        .iter()
+        .position(|source| source.starts_with("cannot detect trajectory format:"))
+        .expect("format detector failure must remain in the error source chain");
+    assert!(
+        detector_source > logical_context,
+        "format detector failure must be below the logical remote source context: {chain:?}"
+    );
     assert_eq!(
         snapshot.prepared[0]
             .sources
@@ -674,12 +687,15 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
     let events_uri =
         story_lance_event_path(&storage.to_string_lossy(), "agent", "root", Some("run-1"))?;
     let projection_uri = storage.join("agent/run-1/storyline");
-    build_storyline_projection(
+    let StorylineProjectionBuildOutcome::Built(_) = build_storyline_projection(
         events_uri.to_string_lossy(),
         projection_uri.to_string_lossy(),
         "agent/run-1/events.lance",
     )
-    .await?;
+    .await?
+    else {
+        panic!("initial catalog projection build unexpectedly reported nonempty output")
+    };
 
     let snapshot = Arc::new(
         DatasetCatalogSnapshot::discover(
@@ -830,20 +846,26 @@ async fn canonical_event_source_exposes_and_loads_each_storyline_independently()
         .unwrap_err();
     assert!(format!("{limit_error:#}").contains("max_event_fallback_rows 1"));
 
-    let sync = sync_storyline_projection(
+    let StorylineProjectionSyncOutcome::Synced(sync) = sync_storyline_projection(
         events_uri.to_string_lossy(),
         projection_uri.to_string_lossy(),
     )
-    .await?;
+    .await?
+    else {
+        panic!("incremental sync returned a non-success outcome")
+    };
     assert_eq!(sync.mode, StorylineProjectionSyncMode::Incremental);
     assert_eq!(sync.affected_storylines, 1);
     assert_eq!(sync.suffix_rows_scanned, 1);
     assert_eq!(sync.history_rows_scanned, 2);
-    let noop = sync_storyline_projection(
+    let StorylineProjectionSyncOutcome::Synced(noop) = sync_storyline_projection(
         events_uri.to_string_lossy(),
         projection_uri.to_string_lossy(),
     )
-    .await?;
+    .await?
+    else {
+        panic!("noop sync returned a non-success outcome")
+    };
     assert_eq!(noop.mode, StorylineProjectionSyncMode::Noop);
     assert_eq!(noop.generation, sync.generation);
     assert_eq!(noop.suffix_rows_scanned, 0);
@@ -908,12 +930,15 @@ async fn multiple_fresh_projections_choose_one_without_hiding_canonical_events()
     let events_uri =
         story_lance_event_path(&storage.to_string_lossy(), "agent", "root", Some("run-1"))?;
     for name in ["storyline-a", "storyline-b"] {
-        build_storyline_projection(
+        let StorylineProjectionBuildOutcome::Built(_) = build_storyline_projection(
             events_uri.to_string_lossy(),
             storage.join("agent/run-1").join(name).to_string_lossy(),
             "agent/run-1/events.lance",
         )
-        .await?;
+        .await?
+        else {
+            panic!("catalog projection candidate build unexpectedly reported nonempty output")
+        };
     }
 
     let snapshot = DatasetCatalogSnapshot::discover(
@@ -934,5 +959,36 @@ async fn multiple_fresh_projections_choose_one_without_hiding_canonical_events()
         source.revision,
         Some(CatalogSourceRevision::Events { .. })
     ));
+    Ok(())
+}
+
+#[test]
+fn report_mode_source_status_does_not_serialize_operational_diagnostics() -> Result<()> {
+    let stub = DiscoveredSource {
+        file: "broken.json".into(),
+        format: None,
+        kind: CatalogSourceKind::File,
+        revision: None,
+        projection_status: None,
+        projection_generation: None,
+        projection_candidates: 0,
+        size_bytes: None,
+        last_modified: None,
+        status: CatalogSourceStatus::Ready,
+        error: None,
+    };
+    let source = reported_source_failure(
+        stub,
+        anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "catalog-secret-sentinel /private/catalog/path",
+        ))
+        .context("freeze catalog source"),
+    );
+
+    let output = serde_json::to_string(&source)?;
+    assert_eq!(source.error.as_deref(), Some("Source discovery failed"));
+    assert!(!output.contains("catalog-secret-sentinel"), "{output}");
+    assert!(!output.contains("/private/catalog/path"), "{output}");
     Ok(())
 }

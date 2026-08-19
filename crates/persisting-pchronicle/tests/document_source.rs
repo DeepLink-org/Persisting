@@ -3,12 +3,16 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use datafusion::prelude::SessionContext;
 use persisting_pchronicle::document::{
-    encode_agenticmd, encode_json_storylines, open_document, DocumentFormat, Error, FilterPushdown,
+    encode_agenticmd, encode_json_storylines, open_document, DocumentFormat, FilterPushdown,
     QueryTables, DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
 };
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument, StorylineTurn};
 use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
 use serde_json::json;
+
+fn accepts_anyhow<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
+    result
+}
 
 fn fixture(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -157,10 +161,8 @@ async fn materialization_budget_fails_closed_but_callback_visits_the_complete_st
     std::fs::write(&path, encode_agenticmd(&story)?)?;
 
     let source = open_document(DocumentFormat::AgenticMd, &path).await?;
-    assert!(matches!(
-        source.project_storylines().await,
-        Err(Error::SourceBudgetExceeded { .. })
-    ));
+    let error = accepts_anyhow(source.project_storylines().await).unwrap_err();
+    assert!(format!("{error:#}").contains("materialized rows"));
     let mut visited = Vec::new();
     source
         .for_each_storyline(|story| {

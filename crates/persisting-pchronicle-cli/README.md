@@ -104,6 +104,11 @@ process, or hidden database. Use global `--settings FILE` or the
 `PCHRONICLE_SETTINGS` environment variable to isolate its settings in tests or
 automation.
 
+Runtime errors are concise by default. Pass the global `--debug-errors` flag
+to include the complete source chain for local diagnosis; successful list and
+status output always uses fixed source-status messages and never includes those
+diagnostics.
+
 The read-only server uses a separate static mount configuration:
 
 ```toml

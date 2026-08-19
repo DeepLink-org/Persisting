@@ -1,6 +1,6 @@
 //! pChronicle 支持的具名物理文档格式。
 
-use crate::{Error, Result};
+use crate::{InputIssue, InputResult};
 use std::fmt;
 use std::str::FromStr;
 
@@ -52,9 +52,9 @@ impl fmt::Display for DocumentFormat {
 }
 
 impl FromStr for DocumentFormat {
-    type Err = Error;
+    type Err = InputIssue;
 
-    fn from_str(input: &str) -> Result<Self> {
+    fn from_str(input: &str) -> InputResult<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
             "canonical-event" => Ok(Self::CanonicalEvent),
             "storyline" => Ok(Self::Storyline),
@@ -62,7 +62,7 @@ impl FromStr for DocumentFormat {
             "atif" => Ok(Self::Atif),
             "openai-msg" => Ok(Self::OpenaiMsg),
             "actf" => Ok(Self::Actf),
-            other => Err(Error::Other(format!(
+            other => Err(InputIssue::invalid(format!(
                 "unknown document format '{other}'; expected canonical-event|storyline|agenticmd|atif|openai-msg|actf"
             ))),
         }

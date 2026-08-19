@@ -285,11 +285,7 @@ impl DatasetCatalogSnapshot {
                         prepared_sources.push(lazy_source);
                     }
                     Err(error) if options.error_policy == CatalogErrorPolicy::Report => {
-                        source_rows.push(DiscoveredSource {
-                            status: CatalogSourceStatus::Error,
-                            error: Some(redact_error(&error.to_string())),
-                            ..stub
-                        });
+                        source_rows.push(reported_source_failure(stub, error));
                     }
                     Err(error) => {
                         return Err(error).with_context(|| {
@@ -706,14 +702,15 @@ fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn redact_error(message: &str) -> String {
-    // Object-store credentials should not normally occur in URLs, but avoid
-    // reflecting query strings from backend errors into the public catalog.
-    message
-        .split_whitespace()
-        .map(|part| part.split('?').next().unwrap_or(part))
-        .collect::<Vec<_>>()
-        .join(" ")
+fn reported_source_failure(mut source: DiscoveredSource, error: anyhow::Error) -> DiscoveredSource {
+    tracing::error!(
+        error = ?error,
+        source = %source.file,
+        "pChronicle Catalog source discovery failed"
+    );
+    source.status = CatalogSourceStatus::Error;
+    source.error = Some("Source discovery failed".into());
+    source
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use persisting_pchronicle::document::{DocumentFormat, QueryTables};
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
 use persisting_pchronicle::query::{
     ChronicleQueryEngine, ChronicleQueryExecutionOptions, ExternalTableFormat, ExternalTableSpec,
-    QuerySnapshot,
+    QuerySnapshot, QueryWriteOutcome,
 };
 use persisting_pchronicle::storage::{RawEventLanceStore, StoryCoords, StorylineLanceStore};
 
@@ -194,6 +194,12 @@ async fn atif_file_filter_prunes_before_validation_and_exposes_relative_path() -
     assert!(output.contains("good.json"));
     let error = engine.query("SELECT * FROM runs").await.unwrap_err();
     assert!(format!("{error:#}").contains("unmatched.json"));
+    assert!(
+        error.chain().any(|source| source
+            .downcast_ref::<persisting_pchronicle::document::InputIssue>()
+            .is_some()),
+        "missing InputIssue source: {error:#}"
+    );
     Ok(())
 }
 
@@ -711,5 +717,61 @@ async fn query_engine_rejects_writes_and_multiple_statements() -> Result<()> {
     assert!(!explain.is_empty());
     let empty_result = engine.query_jsonl("SELECT * FROM runs WHERE 1 = 0").await?;
     assert!(empty_result.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn bounded_query_reports_row_exhaustion_as_an_outcome() -> Result<()> {
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        fixture_root(),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let mut output = Vec::new();
+
+    let outcome = engine
+        .write_query_jsonl_bounded("SELECT session_id FROM runs", &mut output, Some(1))
+        .await?;
+
+    assert_eq!(outcome, QueryWriteOutcome::LimitExceeded);
+    Ok(())
+}
+
+#[tokio::test]
+async fn bounded_query_preserves_an_ordinary_writer_error_source() -> Result<()> {
+    #[derive(Debug)]
+    struct FailingWriter;
+
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "writer-source-sentinel",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::Atif,
+        fixture_root().join("dialogue_10.json"),
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let error = engine
+        .write_query_jsonl_bounded("SELECT session_id FROM runs", FailingWriter, None)
+        .await
+        .expect_err("an ordinary writer failure must remain operational");
+
+    let source = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<std::io::Error>())
+        .context("writer I/O source was not preserved")?;
+    assert_eq!(source.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(source.to_string(), "writer-source-sentinel");
     Ok(())
 }

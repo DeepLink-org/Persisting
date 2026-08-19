@@ -1,11 +1,11 @@
 //! Bounded bridge from synchronous capture callbacks to the async Lance appender.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use anyhow::Context;
-use thiserror::Error;
 
 use crate::formats::EventRecord;
 use crate::layout::StoryCoords;
@@ -29,7 +29,7 @@ pub const DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY: usize = 64;
 struct RawEventAppendJob {
     coords: StoryCoords,
     record: EventRecord,
-    completion: Option<mpsc::SyncSender<Result<(), String>>>,
+    completion: Option<mpsc::SyncSender<anyhow::Result<()>>>,
 }
 
 #[derive(Debug)]
@@ -38,14 +38,11 @@ enum WriterMessage {
     Finish,
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum RawEventAppendQueueError {
-    #[error("pChronicle append queue is full")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawEventAppendOutcome {
+    Accepted,
     Full,
-    #[error("pChronicle append queue is closed")]
-    Closed,
-    #[error("pChronicle append failed: {0}")]
-    Write(String),
+    Unavailable,
 }
 
 #[derive(Debug)]
@@ -66,11 +63,7 @@ pub struct RawEventAppendSender {
 }
 
 impl RawEventAppendSender {
-    pub fn try_append(
-        &self,
-        coords: StoryCoords,
-        record: EventRecord,
-    ) -> Result<(), RawEventAppendQueueError> {
+    pub fn try_append(&self, coords: StoryCoords, record: EventRecord) -> RawEventAppendOutcome {
         self.enqueue(coords, record, None)
     }
 
@@ -83,45 +76,48 @@ impl RawEventAppendSender {
         &self,
         coords: StoryCoords,
         record: EventRecord,
-    ) -> Result<(), RawEventAppendQueueError> {
+    ) -> anyhow::Result<RawEventAppendOutcome> {
         let (completion_tx, completion_rx) = mpsc::sync_channel(1);
-        self.enqueue(coords, record, Some(completion_tx))?;
-        completion_rx
-            .recv()
-            .map_err(|_| RawEventAppendQueueError::Closed)?
-            .map_err(RawEventAppendQueueError::Write)
+        match self.enqueue(coords, record, Some(completion_tx)) {
+            RawEventAppendOutcome::Accepted => completion_rx
+                .recv()
+                .context("await raw event append completion")?
+                .map(|()| RawEventAppendOutcome::Accepted),
+            rejection => Ok(rejection),
+        }
     }
 
     fn enqueue(
         &self,
         coords: StoryCoords,
         record: EventRecord,
-        completion: Option<mpsc::SyncSender<Result<(), String>>>,
-    ) -> Result<(), RawEventAppendQueueError> {
+        completion: Option<mpsc::SyncSender<anyhow::Result<()>>>,
+    ) -> RawEventAppendOutcome {
         if !self.state.accepting.load(Ordering::SeqCst) {
-            return Err(RawEventAppendQueueError::Closed);
+            return RawEventAppendOutcome::Unavailable;
         }
 
         self.state.in_flight.fetch_add(1, Ordering::SeqCst);
         if !self.state.accepting.load(Ordering::SeqCst) {
             self.state.in_flight.fetch_sub(1, Ordering::SeqCst);
-            return Err(RawEventAppendQueueError::Closed);
+            return RawEventAppendOutcome::Unavailable;
         }
 
-        let result = self
-            .state
-            .tx
-            .try_send(WriterMessage::Append(Box::new(RawEventAppendJob {
-                coords,
-                record,
-                completion,
-            })))
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => RawEventAppendQueueError::Full,
-                mpsc::TrySendError::Disconnected(_) => RawEventAppendQueueError::Closed,
-            });
+        let outcome =
+            match self
+                .state
+                .tx
+                .try_send(WriterMessage::Append(Box::new(RawEventAppendJob {
+                    coords,
+                    record,
+                    completion,
+                }))) {
+                Ok(()) => RawEventAppendOutcome::Accepted,
+                Err(mpsc::TrySendError::Full(_)) => RawEventAppendOutcome::Full,
+                Err(mpsc::TrySendError::Disconnected(_)) => RawEventAppendOutcome::Unavailable,
+            };
         self.state.in_flight.fetch_sub(1, Ordering::SeqCst);
-        result
+        outcome
     }
 }
 
@@ -143,7 +139,8 @@ impl RawEventAppendWorker {
             .state
             .tx
             .send(WriterMessage::Finish)
-            .map_err(|error| anyhow::anyhow!("pChronicle append worker closed: {error}"));
+            .map_err(anyhow::Error::new)
+            .context("finish raw event append worker");
         let Some(join) = self.join.take() else {
             return finish_signal;
         };
@@ -280,15 +277,27 @@ fn run_append_worker(
             }
         }
 
-        let mut completions = Vec::with_capacity(jobs.len());
+        let mut completions = BTreeMap::<String, Vec<mpsc::SyncSender<anyhow::Result<()>>>>::new();
         let mut entries = Vec::with_capacity(jobs.len());
         for job in jobs {
             match raw_event_lance_path(&job.coords) {
                 Ok(path) => {
-                    completions.push((path.to_string_lossy().into_owned(), job.completion));
+                    let uri = path.to_string_lossy().into_owned();
+                    if let Some(completion) = job.completion {
+                        completions.entry(uri).or_default().push(completion);
+                    } else {
+                        completions.entry(uri).or_default();
+                    }
                     entries.push((job.coords, job.record));
                 }
-                Err(error) => notify_completion(job.completion, Err(format!("{error:#}"))),
+                Err(error) => {
+                    if let Some(error) = notify_completion(job.completion, Err(error)) {
+                        tracing::warn!(
+                            target: "persisting_pchronicle",
+                            "non-durable raw-event append path failed: {error:#}"
+                        );
+                    }
+                }
             }
         }
         if entries.is_empty() {
@@ -298,54 +307,50 @@ fn run_append_worker(
             .block_on(appender.append_event_batch_partitioned(&entries))
             .context("append event batch to pChronicle");
         match append_result {
-            Ok(report) => {
-                for (uri, completion) in completions {
-                    let result = match report.outcome_for(&uri) {
+            Ok(mut report) => {
+                for (uri, partition_completions) in completions {
+                    let result = match report.take_outcome(&uri) {
                         Some(Ok(_)) => Ok(()),
-                        Some(Err(error)) => Err(error.clone()),
-                        None => Err(format!(
-                            "pChronicle append returned no partition outcome for {uri}"
-                        )),
+                        Some(Err(error)) => Err(error.context("append raw event partition")),
+                        None => Err(anyhow::anyhow!(
+                            "pChronicle append returned no partition outcome"
+                        )
+                        .context(format!("append raw event partition {uri}"))),
                     };
-                    if completion.is_none() {
-                        if let Err(error) = &result {
-                            tracing::warn!(
-                                target: "persisting_pchronicle",
-                                "non-durable raw-event append failed for {uri}: {error}"
-                            );
-                        }
-                    }
-                    notify_completion(completion, result);
-                }
-                match appender.seal_fragmented_segments(compaction_threshold) {
-                    Ok(segments) => {
-                        for segment in segments {
-                            enqueue_maintenance(&maintenance_tx, segment);
-                        }
-                    }
-                    Err(error) => {
-                        // The append and its manifest publication are already
-                        // durable. Keep maintenance best-effort so a compaction
-                        // failure cannot turn a successful capture into a retry.
+                    if let Some(error) =
+                        notify_partition_completions(&uri, partition_completions, result)
+                    {
                         tracing::warn!(
                             target: "persisting_pchronicle",
-                            "background raw-event segment sealing failed: {error:#}"
+                            "non-durable raw-event append failed for {uri}: {error:#}"
                         );
                     }
                 }
             }
             Err(error) => {
-                let message = format!("{error:#}");
-                // Publish the terminal queue state before waking callers from
-                // the failed batch. Once a durable append observes `Write`, a
-                // subsequent append must deterministically observe `Closed`
-                // instead of racing into the drain path and receiving the same
-                // writer error again.
-                stop_and_reject_pending(&rx, &state, &message);
-                for (_, completion) in completions {
-                    notify_completion(completion, Err(message.clone()));
+                return Err(complete_terminal_append_failure(
+                    &rx,
+                    &state,
+                    completions,
+                    error,
+                ));
+            }
+        }
+
+        match appender.seal_fragmented_segments(compaction_threshold) {
+            Ok(segments) => {
+                for segment in segments {
+                    enqueue_maintenance(&maintenance_tx, segment);
                 }
-                return Err(error);
+            }
+            Err(error) => {
+                // The append and its manifest publication are already durable.
+                // Keep maintenance best-effort so a compaction failure cannot
+                // turn a successful capture into a retry.
+                tracing::warn!(
+                    target: "persisting_pchronicle",
+                    "background raw-event segment sealing failed: {error:#}"
+                );
             }
         }
     }
@@ -371,22 +376,60 @@ fn run_append_worker(
     Ok(())
 }
 
-fn notify_completions(
-    completions: &[Option<mpsc::SyncSender<Result<(), String>>>],
-    result: Result<(), String>,
-) {
-    for completion in completions.iter().flatten() {
-        let _ = completion.send(result.clone());
+fn notify_completion(
+    completion: Option<mpsc::SyncSender<anyhow::Result<()>>>,
+    result: anyhow::Result<()>,
+) -> Option<anyhow::Error> {
+    match (completion, result) {
+        (Some(completion), Ok(())) => {
+            let _ = completion.send(Ok(()));
+            None
+        }
+        (Some(completion), Err(error)) => send_owned_completion_error(&completion, error),
+        (None, Ok(())) => None,
+        (None, Err(error)) => Some(error),
     }
 }
 
-fn notify_completion(
-    completion: Option<mpsc::SyncSender<Result<(), String>>>,
-    result: Result<(), String>,
-) {
-    if let Some(completion) = completion {
-        let _ = completion.send(result);
+fn notify_partition_completions(
+    uri: &str,
+    completions: Vec<mpsc::SyncSender<anyhow::Result<()>>>,
+    result: anyhow::Result<()>,
+) -> Option<anyhow::Error> {
+    match result {
+        Ok(()) => {
+            for completion in completions {
+                let _ = completion.send(Ok(()));
+            }
+            None
+        }
+        Err(error) => {
+            let mut original = Some(error);
+            for completion in completions {
+                if let Some(error) = original.take() {
+                    original = send_owned_completion_error(&completion, error);
+                } else {
+                    let _ = completion.send(Err(partition_append_failure(uri)));
+                }
+            }
+            original
+        }
     }
+}
+
+fn send_owned_completion_error(
+    completion: &mpsc::SyncSender<anyhow::Result<()>>,
+    error: anyhow::Error,
+) -> Option<anyhow::Error> {
+    match completion.send(Err(error)) {
+        Ok(()) => None,
+        Err(send_error) => send_error.0.err(),
+    }
+}
+
+fn partition_append_failure(uri: &str) -> anyhow::Error {
+    anyhow::anyhow!("partition micro-batch failed; another waiter owns the storage failure")
+        .context(format!("append raw event partition {uri}"))
 }
 
 fn enqueue_maintenance(
@@ -406,14 +449,51 @@ fn enqueue_maintenance(
     }
 }
 
-fn stop_and_reject_pending(rx: &mpsc::Receiver<WriterMessage>, state: &SenderState, message: &str) {
+fn complete_terminal_append_failure(
+    rx: &mpsc::Receiver<WriterMessage>,
+    state: &SenderState,
+    completions: BTreeMap<String, Vec<mpsc::SyncSender<anyhow::Result<()>>>>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    stop_and_reject_pending(rx, state);
+    let canonical_uri = completions
+        .iter()
+        .find(|(_, waiters)| !waiters.is_empty())
+        .map(|(uri, _)| uri.clone());
+    let mut original = Some(error);
+    for (uri, partition_completions) in completions {
+        for completion in partition_completions {
+            if let Some(error) = original.take() {
+                original = send_owned_completion_error(&completion, error);
+            } else {
+                let _ = completion.send(Err(partition_append_failure(&uri)));
+            }
+        }
+    }
+
+    original.unwrap_or_else(|| {
+        let worker_failure =
+            anyhow::anyhow!("pChronicle append worker stopped after a terminal storage failure");
+        match canonical_uri {
+            Some(uri) => worker_failure.context(format!("append raw event partition {uri}")),
+            None => worker_failure,
+        }
+    })
+}
+
+fn stop_and_reject_pending(rx: &mpsc::Receiver<WriterMessage>, state: &SenderState) {
     state.accepting.store(false, Ordering::SeqCst);
     while state.in_flight.load(Ordering::SeqCst) != 0 {
         std::thread::yield_now();
     }
     while let Ok(message_in_queue) = rx.try_recv() {
         if let WriterMessage::Append(job) = message_in_queue {
-            notify_completions(&[job.completion], Err(message.to_string()));
+            let _ = notify_completion(
+                job.completion,
+                Err(anyhow::anyhow!(
+                    "pChronicle append worker stopped before acknowledging the event"
+                )),
+            );
         }
     }
 }
@@ -422,6 +502,7 @@ fn stop_and_reject_pending(rx: &mpsc::Receiver<WriterMessage>, state: &SenderSta
 mod tests {
     use super::*;
     use serde_json::Value;
+    use std::collections::BTreeMap;
 
     use crate::store::RawEventLanceStore;
 
@@ -446,21 +527,49 @@ mod tests {
     }
 
     #[test]
-    fn full_queue_is_reported_without_waiting() {
+    fn full_and_closed_are_expected_append_outcomes() {
         let (tx, _rx) = mpsc::sync_channel(1);
         let state = Arc::new(SenderState {
             tx,
             accepting: AtomicBool::new(true),
             in_flight: AtomicUsize::new(0),
         });
-        let sender = RawEventAppendSender { state };
+        let sender = RawEventAppendSender {
+            state: Arc::clone(&state),
+        };
         let coords = StoryCoords::new("memory://queue", "agent", "session", None);
-        let record = event();
-
-        sender.try_append(coords.clone(), record.clone()).unwrap();
         assert_eq!(
-            sender.try_append(coords, record),
-            Err(RawEventAppendQueueError::Full)
+            sender.try_append(coords.clone(), event()),
+            RawEventAppendOutcome::Accepted
+        );
+        assert_eq!(
+            sender.try_append(coords.clone(), event()),
+            RawEventAppendOutcome::Full
+        );
+        state.accepting.store(false, Ordering::SeqCst);
+        assert_eq!(
+            sender.try_append(coords, event()),
+            RawEventAppendOutcome::Unavailable
+        );
+    }
+
+    #[test]
+    fn disconnected_queue_is_an_unavailable_append_outcome() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        drop(rx);
+        let state = Arc::new(SenderState {
+            tx,
+            accepting: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+        });
+        let sender = RawEventAppendSender { state };
+
+        assert_eq!(
+            sender.try_append(
+                StoryCoords::new("memory://queue", "agent", "session", None),
+                event(),
+            ),
+            RawEventAppendOutcome::Unavailable
         );
     }
 
@@ -471,7 +580,10 @@ mod tests {
         let coords = StoryCoords::new(storage.to_string_lossy(), "agent", "session", None);
         let (sender, worker) = raw_event_append_queue_with_capacity(1).unwrap();
 
-        sender.append_durable(coords.clone(), event()).unwrap();
+        assert_eq!(
+            sender.append_durable(coords.clone(), event()).unwrap(),
+            RawEventAppendOutcome::Accepted
+        );
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -498,11 +610,15 @@ mod tests {
         );
         let (sender, worker) = raw_event_append_queue_with_capacity(1).unwrap();
 
-        assert!(matches!(
-            sender.append_durable(invalid, event()),
-            Err(RawEventAppendQueueError::Write(_))
-        ));
-        sender.append_durable(valid.clone(), event()).unwrap();
+        let error = sender.append_durable(invalid, event()).unwrap_err();
+        assert!(
+            error.chain().count() >= 2,
+            "missing source chain: {error:#}"
+        );
+        assert_eq!(
+            sender.append_durable(valid.clone(), event()).unwrap(),
+            RawEventAppendOutcome::Accepted
+        );
         worker.finish().unwrap();
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -588,5 +704,297 @@ mod tests {
             .map(|record| record.seq)
             .collect::<Vec<_>>();
         assert_eq!(sequences, (0..8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn multiple_durable_waiters_preserve_same_partition_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("store");
+        let coords = StoryCoords::new(storage.to_string_lossy(), "agent", "session", None);
+        let (tx, rx) = mpsc::sync_channel(4);
+        let state = Arc::new(SenderState {
+            tx,
+            accepting: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+        });
+        let sender = RawEventAppendSender {
+            state: Arc::clone(&state),
+        };
+        let (first_tx, first_rx) = mpsc::sync_channel(1);
+        let (second_tx, second_rx) = mpsc::sync_channel(1);
+        for (seq, completion) in [(1, Some(first_tx)), (2, Some(second_tx)), (3, None)] {
+            let mut record = event();
+            record.seq = seq;
+            assert_eq!(
+                sender.enqueue(coords.clone(), record, completion),
+                RawEventAppendOutcome::Accepted
+            );
+        }
+
+        let worker_state = Arc::clone(&state);
+        let join = std::thread::spawn(move || {
+            run_append_worker(
+                rx,
+                worker_state,
+                DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
+                DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
+                DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
+            )
+        });
+        let worker = RawEventAppendWorker {
+            state,
+            join: Some(join),
+        };
+
+        first_rx.recv().unwrap().unwrap();
+        second_rx.recv().unwrap().unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let layout = runtime
+            .block_on(RawEventLanceStore.layout_stats(&coords))
+            .unwrap();
+        assert_eq!(layout.visible_rows, 3);
+        assert_eq!(
+            layout.visible_fragments, 1,
+            "one same-partition queue micro-batch must make one Lance commit"
+        );
+        worker.finish().unwrap();
+        let replay = runtime
+            .block_on(RawEventLanceStore.replay(&coords, 0, None))
+            .unwrap();
+        let sequences = replay
+            .records
+            .iter()
+            .map(|record| record.seq)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn failed_partition_batch_rejects_later_waiters_without_a_sequence_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("store");
+        let coords = StoryCoords::new(storage.to_string_lossy(), "agent", "session", None);
+        let (tx, rx) = mpsc::sync_channel(4);
+        let state = Arc::new(SenderState {
+            tx,
+            accepting: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+        });
+        let sender = RawEventAppendSender {
+            state: Arc::clone(&state),
+        };
+        let (first_tx, first_rx) = mpsc::sync_channel(1);
+        let (second_tx, second_rx) = mpsc::sync_channel(1);
+        let mut invalid = event();
+        invalid.seq = 1;
+        invalid.identity.timestamp_unix_ms = Some(1_000);
+        invalid.timestamp = Some("1970-01-01T00:00:02Z".into());
+        let mut second = event();
+        second.seq = 2;
+        assert_eq!(
+            sender.enqueue(coords.clone(), invalid, Some(first_tx)),
+            RawEventAppendOutcome::Accepted
+        );
+        assert_eq!(
+            sender.enqueue(coords.clone(), second, Some(second_tx)),
+            RawEventAppendOutcome::Accepted
+        );
+
+        let worker_state = Arc::clone(&state);
+        let join = std::thread::spawn(move || {
+            run_append_worker(
+                rx,
+                worker_state,
+                DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
+                DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
+                DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
+            )
+        });
+        let worker = RawEventAppendWorker {
+            state,
+            join: Some(join),
+        };
+
+        let first_error = first_rx.recv().unwrap().unwrap_err();
+        assert!(
+            format!("{first_error:#}").contains("timestamp"),
+            "{first_error:#}"
+        );
+        let second_error = second_rx.recv().unwrap().unwrap_err();
+        assert!(
+            format!("{second_error:#}").contains("event partition"),
+            "{second_error:#}"
+        );
+
+        let mut third = event();
+        third.seq = 3;
+        assert_eq!(
+            sender.append_durable(coords.clone(), third).unwrap(),
+            RawEventAppendOutcome::Accepted
+        );
+        worker.finish().unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let replay = runtime
+            .block_on(RawEventLanceStore.replay(&coords, 0, None))
+            .unwrap();
+        let sequences = replay
+            .records
+            .iter()
+            .map(|record| record.seq)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![3]);
+    }
+
+    #[test]
+    fn partition_failure_transfers_original_error_after_selected_receiver_is_dropped() {
+        let (dropped_tx, dropped_rx) = mpsc::sync_channel(1);
+        drop(dropped_rx);
+        let (live_tx, live_rx) = mpsc::sync_channel(1);
+        let source_error = anyhow::Error::new(std::io::Error::other("partition-source-sentinel"))
+            .context("append event partition");
+
+        let unclaimed = notify_partition_completions(
+            "memory://partition/events.lance",
+            vec![dropped_tx, live_tx],
+            Err(source_error),
+        );
+
+        assert!(unclaimed.is_none());
+        let error = live_rx.recv().unwrap().unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("append event partition"), "{rendered}");
+        assert!(rendered.contains("partition-source-sentinel"), "{rendered}");
+    }
+
+    #[test]
+    fn terminal_append_failure_reaches_waiter_and_worker_finish() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        tx.send(WriterMessage::Finish).unwrap();
+        let state = Arc::new(SenderState {
+            tx,
+            accepting: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+        });
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        let uri = "memory://terminal/events.lance".to_string();
+        let completions = BTreeMap::from([(uri.clone(), vec![completion_tx])]);
+        let worker_state = Arc::clone(&state);
+        let join = std::thread::spawn(move || -> anyhow::Result<()> {
+            Err(complete_terminal_append_failure(
+                &rx,
+                &worker_state,
+                completions,
+                anyhow::Error::new(std::io::Error::other("terminal-source-sentinel"))
+                    .context("append raw event batch"),
+            ))
+        });
+        let worker = RawEventAppendWorker {
+            state,
+            join: Some(join),
+        };
+
+        let waiter_error = completion_rx.recv().unwrap().unwrap_err();
+        let waiter_rendered = format!("{waiter_error:#}");
+        assert!(waiter_rendered.contains("terminal-source-sentinel"));
+
+        let finish_error = worker.finish().unwrap_err();
+        let finish_rendered = format!("{finish_error:#}");
+        assert!(finish_rendered.contains("terminal storage failure"));
+        assert!(finish_rendered.contains(&uri));
+    }
+
+    #[test]
+    fn terminal_failure_returns_original_when_all_completion_receivers_are_dropped() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        tx.send(WriterMessage::Finish).unwrap();
+        let state = Arc::new(SenderState {
+            tx,
+            accepting: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+        });
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        drop(completion_rx);
+        let completions = BTreeMap::from([(
+            "memory://terminal/events.lance".to_string(),
+            vec![completion_tx],
+        )]);
+        let worker_state = Arc::clone(&state);
+        let join = std::thread::spawn(move || -> anyhow::Result<()> {
+            Err(complete_terminal_append_failure(
+                &rx,
+                &worker_state,
+                completions,
+                anyhow::Error::new(std::io::Error::other("dropped-terminal-source-sentinel"))
+                    .context("append raw event batch"),
+            ))
+        });
+        let worker = RawEventAppendWorker {
+            state,
+            join: Some(join),
+        };
+
+        let error = worker.finish().unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("append raw event batch"), "{rendered}");
+        assert!(
+            rendered.contains("dropped-terminal-source-sentinel"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn worker_panic_is_reported_by_finish() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let state = Arc::new(SenderState {
+            tx,
+            accepting: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+        });
+        let join = std::thread::spawn(move || -> anyhow::Result<()> {
+            drop(rx);
+            panic!("injected append worker panic");
+        });
+        let worker = RawEventAppendWorker {
+            state,
+            join: Some(join),
+        };
+
+        let error = worker.finish().unwrap_err();
+        assert!(error.to_string().contains("worker thread panicked"));
+    }
+
+    #[test]
+    fn worker_close_failure_keeps_the_channel_source() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let (closed_tx, closed_rx) = mpsc::sync_channel(1);
+        let state = Arc::new(SenderState {
+            tx,
+            accepting: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+        });
+        let join = std::thread::spawn(move || -> anyhow::Result<()> {
+            drop(rx);
+            closed_tx.send(()).unwrap();
+            Ok(())
+        });
+        let worker = RawEventAppendWorker {
+            state,
+            join: Some(join),
+        };
+        closed_rx.recv().unwrap();
+
+        let error = worker.finish().unwrap_err();
+        assert!(
+            error.chain().count() >= 2,
+            "missing source chain: {error:#}"
+        );
     }
 }

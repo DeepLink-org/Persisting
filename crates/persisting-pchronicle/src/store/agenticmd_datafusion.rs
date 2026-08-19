@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::datasource::{MemTable, TableProvider};
@@ -15,8 +15,9 @@ use crate::formats::StorylineDocument;
 use crate::store::split_storyline;
 
 use super::{
-    story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema, story_steps_to_batch,
-    story_tool_calls_arrow_schema, story_tool_calls_to_batch, StorylineDataFusionTableNames,
+    datafusion_bridge::from_datafusion, story_runs_arrow_schema, story_runs_to_batch,
+    story_steps_arrow_schema, story_steps_to_batch, story_tool_calls_arrow_schema,
+    story_tool_calls_to_batch, StorylineDataFusionTableNames,
 };
 
 #[derive(Debug)]
@@ -49,13 +50,13 @@ impl AgenticMdDataSource {
         let names = StorylineDataFusionTableNames::default();
         context
             .register_table(&names.runs, self.runs.clone())
-            .context("register AgenticMD runs table")?;
+            .map_err(|error| from_datafusion("register AgenticMD runs table", error))?;
         context
             .register_table(&names.steps, self.steps.clone())
-            .context("register AgenticMD steps table")?;
+            .map_err(|error| from_datafusion("register AgenticMD steps table", error))?;
         context
             .register_table(&names.tool_calls, self.tool_calls.clone())
-            .context("register AgenticMD tool_calls table")?;
+            .map_err(|error| from_datafusion("register AgenticMD tool_calls table", error))?;
         Ok(())
     }
 }

@@ -1,8 +1,9 @@
 //! Private provider variants behind the public `DocumentSource` API.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use anyhow::{Context as _, Result};
 use datafusion::arrow::array::{Array, StringArray};
 use datafusion::prelude::SessionContext;
 use futures::TryStreamExt;
@@ -13,14 +14,14 @@ use crate::document::{
     FilterPushdown, QueryCapabilities, QueryTables, DEFAULT_DOCUMENT_MATERIALIZE_BYTES,
     DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
 };
-use crate::error::{Error, Result};
 use crate::format::DocumentFormat;
 use crate::formats::actf::ActfDocument;
 use crate::formats::{parse_openai_msg_corpus_value, StorylineDocument};
 
 use super::{
-    AgenticMdDataSource, FileTrajectoryDataSource, LocalQueryManifest, RawEventDataSource,
-    StorylineDataSource, DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    datafusion_bridge::from_datafusion, AgenticMdDataSource, FileTrajectoryDataSource,
+    LocalQueryManifest, RawEventDataSource, StorylineDataSource, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
+    DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
 
 pub(crate) trait QueryDocumentSource {
@@ -33,21 +34,17 @@ pub(crate) trait QueryDocumentSource {
 #[derive(Debug)]
 pub(crate) enum DocumentSourceImpl {
     Events {
-        path: PathBuf,
         source: RawEventDataSource,
     },
     Storyline {
-        path: PathBuf,
         source: Box<StorylineDataSource>,
     },
     AgenticMd {
-        path: PathBuf,
         story: Box<StorylineDocument>,
         source: AgenticMdDataSource,
     },
     Files {
         format: DocumentFormat,
-        path: PathBuf,
         manifest: LocalQueryManifest,
         source: FileTrajectoryDataSource,
     },
@@ -60,34 +57,32 @@ pub(crate) async fn open_document_source(
     let path = path.to_path_buf();
     match format {
         DocumentFormat::CanonicalEvent => Ok(DocumentSourceImpl::Events {
-            source: RawEventDataSource::open(&path).await.map_err(other)?,
-            path,
+            source: RawEventDataSource::open(&path).await?,
         }),
         DocumentFormat::Storyline => {
-            let source = StorylineDataSource::open(&path).await.map_err(other)?;
+            let source = StorylineDataSource::open(&path).await?;
             Ok(DocumentSourceImpl::Storyline {
-                path,
                 source: Box::new(source),
             })
         }
         DocumentFormat::AgenticMd => {
-            let input = std::fs::read_to_string(&path).map_err(Error::from)?;
-            let story = parse_agenticmd(&input).map_err(|error| with_path(error, &path))?;
-            let source = AgenticMdDataSource::new(&story).map_err(other)?;
+            let input = std::fs::read_to_string(&path)
+                .with_context(|| format!("read AgenticMD document {}", path.display()))?;
+            let story = parse_agenticmd(&input)
+                .map_err(anyhow::Error::from)
+                .with_context(|| format!("parse AgenticMD document {}", path.display()))?;
+            let source = AgenticMdDataSource::new(&story)?;
             Ok(DocumentSourceImpl::AgenticMd {
-                path,
                 story: Box::new(story),
                 source,
             })
         }
         DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf => {
-            let manifest = LocalQueryManifest::for_format(&path, format).map_err(other)?;
-            let source =
-                FileTrajectoryDataSource::from_manifest(manifest.clone()).map_err(other)?;
+            let manifest = LocalQueryManifest::for_format(&path, format)?;
+            let source = FileTrajectoryDataSource::from_manifest(manifest.clone())?;
             debug_assert_eq!(source.format(), format);
             Ok(DocumentSourceImpl::Files {
                 format,
-                path,
                 manifest,
                 source,
             })
@@ -157,18 +152,22 @@ impl DocumentSourceImpl {
             } => for_each_file_storyline(*format, manifest, source.max_file_bytes(), on_storyline),
             Self::Storyline { source, .. } => {
                 let context = SessionContext::new();
-                source.register(&context).map_err(other)?;
+                source.register(&context)?;
                 let mut batches = context
                     .sql(
                         "SELECT document_id FROM runs \
                          ORDER BY storage_ordinal, document_id",
                     )
                     .await
-                    .map_err(other)?
+                    .map_err(|error| from_datafusion("plan Storyline document scan", error))?
                     .execute_stream()
                     .await
-                    .map_err(other)?;
-                while let Some(batch) = batches.try_next().await.map_err(other)? {
+                    .map_err(|error| from_datafusion("start Storyline document scan", error))?;
+                while let Some(batch) = batches
+                    .try_next()
+                    .await
+                    .map_err(|error| from_datafusion("stream Storyline documents", error))?
+                {
                     for document_id in strings_from_batch(&batch, "document_id")? {
                         on_storyline(read_pinned_storyline(&context, &document_id).await?)?;
                     }
@@ -177,18 +176,22 @@ impl DocumentSourceImpl {
             }
             Self::Events { source, .. } => {
                 let context = SessionContext::new();
-                source.register(&context).map_err(other)?;
+                source.register(&context)?;
                 let mut batches = context
                     .sql(
                         "SELECT DISTINCT session_id FROM events \
                          WHERE session_id IS NOT NULL ORDER BY session_id",
                     )
                     .await
-                    .map_err(other)?
+                    .map_err(|error| from_datafusion("plan event document scan", error))?
                     .execute_stream()
                     .await
-                    .map_err(other)?;
-                while let Some(batch) = batches.try_next().await.map_err(other)? {
+                    .map_err(|error| from_datafusion("start event document scan", error))?;
+                while let Some(batch) = batches
+                    .try_next()
+                    .await
+                    .map_err(|error| from_datafusion("stream event documents", error))?
+                {
                     for session_id in strings_from_batch(&batch, "session_id")? {
                         let requested = BTreeSet::from([session_id]);
                         let records = source
@@ -197,14 +200,7 @@ impl DocumentSourceImpl {
                                 DEFAULT_MAX_EVENT_FALLBACK_ROWS,
                                 DEFAULT_MAX_EVENT_FALLBACK_BYTES,
                             )
-                            .await
-                            .map_err(|error| {
-                                if error.to_string().contains("exceeds max_event_fallback") {
-                                    budget_error(self, &error.to_string())
-                                } else {
-                                    other(error)
-                                }
-                            })?;
+                            .await?;
                         on_storyline(project_event_records(&records)?)?;
                     }
                 }
@@ -311,10 +307,10 @@ impl QueryDocumentSource for DocumentSourceImpl {
 
     fn register(&self, context: &SessionContext) -> Result<()> {
         match self {
-            Self::Events { source, .. } => source.register(context).map_err(other),
-            Self::Storyline { source, .. } => source.register(context).map_err(other),
-            Self::AgenticMd { source, .. } => source.register(context).map_err(other),
-            Self::Files { source, .. } => source.register(context).map_err(other),
+            Self::Events { source, .. } => source.register(context),
+            Self::Storyline { source, .. } => source.register(context),
+            Self::AgenticMd { source, .. } => source.register(context),
+            Self::Files { source, .. } => source.register(context),
         }
     }
 }
@@ -332,9 +328,8 @@ where
         DocumentFormat::Atif => {
             for file in manifest.files() {
                 let input = read_bounded_file(file, max_file_bytes, format)?;
-                let input = std::str::from_utf8(&input)
-                    .map_err(|error| Error::Other(format!("ATIF input is not UTF-8: {error}")))?;
-                for story in super::files::parse_atif_storylines(input).map_err(other)? {
+                let input = std::str::from_utf8(&input).context("ATIF input is not UTF-8")?;
+                for story in super::files::parse_atif_storylines(input)? {
                     on_storyline(story)?;
                 }
             }
@@ -351,8 +346,7 @@ where
         DocumentFormat::Actf => {
             for file in manifest.files() {
                 let input = read_bounded_file(file, max_file_bytes, format)?;
-                let input = std::str::from_utf8(&input)
-                    .map_err(|error| Error::Other(format!("ACTF input is not UTF-8: {error}")))?;
+                let input = std::str::from_utf8(&input).context("ACTF input is not UTF-8")?;
                 let document = ActfDocument::from_json_str(input)?;
                 for story in actf_to_storylines(&document)? {
                     on_storyline(story)?;
@@ -360,9 +354,7 @@ where
             }
         }
         DocumentFormat::CanonicalEvent | DocumentFormat::Storyline | DocumentFormat::AgenticMd => {
-            return Err(Error::Other(format!(
-                "{format} is not a file-backed trajectory document format"
-            )));
+            anyhow::bail!("{format} is not a file-backed trajectory document format");
         }
     }
     Ok(())
@@ -373,22 +365,22 @@ fn read_bounded_file(
     max_file_bytes: u64,
     format: DocumentFormat,
 ) -> Result<Vec<u8>> {
-    file.validate_unchanged().map_err(other)?;
+    file.validate_unchanged()?;
     if file.size_bytes() > max_file_bytes {
-        return Err(Error::Other(format!(
+        anyhow::bail!(
             "{format} input {} is {} bytes, exceeding max_file_bytes {max_file_bytes}",
             file.path().display(),
             file.size_bytes()
-        )));
+        );
     }
     let input = std::fs::read(file.path())?;
     if input.len() as u64 > max_file_bytes {
-        return Err(Error::Other(format!(
+        anyhow::bail!(
             "{format} input {} exceeded max_file_bytes {max_file_bytes} while reading",
             file.path().display()
-        )));
+        );
     }
-    file.validate_unchanged().map_err(other)?;
+    file.validate_unchanged()?;
     Ok(input)
 }
 
@@ -397,12 +389,12 @@ fn strings_from_batch(
     column: &str,
 ) -> Result<Vec<String>> {
     let mut values = Vec::new();
-    let index = batch.schema().index_of(column).map_err(other)?;
+    let index = batch.schema().index_of(column)?;
     let array = batch
         .column(index)
         .as_any()
         .downcast_ref::<StringArray>()
-        .ok_or_else(|| Error::Other(format!("query column '{column}' is not Utf8")))?;
+        .ok_or_else(|| anyhow::anyhow!("query column '{column}' is not Utf8"))?;
     for row in 0..array.len() {
         if !array.is_null(row) {
             values.push(array.value(row).to_string());
@@ -421,46 +413,46 @@ async fn read_pinned_storyline(
             "SELECT * FROM runs WHERE document_id = '{literal}'"
         ))
         .await
-        .map_err(other)?
+        .map_err(|error| from_datafusion("plan pinned Storyline runs", error))?
         .collect()
         .await
-        .map_err(other)?;
+        .map_err(|error| from_datafusion("read pinned Storyline runs", error))?;
     let steps = context
         .sql(&format!(
             "SELECT * FROM steps WHERE document_id = '{literal}' ORDER BY step_id"
         ))
         .await
-        .map_err(other)?
+        .map_err(|error| from_datafusion("plan pinned Storyline steps", error))?
         .collect()
         .await
-        .map_err(other)?;
+        .map_err(|error| from_datafusion("read pinned Storyline steps", error))?;
     let tool_calls = context
         .sql(&format!(
             "SELECT * FROM tool_calls WHERE document_id = '{literal}' ORDER BY step_id, call_index"
         ))
         .await
-        .map_err(other)?
+        .map_err(|error| from_datafusion("plan pinned Storyline tool calls", error))?
         .collect()
         .await
-        .map_err(other)?;
+        .map_err(|error| from_datafusion("read pinned Storyline tool calls", error))?;
 
     let mut run_rows = Vec::new();
     for batch in &runs {
-        run_rows.extend(super::story_runs_from_batch(batch).map_err(other)?);
+        run_rows.extend(super::story_runs_from_batch(batch)?);
     }
     if run_rows.len() != 1 {
-        return Err(Error::Other(format!(
+        anyhow::bail!(
             "pinned Storyline source returned {} run rows for document_id '{document_id}'",
             run_rows.len()
-        )));
+        );
     }
     let mut step_rows = Vec::new();
     for batch in &steps {
-        step_rows.extend(super::story_steps_from_batch(batch).map_err(other)?);
+        step_rows.extend(super::story_steps_from_batch(batch)?);
     }
     let mut tool_call_rows = Vec::new();
     for batch in &tool_calls {
-        tool_call_rows.extend(super::story_tool_calls_from_batch(batch).map_err(other)?);
+        tool_call_rows.extend(super::story_tool_calls_from_batch(batch)?);
     }
     crate::store::reconstruct_storyline(crate::store::StorylineTables {
         run: run_rows.remove(0),
@@ -479,42 +471,6 @@ fn story_rows(story: &StorylineDocument) -> usize {
     )
 }
 
-fn budget_error(source: &DocumentSourceImpl, budget: &str) -> Error {
-    Error::SourceBudgetExceeded {
-        format: source.format(),
-        path: Some(source.path().to_path_buf()),
-        budget: budget.into(),
-    }
-}
-
-impl DocumentSourceImpl {
-    fn path(&self) -> &Path {
-        match self {
-            Self::Events { path, .. }
-            | Self::Storyline { path, .. }
-            | Self::AgenticMd { path, .. }
-            | Self::Files { path, .. } => path,
-        }
-    }
-}
-
-fn other(error: impl std::fmt::Display) -> Error {
-    Error::Other(error.to_string())
-}
-
-fn with_path(error: Error, path: &Path) -> Error {
-    match error {
-        Error::InvalidDocument {
-            format,
-            location,
-            message,
-            ..
-        } => Error::InvalidDocument {
-            format,
-            path: Some(path.to_path_buf()),
-            location,
-            message,
-        },
-        error => error,
-    }
+fn budget_error(source: &DocumentSourceImpl, budget: &str) -> anyhow::Error {
+    anyhow::anyhow!("{} source budget exceeded: {budget}", source.format())
 }

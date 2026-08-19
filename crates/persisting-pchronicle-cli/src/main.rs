@@ -7,6 +7,7 @@ use persisting_pchronicle_cli::{run_with_stdio, Cli};
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    let debug_errors = cli.debug_errors();
     let stdin_is_terminal = io::stdin().is_terminal();
     let stdout_is_terminal = io::stdout().is_terminal();
     let mut stdin = io::stdin().lock();
@@ -26,8 +27,33 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             use std::io::Write as _;
-            let _ = writeln!(stderr, "error: {error:#}");
+            let _ = writeln!(stderr, "error: {}", render_error(&error, debug_errors));
             ExitCode::FAILURE
         }
+    }
+}
+
+fn render_error(error: &anyhow::Error, detailed: bool) -> String {
+    if detailed {
+        format!("{error:#}")
+    } else {
+        error.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_error_rendering_omits_nested_sources_until_explicitly_requested() {
+        let error = anyhow::Error::new(std::io::Error::other("nested-error-sentinel"))
+            .context("top-level summary");
+
+        assert_eq!(render_error(&error, false), "top-level summary");
+        assert_eq!(
+            render_error(&error, true),
+            "top-level summary: nested-error-sentinel"
+        );
     }
 }

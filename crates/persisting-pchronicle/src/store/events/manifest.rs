@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use fs2::FileExt;
 use futures::TryStreamExt;
 use lance::io::ObjectStore;
@@ -39,6 +39,19 @@ impl EventWriterFence {
         );
         Ok(Self { epoch, writer_id })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EventWriterConflict {
+    StaleFence,
+    EpochAlreadyOwned,
+    PublicationChanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ManifestWriteOutcome<T> {
+    Applied(T),
+    Conflict(EventWriterConflict),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,7 +98,7 @@ pub(super) async fn activate(
     root_uri: &str,
     requested: Option<&EventWriterFence>,
     auto_writer_id: &str,
-) -> Result<EventManifest> {
+) -> Result<ManifestWriteOutcome<EventManifest>> {
     let requested = requested.cloned();
     let auto_writer_id = auto_writer_id.to_string();
     mutate(root_uri, move |current| {
@@ -94,18 +107,12 @@ pub(super) async fn activate(
                 return Ok(ManifestMutation::Unchanged(manifest.clone()));
             }
             (Some(fence), Some(manifest)) if fence.epoch < manifest.active_writer.epoch => {
-                bail!(
-                    "stale event writer fence: supplied epoch {}, active epoch {}",
-                    fence.epoch,
-                    manifest.active_writer.epoch
-                );
+                return Ok(ManifestMutation::Conflict(EventWriterConflict::StaleFence));
             }
             (Some(fence), Some(manifest)) if fence.epoch == manifest.active_writer.epoch => {
-                bail!(
-                    "event writer epoch {} is already owned by {}",
-                    fence.epoch,
-                    manifest.active_writer.writer_id
-                );
+                return Ok(ManifestMutation::Conflict(
+                    EventWriterConflict::EpochAlreadyOwned,
+                ));
             }
             (Some(fence), _) => fence.clone(),
             (None, Some(manifest)) => EventWriterFence {
@@ -142,11 +149,13 @@ pub(super) async fn publish_segment(
     root_uri: &str,
     fence: &EventWriterFence,
     segment: EventSegment,
-) -> Result<EventManifest> {
+) -> Result<ManifestWriteOutcome<EventManifest>> {
     let fence = fence.clone();
     mutate(root_uri, move |current| {
         let current = current.context("event manifest disappeared during publish")?;
-        ensure_active_writer(current, &fence)?;
+        if let Some(conflict) = active_writer_conflict(current, &fence) {
+            return Ok(ManifestMutation::Conflict(conflict));
+        }
         if let Some(existing) = current
             .segments
             .iter()
@@ -206,11 +215,13 @@ pub(super) async fn replace_segments(
     root_uri: &str,
     fence: &EventWriterFence,
     segments: Vec<EventSegment>,
-) -> Result<EventManifest> {
+) -> Result<ManifestWriteOutcome<EventManifest>> {
     let fence = fence.clone();
     mutate(root_uri, move |current| {
         let current = current.context("event manifest disappeared during maintenance")?;
-        ensure_active_writer(current, &fence)?;
+        if let Some(conflict) = active_writer_conflict(current, &fence) {
+            return Ok(ManifestMutation::Conflict(conflict));
+        }
         let replacement_rows = segments.iter().try_fold(0_u64, |total, segment| {
             total
                 .checked_add(segment.rows)
@@ -239,18 +250,24 @@ pub(super) async fn replace_segment_group(
     fence: &EventWriterFence,
     expected: &[EventSegment],
     replacement: EventSegment,
-) -> Result<EventManifest> {
+) -> Result<ManifestWriteOutcome<EventManifest>> {
     anyhow::ensure!(!expected.is_empty(), "segment replacement group is empty");
     let expected = expected.to_vec();
     let fence = fence.clone();
     mutate(root_uri, move |current| {
         let current = current.context("event manifest disappeared during segment merge")?;
-        ensure_active_writer(current, &fence)?;
-        let start = current
+        if let Some(conflict) = active_writer_conflict(current, &fence) {
+            return Ok(ManifestMutation::Conflict(conflict));
+        }
+        let Some(start) = current
             .segments
             .windows(expected.len())
             .position(|window| window == expected.as_slice())
-            .context("event segment merge inputs changed before publication")?;
+        else {
+            return Ok(ManifestMutation::Conflict(
+                EventWriterConflict::PublicationChanged,
+            ));
+        };
         let expected_rows = expected.iter().try_fold(0_u64, |total, segment| {
             total
                 .checked_add(segment.rows)
@@ -394,24 +411,20 @@ fn directory_bytes(path: &Path) -> Result<u64> {
     Ok(bytes)
 }
 
-fn ensure_active_writer(manifest: &EventManifest, fence: &EventWriterFence) -> Result<()> {
-    anyhow::ensure!(
-        &manifest.active_writer == fence,
-        "stale event writer fence: supplied epoch {} writer {}, active epoch {} writer {}",
-        fence.epoch,
-        fence.writer_id,
-        manifest.active_writer.epoch,
-        manifest.active_writer.writer_id
-    );
-    Ok(())
+fn active_writer_conflict(
+    manifest: &EventManifest,
+    fence: &EventWriterFence,
+) -> Option<EventWriterConflict> {
+    (&manifest.active_writer != fence).then_some(EventWriterConflict::StaleFence)
 }
 
 enum ManifestMutation<T> {
     Unchanged(T),
     Replace(EventManifest, T),
+    Conflict(EventWriterConflict),
 }
 
-async fn mutate<T, F>(root_uri: &str, mutation: F) -> Result<T>
+async fn mutate<T, F>(root_uri: &str, mutation: F) -> Result<ManifestWriteOutcome<T>>
 where
     T: Send + 'static,
     F: Fn(Option<&EventManifest>) -> Result<ManifestMutation<T>> + Send + Sync + 'static,
@@ -433,12 +446,13 @@ where
             let manifest_path = root.join(MANIFEST_FILE);
             let current = read_local_manifest(&manifest_path)?;
             let result = match mutation(current.as_ref())? {
-                ManifestMutation::Unchanged(value) => value,
+                ManifestMutation::Unchanged(value) => ManifestWriteOutcome::Applied(value),
                 ManifestMutation::Replace(manifest, value) => {
                     validate_manifest(&manifest)?;
                     write_local_manifest(&manifest_path, &manifest)?;
-                    value
+                    ManifestWriteOutcome::Applied(value)
                 }
+                ManifestMutation::Conflict(conflict) => ManifestWriteOutcome::Conflict(conflict),
             };
             FileExt::unlock(&lock)?;
             Ok(result)
@@ -452,8 +466,13 @@ where
         let current = read_object_manifest(&store, &path).await?;
         let outcome = mutation(current.as_ref().map(|(manifest, _)| manifest))?;
         let (manifest, value) = match outcome {
-            ManifestMutation::Unchanged(value) => return Ok(value),
+            ManifestMutation::Unchanged(value) => {
+                return Ok(ManifestWriteOutcome::Applied(value));
+            }
             ManifestMutation::Replace(manifest, value) => (manifest, value),
+            ManifestMutation::Conflict(conflict) => {
+                return Ok(ManifestWriteOutcome::Conflict(conflict));
+            }
         };
         validate_manifest(&manifest)?;
         let mode = match current {
@@ -462,13 +481,15 @@ where
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         match store.inner.put_opts(&path, bytes.into(), mode.into()).await {
-            Ok(_) => return Ok(value),
+            Ok(_) => return Ok(ManifestWriteOutcome::Applied(value)),
             Err(ObjectStoreError::AlreadyExists { .. })
             | Err(ObjectStoreError::Precondition { .. }) => continue,
             Err(error) => return Err(error.into()),
         }
     }
-    bail!("event manifest CAS contention exceeded {CAS_RETRIES} retries")
+    Ok(ManifestWriteOutcome::Conflict(
+        EventWriterConflict::PublicationChanged,
+    ))
 }
 
 fn validate_manifest(manifest: &EventManifest) -> Result<()> {
@@ -561,8 +582,15 @@ fn is_object_store_uri(uri: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn applied<T>(outcome: ManifestWriteOutcome<T>) -> T {
+        let ManifestWriteOutcome::Applied(value) = outcome else {
+            panic!("manifest write unexpectedly conflicted")
+        };
+        value
+    }
+
     #[tokio::test]
-    async fn newer_epoch_fences_old_publication() {
+    async fn stale_fence_is_a_conflict_while_object_store_failure_is_an_error() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("events.lance");
         let uri = root.to_str().unwrap();
@@ -583,7 +611,7 @@ mod tests {
         .await
         .unwrap();
         activate(uri, Some(&new), "unused").await.unwrap();
-        let error = publish_segment(
+        let outcome = publish_segment(
             uri,
             &old,
             EventSegment {
@@ -595,11 +623,20 @@ mod tests {
             },
         )
         .await
-        .unwrap_err();
-        assert!(error.to_string().contains("stale event writer fence"));
+        .unwrap();
+        assert_eq!(
+            outcome,
+            ManifestWriteOutcome::Conflict(EventWriterConflict::StaleFence)
+        );
         let manifest = read(uri).await.unwrap().unwrap();
         assert_eq!(manifest.active_writer, new);
         assert_eq!(manifest.total_rows(), 10);
+
+        assert!(
+            activate("unsupported-object-store://manifest", None, "writer")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -608,33 +645,37 @@ mod tests {
         let root = directory.path().join("events.lance");
         let uri = root.to_str().unwrap();
         let first = EventWriterFence::new(1, "first").unwrap();
-        let activated = activate(uri, Some(&first), "unused").await.unwrap();
+        let activated = applied(activate(uri, Some(&first), "unused").await.unwrap());
         assert_eq!((activated.fact_version, activated.fact_rows), (0, 0));
 
-        let published = publish_segment(
-            uri,
-            &first,
-            EventSegment {
-                id: "segment".into(),
-                version: 1,
-                rows: 3,
-                level: 0,
-                sealed: false,
-            },
-        )
-        .await
-        .unwrap();
+        let published = applied(
+            publish_segment(
+                uri,
+                &first,
+                EventSegment {
+                    id: "segment".into(),
+                    version: 1,
+                    rows: 3,
+                    level: 0,
+                    sealed: false,
+                },
+            )
+            .await
+            .unwrap(),
+        );
         assert_eq!((published.fact_version, published.fact_rows), (1, 3));
 
         let second = EventWriterFence::new(2, "second").unwrap();
-        let reactivated = activate(uri, Some(&second), "unused").await.unwrap();
+        let reactivated = applied(activate(uri, Some(&second), "unused").await.unwrap());
         assert!(reactivated.revision > published.revision);
         assert_eq!(reactivated.fact_version, published.fact_version);
         assert_eq!(reactivated.fact_rows, published.fact_rows);
 
-        let maintained = replace_segments(uri, &second, reactivated.segments.clone())
-            .await
-            .unwrap();
+        let maintained = applied(
+            replace_segments(uri, &second, reactivated.segments.clone())
+                .await
+                .unwrap(),
+        );
         assert!(maintained.revision > reactivated.revision);
         assert_eq!(maintained.fact_version, published.fact_version);
         assert_eq!(maintained.fact_rows, published.fact_rows);
@@ -649,8 +690,10 @@ mod tests {
         let first = EventWriterFence::new(7, "first").unwrap();
         let second = EventWriterFence::new(7, "second").unwrap();
         activate(&uri, Some(&first), "unused").await.unwrap();
-        let error = activate(&uri, Some(&second), "unused").await.unwrap_err();
-        assert!(error.to_string().contains("already owned"));
+        assert_eq!(
+            activate(&uri, Some(&second), "unused").await.unwrap(),
+            ManifestWriteOutcome::Conflict(EventWriterConflict::EpochAlreadyOwned)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -666,7 +709,7 @@ mod tests {
             claims.push(tokio::spawn(async move {
                 activate(&uri, None, &format!("writer-{writer}"))
                     .await
-                    .map(|manifest| manifest.active_writer.epoch)
+                    .map(|outcome| applied(outcome).active_writer.epoch)
             }));
         }
         let mut epochs = Vec::with_capacity(WRITERS);
@@ -719,19 +762,21 @@ mod tests {
             .unwrap();
         }
         let before_retry = read(uri).await.unwrap().unwrap();
-        let idempotent = publish_segment(
-            uri,
-            &fence,
-            EventSegment {
-                id: "one-writer-segment".into(),
-                version: PUBLISHES,
-                rows: PUBLISHES,
-                level: 0,
-                sealed: false,
-            },
-        )
-        .await
-        .unwrap();
+        let idempotent = applied(
+            publish_segment(
+                uri,
+                &fence,
+                EventSegment {
+                    id: "one-writer-segment".into(),
+                    version: PUBLISHES,
+                    rows: PUBLISHES,
+                    level: 0,
+                    sealed: false,
+                },
+            )
+            .await
+            .unwrap(),
+        );
         assert_eq!(idempotent.revision, before_retry.revision);
         assert_eq!(idempotent.segments.len(), 1);
         assert_eq!(idempotent.total_rows(), PUBLISHES);
@@ -766,20 +811,22 @@ mod tests {
             .unwrap();
         }
         let before = read(uri).await.unwrap().unwrap();
-        let merged = replace_segment_group(
-            uri,
-            &fence,
-            &before.segments[..2],
-            EventSegment {
-                id: "ab".into(),
-                version: 1,
-                rows: 4,
-                level: 1,
-                sealed: true,
-            },
-        )
-        .await
-        .unwrap();
+        let merged = applied(
+            replace_segment_group(
+                uri,
+                &fence,
+                &before.segments[..2],
+                EventSegment {
+                    id: "ab".into(),
+                    version: 1,
+                    rows: 4,
+                    level: 1,
+                    sealed: true,
+                },
+            )
+            .await
+            .unwrap(),
+        );
         assert_eq!(
             merged
                 .segments
@@ -790,7 +837,7 @@ mod tests {
         );
         assert_eq!(merged.total_rows(), before.total_rows());
 
-        let stale_error = replace_segment_group(
+        let stale_outcome = replace_segment_group(
             uri,
             &fence,
             &before.segments[..2],
@@ -803,10 +850,11 @@ mod tests {
             },
         )
         .await
-        .unwrap_err();
-        assert!(stale_error
-            .to_string()
-            .contains("merge inputs changed before publication"));
+        .unwrap();
+        assert_eq!(
+            stale_outcome,
+            ManifestWriteOutcome::Conflict(EventWriterConflict::PublicationChanged)
+        );
     }
 
     #[tokio::test]
@@ -817,7 +865,7 @@ mod tests {
         activate(uri, None, "writer").await.unwrap();
         std::fs::write(root.join(MANIFEST_FILE), b"{truncated").unwrap();
         let error = read(uri).await.unwrap_err();
-        assert!(error.to_string().contains("decode event manifest"));
+        assert!(format!("{error:#}").contains("decode event manifest"));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Error, Result};
+use crate::{InputIssue, InputResult, Result};
 
 /// Presence semantics for interchange fields where missing and explicit null
 /// carry different meanings.
@@ -343,8 +343,9 @@ impl StorylineDocument {
             .unwrap_or(&self.session_id)
     }
 
-    pub fn from_json_str(s: &str) -> Result<Self> {
-        let doc: Self = serde_json::from_str(s)?;
+    pub fn from_json_str(s: &str) -> InputResult<Self> {
+        let doc: Self =
+            serde_json::from_str(s).map_err(|error| InputIssue::invalid(error.to_string()))?;
         doc.validate()?;
         Ok(doc)
     }
@@ -353,20 +354,20 @@ impl StorylineDocument {
         Ok(serde_json::to_string_pretty(self)?)
     }
 
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> InputResult<()> {
         if self.session_id.is_empty() {
-            return Err(Error::Other("storyline.session is required".into()));
+            return Err(InputIssue::invalid("storyline.session is required"));
         }
         if self.agent.id.is_empty() {
-            return Err(Error::Other("storyline.agent.id is required".into()));
+            return Err(InputIssue::invalid("storyline.agent.id is required"));
         }
         if self
             .presence
             .collection_ordinal
             .is_some_and(|ordinal| ordinal < 0)
         {
-            return Err(Error::Other(
-                "storyline collection ordinal cannot be negative".into(),
+            return Err(InputIssue::invalid(
+                "storyline collection ordinal cannot be negative",
             ));
         }
         if self.presence.collection_shape == Some(StorylineCollectionShape::Single)
@@ -375,17 +376,23 @@ impl StorylineDocument {
                 .collection_ordinal
                 .is_some_and(|ordinal| ordinal != 0)
         {
-            return Err(Error::Other(
-                "single-document Storyline collection ordinal must be zero".into(),
+            return Err(InputIssue::invalid(
+                "single-document Storyline collection ordinal must be zero",
             ));
         }
         let mut seen = std::collections::HashSet::new();
         for turn in &self.turns {
             if turn.source.is_empty() {
-                return Err(Error::Other(format!("turn id={} src is required", turn.id)));
+                return Err(InputIssue::invalid(format!(
+                    "turn id={} src is required",
+                    turn.id
+                )));
             }
             if !seen.insert(turn.id) {
-                return Err(Error::Other(format!("duplicate turn id {}", turn.id)));
+                return Err(InputIssue::invalid(format!(
+                    "duplicate turn id {}",
+                    turn.id
+                )));
             }
         }
         Ok(())
@@ -394,7 +401,7 @@ impl StorylineDocument {
 
 #[cfg(all(test, feature = "lance-store"))]
 pub fn parse_storyline_document(input: &str) -> Result<StorylineDocument> {
-    StorylineDocument::from_json_str(input)
+    StorylineDocument::from_json_str(input).map_err(Into::into)
 }
 
 #[cfg(test)]

@@ -1,10 +1,10 @@
 //! pChronicle 的持久化存储入口。
 
-pub use crate::error::{classify_error, Error, ErrorCode, Result};
+pub type Result<T> = anyhow::Result<T>;
 
 #[cfg(feature = "lance-store")]
 pub use crate::append_queue::{
-    raw_event_append_queue, raw_event_append_queue_with_capacity, RawEventAppendQueueError,
+    raw_event_append_queue, raw_event_append_queue_with_capacity, RawEventAppendOutcome,
     RawEventAppendSender, RawEventAppendWorker, DEFAULT_RAW_EVENT_BATCH_DELAY,
     DEFAULT_RAW_EVENT_BATCH_SIZE, DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
     DEFAULT_RAW_EVENT_HIERARCHY_FANOUT, DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY,
@@ -49,8 +49,9 @@ pub use crate::store::{
 #[cfg(feature = "lance-store")]
 pub use crate::projection::{
     build_storyline_projection, rebuild_storyline_projection, storyline_projection_status,
-    sync_storyline_projection, verify_storyline_projection, StorylineProjectionBuildReport,
-    StorylineProjectionStatus, StorylineProjectionSyncMode, StorylineProjectionSyncReport,
+    sync_storyline_projection, verify_storyline_projection, ProjectionRebuildReason,
+    StorylineProjectionBuildOutcome, StorylineProjectionBuildReport, StorylineProjectionStatus,
+    StorylineProjectionSyncMode, StorylineProjectionSyncOutcome, StorylineProjectionSyncReport,
     StorylineProjectionVerification,
 };
 

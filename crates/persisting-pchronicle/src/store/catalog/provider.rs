@@ -65,20 +65,17 @@ impl CatalogTableProvider {
         event_session_ids: Option<&BTreeSet<String>>,
     ) -> datafusion::common::Result<Option<Arc<dyn ExecutionPlan>>> {
         let resolved = source.resolve().await.map_err(|error| {
-            DataFusionError::Execution(format!(
-                "resolve Dataset source '{}': {error:#}",
-                source.file()
-            ))
+            crate::store::datafusion_bridge::into_datafusion(
+                error.context("resolve Dataset source"),
+            )
         })?;
         let Some(table) = resolved
             .table(self.kind, event_session_ids)
             .await
             .map_err(|error| {
-                DataFusionError::Execution(format!(
-                    "prepare Dataset source '{}' table {}: {error:#}",
-                    source.file(),
-                    self.kind.table_name()
-                ))
+                crate::store::datafusion_bridge::into_datafusion(
+                    error.context("prepare Dataset source table"),
+                )
             })?
         else {
             return Ok(None);
@@ -368,12 +365,23 @@ pub(super) fn register_catalog_provider(
     provider: Arc<dyn TableProvider>,
     register_default: bool,
 ) -> Result<()> {
-    context.register_table(
-        TableReference::partial(dataset.to_string(), table.to_string()),
-        provider.clone(),
-    )?;
+    context
+        .register_table(
+            TableReference::partial(dataset.to_string(), table.to_string()),
+            provider.clone(),
+        )
+        .map_err(|error| {
+            crate::store::datafusion_bridge::from_datafusion("register Dataset table", error)
+        })?;
     if register_default {
-        context.register_table(TableReference::bare(table.to_string()), provider)?;
+        context
+            .register_table(TableReference::bare(table.to_string()), provider)
+            .map_err(|error| {
+                crate::store::datafusion_bridge::from_datafusion(
+                    "register default Dataset table",
+                    error,
+                )
+            })?;
     }
     Ok(())
 }
@@ -413,10 +421,14 @@ pub(super) async fn execute_ddl(context: &SessionContext, sql: &str) -> Result<(
     context
         .sql(sql)
         .await
-        .with_context(|| format!("plan Catalog DDL: {sql}"))?
+        .map_err(|error| {
+            crate::store::datafusion_bridge::from_datafusion("plan Catalog DDL", error)
+        })?
         .collect()
         .await
-        .with_context(|| format!("execute Catalog DDL: {sql}"))?;
+        .map_err(|error| {
+            crate::store::datafusion_bridge::from_datafusion("execute Catalog DDL", error)
+        })?;
     Ok(())
 }
 

@@ -24,7 +24,7 @@ where
             break;
         };
         let story = story?;
-        let mut tables = split_storyline(&story).map_err(anyhow::Error::from)?;
+        let mut tables = split_storyline(&story)?;
         let document_id = tables.run.document_id.clone();
         tables.run.storage_ordinal = *next_storage_ordinal;
         *next_storage_ordinal = next_storage_ordinal

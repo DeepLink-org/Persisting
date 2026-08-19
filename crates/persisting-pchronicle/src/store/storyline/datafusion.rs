@@ -30,6 +30,7 @@ use super::content::{
     content_columns, hydrate_selected_batches, open_objects, preview_selected_batches,
 };
 use super::{StorylineLanceStore, StorylineTablePaths};
+use crate::store::datafusion_bridge::{from_datafusion, into_datafusion};
 
 pub const DATAFUSION_RUNS_TABLE: &str = "runs";
 pub const DATAFUSION_STEPS_TABLE: &str = "steps";
@@ -139,14 +140,16 @@ impl TableProvider for StorylineTableProvider {
         let mut scan = self.dataset.scan();
         match projection {
             Some(projection) if projection.is_empty() => {
-                scan.empty_project().map_err(DataFusionError::from)?;
+                scan.empty_project()
+                    .map_err(|error| into_datafusion(error.into()))?;
             }
             Some(projection) => {
                 let columns = projection
                     .iter()
                     .map(|index| self.schema.field(*index).name())
                     .collect::<Vec<_>>();
-                scan.project(&columns).map_err(DataFusionError::from)?;
+                scan.project(&columns)
+                    .map_err(|error| into_datafusion(error.into()))?;
             }
             None => {}
         }
@@ -174,10 +177,13 @@ impl TableProvider for StorylineTableProvider {
                 .map(|value| value as i64),
             None,
         )
-        .map_err(DataFusionError::from)?;
+        .map_err(|error| into_datafusion(error.into()))?;
         scan.scan_in_order(self.options.scan_in_order);
         scan.use_scalar_index(self.options.use_scalar_indexes);
-        let plan = scan.create_plan().await.map_err(DataFusionError::from)?;
+        let plan = scan
+            .create_plan()
+            .await
+            .map_err(|error| into_datafusion(error.into()))?;
         let selected = selected_content_columns(self.kind, projection, &self.schema);
         if selected.is_empty() {
             Ok(plan)
@@ -352,7 +358,7 @@ impl ExecutionPlan for ContentHydrationExec {
                         preview_selected_batches(vec![batch], &selected)
                     }
                 }
-                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                .map_err(into_datafusion)?;
                 batches.pop().ok_or_else(|| {
                     DataFusionError::Internal("content hydration returned no batch".into())
                 })
@@ -483,13 +489,13 @@ impl StorylineDataSource {
         validate_table_names(names)?;
         context
             .register_table(&names.runs, self.runs.clone())
-            .with_context(|| format!("register DataFusion table '{}'", names.runs))?;
+            .map_err(|error| from_datafusion("register Storyline runs table", error))?;
         context
             .register_table(&names.steps, self.steps.clone())
-            .with_context(|| format!("register DataFusion table '{}'", names.steps))?;
+            .map_err(|error| from_datafusion("register Storyline steps table", error))?;
         context
             .register_table(&names.tool_calls, self.tool_calls.clone())
-            .with_context(|| format!("register DataFusion table '{}'", names.tool_calls))?;
+            .map_err(|error| from_datafusion("register Storyline tool_calls table", error))?;
         Ok(())
     }
 
