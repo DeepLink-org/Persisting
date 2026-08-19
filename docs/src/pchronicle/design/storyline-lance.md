@@ -23,6 +23,12 @@ recipe identity, recipe hash, and completeness. `fact_version` and `fact_rows` a
 freshness watermark. Compaction changes only the layout revision and does not stale a projection.
 Direct document writes clear lineage; maintenance preserves it.
 
+Incremental sync treats `[previous_fact_rows, fact_rows)` as an append range only because the
+canonical manifest validates `fact_rows == total_rows()`. Layout maintenance must preserve both
+replacement row count and segment order, so compaction cannot move that logical watermark. After
+reading the range, the projector also requires the returned record count to equal the exact range
+length; violating any of these proof obligations fails closed instead of silently skipping facts.
+
 Operational commands:
 
 ```bash
@@ -67,13 +73,13 @@ projection ownership 见[轨迹存储](trajectory-storage.md)，用户查询流�
 
 | 表 | 粒度 | 逻辑主键 | 外键 |
 |---|---|---|---|
-| `runs.lance` | 每个 Storyline 一行 | `session_id` | — |
-| `steps.lance` | 每个 turn 一行 | (`session_id`, `step_id`) | `session_id` → runs |
-| `tool_calls.lance` | 每个 tool call 一行 | (`session_id`, `tool_call_id`) | (`session_id`, `step_id`) → steps |
+| `runs.lance` | 每个 Storyline 一行 | `document_id` | — |
+| `steps.lance` | 每个 turn 一行 | (`document_id`, `step_id`) | `document_id` → runs |
+| `tool_calls.lance` | 每个 tool call 一行 | (`document_id`, `step_id`, `call_index`) | (`document_id`, `step_id`) → steps |
 
 `run_id` 是 Run 分组键；一个 Run 可以包含主 Story 和多个 subagent Story，因此
-`runs.lance` 中可能有多行共享同一个 `run_id`。`session_id` 才是 Storyline 文档的
-唯一键。
+`runs.lance` 中可能有多行共享同一个 `run_id`。内部 `document_id` 使用显式
+`trajectory_id`，缺省时回落到 `session_id`，是三表 mutation 的文档作用域键。
 
 常用 JSON 值（message、arguments、metrics、extra 等）以 UTF-8 JSON 列保存；身份、
 顺序、类型、时间和性能字段使用独立的 Arrow 标量列，便于过滤和分析。
@@ -190,7 +196,7 @@ root/
 
 首次导入创建三张规范化 Lance dataset、共享的 `objects.lance` 和标量索引。后续
 `replace_storyline` 不再读取或重写全库，而是按各表主键执行 merge-upsert，并只删除指定
-`session_id` 中已经不再存在的旧键。每次替换
+`document_id` 中已经不再存在的旧键。每次替换
 会产生一个新的逻辑 snapshot；
 `CURRENT` 是一段 JSON，记录逻辑 snapshot id、物理 `table_generation`、三张表以及对象表
 各自精确的 Lance version id。对象先持久化，三张业务表随后写入，最后才更新 `CURRENT`；
@@ -201,9 +207,9 @@ root/
 Lance MVCC 的旧版本默认保留，便于已打开的 reader 固定快照及故障恢复。频繁增量更新
 会积累 fragment、delete file 和未合并的索引增量。普通 replace 不执行 index refresh 或
 compaction，避免某次写请求出现维护型长尾；生产环境通过 `maintain` 显式执行三表并行
-compaction、补齐/刷新索引、内容 GC 和按保留期 vacuum。维护产生的三个新 version 仍先原子更新
-`CURRENT`，之后才回收旧版本。`CURRENT` 必须是包含全部精确版本的 JSON 指针，不读取旧的
-纯文本 generation 指针。
+compaction、补齐/刷新索引、内容 GC 和按保留期 vacuum。维护产生的四个 dataset version
+仍先原子更新 `CURRENT`，之后才回收旧版本和过期的非当前 physical generation。
+`CURRENT` 必须是包含全部精确版本的 JSON 指针，不读取旧的纯文本 generation 指针。
 
 本地写入通过进程内锁和文件锁串行化；对象存储通过 `CURRENT` 的 ETag/version 条件更新
 执行 optimistic CAS。stale commit 不能移动 `CURRENT`；`StorylineLanceStore` 在 CAS 冲突后
@@ -219,7 +225,7 @@ let restored = store.get_storyline_full("session-id").await?;
 let report = store.maintain(&LanceMaintenanceOptions::default()).await?;
 ```
 
-`replace_storyline` 以 `session_id` 为边界替换三张表中的相关行，同时保留同一 store
+`replace_storyline` 以 `document_id` 为边界替换三张表中的相关行，同时保留同一 store
 内的其他 Storyline。
 
 `get_storyline_full` 明确表示会读取三表并恢复该 Storyline 的全部内容。未被 CLI 或 Web 使用的
@@ -264,9 +270,9 @@ Blob payload I/O；为避免把 preview 当成完整值产生错误结果，内�
 
 | 表 | BTree | Bitmap |
 |---|---|---|
-| runs | `session_id`, `run_id` | — |
-| steps | `session_id`, `timestamp` | `effective_kind`, `source` |
-| tool_calls | `session_id`, `tool_call_id` | `function_name` |
+| runs | `document_id`, `session_id`, `run_id` | — |
+| steps | `document_id`, `session_id`, `timestamp` | `effective_kind`, `source` |
+| tool_calls | `document_id`, `session_id`, `tool_call_id` | `function_name` |
 
 这些索引针对按 Story/Run 定位、tool-call 查找和类型过滤。`step_id` 在每个 Storyline 内
 从小值重新计数，全局选择性低，因此不单独建立 BTree；组合条件先用 `session_id` 定位到

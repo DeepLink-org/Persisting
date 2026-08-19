@@ -58,6 +58,29 @@ impl CreateAfterEmptyReadBarrier {
     }
 }
 
+struct ReplacementAfterCurrentReadBarrier;
+
+impl ReplacementAfterCurrentReadBarrier {
+    fn install(root_uri: &str, parties: usize) -> Self {
+        *REPLACEMENT_AFTER_CURRENT_READ_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(ReplacementAfterCurrentReadBarrierHook {
+                root_uri: root_uri.to_string(),
+                barrier: Arc::new(tokio::sync::Barrier::new(parties)),
+            });
+        Self
+    }
+}
+
+impl Drop for ReplacementAfterCurrentReadBarrier {
+    fn drop(&mut self) {
+        *REPLACEMENT_AFTER_CURRENT_READ_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
 impl Drop for CreateAfterEmptyReadBarrier {
     fn drop(&mut self) {
         *CREATE_AFTER_EMPTY_READ_BARRIER
@@ -399,6 +422,107 @@ async fn maintenance_prunes_objects_unreachable_from_current_snapshot() {
 }
 
 #[tokio::test]
+async fn maintenance_vacuums_unreferenced_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let options = StorylineContentOptions {
+        offload_threshold: 32,
+        ..Default::default()
+    };
+    let store = StorylineLanceStore::open_with_content_options(dir.path(), options)
+        .await
+        .unwrap();
+    let mut document = story("vacuum-objects");
+    document.notes = Some("old unreachable object ".repeat(64));
+    store.replace_storyline(&document).await.unwrap();
+    document.notes = Some("new live object ".repeat(64));
+    store.replace_storyline(&document).await.unwrap();
+
+    let report = store
+        .maintain(&LanceMaintenanceOptions {
+            vacuum_older_than: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(report.objects_removed, 1);
+    assert!(report.objects.old_versions_removed > 0, "{report:?}");
+    assert!(report.objects.bytes_removed > 0, "{report:?}");
+    assert_eq!(
+        store.get_storyline_full("vacuum-objects").await.unwrap(),
+        Some(document)
+    );
+}
+
+#[tokio::test]
+async fn maintenance_prunes_expired_physical_generations() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(dir.path()).await.unwrap();
+    store
+        .rebuild_projected_storyline_stream(vec![Ok(story("generation-one"))], projection_lineage())
+        .await
+        .unwrap();
+    let first_table_generation = store
+        .current_table_paths()
+        .await
+        .unwrap()
+        .unwrap()
+        .table_generation;
+    store
+        .rebuild_projected_storyline_stream(vec![Ok(story("generation-two"))], projection_lineage())
+        .await
+        .unwrap();
+    let current_table_generation = store
+        .current_table_paths()
+        .await
+        .unwrap()
+        .unwrap()
+        .table_generation;
+    assert_ne!(first_table_generation, current_table_generation);
+
+    let malformed = dir
+        .path()
+        .join(GENERATIONS_DIR)
+        .join("not-owned-by-storyline");
+    std::fs::create_dir_all(&malformed).unwrap();
+    std::fs::write(malformed.join("keep"), b"not a Storyline generation").unwrap();
+
+    let no_vacuum = store
+        .maintain(&LanceMaintenanceOptions {
+            vacuum_older_than: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(no_vacuum.generations_removed, 0);
+    assert!(dir
+        .path()
+        .join(GENERATIONS_DIR)
+        .join(&first_table_generation)
+        .exists());
+
+    let vacuumed = store
+        .maintain(&LanceMaintenanceOptions {
+            vacuum_older_than: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(vacuumed.generations_removed, 1);
+    assert!(!dir
+        .path()
+        .join(GENERATIONS_DIR)
+        .join(first_table_generation)
+        .exists());
+    assert!(dir
+        .path()
+        .join(GENERATIONS_DIR)
+        .join(current_table_generation)
+        .exists());
+    assert!(malformed.exists());
+}
+
+#[tokio::test]
 async fn content_descriptor_magic_in_user_text_round_trips_as_literal() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open_with_content_options(
@@ -529,6 +653,279 @@ async fn batch_get_preserves_request_order_and_missing_sessions() {
         .unwrap_err()
         .to_string()
         .contains("duplicate session_id"));
+}
+
+#[test]
+fn storyline_import_limits_reject_zero() {
+    let cases = [
+        (
+            StorylineContentOptions {
+                max_document_rows: Some(0),
+                ..Default::default()
+            },
+            "max_document_rows",
+        ),
+        (
+            StorylineContentOptions {
+                max_document_bytes: Some(0),
+                ..Default::default()
+            },
+            "max_document_bytes",
+        ),
+        (
+            StorylineContentOptions {
+                max_chunk_rows: Some(0),
+                ..Default::default()
+            },
+            "max_chunk_rows",
+        ),
+        (
+            StorylineContentOptions {
+                max_chunk_bytes: Some(0),
+                ..Default::default()
+            },
+            "max_chunk_bytes",
+        ),
+        (
+            StorylineContentOptions {
+                max_import_documents: Some(0),
+                ..Default::default()
+            },
+            "max_import_documents",
+        ),
+    ];
+
+    for (options, name) in cases {
+        let error = options.validate().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{name} must be positive")),
+            "{error:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn document_limit_failure_keeps_current_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = StorylineLanceStore::open(dir.path()).await.unwrap();
+    baseline
+        .replace_storyline(&story("baseline"))
+        .await
+        .unwrap();
+    let generation = baseline
+        .current_table_paths()
+        .await
+        .unwrap()
+        .unwrap()
+        .generation;
+    let limited = StorylineLanceStore::open_with_content_options(
+        dir.path(),
+        StorylineContentOptions {
+            max_document_rows: Some(3),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = limited
+        .replace_storyline(&story("oversized"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("max_document_rows"), "{error:#}");
+    assert_eq!(
+        limited
+            .current_table_paths()
+            .await
+            .unwrap()
+            .unwrap()
+            .generation,
+        generation
+    );
+    assert!(limited
+        .get_storyline_full("oversized")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn document_byte_limit_rejects_oversized_storyline() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open_with_content_options(
+        dir.path(),
+        StorylineContentOptions {
+            max_document_bytes: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = store
+        .replace_storyline(&story("byte-limited"))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("max_document_bytes"),
+        "{error:#}"
+    );
+    assert!(store.current_table_paths().await.unwrap().is_none());
+}
+
+#[test]
+fn single_document_must_fit_chunk_limits() {
+    let document = story("single-chunk-limit");
+    let mut iterator = vec![Ok(document)].into_iter();
+    let mut state = StorylineChunkState::default();
+    let mut ordinal = 0;
+
+    let error = next_storyline_stream_chunk(
+        &mut iterator,
+        &mut state,
+        &mut ordinal,
+        StorylineContentOptions {
+            max_chunk_rows: Some(3),
+            ..Default::default()
+        },
+    )
+    .err()
+    .expect("single document must exceed max_chunk_rows");
+    assert!(error.to_string().contains("max_chunk_rows"), "{error:#}");
+
+    let document = story("single-byte-chunk-limit");
+    let mut iterator = vec![Ok(document)].into_iter();
+    let mut state = StorylineChunkState::default();
+    let error = next_storyline_stream_chunk(
+        &mut iterator,
+        &mut state,
+        &mut ordinal,
+        StorylineContentOptions {
+            max_chunk_bytes: Some(1),
+            ..Default::default()
+        },
+    )
+    .err()
+    .expect("single document must exceed max_chunk_bytes");
+    assert!(error.to_string().contains("max_chunk_bytes"), "{error:#}");
+}
+
+#[test]
+fn chunk_limits_preserve_the_next_document() {
+    let mut first = story("chunk-a");
+    first.turns.clear();
+    let mut second = story("chunk-b");
+    second.turns.clear();
+    let mut third = story("chunk-c");
+    third.turns.clear();
+    let document_bytes = serde_json::to_vec(&first).unwrap().len();
+    let mut iterator = vec![Ok(first), Ok(second), Ok(third)].into_iter();
+    let mut state = StorylineChunkState::default();
+    let mut ordinal = 0;
+    let options = StorylineContentOptions {
+        max_document_rows: Some(1),
+        max_document_bytes: Some(document_bytes + 8),
+        max_chunk_rows: Some(2),
+        max_chunk_bytes: Some((document_bytes + 8) * 2),
+        max_import_documents: Some(3),
+        ..Default::default()
+    };
+
+    let first_chunk = next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_chunk.runs.len(), 2);
+    assert!(state.pending.is_some());
+
+    let second_chunk =
+        next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+            .unwrap()
+            .unwrap();
+    assert_eq!(second_chunk.runs.len(), 1);
+    assert!(state.pending.is_none());
+    assert!(
+        next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn chunk_byte_limit_preserves_the_next_document() {
+    let mut first = story("byte-chunk-a");
+    first.turns.clear();
+    let mut second = story("byte-chunk-b");
+    second.turns.clear();
+    let document_bytes = serde_json::to_vec(&first).unwrap().len();
+    let mut iterator = vec![Ok(first), Ok(second)].into_iter();
+    let mut state = StorylineChunkState::default();
+    let mut ordinal = 0;
+    let options = StorylineContentOptions {
+        max_chunk_bytes: Some(document_bytes + 8),
+        ..Default::default()
+    };
+
+    let first_chunk = next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_chunk.runs.len(), 1);
+    assert!(state.pending.is_some());
+
+    let second_chunk =
+        next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+            .unwrap()
+            .unwrap();
+    assert_eq!(second_chunk.runs.len(), 1);
+    assert!(state.pending.is_none());
+}
+
+#[tokio::test]
+async fn import_document_limit_failure_keeps_current_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = StorylineLanceStore::open(dir.path()).await.unwrap();
+    baseline
+        .replace_storyline(&story("baseline"))
+        .await
+        .unwrap();
+    let generation = baseline
+        .current_table_paths()
+        .await
+        .unwrap()
+        .unwrap()
+        .generation;
+    let limited = StorylineLanceStore::open_with_content_options(
+        dir.path(),
+        StorylineContentOptions {
+            max_import_documents: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = limited
+        .replace_storyline_stream(
+            [story("limited-a"), story("limited-b")]
+                .into_iter()
+                .map(Ok::<_, anyhow::Error>),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("max_import_documents"),
+        "{error:#}"
+    );
+    assert_eq!(
+        limited
+            .current_table_paths()
+            .await
+            .unwrap()
+            .unwrap()
+            .generation,
+        generation
+    );
 }
 
 #[tokio::test]
@@ -874,6 +1271,72 @@ async fn concurrent_object_store_replacements_do_not_lose_sessions() {
         .map(|story| story.unwrap().session_id)
         .collect::<Vec<_>>();
     assert_eq!(sessions, expected);
+}
+
+#[tokio::test]
+async fn independent_replacements_conflict_at_current_cas_and_retry_cleanly() {
+    let uri = remote_uri("independent-replacement-cas");
+    let baseline = story("replacement-baseline");
+    let seed = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    seed.replace_storyline(&baseline).await.unwrap();
+
+    let mut left = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    let mut right = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    left.write_lock = Arc::new(tokio::sync::Mutex::new(()));
+    right.write_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let barrier = ReplacementAfterCurrentReadBarrier::install(&uri, 2);
+    let left_story = story("replacement-left");
+    let right_story = story("replacement-right");
+
+    let (left_result, right_result) = tokio::join!(
+        left.replace_storyline(&left_story),
+        right.replace_storyline(&right_story)
+    );
+    drop(barrier);
+
+    let (winner, loser, conflict) = match (left_result, right_result) {
+        (Ok(()), Err(error)) => (&left_story, &right_story, error),
+        (Err(error), Ok(())) => (&right_story, &left_story, error),
+        (left, right) => panic!("expected one success and one conflict: {left:?}, {right:?}"),
+    };
+    assert!(
+        conflict.to_string().contains("commit conflict"),
+        "{conflict:#}"
+    );
+
+    let reopened = StorylineLanceStore::open_uri(&uri).await.unwrap();
+    assert_eq!(
+        reopened
+            .get_storyline_full(&baseline.session_id)
+            .await
+            .unwrap(),
+        Some(baseline.clone())
+    );
+    assert_eq!(
+        reopened
+            .get_storyline_full(&winner.session_id)
+            .await
+            .unwrap(),
+        Some(winner.clone())
+    );
+    assert!(reopened
+        .get_storyline_full(&loser.session_id)
+        .await
+        .unwrap()
+        .is_none());
+
+    reopened.replace_storyline(loser).await.unwrap();
+    assert_eq!(
+        reopened
+            .get_storylines_full(&[
+                baseline.session_id.clone(),
+                winner.session_id.clone(),
+                loser.session_id.clone(),
+            ])
+            .await
+            .unwrap(),
+        [Some(baseline), Some(winner.clone()), Some(loser.clone())]
+    );
 }
 
 async fn assert_independent_object_store_create_case(

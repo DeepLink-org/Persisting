@@ -23,7 +23,7 @@ pub(super) mod rows;
 
 use mutation::{
     externalize_rows, next_storyline_stream_chunk, replace_table_batches, write_batches,
-    ExternalizedStorylineBatches,
+    ExternalizedStorylineBatches, StorylineChunkState,
 };
 
 pub use content::{
@@ -236,7 +236,9 @@ pub struct StorylineMaintenanceReport {
     pub runs: LanceMaintenanceReport,
     pub steps: LanceMaintenanceReport,
     pub tool_calls: LanceMaintenanceReport,
+    pub objects: LanceMaintenanceReport,
     pub objects_removed: usize,
+    pub generations_removed: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -285,8 +287,33 @@ static CREATE_AFTER_EMPTY_READ_BARRIER: std::sync::Mutex<Option<CreateAfterEmpty
     std::sync::Mutex::new(None);
 
 #[cfg(test)]
+#[derive(Clone)]
+struct ReplacementAfterCurrentReadBarrierHook {
+    root_uri: String,
+    barrier: Arc<tokio::sync::Barrier>,
+}
+
+#[cfg(test)]
+static REPLACEMENT_AFTER_CURRENT_READ_BARRIER: std::sync::Mutex<
+    Option<ReplacementAfterCurrentReadBarrierHook>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
 async fn wait_after_empty_current_read(root_uri: &str) {
     let barrier = CREATE_AFTER_EMPTY_READ_BARRIER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|hook| hook.root_uri == root_uri)
+        .map(|hook| hook.barrier.clone());
+    if let Some(barrier) = barrier {
+        barrier.wait().await;
+    }
+}
+
+#[cfg(test)]
+async fn wait_after_replacement_current_read(root_uri: &str) {
+    let barrier = REPLACEMENT_AFTER_CURRENT_READ_BARRIER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
@@ -674,11 +701,15 @@ impl StorylineLanceStore {
             wait_after_empty_current_read(&self.root_uri).await;
         }
         let expected_generation = original.as_ref().map(|paths| paths.generation.clone());
+        #[cfg(test)]
+        if mode == StorylineStreamWriteMode::Replace {
+            wait_after_replacement_current_read(&self.root_uri).await;
+        }
         let rebuild = mode == StorylineStreamWriteMode::Rebuild;
         let mut paths = if rebuild { None } else { original.clone() };
         let mut new_table_generation = None;
         let mut iterator = stories.into_iter();
-        let mut document_ids = HashSet::new();
+        let mut chunk_state = StorylineChunkState::default();
         let mut next_storage_ordinal = if rebuild {
             0
         } else if let Some(paths) = &original {
@@ -692,8 +723,9 @@ impl StorylineLanceStore {
             loop {
                 let Some(mut chunk) = next_storyline_stream_chunk(
                     &mut iterator,
-                    &mut document_ids,
+                    &mut chunk_state,
                     &mut next_storage_ordinal,
+                    self.content_options,
                 )?
                 else {
                     break;
@@ -984,17 +1016,23 @@ impl StorylineLanceStore {
         )
         .await?;
 
-        let (runs_vacuum, steps_vacuum, tool_calls_vacuum) = tokio::try_join!(
+        let (runs_vacuum, steps_vacuum, tool_calls_vacuum, objects_vacuum) = tokio::try_join!(
             vacuum_table(&paths.runs, options.vacuum_older_than),
             vacuum_table(&paths.steps, options.vacuum_older_than),
             vacuum_table(&paths.tool_calls, options.vacuum_older_than),
+            vacuum_table(&paths.objects, options.vacuum_older_than),
         )?;
+        let generations_removed = self
+            .prune_expired_generations(&paths.table_generation, options.vacuum_older_than)
+            .await?;
         Ok(StorylineMaintenanceReport {
             generation: Some(generation),
             runs: merge_maintenance_reports(runs, runs_vacuum),
             steps: merge_maintenance_reports(steps, steps_vacuum),
             tool_calls: merge_maintenance_reports(tool_calls, tool_calls_vacuum),
+            objects: objects_vacuum,
             objects_removed,
+            generations_removed,
         })
     }
 
@@ -1151,6 +1189,58 @@ impl StorylineLanceStore {
             .join(generation)
     }
 
+    async fn prune_expired_generations(
+        &self,
+        current: &str,
+        retention: Option<std::time::Duration>,
+    ) -> Result<usize> {
+        let Some(retention) = retention else {
+            return Ok(0);
+        };
+        let cutoff_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .saturating_sub(retention)
+            .as_nanos();
+        let generations_root = self.object_root.clone().join(GENERATIONS_DIR);
+        let prefix = format!("{}/", generations_root.as_ref().trim_end_matches('/'));
+        let objects = self
+            .object_store
+            .inner
+            .list(Some(&generations_root))
+            .try_collect::<Vec<_>>()
+            .await
+            .context("list Storyline physical generations")?;
+        let mut candidates = std::collections::BTreeSet::new();
+        for object in objects {
+            let Some(relative) = object.location.as_ref().strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some(generation) = relative.split('/').next() else {
+                continue;
+            };
+            if generation.is_empty() || generation == current {
+                continue;
+            }
+            let Some(created_nanos) = parse_generation_timestamp(generation) else {
+                continue;
+            };
+            if created_nanos < cutoff_nanos {
+                candidates.insert(generation.to_string());
+            }
+        }
+
+        let mut removed = 0;
+        for generation in candidates {
+            self.object_store
+                .remove_dir_all(self.generation_object_path(&generation))
+                .await
+                .with_context(|| format!("remove expired Storyline generation {generation}"))?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
     async fn commit_snapshot(
         &self,
         snapshot: &StorylineSnapshotPointer,
@@ -1292,6 +1382,17 @@ fn validate_generation_name(value: &str) -> Result<()> {
         anyhow::bail!("invalid Storyline generation name '{value}'");
     }
     Ok(())
+}
+
+fn parse_generation_timestamp(value: &str) -> Option<u128> {
+    let mut parts = value.strip_prefix("gen-")?.split('-');
+    let nanos = parts.next()?.parse::<u128>().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(nanos)
 }
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
