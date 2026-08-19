@@ -290,8 +290,11 @@ async fn cleanup(root: &str) -> Result<()> {
 #[tokio::test]
 #[ignore = "worker launched by s3_storyline_multiprocess_replacement_contract"]
 async fn s3_storyline_replacement_worker() -> Result<()> {
-    let root =
-        std::env::var(REPLACEMENT_WORKER_ROOT_ENV).context("missing S3 replacement worker root")?;
+    let root = match std::env::var(REPLACEMENT_WORKER_ROOT_ENV) {
+        Ok(root) => root,
+        Err(std::env::VarError::NotPresent) => return Ok(()),
+        Err(error) => return Err(error).context("read S3 replacement worker root"),
+    };
     let session_id = std::env::var(REPLACEMENT_WORKER_SESSION_ENV)
         .context("missing S3 replacement worker session")?;
     let barrier = std::env::var(REPLACEMENT_WORKER_BARRIER_ENV)
