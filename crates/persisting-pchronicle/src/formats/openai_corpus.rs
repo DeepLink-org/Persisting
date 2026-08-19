@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
-use crate::{Error, Result};
+use crate::{InputIssue, InputResult, Result};
 
 const OPENAI_EXTENSION_KEY: &str = "persisting.dev/openai-msg/v1";
 const ROW_METRIC_FIELDS: &[&str] = &[
@@ -37,8 +37,8 @@ pub struct RecoveredOpenaiMsgFile {
 pub fn parse_openai_msg_corpus_value(
     document: &Value,
     relative_path: impl AsRef<Path>,
-) -> Result<Vec<StorylineDocument>> {
-    let relative_path = validate_relative_path(relative_path.as_ref())?
+) -> InputResult<Vec<StorylineDocument>> {
+    let relative_path = validate_input_relative_path(relative_path.as_ref())?
         .to_string_lossy()
         .into_owned();
     let (kind, envelope, records) = match document {
@@ -48,7 +48,7 @@ pub fn parse_openai_msg_corpus_value(
                 .get("session_steps")
                 .and_then(Value::as_array)
                 .ok_or_else(|| {
-                    Error::Other("OpenAI corpus object requires a session_steps array".to_string())
+                    InputIssue::invalid("OpenAI corpus object requires a session_steps array")
                 })?
                 .clone();
             let mut metadata = root.clone();
@@ -56,8 +56,8 @@ pub fn parse_openai_msg_corpus_value(
             ("envelope", Some(Value::Object(metadata)), records)
         }
         _ => {
-            return Err(Error::Other(
-                "OpenAI corpus must be a JSON array or session_steps object".to_string(),
+            return Err(InputIssue::invalid(
+                "OpenAI corpus must be a JSON array or session_steps object",
             ));
         }
     };
@@ -71,12 +71,11 @@ pub fn parse_openai_msg_corpus_value(
     let mut group_indexes = HashMap::<String, usize>::new();
     for (ordinal, record) in records.into_iter().enumerate() {
         let object = record.as_object().ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} must be an object",
-                relative_path, ordinal
-            ))
+            InputIssue::invalid("OpenAI corpus row must be an object")
+                .at(format!("rows[{ordinal}]"))
         })?;
-        let session_id = required_string(object, "session_id", &relative_path, ordinal)?;
+        let session_id = required_string(object, "session_id")
+            .map_err(|error| error.at(format!("rows[{ordinal}].session_id")))?;
         let index = if let Some(index) = group_indexes.get(&session_id) {
             *index
         } else {
@@ -89,10 +88,7 @@ pub fn parse_openai_msg_corpus_value(
     }
 
     if groups.is_empty() {
-        return Err(Error::UnsupportedCardinality {
-            format: crate::DocumentFormat::OpenaiMsg,
-            stories: 0,
-        });
+        return Err(InputIssue::unsupported("OpenAI corpus cannot be empty"));
     }
 
     groups
@@ -125,21 +121,21 @@ pub fn recover_openai_msg_files(
             .and_then(|extra| extra.get(OPENAI_EXTENSION_KEY))
             .and_then(Value::as_object)
             .ok_or_else(|| {
-                Error::Other(format!(
+                anyhow::anyhow!(
                     "Storyline '{}' has no lossless OpenAI file metadata",
                     story.session_id
-                ))
+                )
             })?;
         let relative_path = file
             .get("relative_path")
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::Other("OpenAI file metadata missing relative_path".into()))?;
+            .ok_or_else(|| anyhow::anyhow!("OpenAI file metadata missing relative_path"))?;
         let relative_path = validate_relative_path(Path::new(relative_path))?;
         let kind = file
             .get("document_kind")
             .and_then(Value::as_str)
             .filter(|kind| matches!(*kind, "array" | "envelope"))
-            .ok_or_else(|| Error::Other("invalid OpenAI document_kind".into()))?
+            .ok_or_else(|| anyhow::anyhow!("invalid OpenAI document_kind"))?
             .to_string();
         let envelope = file.get("envelope").filter(|v| !v.is_null()).cloned();
 
@@ -151,10 +147,10 @@ pub fn recover_openai_msg_files(
                 records: Vec::new(),
             });
         if group.kind != kind || group.envelope != envelope {
-            return Err(Error::Other(format!(
+            anyhow::bail!(
                 "conflicting OpenAI file metadata for {}",
                 relative_path.display()
-            )));
+            );
         }
 
         for turn in &story.turns {
@@ -162,31 +158,33 @@ pub fn recover_openai_msg_files(
                 continue;
             }
             let extra = turn.extra.as_ref().ok_or_else(|| {
-                Error::Other(format!(
+                anyhow::anyhow!(
                     "Storyline '{}' step {} has no OpenAI provenance",
-                    story.session_id, turn.id
-                ))
+                    story.session_id,
+                    turn.id
+                )
             })?;
             let Some(record) = extra.get(OPENAI_EXTENSION_KEY).and_then(Value::as_object) else {
-                return Err(Error::Other(format!(
+                anyhow::bail!(
                     "Storyline '{}' step {} has no OpenAI residual",
-                    story.session_id, turn.id
-                )));
+                    story.session_id,
+                    turn.id
+                );
             };
             let record_path = record
                 .get("relative_path")
                 .and_then(Value::as_str)
-                .ok_or_else(|| Error::Other("OpenAI record missing relative_path".into()))?;
+                .ok_or_else(|| anyhow::anyhow!("OpenAI record missing relative_path"))?;
             if validate_relative_path(Path::new(record_path))? != relative_path {
-                return Err(Error::Other(format!(
+                anyhow::bail!(
                     "OpenAI record path conflicts with Storyline '{}' file metadata",
                     story.session_id
-                )));
+                );
             }
             let ordinal = record
                 .get("ordinal")
                 .and_then(Value::as_u64)
-                .ok_or_else(|| Error::Other("OpenAI record missing ordinal".into()))?;
+                .ok_or_else(|| anyhow::anyhow!("OpenAI record missing ordinal"))?;
             let raw = recover_record(story, turn, record)?;
             group.records.push((ordinal, raw));
         }
@@ -197,11 +195,11 @@ pub fn recover_openai_msg_files(
         group.records.sort_by_key(|(ordinal, _)| *ordinal);
         for pair in group.records.windows(2) {
             if pair[0].0 == pair[1].0 {
-                return Err(Error::Other(format!(
+                anyhow::bail!(
                     "duplicate OpenAI row ordinal {} in {}",
                     pair[0].0,
                     relative_path.display()
-                )));
+                );
             }
         }
         // Ordinals are ordering keys, not a completeness proof. Callers may
@@ -219,20 +217,20 @@ pub fn recover_openai_msg_files(
                     .envelope
                     .and_then(|value| value.as_object().cloned())
                     .ok_or_else(|| {
-                        Error::Other(format!(
+                        anyhow::anyhow!(
                             "OpenAI envelope metadata missing for {}",
                             relative_path.display()
-                        ))
+                        )
                     })?;
                 envelope.insert("session_steps".into(), Value::Array(records));
                 Value::Object(envelope)
             }
             kind => {
-                return Err(Error::Other(format!(
+                anyhow::bail!(
                     "invalid OpenAI document kind '{}' while recovering {}",
                     kind,
                     relative_path.display()
-                )))
+                )
             }
         };
         output.push(RecoveredOpenaiMsgFile {
@@ -276,20 +274,21 @@ pub fn synthesize_openai_msg_corpus(stories: &[StorylineDocument]) -> Result<Val
                 index += 1;
                 (None, Some(turn))
             } else {
-                return Err(Error::Other(format!(
+                anyhow::bail!(
                     "OpenAI synthesis cannot represent Storyline turn {} source '{}'",
-                    turn.id, turn.source
-                )));
+                    turn.id,
+                    turn.source
+                );
             };
             if user.is_some() && agent.is_none() {
-                return Err(Error::Other(format!(
+                anyhow::bail!(
                     "OpenAI synthesis requires an agent response after user turn {}",
                     turn.id
-                )));
+                );
             }
-            let output = agent.or(user).ok_or_else(|| {
-                Error::Other("cannot synthesize an empty OpenAI message step".into())
-            })?;
+            let output = agent
+                .or(user)
+                .ok_or_else(|| anyhow::anyhow!("cannot synthesize an empty OpenAI message step"))?;
             let mut messages = agent
                 .and_then(|turn| turn.extra.as_ref())
                 .and_then(|extra| extra.get("request_messages"))
@@ -345,7 +344,7 @@ fn rows_to_storyline(
     mut records: Vec<(usize, Value)>,
     relative_path: &str,
     file_metadata: &Value,
-) -> Result<StorylineDocument> {
+) -> InputResult<StorylineDocument> {
     records.sort_by_key(|(_, row)| row.get("step_id").and_then(Value::as_i64));
     let mut seen_steps = HashSet::new();
     let mut turns = Vec::with_capacity(records.len().saturating_mul(2));
@@ -356,22 +355,16 @@ fn rows_to_storyline(
 
     for (ordinal, raw) in records {
         let row = raw.as_object().ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} must be an object",
-                relative_path, ordinal
-            ))
+            InputIssue::invalid("OpenAI corpus row must be an object")
+                .at(format!("rows[{ordinal}]"))
         })?;
         let step_id = row.get("step_id").and_then(Value::as_i64).ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} requires integer step_id",
-                relative_path, ordinal
-            ))
+            InputIssue::invalid("OpenAI corpus row requires integer step_id")
+                .at(format!("rows[{ordinal}].step_id"))
         })?;
         if !seen_steps.insert(step_id) {
-            return Err(Error::DuplicateStep {
-                session_id: session_id.to_string(),
-                step_id,
-            });
+            return Err(InputIssue::invalid(format!("duplicate step_id {step_id}"))
+                .at(format!("rows[{ordinal}].step_id")));
         }
         let meta = parsed_meta(row);
         let env_state = parsed_env_state(meta.as_ref());
@@ -402,10 +395,10 @@ fn rows_to_storyline(
         {
             if let Some(existing) = &run_id {
                 if existing != candidate {
-                    return Err(Error::Other(format!(
-                        "OpenAI corpus {} session {} has conflicting Run ids '{}' and '{}'",
-                        relative_path, session_id, existing, candidate
-                    )));
+                    return Err(InputIssue::invalid(
+                        "OpenAI corpus session has conflicting run ids",
+                    )
+                    .at(format!("rows[{ordinal}]")));
                 }
             } else {
                 run_id = Some(candidate.to_string());
@@ -413,10 +406,8 @@ fn rows_to_storyline(
         }
 
         let (output, output_location) = select_output_message(row).ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} has no assistant output",
-                relative_path, ordinal
-            ))
+            InputIssue::invalid("OpenAI corpus row has no assistant output")
+                .at(format!("rows[{ordinal}]"))
         })?;
         let tool_calls = parse_tool_calls(output.get("tool_calls"))
             .or_else(|| parse_embedded_tool_call(output.get("content"), step_id));
@@ -505,7 +496,7 @@ fn rows_to_storyline(
                     user_turn_id,
                     output_location,
                     env_state.as_ref(),
-                )?
+                )
             })),
         });
         next_turn_id += 1;
@@ -560,7 +551,7 @@ fn record_residual(
     user_turn_id: Option<i64>,
     output_location: OutputLocation,
     env_state: Option<&Value>,
-) -> Result<Value> {
+) -> Value {
     let mut residual = row.clone();
     for key in ["session_id", "step_id", "messages", "response"] {
         residual.remove(key);
@@ -655,7 +646,7 @@ fn record_residual(
         OutputLocation::Response => ("response", None),
         OutputLocation::Message(index) => ("message", Some(index)),
     };
-    Ok(json!({
+    json!({
         "relative_path": relative_path,
         "ordinal": ordinal,
         "step_id": step_id,
@@ -675,7 +666,7 @@ fn record_residual(
         "messages": messages,
         "response": response,
         "residual": residual,
-    }))
+    })
 }
 
 fn recover_record(
@@ -687,11 +678,11 @@ fn recover_record(
         .get("residual")
         .and_then(Value::as_object)
         .cloned()
-        .ok_or_else(|| Error::Other("OpenAI record residual must be an object".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("OpenAI record residual must be an object"))?;
     let step_id = metadata
         .get("step_id")
         .and_then(Value::as_i64)
-        .ok_or_else(|| Error::Other("OpenAI record residual missing step_id".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("OpenAI record residual missing step_id"))?;
     insert_authoritative(
         &mut record,
         "session_id",
@@ -768,13 +759,13 @@ fn recover_record(
     let output_kind = metadata
         .get("output_kind")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::Other("OpenAI record residual missing output_kind".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("OpenAI record residual missing output_kind"))?;
     let output_index = metadata.get("output_index").and_then(Value::as_u64);
 
     if let Some(mut messages) = metadata.get("messages").filter(|v| !v.is_null()).cloned() {
         let values = messages
             .as_array_mut()
-            .ok_or_else(|| Error::Other("OpenAI messages residual must be an array".into()))?;
+            .ok_or_else(|| anyhow::anyhow!("OpenAI messages residual must be an array"))?;
         if let (Some(index), Some(user_turn)) = (
             metadata
                 .get("user_message_index")
@@ -785,17 +776,17 @@ fn recover_record(
             let message = values
                 .get_mut(index)
                 .and_then(Value::as_object_mut)
-                .ok_or_else(|| Error::Other("OpenAI user message residual is invalid".into()))?;
+                .ok_or_else(|| anyhow::anyhow!("OpenAI user message residual is invalid"))?;
             message.insert("content".into(), user_turn.message.clone());
         }
         if output_kind == "message" {
             let index = output_index
-                .ok_or_else(|| Error::Other("OpenAI output message index is missing".into()))?
+                .ok_or_else(|| anyhow::anyhow!("OpenAI output message index is missing"))?
                 as usize;
             let message = values
                 .get_mut(index)
                 .and_then(Value::as_object_mut)
-                .ok_or_else(|| Error::Other("OpenAI output message residual is invalid".into()))?;
+                .ok_or_else(|| anyhow::anyhow!("OpenAI output message residual is invalid"))?;
             apply_output(message, agent_turn)?;
         }
         insert_authoritative(&mut record, "messages", messages, "record");
@@ -805,7 +796,7 @@ fn recover_record(
         if output_kind == "response" {
             let message = response
                 .as_object_mut()
-                .ok_or_else(|| Error::Other("OpenAI response residual must be an object".into()))?;
+                .ok_or_else(|| anyhow::anyhow!("OpenAI response residual must be an object"))?;
             apply_output(message, agent_turn)?;
         }
         insert_authoritative(&mut record, "response", response, "record");
@@ -841,9 +832,7 @@ fn encode_timestamp(timestamp: &str, kind: &str) -> Result<Value> {
     if kind == "other" {
         return Ok(Value::String(timestamp.to_string()));
     }
-    let parsed = chrono::DateTime::parse_from_rfc3339(timestamp).map_err(|error| {
-        Error::Other(format!("encode OpenAI created_at '{timestamp}': {error}"))
-    })?;
+    let parsed = chrono::DateTime::parse_from_rfc3339(timestamp)?;
     if kind == "integer" && parsed.timestamp_subsec_nanos() == 0 {
         Ok(json!(parsed.timestamp()))
     } else {
@@ -856,39 +845,42 @@ fn encode_timestamp(timestamp: &str, kind: &str) -> Result<Value> {
 
 fn validate_relative_path(path: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty() || path.is_absolute() {
-        return Err(Error::Other(format!(
+        anyhow::bail!(
             "OpenAI source path must be non-empty and relative: {}",
             path.display()
-        )));
+        );
     }
     if path
         .components()
         .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(Error::Other(format!(
+        anyhow::bail!(
             "OpenAI source path contains unsafe components: {}",
             path.display()
-        )));
+        );
     }
     Ok(path.to_path_buf())
 }
 
-fn required_string(
-    row: &Map<String, Value>,
-    field: &str,
-    path: &str,
-    ordinal: usize,
-) -> Result<String> {
+fn validate_input_relative_path(path: &Path) -> InputResult<PathBuf> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err(InputIssue::invalid("source path must be non-empty and relative").at("path"));
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(InputIssue::invalid("source path contains unsafe components").at("path"));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn required_string(row: &Map<String, Value>, field: &str) -> InputResult<String> {
     row.get(field)
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| {
-            Error::Other(format!(
-                "OpenAI corpus {} row {} requires non-empty {}",
-                path, ordinal, field
-            ))
-        })
+        .ok_or_else(|| InputIssue::invalid(format!("OpenAI corpus row requires non-empty {field}")))
 }
 
 fn parsed_meta(row: &Map<String, Value>) -> Option<Value> {
@@ -1321,6 +1313,9 @@ mod tests {
     fn recovery_rejects_unsafe_paths() {
         let error = parse_openai_msg_corpus_value(&corpus(), "../escape.json").unwrap_err();
         assert!(error.to_string().contains("unsafe"));
+        assert_eq!(error.kind(), crate::input::InputIssueKind::Invalid);
+        assert_eq!(error.location(), Some("path"));
+        assert!(!error.message().contains("../escape.json"));
     }
 
     #[test]

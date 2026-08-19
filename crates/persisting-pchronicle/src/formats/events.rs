@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Result};
+use crate::Result;
 pub use persisting_events::{EventIdentity, EventRecord};
 
 /// In-memory batch of events (not a file format).
@@ -59,18 +59,14 @@ impl ChronicleEventRecordExt for EventRecord {
         let Some(payload) = self.payload.get("llm_request") else {
             return Ok(None);
         };
-        serde_json::from_value(payload.clone())
-            .map(Some)
-            .map_err(|error| Error::Other(format!("decode llm.request payload: {error}")))
+        Ok(Some(serde_json::from_value(payload.clone())?))
     }
 
     fn llm_response_payload(&self) -> Result<Option<super::llm::LlmResponseEventPayload>> {
         let Some(payload) = self.payload.get("llm_response") else {
             return Ok(None);
         };
-        serde_json::from_value(payload.clone())
-            .map(Some)
-            .map_err(|error| Error::Other(format!("decode llm.response payload: {error}")))
+        Ok(Some(serde_json::from_value(payload.clone())?))
     }
 }
 
@@ -99,13 +95,12 @@ pub fn export_events_jsonl(events: &[EventRecord]) -> Result<String> {
 #[cfg(all(test, feature = "lance-store"))]
 pub fn parse_events_jsonl_for_test(input: &str) -> Result<EventsDocument> {
     let mut events = Vec::new();
-    for (idx, line) in input.lines().enumerate() {
+    for line in input.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let event = serde_json::from_str::<EventRecord>(line)
-            .map_err(|e| Error::Other(format!("events jsonl line {}: {e}", idx + 1)))?;
+        let event = serde_json::from_str::<EventRecord>(line)?;
         events.push(event);
     }
     Ok(EventsDocument::new(events))

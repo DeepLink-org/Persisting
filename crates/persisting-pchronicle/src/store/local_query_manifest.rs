@@ -262,39 +262,37 @@ fn validate_query_format(format: DocumentFormat, path: &Path) -> Result<()> {
 }
 
 fn detect_query_format(path: &Path, options: LocalQueryManifestOptions) -> Result<DocumentFormat> {
-    let format =
-        if let Some(format) = detect_format(Some(path), None).map_err(anyhow::Error::from)? {
-            format
-        } else {
-            let detection_len = fs::metadata(path)
-                .with_context(|| {
-                    format!(
-                        "inspect query input for format detection: {}",
-                        path.display()
-                    )
-                })?
-                .len();
-            anyhow::ensure!(
+    let format = if let Some(format) = detect_format(Some(path), None)? {
+        format
+    } else {
+        let detection_len = fs::metadata(path)
+            .with_context(|| {
+                format!(
+                    "inspect query input for format detection: {}",
+                    path.display()
+                )
+            })?
+            .len();
+        anyhow::ensure!(
             detection_len <= options.max_detection_bytes,
             "format detection input {} is {detection_len} bytes, exceeding max_detection_bytes {}",
             path.display(),
             options.max_detection_bytes
         );
-            let content = fs::read_to_string(path).with_context(|| {
-                format!("read query input for format detection: {}", path.display())
-            })?;
-            let detection_content = if is_json_lines(path) {
-                content
-                    .lines()
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or(content.as_str())
-            } else {
-                content.as_str()
-            };
-            detect_format(None, Some(detection_content))
-                .map_err(anyhow::Error::from)?
-                .with_context(|| format!("cannot detect trajectory format: {}", path.display()))?
+        let content = fs::read_to_string(path).with_context(|| {
+            format!("read query input for format detection: {}", path.display())
+        })?;
+        let detection_content = if is_json_lines(path) {
+            content
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or(content.as_str())
+        } else {
+            content.as_str()
         };
+        detect_format(None, Some(detection_content))?
+            .with_context(|| format!("cannot detect trajectory format: {}", path.display()))?
+    };
     validate_query_format(format, path)?;
     Ok(format)
 }

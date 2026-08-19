@@ -76,7 +76,8 @@ ATIF 的顶层单对象/数组形态与 root 顺序作为格式无关的 Storyli
 Canonical Event 保留 Lance projection/filter/limit pushdown、scalar index、pinned manifest
 和 append-order scan。Storyline Lance 保留三表 provider 与 late content materialization。
 文本格式不虚报 Lance 能力。物化或 fallback 超过行/字节预算时返回
-`SourceBudgetExceeded`，不会静默截断结果。
+操作失败，不会静默截断结果；HTTP/CLI 查询输出预算由边界拥有的显式
+`LimitExceeded` 结果映射为 `resource_exhausted`。
 
 ## 公共 API
 
@@ -90,6 +91,17 @@ Canonical Event 保留 Lance projection/filter/limit pushdown、scalar index、p
 外围 wire DTO、低层格式 parser、AgenticMD AST、Arrow codec、DataFusion provider、
 provider options、manifest、锁和底层投影辅助实现均保持私有或 crate 内可见。
 `search` 是独立 feature，本轮公共门面收敛不改变它。
+
+错误门面保持轻量：crate 根以及 `document`、`storage`、`query` 模块公开的
+`Result<T>` 都精确等同于 `anyhow::Result<T>`。操作失败直接使用 `?` 保留具体 source；
+lookup 用 `Result<Option<T>>` 表达缺失；parser/validator 只通过
+`document::{InputIssue, InputIssueKind, InputResult}` 表达可安全反馈的输入问题；append、
+projection 等调用方需要分支的状态使用所属模块的局部 Outcome。公共 API 不提供全局
+`Error`、错误码、分类器或传播上下文协议。
+
+查询流的行预算通过 `query::QueryWriteOutcome::{Complete, LimitExceeded}` 显式返回；
+写入器或查询执行失败仍作为保留原始 source chain 的 `anyhow::Error` 返回。现有
+`write_query_jsonl_with_max_rows` 便捷方法继续为不需要分支处理的调用方提供错误式兼容接口。
 
 ## 组件边界
 

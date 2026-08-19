@@ -3,7 +3,7 @@
 //! Field presence and semantic combinations are deliberately not validated:
 //! AgenticMD is a debugging view, not a protocol boundary.
 
-use anyhow::{bail, Result};
+use crate::{InputIssue, InputResult};
 
 use super::codec::{MarkdownBlock, MarkdownHeader};
 
@@ -16,38 +16,44 @@ pub fn block_speaker(header: &MarkdownHeader) -> &str {
         .unwrap_or("system")
 }
 
-pub fn validate_speaker(speaker: &str) -> Result<()> {
+pub fn validate_speaker(speaker: &str) -> InputResult<()> {
     let s = speaker.trim();
     if s.is_empty() {
-        bail!("block speaker must not be empty");
+        return Err(InputIssue::invalid("block speaker must not be empty"));
     }
     if !s
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
     {
-        bail!("invalid block speaker: {speaker}");
+        return Err(InputIssue::invalid(format!(
+            "invalid block speaker: {speaker}"
+        )));
     }
     Ok(())
 }
 
-pub fn validate_type_name(type_name: &str) -> Result<()> {
+pub fn validate_type_name(type_name: &str) -> InputResult<()> {
     let t = type_name.trim();
     if t.is_empty() {
-        bail!("block type must not be empty");
+        return Err(InputIssue::invalid("block type must not be empty"));
     }
     if t.contains('\n') || t.contains(':') {
-        bail!("block type must not contain ':' or newline");
+        return Err(InputIssue::invalid(
+            "block type must not contain ':' or newline",
+        ));
     }
     if !t
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/'))
     {
-        bail!("invalid block type: {type_name}");
+        return Err(InputIssue::invalid(format!(
+            "invalid block type: {type_name}"
+        )));
     }
     Ok(())
 }
 
-pub fn validate_agenticmd_block(block: &MarkdownBlock) -> Result<()> {
+pub fn validate_agenticmd_block(block: &MarkdownBlock) -> InputResult<()> {
     validate_type_name(&block.header.type_name)?;
     validate_speaker(block_speaker(&block.header))?;
     Ok(())

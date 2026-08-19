@@ -27,16 +27,15 @@ fn into_storyline(
 ) -> persisting_pchronicle::document::Result<StorylineDocument> {
     match format {
         TestFormat::Storyline => serde_json::from_str(input).map_err(Into::into),
-        TestFormat::AgenticMd => decode_agenticmd(input),
+        TestFormat::AgenticMd => Ok(decode_agenticmd(input)?),
         TestFormat::OpenaiMsg => {
             let mut stories =
                 decode_json_storylines(DocumentFormat::OpenaiMsg, input, "corpus.json")?;
             if stories.len() != 1 {
-                return Err(
-                    persisting_pchronicle::document::Error::UnsupportedCardinality {
-                        format: persisting_pchronicle::document::DocumentFormat::OpenaiMsg,
-                        stories: stories.len(),
-                    },
+                anyhow::bail!(
+                    "{} document cannot represent {} storylines",
+                    DocumentFormat::OpenaiMsg,
+                    stories.len()
                 );
             }
             Ok(stories.remove(0))
@@ -44,11 +43,10 @@ fn into_storyline(
         TestFormat::Atif => {
             let mut stories = decode_json_storylines(DocumentFormat::Atif, input, "corpus.json")?;
             if stories.len() != 1 {
-                return Err(
-                    persisting_pchronicle::document::Error::UnsupportedCardinality {
-                        format: DocumentFormat::Atif,
-                        stories: stories.len(),
-                    },
+                anyhow::bail!(
+                    "{} document cannot represent {} storylines",
+                    DocumentFormat::Atif,
+                    stories.len()
                 );
             }
             Ok(stories.remove(0))

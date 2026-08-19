@@ -89,8 +89,9 @@ pub struct AtifObservation {
 }
 
 impl AtifTrajectory {
-    pub fn from_json_str(s: &str) -> crate::Result<Self> {
-        let traj: Self = serde_json::from_str(s)?;
+    pub fn from_json_str(s: &str) -> crate::InputResult<Self> {
+        let traj: Self = serde_json::from_str(s)
+            .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
         traj.validate()?;
         Ok(traj)
     }
@@ -98,19 +99,19 @@ impl AtifTrajectory {
     /// Effective session partition. Table relationships use `document_id`.
     ///
     /// Preference: `session_id` → `trajectory_id` → error.
-    pub fn effective_session_id(&self) -> crate::Result<&str> {
+    pub fn effective_session_id(&self) -> crate::InputResult<&str> {
         if let Some(id) = self.session_id.value().filter(|s| !s.is_empty()) {
             return Ok(id);
         }
         if let Some(id) = self.trajectory_id.value().filter(|s| !s.is_empty()) {
             return Ok(id);
         }
-        Err(crate::Error::InvalidAtif(
-            "ATIF trajectory requires session_id or trajectory_id".into(),
+        Err(crate::InputIssue::invalid(
+            "ATIF trajectory requires session_id or trajectory_id",
         ))
     }
 
-    pub fn validate(&self) -> crate::Result<()> {
+    pub fn validate(&self) -> crate::InputResult<()> {
         let mut trajectory_ids = std::collections::HashSet::new();
         self.validate_inner(false, &mut trajectory_ids)
     }
@@ -119,19 +120,17 @@ impl AtifTrajectory {
         &self,
         embedded: bool,
         trajectory_ids: &mut std::collections::HashSet<String>,
-    ) -> crate::Result<()> {
+    ) -> crate::InputResult<()> {
         if embedded {
             let trajectory_id = self
                 .trajectory_id
                 .value()
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| {
-                    crate::Error::InvalidAtif(
-                        "embedded ATIF trajectory requires trajectory_id".into(),
-                    )
+                    crate::InputIssue::invalid("embedded ATIF trajectory requires trajectory_id")
                 })?;
             if !trajectory_ids.insert(trajectory_id.clone()) {
-                return Err(crate::Error::InvalidAtif(format!(
+                return Err(crate::InputIssue::invalid(format!(
                     "duplicate embedded trajectory_id '{trajectory_id}'"
                 )));
             }
@@ -144,24 +143,22 @@ impl AtifTrajectory {
             }
         }
         if self.agent.name.is_empty() {
-            return Err(crate::Error::InvalidAtif("agent.name is required".into()));
+            return Err(crate::InputIssue::invalid("agent.name is required"));
         }
         if self.agent.version.is_empty() {
-            return Err(crate::Error::InvalidAtif(
-                "agent.version is required".into(),
-            ));
+            return Err(crate::InputIssue::invalid("agent.version is required"));
         }
         let mut seen_steps = std::collections::HashSet::new();
         let mut seen_tools = std::collections::HashSet::new();
         for step in &self.steps {
             if step.step_id < 1 {
-                return Err(crate::Error::InvalidAtif(format!(
+                return Err(crate::InputIssue::invalid(format!(
                     "step_id must start from 1, got {}",
                     step.step_id
                 )));
             }
             if !seen_steps.insert(step.step_id) {
-                return Err(crate::Error::InvalidAtif(format!(
+                return Err(crate::InputIssue::invalid(format!(
                     "duplicate step_id {}",
                     step.step_id
                 )));
@@ -169,12 +166,10 @@ impl AtifTrajectory {
             if let Some(calls) = step.tool_calls.value() {
                 for call in calls {
                     if call.tool_call_id.is_empty() {
-                        return Err(crate::Error::InvalidAtif(
-                            "tool_call_id must be non-empty".into(),
-                        ));
+                        return Err(crate::InputIssue::invalid("tool_call_id must be non-empty"));
                     }
                     if !seen_tools.insert(call.tool_call_id.clone()) {
-                        return Err(crate::Error::InvalidAtif(format!(
+                        return Err(crate::InputIssue::invalid(format!(
                             "duplicate tool_call_id {}",
                             call.tool_call_id
                         )));

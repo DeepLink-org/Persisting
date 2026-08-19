@@ -36,6 +36,8 @@ use clap::CommandFactory;
 use serde_json::Value;
 use std::fs;
 
+static STATUS_REPORT_TRACING_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn atif_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../persisting-pchronicle/tests/fixtures/atif/dialogue_10.json")
@@ -193,6 +195,115 @@ async fn project_watch_emits_sync_and_verification_state() -> Result<()> {
 }
 
 #[tokio::test]
+async fn project_watch_labels_missing_projection_without_diagnostic_text() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "session",
+        None,
+    );
+    let source = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
+    let projection = temp.path().join("missing-projection");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "project",
+        "watch",
+        "--from",
+        projection.to_str().unwrap(),
+        "--source",
+        source.to_str().unwrap(),
+        "--iterations",
+        "1",
+        "--interval-seconds",
+        "1",
+        "--max-backoff-seconds",
+        "1",
+        "--verify-every",
+        "1",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+    let event: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(event["status"], "error");
+    assert_eq!(event["code"], "not_found");
+    assert_eq!(event["message"], "projection was not found");
+    assert!(event.get("error").is_none());
+    assert!(!event
+        .to_string()
+        .contains(source.to_string_lossy().as_ref()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_verify_labels_stale_projection_as_conflict() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "session",
+        None,
+    );
+    let source = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
+    let projection = temp.path().join("storyline");
+    persisting_pchronicle::storage::build_storyline_projection(
+        source.to_string_lossy(),
+        projection.to_string_lossy(),
+        "events.lance",
+    )
+    .await?;
+    persisting_pchronicle::storage::RawEventLanceStore
+        .append_events(
+            &coords,
+            &[persisting_pchronicle::model::EventRecord {
+                identity: Default::default(),
+                seq: 1,
+                source: "test".into(),
+                kind: "note".into(),
+                timestamp: None,
+                session_id: None,
+                agent_id: None,
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: serde_json::json!({"content":"stale"}),
+            }],
+        )
+        .await?;
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "project",
+        "verify",
+        "--from",
+        projection.to_str().unwrap(),
+        "--source",
+        source.to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    let error = run(cli, false, &mut stdout, &mut Vec::new())
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "conflict: projection verification is not fresh"
+    );
+    let verification: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(verification["fresh"], false);
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_discovers_nested_sources_as_json() -> Result<()> {
     let temp = tempfile::tempdir()?;
     fs::create_dir(temp.path().join("nested"))?;
@@ -242,6 +353,29 @@ async fn list_alias_and_table_output_work() -> Result<()> {
     assert!(output.contains("SOURCE"));
     assert!(output.contains("LAST MODIFIED"));
     assert!(output.contains("trajectory.json"));
+    Ok(())
+}
+
+#[test]
+fn list_source_status_does_not_serialize_catalog_diagnostics() -> Result<()> {
+    let source = persisting_pchronicle::storage::DiscoveredSource {
+        file: "broken.json".into(),
+        format: None,
+        kind: CatalogSourceKind::File,
+        revision: None,
+        projection_status: None,
+        projection_generation: None,
+        projection_candidates: 0,
+        size_bytes: None,
+        last_modified: None,
+        status: CatalogSourceStatus::Error,
+        error: Some("list-secret-sentinel /private/list/path".into()),
+    };
+
+    let output = serde_json::to_string(&source_response(&source))?;
+    assert!(output.contains("Source discovery failed"), "{output}");
+    assert!(!output.contains("list-secret-sentinel"), "{output}");
+    assert!(!output.contains("/private/list/path"), "{output}");
     Ok(())
 }
 
@@ -316,6 +450,7 @@ async fn status_and_analysis_use_bounded_canonical_fallback() -> Result<()> {
 
 #[tokio::test]
 async fn status_reports_partial_counts_for_bad_sources() -> Result<()> {
+    let _tracing_guard = STATUS_REPORT_TRACING_LOCK.lock().await;
     let temp = tempfile::tempdir()?;
     fs::copy(atif_fixture(), temp.path().join("valid.json"))?;
     fs::write(temp.path().join("broken.json"), "{not-json")?;
@@ -363,8 +498,12 @@ async fn status_strict_mode_rejects_bad_sources() -> Result<()> {
 
 #[tokio::test]
 async fn status_report_mode_marks_an_unreadable_dataset_as_error() -> Result<()> {
+    let _tracing_guard = STATUS_REPORT_TRACING_LOCK.lock().await;
     let temp = tempfile::tempdir()?;
-    fs::write(temp.path().join("broken.json"), "{not-json")?;
+    fs::write(
+        temp.path().join("broken.json"),
+        "{status-secret-sentinel:/private/status/path",
+    )?;
     let cli = Cli::try_parse_from([
         "pchronicle",
         "status",
@@ -382,8 +521,124 @@ async fn status_report_mode_marks_an_unreadable_dataset_as_error() -> Result<()>
     assert_eq!(value["sources"]["ready"], 0);
     assert_eq!(value["sources"]["error"], 1);
     let error = value["source_errors"][0]["error"].as_str().unwrap();
-    assert!(error.contains("<dataset>/broken.json"));
-    assert!(!error.contains(temp.path().to_str().unwrap()));
+    assert_eq!(error, "Source status query failed");
+    let output = String::from_utf8(stdout)?;
+    assert!(!output.contains("status-secret-sentinel"), "{output}");
+    assert!(!output.contains("/private/status/path"), "{output}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn status_report_mode_logs_each_cached_source_failure_once() -> Result<()> {
+    use std::fmt::Write as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use tracing::field::{Field, Visit};
+    use tracing::instrument::WithSubscriber as _;
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
+    use tracing_subscriber::Layer;
+
+    const SENTINEL: &str = "status-duplicate-log-sentinel";
+
+    let _tracing_guard = STATUS_REPORT_TRACING_LOCK.lock().await;
+
+    #[derive(Clone)]
+    struct SentinelLayer {
+        events: Arc<AtomicUsize>,
+    }
+
+    impl<S> Layer<S> for SentinelLayer
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _context: LayerContext<'_, S>) {
+            #[derive(Default)]
+            struct Fields(String);
+
+            impl Visit for Fields {
+                fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                    let _ = write!(self.0, "{}={value:?};", field.name());
+                }
+            }
+
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            if fields.0.contains(SENTINEL) {
+                self.events.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir()?;
+    fs::write(
+        temp.path().join(format!("{SENTINEL}.json")),
+        "{private-status-diagnostic:/private/status/path",
+    )?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        temp.path().to_str().unwrap(),
+        "--format",
+        "json",
+        "--errors",
+        "report",
+    ])?;
+    let events = Arc::new(AtomicUsize::new(0));
+    let subscriber = tracing_subscriber::registry().with(SentinelLayer {
+        events: events.clone(),
+    });
+    let mut stdout = Vec::new();
+
+    async {
+        tracing::callsite::rebuild_interest_cache();
+        run(cli, false, &mut stdout, &mut Vec::new()).await
+    }
+    .with_subscriber(subscriber)
+    .await?;
+
+    assert_eq!(events.load(Ordering::Relaxed), 1);
+    let value: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(
+        value["source_errors"][0]["error"],
+        "Source status query failed"
+    );
+    let public_error = value["source_errors"][0]["error"].as_str().unwrap();
+    assert!(!public_error.contains("private-status-diagnostic"));
+    assert!(!public_error.contains("/private/status/path"));
+    Ok(())
+}
+
+#[test]
+fn limited_buffer_labels_byte_exhaustion_without_swallowing_writer_errors() -> Result<()> {
+    use persisting_pchronicle::query::QueryWriteOutcome;
+
+    let mut buffer = LimitedBuffer::new(3);
+    let write_error = buffer.write_all(b"four").unwrap_err();
+    let outcome = buffer.finish(Err(anyhow::Error::new(write_error)))?;
+    assert_eq!(outcome, QueryOutputBudgetOutcome::ByteLimitExceeded);
+
+    let buffer = LimitedBuffer::new(3);
+    let writer_error = anyhow::Error::new(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "limited-writer-source-sentinel",
+    ));
+    let error = buffer
+        .finish(Err(writer_error))
+        .expect_err("ordinary writer errors must remain operational");
+    let source = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<std::io::Error>())
+        .context("writer I/O source was not preserved")?;
+    assert_eq!(source.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(source.to_string(), "limited-writer-source-sentinel");
+
+    let buffer = LimitedBuffer::new(3);
+    assert_eq!(
+        buffer.finish(Ok(QueryWriteOutcome::LimitExceeded))?,
+        QueryOutputBudgetOutcome::RowLimitExceeded
+    );
     Ok(())
 }
 
@@ -530,24 +785,27 @@ async fn query_writes_new_files_without_overwriting() -> Result<()> {
 
 #[tokio::test]
 async fn query_rejects_writes_and_bounded_output_without_partial_stdout() -> Result<()> {
-    for (sql, limit_flag, limit, expected) in [
+    for (sql, limit_flag, limit, expected, boundary_code) in [
         (
             "DELETE FROM dataset.runs",
             "--max-output-rows",
             "100",
             "only accepts SELECT",
+            None,
         ),
         (
             "SELECT * FROM dataset.steps",
             "--max-output-rows",
             "1",
             "max_output_rows",
+            Some("resource_exhausted"),
         ),
         (
             "SELECT * FROM dataset.steps",
             "--max-output-bytes",
             "8",
             "max_output_bytes",
+            Some("resource_exhausted"),
         ),
     ] {
         let cli = Cli::try_parse_from([
@@ -562,24 +820,27 @@ async fn query_rejects_writes_and_bounded_output_without_partial_stdout() -> Res
         let error = run(cli, false, &mut stdout, &mut Vec::new())
             .await
             .unwrap_err();
-        assert!(error.to_string().contains(expected), "{error:#}");
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+        if let Some(boundary_code) = boundary_code {
+            assert!(error.to_string().starts_with(boundary_code), "{error:#}");
+        }
         assert!(stdout.is_empty());
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn query_errors_redact_sql_and_dataset_path() -> Result<()> {
+async fn query_errors_preserve_the_operational_source_chain() -> Result<()> {
     let dataset = example_dataset("atif");
     let sql = "SELECT secret_column FROM dataset.runs";
     let cli = Cli::try_parse_from(["pchronicle", "query", dataset.to_str().unwrap(), sql])?;
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    let message = format!("{error:#}");
-    assert!(!message.contains(sql));
-    assert!(!message.contains(dataset.to_str().unwrap()));
-    assert!(message.contains("<sql>"));
+    assert!(
+        error.chain().count() >= 2,
+        "missing source chain: {error:#}"
+    );
     Ok(())
 }
 
@@ -816,7 +1077,10 @@ async fn find_enforces_output_byte_limit_without_partial_stdout() -> Result<()> 
     let error = run(cli, false, &mut stdout, &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("max_output_bytes"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("max_output_bytes"),
+        "{error:#}"
+    );
     assert!(stdout.is_empty());
     Ok(())
 }
@@ -968,10 +1232,14 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
     let invalid = temp.path().join("invalid.json");
     fs::write(&invalid, "not json")?;
 
-    for (name, extra) in [
-        ("invalid", vec![]),
-        ("oversized", vec!["--max-input-bytes", "1"]),
-        ("storyline", vec!["--format", "storyline"]),
+    for (name, extra, code) in [
+        ("invalid", vec![], "invalid_request"),
+        (
+            "oversized",
+            vec!["--max-input-bytes", "1"],
+            "resource_exhausted",
+        ),
+        ("storyline", vec!["--format", "storyline"], "unsupported"),
     ] {
         let output = temp.path().join(name);
         let mut args = vec![
@@ -985,7 +1253,10 @@ async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_
         args.extend(extra);
         let cli = Cli::try_parse_from(args)?;
         let mut stdout = Vec::new();
-        assert!(run(cli, false, &mut stdout, &mut Vec::new()).await.is_err());
+        let error = run(cli, false, &mut stdout, &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").starts_with(code), "{error:#}");
         assert!(stdout.is_empty());
         assert!(!output.exists());
     }
@@ -1037,11 +1308,17 @@ async fn import_is_create_only_and_rejects_duplicate_documents() -> Result<()> {
     let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
         .unwrap_err();
-    assert!(
-        error.to_string().contains("duplicate document_id"),
-        "{error:#}"
+    assert_eq!(
+        error.to_string(),
+        "invalid_request: import contains duplicate document_id"
     );
     assert!(!duplicate_output.exists());
+    assert!(!fs::read_dir(temp.path())?.any(|entry| {
+        entry
+            .ok()
+            .and_then(|entry| entry.file_name().into_string().ok())
+            .is_some_and(|name| name.starts_with(".pchronicle-import-"))
+    }));
 
     let mut first: Value = serde_json::from_slice(&fs::read(example_source("atif"))?)?;
     first["trajectory_id"] = serde_json::json!("document-a");
@@ -1209,9 +1486,14 @@ async fn export_is_bounded_create_only_and_has_no_partial_output() -> Result<()>
         "--max-output-bytes",
         "8",
     ])?;
-    assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
         .await
-        .is_err());
+        .unwrap_err();
+    assert!(
+        error.to_string().starts_with("resource_exhausted:"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("exact export"), "{error:#}");
     assert!(!limited.exists());
     assert!(!fs::read_dir(temp.path())?.any(|entry| {
         entry
@@ -1219,6 +1501,125 @@ async fn export_is_bounded_create_only_and_has_no_partial_output() -> Result<()>
             .and_then(|entry| entry.file_name().into_string().ok())
             .is_some_and(|name| name.starts_with(".pchronicle-export-"))
     }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_stream_preserves_an_ordinary_writer_error_source() -> Result<()> {
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "export-writer-source-sentinel",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("atif").to_str().unwrap(),
+        "--output",
+        "-",
+        "--stream",
+        "--format",
+        "atif",
+    ])?;
+    let error = run(cli, false, &mut FailingWriter, &mut Vec::new())
+        .await
+        .unwrap_err();
+    let source = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<std::io::Error>())
+        .context("export stream failure did not retain its I/O source")?;
+    assert_eq!(source.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(source.to_string(), "export-writer-source-sentinel");
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_normalized_budgets_are_resource_exhausted_without_partial_output() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+
+    let trajectory_limited = temp.path().join("trajectory-limited.json");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("openai-messages").to_str().unwrap(),
+        "--output",
+        trajectory_limited.to_str().unwrap(),
+        "--format",
+        "openai-messages",
+        "--where",
+        "TRUE",
+        "--max-trajectories",
+        "1",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().starts_with("resource_exhausted:"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("max_trajectories"), "{error:#}");
+    assert!(!trajectory_limited.exists());
+
+    let exact_trajectory_limited = temp.path().join("exact-trajectory-limited.json");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("openai-messages").to_str().unwrap(),
+        "--output",
+        exact_trajectory_limited.to_str().unwrap(),
+        "--format",
+        "openai-messages",
+        "--max-trajectories",
+        "1",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().starts_with("resource_exhausted:"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("max_trajectories"), "{error:#}");
+    assert!(!exact_trajectory_limited.exists());
+
+    let byte_limited = temp.path().join("normalized-byte-limited.json");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "export",
+        "--from",
+        example_dataset("atif").to_str().unwrap(),
+        "--output",
+        byte_limited.to_str().unwrap(),
+        "--format",
+        "atif",
+        "--where",
+        "TRUE",
+        "--max-output-bytes",
+        "512",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().starts_with("resource_exhausted:"),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("normalized export"), "{error:#}");
+    assert!(!byte_limited.exists());
     Ok(())
 }
 
@@ -1551,7 +1952,7 @@ upstream = "http://{upstream_addr}/v1"
     config.listen = gateway_addr.to_string();
     config.admin_listen = admin_addr.to_string();
     let (sink, writer) =
-        gateway_capture::gateway_capture_sink(&dataset.path().to_string_lossy(), &config.agent_id);
+        gateway_capture::gateway_capture_sink(&dataset.path().to_string_lossy(), &config.agent_id)?;
     let warehouse_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let warehouse_addr = warehouse_listener.local_addr()?;
     let warehouse_config = server::ChronicleServerConfig::mounted(vec![DatasetMount::default(

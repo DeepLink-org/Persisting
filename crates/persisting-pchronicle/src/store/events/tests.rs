@@ -69,6 +69,23 @@ fn payload_content(record: &EventRecord) -> String {
     record.payload["content"].as_str().unwrap().to_string()
 }
 
+#[test]
+fn batch_report_failure_extraction_preserves_the_original_source() {
+    let mut report = EventAppendBatchReport::default();
+    report.outcomes.insert(
+        "memory://failed-partition".into(),
+        Err(anyhow::Error::new(std::io::Error::other(
+            "partition failure sentinel",
+        ))),
+    );
+
+    let (uri, error) = report.take_failure().unwrap();
+
+    assert_eq!(uri, "memory://failed-partition");
+    assert!(error.downcast_ref::<std::io::Error>().is_some());
+    assert!(report.outcomes.is_empty());
+}
+
 #[tokio::test]
 async fn append_creates_lance_dataset() {
     let dir = tempfile::tempdir().unwrap();
@@ -306,7 +323,7 @@ async fn partitioned_append_reports_one_root_failure_without_losing_other_root()
         .await
         .unwrap();
     assert!(report.outcome_for(&invalid_uri).unwrap().is_err());
-    assert_eq!(report.outcome_for(&valid_uri), Some(&Ok(1)));
+    assert!(matches!(report.outcome_for(&valid_uri), Some(Ok(1))));
     assert_eq!(replay(&valid, 0, None).await.unwrap().records.len(), 1);
 }
 

@@ -17,8 +17,8 @@ use datafusion::sql::sqlparser::ast::Statement as SqlStatement;
 use futures::TryStreamExt;
 
 use super::{
-    DatasetCatalogSnapshot, FileTrajectoryQueryMetrics, FileTrajectoryQueryMetricsSnapshot,
-    SOURCE_FILE_COLUMN,
+    datafusion_bridge::from_datafusion, DatasetCatalogSnapshot, FileTrajectoryQueryMetrics,
+    FileTrajectoryQueryMetricsSnapshot, SOURCE_FILE_COLUMN,
 };
 use crate::{DocumentFormat, QueryCapabilities, QueryTables};
 
@@ -68,6 +68,12 @@ pub struct ChronicleQueryExecutionOptions {
     pub spill_path: Option<PathBuf>,
     /// Maximum bytes permitted in the spill directory.
     pub max_spill_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryWriteOutcome {
+    Complete,
+    LimitExceeded,
 }
 
 impl ExternalTableSpec {
@@ -220,7 +226,7 @@ impl ChronicleQueryEngine {
             !self
                 .context
                 .table_exist(spec.name.as_str())
-                .context("inspect DataFusion table catalog")?,
+                .map_err(|error| from_datafusion("inspect DataFusion table catalog", error))?,
             "DataFusion table '{}' is already registered",
             spec.name
         );
@@ -254,12 +260,7 @@ impl ChronicleQueryEngine {
                     .await
             }
         }
-        .with_context(|| {
-            format!(
-                "register external DataFusion table '{}' from {}",
-                spec.name, spec.path
-            )
-        })
+        .map_err(|error| from_datafusion("register external DataFusion table", error))
     }
 
     /// Build a lazy DataFusion DataFrame for callers that need plan inspection
@@ -270,7 +271,7 @@ impl ChronicleQueryEngine {
             .context
             .sql(sql)
             .await
-            .with_context(|| format!("plan pChronicle SQL: {sql}"))?;
+            .map_err(|error| from_datafusion("plan pChronicle SQL", error))?;
         if self.require_file_join_key {
             ensure_collision_safe_file_joins(
                 dataframe.logical_plan(),
@@ -286,7 +287,7 @@ impl ChronicleQueryEngine {
             .await?
             .collect()
             .await
-            .with_context(|| format!("execute pChronicle SQL: {sql}"))
+            .map_err(|error| from_datafusion("execute pChronicle SQL", error))
     }
 
     /// Execute SQL and encode result rows as JSONL.
@@ -317,9 +318,29 @@ impl ChronicleQueryEngine {
     pub async fn write_query_jsonl_with_max_rows<W: std::io::Write>(
         &self,
         sql: &str,
-        mut output: W,
+        output: W,
         max_rows: Option<u64>,
     ) -> Result<()> {
+        match self
+            .write_query_jsonl_bounded(sql, output, max_rows)
+            .await?
+        {
+            QueryWriteOutcome::Complete => Ok(()),
+            QueryWriteOutcome::LimitExceeded => {
+                let max_rows = max_rows.context("bounded query row limit is missing")?;
+                anyhow::bail!("SQL result exceeds max_output_rows limit of {max_rows}")
+            }
+        }
+    }
+
+    /// Stream JSONL and return row-budget exhaustion through an explicit
+    /// outcome. Ordinary execution and writer failures remain errors.
+    pub async fn write_query_jsonl_bounded<W: std::io::Write>(
+        &self,
+        sql: &str,
+        mut output: W,
+        max_rows: Option<u64>,
+    ) -> Result<QueryWriteOutcome> {
         if let Some(max_rows) = max_rows {
             anyhow::ensure!(max_rows > 0, "query max_rows must be greater than zero");
         }
@@ -328,28 +349,30 @@ impl ChronicleQueryEngine {
             .await?
             .execute_stream()
             .await
-            .with_context(|| format!("start streaming pChronicle SQL: {sql}"))?;
+            .map_err(|error| from_datafusion("start streaming pChronicle SQL", error))?;
         let mut writer = LineDelimitedWriter::new(&mut output);
         let mut rows_written = 0u64;
         while let Some(batch) = stream
             .try_next()
             .await
-            .with_context(|| format!("stream pChronicle SQL: {sql}"))?
+            .map_err(|error| from_datafusion("stream pChronicle SQL", error))?
         {
             rows_written = rows_written
                 .checked_add(batch.num_rows() as u64)
                 .context("streaming SQL result row count overflow")?;
             if let Some(max_rows) = max_rows {
-                anyhow::ensure!(
-                    rows_written <= max_rows,
-                    "SQL result exceeds max_output_rows limit of {max_rows}"
-                );
+                if rows_written > max_rows {
+                    return Ok(QueryWriteOutcome::LimitExceeded);
+                }
             }
             writer
                 .write(&batch)
                 .context("encode streaming SQL result batch as JSONL")?;
         }
-        writer.finish().context("finish streaming SQL JSONL output")
+        writer
+            .finish()
+            .context("finish streaming SQL JSONL output")?;
+        Ok(QueryWriteOutcome::Complete)
     }
 }
 
@@ -384,7 +407,11 @@ fn query_session_context(options: &ChronicleQueryExecutionOptions) -> Result<Ses
     if let Some(max_spill_bytes) = options.max_spill_bytes {
         runtime = runtime.with_max_temp_directory_size(max_spill_bytes);
     }
-    let runtime = Arc::new(runtime.build().context("build DataFusion query runtime")?);
+    let runtime = Arc::new(
+        runtime
+            .build()
+            .map_err(|error| from_datafusion("build DataFusion query runtime", error))?,
+    );
     Ok(SessionContext::new_with_config_rt(
         SessionConfig::new().with_information_schema(true),
         runtime,
@@ -421,7 +448,8 @@ fn json_lines_extension(path: &str) -> &str {
 }
 
 fn ensure_read_only_query(sql: &str) -> Result<()> {
-    let statements = DFParser::parse_sql(sql).context("parse pChronicle SQL")?;
+    let statements =
+        DFParser::parse_sql(sql).map_err(|error| from_datafusion("parse pChronicle SQL", error))?;
     anyhow::ensure!(
         statements.len() == 1,
         "pChronicle query accepts exactly one SQL statement"

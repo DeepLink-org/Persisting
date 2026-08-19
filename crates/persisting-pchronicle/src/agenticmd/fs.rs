@@ -17,7 +17,7 @@ use super::convert::{encode_storyline_preamble, storyline_turn_block};
 use super::validate::{
     block_speaker, validate_agenticmd_block, validate_speaker, validate_type_name,
 };
-use crate::{StorylineDocument, StorylineTurn};
+use crate::{InputResult, StorylineDocument, StorylineTurn};
 
 /// Diagnostic index of one AgenticMD document.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -51,33 +51,32 @@ pub fn encode_agenticmd_block_validated(block: &MarkdownBlock) -> Result<String>
 }
 
 /// Tolerant parse plus minimal safety checks for fields used in generated comments.
-pub fn parse_agenticmd_document_validated(input: &str) -> Result<Vec<MarkdownBlock>> {
-    parse_agenticmd_document(input)
-        .map_err(|e| anyhow::anyhow!("agenticmd parse: {e}"))?
+pub fn parse_agenticmd_document_validated(input: &str) -> InputResult<Vec<MarkdownBlock>> {
+    parse_agenticmd_document(input)?
         .blocks
         .into_iter()
         .enumerate()
         .map(|(i, block)| {
-            validate_agenticmd_block(&block).with_context(|| format!("agenticmd block[{i}]"))?;
+            validate_agenticmd_block(&block).map_err(|error| error.at(format!("blocks[{i}]")))?;
             Ok(block)
         })
-        .collect()
+        .collect::<InputResult<Vec<_>>>()
 }
 
 /// Tolerant parse with absolute byte spans for live-view upsert ranges.
-pub fn parse_agenticmd_spans_validated(input: &str) -> Result<Vec<(MarkdownBlock, usize, usize)>> {
-    let spans = parse_agenticmd_blocks_with_spans(input)
-        .map_err(|e| anyhow::anyhow!("agenticmd span parse: {e}"))?;
+pub fn parse_agenticmd_spans_validated(
+    input: &str,
+) -> InputResult<Vec<(MarkdownBlock, usize, usize)>> {
+    let spans = parse_agenticmd_blocks_with_spans(input)?;
     spans
         .into_iter()
         .enumerate()
         .map(|(i, span)| {
             let MarkdownBlockSpan { block, start, end } = span;
-            validate_agenticmd_block(&block)
-                .with_context(|| format!("agenticmd span block[{i}]"))?;
+            validate_agenticmd_block(&block).map_err(|error| error.at(format!("blocks[{i}]")))?;
             Ok((block, start, end))
         })
-        .collect()
+        .collect::<InputResult<Vec<_>>>()
 }
 
 /// Append blocks to a session markdown file.
@@ -333,7 +332,7 @@ pub fn read_agenticmd_blocks_from_file(path: &Path) -> Result<Vec<MarkdownBlock>
         return Ok(Vec::new());
     }
     let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    parse_agenticmd_document_validated(&text)
+    Ok(parse_agenticmd_document_validated(&text)?)
 }
 
 pub fn agenticmd_block_count(path: &Path) -> Result<usize> {
@@ -556,6 +555,14 @@ mod tests {
             parse_agenticmd_document_validated(&doc).unwrap()[0].body,
             inner
         );
+    }
+
+    #[test]
+    fn validated_in_memory_parse_retains_leaf_issue_location() {
+        let error = parse_agenticmd_document_validated("---\nformat: [\n---\n\n").unwrap_err();
+
+        assert_eq!(error.kind(), crate::input::InputIssueKind::Invalid);
+        assert_eq!(error.location(), Some("frontmatter"));
     }
 
     #[test]

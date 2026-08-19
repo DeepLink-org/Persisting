@@ -3,6 +3,14 @@ use super::*;
 pub(super) struct LimitedBuffer {
     pub(super) bytes: Vec<u8>,
     max_bytes: usize,
+    limit_exceeded: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum QueryOutputBudgetOutcome {
+    Complete(Vec<u8>),
+    RowLimitExceeded,
+    ByteLimitExceeded,
 }
 
 impl LimitedBuffer {
@@ -10,22 +18,34 @@ impl LimitedBuffer {
         Self {
             bytes: Vec::new(),
             max_bytes,
+            limit_exceeded: false,
         }
     }
 
-    pub(super) fn into_inner(self) -> Vec<u8> {
-        self.bytes
+    pub(super) fn finish(
+        self,
+        write_result: Result<persisting_pchronicle::query::QueryWriteOutcome>,
+    ) -> Result<QueryOutputBudgetOutcome> {
+        if self.limit_exceeded {
+            return Ok(QueryOutputBudgetOutcome::ByteLimitExceeded);
+        }
+        match write_result {
+            Ok(persisting_pchronicle::query::QueryWriteOutcome::Complete) => {
+                Ok(QueryOutputBudgetOutcome::Complete(self.bytes))
+            }
+            Ok(persisting_pchronicle::query::QueryWriteOutcome::LimitExceeded) => {
+                Ok(QueryOutputBudgetOutcome::RowLimitExceeded)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
 impl Write for LimitedBuffer {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let next_size = self
-            .bytes
-            .len()
-            .checked_add(buffer.len())
-            .ok_or_else(|| IoError::other("query output size overflow"))?;
+        let next_size = self.bytes.len().saturating_add(buffer.len());
         if next_size > self.max_bytes {
+            self.limit_exceeded = true;
             return Err(IoError::other(format!(
                 "SQL result exceeds max_output_bytes limit of {}",
                 self.max_bytes
@@ -234,15 +254,6 @@ pub(super) fn write_status_table(stdout: &mut dyn Write, response: &StatusRespon
 
 pub(super) fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
-}
-
-pub(super) fn redact_message(message: &str, dataset_uri: &str) -> String {
-    message
-        .replace(dataset_uri, "<dataset>")
-        .split_whitespace()
-        .map(|part| part.split('?').next().unwrap_or(part))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 pub(super) fn normalize_and_validate_dataset_uri(input: &str) -> Result<String> {

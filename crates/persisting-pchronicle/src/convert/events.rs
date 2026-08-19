@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::convert::message_text;
 use crate::formats::events::{EventIdentity, EventRecord, EventsDocument};
 use crate::formats::storyline::{StoryLink, StorylineAgent, StorylineDocument, StorylineTurn};
-use crate::{Error, Result};
+use crate::Result;
 
 /// Resolve and project exactly one canonical Storyline from append-ordered events.
 ///
@@ -20,7 +20,7 @@ pub fn project_event_records(records: &[EventRecord]) -> Result<StorylineDocumen
     records
         .iter()
         .try_for_each(EventRecord::validate)
-        .map_err(|error| crate::Error::Other(error.to_string()))?;
+        .map_err(anyhow::Error::from)?;
     records
         .iter()
         .try_for_each(|record| canonical_event_timestamp(record).map(|_| ()))?;
@@ -29,7 +29,7 @@ pub fn project_event_records(records: &[EventRecord]) -> Result<StorylineDocumen
         .rev()
         .find_map(event_storyline_key)
         .ok_or_else(|| {
-            Error::Other("canonical event requires session_id, storyline_id, or run_id".into())
+            anyhow::anyhow!("canonical event requires session_id, storyline_id, or run_id")
         })?
         .to_string();
     let run_id = records.iter().rev().find_map(|record| {
@@ -539,13 +539,7 @@ fn canonical_event_timestamp(record: &EventRecord) -> Result<Option<String>> {
         .timestamp
         .as_deref()
         .map(|timestamp| {
-            DateTime::parse_from_rfc3339(timestamp)
-                .map(|timestamp| timestamp.timestamp_millis())
-                .map_err(|error| {
-                    Error::Other(format!(
-                        "invalid RFC3339 event timestamp '{timestamp}': {error}"
-                    ))
-                })
+            DateTime::parse_from_rfc3339(timestamp).map(|timestamp| timestamp.timestamp_millis())
         })
         .transpose()?;
     let canonical_ms = record
@@ -553,21 +547,21 @@ fn canonical_event_timestamp(record: &EventRecord) -> Result<Option<String>> {
         .timestamp_unix_ms
         .map(|timestamp| {
             i64::try_from(timestamp)
-                .map_err(|_| Error::Other("event timestamp_unix_ms exceeds i64".into()))
+                .map_err(|_| anyhow::anyhow!("event timestamp_unix_ms exceeds i64"))
         })
         .transpose()?;
     if let (Some(canonical), Some(textual)) = (canonical_ms, textual_ms) {
         if canonical != textual {
-            return Err(Error::Other(format!(
+            anyhow::bail!(
                 "event timestamp conflict: timestamp_unix_ms={canonical}, RFC3339 timestamp={textual}"
-            )));
+            );
         }
     }
     let Some(timestamp_ms) = canonical_ms.or(textual_ms) else {
         return Ok(None);
     };
     let timestamp = DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
-        .ok_or_else(|| Error::Other("event timestamp is outside the RFC3339 range".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("event timestamp is outside the RFC3339 range"))?;
     Ok(Some(timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)))
 }
 

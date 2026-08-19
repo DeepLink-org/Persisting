@@ -42,6 +42,18 @@ pub(super) async fn run_import(
     let text = std::str::from_utf8(&input).context("import input must be UTF-8")?;
     let format = resolve_import_format(args.format, input_path, text)?;
     let source_path = import_source_name(format);
+    let relative_path = input_path
+        .and_then(Path::file_name)
+        .map(Path::new)
+        .unwrap_or_else(|| Path::new(source_path));
+    let storylines = decode_json_storylines(
+        exchange_document_format(format)
+            .context("supported import format must map to a physical document format")?,
+        text,
+        relative_path,
+    )
+    .map_err(cli_input_error)?;
+    let trajectories = validate_import_storylines(&storylines)?;
     let parent = output
         .parent()
         .context("import output must have a parent directory")?;
@@ -58,7 +70,7 @@ pub(super) async fn run_import(
     file.write_all(&input)
         .context("write staged import Source")?;
     file.sync_all().context("sync staged import Source")?;
-    let trajectories = validate_import_source(format, &staged_source).await?;
+    validate_import_source(format, &staged_source).await?;
     std::fs::File::open(staging.path())
         .and_then(|directory| directory.sync_all())
         .context("sync import staging directory")?;
@@ -170,11 +182,8 @@ pub(super) async fn run_export(
             args.timeout_seconds
         )
     })??;
-    anyhow::ensure!(
-        export.bytes.len() <= args.max_output_bytes,
-        "encoded export exceeds max_output_bytes limit of {}",
-        args.max_output_bytes
-    );
+    ensure_export_trajectory_budget(export.trajectories, args.max_trajectories)?;
+    ensure_output_byte_budget(export.bytes.len(), args.max_output_bytes, "encoded export")?;
     write_export_output(&args.output, &export.bytes, args.overwrite, stdout)?;
     writeln!(
         stderr,
@@ -210,31 +219,42 @@ async fn export_from_snapshot(
     );
 
     let sql = export_address_sql(args)?;
-    let engine = snapshot
-        .clone()
-        .query_engine(Default::default())
-        .await
-        .map_err(|error| redact_query_error(&error, &[dataset_uri.to_string()], None))?;
+    let engine = snapshot.clone().query_engine(Default::default()).await?;
     let row_limit = args
         .max_trajectories
         .checked_add(1)
         .context("--max-trajectories is too large")?;
     let mut addresses = LimitedBuffer::new(args.max_output_bytes);
-    engine
-        .write_query_jsonl_with_max_rows(&sql, &mut addresses, Some(row_limit))
-        .await
-        .map_err(|error| redact_query_error(&error, &[dataset_uri.to_string()], Some(&sql)))?;
-    let mut addresses = addresses
-        .into_inner()
+    let write_result = engine
+        .write_query_jsonl_bounded(&sql, &mut addresses, Some(row_limit))
+        .await;
+    let address_bytes = match addresses.finish(write_result)? {
+        QueryOutputBudgetOutcome::Complete(bytes) => bytes,
+        QueryOutputBudgetOutcome::RowLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!(
+                    "export exceeds max_trajectories limit of {}",
+                    args.max_trajectories
+                ),
+            ));
+        }
+        QueryOutputBudgetOutcome::ByteLimitExceeded => {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!(
+                    "export address selection exceeds max_output_bytes limit of {}",
+                    args.max_output_bytes
+                ),
+            ));
+        }
+    };
+    let mut addresses = address_bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_slice(line).context("decode export Trajectory address"))
         .collect::<Result<Vec<ExportAddress>>>()?;
-    anyhow::ensure!(
-        addresses.len() <= usize::try_from(args.max_trajectories).unwrap_or(usize::MAX),
-        "export exceeds max_trajectories limit of {}",
-        args.max_trajectories
-    );
+    ensure_export_trajectory_budget(addresses.len(), args.max_trajectories)?;
     anyhow::ensure!(
         !addresses.is_empty(),
         "export selection matched no Trajectories"
@@ -278,14 +298,8 @@ async fn export_from_snapshot(
             story.run_id == address.run_id,
             "export Trajectory Run ID changed within the snapshot"
         );
-        normalized_bytes = normalized_bytes
-            .checked_add(serde_json::to_vec(&story)?.len())
-            .context("normalized export size overflow")?;
-        anyhow::ensure!(
-            normalized_bytes <= args.max_output_bytes,
-            "normalized export exceeds max_output_bytes limit of {}",
-            args.max_output_bytes
-        );
+        normalized_bytes = normalized_bytes.saturating_add(serde_json::to_vec(&story)?.len());
+        ensure_output_byte_budget(normalized_bytes, args.max_output_bytes, "normalized export")?;
         stories.push(story);
     }
     let bytes = encode_export(format, &stories)?;
@@ -336,13 +350,9 @@ async fn exact_local_file_export(
         "export Source resolves outside the local Dataset"
     );
     let input = std::fs::read(&source_path).context("read exact export Source")?;
-    anyhow::ensure!(
-        input.len() <= args.max_output_bytes,
-        "exact export exceeds max_output_bytes limit of {}",
-        args.max_output_bytes
-    );
+    ensure_output_byte_budget(input.len(), args.max_output_bytes, "exact export")?;
     let text = std::str::from_utf8(&input).context("exact export Source must be UTF-8")?;
-    let detected = detect_format(Some(&source_path), Some(text)).map_err(anyhow::Error::from)?;
+    let detected = detect_format(Some(&source_path), Some(text))?;
     if detected != exchange_document_format(format) {
         return Ok(None);
     }
@@ -357,6 +367,16 @@ async fn exact_local_file_export(
         trajectories,
         exact: true,
     }))
+}
+
+fn ensure_export_trajectory_budget(trajectories: usize, max_trajectories: u64) -> Result<()> {
+    if usize::try_from(max_trajectories).is_ok_and(|limit| trajectories > limit) {
+        return Err(cli_boundary_error(
+            BoundaryCode::ResourceExhausted,
+            format!("export exceeds max_trajectories limit of {max_trajectories}"),
+        ));
+    }
+    Ok(())
 }
 
 fn export_address_sql(args: &ExportArgs) -> Result<String> {
@@ -537,18 +557,30 @@ fn read_bounded(mut reader: impl Read, max_bytes: usize, label: &str) -> Result<
     let limit = u64::try_from(max_bytes)
         .ok()
         .and_then(|limit| limit.checked_add(1))
-        .context("--max-input-bytes is too large")?;
+        .ok_or_else(|| {
+            cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                "--max-input-bytes is too large",
+            )
+        })?;
     let mut input = Vec::new();
     reader
         .by_ref()
         .take(limit)
         .read_to_end(&mut input)
         .with_context(|| format!("read {label}"))?;
-    anyhow::ensure!(
-        input.len() <= max_bytes,
-        "{label} exceeds max_input_bytes limit of {max_bytes}"
-    );
-    anyhow::ensure!(!input.is_empty(), "{label} is empty");
+    if input.len() > max_bytes {
+        return Err(cli_boundary_error(
+            BoundaryCode::ResourceExhausted,
+            format!("{label} exceeds max_input_bytes limit of {max_bytes}"),
+        ));
+    }
+    if input.is_empty() {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("{label} is empty"),
+        ));
+    }
     Ok(input)
 }
 
@@ -558,27 +590,38 @@ fn resolve_import_format(
     input: &str,
 ) -> Result<ExchangeFormat> {
     let format = match requested {
-        ExchangeFormat::Auto => match detect_format(input_path, Some(input))
-            .map_err(anyhow::Error::from)?
-            .context("cannot detect import format; pass --format explicitly")?
-        {
+        ExchangeFormat::Auto => match detect_format(input_path, Some(input))?.ok_or_else(|| {
+            cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                "cannot detect import format; pass --format explicitly",
+            )
+        })? {
             DocumentFormat::Atif => ExchangeFormat::Atif,
             DocumentFormat::Actf => ExchangeFormat::Actf,
             DocumentFormat::OpenaiMsg => ExchangeFormat::OpenaiMessages,
-            format => bail!("detected import format '{format}' is not a queryable JSON format"),
+            format => {
+                return Err(cli_boundary_error(
+                    BoundaryCode::Unsupported,
+                    format!("detected import format '{format}' is not a queryable JSON format"),
+                ));
+            }
         },
         ExchangeFormat::Atif => ExchangeFormat::Atif,
         ExchangeFormat::Actf => ExchangeFormat::Actf,
         ExchangeFormat::OpenaiMessages => ExchangeFormat::OpenaiMessages,
         ExchangeFormat::Storyline => ExchangeFormat::Storyline,
     };
-    anyhow::ensure!(
-        matches!(
-            format,
-            ExchangeFormat::Atif | ExchangeFormat::Actf | ExchangeFormat::OpenaiMessages
-        ),
-        "import format '{format}' is not supported by the first queryable import increment"
-    );
+    if !matches!(
+        format,
+        ExchangeFormat::Atif | ExchangeFormat::Actf | ExchangeFormat::OpenaiMessages
+    ) {
+        return Err(cli_boundary_error(
+            BoundaryCode::Unsupported,
+            format!(
+                "import format '{format}' is not supported by the first queryable import increment"
+            ),
+        ));
+    }
     Ok(format)
 }
 
@@ -591,6 +634,19 @@ fn import_source_name(format: ExchangeFormat) -> &'static str {
     }
 }
 
+fn validate_import_storylines(storylines: &[StorylineDocument]) -> Result<usize> {
+    let mut seen = HashSet::new();
+    for storyline in storylines {
+        if !seen.insert(storyline.document_id()) {
+            return Err(cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                "import contains duplicate document_id",
+            ));
+        }
+    }
+    Ok(storylines.len())
+}
+
 pub(super) async fn validate_import_source(format: ExchangeFormat, path: &Path) -> Result<usize> {
     let format = exchange_document_format(format)
         .context("supported import format must map to a physical document format")?;
@@ -601,15 +657,14 @@ pub(super) async fn validate_import_source(format: ExchangeFormat, path: &Path) 
         .for_each_storyline(|story| {
             let document_id = story.document_id();
             if !seen.insert(document_id.to_string()) {
-                return Err(persisting_pchronicle::document::Error::Other(format!(
-                    "duplicate document_id: {document_id}"
-                )));
+                return Err(cli_boundary_error(
+                    BoundaryCode::InvalidRequest,
+                    "import contains duplicate document_id",
+                ));
             }
-            document_count = document_count.checked_add(1).ok_or_else(|| {
-                persisting_pchronicle::document::Error::Other(
-                    "import document count overflow".to_string(),
-                )
-            })?;
+            document_count = document_count
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("import document count overflow"))?;
             Ok(())
         })
         .await?;

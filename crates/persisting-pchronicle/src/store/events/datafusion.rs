@@ -8,7 +8,6 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
-use datafusion::error::DataFusionError;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::union::UnionExec;
@@ -19,6 +18,7 @@ use lance::deps::arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 
 use super::manifest::EventManifest;
+use crate::store::datafusion_bridge::{from_datafusion, into_datafusion};
 use crate::{event_row_to_event_record, event_rows_from_batch, EventRecord};
 
 pub const DATAFUSION_EVENTS_TABLE: &str = "events";
@@ -86,14 +86,16 @@ impl TableProvider for RawEventTableProvider {
             let mut scan = dataset.scan();
             match projection {
                 Some(projection) if projection.is_empty() => {
-                    scan.empty_project().map_err(DataFusionError::from)?;
+                    scan.empty_project()
+                        .map_err(|error| into_datafusion(error.into()))?;
                 }
                 Some(projection) => {
                     let columns = projection
                         .iter()
                         .map(|index| self.schema.field(*index).name())
                         .collect::<Vec<_>>();
-                    scan.project(&columns).map_err(DataFusionError::from)?;
+                    scan.project(&columns)
+                        .map_err(|error| into_datafusion(error.into()))?;
                 }
                 None => {}
             }
@@ -102,7 +104,11 @@ impl TableProvider for RawEventTableProvider {
             }
             scan.scan_in_order(self.options.scan_in_order);
             scan.use_scalar_index(self.options.use_scalar_indexes);
-            plans.push(scan.create_plan().await.map_err(DataFusionError::from)?);
+            plans.push(
+                scan.create_plan()
+                    .await
+                    .map_err(|error| into_datafusion(error.into()))?,
+            );
         }
         let union = UnionExec::try_new(plans)?;
         Ok(match limit {
@@ -243,7 +249,7 @@ impl RawEventDataSource {
         );
         context
             .register_table(table_name, self.provider.clone())
-            .with_context(|| format!("register DataFusion table '{table_name}'"))?;
+            .map_err(|error| from_datafusion("register canonical event table", error))?;
         Ok(())
     }
 

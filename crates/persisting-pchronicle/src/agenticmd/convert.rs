@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
-use crate::{DocumentFormat, Error, Result};
+use crate::{InputIssue, InputResult, Result};
 
 use super::codec::{
     encode_agenticmd_block, encode_agenticmd_preamble, parse_agenticmd_document, MarkdownBlock,
@@ -19,7 +19,7 @@ const STORYLINE_METADATA_KEY: &str = "storyline";
 const MESSAGE_ENCODING_KEY: &str = "message_encoding";
 
 /// Parse AgenticMD into its authoritative Storyline model.
-pub fn parse_agenticmd(input: &str) -> Result<StorylineDocument> {
+pub fn parse_agenticmd(input: &str) -> InputResult<StorylineDocument> {
     let document = parse_agenticmd_document(input)?;
     let Some(metadata) = document.frontmatter.get(STORYLINE_METADATA_KEY) else {
         return agenticmd_to_storyline(&document);
@@ -27,12 +27,7 @@ pub fn parse_agenticmd(input: &str) -> Result<StorylineDocument> {
     let mut story = metadata
         .as_object()
         .cloned()
-        .ok_or_else(|| Error::InvalidDocument {
-            format: DocumentFormat::AgenticMd,
-            path: None,
-            location: Some("frontmatter.storyline".into()),
-            message: "expected an object".into(),
-        })?;
+        .ok_or_else(|| InputIssue::invalid("expected an object").at("frontmatter.storyline"))?;
     let turns = document
         .blocks
         .iter()
@@ -44,11 +39,9 @@ pub fn parse_agenticmd(input: &str) -> Result<StorylineDocument> {
                 .get(STORYLINE_METADATA_KEY)
                 .and_then(Value::as_object)
                 .cloned()
-                .ok_or_else(|| Error::InvalidDocument {
-                    format: DocumentFormat::AgenticMd,
-                    path: None,
-                    location: Some(format!("block[{index}].storyline")),
-                    message: "expected an object".into(),
+                .ok_or_else(|| {
+                    InputIssue::invalid("expected an object")
+                        .at(format!("block[{index}].storyline"))
                 })?;
             let message = match block
                 .header
@@ -56,37 +49,23 @@ pub fn parse_agenticmd(input: &str) -> Result<StorylineDocument> {
                 .get(MESSAGE_ENCODING_KEY)
                 .and_then(Value::as_str)
             {
-                Some("json") => {
-                    serde_json::from_str(&block.body).map_err(|error| Error::InvalidDocument {
-                        format: DocumentFormat::AgenticMd,
-                        path: None,
-                        location: Some(format!("block[{index}].body")),
-                        message: error.to_string(),
-                    })?
-                }
+                Some("json") => serde_json::from_str(&block.body).map_err(|error| {
+                    InputIssue::invalid(error.to_string()).at(format!("block[{index}].body"))
+                })?,
                 _ => Value::String(block.body.clone()),
             };
             turn.insert("msg".into(), message);
             serde_json::from_value::<StorylineTurn>(Value::Object(turn)).map_err(|error| {
-                Error::InvalidDocument {
-                    format: DocumentFormat::AgenticMd,
-                    path: None,
-                    location: Some(format!("block[{index}].storyline")),
-                    message: error.to_string(),
-                }
+                InputIssue::invalid(error.to_string()).at(format!("block[{index}].storyline"))
             })
         })
-        .collect::<Result<Vec<_>>>()?;
-    story.insert("turns".into(), serde_json::to_value(&turns)?);
-    let document =
-        serde_json::from_value::<StorylineDocument>(Value::Object(story)).map_err(|error| {
-            Error::InvalidDocument {
-                format: DocumentFormat::AgenticMd,
-                path: None,
-                location: Some("frontmatter.storyline".into()),
-                message: error.to_string(),
-            }
-        })?;
+        .collect::<InputResult<Vec<_>>>()?;
+    story.insert(
+        "turns".into(),
+        serde_json::to_value(&turns).map_err(|error| InputIssue::invalid(error.to_string()))?,
+    );
+    let document = serde_json::from_value::<StorylineDocument>(Value::Object(story))
+        .map_err(|error| InputIssue::invalid(error.to_string()).at("frontmatter.storyline"))?;
     document.validate()?;
     Ok(document)
 }
@@ -105,7 +84,7 @@ pub(super) fn encode_storyline_preamble(story: &StorylineDocument) -> Result<Str
     let mut metadata = serde_json::to_value(story)?
         .as_object()
         .cloned()
-        .ok_or_else(|| Error::Other("serialized Storyline must be an object".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("serialized Storyline must be an object"))?;
     metadata.remove("turns");
     let frontmatter: BTreeMap<String, Value> = BTreeMap::from([
         (
@@ -124,7 +103,7 @@ pub(super) fn storyline_turn_block(
     let mut turn_metadata = serde_json::to_value(turn)?
         .as_object()
         .cloned()
-        .ok_or_else(|| Error::Other("serialized Storyline turn must be an object".into()))?;
+        .ok_or_else(|| anyhow::anyhow!("serialized Storyline turn must be an object"))?;
     turn_metadata.remove("msg");
     let (body, encoding, type_name) = match &turn.message {
         Value::String(text) => (text.clone(), "text", "text"),
@@ -149,7 +128,7 @@ pub(super) fn storyline_turn_block(
     })
 }
 
-fn agenticmd_to_storyline(doc: &MarkdownDocument) -> Result<StorylineDocument> {
+fn agenticmd_to_storyline(doc: &MarkdownDocument) -> InputResult<StorylineDocument> {
     let session_id = doc.session_id.clone().unwrap_or_else(|| "unknown".into());
     let agent_id = doc.agent_id.clone().unwrap_or_else(|| "unknown".into());
 

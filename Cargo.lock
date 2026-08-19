@@ -7008,6 +7008,8 @@ dependencies = [
  "tokio",
  "toml",
  "tower",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
