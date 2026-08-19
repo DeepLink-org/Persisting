@@ -23,7 +23,7 @@ pub(super) mod rows;
 
 use mutation::{
     externalize_rows, next_storyline_stream_chunk, replace_table_batches, write_batches,
-    ExternalizedStorylineBatches,
+    ExternalizedStorylineBatches, StorylineChunkState,
 };
 
 pub use content::{
@@ -678,7 +678,7 @@ impl StorylineLanceStore {
         let mut paths = if rebuild { None } else { original.clone() };
         let mut new_table_generation = None;
         let mut iterator = stories.into_iter();
-        let mut document_ids = HashSet::new();
+        let mut chunk_state = StorylineChunkState::default();
         let mut next_storage_ordinal = if rebuild {
             0
         } else if let Some(paths) = &original {
@@ -692,8 +692,9 @@ impl StorylineLanceStore {
             loop {
                 let Some(mut chunk) = next_storyline_stream_chunk(
                     &mut iterator,
-                    &mut document_ids,
+                    &mut chunk_state,
                     &mut next_storage_ordinal,
+                    self.content_options,
                 )?
                 else {
                     break;

@@ -531,6 +531,279 @@ async fn batch_get_preserves_request_order_and_missing_sessions() {
         .contains("duplicate session_id"));
 }
 
+#[test]
+fn storyline_import_limits_reject_zero() {
+    let cases = [
+        (
+            StorylineContentOptions {
+                max_document_rows: Some(0),
+                ..Default::default()
+            },
+            "max_document_rows",
+        ),
+        (
+            StorylineContentOptions {
+                max_document_bytes: Some(0),
+                ..Default::default()
+            },
+            "max_document_bytes",
+        ),
+        (
+            StorylineContentOptions {
+                max_chunk_rows: Some(0),
+                ..Default::default()
+            },
+            "max_chunk_rows",
+        ),
+        (
+            StorylineContentOptions {
+                max_chunk_bytes: Some(0),
+                ..Default::default()
+            },
+            "max_chunk_bytes",
+        ),
+        (
+            StorylineContentOptions {
+                max_import_documents: Some(0),
+                ..Default::default()
+            },
+            "max_import_documents",
+        ),
+    ];
+
+    for (options, name) in cases {
+        let error = options.validate().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{name} must be positive")),
+            "{error:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn document_limit_failure_keeps_current_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = StorylineLanceStore::open(dir.path()).await.unwrap();
+    baseline
+        .replace_storyline(&story("baseline"))
+        .await
+        .unwrap();
+    let generation = baseline
+        .current_table_paths()
+        .await
+        .unwrap()
+        .unwrap()
+        .generation;
+    let limited = StorylineLanceStore::open_with_content_options(
+        dir.path(),
+        StorylineContentOptions {
+            max_document_rows: Some(3),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = limited
+        .replace_storyline(&story("oversized"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("max_document_rows"), "{error:#}");
+    assert_eq!(
+        limited
+            .current_table_paths()
+            .await
+            .unwrap()
+            .unwrap()
+            .generation,
+        generation
+    );
+    assert!(limited
+        .get_storyline_full("oversized")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn document_byte_limit_rejects_oversized_storyline() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open_with_content_options(
+        dir.path(),
+        StorylineContentOptions {
+            max_document_bytes: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = store
+        .replace_storyline(&story("byte-limited"))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("max_document_bytes"),
+        "{error:#}"
+    );
+    assert!(store.current_table_paths().await.unwrap().is_none());
+}
+
+#[test]
+fn single_document_must_fit_chunk_limits() {
+    let document = story("single-chunk-limit");
+    let mut iterator = vec![Ok(document)].into_iter();
+    let mut state = StorylineChunkState::default();
+    let mut ordinal = 0;
+
+    let error = next_storyline_stream_chunk(
+        &mut iterator,
+        &mut state,
+        &mut ordinal,
+        StorylineContentOptions {
+            max_chunk_rows: Some(3),
+            ..Default::default()
+        },
+    )
+    .err()
+    .expect("single document must exceed max_chunk_rows");
+    assert!(error.to_string().contains("max_chunk_rows"), "{error:#}");
+
+    let document = story("single-byte-chunk-limit");
+    let mut iterator = vec![Ok(document)].into_iter();
+    let mut state = StorylineChunkState::default();
+    let error = next_storyline_stream_chunk(
+        &mut iterator,
+        &mut state,
+        &mut ordinal,
+        StorylineContentOptions {
+            max_chunk_bytes: Some(1),
+            ..Default::default()
+        },
+    )
+    .err()
+    .expect("single document must exceed max_chunk_bytes");
+    assert!(error.to_string().contains("max_chunk_bytes"), "{error:#}");
+}
+
+#[test]
+fn chunk_limits_preserve_the_next_document() {
+    let mut first = story("chunk-a");
+    first.turns.clear();
+    let mut second = story("chunk-b");
+    second.turns.clear();
+    let mut third = story("chunk-c");
+    third.turns.clear();
+    let document_bytes = serde_json::to_vec(&first).unwrap().len();
+    let mut iterator = vec![Ok(first), Ok(second), Ok(third)].into_iter();
+    let mut state = StorylineChunkState::default();
+    let mut ordinal = 0;
+    let options = StorylineContentOptions {
+        max_document_rows: Some(1),
+        max_document_bytes: Some(document_bytes + 8),
+        max_chunk_rows: Some(2),
+        max_chunk_bytes: Some((document_bytes + 8) * 2),
+        max_import_documents: Some(3),
+        ..Default::default()
+    };
+
+    let first_chunk = next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_chunk.runs.len(), 2);
+    assert!(state.pending.is_some());
+
+    let second_chunk =
+        next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+            .unwrap()
+            .unwrap();
+    assert_eq!(second_chunk.runs.len(), 1);
+    assert!(state.pending.is_none());
+    assert!(
+        next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn chunk_byte_limit_preserves_the_next_document() {
+    let mut first = story("byte-chunk-a");
+    first.turns.clear();
+    let mut second = story("byte-chunk-b");
+    second.turns.clear();
+    let document_bytes = serde_json::to_vec(&first).unwrap().len();
+    let mut iterator = vec![Ok(first), Ok(second)].into_iter();
+    let mut state = StorylineChunkState::default();
+    let mut ordinal = 0;
+    let options = StorylineContentOptions {
+        max_chunk_bytes: Some(document_bytes + 8),
+        ..Default::default()
+    };
+
+    let first_chunk = next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_chunk.runs.len(), 1);
+    assert!(state.pending.is_some());
+
+    let second_chunk =
+        next_storyline_stream_chunk(&mut iterator, &mut state, &mut ordinal, options)
+            .unwrap()
+            .unwrap();
+    assert_eq!(second_chunk.runs.len(), 1);
+    assert!(state.pending.is_none());
+}
+
+#[tokio::test]
+async fn import_document_limit_failure_keeps_current_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = StorylineLanceStore::open(dir.path()).await.unwrap();
+    baseline
+        .replace_storyline(&story("baseline"))
+        .await
+        .unwrap();
+    let generation = baseline
+        .current_table_paths()
+        .await
+        .unwrap()
+        .unwrap()
+        .generation;
+    let limited = StorylineLanceStore::open_with_content_options(
+        dir.path(),
+        StorylineContentOptions {
+            max_import_documents: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let error = limited
+        .replace_storyline_stream(
+            [story("limited-a"), story("limited-b")]
+                .into_iter()
+                .map(Ok::<_, anyhow::Error>),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("max_import_documents"),
+        "{error:#}"
+    );
+    assert_eq!(
+        limited
+            .current_table_paths()
+            .await
+            .unwrap()
+            .unwrap()
+            .generation,
+        generation
+    );
+}
+
 #[tokio::test]
 async fn streamed_replace_is_bounded_and_commits_once() {
     let dir = tempfile::tempdir().unwrap();
