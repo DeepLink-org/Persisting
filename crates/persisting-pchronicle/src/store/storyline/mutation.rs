@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Default)]
+pub(super) struct StorylineChunkState {
+    pub(super) all_document_ids: HashSet<String>,
+    pub(super) pending: Option<StorylineDocument>,
+}
+
 pub(super) struct StorylineStreamChunk {
     pub(super) document_ids: HashSet<String>,
     pub(super) runs: Vec<StoryRunRow>,
@@ -9,8 +15,9 @@ pub(super) struct StorylineStreamChunk {
 
 pub(super) fn next_storyline_stream_chunk<I>(
     iterator: &mut I,
-    all_document_ids: &mut HashSet<String>,
+    state: &mut StorylineChunkState,
     next_storage_ordinal: &mut i64,
+    options: StorylineContentOptions,
 ) -> Result<Option<StorylineStreamChunk>>
 where
     I: Iterator<Item = Result<StorylineDocument>>,
@@ -19,24 +26,74 @@ where
     let mut runs = Vec::with_capacity(STREAM_IMPORT_STORIES);
     let mut steps = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut chunk_rows = 0usize;
+    let mut chunk_bytes = 0usize;
     while runs.len() < STREAM_IMPORT_STORIES {
-        let Some(story) = iterator.next() else {
-            break;
+        let story = match state.pending.take() {
+            Some(story) => story,
+            None => {
+                let Some(story) = iterator.next() else {
+                    break;
+                };
+                story?
+            }
         };
-        let story = story?;
+        let document_bytes = serialized_document_bytes(&story)?;
         let mut tables = split_storyline(&story)?;
+        let document_rows = 1usize
+            .checked_add(tables.steps.len())
+            .and_then(|rows| rows.checked_add(tables.tool_calls.len()))
+            .context("Storyline document row count overflow")?;
+        enforce_limit(
+            "max_document_rows",
+            document_rows,
+            options.max_document_rows,
+        )?;
+        enforce_limit(
+            "max_document_bytes",
+            document_bytes,
+            options.max_document_bytes,
+        )?;
+        enforce_limit("max_chunk_rows", document_rows, options.max_chunk_rows)?;
+        enforce_limit("max_chunk_bytes", document_bytes, options.max_chunk_bytes)?;
         let document_id = tables.run.document_id.clone();
+        if state.all_document_ids.contains(&document_id) {
+            anyhow::bail!("duplicate document_id '{document_id}' in Storyline stream");
+        }
+        let next_document_count = state
+            .all_document_ids
+            .len()
+            .checked_add(1)
+            .context("Storyline import document count overflow")?;
+        enforce_limit(
+            "max_import_documents",
+            next_document_count,
+            options.max_import_documents,
+        )?;
+        let next_chunk_rows = chunk_rows
+            .checked_add(document_rows)
+            .context("Storyline chunk row count overflow")?;
+        let next_chunk_bytes = chunk_bytes
+            .checked_add(document_bytes)
+            .context("Storyline chunk byte count overflow")?;
+        if !runs.is_empty()
+            && (exceeds_limit(next_chunk_rows, options.max_chunk_rows)
+                || exceeds_limit(next_chunk_bytes, options.max_chunk_bytes))
+        {
+            state.pending = Some(story);
+            break;
+        }
         tables.run.storage_ordinal = *next_storage_ordinal;
         *next_storage_ordinal = next_storage_ordinal
             .checked_add(1)
             .context("Storyline storage ordinal overflow")?;
-        if !all_document_ids.insert(document_id.clone()) {
-            anyhow::bail!("duplicate document_id '{document_id}' in Storyline stream");
-        }
+        state.all_document_ids.insert(document_id.clone());
         document_ids.insert(document_id);
         runs.push(tables.run);
         steps.extend(tables.steps);
         tool_calls.extend(tables.tool_calls);
+        chunk_rows = next_chunk_rows;
+        chunk_bytes = next_chunk_bytes;
     }
     if runs.is_empty() {
         return Ok(None);
@@ -48,6 +105,43 @@ where
         steps,
         tool_calls,
     }))
+}
+
+fn enforce_limit(name: &str, actual: usize, limit: Option<usize>) -> Result<()> {
+    if let Some(limit) = limit {
+        anyhow::ensure!(
+            actual <= limit,
+            "Storyline {name} exceeded: actual {actual}, limit {limit}"
+        );
+    }
+    Ok(())
+}
+
+fn exceeds_limit(actual: usize, limit: Option<usize>) -> bool {
+    limit.is_some_and(|limit| actual > limit)
+}
+
+fn serialized_document_bytes(story: &StorylineDocument) -> Result<usize> {
+    #[derive(Default)]
+    struct CountingWriter(usize);
+
+    impl std::io::Write for CountingWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(buffer.len())
+                .ok_or_else(|| std::io::Error::other("Storyline serialized byte count overflow"))?;
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = CountingWriter::default();
+    serde_json::to_writer(&mut writer, story).context("measure serialized Storyline document")?;
+    Ok(writer.0)
 }
 
 struct EncodedBatchIterator<T> {

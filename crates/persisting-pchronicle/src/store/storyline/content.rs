@@ -44,6 +44,16 @@ pub struct StorylineContentOptions {
     pub preview_bytes: usize,
     /// Zstd compression level for UTF-8 and JSON content.
     pub zstd_level: i32,
+    /// Maximum normalized rows produced by one Storyline document.
+    pub max_document_rows: Option<usize>,
+    /// Maximum serialized JSON bytes in one Storyline document.
+    pub max_document_bytes: Option<usize>,
+    /// Maximum normalized rows retained in one streamed import chunk.
+    pub max_chunk_rows: Option<usize>,
+    /// Maximum serialized document bytes retained in one streamed import chunk.
+    pub max_chunk_bytes: Option<usize>,
+    /// Maximum number of documents accepted by one streamed import.
+    pub max_import_documents: Option<usize>,
 }
 
 impl Default for StorylineContentOptions {
@@ -52,6 +62,11 @@ impl Default for StorylineContentOptions {
             offload_threshold: DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
             preview_bytes: DEFAULT_CONTENT_PREVIEW_BYTES,
             zstd_level: 3,
+            max_document_rows: None,
+            max_document_bytes: None,
+            max_chunk_rows: None,
+            max_chunk_bytes: None,
+            max_import_documents: None,
         }
     }
 }
@@ -66,6 +81,17 @@ impl StorylineContentOptions {
             self.preview_bytes <= 4096,
             "Storyline content preview must not exceed 4096 bytes"
         );
+        for (name, value) in [
+            ("max_document_rows", self.max_document_rows),
+            ("max_document_bytes", self.max_document_bytes),
+            ("max_chunk_rows", self.max_chunk_rows),
+            ("max_chunk_bytes", self.max_chunk_bytes),
+            ("max_import_documents", self.max_import_documents),
+        ] {
+            if let Some(value) = value {
+                anyhow::ensure!(value > 0, "{name} must be positive");
+            }
+        }
         Ok(self)
     }
 }

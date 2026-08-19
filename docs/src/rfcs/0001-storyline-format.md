@@ -144,7 +144,8 @@ JSON 序列化和解码都使用短名；长名仅用于说明字段概念，不
 | `session` | string | Required | `session_id` |
 | `agent` | object | Required | `agent` |
 | `turns` | array | Required | `steps` |
-| `run` | string | Optional | `trajectory_id` |
+| `run` | string | Optional | （无 ATIF 来源；保留 run-scoped `run_id`） |
+| `trajectory` | string | Optional | `trajectory_id` |
 | `notes` | string | Optional | `notes` |
 | `final_metrics` | object | Optional | `final_metrics` |
 | `continued_trajectory_ref` | string | Optional | `continued_trajectory_ref` |
@@ -235,7 +236,7 @@ value = 在 ATIF 根上求值的 JSONPath。
 
 ```json
 {
-  "run": "$.trajectory_id",
+  "trajectory": "$.trajectory_id",
   "session": "$.session_id",
   "agent": {
     "id": "$.agent.name",

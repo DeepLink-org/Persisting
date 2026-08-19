@@ -168,6 +168,69 @@ async fn corpus_round_trips_through_three_lance_tables() -> Result<()> {
 }
 
 #[tokio::test]
+async fn atif_null_and_tool_result_presence_round_trip_through_lance() -> Result<()> {
+    let input = serde_json::json!({
+        "schema_version": "ATIF-v1.7",
+        "trajectory_id": "presence-trajectory",
+        "agent": {
+            "name": "agent-1",
+            "version": "1",
+            "model_name": null,
+            "extra": null
+        },
+        "steps": [{
+            "step_id": 1,
+            "timestamp": null,
+            "source": "agent",
+            "message": "done",
+            "reasoning_content": null,
+            "tool_calls": [
+                {
+                    "tool_call_id": "missing",
+                    "function_name": "a",
+                    "arguments": {}
+                },
+                {
+                    "tool_call_id": "null",
+                    "function_name": "b",
+                    "arguments": {},
+                    "result": null
+                },
+                {
+                    "tool_call_id": "value",
+                    "function_name": "c",
+                    "arguments": {},
+                    "result": {"ok": true}
+                }
+            ],
+            "observation": null,
+            "metrics": null,
+            "extra": null,
+            "llm_call_count": null,
+            "is_copied_context": null
+        }],
+        "notes": null,
+        "final_metrics": null,
+        "continued_trajectory_ref": null,
+        "extra": null,
+        "subagent_trajectories": null
+    });
+    let story = into_storyline(TestFormat::Atif, &input.to_string())?;
+    let dir = tempfile::tempdir()?;
+    let store = StorylineLanceStore::open(dir.path()).await?;
+    store.replace_storyline(&story).await?;
+
+    let restored = store
+        .get_storyline_full(&story.session_id)
+        .await?
+        .context("missing presence Storyline after Lance write")?;
+    let output: serde_json::Value =
+        serde_json::from_str(&from_storyline(TestFormat::Atif, &restored)?)?;
+    assert_eq!(output, input);
+    Ok(())
+}
+
+#[tokio::test]
 async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()> {
     use lance::index::DatasetIndexExt;
 
