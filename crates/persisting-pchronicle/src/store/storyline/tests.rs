@@ -399,6 +399,39 @@ async fn maintenance_prunes_objects_unreachable_from_current_snapshot() {
 }
 
 #[tokio::test]
+async fn maintenance_vacuums_unreferenced_objects() {
+    let dir = tempfile::tempdir().unwrap();
+    let options = StorylineContentOptions {
+        offload_threshold: 32,
+        ..Default::default()
+    };
+    let store = StorylineLanceStore::open_with_content_options(dir.path(), options)
+        .await
+        .unwrap();
+    let mut document = story("vacuum-objects");
+    document.notes = Some("old unreachable object ".repeat(64));
+    store.replace_storyline(&document).await.unwrap();
+    document.notes = Some("new live object ".repeat(64));
+    store.replace_storyline(&document).await.unwrap();
+
+    let report = store
+        .maintain(&LanceMaintenanceOptions {
+            vacuum_older_than: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(report.objects_removed, 1);
+    assert!(report.objects.old_versions_removed > 0, "{report:?}");
+    assert!(report.objects.bytes_removed > 0, "{report:?}");
+    assert_eq!(
+        store.get_storyline_full("vacuum-objects").await.unwrap(),
+        Some(document)
+    );
+}
+
+#[tokio::test]
 async fn content_descriptor_magic_in_user_text_round_trips_as_literal() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open_with_content_options(

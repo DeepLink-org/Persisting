@@ -236,6 +236,7 @@ pub struct StorylineMaintenanceReport {
     pub runs: LanceMaintenanceReport,
     pub steps: LanceMaintenanceReport,
     pub tool_calls: LanceMaintenanceReport,
+    pub objects: LanceMaintenanceReport,
     pub objects_removed: usize,
 }
 
@@ -985,16 +986,18 @@ impl StorylineLanceStore {
         )
         .await?;
 
-        let (runs_vacuum, steps_vacuum, tool_calls_vacuum) = tokio::try_join!(
+        let (runs_vacuum, steps_vacuum, tool_calls_vacuum, objects_vacuum) = tokio::try_join!(
             vacuum_table(&paths.runs, options.vacuum_older_than),
             vacuum_table(&paths.steps, options.vacuum_older_than),
             vacuum_table(&paths.tool_calls, options.vacuum_older_than),
+            vacuum_table(&paths.objects, options.vacuum_older_than),
         )?;
         Ok(StorylineMaintenanceReport {
             generation: Some(generation),
             runs: merge_maintenance_reports(runs, runs_vacuum),
             steps: merge_maintenance_reports(steps, steps_vacuum),
             tool_calls: merge_maintenance_reports(tool_calls, tool_calls_vacuum),
+            objects: objects_vacuum,
             objects_removed,
         })
     }
