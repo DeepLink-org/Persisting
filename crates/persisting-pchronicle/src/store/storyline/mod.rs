@@ -258,9 +258,9 @@ fn published_storyline_report(
 ) -> Result<StorylineStreamImportReport> {
     match outcome {
         StorylineProjectionPublicationOutcome::Published(report) => Ok(report),
-        StorylineProjectionPublicationOutcome::OutputNotEmpty => anyhow::bail!(
-            "non-create Storyline publication reported nonempty output"
-        ),
+        StorylineProjectionPublicationOutcome::OutputNotEmpty => {
+            anyhow::bail!("non-create Storyline publication reported nonempty output")
+        }
     }
 }
 
