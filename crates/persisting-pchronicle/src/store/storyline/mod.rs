@@ -238,6 +238,7 @@ pub struct StorylineMaintenanceReport {
     pub tool_calls: LanceMaintenanceReport,
     pub objects: LanceMaintenanceReport,
     pub objects_removed: usize,
+    pub generations_removed: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -992,6 +993,9 @@ impl StorylineLanceStore {
             vacuum_table(&paths.tool_calls, options.vacuum_older_than),
             vacuum_table(&paths.objects, options.vacuum_older_than),
         )?;
+        let generations_removed = self
+            .prune_expired_generations(&paths.table_generation, options.vacuum_older_than)
+            .await?;
         Ok(StorylineMaintenanceReport {
             generation: Some(generation),
             runs: merge_maintenance_reports(runs, runs_vacuum),
@@ -999,6 +1003,7 @@ impl StorylineLanceStore {
             tool_calls: merge_maintenance_reports(tool_calls, tool_calls_vacuum),
             objects: objects_vacuum,
             objects_removed,
+            generations_removed,
         })
     }
 
@@ -1155,6 +1160,58 @@ impl StorylineLanceStore {
             .join(generation)
     }
 
+    async fn prune_expired_generations(
+        &self,
+        current: &str,
+        retention: Option<std::time::Duration>,
+    ) -> Result<usize> {
+        let Some(retention) = retention else {
+            return Ok(0);
+        };
+        let cutoff_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .saturating_sub(retention)
+            .as_nanos();
+        let generations_root = self.object_root.clone().join(GENERATIONS_DIR);
+        let prefix = format!("{}/", generations_root.as_ref().trim_end_matches('/'));
+        let objects = self
+            .object_store
+            .inner
+            .list(Some(&generations_root))
+            .try_collect::<Vec<_>>()
+            .await
+            .context("list Storyline physical generations")?;
+        let mut candidates = std::collections::BTreeSet::new();
+        for object in objects {
+            let Some(relative) = object.location.as_ref().strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some(generation) = relative.split('/').next() else {
+                continue;
+            };
+            if generation.is_empty() || generation == current {
+                continue;
+            }
+            let Some(created_nanos) = parse_generation_timestamp(generation) else {
+                continue;
+            };
+            if created_nanos < cutoff_nanos {
+                candidates.insert(generation.to_string());
+            }
+        }
+
+        let mut removed = 0;
+        for generation in candidates {
+            self.object_store
+                .remove_dir_all(self.generation_object_path(&generation))
+                .await
+                .with_context(|| format!("remove expired Storyline generation {generation}"))?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
     async fn commit_snapshot(
         &self,
         snapshot: &StorylineSnapshotPointer,
@@ -1296,6 +1353,17 @@ fn validate_generation_name(value: &str) -> Result<()> {
         anyhow::bail!("invalid Storyline generation name '{value}'");
     }
     Ok(())
+}
+
+fn parse_generation_timestamp(value: &str) -> Option<u128> {
+    let mut parts = value.strip_prefix("gen-")?.split('-');
+    let nanos = parts.next()?.parse::<u128>().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(nanos)
 }
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);

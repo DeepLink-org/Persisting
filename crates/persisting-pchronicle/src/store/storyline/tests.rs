@@ -432,6 +432,74 @@ async fn maintenance_vacuums_unreferenced_objects() {
 }
 
 #[tokio::test]
+async fn maintenance_prunes_expired_physical_generations() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(dir.path()).await.unwrap();
+    store
+        .rebuild_projected_storyline_stream(vec![Ok(story("generation-one"))], projection_lineage())
+        .await
+        .unwrap();
+    let first_table_generation = store
+        .current_table_paths()
+        .await
+        .unwrap()
+        .unwrap()
+        .table_generation;
+    store
+        .rebuild_projected_storyline_stream(vec![Ok(story("generation-two"))], projection_lineage())
+        .await
+        .unwrap();
+    let current_table_generation = store
+        .current_table_paths()
+        .await
+        .unwrap()
+        .unwrap()
+        .table_generation;
+    assert_ne!(first_table_generation, current_table_generation);
+
+    let malformed = dir
+        .path()
+        .join(GENERATIONS_DIR)
+        .join("not-owned-by-storyline");
+    std::fs::create_dir_all(&malformed).unwrap();
+    std::fs::write(malformed.join("keep"), b"not a Storyline generation").unwrap();
+
+    let no_vacuum = store
+        .maintain(&LanceMaintenanceOptions {
+            vacuum_older_than: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(no_vacuum.generations_removed, 0);
+    assert!(dir
+        .path()
+        .join(GENERATIONS_DIR)
+        .join(&first_table_generation)
+        .exists());
+
+    let vacuumed = store
+        .maintain(&LanceMaintenanceOptions {
+            vacuum_older_than: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(vacuumed.generations_removed, 1);
+    assert!(!dir
+        .path()
+        .join(GENERATIONS_DIR)
+        .join(first_table_generation)
+        .exists());
+    assert!(dir
+        .path()
+        .join(GENERATIONS_DIR)
+        .join(current_table_generation)
+        .exists());
+    assert!(malformed.exists());
+}
+
+#[tokio::test]
 async fn content_descriptor_magic_in_user_text_round_trips_as_literal() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open_with_content_options(
