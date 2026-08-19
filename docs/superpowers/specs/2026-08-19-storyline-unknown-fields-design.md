@@ -120,6 +120,7 @@ codec 生成的 carrier JSON Pointer：它指向目标物理文档中承载该�
 {
   "_storyline": {
     "unknown_fields": {
+      "version": 1,
       "by_trajectory": {
         "/attempts/1": {
           "sources": {
@@ -146,7 +147,8 @@ AgenticMD 使用相同逻辑 envelope，但放入现有 Storyline frontmatter me
 Markdown 正文中发明新的 block。Storyline Lance 直接持久化权威字段，不使用 wire
 envelope。Canonical Event 不携带 envelope。
 
-`_storyline` 是保留扩展字段：解析时它不会再次被捕获成 unknown。非 object、未知版本、
+`_storyline` 是保留扩展字段：解析时它不会再次被捕获成 unknown。`unknown_fields.version`
+当前只接受整数 `1`；非 object、缺少或未知版本、
 无法关联的 `by_trajectory` 或格式不合法的 envelope 都 fail closed。
 
 ## 跨格式展开与携带
