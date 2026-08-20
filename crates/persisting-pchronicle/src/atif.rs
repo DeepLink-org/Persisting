@@ -5,70 +5,74 @@
 //! `runs` / `steps` / `tool_calls` schema.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-use crate::formats::storyline::FieldPresence;
+use serde_json::{Map, Value};
 
 /// Root ATIF trajectory document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtifTrajectory {
     pub schema_version: String,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub session_id: FieldPresence<String>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub trajectory_id: FieldPresence<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trajectory_id: Option<String>,
     pub agent: AtifAgent,
     pub steps: Vec<AtifStep>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub notes: FieldPresence<String>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub final_metrics: FieldPresence<Value>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub continued_trajectory_ref: FieldPresence<String>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub extra: FieldPresence<Value>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub subagent_trajectories: FieldPresence<Vec<AtifTrajectory>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_metrics: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_trajectory_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_trajectories: Option<Vec<AtifTrajectory>>,
+    #[serde(default, flatten, skip_serializing_if = "Map::is_empty")]
+    pub unknown: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtifAgent {
     pub name: String,
     pub version: String,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub model_name: FieldPresence<String>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub tool_definitions: FieldPresence<Value>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub extra: FieldPresence<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_definitions: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<Value>,
+    #[serde(default, flatten, skip_serializing_if = "Map::is_empty")]
+    pub unknown: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtifStep {
     pub step_id: i64,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub timestamp: FieldPresence<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
     pub source: String,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub model_name: FieldPresence<String>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub reasoning_effort: FieldPresence<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<Value>,
     /// String or multimodal content-part array.
     pub message: Value,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub reasoning_content: FieldPresence<String>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub tool_calls: FieldPresence<Vec<AtifToolCall>>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub observation: FieldPresence<AtifObservation>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub metrics: FieldPresence<Value>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub extra: FieldPresence<Value>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub llm_call_count: FieldPresence<i64>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub is_copied_context: FieldPresence<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<AtifToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<AtifObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_call_count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_copied_context: Option<bool>,
+    #[serde(default, flatten, skip_serializing_if = "Map::is_empty")]
+    pub unknown: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,11 +80,12 @@ pub struct AtifToolCall {
     pub tool_call_id: String,
     pub function_name: String,
     pub arguments: Value,
-    /// Inline result. ATIF distinguishes an omitted result from explicit null.
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub result: FieldPresence<Value>,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub extra: FieldPresence<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<Value>,
+    #[serde(default, flatten, skip_serializing_if = "Map::is_empty")]
+    pub unknown: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,6 +94,7 @@ pub struct AtifObservation {
 }
 
 impl AtifTrajectory {
+    #[cfg(test)]
     pub fn from_json_str(s: &str) -> crate::InputResult<Self> {
         let traj: Self = serde_json::from_str(s)
             .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
@@ -100,10 +106,10 @@ impl AtifTrajectory {
     ///
     /// Preference: `session_id` → `trajectory_id` → error.
     pub fn effective_session_id(&self) -> crate::InputResult<&str> {
-        if let Some(id) = self.session_id.value().filter(|s| !s.is_empty()) {
+        if let Some(id) = self.session_id.as_ref().filter(|s| !s.is_empty()) {
             return Ok(id);
         }
-        if let Some(id) = self.trajectory_id.value().filter(|s| !s.is_empty()) {
+        if let Some(id) = self.trajectory_id.as_ref().filter(|s| !s.is_empty()) {
             return Ok(id);
         }
         Err(crate::InputIssue::invalid(
@@ -124,7 +130,7 @@ impl AtifTrajectory {
         if embedded {
             let trajectory_id = self
                 .trajectory_id
-                .value()
+                .as_ref()
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| {
                     crate::InputIssue::invalid("embedded ATIF trajectory requires trajectory_id")
@@ -136,8 +142,10 @@ impl AtifTrajectory {
             }
         } else {
             let _ = self.effective_session_id()?;
-            if let Some(trajectory_id) =
-                self.trajectory_id.value().filter(|value| !value.is_empty())
+            if let Some(trajectory_id) = self
+                .trajectory_id
+                .as_ref()
+                .filter(|value| !value.is_empty())
             {
                 trajectory_ids.insert(trajectory_id.clone());
             }
@@ -163,7 +171,7 @@ impl AtifTrajectory {
                     step.step_id
                 )));
             }
-            if let Some(calls) = step.tool_calls.value() {
+            if let Some(calls) = step.tool_calls.as_ref() {
                 for call in calls {
                     if call.tool_call_id.is_empty() {
                         return Err(crate::InputIssue::invalid("tool_call_id must be non-empty"));
@@ -177,7 +185,7 @@ impl AtifTrajectory {
                 }
             }
         }
-        if let Some(children) = self.subagent_trajectories.value() {
+        if let Some(children) = self.subagent_trajectories.as_ref() {
             for child in children {
                 child.validate_inner(true, trajectory_ids)?;
             }

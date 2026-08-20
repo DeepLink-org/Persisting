@@ -9,10 +9,10 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    FieldPresence, Result, StoryLink, StorylineDocument, StorylinePresence, StorylineToolCall,
-    StorylineTurn,
+use crate::formats::unknown_fields::{
+    validate_unknown_fields, StorylineUnknownFields, UnknownFieldLimits, UnknownKeyCounts,
 };
+use crate::{Result, StoryLink, StorylineDocument, StorylineToolCall, StorylineTurn};
 
 #[cfg(feature = "lance-store")]
 pub const STORY_RUNS_TABLE: &str = "runs";
@@ -27,8 +27,7 @@ pub struct StoryRunRow {
     /// Stable per-document storage identity. Explicit ATIF `trajectory_id`
     /// wins; otherwise the effective `session_id` is used.
     pub document_id: String,
-    /// Stable global order inside this Storyline store. This is deliberately
-    /// distinct from source-container ordinals retained in `presence`.
+    /// Stable global order inside this Storyline store.
     pub storage_ordinal: i64,
     pub trajectory_id_explicit: bool,
     pub run_id: Option<String>,
@@ -46,7 +45,8 @@ pub struct StoryRunRow {
     pub final_metrics: Option<Value>,
     pub continued_trajectory_ref: Option<String>,
     pub extra: Option<Value>,
-    pub presence: StorylinePresence,
+    pub unknown_fields: StorylineUnknownFields,
+    pub unknown_key_counts: UnknownKeyCounts,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,7 +85,7 @@ pub struct StoryToolCallRow {
     pub tool_call_id: String,
     pub function_name: String,
     pub arguments: Value,
-    pub result: FieldPresence<Value>,
+    pub result: Option<Value>,
     pub results: Vec<Value>,
     pub duration_ms: Option<i64>,
     pub extra: Option<Value>,
@@ -118,7 +118,19 @@ fn source_call_id(result: &Value) -> Option<&str> {
 }
 
 pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
+    split_storyline_with_unknown_limits(story, UnknownFieldLimits::default())
+}
+
+pub(crate) fn split_storyline_with_unknown_limits(
+    story: &StorylineDocument,
+    unknown_limits: UnknownFieldLimits,
+) -> Result<StorylineTables> {
     story.validate()?;
+    let counts = validate_unknown_fields(&story.unknown_fields, unknown_limits)?;
+    anyhow::ensure!(
+        counts == story.unknown_key_counts,
+        "storyline unknown_key_counts do not match unknown_fields"
+    );
     let document_id = story
         .trajectory_id
         .clone()
@@ -143,7 +155,8 @@ pub fn split_storyline(story: &StorylineDocument) -> Result<StorylineTables> {
         final_metrics: story.final_metrics.clone(),
         continued_trajectory_ref: story.continued_trajectory_ref.clone(),
         extra: story.extra.clone(),
-        presence: story.presence.clone(),
+        unknown_fields: story.unknown_fields.clone(),
+        unknown_key_counts: story.unknown_key_counts.clone(),
     };
 
     let mut seen_calls = HashSet::new();
@@ -336,7 +349,6 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
             }
         })
         .collect();
-    let presence = run.presence;
     let story = StorylineDocument {
         schema_version: run.schema_version,
         run_id: run.run_id,
@@ -357,7 +369,8 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         final_metrics: run.final_metrics,
         continued_trajectory_ref: run.continued_trajectory_ref,
         extra: run.extra,
-        presence,
+        unknown_fields: run.unknown_fields,
+        unknown_key_counts: run.unknown_key_counts,
         turns,
     };
     story.validate()?;
@@ -397,7 +410,7 @@ mod tests {
             tool_call_id: "call-1".into(),
             function_name: "lookup".into(),
             arguments: json!({"query": "answer"}),
-            result: FieldPresence::Missing,
+            result: None,
             duration_ms: Some(7),
             extra: Some(json!({"provider": "test"})),
         }]);
@@ -424,7 +437,8 @@ mod tests {
             final_metrics: Some(json!({"score": 1})),
             continued_trajectory_ref: None,
             extra: Some(json!({"case": "roundtrip"})),
-            presence: Default::default(),
+            unknown_fields: Default::default(),
+            unknown_key_counts: Default::default(),
             turns: vec![turn(1, "user"), tool_turn],
         }
     }
@@ -434,7 +448,12 @@ mod tests {
         let mut expected = story();
         expected.schema_version = Some("ATIF-v1.7".into());
         expected.attempt_id = Some("attempt-1".into());
-        expected.turns[1].tool_calls.as_mut().unwrap()[0].result = crate::FieldPresence::Null;
+        expected
+            .unknown_fields
+            .insert("atif", "source-1", "/vendor", json!(7))
+            .unwrap();
+        expected.refresh_unknown_key_counts().unwrap();
+        expected.turns[1].tool_calls.as_mut().unwrap()[0].result = None;
         let tables = split_storyline(&expected).unwrap();
         assert!(!tables.run.trajectory_id_explicit);
         assert_eq!(tables.run.run_id.as_deref(), Some("run-1"));
@@ -442,7 +461,7 @@ mod tests {
         assert_eq!(tables.steps.len(), 2);
         assert_eq!(tables.tool_calls.len(), 1);
         assert_eq!(tables.tool_calls[0].results.len(), 1);
-        assert_eq!(tables.tool_calls[0].result, crate::FieldPresence::Null);
+        assert_eq!(tables.tool_calls[0].result, None);
         assert_eq!(reconstruct_storyline(tables).unwrap(), expected);
 
         let mut implicit_run = story();
@@ -512,5 +531,34 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("mismatched source_call_id"));
+    }
+
+    #[test]
+    fn split_storyline_validates_configured_unknown_field_limit() {
+        let mut oversized = story();
+        oversized
+            .unknown_fields
+            .insert("atif", "source", "/one", json!(1))
+            .unwrap();
+        oversized
+            .unknown_fields
+            .insert("atif", "source", "/two", json!(2))
+            .unwrap();
+        oversized.refresh_unknown_key_counts().unwrap();
+
+        let error = split_storyline_with_unknown_limits(
+            &oversized,
+            UnknownFieldLimits {
+                max_fields: 1,
+                max_bytes: 1024,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field count 2 exceeds configured limit 1"),
+            "{error:#}"
+        );
     }
 }

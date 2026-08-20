@@ -1,17 +1,23 @@
 //! ATIF ⇄ storyline.
 
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
+use crate::format::DocumentFormat;
 use crate::formats::storyline::{
-    FieldPresence, PresenceState, StoryLink, StorylineAgent, StorylineAgentField,
-    StorylineCollectionShape, StorylineDocument, StorylinePresence, StorylineRootField,
-    StorylineToolCall, StorylineTurn, StorylineTurnField,
+    StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
+};
+use crate::formats::unknown_fields::{
+    attach_carried_unknown_fields, canonical_source_document_id, restore_json_pointer,
+    take_unknown_fields_envelope, validate_unknown_fields, write_foreign_unknown_fields_envelope,
+    CarrierBinding, PointerWrite, UnknownFieldLimits,
 };
 use anyhow::Context as _;
+use serde_json::{Map, Value};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::Result;
 
-fn timing_from_metrics(metrics: &FieldPresence<serde_json::Value>) -> (Option<i64>, Option<i64>) {
-    let Some(m) = metrics.value() else {
+fn timing_from_metrics(metrics: &Option<serde_json::Value>) -> (Option<i64>, Option<i64>) {
+    let Some(m) = metrics.as_ref() else {
         return (None, None);
     };
     let latency = m
@@ -25,57 +31,11 @@ fn timing_from_metrics(metrics: &FieldPresence<serde_json::Value>) -> (Option<i6
     (latency, ttft)
 }
 
-trait NullField {
-    fn is_null_field(&self) -> bool;
-}
-
-impl<T> NullField for FieldPresence<T> {
-    fn is_null_field(&self) -> bool {
-        self.is_null()
-    }
-}
-
-fn presence_state<T>(field: &FieldPresence<T>) -> PresenceState {
-    match field {
-        FieldPresence::Missing => PresenceState::Missing,
-        FieldPresence::Null => PresenceState::Null,
-        FieldPresence::Value(_) => PresenceState::Value,
-    }
-}
-
-fn mark_root_null<T>(
-    presence: &mut StorylinePresence,
-    field: StorylineRootField,
-    value: &FieldPresence<T>,
-) {
-    if value.is_null() {
-        presence.root_nulls.insert(field);
-    }
-}
-
-fn mark_agent_null<T>(
-    presence: &mut StorylinePresence,
-    field: StorylineAgentField,
-    value: &FieldPresence<T>,
-) {
-    if value.is_null() {
-        presence.agent_nulls.insert(field);
-    }
-}
-
-fn field_from_option<T>(value: Option<T>, explicit_null: bool) -> FieldPresence<T> {
-    match value {
-        Some(value) => FieldPresence::Value(value),
-        None if explicit_null => FieldPresence::Null,
-        None => FieldPresence::Missing,
-    }
-}
-
 #[cfg(test)]
 pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
     if traj
         .subagent_trajectories
-        .value()
+        .as_ref()
         .is_some_and(|children| !children.is_empty())
     {
         anyhow::bail!("embedded ATIF subagent trajectories require atif_to_storylines");
@@ -87,29 +47,54 @@ pub fn atif_to_storyline(traj: &AtifTrajectory) -> Result<StorylineDocument> {
 ///
 /// Embedded subagents retain input order through each parent's `children`
 /// list. Missing child `session_id` values inherit the parent's effective
-/// storage identity while their original presence remains explicit.
+/// storage identity.
+#[cfg(test)]
 pub fn atif_to_storylines(traj: &AtifTrajectory) -> Result<Vec<StorylineDocument>> {
+    let source_id = canonical_source_document_id(&serde_json::to_value(traj)?)?;
+    atif_to_storylines_with_source(traj, &source_id).map(|(stories, _)| stories)
+}
+
+fn atif_to_storylines_with_source(
+    traj: &AtifTrajectory,
+    source_document_id: &str,
+) -> Result<(Vec<StorylineDocument>, Vec<CarrierBinding>)> {
     fn visit(
         trajectory: &AtifTrajectory,
         parent_key: Option<&str>,
         inherited_session_id: Option<&str>,
+        source_document_id: &str,
+        source_pointer: &str,
         output: &mut Vec<StorylineDocument>,
+        carriers: &mut Vec<CarrierBinding>,
     ) -> Result<()> {
-        let story = atif_to_storyline_node(trajectory, parent_key, inherited_session_id)?;
+        let mut story = atif_to_storyline_node(trajectory, parent_key, inherited_session_id)?;
+        capture_atif_unknowns(trajectory, source_document_id, source_pointer, &mut story)?;
         let parent_key = story
             .trajectory_id
             .as_deref()
             .unwrap_or(story.session_id.as_str())
             .to_string();
         let inherited_session_id = story.session_id.clone();
+        let story_index = output.len();
         output.push(story);
-        if let Some(children) = trajectory.subagent_trajectories.value() {
-            for child in children {
+        carriers.push(CarrierBinding {
+            story_index,
+            pointer: source_pointer.to_string(),
+        });
+        if let Some(children) = trajectory.subagent_trajectories.as_ref() {
+            for (index, child) in children.iter().enumerate() {
+                let child_pointer = pointer_join(
+                    &pointer_join(source_pointer, "subagent_trajectories"),
+                    &index.to_string(),
+                );
                 visit(
                     child,
                     Some(&parent_key),
                     Some(&inherited_session_id),
+                    source_document_id,
+                    &child_pointer,
                     output,
+                    carriers,
                 )?;
             }
         }
@@ -117,26 +102,45 @@ pub fn atif_to_storylines(traj: &AtifTrajectory) -> Result<Vec<StorylineDocument
     }
 
     let mut output = Vec::new();
-    visit(traj, None, None, &mut output)?;
-    Ok(output)
+    let mut carriers = Vec::new();
+    visit(
+        traj,
+        None,
+        None,
+        source_document_id,
+        "",
+        &mut output,
+        &mut carriers,
+    )?;
+    Ok((output, carriers))
 }
 
-/// Convert one top-level ATIF trajectory and attach its format-neutral
-/// collection semantics to every flattened Storyline node.
-pub(crate) fn atif_collection_to_storylines(
-    traj: &AtifTrajectory,
-    shape: StorylineCollectionShape,
-    ordinal: i64,
-) -> Result<Vec<StorylineDocument>> {
-    if ordinal < 0 {
-        anyhow::bail!("ATIF collection ordinal cannot be negative");
-    }
-    let mut stories = atif_to_storylines(traj)?;
+pub(crate) fn atif_value_to_storylines(
+    mut value: Value,
+) -> crate::InputResult<Vec<StorylineDocument>> {
+    let envelope = take_unknown_fields_envelope(&mut value)?;
+    let source_document_id = canonical_source_document_id(&value)
+        .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
+    let trajectory: AtifTrajectory = serde_json::from_value(value)
+        .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
+    trajectory.validate()?;
+    let (mut stories, carriers) = atif_to_storylines_with_source(&trajectory, &source_document_id)
+        .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
+    attach_carried_unknown_fields(
+        envelope,
+        &carriers,
+        &mut stories,
+        UnknownFieldLimits::default(),
+    )?;
     for story in &mut stories {
-        story.presence.collection_shape = Some(shape);
-        story.presence.collection_ordinal = Some(ordinal);
+        story.unknown_key_counts =
+            validate_unknown_fields(&story.unknown_fields, UnknownFieldLimits::default())?;
     }
     Ok(stories)
+}
+
+pub(crate) fn atif_collection_to_storylines(value: Value) -> Result<Vec<StorylineDocument>> {
+    atif_value_to_storylines(value).map_err(anyhow::Error::from)
 }
 
 fn atif_to_storyline_node(
@@ -146,25 +150,23 @@ fn atif_to_storyline_node(
 ) -> Result<StorylineDocument> {
     let session_id = traj
         .session_id
-        .value()
-        .map(String::as_str)
+        .as_deref()
         .filter(|value| !value.is_empty())
         .or(inherited_session_id)
         .or_else(|| {
             traj.trajectory_id
-                .value()
-                .map(String::as_str)
+                .as_deref()
                 .filter(|value| !value.is_empty())
         })
         .ok_or_else(|| anyhow::anyhow!("ATIF trajectory requires an effective storage identity"))?
         .to_string();
-    let child_ids = traj.subagent_trajectories.value().map(|children| {
+    let child_ids = traj.subagent_trajectories.as_ref().map(|children| {
         children
             .iter()
             .map(|child| {
                 child
                     .trajectory_id
-                    .value()
+                    .as_ref()
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| anyhow::anyhow!("embedded ATIF subagent requires trajectory_id"))
                     .cloned()
@@ -173,94 +175,24 @@ fn atif_to_storyline_node(
     });
     let child_ids = child_ids.transpose()?;
 
-    let mut presence = StorylinePresence {
-        session_id: presence_state(&traj.session_id),
-        ..StorylinePresence::default()
-    };
-    mark_root_null(
-        &mut presence,
-        StorylineRootField::TrajectoryId,
-        &traj.trajectory_id,
-    );
-    mark_root_null(&mut presence, StorylineRootField::Notes, &traj.notes);
-    mark_root_null(
-        &mut presence,
-        StorylineRootField::FinalMetrics,
-        &traj.final_metrics,
-    );
-    mark_root_null(
-        &mut presence,
-        StorylineRootField::ContinuedTrajectoryRef,
-        &traj.continued_trajectory_ref,
-    );
-    mark_root_null(&mut presence, StorylineRootField::Extra, &traj.extra);
-    mark_root_null(
-        &mut presence,
-        StorylineRootField::SubagentTrajectories,
-        &traj.subagent_trajectories,
-    );
-    mark_agent_null(
-        &mut presence,
-        StorylineAgentField::ModelName,
-        &traj.agent.model_name,
-    );
-    mark_agent_null(
-        &mut presence,
-        StorylineAgentField::ToolDefinitions,
-        &traj.agent.tool_definitions,
-    );
-    mark_agent_null(&mut presence, StorylineAgentField::Extra, &traj.agent.extra);
-
     let mut turns = Vec::new();
     for step in &traj.steps {
-        for (field, value) in [
-            (
-                StorylineTurnField::Timestamp,
-                &step.timestamp as &dyn NullField,
-            ),
-            (StorylineTurnField::ModelName, &step.model_name),
-            (StorylineTurnField::ReasoningEffort, &step.reasoning_effort),
-            (
-                StorylineTurnField::ReasoningContent,
-                &step.reasoning_content,
-            ),
-            (StorylineTurnField::ToolCalls, &step.tool_calls),
-            (StorylineTurnField::Observation, &step.observation),
-            (StorylineTurnField::Metrics, &step.metrics),
-            (StorylineTurnField::Extra, &step.extra),
-            (StorylineTurnField::LlmCallCount, &step.llm_call_count),
-            (StorylineTurnField::IsCopiedContext, &step.is_copied_context),
-        ] {
-            if value.is_null_field() {
-                presence
-                    .turn_nulls
-                    .entry(step.step_id)
-                    .or_default()
-                    .insert(field);
-            }
-        }
-
-        let tool_calls = step.tool_calls.value().map(|calls| {
+        let tool_calls = step.tool_calls.as_ref().map(|calls| {
             calls
                 .iter()
                 .map(|c| {
                     let duration_ms = c
                         .extra
-                        .value()
+                        .as_ref()
                         .and_then(|x| x.get("duration_ms"))
                         .and_then(|v| v.as_i64());
-                    if c.extra.is_null() {
-                        presence
-                            .tool_call_extra_nulls
-                            .insert(c.tool_call_id.clone());
-                    }
                     StorylineToolCall {
                         tool_call_id: c.tool_call_id.clone(),
                         function_name: c.function_name.clone(),
                         arguments: c.arguments.clone(),
                         result: c.result.clone(),
                         duration_ms,
-                        extra: c.extra.clone().into_option(),
+                        extra: c.extra.clone(),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -271,24 +203,24 @@ fn atif_to_storyline_node(
         let mut turn = StorylineTurn {
             id: step.step_id,
             kind: None,
-            timestamp: step.timestamp.clone().into_option(),
+            timestamp: step.timestamp.clone(),
             source: step.source.clone(),
             message: step.message.clone(),
-            reasoning_content: step.reasoning_content.clone().into_option(),
-            reasoning_effort: step.reasoning_effort.clone().into_option(),
+            reasoning_content: step.reasoning_content.clone(),
+            reasoning_effort: step.reasoning_effort.clone(),
             tool_calls,
             observation: step
                 .observation
-                .value()
+                .as_ref()
                 .map(serde_json::to_value)
                 .transpose()?,
-            metrics: step.metrics.clone().into_option(),
-            model_name: step.model_name.clone().into_option(),
-            llm_call_count: step.llm_call_count.clone().into_option(),
-            is_copied_context: step.is_copied_context.clone().into_option(),
+            metrics: step.metrics.clone(),
+            model_name: step.model_name.clone(),
+            llm_call_count: step.llm_call_count,
+            is_copied_context: step.is_copied_context,
             latency_ms,
             ttft_ms,
-            extra: step.extra.clone().into_option(),
+            extra: step.extra.clone(),
         };
         let derived = turn.effective_kind().to_string();
         if !matches!(
@@ -303,16 +235,16 @@ fn atif_to_storyline_node(
     Ok(StorylineDocument {
         schema_version: Some(traj.schema_version.clone()),
         run_id: None,
-        trajectory_id: traj.trajectory_id.clone().into_option(),
+        trajectory_id: traj.trajectory_id.clone(),
         attempt_id: None,
         session_id,
         agent: StorylineAgent {
             id: traj.agent.name.clone(),
             name: Some(traj.agent.name.clone()),
             version: Some(traj.agent.version.clone()),
-            model_name: traj.agent.model_name.clone().into_option(),
-            tool_definitions: traj.agent.tool_definitions.clone().into_option(),
-            extra: traj.agent.extra.clone().into_option(),
+            model_name: traj.agent.model_name.clone(),
+            tool_definitions: traj.agent.tool_definitions.clone(),
+            extra: traj.agent.extra.clone(),
         },
         parent: parent_key.map(|parent_session_id| StoryLink {
             parent_session_id: parent_session_id.to_string(),
@@ -321,13 +253,72 @@ fn atif_to_storyline_node(
             relation: "spawn".into(),
         }),
         child_session_ids: child_ids,
-        notes: traj.notes.clone().into_option(),
-        final_metrics: traj.final_metrics.clone().into_option(),
-        continued_trajectory_ref: traj.continued_trajectory_ref.clone().into_option(),
-        extra: traj.extra.clone().into_option(),
-        presence,
+        notes: traj.notes.clone(),
+        final_metrics: traj.final_metrics.clone(),
+        continued_trajectory_ref: traj.continued_trajectory_ref.clone(),
+        extra: traj.extra.clone(),
+        unknown_fields: Default::default(),
+        unknown_key_counts: Default::default(),
         turns,
     })
+}
+
+fn capture_atif_unknowns(
+    trajectory: &AtifTrajectory,
+    source_document_id: &str,
+    source_pointer: &str,
+    story: &mut StorylineDocument,
+) -> crate::InputResult<()> {
+    insert_unknown_map(
+        story,
+        source_document_id,
+        source_pointer,
+        &trajectory.unknown,
+    )?;
+    insert_unknown_map(
+        story,
+        source_document_id,
+        &pointer_join(source_pointer, "agent"),
+        &trajectory.agent.unknown,
+    )?;
+    for (step_index, step) in trajectory.steps.iter().enumerate() {
+        let step_pointer = pointer_join(
+            &pointer_join(source_pointer, "steps"),
+            &step_index.to_string(),
+        );
+        insert_unknown_map(story, source_document_id, &step_pointer, &step.unknown)?;
+        if let Some(calls) = step.tool_calls.as_ref() {
+            for (call_index, call) in calls.iter().enumerate() {
+                let call_pointer = pointer_join(
+                    &pointer_join(&step_pointer, "tool_calls"),
+                    &call_index.to_string(),
+                );
+                insert_unknown_map(story, source_document_id, &call_pointer, &call.unknown)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn insert_unknown_map(
+    story: &mut StorylineDocument,
+    source_document_id: &str,
+    parent: &str,
+    fields: &Map<String, Value>,
+) -> crate::InputResult<()> {
+    for (key, value) in fields {
+        story.unknown_fields.insert(
+            "atif",
+            source_document_id,
+            pointer_join(parent, key),
+            value.clone(),
+        )?;
+    }
+    Ok(())
+}
+
+fn pointer_join(parent: &str, token: &str) -> String {
+    format!("{parent}/{}", token.replace('~', "~0").replace('/', "~1"))
 }
 
 #[cfg(test)]
@@ -346,7 +337,9 @@ fn storyline_to_atif_node(
     story: &StorylineDocument,
     embedded_children: Option<Vec<AtifTrajectory>>,
 ) -> Result<AtifTrajectory> {
-    story.validate()?;
+    if story.session_id.is_empty() || story.agent.id.is_empty() {
+        anyhow::bail!("invalid Storyline identity for ATIF conversion");
+    }
     let mut steps = Vec::new();
     for (step_index, turn) in story.turns.iter().enumerate() {
         let observation = turn
@@ -369,17 +362,10 @@ fn storyline_to_atif_node(
                             obj.insert("duration_ms".into(), serde_json::json!(ms));
                         }
                     }
-                    let extra = if story
-                        .presence
-                        .tool_call_extra_nulls
-                        .contains(&c.tool_call_id)
-                        && extra.as_object().is_some_and(|object| object.is_empty())
-                    {
-                        FieldPresence::Null
-                    } else if extra.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                        FieldPresence::Missing
+                    let extra = if extra.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                        None
                     } else {
-                        FieldPresence::Value(extra)
+                        Some(extra)
                     };
                     AtifToolCall {
                         tool_call_id: c.tool_call_id.clone(),
@@ -387,6 +373,7 @@ fn storyline_to_atif_node(
                         arguments: c.arguments.clone(),
                         result: c.result.clone(),
                         extra,
+                        unknown: Map::new(),
                     }
                 })
                 .collect()
@@ -403,72 +390,34 @@ fn storyline_to_atif_node(
                     .or_insert(serde_json::json!(ms));
             }
         }
-        let metrics = if turn.metrics.is_none()
-            && story
-                .presence
-                .turn_nulls
-                .get(&turn.id)
-                .is_some_and(|fields| fields.contains(&StorylineTurnField::Metrics))
-        {
-            FieldPresence::Null
-        } else if metrics.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-            FieldPresence::Missing
+        let metrics = if metrics.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+            None
         } else {
-            FieldPresence::Value(metrics)
-        };
-
-        let turn_null = |field| {
-            story
-                .presence
-                .turn_nulls
-                .get(&turn.id)
-                .is_some_and(|fields| fields.contains(&field))
+            Some(metrics)
         };
 
         steps.push(AtifStep {
             step_id: turn.id,
-            timestamp: field_from_option(
-                turn.timestamp.clone(),
-                turn_null(StorylineTurnField::Timestamp),
-            ),
+            timestamp: turn.timestamp.clone(),
             source: turn.source.clone(),
-            model_name: field_from_option(
-                turn.model_name.clone(),
-                turn_null(StorylineTurnField::ModelName),
-            ),
-            reasoning_effort: field_from_option(
-                turn.reasoning_effort.clone(),
-                turn_null(StorylineTurnField::ReasoningEffort),
-            ),
+            model_name: turn.model_name.clone(),
+            reasoning_effort: turn.reasoning_effort.clone(),
             message: turn.message.clone(),
-            reasoning_content: field_from_option(
-                turn.reasoning_content.clone(),
-                turn_null(StorylineTurnField::ReasoningContent),
-            ),
-            tool_calls: field_from_option(tool_calls, turn_null(StorylineTurnField::ToolCalls)),
-            observation: field_from_option(observation, turn_null(StorylineTurnField::Observation)),
+            reasoning_content: turn.reasoning_content.clone(),
+            tool_calls,
+            observation,
             metrics,
-            extra: field_from_option(turn.extra.clone(), turn_null(StorylineTurnField::Extra)),
-            llm_call_count: field_from_option(
-                turn.llm_call_count,
-                turn_null(StorylineTurnField::LlmCallCount),
-            ),
-            is_copied_context: field_from_option(
-                turn.is_copied_context,
-                turn_null(StorylineTurnField::IsCopiedContext),
-            ),
+            extra: turn.extra.clone(),
+            llm_call_count: turn.llm_call_count,
+            is_copied_context: turn.is_copied_context,
+            unknown: Map::new(),
         });
     }
 
-    let root_null = |field| story.presence.root_nulls.contains(&field);
-    let agent_null = |field| story.presence.agent_nulls.contains(&field);
     let subagent_trajectories = match embedded_children {
-        Some(children) => FieldPresence::Value(children),
-        None if root_null(StorylineRootField::SubagentTrajectories) => FieldPresence::Null,
-        None if story.child_session_ids.as_ref().is_some_and(Vec::is_empty) => {
-            FieldPresence::Value(Vec::new())
-        }
-        None => FieldPresence::Missing,
+        Some(children) => Some(children),
+        None if story.child_session_ids.as_ref().is_some_and(Vec::is_empty) => Some(Vec::new()),
+        None => None,
     };
 
     Ok(AtifTrajectory {
@@ -476,54 +425,36 @@ fn storyline_to_atif_node(
             .schema_version
             .clone()
             .unwrap_or_else(|| "ATIF-v1.7".into()),
-        session_id: match story.presence.session_id {
-            PresenceState::Missing => FieldPresence::Missing,
-            PresenceState::Null => FieldPresence::Null,
-            PresenceState::Value => FieldPresence::Value(story.session_id.clone()),
-        },
-        trajectory_id: field_from_option(
-            story.trajectory_id.clone(),
-            root_null(StorylineRootField::TrajectoryId),
-        ),
+        session_id: Some(story.session_id.clone()),
+        trajectory_id: story.trajectory_id.clone(),
         agent: AtifAgent {
             name: story
                 .agent
                 .name
                 .clone()
                 .unwrap_or_else(|| story.agent.id.clone()),
-            version: story.agent.version.clone().unwrap_or_default(),
-            model_name: field_from_option(
-                story.agent.model_name.clone(),
-                agent_null(StorylineAgentField::ModelName),
-            ),
-            tool_definitions: field_from_option(
-                story.agent.tool_definitions.clone(),
-                agent_null(StorylineAgentField::ToolDefinitions),
-            ),
-            extra: field_from_option(
-                story.agent.extra.clone(),
-                agent_null(StorylineAgentField::Extra),
-            ),
+            version: story
+                .agent
+                .version
+                .clone()
+                .unwrap_or_else(|| "unknown".into()),
+            model_name: story.agent.model_name.clone(),
+            tool_definitions: story.agent.tool_definitions.clone(),
+            extra: story.agent.extra.clone(),
+            unknown: Map::new(),
         },
         steps,
-        notes: field_from_option(story.notes.clone(), root_null(StorylineRootField::Notes)),
-        final_metrics: field_from_option(
-            story.final_metrics.clone(),
-            root_null(StorylineRootField::FinalMetrics),
-        ),
-        continued_trajectory_ref: field_from_option(
-            story.continued_trajectory_ref.clone(),
-            root_null(StorylineRootField::ContinuedTrajectoryRef),
-        ),
-        extra: field_from_option(story.extra.clone(), root_null(StorylineRootField::Extra)),
+        notes: story.notes.clone(),
+        final_metrics: story.final_metrics.clone(),
+        continued_trajectory_ref: story.continued_trajectory_ref.clone(),
+        extra: story.extra.clone(),
         subagent_trajectories,
+        unknown: Map::new(),
     })
 }
 
 /// Rebuild one or more ATIF trees from flattened Storyline documents.
 pub fn storylines_to_atif(stories: &[StorylineDocument]) -> Result<Vec<AtifTrajectory>> {
-    use std::collections::{HashMap, HashSet};
-
     fn key(story: &StorylineDocument) -> &str {
         story
             .trajectory_id
@@ -601,14 +532,141 @@ pub fn storylines_to_atif(stories: &[StorylineDocument]) -> Result<Vec<AtifTraje
     if emitted.len() != stories.len() {
         anyhow::bail!("Storyline child graph contains unreachable documents");
     }
-    Ok(output)
+    restore_atif_documents(output, stories)
+}
+
+fn restore_atif_documents(
+    documents: Vec<AtifTrajectory>,
+    stories: &[StorylineDocument],
+) -> Result<Vec<AtifTrajectory>> {
+    let single = documents.len() == 1;
+    let mut value = if documents.len() == 1 {
+        serde_json::to_value(&documents[0])?
+    } else {
+        serde_json::to_value(&documents)?
+    };
+
+    let indexes = stories
+        .iter()
+        .enumerate()
+        .map(|(index, story)| (story.document_id().to_string(), index))
+        .collect::<HashMap<_, _>>();
+    let referenced = stories
+        .iter()
+        .flat_map(|story| story.child_session_ids.iter().flatten().cloned())
+        .collect::<HashSet<_>>();
+    let root_indexes = stories
+        .iter()
+        .enumerate()
+        .filter_map(|(index, story)| (!referenced.contains(story.document_id())).then_some(index))
+        .collect::<Vec<_>>();
+
+    fn bind_tree(
+        story_index: usize,
+        pointer: &str,
+        stories: &[StorylineDocument],
+        indexes: &HashMap<String, usize>,
+        carriers: &mut Vec<CarrierBinding>,
+    ) -> Result<()> {
+        carriers.push(CarrierBinding {
+            story_index,
+            pointer: pointer.to_string(),
+        });
+        if let Some(children) = &stories[story_index].child_session_ids {
+            for (child_position, child) in children.iter().enumerate() {
+                let child_index = *indexes.get(child).ok_or_else(|| {
+                    anyhow::anyhow!("Storyline child '{child}' has no matching document")
+                })?;
+                let child_pointer = pointer_join(
+                    &pointer_join(pointer, "subagent_trajectories"),
+                    &child_position.to_string(),
+                );
+                bind_tree(child_index, &child_pointer, stories, indexes, carriers)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut carriers = Vec::new();
+    for (root_position, story_index) in root_indexes.iter().copied().enumerate() {
+        let pointer = if root_indexes.len() == 1 {
+            String::new()
+        } else {
+            pointer_join("", &root_position.to_string())
+        };
+        bind_tree(story_index, &pointer, stories, &indexes, &mut carriers)?;
+    }
+
+    let mut source_roots = BTreeMap::<String, usize>::new();
+    for story_index in &root_indexes {
+        if let Some(source) = stories[*story_index].unknown_fields.sources.get("atif") {
+            if source_roots
+                .insert(source.source_document_id.clone(), *story_index)
+                .is_some()
+            {
+                anyhow::bail!(
+                    "ATIF source document '{}' has multiple root trajectories",
+                    source.source_document_id
+                );
+            }
+        }
+    }
+    let carrier_by_story = carriers
+        .iter()
+        .map(|carrier| (carrier.story_index, carrier.pointer.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut merged = BTreeMap::<String, BTreeMap<String, Value>>::new();
+    for story in stories {
+        let Some(source) = story.unknown_fields.sources.get("atif") else {
+            continue;
+        };
+        let fields = merged.entry(source.source_document_id.clone()).or_default();
+        for (pointer, field_value) in &source.fields {
+            match fields.get(pointer) {
+                Some(existing) if existing != field_value => anyhow::bail!(
+                    "ATIF source '{}' has conflicting unknown field at '{}'",
+                    source.source_document_id,
+                    pointer
+                ),
+                Some(_) => {}
+                None => {
+                    fields.insert(pointer.clone(), field_value.clone());
+                }
+            }
+        }
+    }
+    for (source_id, fields) in merged {
+        let root_story = source_roots.get(&source_id).ok_or_else(|| {
+            anyhow::anyhow!("ATIF source document '{source_id}' has no root trajectory")
+        })?;
+        let root_pointer = &carrier_by_story[root_story];
+        let target = value
+            .pointer_mut(root_pointer)
+            .ok_or_else(|| anyhow::anyhow!("ATIF root carrier '{root_pointer}' is missing"))?;
+        for (pointer, field_value) in fields {
+            restore_json_pointer(target, &pointer, field_value, PointerWrite::InsertOnly)
+                .with_context(|| {
+                    format!(
+                        "restore ATIF unknown-field pointer '{pointer}' for trajectory '{}'",
+                        stories[*root_story].document_id()
+                    )
+                })?;
+        }
+    }
+
+    write_foreign_unknown_fields_envelope(DocumentFormat::Atif, &mut value, stories, &carriers)?;
+    if single {
+        Ok(vec![serde_json::from_value(value)?])
+    } else {
+        Ok(serde_json::from_value(value)?)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{atif_to_storyline, atif_to_storylines, storyline_to_atif, storylines_to_atif};
     use crate::atif::AtifTrajectory;
-    use crate::FieldPresence;
+    use crate::StorylineDocument;
 
     #[test]
     fn malformed_atif_observation_is_not_silently_dropped() {
@@ -638,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn atif_tool_result_presence_round_trips_without_provenance() {
+    fn atif_tool_result_null_and_missing_canonicalize_to_absent() {
         let trajectory = AtifTrajectory::from_json_str(
             r#"{
                 "schema_version":"ATIF-v1.7",
@@ -661,12 +719,9 @@ mod tests {
         let story = atif_to_storyline(&trajectory).unwrap();
         assert_eq!(story.schema_version.as_deref(), Some("ATIF-v1.7"));
         let calls = story.turns[0].tool_calls.as_ref().unwrap();
-        assert_eq!(calls[0].result, FieldPresence::Missing);
-        assert_eq!(calls[1].result, FieldPresence::Null);
-        assert_eq!(
-            calls[2].result,
-            FieldPresence::Value(serde_json::json!({"ok": true}))
-        );
+        assert_eq!(calls[0].result, None);
+        assert_eq!(calls[1].result, None);
+        assert_eq!(calls[2].result, Some(serde_json::json!({"ok": true})));
         assert!(calls.iter().all(|call| {
             !call
                 .extra
@@ -677,12 +732,12 @@ mod tests {
         let encoded = serde_json::to_value(storyline_to_atif(&story).unwrap()).unwrap();
         let calls = encoded["steps"][0]["tool_calls"].as_array().unwrap();
         assert!(calls[0].get("result").is_none());
-        assert_eq!(calls[1]["result"], serde_json::Value::Null);
+        assert!(calls[1].get("result").is_none());
         assert_eq!(calls[2]["result"], serde_json::json!({"ok": true}));
     }
 
     #[test]
-    fn atif_null_presence_and_trajectory_only_identity_round_trip() {
+    fn atif_null_fields_canonicalize_to_absent() {
         let input = serde_json::json!({
             "schema_version": "ATIF-v1.7",
             "trajectory_id": "trajectory-only",
@@ -714,7 +769,18 @@ mod tests {
         let trajectory = AtifTrajectory::from_json_str(&input.to_string()).unwrap();
         let story = atif_to_storyline(&trajectory).unwrap();
         let output = serde_json::to_value(storyline_to_atif(&story).unwrap()).unwrap();
-        assert_eq!(output, input);
+        assert_eq!(output["session_id"], "trajectory-only");
+        assert_eq!(output["trajectory_id"], "trajectory-only");
+        assert!(output.get("notes").is_none());
+        assert!(output["steps"][0].get("timestamp").is_none());
+    }
+
+    #[test]
+    fn cross_format_storyline_gets_a_valid_atif_agent_version() {
+        let story = StorylineDocument::new("session", "agent");
+        let trajectory = storyline_to_atif(&story).unwrap();
+        assert_eq!(trajectory.agent.version, "unknown");
+        trajectory.validate().unwrap();
     }
 
     #[test]
@@ -751,7 +817,19 @@ mod tests {
         );
         let rebuilt = storylines_to_atif(&stories).unwrap();
         assert_eq!(rebuilt.len(), 1);
-        assert_eq!(serde_json::to_value(&rebuilt[0]).unwrap(), input);
+        let rebuilt = serde_json::to_value(&rebuilt[0]).unwrap();
+        assert_eq!(
+            rebuilt["subagent_trajectories"][0]["session_id"],
+            "shared-run"
+        );
+        assert_eq!(
+            rebuilt["subagent_trajectories"][0]["trajectory_id"],
+            "child-a"
+        );
+        assert_eq!(
+            rebuilt["subagent_trajectories"][1]["trajectory_id"],
+            "child-b"
+        );
     }
 
     #[test]

@@ -55,13 +55,13 @@ mod store;
 
 #[cfg(feature = "lance-store")]
 pub(crate) use document::{QueryCapabilities, QueryTables};
-#[cfg(any(feature = "lance-store", test))]
+#[cfg(feature = "lance-store")]
 pub(crate) use format::DocumentFormat;
+#[cfg(feature = "lance-store")]
+pub(crate) use formats::storyline::StorylineAgent;
 pub(crate) use formats::storyline::StorylineTurn;
 #[cfg(any(feature = "lance-store", test))]
-pub(crate) use formats::storyline::{FieldPresence, StoryLink, StorylineToolCall};
-#[cfg(feature = "lance-store")]
-pub(crate) use formats::storyline::{StorylineAgent, StorylinePresence};
+pub(crate) use formats::storyline::{StoryLink, StorylineToolCall};
 pub(crate) use formats::{EventIdentity, EventRecord, StorylineDocument};
 pub(crate) use input::{InputIssue, InputResult};
 pub type Result<T> = anyhow::Result<T>;

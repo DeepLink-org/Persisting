@@ -309,7 +309,8 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
-        presence: Default::default(),
+        unknown_fields: Default::default(),
+        unknown_key_counts: Default::default(),
         turns,
     })
 }

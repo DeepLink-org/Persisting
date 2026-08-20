@@ -3,17 +3,24 @@
 //! Each source file is one streaming partition. Query-only `_file_` predicates
 //! are evaluated against the frozen manifest before partitions are opened.
 
+mod actf_reader;
+mod actf_stream;
 mod atif_reader;
 mod atif_stream;
+mod json_stream;
+mod projected_steps;
 
-pub(crate) use atif_reader::parse_storylines as parse_atif_storylines;
+use actf_reader::parse_actf_storylines_from_reader_with_stats;
+use actf_stream::stream_projected_actf_steps;
+use atif_reader::parse_atif_storylines_from_reader_with_stats;
 pub(crate) use atif_reader::AtifReader;
 use atif_stream::stream_projected_atif_steps;
+use json_stream::BoundedCountingReader;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -30,19 +37,14 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use datafusion::prelude::SessionContext;
-use lance::deps::arrow_array::{
-    ArrayRef, BooleanArray, Int64Array, RecordBatch, RecordBatchOptions, StringArray,
-};
+use lance::deps::arrow_array::{RecordBatch, StringArray};
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use tokio::sync::mpsc::Sender;
 
-use crate::convert::actf_to_storylines;
 use crate::format::DocumentFormat;
-use crate::formats::actf::ActfDocument;
 use crate::formats::parse_openai_msg_corpus_value;
 
-use super::storyline::rows::timestamp_array;
 use super::{
     datafusion_bridge::{from_datafusion, into_datafusion},
     split_storyline, story_runs_arrow_schema, story_runs_to_batch, story_steps_arrow_schema,
@@ -303,7 +305,7 @@ impl FileScanSpec {
         }
     }
 
-    fn can_project_atif_steps(&self, schema: &SchemaRef) -> bool {
+    fn can_project_steps(&self, schema: &SchemaRef) -> bool {
         self.projection
             .as_ref()
             .is_some_and(|projection| projection.len() < schema.fields().len())
@@ -483,13 +485,13 @@ impl TableProvider for FileTrajectoryTableProvider {
             .map(|filter| {
                 if matches_file_filter(filter, "").is_some() {
                     TableProviderFilterPushDown::Exact
-                } else if self.format == DocumentFormat::Atif
+                } else if matches!(self.format, DocumentFormat::Atif | DocumentFormat::Actf)
                     && self.kind == StorylineTableKind::Steps
                     && atif_step_filters(filter).is_some()
                 {
                     // The projected decoder applies these filters to reduce
                     // materialization, while DataFusion retains the filter to
-                    // guarantee SQL semantics on the compatibility fallback.
+                    // guarantee SQL semantics on the full-normalization path.
                     TableProviderFilterPushDown::Inexact
                 } else {
                     TableProviderFilterPushDown::Unsupported
@@ -559,9 +561,16 @@ fn stream_file(
 ) -> Result<()> {
     if format == DocumentFormat::Atif
         && kind == StorylineTableKind::Steps
-        && scan.can_project_atif_steps(&source_schema)
+        && scan.can_project_steps(&source_schema)
     {
         stream_projected_atif_steps(file, runtime, &schema, batch_size, scan, tx)?;
+        return Ok(());
+    }
+    if format == DocumentFormat::Actf
+        && kind == StorylineTableKind::Steps
+        && scan.can_project_steps(&source_schema)
+    {
+        stream_projected_actf_steps(file, runtime, &schema, batch_size, scan, tx)?;
         return Ok(());
     }
     let parsed = load_file(file, runtime, format)?;
@@ -789,32 +798,74 @@ fn load_file(
         state.file.size_bytes(),
         runtime.options.max_file_bytes
     );
-    let content = fs::read_to_string(state.file.path()).with_context(|| {
-        format!(
-            "read {} input {}",
-            format.as_str(),
-            state.file.path().display()
-        )
-    })?;
-    anyhow::ensure!(
-        content.len() as u64 <= runtime.options.max_file_bytes,
-        "{} input {} exceeded max_file_bytes {} while reading",
-        format.as_str(),
-        state.file.path().display(),
-        runtime.options.max_file_bytes
-    );
-    state.file.validate_unchanged()?;
-    runtime
-        .metrics
-        .inner
-        .source_bytes_read
-        .fetch_add(content.len() as u64, Ordering::Relaxed);
-    let parsed = Arc::new(parse_file(
-        &state.file,
-        format,
-        &content,
-        runtime.options.batch_size,
-    )?);
+    let parsed = match format {
+        DocumentFormat::Atif | DocumentFormat::Actf => {
+            let input = File::open(state.file.path()).with_context(|| {
+                format!(
+                    "open {} input {}",
+                    format.as_str(),
+                    state.file.path().display()
+                )
+            })?;
+            let mut reader = BufReader::with_capacity(
+                64 * 1024,
+                BoundedCountingReader::new(input, runtime.options.max_file_bytes),
+            );
+            let (stories, peak_record_bytes) = match format {
+                DocumentFormat::Atif => parse_atif_storylines_from_reader_with_stats(
+                    state.file.path(),
+                    &mut reader,
+                    runtime.options.max_record_bytes,
+                )
+                .with_context(|| format!("parse ATIF input {}", state.file.path().display()))?,
+                DocumentFormat::Actf => parse_actf_storylines_from_reader_with_stats(
+                    state.file.path(),
+                    &mut reader,
+                    runtime.options.max_record_bytes,
+                )
+                .with_context(|| format!("parse ACTF input {}", state.file.path().display()))?,
+                _ => unreachable!(),
+            };
+            runtime.metrics.inner.streaming_buffer_peak_bytes.fetch_max(
+                (reader.capacity() as u64).saturating_add(peak_record_bytes as u64),
+                Ordering::Relaxed,
+            );
+            state.file.validate_unchanged()?;
+            runtime
+                .metrics
+                .inner
+                .source_bytes_read
+                .fetch_add(reader.get_ref().bytes_read(), Ordering::Relaxed);
+            stories_to_parsed_file(&state.file, format, stories, runtime.options.batch_size)?
+        }
+        DocumentFormat::OpenaiMsg => {
+            let content = fs::read_to_string(state.file.path()).with_context(|| {
+                format!(
+                    "read {} input {}",
+                    format.as_str(),
+                    state.file.path().display()
+                )
+            })?;
+            anyhow::ensure!(
+                content.len() as u64 <= runtime.options.max_file_bytes,
+                "{} input {} exceeded max_file_bytes {} while reading",
+                format.as_str(),
+                state.file.path().display(),
+                runtime.options.max_file_bytes
+            );
+            state.file.validate_unchanged()?;
+            runtime
+                .metrics
+                .inner
+                .source_bytes_read
+                .fetch_add(content.len() as u64, Ordering::Relaxed);
+            parse_openai_stories_from_content(&state.file, &content, runtime.options.batch_size)?
+        }
+        unsupported => {
+            anyhow::bail!("file trajectory datasource does not support '{unsupported}'")
+        }
+    };
+    let parsed = Arc::new(parsed);
     runtime
         .metrics
         .inner
@@ -834,34 +885,25 @@ fn load_file(
     Ok(parsed)
 }
 
-fn parse_file(
+fn parse_openai_stories_from_content(
     file: &LocalQueryInputFile,
-    format: DocumentFormat,
     content: &str,
     batch_size: usize,
 ) -> Result<ParsedFile> {
-    let stories = match format {
-        DocumentFormat::Atif => parse_atif_storylines(content)
-            .with_context(|| format!("parse ATIF input {}", file.path().display()))?,
-        DocumentFormat::OpenaiMsg => {
-            let value = serde_json::from_str(content)
-                .with_context(|| format!("parse OpenAI JSON input {}", file.path().display()))?;
-            parse_openai_msg_corpus_value(&value, file.relative_path())
-                .map_err(anyhow::Error::from)
-                .with_context(|| format!("normalize OpenAI input {}", file.path().display()))?
-        }
-        DocumentFormat::Actf => {
-            let document = ActfDocument::from_json_str(content)
-                .map_err(anyhow::Error::from)
-                .with_context(|| format!("parse ACTF input {}", file.path().display()))?;
-            actf_to_storylines(&document)
-                .with_context(|| format!("normalize ACTF input {}", file.path().display()))?
-        }
-        unsupported => {
-            anyhow::bail!("file trajectory datasource does not support '{unsupported}'")
-        }
-    };
+    let value = serde_json::from_str(content)
+        .with_context(|| format!("parse OpenAI JSON input {}", file.path().display()))?;
+    let stories = parse_openai_msg_corpus_value(&value, file.relative_path())
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("normalize OpenAI input {}", file.path().display()))?;
+    stories_to_parsed_file(file, DocumentFormat::OpenaiMsg, stories, batch_size)
+}
 
+fn stories_to_parsed_file(
+    file: &LocalQueryInputFile,
+    format: DocumentFormat,
+    stories: Vec<crate::formats::storyline::StorylineDocument>,
+    batch_size: usize,
+) -> Result<ParsedFile> {
     let mut document_ids = HashSet::with_capacity(stories.len());
     let mut runs = Vec::<StoryRunRow>::with_capacity(stories.len());
     let mut steps = Vec::<StoryStepRow>::new();

@@ -11,7 +11,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::super::storyline_model::{StoryRunRow, StoryStepRow, StoryToolCallRow};
-use crate::FieldPresence;
 
 fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
     Field::new(name, data_type, nullable)
@@ -38,7 +37,8 @@ pub fn story_runs_arrow_schema() -> Arc<ArrowSchema> {
         field("final_metrics_json", DataType::Utf8, true),
         field("continued_trajectory_ref", DataType::Utf8, true),
         field("extra_json", DataType::Utf8, true),
-        field("presence_json", DataType::Utf8, true),
+        field("unknown_fields_json", DataType::Utf8, true),
+        field("unknown_key_counts_json", DataType::Utf8, true),
     ]))
 }
 
@@ -83,7 +83,6 @@ pub fn story_tool_calls_arrow_schema() -> Arc<ArrowSchema> {
         field("tool_call_id", DataType::Utf8, false),
         field("function_name", DataType::Utf8, false),
         field("arguments_json", DataType::Utf8, false),
-        field("result_present", DataType::Boolean, false),
         field("result_json", DataType::Utf8, true),
         field("results_json", DataType::Utf8, false),
         field("duration_ms", DataType::Int64, true),
@@ -188,9 +187,22 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
                     .map(|r| opt_json(&r.extra))
                     .collect::<Result<Vec<_>>>()?,
             )),
-            Arc::new(req_utf8_owned(
+            Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| json(&r.presence))
+                    .map(|r| {
+                        (!r.unknown_fields.is_empty())
+                            .then(|| json(&r.unknown_fields))
+                            .transpose()
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| {
+                        (!r.unknown_key_counts.is_empty())
+                            .then(|| json(&r.unknown_key_counts))
+                            .transpose()
+                    })
                     .collect::<Result<Vec<_>>>()?,
             )),
         ],
@@ -279,17 +291,9 @@ pub fn story_tool_calls_to_batch(rows: &[StoryToolCallRow]) -> Result<RecordBatc
                     .map(|r| json(&r.arguments))
                     .collect::<Result<_>>()?,
             )),
-            Arc::new(BooleanArray::from(
-                rows.iter()
-                    .map(|r| !r.result.is_missing())
-                    .collect::<Vec<_>>(),
-            )),
             Arc::new(opt_utf8_owned(
                 rows.iter()
-                    .map(|r| match &r.result {
-                        FieldPresence::Value(value) => json(value).map(Some),
-                        FieldPresence::Missing | FieldPresence::Null => Ok(None),
-                    })
+                    .map(|r| r.result.as_ref().map(json).transpose())
                     .collect::<Result<Vec<_>>>()?,
             )),
             Arc::new(req_utf8_owned(
@@ -433,8 +437,14 @@ pub fn story_runs_from_batch(batch: &RecordBatch) -> Result<Vec<StoryRunRow>> {
                 final_metrics: optional_json_at(batch, "final_metrics_json", row)?,
                 continued_trajectory_ref: string_at(batch, "continued_trajectory_ref", row)?,
                 extra: optional_json_at(batch, "extra_json", row)?,
-                presence: optional_json_if_present(batch, "presence_json", row)?
+                unknown_fields: optional_json_if_present(batch, "unknown_fields_json", row)?
                     .unwrap_or_default(),
+                unknown_key_counts: optional_json_if_present(
+                    batch,
+                    "unknown_key_counts_json",
+                    row,
+                )?
+                .unwrap_or_default(),
             })
         })
         .collect()
@@ -489,14 +499,9 @@ pub fn story_tool_calls_from_batch(batch: &RecordBatch) -> Result<Vec<StoryToolC
                     required_string_at(batch, "arguments_json", row)?,
                     "arguments_json",
                 )?,
-                result: if required_bool_at(batch, "result_present", row)? {
-                    match string_at(batch, "result_json", row)? {
-                        Some(value) => FieldPresence::Value(parse_json(value, "result_json")?),
-                        None => FieldPresence::Null,
-                    }
-                } else {
-                    FieldPresence::Missing
-                },
+                result: string_at(batch, "result_json", row)?
+                    .map(|value| parse_json(value, "result_json"))
+                    .transpose()?,
                 results: parse_json(
                     required_string_at(batch, "results_json", row)?,
                     "results_json",
@@ -514,9 +519,9 @@ mod tests {
 
     #[test]
     fn empty_batches_keep_all_three_schemas() {
-        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 20);
+        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 21);
         assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 20);
-        assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 13);
+        assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 12);
     }
 
     #[test]
@@ -598,7 +603,7 @@ mod tests {
             tool_call_id: "c".into(),
             function_name: "lookup".into(),
             arguments: serde_json::json!({"q": "x"}),
-            result: FieldPresence::Null,
+            result: None,
             results: vec![serde_json::json!({"source_call_id": "c", "content": "y"})],
             duration_ms: Some(8),
             extra: None,

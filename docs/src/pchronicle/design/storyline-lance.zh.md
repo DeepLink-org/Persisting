@@ -350,24 +350,25 @@ SQL / DataFrame
   → DataFusion 保留 inexact filter 再次校验
 ```
 
-当前 fast path 的适用范围是 ATIF 单对象 JSON、JSON 数组（包括 pretty JSON），以及每行一个对象的 JSONL/NDJSON，
-目标表为 `steps`，并且物理计划存在严格列裁剪。它有意保持保守：
+当前 fast path 的适用范围是 ATIF 单对象、数组（包括 pretty JSON）和 JSONL/NDJSON，
+以及 ACTF 单对象和数组；目标表为 `steps`，并且物理计划存在严格列裁剪。它有意保持保守：
 
 | 输入/查询 | 执行路径 |
 |---|---|
 | ATIF object/pretty object + projected `steps` | reader-backed seeded projected decoder |
 | ATIF array/pretty array + projected `steps` | `fill_buf` 结构扫描 + 有界 element buffer + seeded `from_slice` |
 | ATIF JSONL/NDJSON + projected `steps` | `BufRead` 逐记录、有界 record buffer |
+| ACTF object/array + projected `steps` | reader/slice seeded projected decoder |
 | `_file_`、`session_id`、`step_id`、`source` 的安全简单谓词 | 可提前裁剪，DataFusion 仍复核 |
 | `SELECT *` | 完整规范化 fallback |
 | `runs` / `tool_calls` | 完整规范化 fallback |
-| OpenAI-message / ACTF | 完整规范化 fallback |
+| OpenAI-message | 完整规范化 fallback |
 | 无法证明安全的表达式、OR/函数/跨列条件 | 不预裁剪，由 DataFusion 求值 |
 
 `DeserializeSeed` 把查询 projection 和安全谓词传入 `Visitor`；未引用字段交给
-`IgnoredAny` 做语法扫描，不构造 `Value`/Storyline。JSONL/NDJSON 以 `BufRead` 逐记录读取；
-JSON array 的结构扫描器识别字符串和转义，在不构造 DOM 的情况下提取单个 trajectory，
-再通过 slice decoder 执行投影解析。单条 JSONL 记录或 array element 由
+`IgnoredAny` 做语法扫描，不构造 `Value`/Storyline。ATIF JSONL/NDJSON 以 `BufRead`
+逐记录读取；JSON array 的结构扫描器识别字符串和转义，在不构造 DOM 的情况下提取单个
+trajectory/document，再通过 slice decoder 执行投影解析。单条 JSONL 记录或 array element 由
 `max_record_bytes` 限制；单对象直接从 reader 解码。三种路径都不先复制整文件。
 Arrow encoder 也只创建投影列，`COUNT(*)` 使用合法的零列 batch。轻量路径
 校验 JSON、必需字段、重复 session、命中文档内的重复 step 和当前表内约束；跨表引用
@@ -434,8 +435,8 @@ JSON 对照使用单个 NDJSON 文件，避免大量小文件打开开销。ATIF
 DataFusion projection 和可安全预裁剪的 `session_id`、`step_id`、`source` 谓词传给
 projected decoder：未引用 JSON 字段只做语法扫描，不构造 Storyline/三表对象，Arrow
 batch 也只包含执行计划需要的列。object、array、pretty JSON 和 JSONL/NDJSON 共用流式
-projection decoder；`SELECT *` 和其他格式仍走完整规范化
-fallback。轻量路径执行 JSON、必需字段和表内约束校验，跨表引用完整性由导入或完整
+projection decoder；ACTF `steps` 也使用对应的 projected decoder；`SELECT *`、其他表和
+OpenAI-message 仍走完整规范化 fallback。轻量路径执行 JSON、必需字段和表内约束校验，跨表引用完整性由导入或完整
 fallback 校验。预解析内存 JSON 对照只计算查询逻辑，用来区分产品工作流与纯内存遍历成本。
 benchmark 还单独输出 DataSource 冷打开并执行 SQL、`get_storyline_full` 点查和单 Storyline
 替换的延迟，避免 warm SQL 吞吐掩盖在线读写路径的写放大。

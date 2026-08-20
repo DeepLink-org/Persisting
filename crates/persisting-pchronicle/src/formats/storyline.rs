@@ -4,157 +4,13 @@
 //! Short wire keys (`src`, `msg`, `ts`, …); timing convenience fields
 //! (`latency_ms` / `ttft_ms` / `duration_ms`) lift common metrics.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::unknown_fields::{compute_unknown_key_counts, StorylineUnknownFields, UnknownKeyCounts};
 use crate::{InputIssue, InputResult, Result};
-
-/// Presence semantics for interchange fields where missing and explicit null
-/// carry different meanings.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum FieldPresence<T> {
-    #[default]
-    Missing,
-    Null,
-    Value(T),
-}
-
-impl<T> FieldPresence<T> {
-    pub fn is_missing(&self) -> bool {
-        matches!(self, Self::Missing)
-    }
-
-    pub fn is_null(&self) -> bool {
-        matches!(self, Self::Null)
-    }
-
-    pub fn value(&self) -> Option<&T> {
-        match self {
-            Self::Value(value) => Some(value),
-            Self::Missing | Self::Null => None,
-        }
-    }
-
-    pub fn as_ref(&self) -> Option<&T> {
-        self.value()
-    }
-
-    pub fn into_option(self) -> Option<T> {
-        match self {
-            Self::Value(value) => Some(value),
-            Self::Missing | Self::Null => None,
-        }
-    }
-}
-
-impl<T: Serialize> Serialize for FieldPresence<T> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            Self::Missing | Self::Null => serializer.serialize_none(),
-            Self::Value(value) => value.serialize(serializer),
-        }
-    }
-}
-
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for FieldPresence<T> {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(match Option::<T>::deserialize(deserializer)? {
-            Some(value) => Self::Value(value),
-            None => Self::Null,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PresenceState {
-    Missing,
-    Null,
-    #[default]
-    Value,
-}
-
-/// Shape of the physical document collection that contained a Storyline.
-///
-/// This is format-neutral collection semantics, not an editable
-/// format-specific residual. It allows collection shape and ordering to pass
-/// through the authoritative Storyline model and Lance storage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StorylineCollectionShape {
-    Single,
-    Sequence,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StorylineRootField {
-    TrajectoryId,
-    Notes,
-    FinalMetrics,
-    ContinuedTrajectoryRef,
-    Extra,
-    SubagentTrajectories,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StorylineAgentField {
-    ModelName,
-    ToolDefinitions,
-    Extra,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StorylineTurnField {
-    Timestamp,
-    ModelName,
-    ReasoningEffort,
-    ReasoningContent,
-    ToolCalls,
-    Observation,
-    Metrics,
-    Extra,
-    LlmCallCount,
-    IsCopiedContext,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorylinePresence {
-    #[serde(default, skip_serializing_if = "is_value_presence")]
-    pub session_id: PresenceState,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub root_nulls: BTreeSet<StorylineRootField>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub agent_nulls: BTreeSet<StorylineAgentField>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub turn_nulls: BTreeMap<i64, BTreeSet<StorylineTurnField>>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub tool_call_extra_nulls: BTreeSet<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collection_shape: Option<StorylineCollectionShape>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collection_ordinal: Option<i64>,
-}
-
-fn is_value_presence(value: &PresenceState) -> bool {
-    *value == PresenceState::Value
-}
-
-impl StorylinePresence {
-    pub fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorylineDocument {
@@ -186,8 +42,10 @@ pub struct StorylineDocument {
     pub continued_trajectory_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
-    #[serde(default, skip_serializing_if = "StorylinePresence::is_default")]
-    pub presence: StorylinePresence,
+    #[serde(default, skip_serializing_if = "StorylineUnknownFields::is_empty")]
+    pub unknown_fields: StorylineUnknownFields,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unknown_key_counts: UnknownKeyCounts,
     pub turns: Vec<StorylineTurn>,
 }
 
@@ -298,8 +156,8 @@ pub struct StorylineToolCall {
     pub function_name: String,
     #[serde(rename = "args")]
     pub arguments: Value,
-    #[serde(default, skip_serializing_if = "FieldPresence::is_missing")]
-    pub result: FieldPresence<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
     /// Tool execution wall time in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
@@ -330,7 +188,8 @@ impl StorylineDocument {
             final_metrics: None,
             continued_trajectory_ref: None,
             extra: None,
-            presence: StorylinePresence::default(),
+            unknown_fields: StorylineUnknownFields::default(),
+            unknown_key_counts: UnknownKeyCounts::default(),
             turns: Vec::new(),
         }
     }
@@ -361,23 +220,9 @@ impl StorylineDocument {
         if self.agent.id.is_empty() {
             return Err(InputIssue::invalid("storyline.agent.id is required"));
         }
-        if self
-            .presence
-            .collection_ordinal
-            .is_some_and(|ordinal| ordinal < 0)
-        {
+        if compute_unknown_key_counts(&self.unknown_fields)? != self.unknown_key_counts {
             return Err(InputIssue::invalid(
-                "storyline collection ordinal cannot be negative",
-            ));
-        }
-        if self.presence.collection_shape == Some(StorylineCollectionShape::Single)
-            && self
-                .presence
-                .collection_ordinal
-                .is_some_and(|ordinal| ordinal != 0)
-        {
-            return Err(InputIssue::invalid(
-                "single-document Storyline collection ordinal must be zero",
+                "storyline unknown_key_counts do not match unknown_fields",
             ));
         }
         let mut seen = std::collections::HashSet::new();
@@ -397,6 +242,11 @@ impl StorylineDocument {
         }
         Ok(())
     }
+
+    pub fn refresh_unknown_key_counts(&mut self) -> InputResult<()> {
+        self.unknown_key_counts = compute_unknown_key_counts(&self.unknown_fields)?;
+        Ok(())
+    }
 }
 
 #[cfg(all(test, feature = "lance-store"))]
@@ -408,22 +258,135 @@ pub fn parse_storyline_document(input: &str) -> Result<StorylineDocument> {
 mod tests {
     use super::*;
 
+    fn story_with_source_normalized_counts() -> StorylineDocument {
+        let mut story = StorylineDocument::new("session", "agent");
+        for (source, source_id, pointer) in [
+            ("atif", "atif-doc", "/steps/0/vendor"),
+            ("atif", "atif-doc", "/steps/1/vendor"),
+            ("actf", "actf-doc", "/attempts/7/trajectory/steps/0/vendor"),
+            ("actf", "actf-doc", "/attempts/7/trajectory/steps/1/vendor"),
+            (
+                "openai-msg",
+                "openai-doc",
+                "/session_steps/0/messages/0/vendor",
+            ),
+            (
+                "openai-msg",
+                "openai-doc",
+                "/session_steps/1/messages/1/vendor",
+            ),
+            ("agenticmd", "agenticmd-doc", "/blocks/0/header/vendor"),
+            ("agenticmd", "agenticmd-doc", "/blocks/1/header/vendor"),
+            ("future-format", "future-doc", "/items/0/vendor"),
+            ("future-format", "future-doc", "/items/1/vendor"),
+        ] {
+            story
+                .unknown_fields
+                .insert(source, source_id, pointer, serde_json::json!(true))
+                .unwrap();
+        }
+        story.unknown_key_counts = BTreeMap::from([
+            (
+                "atif".into(),
+                BTreeMap::from([("/steps/*/vendor".into(), 2)]),
+            ),
+            (
+                "actf".into(),
+                BTreeMap::from([("/attempts/7/trajectory/steps/*/vendor".into(), 2)]),
+            ),
+            (
+                "openai-msg".into(),
+                BTreeMap::from([("/session_steps/*/messages/*/vendor".into(), 2)]),
+            ),
+            (
+                "agenticmd".into(),
+                BTreeMap::from([("/blocks/*/header/vendor".into(), 2)]),
+            ),
+            (
+                "future-format".into(),
+                BTreeMap::from([("/items/0/vendor".into(), 1), ("/items/1/vendor".into(), 1)]),
+            ),
+        ]);
+        story
+    }
+
     #[test]
-    fn legacy_long_field_names_are_rejected() {
-        let legacy = serde_json::json!({
+    fn validate_accepts_source_normalized_unknown_key_counts() {
+        story_with_source_normalized_counts().validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_stale_source_normalized_unknown_key_counts() {
+        let mut story = story_with_source_normalized_counts();
+        *story
+            .unknown_key_counts
+            .get_mut("atif")
+            .unwrap()
+            .get_mut("/steps/*/vendor")
+            .unwrap() = 1;
+        assert!(story.validate().is_err());
+    }
+
+    #[test]
+    fn refresh_counts_wildcards_only_schema_array_positions() {
+        let mut story = StorylineDocument::new("session", "agent");
+        for (source, source_id, pointer) in [
+            ("atif", "atif-doc", "/steps/0/0"),
+            ("actf", "actf-doc", "/attempts/1/trajectory/steps/0/0"),
+            ("openai-msg", "openai-doc", "/session_steps/0/messages/0/0"),
+            ("agenticmd", "agenticmd-doc", "/frontmatter/0"),
+            ("agenticmd", "agenticmd-doc", "/blocks/0/header/0"),
+            ("future-format", "future-doc", "/items/0/0"),
+        ] {
+            story
+                .unknown_fields
+                .insert(source, source_id, pointer, serde_json::json!(true))
+                .unwrap();
+        }
+
+        story.refresh_unknown_key_counts().unwrap();
+
+        assert_eq!(story.unknown_key_counts["atif"]["/steps/*/0"], 1);
+        assert_eq!(
+            story.unknown_key_counts["actf"]["/attempts/1/trajectory/steps/*/0"],
+            1
+        );
+        assert_eq!(
+            story.unknown_key_counts["openai-msg"]["/session_steps/*/messages/*/0"],
+            1
+        );
+        assert_eq!(story.unknown_key_counts["agenticmd"]["/frontmatter/0"], 1);
+        assert_eq!(
+            story.unknown_key_counts["agenticmd"]["/blocks/*/header/0"],
+            1
+        );
+        assert_eq!(story.unknown_key_counts["future-format"]["/items/0/0"], 1);
+        story.validate().unwrap();
+    }
+
+    #[test]
+    fn storyline_serialization_omits_empty_unknown_fields() {
+        let story = StorylineDocument::new("session", "agent");
+        let value = serde_json::to_value(story).unwrap();
+        assert!(value.get("unknown_fields").is_none());
+    }
+
+    #[test]
+    fn unsupported_long_field_names_are_rejected() {
+        let document = serde_json::json!({
             "session_id": "session-1",
             "agent": { "id": "agent-1" },
             "turns": []
         });
-        assert!(serde_json::from_value::<StorylineDocument>(legacy).is_err());
+        assert!(serde_json::from_value::<StorylineDocument>(document).is_err());
     }
 
     #[test]
-    fn tool_result_presence_distinguishes_missing_null_and_value() {
+    fn tool_result_canonicalizes_missing_and_null() {
         let base = serde_json::json!({"tcid":"call-1","fn":"lookup","args":{}});
 
         let missing: StorylineToolCall = serde_json::from_value(base.clone()).unwrap();
-        assert_eq!(missing.result, FieldPresence::Missing);
+        assert_eq!(missing.result, None);
         assert!(serde_json::to_value(missing)
             .unwrap()
             .get("result")
@@ -432,16 +395,13 @@ mod tests {
         let mut null = base.clone();
         null["result"] = Value::Null;
         let null: StorylineToolCall = serde_json::from_value(null).unwrap();
-        assert_eq!(null.result, FieldPresence::Null);
-        assert_eq!(serde_json::to_value(null).unwrap()["result"], Value::Null);
+        assert_eq!(null.result, None);
+        assert!(serde_json::to_value(null).unwrap().get("result").is_none());
 
         let mut value = base;
         value["result"] = serde_json::json!({"answer": 42});
         let value: StorylineToolCall = serde_json::from_value(value).unwrap();
-        assert_eq!(
-            value.result,
-            FieldPresence::Value(serde_json::json!({"answer": 42}))
-        );
+        assert_eq!(value.result, Some(serde_json::json!({"answer": 42})));
         assert_eq!(
             serde_json::to_value(value).unwrap()["result"],
             serde_json::json!({"answer": 42})

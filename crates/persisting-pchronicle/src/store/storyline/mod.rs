@@ -71,15 +71,16 @@ use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, UpdateVer
 use serde::{Deserialize, Serialize};
 
 use super::storyline_model::{
-    reconstruct_storyline, split_storyline, StoryRunRow, StoryStepRow, StoryToolCallRow,
-    StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
+    reconstruct_storyline, split_storyline_with_unknown_limits, StoryRunRow, StoryStepRow,
+    StoryToolCallRow, StorylineTables, STORY_RUNS_TABLE, STORY_STEPS_TABLE, STORY_TOOL_CALLS_TABLE,
 };
+use crate::formats::unknown_fields::{compute_unknown_key_counts, validate_unknown_fields};
 use crate::StorylineDocument;
 
 use self::content::{
     collect_content_ids, commit_pending_content, content_columns, externalize_batches,
-    hydrate_batches, open_objects, prune_unreferenced_objects, PendingContent,
-    STORYLINE_OBJECTS_DATASET,
+    externalize_unknown_field_values, hydrate_batches, open_objects, prune_unreferenced_objects,
+    PendingContent, STORYLINE_OBJECTS_DATASET,
 };
 use super::AtifReader;
 use super::{root_write_lock, LanceMaintenanceOptions, LanceMaintenanceReport};
@@ -1124,7 +1125,8 @@ impl StorylineLanceStore {
             _ => session_id.to_string(),
         };
         let mut runs = HashMap::with_capacity(ids.len());
-        for run in decode_run_batches(&run_batches)? {
+        for mut run in decode_run_batches(&run_batches)? {
+            run.unknown_key_counts = compute_unknown_key_counts(&run.unknown_fields)?;
             let key = row_key(&run.document_id, &run.session_id);
             if runs.insert(key.clone(), run).is_some() {
                 anyhow::bail!("duplicate runs rows for {column} '{key}'");
@@ -1146,12 +1148,16 @@ impl StorylineLanceStore {
                 let Some(run) = runs.remove(id) else {
                     return Ok(None);
                 };
-                reconstruct_storyline(StorylineTables {
+                let story = reconstruct_storyline(StorylineTables {
                     run,
                     steps: steps.remove(id).unwrap_or_default(),
                     tool_calls: tool_calls.remove(id).unwrap_or_default(),
-                })
-                .map(Some)
+                })?;
+                validate_unknown_fields(
+                    &story.unknown_fields,
+                    self.content_options.unknown_field_limits(),
+                )?;
+                Ok(Some(story))
             })
             .collect()
     }
@@ -1548,10 +1554,14 @@ async fn open_table_version(path: &Path, version: u64) -> Result<Dataset> {
 }
 
 fn content_column_projection(kind: StorylineTableKind) -> Vec<&'static str> {
-    content_columns(kind)
+    let mut columns = content_columns(kind)
         .iter()
         .map(|(column, _)| *column)
-        .collect()
+        .collect::<Vec<_>>();
+    if kind == StorylineTableKind::Runs {
+        columns.push("unknown_fields_json");
+    }
+    columns
 }
 
 async fn next_storage_ordinal(paths: &StorylineTablePaths) -> Result<i64> {

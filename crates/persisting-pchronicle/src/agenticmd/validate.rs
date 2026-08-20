@@ -3,7 +3,11 @@
 //! Field presence and semantic combinations are deliberately not validated:
 //! AgenticMD is a debugging view, not a protocol boundary.
 
-use crate::{InputIssue, InputResult};
+use crate::formats::unknown_fields::{
+    compute_unknown_key_counts, normalize_agenticmd_unknown_pointer, validate_json_pointer,
+    UnknownFieldLimits,
+};
+use crate::{InputIssue, InputResult, StorylineDocument};
 
 use super::codec::{MarkdownBlock, MarkdownHeader};
 
@@ -57,4 +61,48 @@ pub fn validate_agenticmd_block(block: &MarkdownBlock) -> InputResult<()> {
     validate_type_name(&block.header.type_name)?;
     validate_speaker(block_speaker(&block.header))?;
     Ok(())
+}
+
+/// Native AgenticMD unknown fields use its logical `blocks` array for key counts,
+/// unlike foreign sources whose pointers retain their own format semantics.
+pub(crate) fn validate_agenticmd_storyline(story: &StorylineDocument) -> InputResult<()> {
+    let expected_counts = story.unknown_fields.validate_with(
+        UnknownFieldLimits::default(),
+        normalize_agenticmd_unknown_pointer,
+    )?;
+    if expected_counts != story.unknown_key_counts {
+        return Err(InputIssue::invalid(
+            "storyline unknown_key_counts do not match AgenticMD unknown_fields",
+        ));
+    }
+
+    // Reuse Storyline's canonical identity and turn validation without making
+    // its format-neutral count normalizer authoritative for AgenticMD.
+    let mut common = story.clone();
+    common.unknown_key_counts = compute_unknown_key_counts(&common.unknown_fields)?;
+    common.validate()
+}
+
+/// Only these leaf locations can be restored into an AgenticMD document.
+/// The pointer token itself may be empty or escaped; it names a frontmatter
+/// or header field and is deliberately not interpreted here.
+pub(crate) fn validate_agenticmd_unknown_pointer(pointer: &str) -> InputResult<()> {
+    validate_json_pointer(pointer)?;
+    let tokens = pointer.split('/').collect::<Vec<_>>();
+    let is_frontmatter_field = matches!(tokens.as_slice(), ["", "frontmatter", _]);
+    let is_header_field =
+        matches!(tokens.as_slice(), ["", "blocks", _, "header", _]) && is_array_index(tokens[2]);
+    if is_frontmatter_field || is_header_field {
+        Ok(())
+    } else {
+        Err(InputIssue::invalid(format!(
+            "AgenticMD unknown-field pointer '{pointer}' must target /frontmatter/<key> or /blocks/<n>/header/<key>"
+        )))
+    }
+}
+
+fn is_array_index(token: &str) -> bool {
+    !token.is_empty()
+        && !(token.len() > 1 && token.starts_with('0'))
+        && token.parse::<usize>().is_ok()
 }

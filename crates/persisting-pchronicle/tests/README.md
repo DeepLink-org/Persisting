@@ -19,6 +19,7 @@ crate 级门面行为（格式往返、detect、frontmatter 解析）集中在 `
 |---|---|
 | `atif_lance_corpus.rs` | 独立 ATIF corpus（`tests/fixtures/atif/`，8 条 10–20 step 确定性轨迹）的格式转换、Storyline 三表落盘与空间占用 |
 | `capture_fixture_corpus.rs` | 复用 `persisting-gateway/tests/fixtures` 的跨组件语料：AgenticMD golden 往返、request/response/provider snapshot/SSE 文本的无损往返（设置最小样本数，防止 fixture 缩减后静默通过） |
+| `conversion_semantics.rs` | ATIF、ACTF、OpenAI 的三条直接 Lance 往返与六条有向跨格式转换；对象字段的 `null`/missing 按语义等价比较，数组中的 `null` 保持显著，unknown field 的 JSON Pointer、值与出现次数精确校验 |
 | `direct_file_query.rs` | 直接对文件/目录的只读查询（不经过导入） |
 | `import_roundtrip_fixtures.rs` | `tests/fixtures/import_roundtrip/` 中 OpenAI corpus / ACTF 经三表 Lance 的无损恢复 |
 | `langfuse_backend_faults.rs` | 存储后端故障语义（追加失败、重复、未知错误分类） |
@@ -26,6 +27,7 @@ crate 级门面行为（格式往返、detect、frontmatter 解析）集中在 `
 | `query_engine.rs` | `ChronicleQueryEngine` 统一 SQL 面（Lance/ATIF/OpenAI/ACTF、`_file_`、只读门禁） |
 | `s3_storage.rs` | 真实 S3/MinIO 对象存储契约（默认忽略，见下） |
 | `search_integration.rs` | Search 索引与检索（Cargo.toml 显式声明的 `[[test]]`） |
+| `unknown_fields_roundtrip.rs` | unknown-fields envelope 在 ATIF、ACTF、OpenAI 跨格式链路中的 JSON Pointer、值与计数保真 |
 
 真实 S3/MinIO 契约测试在隔离的测试前缀下显式运行：
 

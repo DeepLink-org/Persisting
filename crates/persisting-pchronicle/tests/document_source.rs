@@ -141,11 +141,19 @@ async fn opens_all_six_formats_and_reports_true_capabilities() -> Result<()> {
         &fixture("tests/fixtures/import_roundtrip/cybergym_0729001_trimmed.json"),
     )
     .await?;
-    assert_storyline_tables(
+    let actf = open_document(
         DocumentFormat::Actf,
         &fixture("tests/fixtures/import_roundtrip/make-doom-for-mips_trimmed.actf.json"),
     )
     .await?;
+    assert_eq!(
+        actf.register_datafusion(&SessionContext::new())?,
+        QueryTables::Storyline
+    );
+    let actf_caps = actf.capabilities();
+    assert_eq!(actf_caps.filter_pushdown, FilterPushdown::Inexact);
+    assert!(actf_caps.streaming_decode);
+    assert!(!actf.project_storylines().await?.is_empty());
     Ok(())
 }
 
@@ -178,27 +186,34 @@ async fn materialization_budget_fails_closed_but_callback_visits_the_complete_st
 }
 
 #[tokio::test]
-async fn file_document_callback_enforces_the_provider_file_budget() -> Result<()> {
+async fn file_document_callbacks_enforce_the_provider_file_budget() -> Result<()> {
     let input = tempfile::NamedTempFile::with_suffix(".json")?;
     input.as_file().set_len(1024 * 1024 * 1024)?;
-    let source = open_document(DocumentFormat::OpenaiMsg, input.path()).await?;
-
-    let error = source.for_each_storyline(|_| Ok(())).await.unwrap_err();
-
-    assert!(error.to_string().contains("exceeding max_file_bytes"));
+    for format in [
+        DocumentFormat::Atif,
+        DocumentFormat::Actf,
+        DocumentFormat::OpenaiMsg,
+    ] {
+        let source = open_document(format, input.path()).await?;
+        let error = source.for_each_storyline(|_| Ok(())).await.unwrap_err();
+        assert!(
+            error.to_string().contains("exceeding max_file_bytes"),
+            "{format}: {error:#}"
+        );
+    }
     Ok(())
 }
 
 #[tokio::test]
-async fn atif_document_source_preserves_singleton_array_shape() -> Result<()> {
+async fn atif_document_source_canonicalizes_singleton_array() -> Result<()> {
     let input = tempfile::NamedTempFile::with_suffix(".json")?;
-    let expected = json!([{
+    let trajectory = json!({
         "schema_version": "ATIF-v1.7",
         "trajectory_id": "one",
         "agent": {"name": "agent", "version": "1"},
         "steps": []
-    }]);
-    std::fs::write(input.path(), expected.to_string())?;
+    });
+    std::fs::write(input.path(), json!([trajectory]).to_string())?;
 
     let stories = open_document(DocumentFormat::Atif, input.path())
         .await?
@@ -206,7 +221,13 @@ async fn atif_document_source_preserves_singleton_array_shape() -> Result<()> {
         .await?;
     assert_eq!(
         encode_json_storylines(DocumentFormat::Atif, &stories)?,
-        expected
+        json!({
+            "schema_version": "ATIF-v1.7",
+            "trajectory_id": "one",
+            "session_id": "one",
+            "agent": {"name": "agent", "version": "1"},
+            "steps": []
+        })
     );
     Ok(())
 }

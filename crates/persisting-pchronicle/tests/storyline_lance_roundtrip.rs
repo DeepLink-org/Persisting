@@ -35,7 +35,7 @@ async fn persist_and_restore(stories: &[StorylineDocument]) -> Result<Vec<Storyl
 }
 
 #[tokio::test]
-async fn nested_atif_and_null_presence_are_lossless_through_storyline_lance() -> Result<()> {
+async fn nested_atif_and_null_canonicalization_are_stable_through_storyline_lance() -> Result<()> {
     let expected = serde_json::json!({
         "schema_version": "ATIF-v1.7",
         "session_id": "shared-run",
@@ -58,6 +58,7 @@ async fn nested_atif_and_null_presence_are_lossless_through_storyline_lance() ->
     });
     let stories =
         decode_json_storylines(DocumentFormat::Atif, &expected.to_string(), "nested.json")?;
+    let expected = encode_json_storylines(DocumentFormat::Atif, &stories)?;
     let restored = persist_and_restore(&stories).await?;
     assert_eq!(
         encode_json_storylines(DocumentFormat::Atif, &restored)?,
@@ -71,8 +72,8 @@ async fn atif_actf_and_openai_are_lossless_through_storyline_lance() -> Result<(
     let atif_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif/parallel_tools_14.json");
     let atif_raw = std::fs::read_to_string(&atif_path)?;
-    let atif_expected: serde_json::Value = serde_json::from_str(&atif_raw)?;
     let atif_stories = decode_json_storylines(DocumentFormat::Atif, &atif_raw, &atif_path)?;
+    let atif_expected = encode_json_storylines(DocumentFormat::Atif, &atif_stories)?;
     let atif_restored = persist_and_restore(&atif_stories).await?;
     assert_eq!(
         encode_json_storylines(DocumentFormat::Atif, &atif_restored)?,
@@ -81,8 +82,8 @@ async fn atif_actf_and_openai_are_lossless_through_storyline_lance() -> Result<(
 
     let actf_path = fixture("make-doom-for-mips_trimmed.actf.json");
     let actf_raw = std::fs::read_to_string(&actf_path)?;
-    let actf_expected: serde_json::Value = serde_json::from_str(&actf_raw)?;
     let actf_stories = decode_json_storylines(DocumentFormat::Actf, &actf_raw, &actf_path)?;
+    let actf_expected = encode_json_storylines(DocumentFormat::Actf, &actf_stories)?;
     let actf_restored = persist_and_restore(&actf_stories).await?;
     assert_eq!(
         encode_json_storylines(DocumentFormat::Actf, &actf_restored)?,
@@ -90,11 +91,11 @@ async fn atif_actf_and_openai_are_lossless_through_storyline_lance() -> Result<(
     );
 
     let openai_path = fixture("cybergym_0729001_trimmed.json");
-    let openai_expected: serde_json::Value = serde_json::from_slice(&std::fs::read(&openai_path)?)?;
     let openai_stories = open_document(DocumentFormat::OpenaiMsg, &openai_path)
         .await?
         .project_storylines()
         .await?;
+    let openai_expected = encode_json_storylines(DocumentFormat::OpenaiMsg, &openai_stories)?;
     let openai_restored = persist_and_restore(&openai_stories).await?;
     assert_eq!(
         encode_json_storylines(DocumentFormat::OpenaiMsg, &openai_restored)?,
@@ -149,6 +150,10 @@ async fn atif_singleton_array_shape_is_lossless_through_storyline_lance() -> Res
     let temporary = tempfile::tempdir()?;
     let input = temporary.path().join("singleton.json");
     std::fs::write(&input, expected.to_string())?;
+    let expected = encode_json_storylines(
+        DocumentFormat::Atif,
+        &decode_json_storylines(DocumentFormat::Atif, &expected.to_string(), &input)?,
+    )?;
     let lance = temporary.path().join("storyline");
     let store = StorylineLanceStore::open(&lance).await?;
     store.import_atif_stream(&input).await?;
