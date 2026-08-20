@@ -452,10 +452,10 @@ where
 {
     let mut counts = UnknownKeyCounts::new();
     for (source, source_fields) in &fields.sources {
-        let source_counts = counts.entry(source.clone()).or_default();
         for pointer in source_fields.fields.keys() {
             validate_json_pointer(pointer)?;
             let normalized_pointer = normalize(source, pointer)?;
+            let source_counts = counts.entry(source.clone()).or_default();
             let count = source_counts.entry(normalized_pointer).or_default();
             *count = count.saturating_add(1);
         }
@@ -754,6 +754,21 @@ mod tests {
     use super::*;
     use crate::formats::StorylineDocument;
     use serde_json::json;
+
+    #[test]
+    fn empty_source_does_not_create_a_key_count_entry() {
+        let fields = StorylineUnknownFields {
+            sources: BTreeMap::from([(
+                "openai-msg".into(),
+                SourceUnknownFields {
+                    source_document_id: "source.json".into(),
+                    fields: BTreeMap::new(),
+                },
+            )]),
+        };
+
+        assert!(compute_unknown_key_counts(&fields).unwrap().is_empty());
+    }
 
     #[test]
     fn envelope_distributes_foreign_sources_by_carrier() {

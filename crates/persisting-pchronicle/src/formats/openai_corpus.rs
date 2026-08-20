@@ -19,8 +19,7 @@ use crate::formats::storyline::{
 use crate::formats::unknown_fields::{
     attach_carried_unknown_fields, normalize_openai_pointer, restore_json_pointer,
     take_unknown_fields_envelope, validate_unknown_fields_with,
-    write_foreign_unknown_fields_envelope, CarrierBinding, PointerWrite, SourceUnknownFields,
-    UnknownFieldLimits,
+    write_foreign_unknown_fields_envelope, CarrierBinding, PointerWrite, UnknownFieldLimits,
 };
 use crate::{InputIssue, InputResult, Result};
 
@@ -130,14 +129,6 @@ fn capture_openai_unknowns(
     root_unknown: &Map<String, Value>,
     records: &[(usize, Value)],
 ) -> InputResult<()> {
-    story
-        .unknown_fields
-        .sources
-        .entry("openai-msg".into())
-        .or_insert_with(|| SourceUnknownFields {
-            source_document_id: source_document_id.to_string(),
-            fields: Default::default(),
-        });
     insert_openai_map(story, source_document_id, "", root_unknown)?;
     for (ordinal, record) in records {
         let row = record.as_object().ok_or_else(|| {
@@ -338,7 +329,7 @@ pub(crate) fn has_openai_provenance(story: &StorylineDocument) -> bool {
             .is_some()
 }
 
-/// Explicitly synthesize an OpenAI message row array from Storyline semantics.
+/// Explicitly synthesize an OpenAI `session_steps` envelope from Storyline semantics.
 ///
 /// This is a cross-format projection, not a lossless recovery operation. Use
 /// [`recover_openai_msg_files`] when the Storylines originated from an OpenAI
@@ -1155,6 +1146,28 @@ mod tests {
             stories[0].unknown_key_counts["openai-msg"]["/session_steps/*/messages/*/0"],
             1
         );
+        assert_eq!(
+            crate::formats::unknown_fields::compute_unknown_key_counts(&stories[0].unknown_fields)
+                .unwrap(),
+            stories[0].unknown_key_counts
+        );
+        stories[0].validate().unwrap();
+    }
+
+    #[test]
+    fn openai_known_only_rows_do_not_create_empty_unknown_metadata() {
+        let input = json!([{
+            "session_id": "s",
+            "step_id": 1,
+            "messages": [{"role": "user", "content": "hi"}],
+            "response": {"role": "assistant", "content": "ok"}
+        }]);
+
+        let stories = parse_openai_msg_corpus_value(&input, "corpus.json").unwrap();
+
+        assert!(stories[0].unknown_fields.sources.is_empty());
+        assert!(stories[0].unknown_key_counts.is_empty());
+        stories[0].validate().unwrap();
     }
     #[cfg(feature = "lance-store")]
     use crate::store::StorylineLanceStore;

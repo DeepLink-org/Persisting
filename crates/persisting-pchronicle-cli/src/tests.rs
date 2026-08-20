@@ -1414,8 +1414,10 @@ async fn export_filters_complete_trajectories_and_streams_finite_json() -> Resul
     let mut stderr = Vec::new();
     run(cli, false, &mut stdout, &mut stderr).await?;
 
-    let rows: Value = serde_json::from_slice(&stdout)?;
-    let rows = rows.as_array().context("OpenAI export must be an array")?;
+    let document: Value = serde_json::from_slice(&stdout)?;
+    let rows = document["session_steps"]
+        .as_array()
+        .context("OpenAI export must contain a session_steps array")?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["session_id"], "training-002");
     assert!(String::from_utf8(stderr)?.contains("trajectories=1"));
