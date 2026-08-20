@@ -233,6 +233,12 @@ async fn atif_document_source_streams_ndjson_and_directories_in_path_order() -> 
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("line 2"), "{error:#}");
+    assert!(
+        error.chain().any(|source| source
+            .downcast_ref::<persisting_pchronicle::document::InputIssue>()
+            .is_some()),
+        "missing InputIssue source: {error:#}"
+    );
     Ok(())
 }
 

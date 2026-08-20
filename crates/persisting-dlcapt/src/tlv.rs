@@ -218,6 +218,13 @@ fn encode_block(
     kind: &str,
 ) -> Result<String> {
     let timestamp = Utc::now().to_rfc3339();
+    let storyline_id =
+        i64::try_from(seq).context("tlv sequence exceeds Storyline turn id range")?;
+    let storyline_source = if speaker == "assistant" {
+        "agent"
+    } else {
+        speaker
+    };
     let mut fields = BTreeMap::new();
     fields.insert("agent_id".to_string(), json!(record.agent_id));
     fields.insert("call_id".to_string(), json!(record.call_id));
@@ -232,6 +239,18 @@ fn encode_block(
     fields.insert("trace_id".to_string(), json!(record.call_id));
     fields.insert("turn".to_string(), json!(record.turn));
     fields.insert("v".to_string(), json!(BLOCK_FORMAT_VERSION));
+    fields.insert("message_encoding".to_string(), json!("text"));
+    fields.insert("step_id".to_string(), json!(storyline_id));
+    fields.insert(
+        "storyline".to_string(),
+        json!({
+            "id": storyline_id,
+            "kind": kind,
+            "ts": timestamp,
+            "src": storyline_source,
+            "model": record.model,
+        }),
+    );
 
     if speaker == "assistant" {
         fields.insert("status".to_string(), json!(record.status_code));
@@ -290,6 +309,11 @@ fn format_document_preamble(session_id: &str, agent_id: &str, turns: u64) -> Res
             "session: {session_id}\n",
             "agent: {agent_id}\n",
             "turns: {turns}\n",
+            "storyline:\n",
+            "  session: {session_id}\n",
+            "  agent:\n",
+            "    id: {agent_id}\n",
+            "    name: {agent_id}\n",
             "client:\n",
             "  peer: ''\n",
             "  peer_port: 0\n",

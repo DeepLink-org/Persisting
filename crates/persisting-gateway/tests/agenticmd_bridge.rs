@@ -65,12 +65,12 @@ fn capture_turns_roundtrip_through_public_storyline_api() {
 }
 
 #[test]
-fn legacy_fixture_still_imports_as_storyline() {
-    let story = decode_agenticmd(fixture()).expect("legacy AgenticMD import parse");
-    assert_eq!(story.turns.len(), 2);
-    assert_eq!(story.turns[0].source, "user");
-    assert_eq!(story.turns[0].message, json!("你好"));
-    assert_eq!(story.turns[1].source, "agent");
+fn legacy_fixture_without_authoritative_storyline_is_rejected() {
+    let error = decode_agenticmd(fixture()).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "missing authoritative Storyline metadata"
+    );
 }
 
 #[test]

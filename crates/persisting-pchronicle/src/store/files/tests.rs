@@ -118,6 +118,120 @@ async fn projected_ndjson_enforces_private_record_bound() {
 }
 
 #[tokio::test]
+async fn projected_array_enforces_private_record_bound_per_element() {
+    let trajectory = std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&trajectory).unwrap();
+    let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
+    std::fs::write(
+        input.path(),
+        format!("[{}]", serde_json::to_string(&value).unwrap()),
+    )
+    .unwrap();
+    let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Atif).unwrap();
+    let source = FileTrajectoryDataSource::from_manifest_with_options(
+        manifest,
+        FileTrajectoryDataSourceOptions {
+            max_record_bytes: 512,
+            ..FileTrajectoryDataSourceOptions::default()
+        },
+    )
+    .unwrap();
+    let context = SessionContext::new();
+    source.register(&context).unwrap();
+    let error = context
+        .sql("SELECT COUNT(*) FROM steps")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("max_record_bytes 512"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn full_atif_array_enforces_private_record_bound_per_element() {
+    let trajectory = std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&trajectory).unwrap();
+    let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
+    std::fs::write(
+        input.path(),
+        format!("[{}]", serde_json::to_string(&value).unwrap()),
+    )
+    .unwrap();
+    let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Atif).unwrap();
+    let source = FileTrajectoryDataSource::from_manifest_with_options(
+        manifest,
+        FileTrajectoryDataSourceOptions {
+            max_record_bytes: 512,
+            ..FileTrajectoryDataSourceOptions::default()
+        },
+    )
+    .unwrap();
+    let context = SessionContext::new();
+    source.register(&context).unwrap();
+    let error = context
+        .sql("SELECT * FROM steps")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("max_record_bytes 512"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn full_atif_array_reports_bounded_input_buffer_peak() {
+    let trajectory = std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap();
+    let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
+    std::fs::write(input.path(), format!("[{trajectory}]")).unwrap();
+    let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Atif).unwrap();
+    let source = FileTrajectoryDataSource::from_manifest(manifest).unwrap();
+    let context = SessionContext::new();
+    source.register(&context).unwrap();
+    context
+        .sql("SELECT * FROM steps")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let peak = source.metrics().snapshot().streaming_buffer_peak_bytes;
+    assert!(peak >= 64 * 1024, "peak={peak}");
+    assert!(peak < 2 * 64 * 1024, "peak={peak}");
+}
+
+#[tokio::test]
+async fn projected_actf_pushdown_matches_session_id_and_step_id() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/import_roundtrip/protein-assembly_trimmed.actf.json");
+    let manifest = LocalQueryManifest::for_format(&path, DocumentFormat::Actf).unwrap();
+    let source = FileTrajectoryDataSource::from_manifest(manifest).unwrap();
+    let context = SessionContext::new();
+    source.register(&context).unwrap();
+
+    let batches = context
+        .sql(
+            "SELECT session_id, step_id, source FROM steps WHERE session_id = 'protein-assembly-trimmed' AND step_id = 2",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let metrics = source.metrics().snapshot();
+    assert!(metrics.rows_pruned > 0, "{metrics:?}");
+}
+
+#[tokio::test]
 async fn projected_atif_pushdown_matches_session_id_not_document_id() {
     let input = tempfile::NamedTempFile::with_suffix(".json").unwrap();
     std::fs::write(

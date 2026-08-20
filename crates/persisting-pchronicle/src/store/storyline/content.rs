@@ -25,6 +25,10 @@ use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::IndexType;
 
 use super::datafusion::StorylineTableKind;
+use crate::formats::unknown_fields::{
+    StorylineUnknownFields, UnknownFieldLimits, DEFAULT_MAX_UNKNOWN_BYTES,
+    DEFAULT_MAX_UNKNOWN_FIELDS,
+};
 
 pub const STORYLINE_OBJECTS_DATASET: &str = "objects.lance";
 pub const DEFAULT_CONTENT_OFFLOAD_THRESHOLD: usize = 64 * 1024;
@@ -54,6 +58,10 @@ pub struct StorylineContentOptions {
     pub max_chunk_bytes: Option<usize>,
     /// Maximum number of documents accepted by one streamed import.
     pub max_import_documents: Option<usize>,
+    /// Maximum number of logical unknown fields retained by one document.
+    pub max_unknown_fields: usize,
+    /// Maximum logical JSON bytes retained in unknown fields by one document.
+    pub max_unknown_bytes: usize,
 }
 
 impl Default for StorylineContentOptions {
@@ -67,6 +75,8 @@ impl Default for StorylineContentOptions {
             max_chunk_rows: None,
             max_chunk_bytes: None,
             max_import_documents: None,
+            max_unknown_fields: DEFAULT_MAX_UNKNOWN_FIELDS,
+            max_unknown_bytes: DEFAULT_MAX_UNKNOWN_BYTES,
         }
     }
 }
@@ -92,7 +102,15 @@ impl StorylineContentOptions {
                 anyhow::ensure!(value > 0, "{name} must be positive");
             }
         }
+        self.unknown_field_limits().validate()?;
         Ok(self)
+    }
+
+    pub(crate) fn unknown_field_limits(self) -> UnknownFieldLimits {
+        UnknownFieldLimits {
+            max_fields: self.max_unknown_fields,
+            max_bytes: self.max_unknown_bytes,
+        }
     }
 }
 
@@ -254,8 +272,32 @@ impl PendingContent {
 
 #[derive(Debug, Clone)]
 struct ResolvedObject {
+    codec: ContentCodec,
     raw_length: u64,
     bytes: Vec<u8>,
+}
+
+pub(crate) fn externalize_unknown_field_values(
+    fields: &mut StorylineUnknownFields,
+    options: StorylineContentOptions,
+    pending: &mut PendingContent,
+) -> Result<()> {
+    for source in fields.sources.values_mut() {
+        for value in source.fields.values_mut() {
+            let encoded = serde_json::to_vec(value).context("serialize Storyline unknown value")?;
+            let collides_with_descriptor = value
+                .as_str()
+                .is_some_and(|value| value.starts_with(CONTENT_REF_MAGIC));
+            if encoded.len() < options.offload_threshold && !collides_with_descriptor {
+                continue;
+            }
+            let object = build_object(&encoded, LogicalType::Json, options)?;
+            let descriptor = object.reference.encode();
+            pending.insert(object)?;
+            *value = serde_json::Value::String(descriptor);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn content_columns(kind: StorylineTableKind) -> &'static [(&'static str, bool)] {
@@ -627,6 +669,29 @@ pub(crate) fn collect_content_ids(
                 }
             }
         }
+        if kind == StorylineTableKind::Runs {
+            let Some(column) = batch.column_by_name("unknown_fields_json") else {
+                continue;
+            };
+            let values = column
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .context("Storyline unknown_fields_json is not Utf8")?;
+            for encoded_fields in values.iter().flatten() {
+                let fields: StorylineUnknownFields = serde_json::from_str(encoded_fields)
+                    .context("decode Storyline unknown_fields_json for content collection")?;
+                for source in fields.sources.values() {
+                    for value in source.fields.values() {
+                        let Some(encoded) = value.as_str() else {
+                            continue;
+                        };
+                        if let Some(reference) = ContentRef::parse(encoded)? {
+                            ids.insert(reference.content_id);
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(ids)
 }
@@ -673,7 +738,132 @@ pub(crate) async fn hydrate_batches(
         .iter()
         .map(|(name, _)| *name)
         .collect::<HashSet<_>>();
-    hydrate_selected_batches(dataset, batches, &selected).await
+    let batches = hydrate_selected_batches(dataset, batches, &selected).await?;
+    if kind == StorylineTableKind::Runs {
+        hydrate_unknown_field_values(dataset, batches).await
+    } else {
+        Ok(batches)
+    }
+}
+
+async fn hydrate_unknown_field_values(
+    dataset: &Arc<Dataset>,
+    batches: Vec<RecordBatch>,
+) -> Result<Vec<RecordBatch>> {
+    const COLUMN: &str = "unknown_fields_json";
+    let mut references = HashMap::<String, ContentRef>::new();
+    for batch in &batches {
+        let Some(column) = batch.column_by_name(COLUMN) else {
+            continue;
+        };
+        let values = column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .context("Storyline unknown_fields_json is not Utf8")?;
+        for encoded_fields in values.iter().flatten() {
+            let fields: StorylineUnknownFields = serde_json::from_str(encoded_fields)
+                .context("decode Storyline unknown_fields_json for hydration")?;
+            for source in fields.sources.values() {
+                for value in source.fields.values() {
+                    let Some(encoded) = value.as_str() else {
+                        continue;
+                    };
+                    let Some(reference) = ContentRef::parse(encoded)
+                        .context("invalid internal unknown-field content descriptor")?
+                    else {
+                        continue;
+                    };
+                    anyhow::ensure!(
+                        reference.logical_type == LogicalType::Json,
+                        "unknown-field content descriptor is not JSON"
+                    );
+                    if let Some(existing) = references.get(&reference.content_id) {
+                        anyhow::ensure!(
+                            existing == &reference,
+                            "conflicting Storyline content descriptors for '{}'",
+                            reference.content_id
+                        );
+                    } else {
+                        references.insert(reference.content_id.clone(), reference);
+                    }
+                }
+            }
+        }
+    }
+    if references.is_empty() {
+        return Ok(batches);
+    }
+    let resolved = resolve_objects(dataset, &references).await?;
+    batches
+        .into_iter()
+        .map(|batch| hydrate_unknown_field_batch(batch, &resolved))
+        .collect()
+}
+
+fn hydrate_unknown_field_batch(
+    batch: RecordBatch,
+    resolved: &HashMap<String, ResolvedObject>,
+) -> Result<RecordBatch> {
+    const COLUMN: &str = "unknown_fields_json";
+    let Ok(index) = batch.schema().index_of(COLUMN) else {
+        return Ok(batch);
+    };
+    let values = batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .context("Storyline unknown_fields_json is not Utf8")?;
+    let hydrated = values
+        .iter()
+        .map(|encoded_fields| {
+            let Some(encoded_fields) = encoded_fields else {
+                return Ok(None);
+            };
+            let mut fields: StorylineUnknownFields = serde_json::from_str(encoded_fields)
+                .context("decode Storyline unknown_fields_json for hydration")?;
+            for source in fields.sources.values_mut() {
+                for value in source.fields.values_mut() {
+                    let Some(encoded) = value.as_str() else {
+                        continue;
+                    };
+                    let Some(reference) = ContentRef::parse(encoded)
+                        .context("invalid internal unknown-field content descriptor")?
+                    else {
+                        continue;
+                    };
+                    let object = resolved.get(&reference.content_id).with_context(|| {
+                        format!(
+                            "Storyline content object '{}' is missing from the committed snapshot",
+                            reference.content_id
+                        )
+                    })?;
+                    anyhow::ensure!(
+                        reference.logical_type == LogicalType::Json,
+                        "unknown-field content descriptor is not JSON"
+                    );
+                    anyhow::ensure!(
+                        object.codec == reference.codec
+                            && object.raw_length == reference.raw_length,
+                        "Storyline content descriptor metadata mismatch for '{}'",
+                        reference.content_id
+                    );
+                    *value = serde_json::from_slice(&object.bytes).with_context(|| {
+                        format!(
+                            "Storyline unknown-field object '{}' is invalid JSON",
+                            reference.content_id
+                        )
+                    })?;
+                }
+            }
+            serde_json::to_string(&fields)
+                .map(Some)
+                .context("encode hydrated Storyline unknown_fields_json")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut columns = batch.columns().to_vec();
+    columns[index] = Arc::new(StringArray::from(hydrated));
+    RecordBatch::try_new(batch.schema(), columns)
+        .context("hydrate Storyline unknown-field content batch")
 }
 
 pub(crate) async fn hydrate_selected_batches(
@@ -779,7 +969,7 @@ fn hydrate_batch(
                 )
             })?;
             anyhow::ensure!(
-                object.raw_length == reference.raw_length,
+                object.codec == reference.codec && object.raw_length == reference.raw_length,
                 "Storyline content descriptor metadata mismatch for '{}'",
                 reference.content_id
             );
@@ -845,7 +1035,14 @@ async fn resolve_objects(
                 );
                 anyhow::ensure!(
                     resolved
-                        .insert(content_id.clone(), ResolvedObject { raw_length, bytes },)
+                        .insert(
+                            content_id.clone(),
+                            ResolvedObject {
+                                codec,
+                                raw_length,
+                                bytes,
+                            },
+                        )
                         .is_none(),
                     "duplicate Storyline content object '{content_id}'"
                 );

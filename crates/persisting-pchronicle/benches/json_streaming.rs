@@ -1,5 +1,12 @@
 //! Allocation, throughput, tail-latency, and process-RSS benchmark for a cold
-//! projected ATIF JSON datasource + DataFusion query iteration.
+//! projected JSON datasource + DataFusion query iteration.
+//!
+//! Environment variables:
+//! - `PCHRONICLE_BENCH_SCALE` (default: 128)
+//! - `PCHRONICLE_BENCH_ITERS` (default: 20)
+//! - `PCHRONICLE_BENCH_JSON_SHAPE`: `ndjson` | `array` (default: `ndjson`)
+//! - `PCHRONICLE_BENCH_FORMAT`: `atif` | `actf` (default: `atif`)
+//! - `PCHRONICLE_BENCH_PATH`: `projected` | `full` | `both` (default: `projected`)
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs::File;
@@ -55,13 +62,46 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchFormat {
+    Atif,
+    Actf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchPath {
+    Projected,
+    Full,
+}
+
 #[derive(Debug)]
 struct Sample {
     elapsed: Duration,
     allocations: u64,
     allocated_bytes: u64,
     rows_scanned: u64,
+    files_parsed: u64,
     input_buffer_peak_bytes: u64,
+    projected_files: u64,
+}
+
+#[derive(Debug)]
+struct BenchReport {
+    format: BenchFormat,
+    path: BenchPath,
+    json_shape: String,
+    documents: usize,
+    steps: u64,
+    file_bytes: u64,
+    iterations: usize,
+    median: Duration,
+    p95: Duration,
+    median_allocations: u64,
+    p95_allocations: u64,
+    median_allocated_bytes: u64,
+    p95_allocated_bytes: u64,
+    input_buffer_peak_bytes: u64,
+    rss_mib: f64,
 }
 
 fn main() -> Result<()> {
@@ -69,6 +109,12 @@ fn main() -> Result<()> {
     let iterations = env_usize("PCHRONICLE_BENCH_ITERS", 20);
     let json_shape =
         std::env::var("PCHRONICLE_BENCH_JSON_SHAPE").unwrap_or_else(|_| "ndjson".to_string());
+    let format = parse_format(
+        &std::env::var("PCHRONICLE_BENCH_FORMAT").unwrap_or_else(|_| "atif".to_string()),
+    )?;
+    let path_mode = parse_path_mode(
+        &std::env::var("PCHRONICLE_BENCH_PATH").unwrap_or_else(|_| "projected".to_string()),
+    )?;
     anyhow::ensure!(scale > 0, "PCHRONICLE_BENCH_SCALE must be positive");
     anyhow::ensure!(iterations > 0, "PCHRONICLE_BENCH_ITERS must be positive");
     anyhow::ensure!(
@@ -82,86 +128,264 @@ fn main() -> Result<()> {
     } else {
         "streaming.ndjson"
     });
-    let (documents, steps) = write_corpus(&input, scale, &json_shape)?;
+    let (documents, steps) = write_corpus(&input, scale, &json_shape, format)?;
+    let file_bytes = std::fs::metadata(&input)?.len();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(run_query(&input))?;
 
-    let mut samples = Vec::with_capacity(iterations);
-    for _ in 0..iterations {
+    let paths = match path_mode {
+        BenchPathMode::Projected => vec![BenchPath::Projected],
+        BenchPathMode::Full => vec![BenchPath::Full],
+        BenchPathMode::Both => vec![BenchPath::Projected, BenchPath::Full],
+    };
+    let dataset = BenchDataset {
+        json_shape: &json_shape,
+        input: &input,
+        documents,
+        steps,
+        file_bytes,
+        iterations,
+    };
+
+    let mut reports = Vec::with_capacity(paths.len());
+    for path in paths {
+        runtime.block_on(run_query(format, path, &input))?;
+        let report = benchmark_path(&runtime, format, path, &dataset)?;
+        print_report(&report);
+        reports.push(report);
+    }
+
+    if reports.len() == 2 {
+        print_comparison(&reports[0], &reports[1]);
+    }
+    Ok(())
+}
+
+struct BenchDataset<'a> {
+    json_shape: &'a str,
+    input: &'a std::path::Path,
+    documents: usize,
+    steps: u64,
+    file_bytes: u64,
+    iterations: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchPathMode {
+    Projected,
+    Full,
+    Both,
+}
+
+fn parse_format(value: &str) -> Result<BenchFormat> {
+    match value {
+        "atif" => Ok(BenchFormat::Atif),
+        "actf" => Ok(BenchFormat::Actf),
+        other => anyhow::bail!("PCHRONICLE_BENCH_FORMAT must be 'atif' or 'actf', got '{other}'"),
+    }
+}
+
+fn parse_path_mode(value: &str) -> Result<BenchPathMode> {
+    match value {
+        "projected" => Ok(BenchPathMode::Projected),
+        "full" => Ok(BenchPathMode::Full),
+        "both" => Ok(BenchPathMode::Both),
+        other => anyhow::bail!(
+            "PCHRONICLE_BENCH_PATH must be 'projected', 'full', or 'both', got '{other}'"
+        ),
+    }
+}
+
+fn benchmark_path(
+    runtime: &tokio::runtime::Runtime,
+    format: BenchFormat,
+    path: BenchPath,
+    dataset: &BenchDataset<'_>,
+) -> Result<BenchReport> {
+    let mut samples = Vec::with_capacity(dataset.iterations);
+    for _ in 0..dataset.iterations {
         reset_allocations();
         let started = Instant::now();
-        let query = runtime.block_on(run_query(&input))?;
+        let query = runtime.block_on(run_query(format, path, dataset.input))?;
         let elapsed = started.elapsed();
         let (allocations, allocated_bytes) = allocation_snapshot();
         samples.push(Sample {
             elapsed,
             allocations,
             allocated_bytes,
-            rows_scanned: query.0,
-            input_buffer_peak_bytes: query.1,
+            rows_scanned: query.rows_scanned,
+            files_parsed: query.files_parsed,
+            input_buffer_peak_bytes: query.streaming_buffer_peak_bytes,
+            projected_files: query.projected_files,
         });
     }
 
-    anyhow::ensure!(samples.iter().all(|sample| sample.rows_scanned == steps));
+    match path {
+        BenchPath::Projected => {
+            anyhow::ensure!(
+                samples.iter().all(|sample| sample.projected_files > 0),
+                "projected path did not record projected_files"
+            );
+            anyhow::ensure!(
+                samples
+                    .iter()
+                    .all(|sample| sample.rows_scanned == dataset.steps),
+                "projected path rows_scanned mismatch"
+            );
+        }
+        BenchPath::Full => {
+            anyhow::ensure!(
+                samples.iter().all(|sample| sample.projected_files == 0),
+                "full path unexpectedly used projected streaming"
+            );
+            anyhow::ensure!(
+                samples.iter().all(|sample| sample.files_parsed > 0),
+                "full path did not parse any files"
+            );
+        }
+    }
+
     let median = percentile_duration(&samples, 0.50);
     let p95 = percentile_duration(&samples, 0.95);
-    let median_allocations = percentile_u64(&samples, 0.50, |sample| sample.allocations);
-    let p95_allocations = percentile_u64(&samples, 0.95, |sample| sample.allocations);
-    let median_allocated_bytes = percentile_u64(&samples, 0.50, |sample| sample.allocated_bytes);
-    let p95_allocated_bytes = percentile_u64(&samples, 0.95, |sample| sample.allocated_bytes);
-    let input_buffer_peak_bytes = samples
-        .iter()
-        .map(|sample| sample.input_buffer_peak_bytes)
-        .max()
-        .unwrap_or_default();
-    let rows_per_second = steps as f64 / median.as_secs_f64();
-    let rss_mib = process_peak_rss_bytes()? as f64 / (1024.0 * 1024.0);
-
-    println!(
-        "dataset: shape={json_shape}, {documents} trajectories, {steps} steps, {} bytes",
-        std::fs::metadata(&input)?.len()
-    );
-    println!(
-        "projected JSON: median={:.3} ms p95={:.3} ms rows/s={rows_per_second:.0}",
-        milliseconds(median),
-        milliseconds(p95)
-    );
-    println!(
-        "allocation traffic: median={median_allocations} calls/{median_allocated_bytes} bytes, \
-         p95={p95_allocations} calls/{p95_allocated_bytes} bytes"
-    );
-    println!(
-        "memory: process peak RSS={rss_mib:.3} MiB, input buffer peak={input_buffer_peak_bytes} bytes"
-    );
-    println!(
-        "RESULT benchmark=json_streaming shape={json_shape} documents={documents} rows={steps} iterations={iterations} \
-         median_ms={:.3} p95_ms={:.3} rows_s={rows_per_second:.0} \
-         median_allocations={median_allocations} p95_allocations={p95_allocations} \
-         median_allocated_bytes={median_allocated_bytes} p95_allocated_bytes={p95_allocated_bytes} \
-         process_peak_rss_mib={rss_mib:.3} input_buffer_peak_bytes={input_buffer_peak_bytes}",
-        milliseconds(median),
-        milliseconds(p95),
-    );
-    Ok(())
+    Ok(BenchReport {
+        format,
+        path,
+        json_shape: dataset.json_shape.to_string(),
+        documents: dataset.documents,
+        steps: dataset.steps,
+        file_bytes: dataset.file_bytes,
+        iterations: dataset.iterations,
+        median,
+        p95,
+        median_allocations: percentile_u64(&samples, 0.50, |sample| sample.allocations),
+        p95_allocations: percentile_u64(&samples, 0.95, |sample| sample.allocations),
+        median_allocated_bytes: percentile_u64(&samples, 0.50, |sample| sample.allocated_bytes),
+        p95_allocated_bytes: percentile_u64(&samples, 0.95, |sample| sample.allocated_bytes),
+        input_buffer_peak_bytes: samples
+            .iter()
+            .map(|sample| sample.input_buffer_peak_bytes)
+            .max()
+            .unwrap_or_default(),
+        rss_mib: process_peak_rss_bytes()? as f64 / (1024.0 * 1024.0),
+    })
 }
 
-async fn run_query(input: &std::path::Path) -> Result<(u64, u64)> {
+fn print_report(report: &BenchReport) {
+    let rows_per_second = report.steps as f64 / report.median.as_secs_f64();
+    let format_name = match report.format {
+        BenchFormat::Atif => "atif",
+        BenchFormat::Actf => "actf",
+    };
+    let path_name = match report.path {
+        BenchPath::Projected => "projected",
+        BenchPath::Full => "full",
+    };
+    println!(
+        "dataset: format={format_name}, path={path_name}, shape={}, {} trajectories, {} steps, {} bytes",
+        report.json_shape, report.documents, report.steps, report.file_bytes
+    );
+    println!(
+        "{path_name} JSON: median={:.3} ms p95={:.3} ms rows/s={rows_per_second:.0}",
+        milliseconds(report.median),
+        milliseconds(report.p95)
+    );
+    println!(
+        "allocation traffic: median={} calls/{} bytes, p95={} calls/{} bytes",
+        report.median_allocations,
+        report.median_allocated_bytes,
+        report.p95_allocations,
+        report.p95_allocated_bytes
+    );
+    println!(
+        "memory: process peak RSS={:.3} MiB, input buffer peak={} bytes",
+        report.rss_mib, report.input_buffer_peak_bytes
+    );
+    println!(
+        "RESULT benchmark=json_streaming format={format_name} path={path_name} shape={} documents={} rows={} iterations={} \
+         median_ms={:.3} p95_ms={:.3} rows_s={rows_per_second:.0} \
+         median_allocations={} p95_allocations={} \
+         median_allocated_bytes={} p95_allocated_bytes={} \
+         process_peak_rss_mib={:.3} input_buffer_peak_bytes={}",
+        report.json_shape,
+        report.documents,
+        report.steps,
+        report.iterations,
+        milliseconds(report.median),
+        milliseconds(report.p95),
+        report.median_allocations,
+        report.p95_allocations,
+        report.median_allocated_bytes,
+        report.p95_allocated_bytes,
+        report.rss_mib,
+        report.input_buffer_peak_bytes
+    );
+}
+
+fn print_comparison(projected: &BenchReport, full: &BenchReport) {
+    let speedup = full.median.as_secs_f64() / projected.median.as_secs_f64();
+    let alloc_ratio = full.median_allocated_bytes as f64 / projected.median_allocated_bytes as f64;
+    println!(
+        "comparison: projected median {:.3} ms vs full {:.3} ms ({speedup:.2}x faster), \
+         allocated bytes ratio {alloc_ratio:.2}x (full/projected)",
+        milliseconds(projected.median),
+        milliseconds(full.median),
+    );
+}
+
+struct QueryMetrics {
+    rows_scanned: u64,
+    files_parsed: u64,
+    streaming_buffer_peak_bytes: u64,
+    projected_files: u64,
+}
+
+async fn run_query(
+    format: BenchFormat,
+    path: BenchPath,
+    input: &std::path::Path,
+) -> Result<QueryMetrics> {
+    let document_format = match format {
+        BenchFormat::Atif => DocumentFormat::Atif,
+        BenchFormat::Actf => DocumentFormat::Actf,
+    };
     let engine = ChronicleQueryEngine::open(
-        DocumentFormat::Atif,
+        document_format,
         input,
         ChronicleQueryExecutionOptions::default(),
     )
     .await?;
-    engine
-        .query("SELECT source, COUNT(*) FROM steps GROUP BY source")
-        .await?;
-    let metrics = engine.local_file_metrics().expect("ATIF file metrics");
-    Ok((metrics.rows_scanned, metrics.streaming_buffer_peak_bytes))
+    let sql = match path {
+        BenchPath::Projected => "SELECT source, COUNT(*) FROM steps GROUP BY source",
+        BenchPath::Full => "SELECT * FROM steps",
+    };
+    engine.query(sql).await?;
+    let metrics = engine.local_file_metrics().expect("local file metrics");
+    Ok(QueryMetrics {
+        rows_scanned: metrics.rows_scanned,
+        files_parsed: metrics.files_parsed,
+        streaming_buffer_peak_bytes: metrics.streaming_buffer_peak_bytes,
+        projected_files: metrics.projected_files,
+    })
 }
 
-fn write_corpus(path: &std::path::Path, scale: usize, json_shape: &str) -> Result<(usize, u64)> {
+fn write_corpus(
+    path: &std::path::Path,
+    scale: usize,
+    json_shape: &str,
+    format: BenchFormat,
+) -> Result<(usize, u64)> {
+    match format {
+        BenchFormat::Atif => write_atif_corpus(path, scale, json_shape),
+        BenchFormat::Actf => write_actf_corpus(path, scale, json_shape),
+    }
+}
+
+fn write_atif_corpus(
+    path: &std::path::Path,
+    scale: usize,
+    json_shape: &str,
+) -> Result<(usize, u64)> {
     let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/atif");
     let fixture_names = [
         "dialogue_10.json",
@@ -213,6 +437,64 @@ fn write_corpus(path: &std::path::Path, scale: usize, json_shape: &str) -> Resul
     output.flush()?;
     Ok((fixtures.len() * scale, steps))
 }
+
+fn write_actf_corpus(
+    path: &std::path::Path,
+    scale: usize,
+    json_shape: &str,
+) -> Result<(usize, u64)> {
+    let fixture_root =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/import_roundtrip");
+    let fixture_names = [
+        "protein-assembly_trimmed.actf.json",
+        "make-doom-for-mips_trimmed.actf.json",
+    ];
+    let fixtures = fixture_names
+        .iter()
+        .map(|name| std::fs::read_to_string(fixture_root.join(name)))
+        .map(|result| result.map_err(anyhow::Error::from))
+        .map(|result| {
+            result.and_then(|text| {
+                serde_json::from_str::<serde_json::Value>(&text).map_err(Into::into)
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut output = BufWriter::new(File::create(path)?);
+    let mut steps = 0_u64;
+    let array = json_shape == "array";
+    let mut first = true;
+    if array {
+        output.write_all(b"[\n")?;
+    }
+    for copy in 0..scale {
+        for (index, fixture) in fixtures.iter().enumerate() {
+            let mut document = fixture.clone();
+            let task_id = format!("stream-{copy:06}-{index:02}");
+            document["task_id"] = serde_json::Value::String(task_id);
+            steps += document["attempts"]
+                .as_object()
+                .and_then(|attempts| attempts.values().next())
+                .and_then(|attempt| attempt.get("trajectory"))
+                .and_then(|trajectory| trajectory.get("steps"))
+                .and_then(|steps| steps.as_array())
+                .map_or(0, Vec::len) as u64;
+            if array && !first {
+                output.write_all(b",\n")?;
+            }
+            serde_json::to_writer(&mut output, &document)?;
+            if !array {
+                output.write_all(b"\n")?;
+            }
+            first = false;
+        }
+    }
+    if array {
+        output.write_all(b"\n]\n")?;
+    }
+    output.flush()?;
+    Ok((fixtures.len() * scale, steps))
+}
+
 fn reset_allocations() {
     ALLOCATION_COUNT.store(0, Ordering::SeqCst);
     ALLOCATED_BYTES.store(0, Ordering::SeqCst);

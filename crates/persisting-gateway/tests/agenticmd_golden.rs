@@ -53,12 +53,12 @@ fn generated_agenticmd_preserves_golden_storyline_semantics() {
 }
 
 #[test]
-fn checked_in_legacy_golden_remains_readable() {
+fn checked_in_legacy_golden_without_authoritative_storyline_is_rejected() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/agenticmd/demo-run-001.md");
-    let story = decode_agenticmd(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
-    assert_eq!(story.session_id, "demo-run-001");
-    assert_eq!(story.turns.len(), 2);
-    assert_eq!(story.turns[0].message, json!("你好"));
-    assert_eq!(story.turns[1].message, json!("你好！有什么可以帮你的？"));
+    let error = decode_agenticmd(&std::fs::read_to_string(&fixture).unwrap()).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "missing authoritative Storyline metadata"
+    );
 }

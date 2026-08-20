@@ -39,7 +39,8 @@ fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
-        presence: Default::default(),
+        unknown_fields: Default::default(),
+        unknown_key_counts: Default::default(),
         turns: vec![StorylineTurn {
             id: 1,
             kind: None,

@@ -61,7 +61,8 @@ ActfObservation    = { type: string, id?: string, tool_use_id?: string,
 ```
 
 token 数、`llm_infer_ms` 和 `env_action_ms` 可以是数值或 `null`，`stop_reason` 也可以
-显式为 `null`；实现不得把显式 `null` 静默改成字段缺失。ACTF v1.0 已观察到两种工具事件：
+显式为 `null`；解析器必须接受两种表示，进入 Storyline 后 missing/null 按同一语义默认值
+规范化。ACTF v1.0 已观察到两种工具事件：
 `tool_use` 使用 `name/input` 与 `tool_use_id/content`，`command_execution` 使用
 `command/aggregated_output/exit_code/status`，并通过共同的 `id` 关联。事件专属字段作为
 opaque JSON 保留。
@@ -93,13 +94,15 @@ ACTF tool     1 ──► 1 Storyline tool_call
   `{task_id}#attempt-{attempt_id}`。
 - assistant `content`、`reasoning_content`、tool call 和 observation 投影到对应的
   Storyline 字段，token/latency 投影到 metrics。
-- ACTF 根、attempt、trajectory 元数据和完整原始 step 写入三表现有的 `extra_json`
-  扩展列，并带 `_pchronicle_actf` provenance version。
-- 恢复时以 provenance 重组 attempt map；多个 attempt 必须具有相同根元数据。
+- Storyline 未建模的 ACTF 根、attempt、trajectory 和 step 键以精确 RFC 6901 JSON
+  Pointer/value 写入 run 级 `unknown_fields`；`unknown_key_counts` 记录归一化路径的出现次数。
+- 恢复时根据 `run_id`、`attempt_id` 和 ACTF unknown fields 重组 attempt map；多个 attempt
+  必须具有相同根元数据。跨格式转换通过 version-1 `_storyline` envelope 携带 unknown fields。
 
 ## 保真边界
 
-ACTF → Storyline → 三表 Lance → Storyline → ACTF 保证 JSON 数据模型级无损：键值、显式
-`null`、未知字段、嵌套值、数组顺序和 attempt 分组均保留。它不保证源文件空白、缩进或
-对象键顺序逐字节一致。没有 ACTF provenance 的普通 Storyline 可以导出为结构合法的
-单 attempt ACTF，但这是有定义的合成转换，不宣称还原某个原始 ACTF 文件。
+ACTF → Storyline → 三表 Lance → Storyline → ACTF 保证规范化 JSON 数据模型级语义一致：
+未知键及其值（包括 `null`）、嵌套值、数组顺序和 attempt 分组均保留。已知字段的
+missing/显式 `null` 会按 Storyline 语义规范化；源文件空白、缩进和对象键顺序不属于保真
+边界。没有 ACTF source unknown fields 的普通 Storyline 可以导出为结构合法的单 attempt ACTF，
+但这是有定义的合成转换，不宣称还原某个原始 ACTF 文件。

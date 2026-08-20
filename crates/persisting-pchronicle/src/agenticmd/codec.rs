@@ -1,8 +1,7 @@
 //! `agenticmd` — best-effort Markdown view for humans and debugging.
 //!
-//! It is intentionally not a canonical storage format. New writers use
-//! Storyline-like identity fields (`session_id`, `agent_id`, `source`,
-//! `step_id`); readers retain aliases for older capture documents.
+//! It is intentionally not a canonical storage format. Storyline metadata
+//! carries semantics; block headers provide a readable, editable view.
 //! ```text
 //! ---
 //! format: persisting   # logical name in pChronicle: agenticmd
@@ -46,7 +45,7 @@ pub struct MarkdownBlock {
 }
 
 impl MarkdownBlock {
-    /// Legacy presentation role, derived from Storyline `source` when absent.
+    /// Human-facing presentation role derived from Storyline `source`.
     pub fn role(&self) -> Option<&str> {
         if let Some(role) = self.header.fields.get("role").and_then(|v| v.as_str()) {
             return Some(role);
@@ -71,12 +70,6 @@ impl MarkdownBlock {
             _ => Some("system"),
         }
     }
-
-    pub fn step_id(&self) -> Option<i64> {
-        ["step_id", "id", "seq"]
-            .iter()
-            .find_map(|key| self.header.fields.get(*key).and_then(|v| v.as_i64()))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,10 +78,6 @@ pub struct MarkdownDocument {
     pub format: String,
     /// Frontmatter `format:` value (usually `persisting`).
     pub frontmatter_format: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
     #[serde(default)]
     pub frontmatter: BTreeMap<String, Value>,
     pub blocks: Vec<MarkdownBlock>,
@@ -99,8 +88,6 @@ impl MarkdownDocument {
         Self {
             format: AGENTICMD_FORMAT_NAME.into(),
             frontmatter_format: AGENTICMD_FRONTMATTER_FORMAT.into(),
-            session_id: None,
-            agent_id: None,
             frontmatter: BTreeMap::new(),
             blocks,
         }
@@ -115,25 +102,6 @@ pub fn parse_agenticmd_document(input: &str) -> InputResult<MarkdownDocument> {
     if let Some(fmt) = doc.frontmatter.get("format").and_then(Value::as_str) {
         doc.frontmatter_format = fmt.to_string();
     }
-    doc.session_id = doc
-        .frontmatter
-        .get("session_id")
-        .or_else(|| doc.frontmatter.get("session"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    doc.agent_id = doc
-        .frontmatter
-        .get("agent_id")
-        .and_then(Value::as_str)
-        .or_else(|| doc.frontmatter.get("agent").and_then(Value::as_str))
-        .or_else(|| {
-            doc.frontmatter
-                .get("agent")
-                .and_then(Value::as_object)
-                .and_then(|agent| agent.get("id"))
-                .and_then(Value::as_str)
-        })
-        .map(str::to_string);
     Ok(doc)
 }
 

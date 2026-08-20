@@ -80,11 +80,11 @@ result 归并到 tool call 行，并通过 `CURRENT` 中的三表版本元组保
 UTF-8/JSON cell 以 BLAKE3 内容地址外置到共享 `objects.lance`，跨轨迹复用；公开 schema
 和 SQL 结果保持不变，查询只在真正引用内容列时延迟恢复 Blob。
 
-ATIF object、array、pretty JSON 与 JSONL/NDJSON 的 `steps` 临时查询还支持
+ATIF object、array、pretty JSON 与 JSONL/NDJSON，以及 ACTF object/array 的 `steps` 临时查询还支持
 projection-aware 快路径：DataFusion 先传递所需列和安全谓词，reader 通过 seeded visitor
 跳过未引用大字段并直接构造窄 Arrow batch；JSONL/NDJSON 逐记录有界读取，array 通过
 结构扫描器逐 element 提取并使用 slice decoder，单 object 从 reader 流式解码。
-`SELECT *`、其他表和格式回退到完整 Storyline 规范化。详细协议、发布顺序和执行边界见
+`SELECT *`、其他表和 OpenAI-message 回退到完整 Storyline 规范化。详细协议、发布顺序和执行边界见
 [Storyline 三表 Lance 存储](storyline-lance.md)。
 
 ## 4. 目录布局
@@ -113,7 +113,8 @@ storage/
 ```
 
 独立的 Storyline 分析 store 使用 `CURRENT`、`generations/<id>/{runs,steps,tool_calls}.lance`
-和根级共享 `objects.lance`；它不改变上面的 canonical event 目录。
+和根级共享 `objects.lance`；`CURRENT` 的必需 `schema_version` 在打开表前验证整个四表物理
+布局。它不改变上面的 canonical event 目录。
 
 系统生成的 AgenticMD 使用 `{session_id}.md` 文件名和
 `<!-- persisting:block:{source} … -->` 块结构；读取器同时接受无 speaker 的块、旧

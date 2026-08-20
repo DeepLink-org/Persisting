@@ -80,7 +80,7 @@ async fn import_export_roundtrip_is_byte_identical_and_reimportable() -> Result<
 }
 
 #[tokio::test]
-async fn forced_storyline_roundtrip_is_canonical_json_byte_identical() -> Result<()> {
+async fn forced_storyline_roundtrip_is_canonical_and_reimport_stable() -> Result<()> {
     let temp = tempfile::tempdir()?;
     for fixture in EXAMPLE_FIXTURES {
         let format = fixture.name;
@@ -115,10 +115,39 @@ async fn forced_storyline_roundtrip_is_canonical_json_byte_identical() -> Result
         .await?;
         assert!(exported_output.stderr_text()?.contains("exact=false"));
 
+        let reimported = temp.path().join(format!("{format}-storyline-reimported"));
+        run_cli([
+            "import",
+            "--from",
+            exported.to_str().unwrap(),
+            "--output",
+            reimported.to_str().unwrap(),
+            "--format",
+            format,
+        ])
+        .await?;
+
+        let reexported = temp
+            .path()
+            .join(format!("{format}-storyline-reexport.json"));
+        let reexported_output = run_cli([
+            "export",
+            "--from",
+            reimported.to_str().unwrap(),
+            "--output",
+            reexported.to_str().unwrap(),
+            "--format",
+            format,
+            "--where",
+            "TRUE",
+        ])
+        .await?;
+        assert!(reexported_output.stderr_text()?.contains("exact=false"));
+
         assert_eq!(
+            canonical_json_bytes(&reexported)?,
             canonical_json_bytes(&exported)?,
-            canonical_json_bytes(&input)?,
-            "Storyline round-trip canonical JSON differs for {format}"
+            "Storyline canonical JSON is not reimport-stable for {format}"
         );
     }
     Ok(())

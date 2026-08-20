@@ -168,10 +168,10 @@ async fn corpus_round_trips_through_three_lance_tables() -> Result<()> {
 }
 
 #[tokio::test]
-async fn atif_null_and_tool_result_presence_round_trip_through_lance() -> Result<()> {
+async fn atif_null_and_missing_canonicalization_is_stable_through_lance() -> Result<()> {
     let input = serde_json::json!({
         "schema_version": "ATIF-v1.7",
-        "trajectory_id": "presence-trajectory",
+        "trajectory_id": "canonical-trajectory",
         "agent": {
             "name": "agent-1",
             "version": "1",
@@ -216,6 +216,8 @@ async fn atif_null_and_tool_result_presence_round_trip_through_lance() -> Result
         "subagent_trajectories": null
     });
     let story = into_storyline(TestFormat::Atif, &input.to_string())?;
+    let expected: serde_json::Value =
+        serde_json::from_str(&from_storyline(TestFormat::Atif, &story)?)?;
     let dir = tempfile::tempdir()?;
     let store = StorylineLanceStore::open(dir.path()).await?;
     store.replace_storyline(&story).await?;
@@ -223,10 +225,10 @@ async fn atif_null_and_tool_result_presence_round_trip_through_lance() -> Result
     let restored = store
         .get_storyline_full(&story.session_id)
         .await?
-        .context("missing presence Storyline after Lance write")?;
+        .context("missing canonical Storyline after Lance write")?;
     let output: serde_json::Value =
         serde_json::from_str(&from_storyline(TestFormat::Atif, &restored)?)?;
-    assert_eq!(output, input);
+    assert_eq!(output, expected);
     Ok(())
 }
 

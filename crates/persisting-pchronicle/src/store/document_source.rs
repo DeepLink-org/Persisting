@@ -18,8 +18,9 @@ use crate::format::DocumentFormat;
 use crate::formats::actf::ActfDocument;
 use crate::formats::{parse_openai_msg_corpus_value, StorylineDocument};
 
+use super::files::DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES;
 use super::{
-    datafusion_bridge::from_datafusion, AgenticMdDataSource, FileTrajectoryDataSource,
+    datafusion_bridge::from_datafusion, AgenticMdDataSource, AtifReader, FileTrajectoryDataSource,
     LocalQueryManifest, RawEventDataSource, StorylineDataSource, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
     DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
@@ -284,7 +285,16 @@ impl QueryDocumentSource for DocumentSourceImpl {
                 late_content_materialization: false,
                 snapshot_consistent: false,
             },
-            DocumentFormat::OpenaiMsg | DocumentFormat::Actf => QueryCapabilities {
+            DocumentFormat::Actf => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Inexact,
+                limit_pushdown: true,
+                scalar_indexes: false,
+                streaming_decode: true,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
+            DocumentFormat::OpenaiMsg => QueryCapabilities {
                 projection_pushdown: true,
                 filter_pushdown: FilterPushdown::Unsupported,
                 limit_pushdown: true,
@@ -326,12 +336,12 @@ where
 {
     match format {
         DocumentFormat::Atif => {
-            for file in manifest.files() {
-                let input = read_bounded_file(file, max_file_bytes, format)?;
-                let input = std::str::from_utf8(&input).context("ATIF input is not UTF-8")?;
-                for story in super::files::parse_atif_storylines(input)? {
-                    on_storyline(story)?;
-                }
+            for story in AtifReader::from_manifest(
+                manifest,
+                max_file_bytes,
+                DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
+            ) {
+                on_storyline(story?)?;
             }
         }
         DocumentFormat::OpenaiMsg => {
