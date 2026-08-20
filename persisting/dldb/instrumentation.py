@@ -117,13 +117,25 @@ def _default_specs() -> Tuple[_ApiSpec, ...]:
             },
         ),
         _ApiSpec(
+            method="compact_files",
+            api="compact_files",
+            meta_fn=lambda self, table_name, *, partition=None, batch_size=None, max_source_fragments=None, **kwargs: {
+                "table_name": table_name,
+                "partition": partition,
+                "batch_size": batch_size,
+                "max_source_fragments": max_source_fragments,
+            },
+        ),
+        _ApiSpec(
             method="optimize",
             api="optimize",
-            meta_fn=lambda self, table_name, *, partition=None, cleanup_older_than=None, delete_unverified=False, retrain=False: {
+            meta_fn=lambda self, table_name, *, partition=None, cleanup_older_than=None, delete_unverified=False, retrain=False, batch_size=None, max_source_fragments=None: {
                 "table_name": table_name,
                 "partition": partition,
                 "cleanup_older_than": cleanup_older_than,
                 "delete_unverified": delete_unverified,
+                "batch_size": batch_size,
+                "max_source_fragments": max_source_fragments,
             },
         ),
         _ApiSpec(

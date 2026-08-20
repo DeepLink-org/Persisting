@@ -9,6 +9,7 @@ import pandas as pd
 import pyarrow as pa
 from dldb.metrics import MetricsCollector
 from dldb.table import (
+    DEFAULT_COMPACT_BATCH_SIZE,
     IndexCoverage,
     InformationSchemaTable,
     create_table,
@@ -145,6 +146,17 @@ class SessionBase:
     ) -> bool:
         raise NotImplementedError
 
+    def compact_files(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
+        **kwargs,
+    ):
+        raise NotImplementedError
+
     def optimize(
         self,
         table_name: str,
@@ -153,6 +165,8 @@ class SessionBase:
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
     ):
         raise NotImplementedError
 
@@ -451,6 +465,23 @@ class LanceSession(SessionBase):
             return False
         return any(not c.fully_indexed for c in coverage)
 
+    def compact_files(
+        self,
+        table_name: str,
+        *,
+        partition=None,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
+        **kwargs,
+    ):
+        table = self._get_table(table_name, partition)
+        return table.compact_files(
+            partition=partition,
+            batch_size=batch_size,
+            max_source_fragments=max_source_fragments,
+            **kwargs,
+        )
+
     def optimize(
         self,
         table_name: str,
@@ -459,6 +490,8 @@ class LanceSession(SessionBase):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
     ):
         table = self._get_table(table_name, partition)
         return table.optimize(
@@ -466,6 +499,8 @@ class LanceSession(SessionBase):
             cleanup_older_than=cleanup_older_than,
             delete_unverified=delete_unverified,
             retrain=retrain,
+            batch_size=batch_size,
+            max_source_fragments=max_source_fragments,
         )
 
     def optimize_indices(

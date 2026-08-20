@@ -1,3 +1,4 @@
+import inspect
 import threading
 from dataclasses import dataclass
 from datetime import timedelta
@@ -8,6 +9,10 @@ import pyarrow as pa
 from dldb.utils import filter_values, schema_from_string, schema_to_string, stable_hash
 from lancedb import LanceDBConnection
 from lancedb.index import IndexConfig
+
+
+DEFAULT_COMPACT_BATCH_SIZE = 64
+OPTIMIZE_CLEANUP_OLDER_THAN = timedelta(days=7)
 
 
 @dataclass(frozen=True)
@@ -188,6 +193,90 @@ def _optimize_indices_on_lance_table(
     if index_names is not None:
         kwargs["index_names"] = index_names
     lance_table.to_lance().optimize.optimize_indices(**kwargs)
+    lance_table.checkout_latest()
+
+
+def _compact_files_kwargs(
+    *,
+    batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+    max_source_fragments: Optional[int] = None,
+    extra: Optional[dict] = None,
+) -> dict:
+    opts = dict(extra or {})
+    if batch_size is not None:
+        opts["batch_size"] = batch_size
+    if max_source_fragments is not None:
+        opts["max_source_fragments"] = max_source_fragments
+    return opts
+
+
+def _compact_files_on_lance_table(
+    lance_table,
+    *,
+    batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+    max_source_fragments: Optional[int] = None,
+    **kwargs,
+):
+    compact = lance_table.to_lance().optimize.compact_files
+    opts = _compact_files_kwargs(
+        batch_size=batch_size,
+        max_source_fragments=max_source_fragments,
+        extra=kwargs,
+    )
+    signature = inspect.signature(compact)
+    supported = set(signature.parameters)
+    accepts_var_keyword = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if not accepts_var_keyword:
+        unknown = [key for key in opts if key not in supported]
+        if unknown:
+            raise TypeError(
+                f"compact_files does not support {unknown} on this pylance version; "
+                f"supported={sorted(supported)}"
+            )
+        opts = {key: value for key, value in opts.items() if key in supported}
+    stats = compact(**opts)
+    lance_table.checkout_latest()
+    return stats
+
+
+def _cleanup_on_lance_table(
+    lance_table,
+    *,
+    cleanup_older_than: Optional[timedelta] = None,
+    delete_unverified: bool = False,
+):
+    older_than = cleanup_older_than if cleanup_older_than is not None else OPTIMIZE_CLEANUP_OLDER_THAN
+    lance_table.to_lance().cleanup_old_versions(
+        older_than,
+        delete_unverified=delete_unverified,
+    )
+    lance_table.checkout_latest()
+
+
+def _full_optimize_on_lance_table(
+    lance_table,
+    *,
+    cleanup_older_than: Optional[timedelta] = None,
+    delete_unverified: bool = False,
+    retrain: bool = False,
+    batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+    max_source_fragments: Optional[int] = None,
+):
+    stats = _compact_files_on_lance_table(
+        lance_table,
+        batch_size=batch_size,
+        max_source_fragments=max_source_fragments,
+    )
+    _cleanup_on_lance_table(
+        lance_table,
+        cleanup_older_than=cleanup_older_than,
+        delete_unverified=delete_unverified,
+    )
+    _optimize_indices_on_lance_table(lance_table, retrain=retrain)
+    return stats
 
 
 class BaseTable:
@@ -249,6 +338,16 @@ class BaseTable:
     ) -> List[IndexCoverage]:
         raise NotImplementedError
 
+    def compact_files(
+        self,
+        *,
+        partition=None,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
+        **kwargs,
+    ):
+        raise NotImplementedError
+
     def optimize(
         self,
         *,
@@ -256,6 +355,8 @@ class BaseTable:
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
     ):
         raise NotImplementedError
 
@@ -393,6 +494,24 @@ class SimpleTable(BaseTable):
             self.table, self.raw_table_name, None, index_name=index_name
         )
 
+    def compact_files(
+        self,
+        *,
+        partition=None,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
+        **kwargs,
+    ):
+        assert partition is None, "Partitioning not supported for SimpleTable"
+        if self.table is None:
+            self.open_table()
+        return _compact_files_on_lance_table(
+            self.table,
+            batch_size=batch_size,
+            max_source_fragments=max_source_fragments,
+            **kwargs,
+        )
+
     def optimize(
         self,
         *,
@@ -400,14 +519,19 @@ class SimpleTable(BaseTable):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
     ):
         assert partition is None, "Partitioning not supported for SimpleTable"
         if self.table is None:
             self.open_table()
-        return self.table.optimize(
+        return _full_optimize_on_lance_table(
+            self.table,
             cleanup_older_than=cleanup_older_than,
             delete_unverified=delete_unverified,
             retrain=retrain,
+            batch_size=batch_size,
+            max_source_fragments=max_source_fragments,
         )
 
     def optimize_indices(
@@ -595,13 +719,13 @@ class ValuePartitionTable(BaseTable):
             index_name=index_name,
         )
 
-    def optimize(
+    def compact_files(
         self,
         *,
         partition=None,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-        retrain: bool = False,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
+        **kwargs,
     ):
         if partition is not None:
             partitions = [partition]
@@ -609,12 +733,43 @@ class ValuePartitionTable(BaseTable):
             partitions = self.list_partitions()
 
         self.open_table(partitions)
+        stats = None
         for p in partitions:
-            self.tables[p].optimize(
+            stats = _compact_files_on_lance_table(
+                self.tables[p],
+                batch_size=batch_size,
+                max_source_fragments=max_source_fragments,
+                **kwargs,
+            )
+        return stats
+
+    def optimize(
+        self,
+        *,
+        partition=None,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+        retrain: bool = False,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
+    ):
+        if partition is not None:
+            partitions = [partition]
+        else:
+            partitions = self.list_partitions()
+
+        self.open_table(partitions)
+        stats = None
+        for p in partitions:
+            stats = _full_optimize_on_lance_table(
+                self.tables[p],
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+                batch_size=batch_size,
+                max_source_fragments=max_source_fragments,
             )
+        return stats
 
     def optimize_indices(
         self,
@@ -937,13 +1092,13 @@ class HashPartitionTable(BaseTable):
             index_name=index_name,
         )
 
-    def optimize(
+    def compact_files(
         self,
         *,
         partition=None,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-        retrain: bool = False,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
+        **kwargs,
     ):
         if partition is not None:
             partitions = [partition]
@@ -951,12 +1106,43 @@ class HashPartitionTable(BaseTable):
             partitions = self.list_partitions()
 
         self.open_table(partitions)
+        stats = None
         for p in partitions:
-            self.tables[p].optimize(
+            stats = _compact_files_on_lance_table(
+                self.tables[p],
+                batch_size=batch_size,
+                max_source_fragments=max_source_fragments,
+                **kwargs,
+            )
+        return stats
+
+    def optimize(
+        self,
+        *,
+        partition=None,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+        retrain: bool = False,
+        batch_size: Optional[int] = DEFAULT_COMPACT_BATCH_SIZE,
+        max_source_fragments: Optional[int] = None,
+    ):
+        if partition is not None:
+            partitions = [partition]
+        else:
+            partitions = self.list_partitions()
+
+        self.open_table(partitions)
+        stats = None
+        for p in partitions:
+            stats = _full_optimize_on_lance_table(
+                self.tables[p],
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+                batch_size=batch_size,
+                max_source_fragments=max_source_fragments,
             )
+        return stats
 
     def optimize_indices(
         self,
