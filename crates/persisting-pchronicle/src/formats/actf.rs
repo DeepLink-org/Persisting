@@ -106,6 +106,7 @@ pub struct ActfObservation {
 }
 
 impl ActfDocument {
+    #[cfg(any(test, feature = "lance-store"))]
     pub fn from_json_str(input: &str) -> InputResult<Self> {
         let document: Self =
             serde_json::from_str(input).map_err(|error| InputIssue::invalid(error.to_string()))?;
