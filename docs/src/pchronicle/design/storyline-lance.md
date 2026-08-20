@@ -198,8 +198,8 @@ root/
 `replace_storyline` 不再读取或重写全库，而是按各表主键执行 merge-upsert，并只删除指定
 `document_id` 中已经不再存在的旧键。每次替换
 会产生一个新的逻辑 snapshot；
-`CURRENT` 是一段 JSON，记录逻辑 snapshot id、物理 `table_generation`、三张表以及对象表
-各自精确的 Lance version id。对象先持久化，三张业务表随后写入，最后才更新 `CURRENT`；
+`CURRENT` 是一段 JSON，记录必需的 store `schema_version: 1`、逻辑 snapshot id、物理
+`table_generation`、三张表以及对象表各自精确的 Lance version id。对象先持久化，三张业务表随后写入，最后才更新 `CURRENT`；
 因此失败最多留下不可达对象，不会发布悬空引用或跨表半提交。
 
 阈值、preview 长度和 Zstd level 可通过 `StorylineContentOptions` 配置；三表 schema 不变。
@@ -209,7 +209,8 @@ Lance MVCC 的旧版本默认保留，便于已打开的 reader 固定快照及�
 compaction，避免某次写请求出现维护型长尾；生产环境通过 `maintain` 显式执行三表并行
 compaction、补齐/刷新索引、内容 GC 和按保留期 vacuum。维护产生的四个 dataset version
 仍先原子更新 `CURRENT`，之后才回收旧版本和过期的非当前 physical generation。
-`CURRENT` 必须是包含全部精确版本的 JSON 指针，不读取旧的纯文本 generation 指针。
+`CURRENT` 必须是包含 schema version 和全部精确版本的 JSON 指针；缺失或未知 schema
+version 会在打开任何 Lance table 前 fail closed，也不读取旧的纯文本 generation 指针。
 
 本地写入通过进程内锁和文件锁串行化；对象存储通过 `CURRENT` 的 ETag/version 条件更新
 执行 optimistic CAS。stale commit 不能移动 `CURRENT`；`StorylineLanceStore` 在 CAS 冲突后

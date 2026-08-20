@@ -114,21 +114,13 @@ pub fn parse_openai_msg_corpus_value(
         }
         stories.push(story);
     }
-    let owned_counts = stories
-        .iter()
-        .map(|story| story.unknown_key_counts.get("openai-msg").cloned())
-        .collect::<Vec<_>>();
     attach_carried_unknown_fields(
+        DocumentFormat::OpenaiMsg,
         carried_envelope,
         &carriers,
         &mut stories,
         UnknownFieldLimits::default(),
     )?;
-    for (story, owned) in stories.iter_mut().zip(owned_counts) {
-        if let Some(owned) = owned {
-            story.unknown_key_counts.insert("openai-msg".into(), owned);
-        }
-    }
     Ok(stories)
 }
 
@@ -148,7 +140,10 @@ fn capture_openai_unknowns(
         });
     insert_openai_map(story, source_document_id, "", root_unknown)?;
     for (ordinal, record) in records {
-        let row = record.as_object().expect("rows were validated as objects");
+        let row = record.as_object().ok_or_else(|| {
+            InputIssue::invalid("OpenAI corpus row must be an object")
+                .at(format!("rows[{ordinal}]"))
+        })?;
         let row_prefix = format!("/session_steps/{ordinal}");
         for (key, value) in row {
             if !is_canonical_openai_row_key(key) {

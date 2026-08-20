@@ -92,10 +92,6 @@ pub fn decode_json_storylines_with_options(
             document.validate()?;
             let mut stories = crate::convert::actf_to_storylines(&document)
                 .map_err(|error| InputIssue::invalid(error.to_string()))?;
-            let owned_counts = stories
-                .iter()
-                .map(|story| story.unknown_key_counts.get("actf").cloned())
-                .collect::<Vec<_>>();
             let carriers = stories
                 .iter()
                 .enumerate()
@@ -113,16 +109,12 @@ pub fn decode_json_storylines_with_options(
                 })
                 .collect::<Vec<_>>();
             attach_carried_unknown_fields(
+                DocumentFormat::Actf,
                 envelope,
                 &carriers,
                 &mut stories,
                 options.unknown_fields,
             )?;
-            for (story, owned) in stories.iter_mut().zip(owned_counts) {
-                if let Some(owned) = owned {
-                    story.unknown_key_counts.insert("actf".into(), owned);
-                }
-            }
             Ok(stories)
         }
         DocumentFormat::OpenaiMsg => {
@@ -338,6 +330,38 @@ mod tests {
             "empty.json"
         )
         .is_err());
+    }
+
+    #[test]
+    fn openai_envelope_rejects_target_source_unknown_fields() {
+        let input = serde_json::json!({
+            "session_steps": [{
+                "session_id": "s-1",
+                "step_id": 1,
+                "messages": [{"role": "user", "content": "inspect"}],
+                "response": {"role": "assistant", "content": "done"}
+            }],
+            "_storyline": {"unknown_fields": {
+                "version": 1,
+                "by_trajectory": {"/session_steps/0": {"sources": {
+                    "openai-msg": {
+                        "source_document_id": "same-target.json",
+                        "fields": {"/session_steps/0/enveloped_vendor": true}
+                    }
+                }}}
+            }}
+        });
+
+        let error = decode_json_storylines(
+            DocumentFormat::OpenaiMsg,
+            &input.to_string(),
+            "same-target.json",
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("target source 'openai-msg'"),
+            "{error:#}"
+        );
     }
 
     #[test]

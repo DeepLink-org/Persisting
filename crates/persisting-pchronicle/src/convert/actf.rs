@@ -162,7 +162,7 @@ fn capture_actf_unknowns(
         .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
     let root = root
         .as_object_mut()
-        .expect("ACTF root serializes as object");
+        .ok_or_else(|| crate::InputIssue::invalid("serialized ACTF document must be an object"))?;
     for key in ["task_id", "correct", "attempts"] {
         root.remove(key);
     }
@@ -173,7 +173,7 @@ fn capture_actf_unknowns(
         .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
     let attempt_map = attempt_value
         .as_object_mut()
-        .expect("ACTF attempt is object");
+        .ok_or_else(|| crate::InputIssue::invalid("serialized ACTF attempt must be an object"))?;
     for key in ["correct", "score", "status", "trajectory"] {
         attempt_map.remove(key);
     }
@@ -182,9 +182,9 @@ fn capture_actf_unknowns(
     let trajectory_prefix = pointer_join(&attempt_prefix, "trajectory");
     let mut trajectory_value = serde_json::to_value(&attempt.trajectory)
         .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
-    let trajectory_map = trajectory_value
-        .as_object_mut()
-        .expect("ACTF trajectory is object");
+    let trajectory_map = trajectory_value.as_object_mut().ok_or_else(|| {
+        crate::InputIssue::invalid("serialized ACTF trajectory must be an object")
+    })?;
     trajectory_map.remove("steps");
     insert_actf_map(story, source_id, &trajectory_prefix, trajectory_map)?;
 
@@ -195,14 +195,18 @@ fn capture_actf_unknowns(
         );
         let mut step_value = serde_json::to_value(step)
             .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
-        let step_map = step_value.as_object_mut().expect("ACTF step is object");
+        let step_map = step_value
+            .as_object_mut()
+            .ok_or_else(|| crate::InputIssue::invalid("serialized ACTF step must be an object"))?;
         let assistant = step_map.remove("assistant_content");
         for key in ["step_id", "metric", "tools", "observation", "started_at"] {
             step_map.remove(key);
         }
         insert_actf_map(story, source_id, &step_prefix, step_map)?;
         if let Some(mut assistant) = assistant {
-            let assistant = assistant.as_object_mut().expect("ACTF assistant is object");
+            let assistant = assistant.as_object_mut().ok_or_else(|| {
+                crate::InputIssue::invalid("serialized ACTF assistant content must be an object")
+            })?;
             for key in ["content", "reasoning_content", "tool_calls"] {
                 assistant.remove(key);
             }

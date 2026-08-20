@@ -824,7 +824,10 @@ fn load_file(
                     runtime.options.max_record_bytes,
                 )
                 .with_context(|| format!("parse ACTF input {}", state.file.path().display()))?,
-                _ => unreachable!(),
+                _ => anyhow::bail!(
+                    "{} does not support streaming trajectory parsing",
+                    format.as_str()
+                ),
             };
             runtime.metrics.inner.streaming_buffer_peak_bytes.fetch_max(
                 (reader.capacity() as u64).saturating_add(peak_record_bytes as u64),

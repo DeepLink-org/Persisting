@@ -113,7 +113,8 @@ storage/
 ```
 
 独立的 Storyline 分析 store 使用 `CURRENT`、`generations/<id>/{runs,steps,tool_calls}.lance`
-和根级共享 `objects.lance`；它不改变上面的 canonical event 目录。
+和根级共享 `objects.lance`；`CURRENT` 的必需 `schema_version` 在打开表前验证整个四表物理
+布局。它不改变上面的 canonical event 目录。
 
 系统生成的 AgenticMD 使用 `{session_id}.md` 文件名和
 `<!-- persisting:block:{source} … -->` 块结构；读取器同时接受无 speaker 的块、旧

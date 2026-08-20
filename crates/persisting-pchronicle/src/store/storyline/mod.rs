@@ -87,6 +87,7 @@ use super::{root_write_lock, LanceMaintenanceOptions, LanceMaintenanceReport};
 
 const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
+const STORYLINE_LANCE_SCHEMA_VERSION: u32 = 1;
 const WRITE_BATCH_ROWS: usize = 8192;
 const STREAM_IMPORT_STORIES: usize = 256;
 const RUN_INDEXES: [(&str, IndexType); 3] = [
@@ -191,6 +192,7 @@ impl StorylineProjectionLineage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StorylineSnapshotPointer {
+    schema_version: u32,
     generation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_generation: Option<String>,
@@ -547,6 +549,12 @@ impl StorylineLanceStore {
         }
         let pointer = serde_json::from_str::<StorylineSnapshotPointer>(contents)
             .context("decode Storyline snapshot pointer")?;
+        anyhow::ensure!(
+            pointer.schema_version == STORYLINE_LANCE_SCHEMA_VERSION,
+            "unsupported Storyline Lance schema_version {}; expected {}",
+            pointer.schema_version,
+            STORYLINE_LANCE_SCHEMA_VERSION
+        );
         if let Some(projection) = &pointer.projection {
             projection.validate()?;
         }
@@ -905,6 +913,7 @@ impl StorylineLanceStore {
                 };
             let generation = next_generation();
             let snapshot = StorylineSnapshotPointer {
+                schema_version: STORYLINE_LANCE_SCHEMA_VERSION,
                 generation: generation.clone(),
                 parent_generation: expected_generation.clone(),
                 table_generation: current.table_generation.clone(),
@@ -1004,6 +1013,7 @@ impl StorylineLanceStore {
         let generation = next_generation();
         self.commit_snapshot(
             &StorylineSnapshotPointer {
+                schema_version: STORYLINE_LANCE_SCHEMA_VERSION,
                 generation: generation.clone(),
                 parent_generation: Some(paths.generation.clone()),
                 table_generation: paths.table_generation.clone(),

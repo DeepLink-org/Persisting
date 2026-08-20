@@ -317,6 +317,118 @@ fn common_storyline_semantics(stories: &[StorylineDocument]) -> Value {
     )
 }
 
+fn assert_target_modeled_semantics(
+    source: &str,
+    target: DocumentFormat,
+    stories: &[StorylineDocument],
+) {
+    assert_eq!(stories.len(), 1);
+    let story = &stories[0];
+    match (source, target) {
+        ("atif", DocumentFormat::Actf) => {
+            assert_eq!(story.agent.id, "actf-agent");
+            assert_eq!(story.agent.name.as_deref(), Some("ACTF Agent"));
+            assert!(story.turns.iter().all(|turn| turn.source == "agent"));
+            assert!(story
+                .turns
+                .iter()
+                .all(|turn| turn.timestamp.as_deref() == Some("1970-01-01 00:00:00+00:00")));
+            assert!(story
+                .turns
+                .iter()
+                .all(|turn| turn.reasoning_content.is_none()));
+            assert_eq!(
+                story.turns[1].metrics.as_ref().unwrap()["prompt_tokens_len"],
+                0
+            );
+            assert_eq!(
+                story.turns[1].metrics.as_ref().unwrap()["completion_tokens_len"],
+                0
+            );
+        }
+        ("atif", DocumentFormat::OpenaiMsg) => {
+            assert_eq!(story.agent.id, "agent");
+            assert_eq!(story.agent.name.as_deref(), Some("agent"));
+            assert!(story.agent.version.is_none());
+            assert_eq!(story.turns[0].source, "user");
+            assert_eq!(story.turns[1].source, "agent");
+            assert!(story.turns.iter().all(|turn| turn.timestamp.is_none()));
+            assert_eq!(story.turns[1].metrics.as_ref().unwrap()["reward"], 0.0);
+        }
+        ("actf", DocumentFormat::Atif) => {
+            assert_eq!(story.agent.id, "ACTF Agent");
+            assert_eq!(story.agent.name.as_deref(), Some("ACTF Agent"));
+            assert_eq!(story.agent.version.as_deref(), Some("unknown"));
+            assert_eq!(story.turns[0].reasoning_content.as_deref(), Some("inspect"));
+            assert_eq!(
+                story.turns[1].reasoning_content.as_deref(),
+                Some("complete")
+            );
+            assert_eq!(
+                story.turns[1].timestamp.as_deref(),
+                Some("2026-08-20T00:00:01Z")
+            );
+            assert_eq!(
+                story.turns[1].metrics.as_ref().unwrap()["prompt_tokens_len"],
+                10
+            );
+            assert_eq!(
+                story.turns[1].metrics.as_ref().unwrap()["completion_tokens_len"],
+                4
+            );
+            assert_eq!(story.turns[1].metrics.as_ref().unwrap()["llm_infer_ms"], 12);
+            assert_eq!(story.turns[1].latency_ms, Some(12));
+            assert_eq!(
+                story.turns[1].tool_calls.as_ref().unwrap()[0].duration_ms,
+                Some(3)
+            );
+        }
+        ("actf", DocumentFormat::OpenaiMsg) => {
+            assert_eq!(story.agent.id, "actf-agent");
+            assert_eq!(story.agent.name.as_deref(), Some("actf-agent"));
+            assert!(story
+                .turns
+                .iter()
+                .all(|turn| turn.reasoning_content.is_none()));
+            assert_eq!(
+                story.turns[1].timestamp.as_deref(),
+                Some("2026-08-20T00:00:01Z")
+            );
+            assert_eq!(story.turns[1].metrics.as_ref().unwrap()["reward"], 0.0);
+            assert_eq!(
+                story.turns[1].tool_calls.as_ref().unwrap()[0].duration_ms,
+                None
+            );
+        }
+        ("openai", DocumentFormat::Atif) => {
+            assert_eq!(story.agent.id, "model");
+            assert_eq!(story.agent.model_name.as_deref(), Some("model"));
+            assert_eq!(story.agent.version.as_deref(), Some("unknown"));
+            assert!(story
+                .turns
+                .iter()
+                .all(|turn| turn.timestamp.as_deref() == Some("2026-08-20T00:00:00Z")));
+            assert_eq!(story.turns[1].model_name.as_deref(), Some("model"));
+            assert!(story.turns[1].metrics.as_ref().unwrap()["reward"].is_null());
+        }
+        ("openai", DocumentFormat::Actf) => {
+            assert_eq!(story.agent.id, "actf-agent");
+            assert_eq!(story.agent.name.as_deref(), Some("ACTF Agent"));
+            assert!(story.turns.iter().all(|turn| turn.source == "agent"));
+            assert!(story
+                .turns
+                .iter()
+                .all(|turn| turn.timestamp.as_deref() == Some("2026-08-20 00:00:00+00:00")));
+            assert_eq!(
+                story.turns[1].metrics.as_ref().unwrap()["prompt_tokens_len"],
+                0
+            );
+            assert!(story.turns[1].metrics.as_ref().unwrap()["reward"].is_null());
+        }
+        _ => panic!("unexpected conversion {source} -> {target}"),
+    }
+}
+
 fn assert_common_storyline_semantics(actual: &[StorylineDocument], expected: &[StorylineDocument]) {
     assert_semantic_json_eq(
         &common_storyline_semantics(actual),
@@ -405,13 +517,14 @@ async fn every_directed_cross_format_hop_is_semantically_stable_through_lance() 
                     .with_context(|| format!("decode {edge}"))?;
             assert_unknown_contract(source.format, &bridge_stories);
             assert_common_storyline_semantics(&bridge_stories, &source_stories);
+            assert_target_modeled_semantics(source.name, bridge, &bridge_stories);
 
             let restored = persist_and_restore(&bridge_stories)
                 .await
                 .with_context(|| format!("persist {edge}"))?;
             assert_eq!(restored, bridge_stories, "Storyline changed across {edge}");
             assert_unknown_contract(source.format, &restored);
-            assert_common_storyline_semantics(&restored, &source_stories);
+            assert_target_modeled_semantics(source.name, bridge, &restored);
             let actual = encode_json_storylines(bridge, &restored)
                 .with_context(|| format!("restore {edge} bridge"))?;
             assert_semantic_json_eq(&actual, &bridged);

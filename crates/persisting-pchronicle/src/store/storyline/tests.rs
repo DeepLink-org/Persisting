@@ -1346,8 +1346,8 @@ async fn open_rejects_malformed_or_incomplete_commit_pointer() {
     tokio::fs::write(
         complete_pointer.path().join(CURRENT_FILE),
         serde_json::to_vec(&serde_json::json!({
-            "generation": "snapshot-current",
-            "table_generation": "tables-current",
+            "generation": "gen-1-1-1",
+            "table_generation": "gen-1-1-1",
             "runs_version": 1,
             "steps_version": 1,
             "tool_calls_version": 1,
@@ -1361,6 +1361,39 @@ async fn open_rejects_malformed_or_incomplete_commit_pointer() {
         .await
         .unwrap_err();
     assert!(!error.to_string().is_empty());
+}
+
+#[tokio::test]
+async fn open_rejects_missing_or_unsupported_snapshot_schema_version() {
+    for (schema_version, expected) in [
+        (None, "schema_version"),
+        (
+            Some(2),
+            "unsupported Storyline Lance schema_version 2; expected 1",
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut pointer = serde_json::json!({
+            "generation": "gen-1-1-1",
+            "table_generation": "gen-1-1-1",
+            "runs_version": 1,
+            "steps_version": 1,
+            "tool_calls_version": 1,
+            "objects_version": 1
+        });
+        if let Some(schema_version) = schema_version {
+            pointer["schema_version"] = serde_json::json!(schema_version);
+        }
+        tokio::fs::write(
+            root.path().join(CURRENT_FILE),
+            serde_json::to_vec(&pointer).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let error = StorylineLanceStore::open(root.path()).await.unwrap_err();
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+    }
 }
 
 #[tokio::test]
@@ -1661,6 +1694,7 @@ async fn stale_current_commit_is_rejected_without_moving_snapshot() {
     let error = store
         .commit_snapshot(
             &StorylineSnapshotPointer {
+                schema_version: STORYLINE_LANCE_SCHEMA_VERSION,
                 generation: attempted_generation,
                 parent_generation: Some(stale.generation.clone()),
                 table_generation: stale.table_generation.clone(),

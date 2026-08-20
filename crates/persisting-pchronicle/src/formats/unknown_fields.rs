@@ -127,14 +127,15 @@ pub(crate) fn take_unknown_fields_envelope(
         carried.insert(carrier, fields);
     }
 
-    document
+    let document = document
         .as_object_mut()
-        .expect("an object containing _storyline remains an object")
-        .remove("_storyline");
+        .ok_or_else(|| InputIssue::invalid("_storyline envelope requires an object document"))?;
+    document.remove("_storyline");
     Ok(carried)
 }
 
 pub(crate) fn attach_carried_unknown_fields(
+    target_format: DocumentFormat,
     envelope: BTreeMap<String, StorylineUnknownFields>,
     carriers: &[CarrierBinding],
     stories: &mut [StorylineDocument],
@@ -149,6 +150,12 @@ pub(crate) fn attach_carried_unknown_fields(
         .collect::<Vec<_>>();
     for (pointer, carried) in envelope {
         validate_json_pointer(&pointer)?;
+        let target_source = target_format.as_str();
+        if carried.sources.contains_key(target_source) {
+            return Err(InputIssue::invalid(format!(
+                "_storyline envelope must not carry target source '{target_source}'"
+            )));
+        }
         let story_index = by_pointer.get(&pointer).ok_or_else(|| {
             InputIssue::invalid(format!(
                 "_storyline envelope carrier '{pointer}' is not bound to a trajectory"
@@ -658,9 +665,9 @@ pub(crate) fn restore_json_pointer(
         };
     }
 
-    let (last, parents) = tokens
-        .split_last()
-        .expect("non-empty JSON Pointer token sequence");
+    let Some((last, parents)) = tokens.split_last() else {
+        anyhow::bail!("JSON Pointer unexpectedly decoded to an empty token sequence");
+    };
     let mut parent = target;
     for token in parents {
         parent = match parent {
@@ -762,6 +769,7 @@ mod tests {
         assert!(raw.get("_storyline").is_none());
         let mut stories = vec![StorylineDocument::new("s", "a")];
         attach_carried_unknown_fields(
+            DocumentFormat::Actf,
             envelope,
             &[CarrierBinding {
                 story_index: 0,
@@ -810,6 +818,7 @@ mod tests {
 
         let stories = &mut [StorylineDocument::new("s", "a")];
         assert!(attach_carried_unknown_fields(
+            DocumentFormat::OpenaiMsg,
             BTreeMap::new(),
             &[
                 CarrierBinding {
@@ -828,6 +837,7 @@ mod tests {
 
         let unbound = BTreeMap::from([("/missing".into(), StorylineUnknownFields::default())]);
         assert!(attach_carried_unknown_fields(
+            DocumentFormat::OpenaiMsg,
             unbound,
             &[CarrierBinding {
                 story_index: 0,
@@ -861,6 +871,7 @@ mod tests {
             },
         )]);
         assert!(attach_carried_unknown_fields(
+            DocumentFormat::OpenaiMsg,
             changed_id,
             &[CarrierBinding {
                 story_index: 0,
@@ -888,6 +899,7 @@ mod tests {
             },
         )]);
         assert!(attach_carried_unknown_fields(
+            DocumentFormat::OpenaiMsg,
             carried,
             &[CarrierBinding {
                 story_index: 0,

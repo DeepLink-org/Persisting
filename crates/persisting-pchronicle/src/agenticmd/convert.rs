@@ -212,11 +212,13 @@ fn capture_agenticmd_unknown_fields(
 fn agenticmd_source_document_id(document: &MarkdownDocument) -> InputResult<String> {
     let mut source =
         serde_json::to_value(document).map_err(|error| InputIssue::invalid(error.to_string()))?;
-    source
+    let frontmatter = source
         .get_mut("frontmatter")
         .and_then(Value::as_object_mut)
-        .expect("serialized AgenticMD document has object frontmatter")
-        .remove(STORYLINE_METADATA_KEY);
+        .ok_or_else(|| {
+            InputIssue::invalid("serialized AgenticMD document lacks object frontmatter")
+        })?;
+    frontmatter.remove(STORYLINE_METADATA_KEY);
     canonical_source_document_id(&source).map_err(|error| InputIssue::invalid(error.to_string()))
 }
 

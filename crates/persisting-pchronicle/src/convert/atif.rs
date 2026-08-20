@@ -127,6 +127,7 @@ pub(crate) fn atif_value_to_storylines(
     let (mut stories, carriers) = atif_to_storylines_with_source(&trajectory, &source_document_id)
         .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
     attach_carried_unknown_fields(
+        DocumentFormat::Atif,
         envelope,
         &carriers,
         &mut stories,
