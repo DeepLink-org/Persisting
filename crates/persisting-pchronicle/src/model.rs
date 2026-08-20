@@ -10,7 +10,10 @@ pub use crate::formats::llm::{
     LlmToolDefinition, LlmUsage,
 };
 pub use crate::formats::storyline::{
-    FieldPresence, PresenceState, StoryLink, StorylineAgent, StorylineAgentField,
-    StorylineCollectionShape, StorylineDocument, StorylinePresence, StorylineRootField,
-    StorylineToolCall, StorylineTurn, StorylineTurnField,
+    StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
+};
+pub use crate::formats::unknown_fields::{
+    compute_unknown_key_counts, validate_json_pointer, validate_unknown_fields,
+    validate_unknown_fields_with, SourceUnknownFields, StorylineUnknownFields, UnknownFieldCounts,
+    UnknownFieldLimits, UnknownKeyCounts, DEFAULT_MAX_UNKNOWN_BYTES, DEFAULT_MAX_UNKNOWN_FIELDS,
 };

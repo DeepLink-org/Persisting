@@ -39,7 +39,8 @@ where
             }
         };
         let document_bytes = serialized_document_bytes(&story)?;
-        let mut tables = split_storyline(&story)?;
+        let mut tables =
+            split_storyline_with_unknown_limits(&story, options.unknown_field_limits())?;
         let document_rows = 1usize
             .checked_add(tables.steps.len())
             .and_then(|rows| rows.checked_add(tables.tool_calls.len()))
@@ -203,12 +204,15 @@ pub(super) struct ExternalizedStorylineBatches {
 }
 
 pub(super) fn externalize_rows(
-    runs: Vec<StoryRunRow>,
+    mut runs: Vec<StoryRunRow>,
     steps: Vec<StoryStepRow>,
     tool_calls: Vec<StoryToolCallRow>,
     options: StorylineContentOptions,
 ) -> Result<ExternalizedStorylineBatches> {
     let mut pending = PendingContent::default();
+    for run in &mut runs {
+        externalize_unknown_field_values(&mut run.unknown_fields, options, &mut pending)?;
+    }
     let runs = externalize_batches(
         encode_rows(runs, story_runs_to_batch)?,
         StorylineTableKind::Runs,

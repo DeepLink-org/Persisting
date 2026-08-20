@@ -110,7 +110,8 @@ fn story(session_id: &str) -> StorylineDocument {
         final_metrics: None,
         continued_trajectory_ref: None,
         extra: None,
-        presence: Default::default(),
+        unknown_fields: Default::default(),
+        unknown_key_counts: Default::default(),
         turns: vec![
             StorylineTurn {
                 id: 1,
@@ -159,6 +160,198 @@ fn story(session_id: &str) -> StorylineDocument {
             },
         ],
     }
+}
+
+#[test]
+fn unknown_field_limit_options_reject_zero_and_unbounded() {
+    for options in [
+        StorylineContentOptions {
+            max_unknown_fields: 0,
+            ..Default::default()
+        },
+        StorylineContentOptions {
+            max_unknown_bytes: 0,
+            ..Default::default()
+        },
+        StorylineContentOptions {
+            max_unknown_fields: usize::MAX,
+            ..Default::default()
+        },
+        StorylineContentOptions {
+            max_unknown_bytes: usize::MAX,
+            ..Default::default()
+        },
+    ] {
+        assert!(options.validate().is_err());
+    }
+}
+
+#[tokio::test]
+async fn configured_unknown_field_limit_reports_actual_and_limit() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open_with_content_options(
+        temporary.path(),
+        StorylineContentOptions {
+            max_unknown_fields: 1,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut oversized = story("unknown-count-limit");
+    oversized
+        .unknown_fields
+        .insert("atif", "source", "/one", serde_json::json!(1))
+        .unwrap();
+    oversized
+        .unknown_fields
+        .insert("atif", "source", "/two", serde_json::json!(2))
+        .unwrap();
+    oversized.refresh_unknown_key_counts().unwrap();
+
+    let error = store.replace_storyline(&oversized).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field count 2 exceeds configured limit 1"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn repeated_unknown_value_is_stored_once() {
+    let large = serde_json::json!({
+        "payload": "x".repeat(DEFAULT_CONTENT_OFFLOAD_THRESHOLD)
+    });
+    let mut first = story("unknown-first");
+    first
+        .unknown_fields
+        .insert("actf", "task-1", "/shared", large.clone())
+        .unwrap();
+    first.refresh_unknown_key_counts().unwrap();
+    let mut second = story("unknown-second");
+    second
+        .unknown_fields
+        .insert("actf", "task-1", "/shared", large.clone())
+        .unwrap();
+    second.refresh_unknown_key_counts().unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
+    store.replace_storylines(&[first, second]).await.unwrap();
+
+    let paths = store.current_table_paths().await.unwrap().unwrap();
+    let objects = open_objects(&paths.objects, paths.objects_version)
+        .await
+        .unwrap();
+    assert_eq!(objects.count_rows(None).await.unwrap(), 1);
+    let hydrated = store
+        .get_storyline_full("unknown-first")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        hydrated.unknown_fields.sources["actf"].fields["/shared"],
+        large
+    );
+}
+
+#[tokio::test]
+async fn unknown_content_ref_magic_string_round_trips_as_literal() {
+    let literal = format!("{CONTENT_REF_MAGIC}user-controlled-not-a-descriptor");
+    let mut expected = story("unknown-magic");
+    expected
+        .unknown_fields
+        .insert("atif", "source", "/literal", serde_json::json!(literal))
+        .unwrap();
+    expected.refresh_unknown_key_counts().unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open_with_content_options(
+        temporary.path(),
+        StorylineContentOptions {
+            offload_threshold: usize::MAX,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    store.replace_storyline(&expected).await.unwrap();
+    assert_eq!(
+        store.get_storyline_full("unknown-magic").await.unwrap(),
+        Some(expected)
+    );
+}
+
+#[tokio::test]
+async fn logical_unknown_limit_rejects_compressible_value_before_offload() {
+    let mut oversized = story("logical-unknown-limit");
+    oversized
+        .unknown_fields
+        .insert(
+            "atif",
+            "source",
+            "/payload",
+            serde_json::json!("x".repeat(crate::model::DEFAULT_MAX_UNKNOWN_BYTES + 1)),
+        )
+        .unwrap();
+    oversized.refresh_unknown_key_counts().unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
+
+    let error = store.replace_storyline(&oversized).await.unwrap_err();
+    assert!(
+        error.to_string().contains("unknown field byte size")
+            && error
+                .to_string()
+                .contains("exceeds configured limit 1048576"),
+        "{error:#}"
+    );
+    assert!(store.current_table_paths().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn logical_unknown_limit_rejects_hydrated_value_on_read() {
+    let temporary = tempfile::tempdir().unwrap();
+    let writer = StorylineLanceStore::open_with_content_options(
+        temporary.path(),
+        StorylineContentOptions {
+            offload_threshold: 1,
+            max_unknown_bytes: 4096,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut stored = story("logical-read-limit");
+    stored
+        .unknown_fields
+        .insert(
+            "atif",
+            "source",
+            "/payload",
+            serde_json::json!("x".repeat(128)),
+        )
+        .unwrap();
+    stored.refresh_unknown_key_counts().unwrap();
+    writer.replace_storyline(&stored).await.unwrap();
+
+    let reader = StorylineLanceStore::open_with_content_options(
+        temporary.path(),
+        StorylineContentOptions {
+            max_unknown_bytes: 16,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let error = reader
+        .get_storyline_full("logical-read-limit")
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("unknown field byte size")
+            && error.to_string().contains("exceeds configured limit 16"),
+        "{error:#}"
+    );
 }
 
 #[tokio::test]
@@ -1017,6 +1210,9 @@ async fn atif_stream_preserves_nested_documents_with_shared_session() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open(dir.path()).await.unwrap();
 
+    let canonical_stories = crate::convert::atif_collection_to_storylines(input.clone()).unwrap();
+    let canonical = crate::convert::storylines_to_atif(&canonical_stories).unwrap();
+
     let report = store.import_atif_stream(file.path()).await.unwrap();
     assert_eq!(report.storylines, 2);
     let stories = store
@@ -1027,7 +1223,7 @@ async fn atif_stream_preserves_nested_documents_with_shared_session() {
         .collect::<Option<Vec<_>>>()
         .unwrap();
     let rebuilt = crate::convert::storylines_to_atif(&stories).unwrap();
-    assert_eq!(serde_json::to_value(&rebuilt[0]).unwrap(), input);
+    assert_eq!(rebuilt, canonical);
 }
 
 #[tokio::test]
@@ -1150,8 +1346,8 @@ async fn open_rejects_malformed_or_incomplete_commit_pointer() {
     tokio::fs::write(
         complete_pointer.path().join(CURRENT_FILE),
         serde_json::to_vec(&serde_json::json!({
-            "generation": "snapshot-current",
-            "table_generation": "tables-current",
+            "generation": "gen-1-1-1",
+            "table_generation": "gen-1-1-1",
             "runs_version": 1,
             "steps_version": 1,
             "tool_calls_version": 1,
@@ -1165,6 +1361,39 @@ async fn open_rejects_malformed_or_incomplete_commit_pointer() {
         .await
         .unwrap_err();
     assert!(!error.to_string().is_empty());
+}
+
+#[tokio::test]
+async fn open_rejects_missing_or_unsupported_snapshot_schema_version() {
+    for (schema_version, expected) in [
+        (None, "schema_version"),
+        (
+            Some(2),
+            "unsupported Storyline Lance schema_version 2; expected 1",
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut pointer = serde_json::json!({
+            "generation": "gen-1-1-1",
+            "table_generation": "gen-1-1-1",
+            "runs_version": 1,
+            "steps_version": 1,
+            "tool_calls_version": 1,
+            "objects_version": 1
+        });
+        if let Some(schema_version) = schema_version {
+            pointer["schema_version"] = serde_json::json!(schema_version);
+        }
+        tokio::fs::write(
+            root.path().join(CURRENT_FILE),
+            serde_json::to_vec(&pointer).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let error = StorylineLanceStore::open(root.path()).await.unwrap_err();
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+    }
 }
 
 #[tokio::test]
@@ -1465,6 +1694,7 @@ async fn stale_current_commit_is_rejected_without_moving_snapshot() {
     let error = store
         .commit_snapshot(
             &StorylineSnapshotPointer {
+                schema_version: STORYLINE_LANCE_SCHEMA_VERSION,
                 generation: attempted_generation,
                 parent_generation: Some(stale.generation.clone()),
                 table_generation: stale.table_generation.clone(),

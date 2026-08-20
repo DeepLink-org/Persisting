@@ -1,75 +1,100 @@
 //! Bounded-memory ATIF document reader shared by conversion and query paths.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Lines};
-use std::path::{Path, PathBuf};
+use std::io::{self, BufRead, BufReader, Read};
+use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 
-use crate::atif::AtifTrajectory;
 use crate::convert::atif_collection_to_storylines;
 use crate::format::DocumentFormat;
-use crate::formats::storyline::{StorylineCollectionShape, StorylineDocument};
+use crate::formats::storyline::StorylineDocument;
+use crate::InputIssue;
 
-use super::{LocalQueryInputFile, LocalQueryManifest};
+use super::json_stream::{
+    read_bounded_line, trim_ascii_whitespace, visit_json_stream, BoundedCountingReader,
+    ScopedJsonObjectReader,
+};
+use super::{
+    LocalQueryInputFile, LocalQueryManifest, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+    DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
+};
 
 /// Bounded-memory ATIF reader.
 ///
-/// JSONL/NDJSON inputs are decoded one non-empty line at a time. Directories
-/// are traversed in stable path order and only the current file is open. A
-/// regular `.json` file may contain one object or an array and is buffered per
-/// file for compatibility; large corpora should use NDJSON.
-pub struct AtifReader {
-    files: std::vec::IntoIter<PathBuf>,
+/// JSONL/NDJSON inputs are decoded one non-empty line at a time. Object and
+/// array `.json` files are streamed through the shared JSON document reader
+/// without loading the whole file into memory first.
+pub(crate) struct AtifReader {
+    files: std::vec::IntoIter<LocalQueryInputFile>,
     current: Option<AtifFileReader>,
     pending: std::vec::IntoIter<StorylineDocument>,
+    max_file_bytes: u64,
+    max_record_bytes: usize,
 }
 
 enum AtifFileReader {
-    Lines {
-        path: PathBuf,
-        lines: Lines<BufReader<File>>,
+    Ndjson {
+        file: LocalQueryInputFile,
+        reader: BufReader<BoundedCountingReader<File>>,
+        record: Vec<u8>,
         line_number: usize,
-        root_ordinal: i64,
     },
     Documents(std::vec::IntoIter<StorylineDocument>),
 }
 
 impl AtifReader {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self> {
         let manifest = LocalQueryManifest::for_format(path, DocumentFormat::Atif)?;
-        Ok(Self::from_files(manifest.files()))
+        Ok(Self::from_manifest(
+            &manifest,
+            DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES,
+            DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
+        ))
     }
 
-    fn from_files(files: &[LocalQueryInputFile]) -> Self {
+    pub(crate) fn from_manifest(
+        manifest: &LocalQueryManifest,
+        max_file_bytes: u64,
+        max_record_bytes: usize,
+    ) -> Self {
         Self {
-            files: files
-                .iter()
-                .map(|file| file.path().to_path_buf())
-                .collect::<Vec<_>>()
-                .into_iter(),
+            files: manifest.files().to_vec().into_iter(),
             current: None,
             pending: Vec::new().into_iter(),
+            max_file_bytes,
+            max_record_bytes,
         }
     }
 
-    fn open_file(path: PathBuf) -> Result<AtifFileReader> {
-        match path.extension().and_then(|value| value.to_str()) {
-            Some("jsonl" | "ndjson") => {
-                let file = File::open(&path)
-                    .with_context(|| format!("open ATIF datasource {}", path.display()))?;
-                Ok(AtifFileReader::Lines {
-                    path,
-                    lines: BufReader::new(file).lines(),
-                    line_number: 0,
-                    root_ordinal: 0,
-                })
-            }
+    fn open_file(&self, file: LocalQueryInputFile) -> Result<AtifFileReader> {
+        file.validate_unchanged()?;
+        anyhow::ensure!(
+            file.size_bytes() <= self.max_file_bytes,
+            "ATIF input {} is {} bytes, exceeding max_file_bytes {}",
+            file.path().display(),
+            file.size_bytes(),
+            self.max_file_bytes
+        );
+        let input = File::open(file.path())
+            .with_context(|| format!("open ATIF datasource {}", file.path().display()))?;
+        let mut reader = BufReader::new(BoundedCountingReader::new(input, self.max_file_bytes));
+        match file.path().extension().and_then(|value| value.to_str()) {
+            Some("jsonl" | "ndjson") => Ok(AtifFileReader::Ndjson {
+                file,
+                reader,
+                record: Vec::new(),
+                line_number: 0,
+            }),
             _ => {
-                let input = std::fs::read_to_string(&path)
-                    .with_context(|| format!("read ATIF datasource {}", path.display()))?;
-                let documents = parse_storylines(&input)
-                    .with_context(|| format!("parse ATIF datasource {}", path.display()))?;
+                let documents = parse_atif_storylines_from_reader(
+                    file.path(),
+                    &mut reader,
+                    self.max_record_bytes,
+                )
+                .with_context(|| format!("parse ATIF datasource {}", file.path().display()))?;
+                file.validate_unchanged()?;
                 Ok(AtifFileReader::Documents(documents.into_iter()))
             }
         }
@@ -91,68 +116,75 @@ impl Iterator for AtifReader {
                             return Some(Ok(document));
                         }
                     }
-                    AtifFileReader::Lines {
-                        path,
-                        lines,
+                    AtifFileReader::Ndjson {
+                        file,
+                        reader,
+                        record,
                         line_number,
-                        root_ordinal,
-                    } => {
-                        for line in lines.by_ref() {
-                            *line_number += 1;
-                            let line = match line {
-                                Ok(line) => line,
-                                Err(error) => {
-                                    return Some(Err(error).with_context(|| {
+                    } => loop {
+                        *line_number += 1;
+                        let length = match read_bounded_line(reader, record, self.max_record_bytes)
+                        {
+                            Ok(length) => length,
+                            Err(error) => {
+                                return Some(
+                                    Err(anyhow::Error::new(
+                                        InputIssue::invalid(error.to_string()).at(format!(
+                                            "{} line {}",
+                                            file.path().display(),
+                                            line_number
+                                        )),
+                                    ))
+                                    .with_context(|| {
                                         format!(
                                             "read ATIF datasource {} line {}",
-                                            path.display(),
+                                            file.path().display(),
                                             line_number
                                         )
-                                    }));
-                                }
-                            };
-                            if line.trim().is_empty() {
-                                continue;
+                                    }),
+                                );
                             }
-                            let trajectory = match AtifTrajectory::from_json_str(line.trim())
-                                .map_err(anyhow::Error::from)
+                        };
+                        if length == 0 {
+                            if let Err(error) = file.validate_unchanged() {
+                                return Some(Err(error));
+                            }
+                            break;
+                        }
+                        let line = trim_ascii_whitespace(record);
+                        if line.is_empty() {
+                            continue;
+                        }
+                        let value =
+                            match serde_json::from_slice(line)
+                                .map_err(|error| {
+                                    anyhow::Error::new(InputIssue::invalid(error.to_string()).at(
+                                        format!("{} line {}", file.path().display(), line_number),
+                                    ))
+                                })
                                 .with_context(|| {
                                     format!(
                                         "parse ATIF datasource {} line {}",
-                                        path.display(),
+                                        file.path().display(),
                                         line_number
                                     )
                                 }) {
-                                Ok(trajectory) => trajectory,
+                                Ok(value) => value,
                                 Err(error) => return Some(Err(error)),
                             };
-                            let ordinal = *root_ordinal;
-                            *root_ordinal = match root_ordinal.checked_add(1) {
-                                Some(next) => next,
-                                None => {
-                                    return Some(Err(anyhow::anyhow!(
-                                        "ATIF collection ordinal overflow"
-                                    )))
-                                }
-                            };
-                            let stories = match atif_collection_to_storylines(
-                                &trajectory,
-                                StorylineCollectionShape::Sequence,
-                                ordinal,
-                            ) {
-                                Ok(stories) => stories,
-                                Err(error) => return Some(Err(error)),
-                            };
-                            self.pending = stories.into_iter();
-                            return self.pending.next().map(Ok);
-                        }
-                    }
+                        let stories = match atif_collection_to_storylines(value) {
+                            Ok(stories) => stories,
+                            Err(error) => return Some(Err(error)),
+                        };
+                        self.pending = stories.into_iter();
+                        return self.pending.next().map(Ok);
+                    },
                 }
                 self.current = None;
             }
 
-            let path = self.files.next()?;
-            match Self::open_file(path) {
+            let file = self.files.next()?;
+            match self.open_file(file) {
                 Ok(reader) => self.current = Some(reader),
                 Err(error) => return Some(Err(error)),
             }
@@ -160,74 +192,147 @@ impl Iterator for AtifReader {
     }
 }
 
-#[cfg(test)]
-fn parse_documents(input: &str) -> Result<Vec<AtifTrajectory>> {
-    parse_documents_with_shape(input).map(|(_, documents)| documents)
+fn parse_atif_storylines_from_reader<R: BufRead>(
+    path: &Path,
+    reader: &mut R,
+    max_record_bytes: usize,
+) -> Result<Vec<StorylineDocument>> {
+    parse_atif_storylines_from_reader_with_stats(path, reader, max_record_bytes)
+        .map(|(stories, _)| stories)
 }
 
-pub(crate) fn parse_storylines(input: &str) -> Result<Vec<StorylineDocument>> {
-    let (shape, documents) = parse_documents_with_shape(input)?;
+pub(super) fn parse_atif_storylines_from_reader_with_stats<R: BufRead>(
+    path: &Path,
+    reader: &mut R,
+    max_record_bytes: usize,
+) -> Result<(Vec<StorylineDocument>, usize)> {
     let mut stories = Vec::new();
-    for (ordinal, trajectory) in documents.into_iter().enumerate() {
-        let ordinal = i64::try_from(ordinal).context("ATIF collection ordinal overflow")?;
-        stories.extend(atif_collection_to_storylines(&trajectory, shape, ordinal)?);
-    }
-    Ok(stories)
+    let visit = visit_json_stream(
+        path,
+        reader,
+        max_record_bytes,
+        &mut stories,
+        |reader, stories| {
+            push_atif_stories_from_scoped(
+                &mut ScopedJsonObjectReader::new(reader, max_record_bytes),
+                stories,
+            )
+        },
+        |record, location, stories| {
+            push_atif_stories_from_slice(record, stories).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("parse ATIF {location} in {}: {error}", path.display()),
+                )
+            })
+        },
+    )
+    .map_err(|error| InputIssue::invalid(error.to_string()).at(path.display().to_string()))
+    .with_context(|| format!("read ATIF input {}", path.display()))?;
+    anyhow::ensure!(
+        visit.record_count > 0 && !stories.is_empty(),
+        "ATIF input contains no trajectories: {}",
+        path.display()
+    );
+    Ok((stories, visit.peak_record_bytes))
 }
 
-fn parse_documents_with_shape(
-    input: &str,
-) -> Result<(StorylineCollectionShape, Vec<AtifTrajectory>)> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("ATIF input is empty");
-    }
-    if let Ok(trajectory) = serde_json::from_str::<AtifTrajectory>(trimmed) {
-        trajectory.validate().map_err(anyhow::Error::from)?;
-        return Ok((StorylineCollectionShape::Single, vec![trajectory]));
-    }
-    if let Ok(trajectories) = serde_json::from_str::<Vec<AtifTrajectory>>(trimmed) {
-        anyhow::ensure!(
-            !trajectories.is_empty(),
-            "ATIF input contains no trajectories"
-        );
-        for trajectory in &trajectories {
-            trajectory.validate().map_err(anyhow::Error::from)?;
-        }
-        return Ok((StorylineCollectionShape::Sequence, trajectories));
-    }
-    let trajectories = trimmed
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .map(|(index, line)| {
-            AtifTrajectory::from_json_str(line)
-                .map_err(anyhow::Error::from)
-                .with_context(|| format!("parse ATIF JSONL line {}", index + 1))
+fn push_atif_stories_from_slice(
+    record: &[u8],
+    stories: &mut Vec<StorylineDocument>,
+) -> io::Result<()> {
+    let mut deserializer = serde_json::Deserializer::from_slice(record);
+    let value = serde_json::Value::deserialize(&mut deserializer)
+        .and_then(|value| {
+            deserializer.end()?;
+            Ok(value)
         })
-        .collect::<Result<Vec<_>>>()?;
-    anyhow::ensure!(
-        !trajectories.is_empty(),
-        "ATIF input contains no trajectories"
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    extend_atif_stories(value, stories)
+}
+
+fn push_atif_stories_from_scoped<R: BufRead>(
+    scoped: &mut ScopedJsonObjectReader<'_, R>,
+    stories: &mut Vec<StorylineDocument>,
+) -> io::Result<()> {
+    let value = deserialize_atif_value(&mut *scoped)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if !scoped.is_finished() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ATIF JSON object was not fully consumed",
+        ));
+    }
+    extend_atif_stories(value, stories)
+}
+
+fn extend_atif_stories(
+    value: serde_json::Value,
+    stories: &mut Vec<StorylineDocument>,
+) -> io::Result<()> {
+    stories.extend(
+        atif_collection_to_storylines(value)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
     );
-    Ok((StorylineCollectionShape::Sequence, trajectories))
+    Ok(())
+}
+
+fn deserialize_atif_value<R: Read>(reader: R) -> Result<serde_json::Value> {
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let value =
+        serde_json::Value::deserialize(&mut deserializer).context("deserialize ATIF trajectory")?;
+    deserializer
+        .end()
+        .context("finish ATIF trajectory deserialization")?;
+    Ok(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+    use std::path::PathBuf;
+
+    fn atif_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/atif")
+            .join(name)
+    }
 
     #[test]
-    fn parses_object_array_and_jsonl() {
-        let object = r#"{"schema_version":"ATIF-v1.7","session_id":"s","agent":{"name":"a","version":"1"},"steps":[]}"#;
-        assert_eq!(parse_documents(object).unwrap().len(), 1);
-        assert_eq!(parse_documents(&format!("[{object}]")).unwrap().len(), 1);
-        assert_eq!(
-            parse_documents(&format!("{object}\n{object}\n"))
-                .unwrap()
-                .len(),
-            2
+    fn streams_atif_fixture_without_whole_file_buffer() {
+        let path = atif_fixture("dialogue_10.json");
+        let raw = std::fs::read(&path).unwrap();
+        let mut reader = Cursor::new(raw);
+        let stories = parse_atif_storylines_from_reader(
+            &path,
+            &mut reader,
+            DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES,
+        )
+        .unwrap();
+        assert!(!stories.is_empty());
+    }
+
+    #[test]
+    fn ndjson_reader_enforces_the_configured_record_limit() {
+        let input = tempfile::NamedTempFile::with_suffix(".ndjson").unwrap();
+        let trajectory: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(atif_fixture("dialogue_10.json")).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            input.path(),
+            format!("{}\n", serde_json::to_string(&trajectory).unwrap()),
+        )
+        .unwrap();
+        let manifest = LocalQueryManifest::for_format(input.path(), DocumentFormat::Atif).unwrap();
+        let mut reader =
+            AtifReader::from_manifest(&manifest, DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES, 512);
+
+        let error = reader.next().unwrap().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("max_record_bytes 512"),
+            "{error:#}"
         );
-        assert!(parse_documents("").is_err());
     }
 }

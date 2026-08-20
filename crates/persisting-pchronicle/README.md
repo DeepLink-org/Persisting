@@ -31,8 +31,8 @@ events.lance ──单向投影──► StorylineDocument ──► Storyline �
 | `Storyline` | Storyline 三表 Lance | `runs`、`steps`、`tool_calls` | 权威二进制表示 |
 | `AgenticMd` | Markdown 文件 | `runs`、`steps`、`tool_calls` | 可读编码，可双向转换 |
 | `Atif` | ATIF JSON/JSONL/NDJSON | `runs`、`steps`、`tool_calls` | ATIF v1.7 对齐，可双向转换 |
-| `OpenaiMsg` | OpenAI message corpus JSON | `runs`、`steps`、`tool_calls` | 通过分层 residual 无损往返 |
-| `Actf` | ACTF JSON | `runs`、`steps`、`tool_calls` | 通过分层 residual 无损往返 |
+| `OpenaiMsg` | OpenAI message corpus JSON | `runs`、`steps`、`tool_calls` | 通过分层 unknown fields 无损往返 |
+| `Actf` | ACTF JSON | `runs`、`steps`、`tool_calls` | 通过分层 unknown fields 无损往返 |
 
 统一读取入口是 `document::open_document`；返回的 `DocumentSource` 隐藏具体 provider，
 并提供有预算上限的物化、逐条 Storyline 回调和 DataFusion 注册。写入仍使用
@@ -48,17 +48,27 @@ ACTF       → Storyline Lance → ACTF
 OpenAI Msg → Storyline Lance → OpenAI Msg
 ```
 
-保真内容包括 ATIF 的 missing/null/value 三态、嵌套 subagent 顺序、`trajectory_id` 与
-run-scoped `session_id` 的独立身份、RFC3339 原始偏移与亚毫秒精度，以及 ACTF/OpenAI 的
-未知字段、数组顺序、attempt 分组和多 session 关系。外围格式无法映射到正式 Storyline
-字段的内容保存在对应语义层级的受控 residual 中；不会保存完整原始对象副本。跨格式转换
-只保证目标格式能够表达的语义。Canonical Event → Storyline 是有意的有损规范化投影，
-不属于上述无损承诺。
+已建模的 Storyline 语义（包括嵌套 subagent 顺序、`trajectory_id` 与 run-scoped
+`session_id` 的独立身份、RFC3339 原始偏移与亚毫秒精度，以及 ACTF/OpenAI 的数组顺序、
+attempt 分组和多 session 关系）按其规范化表示保存。已知字段的 missing/null 区别，以及
+输入的物理容器形态（例如 ATIF 顶层单对象与单元素数组），都会被规范化，因而不作为
+往返保真承诺。
 
-ATIF 的顶层单对象/数组形态与 root 顺序作为格式无关的 Storyline 集合语义随 Lance
-持久化，不依赖进程内 sidecar；Lance 内部另用 `storage_ordinal` 维护全局稳定读取顺序，
-不会把多次增量写入都退化到 document id 排序。无法用任何 Storyline 表达的空 ATIF 数组
-或空 OpenAI 信封会 fail closed，而不是接受后在导出时静默丢失容器字段。
+源格式中 Storyline 未建模的键保存在受控 unknown fields：键名是带命名空间的精确
+[RFC 6901 JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901)；未知字段值不保存完整原始对象
+副本。未知键即使值为 `null` 也会保留。写回同一格式时，目标格式的规范字段优先；若
+unknown field 与它们冲突，编码会 fail closed，而不会覆盖目标字段或静默丢弃冲突。
+
+跨格式、多跳转换使用保留的 version-1 `_storyline` envelope 携带这些 unknown fields，确保目标
+格式不能直接表示的源语义仍可在后续转换中恢复。每条 trajectory 跨所有来源默认最多
+4,096 个 unknown fields、最多 1 MiB；任一上限溢出都会拒绝整条 Storyline，而非截断或只
+保留部分未知字段。Canonical Event → Storyline 是有意的有损规范化投影，不属于上述无损
+承诺。
+
+Storyline Lance 的 `objects.lance` 可用于 unknown field 值的内部去重/卸载优化；它从不出现在
+公共 Storyline 模型或任何公共 wire 输出中。Lance 内部另用 `storage_ordinal` 维护全局稳定
+读取顺序，不会把多次增量写入都退化到 document id 排序。无法用任何 Storyline 表达的空
+ATIF 数组或空 OpenAI 信封会 fail closed，而不是接受后在导出时静默丢失容器字段。
 
 ## DataFusion 能力
 
@@ -70,7 +80,7 @@ ATIF 的顶层单对象/数组形态与 root 顺序作为格式无关的 Storyli
 | Storyline Lance | 是 | expression-dependent | 是 | 是 | 否 | 是 |
 | ATIF | 是 | inexact | 是 | 否 | 是 | 否 |
 | OpenAI Msg | 是 | unsupported | 是 | 否 | 否 | 否 |
-| ACTF | 是 | unsupported | 是 | 否 | 否 | 否 |
+| ACTF | 是 | inexact | 是 | 否 | 是 | 否 |
 | AgenticMD | 是 | unsupported | 否 | 否 | 否 | 否 |
 
 Canonical Event 保留 Lance projection/filter/limit pushdown、scalar index、pinned manifest

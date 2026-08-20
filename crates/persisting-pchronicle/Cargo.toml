@@ -93,6 +93,10 @@ name = "storyline_lance_roundtrip"
 required-features = ["lance-store"]
 
 [[test]]
+name = "conversion_semantics"
+required-features = ["lance-store"]
+
+[[test]]
 name = "atif_lance_corpus"
 required-features = ["lance-store"]
 

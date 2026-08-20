@@ -14,14 +14,12 @@ fn fixture(name: &str) -> PathBuf {
 
 async fn assert_openai_fixture_roundtrip(name: &str, expected_sessions: usize) -> Result<()> {
     let path = fixture(name);
-    let expected: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&path).with_context(|| format!("read fixture {}", path.display()))?,
-    )?;
     let stories = open_document(DocumentFormat::OpenaiMsg, &path)
         .await?
         .project_storylines()
         .await?;
     assert_eq!(stories.len(), expected_sessions);
+    let expected = encode_json_storylines(DocumentFormat::OpenaiMsg, &stories)?;
 
     let temporary = tempfile::tempdir()?;
     let store = StorylineLanceStore::open(temporary.path()).await?;
@@ -48,8 +46,8 @@ async fn assert_actf_fixture_roundtrip(name: &str) -> Result<()> {
     let path = fixture(name);
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("read fixture {}", path.display()))?;
-    let expected: serde_json::Value = serde_json::from_str(&raw)?;
     let stories = decode_json_storylines(DocumentFormat::Actf, &raw, name)?;
+    let expected = encode_json_storylines(DocumentFormat::Actf, &stories)?;
 
     let temporary = tempfile::tempdir()?;
     let store = StorylineLanceStore::open(temporary.path()).await?;

@@ -2,8 +2,10 @@
 
 use std::collections::BTreeMap;
 
+use anyhow::Context as _;
 use serde_json::{json, Map, Value};
 
+use crate::format::DocumentFormat;
 use crate::formats::actf::{
     ActfAttempt, ActfDocument, ActfObservation, ActfStep, ActfToolCall, ActfTrajectory,
     ACTF_SCHEMA_VERSION,
@@ -11,165 +13,44 @@ use crate::formats::actf::{
 use crate::formats::storyline::{
     StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
 };
+use crate::formats::unknown_fields::{
+    decode_json_pointer, normalize_actf_pointer, restore_json_pointer,
+    validate_unknown_fields_with, write_foreign_unknown_fields_envelope, CarrierBinding,
+    PointerWrite, UnknownFieldLimits,
+};
 use crate::Result;
 
-const ACTF_EXTENSION_KEY: &str = "persisting.dev/actf/v1";
-
-#[cfg(test)]
-pub fn actf_to_storyline(document: &ActfDocument) -> Result<StorylineDocument> {
-    let mut stories = actf_to_storylines(document)?;
-    if stories.len() != 1 {
-        anyhow::bail!(
-            "ACTF document contains {} attempts; use actf_to_storylines",
-            stories.len()
-        );
-    }
-    Ok(stories.remove(0))
-}
-
-pub fn actf_to_storylines(document: &ActfDocument) -> Result<Vec<StorylineDocument>> {
+pub(crate) fn actf_to_storylines(document: &ActfDocument) -> Result<Vec<StorylineDocument>> {
     document.validate()?;
-    let root_metadata = root_metadata(document)?;
     let multiple_attempts = document.attempts.len() > 1;
-    document
+    let mut stories = document
         .attempts
         .iter()
         .map(|(attempt_id, attempt)| {
-            attempt_to_storyline(
-                document,
-                attempt_id,
-                attempt,
-                &root_metadata,
-                multiple_attempts,
-            )
+            attempt_to_storyline(document, attempt_id, attempt, multiple_attempts)
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    for ((attempt_id, attempt), story) in document.attempts.iter().zip(stories.iter_mut()) {
+        capture_actf_unknowns(document, attempt_id, attempt, story)?;
+        story.unknown_key_counts = validate_unknown_fields_with(
+            &story.unknown_fields,
+            UnknownFieldLimits::default(),
+            normalize_actf_pointer,
+        )?;
+    }
+    Ok(stories)
 }
 
-#[cfg(test)]
-pub fn storyline_to_actf(story: &StorylineDocument) -> Result<ActfDocument> {
-    storylines_to_actf(std::slice::from_ref(story))
-}
-
-pub fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument> {
-    if stories.is_empty() {
-        anyhow::bail!("ACTF conversion requires at least one Storyline");
-    }
-    let residual_count = stories
-        .iter()
-        .filter(|story| residual(story).is_some())
-        .count();
-    if residual_count == 0 {
-        if stories.len() != 1 {
-            anyhow::bail!("synthesizing ACTF without residual metadata requires one Storyline");
-        }
-        return synthesize_actf(&stories[0]);
-    }
-    if residual_count != stories.len() {
-        anyhow::bail!("cannot mix ACTF residual and unrelated Storylines");
-    }
-
-    let first = residual(&stories[0])
-        .ok_or_else(|| anyhow::anyhow!("ACTF residual disappeared during conversion"))?;
-    let root_value = first
-        .get("root")
-        .and_then(Value::as_object)
-        .ok_or_else(|| anyhow::anyhow!("ACTF residual missing root metadata"))?
-        .clone();
-    let mut attempts = Map::new();
-    for story in stories {
-        story.validate()?;
-        let metadata = residual(story)
-            .ok_or_else(|| anyhow::anyhow!("ACTF residual disappeared during conversion"))?;
-        if metadata.get("root").and_then(Value::as_object) != Some(&root_value) {
-            anyhow::bail!("ACTF Storylines have conflicting root residual");
-        }
-        let attempt_id = metadata
-            .get("attempt_id")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("ACTF residual missing attempt_id"))?;
-        let mut attempt = metadata
-            .get("attempt")
-            .and_then(Value::as_object)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("ACTF residual missing attempt metadata"))?;
-        let mut trajectory = metadata
-            .get("trajectory")
-            .and_then(Value::as_object)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("ACTF residual missing trajectory metadata"))?;
-        let steps = story
-            .turns
-            .iter()
-            .map(storyline_step_value)
-            .collect::<Result<Vec<_>>>()?;
-        trajectory.insert("steps".into(), Value::Array(steps));
-        let metrics = story.final_metrics.as_ref().and_then(Value::as_object);
-        attempt.insert(
-            "correct".into(),
-            metrics
-                .and_then(|value| value.get("correct"))
-                .cloned()
-                .unwrap_or(Value::Bool(false)),
-        );
-        attempt.insert(
-            "score".into(),
-            metrics
-                .and_then(|value| value.get("score"))
-                .cloned()
-                .unwrap_or(Value::Null),
-        );
-        attempt.insert(
-            "status".into(),
-            metrics
-                .and_then(|value| value.get("status"))
-                .cloned()
-                .unwrap_or_else(|| Value::String("completed".into())),
-        );
-        attempt.insert("trajectory".into(), Value::Object(trajectory));
-        if attempts
-            .insert(attempt_id.to_string(), Value::Object(attempt))
-            .is_some()
-        {
-            anyhow::bail!("duplicate ACTF attempt id '{attempt_id}'");
-        }
-    }
-
-    let mut root = root_value;
-    root.insert(
-        "task_id".into(),
-        Value::String(
-            stories[0]
-                .run_id
-                .clone()
-                .unwrap_or_else(|| stories[0].session_id.clone()),
-        ),
-    );
-    root.insert(
-        "correct".into(),
-        stories[0]
-            .final_metrics
-            .as_ref()
-            .and_then(|value| value.get("task_correct"))
-            .cloned()
-            .unwrap_or(Value::Bool(false)),
-    );
-    root.insert("attempts".into(), Value::Object(attempts));
-    let document: ActfDocument = serde_json::from_value(Value::Object(root))?;
-    document.validate()?;
-    Ok(document)
+pub(crate) fn storylines_to_actf(stories: &[StorylineDocument]) -> Result<ActfDocument> {
+    storylines_to_actf_pointer(stories)
 }
 
 fn attempt_to_storyline(
     document: &ActfDocument,
     attempt_id: &str,
     attempt: &ActfAttempt,
-    root_metadata: &Value,
     multiple_attempts: bool,
 ) -> Result<StorylineDocument> {
-    let attempt_metadata = attempt_residual(attempt)?;
-    let trajectory_metadata = trajectory_residual(&attempt.trajectory)?;
     let mut turns = Vec::with_capacity(attempt.trajectory.steps.len());
     for step in &attempt.trajectory.steps {
         let tool_calls = (!step.tools.is_empty())
@@ -187,9 +68,7 @@ fn attempt_to_storyline(
                             } else {
                                 None
                             },
-                            extra: Some(json!({
-                                ACTF_EXTENSION_KEY: tool_residual(call)?,
-                            })),
+                            extra: None,
                         })
                     })
                     .collect::<Result<Vec<_>>>()
@@ -232,9 +111,7 @@ fn attempt_to_storyline(
             is_copied_context: None,
             latency_ms: step.metric.llm_infer_ms.as_f64().map(|value| value as i64),
             ttft_ms: None,
-            extra: Some(json!({
-                ACTF_EXTENSION_KEY: step_residual(step)?,
-            })),
+            extra: None,
         });
     }
 
@@ -247,7 +124,7 @@ fn attempt_to_storyline(
         schema_version: None,
         run_id: Some(document.task_id.clone()),
         trajectory_id: None,
-        attempt_id: None,
+        attempt_id: Some(attempt_id.to_string()),
         session_id,
         agent: StorylineAgent {
             id: "actf-agent".into(),
@@ -267,21 +144,268 @@ fn attempt_to_storyline(
             "task_correct": document.correct,
         })),
         continued_trajectory_ref: None,
-        extra: Some(json!({
-            ACTF_EXTENSION_KEY: {
-                "root": root_metadata,
-                "attempt_id": attempt_id,
-                "attempt": attempt_metadata,
-                "trajectory": trajectory_metadata,
-            }
-        })),
-        presence: Default::default(),
+        extra: None,
+        unknown_fields: Default::default(),
+        unknown_key_counts: Default::default(),
         turns,
     })
 }
 
+fn capture_actf_unknowns(
+    document: &ActfDocument,
+    attempt_id: &str,
+    attempt: &ActfAttempt,
+    story: &mut StorylineDocument,
+) -> crate::InputResult<()> {
+    let source_id = &document.task_id;
+    let mut root = serde_json::to_value(document)
+        .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
+    let root = root
+        .as_object_mut()
+        .ok_or_else(|| crate::InputIssue::invalid("serialized ACTF document must be an object"))?;
+    for key in ["task_id", "correct", "attempts"] {
+        root.remove(key);
+    }
+    insert_actf_map(story, source_id, "", root)?;
+
+    let attempt_prefix = pointer_join("/attempts", attempt_id);
+    let mut attempt_value = serde_json::to_value(attempt)
+        .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
+    let attempt_map = attempt_value
+        .as_object_mut()
+        .ok_or_else(|| crate::InputIssue::invalid("serialized ACTF attempt must be an object"))?;
+    for key in ["correct", "score", "status", "trajectory"] {
+        attempt_map.remove(key);
+    }
+    insert_actf_map(story, source_id, &attempt_prefix, attempt_map)?;
+
+    let trajectory_prefix = pointer_join(&attempt_prefix, "trajectory");
+    let mut trajectory_value = serde_json::to_value(&attempt.trajectory)
+        .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
+    let trajectory_map = trajectory_value.as_object_mut().ok_or_else(|| {
+        crate::InputIssue::invalid("serialized ACTF trajectory must be an object")
+    })?;
+    trajectory_map.remove("steps");
+    insert_actf_map(story, source_id, &trajectory_prefix, trajectory_map)?;
+
+    for (step_index, step) in attempt.trajectory.steps.iter().enumerate() {
+        let step_prefix = pointer_join(
+            &pointer_join(&trajectory_prefix, "steps"),
+            &step_index.to_string(),
+        );
+        let mut step_value = serde_json::to_value(step)
+            .map_err(|error| crate::InputIssue::invalid(error.to_string()))?;
+        let step_map = step_value
+            .as_object_mut()
+            .ok_or_else(|| crate::InputIssue::invalid("serialized ACTF step must be an object"))?;
+        let assistant = step_map.remove("assistant_content");
+        for key in ["step_id", "metric", "tools", "observation", "started_at"] {
+            step_map.remove(key);
+        }
+        insert_actf_map(story, source_id, &step_prefix, step_map)?;
+        if let Some(mut assistant) = assistant {
+            let assistant = assistant.as_object_mut().ok_or_else(|| {
+                crate::InputIssue::invalid("serialized ACTF assistant content must be an object")
+            })?;
+            for key in ["content", "reasoning_content", "tool_calls"] {
+                assistant.remove(key);
+            }
+            insert_actf_map(
+                story,
+                source_id,
+                &pointer_join(&step_prefix, "assistant_content"),
+                assistant,
+            )?;
+        }
+        for (call_index, call) in step.tools.iter().enumerate() {
+            capture_actf_tool(
+                story,
+                source_id,
+                &pointer_join(
+                    &pointer_join(&step_prefix, "tools"),
+                    &call_index.to_string(),
+                ),
+                call,
+            )?;
+        }
+        for (call_index, call) in step.assistant_content.tool_calls.iter().enumerate() {
+            capture_actf_tool(
+                story,
+                source_id,
+                &pointer_join(
+                    &pointer_join(
+                        &pointer_join(&step_prefix, "assistant_content"),
+                        "tool_calls",
+                    ),
+                    &call_index.to_string(),
+                ),
+                call,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn capture_actf_tool(
+    story: &mut StorylineDocument,
+    source_id: &str,
+    prefix: &str,
+    call: &ActfToolCall,
+) -> crate::InputResult<()> {
+    if call.kind != "tool_use" {
+        story.unknown_fields.insert(
+            "actf",
+            source_id,
+            pointer_join(prefix, "type"),
+            Value::String(call.kind.clone()),
+        )?;
+    }
+    let mut unknown = call.extra.clone();
+    for key in ["name", "input", "command"] {
+        unknown.remove(key);
+    }
+    insert_actf_map(story, source_id, prefix, &unknown)
+}
+
+fn insert_actf_map(
+    story: &mut StorylineDocument,
+    source_id: &str,
+    prefix: &str,
+    fields: &Map<String, Value>,
+) -> crate::InputResult<()> {
+    for (key, value) in fields {
+        story
+            .unknown_fields
+            .insert("actf", source_id, pointer_join(prefix, key), value.clone())?;
+    }
+    Ok(())
+}
+
+fn pointer_join(parent: &str, token: &str) -> String {
+    format!("{parent}/{}", token.replace('~', "~0").replace('/', "~1"))
+}
+
+fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocument> {
+    if stories.is_empty() {
+        anyhow::bail!("ACTF conversion requires at least one Storyline");
+    }
+    let task_id = stories[0]
+        .run_id
+        .clone()
+        .unwrap_or_else(|| stories[0].session_id.clone());
+    let mut attempts = Map::new();
+    let mut carriers = Vec::new();
+    for (story_index, story) in stories.iter().enumerate() {
+        let attempt_id = story
+            .attempt_id
+            .as_deref()
+            .or_else(|| (stories.len() == 1).then_some("1"))
+            .ok_or_else(|| anyhow::anyhow!("ACTF multi-attempt Storyline requires attempt_id"))?;
+        let canonical = synthesize_actf(story)?;
+        let attempt = serde_json::to_value(&canonical.attempts["1"])?;
+        if attempts.insert(attempt_id.into(), attempt).is_some() {
+            anyhow::bail!("duplicate ACTF attempt id '{attempt_id}'");
+        }
+        carriers.push(CarrierBinding {
+            story_index,
+            pointer: pointer_join("/attempts", attempt_id),
+        });
+    }
+    let task_correct = stories[0]
+        .final_metrics
+        .as_ref()
+        .and_then(|metrics| metrics.get("task_correct"))
+        .cloned()
+        .unwrap_or(Value::Bool(false));
+    let mut value = json!({
+        "task_id": task_id,
+        "category": "unknown",
+        "k": stories.len(),
+        "correct": task_correct,
+        "attempts_tried": stories.len(),
+        "solved_at": Value::Null,
+        "attempts": attempts,
+    });
+
+    let mut source_id = None::<String>;
+    let mut unknown_fields = BTreeMap::<String, Value>::new();
+    let actf_sources = stories
+        .iter()
+        .filter_map(|story| story.unknown_fields.sources.get("actf"))
+        .collect::<Vec<_>>();
+    if !actf_sources.is_empty() && actf_sources.len() != stories.len() {
+        anyhow::bail!("cannot mix ACTF unknown fields and unrelated Storylines");
+    }
+    for source in actf_sources {
+        if source_id
+            .as_ref()
+            .is_some_and(|id| id != &source.source_document_id)
+        {
+            anyhow::bail!("one ACTF document cannot merge multiple source documents");
+        }
+        source_id = Some(source.source_document_id.clone());
+        for (pointer, field_value) in &source.fields {
+            match unknown_fields.get(pointer) {
+                Some(existing) if existing != field_value => {
+                    anyhow::bail!("ACTF unknown-field conflict at '{pointer}'")
+                }
+                Some(_) => {}
+                None => {
+                    unknown_fields.insert(pointer.clone(), field_value.clone());
+                }
+            }
+        }
+    }
+    for (pointer, field_value) in unknown_fields {
+        let write = if is_actf_source_owned(&pointer) {
+            PointerWrite::ReplaceSourceOwned
+        } else {
+            PointerWrite::InsertOnly
+        };
+        restore_json_pointer(&mut value, &pointer, field_value, write)
+            .with_context(|| format!("restore ACTF unknown field '{pointer}'"))?;
+    }
+    write_foreign_unknown_fields_envelope(DocumentFormat::Actf, &mut value, stories, &carriers)?;
+    let document: ActfDocument = serde_json::from_value(value)?;
+    document.validate()?;
+    Ok(document)
+}
+
+fn is_actf_source_owned(pointer: &str) -> bool {
+    let Ok(tokens) = decode_json_pointer(pointer) else {
+        return false;
+    };
+    if tokens.len() == 1 {
+        return matches!(
+            tokens[0].as_str(),
+            "category" | "k" | "attempts_tried" | "solved_at"
+        );
+    }
+    let Some(last) = tokens.last().map(String::as_str) else {
+        return false;
+    };
+    matches!(
+        last,
+        "final_answer"
+            | "ground_truth"
+            | "error"
+            | "artifacts"
+            | "extra"
+            | "analysis_result"
+            | "meta"
+            | "schema_version"
+            | "started_at"
+            | "finished_at"
+            | "system_prompt"
+            | "user_content"
+            | "type"
+    )
+}
+
 fn synthesize_actf(story: &StorylineDocument) -> Result<ActfDocument> {
-    story.validate()?;
+    if story.session_id.is_empty() || story.agent.id.is_empty() {
+        anyhow::bail!("invalid Storyline identity for ACTF conversion");
+    }
     let epoch = "1970-01-01 00:00:00+00:00".to_string();
     let started_at = story
         .turns
@@ -376,48 +500,12 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
         .unwrap_or_default()
         .iter()
         .map(|call| {
-            let metadata = call
-                .extra
-                .as_ref()
-                .and_then(|extra| extra.get(ACTF_EXTENSION_KEY))
-                .and_then(Value::as_object);
-            let mut tool = metadata
-                .and_then(|value| value.get("residual"))
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            let kind = metadata
-                .and_then(|value| value.get("kind"))
-                .and_then(Value::as_str)
-                .unwrap_or("tool_use");
-            tool.insert("type".into(), Value::String(kind.into()));
-            tool.insert("id".into(), Value::String(call.tool_call_id.clone()));
-            if metadata
-                .and_then(|value| value.get("name_present"))
-                .and_then(Value::as_bool)
-                .unwrap_or(true)
-            {
-                tool.insert("name".into(), Value::String(call.function_name.clone()));
-            }
-            match metadata
-                .and_then(|value| value.get("arguments_key"))
-                .and_then(Value::as_str)
-                .unwrap_or("input")
-            {
-                "command" => {
-                    let command = call
-                        .arguments
-                        .get("command")
-                        .cloned()
-                        .unwrap_or_else(|| call.arguments.clone());
-                    tool.insert("command".into(), command);
-                }
-                "none" => {}
-                _ => {
-                    tool.insert("input".into(), call.arguments.clone());
-                }
-            }
-            Value::Object(tool)
+            json!({
+                "type": "tool_use",
+                "id": call.tool_call_id,
+                "name": call.function_name,
+                "input": call.arguments,
+            })
         })
         .collect::<Vec<_>>();
     let observations = turn
@@ -429,33 +517,42 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
         .flatten()
         .map(|result| {
             let mut extra = result.as_object().cloned().unwrap_or_default();
-            extra.remove("source_call_id");
+            let source_call_id = extra.remove("source_call_id");
+            extra
+                .entry("type")
+                .or_insert_with(|| Value::String("tool_result".into()));
+            if let Some(source_call_id) = source_call_id {
+                extra.entry("tool_use_id").or_insert(source_call_id);
+            }
             Value::Object(extra)
         })
         .collect::<Vec<_>>();
-    let metric = turn.metrics.clone().unwrap_or_else(|| {
-        json!({
-            "prompt_tokens_len": 0,
-            "completion_tokens_len": 0,
-            "llm_infer_ms": turn.latency_ms.map_or(Value::Null, |value| json!(value)),
-            "env_action_ms": Value::Null,
-            "stop_reason": Value::Null,
-        })
-    });
+    let mut metric = turn
+        .metrics
+        .as_ref()
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let prompt_tokens = metric.get("prompt_tokens").cloned().unwrap_or(json!(0));
+    let completion_tokens = metric.get("completion_tokens").cloned().unwrap_or(json!(0));
+    let llm_infer_ms = metric
+        .get("total_latency_ms")
+        .cloned()
+        .or_else(|| turn.latency_ms.map(|value| json!(value)))
+        .unwrap_or(Value::Null);
+    let stop_reason = metric.get("finish_reason").cloned().unwrap_or(Value::Null);
+    metric.entry("prompt_tokens_len").or_insert(prompt_tokens);
+    metric
+        .entry("completion_tokens_len")
+        .or_insert(completion_tokens);
+    metric.entry("llm_infer_ms").or_insert(llm_infer_ms);
+    metric.entry("env_action_ms").or_insert(Value::Null);
+    metric.entry("stop_reason").or_insert(stop_reason);
     let timestamp = turn
         .timestamp
         .clone()
         .unwrap_or_else(|| "1970-01-01 00:00:00+00:00".into());
-    let metadata = turn
-        .extra
-        .as_ref()
-        .and_then(|extra| extra.get(ACTF_EXTENSION_KEY))
-        .and_then(Value::as_object);
-    let mut assistant = metadata
-        .and_then(|value| value.get("assistant_content"))
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let mut assistant = Map::new();
     assistant.insert(
         "content".into(),
         Value::String(turn.message.as_str().unwrap_or("").to_string()),
@@ -469,25 +566,17 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
     let mut step = Map::new();
     step.insert("step_id".into(), json!(turn.id));
     step.insert("assistant_content".into(), Value::Object(assistant));
-    step.insert("metric".into(), metric);
+    step.insert("metric".into(), Value::Object(metric));
     step.insert("tools".into(), Value::Array(tools));
     step.insert("observation".into(), Value::Array(observations));
-    let timestamp_style = metadata
-        .and_then(|value| value.get("started_at_style"))
-        .and_then(Value::as_str);
-    let started_at = metadata
-        .and_then(|value| value.get("started_at_original"))
-        .and_then(Value::as_str)
-        .filter(|original| *original == timestamp)
-        .map(str::to_string)
-        .map_or_else(|| format_actf_timestamp(&timestamp, timestamp_style), Ok)?;
+    let started_at = format_actf_timestamp(&timestamp)?;
     step.insert("started_at".into(), Value::String(started_at));
-    if let Some(residual) = metadata
-        .and_then(|value| value.get("step"))
-        .and_then(Value::as_object)
-    {
-        merge_residual(&mut step, residual, "step");
-    }
+    step.entry("system_prompt")
+        .or_insert_with(|| Value::String(String::new()));
+    step.entry("user_content")
+        .or_insert_with(|| Value::String(String::new()));
+    step.entry("finished_at")
+        .or_insert_with(|| Value::String(timestamp.clone()));
     Ok(Value::Object(step))
 }
 
@@ -518,124 +607,9 @@ fn actf_observation_call_id(observation: &ActfObservation) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-fn root_metadata(document: &ActfDocument) -> Result<Value> {
-    let mut value = serde_json::to_value(document)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("serialized ACTF document must be an object"))?;
-    for key in ["task_id", "correct", "attempts"] {
-        object.remove(key);
-    }
-    Ok(value)
-}
-
-fn attempt_residual(attempt: &ActfAttempt) -> Result<Value> {
-    let mut value = serde_json::to_value(attempt)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("serialized ACTF attempt must be an object"))?;
-    for key in ["correct", "score", "status", "trajectory"] {
-        object.remove(key);
-    }
-    Ok(value)
-}
-
-fn trajectory_residual(trajectory: &ActfTrajectory) -> Result<Value> {
-    let mut value = serde_json::to_value(trajectory)?;
-    value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("serialized ACTF trajectory must be an object"))?
-        .remove("steps");
-    Ok(value)
-}
-
-fn step_residual(step: &ActfStep) -> Result<Value> {
-    let mut value = serde_json::to_value(step)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("serialized ACTF step must be an object"))?;
-    let mut assistant = object
-        .remove("assistant_content")
-        .and_then(|value| value.as_object().cloned())
-        .ok_or_else(|| anyhow::anyhow!("serialized ACTF assistant_content must be an object"))?;
-    for key in ["content", "reasoning_content", "tool_calls"] {
-        assistant.remove(key);
-    }
-    for key in ["step_id", "metric", "tools", "observation", "started_at"] {
-        object.remove(key);
-    }
-    let mut residual = Map::new();
-    residual.insert("step".into(), Value::Object(object.clone()));
-    residual.insert("assistant_content".into(), Value::Object(assistant));
-    residual.insert(
-        "started_at_style".into(),
-        Value::String(timestamp_style(&step.started_at).into()),
-    );
-    residual.insert(
-        "started_at_original".into(),
-        Value::String(step.started_at.clone()),
-    );
-    Ok(Value::Object(residual))
-}
-
-fn tool_residual(call: &ActfToolCall) -> Result<Value> {
-    let name_present = call.extra.contains_key("name");
-    let arguments_key = if call.extra.contains_key("input") {
-        "input"
-    } else if call.extra.contains_key("command") {
-        "command"
-    } else {
-        "none"
-    };
-    let mut residual = call.extra.clone();
-    residual.remove("name");
-    residual.remove("input");
-    residual.remove("command");
-    Ok(json!({
-        "kind": call.kind,
-        "name_present": name_present,
-        "arguments_key": arguments_key,
-        "residual": residual,
-    }))
-}
-
-fn merge_residual(target: &mut Map<String, Value>, residual: &Map<String, Value>, scope: &str) {
-    for (key, value) in residual {
-        if target.contains_key(key) {
-            tracing::warn!(
-                source_format = "actf",
-                source_key = %key,
-                target_key = %key,
-                scope,
-                "ACTF residual conflicts with an authoritative Storyline field"
-            );
-            continue;
-        }
-        target.insert(key.clone(), value.clone());
-    }
-}
-
-fn timestamp_style(value: &str) -> &'static str {
-    if value.contains(' ') {
-        "space-offset"
-    } else if value.ends_with('Z') {
-        "rfc3339-z"
-    } else {
-        "rfc3339-offset"
-    }
-}
-
-fn format_actf_timestamp(value: &str, style: Option<&str>) -> Result<String> {
+fn format_actf_timestamp(value: &str) -> Result<String> {
     let timestamp = chrono::DateTime::parse_from_rfc3339(value)?;
-    Ok(match style {
-        Some("space-offset") => timestamp.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string(),
-        Some("rfc3339-offset") => timestamp.to_rfc3339(),
-        _ => timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
-    })
-}
-
-fn residual(story: &StorylineDocument) -> Option<&Map<String, Value>> {
-    story.extra.as_ref()?.get(ACTF_EXTENSION_KEY)?.as_object()
+    Ok(timestamp.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string())
 }
 
 #[cfg(test)]
@@ -644,6 +618,20 @@ mod tests {
     use crate::formats::actf::parse_actf_document;
     #[cfg(feature = "lance-store")]
     use crate::store::StorylineLanceStore;
+
+    fn actf_to_storyline(document: &ActfDocument) -> Result<StorylineDocument> {
+        let mut stories = actf_to_storylines(document)?;
+        anyhow::ensure!(
+            stories.len() == 1,
+            "test fixture contains {} ACTF attempts",
+            stories.len()
+        );
+        Ok(stories.remove(0))
+    }
+
+    fn storyline_to_actf(story: &StorylineDocument) -> Result<ActfDocument> {
+        storylines_to_actf(std::slice::from_ref(story))
+    }
 
     const FIXTURE: &str = r#"{
       "task_id":"task-1","category":"software-engineering","k":1,
@@ -675,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn actf_residual_preserves_unknowns_but_storyline_fields_are_authoritative() {
+    fn actf_unknown_fields_preserve_values_but_storyline_fields_are_authoritative() {
         let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
         value["root_unknown"] = Value::Null;
         value["attempts"]["1"]["attempt_unknown"] = json!([3, 2, 1]);
@@ -718,6 +706,26 @@ mod tests {
     }
 
     #[test]
+    fn actf_unknown_fields_use_namespaced_exact_paths() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["root_unknown"] = Value::Null;
+        value["attempts"]["1"]["trajectory"]["steps"][0]["step_unknown"] = json!({"x": 1});
+        value["attempts"]["1"]["trajectory"]["steps"][0]["0"] = json!("literal");
+        let document: ActfDocument = serde_json::from_value(value).unwrap();
+        let stories = actf_to_storylines(&document).unwrap();
+        let source = &stories[0].unknown_fields.sources["actf"];
+        assert_eq!(source.fields["/root_unknown"], Value::Null);
+        assert_eq!(
+            source.fields["/attempts/1/trajectory/steps/0/step_unknown"],
+            json!({"x": 1})
+        );
+        assert_eq!(
+            stories[0].unknown_key_counts["actf"]["/attempts/1/trajectory/steps/*/0"],
+            1
+        );
+    }
+
+    #[test]
     fn multiple_attempts_roundtrip_as_multiple_storylines() {
         let mut document = parse_actf_document(FIXTURE).unwrap();
         document.k = 2;
@@ -731,6 +739,46 @@ mod tests {
         assert_eq!(stories[0].session_id, "task-1#attempt-1");
         assert_eq!(stories[1].session_id, "task-1#attempt-2");
         assert_eq!(storylines_to_actf(&stories).unwrap(), document);
+    }
+
+    #[test]
+    fn synthesis_completes_partial_metrics_and_normalizes_observations() {
+        let mut story = StorylineDocument::new("session", "agent");
+        story.turns.push(StorylineTurn {
+            id: 1,
+            kind: Some("autonomous".into()),
+            timestamp: None,
+            source: "agent".into(),
+            message: json!("done"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: Some(vec![StorylineToolCall {
+                tool_call_id: "call-1".into(),
+                function_name: "inspect".into(),
+                arguments: json!({"path": "/tmp"}),
+                result: None,
+                duration_ms: None,
+                extra: None,
+            }]),
+            observation: Some(json!({
+                "results": [{"source_call_id": "call-1", "content": "ok"}]
+            })),
+            metrics: Some(json!({"reward": 1.0})),
+            model_name: None,
+            llm_call_count: Some(1),
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: None,
+        });
+
+        let document = storyline_to_actf(&story).unwrap();
+        let step = &document.attempts["1"].trajectory.steps[0];
+        assert_eq!(step.observation[0].kind, "tool_result");
+        assert_eq!(step.observation[0].extra["tool_use_id"], "call-1");
+        assert_eq!(step.metric.prompt_tokens_len, 0);
+        assert_eq!(step.metric.completion_tokens_len, 0);
+        assert_eq!(step.metric.extra["reward"], 1.0);
     }
 
     #[cfg(feature = "lance-store")]
