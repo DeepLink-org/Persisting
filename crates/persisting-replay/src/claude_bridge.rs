@@ -1214,7 +1214,7 @@ fn required_string<'a>(value: Option<&'a Value>, context: &str) -> anyhow::Resul
 
 fn estimate_input_tokens(payload: &Value) -> usize {
     let rendered = serde_json::to_vec(payload).unwrap_or_default();
-    ((rendered.len() + 2) / 3).max(1)
+    rendered.len().div_ceil(3).max(1)
 }
 
 fn chat_completions_url(base: &str) -> Result<String, ReplayError> {

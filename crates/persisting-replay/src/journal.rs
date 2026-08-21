@@ -23,6 +23,7 @@ impl Journal {
         let lock_path = state_dir.join("run.lock");
         let lock = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&lock_path)
