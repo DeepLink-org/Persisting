@@ -49,10 +49,12 @@ pub use crate::store::{
 #[cfg(feature = "lance-store")]
 pub use crate::projection::{
     automatic_projection_inventory, build_storyline_projection,
-    inspect_automatic_storyline_projection, probe_canonical_event_store,
-    rebuild_storyline_projection, storyline_projection_destination_exists,
-    storyline_projection_status, sync_storyline_projection, verify_storyline_projection,
-    AutomaticProjectionInspection, AutomaticProjectionInventory, AutomaticProjectionInventoryError,
+    inspect_automatic_storyline_projection, maintain_automatic_storyline_projection,
+    probe_canonical_event_store, rebuild_storyline_projection,
+    storyline_projection_destination_exists, storyline_projection_status,
+    sync_storyline_projection, verify_storyline_projection, AutomaticProjectionInspection,
+    AutomaticProjectionInventory, AutomaticProjectionInventoryError,
+    AutomaticProjectionMaintenanceMode, AutomaticProjectionMaintenanceReport,
     AutomaticProjectionState, AutomaticProjectionTarget, ProjectionRebuildReason,
     StorylineProjectionBuildOutcome, StorylineProjectionBuildReport, StorylineProjectionStatus,
     StorylineProjectionSyncMode, StorylineProjectionSyncOutcome, StorylineProjectionSyncReport,

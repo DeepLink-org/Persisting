@@ -5,8 +5,10 @@ mod storyline;
 
 pub use automatic::{
     automatic_projection_inventory, inspect_automatic_storyline_projection,
-    probe_canonical_event_store, storyline_projection_destination_exists,
-    AutomaticProjectionInspection, AutomaticProjectionInventory, AutomaticProjectionInventoryError,
+    maintain_automatic_storyline_projection, probe_canonical_event_store,
+    storyline_projection_destination_exists, AutomaticProjectionInspection,
+    AutomaticProjectionInventory, AutomaticProjectionInventoryError,
+    AutomaticProjectionMaintenanceMode, AutomaticProjectionMaintenanceReport,
     AutomaticProjectionState, AutomaticProjectionTarget,
 };
 pub use storyline::{

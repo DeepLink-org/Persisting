@@ -4,7 +4,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::projection::{projection_lineage_is_fresh, storyline_projection_status};
+use super::storyline::{
+    build_storyline_projection, canonical_projection_lineage, projection_lineage_is_fresh,
+    rebuild_storyline_projection, storyline_projection_status, sync_storyline_projection,
+    StorylineProjectionBuildOutcome, StorylineProjectionSyncMode, StorylineProjectionSyncOutcome,
+};
 use crate::store::{
     CatalogSourceStatus, DatasetCatalogSnapshot, EventFactSnapshot, ProjectionSourceSnapshot,
     RawEventDataSource, StorylineLanceStore,
@@ -86,6 +90,35 @@ pub struct AutomaticProjectionInspection {
     pub fact_rows: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomaticProjectionMaintenanceMode {
+    Unchanged,
+    Built,
+    Incremental,
+    Rebuilt,
+    ConcurrentWinner,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomaticProjectionMaintenanceReport {
+    pub mode: AutomaticProjectionMaintenanceMode,
+    pub generation: String,
+    pub fact_version: u64,
+    pub fact_rows: u64,
+    pub trajectories: Option<usize>,
+}
+
+impl AutomaticProjectionMaintenanceReport {
+    pub fn published(&self) -> bool {
+        matches!(
+            self.mode,
+            AutomaticProjectionMaintenanceMode::Built
+                | AutomaticProjectionMaintenanceMode::Incremental
+                | AutomaticProjectionMaintenanceMode::Rebuilt
+        )
+    }
+}
+
 pub fn automatic_projection_inventory(
     snapshot: &DatasetCatalogSnapshot,
 ) -> Result<AutomaticProjectionInventory> {
@@ -156,7 +189,7 @@ pub async fn inspect_automatic_storyline_projection(
     };
     anyhow::ensure!(
         source_uri == &target.source_snapshot.source_uri,
-        "automatic Storyline destination does not match canonical source"
+        "automatic Storyline destination does not have matching canonical source ownership"
     );
     let state = if projection_lineage_is_fresh(&target.source_snapshot, lineage) {
         AutomaticProjectionState::Fresh
@@ -164,6 +197,72 @@ pub async fn inspect_automatic_storyline_projection(
         AutomaticProjectionState::Stale
     };
     Ok(inspection(target, state, Some(generation)))
+}
+
+pub async fn maintain_automatic_storyline_projection(
+    target: &AutomaticProjectionTarget,
+) -> Result<AutomaticProjectionMaintenanceReport> {
+    let inspection = inspect_automatic_storyline_projection(target).await?;
+    match inspection.state {
+        AutomaticProjectionState::Missing => build_or_accept_concurrent_winner(target).await,
+        AutomaticProjectionState::Fresh => Ok(report_from_inspection(
+            AutomaticProjectionMaintenanceMode::Unchanged,
+            inspection,
+        )),
+        AutomaticProjectionState::Stale => {
+            let outcome =
+                match sync_storyline_projection(&target.source_uri, &target.projection_uri).await {
+                    Ok(outcome) => outcome,
+                    Err(error) => return accept_fresh_concurrent_winner(target, error).await,
+                };
+            match outcome {
+                StorylineProjectionSyncOutcome::Synced(report) => {
+                    let mode = match report.mode {
+                        StorylineProjectionSyncMode::Noop => {
+                            AutomaticProjectionMaintenanceMode::ConcurrentWinner
+                        }
+                        StorylineProjectionSyncMode::Incremental => {
+                            AutomaticProjectionMaintenanceMode::Incremental
+                        }
+                        StorylineProjectionSyncMode::Rebuild => {
+                            AutomaticProjectionMaintenanceMode::Rebuilt
+                        }
+                    };
+                    Ok(AutomaticProjectionMaintenanceReport {
+                        mode,
+                        generation: report.generation,
+                        fact_version: report.fact_version,
+                        fact_rows: report.fact_rows,
+                        trajectories: (mode
+                            != AutomaticProjectionMaintenanceMode::ConcurrentWinner)
+                            .then_some(report.affected_storylines),
+                    })
+                }
+                StorylineProjectionSyncOutcome::MissingProjection => {
+                    build_or_accept_concurrent_winner(target).await
+                }
+                StorylineProjectionSyncOutcome::RequiresRebuild(_) => {
+                    ensure_current_lineage_owns_target(target).await?;
+                    match rebuild_storyline_projection(
+                        &target.source_uri,
+                        &target.projection_uri,
+                        &target.source_path,
+                    )
+                    .await
+                    {
+                        Ok(report) => Ok(AutomaticProjectionMaintenanceReport {
+                            mode: AutomaticProjectionMaintenanceMode::Rebuilt,
+                            generation: report.generation,
+                            fact_version: report.fact_version,
+                            fact_rows: report.fact_rows,
+                            trajectories: Some(report.affected_storylines),
+                        }),
+                        Err(error) => accept_fresh_concurrent_winner(target, error).await,
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub async fn storyline_projection_destination_exists(uri: impl AsRef<str>) -> Result<bool> {
@@ -180,6 +279,86 @@ fn inspection(
         generation,
         fact_version: target.source_snapshot.fact_version,
         fact_rows: target.source_snapshot.fact_rows,
+    }
+}
+
+async fn build_or_accept_concurrent_winner(
+    target: &AutomaticProjectionTarget,
+) -> Result<AutomaticProjectionMaintenanceReport> {
+    match build_storyline_projection(
+        &target.source_uri,
+        &target.projection_uri,
+        &target.source_path,
+    )
+    .await?
+    {
+        StorylineProjectionBuildOutcome::Built(report) => {
+            Ok(AutomaticProjectionMaintenanceReport {
+                mode: AutomaticProjectionMaintenanceMode::Built,
+                generation: report.generation,
+                fact_version: report.fact_version,
+                fact_rows: report.fact_rows,
+                trajectories: Some(report.storylines),
+            })
+        }
+        StorylineProjectionBuildOutcome::OutputNotEmpty => {
+            let inspection = inspect_automatic_storyline_projection(target).await?;
+            anyhow::ensure!(
+                inspection.state == AutomaticProjectionState::Fresh,
+                "automatic Storyline destination became nonempty without a fresh matching projection"
+            );
+            Ok(report_from_inspection(
+                AutomaticProjectionMaintenanceMode::ConcurrentWinner,
+                inspection,
+            ))
+        }
+    }
+}
+
+async fn ensure_current_lineage_owns_target(target: &AutomaticProjectionTarget) -> Result<()> {
+    let status = storyline_projection_status(&target.projection_uri).await?;
+    let lineage = status
+        .lineage
+        .as_ref()
+        .context("automatic Storyline destination has no canonical lineage")?;
+    let ProjectionSourceSnapshot::CanonicalEvents { source_uri, .. } = &lineage.source else {
+        anyhow::bail!("automatic Storyline destination was not derived from canonical events");
+    };
+    let expected = canonical_projection_lineage(&target.source_snapshot, &target.source_path);
+    anyhow::ensure!(
+        source_uri == &target.source_snapshot.source_uri && lineage.source_id == expected.source_id,
+        "automatic Storyline destination does not have matching canonical source ownership"
+    );
+    Ok(())
+}
+
+async fn accept_fresh_concurrent_winner(
+    target: &AutomaticProjectionTarget,
+    original: anyhow::Error,
+) -> Result<AutomaticProjectionMaintenanceReport> {
+    match inspect_automatic_storyline_projection(target).await {
+        Ok(inspection) if inspection.state == AutomaticProjectionState::Fresh => {
+            Ok(report_from_inspection(
+                AutomaticProjectionMaintenanceMode::ConcurrentWinner,
+                inspection,
+            ))
+        }
+        _ => Err(original),
+    }
+}
+
+fn report_from_inspection(
+    mode: AutomaticProjectionMaintenanceMode,
+    inspection: AutomaticProjectionInspection,
+) -> AutomaticProjectionMaintenanceReport {
+    AutomaticProjectionMaintenanceReport {
+        mode,
+        generation: inspection
+            .generation
+            .expect("fresh and stale projections have a generation"),
+        fact_version: inspection.fact_version,
+        fact_rows: inspection.fact_rows,
+        trajectories: None,
     }
 }
 
@@ -238,6 +417,10 @@ mod tests {
     }
 
     async fn append_note(storage: &Path, run_id: &str) -> Result<String> {
+        append_note_at(storage, run_id, 0).await
+    }
+
+    async fn append_note_at(storage: &Path, run_id: &str, seq: u64) -> Result<String> {
         let coords = StoryCoords::new(
             storage.to_string_lossy(),
             "agent",
@@ -245,11 +428,25 @@ mod tests {
             Some(run_id.into()),
         );
         RawEventLanceStore
-            .append_events(&coords, &[note(run_id, 0)])
+            .append_events(&coords, &[note(run_id, seq)])
             .await?;
         Ok(raw_event_lance_path(&coords)?
             .to_string_lossy()
             .into_owned())
+    }
+
+    async fn target_for(source_uri: &str, projection: &Path) -> Result<AutomaticProjectionTarget> {
+        let source_snapshot = probe_canonical_event_store(source_uri)
+            .await?
+            .expect("test source is canonical");
+        Ok(AutomaticProjectionTarget {
+            dataset: "dataset".into(),
+            source_path: "events.lance".into(),
+            source_uri: source_snapshot.source_uri.clone(),
+            projection_path: "storyline".into(),
+            projection_uri: projection.to_string_lossy().into_owned(),
+            source_snapshot,
+        })
     }
 
     #[test]
@@ -409,7 +606,7 @@ mod tests {
             .unwrap_err();
         assert!(error
             .to_string()
-            .contains("does not match canonical source"));
+            .contains("matching canonical source ownership"));
         assert_eq!(std::fs::read(projection_b.join("CURRENT"))?, before);
 
         let projection_a = storage.join("agent/a/storyline");
@@ -476,6 +673,118 @@ mod tests {
                 source_path: "bad/events.lance".into(),
                 projection_path: "bad/storyline".into(),
             }]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn maintenance_builds_syncs_and_noops() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let storage = temp.path().join("capture");
+        let source = append_note_at(&storage, "run", 0).await?;
+        let projection = storage.join("agent/run/storyline");
+        let target = target_for(&source, &projection).await?;
+
+        let built = maintain_automatic_storyline_projection(&target).await?;
+        assert_eq!(built.mode, AutomaticProjectionMaintenanceMode::Built);
+        assert!(built.published());
+        assert_eq!(built.fact_rows, 1);
+
+        let unchanged = maintain_automatic_storyline_projection(&target).await?;
+        assert_eq!(
+            unchanged.mode,
+            AutomaticProjectionMaintenanceMode::Unchanged
+        );
+        assert!(!unchanged.published());
+        assert_eq!(unchanged.generation, built.generation);
+
+        append_note_at(&storage, "run", 1).await?;
+        let refreshed = target_for(&source, &projection).await?;
+        let incremental = maintain_automatic_storyline_projection(&refreshed).await?;
+        assert_eq!(
+            incremental.mode,
+            AutomaticProjectionMaintenanceMode::Incremental
+        );
+        assert!(incremental.published());
+        assert_eq!(incremental.fact_rows, 2);
+        assert_ne!(incremental.generation, built.generation);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn maintenance_rebuilds_only_owned_outputs() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let storage = temp.path().join("capture");
+        let source = append_note(&storage, "run").await?;
+        let projection = storage.join("agent/run/storyline");
+        let target = target_for(&source, &projection).await?;
+        assert_eq!(
+            maintain_automatic_storyline_projection(&target).await?.mode,
+            AutomaticProjectionMaintenanceMode::Built
+        );
+
+        let current = projection.join("CURRENT");
+        let mut pointer: serde_json::Value = serde_json::from_slice(&std::fs::read(&current)?)?;
+        pointer["projection"]["recipe_hash"] = serde_json::json!("blake3:obsolete");
+        std::fs::write(&current, serde_json::to_vec(&pointer)?)?;
+        let rebuilt = maintain_automatic_storyline_projection(&target).await?;
+        assert_eq!(rebuilt.mode, AutomaticProjectionMaintenanceMode::Rebuilt);
+        assert!(rebuilt.published());
+
+        let mut pointer: serde_json::Value = serde_json::from_slice(&std::fs::read(&current)?)?;
+        pointer["projection"]["source"]["fact_version"] = serde_json::json!(999);
+        pointer["projection"]["source"]["fact_rows"] = serde_json::json!(999);
+        std::fs::write(&current, serde_json::to_vec(&pointer)?)?;
+        let rebuilt_non_monotonic = maintain_automatic_storyline_projection(&target).await?;
+        assert_eq!(
+            rebuilt_non_monotonic.mode,
+            AutomaticProjectionMaintenanceMode::Rebuilt
+        );
+
+        let mut pointer: serde_json::Value = serde_json::from_slice(&std::fs::read(&current)?)?;
+        pointer["projection"]["source"]["source_uri"] = serde_json::json!("/foreign/events.lance");
+        std::fs::write(&current, serde_json::to_vec(&pointer)?)?;
+        let before = std::fs::read(&current)?;
+        let error = maintain_automatic_storyline_projection(&target)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("matching canonical source"));
+        assert_eq!(std::fs::read(&current)?, before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_maintenance_accepts_one_fresh_winner() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let storage = temp.path().join("capture");
+        let source = append_note(&storage, "run").await?;
+        let projection = storage.join("agent/run/storyline");
+        let target = target_for(&source, &projection).await?;
+
+        let (left, right) = tokio::join!(
+            maintain_automatic_storyline_projection(&target),
+            maintain_automatic_storyline_projection(&target),
+        );
+        let reports = [left?, right?];
+        assert_eq!(
+            reports
+                .iter()
+                .filter(|report| report.mode == AutomaticProjectionMaintenanceMode::Built)
+                .count(),
+            1
+        );
+        assert_eq!(
+            reports
+                .iter()
+                .filter(|report| {
+                    report.mode == AutomaticProjectionMaintenanceMode::ConcurrentWinner
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            inspect_automatic_storyline_projection(&target).await?.state,
+            AutomaticProjectionState::Fresh
         );
         Ok(())
     }

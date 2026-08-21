@@ -245,7 +245,9 @@ pub async fn sync_storyline_projection(
         ..
     } = &previous.source
     else {
-        anyhow::bail!("projection source is not canonical events; use `project rebuild`")
+        anyhow::bail!(
+            "projection source is not canonical events; projection requires a complete rebuild"
+        )
     };
 
     if projection_lineage_is_fresh(&snapshot, previous) {
