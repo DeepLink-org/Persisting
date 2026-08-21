@@ -2763,10 +2763,10 @@ fn run_mini(
             json!(context.request.mode == ReplayMode::PrepareOnly),
         )],
     )?;
-    if context.request.mode != ReplayMode::ReplayAndContinue {
+    if context.request.mode == ReplayMode::PrepareOnly {
         return Ok(prepared_outcome(path));
     }
-    run_sdk_bridge(plan, context, journal, AgentKind::MiniSweAgent, &path)
+    run_sdk_bridge(plan, context, journal, AgentKind::MiniSweAgent)
 }
 
 fn run_swe(
@@ -2798,10 +2798,10 @@ fn run_swe(
             json!(context.request.mode == ReplayMode::PrepareOnly),
         )],
     )?;
-    if context.request.mode != ReplayMode::ReplayAndContinue {
+    if context.request.mode == ReplayMode::PrepareOnly {
         return Ok(prepared_outcome(path));
     }
-    run_sdk_bridge(plan, context, journal, AgentKind::SweAgent, &path)
+    run_sdk_bridge(plan, context, journal, AgentKind::SweAgent)
 }
 
 fn prepared_outcome(path: PathBuf) -> ReplayOutcome {
@@ -2820,20 +2820,10 @@ fn run_sdk_bridge(
     context: &RunContext<'_>,
     journal: &mut Journal,
     agent: AgentKind,
-    prepared: &Path,
 ) -> Result<ReplayOutcome, ReplayError> {
     let launch = context
         .launch
         .ok_or_else(|| ReplayError::continuation("SDK continuation has no launch spec"))?;
-    if context
-        .request
-        .max_steps
-        .is_some_and(|max| max <= plan.prefix_model_turns)
-    {
-        return Err(ReplayError::continuation(
-            "max-steps is exhausted by the replay prefix",
-        ));
-    }
     let native_dir = context.output_dir.join("native");
     let logs_dir = context.output_dir.join("logs");
     fs::create_dir_all(&native_dir)
@@ -2841,10 +2831,31 @@ fn run_sdk_bridge(
     fs::create_dir_all(&logs_dir)
         .replay_context(ReplayErrorKind::Executor, "create Agent log directory")?;
 
-    let (program, bridge_source, bridge_name, request_value, continued, observations_path) =
-        match agent {
+    let runner_result = context
+        .state_dir
+        .join(format!("{}-runner-result.json", agent.as_str()));
+    let mode = match context.request.mode {
+        ReplayMode::ReplayOnly => "replay_only",
+        ReplayMode::ReplayAndContinue => "replay_and_continue",
+        ReplayMode::PrepareOnly => {
+            return Err(ReplayError::new(
+                ReplayErrorKind::Internal,
+                "prepare-only unexpectedly started an SDK runner",
+            ));
+        }
+    };
+    let (
+        program,
+        bridge_source,
+        bridge_name,
+        request_value,
+        reconstructed,
+        continued,
+        observations_path,
+    ) = match agent {
             AgentKind::MiniSweAgent => {
                 let source = context.state_dir.join("mini-source.json");
+                let reconstructed = native_dir.join("reconstructed-trajectory.json");
                 let continued = native_dir.join("continued-trajectory.json");
                 let observations = context.state_dir.join("mini-fresh-observations.json");
                 atomic_write_json(&source, &plan.native)?;
@@ -2859,13 +2870,17 @@ fn run_sdk_bridge(
                     "mini-swe-agent-runner.py",
                     json!({
                         "source": source,
+                        "reconstructed": reconstructed,
                         "continued": continued,
                         "observations": observations,
+                        "result": runner_result,
+                        "mode": mode,
                         "workspace": context.request.workspace,
                         "after_step": plan.after_step,
                         "max_steps": context.request.max_steps,
                         "session_id": context.session_id,
                     }),
+                    reconstructed,
                     continued,
                     Some(observations),
                 )
@@ -2873,6 +2888,7 @@ fn run_sdk_bridge(
             AgentKind::SweAgent => {
                 let source = native_dir.join("continuation-source.traj");
                 let run_output = native_dir.join("swe-agent-run");
+                let reconstructed = native_dir.join("reconstructed-trajectory.traj");
                 let continued = native_dir.join("continued-trajectory.traj");
                 atomic_write_json(&source, &plan.native)?;
                 (
@@ -2881,11 +2897,17 @@ fn run_sdk_bridge(
                     "swe-agent-runner.py",
                     json!({
                         "trajectory": source,
+                        "reconstructed": reconstructed,
+                        "continued": continued,
                         "trajectory_assets": context.request.trajectory_assets,
                         "after_step": plan.after_step,
+                        "max_steps": context.request.max_steps,
+                        "mode": mode,
+                        "result": runner_result,
                         "workspace": context.request.workspace,
                         "output_dir": run_output,
                     }),
+                    reconstructed,
                     continued,
                     None,
                 )
@@ -2929,16 +2951,24 @@ fn run_sdk_bridge(
         command.env("SWE_EVAL_MINI_RUNTIME", "1");
     }
     command.arg(&bridge).arg(&request_path);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     journal.append("continuation_started", std::iter::empty())?;
-    let output = command.output().replay_context(
-        ReplayErrorKind::Continuation,
-        format!("start {} replay bridge", agent.as_str()),
-    )?;
     let log = logs_dir.join(format!("{}.log", agent.as_str()));
-    write_process_log(&log, &output)?;
+    let output = run_process(ProcessSpec {
+        command,
+        stdin: None,
+        timeout: Duration::from_secs(24 * 60 * 60),
+        termination_grace: Duration::from_secs(2),
+        pipe_grace: Duration::from_millis(250),
+        retained_bytes: MAX_TOOL_OUTPUT_BYTES / 2,
+        log_path: log.clone(),
+    })
+    .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
     if !output.status.success() {
-        let rendered = render_output(&output);
+        let mut rendered = String::from_utf8_lossy(&output.stdout_tail).into_owned();
+        if !output.stderr_tail.is_empty() {
+            rendered.push('\n');
+            rendered.push_str(&String::from_utf8_lossy(&output.stderr_tail));
+        }
         return Err(ReplayError::classify_continuation(
             format!(
                 "{} replay/continuation exited {}; see {}",
@@ -2950,13 +2980,66 @@ fn run_sdk_bridge(
         ));
     }
 
-    let (observations, continued_steps) = if agent == AgentKind::MiniSweAgent {
-        if !continued.is_file() {
-            return Err(ReplayError::continuation(format!(
-                "mini-swe-agent produced no continued trajectory; see {}",
-                log.display()
-            )));
+    let runner: Value = serde_json::from_slice(&read_regular_file(&runner_result)?)
+        .replay_context(ReplayErrorKind::Continuation, "parse SDK replay runner result")?;
+    let expected_phase = if context.request.mode == ReplayMode::ReplayOnly {
+        "replayed"
+    } else {
+        "continued"
+    };
+    if runner.get("phase").and_then(Value::as_str) != Some(expected_phase)
+        || runner.get("replayed_steps").and_then(Value::as_u64) != Some(plan.after_step as u64)
+    {
+        return Err(ReplayError::continuation(format!(
+            "{} runner returned an invalid replay boundary",
+            agent.as_str()
+        )));
+    }
+    let runner_continued_steps = runner
+        .get("continued_steps")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ReplayError::continuation("SDK runner omitted continued_steps"))?
+        as usize;
+    let runner_agent_status = runner
+        .get("agent_status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ReplayError::continuation("SDK runner omitted agent_status"))?;
+    let status_is_valid = match context.request.mode {
+        ReplayMode::ReplayOnly => {
+            runner_agent_status == "not_started" && runner_continued_steps == 0
         }
+        ReplayMode::ReplayAndContinue => {
+            matches!(runner_agent_status, "completed" | "max_steps")
+                && context.request.max_steps.is_none_or(|max_steps| {
+                    plan.prefix_model_turns + runner_continued_steps <= max_steps
+                })
+        }
+        ReplayMode::PrepareOnly => false,
+    };
+    if !status_is_valid {
+        return Err(ReplayError::continuation(format!(
+            "{} runner returned an invalid terminal status or step count",
+            agent.as_str()
+        )));
+    }
+    let runner_trajectory = runner
+        .get("trajectory")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| ReplayError::continuation("SDK runner omitted trajectory"))?;
+    let expected_trajectory = if context.request.mode == ReplayMode::ReplayOnly {
+        &reconstructed
+    } else {
+        &continued
+    };
+    if runner_trajectory != *expected_trajectory || !runner_trajectory.is_file() {
+        return Err(ReplayError::continuation(format!(
+            "{} runner produced an unexpected trajectory path",
+            agent.as_str()
+        )));
+    }
+
+    let (observations, continued_steps) = if agent == AgentKind::MiniSweAgent {
         let raw_observations: Vec<Value> = serde_json::from_slice(&read_regular_file(
             observations_path.as_ref().expect("mini observations path"),
         )?)
@@ -2991,7 +3074,7 @@ fn run_sdk_bridge(
                 metadata: BTreeMap::new(),
             })
             .collect::<Vec<_>>();
-        let continued_value: Value = serde_json::from_slice(&read_regular_file(&continued)?)
+        let continued_value: Value = serde_json::from_slice(&read_regular_file(&runner_trajectory)?)
             .replay_context(
                 ReplayErrorKind::Trajectory,
                 "parse continued mini-swe-agent trajectory",
@@ -3011,27 +3094,18 @@ fn run_sdk_bridge(
                     .count()
             })
             .unwrap_or_default();
-        (observations, action_count.saturating_sub(plan.after_step))
-    } else {
-        let run_output = request_value["output_dir"]
-            .as_str()
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                ReplayError::new(ReplayErrorKind::Internal, "SWE-agent output missing")
-            })?;
-        let mut candidates = Vec::new();
-        collect_extension(&run_output, "traj", &mut candidates)?;
-        if candidates.len() != 1 {
-            return Err(ReplayError::continuation(format!(
-                "SWE-agent continuation produced {} trajectory files",
-                candidates.len()
-            )));
+        let measured = action_count.saturating_sub(plan.after_step);
+        if measured != runner_continued_steps {
+            return Err(ReplayError::trajectory(
+                "mini-swe-agent runner result disagrees with its trajectory",
+            ));
         }
-        atomic_write(&continued, &read_regular_file(&candidates[0])?)?;
-        let replayed: Value = serde_json::from_slice(&read_regular_file(&continued)?)
+        (observations, measured)
+    } else {
+        let replayed: Value = serde_json::from_slice(&read_regular_file(&runner_trajectory)?)
             .replay_context(
                 ReplayErrorKind::Trajectory,
-                "parse continued SWE-agent trajectory",
+                "parse SWE-agent replay runner trajectory",
             )?;
         let steps = replayed["trajectory"]
             .as_array()
@@ -3062,9 +3136,14 @@ fn run_sdk_bridge(
                     .is_some_and(|action| !action.trim().is_empty())
             })
             .count();
+        if continued_steps != runner_continued_steps {
+            return Err(ReplayError::trajectory(
+                "SWE-agent runner result disagrees with its trajectory",
+            ));
+        }
         (observations, continued_steps)
     };
-    if continued_steps == 0 {
+    if context.request.mode == ReplayMode::ReplayAndContinue && continued_steps == 0 {
         return Err(ReplayError::continuation(format!(
             "{} produced no actionable continuation step; see {}",
             agent.as_str(),
@@ -3097,39 +3176,18 @@ fn run_sdk_bridge(
         ],
     )?;
     Ok(ReplayOutcome {
-        status: "completed".into(),
-        reconstructed_path: Some(prepared.to_path_buf()),
-        continued_path: Some(continued),
+        status: if context.request.mode == ReplayMode::ReplayOnly {
+            "replayed".into()
+        } else {
+            runner_agent_status.into()
+        },
+        reconstructed_path: Some(reconstructed),
+        continued_path: (context.request.mode == ReplayMode::ReplayAndContinue)
+            .then_some(continued),
         observations,
         continued_steps,
         metadata: json!({"sdk_bridge": bridge_name}),
     })
-}
-
-fn collect_extension(
-    root: &Path,
-    extension: &str,
-    output: &mut Vec<PathBuf>,
-) -> Result<(), ReplayError> {
-    if !root.exists() {
-        return Ok(());
-    }
-    if root.is_file() {
-        if root.extension().and_then(|value| value.to_str()) == Some(extension) {
-            output.push(root.to_path_buf());
-        }
-        return Ok(());
-    }
-    for entry in fs::read_dir(root).replay_context(
-        ReplayErrorKind::Continuation,
-        format!("scan Agent output {}", root.display()),
-    )? {
-        let path = entry
-            .replay_context(ReplayErrorKind::Continuation, "read Agent output entry")?
-            .path();
-        collect_extension(&path, extension, output)?;
-    }
-    Ok(())
 }
 
 fn run_openhands(

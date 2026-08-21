@@ -26,10 +26,7 @@ pub(crate) fn resolve_launch_spec(
             "agent entrypoint and agent runtime are mutually exclusive",
         ));
     }
-    if request.mode == ReplayMode::PrepareOnly
-        && request.agent_entrypoint.is_none()
-        && request.agent_runtime.is_none()
-    {
+    if request.mode == ReplayMode::PrepareOnly {
         return Ok(None);
     }
     let (entrypoint, source, runtime_root, declared_version) =
@@ -394,6 +391,8 @@ pub(super) fn configure_mini_python_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn version_probes_require_exact_banners() {
@@ -431,5 +430,45 @@ mod tests {
             parse_version(AgentKind::SweAgent, "swe-agent 1.1.0"),
             None
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_only_never_starts_a_supplied_runtime() {
+        let temporary = tempfile::tempdir().unwrap();
+        let marker = temporary.path().join("started");
+        let entrypoint = temporary.path().join("claude");
+        fs::write(
+            &entrypoint,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nprintf '2.1.220 (Claude Code)\\n'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&entrypoint).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&entrypoint, permissions).unwrap();
+        let request = PlaybackRequest {
+            agent: AgentKind::ClaudeCode,
+            trajectory: temporary.path().join("trajectory"),
+            after_step: 1,
+            workspace: temporary.path().to_path_buf(),
+            state_dir: temporary.path().join("state"),
+            output_dir: temporary.path().join("output"),
+            agent_entrypoint: Some(entrypoint),
+            agent_runtime: None,
+            disallowed_tools: Vec::new(),
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
+            run_id: None,
+            disable_thinking: false,
+        };
+
+        assert!(resolve_launch_spec(&request).unwrap().is_none());
+        assert!(!marker.exists());
     }
 }

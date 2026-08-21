@@ -51,6 +51,7 @@ fn execute_with_run_id(
     )?;
 
     let plan = build_plan(&request)?;
+    validate_step_budget(request.mode, request.max_steps, plan.prefix_model_turns)?;
     let launch = resolve_launch_spec(&request)?;
     if let Some(launch) = &launch {
         if launch.version != plan.agent.supported_version() {
@@ -358,6 +359,30 @@ fn validate(request: &PlaybackRequest) -> Result<(), ReplayError> {
     Ok(())
 }
 
+fn validate_step_budget(
+    mode: ReplayMode,
+    max_steps: Option<usize>,
+    prefix_steps: usize,
+) -> Result<(), ReplayError> {
+    let Some(max_steps) = max_steps else {
+        return Ok(());
+    };
+    match mode {
+        ReplayMode::PrepareOnly => Ok(()),
+        ReplayMode::ReplayOnly if max_steps < prefix_steps => Err(ReplayError::configuration(
+            format!(
+                "max_steps {max_steps} is smaller than the selected replay prefix of {prefix_steps} steps"
+            ),
+        )),
+        ReplayMode::ReplayAndContinue if max_steps <= prefix_steps => {
+            Err(ReplayError::configuration(format!(
+                "max_steps {max_steps} leaves no live step after the selected replay prefix of {prefix_steps} steps"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn absolute_or_current(path: &Path) -> Result<std::path::PathBuf, ReplayError> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
@@ -394,7 +419,7 @@ fn agent_result(request: &PlaybackRequest, launch: Option<&LaunchSpec>) -> Agent
         entrypoint: launch.map(|launch| launch.entrypoint.clone()),
         launch_source: launch
             .map(|launch| launch.source.clone())
-            .unwrap_or_else(|| "replay_only".into()),
+            .unwrap_or_else(|| "prepare_only".into()),
         disallowed_tools: request.disallowed_tools.clone(),
     }
 }
@@ -609,5 +634,14 @@ mod tests {
         };
 
         assert_eq!(quality_for_outcome(&outcome), ReplayQuality::Degraded);
+    }
+
+    #[test]
+    fn total_step_budget_is_checked_before_replay() {
+        assert!(validate_step_budget(ReplayMode::ReplayOnly, Some(3), 3).is_ok());
+        assert!(validate_step_budget(ReplayMode::ReplayOnly, Some(2), 3).is_err());
+        assert!(validate_step_budget(ReplayMode::ReplayAndContinue, Some(3), 3).is_err());
+        assert!(validate_step_budget(ReplayMode::ReplayAndContinue, Some(4), 3).is_ok());
+        assert!(validate_step_budget(ReplayMode::PrepareOnly, Some(1), 3).is_ok());
     }
 }
