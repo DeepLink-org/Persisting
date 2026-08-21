@@ -15,6 +15,7 @@ mod error;
 mod io;
 mod journal;
 mod model;
+mod process;
 
 pub use config::{
     request_from_json, OverlayFsConfig, OverlayNetConfig, ReplayConfig, ReplayToml, RunConfig,
