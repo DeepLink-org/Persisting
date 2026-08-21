@@ -3,6 +3,7 @@ mod exchange;
 mod gateway_capture;
 mod onboard;
 mod output;
+mod projection_supervisor;
 pub mod server;
 mod settings;
 
@@ -985,11 +986,23 @@ async fn serve_warehouse_and_gateway(
     gateway: PreparedGateway,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> Result<()> {
+    let (diagnostic_tx, diagnostic_rx) = tokio::sync::mpsc::channel(256);
+    let mut projections = projection_supervisor::ProjectionSupervisor::new(
+        warehouse_config.clone(),
+        None,
+        diagnostic_tx,
+    );
+    projections.converge_before_readiness().await?;
     let warehouse = server::PreparedWarehouse::prepare(warehouse_config).await?;
+    projections.set_warehouse(Some(warehouse.clone()));
+    let mut stderr = Vec::new();
     serve_components(
         Some((warehouse, warehouse_listener)),
         None,
         Some(gateway),
+        projections,
+        diagnostic_rx,
+        &mut stderr,
         shutdown,
     )
     .await
@@ -1026,10 +1039,13 @@ async fn serve_gateway_component(
     result
 }
 
-async fn serve_components(
+async fn serve_components<W: Write + ?Sized>(
     warehouse: Option<(server::PreparedWarehouse, tokio::net::TcpListener)>,
     control: Option<control::PreparedControl>,
     gateway: Option<PreparedGateway>,
+    projections: projection_supervisor::ProjectionSupervisor,
+    mut diagnostics: tokio::sync::mpsc::Receiver<projection_supervisor::ProjectionDiagnostic>,
+    stderr: &mut W,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> Result<()> {
     type ServiceFuture =
@@ -1037,6 +1053,10 @@ async fn serve_components(
 
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let mut services = FuturesUnordered::<ServiceFuture>::new();
+    anyhow::ensure!(
+        warehouse.is_some() || control.is_some() || gateway.is_some(),
+        "pChronicle serve has no enabled service"
+    );
     if let Some((warehouse, listener)) = warehouse {
         let stop = stop_rx.clone();
         services.push(Box::pin(async move {
@@ -1058,7 +1078,7 @@ async fn serve_components(
         }));
     }
     if let Some(gateway) = gateway {
-        let stop = stop_rx;
+        let stop = stop_rx.clone();
         services.push(Box::pin(async move {
             (
                 "Gateway",
@@ -1066,23 +1086,66 @@ async fn serve_components(
             )
         }));
     }
-    anyhow::ensure!(
-        !services.is_empty(),
-        "pChronicle serve has no enabled service"
-    );
+    services.push(Box::pin(async move {
+        ("Projection", projections.run(stop_rx).await)
+    }));
 
     tokio::pin!(shutdown);
-    let first = tokio::select! {
-        _ = &mut shutdown => None,
-        completed = services.next() => completed,
+    let mut diagnostics_open = true;
+    let mut diagnostic_error = None;
+    let first = loop {
+        tokio::select! {
+            _ = &mut shutdown => break None,
+            completed = services.next() => break completed,
+            diagnostic = diagnostics.recv(), if diagnostics_open => {
+                match diagnostic {
+                    Some(diagnostic) => {
+                        if let Err(error) = write_projection_diagnostic(stderr, &diagnostic) {
+                            diagnostic_error = Some(error);
+                            break None;
+                        }
+                    }
+                    None => diagnostics_open = false,
+                }
+            }
+        }
     };
     let _ = stop_tx.send(true);
 
     let mut sibling_error = None;
-    while let Some((name, result)) = services.next().await {
-        if let Err(error) = result {
-            sibling_error.get_or_insert_with(|| error.context(format!("stop pChronicle {name}")));
+    while !services.is_empty() {
+        tokio::select! {
+            completed = services.next() => {
+                if let Some((name, Err(error))) = completed {
+                    sibling_error.get_or_insert_with(|| {
+                        error.context(format!("stop pChronicle {name}"))
+                    });
+                }
+            }
+            diagnostic = diagnostics.recv(), if diagnostics_open => {
+                match diagnostic {
+                    Some(diagnostic) => {
+                        if diagnostic_error.is_none() {
+                            if let Err(error) = write_projection_diagnostic(stderr, &diagnostic) {
+                                diagnostic_error = Some(error);
+                            }
+                        }
+                    }
+                    None => diagnostics_open = false,
+                }
+            }
         }
+    }
+    while let Ok(diagnostic) = diagnostics.try_recv() {
+        if diagnostic_error.is_none() {
+            if let Err(error) = write_projection_diagnostic(stderr, &diagnostic) {
+                diagnostic_error = Some(error);
+            }
+        }
+    }
+
+    if let Some(error) = diagnostic_error {
+        return Err(error);
     }
 
     match first {
@@ -1095,8 +1158,27 @@ async fn serve_components(
     }
 }
 
+fn write_projection_diagnostic<W: Write + ?Sized>(
+    stderr: &mut W,
+    diagnostic: &projection_supervisor::ProjectionDiagnostic,
+) -> Result<()> {
+    writeln!(
+        stderr,
+        "projection source={} output={} status={} retry_ms={}",
+        projection_supervisor::sanitize_log_field(&diagnostic.source_path),
+        projection_supervisor::sanitize_log_field(&diagnostic.projection_path),
+        diagnostic.status,
+        diagnostic.retry_ms,
+    )
+    .context("write pChronicle projection diagnostic")
+}
+
 async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<()> {
     let config = resolve_serve_config(&args)?;
+    let (diagnostic_tx, diagnostic_rx) = tokio::sync::mpsc::channel(256);
+    let mut projections =
+        projection_supervisor::ProjectionSupervisor::new(config.clone(), None, diagnostic_tx);
+    projections.converge_before_readiness().await?;
     let warehouse = match args.listen {
         Some(listen) => {
             anyhow::ensure!(
@@ -1111,6 +1193,11 @@ async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Wri
         }
         None => None,
     };
+    projections.set_warehouse(
+        warehouse
+            .as_ref()
+            .map(|(warehouse, _listener)| warehouse.clone()),
+    );
     let control = match args.control {
         Some(listen) => Some(
             control::PreparedControl::bind(
@@ -1183,7 +1270,16 @@ async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Wri
             .context("--open requires --listen")?;
         open_browser(&format!("http://{endpoint}/"))?;
     }
-    serve_components(warehouse, control, gateway, wait_for_termination()).await
+    serve_components(
+        warehouse,
+        control,
+        gateway,
+        projections,
+        diagnostic_rx,
+        stderr,
+        wait_for_termination(),
+    )
+    .await
 }
 
 fn resolve_serve_config(args: &ServeArgs) -> Result<server::ChronicleServerConfig> {
