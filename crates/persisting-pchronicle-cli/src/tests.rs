@@ -161,6 +161,16 @@ async fn append_canonical_note(storage: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+fn canonical_source(storage: &std::path::Path) -> Result<PathBuf> {
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "session",
+        None,
+    );
+    persisting_pchronicle::storage::raw_event_lance_path(&coords)
+}
+
 #[test]
 fn command_tree_contains_the_product_commands() {
     let command = Cli::command();
@@ -1693,6 +1703,159 @@ async fn import_storyline_output_writes_one_root_lance_store() -> Result<()> {
     let row: Value = serde_json::from_slice(&stdout)?;
     assert_eq!(row["source_file"], ".");
     assert_eq!(row["runs"], 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_event_import_auto_detects_and_is_create_only() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+    let source = canonical_source(&storage)?;
+    let manifest = source.join("_manifest.json");
+    let before = fs::read(&manifest)?;
+    let output = temp.path().join("storyline");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["format"], "events");
+    assert_eq!(response["source_path"], "events.lance");
+    assert_eq!(response["output_format"], "storyline-lance");
+    assert_eq!(response["sources"], 1);
+    assert_eq!(response["trajectories"], 1);
+    assert_eq!(response["fact_rows"], 1);
+    assert!(response.get("input_bytes").is_none());
+    assert_eq!(fs::read(&manifest)?, before);
+    assert!(output.join("CURRENT").is_file());
+    let metadata = String::from_utf8(stderr)?;
+    assert!(metadata.contains("fact_rows=1"));
+    assert!(!metadata.contains("input_bytes="));
+
+    let query = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT COUNT(*) AS runs FROM dataset.runs",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut query_stdout = Vec::new();
+    run(query, false, &mut query_stdout, &mut Vec::new()).await?;
+    let count: Value = serde_json::from_slice(&query_stdout)?;
+    assert_eq!(count["runs"], 1);
+
+    let explicit = temp.path().join("explicit-storyline");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        explicit.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(explicit.join("CURRENT").is_file());
+
+    let preserved = temp.path().join("preserved");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        preserved.to_str().unwrap(),
+        "--output-format",
+        "preserve",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("cannot preserve an existing canonical event Store"));
+    assert!(!preserved.exists());
+
+    let existing = temp.path().join("existing");
+    fs::create_dir(&existing)?;
+    fs::write(existing.join("sentinel"), "keep")?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        existing.to_str().unwrap(),
+    ])?;
+    assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .is_err());
+    assert_eq!(fs::read_to_string(existing.join("sentinel"))?, "keep");
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_event_import_supports_object_store_uris() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+    let source = canonical_source(&storage)?;
+    let output = format!(
+        "shared-memory://pchronicle-canonical-import-{}/storyline",
+        uuid::Uuid::new_v4().simple()
+    );
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        &output,
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["dataset_uri"], output);
+    assert_eq!(response["fact_rows"], 1);
+    let store = StorylineLanceStore::open_uri(&output).await?;
+    assert!(store.current_table_paths().await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn events_lance_suffix_without_manifest_remains_an_ordinary_directory_import() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("events.lance");
+    fs::create_dir(&input)?;
+    let output = temp.path().join("output");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("contains no .json, .jsonl, or .ndjson files"));
+    assert!(!output.exists());
     Ok(())
 }
 

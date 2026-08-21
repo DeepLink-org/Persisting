@@ -33,10 +33,11 @@ use persisting_pchronicle::document::{
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::{
-    build_storyline_projection, rebuild_storyline_projection, storyline_projection_status,
+    build_storyline_projection, probe_canonical_event_store, rebuild_storyline_projection,
+    storyline_projection_destination_exists, storyline_projection_status,
     sync_storyline_projection, verify_storyline_projection, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, StorylineLanceStore,
+    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, EventFactSnapshot, StorylineLanceStore,
     StorylineProjectionBuildOutcome, StorylineProjectionSyncOutcome, StorylineProjectionSyncReport,
     StorylineProjectionVerification, DEFAULT_DATASET_NAME,
 };
@@ -360,10 +361,9 @@ impl std::fmt::Display for ExchangeFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ImportOutputFormat {
     /// Preserve each source document byte-for-byte.
-    #[default]
     Preserve,
     /// Decode all input Sources into one squashed Storyline Lance Store at the Dataset root.
     Storyline,
@@ -393,8 +393,8 @@ struct ImportArgs {
     format: ExchangeFormat,
 
     /// Physical Dataset output: preserve source files, or squash into one Storyline Lance Store at the Dataset root.
-    #[arg(long, value_enum, default_value_t = ImportOutputFormat::Preserve)]
-    output_format: ImportOutputFormat,
+    #[arg(long, value_enum)]
+    output_format: Option<ImportOutputFormat>,
 
     /// Read a finite trajectory stream from stdin and publish only after EOF.
     #[arg(long)]
@@ -843,7 +843,10 @@ struct ImportResponse {
     output_format: String,
     sources: usize,
     trajectories: usize,
-    input_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fact_rows: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_bytes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
