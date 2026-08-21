@@ -3,14 +3,15 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::convert::message_text;
 use crate::format::DocumentFormat;
-use crate::formats::events::{EventIdentity, EventRecord, EventsDocument};
+use crate::formats::events::{ChronicleEventRecordExt, EventIdentity, EventRecord, EventsDocument};
+use crate::formats::llm::LlmContentPart;
 use crate::formats::storyline::{
-    StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin, StorylineTurn,
-    STORYLINE_SCHEMA_VERSION,
+    StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall,
+    StorylineTurn, STORYLINE_SCHEMA_VERSION,
 };
 use crate::formats::timestamp::StorylineTimestamp;
 use crate::Result;
@@ -96,6 +97,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
         .find_map(|event| event.agent_id.clone())
         .unwrap_or_else(|| "unknown".into());
 
+    let tool_results = collect_tool_results(events)?;
     let mut by_call: BTreeMap<String, Vec<&EventRecord>> = BTreeMap::new();
     let mut first_call_position = BTreeMap::<String, usize>::new();
     let mut orphans: Vec<&EventRecord> = Vec::new();
@@ -120,6 +122,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
 
     for (_, cid) in call_order {
         let evs = &by_call[&cid];
+        let tool_calls = collect_tool_calls(evs, &tool_results)?;
         let first_ts = evs
             .first()
             .map(|event| canonical_event_timestamp(event))
@@ -153,6 +156,11 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
                 | "http.response.stream" => {
                     resp_ts = timestamp;
                     asst_text = extract_assistant(&ev.payload);
+                    if model.is_none() {
+                        model = ev
+                            .llm_response_payload()?
+                            .and_then(|payload| payload.response.model);
+                    }
                     if let Some(u) = ev.payload.get("usage") {
                         metrics = Some(u.clone());
                     }
@@ -257,7 +265,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
             message,
             reasoning_content: None,
             reasoning_effort: None,
-            tool_calls: None,
+            tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
             observation: None,
             metrics,
             model_name: model,
@@ -294,6 +302,8 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
         }
     }
 
+    let agent_model_name = turns.iter().rev().find_map(|turn| turn.model_name.clone());
+
     Ok(StorylineDocument {
         schema_version: STORYLINE_SCHEMA_VERSION.into(),
         origin: Some(StorylineOrigin {
@@ -309,7 +319,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
             id: agent_id.clone(),
             name: Some(agent_id),
             version: None,
-            model_name: None,
+            model_name: agent_model_name,
             tool_definitions: None,
             extra: None,
         },
@@ -323,6 +333,80 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
         unknown_key_counts: Default::default(),
         turns,
     })
+}
+
+fn collect_tool_results(events: &[EventRecord]) -> Result<BTreeMap<String, Value>> {
+    let mut results = BTreeMap::new();
+    for event in events {
+        let Some(payload) = event.llm_request_payload()? else {
+            continue;
+        };
+        for message in payload.request.messages {
+            for part in message.parts {
+                if let LlmContentPart::ToolResult {
+                    call_id, content, ..
+                } = part
+                {
+                    if !call_id.is_empty() {
+                        results.insert(call_id, content);
+                    }
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn collect_tool_calls(
+    events: &[&EventRecord],
+    results: &BTreeMap<String, Value>,
+) -> Result<Vec<StorylineToolCall>> {
+    let mut calls = Vec::<StorylineToolCall>::new();
+    let mut positions = BTreeMap::<String, usize>::new();
+    for event in events {
+        let Some(payload) = event.llm_response_payload()? else {
+            continue;
+        };
+        for candidate in payload.response.candidates {
+            for part in candidate.message.parts {
+                let LlmContentPart::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    signature,
+                } = part
+                else {
+                    continue;
+                };
+                if id.is_empty() {
+                    continue;
+                }
+                let result = results.get(&id).cloned();
+                let extra = signature.map(|signature| json!({"signature": signature}));
+                if let Some(position) = positions.get(&id).copied() {
+                    calls[position] = StorylineToolCall {
+                        tool_call_id: id,
+                        function_name: name,
+                        arguments,
+                        result,
+                        duration_ms: None,
+                        extra,
+                    };
+                } else {
+                    positions.insert(id.clone(), calls.len());
+                    calls.push(StorylineToolCall {
+                        tool_call_id: id,
+                        function_name: name,
+                        arguments,
+                        result,
+                        duration_ms: None,
+                        extra,
+                    });
+                }
+            }
+        }
+    }
+    Ok(calls)
 }
 
 pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> {
@@ -686,6 +770,80 @@ mod projection_tests {
         record.timestamp = Some("1970-01-01T00:00:02Z".into());
         let error = project_event_records(&[record]).unwrap_err();
         assert!(error.to_string().contains("timestamp conflict"));
+    }
+
+    #[test]
+    fn canonical_projection_materializes_stream_tool_calls_and_followup_results() {
+        let mut response = response(Some("session"), "model-call-1", 0, "");
+        response.kind = "llm.response.stream".into();
+        response.payload = json!({
+            "assistant_content": "",
+            "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+            "llm_response": {
+                "output_format": "chat_completions",
+                "response": {
+                    "model": "test-model",
+                    "candidates": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "parts": [{
+                                "type": "tool_call",
+                                "id": "tool-call-1",
+                                "name": "lookup",
+                                "arguments": {"query": "pchronicle"}
+                            }]
+                        },
+                        "finish_reason": "tool_calls"
+                    }],
+                    "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}
+                }
+            }
+        });
+        let followup = EventRecord {
+            identity: EventIdentity::default(),
+            seq: 1,
+            source: "test".into(),
+            kind: "llm.request".into(),
+            timestamp: None,
+            session_id: Some("session".into()),
+            agent_id: Some("agent".into()),
+            parent_uuid: None,
+            trace_id: None,
+            call_id: Some("model-call-2".into()),
+            subagent_id: None,
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: json!({
+                "user_content": "tool result",
+                "llm_request": {
+                    "input_format": "chat_completions",
+                    "request": {
+                        "messages": [{
+                            "role": "tool",
+                            "parts": [{
+                                "type": "tool_result",
+                                "call_id": "tool-call-1",
+                                "name": "lookup",
+                                "content": {"ok": true}
+                            }]
+                        }],
+                        "generation": {},
+                        "stream": true
+                    }
+                }
+            }),
+        };
+
+        let story = project_event_records(&[response, followup]).unwrap();
+        let calls = story.turns[0].tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_call_id, "tool-call-1");
+        assert_eq!(calls[0].function_name, "lookup");
+        assert_eq!(calls[0].arguments, json!({"query": "pchronicle"}));
+        assert_eq!(calls[0].result.as_ref(), Some(&json!({"ok": true})));
+        assert_eq!(story.agent.model_name.as_deref(), Some("test-model"));
     }
 
     #[test]
