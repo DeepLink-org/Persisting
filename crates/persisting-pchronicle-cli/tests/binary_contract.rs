@@ -38,7 +38,7 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
     ] {
         assert!(stdout.contains(command), "help omits {command}: {stdout}");
     }
-    for command in ["control", "search", "maintain"] {
+    for command in ["control", "project", "search", "maintain"] {
         assert!(
             !stdout
                 .lines()

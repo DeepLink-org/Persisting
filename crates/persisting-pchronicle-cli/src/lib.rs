@@ -20,11 +20,11 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{stream, stream::FuturesUnordered, StreamExt};
 use persisting_events::{ChronicleServeReady, CHRONICLE_SERVE_READY_VERSION};
 use persisting_pchronicle::document::{
     decode_json_storylines, detect_format, encode_json_storylines, open_document, DocumentFormat,
@@ -33,13 +33,13 @@ use persisting_pchronicle::document::{
 use persisting_pchronicle::model::StorylineDocument;
 use persisting_pchronicle::query::ChronicleQueryEngine;
 use persisting_pchronicle::storage::{
-    build_storyline_projection, probe_canonical_event_store, rebuild_storyline_projection,
-    storyline_projection_destination_exists, storyline_projection_status,
-    sync_storyline_projection, verify_storyline_projection, CatalogErrorPolicy,
-    CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, EventFactSnapshot, StorylineLanceStore,
-    StorylineProjectionBuildOutcome, StorylineProjectionSyncOutcome, StorylineProjectionSyncReport,
-    StorylineProjectionVerification, DEFAULT_DATASET_NAME,
+    automatic_projection_inventory, build_storyline_projection,
+    inspect_automatic_storyline_projection, probe_canonical_event_store,
+    storyline_projection_destination_exists, AutomaticProjectionInspection,
+    AutomaticProjectionState, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
+    CatalogSourceStatus, CatalogStorylineKey, DatasetCatalogSnapshot, DatasetMount,
+    DiscoveredSource, EventFactSnapshot, StorylineLanceStore, StorylineProjectionBuildOutcome,
+    DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -113,8 +113,6 @@ enum Command {
     Import(ImportArgs),
     /// Export complete Trajectories to an exchange format.
     Export(ExportArgs),
-    /// Build and inspect the rebuildable Storyline projection.
-    Project(ProjectArgs),
     /// Run a deterministic local LLM upstream for Gateway testing.
     Echo(EchoArgs),
     /// Run explicitly enabled Warehouse, Control, and Gateway services.
@@ -473,146 +471,6 @@ struct ExportArgs {
 }
 
 #[derive(Debug, Args)]
-struct ProjectArgs {
-    #[command(subcommand)]
-    command: ProjectCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum ProjectCommand {
-    /// Build a complete projection into a new, empty Storyline store.
-    Build(ProjectBuildArgs),
-    /// Show the committed projection generation and lineage.
-    Status(ProjectStatusArgs),
-    /// Compare a projection with its current canonical fact snapshot.
-    Verify(ProjectVerifyArgs),
-    /// Apply newly appended facts by replacing only affected Storylines.
-    Sync(ProjectSyncArgs),
-    /// Continuously sync and periodically verify one canonical projection.
-    Watch(ProjectWatchArgs),
-    /// Recreate every projection table in a new physical generation.
-    Rebuild(ProjectRebuildArgs),
-}
-
-#[derive(Debug, Args)]
-struct ProjectBuildArgs {
-    /// Canonical events.lance path or object-store URI.
-    #[arg(short = 'f', long = "from", value_name = "EVENTS_URI")]
-    from: String,
-
-    /// New Storyline projection root.
-    #[arg(short, long, value_name = "STORYLINE_URI")]
-    output: String,
-
-    /// Dataset-relative canonical Source name recorded in projection lineage.
-    #[arg(long, value_name = "SOURCE_FILE", default_value = "events.lance")]
-    source_file: String,
-}
-
-#[derive(Debug, Args)]
-struct ProjectStatusArgs {
-    /// Storyline projection root.
-    #[arg(short = 'f', long = "from", value_name = "STORYLINE_URI")]
-    from: String,
-}
-
-#[derive(Debug, Args)]
-struct ProjectVerifyArgs {
-    /// Storyline projection root.
-    #[arg(short = 'f', long = "from", value_name = "STORYLINE_URI")]
-    from: String,
-
-    /// Canonical events.lance path or object-store URI.
-    #[arg(long, value_name = "EVENTS_URI")]
-    source: String,
-}
-
-#[derive(Debug, Args)]
-struct ProjectSyncArgs {
-    /// Storyline projection root.
-    #[arg(short = 'f', long = "from", value_name = "STORYLINE_URI")]
-    from: String,
-
-    /// Canonical events.lance path or object-store URI.
-    #[arg(long, value_name = "EVENTS_URI")]
-    source: String,
-}
-
-#[derive(Debug, Args)]
-struct ProjectWatchArgs {
-    /// Storyline projection root.
-    #[arg(short = 'f', long = "from", value_name = "STORYLINE_URI")]
-    from: String,
-
-    /// Canonical events.lance path or object-store URI.
-    #[arg(long, value_name = "EVENTS_URI")]
-    source: String,
-
-    /// Seconds between successful sync attempts.
-    #[arg(long, default_value_t = 5)]
-    interval_seconds: u64,
-
-    /// Verify canonical freshness on the first iteration and every N iterations.
-    #[arg(long, default_value_t = 12)]
-    verify_every: u64,
-
-    /// Maximum retry delay after repeated sync failures.
-    #[arg(long, default_value_t = 60)]
-    max_backoff_seconds: u64,
-
-    /// Stop after this many iterations; primarily useful for schedulers and tests.
-    #[arg(long)]
-    iterations: Option<u64>,
-
-    /// Exit immediately after emitting a failed iteration.
-    #[arg(long)]
-    exit_on_error: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct ProjectWatchEvent {
-    iteration: u64,
-    observed_at_unix_ms: u64,
-    status: &'static str,
-    duration_ms: u64,
-    consecutive_failures: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<BoundaryCode>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sync: Option<StorylineProjectionSyncReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verification: Option<StorylineProjectionVerification>,
-}
-
-enum ProjectWatchAttempt {
-    Synced {
-        sync: StorylineProjectionSyncReport,
-        verification: Box<Option<StorylineProjectionVerification>>,
-    },
-    Rejected {
-        code: BoundaryCode,
-        message: String,
-    },
-}
-
-#[derive(Debug, Args)]
-struct ProjectRebuildArgs {
-    /// Canonical events.lance path or object-store URI.
-    #[arg(short = 'f', long = "from", value_name = "EVENTS_URI")]
-    from: String,
-
-    /// Existing or new Storyline projection root.
-    #[arg(short, long, value_name = "STORYLINE_URI")]
-    output: String,
-
-    /// Dataset-relative canonical Source name recorded in projection lineage.
-    #[arg(long, value_name = "SOURCE_FILE", default_value = "events.lance")]
-    source_file: String,
-}
-
-#[derive(Debug, Args)]
 #[command(
     group(
         ArgGroup::new("dataset_source")
@@ -782,7 +640,73 @@ struct StatusResponse {
     counts_complete: bool,
     sources: StatusSources,
     counts: StatusCounts,
+    projections: Vec<ProjectionStatusResponse>,
     source_errors: Vec<StatusSourceError>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectionStatusResponse {
+    source_path: String,
+    projection_path: String,
+    status: ProjectionStatusName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fact_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fact_rows: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ProjectionStatusName {
+    Fresh,
+    Stale,
+    Missing,
+    Error,
+}
+
+impl ProjectionStatusName {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Stale => "stale",
+            Self::Missing => "missing",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl ProjectionStatusResponse {
+    fn from_inspection(
+        source_path: String,
+        projection_path: String,
+        inspection: AutomaticProjectionInspection,
+    ) -> Self {
+        Self {
+            source_path,
+            projection_path,
+            status: match inspection.state {
+                AutomaticProjectionState::Fresh => ProjectionStatusName::Fresh,
+                AutomaticProjectionState::Stale => ProjectionStatusName::Stale,
+                AutomaticProjectionState::Missing => ProjectionStatusName::Missing,
+            },
+            generation: inspection.generation,
+            fact_version: Some(inspection.fact_version),
+            fact_rows: Some(inspection.fact_rows),
+        }
+    }
+
+    fn error(source_path: String, projection_path: String) -> Self {
+        Self {
+            source_path,
+            projection_path,
+            status: ProjectionStatusName::Error,
+            generation: None,
+            fact_version: None,
+            fact_rows: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -797,6 +721,8 @@ struct StatusSourceError {
     source_path: String,
     error: String,
 }
+
+const STATUS_PROJECTION_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Serialize)]
 struct FindResponse {
@@ -908,254 +834,9 @@ pub async fn run_with_stdio(
         Command::Find(args) => run_find(args, settings, stdout_is_terminal, stdout, stderr).await,
         Command::Import(args) => run_import(args, settings, stdin, stdout, stderr).await,
         Command::Export(args) => run_export(args, settings, stdout, stderr).await,
-        Command::Project(args) => run_project(args, stdout, stderr).await,
         Command::Echo(args) => run_echo(args, stderr).await,
         Command::Serve(args) => run_serve(args, stdout, stderr).await,
     }
-}
-
-async fn run_project(
-    args: ProjectArgs,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
-) -> Result<()> {
-    match args.command {
-        ProjectCommand::Build(args) => {
-            let report =
-                match build_storyline_projection(&args.from, &args.output, args.source_file).await?
-                {
-                    StorylineProjectionBuildOutcome::Built(report) => report,
-                    StorylineProjectionBuildOutcome::OutputNotEmpty => {
-                        return Err(cli_boundary_error(
-                            BoundaryCode::Conflict,
-                            "projection output is not empty",
-                        ));
-                    }
-                };
-            serde_json::to_writer_pretty(&mut *stdout, &report)
-                .context("encode projection build report")?;
-            writeln!(stdout).context("write projection build report")?;
-            writeln!(
-                stderr,
-                "generation={} fact_version={} fact_rows={} storylines={}",
-                report.generation, report.fact_version, report.fact_rows, report.storylines
-            )
-            .context("write projection build metadata")?;
-        }
-        ProjectCommand::Status(args) => {
-            let status = storyline_projection_status(&args.from).await?;
-            serde_json::to_writer_pretty(&mut *stdout, &status)
-                .context("encode projection status")?;
-            writeln!(stdout).context("write projection status")?;
-        }
-        ProjectCommand::Verify(args) => {
-            let verification = verify_storyline_projection(&args.source, &args.from).await?;
-            serde_json::to_writer_pretty(&mut *stdout, &verification)
-                .context("encode projection verification")?;
-            writeln!(stdout).context("write projection verification")?;
-            if !verification.fresh {
-                return Err(cli_boundary_error(
-                    BoundaryCode::Conflict,
-                    "projection verification is not fresh",
-                ));
-            }
-        }
-        ProjectCommand::Sync(args) => {
-            let report = match sync_storyline_projection(&args.source, &args.from).await? {
-                StorylineProjectionSyncOutcome::Synced(report) => report,
-                StorylineProjectionSyncOutcome::MissingProjection => {
-                    return Err(cli_boundary_error(
-                        BoundaryCode::NotFound,
-                        "projection was not found",
-                    ));
-                }
-                StorylineProjectionSyncOutcome::RequiresRebuild(_) => {
-                    return Err(cli_boundary_error(
-                        BoundaryCode::Conflict,
-                        "projection requires rebuild",
-                    ));
-                }
-            };
-            serde_json::to_writer_pretty(&mut *stdout, &report)
-                .context("encode projection sync report")?;
-            writeln!(stdout).context("write projection sync report")?;
-        }
-        ProjectCommand::Watch(args) => run_project_watch(args, stdout, stderr).await?,
-        ProjectCommand::Rebuild(args) => {
-            let report =
-                rebuild_storyline_projection(&args.from, &args.output, args.source_file).await?;
-            serde_json::to_writer_pretty(&mut *stdout, &report)
-                .context("encode projection rebuild report")?;
-            writeln!(stdout).context("write projection rebuild report")?;
-        }
-    }
-    Ok(())
-}
-
-async fn run_project_watch(
-    args: ProjectWatchArgs,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
-) -> Result<()> {
-    anyhow::ensure!(
-        args.interval_seconds > 0,
-        "interval-seconds must be positive"
-    );
-    anyhow::ensure!(args.verify_every > 0, "verify-every must be positive");
-    anyhow::ensure!(
-        args.max_backoff_seconds >= args.interval_seconds,
-        "max-backoff-seconds must be at least interval-seconds"
-    );
-    if let Some(iterations) = args.iterations {
-        anyhow::ensure!(iterations > 0, "iterations must be positive");
-    }
-
-    let mut iteration = 0u64;
-    let mut consecutive_failures = 0u32;
-    loop {
-        iteration = iteration.saturating_add(1);
-        let started = Instant::now();
-        let verify_this_iteration = (iteration - 1).is_multiple_of(args.verify_every);
-        let outcome = async {
-            let sync = match sync_storyline_projection(&args.source, &args.from).await? {
-                StorylineProjectionSyncOutcome::Synced(sync) => sync,
-                StorylineProjectionSyncOutcome::MissingProjection => {
-                    return Ok(ProjectWatchAttempt::Rejected {
-                        code: BoundaryCode::NotFound,
-                        message: "projection was not found".into(),
-                    });
-                }
-                StorylineProjectionSyncOutcome::RequiresRebuild(_) => {
-                    return Ok(ProjectWatchAttempt::Rejected {
-                        code: BoundaryCode::Conflict,
-                        message: "projection requires rebuild".into(),
-                    });
-                }
-            };
-            let verification = if verify_this_iteration {
-                let verification = verify_storyline_projection(&args.source, &args.from).await?;
-                if !verification.fresh {
-                    return Ok(ProjectWatchAttempt::Rejected {
-                        code: BoundaryCode::Conflict,
-                        message: "projection verification is not fresh".into(),
-                    });
-                }
-                Some(verification)
-            } else {
-                None
-            };
-            Ok::<_, anyhow::Error>(ProjectWatchAttempt::Synced {
-                sync,
-                verification: Box::new(verification),
-            })
-        }
-        .await;
-
-        let (event, operational_error) = match outcome {
-            Ok(ProjectWatchAttempt::Synced { sync, verification }) => {
-                consecutive_failures = 0;
-                (
-                    ProjectWatchEvent {
-                        iteration,
-                        observed_at_unix_ms: unix_now_ms(),
-                        status: "ok",
-                        duration_ms: elapsed_ms(started),
-                        consecutive_failures,
-                        code: None,
-                        message: None,
-                        sync: Some(sync),
-                        verification: *verification,
-                    },
-                    None,
-                )
-            }
-            Ok(ProjectWatchAttempt::Rejected { code, message }) => {
-                consecutive_failures = consecutive_failures.saturating_add(1);
-                (
-                    ProjectWatchEvent {
-                        iteration,
-                        observed_at_unix_ms: unix_now_ms(),
-                        status: "error",
-                        duration_ms: elapsed_ms(started),
-                        consecutive_failures,
-                        code: Some(code),
-                        message: Some(message),
-                        sync: None,
-                        verification: None,
-                    },
-                    None,
-                )
-            }
-            Err(error) => {
-                tracing::error!(error = ?error, "pChronicle project watch iteration failed");
-                consecutive_failures = consecutive_failures.saturating_add(1);
-                (
-                    ProjectWatchEvent {
-                        iteration,
-                        observed_at_unix_ms: unix_now_ms(),
-                        status: "error",
-                        duration_ms: elapsed_ms(started),
-                        consecutive_failures,
-                        code: Some(BoundaryCode::Internal),
-                        message: Some("internal error".into()),
-                        sync: None,
-                        verification: None,
-                    },
-                    Some(error),
-                )
-            }
-        };
-        let failed = event.code.is_some();
-        serde_json::to_writer(&mut *stdout, &event).context("encode project watch event")?;
-        writeln!(stdout).context("write project watch event")?;
-        stdout.flush().context("flush project watch event")?;
-        writeln!(
-            stderr,
-            "project_watch iteration={} status={} duration_ms={} failures={}",
-            event.iteration, event.status, event.duration_ms, event.consecutive_failures
-        )
-        .context("write project watch metadata")?;
-
-        if failed && args.exit_on_error {
-            if let Some(error) = operational_error {
-                return Err(error);
-            }
-            return Err(cli_boundary_error(
-                event.code.expect("failed watch event has a boundary code"),
-                event.message.as_deref().unwrap_or("project watch failed"),
-            ));
-        }
-        if args.iterations.is_some_and(|limit| iteration >= limit) {
-            return Ok(());
-        }
-
-        let retry_multiplier = if failed {
-            1u64 << consecutive_failures.min(6)
-        } else {
-            1
-        };
-        let delay = args
-            .interval_seconds
-            .saturating_mul(retry_multiplier)
-            .min(args.max_backoff_seconds);
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
-            _ = wait_for_termination() => return Ok(()),
-        }
-    }
-}
-
-fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
-fn elapsed_ms(started: Instant) -> u64 {
-    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 struct PreparedGateway {
@@ -1639,6 +1320,37 @@ async fn run_status(
     let (dataset_uri, snapshot) =
         discover_snapshot(&dataset_uri, args.errors, args.max_files, args.max_entries).await?;
     let snapshot = Arc::new(snapshot);
+    let inventory = automatic_projection_inventory(snapshot.as_ref())?;
+    let mut projections = stream::iter(inventory.targets)
+        .map(|target| async move {
+            let source_path = target.source_path.clone();
+            let projection_path = target.projection_path.clone();
+            match inspect_automatic_storyline_projection(&target).await {
+                Ok(inspection) => ProjectionStatusResponse::from_inspection(
+                    source_path,
+                    projection_path,
+                    inspection,
+                ),
+                Err(error) => {
+                    tracing::error!(
+                        error = ?error,
+                        source = %source_path,
+                        "pChronicle projection status inspection failed"
+                    );
+                    ProjectionStatusResponse::error(source_path, projection_path)
+                }
+            }
+        })
+        .buffered(STATUS_PROJECTION_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    projections.extend(
+        inventory
+            .errors
+            .into_iter()
+            .map(|error| ProjectionStatusResponse::error(error.source_path, error.projection_path)),
+    );
+    projections.sort_by(|left, right| left.source_path.cmp(&right.source_path));
     let dataset = snapshot
         .dataset(DEFAULT_DATASET_NAME)
         .context("default Dataset missing from Catalog Snapshot")?;
@@ -1700,6 +1412,7 @@ async fn run_status(
             error: error_sources,
         },
         counts,
+        projections,
         source_errors,
     };
 
