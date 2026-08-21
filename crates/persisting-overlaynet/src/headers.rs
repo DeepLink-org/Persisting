@@ -25,14 +25,7 @@ pub fn skip_transparent_forward_header(name: &str) -> bool {
 /// RFC 9110 allows `Connection` to nominate additional hop-by-hop headers.
 /// Those fields must be removed alongside the fixed proxy header set.
 pub fn skip_transparent_forward_header_for(headers: &HeaderMap, name: &str) -> bool {
-    skip_transparent_forward_header(name)
-        || headers
-            .get_all("connection")
-            .iter()
-            .filter_map(|value| value.to_str().ok())
-            .flat_map(|value| value.split(','))
-            .map(str::trim)
-            .any(|token| token.eq_ignore_ascii_case(name))
+    skip_transparent_forward_header(name) || connection_nominates_header(headers, name)
 }
 
 pub fn skip_upstream_forward_header(name: &str) -> bool {
@@ -48,6 +41,34 @@ pub fn skip_response_header_when_body_changed(name: &str) -> bool {
             name.to_ascii_lowercase().as_str(),
             "content-length" | "content-encoding" | "content-type"
         )
+}
+
+/// Filter upstream response headers after a proxy has consumed and rebuilt the
+/// response body. HTTP framing is always local to the current hop, so stale
+/// transfer metadata must not survive even when the payload bytes are unchanged.
+pub fn skip_response_header_after_reframing(
+    headers: &HeaderMap,
+    name: &str,
+    body_changed: bool,
+) -> bool {
+    is_hop_by_hop(name)
+        || connection_nominates_header(headers, name)
+        || name.eq_ignore_ascii_case("content-length")
+        || (body_changed
+            && matches!(
+                name.to_ascii_lowercase().as_str(),
+                "content-encoding" | "content-type"
+            ))
+}
+
+fn connection_nominates_header(headers: &HeaderMap, name: &str) -> bool {
+    headers
+        .get_all("connection")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .any(|token| token.eq_ignore_ascii_case(name))
 }
 
 pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -70,6 +91,38 @@ mod tests {
         assert!(skip_upstream_forward_header("authorization"));
         assert!(skip_response_header_when_body_changed("content-length"));
         assert!(!skip_response_header_when_body_changed("x-request-id"));
+    }
+
+    #[test]
+    fn reframed_responses_drop_upstream_framing_and_connection_extensions() {
+        let mut headers = HeaderMap::new();
+        headers.insert("connection", "keep-alive, x-upstream-hop".parse().unwrap());
+
+        assert!(skip_response_header_after_reframing(
+            &headers,
+            "transfer-encoding",
+            false
+        ));
+        assert!(skip_response_header_after_reframing(
+            &headers,
+            "content-length",
+            false
+        ));
+        assert!(skip_response_header_after_reframing(
+            &headers,
+            "x-upstream-hop",
+            false
+        ));
+        assert!(!skip_response_header_after_reframing(
+            &headers,
+            "content-type",
+            false
+        ));
+        assert!(skip_response_header_after_reframing(
+            &headers,
+            "content-type",
+            true
+        ));
     }
 
     #[test]

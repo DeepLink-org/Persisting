@@ -18,7 +18,7 @@ use crate::engine::{
     headers_to_vec, CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event,
 };
 use crate::runtime::debug;
-use persisting_overlaynet::headers::skip_response_header_when_body_changed;
+use persisting_overlaynet::headers::skip_response_header_after_reframing;
 
 const STREAM_DRAFT_MD_INTERVAL: Duration = Duration::from_millis(150);
 /// Bounded queue between upstream reader and client SSE writer (backpressure).
@@ -268,13 +268,11 @@ pub(super) async fn streaming_llm_response(
     let body_stream = ReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
 
     let mut builder = Response::builder().status(status);
-    // SSE streams already strip body-sensitive headers (`content-length` /
-    // `transfer-encoding` always apply per-chunk, not per-body) but bridges that
-    // rewrite the body still need a fresh `content-type` and must not forward stale
-    // `content-encoding`. The shared filter handles both cases consistently with
-    // the non-streaming path.
+    // The client-facing SSE body is a new stream. Upstream hop-by-hop framing and
+    // content length never cross that boundary; translated streams additionally
+    // replace stale encoding and media type metadata.
     for (name, value) in resp_headers.iter() {
-        if translate && skip_response_header_when_body_changed(name.as_str()) {
+        if skip_response_header_after_reframing(&resp_headers, name.as_str(), translate) {
             continue;
         }
         builder = builder.header(name, value);
