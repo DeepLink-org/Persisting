@@ -208,10 +208,9 @@ pub async fn maintain_automatic_storyline_projection(
     let inspection = inspect_automatic_storyline_projection(target).await?;
     match inspection.state {
         AutomaticProjectionState::Missing => build_or_accept_concurrent_winner(target).await,
-        AutomaticProjectionState::Fresh => Ok(report_from_inspection(
-            AutomaticProjectionMaintenanceMode::Unchanged,
-            inspection,
-        )),
+        AutomaticProjectionState::Fresh => {
+            report_from_inspection(AutomaticProjectionMaintenanceMode::Unchanged, inspection)
+        }
         AutomaticProjectionState::Stale => {
             let outcome =
                 match sync_storyline_projection(&target.source_uri, &target.projection_uri).await {
@@ -310,10 +309,10 @@ async fn build_or_accept_concurrent_winner(
                 inspection.state == AutomaticProjectionState::Fresh,
                 "automatic Storyline destination became nonempty without a fresh matching projection"
             );
-            Ok(report_from_inspection(
+            report_from_inspection(
                 AutomaticProjectionMaintenanceMode::ConcurrentWinner,
                 inspection,
-            ))
+            )
         }
     }
 }
@@ -341,10 +340,10 @@ async fn accept_fresh_concurrent_winner(
 ) -> Result<AutomaticProjectionMaintenanceReport> {
     match inspect_automatic_storyline_projection(target).await {
         Ok(inspection) if inspection.state == AutomaticProjectionState::Fresh => {
-            Ok(report_from_inspection(
+            report_from_inspection(
                 AutomaticProjectionMaintenanceMode::ConcurrentWinner,
                 inspection,
-            ))
+            )
         }
         _ => Err(original),
     }
@@ -353,16 +352,17 @@ async fn accept_fresh_concurrent_winner(
 fn report_from_inspection(
     mode: AutomaticProjectionMaintenanceMode,
     inspection: AutomaticProjectionInspection,
-) -> AutomaticProjectionMaintenanceReport {
-    AutomaticProjectionMaintenanceReport {
+) -> Result<AutomaticProjectionMaintenanceReport> {
+    let generation = inspection
+        .generation
+        .context("fresh automatic Storyline projection has no generation")?;
+    Ok(AutomaticProjectionMaintenanceReport {
         mode,
-        generation: inspection
-            .generation
-            .expect("fresh and stale projections have a generation"),
+        generation,
         fact_version: inspection.fact_version,
         fact_rows: inspection.fact_rows,
         trajectories: None,
-    }
+    })
 }
 
 fn display_source_path(source_path: &str) -> String {
