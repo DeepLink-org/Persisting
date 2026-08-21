@@ -69,9 +69,7 @@ async fn append_note(
             }],
         )
         .await?;
-    Ok(persisting_pchronicle::storage::raw_event_lance_path(
-        &coords,
-    )?)
+    persisting_pchronicle::storage::raw_event_lance_path(&coords)
 }
 
 async fn target_for(source: &std::path::Path) -> Result<AutomaticProjectionTarget> {

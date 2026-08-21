@@ -145,11 +145,15 @@ pub fn automatic_projection_inventory(
         .datasets()
         .iter()
         .flat_map(|dataset| {
-            dataset.sources.iter().filter_map(|source| {
-                (source.status == CatalogSourceStatus::Error
-                    && source.format.as_deref()
-                        == Some(crate::DocumentFormat::CanonicalEvent.as_str()))
-                .then(|| {
+            dataset
+                .sources
+                .iter()
+                .filter(|source| {
+                    source.status == CatalogSourceStatus::Error
+                        && source.format.as_deref()
+                            == Some(crate::DocumentFormat::CanonicalEvent.as_str())
+                })
+                .map(|source| {
                     let source_path = display_source_path(&source.file);
                     display_projection_path(&source_path).map(|projection_path| {
                         AutomaticProjectionInventoryError {
@@ -159,7 +163,6 @@ pub fn automatic_projection_inventory(
                         }
                     })
                 })
-            })
         })
         .collect::<Result<Vec<_>>>()?;
     errors.sort_by(|left, right| {
