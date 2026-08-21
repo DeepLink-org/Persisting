@@ -2,6 +2,7 @@
 
 mod env;
 mod product;
+mod replay;
 mod run;
 pub mod runtime;
 mod trajectory;
@@ -45,6 +46,8 @@ enum Command {
         long_about = run::RUN_COMMAND_LONG_ABOUT
     )]
     Run(Box<run::RunArgs>),
+    /// Replay an agent-native trajectory in this sandbox, then continue the same Agent.
+    Replay(Box<replay::ReplayArgs>),
     /// Manage durable reusable execution environments.
     Env(env::EnvArgs),
     /// Show the selected Run's process, filesystem, and network status.
@@ -68,6 +71,12 @@ pub fn main() -> anyhow::Result<()> {
     match Cli::parse_from(args).command {
         Command::Run(args) => {
             let code = tokio::runtime::Runtime::new()?.block_on(run::run(*args))?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Command::Replay(args) => {
+            let code = replay::run(*args);
             if code != 0 {
                 std::process::exit(code);
             }
@@ -103,6 +112,7 @@ fn normalize_default_run(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
     let first = args.get(1).and_then(|value| value.to_str());
     let reserved = [
         "run",
+        "replay",
         "env",
         "status",
         "inspect",
@@ -154,9 +164,52 @@ mod tests {
             vec!["pvisor", "env", "delete", "demo", "--force"],
             vec!["pvisor", "run", "--", "/usr/bin/true"],
             vec!["pvisor", "run", "--safe", "/usr/bin/true"],
+            vec![
+                "pvisor",
+                "replay",
+                "--agent",
+                "claude-code",
+                "--trajectory",
+                "/input/session.jsonl",
+                "--after-step",
+                "30",
+            ],
+            vec![
+                "pvisor",
+                "replay",
+                "--agent",
+                "claude-code",
+                "--trajectory",
+                "/input/session.jsonl",
+                "--after-step",
+                "30",
+                "--agent-entrypoint",
+                "/usr/bin/claude",
+                "--safe",
+                "--overlayfs-base",
+                "/workspace",
+            ],
         ] {
             Cli::try_parse_from(args).expect("valid pvisor command");
         }
+    }
+
+    #[test]
+    fn replay_rejects_removed_chronicle_flag() {
+        let error = Cli::try_parse_from([
+            "pvisor",
+            "replay",
+            "--agent",
+            "claude-code",
+            "--trajectory",
+            "/input/session.jsonl",
+            "--after-step",
+            "30",
+            "--chronicle-mode",
+            "off",
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("--chronicle-mode"));
     }
 
     #[test]

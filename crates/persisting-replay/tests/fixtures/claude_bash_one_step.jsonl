@@ -1,0 +1,4 @@
+{"type":"user","uuid":"user-1","parentUuid":null,"isSidechain":false,"sessionId":"session-1","version":"2.1.220","message":{"role":"user","content":"Create the marker."}}
+{"type":"assistant","uuid":"assistant-1","parentUuid":"user-1","isSidechain":false,"sessionId":"session-1","version":"2.1.220","message":{"id":"message-1","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"printf fresh > marker.txt"}}]}}
+{"type":"user","uuid":"result-1","parentUuid":"assistant-1","sourceToolAssistantUUID":"assistant-1","isSidechain":false,"sessionId":"session-1","version":"2.1.220","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"old"}]}}
+{"type":"assistant","uuid":"assistant-2","parentUuid":"result-1","isSidechain":false,"sessionId":"session-1","version":"2.1.220","message":{"id":"message-2","role":"assistant","content":[{"type":"text","text":"done"}]}}
