@@ -5,7 +5,7 @@ mod asset;
 mod explorer;
 pub(crate) mod problem;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -491,28 +491,6 @@ struct TrajectoryView {
     turns: Vec<TrajectoryTurnView>,
 }
 
-fn count_tool_calls(value: &Value) -> usize {
-    match value {
-        Value::Array(items) => items.iter().map(count_tool_calls).sum(),
-        Value::Object(map) => {
-            let here = map
-                .get("tool_calls")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len)
-                + usize::from(matches!(
-                    map.get("type").and_then(Value::as_str),
-                    Some("tool_use" | "function_call" | "custom_tool_call" | "local_shell_call")
-                ));
-            here + map
-                .iter()
-                .filter(|(key, _)| key.as_str() != "tool_calls")
-                .map(|(_, value)| count_tool_calls(value))
-                .sum::<usize>()
-        }
-        _ => 0,
-    }
-}
-
 fn normalize_arguments(value: Value) -> Value {
     if let Value::String(text) = &value {
         serde_json::from_str(text).unwrap_or(value)
@@ -593,6 +571,17 @@ fn turn_seq(turn: &StorylineTurn) -> Option<u64> {
         .and_then(Value::as_u64)
 }
 
+fn event_seqs_for_turn(turn: &StorylineTurn, by_call: &BTreeMap<String, Vec<u64>>) -> Vec<u64> {
+    // Canonical Event -> Storyline projection records the authoritative source
+    // sequence on each turn. Prefer it over the broader call correlation: a
+    // call contains both request and response, and attaching both to both turns
+    // duplicates usage, tool calls, latency and TTFT in Explorer aggregates.
+    turn_seq(turn)
+        .map(|seq| vec![seq])
+        .or_else(|| turn_call_id(turn).and_then(|id| by_call.get(&id).cloned()))
+        .unwrap_or_default()
+}
+
 #[derive(Clone)]
 struct LoadedTrajectory {
     run: RunSummary,
@@ -642,11 +631,7 @@ async fn load_trajectory(
         .into_iter()
         .map(|turn| {
             let call_id = turn_call_id(&turn);
-            let event_seqs = call_id
-                .as_ref()
-                .and_then(|id| by_call.get(id).cloned())
-                .or_else(|| turn_seq(&turn).map(|seq| vec![seq]))
-                .unwrap_or_default();
+            let event_seqs = event_seqs_for_turn(&turn, &by_call);
             let mut wire_tool_calls = Vec::new();
             for event in records
                 .iter()
@@ -654,8 +639,13 @@ async fn load_trajectory(
             {
                 collect_wire_tool_calls(&event.payload, &mut wire_tool_calls);
             }
-            wire_tool_calls.dedup_by(|left, right| {
-                left.id == right.id && left.name == right.name && left.arguments == right.arguments
+            let mut seen = BTreeSet::new();
+            wire_tool_calls.retain(|call| {
+                seen.insert((
+                    call.id.clone(),
+                    call.name.clone(),
+                    serde_json::to_string(&call.arguments).unwrap_or_default(),
+                ))
             });
             TrajectoryTurnView {
                 turn,
@@ -681,11 +671,15 @@ async fn trajectory_view(
     let query = api_query(query)?;
     let loaded = load_trajectory(&state, &query).await?;
     let mut event_kind_counts = BTreeMap::new();
-    let mut tool_call_count = 0;
     for event in &loaded.records {
         *event_kind_counts.entry(event.kind.clone()).or_insert(0) += 1;
-        tool_call_count += count_tool_calls(&event.payload);
     }
+    let tool_call_count = loaded
+        .turns
+        .iter()
+        .map(explorer::display_tool_calls)
+        .map(|calls| calls.len())
+        .sum();
     Ok(Json(TrajectoryView {
         run: loaded.run,
         event_kind_counts,

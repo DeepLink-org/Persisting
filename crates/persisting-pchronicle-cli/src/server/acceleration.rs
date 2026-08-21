@@ -977,7 +977,11 @@ async fn build_event_stats(
                     WHEN kind = 'session.ended' THEN 1 \
                     ELSE 0 END) AS terminal_rank, \
                 MAX(CASE WHEN kind = 'session.ended' THEN payload_json ELSE NULL END) \
-                    AS session_ended_payload_json \
+                    AS session_ended_payload_json, \
+                SUM(CASE WHEN kind = 'llm.request' THEN 1 ELSE 0 END) \
+                    AS request_count, \
+                SUM(CASE WHEN kind = 'llm.response' OR kind = 'llm.response.stream' \
+                    THEN 1 ELSE 0 END) AS response_count \
          FROM {dataset}.events GROUP BY _file_, session_id"
     );
     let body = engine.query_jsonl(&sql).await?;
@@ -990,11 +994,14 @@ async fn build_event_stats(
             let row_count = required_json_u64(&row, "row_count")? as usize;
             let duplicate_event_ids = required_json_u64(&row, "duplicate_event_ids")? as usize;
             let terminal_rank = required_json_u64(&row, "terminal_rank")?;
+            let request_count = required_json_u64(&row, "request_count")?;
+            let response_count = required_json_u64(&row, "response_count")?;
             let status = terminal_event_status(
                 terminal_rank,
                 row.get("session_ended_payload_json")
                     .and_then(JsonValue::as_str),
-            );
+            )
+            .or_else(|| capture_call_status(request_count, response_count));
             Ok((
                 (file, session_id),
                 EventStats {
@@ -1023,6 +1030,16 @@ fn terminal_event_status(rank: u64, session_ended_payload_json: Option<&str>) ->
             })
         }
         _ => None,
+    }
+}
+
+fn capture_call_status(request_count: u64, response_count: u64) -> Option<String> {
+    if request_count == 0 && response_count == 0 {
+        None
+    } else if response_count >= request_count {
+        Some("completed".into())
+    } else {
+        Some("active".into())
     }
 }
 
@@ -1136,6 +1153,14 @@ mod run_summary_tests {
         );
         assert_eq!(terminal_event_status(3, None).as_deref(), Some("failed"));
         assert_eq!(terminal_event_status(0, None), None);
+    }
+
+    #[test]
+    fn gateway_call_pairs_close_runs_without_explicit_session_events() {
+        assert_eq!(capture_call_status(3, 3).as_deref(), Some("completed"));
+        assert_eq!(capture_call_status(3, 2).as_deref(), Some("active"));
+        assert_eq!(capture_call_status(0, 1).as_deref(), Some("completed"));
+        assert_eq!(capture_call_status(0, 0), None);
     }
 }
 
