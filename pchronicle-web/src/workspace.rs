@@ -665,7 +665,7 @@ fn RunDetailWorkspace(
         section { class: "pc2-detail",
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
-                div { class: "pc2-head-actions", button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/v1/export/otlp?{run.query()}", "OTLP" } }
+                div { class: "pc2-head-actions", button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" } }
             }
             MetricsStrip { analysis: analysis.clone() }
             nav { class: "pc2-detail-tabs", aria_label: "Trajectory detail view",
