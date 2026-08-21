@@ -23,6 +23,15 @@ const MANIFEST_FILE: &str = "_manifest.json";
 const MANIFEST_LOCK_FILE: &str = "_manifest.lock";
 const CAS_RETRIES: usize = 64;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ObjectStoreManifestWriteMode {
+    #[default]
+    Conditional,
+    /// Use only when one process owns the object-store Dataset. This supports
+    /// S3-compatible providers that cannot conditionally replace an object.
+    SingleWriter,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventWriterFence {
     pub epoch: u64,
@@ -99,9 +108,24 @@ pub(super) async fn activate(
     requested: Option<&EventWriterFence>,
     auto_writer_id: &str,
 ) -> Result<ManifestWriteOutcome<EventManifest>> {
+    activate_with_mode(
+        root_uri,
+        requested,
+        auto_writer_id,
+        ObjectStoreManifestWriteMode::Conditional,
+    )
+    .await
+}
+
+pub(super) async fn activate_with_mode(
+    root_uri: &str,
+    requested: Option<&EventWriterFence>,
+    auto_writer_id: &str,
+    write_mode: ObjectStoreManifestWriteMode,
+) -> Result<ManifestWriteOutcome<EventManifest>> {
     let requested = requested.cloned();
     let auto_writer_id = auto_writer_id.to_string();
-    mutate(root_uri, move |current| {
+    mutate_with_mode(root_uri, write_mode, move |current| {
         let next_fence = match (&requested, current) {
             (Some(fence), Some(manifest)) if fence == &manifest.active_writer => {
                 return Ok(ManifestMutation::Unchanged(manifest.clone()));
@@ -145,13 +169,29 @@ pub(super) async fn activate(
     .await
 }
 
+#[cfg(test)]
 pub(super) async fn publish_segment(
     root_uri: &str,
     fence: &EventWriterFence,
     segment: EventSegment,
 ) -> Result<ManifestWriteOutcome<EventManifest>> {
+    publish_segment_with_mode(
+        root_uri,
+        fence,
+        segment,
+        ObjectStoreManifestWriteMode::Conditional,
+    )
+    .await
+}
+
+pub(super) async fn publish_segment_with_mode(
+    root_uri: &str,
+    fence: &EventWriterFence,
+    segment: EventSegment,
+    write_mode: ObjectStoreManifestWriteMode,
+) -> Result<ManifestWriteOutcome<EventManifest>> {
     let fence = fence.clone();
-    mutate(root_uri, move |current| {
+    mutate_with_mode(root_uri, write_mode, move |current| {
         let current = current.context("event manifest disappeared during publish")?;
         if let Some(conflict) = active_writer_conflict(current, &fence) {
             return Ok(ManifestMutation::Conflict(conflict));
@@ -245,16 +285,34 @@ pub(super) async fn replace_segments(
 /// Atomically replace one contiguous immutable segment group while preserving
 /// its position in append order. Exact descriptor matching prevents a stale
 /// compactor from overwriting a segment version published by another task.
+#[cfg(test)]
 pub(super) async fn replace_segment_group(
     root_uri: &str,
     fence: &EventWriterFence,
     expected: &[EventSegment],
     replacement: EventSegment,
 ) -> Result<ManifestWriteOutcome<EventManifest>> {
+    replace_segment_group_with_mode(
+        root_uri,
+        fence,
+        expected,
+        replacement,
+        ObjectStoreManifestWriteMode::Conditional,
+    )
+    .await
+}
+
+pub(super) async fn replace_segment_group_with_mode(
+    root_uri: &str,
+    fence: &EventWriterFence,
+    expected: &[EventSegment],
+    replacement: EventSegment,
+    write_mode: ObjectStoreManifestWriteMode,
+) -> Result<ManifestWriteOutcome<EventManifest>> {
     anyhow::ensure!(!expected.is_empty(), "segment replacement group is empty");
     let expected = expected.to_vec();
     let fence = fence.clone();
-    mutate(root_uri, move |current| {
+    mutate_with_mode(root_uri, write_mode, move |current| {
         let current = current.context("event manifest disappeared during segment merge")?;
         if let Some(conflict) = active_writer_conflict(current, &fence) {
             return Ok(ManifestMutation::Conflict(conflict));
@@ -429,6 +487,23 @@ where
     T: Send + 'static,
     F: Fn(Option<&EventManifest>) -> Result<ManifestMutation<T>> + Send + Sync + 'static,
 {
+    mutate_with_mode(
+        root_uri,
+        ObjectStoreManifestWriteMode::Conditional,
+        mutation,
+    )
+    .await
+}
+
+async fn mutate_with_mode<T, F>(
+    root_uri: &str,
+    write_mode: ObjectStoreManifestWriteMode,
+    mutation: F,
+) -> Result<ManifestWriteOutcome<T>>
+where
+    T: Send + 'static,
+    F: Fn(Option<&EventManifest>) -> Result<ManifestMutation<T>> + Send + Sync + 'static,
+{
     if !is_object_store_uri(root_uri) {
         let root = PathBuf::from(root_uri);
         return tokio::task::spawn_blocking(move || {
@@ -475,9 +550,12 @@ where
             }
         };
         validate_manifest(&manifest)?;
-        let mode = match current {
-            None => PutMode::Create,
-            Some((_, version)) => PutMode::Update(version),
+        let mode = match (write_mode, current) {
+            (_, None) => PutMode::Create,
+            (ObjectStoreManifestWriteMode::Conditional, Some((_, version))) => {
+                PutMode::Update(version)
+            }
+            (ObjectStoreManifestWriteMode::SingleWriter, Some(_)) => PutMode::Overwrite,
         };
         let bytes = serde_json::to_vec_pretty(&manifest)?;
         match store.inner.put_opts(&path, bytes.into(), mode.into()).await {

@@ -27,7 +27,7 @@ pub async fn explorer_runs(
     offset: usize,
 ) -> Result<RunPage, String> {
     let url = format!(
-        "/api/v1/explorer/runs?q={}&dataset={}&status={}&sort={}&direction={}&path={}&offset={offset}&limit=50",
+        "/api/explorer/runs?q={}&dataset={}&status={}&sort={}&direction={}&path={}&offset={offset}&limit=50",
         urlencoding::encode(q),
         urlencoding::encode(dataset),
         urlencoding::encode(status),
@@ -44,7 +44,7 @@ pub async fn explorer_runs(
 
 pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, String> {
     checked(
-        Request::get(&format!("/api/v1/explorer/run?{}", run.query()))
+        Request::get(&format!("/api/explorer/run?{}", run.query()))
             .send()
             .await
             .map_err(|e| e.to_string())?,
@@ -57,7 +57,7 @@ pub async fn run_analysis(run: &RunSummary) -> Result<RunAnalysis, String> {
 
 pub async fn turns(run: &RunSummary, q: &str, source: &str) -> Result<TurnPage, String> {
     let url = format!(
-        "/api/v1/explorer/turns?{}&q={}&source={}&offset=0&limit=500",
+        "/api/explorer/turns?{}&q={}&source={}&offset=0&limit=500",
         run.query(),
         urlencoding::encode(q),
         urlencoding::encode(source),
@@ -72,7 +72,7 @@ pub async fn turns(run: &RunSummary, q: &str, source: &str) -> Result<TurnPage, 
 pub async fn turn_detail(run: &RunSummary, turn_id: i64) -> Result<TurnDetail, String> {
     checked(
         Request::get(&format!(
-            "/api/v1/explorer/turn?{}&turn_id={turn_id}",
+            "/api/explorer/turn?{}&turn_id={turn_id}",
             run.query()
         ))
         .send()
@@ -98,7 +98,7 @@ async fn query_evidence_with_budget(
     max_rows: usize,
     max_bytes: usize,
 ) -> Result<QueryEvidence, String> {
-    let response = Request::post("/api/v1/query/evidence")
+    let response = Request::post("/api/query/evidence")
         .json(&json!({ "sql": sql, "max_rows": max_rows, "max_bytes": max_bytes }))
         .map_err(|e| e.to_string())?
         .send()
@@ -113,7 +113,7 @@ async fn query_evidence_with_budget(
 
 pub async fn query_catalog() -> Result<QueryCatalog, String> {
     checked(
-        Request::get("/api/v1/query/tables")
+        Request::get("/api/query/tables")
             .send()
             .await
             .map_err(|e| e.to_string())?,
@@ -126,7 +126,7 @@ pub async fn query_catalog() -> Result<QueryCatalog, String> {
 
 pub async fn refresh_catalog() -> Result<(), String> {
     checked(
-        Request::post("/api/v1/catalog")
+        Request::post("/api/catalog")
             .send()
             .await
             .map_err(|e| e.to_string())?,

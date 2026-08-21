@@ -642,7 +642,7 @@ fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
     values.get(index).copied()
 }
 
-fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Option<f64>)> {
+pub(super) fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Option<f64>)> {
     if let Some(calls) = &item.turn.tool_calls {
         return calls
             .iter()
@@ -653,6 +653,12 @@ fn display_tool_calls(item: &TrajectoryTurnView) -> Vec<(String, Option<f64>)> {
                 )
             })
             .collect();
+    }
+    if !matches!(
+        item.turn.source.trim().to_ascii_lowercase().as_str(),
+        "agent" | "assistant" | "model"
+    ) {
+        return Vec::new();
     }
     item.wire_tool_calls
         .iter()

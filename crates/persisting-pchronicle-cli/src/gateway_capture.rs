@@ -5,9 +5,11 @@ use std::sync::Arc;
 use persisting_gateway::record::EventRecord;
 use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::sink::{CallbackSink, CaptureEventSink};
+#[cfg(test)]
+use persisting_pchronicle::storage::raw_event_append_queue;
 use persisting_pchronicle::storage::{
-    raw_event_append_queue, RawEventAppendOutcome, RawEventAppendSender, RawEventAppendWorker,
-    StoryCoords,
+    raw_event_append_queue_with_manifest_write_mode, ObjectStoreManifestWriteMode,
+    RawEventAppendOutcome, RawEventAppendSender, RawEventAppendWorker, StoryCoords,
 };
 
 use crate::{cli_boundary_error, server::problem::BoundaryCode};
@@ -22,11 +24,22 @@ impl GatewayCaptureWriter {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn gateway_capture_sink(
     dataset_uri: &str,
     default_agent_id: &str,
 ) -> anyhow::Result<(Arc<dyn CaptureEventSink>, GatewayCaptureWriter)> {
     gateway_capture_sink_with_factory(dataset_uri, default_agent_id, raw_event_append_queue)
+}
+
+pub(crate) fn gateway_capture_sink_with_manifest_write_mode(
+    dataset_uri: &str,
+    default_agent_id: &str,
+    manifest_write_mode: ObjectStoreManifestWriteMode,
+) -> anyhow::Result<(Arc<dyn CaptureEventSink>, GatewayCaptureWriter)> {
+    gateway_capture_sink_with_factory(dataset_uri, default_agent_id, move || {
+        raw_event_append_queue_with_manifest_write_mode(manifest_write_mode)
+    })
 }
 
 fn gateway_capture_sink_with_factory<F>(

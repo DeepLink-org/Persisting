@@ -2,7 +2,7 @@
 
 Dioxus frontend for the pChronicle read-only Warehouse. This is an independent
 Web project, not a module of `persisting-pchronicle` Core. It consumes the
-versioned HTTP API exposed by `persisting-pchronicle-cli` and owns browser
+read-only HTTP API exposed by `persisting-pchronicle-cli` and owns browser
 navigation, rendering, and client-side interaction only.
 
 For local frontend development, start a compatible server and run:

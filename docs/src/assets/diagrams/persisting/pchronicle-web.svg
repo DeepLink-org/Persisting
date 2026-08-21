@@ -12,7 +12,7 @@
   <rect x="42" y="338" width="1316" height="330" rx="22" fill="#0d1c2d" stroke="#334155"/><text x="70" y="373" class="zone">LOOPBACK RUNTIME</text>
   <rect x="72" y="422" width="230" height="100" rx="16" class="box"/><text x="102" y="460" class="label">Dioxus application</text><text x="102" y="484" class="tiny">Dataset · Runs · timeline</text><text x="102" y="506" class="tiny">events · tools · filters</text>
   <path d="M302 472H368" class="line"/>
-  <rect x="371" y="422" width="180" height="100" rx="16" class="accent"/><text x="405" y="460" class="label">Axum /api/v1</text><text x="405" y="486" class="tiny">read-only REST</text><text x="405" y="508" class="tiny">explicit refresh</text>
+  <rect x="371" y="422" width="180" height="100" rx="16" class="accent"/><text x="405" y="460" class="label">Axum /api</text><text x="405" y="486" class="tiny">read-only REST</text><text x="405" y="508" class="tiny">explicit refresh</text>
   <path d="M551 472H617" class="line"/>
   <rect x="620" y="410" width="205" height="124" rx="16" class="box"/><text x="650" y="450" class="label">AppState</text><text x="650" y="476" class="tiny">mount config</text><text x="650" y="498" class="tiny">immutable catalog snapshot</text><text x="650" y="520" class="tiny">generation-scoped routing</text>
   <path d="M825 450H889" class="line"/><path d="M825 502H889" class="line"/>

@@ -109,6 +109,13 @@ fn test_router_with_config(config: ChronicleServerConfig) -> Router {
     warehouse_router(config)
 }
 
+fn test_router_with_catalog_refresh_interval(
+    config: ChronicleServerConfig,
+    interval: std::time::Duration,
+) -> Router {
+    read_routes().with_state(app_state_with_catalog_refresh_interval(config, interval))
+}
+
 fn json_dataset_root() -> std::path::PathBuf {
     static NEXT_DATASET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let unique = std::time::SystemTime::now()
@@ -180,12 +187,167 @@ fn mounted_config_rejects_duplicate_dataset_names() {
 }
 
 #[test]
-fn tool_call_counter_handles_openai_and_anthropic_payloads() {
-    let payload = json!({
-        "choices": [{"message": {"tool_calls": [{"id":"call-1"}, {"id":"call-2"}]}}],
-        "content": [{"type":"tool_use", "id":"toolu-1"}],
-    });
-    assert_eq!(count_tool_calls(&payload), 3);
+fn projected_turn_sequence_wins_over_call_wide_event_group() {
+    let turn = StorylineTurn {
+        id: 1,
+        kind: Some("llm.response".into()),
+        timestamp: None,
+        source: "agent".into(),
+        message: json!("done"),
+        reasoning_content: None,
+        reasoning_effort: None,
+        tool_calls: None,
+        observation: None,
+        metrics: None,
+        model_name: None,
+        llm_call_count: Some(1),
+        is_copied_context: None,
+        latency_ms: None,
+        ttft_ms: None,
+        extra: Some(json!({"call_id": "model-call", "seq": 11})),
+    };
+    let by_call = BTreeMap::from([("model-call".into(), vec![10, 11])]);
+
+    assert_eq!(event_seqs_for_turn(&turn, &by_call), vec![11]);
+}
+
+#[test]
+fn explorer_analysis_counts_usage_and_normalized_tools_once_per_call() {
+    use persisting_pchronicle::model::StorylineToolCall;
+
+    let user = StorylineTurn {
+        id: 1,
+        kind: Some("llm.request".into()),
+        timestamp: Some(
+            persisting_pchronicle::model::StorylineTimestamp::from_rfc3339("2026-08-20T00:00:00Z")
+                .unwrap(),
+        ),
+        source: "user".into(),
+        message: json!("run tool"),
+        reasoning_content: None,
+        reasoning_effort: None,
+        tool_calls: None,
+        observation: None,
+        metrics: None,
+        model_name: None,
+        llm_call_count: None,
+        is_copied_context: None,
+        latency_ms: None,
+        ttft_ms: None,
+        extra: Some(json!({"call_id": "model-call", "seq": 0})),
+    };
+    let agent = StorylineTurn {
+        id: 2,
+        kind: Some("llm.response".into()),
+        timestamp: Some(
+            persisting_pchronicle::model::StorylineTimestamp::from_rfc3339("2026-08-20T00:00:01Z")
+                .unwrap(),
+        ),
+        source: "agent".into(),
+        message: json!(""),
+        reasoning_content: None,
+        reasoning_effort: None,
+        tool_calls: Some(vec![StorylineToolCall {
+            tool_call_id: "tool-call-1".into(),
+            function_name: "lookup".into(),
+            arguments: json!({"q": "x"}),
+            result: None,
+            duration_ms: None,
+            extra: None,
+        }]),
+        observation: None,
+        metrics: Some(json!({
+            "prompt_tokens": 10,
+            "completion_tokens": 4,
+            "total_tokens": 14
+        })),
+        model_name: Some("test-model".into()),
+        llm_call_count: Some(1),
+        is_copied_context: None,
+        latency_ms: Some(1000),
+        ttft_ms: Some(100),
+        extra: Some(json!({"call_id": "model-call", "seq": 1})),
+    };
+    let event = |seq, kind: &str, payload| EventRecord {
+        identity: Default::default(),
+        seq,
+        source: "gateway".into(),
+        kind: kind.into(),
+        timestamp: None,
+        session_id: Some("session".into()),
+        agent_id: Some("agent".into()),
+        parent_uuid: None,
+        trace_id: None,
+        call_id: Some("model-call".into()),
+        subagent_id: None,
+        parent_agent_id: None,
+        branch: None,
+        parent_call_id: None,
+        payload,
+    };
+    let events = vec![
+        event(0, "llm.request", json!({"model": "test-model"})),
+        event(
+            1,
+            "llm.response.stream",
+            json!({
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 4,
+                    "total_tokens": 14
+                }
+            }),
+        ),
+    ];
+    let turns = vec![
+        TrajectoryTurnView {
+            turn: user,
+            call_id: Some("model-call".into()),
+            event_seqs: vec![0],
+            // A later request carries the prior assistant tool call as message
+            // history. It must not be counted as a new invocation.
+            wire_tool_calls: vec![WireToolCall {
+                id: Some("tool-call-1".into()),
+                name: "lookup".into(),
+                arguments: json!({"q": "x"}),
+            }],
+        },
+        TrajectoryTurnView {
+            turn: agent,
+            call_id: Some("model-call".into()),
+            event_seqs: vec![1],
+            wire_tool_calls: vec![WireToolCall {
+                id: Some("tool-call-1".into()),
+                name: "lookup".into(),
+                arguments: json!({"q": "x"}),
+            }],
+        },
+    ];
+    let run = RunSummary {
+        dataset: "dataset".into(),
+        file: "events.lance".into(),
+        document_id: "session".into(),
+        run_id: None,
+        agent_id: "agent".into(),
+        model_name: Some("test-model".into()),
+        session_id: "session".into(),
+        root_session_id: None,
+        path: "dataset/events.lance/session".into(),
+        row_count: 2,
+        duplicate_event_ids: 0,
+        status: "completed".into(),
+    };
+
+    let analysis = explorer::analyze(run, &turns, &events);
+    assert_eq!(analysis.prompt_tokens, Some(10));
+    assert_eq!(analysis.completion_tokens, Some(4));
+    assert_eq!(analysis.total_tokens, Some(14));
+    assert_eq!(analysis.tool_call_count, 1);
+    assert_eq!(analysis.tools.len(), 1);
+    assert_eq!(analysis.tools[0].name, "lookup");
+    assert_eq!(analysis.tools[0].count, 1);
+    assert_eq!(analysis.latency_ms.sample_count, 1);
+    assert_eq!(analysis.ttft_ms.sample_count, 1);
 }
 
 #[test]
@@ -287,6 +449,54 @@ async fn json_datasets_expose_tables_and_support_read_only_sql() {
     let result: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(result["rows"][0]["session_id"], "json-session");
     assert_eq!(result["rows"][0]["step_count"], 2);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn explorer_automatically_refreshes_new_dataset_sources() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let config = ChronicleServerConfig::mounted(vec![DatasetMount::default(
+        root.to_string_lossy().to_string(),
+    )
+    .unwrap()])
+    .unwrap();
+    let app = test_router_with_catalog_refresh_interval(config, std::time::Duration::ZERO);
+
+    let initial = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/runs?limit=10")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let initial: Value =
+        serde_json::from_slice(&initial.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(initial["snapshot"]["total"], 1);
+
+    write_gateway_fixture(&root, "second.json", "second-session", "second-job");
+    let refreshed = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/runs?limit=10")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let refreshed: Value =
+        serde_json::from_slice(&refreshed.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(refreshed["snapshot"]["total"], 2);
+    assert!(refreshed["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|run| run["session_id"] == "second-session"));
     std::fs::remove_dir_all(root).unwrap();
 }
 
