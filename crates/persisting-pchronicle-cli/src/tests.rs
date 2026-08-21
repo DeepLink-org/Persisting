@@ -161,6 +161,48 @@ async fn append_canonical_note(storage: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+fn canonical_source(storage: &std::path::Path) -> Result<PathBuf> {
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "session",
+        None,
+    );
+    persisting_pchronicle::storage::raw_event_lance_path(&coords)
+}
+
+async fn append_canonical_run(storage: &Path, run_id: &str, seq: u64) -> Result<PathBuf> {
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        run_id,
+        Some(run_id.into()),
+    );
+    persisting_pchronicle::storage::RawEventLanceStore
+        .append_events(
+            &coords,
+            &[persisting_pchronicle::model::EventRecord {
+                identity: Default::default(),
+                seq,
+                source: "test".into(),
+                kind: "note".into(),
+                timestamp: None,
+                session_id: Some(run_id.into()),
+                agent_id: Some("agent".into()),
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: serde_json::json!({"content": format!("{run_id}-{seq}")}),
+            }],
+        )
+        .await?;
+    persisting_pchronicle::storage::raw_event_lance_path(&coords)
+}
+
 #[test]
 fn command_tree_contains_the_product_commands() {
     let command = Cli::command();
@@ -172,7 +214,7 @@ fn command_tree_contains_the_product_commands() {
         names,
         [
             "onboard", "default", "ls", "status", "query", "analysis", "find", "import", "export",
-            "project", "echo", "serve",
+            "echo", "serve",
         ]
     );
     let ls = command
@@ -193,197 +235,7 @@ fn command_tree_contains_the_product_commands() {
         .unwrap()
         .to_string()
         .contains("squash into one Storyline Lance Store at the Dataset root"));
-    let project = command
-        .get_subcommands()
-        .find(|command| command.get_name() == "project")
-        .unwrap();
-    assert_eq!(
-        project
-            .get_subcommands()
-            .map(|command| command.get_name())
-            .collect::<Vec<_>>(),
-        ["build", "status", "verify", "sync", "watch", "rebuild"]
-    );
-}
-
-#[tokio::test]
-async fn project_watch_emits_sync_and_verification_state() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let storage = temp.path().join("capture");
-    let coords = persisting_pchronicle::storage::StoryCoords::new(
-        storage.to_string_lossy(),
-        "agent",
-        "session",
-        None,
-    );
-    persisting_pchronicle::storage::RawEventLanceStore
-        .append_events(
-            &coords,
-            &[persisting_pchronicle::model::EventRecord {
-                identity: Default::default(),
-                seq: 0,
-                source: "test".into(),
-                kind: "note".into(),
-                timestamp: None,
-                session_id: None,
-                agent_id: None,
-                parent_uuid: None,
-                trace_id: None,
-                call_id: None,
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: serde_json::json!({"content":"watch"}),
-            }],
-        )
-        .await?;
-    let events = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
-    let projection = temp.path().join("storyline");
-    persisting_pchronicle::storage::build_storyline_projection(
-        events.to_string_lossy(),
-        projection.to_string_lossy(),
-        "events.lance",
-    )
-    .await?;
-
-    let cli = Cli::try_parse_from([
-        "pchronicle",
-        "project",
-        "watch",
-        "--from",
-        projection.to_str().unwrap(),
-        "--source",
-        events.to_str().unwrap(),
-        "--iterations",
-        "1",
-        "--interval-seconds",
-        "1",
-        "--max-backoff-seconds",
-        "1",
-        "--verify-every",
-        "1",
-    ])?;
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    run(cli, false, &mut stdout, &mut stderr).await?;
-
-    let event: Value = serde_json::from_slice(&stdout)?;
-    assert!(event.get("schema_version").is_none());
-    assert_eq!(event["status"], "ok");
-    assert_eq!(event["sync"]["mode"], "noop");
-    assert_eq!(event["verification"]["fresh"], true);
-    assert!(String::from_utf8(stderr)?.contains("project_watch iteration=1 status=ok"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn project_watch_labels_missing_projection_without_diagnostic_text() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let storage = temp.path().join("capture");
-    append_canonical_note(&storage).await?;
-    let coords = persisting_pchronicle::storage::StoryCoords::new(
-        storage.to_string_lossy(),
-        "agent",
-        "session",
-        None,
-    );
-    let source = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
-    let projection = temp.path().join("missing-projection");
-    let cli = Cli::try_parse_from([
-        "pchronicle",
-        "project",
-        "watch",
-        "--from",
-        projection.to_str().unwrap(),
-        "--source",
-        source.to_str().unwrap(),
-        "--iterations",
-        "1",
-        "--interval-seconds",
-        "1",
-        "--max-backoff-seconds",
-        "1",
-        "--verify-every",
-        "1",
-    ])?;
-    let mut stdout = Vec::new();
-    run(cli, false, &mut stdout, &mut Vec::new()).await?;
-
-    let event: Value = serde_json::from_slice(&stdout)?;
-    assert_eq!(event["status"], "error");
-    assert_eq!(event["code"], "not_found");
-    assert_eq!(event["message"], "projection was not found");
-    assert!(event.get("error").is_none());
-    assert!(!event
-        .to_string()
-        .contains(source.to_string_lossy().as_ref()));
-    Ok(())
-}
-
-#[tokio::test]
-async fn project_verify_labels_stale_projection_as_conflict() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let storage = temp.path().join("capture");
-    append_canonical_note(&storage).await?;
-    let coords = persisting_pchronicle::storage::StoryCoords::new(
-        storage.to_string_lossy(),
-        "agent",
-        "session",
-        None,
-    );
-    let source = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
-    let projection = temp.path().join("storyline");
-    persisting_pchronicle::storage::build_storyline_projection(
-        source.to_string_lossy(),
-        projection.to_string_lossy(),
-        "events.lance",
-    )
-    .await?;
-    persisting_pchronicle::storage::RawEventLanceStore
-        .append_events(
-            &coords,
-            &[persisting_pchronicle::model::EventRecord {
-                identity: Default::default(),
-                seq: 1,
-                source: "test".into(),
-                kind: "note".into(),
-                timestamp: None,
-                session_id: None,
-                agent_id: None,
-                parent_uuid: None,
-                trace_id: None,
-                call_id: None,
-                subagent_id: None,
-                parent_agent_id: None,
-                branch: None,
-                parent_call_id: None,
-                payload: serde_json::json!({"content":"stale"}),
-            }],
-        )
-        .await?;
-
-    let cli = Cli::try_parse_from([
-        "pchronicle",
-        "project",
-        "verify",
-        "--from",
-        projection.to_str().unwrap(),
-        "--source",
-        source.to_str().unwrap(),
-    ])?;
-    let mut stdout = Vec::new();
-    let error = run(cli, false, &mut stdout, &mut Vec::new())
-        .await
-        .unwrap_err();
-
-    assert_eq!(
-        error.to_string(),
-        "conflict: projection verification is not fresh"
-    );
-    let verification: Value = serde_json::from_slice(&stdout)?;
-    assert_eq!(verification["fresh"], false);
-    Ok(())
+    assert!(Cli::try_parse_from(["pchronicle", "project", "status"]).is_err());
 }
 
 #[tokio::test]
@@ -528,6 +380,122 @@ async fn status_and_analysis_use_bounded_canonical_fallback() -> Result<()> {
     let overview: Value = serde_json::from_slice(&stdout)?;
     assert_eq!(overview["trajectories"], 1);
     assert_eq!(overview["steps"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn status_reports_projection_fresh_and_missing_in_source_order() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    let source_b = append_canonical_run(&storage, "b", 0).await?;
+    let source_a = append_canonical_run(&storage, "a", 0).await?;
+    let projection_a = storage.join("agent/a/storyline");
+    persisting_pchronicle::storage::build_storyline_projection(
+        source_a.to_string_lossy(),
+        projection_a.to_string_lossy(),
+        "a/events.lance",
+    )
+    .await?;
+    let projection_b = storage.join("agent/b/storyline");
+    assert!(!projection_b.exists());
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        storage.join("agent").to_str().unwrap(),
+        "--format",
+        "json",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let response: Value = serde_json::from_slice(&stdout)?;
+    let projections = response["projections"].as_array().unwrap();
+    assert_eq!(projections.len(), 2);
+    assert_eq!(projections[0]["source_path"], "a/events.lance");
+    assert_eq!(projections[0]["projection_path"], "a/storyline");
+    assert_eq!(projections[0]["status"], "fresh");
+    assert_eq!(projections[0]["fact_version"], 1);
+    assert_eq!(projections[0]["fact_rows"], 1);
+    assert!(projections[0]["generation"].is_string());
+    assert_eq!(projections[1]["source_path"], "b/events.lance");
+    assert_eq!(projections[1]["projection_path"], "b/storyline");
+    assert_eq!(projections[1]["status"], "missing");
+    assert_eq!(projections[1]["fact_version"], 1);
+    assert_eq!(projections[1]["fact_rows"], 1);
+    assert!(projections[1].get("generation").is_none());
+    assert_eq!(source_b.file_name().unwrap(), "events.lance");
+    assert!(!projection_b.exists());
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        storage.join("agent").to_str().unwrap(),
+        "--format",
+        "table",
+    ])?;
+    let mut table = Vec::new();
+    run(cli, true, &mut table, &mut Vec::new()).await?;
+    let table = String::from_utf8(table)?;
+    assert!(table.contains("PROJECTION"));
+    assert!(table.contains("a/events.lance -> a/storyline"));
+    assert!(table.contains("b/events.lance -> b/storyline"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn status_reports_projection_stale_and_safe_errors() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    for run_id in ["stale", "lineage-free", "malformed"] {
+        let source = append_canonical_run(&storage, run_id, 0).await?;
+        persisting_pchronicle::storage::build_storyline_projection(
+            source.to_string_lossy(),
+            storage
+                .join(format!("agent/{run_id}/storyline"))
+                .to_string_lossy(),
+            format!("{run_id}/events.lance"),
+        )
+        .await?;
+    }
+    append_canonical_run(&storage, "stale", 1).await?;
+
+    let lineage_free = storage.join("agent/lineage-free/storyline/CURRENT");
+    let mut pointer: Value = serde_json::from_slice(&fs::read(&lineage_free)?)?;
+    pointer
+        .as_object_mut()
+        .expect("CURRENT object")
+        .remove("projection");
+    fs::write(&lineage_free, serde_json::to_vec(&pointer)?)?;
+    let malformed = storage.join("agent/malformed/storyline/CURRENT");
+    fs::write(&malformed, b"{broken")?;
+    let lineage_free_before = fs::read(&lineage_free)?;
+    let malformed_before = fs::read(&malformed)?;
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "status",
+        storage.join("agent").to_str().unwrap(),
+        "--format",
+        "json",
+        "--errors",
+        "report",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let response: Value = serde_json::from_slice(&stdout)?;
+    let projections = response["projections"].as_array().unwrap();
+    assert_eq!(projections.len(), 3);
+    assert_eq!(projections[0]["source_path"], "lineage-free/events.lance");
+    assert_eq!(projections[0]["status"], "error");
+    assert!(projections[0].get("generation").is_none());
+    assert!(projections[0].get("fact_version").is_none());
+    assert!(projections[0].get("fact_rows").is_none());
+    assert_eq!(projections[1]["source_path"], "malformed/events.lance");
+    assert_eq!(projections[1]["status"], "error");
+    assert_eq!(projections[2]["source_path"], "stale/events.lance");
+    assert_eq!(projections[2]["status"], "stale");
+    assert_eq!(fs::read(&lineage_free)?, lineage_free_before);
+    assert_eq!(fs::read(&malformed)?, malformed_before);
     Ok(())
 }
 
@@ -1697,6 +1665,159 @@ async fn import_storyline_output_writes_one_root_lance_store() -> Result<()> {
 }
 
 #[tokio::test]
+async fn canonical_event_import_auto_detects_and_is_create_only() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+    let source = canonical_source(&storage)?;
+    let manifest = source.join("_manifest.json");
+    let before = fs::read(&manifest)?;
+    let output = temp.path().join("storyline");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["format"], "events");
+    assert_eq!(response["source_path"], "events.lance");
+    assert_eq!(response["output_format"], "storyline-lance");
+    assert_eq!(response["sources"], 1);
+    assert_eq!(response["trajectories"], 1);
+    assert_eq!(response["fact_rows"], 1);
+    assert!(response.get("input_bytes").is_none());
+    assert_eq!(fs::read(&manifest)?, before);
+    assert!(output.join("CURRENT").is_file());
+    let metadata = String::from_utf8(stderr)?;
+    assert!(metadata.contains("fact_rows=1"));
+    assert!(!metadata.contains("input_bytes="));
+
+    let query = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT COUNT(*) AS runs FROM dataset.runs",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut query_stdout = Vec::new();
+    run(query, false, &mut query_stdout, &mut Vec::new()).await?;
+    let count: Value = serde_json::from_slice(&query_stdout)?;
+    assert_eq!(count["runs"], 1);
+
+    let explicit = temp.path().join("explicit-storyline");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        explicit.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+    assert!(explicit.join("CURRENT").is_file());
+
+    let preserved = temp.path().join("preserved");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        preserved.to_str().unwrap(),
+        "--output-format",
+        "preserve",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("cannot preserve an existing canonical event Store"));
+    assert!(!preserved.exists());
+
+    let existing = temp.path().join("existing");
+    fs::create_dir(&existing)?;
+    fs::write(existing.join("sentinel"), "keep")?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        existing.to_str().unwrap(),
+    ])?;
+    assert!(run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .is_err());
+    assert_eq!(fs::read_to_string(existing.join("sentinel"))?, "keep");
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_event_import_supports_object_store_uris() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    append_canonical_note(&storage).await?;
+    let source = canonical_source(&storage)?;
+    let output = format!(
+        "shared-memory://pchronicle-canonical-import-{}/storyline",
+        uuid::Uuid::new_v4().simple()
+    );
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        &output,
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["dataset_uri"], output);
+    assert_eq!(response["fact_rows"], 1);
+    let store = StorylineLanceStore::open_uri(&output).await?;
+    assert!(store.current_table_paths().await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn events_lance_suffix_without_manifest_remains_an_ordinary_directory_import() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("events.lance");
+    fs::create_dir(&input)?;
+    let output = temp.path().join("output");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("contains no .json, .jsonl, or .ndjson files"));
+    assert!(!output.exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn directory_storyline_output_squashes_sources_into_one_root_store() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("input");
@@ -2764,6 +2885,8 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
         "captures",
         "--gateway-state",
         ".gateway-state",
+        "--gateway-object-store-manifest-mode",
+        "single-writer",
         "--gateway-stream-markdown",
         "--debug",
     ])?;
@@ -2773,6 +2896,10 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     assert_eq!(args.gateway, Some(PathBuf::from("gateway.toml")));
     assert_eq!(args.gateway_dataset.as_deref(), Some("captures"));
     assert_eq!(args.gateway_state, Some(PathBuf::from(".gateway-state")));
+    assert_eq!(
+        args.gateway_object_store_manifest_mode,
+        GatewayObjectStoreManifestMode::SingleWriter
+    );
     assert!(args.gateway_stream_markdown);
     assert!(args.debug);
 

@@ -373,17 +373,14 @@ pchronicle serve \
 ## Observe new captures
 
 Gateway events are durable after they have been flushed to the selected
-Dataset. The Warehouse reads a Catalog Snapshot, so an already open Warehouse
-does not automatically add new events to its current Snapshot. Refresh the
-Catalog from the Web UI, or request a refresh through the local API:
-
-```bash
-curl -X POST http://127.0.0.1:8080/api/catalog
-```
-
-Then query the selected Dataset through the Web UI or read API. On `SIGINT` or
-`SIGTERM`, `pchronicle serve` stops both services and finishes the Gateway
-capture writer before exiting.
+Dataset. The `serve` projection supervisor discovers the canonical change,
+updates its deterministic sibling Storyline Store, then completely rebuilds
+and atomically swaps the Warehouse Catalog. Projection or refresh failures use
+bounded retry and retain the old queryable Catalog; neither blocks durable
+capture writes. `POST /api/catalog` remains available for an explicit manual
+refresh, but it is not required for captured events to become visible. On
+`SIGINT` or `SIGTERM`, `pchronicle serve` stops both services and finishes the
+Gateway capture writer before exiting.
 
 For exact command flags, see the [`pchronicle` CLI reference](../reference/cli.md).
 For the storage model behind refresh, see

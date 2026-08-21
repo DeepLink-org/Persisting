@@ -1,0 +1,9 @@
+[replay]
+agent = "claude-code"
+trajectory = "crates/persisting-replay/tests/fixtures/claude_bash_one_step.jsonl"
+after_step = 1
+workspace = "/tmp/pvisor-replay-toml-workspace"
+state_dir = "/tmp/pvisor-replay-toml-state"
+output_dir = "/tmp/pvisor-replay-toml-output"
+replay_only = true
+disable_thinking = false

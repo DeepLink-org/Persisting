@@ -10,7 +10,7 @@ use anyhow::Context;
 use crate::formats::EventRecord;
 use crate::layout::StoryCoords;
 use crate::store::compact_sealed_event_segment;
-use crate::store::{raw_event_lance_path, RawEventLanceAppender};
+use crate::store::{raw_event_lance_path, ObjectStoreManifestWriteMode, RawEventLanceAppender};
 
 pub const DEFAULT_RAW_EVENT_QUEUE_CAPACITY: usize = 256;
 pub const DEFAULT_RAW_EVENT_BATCH_SIZE: usize = 256;
@@ -159,6 +159,18 @@ pub fn raw_event_append_queue() -> anyhow::Result<(RawEventAppendSender, RawEven
     raw_event_append_queue_with_capacity(DEFAULT_RAW_EVENT_QUEUE_CAPACITY)
 }
 
+pub fn raw_event_append_queue_with_manifest_write_mode(
+    manifest_write_mode: ObjectStoreManifestWriteMode,
+) -> anyhow::Result<(RawEventAppendSender, RawEventAppendWorker)> {
+    raw_event_append_queue_with_options(
+        DEFAULT_RAW_EVENT_QUEUE_CAPACITY,
+        DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
+        DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
+        DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
+        manifest_write_mode,
+    )
+}
+
 pub fn raw_event_append_queue_with_capacity(
     capacity: usize,
 ) -> anyhow::Result<(RawEventAppendSender, RawEventAppendWorker)> {
@@ -167,6 +179,7 @@ pub fn raw_event_append_queue_with_capacity(
         DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
         DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
         DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
+        ObjectStoreManifestWriteMode::Conditional,
     )
 }
 
@@ -175,6 +188,7 @@ fn raw_event_append_queue_with_options(
     compaction_threshold: usize,
     target_rows_per_fragment: usize,
     hierarchy_fanout: usize,
+    manifest_write_mode: ObjectStoreManifestWriteMode,
 ) -> anyhow::Result<(RawEventAppendSender, RawEventAppendWorker)> {
     if capacity == 0 {
         anyhow::bail!("pChronicle append queue capacity must be greater than zero");
@@ -209,6 +223,7 @@ fn raw_event_append_queue_with_options(
                     compaction_threshold,
                     target_rows_per_fragment,
                     hierarchy_fanout,
+                    manifest_write_mode,
                 )
             }
         })
@@ -231,13 +246,15 @@ fn run_append_worker(
     compaction_threshold: usize,
     target_rows_per_fragment: usize,
     hierarchy_fanout: usize,
+    manifest_write_mode: ObjectStoreManifestWriteMode,
 ) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .context("create pChronicle append worker runtime")?;
-    let mut appender = RawEventLanceAppender::default();
+    let mut appender =
+        RawEventLanceAppender::default().with_object_store_manifest_write_mode(manifest_write_mode);
     let (maintenance_tx, mut maintenance_rx) =
         tokio::sync::mpsc::channel(DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY);
     let maintenance_task = runtime.spawn(async move {
@@ -597,6 +614,34 @@ mod tests {
     }
 
     #[test]
+    fn single_writer_manifest_mode_publishes_object_store_events() {
+        let storage = format!(
+            "shared-memory://append-single-writer-{}/dataset",
+            uuid::Uuid::new_v4()
+        );
+        let coords = StoryCoords::new(storage, "agent", "session", None);
+        let (sender, worker) = raw_event_append_queue_with_manifest_write_mode(
+            ObjectStoreManifestWriteMode::SingleWriter,
+        )
+        .unwrap();
+
+        assert_eq!(
+            sender.append_durable(coords.clone(), event()).unwrap(),
+            RawEventAppendOutcome::Accepted
+        );
+        worker.finish().unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let replay = runtime
+            .block_on(RawEventLanceStore.replay(&coords, 0, None))
+            .unwrap();
+        assert_eq!(replay.records.len(), 1);
+    }
+
+    #[test]
     fn durable_append_isolates_one_partition_failure() {
         let dir = tempfile::tempdir().unwrap();
         let invalid_storage = dir.path().join("not-a-directory");
@@ -669,7 +714,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("store");
         let coords = StoryCoords::new(storage.to_string_lossy(), "agent", "session", None);
-        let (sender, worker) = raw_event_append_queue_with_options(32, 2, 2, 2).unwrap();
+        let (sender, worker) = raw_event_append_queue_with_options(
+            32,
+            2,
+            2,
+            2,
+            ObjectStoreManifestWriteMode::Conditional,
+        )
+        .unwrap();
 
         // 8 rows become four L0 segments, two L1 segments, and finally one L2
         // segment. Each merge preserves append order and total row count.
@@ -739,6 +791,7 @@ mod tests {
                 DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
                 DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
                 DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
+                ObjectStoreManifestWriteMode::Conditional,
             )
         });
         let worker = RawEventAppendWorker {
@@ -812,6 +865,7 @@ mod tests {
                 DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
                 DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
                 DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
+                ObjectStoreManifestWriteMode::Conditional,
             )
         });
         let worker = RawEventAppendWorker {

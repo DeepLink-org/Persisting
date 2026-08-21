@@ -4,11 +4,12 @@ pub type Result<T> = anyhow::Result<T>;
 
 #[cfg(feature = "lance-store")]
 pub use crate::append_queue::{
-    raw_event_append_queue, raw_event_append_queue_with_capacity, RawEventAppendOutcome,
-    RawEventAppendSender, RawEventAppendWorker, DEFAULT_RAW_EVENT_BATCH_DELAY,
-    DEFAULT_RAW_EVENT_BATCH_SIZE, DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD,
-    DEFAULT_RAW_EVENT_HIERARCHY_FANOUT, DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY,
-    DEFAULT_RAW_EVENT_QUEUE_CAPACITY, DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
+    raw_event_append_queue, raw_event_append_queue_with_capacity,
+    raw_event_append_queue_with_manifest_write_mode, RawEventAppendOutcome, RawEventAppendSender,
+    RawEventAppendWorker, DEFAULT_RAW_EVENT_BATCH_DELAY, DEFAULT_RAW_EVENT_BATCH_SIZE,
+    DEFAULT_RAW_EVENT_COMPACTION_THRESHOLD, DEFAULT_RAW_EVENT_HIERARCHY_FANOUT,
+    DEFAULT_RAW_EVENT_MAINTENANCE_CAPACITY, DEFAULT_RAW_EVENT_QUEUE_CAPACITY,
+    DEFAULT_RAW_EVENT_TARGET_ROWS_PER_FRAGMENT,
 };
 pub use crate::layout::{
     is_subagent_session_storage_key, is_trajectory_markdown_path, list_story_read_locations,
@@ -33,12 +34,13 @@ pub use crate::store::{
     CatalogSourceStatus, CatalogStorylineKey, CatalogTrajectoryBundle, CommitRunOutcome,
     DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, EventFactSnapshot, EventLogLayoutStats,
     EventWriterFence, ExportOutcome, LanceMaintenanceOptions, LanceMaintenanceReport,
-    LeaseAcquireOutcome, NamespacePath, ProjectionSourceSnapshot, RawEventLanceAppender,
-    RawEventLanceStore, ReplayOutcome, RunControlStore, StorylineContentOptions,
-    StorylineContentReadMode, StorylineLanceStore, StorylineMaintenanceReport,
-    StorylineProjectionLineage, StorylineStreamImportReport, StorylineTablePaths, TrajectoryStats,
-    DEFAULT_CONTENT_OFFLOAD_THRESHOLD, DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME,
-    DEFAULT_MAX_EVENT_FALLBACK_BYTES, DEFAULT_MAX_EVENT_FALLBACK_ROWS,
+    LeaseAcquireOutcome, NamespacePath, ObjectStoreManifestWriteMode, ProjectionSourceSnapshot,
+    RawEventLanceAppender, RawEventLanceStore, ReplayOutcome, RunControlStore,
+    StorylineContentOptions, StorylineContentReadMode, StorylineLanceStore,
+    StorylineMaintenanceReport, StorylineProjectionLineage, StorylineStreamImportReport,
+    StorylineTablePaths, TrajectoryStats, DEFAULT_CONTENT_OFFLOAD_THRESHOLD,
+    DEFAULT_CONTENT_PREVIEW_BYTES, DEFAULT_DATASET_NAME, DEFAULT_MAX_EVENT_FALLBACK_BYTES,
+    DEFAULT_MAX_EVENT_FALLBACK_ROWS,
 };
 
 #[cfg(feature = "lance-store")]
@@ -48,8 +50,14 @@ pub use crate::store::{
 
 #[cfg(feature = "lance-store")]
 pub use crate::projection::{
-    build_storyline_projection, rebuild_storyline_projection, storyline_projection_status,
-    sync_storyline_projection, verify_storyline_projection, ProjectionRebuildReason,
+    automatic_projection_inventory, build_storyline_projection,
+    inspect_automatic_storyline_projection, maintain_automatic_storyline_projection,
+    probe_canonical_event_store, rebuild_storyline_projection,
+    storyline_projection_destination_exists, storyline_projection_status,
+    sync_storyline_projection, verify_storyline_projection, AutomaticProjectionInspection,
+    AutomaticProjectionInventory, AutomaticProjectionInventoryError,
+    AutomaticProjectionMaintenanceMode, AutomaticProjectionMaintenanceReport,
+    AutomaticProjectionState, AutomaticProjectionTarget, ProjectionRebuildReason,
     StorylineProjectionBuildOutcome, StorylineProjectionBuildReport, StorylineProjectionStatus,
     StorylineProjectionSyncMode, StorylineProjectionSyncOutcome, StorylineProjectionSyncReport,
     StorylineProjectionVerification,

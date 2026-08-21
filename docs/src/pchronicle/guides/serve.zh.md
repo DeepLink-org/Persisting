@@ -29,7 +29,8 @@ pchronicle serve --config warehouse.toml \
 公开 listener 后冒充生产控制面。
 
 挂载的 Dataset 和 API 操作均只读。HTTP 不暴露 import、export、maintenance 或任意文件
-访问。刷新会先构造新 Catalog Snapshot，再切换 reader。
+访问。刷新会在 reader lock 外完整构造新 Catalog Snapshot，再原子切换 reader；失败时保留
+旧的可查询快照。
 
 如需在同一进程中转发、改写并捕获新的 LLM 流量，继续阅读
 [Gateway 转发、改写与捕获](serve-gateway.md)。精确参数见
@@ -45,3 +46,13 @@ pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
 
 `--config` 与 `--storage` 互斥，`--control` 要求使用 `--storage`。进程只向 stdout 写一条
 机器可读的 readiness 记录，Control token 不会写入 stderr。
+
+使用 `--storage` 时，`serve` 会先发现经过验证且非空的 canonical `events.lance` Store，
+将每个投影收敛到确定的同级 `storyline`，全部 startup target 变为 fresh 后才输出 readiness。
+随后以有界并发和重试继续发现、维护投影。projection failure 不进入 durable canonical write
+路径，没有匹配 lineage 的外来目标绝不覆盖。若同时传入 `--listen`，每次成功发布投影都会
+自动完整重建并原子切换 Warehouse Catalog。可用只读命令观察状态：
+
+```bash
+pchronicle status ./trajectory-data --format json
+```

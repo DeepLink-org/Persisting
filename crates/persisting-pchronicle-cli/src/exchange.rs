@@ -24,6 +24,16 @@ pub(super) async fn run_import(
             "stdin import requires an explicit --format"
         );
     }
+    let canonical = if !args.stream && (args.from.contains("://") || Path::new(&args.from).is_dir())
+    {
+        probe_canonical_event_store(&args.from).await?
+    } else {
+        None
+    };
+    if let Some(snapshot) = canonical {
+        return run_canonical_event_import(args, snapshot, settings_override, stdout, stderr).await;
+    }
+    let output_format = args.output_format.unwrap_or(ImportOutputFormat::Preserve);
     let input_path = (!args.stream).then(|| Path::new(&args.from));
     let (directory_input, candidates) = if let Some(input_path) = input_path {
         collect_import_candidates(input_path)?
@@ -42,7 +52,7 @@ pub(super) async fn run_import(
         .prefix(".pchronicle-import-")
         .tempdir_in(parent)
         .with_context(|| format!("create import staging directory in {}", parent.display()))?;
-    let (imported_sources, unknown_field_warnings) = match args.output_format {
+    let (imported_sources, unknown_field_warnings) = match output_format {
         ImportOutputFormat::Preserve => {
             let mut unknown_field_warnings =
                 persisting_pchronicle::model::UnknownFieldImportWarnings::default();
@@ -138,10 +148,11 @@ pub(super) async fn run_import(
         dataset_uri: output.to_string_lossy().into_owned(),
         source_path: single_source.map(|source| source.source_path.clone()),
         format: single_source.map(|source| source.format.as_str().to_owned()),
-        output_format: args.output_format.response_name().into(),
+        output_format: output_format.response_name().into(),
         sources: imported_sources.len(),
         trajectories,
-        input_bytes,
+        fact_rows: None,
+        input_bytes: Some(input_bytes),
     };
     serde_json::to_writer_pretty(&mut *stdout, &response)
         .context("encode pChronicle import JSON")?;
@@ -155,7 +166,9 @@ pub(super) async fn run_import(
             format,
             response.output_format,
             response.trajectories,
-            response.input_bytes,
+            response
+                .input_bytes
+                .expect("JSON imports always report input bytes"),
         )
         .context("write pChronicle import metadata")?;
     } else {
@@ -166,13 +179,94 @@ pub(super) async fn run_import(
             response.sources,
             response.output_format,
             response.trajectories,
-            response.input_bytes,
+            response
+                .input_bytes
+                .expect("JSON imports always report input bytes"),
         )
         .context("write pChronicle import metadata")?;
     }
     for line in unknown_field_warnings.warning_lines() {
         writeln!(stderr, "{line}").context("write pChronicle unknown-field warning")?;
     }
+    Ok(())
+}
+
+async fn run_canonical_event_import(
+    args: ImportArgs,
+    _snapshot: EventFactSnapshot,
+    settings_override: Option<&Path>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<()> {
+    anyhow::ensure!(
+        args.format == ExchangeFormat::Auto,
+        "canonical event import does not accept a JSON exchange --format"
+    );
+    anyhow::ensure!(
+        args.output_format != Some(ImportOutputFormat::Preserve),
+        "canonical event import cannot preserve an existing canonical event Store"
+    );
+    let output_arg = match args.output.as_deref() {
+        Some(output) => output.to_owned(),
+        None => default_import_output(&args, settings_override)?,
+    };
+    let output_uri = if output_arg.contains("://") {
+        let output = output_arg.trim().trim_end_matches('/');
+        anyhow::ensure!(!output.is_empty(), "import output URI must not be empty");
+        output.to_string()
+    } else {
+        let output = Path::new(output_arg.trim());
+        anyhow::ensure!(
+            output.file_name().is_some(),
+            "import output must name a new Dataset"
+        );
+        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+        let parent =
+            std::fs::canonicalize(parent).context("canonicalize import output parent directory")?;
+        anyhow::ensure!(parent.is_dir(), "import output parent is not a directory");
+        parent
+            .join(output.file_name().expect("checked output filename"))
+            .to_string_lossy()
+            .into_owned()
+    };
+    if storyline_projection_destination_exists(&output_uri).await? {
+        return Err(cli_boundary_error(
+            BoundaryCode::Conflict,
+            "import output already exists",
+        ));
+    }
+
+    let report = match build_storyline_projection(&args.from, &output_uri, "events.lance").await? {
+        StorylineProjectionBuildOutcome::Built(report) => report,
+        StorylineProjectionBuildOutcome::OutputNotEmpty => {
+            return Err(cli_boundary_error(
+                BoundaryCode::Conflict,
+                "import output already exists",
+            ));
+        }
+    };
+    let response = ImportResponse {
+        dataset_uri: output_uri,
+        source_path: Some("events.lance".into()),
+        format: Some("events".into()),
+        output_format: ImportOutputFormat::Storyline.response_name().into(),
+        sources: 1,
+        trajectories: report.storylines,
+        fact_rows: Some(report.fact_rows),
+        input_bytes: None,
+    };
+    serde_json::to_writer_pretty(&mut *stdout, &response)
+        .context("encode canonical event import JSON")?;
+    writeln!(stdout).context("write canonical event import JSON")?;
+    writeln!(
+        stderr,
+        "dataset_uri={} source=events.lance format=events output_format={} trajectories={} fact_rows={}",
+        response.dataset_uri,
+        response.output_format,
+        response.trajectories,
+        report.fact_rows,
+    )
+    .context("write canonical event import metadata")?;
     Ok(())
 }
 

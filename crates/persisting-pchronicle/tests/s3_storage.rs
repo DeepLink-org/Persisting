@@ -10,8 +10,8 @@ use persisting_pchronicle::document::{decode_json_storylines, DocumentFormat};
 use persisting_pchronicle::model::{EventIdentity, EventRecord, StorylineDocument};
 use persisting_pchronicle::query::{ChronicleQueryEngine, ChronicleQueryExecutionOptions};
 use persisting_pchronicle::storage::{
-    raw_event_lance_path, LanceMaintenanceOptions, RawEventLanceAppender, RawEventLanceStore,
-    StoryCoords, StorylineLanceStore,
+    raw_event_lance_path, LanceMaintenanceOptions, ObjectStoreManifestWriteMode,
+    RawEventLanceAppender, RawEventLanceStore, StoryCoords, StorylineLanceStore,
 };
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -281,6 +281,44 @@ async fn run_append_scale_contract(root: &str) -> Result<()> {
     Ok(())
 }
 
+async fn run_single_writer_manifest_contract(root: &str) -> Result<()> {
+    let event_root = format!("{root}/event-single-writer");
+    let session = StoryCoords::new(
+        &event_root,
+        "contract-agent",
+        "single-writer-story",
+        Some("single-writer-run".into()),
+    );
+    let mut writer = RawEventLanceAppender::default()
+        .with_object_store_manifest_write_mode(ObjectStoreManifestWriteMode::SingleWriter);
+    writer
+        .append_event_batch(&[(session.clone(), event("first"))])
+        .await?;
+    let mut second = event("second");
+    second.seq = 1;
+    writer
+        .append_event_batch(&[(session.clone(), second)])
+        .await?;
+    writer.finish();
+
+    let replay = RawEventLanceStore.read_events(&session, 0, None).await?;
+    assert_eq!(replay.len(), 2);
+    let engine = ChronicleQueryEngine::open(
+        DocumentFormat::CanonicalEvent,
+        raw_event_lance_path(&session)?,
+        ChronicleQueryExecutionOptions::default(),
+    )
+    .await?;
+    let output = engine
+        .query_jsonl("SELECT COUNT(*) AS rows FROM events")
+        .await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.trim())?["rows"],
+        2
+    );
+    Ok(())
+}
+
 async fn cleanup(root: &str) -> Result<()> {
     let (store, path) = ObjectStore::from_uri(root).await?;
     store.remove_dir_all(path).await?;
@@ -450,6 +488,24 @@ async fn s3_append_scale_snapshot_and_maintenance_contract() -> Result<()> {
         (Ok(()), Err(error)) => Err(error).context("S3 scale contract passed but cleanup failed"),
         (Err(error), Err(cleanup_error)) => Err(error).context(format!(
             "S3 scale contract cleanup also failed: {cleanup_error:#}"
+        )),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires PCHRONICLE_S3_TEST_URI and a single-writer S3-compatible bucket"]
+async fn s3_single_writer_manifest_contract() -> Result<()> {
+    let root = unique_root()?;
+    let contract_result = run_single_writer_manifest_contract(&root).await;
+    let cleanup_result = cleanup(&root).await;
+    match (contract_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => {
+            Err(error).context("S3 single-writer contract passed but cleanup failed")
+        }
+        (Err(error), Err(cleanup_error)) => Err(error).context(format!(
+            "S3 single-writer contract cleanup also failed: {cleanup_error:#}"
         )),
     }
 }

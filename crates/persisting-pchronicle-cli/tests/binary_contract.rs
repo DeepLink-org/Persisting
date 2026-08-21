@@ -38,7 +38,7 @@ fn help_exposes_the_supported_product_surface() -> Result<()> {
     ] {
         assert!(stdout.contains(command), "help omits {command}: {stdout}");
     }
-    for command in ["control", "search", "maintain"] {
+    for command in ["control", "project", "search", "maintain"] {
         assert!(
             !stdout
                 .lines()
@@ -165,6 +165,75 @@ fn successful_query_keeps_machine_output_on_stdout() -> Result<()> {
     let value: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(value["runs"], 1);
     assert!(String::from_utf8(output.stderr)?.contains("datasets=dataset"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_event_import_is_queryable_in_release() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let storage = temp.path().join("capture");
+    let coords = persisting_pchronicle::storage::StoryCoords::new(
+        storage.to_string_lossy(),
+        "agent",
+        "run",
+        Some("run".into()),
+    );
+    persisting_pchronicle::storage::RawEventLanceStore
+        .append_events(
+            &coords,
+            &[persisting_pchronicle::model::EventRecord {
+                identity: Default::default(),
+                seq: 0,
+                source: "test".into(),
+                kind: "note".into(),
+                timestamp: None,
+                session_id: Some("run".into()),
+                agent_id: Some("agent".into()),
+                parent_uuid: None,
+                trace_id: None,
+                call_id: None,
+                subagent_id: None,
+                parent_agent_id: None,
+                branch: None,
+                parent_call_id: None,
+                payload: serde_json::json!({"content":"release-smoke"}),
+            }],
+        )
+        .await?;
+    let source = persisting_pchronicle::storage::raw_event_lance_path(&coords)?;
+    let output = temp.path().join("storyline");
+    let imported = pchronicle(&[
+        "import",
+        "--from",
+        source.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let response: Value = serde_json::from_slice(&imported.stdout)?;
+    assert_eq!(response["format"], "events");
+    assert_eq!(response["output_format"], "storyline-lance");
+    assert_eq!(response["fact_rows"], 1);
+    assert!(response.get("input_bytes").is_none());
+
+    let queried = pchronicle(&[
+        "query",
+        output.to_str().unwrap(),
+        "SELECT COUNT(*) AS runs FROM dataset.runs",
+        "--format",
+        "jsonl",
+    ])?;
+    assert!(
+        queried.status.success(),
+        "{}",
+        String::from_utf8_lossy(&queried.stderr)
+    );
+    let row: Value = serde_json::from_slice(&queried.stdout)?;
+    assert_eq!(row["runs"], 1);
     Ok(())
 }
 

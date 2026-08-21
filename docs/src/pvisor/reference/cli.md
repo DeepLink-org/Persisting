@@ -7,6 +7,7 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 ```text
 pvisor
 ├── run                 execute one Agent Run
+├── replay              replay and continue an Agent-native trajectory
 ├── env                 manage durable reusable environments
 ├── status              aggregate Run, filesystem, and network state
 ├── inspect             open a read-only Run view
@@ -81,6 +82,54 @@ pvisor env delete dev --force
 `apply --all` 或 `drop` 不会把 terminal Overlay 原地改回 `staged`；它们会创建单调递增的
 Overlay generation。命令取得环境 lease 后会重新读取 generation，避免用 reset 前的
 metadata 覆盖新 stage。
+
+## Replay an Agent trajectory
+
+`pvisor replay` assumes the caller has normally created a fresh sandbox. It
+replays complete tool batches through `after_step`, rebuilds the selected
+Agent native context with fresh observations, and then starts the live Agent:
+
+```bash
+pvisor replay \
+  --agent claude-code \
+  --trajectory /input/session.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/claude
+```
+
+OpenHands, mini-swe-agent, and SWE-agent use the model endpoint and credentials
+already present in their environment. Claude Code uses a temporary bridge owned
+by SandboxReplay because its native resume transport inserts wake-up messages.
+The bridge validates and removes that exact Resume Transport envelope before
+forwarding the model request. It does not enable pVisor Gateway, capture model
+traffic, or persist a bridge audit.
+
+The equivalent strict replay TOML is:
+
+```toml
+[replay]
+agent = "claude-code"
+trajectory = "/input/session.jsonl"
+after_step = 30
+agent_entrypoint = "/usr/bin/claude"
+max_steps = 200
+session_id = "task-291-attempt-1"
+replay_only = false
+disable_thinking = true
+```
+
+`disable_thinking` belongs to `[replay]` and is also exposed as
+`--disable-thinking`; it is applied by the Claude protocol bridge without
+turning on Gateway capture. Optional `[run]`, `[overlayfs]`, and `[overlaynet]` sections create an outer
+managed `pvisor run`; they do not change the inner replay model path.
+
+By default, replay's internal state, WAL, manifest, fresh-observation
+comparisons, and native working files remain under
+`/tmp/pvisor-sandbox-replay` and disappear with the sandbox. Replay does not
+enable pVisor Gateway, pChronicle, a model-traffic capture store, or a Claude
+Resume Transport audit. A caller that explicitly selects `--state-dir` or
+`--output-dir` owns those files. Use `--replay-only` to stop after prefix
+reconstruction and tool replay.
 
 ## One configuration model
 

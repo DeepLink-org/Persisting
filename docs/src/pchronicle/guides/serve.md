@@ -32,7 +32,8 @@ for a production control plane.
 
 Mounted Datasets and API operations are read-only. Import, export, maintenance,
 and arbitrary filesystem access are not exposed over HTTP. A refresh constructs
-a new Catalog Snapshot before switching readers to it.
+a complete new Catalog Snapshot outside the reader lock before atomically
+switching readers to it. A failed refresh retains the old queryable snapshot.
 
 To capture new LLM traffic in the same process, continue with
 [Gateway forwarding, rewriting, and capture](serve-gateway.md). For exact flags, see the
@@ -50,3 +51,16 @@ pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
 `--config` and `--storage` are mutually exclusive, and `--control` requires
 `--storage`. The process writes one machine-readable readiness record to
 stdout; its Control token is never written to stderr.
+
+For `--storage`, `serve` first discovers validated non-empty canonical
+`events.lance` Stores and converges each deterministic sibling `storyline`;
+readiness is emitted only after all startup targets are fresh. It then keeps
+discovering and maintaining projections with bounded concurrency and retry.
+Projection failures remain outside the durable canonical write path, and
+foreign destinations without matching lineage are never overwritten. When
+`--listen` is also present, successful projection publication automatically
+rebuilds and swaps the Warehouse Catalog. Observe the state without mutation:
+
+```bash
+pchronicle status ./trajectory-data --format json
+```

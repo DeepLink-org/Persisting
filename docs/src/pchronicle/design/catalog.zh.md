@@ -413,18 +413,22 @@ Catalog 复用直接文件查询的资源参数：
 
 ## 9. Server、刷新与 Web
 
-`pchronicle serve` 从静态 Warehouse 配置挂载命名 Dataset。Catalog 在第一个需要数据的
-请求到达时惰性构建，随后由所有 REST 和 SQL 请求共享。
+`pchronicle serve` 从静态 Warehouse 配置挂载命名 Dataset。使用 `--config` 时 Catalog 在
+第一个需要数据的请求到达时惰性构建；使用 `--storage` 与 `--listen` 时，启动流程先收敛
+canonical Storyline 投影，再构建初始 Catalog。随后由所有 REST 和 SQL 请求共享。
 
 | API | 语义 |
 |---|---|
 | `GET /api/catalog` | 返回当前 `snapshot_id`、创建时间、默认 Dataset、错误策略和 source 列表 |
 | `POST /api/catalog` | 在锁外完整构建新快照，成功后原子替换，并清空轨迹缓存 |
 
-刷新失败不会清空或部分更新旧 Catalog；正在处理的请求持有旧快照的 `Arc`，可以继续完成。
+投影 supervisor 在运行期发现 canonical Store 新增或发布后，会标记 Catalog dirty，随后在
+锁外完整重建并原子切换。刷新失败不会清空或部分更新旧 Catalog，而会保留 dirty 状态并有界
+重试；正在处理的请求持有旧快照的 `Arc`，可以继续完成。
 Web Explorer 从 Catalog 获取 Dataset 列表，服务端过滤、URL 状态和 Storyline 列表
 均携带完整 `(dataset, _file_, session_id)`；`run_id` 作为物理 Run 分组信息
-单独返回。Catalog 是不可变快照，新增数据只在显式 refresh 后进入 Web 视图。
+单独返回。Catalog 是不可变快照；`POST /api/catalog` 仍可显式刷新，但 `serve --storage`
+维护的 canonical 更新会自动产生新快照。
 
 ### 9.1 Server source-routing 加速
 
@@ -535,8 +539,9 @@ basename 会受路径拼写、对象前缀和部署目录影响，不带 schema 
 
 ### 12.4 发现时统一导入 Lance
 
-自动导入会改变查询的延迟、容量和失败语义，还会制造新的持久状态。Catalog 只做虚拟
-规范化；重复大规模分析由用户显式转换为 Storyline Lance，以获得列裁剪、索引和版本发布。
+外围 JSON 的自动导入会改变查询的延迟、容量和失败语义，还会制造新的持久状态，因此
+Catalog 对它只做虚拟规范化。canonical `events.lance` 是例外：`serve --storage` 在 Catalog
+之外维护确定的同级 Storyline 投影；查询仍按 lineage 和 freshness 选择投影或固定快照 fallback。
 
 ### 12.5 只使用 `run_id`
 

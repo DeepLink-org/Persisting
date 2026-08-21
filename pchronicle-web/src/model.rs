@@ -10,7 +10,7 @@ pub struct RunSummary {
     #[serde(default = "default_source_file")]
     pub file: String,
     #[serde(default)]
-    pub run_id: String,
+    pub run_id: Option<String>,
     pub agent_id: String,
     #[serde(default)]
     pub model_name: Option<String>,
@@ -85,13 +85,19 @@ pub struct QueryFieldSummary {
 impl RunSummary {
     pub fn query(&self) -> String {
         let mut out = format!(
-            "dataset={}&file={}&run_id={}&agent_id={}&session_id={}",
+            "dataset={}&file={}",
             urlencoding::encode(&self.dataset),
-            urlencoding::encode(&self.file),
-            urlencoding::encode(&self.run_id),
+            urlencoding::encode(&self.file)
+        );
+        if let Some(run_id) = self.run_id.as_deref().filter(|value| !value.is_empty()) {
+            out.push_str("&run_id=");
+            out.push_str(&urlencoding::encode(run_id));
+        }
+        out.push_str(&format!(
+            "&agent_id={}&session_id={}",
             urlencoding::encode(&self.agent_id),
             urlencoding::encode(&self.session_id)
-        );
+        ));
         if let Some(root) = &self.root_session_id {
             out.push_str("&root_session_id=");
             out.push_str(&urlencoding::encode(root));
@@ -283,7 +289,7 @@ mod tests {
         let run = RunSummary {
             dataset: "dataset".into(),
             file: "nested/source.json".into(),
-            run_id: "run-1".into(),
+            run_id: Some("run-1".into()),
             agent_id: "agent one".into(),
             model_name: None,
             session_id: "s/1".into(),
@@ -296,6 +302,42 @@ mod tests {
         assert_eq!(
             run.query(),
             "dataset=dataset&file=nested%2Fsource.json&run_id=run-1&agent_id=agent%20one&session_id=s%2F1&root_session_id=root%2B1"
+        );
+    }
+
+    #[test]
+    fn run_page_accepts_nullable_run_id() {
+        let page: RunPage = serde_json::from_value(serde_json::json!({
+            "snapshot": {
+                "offset": 0,
+                "next_offset": 1,
+                "total": 1,
+                "has_more": false,
+                "limit": 100
+            },
+            "records": [{
+                "dataset": "captures",
+                "file": "capture-comparison/events.lance",
+                "document_id": "session-1",
+                "run_id": null,
+                "agent_id": "capture-comparison",
+                "model_name": null,
+                "session_id": "session-1",
+                "root_session_id": null,
+                "path": "captures/capture-comparison/session-1",
+                "row_count": 6,
+                "duplicate_event_ids": 0,
+                "status": "completed",
+                "model": "test-model"
+            }],
+            "path_index": []
+        }))
+        .expect("canonical Gateway runs may not have a run id");
+
+        assert_eq!(page.records[0].run.run_id, None);
+        assert_eq!(
+            page.records[0].run.query(),
+            "dataset=captures&file=capture-comparison%2Fevents.lance&agent_id=capture-comparison&session_id=session-1"
         );
     }
 }
