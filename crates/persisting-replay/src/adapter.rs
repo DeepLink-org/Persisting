@@ -1,15 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+mod runtime;
+
 use serde_json::{json, Value};
 
 use crate::claude_bridge::ClaudeBridgeHandle;
@@ -20,6 +20,11 @@ use crate::journal::Journal;
 use crate::model::{
     AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
     ToolCall,
+};
+pub(crate) use runtime::{resolve_launch_spec, LaunchSpec};
+use runtime::{
+    configure_mini_python_environment, mini_python_library_path, mini_python_runtime,
+    safe_relative,
 };
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
@@ -41,14 +46,6 @@ const SUPPORTED_CLAUDE_TOOLS: &[&str] = &[
     "Write",
 ];
 
-#[derive(Debug, Clone)]
-pub struct LaunchSpec {
-    pub entrypoint: PathBuf,
-    pub version: String,
-    pub source: String,
-    pub runtime_root: Option<PathBuf>,
-}
-
 pub struct RunContext<'a> {
     pub request: &'a PlaybackRequest,
     pub state_dir: &'a Path,
@@ -56,225 +53,6 @@ pub struct RunContext<'a> {
     pub launch: Option<&'a LaunchSpec>,
     pub session_id: &'a str,
     pub nonce: &'a str,
-}
-
-pub fn resolve_launch_spec(request: &PlaybackRequest) -> Result<Option<LaunchSpec>, ReplayError> {
-    if request.agent_entrypoint.is_some() && request.agent_runtime.is_some() {
-        return Err(ReplayError::configuration(
-            "agent entrypoint and agent runtime are mutually exclusive",
-        ));
-    }
-    if request.mode == ReplayMode::PrepareOnly
-        && request.agent_entrypoint.is_none()
-        && request.agent_runtime.is_none()
-    {
-        return Ok(None);
-    }
-    let (entrypoint, source, runtime_root, declared_version) =
-        if let Some(runtime_root) = &request.agent_runtime {
-            let root = canonicalize(
-                runtime_root,
-                ReplayErrorKind::Configuration,
-                "agent runtime",
-            )?;
-            let manifest_path = root.join("sandbox-playback-agent.json");
-            let manifest: RuntimeManifest =
-                serde_json::from_slice(&read_regular_file(&manifest_path)?).replay_context(
-                    ReplayErrorKind::Configuration,
-                    format!("parse agent runtime manifest {}", manifest_path.display()),
-                )?;
-            if manifest.schema_version != "sandbox-playback.agent-runtime/v1" {
-                return Err(ReplayError::configuration(
-                    "agent runtime schema_version must be sandbox-playback.agent-runtime/v1",
-                ));
-            }
-            if manifest.agent != request.agent.as_str() {
-                return Err(ReplayError::new(
-                    ReplayErrorKind::UnsupportedAgent,
-                    format!(
-                        "agent runtime declares {:?}, requested {:?}",
-                        manifest.agent,
-                        request.agent.as_str()
-                    ),
-                ));
-            }
-            if manifest.version != request.agent.supported_version() {
-                return Err(ReplayError::new(
-                    ReplayErrorKind::UnsupportedVersion,
-                    format!(
-                        "agent runtime declares {:?}; profile requires {}",
-                        manifest.version,
-                        request.agent.supported_version()
-                    ),
-                ));
-            }
-            let relative = safe_relative(&manifest.entrypoint)?;
-            (
-                root.join(relative),
-                "runtime_manifest".to_owned(),
-                Some(root),
-                Some(manifest.version),
-            )
-        } else {
-            let entrypoint = request.agent_entrypoint.clone().ok_or_else(|| {
-                ReplayError::configuration(
-                    "replay and continuation modes require --agent-entrypoint or --agent-runtime",
-                )
-            })?;
-            (entrypoint, "explicit_entrypoint".to_owned(), None, None)
-        };
-    if !entrypoint.is_absolute() {
-        return Err(ReplayError::configuration(
-            "agent entrypoint must be an absolute path",
-        ));
-    }
-    let entrypoint = canonicalize(
-        &entrypoint,
-        ReplayErrorKind::Configuration,
-        "agent entrypoint",
-    )?;
-    if !entrypoint.is_file() {
-        return Err(ReplayError::configuration(format!(
-            "agent entrypoint is not a regular file: {}",
-            entrypoint.display()
-        )));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if entrypoint
-            .metadata()
-            .map(|m| m.permissions().mode() & 0o111 == 0)
-            .unwrap_or(true)
-        {
-            return Err(ReplayError::configuration(format!(
-                "agent entrypoint is not executable: {}",
-                entrypoint.display()
-            )));
-        }
-    }
-    let version = probe_version(request.agent, &entrypoint)?;
-    if declared_version
-        .as_deref()
-        .is_some_and(|declared| declared != version)
-    {
-        return Err(ReplayError::new(
-            ReplayErrorKind::UnsupportedVersion,
-            "agent runtime manifest and executable versions differ",
-        ));
-    }
-    Ok(Some(LaunchSpec {
-        entrypoint,
-        version,
-        source,
-        runtime_root,
-    }))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeManifest {
-    schema_version: String,
-    agent: String,
-    version: String,
-    entrypoint: PathBuf,
-    #[serde(default, rename = "paths")]
-    _paths: BTreeMap<String, PathBuf>,
-}
-
-fn safe_relative(path: &Path) -> Result<PathBuf, ReplayError> {
-    if path.as_os_str().is_empty()
-        || path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    {
-        return Err(ReplayError::configuration(
-            "agent runtime entrypoint must be a non-empty relative path without '..'",
-        ));
-    }
-    Ok(path.to_path_buf())
-}
-
-fn probe_version(agent: AgentKind, entrypoint: &Path) -> Result<String, ReplayError> {
-    let expected = agent.supported_version();
-    let mut command = Command::new(entrypoint);
-    match agent {
-        AgentKind::ClaudeCode | AgentKind::MiniSweAgent => {
-            command.arg("--version");
-        }
-        AgentKind::Openhands => {
-            command.args([
-                "-c",
-                "import importlib.metadata;print(importlib.metadata.version('openhands-ai'))",
-            ]);
-        }
-        AgentKind::SweAgent => {
-            command.args([
-                "-c",
-                "import importlib.metadata;print(importlib.metadata.version('sweagent'))",
-            ]);
-        }
-    }
-    command.env_remove("PYTHONHOME");
-    command.env_remove("PYTHONPATH");
-    command.env_remove("VIRTUAL_ENV");
-    if agent == AgentKind::MiniSweAgent {
-        let runtime = mini_python_runtime(entrypoint)?;
-        configure_mini_python_environment(&mut command, &runtime)?;
-    }
-    let output = command.output().replay_context(
-        ReplayErrorKind::UnsupportedVersion,
-        format!(
-            "probe {} version from {}",
-            agent.as_str(),
-            entrypoint.display()
-        ),
-    )?;
-    let rendered = String::from_utf8_lossy(if output.stdout.is_empty() {
-        &output.stderr
-    } else {
-        &output.stdout
-    });
-    let detected = probed_version(agent, &rendered, expected);
-    // mini-swe-agent 2.4.6 prints its version before loading the global config.
-    // In a freshly provisioned sandbox that later config load can exit non-zero,
-    // but the unambiguous version banner is still a valid executable probe.
-    let status_is_acceptable =
-        output.status.success() || (agent == AgentKind::MiniSweAgent && detected == Some(expected));
-    if !status_is_acceptable || detected != Some(expected) {
-        return Err(ReplayError::new(
-            ReplayErrorKind::UnsupportedVersion,
-            format!(
-                "{} profile requires {}, got {:?} from {}",
-                agent.as_str(),
-                expected,
-                rendered.trim(),
-                entrypoint.display()
-            ),
-        ));
-    }
-    Ok(expected.to_owned())
-}
-
-fn probed_version<'a>(agent: AgentKind, rendered: &'a str, expected: &'a str) -> Option<&'a str> {
-    if agent != AgentKind::MiniSweAgent {
-        return rendered.contains(expected).then_some(expected);
-    }
-
-    const PREFIX: &str = "This is mini-swe-agent version ";
-    rendered.lines().find_map(|line| {
-        let version = line
-            .trim()
-            .strip_prefix(PREFIX)?
-            .split_whitespace()
-            .next()?
-            .trim_end_matches('.');
-        (version == expected).then_some(version)
-    })
 }
 
 pub fn build_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
@@ -3281,147 +3059,6 @@ fn run_sdk_bridge(
     })
 }
 
-#[derive(Debug)]
-struct MiniPythonRuntime {
-    python: PathBuf,
-    loader: Option<PathBuf>,
-    python_home: Option<PathBuf>,
-    virtual_env: Option<PathBuf>,
-    library_paths: Vec<PathBuf>,
-}
-
-fn mini_python_runtime(entrypoint: &Path) -> Result<MiniPythonRuntime, ReplayError> {
-    if let Some(local_root) = entrypoint.parent().and_then(Path::parent) {
-        let uv_root = local_root.join("share/uv");
-        let virtual_env = uv_root.join("tools/mini-swe-agent");
-        let python = virtual_env.join("bin/python");
-        if python.is_file() {
-            let python = fs::canonicalize(&python).replay_context(
-                ReplayErrorKind::Continuation,
-                format!(
-                    "resolve bundled mini-swe-agent Python from {}",
-                    python.display()
-                ),
-            )?;
-            let python_home = python
-                .parent()
-                .and_then(Path::parent)
-                .ok_or_else(|| ReplayError::continuation("bundled Python has no prefix"))?
-                .to_path_buf();
-            if !python_home.join("lib/python3.12/encodings").is_dir() {
-                return Err(ReplayError::continuation(format!(
-                    "bundled mini-swe-agent Python has no standard library below {}",
-                    python_home.display()
-                )));
-            }
-            let loader = uv_root.join("sweeval-system-libs/ld-linux-x86-64.so.2");
-            if !loader.is_file() {
-                return Err(ReplayError::continuation(format!(
-                    "bundled mini-swe-agent Python loader does not exist: {}",
-                    loader.display()
-                )));
-            }
-            return Ok(MiniPythonRuntime {
-                python,
-                loader: Some(loader),
-                python_home: Some(python_home.clone()),
-                virtual_env: Some(virtual_env),
-                library_paths: vec![uv_root.join("sweeval-system-libs"), python_home.join("lib")],
-            });
-        }
-    }
-
-    let prefix = read_regular_file(entrypoint)?;
-    if let Some(first) = prefix.split(|byte| *byte == b'\n').next() {
-        if let Some(shebang) = first.strip_prefix(b"#!") {
-            let rendered = String::from_utf8_lossy(shebang);
-            let words: Vec<_> = rendered.split_whitespace().collect();
-            if words.first() == Some(&"/usr/bin/env") {
-                if let Some(program) = words.get(1) {
-                    if program.contains("python") {
-                        return Ok(MiniPythonRuntime {
-                            python: PathBuf::from(program),
-                            loader: None,
-                            python_home: None,
-                            virtual_env: None,
-                            library_paths: Vec::new(),
-                        });
-                    }
-                }
-            } else if let Some(program) = words.first() {
-                if program.contains("python") {
-                    return Ok(MiniPythonRuntime {
-                        python: PathBuf::from(program),
-                        loader: None,
-                        python_home: None,
-                        virtual_env: None,
-                        library_paths: Vec::new(),
-                    });
-                }
-            }
-        }
-    }
-    for name in ["python3", "python"] {
-        let candidate = entrypoint.parent().unwrap_or(Path::new("/")).join(name);
-        if candidate.is_file() {
-            return Ok(MiniPythonRuntime {
-                python: candidate,
-                loader: None,
-                python_home: None,
-                virtual_env: None,
-                library_paths: Vec::new(),
-            });
-        }
-    }
-    Err(ReplayError::continuation(
-        "mini-swe-agent entrypoint does not expose its Python interpreter",
-    ))
-}
-
-fn mini_python_library_path(runtime: &MiniPythonRuntime) -> Result<Option<OsString>, ReplayError> {
-    let paths = runtime
-        .library_paths
-        .iter()
-        .filter(|path| path.is_dir())
-        .collect::<Vec<_>>();
-    if paths.is_empty() {
-        return Ok(None);
-    }
-    std::env::join_paths(paths).map(Some).map_err(|error| {
-        ReplayError::configuration(format!(
-            "cannot construct mini-swe-agent Python library path: {error}"
-        ))
-    })
-}
-
-fn configure_mini_python_environment(
-    command: &mut Command,
-    runtime: &MiniPythonRuntime,
-) -> Result<(), ReplayError> {
-    if let Some(python_home) = &runtime.python_home {
-        command.env("PYTHONHOME", python_home);
-    }
-    if let Some(virtual_env) = &runtime.virtual_env {
-        command.env("VIRTUAL_ENV", virtual_env);
-        command.env(
-            "PYTHONPATH",
-            virtual_env.join("lib/python3.12/site-packages"),
-        );
-        let current = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
-        let paths = std::iter::once(virtual_env.join("bin")).chain(std::env::split_paths(&current));
-        let path = std::env::join_paths(paths).map_err(|error| {
-            ReplayError::configuration(format!(
-                "cannot prepend mini-swe-agent virtual environment to PATH: {error}"
-            ))
-        })?;
-        command.env("PATH", path);
-    }
-    if let Some(library_path) = mini_python_library_path(runtime)? {
-        command.env("LD_LIBRARY_PATH", library_path);
-    }
-    Ok(())
-}
-
 fn collect_extension(
     root: &Path,
     extension: &str,
@@ -4268,12 +3905,8 @@ mod tests {
 Check the v2 migration guide at https://example.invalid\n\
 Loading global config from '/root/.config/mini-swe-agent/.env'";
         assert_eq!(
-            probed_version(AgentKind::MiniSweAgent, output, "2.4.6"),
+            runtime::parse_version(AgentKind::MiniSweAgent, output),
             Some("2.4.6")
-        );
-        assert_eq!(
-            probed_version(AgentKind::MiniSweAgent, output, "2.4.5"),
-            None
         );
     }
 
@@ -4301,15 +3934,21 @@ Loading global config from '/root/.config/mini-swe-agent/.env'";
         symlink(&python, virtual_env.join("bin/python")).unwrap();
 
         let runtime = mini_python_runtime(&entrypoint).unwrap();
-        assert_eq!(runtime.python, python);
-        assert_eq!(runtime.python_home.as_deref(), Some(python_home.as_path()));
+        let canonical_python_home = fs::canonicalize(&python_home).unwrap();
+        assert_eq!(runtime.python, fs::canonicalize(&python).unwrap());
+        assert_eq!(
+            runtime.python_home.as_deref(),
+            Some(canonical_python_home.as_path())
+        );
         assert_eq!(runtime.loader.as_deref(), Some(loader.as_path()));
         assert_eq!(runtime.virtual_env.as_deref(), Some(virtual_env.as_path()));
         let mut command = Command::new(&runtime.python);
         configure_mini_python_environment(&mut command, &runtime).unwrap();
         assert!(command
             .get_envs()
-            .any(|(name, value)| name == "PYTHONHOME" && value == Some(python_home.as_os_str())));
+            .any(|(name, value)| {
+                name == "PYTHONHOME" && value == Some(canonical_python_home.as_os_str())
+            }));
         let path = command
             .get_envs()
             .find_map(|(name, value)| {
