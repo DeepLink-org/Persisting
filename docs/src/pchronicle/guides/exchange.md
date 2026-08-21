@@ -29,6 +29,19 @@ pchronicle import --from ./corpus --output ./normalized \
   --output-format storyline
 ```
 
+A validated, non-empty canonical Event Store is detected before JSON scanning
+and always creates Storyline Lance:
+
+```bash
+pchronicle import --from ./run/events.lance --output ./run/storyline
+```
+
+This mode accepts local and object-store URIs, never mutates the source, and
+refuses an existing destination. Its JSON result reports `format: "events"`,
+`output_format: "storyline-lance"`, and `fact_rows`; it omits `input_bytes`.
+Explicit `--output-format preserve` and JSON exchange `--format` values are
+invalid for canonical events.
+
 The squashed Dataset exposes one physical Source named `.`, so `_file_` is `.`
 for all normalized rows:
 

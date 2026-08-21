@@ -338,15 +338,11 @@ pchronicle serve \
 
 ## 查看新捕获
 
-Gateway writer 排空后，events 会持久写入目标 Dataset。Warehouse 读取的是 Catalog
-Snapshot，因此已打开的 Warehouse 不会自动把新 events 加入当前 Snapshot。可以在 Web UI
-刷新 Catalog，或者调用本地 API：
-
-```bash
-curl -X POST http://127.0.0.1:8080/api/catalog
-```
-
-刷新后即可通过 Web UI 或只读 API 查询目标 Dataset。收到 `SIGINT` 或 `SIGTERM` 时，
+Gateway writer 排空后，events 会持久写入目标 Dataset。`serve` 的 projection supervisor
+会发现 canonical 变化，更新确定的同级 Storyline Store，然后完整重建并原子切换 Warehouse
+Catalog。projection 或 refresh 失败会有界重试并保留旧的可查询 Catalog；两者都不阻塞
+durable capture write。`POST /api/catalog` 仍可用于显式手工刷新，但新捕获可见性不再依赖它。
+收到 `SIGINT` 或 `SIGTERM` 时，
 `pchronicle serve` 会停止两个服务，并在退出前完成 Gateway capture writer。
 
 精确命令参数见 [`pchronicle` CLI 参考](../reference/cli.md)；刷新背后的存储模型见

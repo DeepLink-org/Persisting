@@ -26,6 +26,18 @@ pchronicle import --from ./corpus --output ./normalized \
   --output-format storyline
 ```
 
+经过验证且非空的 canonical Event Store 会在 JSON 扫描前被识别，并始终创建
+Storyline Lance：
+
+```bash
+pchronicle import --from ./run/events.lance --output ./run/storyline
+```
+
+此模式接受本地和 object-store URI，不修改源，并拒绝已有目标。JSON 结果报告
+`format: "events"`、`output_format: "storyline-lance"` 和 `fact_rows`，不包含
+`input_bytes`。canonical events 不接受显式 `--output-format preserve` 或 JSON exchange
+`--format`。
+
 squash 后的 Dataset 只有一个名为 `.` 的物理 Source，因此所有规范化表中的 `_file_` 都是
 `.`：
 
