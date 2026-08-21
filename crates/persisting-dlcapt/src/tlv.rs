@@ -310,6 +310,7 @@ fn format_document_preamble(session_id: &str, agent_id: &str, turns: u64) -> Res
             "agent: {agent_id}\n",
             "turns: {turns}\n",
             "storyline:\n",
+            "  schema_version: storyline/v1\n",
             "  session: {session_id}\n",
             "  agent:\n",
             "    id: {agent_id}\n",
