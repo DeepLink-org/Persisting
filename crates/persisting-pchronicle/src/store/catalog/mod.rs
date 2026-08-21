@@ -229,6 +229,14 @@ pub struct DatasetCatalogSnapshot {
     _temporary_files: Arc<SnapshotTempDir>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CatalogCanonicalEventSource {
+    pub(crate) dataset: String,
+    pub(crate) source_path: String,
+    pub(crate) source_uri: String,
+    pub(crate) snapshot: crate::store::EventFactSnapshot,
+}
+
 impl DatasetCatalogSnapshot {
     /// Build a read-only query engine over this catalog snapshot.
     pub async fn query_engine(
@@ -334,6 +342,28 @@ impl DatasetCatalogSnapshot {
 
     pub fn datasets(&self) -> &[CatalogDataset] {
         &self.datasets
+    }
+
+    pub(crate) fn canonical_event_sources(&self) -> Vec<CatalogCanonicalEventSource> {
+        self.prepared
+            .iter()
+            .flat_map(|dataset| {
+                dataset
+                    .sources
+                    .iter()
+                    .filter_map(|source| match &source.spec {
+                        LazySourceSpec::Events { uri, snapshot, .. } => {
+                            Some(CatalogCanonicalEventSource {
+                                dataset: dataset.name.clone(),
+                                source_path: source.file.clone(),
+                                source_uri: uri.clone(),
+                                snapshot: snapshot.fact_snapshot(),
+                            })
+                        }
+                        _ => None,
+                    })
+            })
+            .collect()
     }
 
     pub fn dataset(&self, name: &str) -> Option<&CatalogDataset> {

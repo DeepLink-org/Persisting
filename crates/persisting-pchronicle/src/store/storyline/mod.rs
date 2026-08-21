@@ -417,6 +417,22 @@ impl StorylineLanceStore {
         Ok(store)
     }
 
+    /// Return whether any state already exists at a potential Storyline root.
+    /// This is observational: it never creates the local directory, a lock
+    /// file, or an object-store key.
+    pub async fn destination_exists(root: impl AsRef<str>) -> Result<bool> {
+        let store = Self::open_uri_unchecked(root).await?;
+        if matches!(store.storage_scheme(), "file" | "file+uring") {
+            return Ok(store.root.exists());
+        }
+        let mut objects = store.object_store.inner.list(Some(&store.object_root));
+        objects
+            .try_next()
+            .await
+            .context("inspect Storyline destination prefix")
+            .map(|object| object.is_some())
+    }
+
     pub(crate) async fn open_uri_unchecked(root: impl AsRef<str>) -> Result<Self> {
         let root_uri = normalize_root_uri(root.as_ref())?;
         let (object_store, object_root) = ObjectStore::from_uri(&root_uri)
