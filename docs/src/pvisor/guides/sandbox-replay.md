@@ -44,6 +44,31 @@ replay_only = false
 disable_thinking = true
 ```
 
+### Execution modes and results
+
+- The default mode executes the selected prefix and continues with the live Agent.
+- `--replay-only` executes the prefix and stops before the next model request.
+- `--prepare-only` only validates and constructs the prefix. It executes no tools,
+  starts no Agent, and does not require an Agent runtime.
+
+`--max-steps` counts all Agent actions, including the selected prefix. For
+example, `--after-step 30 --max-steps 50` leaves at most 20 live actions. A
+replay-only budget must cover the prefix; a continuation budget must leave at
+least one live action.
+
+Results use `sandbox-playback.result/v3`. The `phase` is `prepared`, `replayed`,
+or `continued`; `quality` is `verified` or `degraded`; and `agent_status`
+distinguishes `not_started`, `completed`, `max_steps`, and `failed`. Failures
+retain available logs and native trajectories. OpenHands controller fatal states
+are failures even when its process exits with status zero.
+
+Migration: older non-Claude configurations sometimes used `replay_only = true`
+to construct a prefix without executing it. Use `prepare_only = true` for that
+behavior. In v3, replay-only always executes the selected prefix and therefore
+requires an exact-version runtime. Claude observations that cannot be reproduced
+fresh fail by default; `--allow-stale-observations` explicitly permits a
+`degraded` result.
+
 Runtime isolation is opt-in. Replay only creates an outer managed `pvisor run`
 when the caller supplies runtime options such as `--safe`, `--executor`, or
 `--overlayfs-base`, or their TOML equivalents. See the

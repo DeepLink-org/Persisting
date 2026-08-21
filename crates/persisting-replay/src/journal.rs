@@ -146,7 +146,10 @@ mod tests {
             ],
         );
 
-        assert_eq!(Journal::find_ambiguous(&path).unwrap().as_deref(), Some("same-call"));
+        assert_eq!(
+            Journal::find_ambiguous(&path).unwrap().as_deref(),
+            Some("same-call")
+        );
     }
 
     #[test]
@@ -165,7 +168,10 @@ mod tests {
             ],
         );
 
-        assert_eq!(Journal::find_ambiguous(&path).unwrap().as_deref(), Some("same-call"));
+        assert_eq!(
+            Journal::find_ambiguous(&path).unwrap().as_deref(),
+            Some("same-call")
+        );
     }
 
     #[test]

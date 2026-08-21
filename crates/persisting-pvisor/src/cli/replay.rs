@@ -71,6 +71,7 @@ pub struct ReplayArgs {
     #[arg(long)]
     session_id: Option<String>,
 
+    /// Total Agent action budget including the replayed prefix and any live continuation.
     #[arg(long)]
     max_steps: Option<usize>,
 
@@ -560,10 +561,12 @@ fn print_error(error: &ReplayError) {
 fn failure_json(error: &ReplayError) -> serde_json::Value {
     let (run_id, state_dir, output_dir) = error
         .locations()
-        .map(|(run_id, state_dir, output_dir)| {
-            (json!(run_id), json!(state_dir), json!(output_dir))
-        })
-        .unwrap_or((serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null));
+        .map(|(run_id, state_dir, output_dir)| (json!(run_id), json!(state_dir), json!(output_dir)))
+        .unwrap_or((
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ));
     json!({
         "schema_version": RESULT_SCHEMA_VERSION,
         "phase": null,

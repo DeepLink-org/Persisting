@@ -246,6 +246,20 @@ mod tests {
     }
 
     #[test]
+    fn replay_help_describes_phase_modes() {
+        let help = Cli::try_parse_from(["pvisor", "replay", "--help"])
+            .unwrap_err()
+            .to_string();
+
+        assert!(help.contains("--prepare-only"));
+        assert!(help.contains("without executing tools or starting an Agent"));
+        assert!(help.contains("--replay-only"));
+        assert!(help.contains("stop before the next model request"));
+        assert!(help.contains("--allow-stale-observations"));
+        assert!(help.contains("including the replayed prefix and any live continuation"));
+    }
+
+    #[test]
     fn unknown_first_token_becomes_default_run() {
         let args = normalize_default_run(vec!["pvisor".into(), "/bin/true".into()]);
         assert_eq!(args[1], "run");

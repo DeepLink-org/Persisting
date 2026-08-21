@@ -118,6 +118,18 @@ replay_only = false
 disable_thinking = true
 ```
 
+Replay has three modes. The default replays the prefix and continues;
+`--replay-only` executes the prefix and stops before a model request; and
+`--prepare-only` constructs the prefix without executing tools or requiring a
+runtime. `--max-steps` is the total action budget, including replayed actions.
+`--allow-stale-observations` is an explicit Claude-only escape hatch that marks
+the v3 result `degraded`.
+
+The result schema is `sandbox-playback.result/v3`, with typed `phase`, `quality`,
+and `agent_status` fields plus state/output locations, artifacts, and an optional
+structured failure. Existing non-Claude callers that used `replay_only = true`
+only to construct a prefix must migrate to `prepare_only = true`.
+
 `disable_thinking` belongs to `[replay]` and is also exposed as
 `--disable-thinking`; it is applied by the Claude protocol bridge without
 turning on Gateway capture. Optional `[run]`, `[overlayfs]`, and `[overlaynet]` sections create an outer
@@ -128,8 +140,8 @@ comparisons, and native working files remain under
 `/tmp/pvisor-sandbox-replay` and disappear with the sandbox. Replay does not
 enable pVisor Gateway, pChronicle, a model-traffic capture store, or a Claude
 Resume Transport audit. A caller that explicitly selects `--state-dir` or
-`--output-dir` owns those files. Use `--replay-only` to stop after prefix
-reconstruction and tool replay.
+`--output-dir` owns those files. Use `--replay-only` to execute the prefix and
+stop before live inference, or `--prepare-only` to construct it without execution.
 
 ## One configuration model
 

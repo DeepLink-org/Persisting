@@ -60,10 +60,10 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
             }
         });
     }
-    let mut child = spec.command.spawn().replay_context(
-        ReplayErrorKind::Executor,
-        "spawn supervised replay process",
-    )?;
+    let mut child = spec
+        .command
+        .spawn()
+        .replay_context(ReplayErrorKind::Executor, "spawn supervised replay process")?;
     let process_group = child.id() as i32;
     let stdout = child
         .stdout
@@ -360,11 +360,7 @@ mod tests {
     fn drains_large_output_to_log_with_a_bounded_tail() {
         let temporary = tempfile::tempdir().unwrap();
         let log_path = temporary.path().join("large.log");
-        let output = run_process(shell_spec(
-            "yes x | head -c 8388608",
-            &log_path,
-        ))
-        .unwrap();
+        let output = run_process(shell_spec("yes x | head -c 8388608", &log_path)).unwrap();
 
         assert!(output.status.success());
         assert_eq!(output.stdout_bytes, 8 * 1024 * 1024);

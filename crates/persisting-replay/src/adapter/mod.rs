@@ -22,15 +22,13 @@ use crate::model::{
     ReplayPlan, ToolBatch, ToolCall,
 };
 use crate::process::{run_process, ProcessSpec};
-pub(crate) use runtime::{resolve_launch_spec, LaunchSpec};
 use runtime::{
-    configure_mini_python_environment, mini_python_library_path, mini_python_runtime,
-    safe_relative,
+    configure_mini_python_environment, mini_python_library_path, mini_python_runtime, safe_relative,
 };
+pub(crate) use runtime::{resolve_launch_spec, LaunchSpec};
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
-const FRESH_CLAUDE_TOOLS: &[&str] =
-    &["Bash", "Edit", "Glob", "Grep", "MultiEdit", "Read", "Write"];
+const FRESH_CLAUDE_TOOLS: &[&str] = &["Bash", "Edit", "Glob", "Grep", "MultiEdit", "Read", "Write"];
 const STALE_CLAUDE_TOOLS: &[&str] = &[
     "Agent",
     "TaskCreate",
@@ -361,8 +359,8 @@ fn build_claude_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayErro
     check_boundary(request.after_step, batches.len())?;
     for batch in batches.iter().take(request.after_step) {
         for call in &batch.tool_calls {
-            let allow_stale = request.mode == ReplayMode::PrepareOnly
-                || request.allow_stale_observations;
+            let allow_stale =
+                request.mode == ReplayMode::PrepareOnly || request.allow_stale_observations;
             validate_claude_tool_policy(call, allow_stale)?;
         }
     }
@@ -2101,7 +2099,8 @@ fn run_bash(
         content.push_str(&String::from_utf8_lossy(&output.stderr_tail));
     }
     if output.stdout_truncated || output.stderr_truncated {
-        content.push_str("\n[output truncated by pvisor replay; full output is in the process log]");
+        content
+            .push_str("\n[output truncated by pvisor replay; full output is in the process log]");
     }
     if output.background_cleanup && !output.timed_out {
         content.push_str("\n[background descendants were terminated after the command exited]");
@@ -2856,72 +2855,72 @@ fn run_sdk_bridge(
         continued,
         observations_path,
     ) = match agent {
-            AgentKind::MiniSweAgent => {
-                let source = context.state_dir.join("mini-source.json");
-                let reconstructed = native_dir.join("reconstructed-trajectory.json");
-                let continued = native_dir.join("continued-trajectory.json");
-                let observations = context.state_dir.join("mini-fresh-observations.json");
-                atomic_write_json(&source, &plan.native)?;
-                let runtime = mini_python_runtime(&launch.entrypoint)?;
-                let program = runtime
-                    .loader
-                    .clone()
-                    .unwrap_or_else(|| runtime.python.clone());
-                (
-                    program,
-                    include_str!("../../assets/mini_swe_agent_runner.py"),
-                    "mini-swe-agent-runner.py",
-                    json!({
-                        "source": source,
-                        "reconstructed": reconstructed,
-                        "continued": continued,
-                        "observations": observations,
-                        "result": runner_result,
-                        "mode": mode,
-                        "workspace": context.request.workspace,
-                        "after_step": plan.after_step,
-                        "max_steps": context.request.max_steps,
-                        "session_id": context.session_id,
-                    }),
-                    reconstructed,
-                    continued,
-                    Some(observations),
-                )
-            }
-            AgentKind::SweAgent => {
-                let source = native_dir.join("continuation-source.traj");
-                let run_output = native_dir.join("swe-agent-run");
-                let reconstructed = native_dir.join("reconstructed-trajectory.traj");
-                let continued = native_dir.join("continued-trajectory.traj");
-                atomic_write_json(&source, &plan.native)?;
-                (
-                    launch.entrypoint.clone(),
-                    include_str!("../../assets/swe_agent_runner.py"),
-                    "swe-agent-runner.py",
-                    json!({
-                        "trajectory": source,
-                        "reconstructed": reconstructed,
-                        "continued": continued,
-                        "trajectory_assets": context.request.trajectory_assets,
-                        "after_step": plan.after_step,
-                        "max_steps": context.request.max_steps,
-                        "mode": mode,
-                        "result": runner_result,
-                        "workspace": context.request.workspace,
-                        "output_dir": run_output,
-                    }),
-                    reconstructed,
-                    continued,
-                    None,
-                )
-            }
-            _ => {
-                return Err(ReplayError::new(
-                    ReplayErrorKind::Internal,
-                    "SDK bridge selected for a non-SDK agent",
-                ));
-            }
-        };
+        AgentKind::MiniSweAgent => {
+            let source = context.state_dir.join("mini-source.json");
+            let reconstructed = native_dir.join("reconstructed-trajectory.json");
+            let continued = native_dir.join("continued-trajectory.json");
+            let observations = context.state_dir.join("mini-fresh-observations.json");
+            atomic_write_json(&source, &plan.native)?;
+            let runtime = mini_python_runtime(&launch.entrypoint)?;
+            let program = runtime
+                .loader
+                .clone()
+                .unwrap_or_else(|| runtime.python.clone());
+            (
+                program,
+                include_str!("../../assets/mini_swe_agent_runner.py"),
+                "mini-swe-agent-runner.py",
+                json!({
+                    "source": source,
+                    "reconstructed": reconstructed,
+                    "continued": continued,
+                    "observations": observations,
+                    "result": runner_result,
+                    "mode": mode,
+                    "workspace": context.request.workspace,
+                    "after_step": plan.after_step,
+                    "max_steps": context.request.max_steps,
+                    "session_id": context.session_id,
+                }),
+                reconstructed,
+                continued,
+                Some(observations),
+            )
+        }
+        AgentKind::SweAgent => {
+            let source = native_dir.join("continuation-source.traj");
+            let run_output = native_dir.join("swe-agent-run");
+            let reconstructed = native_dir.join("reconstructed-trajectory.traj");
+            let continued = native_dir.join("continued-trajectory.traj");
+            atomic_write_json(&source, &plan.native)?;
+            (
+                launch.entrypoint.clone(),
+                include_str!("../../assets/swe_agent_runner.py"),
+                "swe-agent-runner.py",
+                json!({
+                    "trajectory": source,
+                    "reconstructed": reconstructed,
+                    "continued": continued,
+                    "trajectory_assets": context.request.trajectory_assets,
+                    "after_step": plan.after_step,
+                    "max_steps": context.request.max_steps,
+                    "mode": mode,
+                    "result": runner_result,
+                    "workspace": context.request.workspace,
+                    "output_dir": run_output,
+                }),
+                reconstructed,
+                continued,
+                None,
+            )
+        }
+        _ => {
+            return Err(ReplayError::new(
+                ReplayErrorKind::Internal,
+                "SDK bridge selected for a non-SDK agent",
+            ));
+        }
+    };
 
     let bridge = context.state_dir.join(bridge_name);
     let request_path = context
@@ -2984,7 +2983,10 @@ fn run_sdk_bridge(
     }
 
     let runner: Value = serde_json::from_slice(&read_regular_file(&runner_result)?)
-        .replay_context(ReplayErrorKind::Continuation, "parse SDK replay runner result")?;
+        .replay_context(
+            ReplayErrorKind::Continuation,
+            "parse SDK replay runner result",
+        )?;
     let expected_phase = if context.request.mode == ReplayMode::ReplayOnly {
         "replayed"
     } else {
@@ -3077,8 +3079,8 @@ fn run_sdk_bridge(
                 metadata: BTreeMap::new(),
             })
             .collect::<Vec<_>>();
-        let continued_value: Value = serde_json::from_slice(&read_regular_file(&runner_trajectory)?)
-            .replay_context(
+        let continued_value: Value =
+            serde_json::from_slice(&read_regular_file(&runner_trajectory)?).replay_context(
                 ReplayErrorKind::Trajectory,
                 "parse continued mini-swe-agent trajectory",
             )?;
@@ -3292,10 +3294,8 @@ fn run_openhands(
     }
     journal.append("continuation_started", std::iter::empty())?;
     let log = context.output_dir.join("logs/openhands.log");
-    fs::create_dir_all(log.parent().expect("OpenHands log has a parent")).replay_context(
-        ReplayErrorKind::Executor,
-        "create OpenHands log directory",
-    )?;
+    fs::create_dir_all(log.parent().expect("OpenHands log has a parent"))
+        .replay_context(ReplayErrorKind::Executor, "create OpenHands log directory")?;
     let output = run_process(ProcessSpec {
         command,
         stdin: Some(b"\n".to_vec()),
@@ -3335,13 +3335,11 @@ fn run_openhands(
             &rendered,
         ));
     }
-    let continued_events: Vec<Value> = serde_json::from_slice(&read_regular_file(
-        &replayed_trajectory,
-    )?)
-    .replay_context(
-        ReplayErrorKind::Trajectory,
-        "parse replayed OpenHands trajectory",
-    )?;
+    let continued_events: Vec<Value> =
+        serde_json::from_slice(&read_regular_file(&replayed_trajectory)?).replay_context(
+            ReplayErrorKind::Trajectory,
+            "parse replayed OpenHands trajectory",
+        )?;
     let complete = openhands_complete_batches(&continued_events)?;
     if complete.len() < plan.after_step {
         return Err(ReplayError::trajectory(
@@ -3729,13 +3727,8 @@ mod tests {
         call.original_observation = json!("source observation");
 
         validate_claude_tool_policy(&call, true).unwrap();
-        let observation = execute_claude_tool_with_policy(
-            &call,
-            workspace.path(),
-            true,
-            None,
-        )
-        .unwrap();
+        let observation =
+            execute_claude_tool_with_policy(&call, workspace.path(), true, None).unwrap();
 
         assert_eq!(observation.content, call.original_observation);
         assert_eq!(
@@ -4216,11 +4209,9 @@ Loading global config from '/root/.config/mini-swe-agent/.env'";
         assert_eq!(runtime.virtual_env.as_deref(), Some(virtual_env.as_path()));
         let mut command = Command::new(&runtime.python);
         configure_mini_python_environment(&mut command, &runtime).unwrap();
-        assert!(command
-            .get_envs()
-            .any(|(name, value)| {
-                name == "PYTHONHOME" && value == Some(canonical_python_home.as_os_str())
-            }));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "PYTHONHOME" && value == Some(canonical_python_home.as_os_str())
+        }));
         let path = command
             .get_envs()
             .find_map(|(name, value)| {
@@ -4250,13 +4241,8 @@ Loading global config from '/root/.config/mini-swe-agent/.env'";
         let workspace = tempfile::tempdir().unwrap();
         let log = workspace.path().join("bash.log");
         let started = Instant::now();
-        let (content, is_error, return_code, truncated) = run_bash(
-            "sleep 5",
-            workspace.path(),
-            Duration::from_millis(50),
-            &log,
-        )
-        .unwrap();
+        let (content, is_error, return_code, truncated) =
+            run_bash("sleep 5", workspace.path(), Duration::from_millis(50), &log).unwrap();
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(is_error);
         assert_eq!(return_code, Some(124));

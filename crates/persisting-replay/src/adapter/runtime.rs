@@ -199,8 +199,8 @@ fn probe_version(agent: AgentKind, entrypoint: &Path) -> Result<String, ReplayEr
         &output.stdout
     });
     let detected = parse_version(agent, &rendered);
-    let status_is_acceptable = output.status.success()
-        || (agent == AgentKind::MiniSweAgent && detected == Some(expected));
+    let status_is_acceptable =
+        output.status.success() || (agent == AgentKind::MiniSweAgent && detected == Some(expected));
     if !status_is_acceptable || detected != Some(expected) {
         return Err(ReplayError::new(
             ReplayErrorKind::UnsupportedVersion,
@@ -252,9 +252,7 @@ pub(super) struct MiniPythonRuntime {
     library_paths: Vec<PathBuf>,
 }
 
-pub(super) fn mini_python_runtime(
-    entrypoint: &Path,
-) -> Result<MiniPythonRuntime, ReplayError> {
+pub(super) fn mini_python_runtime(entrypoint: &Path) -> Result<MiniPythonRuntime, ReplayError> {
     if let Some(local_root) = entrypoint.parent().and_then(Path::parent) {
         let uv_root = local_root.join("share/uv");
         let virtual_env = uv_root.join("tools/mini-swe-agent");
@@ -422,14 +420,8 @@ mod tests {
             ),
             Some("2.4.6")
         );
-        assert_eq!(
-            parse_version(AgentKind::SweAgent, "1.1.0"),
-            Some("1.1.0")
-        );
-        assert_eq!(
-            parse_version(AgentKind::SweAgent, "swe-agent 1.1.0"),
-            None
-        );
+        assert_eq!(parse_version(AgentKind::SweAgent, "1.1.0"), Some("1.1.0"));
+        assert_eq!(parse_version(AgentKind::SweAgent, "swe-agent 1.1.0"), None);
     }
 
     #[cfg(unix)]

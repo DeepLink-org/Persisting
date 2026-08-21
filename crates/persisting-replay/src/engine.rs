@@ -22,9 +22,8 @@ pub fn execute(request: PlaybackRequest) -> Result<ExecutionReport, ReplayError>
         .unwrap_or_else(|| format!("replay-{}", uuid::Uuid::new_v4().simple()));
     let state_dir = location_hint(&request.state_dir, &run_id);
     let output_dir = location_hint(&request.output_dir, &run_id);
-    execute_with_run_id(request, run_id.clone()).map_err(|error| {
-        error.with_default_locations(run_id, state_dir, output_dir)
-    })
+    execute_with_run_id(request, run_id.clone())
+        .map_err(|error| error.with_default_locations(run_id, state_dir, output_dir))
 }
 
 fn execute_with_run_id(
@@ -263,14 +262,12 @@ fn failure_result(
     error: &ReplayError,
 ) -> ReplayResult {
     let artifacts = existing_artifacts(request, &output_dir);
-    let replay_completed = artifacts
-        .iter()
-        .any(|artifact| {
-            matches!(
-                artifact.role.as_str(),
-                "reconstructed_native_trajectory" | "continued_native_trajectory"
-            )
-        });
+    let replay_completed = artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.role.as_str(),
+            "reconstructed_native_trajectory" | "continued_native_trajectory"
+        )
+    });
     ReplayResult {
         schema_version: RESULT_SCHEMA_VERSION,
         phase: if replay_completed {
@@ -584,8 +581,14 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
     let native_paths: &[(&str, &str)] = match request.agent {
         AgentKind::ClaudeCode => &[
             ("prepared_native_prefix", "native/prepared-prefix.jsonl"),
-            ("reconstructed_native_trajectory", "native/reconstructed-prefix.jsonl"),
-            ("continued_native_trajectory", "native/continued-session.jsonl"),
+            (
+                "reconstructed_native_trajectory",
+                "native/reconstructed-prefix.jsonl",
+            ),
+            (
+                "continued_native_trajectory",
+                "native/continued-session.jsonl",
+            ),
         ],
         AgentKind::MiniSweAgent => &[
             ("prepared_native_prefix", "native/prepared-prefix.json"),
@@ -593,15 +596,24 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
                 "reconstructed_native_trajectory",
                 "native/reconstructed-trajectory.json",
             ),
-            ("continued_native_trajectory", "native/continued-trajectory.json"),
+            (
+                "continued_native_trajectory",
+                "native/continued-trajectory.json",
+            ),
         ],
         AgentKind::Openhands => &[
-            ("prepared_native_prefix", "native/prepared-replay-events.json"),
+            (
+                "prepared_native_prefix",
+                "native/prepared-replay-events.json",
+            ),
             (
                 "reconstructed_native_trajectory",
                 "native/reconstructed-trajectory.json",
             ),
-            ("continued_native_trajectory", "native/continued-trajectory.json"),
+            (
+                "continued_native_trajectory",
+                "native/continued-trajectory.json",
+            ),
         ],
         AgentKind::SweAgent => &[
             ("prepared_native_prefix", "native/prepared-prefix.traj"),
@@ -609,7 +621,10 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
                 "reconstructed_native_trajectory",
                 "native/reconstructed-trajectory.traj",
             ),
-            ("continued_native_trajectory", "native/continued-trajectory.traj"),
+            (
+                "continued_native_trajectory",
+                "native/continued-trajectory.traj",
+            ),
         ],
     };
     for (role, relative) in native_paths {
