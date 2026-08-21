@@ -7058,6 +7058,7 @@ dependencies = [
  "persisting-overlayfs",
  "persisting-overlaynet",
  "persisting-ppilot",
+ "persisting-replay",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -7072,6 +7073,25 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "persisting-replay"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "fs2",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "toml",
+ "uuid",
 ]
 
 [[package]]

@@ -20,6 +20,64 @@ The industry-level category definition is in
 [command reference](../../docs/src/design/cli-pvisor.md) describe the current
 implementation in detail.
 
+## Replay an Agent trajectory
+
+The default replay path assumes the caller already created a fresh sandbox.
+It reconstructs and continues the Agent directly in that sandbox. OpenHands,
+mini-swe-agent, and SWE-agent connect to the model endpoint already configured
+in their environment; replay does not start pVisor Gateway for them.
+
+Claude Code alone uses a temporary bridge owned by SandboxReplay. Before any
+upstream model request, the bridge validates and removes the exact Resume
+Transport envelope so the first continued request ends at the replayed
+observation. The bridge performs no capture or audit and is stopped with the
+continuation process.
+
+```bash
+pvisor replay \
+  --agent claude-code \
+  --trajectory /input/session.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/claude
+```
+
+The same request can be supplied as strict TOML:
+
+```toml
+[replay]
+agent = "claude-code"
+trajectory = "/input/session.jsonl"
+after_step = 30
+agent_entrypoint = "/usr/bin/claude"
+disable_thinking = false
+```
+
+`disable_thinking` is also available as `--disable-thinking`. It is applied by
+the Claude replay bridge when protocol translation is required; it does not
+enable Gateway capture.
+
+Runtime isolation is opt-in. Supplying `--safe`, `--executor`,
+`--overlayfs-base`, another replay runtime flag, or the corresponding
+`[run]`, `[overlayfs]`, or `[overlaynet]` TOML settings create an outer `pvisor run`; the inner command remains the same direct replay
+operation. For example:
+
+```bash
+pvisor replay \
+  --agent claude-code \
+  --trajectory /input/session.jsonl \
+  --after-step 30 \
+  --agent-entrypoint /usr/bin/claude \
+  --safe \
+  --overlayfs-base /workspace
+```
+
+By default, replay's internal state, WAL, manifest, comparisons, and native
+working files stay below `/tmp/pvisor-sandbox-replay` and disappear with the
+sandbox. Replay does not enable pVisor Gateway, pChronicle, model-traffic
+capture, or a Claude Resume Transport audit. Callers that explicitly select
+`--state-dir` or `--output-dir` own the resulting files. Use `--replay-only`
+when only prefix reconstruction and tool replay are required.
+
 ## Start with one Agent
 
 The shortest product path is a transactional Agent Run:

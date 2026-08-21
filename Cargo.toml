@@ -7,6 +7,7 @@ members = [
     "crates/persisting-dlcapt",
     "crates/persisting-ppilot",
     "crates/persisting-pvisor",
+    "crates/persisting-replay",
     "crates/persisting-pchronicle",
     "crates/persisting-pchronicle-cli",
     "crates/persisting-overlayfs",
@@ -120,6 +121,7 @@ persisting-overlay-core = { path = "crates/persisting-overlay-core" }
 persisting-overlaynet = { path = "crates/persisting-overlaynet" }
 persisting-pchronicle = { path = "crates/persisting-pchronicle", default-features = false }
 persisting-pvisor = { path = "crates/persisting-pvisor" }
+persisting-replay = { path = "crates/persisting-replay" }
 pollster = "0.4"
 pulsing-actor = { version = "0.1.2", default-features = false }
 regex = "1"

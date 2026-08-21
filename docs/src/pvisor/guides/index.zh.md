@@ -6,7 +6,8 @@
 2. [审查并选择性应用 filesystem Effect](review-apply.md)。
 3. [控制网络访问](network.md)。
 4. [捕获模型流量与轨迹 evidence](capture.md)。
-5. [编排多个独立 Run](orchestrate.md)。
+5. [在新沙箱中回放并续跑 Agent 轨迹](sandbox-replay.md)。
+6. [编排多个独立 Run](orchestrate.md)。
 
 文件系统、网络、capture 与 execution provider 的保证彼此独立。请始终通过 Run Bundle
 检查当前平台实际安装的机制。
