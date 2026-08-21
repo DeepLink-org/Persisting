@@ -15,6 +15,7 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 #[allow(dead_code)]
 pub(crate) struct ProcessSpec {
     pub command: Command,
+    pub stdin: Option<Vec<u8>>,
     pub timeout: Duration,
     pub termination_grace: Duration,
     pub pipe_grace: Duration,
@@ -46,6 +47,9 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
     let log = owner_only_log(&spec.log_path)?;
     let log = Arc::new(Mutex::new(log));
     spec.command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if spec.stdin.is_some() {
+        spec.command.stdin(Stdio::piped());
+    }
     #[cfg(unix)]
     unsafe {
         spec.command.pre_exec(|| {
@@ -71,6 +75,26 @@ pub(crate) fn run_process(mut spec: ProcessSpec) -> Result<ProcessOutput, Replay
         .ok_or_else(|| ReplayError::new(ReplayErrorKind::Internal, "stderr pipe missing"))?;
     let stdout_reader = spawn_reader(stdout, Arc::clone(&log), spec.retained_bytes);
     let stderr_reader = spawn_reader(stderr, Arc::clone(&log), spec.retained_bytes);
+    if let Some(input) = spec.stdin.take() {
+        let write_result = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("stdin pipe missing"))
+            .and_then(|mut stdin| stdin.write_all(&input));
+        if let Err(error) = write_result {
+            #[cfg(unix)]
+            let _ = signal_group(process_group, libc::SIGKILL);
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(ReplayError::new(
+                ReplayErrorKind::Executor,
+                format!("write supervised process stdin: {error}"),
+            ));
+        }
+    }
 
     let started = Instant::now();
     let mut timed_out = false;
@@ -310,12 +334,26 @@ mod tests {
         command.args(["-c", script]);
         ProcessSpec {
             command,
+            stdin: None,
             timeout: Duration::from_secs(5),
             termination_grace: Duration::from_millis(100),
             pipe_grace: Duration::from_millis(100),
             retained_bytes: 64 * 1024,
             log_path: log_path.to_path_buf(),
         }
+    }
+
+    #[test]
+    fn writes_configured_stdin_before_waiting() {
+        let temporary = tempfile::tempdir().unwrap();
+        let log_path = temporary.path().join("stdin.log");
+        let mut spec = shell_spec("cat", &log_path);
+        spec.stdin = Some(b"resume nonce".to_vec());
+
+        let output = run_process(spec).unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout_tail, b"resume nonce");
     }
 
     #[test]

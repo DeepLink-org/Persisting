@@ -50,8 +50,8 @@ fn execute_with_run_id(
         format!("create unique replay output {}", output_dir.display()),
     )?;
 
-    let launch = resolve_launch_spec(&request)?;
     let plan = build_plan(&request)?;
+    let launch = resolve_launch_spec(&request)?;
     if let Some(launch) = &launch {
         if launch.version != plan.agent.supported_version() {
             return Err(ReplayError::new(
@@ -556,6 +556,7 @@ fn artifact(role: &str, format: &str, path: std::path::PathBuf) -> Artifact {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn validation_errors_keep_resolved_run_locations() {
@@ -583,5 +584,30 @@ mod tests {
         assert_eq!(run_id, "replay-1");
         assert_eq!(state_dir, Path::new("/state/replay-1"));
         assert_eq!(output_dir, Path::new("/output/replay-1"));
+    }
+
+    #[test]
+    fn stale_source_observations_degrade_result_quality() {
+        let outcome = ReplayOutcome {
+            status: "replayed".into(),
+            reconstructed_path: None,
+            continued_path: None,
+            observations: vec![crate::model::FreshObservation {
+                call_id: "call-1".into(),
+                content: Value::Null,
+                is_error: false,
+                return_code: Some(0),
+                duration_ms: 0,
+                truncated: false,
+                metadata: BTreeMap::from([(
+                    "degradation_reason".into(),
+                    json!("stale_source_observation"),
+                )]),
+            }],
+            continued_steps: 0,
+            metadata: Value::Null,
+        };
+
+        assert_eq!(quality_for_outcome(&outcome), ReplayQuality::Degraded);
     }
 }

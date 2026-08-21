@@ -1,11 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Read, Write};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
 
 mod runtime;
@@ -21,6 +18,7 @@ use crate::model::{
     AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
     ToolCall,
 };
+use crate::process::{run_process, ProcessSpec};
 pub(crate) use runtime::{resolve_launch_spec, LaunchSpec};
 use runtime::{
     configure_mini_python_environment, mini_python_library_path, mini_python_runtime,
@@ -28,22 +26,16 @@ use runtime::{
 };
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
-const SUPPORTED_CLAUDE_TOOLS: &[&str] = &[
+const FRESH_CLAUDE_TOOLS: &[&str] =
+    &["Bash", "Edit", "Glob", "Grep", "MultiEdit", "Read", "Write"];
+const STALE_CLAUDE_TOOLS: &[&str] = &[
     "Agent",
-    "Bash",
-    "Edit",
-    "Find",
-    "Glob",
-    "Grep",
-    "MultiEdit",
-    "Read",
     "TaskCreate",
     "TaskGet",
     "TaskList",
     "TaskOutput",
     "TaskUpdate",
     "TodoWrite",
-    "Write",
 ];
 
 pub struct RunContext<'a> {
@@ -366,22 +358,9 @@ fn build_claude_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayErro
     check_boundary(request.after_step, batches.len())?;
     for batch in batches.iter().take(request.after_step) {
         for call in &batch.tool_calls {
-            if !SUPPORTED_CLAUDE_TOOLS.contains(&call.name.as_str())
-                || (call.name == "Bash"
-                    && call
-                        .arguments
-                        .get("run_in_background")
-                        .and_then(Value::as_bool)
-                        == Some(true))
-            {
-                return Err(ReplayError::new(
-                    ReplayErrorKind::UnsupportedVersion,
-                    format!(
-                        "unsupported Claude replay tool call {}({}) inside the selected prefix",
-                        call.name, call.call_id
-                    ),
-                ));
-            }
+            let allow_stale = request.mode == ReplayMode::PrepareOnly
+                || request.allow_stale_observations;
+            validate_claude_tool_policy(call, allow_stale)?;
         }
     }
     let boundary_turn_index = batches[request.after_step - 1].native["turn_index"]
@@ -1528,9 +1507,48 @@ fn run_claude(
     let session_id = plan.native["session_id"]
         .as_str()
         .ok_or_else(|| ReplayError::trajectory("Claude plan lost its session ID"))?;
+    if context.request.mode == ReplayMode::PrepareOnly {
+        let replacements = plan
+            .calls()
+            .map(|call| {
+                (
+                    call.call_id.clone(),
+                    FreshObservation {
+                        call_id: call.call_id.clone(),
+                        content: call.original_observation.clone(),
+                        is_error: call.original_is_error,
+                        return_code: None,
+                        duration_ms: 0,
+                        truncated: false,
+                        metadata: BTreeMap::new(),
+                    },
+                )
+            })
+            .collect();
+        let canonical = rebuild_claude(plan, &replacements)?;
+        let prepared = context.output_dir.join("native/prepared-prefix.jsonl");
+        atomic_write(&prepared, canonical.as_bytes())?;
+        journal.append(
+            "session_prepared",
+            [("sha256".into(), json!(sha256(canonical.as_bytes())))],
+        )?;
+        return Ok(ReplayOutcome {
+            status: "prepared".into(),
+            reconstructed_path: Some(prepared),
+            continued_path: None,
+            observations: Vec::new(),
+            continued_steps: 0,
+            metadata: json!({"native_session_id": session_id}),
+        });
+    }
     let mut replacements = BTreeMap::new();
     let mut observations = Vec::new();
     let mut comparisons = Vec::new();
+    let historical_logs = context.output_dir.join("logs/historical-tools");
+    fs::create_dir_all(&historical_logs).replay_context(
+        ReplayErrorKind::Executor,
+        "create Claude historical tool log directory",
+    )?;
     for batch in &plan.batches {
         journal.append("batch_started", [("batch".into(), json!(batch.ordinal))])?;
         for call in &batch.tool_calls {
@@ -1542,7 +1560,13 @@ fn run_claude(
                     ("tool".into(), json!(call.name)),
                 ],
             )?;
-            let fresh = execute_claude_tool(call, &context.request.workspace)?;
+            let bash_log = historical_logs.join(format!("bash-{}.log", call.ordinal));
+            let fresh = execute_claude_tool_with_policy(
+                call,
+                &context.request.workspace,
+                context.request.allow_stale_observations,
+                Some(&bash_log),
+            )?;
             replacements.insert(call.call_id.clone(), fresh.clone());
             comparisons.push(json!({
                 "call_id": call.call_id,
@@ -1657,34 +1681,26 @@ fn run_claude(
     }
     command.args(["--permission-mode", "bypassPermissions", "--print"]);
     command.env("CLAUDE_CONFIG_DIR", &config_dir);
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().replay_context(
-        ReplayErrorKind::Continuation,
-        format!("start Claude Code {}", launch.entrypoint.display()),
-    )?;
-    let nonce_write = match child.stdin.take() {
-        Some(mut stdin) => stdin
-            .write_all(context.nonce.as_bytes())
-            .replay_context(ReplayErrorKind::Continuation, "write Claude resume nonce"),
-        None => Err(ReplayError::continuation("Claude stdin unavailable")),
-    };
-    if let Err(error) = nonce_write {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
-    let output = child
-        .wait_with_output()
-        .replay_context(ReplayErrorKind::Continuation, "wait for Claude Code")?;
     let log = context.output_dir.join("logs/claude-code.jsonl");
-    write_process_log(&log, &output)?;
-    let process_error = if !output.status.success()
-        && !expected_claude_max_turn_exit(&output.stdout, remaining_turns)
+    let output = run_process(ProcessSpec {
+        command,
+        stdin: Some(context.nonce.as_bytes().to_vec()),
+        timeout: Duration::from_secs(24 * 60 * 60),
+        termination_grace: Duration::from_secs(2),
+        pipe_grace: Duration::from_millis(250),
+        retained_bytes: MAX_TOOL_OUTPUT_BYTES / 2,
+        log_path: log.clone(),
+    })
+    .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
+    let process_error = if output.timed_out
+        || (!output.status.success()
+            && !expected_claude_max_turn_exit(&output.stdout_tail, remaining_turns))
     {
-        let rendered = render_output(&output);
+        let mut rendered = String::from_utf8_lossy(&output.stdout_tail).into_owned();
+        if !output.stderr_tail.is_empty() {
+            rendered.push('\n');
+            rendered.push_str(&String::from_utf8_lossy(&output.stderr_tail));
+        }
         Some(ReplayError::classify_continuation(
             format!(
                 "Claude continuation exited {}; see {}",
@@ -1740,26 +1756,61 @@ fn run_claude(
     })
 }
 
-fn execute_claude_tool(call: &ToolCall, workspace: &Path) -> Result<FreshObservation, ReplayError> {
+fn validate_claude_tool_policy(
+    call: &ToolCall,
+    allow_stale_observations: bool,
+) -> Result<(), ReplayError> {
+    let unsupported = || {
+        ReplayError::new(
+            ReplayErrorKind::UnsupportedVersion,
+            format!(
+                "unsupported Claude replay tool call {}({}) inside the selected prefix",
+                call.name, call.call_id
+            ),
+        )
+    };
+    if call.name == "Find"
+        || (!FRESH_CLAUDE_TOOLS.contains(&call.name.as_str())
+            && !STALE_CLAUDE_TOOLS.contains(&call.name.as_str()))
+        || (call.name == "Bash"
+            && call
+                .arguments
+                .get("run_in_background")
+                .and_then(Value::as_bool)
+                == Some(true))
+        || (call.name == "Agent"
+            && call.arguments.get("subagent_type").and_then(Value::as_str) != Some("Explore"))
+    {
+        return Err(unsupported());
+    }
+    let requires_stale = STALE_CLAUDE_TOOLS.contains(&call.name.as_str())
+        || (call.original_is_error && claude_arguments_are_invalid(call));
+    if requires_stale && !allow_stale_observations {
+        return Err(ReplayError::trajectory(format!(
+            "Claude tool call {}({}) can only reuse its source observation; pass --allow-stale-observations to opt into degraded replay",
+            call.name, call.call_id
+        )));
+    }
+    Ok(())
+}
+
+fn execute_claude_tool_with_policy(
+    call: &ToolCall,
+    workspace: &Path,
+    allow_stale_observations: bool,
+    bash_log: Option<&Path>,
+) -> Result<FreshObservation, ReplayError> {
+    validate_claude_tool_policy(call, allow_stale_observations)?;
     let started = Instant::now();
     if call.original_is_error && claude_arguments_are_invalid(call) {
-        return replay_original_observation(call, started, "input_validation_error");
+        return replay_original_observation(call, started);
     }
     let (content, is_error, return_code) = match call.name.as_str() {
         "Agent" => {
-            if call.arguments.get("subagent_type").and_then(Value::as_str) != Some("Explore") {
-                return Err(ReplayError::new(
-                    ReplayErrorKind::UnsupportedVersion,
-                    "Claude Agent replay supports only the read-only Explore subagent",
-                ));
-            }
-            return replay_original_observation(call, started, "read_only_explore_agent");
+            return replay_original_observation(call, started);
         }
         "TaskOutput" => {
-            // TaskOutput only retrieves the result of an already-launched subagent. It does not
-            // execute a command or mutate the workspace, so preserve the source observation just
-            // as we do for the read-only Explore Agent call that produced it.
-            return replay_original_observation(call, started, "read_only_task_output");
+            return replay_original_observation(call, started);
         }
         "Bash" => {
             let command = call
@@ -1773,7 +1824,22 @@ fn execute_claude_tool(call: &ToolCall, workspace: &Path) -> Result<FreshObserva
                 .and_then(Value::as_u64)
                 .map(|milliseconds| Duration::from_millis(milliseconds.clamp(1_000, 600_000)))
                 .unwrap_or(Duration::from_secs(120));
-            run_bash(command, workspace, timeout)?
+            let log = bash_log.ok_or_else(|| {
+                ReplayError::new(
+                    ReplayErrorKind::Internal,
+                    "Claude Bash replay requires a process log path",
+                )
+            })?;
+            let (content, is_error, return_code, truncated) =
+                run_bash(command, workspace, timeout, log)?;
+            return observation_with_truncation(
+                call,
+                content,
+                is_error,
+                return_code,
+                started,
+                truncated,
+            );
         }
         "Read" => {
             let path = tool_path(&call.arguments, workspace, true)?;
@@ -1911,16 +1977,9 @@ fn execute_claude_tool(call: &ToolCall, workspace: &Path) -> Result<FreshObserva
             })?;
             (matches.join("\n"), false, Some(0))
         }
-        "Find" => (
-            "Find is unavailable in the native Claude Code 2.1.220 replay profile; use Glob".into(),
-            true,
-            Some(1),
-        ),
-        "TaskCreate" | "TaskGet" | "TaskList" | "TaskUpdate" | "TodoWrite" => (
-            json!({"replayed": true, "tool": call.name, "input": call.arguments}).to_string(),
-            false,
-            Some(0),
-        ),
+        "TaskCreate" | "TaskGet" | "TaskList" | "TaskUpdate" | "TodoWrite" => {
+            return replay_original_observation(call, started);
+        }
         other => {
             return Err(ReplayError::new(
                 ReplayErrorKind::UnsupportedVersion,
@@ -1952,10 +2011,17 @@ fn claude_arguments_are_invalid(call: &ToolCall) -> bool {
 fn replay_original_observation(
     call: &ToolCall,
     started: Instant,
-    reason: &str,
 ) -> Result<FreshObservation, ReplayError> {
     let mut metadata = BTreeMap::new();
-    metadata.insert("opaque_source_observation".into(), json!(reason));
+    metadata.insert(
+        "opaque_source_observation".into(),
+        json!("stale_source_observation"),
+    );
+    metadata.insert(
+        "degradation_reason".into(),
+        json!("stale_source_observation"),
+    );
+    metadata.insert("source_call_id".into(), json!(call.call_id));
     Ok(FreshObservation {
         call_id: call.call_id.clone(),
         content: call.original_observation.clone(),
@@ -1974,9 +2040,20 @@ fn observation(
     return_code: Option<i32>,
     started: Instant,
 ) -> Result<FreshObservation, ReplayError> {
+    observation_with_truncation(call, content, is_error, return_code, started, false)
+}
+
+fn observation_with_truncation(
+    call: &ToolCall,
+    content: String,
+    is_error: bool,
+    return_code: Option<i32>,
+    started: Instant,
+    forced_truncated: bool,
+) -> Result<FreshObservation, ReplayError> {
     let bytes = content.into_bytes();
-    let truncated = bytes.len() > MAX_TOOL_OUTPUT_BYTES;
-    let content = if truncated {
+    let truncated = forced_truncated || bytes.len() > MAX_TOOL_OUTPUT_BYTES;
+    let content = if bytes.len() > MAX_TOOL_OUTPUT_BYTES {
         format!(
             "{}\n[output truncated by pvisor replay]",
             String::from_utf8_lossy(&bytes[..MAX_TOOL_OUTPUT_BYTES])
@@ -1999,69 +2076,34 @@ fn run_bash(
     command: &str,
     workspace: &Path,
     timeout: Duration,
-) -> Result<(String, bool, Option<i32>), ReplayError> {
+    log_path: &Path,
+) -> Result<(String, bool, Option<i32>, bool), ReplayError> {
     let mut process = Command::new("/bin/bash");
-    process
-        .args(["-c", command])
-        .current_dir(workspace)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    process.process_group(0);
+    process.args(["-c", command]).current_dir(workspace);
     sanitized_environment(&mut process, true);
-    let mut child = process.spawn().replay_context(
-        ReplayErrorKind::Executor,
-        "execute historical Claude Bash call",
-    )?;
-    let mut stdout = child.stdout.take().expect("stdout configured as piped");
-    let mut stderr = child.stderr.take().expect("stderr configured as piped");
-    let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let started = Instant::now();
-    let (status, timed_out) = loop {
-        if let Some(status) = child.try_wait().replay_context(
-            ReplayErrorKind::Executor,
-            "wait for historical Claude Bash call",
-        )? {
-            break (status, false);
-        }
-        if started.elapsed() >= timeout {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(-(child.id() as i32), libc::SIGKILL);
-            }
-            #[cfg(not(unix))]
-            let _ = child.kill();
-            let status = child.wait().replay_context(
-                ReplayErrorKind::Executor,
-                "reap timed-out historical Claude Bash call",
-            )?;
-            break (status, true);
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "Bash stdout reader panicked"))?
-        .replay_context(ReplayErrorKind::Executor, "read historical Bash stdout")?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| ReplayError::new(ReplayErrorKind::Internal, "Bash stderr reader panicked"))?
-        .replay_context(ReplayErrorKind::Executor, "read historical Bash stderr")?;
-    let mut content = String::from_utf8_lossy(&stdout).into_owned();
-    if !stderr.is_empty() {
+    let output = run_process(ProcessSpec {
+        command: process,
+        stdin: None,
+        timeout,
+        termination_grace: Duration::from_millis(250),
+        pipe_grace: Duration::from_millis(100),
+        retained_bytes: MAX_TOOL_OUTPUT_BYTES / 2,
+        log_path: log_path.to_path_buf(),
+    })?;
+    let mut content = String::from_utf8_lossy(&output.stdout_tail).into_owned();
+    if !output.stderr_tail.is_empty() {
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
         }
-        content.push_str(&String::from_utf8_lossy(&stderr));
+        content.push_str(&String::from_utf8_lossy(&output.stderr_tail));
     }
-    if timed_out {
+    if output.stdout_truncated || output.stderr_truncated {
+        content.push_str("\n[output truncated by pvisor replay; full output is in the process log]");
+    }
+    if output.background_cleanup && !output.timed_out {
+        content.push_str("\n[background descendants were terminated after the command exited]");
+    }
+    if output.timed_out {
         content = format!(
             "Command timed out after {} ms\n{}",
             timeout.as_millis(),
@@ -2072,8 +2114,13 @@ fn run_bash(
     }
     Ok((
         content,
-        timed_out || !status.success(),
-        if timed_out { Some(124) } else { status.code() },
+        output.timed_out || output.background_cleanup || !output.status.success(),
+        if output.timed_out {
+            Some(124)
+        } else {
+            output.status.code()
+        },
+        output.stdout_truncated || output.stderr_truncated,
     ))
 }
 
@@ -3507,12 +3554,13 @@ mod tests {
         call.original_observation = json!("<tool_use_error>file_path is missing</tool_use_error>");
         call.original_is_error = true;
 
-        let observation = execute_claude_tool(&call, workspace.path()).unwrap();
+        let observation =
+            execute_claude_tool_with_policy(&call, workspace.path(), true, None).unwrap();
         assert!(observation.is_error);
         assert_eq!(observation.content, call.original_observation);
         assert_eq!(
             observation.metadata.get("opaque_source_observation"),
-            Some(&json!("input_validation_error"))
+            Some(&json!("stale_source_observation"))
         );
     }
 
@@ -3532,12 +3580,13 @@ mod tests {
             "text": "Async agent launched successfully.",
         }]);
 
-        let observation = execute_claude_tool(&call, workspace.path()).unwrap();
+        let observation =
+            execute_claude_tool_with_policy(&call, workspace.path(), true, None).unwrap();
         assert!(!observation.is_error);
         assert_eq!(observation.content, call.original_observation);
         assert_eq!(
             observation.metadata.get("opaque_source_observation"),
-            Some(&json!("read_only_explore_agent"))
+            Some(&json!("stale_source_observation"))
         );
     }
 
@@ -3557,13 +3606,143 @@ mod tests {
             "text": "Explore agent result",
         }]);
 
-        let observation = execute_claude_tool(&call, workspace.path()).unwrap();
+        let observation =
+            execute_claude_tool_with_policy(&call, workspace.path(), true, None).unwrap();
         assert!(!observation.is_error);
         assert_eq!(observation.content, call.original_observation);
         assert_eq!(
             observation.metadata.get("opaque_source_observation"),
-            Some(&json!("read_only_task_output"))
+            Some(&json!("stale_source_observation"))
         );
+    }
+
+    #[test]
+    fn stale_observations_fail_closed_by_default() {
+        for call in [
+            claude_tool_call(
+                "Agent",
+                json!({
+                    "description": "Inspect code",
+                    "prompt": "Find files",
+                    "subagent_type": "Explore",
+                }),
+            ),
+            claude_tool_call("TaskOutput", json!({"task_id": "task-1"})),
+            claude_tool_call("TaskCreate", json!({"subject": "work"})),
+            claude_tool_call("TodoWrite", json!({"todos": []})),
+        ] {
+            let error = validate_claude_tool_policy(&call, false).unwrap_err();
+            assert!(error.to_string().contains("--allow-stale-observations"));
+        }
+
+        let find = claude_tool_call("Find", json!({"pattern": "*.rs"}));
+        assert!(validate_claude_tool_policy(&find, true).is_err());
+    }
+
+    #[test]
+    fn stale_observations_are_explicitly_degraded() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut call = claude_tool_call("TaskOutput", json!({"task_id": "task-1"}));
+        call.original_observation = json!("source observation");
+
+        validate_claude_tool_policy(&call, true).unwrap();
+        let observation = execute_claude_tool_with_policy(
+            &call,
+            workspace.path(),
+            true,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(observation.content, call.original_observation);
+        assert_eq!(
+            observation.metadata.get("degradation_reason"),
+            Some(&json!("stale_source_observation"))
+        );
+        assert_eq!(
+            observation.metadata.get("source_call_id"),
+            Some(&json!(call.call_id))
+        );
+    }
+
+    #[test]
+    fn prepare_only_executes_no_historical_tool() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let state = temporary.path().join("state");
+        let output = temporary.path().join("output");
+        let trajectory = temporary.path().join("trajectory.jsonl");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(output.join("native")).unwrap();
+        let marker = workspace.join("must-not-exist");
+        let events = [
+            json!({
+                "type": "assistant", "uuid": "assistant-1", "parentUuid": null,
+                "sessionId": "session", "version": "2.1.220",
+                "message": {"id": "message-1", "stop_reason": "tool_use", "content": [{
+                    "type": "tool_use", "id": "tool-1", "name": "Bash",
+                    "input": {"command": format!("touch {}", marker.display())}
+                }]}
+            }),
+            json!({
+                "type": "user", "uuid": "result-1", "parentUuid": "assistant-1",
+                "sourceToolAssistantUUID": "assistant-1", "sessionId": "session",
+                "version": "2.1.220", "message": {"content": [{
+                    "type": "tool_result", "tool_use_id": "tool-1", "content": "old"
+                }]}
+            }),
+            json!({
+                "type": "assistant", "uuid": "assistant-2", "parentUuid": "result-1",
+                "sessionId": "session", "version": "2.1.220",
+                "message": {"id": "message-2", "stop_reason": "end_turn", "content": [{
+                    "type": "text", "text": "next"
+                }]}
+            }),
+        ];
+        fs::write(
+            &trajectory,
+            events
+                .iter()
+                .map(|event| serde_json::to_string(event).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let request = PlaybackRequest {
+            agent: AgentKind::ClaudeCode,
+            trajectory,
+            after_step: 1,
+            workspace,
+            state_dir: state.clone(),
+            output_dir: output.clone(),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: Vec::new(),
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
+            run_id: Some("test".into()),
+            disable_thinking: false,
+        };
+        let plan = build_plan(&request).unwrap();
+        let mut journal = Journal::open(&state).unwrap();
+        let context = RunContext {
+            request: &request,
+            state_dir: &state,
+            output_dir: &output,
+            launch: None,
+            session_id: "session",
+            nonce: "nonce",
+        };
+
+        let outcome = run(&plan, &context, &mut journal).unwrap();
+
+        assert_eq!(outcome.status, "prepared");
+        assert!(outcome.observations.is_empty());
+        assert!(!marker.exists());
     }
 
     #[test]
@@ -3572,9 +3751,11 @@ mod tests {
         fs::create_dir(workspace.path().join("directory")).unwrap();
 
         for file_path in ["directory", "missing/nested/file.txt"] {
-            let observation = execute_claude_tool(
+            let observation = execute_claude_tool_with_policy(
                 &claude_tool_call("Read", json!({"file_path": file_path})),
                 workspace.path(),
+                false,
+                None,
             )
             .unwrap();
             assert!(observation.is_error);
@@ -3592,9 +3773,11 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("source.txt");
         fs::write(&source, "first\nneedle here\nlast\n").unwrap();
-        let observation = execute_claude_tool(
+        let observation = execute_claude_tool_with_policy(
             &claude_tool_call("Grep", json!({"search": "needle", "files": source})),
             workspace.path(),
+            false,
+            None,
         )
         .unwrap();
         assert!(!observation.is_error);
@@ -3608,9 +3791,11 @@ mod tests {
     fn claude_grep_rejects_an_empty_pattern() {
         let workspace = tempfile::tempdir().unwrap();
         fs::write(workspace.path().join("source.txt"), "content").unwrap();
-        let observation = execute_claude_tool(
+        let observation = execute_claude_tool_with_policy(
             &claude_tool_call("Grep", json!({"pattern": ""})),
             workspace.path(),
+            false,
+            None,
         )
         .unwrap();
         assert!(observation.is_error);
@@ -3976,13 +4161,46 @@ Loading global config from '/root/.config/mini-swe-agent/.env'";
     #[test]
     fn bash_timeout_kills_the_historical_process_group() {
         let workspace = tempfile::tempdir().unwrap();
+        let log = workspace.path().join("bash.log");
         let started = Instant::now();
-        let (content, is_error, return_code) =
-            run_bash("sleep 5", workspace.path(), Duration::from_millis(50)).unwrap();
+        let (content, is_error, return_code, truncated) = run_bash(
+            "sleep 5",
+            workspace.path(),
+            Duration::from_millis(50),
+            &log,
+        )
+        .unwrap();
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(is_error);
         assert_eq!(return_code, Some(124));
         assert!(content.contains("timed out"));
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn bash_reports_truncation_and_background_cleanup() {
+        let workspace = tempfile::tempdir().unwrap();
+        let large_log = workspace.path().join("large.log");
+        let (_, is_error, _, truncated) = run_bash(
+            "yes x | head -c 6291456",
+            workspace.path(),
+            Duration::from_secs(2),
+            &large_log,
+        )
+        .unwrap();
+        assert!(!is_error);
+        assert!(truncated);
+
+        let background_log = workspace.path().join("background.log");
+        let (content, is_error, _, _) = run_bash(
+            "sleep 30 &",
+            workspace.path(),
+            Duration::from_secs(2),
+            &background_log,
+        )
+        .unwrap();
+        assert!(is_error);
+        assert!(content.contains("background descendants were terminated"));
     }
 
     #[test]
