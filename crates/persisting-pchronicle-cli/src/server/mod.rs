@@ -8,6 +8,7 @@ pub(crate) mod problem;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
@@ -36,8 +37,12 @@ use problem::BoundaryCode;
 struct AppState {
     config: Arc<ChronicleServerConfig>,
     catalog: Arc<tokio::sync::RwLock<Option<Arc<CatalogRuntime>>>>,
+    catalog_refresh: Arc<tokio::sync::Mutex<()>>,
+    catalog_refresh_interval: Duration,
     trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, LoadedTrajectory)>>>,
 }
+
+const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ChronicleServerConfig {
@@ -71,6 +76,7 @@ struct CatalogRuntime {
     snapshot: Arc<DatasetCatalogSnapshot>,
     engine: Arc<ChronicleQueryEngine>,
     acceleration: ServerAcceleration,
+    built_at: Instant,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,9 +114,18 @@ pub fn warehouse_router(config: ChronicleServerConfig) -> Router {
 }
 
 fn app_state(config: ChronicleServerConfig) -> AppState {
+    app_state_with_catalog_refresh_interval(config, DEFAULT_CATALOG_REFRESH_INTERVAL)
+}
+
+fn app_state_with_catalog_refresh_interval(
+    config: ChronicleServerConfig,
+    catalog_refresh_interval: Duration,
+) -> AppState {
     AppState {
         config: Arc::new(config),
         catalog: Arc::new(tokio::sync::RwLock::new(None)),
+        catalog_refresh: Arc::new(tokio::sync::Mutex::new(())),
+        catalog_refresh_interval,
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
     }
 }
@@ -218,18 +233,49 @@ async fn build_catalog_runtime(
         snapshot,
         engine,
         acceleration: ServerAcceleration::default(),
+        built_at: Instant::now(),
     }))
 }
 
 async fn current_catalog(state: &AppState) -> Result<Arc<CatalogRuntime>, ApiError> {
     if let Some(runtime) = state.catalog.read().await.as_ref() {
-        return Ok(runtime.clone());
+        return Ok(Arc::clone(runtime));
+    }
+    let _refresh = state.catalog_refresh.lock().await;
+    if let Some(runtime) = state.catalog.read().await.as_ref() {
+        return Ok(Arc::clone(runtime));
     }
     let runtime = build_catalog_runtime(&state.config)
         .await
         .map_err(ApiError::internal)?;
-    let mut catalog = state.catalog.write().await;
-    Ok(catalog.get_or_insert_with(|| runtime.clone()).clone())
+    *state.catalog.write().await = Some(Arc::clone(&runtime));
+    Ok(runtime)
+}
+
+async fn current_catalog_for_runs(state: &AppState) -> Result<Arc<CatalogRuntime>, ApiError> {
+    let runtime = current_catalog(state).await?;
+    if runtime.built_at.elapsed() < state.catalog_refresh_interval {
+        return Ok(runtime);
+    }
+    let _refresh = state.catalog_refresh.lock().await;
+    let current = state.catalog.read().await.clone().unwrap_or(runtime);
+    if current.built_at.elapsed() < state.catalog_refresh_interval {
+        return Ok(current);
+    }
+    match build_catalog_runtime(&state.config).await {
+        Ok(runtime) => {
+            *state.catalog.write().await = Some(Arc::clone(&runtime));
+            *state.trajectory_cache.write().await = None;
+            Ok(runtime)
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "persisting_pchronicle",
+                "automatic Catalog refresh failed; retaining the last valid snapshot: {error:#}"
+            );
+            Ok(current)
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +307,7 @@ async fn catalog(State(state): State<AppState>) -> Result<Json<CatalogResponse>,
 async fn refresh_catalog(State(state): State<AppState>) -> Result<Json<CatalogResponse>, ApiError> {
     // Build fully outside the write lock. Failed strict refreshes leave the
     // previously published snapshot untouched.
+    let _refresh = state.catalog_refresh.lock().await;
     let runtime = build_catalog_runtime(&state.config)
         .await
         .map_err(ApiError::internal)?;
@@ -274,7 +321,7 @@ async fn runs(State(state): State<AppState>) -> Result<Json<Vec<RunSummary>>, Ap
 }
 
 async fn load_run_summaries(state: &AppState) -> Result<Vec<RunSummary>, ApiError> {
-    let runtime = current_catalog(state).await?;
+    let runtime = current_catalog_for_runs(state).await?;
     runtime
         .acceleration
         .run_summaries(&runtime.snapshot, &runtime.engine)

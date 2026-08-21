@@ -109,6 +109,13 @@ fn test_router_with_config(config: ChronicleServerConfig) -> Router {
     warehouse_router(config)
 }
 
+fn test_router_with_catalog_refresh_interval(
+    config: ChronicleServerConfig,
+    interval: std::time::Duration,
+) -> Router {
+    read_routes().with_state(app_state_with_catalog_refresh_interval(config, interval))
+}
+
 fn json_dataset_root() -> std::path::PathBuf {
     static NEXT_DATASET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let unique = std::time::SystemTime::now()
@@ -442,6 +449,54 @@ async fn json_datasets_expose_tables_and_support_read_only_sql() {
     let result: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(result["rows"][0]["session_id"], "json-session");
     assert_eq!(result["rows"][0]["step_count"], 2);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn explorer_automatically_refreshes_new_dataset_sources() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let config = ChronicleServerConfig::mounted(vec![DatasetMount::default(
+        root.to_string_lossy().to_string(),
+    )
+    .unwrap()])
+    .unwrap();
+    let app = test_router_with_catalog_refresh_interval(config, std::time::Duration::ZERO);
+
+    let initial = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/runs?limit=10")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let initial: Value =
+        serde_json::from_slice(&initial.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(initial["snapshot"]["total"], 1);
+
+    write_gateway_fixture(&root, "second.json", "second-session", "second-job");
+    let refreshed = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/explorer/runs?limit=10")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let refreshed: Value =
+        serde_json::from_slice(&refreshed.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(refreshed["snapshot"]["total"], 2);
+    assert!(refreshed["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|run| run["session_id"] == "second-session"));
     std::fs::remove_dir_all(root).unwrap();
 }
 
