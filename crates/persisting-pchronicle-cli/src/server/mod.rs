@@ -130,6 +130,54 @@ fn app_state_with_catalog_refresh_interval(
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct PreparedWarehouse {
+    state: AppState,
+}
+
+impl PreparedWarehouse {
+    pub(crate) async fn prepare(config: ChronicleServerConfig) -> anyhow::Result<Self> {
+        let warehouse = Self {
+            state: app_state(config),
+        };
+        let runtime = build_catalog_runtime(&warehouse.state.config).await?;
+        warehouse.install_catalog_runtime(runtime).await;
+        Ok(warehouse)
+    }
+
+    async fn install_catalog_runtime(&self, runtime: Arc<CatalogRuntime>) -> String {
+        let snapshot_id = runtime.snapshot.snapshot_id().to_string();
+        *self.state.catalog.write().await = Some(runtime);
+        *self.state.trajectory_cache.write().await = None;
+        snapshot_id
+    }
+
+    async fn refresh_runtime(&self) -> anyhow::Result<Arc<CatalogRuntime>> {
+        let runtime = build_catalog_runtime(&self.state.config).await?;
+        self.install_catalog_runtime(runtime.clone()).await;
+        Ok(runtime)
+    }
+
+    pub(crate) async fn refresh_catalog(&self) -> anyhow::Result<String> {
+        let runtime = self.refresh_runtime().await?;
+        Ok(runtime.snapshot.snapshot_id().to_string())
+    }
+
+    pub(crate) fn router(&self) -> Router {
+        read_routes().with_state(self.state.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn current_snapshot_id(&self) -> Option<String> {
+        self.state
+            .catalog
+            .read()
+            .await
+            .as_ref()
+            .map(|runtime| runtime.snapshot.snapshot_id().to_string())
+    }
+}
+
 fn read_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(index))
@@ -188,6 +236,24 @@ pub async fn serve_warehouse_with_listener_and_shutdown(
         "pChronicle Warehouse may only bind to a loopback address"
     );
     axum::serve(listener, warehouse_router(config))
+        .with_graceful_shutdown(shutdown)
+        .await
+        .context("serve pChronicle Warehouse")
+}
+
+pub(crate) async fn serve_prepared_warehouse_with_listener_and_shutdown(
+    warehouse: PreparedWarehouse,
+    listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let addr = listener
+        .local_addr()
+        .context("read Warehouse listen address")?;
+    anyhow::ensure!(
+        addr.ip().is_loopback(),
+        "pChronicle Warehouse may only bind to a loopback address"
+    );
+    axum::serve(listener, warehouse.router())
         .with_graceful_shutdown(shutdown)
         .await
         .context("serve pChronicle Warehouse")
@@ -305,14 +371,13 @@ async fn catalog(State(state): State<AppState>) -> Result<Json<CatalogResponse>,
 }
 
 async fn refresh_catalog(State(state): State<AppState>) -> Result<Json<CatalogResponse>, ApiError> {
-    // Build fully outside the write lock. Failed strict refreshes leave the
-    // previously published snapshot untouched.
-    let _refresh = state.catalog_refresh.lock().await;
-    let runtime = build_catalog_runtime(&state.config)
+    let warehouse = PreparedWarehouse {
+        state: state.clone(),
+    };
+    let runtime = warehouse
+        .refresh_runtime()
         .await
         .map_err(ApiError::internal)?;
-    *state.catalog.write().await = Some(runtime.clone());
-    *state.trajectory_cache.write().await = None;
     Ok(Json(catalog_response(&state, &runtime)))
 }
 

@@ -188,6 +188,40 @@ impl RawEventDataSource {
         Self::from_pinned_snapshot_with_options(snapshot, options).await
     }
 
+    /// Probe a URI using only the canonical visibility manifest.
+    ///
+    /// A path whose name merely ends in `events.lance` is not canonical. The
+    /// probe succeeds only when a valid, non-empty manifest is present, and it
+    /// does not open any Lance segment.
+    pub async fn probe_uri(uri: impl AsRef<str>) -> Result<Option<EventFactSnapshot>> {
+        let uri = if uri.as_ref().contains("://") {
+            uri.as_ref().trim_end_matches('/').to_string()
+        } else {
+            match std::fs::canonicalize(uri.as_ref()) {
+                Ok(path) => path.to_string_lossy().into_owned(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("canonicalize canonical event source {}", uri.as_ref())
+                    })
+                }
+            }
+        };
+        let Some(manifest) = super::pin_visible_snapshot(&uri).await? else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            !manifest.segments.is_empty(),
+            "canonical event manifest has no visible segments at {uri}"
+        );
+        Ok(Some(EventFactSnapshot {
+            source_uri: uri,
+            fact_version: manifest.fact_version,
+            fact_rows: manifest.fact_rows,
+            layout_revision: manifest.revision,
+        }))
+    }
+
     pub(crate) async fn pin_uri(uri: impl AsRef<str>) -> Result<RawEventSnapshot> {
         let uri = if uri.as_ref().contains("://") {
             uri.as_ref().to_string()

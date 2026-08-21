@@ -106,6 +106,62 @@ async fn append_creates_lance_dataset() {
 }
 
 #[tokio::test]
+async fn canonical_probe_requires_a_valid_nonempty_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        RawEventDataSource::probe_uri(
+            dir.path()
+                .join("absent/events.lance")
+                .to_string_lossy()
+                .as_ref()
+        )
+        .await
+        .unwrap(),
+        None
+    );
+    let suffix_only = dir.path().join("suffix-only").join("events.lance");
+    std::fs::create_dir_all(&suffix_only).unwrap();
+
+    assert_eq!(
+        RawEventDataSource::probe_uri(suffix_only.to_string_lossy().as_ref())
+            .await
+            .unwrap(),
+        None
+    );
+
+    let storage = dir.path().join("store");
+    std::fs::create_dir_all(&storage).unwrap();
+    let session = flat_session(storage.to_str().unwrap(), "agent", "sess");
+    append_events(&session, &[note("one")]).await.unwrap();
+    let uri = raw_event_lance_path(&session)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let snapshot = RawEventDataSource::probe_uri(&uri)
+        .await
+        .unwrap()
+        .expect("valid canonical store");
+    assert_eq!(
+        snapshot.source_uri,
+        std::fs::canonicalize(&uri).unwrap().to_string_lossy()
+    );
+    assert_eq!(snapshot.fact_version, 1);
+    assert_eq!(snapshot.fact_rows, 1);
+    assert!(snapshot.layout_revision >= snapshot.fact_version);
+
+    std::fs::write(
+        dir.path().join("suffix-only/events.lance/_manifest.json"),
+        b"{broken",
+    )
+    .unwrap();
+    let error = RawEventDataSource::probe_uri(suffix_only.to_string_lossy().as_ref())
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("decode event manifest"));
+}
+
+#[tokio::test]
 async fn canonical_timestamp_is_utc_milliseconds_and_preserves_original_text() {
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().join("store");

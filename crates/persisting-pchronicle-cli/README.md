@@ -108,6 +108,17 @@ requires globally unique `document_id` and `session_id` values; collision
 errors name both input paths, but successful Stores do not retain those paths
 as query provenance. Use preserve output when Source boundaries matter.
 
+A validated non-empty canonical `events.lance` input is detected before JSON
+scanning and always creates Storyline Lance. The operation accepts local or
+object-store URIs, never mutates the source, and refuses an existing target.
+Its response reports `fact_rows` and omits `input_bytes`; explicit
+`--output-format preserve` is invalid for canonical events.
+
+`serve --storage URI` converges deterministic sibling Storyline projections
+before readiness and maintains them as canonical events are appended. Runtime
+failures are retried without blocking durable writes. `status URI --format
+json` reports each projection's state and watermark.
+
 An explicit Dataset URI still takes precedence. This basic Warehouse is just a
 recursive local Dataset root: it has no server, authentication, background
 process, or hidden database. Use global `--settings FILE` or the

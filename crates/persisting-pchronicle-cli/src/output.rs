@@ -241,6 +241,34 @@ pub(super) fn write_status_table(stdout: &mut dyn Write, response: &StatusRespon
         "events        {}          {accuracy}",
         response.counts.events
     )?;
+    if !response.projections.is_empty() {
+        writeln!(stdout)?;
+        writeln!(
+            stdout,
+            "PROJECTION                         STATUS   FACT_VERSION FACT_ROWS GENERATION"
+        )?;
+        for projection in &response.projections {
+            let path = format!(
+                "{} -> {}",
+                projection.source_path, projection.projection_path
+            );
+            writeln!(
+                stdout,
+                "{:<34} {:<8} {:<12} {:<9} {}",
+                truncate(&path, 34),
+                projection.status.as_str(),
+                projection
+                    .fact_version
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                projection
+                    .fact_rows
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                projection.generation.as_deref().unwrap_or_default(),
+            )?;
+        }
+    }
     for error in &response.source_errors {
         writeln!(
             stdout,

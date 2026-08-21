@@ -15,14 +15,14 @@ product and storage boundary, see the [pChronicle product architecture](../desig
 | `onboard` | Render a guided walkthrough over a temporary example or an explicit Dataset |
 | `default` | Get or set one local directory as the default Warehouse |
 | `ls` / `list` | Discover logical trajectory Sources |
-| `status` | Report Dataset health and aggregate counts |
+| `status` | Report Dataset health, aggregate counts, and automatic projection state |
 | `query` | Execute one bounded, read-only SQL statement |
 | `analysis` | Run a built-in `overview`, `agents`, `models`, or `tools` report |
 | `find` | Locate Run, Session, or Step candidates by Source-local ID |
-| `import` | Create a new local Dataset from ATIF, ACTF, or OpenAI Messages |
+| `import` | Create a new Dataset from exchange JSON or a canonical Event Store |
 | `export` | Export complete trajectories as ATIF, ACTF, OpenAI Messages, or Storyline JSON |
 | `echo` | Run a deterministic loopback-only LLM upstream for Gateway tests |
-| `serve` | Serve statically configured Datasets through a loopback-only read API and Web UI |
+| `serve` | Compose loopback Warehouse, Control, Gateway, and automatic projection services |
 
 The executable's `--help` is authoritative for individual flags and defaults.
 
@@ -94,6 +94,11 @@ physical metadata. `status` aggregates the immutable Catalog Snapshot selected
 for that invocation. Both commands bound discovery with `--max-files` and
 `--max-entries`; `--errors report` keeps diagnosable Sources in the result,
 while `strict` fails the command.
+
+For every canonical `events.lance`, `status --format json` also reports the
+deterministic sibling projection path, `fresh`, `stale`, `missing`, or `error`
+state, source `fact_version`/`fact_rows`, and projection generation when one is
+published. Inspection is read-only and never creates or repairs a projection.
 
 ## Read-only SQL
 
@@ -206,6 +211,20 @@ Lines uses the canonical `trajectories.atif.jsonl` or
 `trajectories.atif.ndjson` source name so later queries retain the
 line-delimited container semantics.
 
+That response shape has one contextual exception. A validated, non-empty
+canonical Event Store is detected before JSON scanning and always creates a
+Storyline Lance projection:
+
+```bash
+pchronicle import --from ./run/events.lance --output ./run/storyline
+```
+
+Canonical import accepts local and object-store URIs, does not mutate the
+source, and is create-only. It reports `source_path: "events.lance"`, `format:
+"events"`, `output_format: "storyline-lance"`, and `fact_rows`, while omitting
+`input_bytes`. It rejects a JSON exchange `--format` and explicit
+`--output-format preserve`.
+
 If `--output` is omitted, pChronicle derives a child name under the configured
 default Warehouse. Stdin requires `--stream`, an explicit input format, and a
 finite input ending at EOF. `--max-input-bytes` is optional and applies to each
@@ -266,6 +285,15 @@ loopback listener. `--open` requires `--listen`.
 Warehouse rejects non-loopback listeners because it has no authentication. Its
 Dataset mounts and API are read-only; import, export, maintenance, and arbitrary
 filesystem access are not exposed over HTTP.
+
+With `--storage`, `serve` discovers validated non-empty canonical Event Stores
+and converges their deterministic sibling `storyline` projections before it
+publishes readiness. It continues discovery at runtime, using bounded
+concurrency and retry for incremental sync or rebuild. Projection failures do
+not block canonical durable writes, and a destination without matching lineage
+is never overwritten. If `--listen` is enabled, each successful publication
+triggers a complete Catalog rebuild outside the reader lock and an atomic
+snapshot swap; a failed refresh retains the old queryable snapshot for retry.
 
 `serve` can also compose the existing Gateway on separate loopback listeners:
 

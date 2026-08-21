@@ -751,7 +751,7 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
             from: demo.atif_source().to_string_lossy().into_owned(),
             output: None,
             format: ExchangeFormat::Atif,
-            output_format: ImportOutputFormat::Preserve,
+            output_format: Some(ImportOutputFormat::Preserve),
             stream: false,
             max_input_bytes: None,
         },

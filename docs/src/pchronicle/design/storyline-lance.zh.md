@@ -19,8 +19,8 @@ projection lineage 的 `CURRENT`。
 
 ```text
 events.lance (事实源)
-  ├─ project build/rebuild ─► runs + steps + tool_calls + objects
-  ├─ project sync ──────────► 只替换 append suffix 影响的 session
+  ├─ serve 启动期/运行期 ─► runs + steps + tool_calls + objects
+  ├─ append-compatible sync ─► 只替换 append suffix 影响的 session
   └─ Catalog fallback ──────► 投影缺失或 stale 时按固定快照即时转换
 ```
 
@@ -37,22 +37,14 @@ completeness。`fact_version` / `fact_rows` 是新鲜度水位；单纯 compacti
 常用运维命令：
 
 ```bash
-# 输出必须为空；从一个固定事实快照做首次完整构建
-pchronicle project build --from ./run/events.lance --output ./run/storyline
-
-# status 只读 CURRENT；verify 对照当前 canonical fact watermark
-pchronicle project status --from ./run/storyline
-pchronicle project verify --from ./run/storyline --source ./run/events.lance
-
-# append-compatible 时只重算受影响 session；无新增事实时为 noop
-pchronicle project sync --from ./run/storyline --source ./run/events.lance
-
-# 独立于 Gateway 热路径持续 sync，并周期性 verify；每轮输出一条 JSONL 状态
-pchronicle project watch --from ./run/storyline --source ./run/events.lance
-
-# projector/recipe 变化或水位不单调时，写入全新 table generation 再切 CURRENT
-pchronicle project rebuild --from ./run/events.lance --output ./run/storyline
+pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+pchronicle status ./trajectory-data --format json
 ```
+
+`serve` 在输出 readiness 前发现所有已验证且非空的 canonical Store，并把投影收敛到确定的
+同级 `storyline`。运行期间会继续发现新 Store，按条件执行增量 sync 或完整 rebuild；失败采用
+有界并发和重试，且不阻塞 canonical durable write。没有匹配 lineage 的目标属于外来数据，
+绝不覆盖。`status` 报告 `fresh`、`stale`、`missing` 或 `error`，以及事实水位和 generation。
 
 Catalog 会把 lineage 指向同一 canonical URI 的 sidecar 与 events Source 合并为一个逻辑
 Source。`sources.projection_status` 为 `fresh` 时，规范化查询使用三表；为 `stale` 时隐藏
@@ -60,9 +52,8 @@ sidecar 并回退到固定 events snapshot 的确定性投影。`projection_gene
 generation，便于监控与诊断。Catalog 不会把无血缘的 Storyline 文档库自动认作 canonical
 events 的 projection。
 
-`project watch` 是推荐的默认运维入口，可由 systemd、Kubernetes 或其他 supervisor
-托管。失败时它采用有上限的指数退避，进程信号可正常终止；`--exit-on-error` 适合由外部
-调度器负责重试的环境。它不进入 Gateway 捕获热路径，因此投影故障不会阻塞 canonical
+投影 supervisor 已内置于 `serve`，使用有界并发和重试，并随进程一起关闭。它不进入
+Gateway 捕获写入热路径，因此 projection 或 Catalog refresh 故障不会阻塞 canonical
 events 写入。
 
 本文只负责三表物理 schema、内容层、Snapshot 发布、查询接入和维护语义。事实源与
