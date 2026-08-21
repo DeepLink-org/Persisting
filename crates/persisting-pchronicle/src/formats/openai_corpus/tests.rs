@@ -684,6 +684,78 @@ fn canonical_export_restores_message_unknowns_and_tool_results_once() {
 }
 
 #[test]
+fn historical_tool_results_attach_to_the_originating_turn() {
+    let input = json!({"session_steps": [
+        {
+            "id": "completion-1",
+            "session_id": "s",
+            "step_id": 1,
+            "messages": [{"role": "user", "content": "run"}],
+            "response": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "inspect", "arguments": "{}"}
+                }]
+            }
+        },
+        {
+            "id": "completion-2",
+            "session_id": "s",
+            "step_id": 2,
+            "messages": [
+                {"role": "user", "content": "run"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "inspect", "arguments": "{}"}
+                    }]
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": "ok"}
+            ],
+            "response": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-2",
+                    "type": "function",
+                    "function": {"name": "finish", "arguments": "{}"}
+                }]
+            }
+        }
+    ]});
+
+    let stories = parse_openai_msg_corpus_value(&input, "history.json").unwrap();
+    assert_eq!(
+        stories[0].turns[1].observation.as_ref().unwrap()["results"][0],
+        json!({"source_call_id": "call-1", "content": "ok"})
+    );
+    assert!(stories[0].turns[3].observation.is_none());
+    let tables = crate::store::split_storyline(&stories[0]).unwrap();
+    assert_eq!(tables.tool_calls.len(), 2);
+
+    let recovered = recover_openai_msg_files(&stories).unwrap();
+    let messages = recovered[0].document["session_steps"][1]["messages"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .count(),
+        1
+    );
+    assert!(messages
+        .iter()
+        .any(|message| { message["role"] == "tool" && message["tool_call_id"] == "call-1" }));
+}
+
+#[test]
 fn canonical_export_preserves_message_and_argument_semantics() {
     let input = json!({"session_steps": [{
         "id": "event-1",
