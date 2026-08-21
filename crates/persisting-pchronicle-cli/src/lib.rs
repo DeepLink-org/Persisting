@@ -36,9 +36,9 @@ use persisting_pchronicle::storage::{
     build_storyline_projection, rebuild_storyline_projection, storyline_projection_status,
     sync_storyline_projection, verify_storyline_projection, CatalogErrorPolicy,
     CatalogSnapshotOptions, CatalogSourceKind, CatalogSourceStatus, CatalogStorylineKey,
-    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, StorylineLanceStore,
-    StorylineProjectionBuildOutcome, StorylineProjectionSyncOutcome, StorylineProjectionSyncReport,
-    StorylineProjectionVerification, DEFAULT_DATASET_NAME,
+    DatasetCatalogSnapshot, DatasetMount, DiscoveredSource, ObjectStoreManifestWriteMode,
+    StorylineLanceStore, StorylineProjectionBuildOutcome, StorylineProjectionSyncOutcome,
+    StorylineProjectionSyncReport, StorylineProjectionVerification, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -659,6 +659,16 @@ struct ServeArgs {
     #[arg(long, value_name = "DIRECTORY", requires = "gateway")]
     gateway_state: Option<PathBuf>,
 
+    /// Object-store manifest publication contract used by Gateway capture.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t,
+        requires = "gateway",
+        value_name = "MODE"
+    )]
+    gateway_object_store_manifest_mode: GatewayObjectStoreManifestMode,
+
     /// Also maintain Gateway's live AgenticMD projection.
     #[arg(long, requires = "gateway")]
     gateway_stream_markdown: bool,
@@ -684,6 +694,23 @@ enum EchoEncoding {
     #[default]
     Plain,
     Base64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum GatewayObjectStoreManifestMode {
+    #[default]
+    Conditional,
+    /// One Gateway process owns the Dataset; conditional object replacement is unavailable.
+    SingleWriter,
+}
+
+impl From<GatewayObjectStoreManifestMode> for ObjectStoreManifestWriteMode {
+    fn from(mode: GatewayObjectStoreManifestMode) -> Self {
+        match mode {
+            GatewayObjectStoreManifestMode::Conditional => Self::Conditional,
+            GatewayObjectStoreManifestMode::SingleWriter => Self::SingleWriter,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1230,15 +1257,22 @@ async fn prepare_gateway(
         persisting_gateway::runtime::debug::enable_debug_stderr();
     }
     let dataset = select_gateway_dataset(warehouse, args.gateway_dataset.as_deref())?;
+    let local_dataset = local_dataset_path(&dataset.uri)?;
     let state_dir = match args.gateway_state.clone() {
         Some(path) => path,
-        None => local_dataset_path(&dataset.uri)?.with_context(|| {
+        None => local_dataset.clone().with_context(|| {
             format!(
                 "Gateway capture Dataset '{}' uses object storage; provide --gateway-state DIRECTORY",
                 dataset.name
             )
         })?,
     };
+    if args.gateway_object_store_manifest_mode == GatewayObjectStoreManifestMode::SingleWriter {
+        anyhow::ensure!(
+            local_dataset.is_none(),
+            "--gateway-object-store-manifest-mode single-writer requires an object-store Dataset"
+        );
+    }
     let listen = parse_gateway_listener(&config.listen, "Gateway")?;
     let admin_listen = parse_gateway_listener(&config.admin_listen, "Gateway admin")?;
     let listener = tokio::net::TcpListener::bind(listen)
@@ -1255,7 +1289,11 @@ async fn prepare_gateway(
         .local_addr()
         .context("read pChronicle Gateway admin listen address")?
         .to_string();
-    let (sink, writer) = gateway_capture::gateway_capture_sink(&dataset.uri, &config.agent_id)?;
+    let (sink, writer) = gateway_capture::gateway_capture_sink_with_manifest_write_mode(
+        &dataset.uri,
+        &config.agent_id,
+        args.gateway_object_store_manifest_mode.into(),
+    )?;
     Ok(Some(PreparedGateway {
         config,
         state_dir,
