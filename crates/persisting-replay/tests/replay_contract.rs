@@ -319,6 +319,18 @@ fn openhands_zero_exit_fatal_status_is_a_failed_result_with_trajectory() {
         .failure
         .as_ref()
         .is_some_and(|failure| { failure.message.contains("Error while running the agent") }));
+    assert_eq!(
+        report.result.output_dir,
+        temporary.path().join("output/contract")
+    );
+    assert_eq!(
+        report.result.state_dir,
+        temporary.path().join("state/contract")
+    );
+    assert!(report.result.output_dir.join("result.json").is_file());
+    let journal = fs::read_to_string(report.result.output_dir.join("replay-events.jsonl")).unwrap();
+    let terminal: Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+    assert_eq!(terminal["event"], "run_failed");
     assert!(report.result.artifacts.iter().any(|artifact| {
         artifact.role == "continued_native_trajectory" && artifact.path.is_file()
     }));
