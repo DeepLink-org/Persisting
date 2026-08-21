@@ -124,11 +124,13 @@ async fn control_call(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serve_control_only_advertises_no_warehouse_and_accepts_ping() -> Result<()> {
-    let root = tempfile::tempdir()?;
+    let parent = tempfile::tempdir()?;
+    let root = parent.path().join("new-storage");
+    assert!(!root.exists());
     let mut child = Command::new(env!("CARGO_BIN_EXE_pchronicle"))
         .arg("serve")
         .arg("--storage")
-        .arg(root.path())
+        .arg(&root)
         .arg("--control")
         .arg("127.0.0.1:0")
         .stdin(Stdio::null())
@@ -144,6 +146,7 @@ async fn serve_control_only_advertises_no_warehouse_and_accepts_ping() -> Result
     assert!(ready.warehouse_endpoint.is_none());
     assert!(ready.gateway_endpoint.is_none());
     assert!(ready.gateway_admin_endpoint.is_none());
+    assert!(root.is_dir());
     let control = ready.control.unwrap();
 
     let mut stream = TcpStream::connect(&control.endpoint).await?;

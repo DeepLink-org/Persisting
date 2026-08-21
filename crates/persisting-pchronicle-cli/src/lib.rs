@@ -1175,6 +1175,7 @@ fn write_projection_diagnostic<W: Write + ?Sized>(
 
 async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<()> {
     let config = resolve_serve_config(&args)?;
+    prepare_local_control_storage(&args).await?;
     let (diagnostic_tx, diagnostic_rx) = tokio::sync::mpsc::channel(256);
     let mut projections =
         projection_supervisor::ProjectionSupervisor::new(config.clone(), None, diagnostic_tx);
@@ -1280,6 +1281,22 @@ async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Wri
         wait_for_termination(),
     )
     .await
+}
+
+async fn prepare_local_control_storage(args: &ServeArgs) -> Result<()> {
+    if args.control.is_none() {
+        return Ok(());
+    }
+    let storage = args
+        .storage
+        .as_deref()
+        .context("pChronicle Control requires --storage")?;
+    let Some(path) = local_dataset_path(storage)? else {
+        return Ok(());
+    };
+    tokio::fs::create_dir_all(&path)
+        .await
+        .with_context(|| format!("create pChronicle Control storage root {}", path.display()))
 }
 
 fn resolve_serve_config(args: &ServeArgs) -> Result<server::ChronicleServerConfig> {
