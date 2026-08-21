@@ -493,6 +493,53 @@ async fn catalog_refresh_is_atomic_and_dataset_filtering_is_explicit() -> anyhow
 }
 
 #[tokio::test]
+async fn prepared_catalog_installs_refreshes_and_retains_the_last_good_runtime(
+) -> anyhow::Result<()> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let root = json_dataset_root();
+    let config =
+        ChronicleServerConfig::mounted(vec![DatasetMount::default(root.to_string_lossy())?])?;
+    let prepared = PreparedWarehouse::prepare(config).await?;
+    let first = prepared
+        .current_snapshot_id()
+        .await
+        .expect("prepare installs a Catalog before requests");
+
+    std::fs::copy(root.join("gateway.json"), root.join("second.json"))?;
+    let second = prepared.refresh_catalog().await?;
+    assert_ne!(second, first);
+    assert_eq!(
+        prepared.current_snapshot_id().await.as_deref(),
+        Some(second.as_str())
+    );
+
+    std::fs::create_dir(root.join("broken"))?;
+    std::fs::write(root.join("broken/CURRENT"), "{")?;
+    assert!(prepared.refresh_catalog().await.is_err());
+    assert_eq!(
+        prepared.current_snapshot_id().await.as_deref(),
+        Some(second.as_str())
+    );
+
+    let response = prepared
+        .router()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/catalog")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let catalog: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    assert_eq!(catalog["snapshot_id"], second);
+
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn explorer_routes_page_runs_and_lazy_load_turn_evidence() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;

@@ -985,8 +985,9 @@ async fn serve_warehouse_and_gateway(
     gateway: PreparedGateway,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> Result<()> {
+    let warehouse = server::PreparedWarehouse::prepare(warehouse_config).await?;
     serve_components(
-        Some((warehouse_config, warehouse_listener)),
+        Some((warehouse, warehouse_listener)),
         None,
         Some(gateway),
         shutdown,
@@ -1026,7 +1027,7 @@ async fn serve_gateway_component(
 }
 
 async fn serve_components(
-    warehouse: Option<(server::ChronicleServerConfig, tokio::net::TcpListener)>,
+    warehouse: Option<(server::PreparedWarehouse, tokio::net::TcpListener)>,
     control: Option<control::PreparedControl>,
     gateway: Option<PreparedGateway>,
     shutdown: impl std::future::Future<Output = ()> + Send,
@@ -1036,13 +1037,13 @@ async fn serve_components(
 
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let mut services = FuturesUnordered::<ServiceFuture>::new();
-    if let Some((config, listener)) = warehouse {
+    if let Some((warehouse, listener)) = warehouse {
         let stop = stop_rx.clone();
         services.push(Box::pin(async move {
             (
                 "Warehouse",
-                server::serve_warehouse_with_listener_and_shutdown(
-                    config,
+                server::serve_prepared_warehouse_with_listener_and_shutdown(
+                    warehouse,
                     listener,
                     wait_for_stop(stop),
                 )
@@ -1105,7 +1106,8 @@ async fn run_serve(args: ServeArgs, stdout: &mut dyn Write, stderr: &mut dyn Wri
             let listener = tokio::net::TcpListener::bind(listen)
                 .await
                 .with_context(|| format!("bind pChronicle Warehouse to {listen}"))?;
-            Some((config.clone(), listener))
+            let warehouse = server::PreparedWarehouse::prepare(config.clone()).await?;
+            Some((warehouse, listener))
         }
         None => None,
     };
