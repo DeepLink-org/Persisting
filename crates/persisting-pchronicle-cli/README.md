@@ -3,24 +3,24 @@
 Standalone command-line interface for onboarding, browsing, querying, importing,
 exporting, and serving pChronicle trajectory Datasets.
 
-The current implementation provides `control`, `onboard`, `default`, `ls`/`list`, `status`,
+The current implementation provides `onboard`, `default`, `ls`/`list`, `status`,
 bounded read-only `query`, built-in `analysis`, Source-local `find`, create-only
 `import`, complete-trajectory `export`, and loopback-only `serve`. Import and
 export support ATIF, OpenAI Messages, ACTF, and Storyline JSON.
 
 ## Orchestrator control plane
 
-`pchronicle control --storage URI` starts the write-capable storage control
-plane used by pPilot. It owns Run lease acquisition and renewal, fencing,
-terminal commits, Attempt registry access, and trajectory append. The process
-binds an ephemeral loopback port, publishes its endpoint and one-time token to
-its parent through stdout, and serves versioned authenticated requests until
-the parent exits.
+`pchronicle serve --storage URI --control 127.0.0.1:0` starts the write-capable
+storage control plane used by pPilot and pVisor. It owns Run lease acquisition
+and renewal, fencing, terminal commits, Attempt registry access, and trajectory
+append. The process publishes one structured readiness record through stdout,
+including the bound loopback endpoint and one-time token, then serves versioned
+authenticated requests until its parent exits.
 
-This command is normally launched automatically by pPilot. Use
+This form of `serve` is normally launched automatically. Use
 `--pchronicle-binary PATH` or `PERSISTING_PCHRONICLE_BIN` on pPilot to select
-the executable. It is deliberately separate from `pchronicle serve`: the
-Warehouse and Web UI remain read-only.
+the executable. It does not start the read-only Warehouse unless `--listen` is
+also supplied.
 
 ## Guided onboarding
 
@@ -98,6 +98,16 @@ subdirectory under the default Warehouse from the input file name:
 pchronicle import --from ./training.json
 ```
 
+Directory inputs recursively import `.json`, `.jsonl`, and `.ndjson` Sources
+while retaining relative paths in the default byte-preserving output.
+`--output-format storyline` instead squashes every decoded Source into one
+normalized Storyline Lance Store at the Dataset root. The result has one
+physical Source named `.`, so `_file_` is `.` for all normalized rows while the
+response `sources` count still reports the number of logical inputs. Squashing
+requires globally unique `document_id` and `session_id` values; collision
+errors name both input paths, but successful Stores do not retain those paths
+as query provenance. Use preserve output when Source boundaries matter.
+
 An explicit Dataset URI still takes precedence. This basic Warehouse is just a
 recursive local Dataset root: it has no server, authentication, background
 process, or hidden database. Use global `--settings FILE` or the
@@ -129,6 +139,7 @@ capture canonical request/response events into one statically mounted Dataset:
 
 ```bash
 pchronicle serve --config warehouse.toml \
+  --listen 127.0.0.1:8080 \
   --gateway gateway.toml \
   --gateway-dataset evals
 ```

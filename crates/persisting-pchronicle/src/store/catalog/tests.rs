@@ -20,7 +20,8 @@ fn write_openai_source(path: &Path, event_id: &str) -> Result<()> {
 
 fn storyline(session_id: &str, run_id: &str) -> StorylineDocument {
     StorylineDocument {
-        schema_version: None,
+        schema_version: crate::model::STORYLINE_SCHEMA_VERSION.into(),
+        origin: None,
         run_id: Some(run_id.into()),
         trajectory_id: None,
         attempt_id: None,

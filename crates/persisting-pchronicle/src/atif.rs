@@ -91,6 +91,8 @@ pub struct AtifToolCall {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AtifObservation {
     pub results: Vec<Value>,
+    #[serde(default, flatten, skip_serializing_if = "Map::is_empty")]
+    pub unknown: Map<String, Value>,
 }
 
 impl AtifTrajectory {

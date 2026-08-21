@@ -266,7 +266,11 @@ mod tests {
     #[test]
     fn agenticmd_storyline_roundtrip_preserves_the_authoritative_model() {
         let mut story = StorylineDocument::new("session-1", "agent-1");
-        story.schema_version = Some("ATIF-v1.7".into());
+        story.origin = Some(crate::model::StorylineOrigin {
+            format: crate::format::DocumentFormat::Atif.as_str().into(),
+            schema_version: Some("ATIF-v1.7".into()),
+            document_id: None,
+        });
         story.run_id = Some("run-1".into());
         story.attempt_id = Some("attempt-1".into());
         story.agent.version = Some("1.2".into());
@@ -287,7 +291,9 @@ mod tests {
         story.turns.push(StorylineTurn {
             id: 7,
             kind: Some("autonomous".into()),
-            timestamp: Some("2026-08-17T01:02:03Z".into()),
+            timestamp: Some(
+                crate::model::StorylineTimestamp::from_rfc3339("2026-08-17T01:02:03Z").unwrap(),
+            ),
             source: "agent".into(),
             message: json!([{"type":"text","text":"hello"}]),
             reasoning_content: Some("reason".into()),
@@ -338,6 +344,7 @@ mod tests {
         let input = r#"---
 format: persisting
 storyline:
+  schema_version: storyline/v1
   session: s
   agent:
     id: a

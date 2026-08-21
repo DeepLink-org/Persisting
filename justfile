@@ -96,11 +96,10 @@ examples-pchronicle:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -q -p persisting-pchronicle-cli --bin pchronicle
-    for example in "{{ repo }}"/examples/pchronicle/*; do
-        [[ -f "$example/run.sh" ]] || continue
-        echo "==> ${example#"{{ repo }}/"}/run.sh"
-        (cd "$example" && bash run.sh)
-    done
+    cargo build --release -q -p persisting-pchronicle \
+      --example pchronicle_storage_query_benchmark
+    bash "{{ repo }}/examples/pchronicle/test.sh" --profile release
+    bash "{{ repo }}/examples/pchronicle/output-contract.sh" >/dev/null
 
 # Run the deterministic, quantitative pPilot examples.
 [group('test')]

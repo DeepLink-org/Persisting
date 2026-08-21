@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 
 use async_trait::async_trait;
 use persisting_events::EventRecord;
-use persisting_events::{ChronicleControl, ChronicleControlProcessClient, TrajectoryAppendRequest};
+use persisting_events::{ChronicleControl, ChronicleServeProcessClient, TrajectoryAppendRequest};
 use persisting_gateway::session::storage::CaptureRoute;
 use persisting_gateway::sink::CallbackSink;
 
@@ -131,7 +131,7 @@ pub async fn chronicle_sink(
 ) -> anyhow::Result<ChronicleSinks> {
     let storage = storage.display().to_string();
     let control: Arc<dyn ChronicleControl> =
-        Arc::new(ChronicleControlProcessClient::spawn(binary, storage.clone()).await?);
+        Arc::new(ChronicleServeProcessClient::spawn(binary, storage.clone()).await?);
     let (tx, rx) = mpsc::sync_channel::<AppendCommand>(APPEND_QUEUE_CAPACITY);
     let worker_control = Arc::clone(&control);
     let worker = std::thread::Builder::new()

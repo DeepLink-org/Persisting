@@ -168,13 +168,48 @@ Import creates a new local Dataset and refuses an existing target:
 ```bash
 pchronicle import --from input.json --output ./imported --format atif
 pchronicle import --from input.json
+pchronicle import --from ./corpus --output ./normalized \
+  --output-format storyline
 cat input.json | pchronicle import --from - --stream \
   --output ./imported --format openai-messages
 ```
 
-Regular files can be auto-detected. If `--output` is omitted, pChronicle derives
-a child name under the configured default Warehouse. Stdin requires
-`--stream`, an explicit format, and a finite input ending at EOF.
+Regular files can be auto-detected. A directory input recursively scans
+`.json`, `.jsonl`, and `.ndjson` regular files, skips symbolic links encountered
+during traversal, and keeps each Source's relative path in the default
+`--output-format preserve` output. An explicitly named symbolic link is
+accepted only when its target is a regular file. ATIF `.jsonl`/`.ndjson`
+Sources decode every non-empty record.
+
+`--output-format storyline` instead squashes every decoded input into one
+normalized Storyline Lance Store at the output root. Directory, regular-file,
+and stdin imports all produce root-level `CURRENT`, `generations`, and
+`objects.lance` entries. Catalog discovery exposes that Store as one physical
+Source named `.`, and `_file_` is `.` in all three normalized SQL tables. The
+original input paths remain available in import diagnostics but are not stored
+as query provenance.
+
+A squash preserves `run_id`, `document_id`, and `session_id` values without
+prefixing them. `document_id` and `session_id` must each be globally unique;
+collisions fail the complete import and report both input paths. Select
+`preserve` when Source-local duplicate identities or original Source boundaries
+must remain queryable. The output root is published only after every Source and
+the single Store snapshot succeed.
+
+Successful import JSON always includes `dataset_uri`, `output_format`,
+`sources`, `trajectories`, and `input_bytes`. `output_format` is exactly
+`preserve` or `storyline-lance`. Single-file and stdin imports also include
+`source_path` and `format`; directory imports omit those two source-specific
+fields. For a squash, `sources` still counts logical inputs even though the
+result has one physical Source. A single-file preserve import of ATIF JSON
+Lines uses the canonical `trajectories.atif.jsonl` or
+`trajectories.atif.ndjson` source name so later queries retain the
+line-delimited container semantics.
+
+If `--output` is omitted, pChronicle derives a child name under the configured
+default Warehouse. Stdin requires `--stream`, an explicit input format, and a
+finite input ending at EOF. `--max-input-bytes` is optional and applies to each
+Source when set; omitting it leaves per-Source input size unbounded.
 
 Export selects complete trajectories from one Catalog Snapshot:
 
@@ -185,8 +220,8 @@ pchronicle export --from ./imported --output one.json --format actf \
   --source source.json --session-id session-42 --strict
 ```
 
-Import supports `atif`, `actf`, and `openai-messages`. Export supports those
-three formats plus `storyline`. Output files are create-only unless
+Import supports `atif`, `actf`, `openai-messages`, and `storyline`. Export
+supports the same four exchange formats. Output files are create-only unless
 `--overwrite` is explicit. `--strict` refuses a conversion that cannot preserve
 the original exchange document.
 
@@ -216,19 +251,27 @@ uri = "../data/atif"
 ```
 
 ```bash
-pchronicle serve --config warehouse.toml
 pchronicle serve --config warehouse.toml --listen 127.0.0.1:8081 --open
+pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
 ```
 
 Relative local Dataset paths are resolved from the configuration file's
-directory. The server rejects non-loopback listeners because it has no
-authentication. Its Dataset mounts and API are read-only; import, export,
-maintenance, and arbitrary filesystem access are not exposed over HTTP.
+directory. At least one of `--listen`, `--control`, or `--gateway` is required.
+`--config` and `--storage` are mutually exclusive: configuration mounts named
+Datasets, while `--storage URI` mounts one Dataset named `default`. `--listen`
+enables Warehouse HTTP; omitting it does not start Warehouse. `--control`
+requires `--storage` and enables the authenticated write/control protocol on a
+loopback listener. `--open` requires `--listen`.
+
+Warehouse rejects non-loopback listeners because it has no authentication. Its
+Dataset mounts and API are read-only; import, export, maintenance, and arbitrary
+filesystem access are not exposed over HTTP.
 
 `serve` can also compose the existing Gateway on separate loopback listeners:
 
 ```bash
 pchronicle serve --config warehouse.toml \
+  --listen 127.0.0.1:8080 \
   --gateway gateway.toml \
   --gateway-dataset evals \
   --gateway-stream-markdown

@@ -35,6 +35,59 @@ async fn persist_and_restore(stories: &[StorylineDocument]) -> Result<Vec<Storyl
 }
 
 #[tokio::test]
+async fn storyline_lance_preserves_order_presence_origin_and_raw_observation() -> Result<()> {
+    let expected = serde_json::json!({
+        "schema_version": "storyline/v1",
+        "origin": {
+            "format": "atif",
+            "schema_version": "ATIF-v1.7",
+            "document_id": "input/trajectory.json"
+        },
+        "trajectory": "order-presence-observation",
+        "session": "shared-session",
+        "agent": {"id": "agent", "name": "agent"},
+        "turns": [
+            {
+                "id": 9,
+                "src": "user",
+                "msg": "first",
+                "tool_calls": []
+            },
+            {
+                "id": 3,
+                "src": "agent",
+                "msg": "second",
+                "tool_calls": [
+                    {"tcid": "call-b", "fn": "second", "args": {"n": 2}},
+                    {"tcid": "call-a", "fn": "first", "args": {"n": 1}}
+                ],
+                "observation": {
+                    "vendor": {"trace": 7},
+                    "results": [
+                        {"source_call_id": "call-b", "content": "b-1"},
+                        {"source_call_id": "call-a", "content": "a-1"},
+                        {"source_call_id": "call-b", "content": "b-2"}
+                    ]
+                }
+            }
+        ]
+    });
+    let stories = decode_json_storylines(
+        DocumentFormat::Storyline,
+        &expected.to_string(),
+        "trajectory.storyline.json",
+    )?;
+
+    let restored = persist_and_restore(&stories).await?;
+
+    assert_eq!(
+        encode_json_storylines(DocumentFormat::Storyline, &restored)?,
+        expected
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn nested_atif_and_null_canonicalization_are_stable_through_storyline_lance() -> Result<()> {
     let expected = serde_json::json!({
         "schema_version": "ATIF-v1.7",
@@ -128,7 +181,7 @@ async fn atif_root_order_is_lossless_through_the_unified_storyline_source() -> R
     let store = StorylineLanceStore::open(temporary.path()).await?;
     store.replace_storylines(&decoded).await?;
 
-    let restored = open_document(DocumentFormat::Storyline, temporary.path())
+    let restored = open_document(DocumentFormat::StorylineLance, temporary.path())
         .await?
         .project_storylines()
         .await?;
@@ -158,7 +211,7 @@ async fn atif_singleton_array_shape_is_lossless_through_storyline_lance() -> Res
     let store = StorylineLanceStore::open(&lance).await?;
     store.import_atif_stream(&input).await?;
 
-    let restored = open_document(DocumentFormat::Storyline, &lance)
+    let restored = open_document(DocumentFormat::StorylineLance, &lance)
         .await?
         .project_storylines()
         .await?;
@@ -180,7 +233,7 @@ async fn incremental_storyline_replace_preserves_global_collection_order() -> Re
     store.replace_storyline(&z).await?;
     store.replace_storyline(&a).await?;
 
-    let source = open_document(DocumentFormat::Storyline, temporary.path()).await?;
+    let source = open_document(DocumentFormat::StorylineLance, temporary.path()).await?;
     let first = source.project_storylines().await?;
     assert_eq!(
         first
@@ -192,7 +245,7 @@ async fn incremental_storyline_replace_preserves_global_collection_order() -> Re
 
     z.notes = Some("updated".into());
     store.replace_storyline(&z).await?;
-    let second = open_document(DocumentFormat::Storyline, temporary.path())
+    let second = open_document(DocumentFormat::StorylineLance, temporary.path())
         .await?
         .project_storylines()
         .await?;

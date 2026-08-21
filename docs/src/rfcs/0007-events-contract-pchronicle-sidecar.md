@@ -14,9 +14,10 @@ Persisting 将运行时事件的逻辑契约从存储实现中拆出，由唯一
 `persisting-events` 拥有。pVisor、Gateway、pPilot 与 pChronicle 共享该契约，但只有
 pChronicle 拥有 Lance、DataFusion、对象存储、Catalog、查询与投影实现。
 
-pVisor 需要持久轨迹或 Attempt registry 时启动独立的 `pchronicle control` sidecar，
-通过带版本和认证令牌的 control 协议提交事件并等待 durable acknowledgement。pVisor
-默认构建不再链接 Lance/DataFusion，也不直接打开或写入 `events.lance`。
+pVisor 需要持久轨迹或 Attempt registry 时启动 `pchronicle serve --storage ...
+--control 127.0.0.1:0`，通过带版本和认证令牌的 control 协议提交事件并等待 durable
+acknowledgement。pVisor 默认构建不再链接 Lance/DataFusion，也不直接打开或写入
+`events.lance`。
 
 ## 动机
 
@@ -58,7 +59,7 @@ pChronicle 消费 `persisting-events::EventRecord`，并独占维护：
 - `EventRow`、Arrow schema 与逻辑记录到物理行的映射；
 - Lance/Vortex 等物理后端、writer fencing、manifest、compaction 与 vacuum；
 - Catalog、query、replay、格式转换、revision 和派生视图；
-- `pchronicle control` 服务端以及 append 成功的 durable acknowledgement。
+- `pchronicle serve` 内嵌的 Control 服务以及 append 成功的 durable acknowledgement。
 
 RFC-0003 中“pChronicle 拥有轨迹格式”的约束仍适用于物理 schema、交换格式与转换。
 其中“pChronicle 唯一定义 `EventRecord`”以及“所有调用方直接依赖 pChronicle 类型”的部分
@@ -71,7 +72,7 @@ pVisor 的 Chronicle 模式为：
 | 模式 | 行为 |
 |---|---|
 | `off` | 不启动 pChronicle；生命周期 sink 为 no-op，Gateway 仍可按自身配置提供实时能力 |
-| `spawn` | 启动 `pchronicle control --storage <root>`，通过 control 协议提交轨迹和 Attempt 状态 |
+| `spawn` | 启动 `pchronicle serve --storage <root> --control 127.0.0.1:0`，通过 control 协议提交轨迹和 Attempt 状态 |
 | `lance` | 兼容旧配置的别名；行为与 `spawn` 相同，不再表示 pVisor 内嵌 Lance |
 
 sidecar executable 由 `chronicle.binary`、`--pchronicle-binary` 或
@@ -118,7 +119,7 @@ pVisor / Gateway / pPilot
           │
           │ versioned authenticated local IPC
           ▼
-  pchronicle control process
+  pchronicle serve process (Control enabled)
           │
           ├── EventRow / Arrow
           ├── Lance or another storage backend

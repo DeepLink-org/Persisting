@@ -3,8 +3,10 @@
 use crate::atif::{AtifAgent, AtifObservation, AtifStep, AtifToolCall, AtifTrajectory};
 use crate::format::DocumentFormat;
 use crate::formats::storyline::{
-    StoryLink, StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
+    StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall,
+    StorylineTurn, STORYLINE_SCHEMA_VERSION,
 };
+use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
     attach_carried_unknown_fields, canonical_source_document_id, restore_json_pointer,
     take_unknown_fields_envelope, validate_unknown_fields, write_foreign_unknown_fields_envelope,
@@ -204,7 +206,11 @@ fn atif_to_storyline_node(
         let mut turn = StorylineTurn {
             id: step.step_id,
             kind: None,
-            timestamp: step.timestamp.clone(),
+            timestamp: step
+                .timestamp
+                .as_deref()
+                .map(StorylineTimestamp::from_rfc3339)
+                .transpose()?,
             source: step.source.clone(),
             message: step.message.clone(),
             reasoning_content: step.reasoning_content.clone(),
@@ -213,8 +219,7 @@ fn atif_to_storyline_node(
             observation: step
                 .observation
                 .as_ref()
-                .map(serde_json::to_value)
-                .transpose()?,
+                .map(|observation| serde_json::json!({"results": observation.results})),
             metrics: step.metrics.clone(),
             model_name: step.model_name.clone(),
             llm_call_count: step.llm_call_count,
@@ -234,7 +239,12 @@ fn atif_to_storyline_node(
     }
 
     Ok(StorylineDocument {
-        schema_version: Some(traj.schema_version.clone()),
+        schema_version: STORYLINE_SCHEMA_VERSION.into(),
+        origin: Some(StorylineOrigin {
+            format: DocumentFormat::Atif.as_str().into(),
+            schema_version: Some(traj.schema_version.clone()),
+            document_id: None,
+        }),
         run_id: None,
         trajectory_id: traj.trajectory_id.clone(),
         attempt_id: None,
@@ -288,6 +298,14 @@ fn capture_atif_unknowns(
             &step_index.to_string(),
         );
         insert_unknown_map(story, source_document_id, &step_pointer, &step.unknown)?;
+        if let Some(observation) = step.observation.as_ref() {
+            insert_unknown_map(
+                story,
+                source_document_id,
+                &pointer_join(&step_pointer, "observation"),
+                &observation.unknown,
+            )?;
+        }
         if let Some(calls) = step.tool_calls.as_ref() {
             for (call_index, call) in calls.iter().enumerate() {
                 let call_pointer = pointer_join(
@@ -399,7 +417,10 @@ fn storyline_to_atif_node(
 
         steps.push(AtifStep {
             step_id: turn.id,
-            timestamp: turn.timestamp.clone(),
+            timestamp: turn
+                .timestamp
+                .as_ref()
+                .map(StorylineTimestamp::source_string_or_canonical),
             source: turn.source.clone(),
             model_name: turn.model_name.clone(),
             reasoning_effort: turn.reasoning_effort.clone(),
@@ -423,8 +444,10 @@ fn storyline_to_atif_node(
 
     Ok(AtifTrajectory {
         schema_version: story
-            .schema_version
-            .clone()
+            .origin
+            .as_ref()
+            .filter(|origin| origin.format == DocumentFormat::Atif.as_str())
+            .and_then(|origin| origin.schema_version.clone())
             .unwrap_or_else(|| "ATIF-v1.7".into()),
         session_id: Some(story.session_id.clone()),
         trajectory_id: story.trajectory_id.clone(),
@@ -665,9 +688,52 @@ fn restore_atif_documents(
 
 #[cfg(test)]
 mod tests {
-    use super::{atif_to_storyline, atif_to_storylines, storyline_to_atif, storylines_to_atif};
+    use super::{
+        atif_to_storyline, atif_to_storylines, atif_value_to_storylines, storyline_to_atif,
+        storylines_to_atif, STORYLINE_SCHEMA_VERSION,
+    };
     use crate::atif::AtifTrajectory;
     use crate::StorylineDocument;
+
+    #[test]
+    fn atif_observation_unknown_fields_roundtrip_at_exact_pointer() {
+        let input = serde_json::json!({
+            "schema_version": "ATIF-v1.7",
+            "session_id": "session-1",
+            "agent": {"name": "agent-1", "version": "1"},
+            "steps": [{
+                "step_id": 1,
+                "source": "agent",
+                "message": "done",
+                "observation": {
+                    "results": [],
+                    "vendor_observation": {"trace": 7},
+                    "nullable_vendor": null
+                }
+            }]
+        });
+
+        let stories = atif_value_to_storylines(input).unwrap();
+        let fields = &stories[0].unknown_fields.sources["atif"].fields;
+        assert_eq!(
+            fields["/steps/0/observation/vendor_observation"],
+            serde_json::json!({"trace": 7})
+        );
+        assert_eq!(
+            fields["/steps/0/observation/nullable_vendor"],
+            serde_json::Value::Null
+        );
+
+        let restored = serde_json::to_value(&storylines_to_atif(&stories).unwrap()[0]).unwrap();
+        assert_eq!(
+            restored["steps"][0]["observation"]["vendor_observation"],
+            serde_json::json!({"trace": 7})
+        );
+        assert_eq!(
+            restored["steps"][0]["observation"]["nullable_vendor"],
+            serde_json::Value::Null
+        );
+    }
 
     #[test]
     fn malformed_atif_observation_is_not_silently_dropped() {
@@ -718,7 +784,14 @@ mod tests {
         .unwrap();
 
         let story = atif_to_storyline(&trajectory).unwrap();
-        assert_eq!(story.schema_version.as_deref(), Some("ATIF-v1.7"));
+        assert_eq!(story.schema_version, STORYLINE_SCHEMA_VERSION);
+        assert_eq!(
+            story
+                .origin
+                .as_ref()
+                .and_then(|origin| origin.schema_version.as_deref()),
+            Some("ATIF-v1.7")
+        );
         let calls = story.turns[0].tool_calls.as_ref().unwrap();
         assert_eq!(calls[0].result, None);
         assert_eq!(calls[1].result, None);

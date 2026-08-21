@@ -246,7 +246,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
     }
 
     let engine = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         dir.path(),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -341,7 +341,7 @@ async fn datafusion_datasource_filters_joins_and_pins_generation() -> Result<()>
         8
     );
     let new_engine = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         dir.path(),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -364,7 +364,7 @@ async fn query_engine_validates_storyline_store_state() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = StorylineLanceStore::open(dir.path()).await?;
     assert!(ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         dir.path(),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -376,7 +376,7 @@ async fn query_engine_validates_storyline_store_state() -> Result<()> {
         .replace_storyline(&into_storyline(TestFormat::Atif, &raw)?)
         .await?;
     let engine = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         dir.path(),
         ChronicleQueryExecutionOptions::default(),
     )

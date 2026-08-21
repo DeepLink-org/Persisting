@@ -6,8 +6,13 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::json;
 
 use crate::convert::message_text;
+use crate::format::DocumentFormat;
 use crate::formats::events::{EventIdentity, EventRecord, EventsDocument};
-use crate::formats::storyline::{StoryLink, StorylineAgent, StorylineDocument, StorylineTurn};
+use crate::formats::storyline::{
+    StoryLink, StorylineAgent, StorylineDocument, StorylineOrigin, StorylineTurn,
+    STORYLINE_SCHEMA_VERSION,
+};
+use crate::formats::timestamp::StorylineTimestamp;
 use crate::Result;
 
 /// Resolve and project exactly one canonical Storyline from append-ordered events.
@@ -171,7 +176,7 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
         }
 
         let latency_ms =
-            latency_from_payload.or_else(|| latency_between(req_ts.as_deref(), resp_ts.as_deref()));
+            latency_from_payload.or_else(|| latency_between(req_ts.as_ref(), resp_ts.as_ref()));
 
         let req_seq = evs
             .iter()
@@ -290,7 +295,12 @@ fn events_to_storyline_unchecked(events: &[EventRecord]) -> Result<StorylineDocu
     }
 
     Ok(StorylineDocument {
-        schema_version: None,
+        schema_version: STORYLINE_SCHEMA_VERSION.into(),
+        origin: Some(StorylineOrigin {
+            format: DocumentFormat::CanonicalEvent.as_str().into(),
+            schema_version: None,
+            document_id: None,
+        }),
         run_id: None,
         trajectory_id: None,
         attempt_id: None,
@@ -329,7 +339,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                 seq,
                 source: "pchronicle".into(),
                 kind: "note".into(),
-                timestamp: turn.timestamp.clone(),
+                timestamp: storyline_timestamp_text(turn.timestamp.as_ref()),
                 session_id: Some(story.session_id.clone()),
                 agent_id: Some(story.agent.id.clone()),
                 parent_uuid: None,
@@ -389,7 +399,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                     seq,
                     source: "pchronicle".into(),
                     kind: req_kind.into(),
-                    timestamp: turn.timestamp.clone(),
+                    timestamp: storyline_timestamp_text(turn.timestamp.as_ref()),
                     session_id: Some(story.session_id.clone()),
                     agent_id: Some(story.agent.id.clone()),
                     parent_uuid: None,
@@ -418,7 +428,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                         seq,
                         source: "pchronicle".into(),
                         kind: resp_kind.into(),
-                        timestamp: agent.timestamp.clone(),
+                        timestamp: storyline_timestamp_text(agent.timestamp.as_ref()),
                         session_id: Some(story.session_id.clone()),
                         agent_id: Some(story.agent.id.clone()),
                         parent_uuid: None,
@@ -452,7 +462,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                         seq,
                         source: "pchronicle".into(),
                         kind: "llm.request".into(),
-                        timestamp: turn.timestamp.clone(),
+                        timestamp: storyline_timestamp_text(turn.timestamp.as_ref()),
                         session_id: Some(story.session_id.clone()),
                         agent_id: Some(story.agent.id.clone()),
                         parent_uuid: None,
@@ -479,7 +489,7 @@ pub fn storyline_to_events(story: &StorylineDocument) -> Result<EventsDocument> 
                     seq,
                     source: "pchronicle".into(),
                     kind: resp_kind.into(),
-                    timestamp: turn.timestamp.clone(),
+                    timestamp: storyline_timestamp_text(turn.timestamp.as_ref()),
                     session_id: Some(story.session_id.clone()),
                     agent_id: Some(story.agent.id.clone()),
                     parent_uuid: None,
@@ -523,26 +533,22 @@ fn take_seq(extra: Option<&serde_json::Value>, next_seq: &mut u64) -> u64 {
     seq
 }
 
-fn latency_between(req: Option<&str>, resp: Option<&str>) -> Option<i64> {
-    let req_ms = parse_rfc3339_millis(req?)?;
-    let resp_ms = parse_rfc3339_millis(resp?)?;
-    Some(resp_ms - req_ms)
+fn latency_between(
+    req: Option<&StorylineTimestamp>,
+    resp: Option<&StorylineTimestamp>,
+) -> Option<i64> {
+    Some(resp?.instant().timestamp_millis() - req?.instant().timestamp_millis())
 }
 
-fn parse_rfc3339_millis(s: &str) -> Option<i64> {
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|timestamp| timestamp.timestamp_millis())
-}
-
-fn canonical_event_timestamp(record: &EventRecord) -> Result<Option<String>> {
-    let textual_ms = record
+fn canonical_event_timestamp(record: &EventRecord) -> Result<Option<StorylineTimestamp>> {
+    let textual = record
         .timestamp
         .as_deref()
-        .map(|timestamp| {
-            DateTime::parse_from_rfc3339(timestamp).map(|timestamp| timestamp.timestamp_millis())
-        })
+        .map(StorylineTimestamp::from_rfc3339)
         .transpose()?;
+    let textual_ms = textual
+        .as_ref()
+        .map(|timestamp| timestamp.instant().timestamp_millis());
     let canonical_ms = record
         .identity
         .timestamp_unix_ms
@@ -558,12 +564,21 @@ fn canonical_event_timestamp(record: &EventRecord) -> Result<Option<String>> {
             );
         }
     }
-    let Some(timestamp_ms) = canonical_ms.or(textual_ms) else {
+    if let Some(timestamp) = textual {
+        return Ok(Some(timestamp));
+    }
+    let Some(timestamp_ms) = canonical_ms else {
         return Ok(None);
     };
     let timestamp = DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
         .ok_or_else(|| anyhow::anyhow!("event timestamp is outside the RFC3339 range"))?;
-    Ok(Some(timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)))
+    Ok(Some(StorylineTimestamp::from_rfc3339(
+        &timestamp.to_rfc3339_opts(SecondsFormat::Millis, true),
+    )?))
+}
+
+fn storyline_timestamp_text(timestamp: Option<&StorylineTimestamp>) -> Option<String> {
+    timestamp.map(StorylineTimestamp::source_string_or_canonical)
 }
 
 fn extract_user(payload: &serde_json::Value) -> Option<String> {
@@ -656,7 +671,10 @@ mod projection_tests {
         record.identity.timestamp_unix_ms = Some(1_000);
         let story = project_event_records(&[record]).unwrap();
         assert_eq!(
-            story.turns[0].timestamp.as_deref(),
+            story.turns[0]
+                .timestamp
+                .as_ref()
+                .and_then(StorylineTimestamp::source_string),
             Some("1970-01-01T00:00:01.000Z")
         );
     }

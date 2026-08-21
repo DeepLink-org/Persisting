@@ -13,7 +13,7 @@ use persisting_agentctl::{
     AttemptId, RunCommitRequest, RunId, RunLeaseRecord, RunResult, RunState,
 };
 #[cfg(not(test))]
-use persisting_events::ChronicleControlProcessClient;
+use persisting_events::ChronicleServeProcessClient;
 #[cfg(test)]
 use persisting_events::MemoryChronicleControl;
 use persisting_events::{
@@ -265,7 +265,7 @@ impl RunCoordinator {
         };
         #[cfg(not(test))]
         let control = Arc::new(
-            ChronicleControlProcessClient::spawn(binary, control_root)
+            ChronicleServeProcessClient::spawn(binary, control_root)
                 .await
                 .context("start pChronicle control client")?,
         );

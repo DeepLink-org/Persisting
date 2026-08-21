@@ -5,8 +5,8 @@
 //! network, filesystem, and the optional internal Gateway driver.
 //!
 //! pChronicle is a peer history service, not a child module. When persistence
-//! is requested, pVisor talks to a standalone `pchronicle control` sidecar over
-//! the lightweight versioned client protocol.
+//! is requested, pVisor starts the Control component of `pchronicle serve` and
+//! talks to it over the lightweight versioned client protocol.
 
 pub mod cli;
 mod runtime;

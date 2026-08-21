@@ -5,12 +5,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
-pub const DEFAULT_MAX_UNKNOWN_FIELDS: usize = 4096;
-pub const DEFAULT_MAX_UNKNOWN_BYTES: usize = 1024 * 1024;
+/// Default unknown-field count limit. `usize::MAX` means unbounded.
+pub const DEFAULT_MAX_UNKNOWN_FIELDS: usize = usize::MAX;
+/// Default unknown-field byte limit. `usize::MAX` means unbounded.
+pub const DEFAULT_MAX_UNKNOWN_BYTES: usize = usize::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownFieldLimits {
+    /// Maximum logical unknown fields, or `usize::MAX` for no field-count limit.
     pub max_fields: usize,
+    /// Maximum logical JSON bytes, or `usize::MAX` for no byte limit.
     pub max_bytes: usize,
 }
 
@@ -25,15 +29,11 @@ impl Default for UnknownFieldLimits {
 
 impl UnknownFieldLimits {
     pub fn validate(self) -> InputResult<()> {
-        if self.max_fields == 0 || self.max_fields == usize::MAX {
-            return Err(InputIssue::invalid(
-                "unknown field limit must be a finite positive value",
-            ));
+        if self.max_fields == 0 {
+            return Err(InputIssue::invalid("unknown field limit must be positive"));
         }
-        if self.max_bytes == 0 || self.max_bytes == usize::MAX {
-            return Err(InputIssue::invalid(
-                "unknown byte limit must be a finite positive value",
-            ));
+        if self.max_bytes == 0 {
+            return Err(InputIssue::invalid("unknown byte limit must be positive"));
         }
         Ok(())
     }
@@ -52,6 +52,92 @@ pub struct StorylineUnknownFields {
 
 pub type UnknownFieldCounts = BTreeMap<String, u64>;
 pub type UnknownKeyCounts = BTreeMap<String, UnknownFieldCounts>;
+
+/// Aggregates normalized unknown-field key counts for one import command.
+///
+/// Deduplication is by `(source format, normalized key)`. Directory importers
+/// reuse one aggregator across every nested Source in the command.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct UnknownFieldImportWarnings {
+    counts: UnknownKeyCounts,
+}
+
+impl UnknownFieldImportWarnings {
+    /// Observe all Storylines decoded from one physical input Source.
+    ///
+    /// Converters may attach a document-level unknown pointer to multiple
+    /// Storylines. Within this call, identical physical pointers are counted
+    /// once by `(source format, source document id, exact pointer)`. Callers
+    /// invoke this method separately for each input Source so identical files
+    /// still contribute independently to command-wide occurrence totals.
+    pub fn observe_storylines<'a>(
+        &mut self,
+        storylines: impl IntoIterator<Item = &'a StorylineDocument>,
+    ) -> InputResult<()> {
+        let mut seen = BTreeSet::new();
+        for story in storylines {
+            for (source, source_fields) in &story.unknown_fields.sources {
+                for pointer in source_fields.fields.keys() {
+                    let occurrence = (
+                        source.clone(),
+                        source_fields.source_document_id.clone(),
+                        pointer.clone(),
+                    );
+                    if !seen.insert(occurrence) {
+                        continue;
+                    }
+                    let normalized_pointer = normalize_unknown_pointer(source, pointer)?;
+                    let total = self
+                        .counts
+                        .entry(source.clone())
+                        .or_default()
+                        .entry(normalized_pointer)
+                        .or_default();
+                    *total = total.saturating_add(1);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn observe(&mut self, counts: &UnknownKeyCounts) {
+        for (source, keys) in counts {
+            let source_counts = self.counts.entry(source.clone()).or_default();
+            for (key, occurrences) in keys {
+                let total = source_counts.entry(key.clone()).or_default();
+                *total = total.saturating_add(*occurrences);
+            }
+        }
+    }
+
+    pub fn warning_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (source, keys) in &self.counts {
+            for (key, occurrences) in keys {
+                if *occurrences == 0 {
+                    continue;
+                }
+                let source = escape_warning_atom(source);
+                let key = escape_warning_atom(key);
+                lines.push(format!(
+                    "warning: unknown field source={source} key={key} occurrences={occurrences}"
+                ));
+            }
+        }
+        lines
+    }
+}
+
+fn escape_warning_atom(value: &str) -> String {
+    let Ok(encoded) = serde_json::to_string(value) else {
+        return value.escape_debug().to_string();
+    };
+    encoded
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(&encoded)
+        .to_owned()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CarrierBinding {
@@ -400,13 +486,13 @@ where
     limits.validate()?;
 
     let (field_count, byte_count) = logical_size(fields)?;
-    if field_count > limits.max_fields {
+    if limits.max_fields != usize::MAX && field_count > limits.max_fields {
         return Err(InputIssue::invalid(format!(
             "unknown field count {field_count} exceeds configured limit {}",
             limits.max_fields
         )));
     }
-    if byte_count > limits.max_bytes {
+    if limits.max_bytes != usize::MAX && byte_count > limits.max_bytes {
         return Err(InputIssue::invalid(format!(
             "unknown field byte size {byte_count} exceeds configured limit {}",
             limits.max_bytes
@@ -756,6 +842,96 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn import_warnings_dedupe_by_source_and_normalized_key_across_observations() {
+        let mut warnings = UnknownFieldImportWarnings::default();
+        warnings.observe(&BTreeMap::from([(
+            "actf".into(),
+            BTreeMap::from([("/attempts/1/trajectory/steps/*/user_content".into(), 2_u64)]),
+        )]));
+        warnings.observe(&BTreeMap::from([(
+            "actf".into(),
+            BTreeMap::from([
+                (
+                    "/attempts/1/trajectory/steps/*/user_content".into(),
+                    2_831_u64 - 2,
+                ),
+                ("/attempts/1/trajectory/steps/*/system_prompt".into(), 3_u64),
+            ]),
+        )]));
+        warnings.observe(&BTreeMap::from([(
+            "atif".into(),
+            BTreeMap::from([("/steps/*/vendor".into(), 1_u64)]),
+        )]));
+
+        assert_eq!(
+            warnings.warning_lines(),
+            vec![
+                "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/system_prompt occurrences=3"
+                    .to_owned(),
+                "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/user_content occurrences=2831"
+                    .to_owned(),
+                "warning: unknown field source=atif key=/steps/*/vendor occurrences=1".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn import_warnings_count_shared_source_pointer_once_per_input_source() {
+        let mut first = StorylineDocument::new("first", "agent");
+        first
+            .unknown_fields
+            .insert("actf", "shared-document", "/vendor_root", json!(true))
+            .unwrap();
+        first.refresh_unknown_key_counts().unwrap();
+        let mut second = StorylineDocument::new("second", "agent");
+        second
+            .unknown_fields
+            .insert("actf", "shared-document", "/vendor_root", json!(true))
+            .unwrap();
+        second.refresh_unknown_key_counts().unwrap();
+
+        let mut warnings = UnknownFieldImportWarnings::default();
+        warnings.observe_storylines([&first, &second]).unwrap();
+        assert_eq!(
+            warnings.warning_lines(),
+            ["warning: unknown field source=actf key=/vendor_root occurrences=1"]
+        );
+
+        // A second call represents a distinct input Source, even if its source
+        // document identifier and contents happen to be identical.
+        warnings.observe_storylines([&first, &second]).unwrap();
+        assert_eq!(
+            warnings.warning_lines(),
+            ["warning: unknown field source=actf key=/vendor_root occurrences=2"]
+        );
+    }
+
+    #[test]
+    fn import_warning_atoms_are_json_escaped_onto_one_physical_line() {
+        let mut warnings = UnknownFieldImportWarnings::default();
+        warnings.observe(&BTreeMap::from([
+            (
+                "actf\nsource".into(),
+                BTreeMap::from([("/line\n\u{1b}[31m".into(), 1_u64)]),
+            ),
+            ("atif".into(), BTreeMap::from([("".into(), 1_u64)])),
+        ]));
+
+        assert_eq!(
+            warnings.warning_lines(),
+            vec![
+                "warning: unknown field source=actf\\nsource key=/line\\n\\u001b[31m occurrences=1"
+                    .to_owned(),
+                "warning: unknown field source=atif key= occurrences=1".to_owned(),
+            ]
+        );
+        assert!(warnings
+            .warning_lines()
+            .iter()
+            .all(|line| !line.contains(['\n', '\r', '\u{1b}'])));
+    }
+
+    #[test]
     fn empty_source_does_not_create_a_key_count_entry() {
         let fields = StorylineUnknownFields {
             sources: BTreeMap::from([(
@@ -1004,31 +1180,65 @@ mod tests {
     }
 
     #[test]
-    fn unknown_field_limits_accept_exact_entry_and_byte_boundaries() {
+    fn default_unknown_field_count_and_bytes_are_unbounded() {
         let mut fields = StorylineUnknownFields::default();
-        for index in 0..DEFAULT_MAX_UNKNOWN_FIELDS {
+        for index in 0..(4_096 + 1) {
             fields
                 .insert("atif", "s", format!("/{index}"), json!(null))
                 .unwrap();
         }
-        assert!(validate_unknown_fields(&fields, UnknownFieldLimits::default()).is_ok());
+        fields
+            .insert(
+                "actf",
+                "large.actf.json",
+                "/attempts/1/extra",
+                json!("x".repeat(1024 * 1024 + 1)),
+            )
+            .unwrap();
+
+        validate_unknown_fields(&fields, UnknownFieldLimits::default()).unwrap();
+        assert!(UnknownFieldLimits {
+            max_fields: usize::MAX,
+            max_bytes: usize::MAX,
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn configured_unknown_field_limits_accept_exact_entry_and_byte_boundaries() {
+        let field_limits = UnknownFieldLimits {
+            max_fields: 4_096,
+            max_bytes: usize::MAX,
+        };
+        let mut fields = StorylineUnknownFields::default();
+        for index in 0..field_limits.max_fields {
+            fields
+                .insert("atif", "s", format!("/{index}"), json!(null))
+                .unwrap();
+        }
+        assert!(validate_unknown_fields(&fields, field_limits).is_ok());
         fields
             .insert("atif", "s", "/too-many", json!(null))
             .unwrap();
-        assert!(validate_unknown_fields(&fields, UnknownFieldLimits::default()).is_err());
+        assert!(validate_unknown_fields(&fields, field_limits).is_err());
 
-        let exact_string_len = DEFAULT_MAX_UNKNOWN_BYTES - 4;
+        let byte_limits = UnknownFieldLimits {
+            max_fields: 4_096,
+            max_bytes: 64,
+        };
+        let exact_string_len = byte_limits.max_bytes - 4;
         let exact = json!("x".repeat(exact_string_len));
         let mut bytes_at_limit = StorylineUnknownFields::default();
         bytes_at_limit.insert("atif", "s", "/", exact).unwrap();
-        assert!(validate_unknown_fields(&bytes_at_limit, UnknownFieldLimits::default()).is_ok());
+        assert!(validate_unknown_fields(&bytes_at_limit, byte_limits).is_ok());
 
         let over_limit = json!("x".repeat(exact_string_len + 1));
         let mut bytes_over_limit = StorylineUnknownFields::default();
         bytes_over_limit
             .insert("atif", "s", "/", over_limit)
             .unwrap();
-        assert!(validate_unknown_fields(&bytes_over_limit, UnknownFieldLimits::default()).is_err());
+        assert!(validate_unknown_fields(&bytes_over_limit, byte_limits).is_err());
     }
 
     #[test]

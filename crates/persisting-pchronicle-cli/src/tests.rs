@@ -59,6 +59,76 @@ fn example_source(format: &str) -> PathBuf {
     example_dataset(format).join(filename)
 }
 
+fn atif_identity_document(document_id: &str, session_id: &str) -> Value {
+    serde_json::json!({
+        "schema_version": "ATIF-v1.7",
+        "trajectory_id": document_id,
+        "session_id": session_id,
+        "agent": {"name": "agent", "version": "1"},
+        "steps": []
+    })
+}
+
+fn actf_with_unknown_step_fields(task_id: &str, users: &[&str]) -> Value {
+    let steps = users
+        .iter()
+        .enumerate()
+        .map(|(index, user)| {
+            let step_id = i64::try_from(index).unwrap() + 1;
+            serde_json::json!({
+                "step_id": step_id,
+                "assistant_content": {
+                    "content": format!("reply-{step_id}"),
+                    "reasoning_content": "",
+                    "tool_calls": []
+                },
+                "metric": {
+                    "prompt_tokens_len": 1,
+                    "completion_tokens_len": 1,
+                    "llm_infer_ms": 1.0,
+                    "env_action_ms": null,
+                    "stop_reason": "stop"
+                },
+                "system_prompt": "system",
+                "user_content": user,
+                "vendor_step": user,
+                "tools": [],
+                "observation": [],
+                "started_at": "2026-08-01 10:00:00+00:00",
+                "finished_at": "2026-08-01 10:00:01+00:00"
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "task_id": task_id,
+        "category": "software-engineering",
+        "k": 1,
+        "correct": false,
+        "attempts_tried": 1,
+        "solved_at": null,
+        "attempts": {
+            "1": {
+                "correct": false,
+                "final_answer": null,
+                "ground_truth": "expected",
+                "trajectory": {
+                    "schema_version": "ACTF_v1.0",
+                    "steps": steps,
+                    "started_at": "2026-08-01 10:00:00+00:00",
+                    "finished_at": "2026-08-01 10:00:01+00:00"
+                },
+                "status": "completed",
+                "score": null,
+                "error": "",
+                "artifacts": null,
+                "extra": null,
+                "analysis_result": null,
+                "meta": null
+            }
+        }
+    })
+}
+
 async fn append_canonical_note(storage: &std::path::Path) -> Result<()> {
     let coords = persisting_pchronicle::storage::StoryCoords::new(
         storage.to_string_lossy(),
@@ -101,8 +171,8 @@ fn command_tree_contains_the_product_commands() {
     assert_eq!(
         names,
         [
-            "control", "onboard", "default", "ls", "status", "query", "analysis", "find", "import",
-            "export", "project", "echo", "serve",
+            "onboard", "default", "ls", "status", "query", "analysis", "find", "import", "export",
+            "project", "echo", "serve",
         ]
     );
     let ls = command
@@ -110,6 +180,19 @@ fn command_tree_contains_the_product_commands() {
         .find(|command| command.get_name() == "ls")
         .unwrap();
     assert!(ls.get_all_aliases().any(|alias| alias == "list"));
+    let import = command
+        .get_subcommands()
+        .find(|command| command.get_name() == "import")
+        .unwrap();
+    let output_format = import
+        .get_arguments()
+        .find(|argument| argument.get_id() == "output_format")
+        .unwrap();
+    assert!(output_format
+        .get_help()
+        .unwrap()
+        .to_string()
+        .contains("squash into one Storyline Lance Store at the Dataset root"));
     let project = command
         .get_subcommands()
         .find(|command| command.get_name() == "project")
@@ -1119,6 +1202,766 @@ async fn find_rejects_empty_and_oversized_identities() -> Result<()> {
 }
 
 #[tokio::test]
+async fn import_warns_for_unmapped_and_vendor_residual_keys() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("steps.actf.json");
+    let output = temp.path().join("dataset");
+    let step = |id: i64, user: &str| {
+        serde_json::json!({
+            "step_id": id,
+            "assistant_content": {
+                "content": format!("reply-{id}"),
+                "reasoning_content": "",
+                "tool_calls": []
+            },
+            "metric": {
+                "prompt_tokens_len": 1,
+                "completion_tokens_len": 1,
+                "llm_infer_ms": 1.0,
+                "env_action_ms": null,
+                "stop_reason": "stop"
+            },
+            "system_prompt": "system",
+            "user_content": user,
+            "tools": [],
+            "observation": [],
+            "started_at": "2026-08-01 10:00:00+00:00",
+            "finished_at": "2026-08-01 10:00:01+00:00",
+            "vendor_step": format!("vendor-{id}")
+        })
+    };
+    let document = serde_json::json!({
+        "task_id": "warn-dedupe",
+        "category": "software-engineering",
+        "k": 1,
+        "correct": false,
+        "attempts_tried": 1,
+        "solved_at": null,
+        "attempts": {
+            "1": {
+                "correct": false,
+                "final_answer": null,
+                "ground_truth": "expected",
+                "trajectory": {
+                    "schema_version": "ACTF_v1.0",
+                    "steps": [
+                        step(1, "alpha"),
+                        step(2, "beta"),
+                        step(3, "gamma")
+                    ],
+                    "started_at": "2026-08-01 10:00:00+00:00",
+                    "finished_at": "2026-08-01 10:00:01+00:00"
+                },
+                "status": "completed",
+                "score": null,
+                "error": "",
+                "artifacts": null,
+                "extra": null,
+                "analysis_result": null,
+                "meta": null
+            }
+        }
+    });
+    fs::write(&input, serde_json::to_vec_pretty(&document)?)?;
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--format",
+        "actf",
+    ])?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    run(cli, false, &mut stdout, &mut stderr).await?;
+
+    let stderr = String::from_utf8(stderr)?;
+    let vendor_warnings: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("key=/attempts/1/trajectory/steps/*/vendor_step"))
+        .collect();
+    assert_eq!(
+        vendor_warnings,
+        [
+            "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/vendor_step occurrences=3"
+        ]
+    );
+    assert!(
+        stderr.contains(
+            "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/user_content occurrences=3"
+        ),
+        "unmapped ACTF fields must warn: {stderr}"
+    );
+    assert!(!stderr.contains("/assistant_content/content"));
+    assert!(
+        !stderr.contains("vendor-1")
+            && !stderr.contains("vendor-2")
+            && !stderr.contains("vendor-3"),
+        "warnings must not print unknown-field values: {stderr}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_counts_shared_actf_root_unknown_once_across_attempt_storylines() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("multi-attempt.actf.json");
+    let output = temp.path().join("dataset");
+    let mut document = actf_with_unknown_step_fields("multi-attempt", &["first"]);
+    document["vendor_root"] = serde_json::json!({"debug": true});
+    document["k"] = serde_json::json!(2);
+    document["attempts_tried"] = serde_json::json!(2);
+    let mut second_attempt = document["attempts"]["1"].clone();
+    second_attempt["trajectory"]["steps"][0]["user_content"] = serde_json::json!("second");
+    document["attempts"]["2"] = second_attempt;
+    fs::write(&input, serde_json::to_vec(&document)?)?;
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--format",
+        "actf",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stderr = Vec::new();
+    run(cli, false, &mut Vec::new(), &mut stderr).await?;
+
+    let stderr = String::from_utf8(stderr)?;
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.contains("source=actf key=/vendor_root "))
+            .collect::<Vec<_>>(),
+        ["warning: unknown field source=actf key=/vendor_root occurrences=1"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_counts_shared_openai_root_unknown_once_across_sessions() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("sessions.json");
+    let output = temp.path().join("dataset");
+    let row = |session_id: &str| {
+        serde_json::json!({
+            "id": format!("row-{session_id}"),
+            "session_id": session_id,
+            "step_id": 1,
+            "agent_model": "model-1",
+            "created_at": 1_785_578_400.25,
+            "job_id": "job-1",
+            "reward": 0.0,
+            "step_reward": 0.0,
+            "is_terminal": true,
+            "is_truncated": false,
+            "is_session_completed": true,
+            "is_trainable": false,
+            "messages": [{
+                "role": "user",
+                "content": "hello",
+                "name": null,
+                "refusal": null,
+                "tool_call_id": null
+            }],
+            "response": {
+                "role": "assistant",
+                "content": "done",
+                "name": null,
+                "refusal": null,
+                "tool_call_id": null
+            },
+            "vendor_row": {"kept": true}
+        })
+    };
+    fs::write(
+        &input,
+        serde_json::to_vec(&serde_json::json!({
+            "vendor_root": {"debug": true},
+            "session_steps": [row("first"), row("second")]
+        }))?,
+    )?;
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--format",
+        "openai-messages",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stderr = Vec::new();
+    run(cli, false, &mut Vec::new(), &mut stderr).await?;
+
+    let stderr = String::from_utf8(stderr)?;
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.contains("source=openai-msg key=/vendor_root "))
+            .collect::<Vec<_>>(),
+        ["warning: unknown field source=openai-msg key=/vendor_root occurrences=1"]
+    );
+    assert!(
+        stderr.contains(
+            "warning: unknown field source=openai-msg key=/session_steps/*/vendor_row occurrences=2"
+        ),
+        "non-empty unmapped OpenAI fields must still warn: {stderr}"
+    );
+    for mapped in [
+        "/step_id",
+        "/agent_model",
+        "/created_at",
+        "/job_id",
+        "/reward",
+        "/step_reward",
+        "/is_terminal",
+        "/is_truncated",
+        "/is_session_completed",
+        "/is_trainable",
+        "/messages/*/role",
+        "/messages/*/content",
+        "/messages/*/name",
+        "/messages/*/refusal",
+        "/messages/*/tool_call_id",
+        "/response/role",
+        "/response/content",
+        "/response/name",
+        "/response/refusal",
+        "/response/tool_call_id",
+    ] {
+        assert!(
+            !stderr.contains(mapped),
+            "mapped or known-empty OpenAI field must not warn ({mapped}): {stderr}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn directory_import_reads_atif_jsonl_and_ndjson_in_both_output_modes() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    for extension in ["jsonl", "ndjson"] {
+        for output_format in [ImportOutputFormat::Preserve, ImportOutputFormat::Storyline] {
+            let case = format!("{extension}-{}", output_format.response_name());
+            let input_root = temp.path().join(format!("input-{case}"));
+            let input = input_root.join(format!("nested/records.{extension}"));
+            fs::create_dir_all(input.parent().unwrap())?;
+            let record = |trajectory_id: &str| {
+                serde_json::json!({
+                    "schema_version": "ATIF-v1.7",
+                    "trajectory_id": trajectory_id,
+                    "agent": {"name": "agent", "version": "1"},
+                    "steps": []
+                })
+            };
+            let bytes = format!("{}\n\n{}\n", record("first"), record("second")).into_bytes();
+            fs::write(&input, &bytes)?;
+            let output = temp.path().join(format!("output-{case}"));
+
+            let mut argv = vec![
+                "pchronicle".to_owned(),
+                "import".to_owned(),
+                "--from".to_owned(),
+                input_root.to_string_lossy().into_owned(),
+                "--output".to_owned(),
+                output.to_string_lossy().into_owned(),
+            ];
+            if output_format == ImportOutputFormat::Storyline {
+                argv.extend(["--output-format".to_owned(), "storyline".to_owned()]);
+            }
+            let cli = Cli::try_parse_from(argv)?;
+            let mut stdout = Vec::new();
+            run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+            let response: Value = serde_json::from_slice(&stdout)?;
+            assert_eq!(response["sources"], 1, "case={case}");
+            assert_eq!(response["trajectories"], 2, "case={case}");
+            let staged = output.join(format!("nested/records.{extension}"));
+            match output_format {
+                ImportOutputFormat::Preserve => assert_eq!(fs::read(staged)?, bytes),
+                ImportOutputFormat::Storyline => {
+                    assert!(output.join("CURRENT").is_file());
+                    assert!(!staged.exists());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn single_file_preserve_import_keeps_atif_json_lines_queryable() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let record = |trajectory_id: &str| {
+        serde_json::json!({
+            "schema_version": "ATIF-v1.7",
+            "trajectory_id": trajectory_id,
+            "agent": {"name": "agent", "version": "1"},
+            "steps": []
+        })
+    };
+    let bytes = format!("{}\n{}\n", record("first"), record("second")).into_bytes();
+    for extension in ["jsonl", "ndjson"] {
+        let input = temp.path().join(format!("records.{extension}"));
+        fs::write(&input, &bytes)?;
+        let output = temp.path().join(format!("dataset-{extension}"));
+
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "import",
+            "--from",
+            input.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+        let source_path = format!("trajectories.atif.{extension}");
+        let response: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(response["source_path"], source_path);
+        assert_eq!(response["trajectories"], 2);
+        assert_eq!(fs::read(output.join(&source_path))?, bytes);
+
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "query",
+            output.to_str().unwrap(),
+            "SELECT COUNT(*) AS runs FROM dataset.runs",
+            "--format",
+            "jsonl",
+        ])?;
+        let mut stdout = Vec::new();
+        run(cli, false, &mut stdout, &mut Vec::new()).await?;
+        let count: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(count["runs"], 2, "extension={extension}");
+    }
+
+    let invalid_input = temp.path().join("invalid.jsonl");
+    fs::write(
+        &invalid_input,
+        format!("{}\n{{\"not\":\"atif\"}}\n", record("valid")),
+    )?;
+    let invalid_output = temp.path().join("invalid-output");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        invalid_input.to_str().unwrap(),
+        "--output",
+        invalid_output.to_str().unwrap(),
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("invalid.jsonl line 2"));
+    assert!(!invalid_output.exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_accepts_an_explicit_symlink_to_a_regular_file() -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input.json");
+    fs::copy(example_source("atif"), &input)?;
+    let link = temp.path().join("input-link.json");
+    symlink(&input, &link)?;
+    let output = temp.path().join("dataset");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        link.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    run(cli, false, &mut Vec::new(), &mut Vec::new()).await?;
+
+    assert_eq!(
+        fs::read(output.join("trajectories.atif.json"))?,
+        fs::read(&input)?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_recurses_directories_and_preserves_relative_source_paths() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input");
+    let nested = input.join("nested/deeper");
+    fs::create_dir_all(&nested)?;
+    let atif = input.join("root.json");
+    let openai = nested.join("training.json");
+    fs::copy(example_source("atif"), &atif)?;
+    fs::copy(example_source("openai-messages"), &openai)?;
+    fs::write(input.join("README.txt"), "not an import source")?;
+    let output = temp.path().join("dataset");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["output_format"], "preserve");
+    assert_eq!(response["sources"], 2);
+    assert_eq!(response["trajectories"], 3);
+    assert_eq!(
+        response["input_bytes"],
+        fs::metadata(&atif)?.len() + fs::metadata(&openai)?.len()
+    );
+    assert!(response.get("source_path").is_none());
+    assert!(response.get("format").is_none());
+    assert_eq!(fs::read(output.join("root.json"))?, fs::read(&atif)?);
+    assert_eq!(
+        fs::read(output.join("nested/deeper/training.json"))?,
+        fs::read(&openai)?
+    );
+    assert!(!output.join("README.txt").exists());
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT COUNT(*) AS runs FROM dataset.runs",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let count: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(count["runs"], 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_storyline_output_writes_one_root_lance_store() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("dataset");
+    let input = example_source("openai-messages");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["format"], "openai-msg");
+    assert_eq!(response["source_path"], "session_steps.json");
+    assert_eq!(response["output_format"], "storyline-lance");
+    assert_eq!(response["sources"], 1);
+    assert_eq!(response["trajectories"], 2);
+    assert!(output.join("CURRENT").is_file());
+    assert!(output.join("generations").is_dir());
+    assert!(output.join("objects.lance").is_dir());
+    assert!(!output.join("session_steps.json").exists());
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT _file_ AS source_file, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let row: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(row["source_file"], ".");
+    assert_eq!(row["runs"], 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn directory_storyline_output_squashes_sources_into_one_root_store() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input");
+    fs::create_dir_all(input.join("first"))?;
+    fs::create_dir_all(input.join("second"))?;
+    fs::write(
+        input.join("first/shared.json"),
+        serde_json::to_vec(&atif_identity_document("document-first", "session-first"))?,
+    )?;
+    fs::write(
+        input.join("second/shared.json"),
+        serde_json::to_vec(&atif_identity_document("document-second", "session-second"))?,
+    )?;
+    let output = temp.path().join("dataset");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+
+    let response: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(response["output_format"], "storyline-lance");
+    assert_eq!(response["sources"], 2);
+    assert_eq!(response["trajectories"], 2);
+    assert!(output.join("CURRENT").is_file());
+    assert!(output.join("generations").is_dir());
+    assert!(output.join("objects.lance").is_dir());
+    assert!(!output.join("first/shared.json").exists());
+    assert!(!output.join("second/shared.json").exists());
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "query",
+        output.to_str().unwrap(),
+        "SELECT _file_ AS source_file, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_",
+        "--format",
+        "jsonl",
+    ])?;
+    let mut stdout = Vec::new();
+    run(cli, false, &mut stdout, &mut Vec::new()).await?;
+    let row: Value = serde_json::from_slice(&stdout)?;
+    assert_eq!(row["source_file"], ".");
+    assert_eq!(row["runs"], 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn directory_import_dedupes_unknown_warnings_across_sources() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input");
+    fs::create_dir_all(input.join("nested"))?;
+    fs::write(
+        input.join("first.actf.json"),
+        serde_json::to_vec(&actf_with_unknown_step_fields("first", &["alpha"]))?,
+    )?;
+    fs::write(
+        input.join("nested/second.actf.json"),
+        serde_json::to_vec(&actf_with_unknown_step_fields("second", &["beta", "gamma"]))?,
+    )?;
+    let output = temp.path().join("dataset");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ])?;
+    let mut stderr = Vec::new();
+    run(cli, false, &mut Vec::new(), &mut stderr).await?;
+
+    let stderr = String::from_utf8(stderr)?;
+    let warnings = stderr
+        .lines()
+        .filter(|line| line.contains("key=/attempts/1/trajectory/steps/*/vendor_step"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        warnings,
+        [
+            "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/vendor_step occurrences=3"
+        ]
+    );
+    assert!(stderr.contains(
+        "warning: unknown field source=actf key=/attempts/1/trajectory/steps/*/user_content occurrences=3"
+    ));
+    assert!(!stderr.contains("alpha") && !stderr.contains("beta") && !stderr.contains("gamma"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn directory_import_failure_does_not_publish_partial_output() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input");
+    fs::create_dir_all(&input)?;
+    fs::copy(example_source("atif"), input.join("a-valid.json"))?;
+    fs::write(input.join("z-invalid.json"), "not json")?;
+
+    for output_format in [ImportOutputFormat::Preserve, ImportOutputFormat::Storyline] {
+        let output = temp
+            .path()
+            .join(format!("dataset-{}", output_format.response_name()));
+        let mut argv = vec![
+            "pchronicle".to_owned(),
+            "import".to_owned(),
+            "--from".to_owned(),
+            input.to_string_lossy().into_owned(),
+            "--output".to_owned(),
+            output.to_string_lossy().into_owned(),
+        ];
+        if output_format == ImportOutputFormat::Storyline {
+            argv.extend(["--output-format".to_owned(), "storyline".to_owned()]);
+        }
+        let cli = Cli::try_parse_from(argv)?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("z-invalid.json"), "{error:#}");
+        assert!(!output.exists());
+    }
+    assert!(!fs::read_dir(temp.path())?.any(|entry| {
+        entry
+            .ok()
+            .and_then(|entry| entry.file_name().into_string().ok())
+            .is_some_and(|name| name.starts_with(".pchronicle-import-"))
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn storyline_squash_rejects_global_identity_collisions() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    for (field, value, first, second) in [
+        (
+            "document_id",
+            "shared-document",
+            ("shared-document", "session-first"),
+            ("shared-document", "session-second"),
+        ),
+        (
+            "session_id",
+            "shared-session",
+            ("document-first", "shared-session"),
+            ("document-second", "shared-session"),
+        ),
+    ] {
+        let case_root = temp.path().join(field);
+        let input = case_root.join("input");
+        fs::create_dir_all(input.join("nested"))?;
+        fs::write(
+            input.join("first.json"),
+            serde_json::to_vec(&atif_identity_document(first.0, first.1))?,
+        )?;
+        fs::write(
+            input.join("nested/second.json"),
+            serde_json::to_vec(&atif_identity_document(second.0, second.1))?,
+        )?;
+        let output = case_root.join("output");
+        let cli = Cli::try_parse_from([
+            "pchronicle",
+            "import",
+            "--from",
+            input.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--output-format",
+            "storyline",
+        ])?;
+        let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+            .await
+            .unwrap_err();
+        let concise = error.to_string();
+        assert!(concise.contains(field), "{concise}");
+        assert!(concise.contains("first.json"), "{concise}");
+        assert!(concise.contains("nested/second.json"), "{concise}");
+        let message = format!("{error:#}");
+        assert!(message.contains(field), "{message}");
+        assert!(message.contains(value), "{message}");
+        assert!(message.contains("first.json"), "{message}");
+        assert!(message.contains("nested/second.json"), "{message}");
+        assert!(!output.exists());
+    }
+
+    let duplicate_input = temp.path().join("duplicates.json");
+    fs::write(
+        &duplicate_input,
+        serde_json::to_vec(&serde_json::json!([
+            atif_identity_document("same-document", "session-a"),
+            atif_identity_document("same-document", "session-b")
+        ]))?,
+    )?;
+    let duplicate_output = temp.path().join("duplicate-output");
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        duplicate_input.to_str().unwrap(),
+        "--output",
+        duplicate_output.to_str().unwrap(),
+        "--format",
+        "atif",
+        "--output-format",
+        "storyline",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("document_id"), "{message}");
+    assert!(message.contains("same-document"), "{message}");
+    assert!(
+        message.contains("Sources 'duplicates.json' and 'duplicates.json'"),
+        "{message}"
+    );
+    assert!(!duplicate_output.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn storyline_squash_late_source_failure_removes_staging() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input");
+    fs::create_dir_all(&input)?;
+    let documents = (0..256)
+        .map(|index| {
+            atif_identity_document(&format!("document-{index}"), &format!("session-{index}"))
+        })
+        .collect::<Vec<_>>();
+    fs::write(input.join("a-valid.json"), serde_json::to_vec(&documents)?)?;
+    fs::write(input.join("z-invalid.json"), "not json")?;
+    let output = temp.path().join("dataset");
+
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    let error = run(cli, false, &mut Vec::new(), &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("z-invalid.json"), "{error:#}");
+    assert!(!output.exists());
+    assert!(!fs::read_dir(temp.path())?.any(|entry| {
+        entry
+            .ok()
+            .and_then(|entry| entry.file_name().into_string().ok())
+            .is_some_and(|name| name.starts_with(".pchronicle-import-"))
+    }));
+    Ok(())
+}
+
+#[tokio::test]
 async fn import_creates_queryable_lossless_datasets_for_all_example_formats() -> Result<()> {
     let temp = tempfile::tempdir()?;
     for (format, expected_format, source_name, expected_runs) in [
@@ -1226,27 +2069,58 @@ async fn import_reads_a_bounded_explicit_stdin_stream() -> Result<()> {
 }
 
 #[tokio::test]
+async fn storyline_import_from_stdin_writes_one_root_store() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let output = temp.path().join("streamed-storyline");
+    let input = fs::read(example_source("atif"))?;
+    let cli = Cli::try_parse_from([
+        "pchronicle",
+        "import",
+        "--from",
+        "-",
+        "--stream",
+        "--format",
+        "atif",
+        "--output",
+        output.to_str().unwrap(),
+        "--output-format",
+        "storyline",
+    ])?;
+    let mut stdin = input.as_slice();
+    run_with_stdin(cli, false, &mut stdin, &mut Vec::new(), &mut Vec::new()).await?;
+
+    assert!(output.join("CURRENT").is_file());
+    assert!(output.join("generations").is_dir());
+    assert!(output.join("objects.lance").is_dir());
+    assert!(!output.join("trajectories.atif.json").exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn import_rejects_invalid_oversized_and_unsupported_input_without_partial_output(
 ) -> Result<()> {
     let temp = tempfile::tempdir()?;
     let invalid = temp.path().join("invalid.json");
     fs::write(&invalid, "not json")?;
+    let unsupported = temp.path().join("unsupported.md");
+    fs::write(&unsupported, "---\nformat: persisting\n---\n")?;
 
-    for (name, extra, code) in [
-        ("invalid", vec![], "invalid_request"),
+    for (name, input, extra, code) in [
+        ("invalid", &invalid, vec![], "invalid_request"),
         (
             "oversized",
+            &invalid,
             vec!["--max-input-bytes", "1"],
             "resource_exhausted",
         ),
-        ("storyline", vec!["--format", "storyline"], "unsupported"),
+        ("unsupported", &unsupported, vec![], "unsupported"),
     ] {
         let output = temp.path().join(name);
         let mut args = vec![
             "pchronicle",
             "import",
             "--from",
-            invalid.to_str().unwrap(),
+            input.to_str().unwrap(),
             "--output",
             output.to_str().unwrap(),
         ];
@@ -1420,6 +2294,7 @@ async fn export_filters_complete_trajectories_and_streams_finite_json() -> Resul
         .context("OpenAI export must contain a session_steps array")?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["session_id"], "training-002");
+    assert_eq!(rows[0]["id"], "example-openai-002");
     assert!(String::from_utf8(stderr)?.contains("trajectories=1"));
     Ok(())
 }
@@ -1743,67 +2618,125 @@ fn warehouse_config_rejects_unsafe_or_ambiguous_mounts() -> Result<()> {
     fs::create_dir(&dataset)?;
 
     for (name, body, expected) in [
-            (
-                "duplicate.toml",
-                format!(
-                    "[[datasets]]\nname='live'\nuri={dataset:?}\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
-                    dataset = dataset.to_string_lossy()
-                ),
-                "unique",
+        (
+            "duplicate.toml",
+            format!(
+                "[[datasets]]\nname='live'\nuri={dataset:?}\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
+                dataset = dataset.to_string_lossy()
             ),
-            (
-                "missing-default.toml",
-                format!(
-                    "default_dataset='missing'\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
-                    dataset = dataset.to_string_lossy()
-                ),
-                "not mounted",
+            "unique",
+        ),
+        (
+            "missing-default.toml",
+            format!(
+                "default_dataset='missing'\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
+                dataset = dataset.to_string_lossy()
             ),
-            (
-                "credential.toml",
-                "[[datasets]]\nname='live'\nuri='s3://user:secret@bucket/path'\n".into(),
-                "credentials",
+            "not mounted",
+        ),
+        (
+            "credential.toml",
+            "[[datasets]]\nname='live'\nuri='s3://user:secret@bucket/path'\n".into(),
+            "credentials",
+        ),
+        (
+            "unknown.toml",
+            format!(
+                "listen='0.0.0.0:80'\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
+                dataset = dataset.to_string_lossy()
             ),
-            (
-                "unknown.toml",
-                format!(
-                    "listen='0.0.0.0:80'\n[[datasets]]\nname='live'\nuri={dataset:?}\n",
-                    dataset = dataset.to_string_lossy()
-                ),
-                "unknown field",
-            ),
-        ] {
-            let path = temp.path().join(name);
-            fs::write(&path, body)?;
-            let error = load_warehouse_config(&path).unwrap_err();
-            assert!(
-                format!("{error:#}").contains(expected),
-                "unexpected error for {name}: {error:#}"
-            );
-        }
+            "unknown field",
+        ),
+    ] {
+        let path = temp.path().join(name);
+        fs::write(&path, body)?;
+        let error = load_warehouse_config(&path).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(expected),
+            "unexpected error for {name}: {error:#}"
+        );
+    }
     Ok(())
 }
 
 #[test]
-fn serve_cli_defaults_to_loopback_and_rejects_public_listeners() -> Result<()> {
-    let cli = Cli::try_parse_from(["pchronicle", "serve", "--config", "warehouse.toml"])?;
-    let Command::Serve(args) = cli.command else {
-        unreachable!("serve command parsed as another variant")
-    };
-    assert_eq!(args.listen, "127.0.0.1:8080".parse::<SocketAddr>()?);
+fn serve_cli_requires_one_dataset_source_and_an_explicit_service() -> Result<()> {
+    for arguments in [
+        vec![
+            "pchronicle",
+            "serve",
+            "--storage",
+            "/tmp/data",
+            "--control",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "--storage",
+            "/tmp/data",
+            "--listen",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "--storage",
+            "/tmp/data",
+            "--gateway",
+            "gateway.toml",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "--config",
+            "warehouse.toml",
+            "--listen",
+            "127.0.0.1:0",
+        ],
+    ] {
+        assert!(
+            Cli::try_parse_from(arguments.clone()).is_ok(),
+            "valid serve arguments rejected: {arguments:?}"
+        );
+    }
 
-    let cli = Cli::try_parse_from([
-        "pchronicle",
-        "serve",
-        "--config",
-        "warehouse.toml",
-        "--listen",
-        "0.0.0.0:8080",
-    ])?;
-    let Command::Serve(args) = cli.command else {
-        unreachable!("serve command parsed as another variant")
-    };
-    assert!(!args.listen.ip().is_loopback());
+    for arguments in [
+        vec!["pchronicle", "serve", "--storage", "/tmp/data"],
+        vec!["pchronicle", "serve", "--config", "warehouse.toml"],
+        vec![
+            "pchronicle",
+            "serve",
+            "--storage",
+            "a",
+            "--config",
+            "b",
+            "--listen",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "--config",
+            "warehouse.toml",
+            "--control",
+            "127.0.0.1:0",
+        ],
+        vec![
+            "pchronicle",
+            "serve",
+            "--storage",
+            "/tmp/data",
+            "--open",
+            "--control",
+            "127.0.0.1:0",
+        ],
+    ] {
+        assert!(
+            Cli::try_parse_from(arguments.clone()).is_err(),
+            "invalid serve arguments accepted: {arguments:?}"
+        );
+    }
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use persisting_pchronicle::document::{
     decode_json_storylines, encode_json_storylines, DocumentFormat,
 };
-use persisting_pchronicle::model::StorylineDocument;
+use persisting_pchronicle::model::{StorylineDocument, StorylineTimestamp};
 use persisting_pchronicle::storage::StorylineLanceStore;
 use serde_json::{json, Map, Value};
 
@@ -13,6 +13,12 @@ const JSON_FORMATS: [DocumentFormat; 3] = [
     DocumentFormat::Actf,
     DocumentFormat::OpenaiMsg,
 ];
+
+fn timestamp_source(timestamp: &Option<StorylineTimestamp>) -> Option<&str> {
+    timestamp
+        .as_ref()
+        .and_then(StorylineTimestamp::source_string)
+}
 
 struct FormatCase {
     name: &'static str,
@@ -305,7 +311,6 @@ fn common_storyline_semantics(stories: &[StorylineDocument]) -> Value {
                             })).collect::<Vec<_>>())
                             .unwrap_or_default();
                         json!({
-                            "id": turn.id,
                             "message": turn.message,
                             "tool_calls": tool_calls,
                             "observation": observation,
@@ -329,10 +334,13 @@ fn assert_target_modeled_semantics(
             assert_eq!(story.agent.id, "actf-agent");
             assert_eq!(story.agent.name.as_deref(), Some("ACTF Agent"));
             assert!(story.turns.iter().all(|turn| turn.source == "agent"));
-            assert!(story
-                .turns
-                .iter()
-                .all(|turn| turn.timestamp.as_deref() == Some("1970-01-01 00:00:00+00:00")));
+            assert!(
+                story
+                    .turns
+                    .iter()
+                    .all(|turn| timestamp_source(&turn.timestamp)
+                        == Some("1970-01-01 00:00:00+00:00"))
+            );
             assert!(story
                 .turns
                 .iter()
@@ -353,7 +361,7 @@ fn assert_target_modeled_semantics(
             assert_eq!(story.turns[0].source, "user");
             assert_eq!(story.turns[1].source, "agent");
             assert!(story.turns.iter().all(|turn| turn.timestamp.is_none()));
-            assert_eq!(story.turns[1].metrics.as_ref().unwrap()["reward"], 0.0);
+            assert!(story.turns[1].metrics.is_none());
         }
         ("actf", DocumentFormat::Atif) => {
             assert_eq!(story.agent.id, "ACTF Agent");
@@ -365,7 +373,7 @@ fn assert_target_modeled_semantics(
                 Some("complete")
             );
             assert_eq!(
-                story.turns[1].timestamp.as_deref(),
+                timestamp_source(&story.turns[1].timestamp),
                 Some("2026-08-20T00:00:01Z")
             );
             assert_eq!(
@@ -386,15 +394,24 @@ fn assert_target_modeled_semantics(
         ("actf", DocumentFormat::OpenaiMsg) => {
             assert_eq!(story.agent.id, "actf-agent");
             assert_eq!(story.agent.name.as_deref(), Some("actf-agent"));
-            assert!(story
-                .turns
-                .iter()
-                .all(|turn| turn.reasoning_content.is_none()));
+            assert_eq!(story.turns[0].reasoning_content.as_deref(), Some("inspect"));
             assert_eq!(
-                story.turns[1].timestamp.as_deref(),
+                story.turns[1].reasoning_content.as_deref(),
+                Some("complete")
+            );
+            assert_eq!(
+                timestamp_source(&story.turns[1].timestamp),
                 Some("2026-08-20T00:00:01Z")
             );
-            assert_eq!(story.turns[1].metrics.as_ref().unwrap()["reward"], 0.0);
+            assert_eq!(
+                story.turns.iter().map(|turn| turn.id).collect::<Vec<_>>(),
+                vec![2, 4]
+            );
+            assert_eq!(
+                story.turns[1].metrics.as_ref().unwrap()["total_latency_ms"],
+                12
+            );
+            assert_eq!(story.turns[1].latency_ms, Some(12));
             assert_eq!(
                 story.turns[1].tool_calls.as_ref().unwrap()[0].duration_ms,
                 None
@@ -407,7 +424,7 @@ fn assert_target_modeled_semantics(
             assert!(story
                 .turns
                 .iter()
-                .all(|turn| turn.timestamp.as_deref() == Some("2026-08-20T00:00:00Z")));
+                .all(|turn| timestamp_source(&turn.timestamp) == Some("2026-08-20T00:00:00Z")));
             assert_eq!(story.turns[1].model_name.as_deref(), Some("model"));
             assert!(story.turns[1].metrics.as_ref().unwrap()["reward"].is_null());
         }
@@ -415,10 +432,13 @@ fn assert_target_modeled_semantics(
             assert_eq!(story.agent.id, "actf-agent");
             assert_eq!(story.agent.name.as_deref(), Some("ACTF Agent"));
             assert!(story.turns.iter().all(|turn| turn.source == "agent"));
-            assert!(story
-                .turns
-                .iter()
-                .all(|turn| turn.timestamp.as_deref() == Some("2026-08-20 00:00:00+00:00")));
+            assert!(
+                story
+                    .turns
+                    .iter()
+                    .all(|turn| timestamp_source(&turn.timestamp)
+                        == Some("2026-08-20 00:00:00+00:00"))
+            );
             assert_eq!(
                 story.turns[1].metrics.as_ref().unwrap()["prompt_tokens_len"],
                 0

@@ -138,9 +138,9 @@ Source 的全局事务。固定外部文件不会把它转换为 canonical runti
 Ingestion 保留这些边界。规范化表示或 Catalog Snapshot 不会升级 Source 提供的 Evidence。
 
 pVisor 默认构建不链接 Lance/DataFusion。Chronicle mode 为 `spawn` 时，pVisor 启动
-`pchronicle control`，通过带认证的 loopback IPC 提交生命周期与 Gateway 事件，并且只把
-sidecar 成功响应视为 durable acknowledgement。旧模式名 `lance` 是 `spawn` 的兼容别名；
-pVisor 不再自行写 Lance。
+`pchronicle serve --storage ... --control 127.0.0.1:0`，通过带认证的 loopback IPC
+提交生命周期与 Gateway 事件，并且只把 sidecar 成功响应视为 durable acknowledgement。
+旧模式名 `lance` 是 `spawn` 的兼容别名；pVisor 不再自行写 Lance。
 
 ## 故障与恢复
 

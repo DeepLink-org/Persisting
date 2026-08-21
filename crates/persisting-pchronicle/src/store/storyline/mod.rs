@@ -87,7 +87,7 @@ use super::{root_write_lock, LanceMaintenanceOptions, LanceMaintenanceReport};
 
 const CURRENT_FILE: &str = "CURRENT";
 const GENERATIONS_DIR: &str = "generations";
-const STORYLINE_LANCE_SCHEMA_VERSION: u32 = 1;
+const STORYLINE_LANCE_SCHEMA_VERSION: u32 = 2;
 const WRITE_BATCH_ROWS: usize = 8192;
 const STREAM_IMPORT_STORIES: usize = 256;
 const RUN_INDEXES: [(&str, IndexType); 3] = [

@@ -229,8 +229,8 @@ jobs:
           WORK_ROOT: ${{ runner.temp }}/pvisor-portable-examples
         run: just examples-pvisor-portable
 
-      # pPilot/pChronicle retain their existing loops until those components
-      # receive the same `just`-first standardization as pVisor.
+      # pPilot retains its existing loop until it receives the same explicit
+      # scenario runner used by pVisor and pChronicle.
       - name: Run pPilot examples
         run: |
           cargo build --release -q \
@@ -247,8 +247,7 @@ jobs:
       - name: Run pChronicle examples
         run: |
           cargo build --release -q -p persisting-pchronicle-cli --bin pchronicle
-          for example in examples/pchronicle/*; do
-            [ -f "$example/run.sh" ] || continue
-            echo "==> ${example}/run.sh"
-            (cd "$example" && bash run.sh)
-          done
+          cargo build --release -q -p persisting-pchronicle \
+            --example pchronicle_storage_query_benchmark
+          bash examples/pchronicle/test.sh --profile release
+          bash examples/pchronicle/output-contract.sh >/dev/null

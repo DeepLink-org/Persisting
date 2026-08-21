@@ -8,8 +8,8 @@ use clap::{Args, Subcommand};
 use super::{
     run_analysis, run_default, run_export, run_find, run_import, run_list, run_query, run_status,
     AnalysisArgs, AnalysisCommand, AnalysisOptions, DefaultArgs, ErrorMode, ExchangeFormat,
-    ExportArgs, FindArgs, ImportArgs, ListArgs, OutputFormat, QueryArgs, QueryOutputFormat,
-    StatusArgs,
+    ExportArgs, FindArgs, ImportArgs, ImportOutputFormat, ListArgs, OutputFormat, QueryArgs,
+    QueryOutputFormat, StatusArgs,
 };
 
 const DEMO_ATIF: &str = include_str!("../assets/onboard/support-ticket.json");
@@ -751,8 +751,9 @@ async fn capture_exchange(demo: &DemoWorkspace) -> Result<ExchangeOutput> {
             from: demo.atif_source().to_string_lossy().into_owned(),
             output: None,
             format: ExchangeFormat::Atif,
+            output_format: ImportOutputFormat::Preserve,
             stream: false,
-            max_input_bytes: 64 * 1024 * 1024,
+            max_input_bytes: None,
         },
         Some(&settings),
         &mut empty_stdin,

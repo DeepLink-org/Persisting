@@ -162,7 +162,9 @@ impl LocalQueryManifest {
         validate_query_format(format, input)?;
         let extensions: &[&str] = match format {
             DocumentFormat::Atif => &["json", "jsonl", "ndjson"],
-            DocumentFormat::OpenaiMsg | DocumentFormat::Actf => &["json"],
+            DocumentFormat::Storyline | DocumentFormat::OpenaiMsg | DocumentFormat::Actf => {
+                &["json"]
+            }
             _ => {
                 anyhow::bail!(
                     "unsupported direct query format '{}' in {}",
@@ -252,7 +254,10 @@ fn validate_query_format(format: DocumentFormat, path: &Path) -> Result<()> {
     anyhow::ensure!(
         matches!(
             format,
-            DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf
+            DocumentFormat::Storyline
+                | DocumentFormat::Atif
+                | DocumentFormat::OpenaiMsg
+                | DocumentFormat::Actf
         ),
         "unsupported direct query format '{}' in {}",
         format,

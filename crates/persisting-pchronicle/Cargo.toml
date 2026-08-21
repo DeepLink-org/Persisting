@@ -84,6 +84,10 @@ harness = false
 name = "langfuse_backend_feasibility"
 required-features = ["lance-store"]
 
+[[example]]
+name = "pchronicle_storage_query_benchmark"
+required-features = ["lance-store"]
+
 [[test]]
 name = "search_integration"
 required-features = ["search"]

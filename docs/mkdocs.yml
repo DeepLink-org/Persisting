@@ -132,7 +132,10 @@ plugins:
             0003 pChronicle ownership: 0003 pChronicle 所有权
             0004 ACTF format: 0004 ACTF 格式
             0005 pChronicle revision lineage: 0005 pChronicle 修订谱系
+            0006 pChronicle Vortex backend: 0006 pChronicle Vortex 后端
             0007 Events contract and pChronicle sidecar: 0007 事件契约与 pChronicle Sidecar
+            0008 ATIF format: 0008 ATIF 格式
+            0009 OpenAI Messages format: 0009 OpenAI Messages 格式
             Research: 调研
             TransferQueue comparison: TransferQueue 对比
             TransferQueue interface mapping: TransferQueue 接口映射
@@ -230,7 +233,10 @@ nav:
           - 0003 pChronicle ownership: rfcs/0003-pchronicle-ownership.md
           - 0004 ACTF format: rfcs/0004-actf-format.md
           - 0005 pChronicle revision lineage: rfcs/0005-pchronicle-revision-lineage.md
+          - 0006 pChronicle Vortex backend: rfcs/0006-pchronicle-vortex-backend.md
           - 0007 Events contract and pChronicle sidecar: rfcs/0007-events-contract-pchronicle-sidecar.md
+          - 0008 ATIF format: rfcs/0008-atif-format.md
+          - 0009 OpenAI Messages format: rfcs/0009-openai-messages-format.md
       - Research:
           - TransferQueue comparison: design/references/transfer-queue-comparison.md
           - TransferQueue interface mapping: design/references/transfer-queue-interface.md

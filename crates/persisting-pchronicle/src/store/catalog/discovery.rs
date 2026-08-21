@@ -38,7 +38,7 @@ impl Candidate {
                 ..
             } => (
                 file.clone(),
-                Some(DocumentFormat::Storyline.as_str().to_string()),
+                Some(DocumentFormat::StorylineLance.as_str().to_string()),
                 CatalogSourceKind::Store,
                 *size_bytes,
                 last_modified.clone(),
@@ -107,7 +107,7 @@ pub(super) async fn freeze_candidate(
     let mut source_row = candidate.source_stub();
     match candidate {
         Candidate::Storyline { file, uri, .. } => {
-            ensure_format_hint(mount, DocumentFormat::Storyline, &file)?;
+            ensure_format_hint(mount, DocumentFormat::StorylineLance, &file)?;
             let paths = StorylineDataSource::pin_uri(&uri)
                 .await
                 .with_context(|| format!("pin Storyline source {uri}"))?;

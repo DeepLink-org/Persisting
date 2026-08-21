@@ -5,12 +5,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use lance::deps::arrow_array::{
     Array, BooleanArray, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+    TimestampNanosecondArray,
 };
 use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, TimeUnit};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::super::storyline_model::{StoryRunRow, StoryStepRow, StoryToolCallRow};
+use crate::model::StorylineTimestamp;
 
 fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
     Field::new(name, data_type, nullable)
@@ -18,7 +20,8 @@ fn field(name: &str, data_type: DataType, nullable: bool) -> Field {
 
 pub fn story_runs_arrow_schema() -> Arc<ArrowSchema> {
     Arc::new(ArrowSchema::new(vec![
-        field("schema_version", DataType::Utf8, true),
+        field("schema_version", DataType::Utf8, false),
+        field("origin_json", DataType::Utf8, true),
         field("document_id", DataType::Utf8, false),
         field("storage_ordinal", DataType::Int64, false),
         field("trajectory_id_explicit", DataType::Boolean, false),
@@ -48,16 +51,16 @@ pub fn story_steps_arrow_schema() -> Arc<ArrowSchema> {
         field("run_id", DataType::Utf8, true),
         field("session_id", DataType::Utf8, false),
         field("step_id", DataType::Int64, false),
+        field("turn_ordinal", DataType::Int64, false),
         field("kind", DataType::Utf8, true),
         field("effective_kind", DataType::Utf8, false),
         field(
             "timestamp",
-            DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
             true,
         ),
-        // Keep the exact wire spelling for lossless reconstruction. `timestamp`
-        // remains the normalized query column used by DataFusion.
-        field("timestamp_rfc3339", DataType::Utf8, true),
+        // Keep the authoritative JSON scalar for lossless string/number recovery.
+        field("timestamp_source_json", DataType::Utf8, true),
         field("source", DataType::Utf8, false),
         field("message_json", DataType::Utf8, false),
         field("reasoning_content", DataType::Utf8, true),
@@ -68,7 +71,9 @@ pub fn story_steps_arrow_schema() -> Arc<ArrowSchema> {
         field("is_copied_context", DataType::Boolean, true),
         field("latency_ms", DataType::Int64, true),
         field("ttft_ms", DataType::Int64, true),
+        field("had_tool_calls", DataType::Boolean, false),
         field("had_observation", DataType::Boolean, false),
+        field("observation_json", DataType::Utf8, true),
         field("extra_json", DataType::Utf8, true),
     ]))
 }
@@ -107,21 +112,15 @@ fn opt_utf8_owned(values: Vec<Option<String>>) -> StringArray {
 }
 
 pub(crate) fn timestamp_array<'a>(
-    values: impl IntoIterator<Item = Option<&'a str>>,
-) -> Result<TimestampMillisecondArray> {
-    let values = values
-        .into_iter()
-        .map(|value| {
-            value
-                .map(|value| {
-                    chrono::DateTime::parse_from_rfc3339(value)
-                        .with_context(|| format!("parse Storyline timestamp '{value}' as RFC3339"))
-                        .map(|timestamp| timestamp.timestamp_millis())
-                })
-                .transpose()
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(TimestampMillisecondArray::from(values).with_timezone("UTC"))
+    values: impl IntoIterator<Item = Option<&'a StorylineTimestamp>>,
+) -> TimestampNanosecondArray {
+    TimestampNanosecondArray::from(
+        values
+            .into_iter()
+            .map(|value| value.map(StorylineTimestamp::timestamp_nanos))
+            .collect::<Vec<_>>(),
+    )
+    .with_timezone("UTC")
 }
 
 fn json<T: Serialize>(value: &T) -> Result<String> {
@@ -136,7 +135,12 @@ pub fn story_runs_to_batch(rows: &[StoryRunRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         story_runs_arrow_schema(),
         vec![
-            Arc::new(opt_utf8(rows.iter().map(|r| r.schema_version.as_deref()))),
+            Arc::new(req_utf8(rows.iter().map(|r| r.schema_version.as_str()))),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.origin))
+                    .collect::<Result<Vec<_>>>()?,
+            )),
             Arc::new(req_utf8(rows.iter().map(|r| r.document_id.as_str()))),
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.storage_ordinal).collect::<Vec<_>>(),
@@ -220,12 +224,22 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
             Arc::new(Int64Array::from(
                 rows.iter().map(|r| r.step_id).collect::<Vec<_>>(),
             )),
+            Arc::new(Int64Array::from(
+                rows.iter().map(|r| r.turn_ordinal).collect::<Vec<_>>(),
+            )),
             Arc::new(opt_utf8(rows.iter().map(|r| r.kind.as_deref()))),
             Arc::new(req_utf8(rows.iter().map(|r| r.effective_kind.as_str()))),
-            Arc::new(timestamp_array(
-                rows.iter().map(|r| r.timestamp.as_deref()),
-            )?),
-            Arc::new(opt_utf8(rows.iter().map(|r| r.timestamp.as_deref()))),
+            Arc::new(timestamp_array(rows.iter().map(|r| r.timestamp.as_ref()))),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| {
+                        r.timestamp
+                            .as_ref()
+                            .map(|timestamp| json(timestamp.source_value()))
+                            .transpose()
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
             Arc::new(req_utf8(rows.iter().map(|r| r.source.as_str()))),
             Arc::new(req_utf8_owned(
                 rows.iter()
@@ -259,7 +273,15 @@ pub fn story_steps_to_batch(rows: &[StoryStepRow]) -> Result<RecordBatch> {
                 rows.iter().map(|r| r.ttft_ms).collect::<Vec<_>>(),
             )),
             Arc::new(BooleanArray::from(
+                rows.iter().map(|r| r.had_tool_calls).collect::<Vec<_>>(),
+            )),
+            Arc::new(BooleanArray::from(
                 rows.iter().map(|r| r.had_observation).collect::<Vec<_>>(),
+            )),
+            Arc::new(opt_utf8_owned(
+                rows.iter()
+                    .map(|r| opt_json(&r.observation))
+                    .collect::<Result<_>>()?,
             )),
             Arc::new(opt_utf8_owned(
                 rows.iter()
@@ -356,21 +378,63 @@ fn required_i64_at(batch: &RecordBatch, name: &str, row: usize) -> Result<i64> {
     i64_at(batch, name, row)?.ok_or_else(|| anyhow::anyhow!("null required column '{name}'"))
 }
 
-fn timestamp_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<String>> {
+fn timestamp_nanos_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<i64>> {
     let column = batch.column(column_index(batch, name)?);
-    let array = column
-        .as_any()
-        .downcast_ref::<TimestampMillisecondArray>()
-        .ok_or_else(|| anyhow::anyhow!("expected Timestamp(Millisecond, UTC) column '{name}'"))?;
-    if array.is_null(row) {
-        return Ok(None);
+    match column.data_type() {
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+            let array = column
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .ok_or_else(|| anyhow::anyhow!("invalid nanosecond timestamp column '{name}'"))?;
+            Ok((!array.is_null(row)).then(|| array.value(row)))
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            let array = column
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .ok_or_else(|| anyhow::anyhow!("invalid millisecond timestamp column '{name}'"))?;
+            if array.is_null(row) {
+                return Ok(None);
+            }
+            Ok(Some(array.value(row).checked_mul(1_000_000).ok_or_else(
+                || anyhow::anyhow!("legacy timestamp millisecond value is outside nanosecond range"),
+            )?))
+        }
+        data_type => anyhow::bail!(
+            "expected Timestamp(Nanosecond, UTC) or legacy Timestamp(Millisecond, UTC) column '{name}', got {data_type:?}"
+        ),
     }
-    let value = array.value(row);
-    let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value)
-        .ok_or_else(|| anyhow::anyhow!("timestamp millisecond value {value} is out of range"))?;
-    Ok(Some(
-        timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
-    ))
+}
+
+fn timestamp_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<StorylineTimestamp>> {
+    let semantic_nanos = timestamp_nanos_at(batch, name, row)?;
+    let source = match string_at_if_present(batch, "timestamp_source_json", row)? {
+        Some(value) => Some(parse_json::<serde_json::Value>(
+            value,
+            "timestamp_source_json",
+        )?),
+        None => {
+            string_at_if_present(batch, "timestamp_rfc3339", row)?.map(serde_json::Value::String)
+        }
+    };
+    let Some(semantic_nanos) = semantic_nanos else {
+        anyhow::ensure!(
+            source.is_none(),
+            "null timestamp has a non-null source scalar"
+        );
+        return Ok(None);
+    };
+    let timestamp = match source {
+        Some(source) => StorylineTimestamp::from_json(source)?,
+        None => StorylineTimestamp::from_utc(
+            chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(semantic_nanos),
+        )?,
+    };
+    anyhow::ensure!(
+        timestamp.timestamp_nanos() == semantic_nanos,
+        "timestamp semantic value disagrees with its source scalar"
+    );
+    Ok(Some(timestamp))
 }
 
 fn bool_at(batch: &RecordBatch, name: &str, row: usize) -> Result<Option<bool>> {
@@ -414,7 +478,8 @@ pub fn story_runs_from_batch(batch: &RecordBatch) -> Result<Vec<StoryRunRow>> {
     (0..batch.num_rows())
         .map(|row| {
             Ok(StoryRunRow {
-                schema_version: string_at(batch, "schema_version", row)?,
+                schema_version: required_string_at(batch, "schema_version", row)?,
+                origin: optional_json_at(batch, "origin_json", row)?,
                 document_id: required_string_at(batch, "document_id", row)?,
                 storage_ordinal: required_i64_at(batch, "storage_ordinal", row)?,
                 trajectory_id_explicit: required_bool_at(batch, "trajectory_id_explicit", row)?,
@@ -458,12 +523,10 @@ pub fn story_steps_from_batch(batch: &RecordBatch) -> Result<Vec<StoryStepRow>> 
                 run_id: string_at(batch, "run_id", row)?,
                 session_id: required_string_at(batch, "session_id", row)?,
                 step_id: required_i64_at(batch, "step_id", row)?,
+                turn_ordinal: required_i64_at(batch, "turn_ordinal", row)?,
                 kind: string_at(batch, "kind", row)?,
                 effective_kind: required_string_at(batch, "effective_kind", row)?,
-                timestamp: match string_at_if_present(batch, "timestamp_rfc3339", row)? {
-                    Some(value) => Some(value),
-                    None => timestamp_at(batch, "timestamp", row)?,
-                },
+                timestamp: timestamp_at(batch, "timestamp", row)?,
                 source: required_string_at(batch, "source", row)?,
                 message: parse_json(
                     required_string_at(batch, "message_json", row)?,
@@ -477,7 +540,9 @@ pub fn story_steps_from_batch(batch: &RecordBatch) -> Result<Vec<StoryStepRow>> 
                 is_copied_context: bool_at(batch, "is_copied_context", row)?,
                 latency_ms: i64_at(batch, "latency_ms", row)?,
                 ttft_ms: i64_at(batch, "ttft_ms", row)?,
+                had_tool_calls: required_bool_at(batch, "had_tool_calls", row)?,
                 had_observation: required_bool_at(batch, "had_observation", row)?,
+                observation: optional_json_at(batch, "observation_json", row)?,
                 extra: optional_json_at(batch, "extra_json", row)?,
             })
         })
@@ -519,21 +584,21 @@ mod tests {
 
     #[test]
     fn empty_batches_keep_all_three_schemas() {
-        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 21);
-        assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 20);
+        assert_eq!(story_runs_to_batch(&[]).unwrap().num_columns(), 22);
+        assert_eq!(story_steps_to_batch(&[]).unwrap().num_columns(), 23);
         assert_eq!(story_tool_calls_to_batch(&[]).unwrap().num_columns(), 12);
     }
 
     #[test]
-    fn step_timestamps_preserve_rfc3339_lexical_value() {
+    fn step_timestamps_store_nanoseconds_and_preserve_source_scalars() {
         let schema = story_steps_arrow_schema();
         assert_eq!(
             schema.field_with_name("timestamp").unwrap().data_type(),
-            &DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))
+            &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into()))
         );
         assert_eq!(
             schema
-                .field_with_name("timestamp_rfc3339")
+                .field_with_name("timestamp_source_json")
                 .unwrap()
                 .data_type(),
             &DataType::Utf8
@@ -541,17 +606,18 @@ mod tests {
 
         let mut rows = Vec::new();
         for (step_id, timestamp) in [
-            (1, "2026-08-14T12:34:56.789123+08:00"),
-            (2, "2026-08-14T04:34:56.789Z"),
+            (1, serde_json::json!(1.25)),
+            (2, serde_json::json!("1970-01-01T00:00:01.250000000Z")),
         ] {
             rows.push(StoryStepRow {
                 document_id: "d".into(),
                 run_id: Some("r".into()),
                 session_id: "s".into(),
                 step_id,
+                turn_ordinal: step_id - 1,
                 kind: None,
                 effective_kind: "dialogue".into(),
-                timestamp: Some(timestamp.into()),
+                timestamp: Some(crate::model::StorylineTimestamp::from_json(timestamp).unwrap()),
                 source: "user".into(),
                 message: serde_json::json!("hello"),
                 reasoning_content: None,
@@ -562,7 +628,9 @@ mod tests {
                 is_copied_context: None,
                 latency_ms: None,
                 ttft_ms: None,
+                had_tool_calls: false,
                 had_observation: false,
+                observation: None,
                 extra: None,
             });
         }
@@ -572,24 +640,113 @@ mod tests {
             .column_by_name("timestamp")
             .unwrap()
             .as_any()
-            .downcast_ref::<TimestampMillisecondArray>()
+            .downcast_ref::<lance::deps::arrow_array::TimestampNanosecondArray>()
             .unwrap();
         assert_eq!(normalized.value(0), normalized.value(1));
         let decoded = story_steps_from_batch(&batch).unwrap();
         assert_eq!(
-            decoded[0].timestamp.as_deref(),
-            Some("2026-08-14T12:34:56.789123+08:00")
+            decoded[0].timestamp.as_ref().unwrap().source_value(),
+            &serde_json::json!(1.25)
         );
         assert_eq!(
-            decoded[1].timestamp.as_deref(),
-            Some("2026-08-14T04:34:56.789Z")
+            decoded[1].timestamp.as_ref().unwrap().source_value(),
+            &serde_json::json!("1970-01-01T00:00:01.250000000Z")
         );
     }
 
     #[test]
-    fn step_timestamp_rejects_non_rfc3339_values() {
-        let error = timestamp_array([Some("2026/08/14 12:34:56")]).unwrap_err();
-        assert!(error.to_string().contains("as RFC3339"), "{error:#}");
+    fn step_timestamp_rejects_semantic_source_disagreement() {
+        let rows = vec![StoryStepRow {
+            document_id: "d".into(),
+            run_id: Some("r".into()),
+            session_id: "s".into(),
+            step_id: 1,
+            turn_ordinal: 0,
+            kind: None,
+            effective_kind: "dialogue".into(),
+            timestamp: Some(
+                crate::model::StorylineTimestamp::from_json(serde_json::json!(1.25)).unwrap(),
+            ),
+            source: "user".into(),
+            message: serde_json::json!("hello"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            had_tool_calls: false,
+            had_observation: false,
+            observation: None,
+            extra: None,
+        }];
+        let batch = story_steps_to_batch(&rows).unwrap();
+        let source_index = batch.schema().index_of("timestamp_source_json").unwrap();
+        let mut columns = batch.columns().to_vec();
+        columns[source_index] = Arc::new(StringArray::from(vec![Some("\"1970-01-01T00:00:02Z\"")]));
+        let corrupt = RecordBatch::try_new(batch.schema(), columns).unwrap();
+
+        let error = story_steps_from_batch(&corrupt).unwrap_err();
+        assert!(error.to_string().contains("disagrees"), "{error:#}");
+    }
+
+    #[test]
+    fn step_timestamp_reads_legacy_millisecond_and_rfc3339_columns() {
+        let rows = vec![StoryStepRow {
+            document_id: "d".into(),
+            run_id: Some("r".into()),
+            session_id: "s".into(),
+            step_id: 1,
+            turn_ordinal: 0,
+            kind: None,
+            effective_kind: "dialogue".into(),
+            timestamp: None,
+            source: "user".into(),
+            message: serde_json::json!("hello"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            had_tool_calls: false,
+            had_observation: false,
+            observation: None,
+            extra: None,
+        }];
+        let current = story_steps_to_batch(&rows).unwrap();
+        let timestamp_index = current.schema().index_of("timestamp").unwrap();
+        let source_index = current.schema().index_of("timestamp_source_json").unwrap();
+        let mut fields = current
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .collect::<Vec<_>>();
+        fields[timestamp_index] = field(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+            true,
+        );
+        fields[source_index] = field("timestamp_rfc3339", DataType::Utf8, true);
+        let schema = Arc::new(ArrowSchema::new(fields));
+        let mut columns = current.columns().to_vec();
+        columns[timestamp_index] =
+            Arc::new(TimestampMillisecondArray::from(vec![Some(1_250)]).with_timezone("UTC"));
+        columns[source_index] = Arc::new(StringArray::from(vec![Some("1970-01-01T00:00:01.250Z")]));
+        let legacy = RecordBatch::try_new(schema, columns).unwrap();
+
+        let decoded = story_steps_from_batch(&legacy).unwrap();
+        let timestamp = decoded[0].timestamp.as_ref().unwrap();
+        assert_eq!(timestamp.timestamp_nanos(), 1_250_000_000);
+        assert_eq!(
+            timestamp.source_value(),
+            &serde_json::json!("1970-01-01T00:00:01.250Z")
+        );
     }
 
     #[test]

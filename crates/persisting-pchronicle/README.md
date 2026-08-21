@@ -49,7 +49,8 @@ OpenAI Msg → Storyline Lance → OpenAI Msg
 ```
 
 已建模的 Storyline 语义（包括嵌套 subagent 顺序、`trajectory_id` 与 run-scoped
-`session_id` 的独立身份、RFC3339 原始偏移与亚毫秒精度，以及 ACTF/OpenAI 的数组顺序、
+`session_id` 的独立身份、timestamp 的字符串/数值源形态、RFC3339 原始偏移与纳秒精度，
+以及 ACTF/OpenAI 的数组顺序、
 attempt 分组和多 session 关系）按其规范化表示保存。已知字段的 missing/null 区别，以及
 输入的物理容器形态（例如 ATIF 顶层单对象与单元素数组），都会被规范化，因而不作为
 往返保真承诺。
@@ -60,10 +61,12 @@ attempt 分组和多 session 关系）按其规范化表示保存。已知字段
 unknown field 与它们冲突，编码会 fail closed，而不会覆盖目标字段或静默丢弃冲突。
 
 跨格式、多跳转换使用保留的 version-1 `_storyline` envelope 携带这些 unknown fields，确保目标
-格式不能直接表示的源语义仍可在后续转换中恢复。每条 trajectory 跨所有来源默认最多
-4,096 个 unknown fields、最多 1 MiB；任一上限溢出都会拒绝整条 Storyline，而非截断或只
-保留部分未知字段。Canonical Event → Storyline 是有意的有损规范化投影，不属于上述无损
-承诺。
+格式不能直接表示的源语义仍可在后续转换中恢复。每条 trajectory 跨所有来源默认不限制
+unknown field 数量与逻辑字节数；显式配置的有限上限仍会在溢出时拒绝整条 Storyline，而非
+截断或只保留部分未知字段。`pchronicle import` 会按 `(source format, 归一化 key)` 去重，向
+stderr 告警本次命令中每个未知键及其出现次数（数组索引归一化为 `*`，不打印值）；去重范围是
+单次命令，目录递归 import 时同一集合覆盖所有子文件。Canonical Event → Storyline 是有意的
+有损规范化投影，不属于上述无损承诺。
 
 Storyline Lance 的 `objects.lance` 可用于 unknown field 值的内部去重/卸载优化；它从不出现在
 公共 Storyline 模型或任何公共 wire 输出中。Lance 内部另用 `storage_ordinal` 维护全局稳定
@@ -128,6 +131,7 @@ pchronicle ls ./dataset
 pchronicle status ./dataset
 pchronicle query ./dataset "SELECT * FROM dataset.runs"
 pchronicle import --from input.json --output ./imported --format atif
+pchronicle import --from ./corpus --output ./normalized --output-format storyline
 pchronicle export --from ./imported --output output.json --format storyline
 pchronicle project build --from ./run/events.lance --output ./run/storyline
 pchronicle project verify --from ./run/storyline --source ./run/events.lance

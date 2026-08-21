@@ -3,6 +3,13 @@
 `StorylineLanceStore` 是 pChronicle 的 Storyline-native 规范化物理表示。它与
 `events.lance` 原始事件日志并列存在，不替代后者。
 
+逻辑 wire schema 以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)
+为准；ACTF、ATIF 与 OpenAI Messages 的逐字段转换分别以
+[RFC-0004](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping)、
+[RFC-0008](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping)和
+[RFC-0009](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping)
+的映射章节为准。本设计只定义 Storyline 的 Lance 物理投影。
+
 ## Projection contract and closed loop
 
 Storyline retains the Hub interchange contract (path A), while the three-table store is a
@@ -84,15 +91,20 @@ projection ownership 见[轨迹存储](trajectory-storage.md)，用户查询流�
 常用 JSON 值（message、arguments、metrics、extra 等）以 UTF-8 JSON 列保存；身份、
 顺序、类型、时间和性能字段使用独立的 Arrow 标量列，便于过滤和分析。
 
-`steps.timestamp` 是规范化到 UTC 的 `Timestamp(Millisecond, "UTC")`。写入端拒绝无法
-解析为 RFC3339 的非空时间；原始时区偏移和亚毫秒精度不会写入物理表，读取为 Storyline /
-ATIF 时统一编码成带 `Z` 后缀、精度不超过毫秒的 UTC 字符串（整秒省略小数部分）。SQL
-排序、范围过滤和时间聚合直接使用 `timestamp`。这是一次物理 schema 变更；旧三表投影
-需要从 canonical events 或原始交换文件重建，不对既有 Lance generation 做原地类型猜测。
+`runs.schema_version` 与 `runs.origin_json` 保存严格 Storyline wire 版本和来源身份。
+`steps.turn_ordinal` 是 turn 数组顺序的权威列；`step_id` 只作身份，不参与重排。
+`had_tool_calls` 让显式空数组与字段缺失保持可区分。
 
-tool result 不再留在 step 的 observation JSON 中。写入时根据
-`observation.results[].source_call_id` 关联到对应 tool call，并保存到该行的
-`results_json`。缺失或错误的关联会拒绝整次写入。
+`steps.timestamp` 是规范化到 UTC 的 `Timestamp(Nanosecond, "UTC")` 查询列；
+`timestamp_source_json` 保存权威 JSON 标量，因此 RFC3339 字符串和 Unix epoch 秒数值
+都能无损恢复。写入端拒绝无效、越界或无法精确表示为纳秒的非空时间。SQL 排序、范围
+过滤和时间聚合使用 `timestamp`，重建 Storyline 时使用权威源标量。读取端继续兼容旧的
+`Timestamp(Millisecond, "UTC")` 与 `timestamp_rfc3339` 布局。
+
+`steps.observation_json` 保存完整、权威的任意 JSON observation，`had_observation` 保存
+出现语义。`tool_calls.results_json` 只是从 `observation.results[]` 可关联项派生的查询列，
+不会反向重建 observation；读取时若派生列与权威 observation 不一致会 fail closed。
+turn ordinal、call index 也必须从零连续且唯一。
 
 ## 大块内容层
 
@@ -198,7 +210,7 @@ root/
 `replace_storyline` 不再读取或重写全库，而是按各表主键执行 merge-upsert，并只删除指定
 `document_id` 中已经不再存在的旧键。每次替换
 会产生一个新的逻辑 snapshot；
-`CURRENT` 是一段 JSON，记录必需的 store `schema_version: 1`、逻辑 snapshot id、物理
+`CURRENT` 是一段 JSON，记录必需的 store `schema_version: 2`、逻辑 snapshot id、物理
 `table_generation`、三张表以及对象表各自精确的 Lance version id。对象先持久化，三张业务表随后写入，最后才更新 `CURRENT`；
 因此失败最多留下不可达对象，不会发布悬空引用或跨表半提交。
 
@@ -377,8 +389,9 @@ SQL / DataFrame
 `DeserializeSeed` 把查询 projection 和安全谓词传入 `Visitor`；未引用字段交给
 `IgnoredAny` 做语法扫描，不构造 `Value`/Storyline。ATIF JSONL/NDJSON 以 `BufRead`
 逐记录读取；JSON array 的结构扫描器识别字符串和转义，在不构造 DOM 的情况下提取单个
-trajectory/document，再通过 slice decoder 执行投影解析。单条 JSONL 记录或 array element 由
-`max_record_bytes` 限制；单对象直接从 reader 解码。三种路径都不先复制整文件。
+trajectory/document，再通过 slice decoder 执行投影解析。调用方可显式设置
+`max_record_bytes` 限制单个 document/record；默认不设单记录上限，只保留
+`max_file_bytes` 文件边界。三种路径都不先复制整文件。
 Arrow encoder 也只创建投影列，`COUNT(*)` 使用合法的零列 batch。轻量路径
 校验 JSON、必需字段、重复 session、命中文档内的重复 step 和当前表内约束；跨表引用
 完整性仍由导入路径或完整 fallback 负责。这一边界使临时查询不承担导入语义，同时不降低
