@@ -4,7 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+mod claude_code;
+mod mini_swe_agent;
+mod openhands;
 mod runtime;
+mod swe_agent;
 
 use serde_json::{json, Value};
 
@@ -14,8 +18,8 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write, atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{
-    AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
-    ToolCall,
+    AdapterPlan, AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome,
+    ReplayPlan, ToolBatch, ToolCall,
 };
 use crate::process::{run_process, ProcessSpec};
 pub(crate) use runtime::{resolve_launch_spec, LaunchSpec};
@@ -46,12 +50,12 @@ pub struct RunContext<'a> {
     pub nonce: &'a str,
 }
 
-pub fn build_plan(request: &PlaybackRequest) -> Result<ReplayPlan, ReplayError> {
+pub fn build_plan(request: &PlaybackRequest) -> Result<AdapterPlan, ReplayError> {
     match request.agent {
-        AgentKind::ClaudeCode => build_claude_plan(request),
-        AgentKind::MiniSweAgent => build_mini_plan(request),
-        AgentKind::Openhands => build_openhands_plan(request),
-        AgentKind::SweAgent => build_swe_plan(request),
+        AgentKind::ClaudeCode => claude_code::build(request),
+        AgentKind::MiniSweAgent => mini_swe_agent::build(request),
+        AgentKind::Openhands => openhands::build(request),
+        AgentKind::SweAgent => swe_agent::build(request),
     }
 }
 
@@ -285,15 +289,15 @@ fn claude_render_text(content: &Value) -> String {
 }
 
 pub fn run(
-    plan: &ReplayPlan,
+    plan: &AdapterPlan,
     context: &RunContext<'_>,
     journal: &mut Journal,
 ) -> Result<ReplayOutcome, ReplayError> {
-    match plan.agent {
-        AgentKind::ClaudeCode => run_claude(plan, context, journal),
-        AgentKind::MiniSweAgent => run_mini(plan, context, journal),
-        AgentKind::Openhands => run_openhands(plan, context, journal),
-        AgentKind::SweAgent => run_swe(plan, context, journal),
+    match plan {
+        AdapterPlan::ClaudeCode(plan) => claude_code::execute(plan, context, journal),
+        AdapterPlan::MiniSweAgent(plan) => mini_swe_agent::execute(plan, context, journal),
+        AdapterPlan::Openhands(plan) => openhands::execute(plan, context, journal),
+        AdapterPlan::SweAgent(plan) => swe_agent::execute(plan, context, journal),
     }
 }
 
@@ -2865,7 +2869,7 @@ fn run_sdk_bridge(
                     .unwrap_or_else(|| runtime.python.clone());
                 (
                     program,
-                    include_str!("../assets/mini_swe_agent_runner.py"),
+                    include_str!("../../assets/mini_swe_agent_runner.py"),
                     "mini-swe-agent-runner.py",
                     json!({
                         "source": source,
@@ -2892,7 +2896,7 @@ fn run_sdk_bridge(
                 atomic_write_json(&source, &plan.native)?;
                 (
                     launch.entrypoint.clone(),
-                    include_str!("../assets/swe_agent_runner.py"),
+                    include_str!("../../assets/swe_agent_runner.py"),
                     "swe-agent-runner.py",
                     json!({
                         "trajectory": source,
@@ -3910,7 +3914,9 @@ mod tests {
         if !request.trajectory.exists() {
             return;
         }
-        let plan = build_plan(&request).unwrap();
+        let AdapterPlan::ClaudeCode(plan) = build_plan(&request).unwrap() else {
+            panic!("Claude fixture produced a non-Claude plan");
+        };
         assert_eq!(plan.batches.len(), 1);
         assert_eq!(plan.batches[0].tool_calls[0].name, "Bash");
         let replacements = BTreeMap::from([(
@@ -4014,7 +4020,9 @@ mod tests {
             run_id: Some("test".into()),
             disable_thinking: false,
         };
-        let plan = build_plan(&request).unwrap();
+        let AdapterPlan::ClaudeCode(plan) = build_plan(&request).unwrap() else {
+            panic!("Claude fixture produced a non-Claude plan");
+        };
         assert_eq!(plan.batches.len(), 1);
         assert_eq!(plan.batches[0].tool_calls.len(), 2);
         assert_eq!(

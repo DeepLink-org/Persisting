@@ -10,8 +10,9 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize};
 use crate::journal::Journal;
 use crate::model::{
-    AgentKind, AgentResult, AgentStatus, Artifact, ExecutionReport, PlaybackRequest, ReplayFailure,
-    ReplayMode, ReplayOutcome, ReplayPhase, ReplayQuality, ReplayResult, RESULT_SCHEMA_VERSION,
+    AdapterPlan, AgentKind, AgentResult, AgentStatus, Artifact, ExecutionReport, PlaybackRequest,
+    ReplayFailure, ReplayMode, ReplayOutcome, ReplayPhase, ReplayQuality, ReplayResult,
+    RESULT_SCHEMA_VERSION,
 };
 
 pub fn execute(request: PlaybackRequest) -> Result<ExecutionReport, ReplayError> {
@@ -42,15 +43,15 @@ fn execute_with_run_id(
     let state_dir = state_root.join(&run_id);
     let output_dir = output_root.join(&run_id);
     let plan = build_plan(&request)?;
-    validate_step_budget(request.mode, request.max_steps, plan.prefix_model_turns)?;
+    validate_step_budget(request.mode, request.max_steps, plan.prefix_model_turns())?;
     let launch = resolve_launch_spec(&request)?;
     if let Some(launch) = &launch {
-        if launch.version != plan.agent.supported_version() {
+        if launch.version != plan.agent().supported_version() {
             return Err(ReplayError::new(
                 ReplayErrorKind::UnsupportedVersion,
                 format!(
                     "trajectory version {:?} does not match agent version {:?}",
-                    plan.agent.supported_version(),
+                    plan.agent().supported_version(),
                     launch.version
                 ),
             ));
@@ -98,7 +99,7 @@ fn execute_allocated(
     run_id: &str,
     state_dir: &Path,
     output_dir: &Path,
-    plan: &crate::model::ReplayPlan,
+    plan: &AdapterPlan,
     launch: Option<&LaunchSpec>,
     journal: &mut Journal,
 ) -> Result<ReplayResult, ReplayError> {
@@ -107,14 +108,14 @@ fn execute_allocated(
         [
             ("run_id".into(), json!(run_id)),
             ("agent".into(), json!(request.agent.as_str())),
-            ("source_sha256".into(), json!(plan.source_sha256)),
-            ("after_step".into(), json!(plan.after_step)),
+            ("source_sha256".into(), json!(plan.source_sha256())),
+            ("after_step".into(), json!(plan.after_step())),
         ],
     )?;
     journal.append(
         "plan_validated",
         [
-            ("profile".into(), json!(plan.agent.profile())),
+            ("profile".into(), json!(plan.agent().profile())),
             ("tool_calls".into(), json!(plan.calls().count())),
         ],
     )?;
@@ -153,7 +154,7 @@ fn execute_allocated(
         &json!({
             "schema_version": "sandbox-playback.summary/v1",
             "agent": request.agent.as_str(),
-            "after_step": plan.after_step,
+            "after_step": plan.after_step(),
             "replayed_tool_calls": outcome.observations.len(),
             "exact_observations": exact,
             "different_observations": different,
@@ -171,9 +172,9 @@ fn execute_allocated(
         agent_status: agent_status_for_outcome(request.mode, &outcome),
         run_id: run_id.to_owned(),
         agent: agent_result(request, launch),
-        after_step: plan.after_step,
+        after_step: plan.after_step(),
         replayed_tool_calls: outcome.observations.len(),
-        prefix_model_turns: plan.prefix_model_turns,
+        prefix_model_turns: plan.prefix_model_turns(),
         continued_steps: outcome.continued_steps,
         state_dir: state_dir.to_path_buf(),
         output_dir: output_dir.to_path_buf(),
@@ -192,7 +193,7 @@ fn finalize_failure(
     run_id: &str,
     state_dir: &Path,
     output_dir: &Path,
-    plan: &crate::model::ReplayPlan,
+    plan: &AdapterPlan,
     launch: Option<&LaunchSpec>,
     journal: &mut Journal,
     error: ReplayError,
@@ -255,7 +256,7 @@ fn agent_status_for_outcome(mode: ReplayMode, outcome: &ReplayOutcome) -> AgentS
 fn failure_result(
     request: &PlaybackRequest,
     launch: Option<&LaunchSpec>,
-    plan: &crate::model::ReplayPlan,
+    plan: &AdapterPlan,
     run_id: String,
     state_dir: std::path::PathBuf,
     output_dir: std::path::PathBuf,
@@ -285,9 +286,9 @@ fn failure_result(
         },
         run_id,
         agent: agent_result(request, launch),
-        after_step: plan.after_step,
+        after_step: plan.after_step(),
         replayed_tool_calls: 0,
-        prefix_model_turns: plan.prefix_model_turns,
+        prefix_model_turns: plan.prefix_model_turns(),
         continued_steps: 0,
         state_dir,
         output_dir: output_dir.clone(),
@@ -303,25 +304,25 @@ fn failure_result(
 
 fn write_next_action_comparison(
     request: &PlaybackRequest,
-    plan: &crate::model::ReplayPlan,
+    plan: &AdapterPlan,
     outcome: &ReplayOutcome,
     output_dir: &Path,
 ) -> Result<(), ReplayError> {
     let (Some(original), Some(continued_path)) =
-        (&plan.original_next_action, &outcome.continued_path)
+        (plan.original_next_action(), &outcome.continued_path)
     else {
         return Ok(());
     };
     let mut continued_request = request.clone();
     continued_request.trajectory = continued_path.clone();
     let continued_plan = build_plan(&continued_request)?;
-    let Some(replayed) = continued_plan.original_next_action else {
+    let Some(replayed) = continued_plan.original_next_action() else {
         return Ok(());
     };
     write_next_action(
         &output_dir.join("next-action-comparison.json"),
         original,
-        &replayed,
+        replayed,
     )
 }
 

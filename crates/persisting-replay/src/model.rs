@@ -117,15 +117,15 @@ pub struct ToolBatch {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReplayPlan {
-    pub agent: AgentKind,
-    pub source_path: PathBuf,
-    pub source_sha256: String,
-    pub after_step: usize,
-    pub batches: Vec<ToolBatch>,
-    pub prefix_model_turns: usize,
-    pub native: Value,
-    pub original_next_action: Option<Value>,
+pub(crate) struct ReplayPlan {
+    pub(crate) agent: AgentKind,
+    pub(crate) source_path: PathBuf,
+    pub(crate) source_sha256: String,
+    pub(crate) after_step: usize,
+    pub(crate) batches: Vec<ToolBatch>,
+    pub(crate) prefix_model_turns: usize,
+    pub(crate) native: Value,
+    pub(crate) original_next_action: Option<Value>,
 }
 
 impl ReplayPlan {
@@ -155,6 +155,53 @@ impl ReplayPlan {
             },
             "batches": self.batches,
         })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum AdapterPlan {
+    ClaudeCode(ReplayPlan),
+    MiniSweAgent(ReplayPlan),
+    Openhands(ReplayPlan),
+    SweAgent(ReplayPlan),
+}
+
+impl AdapterPlan {
+    pub(crate) fn agent(&self) -> AgentKind {
+        self.plan().agent
+    }
+
+    pub(crate) fn after_step(&self) -> usize {
+        self.plan().after_step
+    }
+
+    pub(crate) fn prefix_model_turns(&self) -> usize {
+        self.plan().prefix_model_turns
+    }
+
+    pub(crate) fn source_sha256(&self) -> &str {
+        &self.plan().source_sha256
+    }
+
+    pub(crate) fn calls(&self) -> impl Iterator<Item = &ToolCall> {
+        self.plan().calls()
+    }
+
+    pub(crate) fn public_value(&self) -> Value {
+        self.plan().public_value()
+    }
+
+    pub(crate) fn original_next_action(&self) -> Option<&Value> {
+        self.plan().original_next_action.as_ref()
+    }
+
+    fn plan(&self) -> &ReplayPlan {
+        match self {
+            Self::ClaudeCode(plan)
+            | Self::MiniSweAgent(plan)
+            | Self::Openhands(plan)
+            | Self::SweAgent(plan) => plan,
+        }
     }
 }
 
@@ -256,6 +303,43 @@ pub struct ExecutionReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn replay_plan(agent: AgentKind, marker: &str) -> ReplayPlan {
+        ReplayPlan {
+            agent,
+            source_path: PathBuf::from(format!("/{marker}")),
+            source_sha256: marker.into(),
+            after_step: 1,
+            batches: vec![ToolBatch {
+                ordinal: 1,
+                native_locator: marker.into(),
+                tool_calls: Vec::new(),
+                assistant_text: String::new(),
+                native: serde_json::json!({"private": marker}),
+            }],
+            prefix_model_turns: 1,
+            native: serde_json::json!({"private": marker}),
+            original_next_action: None,
+        }
+    }
+
+    #[test]
+    fn adapter_plan_exposes_only_common_dispatch_fields() {
+        let plans = [
+            AdapterPlan::ClaudeCode(replay_plan(AgentKind::ClaudeCode, "claude")),
+            AdapterPlan::MiniSweAgent(replay_plan(AgentKind::MiniSweAgent, "mini")),
+            AdapterPlan::Openhands(replay_plan(AgentKind::Openhands, "openhands")),
+            AdapterPlan::SweAgent(replay_plan(AgentKind::SweAgent, "swe")),
+        ];
+
+        for plan in plans {
+            assert_eq!(plan.after_step(), 1);
+            assert_eq!(plan.prefix_model_turns(), 1);
+            assert_eq!(plan.calls().count(), 0);
+            assert_eq!(plan.public_value()["agent"]["name"], plan.agent().as_str());
+            assert!(!plan.source_sha256().is_empty());
+        }
+    }
 
     #[test]
     fn v3_result_serializes_typed_execution_state() {
