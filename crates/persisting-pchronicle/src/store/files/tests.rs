@@ -1,10 +1,30 @@
 use super::*;
 use datafusion::logical_expr::{col, lit};
+use std::io::{BufReader, Cursor, Read as _};
 
 fn atif_fixture(name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/atif")
         .join(name)
+}
+
+#[test]
+fn default_options_allow_records_above_legacy_64_mib_cap() {
+    const LEGACY_RECORD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+
+    let input = Cursor::new(br#"{"padding":""#)
+        .chain(std::io::repeat(b'x').take((LEGACY_RECORD_LIMIT_BYTES + 1) as u64))
+        .chain(Cursor::new(br#""}"#));
+    let mut reader = BufReader::new(input);
+    let options = FileTrajectoryDataSourceOptions::default();
+    let mut object =
+        super::json_stream::ScopedJsonObjectReader::new(&mut reader, options.max_record_bytes);
+
+    let copied = std::io::copy(&mut object, &mut std::io::sink())
+        .expect("the default options must not impose a per-record byte limit");
+
+    assert!(copied > LEGACY_RECORD_LIMIT_BYTES as u64);
+    assert!(object.is_finished());
 }
 
 #[test]
@@ -52,6 +72,22 @@ fn atif_step_filter_compilation_is_conservative() {
     assert!(!scan.matches_step(4, "agent"));
     assert!(!scan.matches_step(16, "agent"));
     assert!(atif_step_filters(&col("message_json").eq(lit("x"))).is_none());
+}
+
+#[test]
+fn projected_read_falls_back_for_lossless_only_step_columns() {
+    let schema = story_steps_arrow_schema();
+    let index = |name: &str| schema.index_of(name).unwrap();
+    let safe = vec![index("session_id")];
+    assert!(FileScanSpec::new(Some(&safe), &[], &schema).can_project_steps(&schema));
+
+    for name in ["turn_ordinal", "had_tool_calls", "observation_json"] {
+        let projection = vec![index(name)];
+        assert!(
+            !FileScanSpec::new(Some(&projection), &[], &schema).can_project_steps(&schema),
+            "{name} requires full Storyline normalization"
+        );
+    }
 }
 
 #[test]

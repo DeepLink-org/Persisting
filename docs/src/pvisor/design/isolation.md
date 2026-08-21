@@ -137,7 +137,7 @@ makes those hierarchies writable.
 The default pVisor dependency graph does not include a pChronicle storage
 backend, Lance, or DataFusion. Durable Attempt and trajectory publication uses
 the lightweight `persisting-events` control feature to start and communicate
-with a `pchronicle control` sidecar; storage-engine and cloud SDK dependencies
+with the Control component of `pchronicle serve`; storage-engine and cloud SDK dependencies
 remain in that process. `jujutsu-overlay` adds the Jujutsu OverlayFS upper.
 See [RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md) for the
 dependency boundary.

@@ -91,7 +91,8 @@ impl Drop for CreateAfterEmptyReadBarrier {
 
 fn story(session_id: &str) -> StorylineDocument {
     StorylineDocument {
-        schema_version: None,
+        schema_version: crate::model::STORYLINE_SCHEMA_VERSION.into(),
+        origin: None,
         run_id: Some("run-1".into()),
         trajectory_id: None,
         attempt_id: None,
@@ -116,7 +117,9 @@ fn story(session_id: &str) -> StorylineDocument {
             StorylineTurn {
                 id: 1,
                 kind: None,
-                timestamp: Some("2026-01-01T00:00:00Z".into()),
+                timestamp: Some(
+                    crate::model::StorylineTimestamp::from_rfc3339("2026-01-01T00:00:00Z").unwrap(),
+                ),
                 source: "user".into(),
                 message: serde_json::json!("price?"),
                 reasoning_content: None,
@@ -163,7 +166,7 @@ fn story(session_id: &str) -> StorylineDocument {
 }
 
 #[test]
-fn unknown_field_limit_options_reject_zero_and_unbounded() {
+fn unknown_field_limit_options_allow_unbounded_count_and_bytes() {
     for options in [
         StorylineContentOptions {
             max_unknown_fields: 0,
@@ -173,17 +176,16 @@ fn unknown_field_limit_options_reject_zero_and_unbounded() {
             max_unknown_bytes: 0,
             ..Default::default()
         },
-        StorylineContentOptions {
-            max_unknown_fields: usize::MAX,
-            ..Default::default()
-        },
-        StorylineContentOptions {
-            max_unknown_bytes: usize::MAX,
-            ..Default::default()
-        },
     ] {
         assert!(options.validate().is_err());
     }
+    assert!(StorylineContentOptions {
+        max_unknown_fields: usize::MAX,
+        max_unknown_bytes: usize::MAX,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok());
 }
 
 #[tokio::test]
@@ -282,30 +284,33 @@ async fn unknown_content_ref_magic_string_round_trips_as_literal() {
 }
 
 #[tokio::test]
-async fn logical_unknown_limit_rejects_compressible_value_before_offload() {
-    let mut oversized = story("logical-unknown-limit");
-    oversized
+async fn default_store_accepts_large_compressible_unknown_value() {
+    let mut expected = story("large-logical-unknown");
+    expected
         .unknown_fields
         .insert(
             "atif",
             "source",
             "/payload",
-            serde_json::json!("x".repeat(crate::model::DEFAULT_MAX_UNKNOWN_BYTES + 1)),
+            serde_json::json!("x".repeat(1024 * 1024 + 1)),
         )
         .unwrap();
-    oversized.refresh_unknown_key_counts().unwrap();
+    expected.refresh_unknown_key_counts().unwrap();
     let temporary = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open(temporary.path()).await.unwrap();
 
-    let error = store.replace_storyline(&oversized).await.unwrap_err();
+    store.replace_storyline(&expected).await.unwrap();
     assert!(
-        error.to_string().contains("unknown field byte size")
-            && error
-                .to_string()
-                .contains("exceeds configured limit 1048576"),
-        "{error:#}"
+        store.current_table_paths().await.unwrap().is_some(),
+        "large unknown field should be committed"
     );
-    assert!(store.current_table_paths().await.unwrap().is_none());
+    assert_eq!(
+        store
+            .get_storyline_full("large-logical-unknown")
+            .await
+            .unwrap(),
+        Some(expected)
+    );
 }
 
 #[tokio::test]
@@ -1247,7 +1252,7 @@ async fn streamed_replace_error_after_first_chunk_keeps_current() {
 }
 
 #[tokio::test]
-async fn invalid_result_does_not_move_current_generation() {
+async fn invalid_storyline_does_not_move_current_generation() {
     let dir = tempfile::tempdir().unwrap();
     let store = StorylineLanceStore::open(dir.path()).await.unwrap();
     store.replace_storyline(&story("a")).await.unwrap();
@@ -1258,9 +1263,7 @@ async fn invalid_result_does_not_move_current_generation() {
         .unwrap()
         .generation;
     let mut invalid = story("a");
-    invalid.turns[1].observation = Some(serde_json::json!({
-        "results": [{"source_call_id": "missing", "content": "x"}]
-    }));
+    invalid.turns[1].id = invalid.turns[0].id;
     assert!(store.replace_storyline(&invalid).await.is_err());
     let after = store
         .current_table_paths()
@@ -1368,8 +1371,8 @@ async fn open_rejects_missing_or_unsupported_snapshot_schema_version() {
     for (schema_version, expected) in [
         (None, "schema_version"),
         (
-            Some(2),
-            "unsupported Storyline Lance schema_version 2; expected 1",
+            Some(1),
+            "unsupported Storyline Lance schema_version 1; expected 2",
         ),
     ] {
         let root = tempfile::tempdir().unwrap();

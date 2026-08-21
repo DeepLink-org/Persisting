@@ -35,3 +35,13 @@ pchronicle serve --config warehouse.toml \
 [Gateway 转发、改写与捕获](serve-gateway.md)。精确参数见
 [`pchronicle` 命令参考](../reference/cli.md)；Snapshot 行为见
 [Dataset Catalog 设计](../design/catalog.md)。
+
+`serve` 只启动命令行明确指定的服务。不传 `--listen` 就不会启动 Warehouse HTTP。也可以
+用一个 storage URI 启动 pPilot 和 pVisor 使用的本地认证 Control 协议：
+
+```bash
+pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+```
+
+`--config` 与 `--storage` 互斥，`--control` 要求使用 `--storage`。进程只向 stdout 写一条
+机器可读的 readiness 记录，Control token 不会写入 stderr。

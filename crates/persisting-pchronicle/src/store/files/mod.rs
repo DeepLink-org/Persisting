@@ -42,6 +42,7 @@ use lance::deps::arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRe
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use tokio::sync::mpsc::Sender;
 
+use crate::document::decode_json_storylines;
 use crate::format::DocumentFormat;
 use crate::formats::parse_openai_msg_corpus_value;
 
@@ -58,7 +59,8 @@ pub const SOURCE_FILE_COLUMN: &str = "_file_";
 
 pub const DEFAULT_LOCAL_QUERY_BATCH_SIZE: usize = 8192;
 pub const DEFAULT_LOCAL_QUERY_MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
-pub const DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+/// Disable the stricter per-record cap by default; `max_file_bytes` remains authoritative.
+pub const DEFAULT_LOCAL_QUERY_MAX_RECORD_BYTES: usize = usize::MAX;
 pub const DEFAULT_LOCAL_QUERY_CACHE_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_LOCAL_QUERY_CACHE_FILES: usize = 128;
 
@@ -67,7 +69,7 @@ pub struct FileTrajectoryDataSourceOptions {
     pub batch_size: usize,
     /// Hard limit for one source file. The limit is checked before and after reading.
     pub max_file_bytes: u64,
-    /// Hard limit for one buffered JSONL/NDJSON record or JSON array element.
+    /// Optional per-record hard limit. `usize::MAX` disables this stricter cap.
     pub max_record_bytes: usize,
     /// Maximum source files parsed concurrently by one datasource.
     pub max_concurrent_files: usize,
@@ -184,7 +186,10 @@ impl FileTrajectoryDataSource {
         anyhow::ensure!(
             matches!(
                 format,
-                DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf
+                DocumentFormat::Storyline
+                    | DocumentFormat::Atif
+                    | DocumentFormat::OpenaiMsg
+                    | DocumentFormat::Actf
             ),
             "file trajectory datasource does not support '{format}'"
         );
@@ -309,6 +314,9 @@ impl FileScanSpec {
         self.projection
             .as_ref()
             .is_some_and(|projection| projection.len() < schema.fields().len())
+            && !["turn_ordinal", "had_tool_calls", "observation_json"]
+                .into_iter()
+                .any(|name| self.wants(name))
     }
 
     fn wants(&self, name: &str) -> bool {
@@ -841,7 +849,7 @@ fn load_file(
                 .fetch_add(reader.get_ref().bytes_read(), Ordering::Relaxed);
             stories_to_parsed_file(&state.file, format, stories, runtime.options.batch_size)?
         }
-        DocumentFormat::OpenaiMsg => {
+        DocumentFormat::Storyline | DocumentFormat::OpenaiMsg => {
             let content = fs::read_to_string(state.file.path()).with_context(|| {
                 format!(
                     "read {} input {}",
@@ -862,7 +870,19 @@ fn load_file(
                 .inner
                 .source_bytes_read
                 .fetch_add(content.len() as u64, Ordering::Relaxed);
-            parse_openai_stories_from_content(&state.file, &content, runtime.options.batch_size)?
+            match format {
+                DocumentFormat::Storyline => parse_storyline_stories_from_content(
+                    &state.file,
+                    &content,
+                    runtime.options.batch_size,
+                )?,
+                DocumentFormat::OpenaiMsg => parse_openai_stories_from_content(
+                    &state.file,
+                    &content,
+                    runtime.options.batch_size,
+                )?,
+                _ => anyhow::bail!("unexpected JSON trajectory format '{format}'"),
+            }
         }
         unsupported => {
             anyhow::bail!("file trajectory datasource does not support '{unsupported}'")
@@ -886,6 +906,17 @@ fn load_file(
         .cache_evictions
         .fetch_add(evictions, Ordering::Relaxed);
     Ok(parsed)
+}
+
+fn parse_storyline_stories_from_content(
+    file: &LocalQueryInputFile,
+    content: &str,
+    batch_size: usize,
+) -> Result<ParsedFile> {
+    let stories = decode_json_storylines(DocumentFormat::Storyline, content, file.relative_path())
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("parse Storyline input {}", file.path().display()))?;
+    stories_to_parsed_file(file, DocumentFormat::Storyline, stories, batch_size)
 }
 
 fn parse_openai_stories_from_content(

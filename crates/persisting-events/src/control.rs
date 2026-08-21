@@ -164,11 +164,27 @@ pub struct ChronicleControlResponseEnvelope {
     pub response: ChronicleControlResponse,
 }
 
+pub const CHRONICLE_SERVE_READY_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChronicleControlReady {
-    pub version: u32,
+#[serde(deny_unknown_fields)]
+pub struct ChronicleServeControlReady {
     pub endpoint: String,
     pub auth_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChronicleServeReady {
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warehouse_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<ChronicleServeControlReady>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_admin_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,7 +271,7 @@ impl Drop for ProcessState {
 }
 
 #[derive(Clone)]
-pub struct ChronicleControlProcessClient {
+pub struct ChronicleServeProcessClient {
     root_uri: String,
     binary: PathBuf,
     endpoint: SocketAddr,
@@ -263,10 +279,10 @@ pub struct ChronicleControlProcessClient {
     state: Arc<ProcessState>,
 }
 
-impl std::fmt::Debug for ChronicleControlProcessClient {
+impl std::fmt::Debug for ChronicleServeProcessClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("ChronicleControlProcessClient")
+            .debug_struct("ChronicleServeProcessClient")
             .field("root_uri", &self.root_uri)
             .field("binary", &self.binary)
             .field("endpoint", &self.endpoint)
@@ -274,7 +290,7 @@ impl std::fmt::Debug for ChronicleControlProcessClient {
     }
 }
 
-impl ChronicleControlProcessClient {
+impl ChronicleServeProcessClient {
     pub async fn spawn(binary: impl AsRef<Path>, root_uri: impl Into<String>) -> Result<Self> {
         let requested_binary = binary.as_ref().to_path_buf();
         let binary = if requested_binary.components().count() == 1 {
@@ -297,37 +313,42 @@ impl ChronicleControlProcessClient {
         };
         let root_uri = root_uri.into();
         let mut child = Command::new(&binary)
-            .arg("control")
+            .arg("serve")
             .arg("--storage")
             .arg(&root_uri)
+            .arg("--control")
+            .arg("127.0.0.1:0")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("spawn pChronicle control process {}", binary.display()))?;
+            .with_context(|| format!("spawn pChronicle serve process {}", binary.display()))?;
         let stdout = child
             .stdout
             .take()
-            .context("pChronicle control stdout unavailable")?;
+            .context("pChronicle serve stdout unavailable")?;
         let mut stdout = BufReader::new(stdout);
         let mut ready = String::new();
         let bytes = stdout
             .read_line(&mut ready)
             .await
-            .context("read pChronicle control endpoint")?;
+            .context("read pChronicle serve readiness")?;
         anyhow::ensure!(
             bytes > 0,
-            "pChronicle control process exited before readiness"
+            "pChronicle serve process exited before readiness"
         );
-        let ready: ChronicleControlReady =
+        let ready: ChronicleServeReady =
             serde_json::from_str(&ready).context("decode pChronicle readiness")?;
         anyhow::ensure!(
-            ready.version == CHRONICLE_CONTROL_VERSION,
-            "unsupported pChronicle control version {}",
+            ready.version == CHRONICLE_SERVE_READY_VERSION,
+            "unsupported pChronicle serve readiness version {}",
             ready.version
         );
-        let endpoint = ready
+        let control = ready
+            .control
+            .context("pChronicle serve readiness omitted Control")?;
+        let endpoint = control
             .endpoint
             .parse::<SocketAddr>()
             .context("parse pChronicle control endpoint")?;
@@ -339,7 +360,7 @@ impl ChronicleControlProcessClient {
             root_uri,
             binary,
             endpoint,
-            auth_token: ready.auth_token,
+            auth_token: control.auth_token,
             state: Arc::new(ProcessState {
                 child: Mutex::new(child),
                 next_request_id: AtomicU64::new(1),
@@ -428,7 +449,7 @@ macro_rules! expect_response {
 }
 
 #[async_trait]
-impl ChronicleControl for ChronicleControlProcessClient {
+impl ChronicleControl for ChronicleServeProcessClient {
     fn root_uri(&self) -> &str {
         &self.root_uri
     }
@@ -1014,6 +1035,38 @@ fn unix_now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serve_ready_omits_disabled_services_and_rejects_unknown_members() {
+        let ready = ChronicleServeReady {
+            version: CHRONICLE_SERVE_READY_VERSION,
+            warehouse_endpoint: None,
+            control: Some(ChronicleServeControlReady {
+                endpoint: "127.0.0.1:4000".into(),
+                auth_token: "secret".into(),
+            }),
+            gateway_endpoint: None,
+            gateway_admin_endpoint: None,
+        };
+
+        let value = serde_json::to_value(ready).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["control"]["endpoint"], "127.0.0.1:4000");
+        assert_eq!(value["control"]["auth_token"], "secret");
+        assert!(value.get("warehouse_endpoint").is_none());
+        assert!(value.get("gateway_endpoint").is_none());
+        assert!(value.get("gateway_admin_endpoint").is_none());
+
+        let malformed = serde_json::json!({
+            "version": 1,
+            "control": {
+                "endpoint": "127.0.0.1:4000",
+                "auth_token": "secret"
+            },
+            "unexpected": true
+        });
+        assert!(serde_json::from_value::<ChronicleServeReady>(malformed).is_err());
+    }
 
     #[tokio::test]
     async fn attempt_heartbeat_renews_only_the_active_fenced_attempt() {

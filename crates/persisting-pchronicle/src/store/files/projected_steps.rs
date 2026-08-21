@@ -11,6 +11,7 @@ use lance::deps::arrow_schema::SchemaRef;
 use tokio::sync::mpsc::Sender;
 
 use super::{FileState, FileTrajectoryRuntime, SOURCE_FILE_COLUMN};
+use crate::model::StorylineTimestamp;
 use crate::store::storyline::rows::timestamp_array;
 
 pub(crate) struct ProjectedStepRow {
@@ -121,6 +122,26 @@ pub(crate) fn projected_step_rows_to_batch(
     relative_path: &str,
     schema: SchemaRef,
 ) -> Result<RecordBatch> {
+    let timestamps = rows
+        .iter()
+        .map(|row| {
+            row.timestamp
+                .as_deref()
+                .map(StorylineTimestamp::from_rfc3339)
+                .transpose()
+                .map_err(anyhow::Error::from)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let timestamp_sources = timestamps
+        .iter()
+        .map(|timestamp| {
+            timestamp
+                .as_ref()
+                .map(|timestamp| serde_json::to_string(timestamp.source_value()))
+                .transpose()
+                .map_err(anyhow::Error::from)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut columns = Vec::<ArrayRef>::with_capacity(schema.fields().len());
     for field in schema.fields() {
         let column: ArrayRef = match field.name().as_str() {
@@ -142,9 +163,10 @@ pub(crate) fn projected_step_rows_to_batch(
             "effective_kind" => Arc::new(StringArray::from_iter_values(
                 rows.iter().map(|row| row.effective_kind.as_str()),
             )),
-            "timestamp" => Arc::new(timestamp_array(
-                rows.iter().map(|row| row.timestamp.as_deref()),
-            )?),
+            "timestamp" => Arc::new(timestamp_array(timestamps.iter().map(Option::as_ref))),
+            "timestamp_source_json" => Arc::new(StringArray::from_iter(
+                timestamp_sources.iter().map(Option::as_deref),
+            )),
             "timestamp_rfc3339" => Arc::new(StringArray::from_iter(
                 rows.iter().map(|row| row.timestamp.as_deref()),
             )),

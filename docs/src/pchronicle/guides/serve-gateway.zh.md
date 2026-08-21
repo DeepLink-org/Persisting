@@ -1,6 +1,6 @@
 # `pchronicle serve` 的 Gateway 转发、改写与捕获
 
-`pchronicle serve` 可以在只读 Warehouse 旁启动一个本地 LLM Gateway。Gateway 对每个请求
+`pchronicle serve` 可以启动本地 LLM Gateway，并可选择是否同时启动只读 Warehouse。Gateway 对每个请求
 选择 upstream，按需改写模型和 wire protocol，再以客户端协议返回响应，同时把 canonical
 capture events 追加到一个已挂载 Dataset。Warehouse Web UI 和 API 仍然保持只读。
 
@@ -70,6 +70,9 @@ pchronicle serve \
 - `127.0.0.1:8080`：Warehouse Web UI 和只读 API；
 - `127.0.0.1:8787`：LLM Gateway；
 - `127.0.0.1:8788`：Gateway 状态和 session API。
+
+省略 `--listen` 时只启动 Gateway listener 与 capture sink，不会创建 Warehouse HTTP
+endpoint。
 
 将 Agent 或 SDK 的 base URL 指向 `http://127.0.0.1:8787/v1`。例如：
 

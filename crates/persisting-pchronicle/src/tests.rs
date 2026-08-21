@@ -46,9 +46,9 @@ fn from_storyline(format: TestFormat, story: &crate::StorylineDocument) -> crate
         TestFormat::CanonicalEvent => Err(lance_only_error()),
         TestFormat::AgenticMd => crate::document::encode_agenticmd(story),
         TestFormat::OpenaiMsg => Ok(serde_json::to_string_pretty(
-            &crate::formats::openai_corpus::synthesize_openai_msg_corpus(std::slice::from_ref(
-                story,
-            ))?,
+            &crate::formats::openai_corpus::synthesize_openai_msg_corpus_value(
+                std::slice::from_ref(story),
+            )?,
         )?),
         TestFormat::Atif => Ok(serde_json::to_string_pretty(
             &crate::convert::storyline_to_atif(story)?,
@@ -139,6 +139,7 @@ fn sample_traj() -> AtifTrajectory {
                         json!({"source_call_id":"call_price_1","content":"$185.35"}),
                         json!({"source_call_id":"call_volume_2","content":"1.5M"}),
                     ],
+                    unknown: Default::default(),
                 }),
                 metrics: Some(json!({
                     "prompt_tokens": 520,
@@ -367,7 +368,7 @@ fn parse_openai_msg_envelope() {
       "session_steps": [{
         "id": "step-1",
         "session_id": "s1",
-        "step_id": 0,
+        "step_id": 1,
         "job_id": "",
         "agent_id": "a1",
         "group_id": "",
@@ -460,7 +461,7 @@ fn openai_msg_preserves_user_and_llm_turns() {
       "session_steps": [{
         "id": "step-1",
         "session_id": "s1",
-        "step_id": 0,
+        "step_id": 1,
         "job_id": "",
         "agent_id": "a1",
         "group_id": "",
@@ -517,6 +518,7 @@ fn storyline_wire_uses_short_keys() {
 #[test]
 fn convert_storyline_agenticmd_preserves_dialogue_and_timing() {
     let story = r#"{
+      "schema_version": "storyline/v1",
       "session": "sess-md",
       "agent": { "id": "agent-md", "name": "demo" },
       "turns": [
@@ -615,7 +617,7 @@ fn convert_openai_msg_storyline_roundtrip_messages() {
       "session_steps": [{
         "id": "step-1",
         "session_id": "s-om",
-        "step_id": 0,
+        "step_id": 1,
         "job_id": "",
         "agent_id": "a-om",
         "group_id": "",
@@ -735,7 +737,8 @@ fn storyline_to_events_assigns_call_id_for_paired_turns() {
     use crate::formats::storyline::{StorylineAgent, StorylineDocument, StorylineTurn};
     use serde_json::json;
     let story = StorylineDocument {
-        schema_version: None,
+        schema_version: crate::model::STORYLINE_SCHEMA_VERSION.into(),
+        origin: None,
         run_id: None,
         trajectory_id: None,
         attempt_id: None,

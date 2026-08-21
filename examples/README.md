@@ -1,7 +1,8 @@
 # Persisting Examples
 
 这里的 example 按产品问题组织，而不是按 API 罗列。每个 `run.sh` 都是平铺直叙的产品
-命令：清理 `.work/`、运行命令、直接打印生成的文件与报告。运行后可继续检查 `.work/`。
+命令：管理自己的 `.work/`、运行命令、直接打印生成的文件与报告。运行后可继续检查
+`.work/`。
 
 ## 1. pVisor 执行轻量级隔离
 
@@ -19,13 +20,12 @@ ACTF 小型确定性 Dataset，用于手动体验和 CLI 集成测试。
 
 | 示例 | 指标 |
 |---|---|
-| [2.1 raw JSON 与 Lance 体积](pchronicle/01-atif-import-compression/) | raw JSON 与完整 pChronicle Lance store bytes |
-| [2.2 Python JSON 与 pChronicle](pchronicle/02-lance-vs-atif-speed/) | Python 基线、pChronicle JSON、pChronicle Lance 的冷进程查询 |
-| [2.3 三路径分析一致性](pchronicle/03-analyze-lance-and-atif/) | 三条路径的语义结果、median/p95 和统一相对值 |
-| [2.4 点查、批查与 live follow](pchronicle/04-point-batch-live-query/) | pChronicle API 延迟、CLI batching gain 和运行中 follow |
-| [2.5 外围格式往返](pchronicle/05-format-roundtrip/) | pPilot 导入/恢复 OpenAI 与 ACTF 后 JSON 数据模型相等 |
-| [2.6 直接查询 OpenAI/ACTF](pchronicle/06-query-openai-actf-directly/) | `_file_` 相对路径、`LIKE` 筛选与 Lance schema 隔离 |
-| [2.7 大字段 Blob 外置](pchronicle/07-objects-lance-blob-offload/) | inline/offload 体积、压缩与查询开销 |
+| [2.1 Dataset 生命周期](pchronicle/01-dataset-lifecycle/) | import、ls/status、query、find、严格 export 的完整路径 |
+| [2.2 内置分析与定位](pchronicle/02-built-in-analysis/) | overview、agents、models、tools 与 Step 定位 |
+| [2.3 跨 Dataset SQL](pchronicle/03-cross-dataset-sql/) | 三个命名 Dataset 的统一 SQL 查询 |
+| [2.4 存储与查询性能](pchronicle/04-storage-query-performance/) | JSON/Lance 体积、压缩比、查询比率与生命周期延迟 |
+| [2.5 外围格式往返](pchronicle/05-format-roundtrip/) | 严格 ATIF 往返后的 JSON 数据模型相等 |
+| [2.6 直接查询 OpenAI/ACTF](pchronicle/06-query-openai-actf-directly/) | 两种交换格式直接映射为统一逻辑表 |
 
 ## 3. pPilot 批量编排与轨迹处理
 

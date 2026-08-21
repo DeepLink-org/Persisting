@@ -4,7 +4,7 @@
 //! tool-call rows. ATIF-compatible `observation.results[]` values are attached
 //! to their call through `source_call_id` and stored in `results`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::formats::unknown_fields::{
     validate_unknown_fields, StorylineUnknownFields, UnknownFieldLimits, UnknownKeyCounts,
 };
+use crate::model::StorylineOrigin;
 use crate::{Result, StoryLink, StorylineDocument, StorylineToolCall, StorylineTurn};
 
 #[cfg(feature = "lance-store")]
@@ -23,7 +24,8 @@ pub const STORY_TOOL_CALLS_TABLE: &str = "tool_calls";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoryRunRow {
-    pub schema_version: Option<String>,
+    pub schema_version: String,
+    pub origin: Option<StorylineOrigin>,
     /// Stable per-document storage identity. Explicit ATIF `trajectory_id`
     /// wins; otherwise the effective `session_id` is used.
     pub document_id: String,
@@ -55,9 +57,10 @@ pub struct StoryStepRow {
     pub run_id: Option<String>,
     pub session_id: String,
     pub step_id: i64,
+    pub turn_ordinal: i64,
     pub kind: Option<String>,
     pub effective_kind: String,
-    pub timestamp: Option<String>,
+    pub timestamp: Option<crate::model::StorylineTimestamp>,
     pub source: String,
     pub message: Value,
     pub reasoning_content: Option<String>,
@@ -68,8 +71,12 @@ pub struct StoryStepRow {
     pub is_copied_context: Option<bool>,
     pub latency_ms: Option<i64>,
     pub ttft_ms: Option<i64>,
+    /// Keeps `tool_calls: []` distinct from no `tool_calls` member.
+    pub had_tool_calls: bool,
     /// Keeps `observation: {"results": []}` distinct from no observation.
     pub had_observation: bool,
+    /// Complete authoritative observation. `StoryToolCallRow::results` is derived.
+    pub observation: Option<Value>,
     pub extra: Option<Value>,
 }
 
@@ -98,15 +105,12 @@ pub struct StorylineTables {
     pub tool_calls: Vec<StoryToolCallRow>,
 }
 
-fn observation_results(observation: &Option<Value>) -> Result<&[Value]> {
-    let Some(observation) = observation else {
-        return Ok(&[]);
-    };
+fn observation_results(observation: Option<&Value>) -> Option<&[Value]> {
+    let observation = observation?;
     observation
         .get("results")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .ok_or_else(|| anyhow::anyhow!("storyline observation must contain a results array"))
 }
 
 fn source_call_id(result: &Value) -> Option<&str> {
@@ -131,12 +135,10 @@ pub(crate) fn split_storyline_with_unknown_limits(
         counts == story.unknown_key_counts,
         "storyline unknown_key_counts do not match unknown_fields"
     );
-    let document_id = story
-        .trajectory_id
-        .clone()
-        .unwrap_or_else(|| story.session_id.clone());
+    let document_id = story.document_id().to_string();
     let run = StoryRunRow {
         schema_version: story.schema_version.clone(),
+        origin: story.origin.clone(),
         document_id: document_id.clone(),
         storage_ordinal: 0,
         trajectory_id_explicit: story.trajectory_id.is_some(),
@@ -162,12 +164,14 @@ pub(crate) fn split_storyline_with_unknown_limits(
     let mut seen_calls = HashSet::new();
     let mut steps = Vec::with_capacity(story.turns.len());
     let mut tool_calls = Vec::new();
-    for turn in &story.turns {
+    for (turn_ordinal, turn) in story.turns.iter().enumerate() {
         steps.push(StoryStepRow {
             document_id: document_id.clone(),
             run_id: story.run_id.clone(),
             session_id: story.session_id.clone(),
             step_id: turn.id,
+            turn_ordinal: i64::try_from(turn_ordinal)
+                .map_err(|_| anyhow::anyhow!("storyline turn ordinal overflow"))?,
             kind: turn.kind.clone(),
             effective_kind: turn.effective_kind().to_string(),
             timestamp: turn.timestamp.clone(),
@@ -181,11 +185,13 @@ pub(crate) fn split_storyline_with_unknown_limits(
             is_copied_context: turn.is_copied_context,
             latency_ms: turn.latency_ms,
             ttft_ms: turn.ttft_ms,
+            had_tool_calls: turn.tool_calls.is_some(),
             had_observation: turn.observation.is_some(),
+            observation: turn.observation.clone(),
             extra: turn.extra.clone(),
         });
 
-        let mut calls = BTreeMap::new();
+        let mut call_positions = HashMap::new();
         for (call_index, call) in turn
             .tool_calls
             .as_deref()
@@ -200,48 +206,34 @@ pub(crate) fn split_storyline_with_unknown_limits(
                     call.tool_call_id
                 );
             }
-            calls.insert(
-                call.tool_call_id.clone(),
-                StoryToolCallRow {
-                    document_id: document_id.clone(),
-                    run_id: story.run_id.clone(),
-                    session_id: story.session_id.clone(),
-                    step_id: turn.id,
-                    call_index: call_index as i64,
-                    tool_call_id: call.tool_call_id.clone(),
-                    function_name: call.function_name.clone(),
-                    arguments: call.arguments.clone(),
-                    result: call.result.clone(),
-                    results: Vec::new(),
-                    duration_ms: call.duration_ms,
-                    extra: call.extra.clone(),
-                },
-            );
+            let position = tool_calls.len();
+            call_positions.insert(call.tool_call_id.as_str(), position);
+            tool_calls.push(StoryToolCallRow {
+                document_id: document_id.clone(),
+                run_id: story.run_id.clone(),
+                session_id: story.session_id.clone(),
+                step_id: turn.id,
+                call_index: i64::try_from(call_index)
+                    .map_err(|_| anyhow::anyhow!("storyline tool-call index overflow"))?,
+                tool_call_id: call.tool_call_id.clone(),
+                function_name: call.function_name.clone(),
+                arguments: call.arguments.clone(),
+                result: call.result.clone(),
+                results: Vec::new(),
+                duration_ms: call.duration_ms,
+                extra: call.extra.clone(),
+            });
         }
-        for result in observation_results(&turn.observation)? {
-            let call_id = source_call_id(result).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "observation result in step {} requires source_call_id",
-                    turn.id
-                )
-            })?;
-            let call = calls.get_mut(call_id).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "tool_call {call_id} references missing step {} in session {}",
-                    turn.id,
-                    story.session_id
-                )
-            })?;
-            call.results.push(result.clone());
+        for result in observation_results(turn.observation.as_ref()).unwrap_or_default() {
+            let Some(call_id) = source_call_id(result) else {
+                continue;
+            };
+            let Some(position) = call_positions.get(call_id) else {
+                continue;
+            };
+            tool_calls[*position].results.push(result.clone());
         }
-        tool_calls.extend(calls.into_values());
     }
-    steps.sort_by_key(|row| row.step_id);
-    tool_calls.sort_by(|a, b| {
-        a.step_id
-            .cmp(&b.step_id)
-            .then(a.call_index.cmp(&b.call_index))
-    });
     Ok(StorylineTables {
         run,
         steps,
@@ -255,7 +247,12 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         mut steps,
         tool_calls,
     } = tables;
+    let steps_with_tool_calls = tool_calls
+        .iter()
+        .map(|call| call.step_id)
+        .collect::<HashSet<_>>();
     let mut step_ids = HashSet::new();
+    let mut turn_ordinals = HashSet::new();
     for step in &steps {
         if step.session_id != run.session_id
             || step.document_id != run.document_id
@@ -271,8 +268,39 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         if !step_ids.insert(step.step_id) {
             anyhow::bail!("duplicate step ({}, {})", run.session_id, step.step_id);
         }
+        if step.turn_ordinal < 0 || !turn_ordinals.insert(step.turn_ordinal) {
+            anyhow::bail!(
+                "invalid or duplicate turn ordinal {} in session {}",
+                step.turn_ordinal,
+                run.session_id
+            );
+        }
+        if step.had_observation != step.observation.is_some() {
+            anyhow::bail!(
+                "step {} observation presence does not match observation_json",
+                step.step_id
+            );
+        }
+        if !step.had_tool_calls && steps_with_tool_calls.contains(&step.step_id) {
+            anyhow::bail!(
+                "step {} has tool-call rows but tool_calls was absent",
+                step.step_id
+            );
+        }
     }
+    let step_count = i64::try_from(steps.len())
+        .map_err(|_| anyhow::anyhow!("storyline step count exceeds i64"))?;
+    anyhow::ensure!(
+        (0..step_count).all(|ordinal| turn_ordinals.contains(&ordinal)),
+        "turn ordinals must be contiguous from zero in session {}",
+        run.session_id
+    );
+    let observations_by_step = steps
+        .iter()
+        .map(|step| (step.step_id, step.observation.as_ref()))
+        .collect::<HashMap<_, _>>();
     let mut call_ids = HashSet::new();
+    let mut call_indices_by_step = HashMap::<i64, HashSet<i64>>::new();
     for call in &tool_calls {
         if call.session_id != run.session_id
             || call.document_id != run.document_id
@@ -293,6 +321,14 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                 call.tool_call_id
             );
         }
+        let call_indices = call_indices_by_step.entry(call.step_id).or_default();
+        if call.call_index < 0 || !call_indices.insert(call.call_index) {
+            anyhow::bail!(
+                "invalid or duplicate call index {} for step {}",
+                call.call_index,
+                call.step_id
+            );
+        }
         for result in &call.results {
             if source_call_id(result) != Some(call.tool_call_id.as_str()) {
                 anyhow::bail!(
@@ -301,8 +337,29 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                 );
             }
         }
+        let expected_results =
+            observation_results(observations_by_step.get(&call.step_id).copied().flatten())
+                .unwrap_or_default()
+                .iter()
+                .filter(|result| source_call_id(result) == Some(call.tool_call_id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+        anyhow::ensure!(
+            call.results == expected_results,
+            "derived results for tool_call '{}' do not match observation_json",
+            call.tool_call_id
+        );
     }
-    steps.sort_by_key(|row| row.step_id);
+    for (step_id, indices) in &call_indices_by_step {
+        let call_count = i64::try_from(indices.len())
+            .map_err(|_| anyhow::anyhow!("storyline tool-call count exceeds i64"))?;
+        anyhow::ensure!(
+            (0..call_count).all(|index| indices.contains(&index)),
+            "call indexes must be contiguous from zero for step {step_id}"
+        );
+    }
+    drop(observations_by_step);
+    steps.sort_by_key(|row| row.turn_ordinal);
     let mut calls_by_step: BTreeMap<i64, Vec<StoryToolCallRow>> = BTreeMap::new();
     for call in tool_calls {
         calls_by_step.entry(call.step_id).or_default().push(call);
@@ -312,19 +369,15 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         .map(|step| {
             let mut calls = calls_by_step.remove(&step.step_id).unwrap_or_default();
             calls.sort_by_key(|call| call.call_index);
-            let mut results = Vec::new();
             let tool_calls = calls
                 .into_iter()
-                .map(|call| {
-                    results.extend(call.results);
-                    StorylineToolCall {
-                        tool_call_id: call.tool_call_id,
-                        function_name: call.function_name,
-                        arguments: call.arguments,
-                        result: call.result,
-                        duration_ms: call.duration_ms,
-                        extra: call.extra,
-                    }
+                .map(|call| StorylineToolCall {
+                    tool_call_id: call.tool_call_id,
+                    function_name: call.function_name,
+                    arguments: call.arguments,
+                    result: call.result,
+                    duration_ms: call.duration_ms,
+                    extra: call.extra,
                 })
                 .collect::<Vec<_>>();
             StorylineTurn {
@@ -335,10 +388,8 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
                 message: step.message,
                 reasoning_content: step.reasoning_content,
                 reasoning_effort: step.reasoning_effort,
-                tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
-                observation: step
-                    .had_observation
-                    .then_some(serde_json::json!({"results": results})),
+                tool_calls: step.had_tool_calls.then_some(tool_calls),
+                observation: step.observation,
                 metrics: step.metrics,
                 model_name: step.model_name,
                 llm_call_count: step.llm_call_count,
@@ -351,6 +402,7 @@ pub fn reconstruct_storyline(tables: StorylineTables) -> Result<StorylineDocumen
         .collect();
     let story = StorylineDocument {
         schema_version: run.schema_version,
+        origin: run.origin,
         run_id: run.run_id,
         trajectory_id: run.trajectory_id_explicit.then_some(run.document_id),
         attempt_id: run.attempt_id,
@@ -418,7 +470,8 @@ mod tests {
             "results": [{"source_call_id": "call-1", "content": "42"}]
         }));
         StorylineDocument {
-            schema_version: None,
+            schema_version: crate::model::STORYLINE_SCHEMA_VERSION.into(),
+            origin: None,
             run_id: Some("run-1".into()),
             trajectory_id: None,
             attempt_id: None,
@@ -446,7 +499,11 @@ mod tests {
     #[test]
     fn three_table_roundtrip_preserves_run_and_observation_semantics() {
         let mut expected = story();
-        expected.schema_version = Some("ATIF-v1.7".into());
+        expected.origin = Some(crate::model::StorylineOrigin {
+            format: crate::format::DocumentFormat::Atif.as_str().into(),
+            schema_version: Some("ATIF-v1.7".into()),
+            document_id: None,
+        });
         expected.attempt_id = Some("attempt-1".into());
         expected
             .unknown_fields
@@ -476,25 +533,62 @@ mod tests {
     }
 
     #[test]
-    fn split_rejects_invalid_result_correlations() {
-        let mut missing_results = story();
-        missing_results.turns[1].observation = Some(json!({}));
-        assert!(split_storyline(&missing_results)
-            .unwrap_err()
-            .to_string()
-            .contains("results array"));
+    fn three_table_roundtrip_preserves_turn_order_presence_and_raw_observation() {
+        let mut story = StorylineDocument::new("session-order", "agent");
+        let mut first = turn(9, "user");
+        first.tool_calls = Some(Vec::new());
 
-        let mut missing_id = story();
-        missing_id.turns[1].observation = Some(json!({"results": [{"content": "42"}]}));
-        assert!(split_storyline(&missing_id)
-            .unwrap_err()
-            .to_string()
-            .contains("requires source_call_id"));
+        let mut second = turn(3, "agent");
+        second.tool_calls = Some(vec![
+            StorylineToolCall {
+                tool_call_id: "call-b".into(),
+                function_name: "second".into(),
+                arguments: json!({"n": 2}),
+                result: None,
+                duration_ms: None,
+                extra: None,
+            },
+            StorylineToolCall {
+                tool_call_id: "call-a".into(),
+                function_name: "first".into(),
+                arguments: json!({"n": 1}),
+                result: None,
+                duration_ms: None,
+                extra: None,
+            },
+        ]);
+        second.observation = Some(json!({
+            "vendor": {"trace": 7},
+            "results": [
+                {"source_call_id": "call-b", "content": "b-1"},
+                {"source_call_id": "call-a", "content": "a-1"},
+                {"source_call_id": "call-b", "content": "b-2"}
+            ]
+        }));
+        story.turns = vec![first, second];
 
-        let mut orphan = story();
-        orphan.turns[1].observation = Some(json!({"results": [{"source_call_id": "missing"}]}));
-        assert!(split_storyline(&orphan).is_err());
+        let reconstructed = reconstruct_storyline(split_storyline(&story).unwrap()).unwrap();
 
+        assert_eq!(reconstructed, story);
+    }
+
+    #[test]
+    fn split_accepts_arbitrary_observations_without_changing_them() {
+        for observation in [
+            json!({}),
+            json!({"results": [{"content": "42"}]}),
+            json!({"results": [{"source_call_id": "missing"}]}),
+            json!([1, null, {"provider": true}]),
+        ] {
+            let mut document = story();
+            document.turns[1].observation = Some(observation);
+            let roundtrip = reconstruct_storyline(split_storyline(&document).unwrap()).unwrap();
+            assert_eq!(roundtrip, document);
+        }
+    }
+
+    #[test]
+    fn split_rejects_duplicate_tool_call_ids() {
         let mut duplicate = story();
         let mut second = duplicate.turns[1].clone();
         second.id = 3;
@@ -515,6 +609,17 @@ mod tests {
         duplicate_step.steps.push(duplicate_step.steps[0].clone());
         assert!(reconstruct_storyline(duplicate_step).is_err());
 
+        let mut duplicate_ordinal = valid.clone();
+        duplicate_ordinal.steps[1].turn_ordinal = duplicate_ordinal.steps[0].turn_ordinal;
+        assert!(reconstruct_storyline(duplicate_ordinal).is_err());
+
+        let mut gapped_ordinal = valid.clone();
+        gapped_ordinal.steps[1].turn_ordinal = 7;
+        assert!(reconstruct_storyline(gapped_ordinal)
+            .unwrap_err()
+            .to_string()
+            .contains("turn ordinals must be contiguous"));
+
         let mut orphan_call = valid.clone();
         orphan_call.tool_calls[0].step_id = 99;
         assert!(reconstruct_storyline(orphan_call).is_err());
@@ -524,6 +629,30 @@ mod tests {
             .tool_calls
             .push(duplicate_call.tool_calls[0].clone());
         assert!(reconstruct_storyline(duplicate_call).is_err());
+
+        let mut gapped_call_index = valid.clone();
+        gapped_call_index.tool_calls[0].call_index = 1;
+        assert!(reconstruct_storyline(gapped_call_index)
+            .unwrap_err()
+            .to_string()
+            .contains("call indexes must be contiguous"));
+
+        let mut duplicate_call_index = valid.clone();
+        let mut second_call = duplicate_call_index.tool_calls[0].clone();
+        second_call.tool_call_id = "call-2".into();
+        second_call.results.clear();
+        duplicate_call_index.tool_calls.push(second_call);
+        assert!(reconstruct_storyline(duplicate_call_index)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate call index"));
+
+        let mut stale_derived_results = valid.clone();
+        stale_derived_results.tool_calls[0].results.clear();
+        assert!(reconstruct_storyline(stale_derived_results)
+            .unwrap_err()
+            .to_string()
+            .contains("do not match observation_json"));
 
         let mut mismatched_result = valid;
         mismatched_result.tool_calls[0].results[0]["source_call_id"] = json!("other-call");

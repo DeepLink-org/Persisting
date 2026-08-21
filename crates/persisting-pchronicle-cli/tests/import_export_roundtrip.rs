@@ -152,3 +152,62 @@ async fn forced_storyline_roundtrip_is_canonical_and_reimport_stable() -> Result
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn storyline_json_import_is_queryable_and_reexport_stable() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input.storyline.json");
+    let dataset = temp.path().join("storyline-dataset");
+    let exported = temp.path().join("exported.storyline.json");
+    let document = serde_json::json!({
+        "schema_version": "storyline/v1",
+        "session": "storyline-session",
+        "agent": {"id": "storyline-agent"},
+        "turns": [{
+            "id": 3,
+            "src": "user",
+            "msg": "hello"
+        }]
+    });
+    fs::write(&input, serde_json::to_vec_pretty(&document)?)?;
+
+    run_cli([
+        "import",
+        "--from",
+        input.to_str().unwrap(),
+        "--output",
+        dataset.to_str().unwrap(),
+        "--format",
+        "storyline",
+    ])
+    .await?;
+    let queried = run_cli([
+        "query",
+        dataset.to_str().unwrap(),
+        "SELECT COUNT(*) AS runs FROM dataset.runs",
+        "--format",
+        "jsonl",
+    ])
+    .await?;
+    let count: Value = serde_json::from_slice(&queried.stdout)?;
+    assert_eq!(count["runs"], 1);
+
+    run_cli([
+        "export",
+        "--from",
+        dataset.to_str().unwrap(),
+        "--output",
+        exported.to_str().unwrap(),
+        "--format",
+        "storyline",
+        "--where",
+        "TRUE",
+    ])
+    .await?;
+
+    assert_eq!(
+        canonical_json_bytes(&exported)?,
+        canonical_json_bytes(&input)?
+    );
+    Ok(())
+}

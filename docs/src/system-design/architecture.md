@@ -157,10 +157,11 @@ Ingestion preserves these boundaries. A normalized representation or Catalog
 Snapshot does not upgrade the evidence supplied by its Source.
 
 The default pVisor build does not link Lance or DataFusion. With Chronicle mode
-`spawn`, pVisor starts `pchronicle control`, submits lifecycle and Gateway
-events over authenticated loopback IPC, and treats only a successful sidecar
-response as a durable acknowledgement. The legacy mode name `lance` is an
-alias for `spawn`; pVisor no longer writes Lance itself.
+`spawn`, pVisor starts `pchronicle serve --storage ... --control
+127.0.0.1:0`, submits lifecycle and Gateway events over authenticated loopback
+IPC, and treats only a successful sidecar response as a durable
+acknowledgement. The legacy mode name `lance` is an alias for `spawn`; pVisor
+no longer writes Lance itself.
 
 ## Failure and recovery
 

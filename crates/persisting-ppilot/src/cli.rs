@@ -13,7 +13,7 @@ use crate::skip::SkipSet;
 use crate::task::TaskResult;
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
-use persisting_events::{ChronicleControl, ChronicleControlProcessClient};
+use persisting_events::{ChronicleControl, ChronicleServeProcessClient};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -235,7 +235,7 @@ pub async fn run_ppilot(args: PPilotArgs) -> Result<ExitCode> {
             .clone()
             .unwrap_or_else(|| dir.display().to_string());
         Some(Arc::new(
-            ChronicleControlProcessClient::spawn(&args.pchronicle_binary, control_root)
+            ChronicleServeProcessClient::spawn(&args.pchronicle_binary, control_root)
                 .await
                 .context("start pChronicle control process")?,
         ))

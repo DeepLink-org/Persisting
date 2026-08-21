@@ -1,6 +1,6 @@
 # Gateway forwarding, rewriting, and capture for `pchronicle serve`
 
-`pchronicle serve` can run a local LLM Gateway beside the read-only Warehouse.
+`pchronicle serve` can run a local LLM Gateway with or without the read-only Warehouse.
 For each request, the Gateway selects an upstream, can rewrite the model and
 wire protocol, returns a response in the client's protocol, and appends
 canonical capture events to one mounted Dataset. The Warehouse Web UI and API
@@ -76,6 +76,9 @@ This starts three loopback listeners:
 - `127.0.0.1:8080` — Warehouse Web UI and read API;
 - `127.0.0.1:8787` — LLM Gateway;
 - `127.0.0.1:8788` — Gateway status and session API.
+
+Omit `--listen` to run only the Gateway listeners and capture sink; no
+Warehouse HTTP endpoint is created.
 
 Point the Agent or SDK at `http://127.0.0.1:8787/v1`. For example:
 

@@ -29,7 +29,8 @@ one independent pVisor workspace per emitted Run, and writes a durable
 production report. Both commands invoke the standalone `pvisor` binary for
 each Run and embed a job-scoped Supervisor; there is no separate Supervisor
 service to deploy. For `run --sink`, pPilot starts one authenticated,
-loopback-only `pchronicle control` child and uses its versioned client protocol
+loopback-only `pchronicle serve --storage ... --control 127.0.0.1:0` child and
+uses its versioned client protocol
 as a storage/control implementation dependency. The child persists the selected
 coordination records. When pPilot is built with `traj-sink` and `--traj` is
 enabled, the same child also appends terminal `ppilot.result` / `ppilot.failure`
@@ -44,7 +45,7 @@ Use
 not installed beside `ppilot` or available on `PATH`. Similarly, use
 `--pvisor-binary PATH` or `PERSISTING_PVISOR_BIN` for pVisor.
 The default pVisor build does not link Lance/DataFusion. Durable Attempt and
-trajectory writes use the same lightweight `pchronicle control` process
+trajectory writes use the same lightweight `pchronicle serve` Control service
 protocol; pPilot itself still does not link pVisor.
 
 The CLI intentionally contains no Dataset catalog, query, conversion, or

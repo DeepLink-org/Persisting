@@ -7,10 +7,13 @@ pub(super) async fn run_import(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<()> {
-    anyhow::ensure!(
-        args.max_input_bytes > 0,
-        "--max-input-bytes must be greater than zero"
-    );
+    let max_input_bytes = match args.max_input_bytes {
+        Some(0) => {
+            return Err(anyhow!("--max-input-bytes must be greater than zero"));
+        }
+        Some(limit) => limit,
+        None => usize::MAX,
+    };
     anyhow::ensure!(
         (args.from == "-") == args.stream,
         "--stream requires --from -, and --from - requires --stream"
@@ -21,39 +24,17 @@ pub(super) async fn run_import(
             "stdin import requires an explicit --format"
         );
     }
+    let input_path = (!args.stream).then(|| Path::new(&args.from));
+    let (directory_input, candidates) = if let Some(input_path) = input_path {
+        collect_import_candidates(input_path)?
+    } else {
+        (false, Vec::new())
+    };
     let output_arg = match args.output.as_deref() {
         Some(output) => output.to_owned(),
         None => default_import_output(&args, settings_override)?,
     };
     let output = validate_new_local_dataset_path(&output_arg)?;
-    let input_path = (!args.stream).then(|| Path::new(&args.from));
-    let input = if args.stream {
-        read_bounded(stdin, args.max_input_bytes, "stdin")?
-    } else {
-        let input_path = input_path.expect("non-stream input path");
-        anyhow::ensure!(
-            input_path.is_file(),
-            "import input must be one regular file"
-        );
-        let file = std::fs::File::open(input_path)
-            .with_context(|| format!("open import input {}", input_path.display()))?;
-        read_bounded(file, args.max_input_bytes, "import input")?
-    };
-    let text = std::str::from_utf8(&input).context("import input must be UTF-8")?;
-    let format = resolve_import_format(args.format, input_path, text)?;
-    let source_path = import_source_name(format);
-    let relative_path = input_path
-        .and_then(Path::file_name)
-        .map(Path::new)
-        .unwrap_or_else(|| Path::new(source_path));
-    let storylines = decode_json_storylines(
-        exchange_document_format(format)
-            .context("supported import format must map to a physical document format")?,
-        text,
-        relative_path,
-    )
-    .map_err(cli_input_error)?;
-    let trajectories = validate_import_storylines(&storylines)?;
     let parent = output
         .parent()
         .context("import output must have a parent directory")?;
@@ -61,16 +42,79 @@ pub(super) async fn run_import(
         .prefix(".pchronicle-import-")
         .tempdir_in(parent)
         .with_context(|| format!("create import staging directory in {}", parent.display()))?;
-    let staged_source = staging.path().join(source_path);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged_source)
-        .context("create staged import Source")?;
-    file.write_all(&input)
-        .context("write staged import Source")?;
-    file.sync_all().context("sync staged import Source")?;
-    validate_import_source(format, &staged_source).await?;
+    let (imported_sources, unknown_field_warnings) = match args.output_format {
+        ImportOutputFormat::Preserve => {
+            let mut unknown_field_warnings =
+                persisting_pchronicle::model::UnknownFieldImportWarnings::default();
+            let mut imported_sources = Vec::new();
+            if args.stream {
+                let input = read_bounded(stdin, max_input_bytes, "stdin")?;
+                imported_sources.push(stage_preserved_import_source(
+                    args.format,
+                    None,
+                    None,
+                    None,
+                    &input,
+                    staging.path(),
+                    &mut unknown_field_warnings,
+                )?);
+            } else {
+                for candidate in &candidates {
+                    let label = format!("import source {}", candidate.relative_path.display());
+                    let file = std::fs::File::open(&candidate.path)
+                        .with_context(|| format!("open {label}"))?;
+                    let input = read_bounded(file, max_input_bytes, &label)?;
+                    imported_sources.push(stage_preserved_import_source(
+                        args.format,
+                        Some(&candidate.path),
+                        Some(&candidate.relative_path),
+                        candidate.output_relative_path.as_deref(),
+                        &input,
+                        staging.path(),
+                        &mut unknown_field_warnings,
+                    )?);
+                }
+            }
+            (imported_sources, unknown_field_warnings)
+        }
+        ImportOutputFormat::Storyline => {
+            let store = StorylineLanceStore::open(staging.path())
+                .await
+                .context("create squashed Storyline Lance Dataset")?;
+            let mut import = if args.stream {
+                StorylineImportIterator::stdin(args.format, max_input_bytes, stdin)
+            } else {
+                StorylineImportIterator::files(args.format, max_input_bytes, &candidates)
+            };
+            let report = store.replace_storyline_stream(&mut import).await?;
+            anyhow::ensure!(
+                store.current_table_paths().await?.is_some(),
+                "squashed Storyline Lance Dataset has no committed snapshot"
+            );
+            let (imported_sources, unknown_field_warnings) = import.into_result_parts();
+            let imported_trajectories =
+                imported_sources.iter().try_fold(0usize, |total, source| {
+                    total
+                        .checked_add(source.trajectories)
+                        .context("import trajectory count overflow")
+                })?;
+            anyhow::ensure!(
+                report.storylines == imported_trajectories,
+                "squashed Storyline import report does not match decoded trajectory count"
+            );
+            (imported_sources, unknown_field_warnings)
+        }
+    };
+    let trajectories = imported_sources.iter().try_fold(0usize, |total, source| {
+        total
+            .checked_add(source.trajectories)
+            .context("import trajectory count overflow")
+    })?;
+    let input_bytes = imported_sources.iter().try_fold(0usize, |total, source| {
+        total
+            .checked_add(source.input_bytes)
+            .context("import input byte count overflow")
+    })?;
     std::fs::File::open(staging.path())
         .and_then(|directory| directory.sync_all())
         .context("sync import staging directory")?;
@@ -85,28 +129,50 @@ pub(super) async fn run_import(
         .with_context(|| format!("sync Dataset parent {}", parent.display()))?;
     cleanup.disarm();
 
-    let document_format = exchange_document_format(format)
-        .context("supported import format must map to a physical document format")?;
+    let single_source = (!directory_input).then(|| {
+        imported_sources
+            .first()
+            .expect("stdin and regular-file imports have one Source")
+    });
     let response = ImportResponse {
         dataset_uri: output.to_string_lossy().into_owned(),
-        source_path: source_path.into(),
-        format: document_format.as_str().into(),
+        source_path: single_source.map(|source| source.source_path.clone()),
+        format: single_source.map(|source| source.format.as_str().to_owned()),
+        output_format: args.output_format.response_name().into(),
+        sources: imported_sources.len(),
         trajectories,
-        input_bytes: input.len(),
+        input_bytes,
     };
     serde_json::to_writer_pretty(&mut *stdout, &response)
         .context("encode pChronicle import JSON")?;
     writeln!(stdout).context("write pChronicle import JSON")?;
-    writeln!(
-        stderr,
-        "dataset_uri={} source={} format={} trajectories={} input_bytes={}",
-        response.dataset_uri,
-        response.source_path,
-        response.format,
-        response.trajectories,
-        response.input_bytes,
-    )
-    .context("write pChronicle import metadata")?;
+    if let (Some(source_path), Some(format)) = (&response.source_path, &response.format) {
+        writeln!(
+            stderr,
+            "dataset_uri={} source={} format={} output_format={} trajectories={} input_bytes={}",
+            response.dataset_uri,
+            source_path,
+            format,
+            response.output_format,
+            response.trajectories,
+            response.input_bytes,
+        )
+        .context("write pChronicle import metadata")?;
+    } else {
+        writeln!(
+            stderr,
+            "dataset_uri={} sources={} output_format={} trajectories={} input_bytes={}",
+            response.dataset_uri,
+            response.sources,
+            response.output_format,
+            response.trajectories,
+            response.input_bytes,
+        )
+        .context("write pChronicle import metadata")?;
+    }
+    for line in unknown_field_warnings.warning_lines() {
+        writeln!(stderr, "{line}").context("write pChronicle unknown-field warning")?;
+    }
     Ok(())
 }
 
@@ -419,13 +485,7 @@ fn encode_export(format: ExchangeFormat, stories: &[StorylineDocument]) -> Resul
         ExchangeFormat::OpenaiMessages => {
             encode_json_storylines(DocumentFormat::OpenaiMsg, stories)?
         }
-        ExchangeFormat::Storyline => {
-            if stories.len() == 1 {
-                serde_json::to_value(&stories[0])?
-            } else {
-                serde_json::to_value(stories)?
-            }
-        }
+        ExchangeFormat::Storyline => encode_json_storylines(DocumentFormat::Storyline, stories)?,
         _ => unreachable!("exchange export format was validated"),
     };
     let mut output = serde_json::to_vec_pretty(&value).context("encode export JSON")?;
@@ -448,7 +508,8 @@ fn exchange_document_format(format: ExchangeFormat) -> Option<DocumentFormat> {
         ExchangeFormat::Atif => Some(DocumentFormat::Atif),
         ExchangeFormat::Actf => Some(DocumentFormat::Actf),
         ExchangeFormat::OpenaiMessages => Some(DocumentFormat::OpenaiMsg),
-        ExchangeFormat::Auto | ExchangeFormat::Storyline => None,
+        ExchangeFormat::Storyline => Some(DocumentFormat::Storyline),
+        ExchangeFormat::Auto => None,
     }
 }
 
@@ -553,27 +614,437 @@ fn local_file_snapshot_ref(path: &Path) -> String {
     format!("local:{}", hash.finalize().to_hex())
 }
 
-fn read_bounded(mut reader: impl Read, max_bytes: usize, label: &str) -> Result<Vec<u8>> {
-    let limit = u64::try_from(max_bytes)
-        .ok()
-        .and_then(|limit| limit.checked_add(1))
-        .ok_or_else(|| {
+#[derive(Debug)]
+struct ImportFileCandidate {
+    path: PathBuf,
+    relative_path: PathBuf,
+    output_relative_path: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct ImportedSource {
+    source_path: String,
+    format: DocumentFormat,
+    trajectories: usize,
+    input_bytes: usize,
+}
+
+fn collect_import_candidates(input: &Path) -> Result<(bool, Vec<ImportFileCandidate>)> {
+    let metadata = std::fs::symlink_metadata(input)
+        .with_context(|| format!("inspect import input {}", input.display()))?;
+    let explicit_file = if metadata.file_type().is_symlink() {
+        std::fs::metadata(input)
+            .with_context(|| format!("inspect import input target {}", input.display()))?
+            .is_file()
+    } else {
+        metadata.is_file()
+    };
+    if explicit_file {
+        let relative_path = input
+            .file_name()
+            .map(PathBuf::from)
+            .context("import input file has no filename")?;
+        return Ok((
+            false,
+            vec![ImportFileCandidate {
+                path: input.to_path_buf(),
+                relative_path,
+                output_relative_path: None,
+            }],
+        ));
+    }
+    anyhow::ensure!(
+        metadata.is_dir(),
+        "import input must be a regular file or directory"
+    );
+
+    let mut pending = vec![input.to_path_buf()];
+    let mut candidates = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let mut entries = std::fs::read_dir(&directory)
+            .with_context(|| format!("read import directory {}", directory.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if file_type.is_file() && is_import_json_candidate(&path) {
+                let relative_path = path
+                    .strip_prefix(input)
+                    .context("derive Dataset-relative import source path")?
+                    .to_path_buf();
+                candidates.push(ImportFileCandidate {
+                    path,
+                    output_relative_path: Some(relative_path.clone()),
+                    relative_path,
+                });
+            }
+        }
+    }
+    candidates.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    if candidates.is_empty() {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            "import directory contains no .json, .jsonl, or .ndjson files",
+        ));
+    }
+    Ok((true, candidates))
+}
+
+fn is_import_json_candidate(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "json" | "jsonl" | "ndjson"
+            )
+        })
+}
+
+fn scope_import_source_error(error: anyhow::Error, source_path: &Path) -> anyhow::Error {
+    if let Some(boundary) = error.downcast_ref::<CliBoundaryError>() {
+        return cli_boundary_error(
+            boundary.code,
+            format!("{}: {}", source_path.display(), boundary.message),
+        );
+    }
+    error.context(format!("import source {}", source_path.display()))
+}
+
+struct DecodedImportSource {
+    diagnostic_path: PathBuf,
+    metadata: ImportedSource,
+    storylines: Vec<StorylineDocument>,
+}
+
+enum StorylineImportInputs<'a> {
+    Stdin(Option<&'a mut dyn Read>),
+    Files {
+        candidates: &'a [ImportFileCandidate],
+        next: usize,
+    },
+}
+
+struct StorylineImportIterator<'a> {
+    requested_format: ExchangeFormat,
+    max_input_bytes: usize,
+    inputs: StorylineImportInputs<'a>,
+    current: std::vec::IntoIter<StorylineDocument>,
+    current_diagnostic_path: Arc<Path>,
+    imported_sources: Vec<ImportedSource>,
+    unknown_field_warnings: persisting_pchronicle::model::UnknownFieldImportWarnings,
+    seen_document_ids: HashMap<String, Arc<Path>>,
+    seen_session_ids: HashMap<String, Arc<Path>>,
+    failed: bool,
+}
+
+impl<'a> StorylineImportIterator<'a> {
+    fn stdin(
+        requested_format: ExchangeFormat,
+        max_input_bytes: usize,
+        stdin: &'a mut dyn Read,
+    ) -> Self {
+        Self {
+            requested_format,
+            max_input_bytes,
+            inputs: StorylineImportInputs::Stdin(Some(stdin)),
+            current: Vec::new().into_iter(),
+            current_diagnostic_path: Arc::from(PathBuf::new()),
+            imported_sources: Vec::new(),
+            unknown_field_warnings:
+                persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
+            seen_document_ids: HashMap::new(),
+            seen_session_ids: HashMap::new(),
+            failed: false,
+        }
+    }
+
+    fn files(
+        requested_format: ExchangeFormat,
+        max_input_bytes: usize,
+        candidates: &'a [ImportFileCandidate],
+    ) -> Self {
+        Self {
+            requested_format,
+            max_input_bytes,
+            inputs: StorylineImportInputs::Files {
+                candidates,
+                next: 0,
+            },
+            current: Vec::new().into_iter(),
+            current_diagnostic_path: Arc::from(PathBuf::new()),
+            imported_sources: Vec::new(),
+            unknown_field_warnings:
+                persisting_pchronicle::model::UnknownFieldImportWarnings::default(),
+            seen_document_ids: HashMap::new(),
+            seen_session_ids: HashMap::new(),
+            failed: false,
+        }
+    }
+
+    fn decode_next_source(&mut self) -> Result<Option<DecodedImportSource>> {
+        match &mut self.inputs {
+            StorylineImportInputs::Stdin(stdin) => {
+                let Some(stdin) = stdin.take() else {
+                    return Ok(None);
+                };
+                let input = read_bounded(stdin, self.max_input_bytes, "stdin")?;
+                decode_import_source(
+                    self.requested_format,
+                    ImportOutputFormat::Storyline,
+                    None,
+                    None,
+                    None,
+                    &input,
+                    &mut self.unknown_field_warnings,
+                )
+                .map(Some)
+            }
+            StorylineImportInputs::Files { candidates, next } => {
+                let Some(candidate) = candidates.get(*next) else {
+                    return Ok(None);
+                };
+                *next = next
+                    .checked_add(1)
+                    .context("import Source index overflow")?;
+                let label = format!("import source {}", candidate.relative_path.display());
+                let file = std::fs::File::open(&candidate.path)
+                    .with_context(|| format!("open {label}"))?;
+                let input = read_bounded(file, self.max_input_bytes, &label)?;
+                decode_import_source(
+                    self.requested_format,
+                    ImportOutputFormat::Storyline,
+                    Some(&candidate.path),
+                    Some(&candidate.relative_path),
+                    candidate.output_relative_path.as_deref(),
+                    &input,
+                    &mut self.unknown_field_warnings,
+                )
+                .map(Some)
+            }
+        }
+    }
+
+    fn into_result_parts(
+        self,
+    ) -> (
+        Vec<ImportedSource>,
+        persisting_pchronicle::model::UnknownFieldImportWarnings,
+    ) {
+        (self.imported_sources, self.unknown_field_warnings)
+    }
+}
+
+impl Iterator for StorylineImportIterator<'_> {
+    type Item = Result<StorylineDocument>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(storyline) = self.current.next() {
+                if let Err(error) = record_import_identity(
+                    &mut self.seen_document_ids,
+                    "document_id",
+                    storyline.document_id(),
+                    &self.current_diagnostic_path,
+                )
+                .and_then(|()| {
+                    record_import_identity(
+                        &mut self.seen_session_ids,
+                        "session_id",
+                        &storyline.session_id,
+                        &self.current_diagnostic_path,
+                    )
+                }) {
+                    self.failed = true;
+                    return Some(Err(error));
+                }
+                return Some(Ok(storyline));
+            }
+            if self.failed {
+                return None;
+            }
+            match self.decode_next_source() {
+                Ok(Some(decoded)) => {
+                    self.current_diagnostic_path = Arc::from(decoded.diagnostic_path);
+                    self.imported_sources.push(decoded.metadata);
+                    self.current = decoded.storylines.into_iter();
+                }
+                Ok(None) => return None,
+                Err(error) => {
+                    self.failed = true;
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
+}
+
+fn record_import_identity(
+    seen: &mut HashMap<String, Arc<Path>>,
+    field: &str,
+    value: &str,
+    diagnostic_path: &Arc<Path>,
+) -> Result<()> {
+    if let Some(first_path) = seen.get(value) {
+        return Err(cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!(
+                "import contains duplicate {field} '{value}' in Sources '{}' and '{}'",
+                first_path.display(),
+                diagnostic_path.display()
+            ),
+        ));
+    }
+    seen.insert(value.to_owned(), Arc::clone(diagnostic_path));
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_import_source(
+    requested_format: ExchangeFormat,
+    output_format: ImportOutputFormat,
+    input_path: Option<&Path>,
+    decode_relative_path: Option<&Path>,
+    logical_source_path: Option<&Path>,
+    input: &[u8],
+    unknown_field_warnings: &mut persisting_pchronicle::model::UnknownFieldImportWarnings,
+) -> Result<DecodedImportSource> {
+    let diagnostic_path = decode_relative_path
+        .unwrap_or_else(|| Path::new("stdin"))
+        .to_path_buf();
+    let text = std::str::from_utf8(input).map_err(|error| {
+        cli_boundary_error(
+            BoundaryCode::InvalidRequest,
+            format!("{} is not UTF-8: {error}", diagnostic_path.display()),
+        )
+    })?;
+    let format = resolve_import_format(requested_format, input_path, text).map_err(|error| {
+        if logical_source_path.is_some() {
+            scope_import_source_error(error, &diagnostic_path)
+        } else {
+            error
+        }
+    })?;
+    let document_format = exchange_document_format(format)
+        .context("supported import format must map to a physical document format")?;
+    let source_path = logical_source_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| single_import_source_path(format, output_format, input_path));
+    let decode_relative_path = decode_relative_path.unwrap_or(&source_path);
+    let storylines =
+        decode_json_storylines(document_format, text, decode_relative_path).map_err(|issue| {
+            let code = match issue.kind() {
+                InputIssueKind::Invalid => BoundaryCode::InvalidRequest,
+                InputIssueKind::Unsupported => BoundaryCode::Unsupported,
+            };
             cli_boundary_error(
-                BoundaryCode::InvalidRequest,
-                "--max-input-bytes is too large",
+                code,
+                import_input_issue_message(&issue, decode_relative_path),
             )
         })?;
+    unknown_field_warnings
+        .observe_storylines(&storylines)
+        .map_err(|issue| {
+            cli_boundary_error(
+                BoundaryCode::InvalidRequest,
+                import_input_issue_message(&issue, decode_relative_path),
+            )
+        })?;
+
+    let metadata = ImportedSource {
+        source_path: source_path
+            .to_str()
+            .context("Dataset-relative import Source path is not UTF-8")?
+            .to_owned(),
+        format: document_format,
+        trajectories: storylines.len(),
+        input_bytes: input.len(),
+    };
+    Ok(DecodedImportSource {
+        diagnostic_path,
+        metadata,
+        storylines,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_preserved_import_source(
+    requested_format: ExchangeFormat,
+    input_path: Option<&Path>,
+    decode_relative_path: Option<&Path>,
+    logical_source_path: Option<&Path>,
+    input: &[u8],
+    staging_root: &Path,
+    unknown_field_warnings: &mut persisting_pchronicle::model::UnknownFieldImportWarnings,
+) -> Result<ImportedSource> {
+    let decoded = decode_import_source(
+        requested_format,
+        ImportOutputFormat::Preserve,
+        input_path,
+        decode_relative_path,
+        logical_source_path,
+        input,
+        unknown_field_warnings,
+    )?;
+    validate_import_storylines(&decoded.storylines).map_err(|error| {
+        if logical_source_path.is_some() {
+            scope_import_source_error(error, &decoded.diagnostic_path)
+        } else {
+            error
+        }
+    })?;
+
+    let staged_source = staging_root.join(&decoded.metadata.source_path);
+    let staged_parent = staged_source
+        .parent()
+        .context("staged import Source has no parent")?;
+    std::fs::create_dir_all(staged_parent)
+        .with_context(|| format!("create staged Source parent {}", staged_parent.display()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged_source)
+        .with_context(|| format!("create staged Source {}", decoded.metadata.source_path))?;
+    file.write_all(input)
+        .with_context(|| format!("write staged Source {}", decoded.metadata.source_path))?;
+    file.sync_all()
+        .with_context(|| format!("sync staged Source {}", decoded.metadata.source_path))?;
+    Ok(decoded.metadata)
+}
+
+fn read_bounded(mut reader: impl Read, max_bytes: usize, label: &str) -> Result<Vec<u8>> {
     let mut input = Vec::new();
-    reader
-        .by_ref()
-        .take(limit)
-        .read_to_end(&mut input)
-        .with_context(|| format!("read {label}"))?;
-    if input.len() > max_bytes {
-        return Err(cli_boundary_error(
-            BoundaryCode::ResourceExhausted,
-            format!("{label} exceeds max_input_bytes limit of {max_bytes}"),
-        ));
+    if max_bytes == usize::MAX {
+        reader
+            .read_to_end(&mut input)
+            .with_context(|| format!("read {label}"))?;
+    } else {
+        let limit = u64::try_from(max_bytes)
+            .ok()
+            .and_then(|limit| limit.checked_add(1))
+            .ok_or_else(|| {
+                cli_boundary_error(
+                    BoundaryCode::InvalidRequest,
+                    "--max-input-bytes is too large",
+                )
+            })?;
+        reader
+            .by_ref()
+            .take(limit)
+            .read_to_end(&mut input)
+            .with_context(|| format!("read {label}"))?;
+        if input.len() > max_bytes {
+            return Err(cli_boundary_error(
+                BoundaryCode::ResourceExhausted,
+                format!("{label} exceeds max_input_bytes limit of {max_bytes}"),
+            ));
+        }
     }
     if input.is_empty() {
         return Err(cli_boundary_error(
@@ -599,6 +1070,7 @@ fn resolve_import_format(
             DocumentFormat::Atif => ExchangeFormat::Atif,
             DocumentFormat::Actf => ExchangeFormat::Actf,
             DocumentFormat::OpenaiMsg => ExchangeFormat::OpenaiMessages,
+            DocumentFormat::Storyline => ExchangeFormat::Storyline,
             format => {
                 return Err(cli_boundary_error(
                     BoundaryCode::Unsupported,
@@ -613,7 +1085,10 @@ fn resolve_import_format(
     };
     if !matches!(
         format,
-        ExchangeFormat::Atif | ExchangeFormat::Actf | ExchangeFormat::OpenaiMessages
+        ExchangeFormat::Atif
+            | ExchangeFormat::Actf
+            | ExchangeFormat::OpenaiMessages
+            | ExchangeFormat::Storyline
     ) {
         return Err(cli_boundary_error(
             BoundaryCode::Unsupported,
@@ -630,7 +1105,33 @@ fn import_source_name(format: ExchangeFormat) -> &'static str {
         ExchangeFormat::Atif => "trajectories.atif.json",
         ExchangeFormat::Actf => "trajectories.actf.json",
         ExchangeFormat::OpenaiMessages => "session_steps.json",
+        ExchangeFormat::Storyline => "trajectories.storyline.json",
         _ => unreachable!("unsupported import format was rejected"),
+    }
+}
+
+fn single_import_source_path(
+    format: ExchangeFormat,
+    output_format: ImportOutputFormat,
+    input_path: Option<&Path>,
+) -> PathBuf {
+    if format == ExchangeFormat::Atif && output_format == ImportOutputFormat::Preserve {
+        let line_extension = input_path
+            .and_then(Path::extension)
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .filter(|extension| matches!(extension.as_str(), "jsonl" | "ndjson"));
+        if let Some(extension) = line_extension {
+            return PathBuf::from(format!("trajectories.atif.{extension}"));
+        }
+    }
+    PathBuf::from(import_source_name(format))
+}
+
+fn import_input_issue_message(issue: &InputIssue, source_path: &Path) -> String {
+    match issue.location() {
+        Some(location) => format!("{} {location}: {}", source_path.display(), issue.message()),
+        None => format!("{}: {}", source_path.display(), issue.message()),
     }
 }
 

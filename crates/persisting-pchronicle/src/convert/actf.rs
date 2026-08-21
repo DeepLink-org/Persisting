@@ -11,14 +11,48 @@ use crate::formats::actf::{
     ACTF_SCHEMA_VERSION,
 };
 use crate::formats::storyline::{
-    StorylineAgent, StorylineDocument, StorylineToolCall, StorylineTurn,
+    StorylineAgent, StorylineDocument, StorylineOrigin, StorylineToolCall, StorylineTurn,
+    STORYLINE_SCHEMA_VERSION,
 };
+use crate::formats::timestamp::StorylineTimestamp;
 use crate::formats::unknown_fields::{
     decode_json_pointer, normalize_actf_pointer, restore_json_pointer,
     validate_unknown_fields_with, write_foreign_unknown_fields_envelope, CarrierBinding,
     PointerWrite, UnknownFieldLimits,
 };
 use crate::Result;
+
+fn actf_tool_to_storyline(call: &ActfToolCall, duration_ms: Option<i64>) -> StorylineToolCall {
+    StorylineToolCall {
+        tool_call_id: call.id.clone(),
+        function_name: actf_tool_name(call),
+        arguments: actf_tool_arguments(call),
+        result: call.extra.get("aggregated_output").cloned(),
+        duration_ms,
+        extra: None,
+    }
+}
+
+fn actf_observation_to_storyline(observation: &ActfObservation) -> Value {
+    let mut result =
+        serde_json::to_value(observation).unwrap_or_else(|_| Value::Object(Map::new()));
+    if let Some(object) = result.as_object_mut() {
+        if let Some(source_call_id) = actf_observation_call_id(observation) {
+            object.insert(
+                "source_call_id".into(),
+                Value::String(source_call_id.to_string()),
+            );
+        }
+        if let Some(content) = observation
+            .extra
+            .get("aggregated_output")
+            .or_else(|| observation.extra.get("content"))
+        {
+            object.insert("content".into(), content.clone());
+        }
+    }
+    result
+}
 
 pub(crate) fn actf_to_storylines(document: &ActfDocument) -> Result<Vec<StorylineDocument>> {
     document.validate()?;
@@ -58,18 +92,14 @@ fn attempt_to_storyline(
                 step.tools
                     .iter()
                     .map(|call| {
-                        Ok(StorylineToolCall {
-                            tool_call_id: call.id.clone(),
-                            function_name: actf_tool_name(call),
-                            arguments: actf_tool_arguments(call),
-                            result: Default::default(),
-                            duration_ms: if step.tools.len() == 1 {
+                        Ok(actf_tool_to_storyline(
+                            call,
+                            if step.tools.len() == 1 {
                                 step.metric.env_action_ms.as_f64().map(|value| value as i64)
                             } else {
                                 None
                             },
-                            extra: None,
-                        })
+                        ))
                     })
                     .collect::<Result<Vec<_>>>()
             })
@@ -78,26 +108,14 @@ fn attempt_to_storyline(
             let results = step
                 .observation
                 .iter()
-                .map(|observation| {
-                    let mut value = serde_json::to_value(observation)
-                        .unwrap_or_else(|_| Value::Object(Map::new()));
-                    if let Some(object) = value.as_object_mut() {
-                        if let Some(source_call_id) = actf_observation_call_id(observation) {
-                            object.insert(
-                                "source_call_id".into(),
-                                Value::String(source_call_id.to_string()),
-                            );
-                        }
-                    }
-                    value
-                })
+                .map(actf_observation_to_storyline)
                 .collect::<Vec<_>>();
             json!({"results": results})
         });
         turns.push(StorylineTurn {
             id: step.step_id,
             kind: tool_calls.as_ref().map(|_| "autonomous".into()),
-            timestamp: Some(step.started_at.clone()),
+            timestamp: Some(StorylineTimestamp::from_rfc3339(&step.started_at)?),
             source: "agent".into(),
             message: Value::String(step.assistant_content.content.clone()),
             reasoning_content: (!step.assistant_content.reasoning_content.is_empty())
@@ -121,7 +139,12 @@ fn attempt_to_storyline(
         document.task_id.clone()
     };
     Ok(StorylineDocument {
-        schema_version: None,
+        schema_version: STORYLINE_SCHEMA_VERSION.into(),
+        origin: Some(StorylineOrigin {
+            format: DocumentFormat::Actf.as_str().into(),
+            schema_version: Some(ACTF_SCHEMA_VERSION.into()),
+            document_id: None,
+        }),
         run_id: Some(document.task_id.clone()),
         trajectory_id: None,
         attempt_id: Some(attempt_id.to_string()),
@@ -142,6 +165,7 @@ fn attempt_to_storyline(
             "score": attempt.score,
             "status": attempt.status,
             "task_correct": document.correct,
+            "analysis_result": attempt.analysis_result,
         })),
         continued_trajectory_ref: None,
         extra: None,
@@ -174,7 +198,13 @@ fn capture_actf_unknowns(
     let attempt_map = attempt_value
         .as_object_mut()
         .ok_or_else(|| crate::InputIssue::invalid("serialized ACTF attempt must be an object"))?;
-    for key in ["correct", "score", "status", "trajectory"] {
+    for key in [
+        "correct",
+        "trajectory",
+        "status",
+        "score",
+        "analysis_result",
+    ] {
         attempt_map.remove(key);
     }
     insert_actf_map(story, source_id, &attempt_prefix, attempt_map)?;
@@ -185,7 +215,9 @@ fn capture_actf_unknowns(
     let trajectory_map = trajectory_value.as_object_mut().ok_or_else(|| {
         crate::InputIssue::invalid("serialized ACTF trajectory must be an object")
     })?;
-    trajectory_map.remove("steps");
+    for key in ["schema_version", "steps"] {
+        trajectory_map.remove(key);
+    }
     insert_actf_map(story, source_id, &trajectory_prefix, trajectory_map)?;
 
     for (step_index, step) in attempt.trajectory.steps.iter().enumerate() {
@@ -199,7 +231,14 @@ fn capture_actf_unknowns(
             .as_object_mut()
             .ok_or_else(|| crate::InputIssue::invalid("serialized ACTF step must be an object"))?;
         let assistant = step_map.remove("assistant_content");
-        for key in ["step_id", "metric", "tools", "observation", "started_at"] {
+        for key in [
+            "step_id",
+            "assistant_content",
+            "metric",
+            "tools",
+            "observation",
+            "started_at",
+        ] {
             step_map.remove(key);
         }
         insert_actf_map(story, source_id, &step_prefix, step_map)?;
@@ -252,16 +291,14 @@ fn capture_actf_tool(
     prefix: &str,
     call: &ActfToolCall,
 ) -> crate::InputResult<()> {
-    if call.kind != "tool_use" {
-        story.unknown_fields.insert(
-            "actf",
-            source_id,
-            pointer_join(prefix, "type"),
-            Value::String(call.kind.clone()),
-        )?;
-    }
+    story.unknown_fields.insert(
+        "actf",
+        source_id,
+        pointer_join(prefix, "type"),
+        Value::String(call.kind.clone()),
+    )?;
     let mut unknown = call.extra.clone();
-    for key in ["name", "input", "command"] {
+    for key in ["name", "input", "command", "aggregated_output"] {
         unknown.remove(key);
     }
     insert_actf_map(story, source_id, prefix, &unknown)
@@ -326,7 +363,6 @@ fn storylines_to_actf_pointer(stories: &[StorylineDocument]) -> Result<ActfDocum
         "solved_at": Value::Null,
         "attempts": attempts,
     });
-
     let mut source_id = None::<String>;
     let mut unknown_fields = BTreeMap::<String, Value>::new();
     let actf_sources = stories
@@ -410,12 +446,16 @@ fn synthesize_actf(story: &StorylineDocument) -> Result<ActfDocument> {
     let started_at = story
         .turns
         .first()
-        .and_then(|turn| turn.timestamp.clone())
+        .and_then(|turn| turn.timestamp.as_ref())
+        .map(format_actf_timestamp)
+        .transpose()?
         .unwrap_or_else(|| epoch.clone());
     let finished_at = story
         .turns
         .last()
-        .and_then(|turn| turn.timestamp.clone())
+        .and_then(|turn| turn.timestamp.as_ref())
+        .map(format_actf_timestamp)
+        .transpose()?
         .unwrap_or_else(|| started_at.clone());
     let steps = story
         .turns
@@ -461,7 +501,12 @@ fn synthesize_actf(story: &StorylineDocument) -> Result<ActfDocument> {
         error: String::new(),
         artifacts: json!({}),
         extra: json!({}),
-        analysis_result: json!({}),
+        analysis_result: story
+            .final_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.get("analysis_result"))
+            .cloned()
+            .unwrap_or_else(|| json!({})),
         meta: json!({}),
         extensions: Map::new(),
     };
@@ -493,20 +538,55 @@ fn synthesize_step(turn: &StorylineTurn) -> Result<ActfStep> {
     Ok(step)
 }
 
+fn storyline_tool_to_actf(call: &StorylineToolCall) -> Value {
+    let mut tool = Map::new();
+    tool.insert("id".into(), Value::String(call.tool_call_id.clone()));
+    if call.function_name == "command_execution" {
+        tool.insert("type".into(), Value::String("command_execution".into()));
+        if let Some(command) = call.arguments.get("command") {
+            tool.insert("command".into(), command.clone());
+        }
+        if let Some(result) = &call.result {
+            tool.insert("aggregated_output".into(), result.clone());
+        }
+    } else {
+        tool.insert("type".into(), Value::String("tool_use".into()));
+        tool.insert("name".into(), Value::String(call.function_name.clone()));
+        tool.insert("input".into(), call.arguments.clone());
+    }
+    Value::Object(tool)
+}
+
+fn storyline_observation_to_actf(result: &Value) -> Value {
+    let mut extra = result.as_object().cloned().unwrap_or_default();
+    let source_call_id = extra.remove("source_call_id");
+    if extra.get("type").and_then(Value::as_str) == Some("command_execution") {
+        if let Some(content) = extra.remove("content") {
+            extra.insert("aggregated_output".into(), content);
+        }
+    }
+    extra
+        .entry("type")
+        .or_insert_with(|| Value::String("tool_result".into()));
+    if let Some(source_call_id) = source_call_id {
+        if extra.contains_key("tool_use_id") {
+            extra.insert("tool_use_id".into(), source_call_id);
+        } else if extra.contains_key("id") {
+            extra.insert("id".into(), source_call_id);
+        } else {
+            extra.insert("tool_use_id".into(), source_call_id);
+        }
+    }
+    Value::Object(extra)
+}
+
 fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
     let tools = turn
         .tool_calls
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .map(|call| {
-            json!({
-                "type": "tool_use",
-                "id": call.tool_call_id,
-                "name": call.function_name,
-                "input": call.arguments,
-            })
-        })
+        .map(storyline_tool_to_actf)
         .collect::<Vec<_>>();
     let observations = turn
         .observation
@@ -515,17 +595,7 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|result| {
-            let mut extra = result.as_object().cloned().unwrap_or_default();
-            let source_call_id = extra.remove("source_call_id");
-            extra
-                .entry("type")
-                .or_insert_with(|| Value::String("tool_result".into()));
-            if let Some(source_call_id) = source_call_id {
-                extra.entry("tool_use_id").or_insert(source_call_id);
-            }
-            Value::Object(extra)
-        })
+        .map(storyline_observation_to_actf)
         .collect::<Vec<_>>();
     let mut metric = turn
         .metrics
@@ -550,7 +620,9 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
     metric.entry("stop_reason").or_insert(stop_reason);
     let timestamp = turn
         .timestamp
-        .clone()
+        .as_ref()
+        .map(format_actf_timestamp)
+        .transpose()?
         .unwrap_or_else(|| "1970-01-01 00:00:00+00:00".into());
     let mut assistant = Map::new();
     assistant.insert(
@@ -569,14 +641,10 @@ fn storyline_step_value(turn: &StorylineTurn) -> Result<Value> {
     step.insert("metric".into(), Value::Object(metric));
     step.insert("tools".into(), Value::Array(tools));
     step.insert("observation".into(), Value::Array(observations));
-    let started_at = format_actf_timestamp(&timestamp)?;
-    step.insert("started_at".into(), Value::String(started_at));
-    step.entry("system_prompt")
-        .or_insert_with(|| Value::String(String::new()));
-    step.entry("user_content")
-        .or_insert_with(|| Value::String(String::new()));
-    step.entry("finished_at")
-        .or_insert_with(|| Value::String(timestamp.clone()));
+    step.insert("started_at".into(), Value::String(timestamp.clone()));
+    step.insert("system_prompt".into(), Value::String(String::new()));
+    step.insert("user_content".into(), Value::String(String::new()));
+    step.insert("finished_at".into(), Value::String(timestamp.clone()));
     Ok(Value::Object(step))
 }
 
@@ -607,9 +675,14 @@ fn actf_observation_call_id(observation: &ActfObservation) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-fn format_actf_timestamp(value: &str) -> Result<String> {
-    let timestamp = chrono::DateTime::parse_from_rfc3339(value)?;
-    Ok(timestamp.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string())
+fn format_actf_timestamp(value: &StorylineTimestamp) -> Result<String> {
+    if let Some(source) = value.source_string() {
+        return Ok(source.to_string());
+    }
+    Ok(value
+        .instant()
+        .format("%Y-%m-%d %H:%M:%S%.f%:z")
+        .to_string())
 }
 
 #[cfg(test)]
@@ -659,6 +732,150 @@ mod tests {
             story.turns[0].observation.as_ref().unwrap()["results"][0]["content"],
             "/app"
         );
+        assert_eq!(storyline_to_actf(&story).unwrap(), document);
+    }
+
+    #[test]
+    fn actf_noncanonical_source_fields_are_unknown_without_source_extra() {
+        let document = parse_actf_document(
+            r#"{
+            "task_id": "task-command",
+            "category": "software-engineering",
+            "k": 1,
+            "correct": false,
+            "attempts_tried": 1,
+            "solved_at": null,
+            "retry_count": 2,
+            "retry_counts": {"environment": 2},
+            "vendor_root": {"kept": true},
+            "attempts": {"1": {
+                "correct": false,
+                "final_answer": null,
+                "ground_truth": "expected",
+                "status": "completed",
+                "score": null,
+                "error": "",
+                "artifacts": {},
+                "extra": {"harness_metrics": {"passed": 0}},
+                "analysis_result": {"quality": 7},
+                "meta": {"suite": "fixture"},
+                "trajectory": {
+                    "schema_version": "ACTF_v1.0",
+                    "started_at": "2026-01-01 00:00:00+00:00",
+                    "finished_at": "2026-01-01 00:00:01+00:00",
+                    "steps": [{
+                        "step_id": 1,
+                        "assistant_content": {
+                            "content": "done",
+                            "reasoning_content": "think",
+                            "tool_calls": [{
+                                "type": "command_execution",
+                                "id": "cmd-1",
+                                "command": "pwd",
+                                "aggregated_output": "/app\n",
+                                "exit_code": 0,
+                                "status": "completed"
+                            }]
+                        },
+                        "metric": {
+                            "prompt_tokens_len": 1,
+                            "completion_tokens_len": 2,
+                            "llm_infer_ms": 3,
+                            "env_action_ms": 4,
+                            "stop_reason": "stop"
+                        },
+                        "system_prompt": "system",
+                        "user_content": "task",
+                        "tools": [{
+                            "type": "command_execution",
+                            "id": "cmd-1",
+                            "command": "pwd",
+                            "aggregated_output": "/app\n",
+                            "exit_code": 0,
+                            "status": "completed"
+                        }],
+                        "observation": [{
+                            "type": "command_execution",
+                            "id": "cmd-1",
+                            "command": "pwd",
+                            "aggregated_output": "/app\n",
+                            "exit_code": 0,
+                            "status": "completed"
+                        }],
+                        "started_at": "2026-01-01 00:00:00+00:00",
+                        "finished_at": "2026-01-01 00:00:01+00:00"
+                    }]
+                }
+            }}
+        }"#,
+        )
+        .unwrap();
+
+        let story = actf_to_storyline(&document).unwrap();
+        let fields = &story.unknown_fields.sources["actf"].fields;
+        assert_eq!(fields["/vendor_root"], json!({"kept": true}));
+        for pointer in [
+            "/category",
+            "/k",
+            "/attempts_tried",
+            "/solved_at",
+            "/retry_count",
+            "/retry_counts",
+            "/attempts/1/final_answer",
+            "/attempts/1/ground_truth",
+            "/attempts/1/error",
+            "/attempts/1/artifacts",
+            "/attempts/1/extra",
+            "/attempts/1/meta",
+            "/attempts/1/trajectory/started_at",
+            "/attempts/1/trajectory/finished_at",
+            "/attempts/1/trajectory/steps/0/system_prompt",
+            "/attempts/1/trajectory/steps/0/user_content",
+            "/attempts/1/trajectory/steps/0/finished_at",
+            "/attempts/1/trajectory/steps/0/tools/0/type",
+            "/attempts/1/trajectory/steps/0/tools/0/exit_code",
+            "/attempts/1/trajectory/steps/0/tools/0/status",
+        ] {
+            assert!(
+                fields.contains_key(pointer),
+                "missing unknown pointer {pointer}"
+            );
+        }
+        for pointer in [
+            "/task_id",
+            "/correct",
+            "/attempts/1/correct",
+            "/attempts/1/status",
+            "/attempts/1/score",
+            "/attempts/1/analysis_result",
+            "/attempts/1/trajectory/schema_version",
+            "/attempts/1/trajectory/steps/0/step_id",
+            "/attempts/1/trajectory/steps/0/started_at",
+            "/attempts/1/trajectory/steps/0/assistant_content/content",
+            "/attempts/1/trajectory/steps/0/assistant_content/reasoning_content",
+            "/attempts/1/trajectory/steps/0/tools/0/id",
+            "/attempts/1/trajectory/steps/0/tools/0/command",
+            "/attempts/1/trajectory/steps/0/tools/0/aggregated_output",
+        ] {
+            assert!(
+                !fields.contains_key(pointer),
+                "canonical pointer leaked into unknowns: {pointer}"
+            );
+        }
+        assert!(story.extra.is_none());
+        assert!(story.turns[0].extra.is_none());
+        assert_eq!(
+            story.final_metrics.as_ref().unwrap()["analysis_result"]["quality"],
+            7
+        );
+        let call = &story.turns[0].tool_calls.as_ref().unwrap()[0];
+        assert_eq!(call.result.as_ref().unwrap(), "/app\n");
+        assert!(call.extra.is_none());
+        assert_eq!(
+            story.turns[0].observation.as_ref().unwrap()["results"][0]["content"],
+            "/app\n"
+        );
+
         assert_eq!(storyline_to_actf(&story).unwrap(), document);
     }
 

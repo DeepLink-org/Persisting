@@ -323,7 +323,7 @@ async fn same_sql_returns_identical_results_for_lance_and_atif() -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     store.replace_storylines(&stories).await?;
     let lance_engine = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         dir.path(),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -362,7 +362,7 @@ async fn timestamp_milliseconds_match_for_lance_and_direct_atif_queries() -> Res
     store.replace_storylines(&stories).await?;
 
     let lance = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         dir.path(),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -551,7 +551,7 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
         .await?;
 
     let engine = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         Path::new(&uri),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -581,7 +581,7 @@ async fn query_engine_opens_object_store_uri() -> Result<()> {
     assert_eq!(engine.backend_info(), pinned_generation.as_ref());
 
     let reopened = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         Path::new(&uri),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -607,7 +607,7 @@ async fn query_engine_rejects_empty_object_store_without_current() -> Result<()>
             .as_nanos()
     );
     let error = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         Path::new(&uri),
         ChronicleQueryExecutionOptions::default(),
     )
