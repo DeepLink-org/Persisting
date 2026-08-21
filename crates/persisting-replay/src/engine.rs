@@ -10,11 +10,26 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write_json, canonicalize};
 use crate::journal::Journal;
 use crate::model::{
-    AgentKind, AgentResult, Artifact, PlaybackRequest, ReplayOutcome, ReplayResult,
-    RESULT_SCHEMA_VERSION,
+    AgentKind, AgentResult, AgentStatus, Artifact, ExecutionReport, PlaybackRequest, ReplayFailure,
+    ReplayMode, ReplayOutcome, ReplayPhase, ReplayQuality, ReplayResult, RESULT_SCHEMA_VERSION,
 };
 
-pub fn execute(mut request: PlaybackRequest) -> Result<ReplayResult, ReplayError> {
+pub fn execute(request: PlaybackRequest) -> Result<ExecutionReport, ReplayError> {
+    let run_id = request
+        .run_id
+        .clone()
+        .unwrap_or_else(|| format!("replay-{}", uuid::Uuid::new_v4().simple()));
+    let state_dir = location_hint(&request.state_dir, &run_id);
+    let output_dir = location_hint(&request.output_dir, &run_id);
+    execute_with_run_id(request, run_id.clone()).map_err(|error| {
+        error.with_default_locations(run_id, state_dir, output_dir)
+    })
+}
+
+fn execute_with_run_id(
+    mut request: PlaybackRequest,
+    run_id: String,
+) -> Result<ExecutionReport, ReplayError> {
     validate(&request)?;
     request.workspace = canonicalize(&request.workspace, ReplayErrorKind::Workspace, "workspace")?;
     request.trajectory = canonicalize(
@@ -22,10 +37,6 @@ pub fn execute(mut request: PlaybackRequest) -> Result<ReplayResult, ReplayError
         ReplayErrorKind::Configuration,
         "trajectory",
     )?;
-    let run_id = request
-        .run_id
-        .clone()
-        .unwrap_or_else(|| format!("replay-{}", uuid::Uuid::new_v4().simple()));
     let state_root = absolute_or_current(&request.state_dir)?;
     let output_root = absolute_or_current(&request.output_dir)?;
     let state_dir = state_root.join(&run_id);
@@ -91,7 +102,35 @@ pub fn execute(mut request: PlaybackRequest) -> Result<ReplayResult, ReplayError
         session_id: &session_id,
         nonce: &nonce,
     };
-    let outcome = run(&plan, &context, &mut journal)?;
+    let outcome = match run(&plan, &context, &mut journal) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let _ = journal.append(
+                "run_failed",
+                [
+                    ("category".into(), json!(error.kind.category())),
+                    ("message".into(), json!(error.message)),
+                ],
+            );
+            let journal_path = journal.path.clone();
+            drop(journal);
+            let _ = fs::copy(&journal_path, output_dir.join("replay-events.jsonl"));
+            let result = failure_result(
+                &request,
+                launch.as_ref(),
+                &plan,
+                run_id,
+                state_dir,
+                output_dir,
+                &error,
+            );
+            let _ = atomic_write_json(&result.output_dir.join("result.json"), &result);
+            return Ok(ExecutionReport {
+                exit_code: error.exit_code(),
+                result,
+            });
+        }
+    };
     write_next_action_comparison(&request, &plan, &outcome, &output_dir)?;
     journal.append("run_finished", [("status".into(), json!(outcome.status))])?;
     let journal_path = journal.path.clone();
@@ -126,20 +165,102 @@ pub fn execute(mut request: PlaybackRequest) -> Result<ReplayResult, ReplayError
     let artifacts = artifacts(&request, &outcome, &output_dir);
     let result = ReplayResult {
         schema_version: RESULT_SCHEMA_VERSION,
-        status: outcome.status,
+        phase: phase_for_mode(request.mode),
+        quality: quality_for_outcome(&outcome),
+        agent_status: agent_status_for_outcome(request.mode, &outcome),
         run_id,
         agent: agent_result(&request, launch.as_ref()),
         after_step: plan.after_step,
         replayed_tool_calls: outcome.observations.len(),
         prefix_model_turns: plan.prefix_model_turns,
         continued_steps: outcome.continued_steps,
+        state_dir,
         output_dir: output_dir.clone(),
         artifacts,
+        failure: None,
         retryable: false,
         metadata: outcome.metadata,
     };
     atomic_write_json(&output_dir.join("result.json"), &result)?;
-    Ok(result)
+    Ok(ExecutionReport {
+        result,
+        exit_code: 0,
+    })
+}
+
+fn phase_for_mode(mode: ReplayMode) -> ReplayPhase {
+    match mode {
+        ReplayMode::PrepareOnly => ReplayPhase::Prepared,
+        ReplayMode::ReplayOnly => ReplayPhase::Replayed,
+        ReplayMode::ReplayAndContinue => ReplayPhase::Continued,
+    }
+}
+
+fn quality_for_outcome(outcome: &ReplayOutcome) -> ReplayQuality {
+    if outcome.observations.iter().any(|observation| {
+        observation
+            .metadata
+            .contains_key("opaque_source_observation")
+            || observation.metadata.contains_key("degradation_reason")
+    }) {
+        ReplayQuality::Degraded
+    } else {
+        ReplayQuality::Verified
+    }
+}
+
+fn agent_status_for_outcome(mode: ReplayMode, outcome: &ReplayOutcome) -> AgentStatus {
+    if mode != ReplayMode::ReplayAndContinue {
+        AgentStatus::NotStarted
+    } else if outcome.status == "max_steps" {
+        AgentStatus::MaxSteps
+    } else {
+        AgentStatus::Completed
+    }
+}
+
+fn failure_result(
+    request: &PlaybackRequest,
+    launch: Option<&LaunchSpec>,
+    plan: &crate::model::ReplayPlan,
+    run_id: String,
+    state_dir: std::path::PathBuf,
+    output_dir: std::path::PathBuf,
+    error: &ReplayError,
+) -> ReplayResult {
+    let artifacts = existing_artifacts(request, &output_dir);
+    let replay_completed = artifacts
+        .iter()
+        .any(|artifact| artifact.role == "reconstructed_native_trajectory");
+    ReplayResult {
+        schema_version: RESULT_SCHEMA_VERSION,
+        phase: if replay_completed {
+            ReplayPhase::Replayed
+        } else {
+            ReplayPhase::Prepared
+        },
+        quality: ReplayQuality::Verified,
+        agent_status: if request.mode == ReplayMode::ReplayAndContinue && replay_completed {
+            AgentStatus::Failed
+        } else {
+            AgentStatus::NotStarted
+        },
+        run_id,
+        agent: agent_result(request, launch),
+        after_step: plan.after_step,
+        replayed_tool_calls: 0,
+        prefix_model_turns: plan.prefix_model_turns,
+        continued_steps: 0,
+        state_dir,
+        output_dir: output_dir.clone(),
+        artifacts,
+        failure: Some(ReplayFailure {
+            category: error.kind.category().into(),
+            message: error.to_string(),
+        }),
+        retryable: error.kind.retryable(),
+        metadata: Value::Null,
+    }
 }
 
 fn write_next_action_comparison(
@@ -247,6 +368,16 @@ fn absolute_or_current(path: &Path) -> Result<std::path::PathBuf, ReplayError> {
     }
 }
 
+fn location_hint(path: &Path, run_id: &str) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path.join(run_id)
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path).join(run_id))
+            .unwrap_or_else(|_| path.join(run_id))
+    }
+}
+
 fn read_comparison(path: &Path) -> Vec<Value> {
     fs::read(path)
         .ok()
@@ -337,10 +468,120 @@ fn artifacts(
     artifacts
 }
 
+fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artifact> {
+    let mut artifacts = Vec::new();
+    for (role, format, path) in [
+        (
+            "playback_plan",
+            "sandbox-playback/plan-v1",
+            output_dir.join("manifest.json"),
+        ),
+        (
+            "replay_events",
+            "sandbox-playback/events-v1",
+            output_dir.join("replay-events.jsonl"),
+        ),
+        (
+            "replay_summary",
+            "sandbox-playback/summary-v1",
+            output_dir.join("replay-summary.json"),
+        ),
+        (
+            "observation_comparison",
+            "sandbox-playback/comparison-v1",
+            output_dir.join("observation-comparison.json"),
+        ),
+        (
+            "next_action_comparison",
+            "sandbox-playback/next-action-v2",
+            output_dir.join("next-action-comparison.json"),
+        ),
+    ] {
+        if path.is_file() {
+            artifacts.push(artifact(role, format, path));
+        }
+    }
+
+    let native_format = match request.agent {
+        AgentKind::ClaudeCode => "claude-code/native-jsonl-2.1.220",
+        AgentKind::MiniSweAgent => "mini-swe-agent/native-json-2.4.6",
+        AgentKind::Openhands => "openhands/native-json-0.53.0",
+        AgentKind::SweAgent => "swe-agent/native-traj-1.1.0",
+    };
+    let native_paths: &[(&str, &str)] = match request.agent {
+        AgentKind::ClaudeCode => &[
+            ("reconstructed_native_trajectory", "native/reconstructed-prefix.jsonl"),
+            ("continued_native_trajectory", "native/continued-session.jsonl"),
+        ],
+        AgentKind::MiniSweAgent => &[
+            ("reconstructed_native_trajectory", "native/prepared-prefix.json"),
+            ("continued_native_trajectory", "native/continued-trajectory.json"),
+        ],
+        AgentKind::Openhands => &[
+            (
+                "reconstructed_native_trajectory",
+                "native/prepared-replay-events.json",
+            ),
+            ("continued_native_trajectory", "native/continued-trajectory.json"),
+        ],
+        AgentKind::SweAgent => &[
+            ("reconstructed_native_trajectory", "native/prepared-prefix.traj"),
+            ("continued_native_trajectory", "native/continued-trajectory.json"),
+        ],
+    };
+    for (role, relative) in native_paths {
+        let path = output_dir.join(relative);
+        if path.is_file() {
+            artifacts.push(artifact(role, native_format, path));
+        }
+    }
+    if output_dir.join("logs").is_dir() {
+        artifacts.push(artifact(
+            "agent_logs",
+            "sandbox-playback/log-directory-v1",
+            output_dir.join("logs"),
+        ));
+    }
+    artifacts
+}
+
 fn artifact(role: &str, format: &str, path: std::path::PathBuf) -> Artifact {
     Artifact {
         role: role.into(),
         format: format.into(),
         path,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validation_errors_keep_resolved_run_locations() {
+        let request = PlaybackRequest {
+            agent: AgentKind::ClaudeCode,
+            trajectory: std::path::PathBuf::from("/missing/trajectory.jsonl"),
+            after_step: 1,
+            workspace: std::path::PathBuf::from("/missing/workspace"),
+            state_dir: std::path::PathBuf::from("/state"),
+            output_dir: std::path::PathBuf::from("/output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: Vec::new(),
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
+            run_id: Some("replay-1".into()),
+            disable_thinking: false,
+        };
+
+        let error = execute(request).unwrap_err();
+        let (run_id, state_dir, output_dir) = error.locations().unwrap();
+        assert_eq!(run_id, "replay-1");
+        assert_eq!(state_dir, Path::new("/state/replay-1"));
+        assert_eq!(output_dir, Path::new("/output/replay-1"));
     }
 }

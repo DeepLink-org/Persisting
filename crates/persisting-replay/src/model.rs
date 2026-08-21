@@ -7,7 +7,7 @@ use serde_json::Value;
 
 pub const PLAN_SCHEMA_VERSION: &str = "sandbox-replay.plan/v1";
 pub const REQUEST_SCHEMA_VERSION: &str = "sandbox-playback.request/v1";
-pub const RESULT_SCHEMA_VERSION: &str = "sandbox-playback.result/v2";
+pub const RESULT_SCHEMA_VERSION: &str = "sandbox-playback.result/v3";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -197,18 +197,98 @@ pub struct AgentResult {
     pub disallowed_tools: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayPhase {
+    Prepared,
+    Replayed,
+    Continued,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayQuality {
+    Verified,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Completed,
+    MaxSteps,
+    Failed,
+    NotStarted,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplayFailure {
+    pub category: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReplayResult {
     pub schema_version: &'static str,
-    pub status: String,
+    pub phase: ReplayPhase,
+    pub quality: ReplayQuality,
+    pub agent_status: AgentStatus,
     pub run_id: String,
     pub agent: AgentResult,
     pub after_step: usize,
     pub replayed_tool_calls: usize,
     pub prefix_model_turns: usize,
     pub continued_steps: usize,
+    pub state_dir: PathBuf,
     pub output_dir: PathBuf,
     pub artifacts: Vec<Artifact>,
+    pub failure: Option<ReplayFailure>,
     pub retryable: bool,
     pub metadata: Value,
+}
+
+#[derive(Debug)]
+pub struct ExecutionReport {
+    pub result: ReplayResult,
+    pub exit_code: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v3_result_serializes_typed_execution_state() {
+        let result = ReplayResult {
+            schema_version: RESULT_SCHEMA_VERSION,
+            phase: ReplayPhase::Replayed,
+            quality: ReplayQuality::Degraded,
+            agent_status: AgentStatus::NotStarted,
+            run_id: "replay-1".into(),
+            agent: AgentResult {
+                kind: "claude-code".into(),
+                version: "2.1.220".into(),
+                entrypoint: None,
+                launch_source: "runtime_manifest".into(),
+                disallowed_tools: Vec::new(),
+            },
+            after_step: 1,
+            replayed_tool_calls: 1,
+            prefix_model_turns: 1,
+            continued_steps: 0,
+            state_dir: PathBuf::from("/state/replay-1"),
+            output_dir: PathBuf::from("/output/replay-1"),
+            artifacts: Vec::new(),
+            failure: None,
+            retryable: false,
+            metadata: Value::Null,
+        };
+
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["schema_version"], "sandbox-playback.result/v3");
+        assert_eq!(value["phase"], "replayed");
+        assert_eq!(value["quality"], "degraded");
+        assert_eq!(value["agent_status"], "not_started");
+        assert_eq!(value["failure"], Value::Null);
+    }
 }

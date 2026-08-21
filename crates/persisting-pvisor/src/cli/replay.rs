@@ -159,12 +159,12 @@ pub fn run(args: ReplayArgs) -> i32 {
         }
     }
     match normalize(args).and_then(execute) {
-        Ok(result) => {
+        Ok(report) => {
             println!(
                 "{}",
-                serde_json::to_string(&result).expect("ReplayResult is serializable")
+                serde_json::to_string(&report.result).expect("ReplayResult is serializable")
             );
-            0
+            report.exit_code
         }
         Err(error) => {
             print_error(&error);
@@ -554,18 +554,31 @@ fn reject_direct(args: &ReplayArgs) -> Result<(), ReplayError> {
 }
 
 fn print_error(error: &ReplayError) {
-    println!(
-        "{}",
-        json!({
-            "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "failed",
-            "error": {
-                "category": error.kind.category(),
-                "message": error.to_string(),
-            },
-            "retryable": error.kind.retryable(),
+    println!("{}", failure_json(error));
+}
+
+fn failure_json(error: &ReplayError) -> serde_json::Value {
+    let (run_id, state_dir, output_dir) = error
+        .locations()
+        .map(|(run_id, state_dir, output_dir)| {
+            (json!(run_id), json!(state_dir), json!(output_dir))
         })
-    );
+        .unwrap_or((serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null));
+    json!({
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "phase": null,
+        "quality": null,
+        "agent_status": "not_started",
+        "run_id": run_id,
+        "state_dir": state_dir,
+        "output_dir": output_dir,
+        "artifacts": [],
+        "failure": {
+            "category": error.kind.category(),
+            "message": error.to_string(),
+        },
+        "retryable": error.kind.retryable(),
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -662,5 +675,22 @@ allow_stale_observations = true
             .iter()
             .any(|argument| argument == "--allow-stale-observations"));
         assert!(!command.iter().any(|argument| argument == "--replay-only"));
+    }
+
+    #[test]
+    fn failure_json_keeps_run_locations() {
+        let error = ReplayError::configuration("invalid request").with_locations(
+            "replay-1",
+            PathBuf::from("/state/replay-1"),
+            PathBuf::from("/output/replay-1"),
+        );
+
+        let value = failure_json(&error);
+
+        assert_eq!(value["schema_version"], "sandbox-playback.result/v3");
+        assert_eq!(value["run_id"], "replay-1");
+        assert_eq!(value["state_dir"], "/state/replay-1");
+        assert_eq!(value["output_dir"], "/output/replay-1");
+        assert_eq!(value["failure"]["category"], "configuration_error");
     }
 }

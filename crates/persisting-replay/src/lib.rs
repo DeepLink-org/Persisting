@@ -21,4 +21,7 @@ pub use config::{
 };
 pub use engine::execute;
 pub use error::{ReplayError, ReplayErrorKind};
-pub use model::{AgentKind, PlaybackRequest, ReplayMode, ReplayResult, RESULT_SCHEMA_VERSION};
+pub use model::{
+    AgentKind, AgentStatus, ExecutionReport, PlaybackRequest, ReplayFailure, ReplayMode,
+    ReplayPhase, ReplayQuality, ReplayResult, RESULT_SCHEMA_VERSION,
+};

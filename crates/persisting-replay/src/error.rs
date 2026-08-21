@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 /// Stable error categories retained from SandboxReplay's public protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +64,14 @@ impl ReplayErrorKind {
 pub struct ReplayError {
     pub kind: ReplayErrorKind,
     pub message: String,
+    pub locations: Option<ReplayLocations>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplayLocations {
+    pub run_id: String,
+    pub state_dir: PathBuf,
+    pub output_dir: PathBuf,
 }
 
 impl ReplayError {
@@ -70,6 +79,7 @@ impl ReplayError {
         Self {
             kind,
             message: message.into(),
+            locations: None,
         }
     }
 
@@ -122,6 +132,46 @@ impl ReplayError {
 
     pub fn exit_code(&self) -> i32 {
         self.kind.exit_code()
+    }
+
+    pub fn with_locations(
+        mut self,
+        run_id: impl Into<String>,
+        state_dir: PathBuf,
+        output_dir: PathBuf,
+    ) -> Self {
+        self.locations = Some(ReplayLocations {
+            run_id: run_id.into(),
+            state_dir,
+            output_dir,
+        });
+        self
+    }
+
+    pub fn with_default_locations(
+        mut self,
+        run_id: impl Into<String>,
+        state_dir: PathBuf,
+        output_dir: PathBuf,
+    ) -> Self {
+        if self.locations.is_none() {
+            self.locations = Some(ReplayLocations {
+                run_id: run_id.into(),
+                state_dir,
+                output_dir,
+            });
+        }
+        self
+    }
+
+    pub fn locations(&self) -> Option<(&str, &Path, &Path)> {
+        self.locations.as_ref().map(|locations| {
+            (
+                locations.run_id.as_str(),
+                locations.state_dir.as_path(),
+                locations.output_dir.as_path(),
+            )
+        })
     }
 }
 
