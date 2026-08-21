@@ -5,7 +5,7 @@ use std::str::FromStr;
 use serde::Deserialize;
 
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
-use crate::model::{AgentKind, PlaybackRequest, REQUEST_SCHEMA_VERSION};
+use crate::model::{AgentKind, PlaybackRequest, ReplayMode, REQUEST_SCHEMA_VERSION};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +34,10 @@ pub struct ReplayConfig {
     pub session_id: Option<String>,
     #[serde(default)]
     pub replay_only: bool,
+    #[serde(default)]
+    pub prepare_only: bool,
+    #[serde(default)]
+    pub allow_stale_observations: bool,
     #[serde(default)]
     pub disable_thinking: bool,
     pub run_id: Option<String>,
@@ -85,6 +89,7 @@ impl ReplayToml {
 
     pub fn into_request(self, cwd: &Path) -> Result<PlaybackRequest, ReplayError> {
         let replay = self.replay;
+        let mode = replay_mode(replay.prepare_only, replay.replay_only)?;
         Ok(PlaybackRequest {
             agent: AgentKind::from_str(&replay.agent)
                 .map_err(|message| ReplayError::new(ReplayErrorKind::UnsupportedAgent, message))?,
@@ -103,7 +108,8 @@ impl ReplayToml {
             trajectory_assets: replay.trajectory_assets,
             session_id: replay.session_id,
             max_steps: replay.max_steps,
-            replay_only: replay.replay_only,
+            mode,
+            allow_stale_observations: replay.allow_stale_observations,
             run_id: replay.run_id,
             disable_thinking: replay.disable_thinking,
         })
@@ -125,6 +131,10 @@ struct JsonRequest {
     session_id: Option<String>,
     #[serde(default)]
     replay_only: bool,
+    #[serde(default)]
+    prepare_only: bool,
+    #[serde(default)]
+    allow_stale_observations: bool,
     #[serde(default)]
     disable_thinking: bool,
     run_id: Option<String>,
@@ -155,6 +165,7 @@ pub fn request_from_json(path: &Path) -> Result<PlaybackRequest, ReplayError> {
             "request schema_version must be {REQUEST_SCHEMA_VERSION:?}"
         )));
     }
+    let mode = replay_mode(request.prepare_only, request.replay_only)?;
     Ok(PlaybackRequest {
         agent: AgentKind::from_str(&request.agent.kind)
             .map_err(|message| ReplayError::new(ReplayErrorKind::UnsupportedAgent, message))?,
@@ -169,15 +180,74 @@ pub fn request_from_json(path: &Path) -> Result<PlaybackRequest, ReplayError> {
         trajectory_assets: request.trajectory_assets,
         session_id: request.session_id,
         max_steps: request.max_steps,
-        replay_only: request.replay_only,
+        mode,
+        allow_stale_observations: request.allow_stale_observations,
         run_id: request.run_id,
         disable_thinking: request.disable_thinking,
     })
 }
 
+fn replay_mode(prepare_only: bool, replay_only: bool) -> Result<ReplayMode, ReplayError> {
+    match (prepare_only, replay_only) {
+        (true, true) => Err(ReplayError::configuration(
+            "prepare_only and replay_only are mutually exclusive",
+        )),
+        (true, false) => Ok(ReplayMode::PrepareOnly),
+        (false, true) => Ok(ReplayMode::ReplayOnly),
+        (false, false) => Ok(ReplayMode::ReplayAndContinue),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ReplayMode;
+
+    #[test]
+    fn toml_maps_prepare_and_replay_modes_and_rejects_both() {
+        let prepare: ReplayToml = toml::from_str(
+            r#"
+[replay]
+agent = "claude-code"
+trajectory = "/input/session.jsonl"
+after_step = 1
+prepare_only = true
+allow_stale_observations = true
+"#,
+        )
+        .unwrap();
+        let prepare = prepare.into_request(Path::new("/workspace")).unwrap();
+        assert_eq!(prepare.mode, ReplayMode::PrepareOnly);
+        assert!(prepare.allow_stale_observations);
+
+        let replay: ReplayToml = toml::from_str(
+            r#"
+[replay]
+agent = "claude-code"
+trajectory = "/input/session.jsonl"
+after_step = 1
+replay_only = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            replay.into_request(Path::new("/workspace")).unwrap().mode,
+            ReplayMode::ReplayOnly
+        );
+
+        let both: ReplayToml = toml::from_str(
+            r#"
+[replay]
+agent = "claude-code"
+trajectory = "/input/session.jsonl"
+after_step = 1
+prepare_only = true
+replay_only = true
+"#,
+        )
+        .unwrap();
+        assert!(both.into_request(Path::new("/workspace")).is_err());
+    }
 
     #[test]
     fn minimal_toml_defaults_to_prepared_sandbox() {
@@ -288,7 +358,34 @@ mode = "off"
         assert_eq!(request.max_steps, Some(200));
         assert_eq!(request.session_id.as_deref(), Some("task-291-attempt-1"));
         assert_eq!(request.run_id.as_deref(), Some("sweeval"));
+        assert_eq!(request.mode, ReplayMode::ReplayAndContinue);
         assert!(!request.disable_thinking);
+    }
+
+    #[test]
+    fn json_maps_prepare_mode_and_rejects_conflicting_modes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("request.json");
+        let mut value = serde_json::json!({
+            "schema_version": "sandbox-playback.request/v1",
+            "agent": { "type": "claude-code" },
+            "trajectory": "/input/session.jsonl",
+            "after_step": 1,
+            "workspace": "/workspace",
+            "state_dir": "/state",
+            "output_dir": "/output",
+            "prepare_only": true,
+            "allow_stale_observations": true
+        });
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let request = request_from_json(&path).unwrap();
+        assert_eq!(request.mode, ReplayMode::PrepareOnly);
+        assert!(request.allow_stale_observations);
+
+        value["replay_only"] = serde_json::Value::Bool(true);
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(request_from_json(&path).is_err());
     }
 
     #[test]

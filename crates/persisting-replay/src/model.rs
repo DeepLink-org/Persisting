@@ -63,6 +63,14 @@ impl FromStr for AgentKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayMode {
+    PrepareOnly,
+    ReplayOnly,
+    ReplayAndContinue,
+}
+
 #[derive(Debug, Clone)]
 pub struct PlaybackRequest {
     pub agent: AgentKind,
@@ -77,7 +85,8 @@ pub struct PlaybackRequest {
     pub trajectory_assets: Option<PathBuf>,
     pub session_id: Option<String>,
     pub max_steps: Option<usize>,
-    pub replay_only: bool,
+    pub mode: ReplayMode,
+    pub allow_stale_observations: bool,
     pub run_id: Option<String>,
     pub disable_thinking: bool,
 }

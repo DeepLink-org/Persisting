@@ -18,7 +18,8 @@ use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use crate::io::{atomic_write, atomic_write_json, canonicalize, read_regular_file, sha256};
 use crate::journal::Journal;
 use crate::model::{
-    AgentKind, FreshObservation, PlaybackRequest, ReplayOutcome, ReplayPlan, ToolBatch, ToolCall,
+    AgentKind, FreshObservation, PlaybackRequest, ReplayMode, ReplayOutcome, ReplayPlan, ToolBatch,
+    ToolCall,
 };
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
@@ -63,7 +64,9 @@ pub fn resolve_launch_spec(request: &PlaybackRequest) -> Result<Option<LaunchSpe
             "agent entrypoint and agent runtime are mutually exclusive",
         ));
     }
-    if request.replay_only && request.agent_entrypoint.is_none() && request.agent_runtime.is_none()
+    if request.mode == ReplayMode::PrepareOnly
+        && request.agent_entrypoint.is_none()
+        && request.agent_runtime.is_none()
     {
         return Ok(None);
     }
@@ -115,7 +118,7 @@ pub fn resolve_launch_spec(request: &PlaybackRequest) -> Result<Option<LaunchSpe
         } else {
             let entrypoint = request.agent_entrypoint.clone().ok_or_else(|| {
                 ReplayError::configuration(
-                    "non-replay-only mode requires --agent-entrypoint or --agent-runtime",
+                    "replay and continuation modes require --agent-entrypoint or --agent-runtime",
                 )
             })?;
             (entrypoint, "explicit_entrypoint".to_owned(), None, None)
@@ -1797,7 +1800,7 @@ fn run_claude(
         "session_rebuilt",
         [("sha256".into(), json!(sha256(canonical.as_bytes())))],
     )?;
-    if context.request.replay_only {
+    if context.request.mode == ReplayMode::ReplayOnly {
         return Ok(ReplayOutcome {
             status: "replayed".into(),
             reconstructed_path: Some(reconstructed),
@@ -2930,9 +2933,12 @@ fn run_mini(
     atomic_write_json(&path, &prepared)?;
     journal.append(
         "session_rebuilt",
-        [("prepared_only".into(), json!(context.request.replay_only))],
+        [(
+            "prepared_only".into(),
+            json!(context.request.mode == ReplayMode::PrepareOnly),
+        )],
     )?;
-    if context.request.replay_only {
+    if context.request.mode != ReplayMode::ReplayAndContinue {
         return Ok(prepared_outcome(path));
     }
     run_sdk_bridge(plan, context, journal, AgentKind::MiniSweAgent, &path)
@@ -2962,9 +2968,12 @@ fn run_swe(
     atomic_write_json(&path, &prepared)?;
     journal.append(
         "session_rebuilt",
-        [("prepared_only".into(), json!(context.request.replay_only))],
+        [(
+            "prepared_only".into(),
+            json!(context.request.mode == ReplayMode::PrepareOnly),
+        )],
     )?;
-    if context.request.replay_only {
+    if context.request.mode != ReplayMode::ReplayAndContinue {
         return Ok(prepared_outcome(path));
     }
     run_sdk_bridge(plan, context, journal, AgentKind::SweAgent, &path)
@@ -3481,9 +3490,12 @@ fn run_openhands(
     atomic_write_json(&prepared, &prepared_events)?;
     journal.append(
         "session_rebuilt",
-        [("prepared_only".into(), json!(context.request.replay_only))],
+        [(
+            "prepared_only".into(),
+            json!(context.request.mode == ReplayMode::PrepareOnly),
+        )],
     )?;
-    if context.request.replay_only {
+    if context.request.mode != ReplayMode::ReplayAndContinue {
         return Ok(prepared_outcome(prepared));
     }
     let launch = context
@@ -3989,7 +4001,8 @@ mod tests {
             trajectory_assets: None,
             session_id: None,
             max_steps: None,
-            replay_only: true,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
             run_id: Some("test".into()),
             disable_thinking: false,
         };
@@ -4095,7 +4108,8 @@ mod tests {
             trajectory_assets: None,
             session_id: None,
             max_steps: None,
-            replay_only: true,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
             run_id: Some("test".into()),
             disable_thinking: false,
         };

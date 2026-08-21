@@ -213,6 +213,39 @@ mod tests {
     }
 
     #[test]
+    fn replay_modes_are_mutually_exclusive_cli_flags() {
+        for mode in ["--prepare-only", "--replay-only"] {
+            Cli::try_parse_from([
+                "pvisor",
+                "replay",
+                "--agent",
+                "claude-code",
+                "--trajectory",
+                "/input/session.jsonl",
+                "--after-step",
+                "1",
+                mode,
+            ])
+            .expect("individual replay mode flag must be accepted");
+        }
+
+        let error = Cli::try_parse_from([
+            "pvisor",
+            "replay",
+            "--agent",
+            "claude-code",
+            "--trajectory",
+            "/input/session.jsonl",
+            "--after-step",
+            "1",
+            "--prepare-only",
+            "--replay-only",
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
     fn unknown_first_token_becomes_default_run() {
         let args = normalize_default_run(vec!["pvisor".into(), "/bin/true".into()]);
         assert_eq!(args[1], "run");

@@ -7,7 +7,7 @@ use clap::Args;
 use persisting_replay::{
     execute, request_from_json, AgentKind, OverlayFsConfig as ReplayOverlayFsConfig,
     OverlayNetConfig as ReplayOverlayNetConfig, PlaybackRequest, ReplayConfig, ReplayError,
-    ReplayToml, RunConfig as ReplayRunConfig, RESULT_SCHEMA_VERSION,
+    ReplayMode, ReplayToml, RunConfig as ReplayRunConfig, RESULT_SCHEMA_VERSION,
 };
 use serde_json::json;
 
@@ -74,9 +74,17 @@ pub struct ReplayArgs {
     #[arg(long)]
     max_steps: Option<usize>,
 
-    /// Reconstruct the selected prefix without starting a live Agent.
-    #[arg(long)]
+    /// Parse and construct the selected prefix without executing tools or starting an Agent.
+    #[arg(long, conflicts_with = "replay_only")]
+    prepare_only: bool,
+
+    /// Execute the selected tool prefix and stop before the next model request.
+    #[arg(long, conflicts_with = "prepare_only")]
     replay_only: bool,
+
+    /// Permit replay to reuse source observations that cannot be freshly reproduced.
+    #[arg(long)]
+    allow_stale_observations: bool,
 
     /// Force live continuation model requests to disable thinking.
     #[arg(long)]
@@ -234,6 +242,8 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
             max_steps: args.max_steps,
             session_id: args.session_id.clone(),
             replay_only: args.replay_only,
+            prepare_only: args.prepare_only,
+            allow_stale_observations: args.allow_stale_observations,
             disable_thinking: args.disable_thinking,
             run_id: args.run_id.clone(),
             workspace: args.workspace.clone(),
@@ -433,6 +443,12 @@ fn inner_replay_command(
     if replay.replay_only {
         command.push("--replay-only".into());
     }
+    if replay.prepare_only {
+        command.push("--prepare-only".into());
+    }
+    if replay.allow_stale_observations {
+        command.push("--allow-stale-observations".into());
+    }
     if replay.disable_thinking {
         command.push("--disable-thinking".into());
     }
@@ -487,7 +503,14 @@ fn normalize(args: ReplayArgs) -> Result<PlaybackRequest, ReplayError> {
         trajectory_assets: args.trajectory_assets,
         session_id: args.session_id,
         max_steps: args.max_steps,
-        replay_only: args.replay_only,
+        mode: if args.prepare_only {
+            ReplayMode::PrepareOnly
+        } else if args.replay_only {
+            ReplayMode::ReplayOnly
+        } else {
+            ReplayMode::ReplayAndContinue
+        },
+        allow_stale_observations: args.allow_stale_observations,
         run_id: args.run_id,
         disable_thinking: args.disable_thinking,
     })
@@ -506,7 +529,9 @@ fn reject_direct(args: &ReplayArgs) -> Result<(), ReplayError> {
         || args.output_dir.is_some()
         || args.session_id.is_some()
         || args.max_steps.is_some()
+        || args.prepare_only
         || args.replay_only
+        || args.allow_stale_observations
         || args.disable_thinking
         || args.run_id.is_some()
         || args.safe
@@ -613,5 +638,29 @@ agent_entrypoint = "/usr/bin/claude"
         assert!(!needs_managed_run(&config));
         config.run.inherit_env = true;
         assert!(needs_managed_run(&config));
+    }
+
+    #[test]
+    fn managed_command_propagates_prepare_and_stale_observation_flags() {
+        let config: ReplayToml = toml::from_str(
+            r#"
+[replay]
+agent = "claude-code"
+trajectory = "/input/session.jsonl"
+after_step = 1
+prepare_only = true
+allow_stale_observations = true
+"#,
+        )
+        .unwrap();
+
+        let command =
+            inner_replay_command(&config, std::path::Path::new("/usr/bin/pvisor")).unwrap();
+
+        assert!(command.iter().any(|argument| argument == "--prepare-only"));
+        assert!(command
+            .iter()
+            .any(|argument| argument == "--allow-stale-observations"));
+        assert!(!command.iter().any(|argument| argument == "--replay-only"));
     }
 }
