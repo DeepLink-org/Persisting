@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 mod runtime;
@@ -3237,26 +3236,25 @@ fn run_openhands(
             json!(context.request.mode == ReplayMode::PrepareOnly),
         )],
     )?;
-    if context.request.mode != ReplayMode::ReplayAndContinue {
+    if context.request.mode == ReplayMode::PrepareOnly {
         return Ok(prepared_outcome(prepared));
     }
     let launch = context
         .launch
-        .ok_or_else(|| ReplayError::continuation("OpenHands continuation has no launch spec"))?;
-    if context
-        .request
-        .max_steps
-        .is_some_and(|max| max <= plan.prefix_model_turns)
-    {
-        return Err(ReplayError::continuation(
-            "max-steps is exhausted by the replay prefix",
-        ));
-    }
-    let continued = context.output_dir.join("native/continued-trajectory.json");
+        .ok_or_else(|| ReplayError::continuation("OpenHands replay has no launch spec"))?;
+    let replayed_trajectory = match context.request.mode {
+        ReplayMode::ReplayOnly => context
+            .output_dir
+            .join("native/reconstructed-trajectory.json"),
+        ReplayMode::ReplayAndContinue => {
+            context.output_dir.join("native/continued-trajectory.json")
+        }
+        ReplayMode::PrepareOnly => unreachable!("prepare-only returned before OpenHands launch"),
+    };
     let mut command = agent_command(&launch.entrypoint, context);
     command.args(["-m", "openhands.core.main"]);
     command.env("REPLAY_TRAJECTORY_PATH", &prepared);
-    command.env("SAVE_TRAJECTORY_PATH", &continued);
+    command.env("SAVE_TRAJECTORY_PATH", &replayed_trajectory);
     command.env("FILE_STORE", "local");
     command.env(
         "FILE_STORE_PATH",
@@ -3280,32 +3278,37 @@ fn run_openhands(
         "OPENAI_CUSTOM_HEADERS",
         format!("X-LiteLLM-Session-ID: {}", context.session_id),
     );
-    if let Some(max) = context.request.max_steps {
-        command.env("MAX_ITERATIONS", (max + 1).to_string());
+    let iteration_limit = match context.request.mode {
+        ReplayMode::ReplayOnly => Some(plan.prefix_model_turns),
+        ReplayMode::ReplayAndContinue => context.request.max_steps,
+        ReplayMode::PrepareOnly => None,
+    };
+    if let Some(max) = iteration_limit {
+        command.env("MAX_ITERATIONS", max.to_string());
     }
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
     journal.append("continuation_started", std::iter::empty())?;
-    let mut child = command.spawn().replay_context(
-        ReplayErrorKind::Continuation,
-        "start OpenHands replay/continuation",
-    )?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| ReplayError::continuation("OpenHands stdin unavailable"))?
-        .write_all(b"\n")
-        .replay_context(ReplayErrorKind::Continuation, "write OpenHands stdin")?;
-    let output = child
-        .wait_with_output()
-        .replay_context(ReplayErrorKind::Continuation, "wait for OpenHands")?;
     let log = context.output_dir.join("logs/openhands.log");
-    write_process_log(&log, &output)?;
-    let rendered = render_output(&output);
+    fs::create_dir_all(log.parent().expect("OpenHands log has a parent")).replay_context(
+        ReplayErrorKind::Executor,
+        "create OpenHands log directory",
+    )?;
+    let output = run_process(ProcessSpec {
+        command,
+        stdin: Some(b"\n".to_vec()),
+        timeout: Duration::from_secs(24 * 60 * 60),
+        termination_grace: Duration::from_secs(2),
+        pipe_grace: Duration::from_millis(250),
+        retained_bytes: MAX_TOOL_OUTPUT_BYTES / 2,
+        log_path: log.clone(),
+    })
+    .map_err(|error| ReplayError::new(ReplayErrorKind::Continuation, error.message))?;
+    let mut rendered = String::from_utf8_lossy(&output.stdout_tail).into_owned();
+    if !output.stderr_tail.is_empty() {
+        rendered.push('\n');
+        rendered.push_str(&String::from_utf8_lossy(&output.stderr_tail));
+    }
     let fatal_marker = openhands_fatal_controller_marker(&rendered);
-    if !output.status.success() || !continued.is_file() {
+    if output.timed_out || !output.status.success() || !replayed_trajectory.is_file() {
         let detail = fatal_marker
             .map(|marker| format!("; OpenHands controller reported {marker:?}"))
             .unwrap_or_default();
@@ -3318,16 +3321,46 @@ fn run_openhands(
             &rendered,
         ));
     }
-    let continued_events: Vec<Value> = serde_json::from_slice(&read_regular_file(&continued)?)
-        .replay_context(
-            ReplayErrorKind::Trajectory,
-            "parse continued OpenHands trajectory",
-        )?;
+    if let Some(marker) = fatal_marker {
+        return Err(ReplayError::classify_continuation(
+            format!(
+                "OpenHands controller reported {marker:?} despite exiting successfully; partial trajectory retained at {}; see {}",
+                replayed_trajectory.display(),
+                log.display()
+            ),
+            &rendered,
+        ));
+    }
+    let continued_events: Vec<Value> = serde_json::from_slice(&read_regular_file(
+        &replayed_trajectory,
+    )?)
+    .replay_context(
+        ReplayErrorKind::Trajectory,
+        "parse replayed OpenHands trajectory",
+    )?;
     let complete = openhands_complete_batches(&continued_events)?;
     if complete.len() < plan.after_step {
         return Err(ReplayError::trajectory(
             "OpenHands output lost replayed action/observation batches",
         ));
+    }
+    if context.request.mode == ReplayMode::ReplayOnly && complete.len() != plan.after_step {
+        return Err(ReplayError::continuation(format!(
+            "OpenHands replay-only crossed the selected boundary: expected {} actions, observed {}",
+            plan.after_step,
+            complete.len()
+        )));
+    }
+    if context
+        .request
+        .max_steps
+        .is_some_and(|max_steps| complete.len() > max_steps)
+    {
+        return Err(ReplayError::continuation(format!(
+            "OpenHands exceeded the total max_steps budget: allowed {}, observed {} actions",
+            context.request.max_steps.unwrap(),
+            complete.len()
+        )));
     }
     let replayed = &complete[..plan.after_step];
     let observations = plan
@@ -3366,23 +3399,30 @@ fn run_openhands(
         "continuation_finished",
         [
             ("continued_steps".into(), json!(continued_steps)),
-            ("agent_error".into(), json!(fatal_marker)),
+            ("agent_error".into(), Value::Null),
         ],
     )?;
+    let reached_max_steps = context.request.mode == ReplayMode::ReplayAndContinue
+        && context
+            .request
+            .max_steps
+            .is_some_and(|max_steps| complete.len() == max_steps)
+        && rendered.contains("Agent reached maximum iteration");
     Ok(ReplayOutcome {
-        status: "completed".into(),
-        reconstructed_path: Some(prepared),
-        continued_path: Some(continued),
+        status: if context.request.mode == ReplayMode::ReplayOnly {
+            "replayed".into()
+        } else if reached_max_steps {
+            "max_steps".into()
+        } else {
+            "completed".into()
+        },
+        reconstructed_path: (context.request.mode == ReplayMode::ReplayOnly)
+            .then_some(replayed_trajectory.clone()),
+        continued_path: (context.request.mode == ReplayMode::ReplayAndContinue)
+            .then_some(replayed_trajectory),
         observations,
         continued_steps,
-        metadata: fatal_marker
-            .map(|marker| {
-                json!({
-                    "agent_terminal_status": "error",
-                    "agent_error": marker,
-                })
-            })
-            .unwrap_or_else(|| json!({})),
+        metadata: json!({}),
     })
 }
 
@@ -3516,25 +3556,6 @@ fn environment_name_allowed(rendered: &str, strip_credentials: bool) -> bool {
     !(strip_credentials && credential)
         && !claude_provider_override
         && !matches!(rendered, "PYTHONHOME" | "PYTHONPATH" | "VIRTUAL_ENV")
-}
-
-fn write_process_log(path: &Path, output: &Output) -> Result<(), ReplayError> {
-    let mut bytes = output.stdout.clone();
-    if !output.stderr.is_empty() {
-        if !bytes.ends_with(b"\n") {
-            bytes.push(b'\n');
-        }
-        bytes.extend_from_slice(&output.stderr);
-    }
-    atomic_write(path, &bytes)
-}
-
-fn render_output(output: &Output) -> String {
-    format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 fn expected_claude_max_turn_exit(stdout: &[u8], max_turns: Option<usize>) -> bool {

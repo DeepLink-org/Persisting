@@ -547,6 +547,10 @@ fn existing_artifacts(request: &PlaybackRequest, output_dir: &Path) -> Vec<Artif
                 "reconstructed_native_trajectory",
                 "native/prepared-replay-events.json",
             ),
+            (
+                "reconstructed_native_trajectory",
+                "native/reconstructed-trajectory.json",
+            ),
             ("continued_native_trajectory", "native/continued-trajectory.json"),
         ],
         AgentKind::SweAgent => &[

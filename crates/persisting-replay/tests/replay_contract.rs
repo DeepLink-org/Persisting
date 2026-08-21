@@ -2,6 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use persisting_replay::{
+    execute, AgentKind, AgentStatus, PlaybackRequest, ReplayMode, ReplayPhase,
+};
 use serde_json::{json, Value};
 
 fn crate_path(relative: &str) -> PathBuf {
@@ -25,6 +31,111 @@ fn run_fake(kind: &str, runner: &str, request: &Path, live_marker: &Path) {
         "fake runner failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[cfg(unix)]
+fn write_fake_openhands_entrypoint(path: &Path) {
+    fs::write(
+        path,
+        r#"#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+
+if len(sys.argv) > 1 and sys.argv[1] == "-c":
+    print("0.53.0")
+    raise SystemExit(0)
+
+prepared = pathlib.Path(os.environ["REPLAY_TRAJECTORY_PATH"])
+continued = pathlib.Path(os.environ["SAVE_TRAJECTORY_PATH"])
+events = json.loads(prepared.read_text(encoding="utf-8"))
+actions = [event for event in events if event.get("source") == "agent" and event.get("action") == "run"]
+next_id = max(event["id"] for event in events) + 1
+for action in actions:
+    if not any(event.get("cause") == action["id"] for event in events):
+        events.append({
+            "id": next_id,
+            "source": "environment",
+            "observation": "run",
+            "cause": action["id"],
+            "message": "fresh replay observation",
+            "args": {"command": action.get("args", {}).get("command", ""), "metadata": {"exit_code": 0}},
+        })
+        next_id += 1
+
+limit = int(os.environ["MAX_ITERATIONS"])
+while len(actions) < limit:
+    pathlib.Path("live-marker").write_text("live\n", encoding="utf-8")
+    action_id = next_id
+    next_id += 1
+    action = {"id": action_id, "source": "agent", "action": "run", "args": {"command": "echo live"}}
+    observation = {
+        "id": next_id,
+        "source": "environment",
+        "observation": "run",
+        "cause": action_id,
+        "message": "fresh live observation",
+        "args": {"command": "echo live", "metadata": {"exit_code": 0}},
+    }
+    next_id += 1
+    events.extend([action, observation])
+    actions.append(action)
+
+continued.parent.mkdir(parents=True, exist_ok=True)
+continued.write_text(json.dumps(events), encoding="utf-8")
+if pathlib.Path("fatal-mode").exists():
+    print("Error while running the agent", file=sys.stderr)
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+#[cfg(unix)]
+fn openhands_request(root: &Path, mode: ReplayMode, max_steps: usize) -> PlaybackRequest {
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let trajectory = root.join("openhands-trajectory.json");
+    fs::write(
+        &trajectory,
+        serde_json::to_vec(&json!([
+            {"id": 0, "source": "user", "action": "message", "args": {"content": "fix it"}},
+            {"id": 1, "source": "agent", "action": "run", "args": {"command": "pwd"}},
+            {
+                "id": 2,
+                "source": "environment",
+                "observation": "run",
+                "cause": 1,
+                "message": "old observation",
+                "args": {"command": "pwd", "metadata": {"exit_code": 0}}
+            }
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let entrypoint = root.join("fake-openhands");
+    write_fake_openhands_entrypoint(&entrypoint);
+    PlaybackRequest {
+        agent: AgentKind::Openhands,
+        trajectory,
+        after_step: 1,
+        workspace,
+        state_dir: root.join("state"),
+        output_dir: root.join("output"),
+        agent_entrypoint: Some(entrypoint),
+        agent_runtime: None,
+        disallowed_tools: Vec::new(),
+        trajectory_assets: None,
+        session_id: None,
+        max_steps: Some(max_steps),
+        mode,
+        allow_stale_observations: false,
+        run_id: Some("contract".into()),
+        disable_thinking: false,
+    }
 }
 
 #[test]
@@ -160,4 +271,55 @@ fn swe_max_steps_caps_total_actions() {
     assert_eq!(fs::read_to_string(live_marker).unwrap().lines().count(), 2);
     assert!(reconstructed.is_file());
     assert!(continued.is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn openhands_replay_only_stops_at_boundary() {
+    let temporary = tempfile::tempdir().unwrap();
+    let report = execute(openhands_request(
+        temporary.path(),
+        ReplayMode::ReplayOnly,
+        1,
+    ))
+    .unwrap();
+
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.result.phase, ReplayPhase::Replayed);
+    assert_eq!(report.result.agent_status, AgentStatus::NotStarted);
+    assert_eq!(report.result.replayed_tool_calls, 1);
+    assert_eq!(report.result.continued_steps, 0);
+    assert!(!temporary.path().join("workspace/live-marker").exists());
+    assert!(report.result.artifacts.iter().any(|artifact| {
+        artifact.role == "reconstructed_native_trajectory"
+            && artifact
+                .path
+                .ends_with("native/reconstructed-trajectory.json")
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn openhands_zero_exit_fatal_status_is_a_failed_result_with_trajectory() {
+    let temporary = tempfile::tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("fatal-mode"), "1\n").unwrap();
+    let report = execute(openhands_request(
+        temporary.path(),
+        ReplayMode::ReplayAndContinue,
+        2,
+    ))
+    .unwrap();
+
+    assert_ne!(report.exit_code, 0);
+    assert_eq!(report.result.agent_status, AgentStatus::Failed);
+    assert!(report
+        .result
+        .failure
+        .as_ref()
+        .is_some_and(|failure| { failure.message.contains("Error while running the agent") }));
+    assert!(report.result.artifacts.iter().any(|artifact| {
+        artifact.role == "continued_native_trajectory" && artifact.path.is_file()
+    }));
 }
