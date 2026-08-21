@@ -5,9 +5,10 @@ mod asset;
 mod explorer;
 pub(crate) mod problem;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
@@ -36,8 +37,12 @@ use problem::BoundaryCode;
 struct AppState {
     config: Arc<ChronicleServerConfig>,
     catalog: Arc<tokio::sync::RwLock<Option<Arc<CatalogRuntime>>>>,
+    catalog_refresh: Arc<tokio::sync::Mutex<()>>,
+    catalog_refresh_interval: Duration,
     trajectory_cache: Arc<tokio::sync::RwLock<Option<(String, LoadedTrajectory)>>>,
 }
+
+const DEFAULT_CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ChronicleServerConfig {
@@ -71,6 +76,7 @@ struct CatalogRuntime {
     snapshot: Arc<DatasetCatalogSnapshot>,
     engine: Arc<ChronicleQueryEngine>,
     acceleration: ServerAcceleration,
+    built_at: Instant,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,9 +114,18 @@ pub fn warehouse_router(config: ChronicleServerConfig) -> Router {
 }
 
 fn app_state(config: ChronicleServerConfig) -> AppState {
+    app_state_with_catalog_refresh_interval(config, DEFAULT_CATALOG_REFRESH_INTERVAL)
+}
+
+fn app_state_with_catalog_refresh_interval(
+    config: ChronicleServerConfig,
+    catalog_refresh_interval: Duration,
+) -> AppState {
     AppState {
         config: Arc::new(config),
         catalog: Arc::new(tokio::sync::RwLock::new(None)),
+        catalog_refresh: Arc::new(tokio::sync::Mutex::new(())),
+        catalog_refresh_interval,
         trajectory_cache: Arc::new(tokio::sync::RwLock::new(None)),
     }
 }
@@ -284,18 +299,49 @@ async fn build_catalog_runtime(
         snapshot,
         engine,
         acceleration: ServerAcceleration::default(),
+        built_at: Instant::now(),
     }))
 }
 
 async fn current_catalog(state: &AppState) -> Result<Arc<CatalogRuntime>, ApiError> {
     if let Some(runtime) = state.catalog.read().await.as_ref() {
-        return Ok(runtime.clone());
+        return Ok(Arc::clone(runtime));
+    }
+    let _refresh = state.catalog_refresh.lock().await;
+    if let Some(runtime) = state.catalog.read().await.as_ref() {
+        return Ok(Arc::clone(runtime));
     }
     let runtime = build_catalog_runtime(&state.config)
         .await
         .map_err(ApiError::internal)?;
-    let mut catalog = state.catalog.write().await;
-    Ok(catalog.get_or_insert_with(|| runtime.clone()).clone())
+    *state.catalog.write().await = Some(Arc::clone(&runtime));
+    Ok(runtime)
+}
+
+async fn current_catalog_for_runs(state: &AppState) -> Result<Arc<CatalogRuntime>, ApiError> {
+    let runtime = current_catalog(state).await?;
+    if runtime.built_at.elapsed() < state.catalog_refresh_interval {
+        return Ok(runtime);
+    }
+    let _refresh = state.catalog_refresh.lock().await;
+    let current = state.catalog.read().await.clone().unwrap_or(runtime);
+    if current.built_at.elapsed() < state.catalog_refresh_interval {
+        return Ok(current);
+    }
+    match build_catalog_runtime(&state.config).await {
+        Ok(runtime) => {
+            *state.catalog.write().await = Some(Arc::clone(&runtime));
+            *state.trajectory_cache.write().await = None;
+            Ok(runtime)
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "persisting_pchronicle",
+                "automatic Catalog refresh failed; retaining the last valid snapshot: {error:#}"
+            );
+            Ok(current)
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -340,7 +386,7 @@ async fn runs(State(state): State<AppState>) -> Result<Json<Vec<RunSummary>>, Ap
 }
 
 async fn load_run_summaries(state: &AppState) -> Result<Vec<RunSummary>, ApiError> {
-    let runtime = current_catalog(state).await?;
+    let runtime = current_catalog_for_runs(state).await?;
     runtime
         .acceleration
         .run_summaries(&runtime.snapshot, &runtime.engine)
@@ -557,28 +603,6 @@ struct TrajectoryView {
     turns: Vec<TrajectoryTurnView>,
 }
 
-fn count_tool_calls(value: &Value) -> usize {
-    match value {
-        Value::Array(items) => items.iter().map(count_tool_calls).sum(),
-        Value::Object(map) => {
-            let here = map
-                .get("tool_calls")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len)
-                + usize::from(matches!(
-                    map.get("type").and_then(Value::as_str),
-                    Some("tool_use" | "function_call" | "custom_tool_call" | "local_shell_call")
-                ));
-            here + map
-                .iter()
-                .filter(|(key, _)| key.as_str() != "tool_calls")
-                .map(|(_, value)| count_tool_calls(value))
-                .sum::<usize>()
-        }
-        _ => 0,
-    }
-}
-
 fn normalize_arguments(value: Value) -> Value {
     if let Value::String(text) = &value {
         serde_json::from_str(text).unwrap_or(value)
@@ -659,6 +683,17 @@ fn turn_seq(turn: &StorylineTurn) -> Option<u64> {
         .and_then(Value::as_u64)
 }
 
+fn event_seqs_for_turn(turn: &StorylineTurn, by_call: &BTreeMap<String, Vec<u64>>) -> Vec<u64> {
+    // Canonical Event -> Storyline projection records the authoritative source
+    // sequence on each turn. Prefer it over the broader call correlation: a
+    // call contains both request and response, and attaching both to both turns
+    // duplicates usage, tool calls, latency and TTFT in Explorer aggregates.
+    turn_seq(turn)
+        .map(|seq| vec![seq])
+        .or_else(|| turn_call_id(turn).and_then(|id| by_call.get(&id).cloned()))
+        .unwrap_or_default()
+}
+
 #[derive(Clone)]
 struct LoadedTrajectory {
     run: RunSummary,
@@ -708,11 +743,7 @@ async fn load_trajectory(
         .into_iter()
         .map(|turn| {
             let call_id = turn_call_id(&turn);
-            let event_seqs = call_id
-                .as_ref()
-                .and_then(|id| by_call.get(id).cloned())
-                .or_else(|| turn_seq(&turn).map(|seq| vec![seq]))
-                .unwrap_or_default();
+            let event_seqs = event_seqs_for_turn(&turn, &by_call);
             let mut wire_tool_calls = Vec::new();
             for event in records
                 .iter()
@@ -720,8 +751,13 @@ async fn load_trajectory(
             {
                 collect_wire_tool_calls(&event.payload, &mut wire_tool_calls);
             }
-            wire_tool_calls.dedup_by(|left, right| {
-                left.id == right.id && left.name == right.name && left.arguments == right.arguments
+            let mut seen = BTreeSet::new();
+            wire_tool_calls.retain(|call| {
+                seen.insert((
+                    call.id.clone(),
+                    call.name.clone(),
+                    serde_json::to_string(&call.arguments).unwrap_or_default(),
+                ))
             });
             TrajectoryTurnView {
                 turn,
@@ -747,11 +783,15 @@ async fn trajectory_view(
     let query = api_query(query)?;
     let loaded = load_trajectory(&state, &query).await?;
     let mut event_kind_counts = BTreeMap::new();
-    let mut tool_call_count = 0;
     for event in &loaded.records {
         *event_kind_counts.entry(event.kind.clone()).or_insert(0) += 1;
-        tool_call_count += count_tool_calls(&event.payload);
     }
+    let tool_call_count = loaded
+        .turns
+        .iter()
+        .map(explorer::display_tool_calls)
+        .map(|calls| calls.len())
+        .sum();
     Ok(Json(TrajectoryView {
         run: loaded.run,
         event_kind_counts,

@@ -70,8 +70,8 @@ pub(crate) use events::{compact_sealed_event_segment, SealedEventSegment};
 pub use events::{
     distinct_session_ids_in_run, event_rows_from_batch, maintain as maintain_raw_events,
     raw_event_arrow_schema, EventFactSnapshot, EventLogLayoutStats, EventWriterFence,
-    LanceMaintenanceOptions, LanceMaintenanceReport, RawEventDataSource, RawEventLanceAppender,
-    DATAFUSION_EVENTS_TABLE,
+    LanceMaintenanceOptions, LanceMaintenanceReport, ObjectStoreManifestWriteMode,
+    RawEventDataSource, RawEventLanceAppender, DATAFUSION_EVENTS_TABLE,
 };
 #[cfg(feature = "lance-store")]
 pub(crate) use files::{

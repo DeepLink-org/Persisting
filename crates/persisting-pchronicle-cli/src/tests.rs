@@ -2885,6 +2885,8 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
         "captures",
         "--gateway-state",
         ".gateway-state",
+        "--gateway-object-store-manifest-mode",
+        "single-writer",
         "--gateway-stream-markdown",
         "--debug",
     ])?;
@@ -2894,6 +2896,10 @@ fn serve_gateway_options_are_explicit_and_scoped() -> Result<()> {
     assert_eq!(args.gateway, Some(PathBuf::from("gateway.toml")));
     assert_eq!(args.gateway_dataset.as_deref(), Some("captures"));
     assert_eq!(args.gateway_state, Some(PathBuf::from(".gateway-state")));
+    assert_eq!(
+        args.gateway_object_store_manifest_mode,
+        GatewayObjectStoreManifestMode::SingleWriter
+    );
     assert!(args.gateway_stream_markdown);
     assert!(args.debug);
 

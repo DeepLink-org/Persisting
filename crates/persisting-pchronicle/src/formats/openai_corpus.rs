@@ -1150,7 +1150,6 @@ fn rows_to_storyline(
 
         let request_messages = row.get("messages").cloned();
         let user_message = last_user_message(request_messages.as_ref());
-        let observation = parse_tool_results(request_messages.as_ref());
         if record_index == 0 {
             let context_end = user_message.as_ref().map(|(index, _)| *index).unwrap_or(0);
             if let Some(messages) = request_messages.as_ref().and_then(Value::as_array) {
@@ -1173,6 +1172,7 @@ fn rows_to_storyline(
                 InputIssue::invalid("OpenAI context size overflows Storyline turn id")
             })?;
         }
+        let observation = distribute_tool_results(request_messages.as_ref(), &mut turns);
         let (user_turn_id, agent_turn_id) = openai_turn_ids(context_count, step_id)
             .map_err(|issue| issue.at(format!("rows[{ordinal}].step_id")))?;
         if let Some((_, message)) = user_message.as_ref() {
@@ -1279,23 +1279,50 @@ fn last_user_message(messages: Option<&Value>) -> Option<(usize, Value)> {
         .and_then(|(index, message)| message.get("content").cloned().map(|value| (index, value)))
 }
 
-fn parse_tool_results(messages: Option<&Value>) -> Option<Value> {
-    let results = messages?
+fn distribute_tool_results(
+    messages: Option<&Value>,
+    previous_turns: &mut [StorylineTurn],
+) -> Option<Value> {
+    let mut current_results = Vec::new();
+    for message in messages?
         .as_array()?
         .iter()
         .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
-        .filter_map(|message| {
-            let source_call_id = message.get("tool_call_id")?.as_str()?;
-            if source_call_id.is_empty() {
-                return None;
-            }
-            Some(json!({
-                "source_call_id": source_call_id,
-                "content": message.get("content").cloned().unwrap_or(Value::Null),
-            }))
-        })
-        .collect::<Vec<_>>();
-    (!results.is_empty()).then(|| json!({"results": results}))
+    {
+        let Some(source_call_id) = message.get("tool_call_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if source_call_id.is_empty() {
+            continue;
+        }
+        let result = json!({
+            "source_call_id": source_call_id,
+            "content": message.get("content").cloned().unwrap_or(Value::Null),
+        });
+        let previous = previous_turns.iter_mut().rev().find(|turn| {
+            turn.tool_calls
+                .as_deref()
+                .is_some_and(|calls| calls.iter().any(|call| call.tool_call_id == source_call_id))
+        });
+        if let Some(previous) = previous {
+            append_tool_result(&mut previous.observation, result);
+        } else if !current_results.contains(&result) {
+            current_results.push(result);
+        }
+    }
+    (!current_results.is_empty()).then(|| json!({"results": current_results}))
+}
+
+fn append_tool_result(observation: &mut Option<Value>, result: Value) {
+    let results = observation
+        .get_or_insert_with(|| json!({"results": []}))
+        .get_mut("results")
+        .and_then(Value::as_array_mut);
+    if let Some(results) = results {
+        if !results.contains(&result) {
+            results.push(result);
+        }
+    }
 }
 
 fn encode_tool_results(observation: Option<&Value>) -> Vec<Value> {

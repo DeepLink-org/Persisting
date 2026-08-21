@@ -32,9 +32,7 @@ use crate::runtime::debug::{self, truncate_body_bytes};
 use crate::session::storage::resolve_capture_route;
 use crate::understanding::understand_request;
 use crate::Call;
-use persisting_overlaynet::headers::{
-    is_websocket_upgrade, skip_response_header_when_body_changed,
-};
+use persisting_overlaynet::headers::{is_websocket_upgrade, skip_response_header_after_reframing};
 
 fn client_request_url(parts: &axum::http::request::Parts) -> String {
     let path_and_query = parts
@@ -405,7 +403,11 @@ pub(super) async fn llm_capture(
         );
         let mut builder = Response::builder().status(status);
         for (name, value) in &resp_headers {
-            if body_was_rewritten && skip_response_header_when_body_changed(name.as_str()) {
+            if skip_response_header_after_reframing(
+                &resp_headers,
+                name.as_str(),
+                body_was_rewritten,
+            ) {
                 continue;
             }
             builder = builder.header(name, value);
@@ -446,11 +448,12 @@ pub(super) async fn llm_capture(
     );
 
     let mut builder = Response::builder().status(status);
-    // When we rewrote the body the upstream's `content-length` / `content-encoding` /
-    // `content-type` no longer apply — drop them and let axum recompute, then re-set
-    // a fresh `content-type` matching the new body.
+    // The upstream body has been fully consumed and rebuilt even for protocol
+    // passthrough. Drop hop-by-hop framing and the stale content length on every
+    // buffered response. If translation changed the payload, also drop encoding
+    // and content type before installing the translated media type.
     for (name, value) in resp_headers.iter() {
-        if body_was_rewritten && skip_response_header_when_body_changed(name.as_str()) {
+        if skip_response_header_after_reframing(&resp_headers, name.as_str(), body_was_rewritten) {
             continue;
         }
         builder = builder.header(name, value);

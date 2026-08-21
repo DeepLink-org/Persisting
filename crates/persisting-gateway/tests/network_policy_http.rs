@@ -87,6 +87,42 @@ async fn spawn_mock_http() -> (u16, oneshot::Sender<()>) {
     (port, stop_tx)
 }
 
+async fn spawn_chunked_llm_http() -> (u16, oneshot::Sender<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let chunks = futures_util::stream::iter([
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(
+                        br#"{"id":"chatcmpl-chunked","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"#,
+                    )),
+                    Ok(axum::body::Bytes::from_static(
+                        br#""chunked"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                    )),
+                ]);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .header("connection", "x-upstream-hop")
+                    .header("x-upstream-hop", "must-not-cross-proxy")
+                    .body(axum::body::Body::from_stream(chunks))
+                    .unwrap()
+            }),
+        );
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stop_rx.await;
+            })
+            .await
+            .ok();
+    });
+    tokio::task::yield_now().await;
+    (port, stop_tx)
+}
+
 async fn spawn_capturing_llm_http() -> (
     u16,
     Arc<std::sync::Mutex<Option<serde_json::Value>>>,
@@ -965,6 +1001,49 @@ upstream = "http://127.0.0.1:{mock_port}/v1"
     // Must not be blocked by network policy (403). Upstream mock returns 200.
     assert_ne!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(resp.status(), StatusCode::OK);
+    let _ = stop.send(());
+    let _ = mock_stop.send(());
+}
+
+#[tokio::test]
+async fn e2e_non_streaming_chunked_upstream_returns_complete_json() {
+    let (mock_port, mock_stop) = spawn_chunked_llm_http().await;
+    let toml = format!(
+        r#"
+listen = "{{{{LISTEN}}}}"
+admin_listen = "{{{{ADMIN}}}}"
+agent_id = "t"
+
+[network]
+mode = "public"
+
+[[models]]
+name = "*"
+upstream = "http://127.0.0.1:{mock_port}/v1"
+"#,
+    );
+    let (proxy, _tmp, stop) = spawn_proxy(&toml).await;
+
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .post(format!("{proxy}/v1/chat/completions"))
+        .json(&serde_json::json!({
+            "model": "test",
+            "stream": false,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("x-upstream-hop").is_none());
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "chunked");
+
     let _ = stop.send(());
     let _ = mock_stop.send(());
 }
