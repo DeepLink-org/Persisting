@@ -39,8 +39,8 @@ use persisting_pchronicle::storage::{
     storyline_projection_destination_exists, AutomaticProjectionInspection,
     AutomaticProjectionState, CatalogErrorPolicy, CatalogSnapshotOptions, CatalogSourceKind,
     CatalogSourceStatus, CatalogStorylineKey, DatasetCatalogSnapshot, DatasetMount,
-    DiscoveredSource, EventFactSnapshot, StorylineLanceStore, StorylineProjectionBuildOutcome,
-    DEFAULT_DATASET_NAME,
+    DiscoveredSource, EventFactSnapshot, ObjectStoreManifestWriteMode, StorylineLanceStore,
+    StorylineProjectionBuildOutcome, DEFAULT_DATASET_NAME,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
