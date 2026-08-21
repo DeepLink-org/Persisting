@@ -11,8 +11,10 @@ use std::str::FromStr;
 pub enum DocumentFormat {
     /// Lance 中 append-only 的 Canonical Event 事实。
     CanonicalEvent,
-    /// Lance 中的 Storyline runs、steps、tool calls 和 objects。
+    /// 严格版本化的 Storyline JSON wire。
     Storyline,
+    /// Lance 中的 Storyline runs、steps、tool calls 和 objects。
+    StorylineLance,
     /// 人类可读的 Storyline Markdown。
     AgenticMd,
     /// ATIF JSON、JSONL 或 NDJSON。
@@ -27,6 +29,7 @@ impl DocumentFormat {
     pub const ALL: &[Self] = &[
         Self::CanonicalEvent,
         Self::Storyline,
+        Self::StorylineLance,
         Self::AgenticMd,
         Self::Atif,
         Self::OpenaiMsg,
@@ -37,6 +40,7 @@ impl DocumentFormat {
         match self {
             Self::CanonicalEvent => "canonical-event",
             Self::Storyline => "storyline",
+            Self::StorylineLance => "storyline-lance",
             Self::AgenticMd => "agenticmd",
             Self::Atif => "atif",
             Self::OpenaiMsg => "openai-msg",
@@ -58,12 +62,13 @@ impl FromStr for DocumentFormat {
         match input.trim().to_ascii_lowercase().as_str() {
             "canonical-event" => Ok(Self::CanonicalEvent),
             "storyline" => Ok(Self::Storyline),
+            "storyline-lance" => Ok(Self::StorylineLance),
             "agenticmd" => Ok(Self::AgenticMd),
             "atif" => Ok(Self::Atif),
             "openai-msg" => Ok(Self::OpenaiMsg),
             "actf" => Ok(Self::Actf),
             other => Err(InputIssue::invalid(format!(
-                "unknown document format '{other}'; expected canonical-event|storyline|agenticmd|atif|openai-msg|actf"
+                "unknown document format '{other}'; expected canonical-event|storyline|storyline-lance|agenticmd|atif|openai-msg|actf"
             ))),
         }
     }
@@ -79,6 +84,7 @@ mod tests {
         let cases = [
             ("canonical-event", DocumentFormat::CanonicalEvent),
             ("storyline", DocumentFormat::Storyline),
+            ("storyline-lance", DocumentFormat::StorylineLance),
             ("agenticmd", DocumentFormat::AgenticMd),
             ("atif", DocumentFormat::Atif),
             ("openai-msg", DocumentFormat::OpenaiMsg),

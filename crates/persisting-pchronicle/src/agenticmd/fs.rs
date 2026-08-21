@@ -771,7 +771,9 @@ mod tests {
         let mut turn = crate::StorylineTurn {
             id: 7,
             kind: Some("llm.response.stream".into()),
-            timestamp: Some("2026-01-01T00:00:00Z".into()),
+            timestamp: Some(
+                crate::model::StorylineTimestamp::from_rfc3339("2026-01-01T00:00:00Z").unwrap(),
+            ),
             source: "agent".into(),
             message: serde_json::json!("draft"),
             reasoning_content: None,

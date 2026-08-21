@@ -1,7 +1,7 @@
 # 复现 Run 生命周期
 
 [`examples/`](https://github.com/DeepLink-org/Persisting/tree/main/examples)
-按产品命令组织。每个 `run.sh` 清理自己的 `.work/`，并输出持久结果或查询结果。它们共同
+按产品命令组织。每个 `run.sh` 管理自己的 `.work/`，并输出持久结果或查询结果。它们共同
 对应使用指南的主线：执行、治理 Effect、编排、检查历史。
 
 ```bash
@@ -31,11 +31,17 @@ just examples-pchronicle
 
 | 示例 | 可复现结论 |
 |---|---|
+| `01-dataset-lifecycle` | 导入、检查、查询、定位并严格导出 Dataset |
+| `02-built-in-analysis` | 汇总 Sources、Agents、Models、工具并定位 Step |
+| `03-cross-dataset-sql` | 对三个命名 Dataset 挂载执行跨 Dataset SQL |
+| `04-storage-query-performance` | 比较 JSON/Lance 体积、压缩比、查询比率与生命周期延迟 |
 | `05-format-roundtrip` | 严格 ATIF 往返并规范化后按字节比较 |
 | `06-query-openai-actf-directly` | 直接对 OpenAI Messages 与 ACTF Dataset 执行 SQL |
 
-pChronicle 示例使用 `examples/data` 中的确定性 fixture。运行要求为 macOS 或 Linux、
-Cargo、Python 3 和 `jq` 等常见 POSIX 工具；pVisor 文件系统示例另需 macFUSE 或 FUSE3。
+pChronicle 示例使用 `examples/data` 中的确定性 fixture。默认只输出紧凑报告；完整命令
+stdout/stderr 保存在各场景的 `.work/run.*`，也可通过
+`PCHRONICLE_EXAMPLE_VERBOSE=1` 在终端展开。运行要求为 macOS 或 Linux、Cargo、
+Python 3 和 `jq` 等常见 POSIX 工具；pVisor 文件系统示例另需 macFUSE 或 FUSE3。
 
 建议从 `pvisor/01-filesystem-isolation` 开始，再进入 changeset management；准备从一个
 Run 扩展到多个 Run、从执行进入历史时，再运行 pPilot 与 pChronicle 示例。

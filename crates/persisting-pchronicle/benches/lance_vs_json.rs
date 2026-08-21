@@ -35,6 +35,10 @@ fn main() -> Result<()> {
         result.lance_bytes as f64 / result.json_bytes as f64
     );
     println!(
+        "RESULT benchmark=dataset documents={} rows={} json_bytes={} lance_bytes={}",
+        result.documents, result.steps, result.json_bytes, result.lance_bytes
+    );
+    println!(
         "build/open: JSON write {:?}, ATIF datasource {:?}, Lance+indexes {:?}, Lance datasource {:?}",
         result.json_write, result.atif_open, result.lance_write, result.lance_open
     );
@@ -78,6 +82,13 @@ struct Comparison {
     atif_file: Duration,
     json_scan: Duration,
     json_memory: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectiveRow {
+    step_id: i64,
+    source: String,
+    message_json: String,
 }
 
 struct BenchmarkResult {
@@ -147,7 +158,7 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     let lance_write = lance_write_started.elapsed();
     let lance_open_started = Instant::now();
     let source = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         store.root(),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -175,22 +186,18 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
     // Warm filesystem, Lance metadata and execution plans, and verify every
     // implementation computes the same result before timing it.
     let json_selective = json_selective_query(&json_path, &target_session)?;
-    let memory_selective = json_memory_selective(&parsed, &target_session);
-    let lance_selective = selective_query.clone().collect().await?;
-    let lance_selective = lance_selective
-        .iter()
-        .map(|batch| batch.num_rows())
-        .sum::<usize>();
-    anyhow::ensure!(json_selective == 11 && memory_selective == 11);
-    anyhow::ensure!(lance_selective == json_selective);
-    let atif_selective = atif_selective_query.clone().collect().await?;
-    anyhow::ensure!(
-        atif_selective
-            .iter()
-            .map(|batch| batch.num_rows())
-            .sum::<usize>()
-            == json_selective
-    );
+    let memory_selective = json_memory_selective(&parsed, &target_session)?;
+    let lance_selective = datafusion_selective_rows(selective_query.clone().collect().await?)?;
+    let atif_selective = datafusion_selective_rows(atif_selective_query.clone().collect().await?)?;
+    anyhow::ensure!(json_selective.len() == 11);
+    ensure_selective_results_match(
+        &json_selective,
+        &[
+            ("parsed JSON native loop", &memory_selective),
+            ("Lance/DataFusion", &lance_selective),
+            ("ATIF/DataFusion", &atif_selective),
+        ],
+    )?;
 
     let json_counts = json_analysis(&json_path)?;
     let memory_counts = json_memory_analysis(&parsed);
@@ -207,7 +214,7 @@ async fn run(scale: usize, iterations: usize) -> Result<BenchmarkResult> {
             json_selective_query(&json_path, &target_session)
         })?,
         json_memory: time_sync(iterations, || {
-            Ok(json_memory_selective(&parsed, &target_session))
+            json_memory_selective(&parsed, &target_session)
         })?,
     };
     let analytical = Comparison {
@@ -266,7 +273,7 @@ async fn time_lance_cold_query(
     let started = Instant::now();
     for _ in 0..iterations {
         let source = ChronicleQueryEngine::open(
-            DocumentFormat::Storyline,
+            DocumentFormat::StorylineLance,
             store.root(),
             ChronicleQueryExecutionOptions::default(),
         )
@@ -319,60 +326,122 @@ fn expand_stories(base: &[StorylineDocument], scale: usize) -> Vec<StorylineDocu
                 .unwrap_or(&story.session_id)
                 .to_string();
             story.session_id = format!("bench-{replica:04}-{suffix}");
-            story.run_id = Some(format!("run-bench-{replica:04}-{suffix}"));
+            let run_id = format!("run-bench-{replica:04}-{suffix}");
+            story.trajectory_id = Some(run_id.clone());
+            story.run_id = Some(run_id);
             stories.push(story);
         }
     }
     stories
 }
 
-fn json_selective_query(path: &Path, target_session: &str) -> Result<usize> {
+fn json_selective_query(path: &Path, target_session: &str) -> Result<Vec<SelectiveRow>> {
     let raw = std::fs::read_to_string(path)?;
-    let mut matches = 0;
+    let mut matches = Vec::new();
     for line in raw.lines() {
         let trajectory: serde_json::Value = serde_json::from_str(line)?;
-        if trajectory
-            .get("session_id")
-            .and_then(serde_json::Value::as_str)
-            == Some(target_session)
-        {
-            matches += trajectory["steps"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|step| {
-                    step.get("step_id")
-                        .and_then(serde_json::Value::as_i64)
-                        .is_some_and(|step_id| (5..=15).contains(&step_id))
-                })
-                .count();
-        }
+        matches.extend(selective_rows_from_trajectory(&trajectory, target_session)?);
     }
     Ok(matches)
 }
 
-fn json_memory_selective(trajectories: &[serde_json::Value], target_session: &str) -> usize {
-    trajectories
-        .iter()
-        .find(|trajectory| {
-            trajectory
-                .get("session_id")
-                .and_then(serde_json::Value::as_str)
-                == Some(target_session)
-        })
-        .map(|trajectory| {
-            trajectory["steps"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|step| {
-                    step.get("step_id")
-                        .and_then(serde_json::Value::as_i64)
-                        .is_some_and(|step_id| (5..=15).contains(&step_id))
-                })
-                .count()
-        })
-        .unwrap_or_default()
+fn json_memory_selective(
+    trajectories: &[serde_json::Value],
+    target_session: &str,
+) -> Result<Vec<SelectiveRow>> {
+    let mut matches = Vec::new();
+    for trajectory in trajectories {
+        matches.extend(selective_rows_from_trajectory(trajectory, target_session)?);
+    }
+    Ok(matches)
+}
+
+fn selective_rows_from_trajectory(
+    trajectory: &serde_json::Value,
+    target_session: &str,
+) -> Result<Vec<SelectiveRow>> {
+    if trajectory
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(target_session)
+    {
+        return Ok(Vec::new());
+    }
+
+    let steps = trajectory
+        .get("steps")
+        .and_then(serde_json::Value::as_array)
+        .context("benchmark ATIF trajectory is missing steps")?;
+    let mut matches = Vec::new();
+    for step in steps {
+        let step_id = step
+            .get("step_id")
+            .and_then(serde_json::Value::as_i64)
+            .context("benchmark ATIF step is missing step_id")?;
+        if !(5..=15).contains(&step_id) {
+            continue;
+        }
+        let source = step
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .context("benchmark ATIF step is missing source")?;
+        let message_json = step
+            .get("message")
+            .unwrap_or(&serde_json::Value::Null)
+            .to_string();
+        matches.push(SelectiveRow {
+            step_id,
+            source: source.to_string(),
+            message_json,
+        });
+    }
+    Ok(matches)
+}
+
+fn datafusion_selective_rows(
+    batches: Vec<datafusion::arrow::record_batch::RecordBatch>,
+) -> Result<Vec<SelectiveRow>> {
+    use datafusion::arrow::array::{Int64Array, StringArray};
+
+    let mut rows = Vec::new();
+    for batch in batches {
+        let step_ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .context("DataFusion step_id column must be Int64")?;
+        let sources = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .context("DataFusion source column must be Utf8")?;
+        let messages = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .context("DataFusion message_json column must be Utf8")?;
+        for row in 0..batch.num_rows() {
+            rows.push(SelectiveRow {
+                step_id: step_ids.value(row),
+                source: sources.value(row).to_string(),
+                message_json: messages.value(row).to_string(),
+            });
+        }
+    }
+    Ok(rows)
+}
+
+fn ensure_selective_results_match(
+    expected: &[SelectiveRow],
+    candidates: &[(&str, &[SelectiveRow])],
+) -> Result<()> {
+    for (label, actual) in candidates {
+        anyhow::ensure!(
+            *actual == expected,
+            "{label} selective rows differ from the JSON read+Serde baseline"
+        );
+    }
+    Ok(())
 }
 
 fn json_analysis(path: &Path) -> Result<BTreeMap<String, usize>> {
@@ -434,10 +503,14 @@ fn print_comparison(id: &str, name: &str, iterations: usize, comparison: &Compar
         comparison.atif_file, atif_qps, atif_over_lance_time
     );
     println!(
-        "  JSON read+Serde scan:     {:?} ({:.1} queries/s, Lance {:.2}x faster)",
+        "  JSON read+Serde scan:     {:?} ({:.1} queries/s, {})",
         comparison.json_scan,
         iterations as f64 / comparison.json_scan.as_secs_f64(),
-        comparison.json_scan.as_secs_f64() / comparison.lance.as_secs_f64()
+        relative_performance(
+            "Lance",
+            "JSON read+Serde scan",
+            comparison.json_scan.as_secs_f64() / comparison.lance.as_secs_f64(),
+        )
     );
     println!(
         "  parsed JSON native loop:  {:?} ({:.1} queries/s, Lance/native time ratio {:.2}x)",
@@ -463,16 +536,22 @@ fn print_conclusion(result: &BenchmarkResult) {
     let group_memory_ratio =
         result.analytical.atif_file.as_secs_f64() / result.analytical.lance.as_secs_f64();
     println!("Conclusion:");
+    println!("  Storage: {}", storage_outcome(lance_over_json));
     println!(
-        "  Storage: Lance uses {:.2}% of JSON space, saving {:.2}%.",
-        lance_over_json * 100.0,
-        (1.0 - lance_over_json) * 100.0
+        "  Open: {}.",
+        relative_performance(
+            "Lance datasource open",
+            "ATIF streaming validation/count scan",
+            open_speedup,
+        )
     );
     println!(
-        "  Open: Lance datasource open is {open_speedup:.2}x faster than ATIF streaming validation/count scan."
+        "  On-disk selective query: {}.",
+        relative_performance("Lance", "JSON read+Serde scan", selective_disk_speedup,)
     );
     println!(
-        "  On-disk query: Lance is {selective_disk_speedup:.2}x faster for the selective query and {group_disk_speedup:.2}x faster for GROUP BY than JSON read+Serde."
+        "  On-disk GROUP BY: {}.",
+        relative_performance("Lance", "JSON read+Serde scan", group_disk_speedup,)
     );
     println!(
         "  Streaming boundary: ATIF stream/Lance time ratio is {selective_memory_ratio:.2}x for the selective query and {group_memory_ratio:.2}x for GROUP BY."
@@ -484,8 +563,37 @@ fn print_conclusion(result: &BenchmarkResult) {
         milliseconds(result.incremental_replace),
     );
     println!(
-        "RESULT benchmark=summary lance_over_json={lance_over_json:.4} open_speedup={open_speedup:.2} selective_disk_speedup={selective_disk_speedup:.2} group_disk_speedup={group_disk_speedup:.2} selective_memory_over_lance_time={selective_memory_ratio:.3} group_memory_over_lance_time={group_memory_ratio:.3}"
+        "RESULT benchmark=summary lance_over_json={lance_over_json:.4} open_speedup={open_speedup:.4} selective_disk_speedup={selective_disk_speedup:.4} group_disk_speedup={group_disk_speedup:.4} selective_memory_over_lance_time={selective_memory_ratio:.4} group_memory_over_lance_time={group_memory_ratio:.4}"
     );
+}
+
+fn storage_outcome(lance_over_json: f64) -> String {
+    if lance_over_json <= 1.0 {
+        format!(
+            "Lance uses {:.2}% of JSON space, saving {:.2}%.",
+            lance_over_json * 100.0,
+            (1.0 - lance_over_json) * 100.0
+        )
+    } else {
+        format!(
+            "Lance uses {:.2}% of JSON space, adding {:.2}% storage overhead.",
+            lance_over_json * 100.0,
+            (lance_over_json - 1.0) * 100.0
+        )
+    }
+}
+
+fn relative_performance(subject: &str, baseline: &str, baseline_over_subject: f64) -> String {
+    if baseline_over_subject > 1.01 {
+        format!("{subject} is {baseline_over_subject:.2}x faster than {baseline}")
+    } else if baseline_over_subject < 0.99 {
+        format!(
+            "{subject} is {:.2}x slower than {baseline}",
+            1.0 / baseline_over_subject
+        )
+    } else {
+        format!("{subject} and {baseline} have comparable elapsed time")
+    }
 }
 
 fn datafusion_counts(
@@ -532,4 +640,51 @@ fn env_usize(name: &str, default: usize) -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn expanded_storylines_have_unique_storage_identities() -> anyhow::Result<()> {
+        let base = super::load_base_stories()?;
+        let stories = super::expand_stories(&base, 2);
+        let mut document_ids = std::collections::HashSet::new();
+
+        for story in &stories {
+            assert!(
+                document_ids.insert(story.document_id().to_owned()),
+                "duplicate document_id '{}'",
+                story.document_id()
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn conclusions_do_not_describe_regressions_as_improvements() {
+        let storage = super::storage_outcome(1.1578);
+        assert!(storage.contains("15.78% storage overhead"));
+        assert!(!storage.contains("saving -"));
+
+        let performance = super::relative_performance("Lance", "JSON", 0.21);
+        assert!(performance.contains("4.76x slower"));
+        assert!(!performance.contains("0.21x faster"));
+    }
+
+    #[test]
+    fn selective_equivalence_rejects_equal_length_wrong_values() {
+        let expected = vec![super::SelectiveRow {
+            step_id: 5,
+            source: "user".into(),
+            message_json: "\"expected\"".into(),
+        }];
+        let wrong = vec![super::SelectiveRow {
+            step_id: 5,
+            source: "assistant".into(),
+            message_json: "\"wrong\"".into(),
+        }];
+
+        assert!(super::ensure_selective_results_match(&expected, &[("Lance", &wrong)]).is_err());
+    }
 }

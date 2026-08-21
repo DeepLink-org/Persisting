@@ -2,8 +2,7 @@
 
 Use import and export at the interoperability boundary. Import creates a new
 Dataset; export reconstructs complete trajectories from one Catalog Snapshot.
-Import accepts ATIF, ACTF, and OpenAI Messages. Export supports those formats
-plus Storyline JSON.
+Import and export accept ATIF, ACTF, OpenAI Messages, and Storyline JSON.
 
 ## Import into a new Dataset
 
@@ -13,8 +12,41 @@ pchronicle import --from input.json \
 ```
 
 The target is create-only. pChronicle refuses an existing target instead of
-silently appending or replacing it. Regular files can be auto-detected; stdin
-must be finite and explicit:
+silently appending or replacing it. Regular files can be auto-detected. A
+directory recursively imports `.json`, `.jsonl`, and `.ndjson` Sources while
+preserving their relative paths in the default output:
+
+```bash
+pchronicle import --from ./corpus --output ./imported
+```
+
+The default output preserves source bytes. To normalize and squash all decoded
+Sources into one Storyline Lance Store at the output root, select Storyline
+output:
+
+```bash
+pchronicle import --from ./corpus --output ./normalized \
+  --output-format storyline
+```
+
+The squashed Dataset exposes one physical Source named `.`, so `_file_` is `.`
+for all normalized rows:
+
+```bash
+pchronicle query ./normalized \
+  'SELECT _file_, COUNT(*) AS runs FROM dataset.runs GROUP BY _file_'
+```
+
+`document_id` and `session_id` must be globally unique across the inputs. A
+collision fails the complete import and names both original paths. Successful
+Storyline output does not retain those paths as query provenance; use the
+default preserve output when Source boundaries matter.
+
+ATIF `.jsonl` and `.ndjson` Sources decode every non-empty record. Symbolic
+links found while walking a directory are skipped; an explicitly named link to
+a regular file retains single-file behavior. The directory is published
+atomically only after every Source and the selected physical output succeed.
+Stdin must be finite and explicit:
 
 ```bash
 cat input.json | pchronicle import --from - --stream \

@@ -187,6 +187,7 @@ async fn tlv_writer_should_append_same_session_into_one_markdown_file() {
     assert!(content.contains("format: persisting:1.0"));
     assert!(content.contains("session: \"feishu-main-abc\""));
     assert!(content.contains("turns: 2"));
+    assert!(content.contains("  schema_version: storyline/v1"));
     assert!(content.contains("<!-- persisting:block:user"));
     assert!(content.contains("<!-- persisting:block:assistant"));
     assert!(content.contains("hi"));

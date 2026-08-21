@@ -6,6 +6,7 @@ pub mod events;
 pub mod llm;
 pub mod openai_corpus;
 pub mod storyline;
+pub mod timestamp;
 pub mod unknown_fields;
 
 pub use detect::detect_format;

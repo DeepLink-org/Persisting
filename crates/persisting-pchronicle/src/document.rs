@@ -63,8 +63,9 @@ pub fn decode_json_storylines_with_options(
     options: DocumentCodecOptions,
 ) -> InputResult<Vec<StorylineDocument>> {
     options.unknown_fields.validate()?;
+    let relative_path = relative_path.as_ref();
     let stories = match format {
-        DocumentFormat::Atif => {
+        DocumentFormat::Storyline => {
             let value: serde_json::Value = serde_json::from_str(input)
                 .map_err(|error| InputIssue::invalid(error.to_string()))?;
             let values = match value {
@@ -72,16 +73,59 @@ pub fn decode_json_storylines_with_options(
                 value => vec![value],
             };
             if values.is_empty() {
-                return Err(InputIssue::unsupported("ATIF document cannot be empty"));
+                return Err(InputIssue::unsupported(
+                    "Storyline document cannot be empty",
+                ));
             }
-            let mut stories = Vec::new();
-            for value in values {
-                stories.extend(
-                    atif_collection_to_storylines(value)
-                        .map_err(|error| InputIssue::invalid(error.to_string()))?,
-                );
+            values
+                .into_iter()
+                .map(|value| {
+                    let story: StorylineDocument = serde_json::from_value(value)
+                        .map_err(|error| InputIssue::invalid(error.to_string()))?;
+                    story.validate()?;
+                    Ok(story)
+                })
+                .collect::<InputResult<Vec<_>>>()
+        }
+        DocumentFormat::Atif => {
+            if is_json_lines_path(relative_path) {
+                let mut stories = Vec::new();
+                for (line_number, line) in input.lines().enumerate() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let location = format!("line {}", line_number + 1);
+                    let value = serde_json::from_str(line).map_err(|error| {
+                        InputIssue::invalid(error.to_string()).at(location.clone())
+                    })?;
+                    stories
+                        .extend(atif_collection_to_storylines(value).map_err(|error| {
+                            InputIssue::invalid(error.to_string()).at(location)
+                        })?);
+                }
+                if stories.is_empty() {
+                    return Err(InputIssue::unsupported("ATIF document cannot be empty"));
+                }
+                Ok(stories)
+            } else {
+                let value: serde_json::Value = serde_json::from_str(input)
+                    .map_err(|error| InputIssue::invalid(error.to_string()))?;
+                let values = match value {
+                    serde_json::Value::Array(values) => values,
+                    value => vec![value],
+                };
+                if values.is_empty() {
+                    return Err(InputIssue::unsupported("ATIF document cannot be empty"));
+                }
+                let mut stories = Vec::new();
+                for value in values {
+                    stories.extend(
+                        atif_collection_to_storylines(value)
+                            .map_err(|error| InputIssue::invalid(error.to_string()))?,
+                    );
+                }
+                Ok(stories)
             }
-            Ok(stories)
         }
         DocumentFormat::Actf => {
             let mut value: serde_json::Value = serde_json::from_str(input)
@@ -127,9 +171,18 @@ pub fn decode_json_storylines_with_options(
         ))),
     }?;
     for story in &stories {
+        story.validate()?;
         validate_unknown_fields(&story.unknown_fields, options.unknown_fields)?;
     }
     Ok(stories)
+}
+
+fn is_json_lines_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(extension.to_ascii_lowercase().as_str(), "jsonl" | "ndjson")
+        })
 }
 
 /// 将权威 Storyline 编码为一个外围 JSON 文档。
@@ -147,9 +200,17 @@ pub fn encode_json_storylines_with_options(
 ) -> Result<serde_json::Value> {
     options.unknown_fields.validate()?;
     for story in stories {
+        story.validate().map_err(anyhow::Error::from)?;
         validate_unknown_fields(&story.unknown_fields, options.unknown_fields)?;
     }
     match format {
+        DocumentFormat::Storyline => {
+            if stories.len() == 1 {
+                Ok(serde_json::to_value(&stories[0])?)
+            } else {
+                Ok(serde_json::to_value(stories)?)
+            }
+        }
         DocumentFormat::Atif => {
             let documents = storylines_to_atif(stories)?;
             if documents.len() == 1 {
@@ -276,6 +337,43 @@ mod tests {
     }
 
     #[test]
+    fn storyline_json_codec_roundtrips_the_strict_wire() {
+        let mut story = StorylineDocument::new("storyline-session", "storyline-agent");
+        story.turns.push(crate::StorylineTurn {
+            id: 7,
+            kind: None,
+            timestamp: Some(
+                crate::model::StorylineTimestamp::from_rfc3339("2026-08-20T12:00:00Z").unwrap(),
+            ),
+            source: "user".into(),
+            message: serde_json::json!("hello"),
+            reasoning_content: None,
+            reasoning_effort: None,
+            tool_calls: Some(Vec::new()),
+            observation: Some(serde_json::json!({"results": [], "vendor": true})),
+            metrics: None,
+            model_name: None,
+            llm_call_count: None,
+            is_copied_context: None,
+            latency_ms: None,
+            ttft_ms: None,
+            extra: None,
+        });
+
+        let encoded =
+            encode_json_storylines(DocumentFormat::Storyline, std::slice::from_ref(&story))
+                .unwrap();
+        let decoded = decode_json_storylines(
+            DocumentFormat::Storyline,
+            &encoded.to_string(),
+            "trajectory.storyline.json",
+        )
+        .unwrap();
+
+        assert_eq!(decoded, vec![story]);
+    }
+
+    #[test]
     fn atif_singleton_object_and_array_encode_canonically() {
         let object = atif_fixture_value();
         let from_object =
@@ -290,6 +388,31 @@ mod tests {
             encode_json_storylines(DocumentFormat::Atif, &from_object).unwrap(),
             encode_json_storylines(DocumentFormat::Atif, &from_array).unwrap(),
         );
+    }
+
+    #[test]
+    fn atif_jsonl_and_ndjson_decode_each_non_empty_record() {
+        let first = atif_fixture_value();
+        let mut second = atif_fixture_value();
+        second["trajectory_id"] = serde_json::json!("two");
+        let input = format!("{}\n\n{}\n", first, second);
+
+        for relative_path in ["records.jsonl", "records.ndjson"] {
+            let stories =
+                decode_json_storylines(DocumentFormat::Atif, &input, relative_path).unwrap();
+            assert_eq!(stories.len(), 2, "path={relative_path}");
+            assert_eq!(stories[0].document_id(), "one");
+            assert_eq!(stories[1].document_id(), "two");
+        }
+    }
+
+    #[test]
+    fn atif_json_lines_reports_the_failing_record_location() {
+        let input = format!("{}\n{{\"not\":\"atif\"}}\n", atif_fixture_value());
+        let error =
+            decode_json_storylines(DocumentFormat::Atif, &input, "records.jsonl").unwrap_err();
+
+        assert_eq!(error.location(), Some("line 2"));
     }
 
     #[test]

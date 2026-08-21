@@ -227,12 +227,7 @@ pub(crate) fn analyze(
     let mut error_count = 0usize;
 
     for item in turns {
-        if let Some(timestamp) = item
-            .turn
-            .timestamp
-            .as_ref()
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(timestamp) = item.turn.timestamp.as_ref() {
             timestamps.push(timestamp.clone());
         }
         let linked = events
@@ -339,7 +334,7 @@ pub(crate) fn analyze(
         }
     }
 
-    timestamps.sort();
+    timestamps.sort_by_key(|timestamp| timestamp.timestamp_nanos());
     let tools = tools
         .into_iter()
         .map(|(name, value)| ToolAggregate {
@@ -364,8 +359,12 @@ pub(crate) fn analyze(
             .map(|calls| calls.len())
             .sum(),
         error_count,
-        start_timestamp: timestamps.first().cloned(),
-        end_timestamp: timestamps.last().cloned(),
+        start_timestamp: timestamps
+            .first()
+            .map(|timestamp| timestamp.canonical_rfc3339()),
+        end_timestamp: timestamps
+            .last()
+            .map(|timestamp| timestamp.canonical_rfc3339()),
         models: models.into_iter().collect(),
         prompt_tokens: prompt_seen.then_some(prompt_tokens),
         completion_tokens: completion_seen.then_some(completion_tokens),
@@ -442,7 +441,11 @@ fn turn_summary(item: &TrajectoryTurnView, events: &[EventRecord]) -> TurnSummar
         id: item.turn.id,
         source: item.turn.source.clone(),
         kind: item.turn.kind.clone(),
-        timestamp: item.turn.timestamp.clone(),
+        timestamp: item
+            .turn
+            .timestamp
+            .as_ref()
+            .map(|timestamp| timestamp.canonical_rfc3339()),
         call_id: item.call_id.clone(),
         preview,
         model_name: item

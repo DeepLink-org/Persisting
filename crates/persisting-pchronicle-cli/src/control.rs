@@ -6,8 +6,8 @@
 use anyhow::{Context, Result};
 use persisting_events::{
     AttemptRecord as ProtocolAttemptRecord, AttemptRecordState as ProtocolAttemptRecordState,
-    ChronicleControlEnvelope, ChronicleControlReady, ChronicleControlRequest,
-    ChronicleControlResponse, ChronicleControlResponseEnvelope, CommitRunOutcome,
+    ChronicleControlEnvelope, ChronicleControlRequest, ChronicleControlResponse,
+    ChronicleControlResponseEnvelope, ChronicleServeControlReady, CommitRunOutcome,
     LeaseAcquireOutcome, TrajectoryAppendRequest, TrajectoryAppendResponse,
     CHRONICLE_CONTROL_MAX_FRAME_BYTES, CHRONICLE_CONTROL_VERSION,
 };
@@ -15,63 +15,80 @@ use persisting_pchronicle::storage::{
     AttemptRecord, AttemptRecordState, AttemptRegistry, RawEventLanceStore, RunControlStore,
     StoryCoords,
 };
-use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-pub(super) async fn run_control(
-    storage: &str,
-    listen: SocketAddr,
-    stdout: &mut dyn Write,
-) -> Result<()> {
-    anyhow::ensure!(
-        listen.ip().is_loopback(),
-        "pChronicle control may only bind to a loopback address"
-    );
-    let control = Arc::new(
-        RunControlStore::open(storage)
-            .await
-            .context("open pChronicle Run control store")?,
-    );
-    let attempts = Arc::new(
-        AttemptRegistry::open(storage)
-            .await
-            .context("open pChronicle Attempt registry")?,
-    );
-    let listener = tokio::net::TcpListener::bind(listen)
-        .await
-        .context("bind pChronicle control listener")?;
-    let endpoint = listener.local_addr()?;
-    let auth_token = uuid::Uuid::new_v4().simple().to_string();
-    serde_json::to_writer(
-        &mut *stdout,
-        &ChronicleControlReady {
-            version: CHRONICLE_CONTROL_VERSION,
-            endpoint: endpoint.to_string(),
-            auth_token: auth_token.clone(),
-        },
-    )?;
-    writeln!(stdout)?;
-    stdout.flush()?;
+pub(super) struct PreparedControl {
+    listener: tokio::net::TcpListener,
+    endpoint: SocketAddr,
+    auth_token: String,
+    control: Arc<RunControlStore>,
+    attempts: Arc<AttemptRegistry>,
+}
 
-    loop {
-        let (stream, _) = listener
-            .accept()
+impl PreparedControl {
+    pub(super) async fn bind(storage: &str, listen: SocketAddr) -> Result<Self> {
+        anyhow::ensure!(
+            listen.ip().is_loopback(),
+            "pChronicle control may only bind to a loopback address"
+        );
+        let control = Arc::new(
+            RunControlStore::open(storage)
+                .await
+                .context("open pChronicle Run control store")?,
+        );
+        let attempts = Arc::new(
+            AttemptRegistry::open(storage)
+                .await
+                .context("open pChronicle Attempt registry")?,
+        );
+        let listener = tokio::net::TcpListener::bind(listen)
             .await
-            .context("accept pChronicle control client")?;
-        stream
-            .set_nodelay(true)
-            .context("configure pChronicle control socket")?;
-        let control = Arc::clone(&control);
-        let attempts = Arc::clone(&attempts);
-        let auth_token = auth_token.clone();
-        tokio::spawn(async move {
-            if let Err(error) = serve_connection(stream, control, attempts, auth_token).await {
-                eprintln!("pChronicle control request failed: {error:#}");
+            .context("bind pChronicle control listener")?;
+        let endpoint = listener
+            .local_addr()
+            .context("read pChronicle control listener address")?;
+        Ok(Self {
+            listener,
+            endpoint,
+            auth_token: uuid::Uuid::new_v4().simple().to_string(),
+            control,
+            attempts,
+        })
+    }
+
+    pub(super) fn ready(&self) -> ChronicleServeControlReady {
+        ChronicleServeControlReady {
+            endpoint: self.endpoint.to_string(),
+            auth_token: self.auth_token.clone(),
+        }
+    }
+
+    pub(super) async fn serve(self, shutdown: impl std::future::Future<Output = ()>) -> Result<()> {
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => return Ok(()),
+                accepted = self.listener.accept() => {
+                    let (stream, _) = accepted.context("accept pChronicle control client")?;
+                    stream
+                        .set_nodelay(true)
+                        .context("configure pChronicle control socket")?;
+                    let control = Arc::clone(&self.control);
+                    let attempts = Arc::clone(&self.attempts);
+                    let auth_token = self.auth_token.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) =
+                            serve_connection(stream, control, attempts, auth_token).await
+                        {
+                            eprintln!("pChronicle control request failed: {error:#}");
+                        }
+                    });
+                }
             }
-        });
+        }
     }
 }
 
@@ -305,4 +322,55 @@ pub(crate) async fn append_trajectory(
         status: "ok".into(),
         note,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use persisting_events::ChronicleServeControlReady;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn prepared_control_serves_ping_and_stops_on_shutdown() -> Result<()> {
+        let storage = tempfile::tempdir()?;
+        let prepared = PreparedControl::bind(
+            storage.path().to_str().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await?;
+        let ChronicleServeControlReady {
+            endpoint,
+            auth_token,
+        } = prepared.ready();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            prepared
+                .serve(async {
+                    let _ = stop_rx.await;
+                })
+                .await
+        });
+
+        let mut stream = TcpStream::connect(endpoint).await?;
+        let request = ChronicleControlEnvelope {
+            version: CHRONICLE_CONTROL_VERSION,
+            request_id: 7,
+            auth_token,
+            request: ChronicleControlRequest::Ping,
+        };
+        let mut encoded = serde_json::to_vec(&request)?;
+        encoded.push(b'\n');
+        stream.write_all(&encoded).await?;
+        stream.flush().await?;
+
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response).await?;
+        let response: ChronicleControlResponseEnvelope = serde_json::from_str(&response)?;
+        assert_eq!(response.request_id, 7);
+        assert!(matches!(response.response, ChronicleControlResponse::Pong));
+
+        stop_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), server).await???;
+        Ok(())
+    }
 }

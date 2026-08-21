@@ -21,6 +21,9 @@ pub fn detect_format_from_path(path: impl AsRef<Path>) -> Option<DocumentFormat>
     if name == "session_steps.json" {
         return Some(DocumentFormat::OpenaiMsg);
     }
+    if name.ends_with(".storyline.json") {
+        return Some(DocumentFormat::Storyline);
+    }
     if name.ends_with(".actf.json") {
         return Some(DocumentFormat::Actf);
     }
@@ -64,6 +67,13 @@ pub fn detect_format_from_content(input: &str) -> Result<Option<DocumentFormat>>
 
 fn detect_json_format(v: &serde_json::Value) -> Option<DocumentFormat> {
     let candidate = v.as_array().and_then(|values| values.first()).unwrap_or(v);
+    if candidate
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|version| version.starts_with("storyline/"))
+    {
+        return Some(DocumentFormat::Storyline);
+    }
     let is_actf_document = v
         .get("attempts")
         .and_then(serde_json::Value::as_object)
@@ -125,4 +135,24 @@ pub fn detect_format(path: Option<&Path>, content: Option<&str>) -> Result<Optio
         return detect_format_from_content(c);
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_storyline_json_by_version_and_specific_suffix() {
+        let input =
+            r#"{"schema_version":"storyline/v1","session":"s","agent":{"id":"a"},"turns":[]}"#;
+
+        assert_eq!(
+            detect_format_from_content(input).unwrap(),
+            Some(DocumentFormat::Storyline)
+        );
+        assert_eq!(
+            detect_format_from_path("trajectory.storyline.json"),
+            Some(DocumentFormat::Storyline)
+        );
+    }
 }

@@ -9,13 +9,18 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::timestamp::StorylineTimestamp;
 use super::unknown_fields::{compute_unknown_key_counts, StorylineUnknownFields, UnknownKeyCounts};
 use crate::{InputIssue, InputResult, Result};
 
+pub const STORYLINE_SCHEMA_VERSION: &str = "storyline/v1";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorylineDocument {
+    pub schema_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_version: Option<String>,
+    pub origin: Option<StorylineOrigin>,
     #[serde(rename = "run", default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     #[serde(
@@ -50,6 +55,17 @@ pub struct StorylineDocument {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorylineOrigin {
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorylineAgent {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +82,7 @@ pub struct StorylineAgent {
 
 /// Optional parent-session link (ATIF `subagent_trajectories` externalization).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoryLink {
     #[serde(rename = "psid")]
     pub parent_session_id: String,
@@ -90,12 +107,13 @@ fn default_spawn() -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorylineTurn {
     pub id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(rename = "ts", default, skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
+    pub timestamp: Option<StorylineTimestamp>,
     #[serde(rename = "src")]
     pub source: String,
     #[serde(rename = "msg")]
@@ -149,6 +167,7 @@ impl StorylineTurn {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorylineToolCall {
     #[serde(rename = "tcid")]
     pub tool_call_id: String,
@@ -169,7 +188,8 @@ impl StorylineDocument {
     pub fn new(session_id: impl Into<String>, agent_id: impl Into<String>) -> Self {
         let agent_id = agent_id.into();
         Self {
-            schema_version: None,
+            schema_version: STORYLINE_SCHEMA_VERSION.into(),
+            origin: None,
             run_id: None,
             trajectory_id: None,
             attempt_id: None,
@@ -210,15 +230,56 @@ impl StorylineDocument {
     }
 
     pub fn to_json_string_pretty(&self) -> Result<String> {
+        self.validate()?;
         Ok(serde_json::to_string_pretty(self)?)
     }
 
     pub fn validate(&self) -> InputResult<()> {
+        if self.schema_version != STORYLINE_SCHEMA_VERSION {
+            return Err(InputIssue::unsupported(format!(
+                "unsupported storyline schema_version '{}'; expected {}",
+                self.schema_version, STORYLINE_SCHEMA_VERSION
+            )));
+        }
         if self.session_id.is_empty() {
             return Err(InputIssue::invalid("storyline.session is required"));
         }
+        if self
+            .trajectory_id
+            .as_ref()
+            .is_some_and(|trajectory_id| trajectory_id.is_empty())
+        {
+            return Err(InputIssue::invalid(
+                "storyline.trajectory must be non-empty when present",
+            ));
+        }
         if self.agent.id.is_empty() {
             return Err(InputIssue::invalid("storyline.agent.id is required"));
+        }
+        if let Some(origin) = &self.origin {
+            if origin.format.is_empty() {
+                return Err(InputIssue::invalid(
+                    "storyline.origin.format must be non-empty",
+                ));
+            }
+            if origin
+                .schema_version
+                .as_ref()
+                .is_some_and(|version| version.is_empty())
+            {
+                return Err(InputIssue::invalid(
+                    "storyline.origin.schema_version must be non-empty when present",
+                ));
+            }
+            if origin
+                .document_id
+                .as_ref()
+                .is_some_and(|document_id| document_id.is_empty())
+            {
+                return Err(InputIssue::invalid(
+                    "storyline.origin.document_id must be non-empty when present",
+                ));
+            }
         }
         if compute_unknown_key_counts(&self.unknown_fields)? != self.unknown_key_counts {
             return Err(InputIssue::invalid(
@@ -226,6 +287,7 @@ impl StorylineDocument {
             ));
         }
         let mut seen = std::collections::HashSet::new();
+        let mut seen_tool_calls = std::collections::HashSet::new();
         for turn in &self.turns {
             if turn.source.is_empty() {
                 return Err(InputIssue::invalid(format!(
@@ -238,6 +300,26 @@ impl StorylineDocument {
                     "duplicate turn id {}",
                     turn.id
                 )));
+            }
+            for call in turn.tool_calls.as_deref().unwrap_or_default() {
+                if call.tool_call_id.is_empty() {
+                    return Err(InputIssue::invalid(format!(
+                        "turn id={} tool_call_id must be non-empty",
+                        turn.id
+                    )));
+                }
+                if call.function_name.is_empty() {
+                    return Err(InputIssue::invalid(format!(
+                        "turn id={} function_name must be non-empty",
+                        turn.id
+                    )));
+                }
+                if !seen_tool_calls.insert(call.tool_call_id.as_str()) {
+                    return Err(InputIssue::invalid(format!(
+                        "duplicate tool_call_id {}",
+                        call.tool_call_id
+                    )));
+                }
             }
         }
         Ok(())
@@ -372,13 +454,176 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_long_field_names_are_rejected() {
-        let document = serde_json::json!({
-            "session_id": "session-1",
+    fn storyline_wire_requires_the_supported_version() {
+        let missing = serde_json::json!({
+            "session": "session-1",
             "agent": { "id": "agent-1" },
             "turns": []
         });
-        assert!(serde_json::from_value::<StorylineDocument>(document).is_err());
+        let unsupported = serde_json::json!({
+            "schema_version": "storyline/v2",
+            "session": "session-1",
+            "agent": { "id": "agent-1" },
+            "turns": []
+        });
+
+        assert!(StorylineDocument::from_json_str(&missing.to_string()).is_err());
+        assert!(StorylineDocument::from_json_str(&unsupported.to_string()).is_err());
+    }
+
+    #[test]
+    fn storyline_wire_rejects_unknown_owned_fields() {
+        let unknown_root = serde_json::json!({
+            "schema_version": "storyline/v1",
+            "session": "session-1",
+            "agent": { "id": "agent-1" },
+            "turns": [],
+            "session_id": "long-key-must-not-be-ignored"
+        });
+        let unknown_turn = serde_json::json!({
+            "schema_version": "storyline/v1",
+            "session": "session-1",
+            "agent": { "id": "agent-1" },
+            "turns": [{
+                "id": 1,
+                "src": "user",
+                "msg": "hello",
+                "source": "long-key-must-not-be-ignored"
+            }]
+        });
+
+        assert!(StorylineDocument::from_json_str(&unknown_root.to_string()).is_err());
+        assert!(StorylineDocument::from_json_str(&unknown_turn.to_string()).is_err());
+    }
+
+    #[test]
+    fn typed_timestamp_preserves_fractional_epoch_source_and_instant() {
+        let timestamp =
+            crate::model::StorylineTimestamp::from_json(serde_json::json!(1785578400.25)).unwrap();
+
+        assert_eq!(timestamp.timestamp_nanos(), 1_785_578_400_250_000_000);
+        assert_eq!(timestamp.source_value(), &serde_json::json!(1785578400.25));
+        assert_eq!(
+            serde_json::to_value(&timestamp).unwrap(),
+            serde_json::json!(1785578400.25)
+        );
+    }
+
+    #[test]
+    fn typed_timestamp_parses_integer_negative_and_exponent_epoch_values_exactly() {
+        for (source, expected_nanos) in [
+            (serde_json::json!(0), 0),
+            (serde_json::json!(-1.25), -1_250_000_000),
+            (serde_json::from_str("1e-9").unwrap(), 1),
+        ] {
+            let timestamp = crate::model::StorylineTimestamp::from_json(source.clone()).unwrap();
+            assert_eq!(timestamp.timestamp_nanos(), expected_nanos);
+            assert_eq!(timestamp.source_value(), &source);
+        }
+    }
+
+    #[test]
+    fn typed_timestamp_normalizes_instant_without_rewriting_source_text() {
+        let offset = crate::model::StorylineTimestamp::from_json(serde_json::json!(
+            "2026-08-20T08:00:00.123456789+08:00"
+        ))
+        .unwrap();
+        let utc = crate::model::StorylineTimestamp::from_json(serde_json::json!(
+            "2026-08-20T00:00:00.123456789Z"
+        ))
+        .unwrap();
+
+        assert_eq!(offset.instant(), utc.instant());
+        assert_eq!(
+            offset.source_value(),
+            &serde_json::json!("2026-08-20T08:00:00.123456789+08:00")
+        );
+        assert_eq!(offset.canonical_rfc3339(), "2026-08-20T00:00:00.123456789Z");
+    }
+
+    #[test]
+    fn typed_timestamp_rejects_sub_nanosecond_epoch_values() {
+        let error = crate::model::StorylineTimestamp::from_json(serde_json::json!(1.0000000001))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("nanosecond"), "{error}");
+    }
+
+    #[test]
+    fn typed_timestamp_rejects_epoch_values_outside_nanosecond_range() {
+        let error =
+            crate::model::StorylineTimestamp::from_json(serde_json::json!(10_000_000_000u64))
+                .unwrap_err();
+
+        assert!(error.to_string().contains("range"), "{error}");
+    }
+
+    #[test]
+    fn typed_timestamp_rejects_non_timestamp_json_scalars() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!(true),
+            serde_json::json!("2026/08/20 00:00:00"),
+        ] {
+            assert!(crate::model::StorylineTimestamp::from_json(value).is_err());
+        }
+    }
+
+    #[test]
+    fn storyline_decode_rejects_non_rfc3339_timestamps() {
+        let input = serde_json::json!({
+            "schema_version": STORYLINE_SCHEMA_VERSION,
+            "session": "session",
+            "agent": {"id": "agent"},
+            "turns": [{
+                "id": 1,
+                "ts": "2026/08/20 12:00:00",
+                "src": "user",
+                "msg": "hello"
+            }]
+        });
+
+        let error = StorylineDocument::from_json_str(&input.to_string()).unwrap_err();
+        assert!(error.to_string().contains("RFC3339"), "{error}");
+    }
+
+    #[test]
+    fn storyline_validation_rejects_duplicate_tool_call_ids() {
+        let mut story = StorylineDocument::new("session", "agent");
+        let call = StorylineToolCall {
+            tool_call_id: "call-1".into(),
+            function_name: "lookup".into(),
+            arguments: serde_json::json!({}),
+            result: None,
+            duration_ms: None,
+            extra: None,
+        };
+        for id in [1, 2] {
+            story.turns.push(StorylineTurn {
+                id,
+                kind: None,
+                timestamp: None,
+                source: "agent".into(),
+                message: Value::Null,
+                reasoning_content: None,
+                reasoning_effort: None,
+                tool_calls: Some(vec![call.clone()]),
+                observation: None,
+                metrics: None,
+                model_name: None,
+                llm_call_count: None,
+                is_copied_context: None,
+                latency_ms: None,
+                ttft_ms: None,
+                extra: None,
+            });
+        }
+
+        let error = story.validate().unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate tool_call_id"),
+            "{error}"
+        );
     }
 
     #[test]

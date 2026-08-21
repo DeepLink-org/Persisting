@@ -11,8 +11,8 @@ use futures::TryStreamExt;
 use crate::agenticmd::parse_agenticmd;
 use crate::convert::{actf_to_storylines, project_event_records};
 use crate::document::{
-    FilterPushdown, QueryCapabilities, QueryTables, DEFAULT_DOCUMENT_MATERIALIZE_BYTES,
-    DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
+    decode_json_storylines, FilterPushdown, QueryCapabilities, QueryTables,
+    DEFAULT_DOCUMENT_MATERIALIZE_BYTES, DEFAULT_DOCUMENT_MATERIALIZE_ROWS,
 };
 use crate::format::DocumentFormat;
 use crate::formats::actf::ActfDocument;
@@ -37,7 +37,7 @@ pub(crate) enum DocumentSourceImpl {
     Events {
         source: RawEventDataSource,
     },
-    Storyline {
+    StorylineLance {
         source: Box<StorylineDataSource>,
     },
     AgenticMd {
@@ -60,9 +60,9 @@ pub(crate) async fn open_document_source(
         DocumentFormat::CanonicalEvent => Ok(DocumentSourceImpl::Events {
             source: RawEventDataSource::open(&path).await?,
         }),
-        DocumentFormat::Storyline => {
+        DocumentFormat::StorylineLance => {
             let source = StorylineDataSource::open(&path).await?;
-            Ok(DocumentSourceImpl::Storyline {
+            Ok(DocumentSourceImpl::StorylineLance {
                 source: Box::new(source),
             })
         }
@@ -78,7 +78,10 @@ pub(crate) async fn open_document_source(
                 source,
             })
         }
-        DocumentFormat::Atif | DocumentFormat::OpenaiMsg | DocumentFormat::Actf => {
+        DocumentFormat::Storyline
+        | DocumentFormat::Atif
+        | DocumentFormat::OpenaiMsg
+        | DocumentFormat::Actf => {
             let manifest = LocalQueryManifest::for_format(&path, format)?;
             let source = FileTrajectoryDataSource::from_manifest(manifest.clone())?;
             debug_assert_eq!(source.format(), format);
@@ -151,7 +154,7 @@ impl DocumentSourceImpl {
                 source,
                 ..
             } => for_each_file_storyline(*format, manifest, source.max_file_bytes(), on_storyline),
-            Self::Storyline { source, .. } => {
+            Self::StorylineLance { source, .. } => {
                 let context = SessionContext::new();
                 source.register(&context)?;
                 let mut batches = context
@@ -233,7 +236,7 @@ impl DocumentSourceImpl {
 
     pub(crate) fn storyline_generation(&self) -> Option<&str> {
         match self {
-            Self::Storyline { source, .. } => Some(source.generation()),
+            Self::StorylineLance { source, .. } => Some(source.generation()),
             _ => None,
         }
     }
@@ -243,7 +246,7 @@ impl QueryDocumentSource for DocumentSourceImpl {
     fn format(&self) -> DocumentFormat {
         match self {
             Self::Events { .. } => DocumentFormat::CanonicalEvent,
-            Self::Storyline { .. } => DocumentFormat::Storyline,
+            Self::StorylineLance { .. } => DocumentFormat::StorylineLance,
             Self::AgenticMd { .. } => DocumentFormat::AgenticMd,
             Self::Files { format, .. } => *format,
         }
@@ -267,7 +270,7 @@ impl QueryDocumentSource for DocumentSourceImpl {
                 late_content_materialization: false,
                 snapshot_consistent: true,
             },
-            DocumentFormat::Storyline => QueryCapabilities {
+            DocumentFormat::StorylineLance => QueryCapabilities {
                 projection_pushdown: true,
                 filter_pushdown: FilterPushdown::ExpressionDependent,
                 limit_pushdown: true,
@@ -303,6 +306,15 @@ impl QueryDocumentSource for DocumentSourceImpl {
                 late_content_materialization: false,
                 snapshot_consistent: false,
             },
+            DocumentFormat::Storyline => QueryCapabilities {
+                projection_pushdown: true,
+                filter_pushdown: FilterPushdown::Unsupported,
+                limit_pushdown: true,
+                scalar_indexes: false,
+                streaming_decode: false,
+                late_content_materialization: false,
+                snapshot_consistent: false,
+            },
             DocumentFormat::AgenticMd => QueryCapabilities {
                 projection_pushdown: true,
                 filter_pushdown: FilterPushdown::Unsupported,
@@ -318,7 +330,7 @@ impl QueryDocumentSource for DocumentSourceImpl {
     fn register(&self, context: &SessionContext) -> Result<()> {
         match self {
             Self::Events { source, .. } => source.register(context),
-            Self::Storyline { source, .. } => source.register(context),
+            Self::StorylineLance { source, .. } => source.register(context),
             Self::AgenticMd { source, .. } => source.register(context),
             Self::Files { source, .. } => source.register(context),
         }
@@ -335,6 +347,18 @@ where
     F: FnMut(StorylineDocument) -> Result<()>,
 {
     match format {
+        DocumentFormat::Storyline => {
+            for file in manifest.files() {
+                let input = read_bounded_file(file, max_file_bytes, format)?;
+                let input = std::str::from_utf8(&input).context("Storyline input is not UTF-8")?;
+                for story in
+                    decode_json_storylines(DocumentFormat::Storyline, input, file.relative_path())
+                        .map_err(anyhow::Error::from)?
+                {
+                    on_storyline(story)?;
+                }
+            }
+        }
         DocumentFormat::Atif => {
             for story in AtifReader::from_manifest(
                 manifest,
@@ -363,7 +387,9 @@ where
                 }
             }
         }
-        DocumentFormat::CanonicalEvent | DocumentFormat::Storyline | DocumentFormat::AgenticMd => {
+        DocumentFormat::CanonicalEvent
+        | DocumentFormat::StorylineLance
+        | DocumentFormat::AgenticMd => {
             anyhow::bail!("{format} is not a file-backed trajectory document format");
         }
     }

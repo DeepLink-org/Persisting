@@ -3,10 +3,12 @@
 | Field | Value |
 |---|---|
 | **Status** | Accepted |
+| **Format** | `actf` |
 | **Date** | 2026-08-07 |
 | **Component** | `persisting-pchronicle` |
 | **Source fixture** | `data/make-doom-for-mips_software-engineering.json` |
-| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0003 pChronicle Ownership](0003-pchronicle-ownership.md) |
+| **Implements** | `crates/persisting-pchronicle/src/formats/actf.rs` · `crates/persisting-pchronicle/src/convert/actf.rs` |
+| **Related** | [RFC-0001 Storyline](0001-storyline-format.md) · [RFC-0003 pChronicle Ownership](0003-pchronicle-ownership.md) · [RFC-0008 ATIF](0008-atif-format.md) · [RFC-0009 OpenAI Messages](0009-openai-messages-format.md) |
 
 ## 摘要
 
@@ -79,7 +81,16 @@ opaque JSON 保留。
 根级 `correct`、`solved_at` 与 attempt 结果之间不施加样本之外的推导约束；它们按输入
 原值保存。
 
-## Storyline 与 Lance 映射
+## ACTF → Storyline JSON Pointer 映射 {#actf-storyline-json-pointer-mapping}
+
+本节是 ACTF 到 Storyline 字段映射的权威定义。指针遵循 RFC 6901；`{a}`、`{s}`、
+`{c}`、`{o}` 和 `{t}` 分别表示 attempt key、源 step 下标、tool call 下标、observation
+result 下标和目标 turn 下标。代入实际 token 后即为普通 JSON Pointer。
+
+`P` 表示左侧命中的完整源 pointer；`E(P)` 表示把整个 `P` 作为 `fields` 对象 key 后再做
+一次 RFC 6901 token 转义。所有输出都生成
+`/schema_version = "storyline/v1"`、`/origin/format = "actf"`，并从
+`/unknown_fields` 计算 `/unknown_key_counts`；这些值没有源 pointer，故不列入表。
 
 一个 ACTF document 可以包含多个 attempts，因此映射基数为：
 
@@ -90,14 +101,66 @@ ACTF step     1 ──► 1 Storyline step
 ACTF tool     1 ──► 1 Storyline tool_call
 ```
 
-- `task_id` 写入 `run_id`；单 attempt 的 `session_id` 使用 `task_id`，多 attempt 使用
-  `{task_id}#attempt-{attempt_id}`。
-- assistant `content`、`reasoning_content`、tool call 和 observation 投影到对应的
-  Storyline 字段，token/latency 投影到 metrics。
-- Storyline 未建模的 ACTF 根、attempt、trajectory 和 step 键以精确 RFC 6901 JSON
-  Pointer/value 写入 run 级 `unknown_fields`；`unknown_key_counts` 记录归一化路径的出现次数。
-- 恢复时根据 `run_id`、`attempt_id` 和 ACTF unknown fields 重组 attempt map；多个 attempt
-  必须具有相同根元数据。跨格式转换通过 version-1 `_storyline` envelope 携带 unknown fields。
+| ACTF JSON Pointer | Storyline JSON Pointer |
+| --- | --- |
+| `/task_id` | `/run`<br>`/session`<br>`/unknown_fields/sources/actf/source_document_id` |
+| `/correct` | `/final_metrics/task_correct` |
+| `/attempts/{a}` | `/attempt_id`<br>`/session` |
+| `/attempts/{a}/correct` | `/final_metrics/correct` |
+| `/attempts/{a}/score` | `/final_metrics/score` |
+| `/attempts/{a}/status` | `/final_metrics/status` |
+| `/attempts/{a}/analysis_result` | `/final_metrics/analysis_result` |
+| `/attempts/{a}/trajectory/schema_version` | `/origin/schema_version` |
+| `/attempts/{a}/trajectory/steps/{s}/step_id` | `/turns/{t}/id` |
+| `/attempts/{a}/trajectory/steps/{s}/started_at` | `/turns/{t}/ts` |
+| `/attempts/{a}/trajectory/steps/{s}/assistant_content/content` | `/turns/{t}/msg` |
+| `/attempts/{a}/trajectory/steps/{s}/assistant_content/reasoning_content` | `/turns/{t}/reason` |
+| `/attempts/{a}/trajectory/steps/{s}/tools`<br>`/attempts/{a}/trajectory/steps/{s}/assistant_content/tool_calls` | `/turns/{t}/tool_calls`<br>`/turns/{t}/kind` |
+| `/attempts/{a}/trajectory/steps/{s}/tools/{c}/id`<br>`/attempts/{a}/trajectory/steps/{s}/assistant_content/tool_calls/{c}/id` | `/turns/{t}/tool_calls/{c}/tcid` |
+| `/attempts/{a}/trajectory/steps/{s}/tools/{c}/name`<br>`/attempts/{a}/trajectory/steps/{s}/assistant_content/tool_calls/{c}/name` | `/turns/{t}/tool_calls/{c}/fn`<br>`/turns/{t}/tool_calls/{c}/args/name` |
+| `/attempts/{a}/trajectory/steps/{s}/tools/{c}/type`<br>`/attempts/{a}/trajectory/steps/{s}/assistant_content/tool_calls/{c}/type` | `/turns/{t}/tool_calls/{c}/fn`<br>`/unknown_fields/sources/actf/fields/{E(P)}` |
+| `/attempts/{a}/trajectory/steps/{s}/tools/{c}/input`<br>`/attempts/{a}/trajectory/steps/{s}/assistant_content/tool_calls/{c}/input` | `/turns/{t}/tool_calls/{c}/args` |
+| `/attempts/{a}/trajectory/steps/{s}/tools/{c}/command`<br>`/attempts/{a}/trajectory/steps/{s}/assistant_content/tool_calls/{c}/command` | `/turns/{t}/tool_calls/{c}/args/command` |
+| `/attempts/{a}/trajectory/steps/{s}/tools/{c}/aggregated_output`<br>`/attempts/{a}/trajectory/steps/{s}/assistant_content/tool_calls/{c}/aggregated_output` | `/turns/{t}/tool_calls/{c}/result`<br>`/turns/{t}/tool_calls/{c}/args/aggregated_output` |
+| `/attempts/{a}/trajectory/steps/{s}/metric/prompt_tokens_len` | `/turns/{t}/metrics/prompt_tokens_len` |
+| `/attempts/{a}/trajectory/steps/{s}/metric/completion_tokens_len` | `/turns/{t}/metrics/completion_tokens_len` |
+| `/attempts/{a}/trajectory/steps/{s}/metric/llm_infer_ms` | `/turns/{t}/metrics/llm_infer_ms`<br>`/turns/{t}/latency_ms` |
+| `/attempts/{a}/trajectory/steps/{s}/metric/env_action_ms` | `/turns/{t}/metrics/env_action_ms`<br>`/turns/{t}/tool_calls/0/duration_ms` |
+| `/attempts/{a}/trajectory/steps/{s}/metric/stop_reason` | `/turns/{t}/metrics/stop_reason` |
+| `/attempts/{a}/trajectory/steps/{s}/metric/{other-metric}` | `/turns/{t}/metrics/{other-metric}` |
+| `/attempts/{a}/trajectory/steps/{s}/observation/{o}` | `/turns/{t}/observation/results/{o}` |
+| `/attempts/{a}/trajectory/steps/{s}/observation/{o}/tool_use_id` | `/turns/{t}/observation/results/{o}/tool_use_id`<br>`/turns/{t}/observation/results/{o}/source_call_id` |
+| `/attempts/{a}/trajectory/steps/{s}/observation/{o}/id` | `/turns/{t}/observation/results/{o}/id`<br>`/turns/{t}/observation/results/{o}/source_call_id` |
+| `/attempts/{a}/trajectory/steps/{s}/observation/{o}/content` | `/turns/{t}/observation/results/{o}/content` |
+| `/attempts/{a}/trajectory/steps/{s}/observation/{o}/aggregated_output` | `/turns/{t}/observation/results/{o}/aggregated_output`<br>`/turns/{t}/observation/results/{o}/content` |
+| `/attempts/{a}/trajectory/steps/{s}/observation/{o}/{other-field}` | `/turns/{t}/observation/results/{o}/{other-field}` |
+| `/category`<br>`/k`<br>`/attempts_tried`<br>`/solved_at`<br>`/{other-root-key}` | `/unknown_fields/sources/actf/fields/{E(P)}` |
+| `/attempts/{a}/final_answer`<br>`/attempts/{a}/ground_truth`<br>`/attempts/{a}/error`<br>`/attempts/{a}/artifacts`<br>`/attempts/{a}/extra`<br>`/attempts/{a}/meta`<br>`/attempts/{a}/{other-attempt-key}` | `/unknown_fields/sources/actf/fields/{E(P)}` |
+| `/attempts/{a}/trajectory/started_at`<br>`/attempts/{a}/trajectory/finished_at`<br>`/attempts/{a}/trajectory/{other-trajectory-key}` | `/unknown_fields/sources/actf/fields/{E(P)}` |
+| `/attempts/{a}/trajectory/steps/{s}/system_prompt`<br>`/attempts/{a}/trajectory/steps/{s}/user_content`<br>`/attempts/{a}/trajectory/steps/{s}/finished_at`<br>`/attempts/{a}/trajectory/steps/{s}/{other-step-key}` | `/unknown_fields/sources/actf/fields/{E(P)}` |
+| `/attempts/{a}/trajectory/steps/{s}/assistant_content/{other-assistant-key}` | `/unknown_fields/sources/actf/fields/{E(P)}` |
+| `/attempts/{a}/trajectory/steps/{s}/tools/{c}/{other-tool-key}`<br>`/attempts/{a}/trajectory/steps/{s}/assistant_content/tool_calls/{c}/{other-tool-key}` | `/turns/{t}/tool_calls/{c}/args/{other-tool-key}`<br>`/unknown_fields/sources/actf/fields/{E(P)}` |
+
+条件和规范化规则：
+
+- 一个 `/attempts/{a}` 生成一份 Storyline。单 attempt 时 `/session = task_id`；多
+  attempt 时 `/session = "{task_id}#attempt-{a}"`。
+- `/agent/id` 固定为 `actf-agent`，`/agent/name` 固定为 `ACTF Agent`。每个 turn 固定
+  `src=agent, nllm=1`；存在非空 tools 时 `kind=autonomous`。
+- `tools` 是规范化 tool-call 来源；`assistant_content.tool_calls` 必须与其完全相等。
+  `name` 优先作为 `/fn`，缺失或为空时回退到 `type`。
+- arguments 按 `input → {"command": command} → flattened tool fields object` 选择。
+  因此 `/args/name`、`/args/aggregated_output` 和 `/args/{other-tool-key}` 只在 `input`
+  与 `command` 都不存在时产生；无论 `{other-tool-key}` 是否进入 `/args`，它仍以源 pointer
+  保存在 `unknown_fields`。`type` 也总是额外保留，以便同源恢复。
+- `env_action_ms` 仅在该 step 恰有一个 tool call 且值为 number 时，才同时写入该 call
+  的 `/duration_ms`。所有 metric 字段始终保留在 `/metrics`。
+- observation result 整体进入 `/observation/results`。`tool_use_id` 优先于 `id` 生成
+  `source_call_id`；`aggregated_output` 优先于 `content` 生成规范化 `content`，原字段仍
+  保留在 result 内。
+- unknown root 字段附到该 document 产生的每个 Storyline attempt；同源恢复时要求它们
+  一致。恢复使用 `/run`、`/attempt_id` 和 ACTF unknown fields 重组 attempt map；跨格式
+  转换通过 version-1 `_storyline` envelope 携带外来 unknown fields。
 
 ## 保真边界
 

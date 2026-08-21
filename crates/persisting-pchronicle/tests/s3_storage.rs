@@ -146,7 +146,7 @@ async fn run_contract(root: &str) -> Result<()> {
     let first = fixture_storyline()?;
     store.replace_storyline(&first).await?;
     let pinned = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         std::path::Path::new(&storyline_root),
         ChronicleQueryExecutionOptions::default(),
     )
@@ -173,7 +173,7 @@ async fn run_contract(root: &str) -> Result<()> {
         [Some(first), Some(second)]
     );
     let engine = ChronicleQueryEngine::open(
-        DocumentFormat::Storyline,
+        DocumentFormat::StorylineLance,
         std::path::Path::new(&storyline_root),
         ChronicleQueryExecutionOptions::default(),
     )

@@ -51,13 +51,22 @@ async fn assert_storyline_tables(format: DocumentFormat, path: &Path) -> Result<
 }
 
 #[tokio::test]
-async fn opens_all_six_formats_and_reports_true_capabilities() -> Result<()> {
+async fn opens_all_seven_formats_and_reports_true_capabilities() -> Result<()> {
     let temporary = tempfile::tempdir()?;
 
     let agentic_path = temporary.path().join("story.md");
     let mut agentic_story = StorylineDocument::new("agentic-session", "agent");
     agentic_story.turns.push(turn(1, "hello"));
     std::fs::write(&agentic_path, encode_agenticmd(&agentic_story)?)?;
+
+    let storyline_json_path = temporary.path().join("story.storyline.json");
+    std::fs::write(
+        &storyline_json_path,
+        serde_json::to_vec_pretty(&encode_json_storylines(
+            DocumentFormat::Storyline,
+            std::slice::from_ref(&agentic_story),
+        )?)?,
+    )?;
 
     let storyline_path = temporary.path().join("storyline");
     let storyline_store = StorylineLanceStore::open(&storyline_path).await?;
@@ -108,7 +117,7 @@ async fn opens_all_six_formats_and_reports_true_capabilities() -> Result<()> {
     assert!(event_caps.snapshot_consistent);
     assert_eq!(events.project_storylines().await?.len(), 1);
 
-    let storyline = open_document(DocumentFormat::Storyline, &storyline_path).await?;
+    let storyline = open_document(DocumentFormat::StorylineLance, &storyline_path).await?;
     assert_eq!(
         storyline.register_datafusion(&SessionContext::new())?,
         QueryTables::Storyline
@@ -130,6 +139,8 @@ async fn opens_all_six_formats_and_reports_true_capabilities() -> Result<()> {
         FilterPushdown::Unsupported
     );
     assert_eq!(agentic.project_storylines().await?, vec![agentic_story]);
+
+    assert_storyline_tables(DocumentFormat::Storyline, &storyline_json_path).await?;
 
     assert_storyline_tables(
         DocumentFormat::Atif,

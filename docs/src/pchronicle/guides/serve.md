@@ -38,3 +38,15 @@ To capture new LLM traffic in the same process, continue with
 [Gateway forwarding, rewriting, and capture](serve-gateway.md). For exact flags, see the
 [`pchronicle` command reference](../reference/cli.md). For Snapshot behavior,
 read the [Dataset Catalog design](../design/catalog.md).
+
+`serve` only starts the services named on the command line. Omitting
+`--listen` disables Warehouse HTTP. A storage URI can instead host the local
+authenticated Control protocol used by pPilot and pVisor:
+
+```bash
+pchronicle serve --storage ./trajectory-data --control 127.0.0.1:0
+```
+
+`--config` and `--storage` are mutually exclusive, and `--control` requires
+`--storage`. The process writes one machine-readable readiness record to
+stdout; its Control token is never written to stderr.

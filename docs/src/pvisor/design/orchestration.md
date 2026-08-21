@@ -36,8 +36,8 @@ resident pVisor daemon.
 
 The default pVisor build has no embedded Chronicle storage adapter and does not
 link Lance or DataFusion. When durable publication is configured, pVisor starts
-`pchronicle control` and publishes Attempt state plus lifecycle/Gateway events
-through the shared `persisting-events` control contract. pPilot uses the same
+the Control component of `pchronicle serve` and publishes Attempt state plus
+lifecycle/Gateway events through the shared `persisting-events` control contract. pPilot uses the same
 contract for lease/CAS and result-journal coordination; each command owns the
 sidecar process it starts. `--pchronicle-binary` or
 `PERSISTING_PCHRONICLE_BIN` selects the executable.

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use persisting_pchronicle::model::{EventRecord, StorylineTurn};
+use persisting_pchronicle::model::{EventRecord, StorylineTimestamp, StorylineTurn};
 use serde_json::{Map, Value};
 
 use super::fields::role_and_body;
@@ -26,6 +26,12 @@ pub fn capture_record_to_storyline_turn(rec: &EventRecord) -> Result<StorylineTu
         .map(str::to_owned);
     let ttft_ms = rec.payload.get("ttft_ms").and_then(Value::as_i64);
     let latency_ms = rec.payload.get("latency_ms").and_then(Value::as_i64);
+    let timestamp = rec
+        .timestamp
+        .as_deref()
+        .map(StorylineTimestamp::from_rfc3339)
+        .transpose()
+        .context("capture event timestamp is not valid RFC 3339")?;
 
     let mut extra = Map::new();
     insert_string(&mut extra, "producer", Some(rec.source.as_str()));
@@ -55,7 +61,7 @@ pub fn capture_record_to_storyline_turn(rec: &EventRecord) -> Result<StorylineTu
     Ok(StorylineTurn {
         id,
         kind: Some(rec.kind.clone()),
-        timestamp: rec.timestamp.clone(),
+        timestamp,
         source: source.into(),
         message: Value::String(body),
         reasoning_content: None,

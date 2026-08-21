@@ -59,8 +59,10 @@ pub struct StorylineContentOptions {
     /// Maximum number of documents accepted by one streamed import.
     pub max_import_documents: Option<usize>,
     /// Maximum number of logical unknown fields retained by one document.
+    /// `usize::MAX` disables the field-count limit.
     pub max_unknown_fields: usize,
     /// Maximum logical JSON bytes retained in unknown fields by one document.
+    /// `usize::MAX` disables the byte limit.
     pub max_unknown_bytes: usize,
 }
 

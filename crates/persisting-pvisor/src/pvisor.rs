@@ -20,7 +20,7 @@ use persisting_agentctl::{
     ExecutorDescriptor, IsolationKind, NetworkCapability, PolicyMode, RunFailure, RunFailureKind,
     RunInvocation, RunResult, RunSpec, RunState, RunStatus, RUNTIME_SCHEMA_VERSION,
 };
-use persisting_events::{ChronicleControl, ChronicleControlProcessClient, EventRecord};
+use persisting_events::{ChronicleControl, ChronicleServeProcessClient, EventRecord};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
@@ -520,7 +520,7 @@ impl PVisor {
                 {
                     Some(control) => Arc::clone(control),
                     None => Arc::new(
-                        ChronicleControlProcessClient::spawn(&self.pchronicle_binary, root)
+                        ChronicleServeProcessClient::spawn(&self.pchronicle_binary, root)
                             .await
                             .map_err(PVisorError::AttemptRegistry)?,
                     ) as Arc<dyn ChronicleControl>,

@@ -4,6 +4,11 @@
 > [RFC-0007](../../rfcs/0007-events-contract-pchronicle-sidecar.md)，
 > Dataset 命令见 [`pchronicle`](../reference/cli.md)。
 
+交换格式 wire contract 与逐字段转换以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)、
+[RFC-0004 § ACTF 映射](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping)、
+[RFC-0008 § ATIF 映射](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping)和
+[RFC-0009 § OpenAI Messages 映射](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping)为准。
+
 ## 1. 定位
 
 `persisting-pchronicle` 是 Agent 轨迹的结构化存储层，统一拥有：
@@ -16,7 +21,7 @@
 - materialize、revision lineage 和标准查询视图。
 
 `persisting-events` 拥有存储无关的逻辑事件信封。Gateway 与 pVisor 负责产出事件；CLI
-可以在进程内调用 pChronicle，pVisor 也可以通过 `pchronicle control` sidecar 提交。
+可以在进程内调用 pChronicle，pVisor 也可以通过 `pchronicle serve` 的 Control 服务提交。
 这些 producer 都不定义第二套轨迹落盘格式。
 
 ## 2. 逻辑坐标

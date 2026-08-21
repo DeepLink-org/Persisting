@@ -872,7 +872,7 @@ async fn build_run_summaries(
         let event_stats = build_event_stats(engine, name).await?;
         let sql = format!(
             "SELECT r._file_, r.document_id, r.run_id, r.session_id, r.agent_id, r.agent_model_name, \
-                    r.parent_json, r.final_metrics_json, r.extra_json, \
+                    r.parent_json, r.final_metrics_json, r.extra_json, r.unknown_fields_json, \
                     (SELECT COUNT(*) FROM {name}.steps s \
                       WHERE s._file_ = r._file_ AND s.document_id = r.document_id) AS row_count \
              FROM {name}.runs r"
@@ -1027,7 +1027,7 @@ fn terminal_event_status(rank: u64, session_ended_payload_json: Option<&str>) ->
 }
 
 fn run_status(row: &JsonValue) -> String {
-    let values = ["final_metrics_json", "extra_json"]
+    let values = ["final_metrics_json", "extra_json", "unknown_fields_json"]
         .into_iter()
         .filter_map(|field| parsed_json_field(row, field))
         .collect::<Vec<_>>();
@@ -1058,8 +1058,16 @@ fn parsed_json_field(row: &JsonValue, field: &str) -> Option<JsonValue> {
 fn find_json_string<'a>(value: &'a JsonValue, field: &str) -> Option<&'a str> {
     match value {
         JsonValue::Object(map) => map.get(field).and_then(JsonValue::as_str).or_else(|| {
-            map.values()
-                .find_map(|value| find_json_string(value, field))
+            map.iter()
+                .find_map(|(key, value)| {
+                    (key.rsplit('/').next() == Some(field))
+                        .then(|| value.as_str())
+                        .flatten()
+                })
+                .or_else(|| {
+                    map.values()
+                        .find_map(|value| find_json_string(value, field))
+                })
         }),
         JsonValue::Array(values) => values
             .iter()
@@ -1073,6 +1081,13 @@ fn find_json_bool(value: &JsonValue, field: &str) -> Option<bool> {
         JsonValue::Object(map) => map
             .get(field)
             .and_then(JsonValue::as_bool)
+            .or_else(|| {
+                map.iter().find_map(|(key, value)| {
+                    (key.rsplit('/').next() == Some(field))
+                        .then(|| value.as_bool())
+                        .flatten()
+                })
+            })
             .or_else(|| map.values().find_map(|value| find_json_bool(value, field))),
         JsonValue::Array(values) => values.iter().find_map(|value| find_json_bool(value, field)),
         _ => None,

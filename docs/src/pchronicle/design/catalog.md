@@ -4,6 +4,11 @@
 > [pChronicle 轨迹存储](trajectory-storage.md) 与
 > [Storyline 三表 Lance](storyline-lance.md)。
 
+格式 wire contract 与逐字段转换以 [RFC-0001 § Wire schema](../../rfcs/0001-storyline-format.md#wire-schema)、
+[RFC-0004 § ACTF 映射](../../rfcs/0004-actf-format.md#actf-storyline-json-pointer-mapping)、
+[RFC-0008 § ATIF 映射](../../rfcs/0008-atif-format.md#atif-storyline-json-pointer-mapping)和
+[RFC-0009 § OpenAI Messages 映射](../../rfcs/0009-openai-messages-format.md#openai-storyline-json-pointer-mapping)为准。
+
 ## 1. 定位
 
 pChronicle Dataset Catalog 面向由多个存储位置和多种轨迹格式共同组成的查询空间，主要
@@ -395,7 +400,8 @@ Catalog 复用直接文件查询的资源参数：
 - `max_entries`：目录项或 object listing 数上限；
 - `max_detection_bytes`：格式检测输入上限；
 - `max_file_bytes`：外围文件/对象大小上限；
-- `max_record_bytes`、`max_concurrent_files`、cache 参数：解析期边界；
+- 可选的 `max_record_bytes`、`max_concurrent_files`、cache 参数：解析期边界；默认不设置
+  单记录大小上限，由 `max_file_bytes` 限制 source；
 - `max_concurrent_sources`：单次物理 scan 同时解析的 source 上限；
 - `max_event_fallback_rows`、`max_event_fallback_bytes`：无 fresh 投影时单次定向
   canonical→Storyline fallback 的内存边界；
