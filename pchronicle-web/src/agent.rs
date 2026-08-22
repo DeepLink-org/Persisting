@@ -1,9 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
 use crate::components::trajectory_fence;
