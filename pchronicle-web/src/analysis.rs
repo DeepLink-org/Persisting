@@ -260,55 +260,57 @@ pub fn AnalysisWorkspace(
     let mut clear_confirmation = use_signal(|| false);
     let mut restored = use_signal(|| false);
 
-    let restore_catalog = catalog.clone();
-    let restore_requested = requested_session_id.clone();
-    use_effect(move || {
-        if restored() {
-            return;
-        }
-        let Some(catalog) = restore_catalog.as_ref() else {
-            return;
-        };
-        restored.set(true);
-        let fingerprint =
-            analysis_session::storage_fingerprint(&catalog.database, &catalog.storage_path);
-        let mut sessions = match analysis_session::load_sessions(&fingerprint) {
-            Ok(sessions) => sessions,
-            Err(message) => {
-                storage_notice.set(Some(message));
-                Vec::new()
+    use_effect(use_reactive(
+        (&catalog, &requested_session_id),
+        move |(restore_catalog, restore_requested)| {
+            if restored() {
+                return;
             }
-        };
-        let requested_id = restore_requested.as_deref().filter(|id| !id.is_empty());
-        let mut restored_session = requested_id
-            .and_then(|id| {
-                sessions
-                    .iter()
-                    .find(|candidate| candidate.id == id)
-                    .cloned()
-            })
-            .unwrap_or_else(|| {
-                let initial_scope = scope().unwrap_or_else(|| AnalysisScope::from_catalog(catalog));
-                AnalysisSession::with_revision(AnalysisRevision::draft(1, "", initial_scope))
-            });
-        restored_session.storage_fingerprint = fingerprint;
-        restored_session.reconcile_catalog(&catalog.snapshot_id);
-        if let Some(revision) = restored_session.active_revision() {
-            question.set(revision.question.clone());
-            scope.set(Some(scope_for_catalog(&revision.scope, catalog)));
-        }
-        let session_id = restored_session.id.clone();
-        sessions.retain(|saved| saved.id != session_id);
-        sessions.push(restored_session.clone());
-        analysis_session::trim_sessions(&mut sessions);
-        recent_sessions.set(sessions);
-        let persisted =
-            persist_session(&restored_session, &mut recent_sessions, &mut storage_notice);
-        if let Some(session_id) = persisted_session_id(&session_id, persisted) {
-            on_session_change.call(session_id);
-        }
-        session.set(Some(restored_session));
-    });
+            let Some(catalog) = restore_catalog.as_ref() else {
+                return;
+            };
+            restored.set(true);
+            let fingerprint =
+                analysis_session::storage_fingerprint(&catalog.database, &catalog.storage_path);
+            let mut sessions = match analysis_session::load_sessions(&fingerprint) {
+                Ok(sessions) => sessions,
+                Err(message) => {
+                    storage_notice.set(Some(message));
+                    Vec::new()
+                }
+            };
+            let requested_id = restore_requested.as_deref().filter(|id| !id.is_empty());
+            let mut restored_session = requested_id
+                .and_then(|id| {
+                    sessions
+                        .iter()
+                        .find(|candidate| candidate.id == id)
+                        .cloned()
+                })
+                .unwrap_or_else(|| {
+                    let initial_scope =
+                        scope().unwrap_or_else(|| AnalysisScope::from_catalog(catalog));
+                    AnalysisSession::with_revision(AnalysisRevision::draft(1, "", initial_scope))
+                });
+            restored_session.storage_fingerprint = fingerprint;
+            restored_session.reconcile_catalog(&catalog.snapshot_id);
+            if let Some(revision) = restored_session.active_revision() {
+                question.set(revision.question.clone());
+                scope.set(Some(scope_for_catalog(&revision.scope, catalog)));
+            }
+            let session_id = restored_session.id.clone();
+            sessions.retain(|saved| saved.id != session_id);
+            sessions.push(restored_session.clone());
+            analysis_session::trim_sessions(&mut sessions);
+            recent_sessions.set(sessions);
+            let persisted =
+                persist_session(&restored_session, &mut recent_sessions, &mut storage_notice);
+            if let Some(session_id) = persisted_session_id(&session_id, persisted) {
+                on_session_change.call(session_id);
+            }
+            session.set(Some(restored_session));
+        },
+    ));
 
     let active_revision = session().and_then(|value| {
         value
