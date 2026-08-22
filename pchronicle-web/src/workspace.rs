@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use dioxus::prelude::*;
 use wasm_bindgen::JsValue;
 
-use crate::agent::{self, AgentAnswer, CopilotThread, LlmConfig};
+use crate::agent::{self, LlmConfig, ThreadMessage, ThreadRole};
 use crate::api;
 use crate::chat_view::normalize_trace_view;
 use crate::components::{parse_rich_blocks, DataTable, RichBlock, TrajectoryView};
@@ -11,15 +11,6 @@ use crate::model::{
     DimensionAggregate, HistogramBucket, QueryCatalog, QueryDatasetSummary, RunAnalysis,
     RunExplorerItem, RunPage, RunSummary, ToolAggregate, TurnDetail, TurnSummary,
 };
-
-#[derive(Clone, Debug, PartialEq)]
-struct ChatMessage {
-    user: bool,
-    text: String,
-    action: Option<String>,
-    sql: Option<String>,
-    truncated: bool,
-}
 
 #[derive(Clone, Debug, PartialEq)]
 struct WorkspaceNotice {
@@ -1053,62 +1044,146 @@ fn CopilotPanel(
     on_close: EventHandler<MouseEvent>,
     on_turn: EventHandler<i64>,
 ) -> Element {
-    let mut messages = use_signal(Vec::<ChatMessage>::new);
+    let initial_run = run.clone();
+    let mut thread = use_signal(move || agent::load_thread(&initial_run));
     let mut input = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut settings = use_signal(|| false);
     let mut config = use_signal(agent::load_config);
+    let mut step = use_signal(|| "Selecting one read-only analysis action…".to_string());
+    let submit_run = run.clone();
+    let submit_analysis = analysis.clone();
+    let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
+    let update_step = Callback::new(move |next: String| step.set(next));
+    let submit_copilot = Callback::new(move |()| {
+        let question = input().trim().to_string();
+        if question.is_empty() || busy() {
+            return;
+        }
+        let config_value = config();
+        if !config_value.is_configured() {
+            settings.set(true);
+            let mut next_thread = thread();
+            next_thread.messages.push(ThreadMessage {
+                role: ThreadRole::Assistant,
+                text: "Configure an OpenAI-compatible model in Settings before asking Copilot."
+                    .into(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                sql: None,
+                truncated: false,
+            });
+            agent::save_thread(&submit_run, &next_thread);
+            thread.set(next_thread);
+            return;
+        }
+
+        let prior_thread = thread();
+        let mut pending_thread = prior_thread.clone();
+        pending_thread.messages.push(ThreadMessage {
+            role: ThreadRole::User,
+            text: question.clone(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            sql: None,
+            truncated: false,
+        });
+        thread.set(pending_thread.clone());
+        input.set(String::new());
+        step.set("Selecting one read-only analysis action…".into());
+        busy.set(true);
+        let run_value = submit_run.clone();
+        let analysis_value = submit_analysis.clone();
+        spawn(async move {
+            let report_step = |next: &str| update_step.call(next.to_string());
+            let result = agent::answer(agent::AnswerRequest {
+                config: &config_value,
+                user_message: &question,
+                run: &run_value,
+                analysis: &analysis_value,
+                focused_turn_id,
+                thread: prior_thread,
+                on_step: Some(&report_step),
+            })
+            .await;
+            match result {
+                Ok(answer) => {
+                    agent::save_thread(&run_value, &answer.thread);
+                    thread.set(answer.thread);
+                }
+                Err(message) => {
+                    pending_thread.messages.push(ThreadMessage {
+                        role: ThreadRole::Assistant,
+                        text: format!("Unable to complete analysis: {message}"),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        tool_name: None,
+                        sql: None,
+                        truncated: false,
+                    });
+                    agent::save_thread(&run_value, &pending_thread);
+                    thread.set(pending_thread);
+                }
+            }
+            busy.set(false);
+        });
+    });
     rsx! { aside { class: "pc2-copilot",
         div { class: "pc2-copilot-head", div { strong { "Trajectory Copilot" } span { "Read-only · minimal evidence" } } div { button { aria_label: "LLM settings", onclick: move |_| settings.set(true), "⚙" } button { aria_label: "Close Copilot", onclick: on_close, "×" } } }
         div { class: "pc2-context-card", div { span { "Grounded in" } strong { "{short(&run.session_id, 30)}" } } div { span { "Evidence" } strong { "{analysis.turn_count} turns · {analysis.error_count} explicit errors" } } }
         div { class: "pc2-chat",
-            if messages().is_empty() { div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" } p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." } } }
-            for (index, message) in messages().iter().enumerate() { ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn } }
-            if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "Selecting one read-only analysis action…" } }
+            if thread().messages.is_empty() {
+                div { class: "pc2-chat-welcome", span { "◇" } strong { "Ask Copilot" }
+                    if config().is_configured() {
+                        p { "Copilot can inspect this analysis, examine a turn, or run read-only SQL." }
+                    } else {
+                        p { "Configure an OpenAI-compatible model in Settings before asking Copilot." }
+                    }
+                }
+            }
+            for (index, message) in thread().messages.iter().enumerate() {
+                if !(message.role == ThreadRole::Assistant
+                    && message.text.trim().is_empty()
+                    && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()))
+                {
+                    ChatBubble { key: "message-{index}", message: message.clone(), turns: turns.clone(), on_turn }
+                }
+            }
+            if busy() { div { class: "pc2-chat-working", span { class: "spinner" } "{step}" } }
         }
-        form { class: "pc2-composer", onsubmit: move |event| {
-            event.prevent_default();
-            let question = input().trim().to_string();
-            if question.is_empty() || busy() { return; }
-            messages.write().push(ChatMessage { user: true, text: question.clone(), action: None, sql: None, truncated: false });
-            input.set(String::new());
-            busy.set(true);
-            let config_value = config();
-            let run_value = run.clone();
-            let analysis_value = analysis.clone();
-            let focused_turn_id = selected.as_ref().map(|detail| detail.summary.id);
-            spawn(async move {
-                let result = agent::answer(agent::AnswerRequest {
-                    config: &config_value,
-                    user_message: &question,
-                    run: &run_value,
-                    analysis: &analysis_value,
-                    focused_turn_id,
-                    thread: CopilotThread { messages: Vec::new(), updated_at: 0, truncated: false },
-                    on_step: None,
-                }).await;
-                let message = match result {
-                    Ok(AgentAnswer { text, sql, truncated, .. }) => ChatMessage { user: false, text, action: None, sql, truncated },
-                    Err(message) => ChatMessage { user: false, text: format!("Unable to complete analysis: {message}"), action: Some("error".into()), sql: None, truncated: false },
-                };
-                messages.write().push(message);
-                busy.set(false);
-            });
-        }, textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); }, disabled: busy() } button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" } }
+        form { class: "pc2-composer", onsubmit: move |event| { event.prevent_default(); submit_copilot.call(()); },
+            textarea { value: "{input}", rows: "3", placeholder: "Ask Copilot about this trajectory…", oninput: move |event| input.set(event.value()), onkeydown: move |event| if event.key() == Key::Enter && !event.modifiers().shift() { event.prevent_default(); submit_copilot.call(()); }, disabled: busy() }
+            button { class: "button primary", disabled: busy() || input().trim().is_empty(), "Ask Copilot" }
+        }
         if settings() { LlmSettings { config: config(), on_close: move |_| settings.set(false), on_save: move |value| { agent::save_config(&value); config.set(value); settings.set(false); } } }
     } }
 }
 
 #[component]
 fn ChatBubble(
-    message: ChatMessage,
+    message: ThreadMessage,
     turns: Vec<TurnSummary>,
     on_turn: EventHandler<i64>,
 ) -> Element {
+    if message.role == ThreadRole::Tool {
+        let action = message
+            .tool_name
+            .clone()
+            .unwrap_or_else(|| "tool".to_string());
+        return rsx! {
+            div { class: "pc2-message tool",
+                span { class: "pc2-action-label", "{action}" }
+                if !message.text.trim().is_empty() {
+                    details { summary { "Tool evidence" } pre { "{message.text}" } }
+                }
+            }
+        };
+    }
     let refs = turn_references(&message.text);
     let blocks = parse_rich_blocks(&message.text);
-    rsx! { div { class: if message.user { "pc2-message user" } else { "pc2-message assistant" },
-        if let Some(action) = &message.action { span { class: "pc2-action-label", "{action}" } }
+    rsx! { div { class: if message.role == ThreadRole::User { "pc2-message user" } else { "pc2-message assistant" },
         for (index, block) in blocks.into_iter().enumerate() {
             match block {
                 RichBlock::Text(text) => rsx! { MessageText { key: "text-{index}", text } },
