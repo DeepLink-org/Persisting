@@ -301,14 +301,9 @@ fn parse_plan_content(
     validate_text_array("expected_columns", &payload.expected_columns)?;
     validate_text_array("warnings", &payload.warnings)?;
     let sql = payload.sql.trim();
-    let sql_upper = sql.to_ascii_uppercase();
-    if sql.is_empty()
-        || !["SELECT", "WITH", "EXPLAIN"]
-            .iter()
-            .any(|prefix| sql_upper.starts_with(prefix))
-    {
+    if !has_allowed_sql_keyword(sql) || !has_at_most_one_sql_statement(sql) {
         return Err(AnalysisAgentError::new(
-            "AnalysisPlan SQL must start with SELECT, WITH, or EXPLAIN.",
+            "AnalysisPlan SQL must contain one SELECT, WITH, or EXPLAIN statement.",
         ));
     }
     Ok(AnalysisPlan {
@@ -396,7 +391,196 @@ fn validate_interpretation(
             "AnalysisInterpretation must describe truncated evidence in limitations.",
         ));
     }
+    for reference in &interpretation.references {
+        validate_reference(reference, digest)?;
+    }
     Ok(interpretation)
+}
+
+fn validate_reference(
+    reference: &EvidenceReference,
+    digest: &EvidenceDigest,
+) -> Result<(), AnalysisAgentError> {
+    if let Some(row_index) = reference.row_index {
+        let row = digest.rows.get(row_index).ok_or_else(|| {
+            AnalysisAgentError::new("AnalysisInterpretation reference row_index is out of range.")
+        })?;
+        if !reference_matches_row(reference, row) {
+            return Err(AnalysisAgentError::new(
+                "AnalysisInterpretation reference coordinates do not match its digest row.",
+            ));
+        }
+        return Ok(());
+    }
+    if !reference_has_coordinates(reference) {
+        return Ok(());
+    }
+    if digest
+        .rows
+        .iter()
+        .any(|row| reference_matches_row(reference, row))
+    {
+        return Ok(());
+    }
+    if reference.turn_id.is_none()
+        && digest
+            .scope
+            .items
+            .iter()
+            .any(|item| reference_matches_scope_item(reference, item))
+    {
+        return Ok(());
+    }
+    Err(AnalysisAgentError::new(
+        "AnalysisInterpretation reference coordinates are not grounded in the evidence digest.",
+    ))
+}
+
+fn reference_has_coordinates(reference: &EvidenceReference) -> bool {
+    reference.dataset.is_some()
+        || reference.file.is_some()
+        || reference.run_id.is_some()
+        || reference.agent_id.is_some()
+        || reference.session_id.is_some()
+        || reference.root_session_id.is_some()
+        || reference.turn_id.is_some()
+}
+
+fn reference_matches_row(reference: &EvidenceReference, row: &Value) -> bool {
+    matches_row_text(row, "dataset", reference.dataset.as_deref())
+        && matches_row_text(row, "file", reference.file.as_deref())
+        && matches_row_text(row, "run_id", reference.run_id.as_deref())
+        && matches_row_text(row, "agent_id", reference.agent_id.as_deref())
+        && matches_row_text(row, "session_id", reference.session_id.as_deref())
+        && matches_row_text(row, "root_session_id", reference.root_session_id.as_deref())
+        && matches_row_turn(row, reference.turn_id)
+}
+
+fn matches_row_text(row: &Value, name: &str, expected: Option<&str>) -> bool {
+    expected.is_none_or(|expected| row.get(name).and_then(Value::as_str) == Some(expected))
+}
+
+fn matches_row_turn(row: &Value, expected: Option<i64>) -> bool {
+    expected.is_none_or(|expected| row.get("turn_id").and_then(Value::as_i64) == Some(expected))
+}
+
+fn reference_matches_scope_item(reference: &EvidenceReference, item: &AnalysisScopeItem) -> bool {
+    match item {
+        AnalysisScopeItem::Dataset { name } => {
+            matches_optional_text(reference.dataset.as_deref(), name)
+                && reference.file.is_none()
+                && reference.run_id.is_none()
+                && reference.agent_id.is_none()
+                && reference.session_id.is_none()
+                && reference.root_session_id.is_none()
+        }
+        AnalysisScopeItem::Root {
+            dataset,
+            file,
+            root_session_id,
+        } => {
+            matches_optional_text(reference.dataset.as_deref(), dataset)
+                && matches_optional_text(reference.file.as_deref(), file)
+                && matches_optional_text(reference.root_session_id.as_deref(), root_session_id)
+                && reference.run_id.is_none()
+                && reference.agent_id.is_none()
+                && reference.session_id.is_none()
+        }
+        AnalysisScopeItem::Run { run } => {
+            matches_optional_text(reference.dataset.as_deref(), &run.dataset)
+                && matches_optional_text(reference.file.as_deref(), &run.file)
+                && matches_optional_optional_text(
+                    reference.run_id.as_deref(),
+                    run.run_id.as_deref(),
+                )
+                && matches_optional_text(reference.agent_id.as_deref(), &run.agent_id)
+                && matches_optional_text(reference.session_id.as_deref(), &run.session_id)
+                && matches_optional_optional_text(
+                    reference.root_session_id.as_deref(),
+                    run.root_session_id.as_deref(),
+                )
+        }
+    }
+}
+
+fn matches_optional_text(expected: Option<&str>, actual: &str) -> bool {
+    expected.is_none_or(|expected| expected == actual)
+}
+
+fn matches_optional_optional_text(expected: Option<&str>, actual: Option<&str>) -> bool {
+    expected.is_none_or(|expected| actual == Some(expected))
+}
+
+fn has_allowed_sql_keyword(sql: &str) -> bool {
+    let sql = sql.trim_start().to_ascii_uppercase();
+    ["SELECT", "WITH", "EXPLAIN"].iter().any(|keyword| {
+        sql.strip_prefix(keyword).is_some_and(|rest| {
+            rest.chars().next().is_none_or(|character| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '_' | '$'))
+            })
+        })
+    })
+}
+
+fn has_at_most_one_sql_statement(sql: &str) -> bool {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Normal,
+        SingleQuoted,
+        DoubleQuoted,
+        BacktickQuoted,
+        LineComment,
+        BlockComment,
+    }
+
+    let mut characters = sql.chars().peekable();
+    let mut state = State::Normal;
+    let mut terminated = false;
+    while let Some(character) = characters.next() {
+        match state {
+            State::Normal if terminated => match character {
+                whitespace if whitespace.is_whitespace() => {}
+                '-' if characters.next_if_eq(&'-').is_some() => state = State::LineComment,
+                '/' if characters.next_if_eq(&'*').is_some() => state = State::BlockComment,
+                _ => return false,
+            },
+            State::Normal => match character {
+                '\'' => state = State::SingleQuoted,
+                '"' => state = State::DoubleQuoted,
+                '`' => state = State::BacktickQuoted,
+                '-' if characters.next_if_eq(&'-').is_some() => state = State::LineComment,
+                '/' if characters.next_if_eq(&'*').is_some() => state = State::BlockComment,
+                ';' => terminated = true,
+                _ => {}
+            },
+            State::SingleQuoted => {
+                if character == '\\' {
+                    let _ = characters.next();
+                } else if character == '\'' {
+                    if characters.next_if_eq(&'\'').is_none() {
+                        state = State::Normal;
+                    }
+                }
+            }
+            State::DoubleQuoted => {
+                if character == '"' && characters.next_if_eq(&'"').is_none() {
+                    state = State::Normal;
+                }
+            }
+            State::BacktickQuoted => {
+                if character == '`' && characters.next_if_eq(&'`').is_none() {
+                    state = State::Normal;
+                }
+            }
+            State::LineComment if character == '\n' || character == '\r' => state = State::Normal,
+            State::LineComment => {}
+            State::BlockComment if character == '*' && characters.next_if_eq(&'/').is_some() => {
+                state = State::Normal;
+            }
+            State::BlockComment => {}
+        }
+    }
+    matches!(state, State::Normal | State::LineComment)
 }
 
 fn require_json_object(raw: &str) -> Result<(), AnalysisAgentError> {
@@ -686,6 +870,26 @@ mod tests {
     }
 
     #[test]
+    fn plan_parser_rejects_keyword_prefixes_and_multiple_sql_statements() {
+        assert!(parse_plan_content(&plan_payload("SELECTED 1"), 1, "question").is_err());
+        assert!(parse_plan_content(
+            &plan_payload("SELECT 1; DELETE FROM default.runs"),
+            1,
+            "question"
+        )
+        .is_err());
+        assert!(
+            parse_plan_content(&plan_payload("SELECT 1; 'not a comment'"), 1, "question").is_err()
+        );
+    }
+
+    #[test]
+    fn plan_parser_allows_quoted_and_commented_semicolons_with_one_terminator() {
+        let sql = "SELECT ';' AS value, \"semi;identifier\" FROM default.runs /* ; */; -- ;\n";
+        assert!(parse_plan_content(&plan_payload(sql), 1, "question").is_ok());
+    }
+
+    #[test]
     fn interpretation_parser_requires_all_structured_sections() {
         let raw = r#"{
           "observations":["One run is failed."],
@@ -728,6 +932,105 @@ mod tests {
         .unwrap();
         let digest = build_evidence_digest(&plan(), &scope(), &evidence(Vec::new(), true), &[]);
         assert!(validate_interpretation(interpretation, &digest).is_err());
+    }
+
+    #[test]
+    fn interpretation_references_reject_out_of_range_and_fabricated_coordinates() {
+        let digest = digest_with_rows(vec![json!({
+            "dataset":"default",
+            "file":"source.json",
+            "run_id":"run-1",
+            "agent_id":"agent-1",
+            "session_id":"session-1",
+            "root_session_id":"root-1",
+            "turn_id":4
+        })]);
+        let out_of_range = interpretation_with_reference(EvidenceReference {
+            label: "outside rows".into(),
+            row_index: Some(1),
+            dataset: Some("default".into()),
+            file: None,
+            run_id: None,
+            agent_id: None,
+            session_id: None,
+            root_session_id: None,
+            turn_id: None,
+        });
+        assert!(validate_interpretation(out_of_range, &digest).is_err());
+
+        let fabricated = interpretation_with_reference(EvidenceReference {
+            label: "fabricated run".into(),
+            row_index: Some(0),
+            dataset: Some("default".into()),
+            file: None,
+            run_id: Some("other-run".into()),
+            agent_id: None,
+            session_id: None,
+            root_session_id: None,
+            turn_id: None,
+        });
+        assert!(validate_interpretation(fabricated, &digest).is_err());
+
+        let ungrounded = interpretation_with_reference(EvidenceReference {
+            label: "not in scope or rows".into(),
+            row_index: None,
+            dataset: Some("other".into()),
+            file: None,
+            run_id: None,
+            agent_id: None,
+            session_id: None,
+            root_session_id: None,
+            turn_id: None,
+        });
+        assert!(validate_interpretation(ungrounded, &digest).is_err());
+    }
+
+    #[test]
+    fn interpretation_references_accept_grounded_rows_scope_and_labels() {
+        let digest = digest_with_rows(vec![json!({
+            "dataset":"default",
+            "file":"source.json",
+            "run_id":"run-1",
+            "turn_id":4
+        })]);
+        let row_reference = interpretation_with_reference(EvidenceReference {
+            label: "row match".into(),
+            row_index: Some(0),
+            dataset: Some("default".into()),
+            file: Some("source.json".into()),
+            run_id: Some("run-1".into()),
+            agent_id: None,
+            session_id: None,
+            root_session_id: None,
+            turn_id: Some(4),
+        });
+        assert!(validate_interpretation(row_reference, &digest).is_ok());
+
+        let scope_reference = interpretation_with_reference(EvidenceReference {
+            label: "scope match".into(),
+            row_index: None,
+            dataset: Some("default".into()),
+            file: None,
+            run_id: None,
+            agent_id: None,
+            session_id: None,
+            root_session_id: None,
+            turn_id: None,
+        });
+        assert!(validate_interpretation(scope_reference, &digest).is_ok());
+
+        let label_only = interpretation_with_reference(EvidenceReference {
+            label: "plain label".into(),
+            row_index: None,
+            dataset: None,
+            file: None,
+            run_id: None,
+            agent_id: None,
+            session_id: None,
+            root_session_id: None,
+            turn_id: None,
+        });
+        assert!(validate_interpretation(label_only, &digest).is_ok());
     }
 
     #[test]
@@ -804,6 +1107,47 @@ mod tests {
             suggested_view: SuggestedView::Distribution,
             sql: "SELECT status, COUNT(*) AS run_count FROM default.runs GROUP BY status".into(),
             warnings: Vec::new(),
+        }
+    }
+
+    fn plan_payload(sql: &str) -> String {
+        json!({
+            "intent_summary": "Compare outcomes",
+            "scope_summary": "current dataset",
+            "filters": [],
+            "groupings": ["status"],
+            "measures": ["run count"],
+            "expected_columns": ["status", "run_count"],
+            "suggested_view": "distribution",
+            "sql": sql,
+            "warnings": [],
+        })
+        .to_string()
+    }
+
+    fn digest_with_rows(rows: Vec<Value>) -> EvidenceDigest {
+        EvidenceDigest {
+            question: "compare outcomes".into(),
+            scope: scope(),
+            sql: "SELECT 1".into(),
+            columns: Vec::new(),
+            profiles: Vec::new(),
+            returned_rows: rows.len(),
+            rows,
+            query_truncated: false,
+            max_rows: 100,
+            max_bytes: 4 * 1024 * 1024,
+            digest_truncated: false,
+        }
+    }
+
+    fn interpretation_with_reference(reference: EvidenceReference) -> AnalysisInterpretation {
+        AnalysisInterpretation {
+            observations: Vec::new(),
+            inferences: Vec::new(),
+            limitations: Vec::new(),
+            follow_ups: Vec::new(),
+            references: vec![reference],
         }
     }
 
