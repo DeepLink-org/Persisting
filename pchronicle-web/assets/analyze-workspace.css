@@ -63,6 +63,54 @@
   margin-right: 6px;
 }
 
+.analyze-header-actions {
+  display: flex;
+  max-width: 390px;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.analyze-recent-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #647184;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.analyze-recent-select select {
+  width: 210px;
+  min-height: 34px;
+  padding: 6px 28px 6px 9px;
+  border: 1px solid #cfd8dd;
+  border-radius: 7px;
+  background: #fff;
+  color: #35424e;
+  font: inherit;
+}
+
+.analyze-clear-confirmation {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid #ecd2ae;
+  border-radius: 7px;
+  background: #fff9f1;
+  color: #76552c;
+  font-size: 9px;
+}
+
+.analyze-clear-confirmation .button {
+  min-height: 27px;
+  padding: 4px 8px;
+  border-color: #dbb67f;
+}
+
 .analyze-layout {
   display: grid;
   grid-template-columns: minmax(560px, 900px) minmax(230px, 310px);
@@ -296,6 +344,72 @@
   margin-top: 20px;
   padding-top: 17px;
   border-top: 1px solid #e8ecef;
+}
+
+.analyze-revision-timeline {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 1px 6px;
+}
+
+.analyze-revision {
+  display: flex;
+  min-width: 185px;
+  max-width: 260px;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #dce3e7;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #46535e;
+  text-align: left;
+  cursor: pointer;
+}
+
+.analyze-revision:hover,
+.analyze-revision.active {
+  border-color: #9fc7c0;
+  background: #f2f9f7;
+}
+
+.analyze-revision-marker {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  margin-top: 3px;
+  border: 2px solid #91aaa5;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.analyze-revision.active .analyze-revision-marker {
+  border-color: var(--analyze-accent);
+  background: var(--analyze-accent);
+  box-shadow: 0 0 0 3px rgba(18, 107, 98, 0.1);
+}
+
+.analyze-revision-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.analyze-revision-copy strong {
+  overflow: hidden;
+  color: #2b3943;
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analyze-revision-copy small {
+  color: #7a8792;
+  font-size: 8px;
+  line-height: 1.4;
 }
 
 .analyze-plan-actions {

@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use dioxus::prelude::*;
 
 use crate::analysis_agent::{self, EvidenceDigest, InterpretationRequest, PlanRequest};
@@ -178,11 +180,25 @@ fn interpretation_reference_identity(reference: &EvidenceReference) -> Option<Re
     }))
 }
 
+fn active_revision_for_callback<'a>(
+    session: &'a mut AnalysisSession,
+    expected_session_id: &str,
+    revision_id: u64,
+) -> Option<&'a mut AnalysisRevision> {
+    if session.id != expected_session_id {
+        return None;
+    }
+    session
+        .active_revision_mut()
+        .filter(|revision| revision.id == revision_id)
+}
+
 fn launch_interpretation(
     config: llm::LlmConfig,
     expected_session_id: String,
     prepared: PreparedInterpretation,
     mut session: Signal<Option<AnalysisSession>>,
+    mut recent_sessions: Signal<Vec<AnalysisSession>>,
     mut storage_notice: Signal<Option<String>>,
 ) {
     spawn(async move {
@@ -221,7 +237,7 @@ fn launch_interpretation(
                 );
             }
         }
-        persist_session(&current, &mut storage_notice);
+        persist_session(&current, &mut recent_sessions, &mut storage_notice);
         session.set(Some(current));
     });
 }
@@ -234,12 +250,15 @@ pub fn AnalysisWorkspace(
     on_session_change: EventHandler<String>,
 ) -> Element {
     let default_scope = catalog.as_ref().map(AnalysisScope::from_catalog);
-    let scope = initial_scope.or(default_scope);
+    let initial_workspace_scope = initial_scope.or(default_scope);
+    let mut scope = use_signal(move || initial_workspace_scope);
     let mut question = use_signal(String::new);
     let mut session = use_signal(|| None::<AnalysisSession>);
+    let mut recent_sessions = use_signal(Vec::<AnalysisSession>::new);
     let mut config = use_signal(llm::load_config);
     let mut settings_open = use_signal(|| false);
     let mut storage_notice = use_signal(|| None::<String>);
+    let mut clear_confirmation = use_signal(|| false);
     let mut restored = use_signal(|| false);
 
     let restore_catalog = catalog.clone();
@@ -252,27 +271,41 @@ pub fn AnalysisWorkspace(
             return;
         };
         restored.set(true);
-        let Some(requested_id) = restore_requested.as_deref() else {
-            return;
-        };
-        match analysis_session::load_sessions(&catalog.storage_path) {
-            Ok(sessions) => {
-                if let Some(saved) = sessions
-                    .into_iter()
-                    .find(|candidate| candidate.id == requested_id)
-                {
-                    if let Some(revision) = saved
-                        .revisions
-                        .iter()
-                        .find(|revision| revision.id == saved.active_revision_id)
-                    {
-                        question.set(revision.question.clone());
-                    }
-                    session.set(Some(saved));
-                }
+        let fingerprint =
+            analysis_session::storage_fingerprint(&catalog.database, &catalog.storage_path);
+        let mut sessions = match analysis_session::load_sessions(&fingerprint) {
+            Ok(sessions) => sessions,
+            Err(message) => {
+                storage_notice.set(Some(message));
+                Vec::new()
             }
-            Err(message) => storage_notice.set(Some(message)),
+        };
+        let requested_id = restore_requested.as_deref().filter(|id| !id.is_empty());
+        let mut restored_session = requested_id
+            .and_then(|id| {
+                sessions
+                    .iter()
+                    .find(|candidate| candidate.id == id)
+                    .cloned()
+            })
+            .unwrap_or_else(|| {
+                let initial_scope = scope().unwrap_or_else(|| AnalysisScope::from_catalog(catalog));
+                AnalysisSession::with_revision(AnalysisRevision::draft(1, "", initial_scope))
+            });
+        restored_session.storage_fingerprint = fingerprint;
+        restored_session.reconcile_catalog(&catalog.snapshot_id);
+        if let Some(revision) = restored_session.active_revision() {
+            question.set(revision.question.clone());
+            scope.set(Some(scope_for_catalog(&revision.scope, catalog)));
         }
+        let session_id = restored_session.id.clone();
+        sessions.retain(|saved| saved.id != session_id);
+        sessions.push(restored_session.clone());
+        analysis_session::trim_sessions(&mut sessions);
+        recent_sessions.set(sessions);
+        persist_session(&restored_session, &mut recent_sessions, &mut storage_notice);
+        on_session_change.call(session_id);
+        session.set(Some(restored_session));
     });
 
     let active_revision = session().and_then(|value| {
@@ -289,18 +322,18 @@ pub fn AnalysisWorkspace(
         .as_ref()
         .is_some_and(|revision| revision.state == RevisionState::GeneratingPlan);
     let can_generate = catalog.is_some()
-        && scope.is_some()
+        && scope().is_some()
         && config().is_configured()
         && !question().trim().is_empty()
         && !generating;
 
-    let scope_for_generate = scope.clone();
+    let scope_for_generate = scope;
     let catalog_for_generate = catalog.clone();
     let generate_plan = move |_| {
         let Some(catalog) = catalog_for_generate.clone() else {
             return;
         };
-        let Some(scope) = scope_for_generate.clone() else {
+        let Some(scope) = scope_for_generate() else {
             return;
         };
         let prompt = question().trim().to_string();
@@ -332,6 +365,9 @@ pub fn AnalysisWorkspace(
             let revision = next_session.new_revision(prompt.clone(), scope.clone());
             revision.prior_plan_context = previous_plan.clone();
         }
+        if next_session.title.trim().is_empty() {
+            next_session.title = prompt.clone();
+        }
         let Some(revision) = next_session.active_revision_mut() else {
             return;
         };
@@ -342,6 +378,7 @@ pub fn AnalysisWorkspace(
         };
         let expected_session_id = next_session.id.clone();
         on_session_change.call(expected_session_id.clone());
+        persist_session(&next_session, &mut recent_sessions, &mut storage_notice);
         session.set(Some(next_session));
 
         let request = PlanRequest {
@@ -375,7 +412,7 @@ pub fn AnalysisWorkspace(
                     let _ = revision.fail_plan(revision_id, operation_id, error.message);
                 }
             }
-            persist_session(&current, &mut storage_notice);
+            persist_session(&current, &mut recent_sessions, &mut storage_notice);
             session.set(Some(current));
         });
     };
@@ -403,6 +440,7 @@ pub fn AnalysisWorkspace(
         };
         let expected_session_id = current.id.clone();
         let interpretation_config = config();
+        persist_session(&current, &mut recent_sessions, &mut storage_notice);
         session.set(Some(current));
         spawn(async move {
             let result = api::query_evidence_interactive(&sql).await;
@@ -436,7 +474,7 @@ pub fn AnalysisWorkspace(
                     None
                 }
             };
-            persist_session(&current, &mut storage_notice);
+            persist_session(&current, &mut recent_sessions, &mut storage_notice);
             session.set(Some(current));
             if let Some(prepared) = prepared {
                 launch_interpretation(
@@ -444,6 +482,7 @@ pub fn AnalysisWorkspace(
                     expected_session_id,
                     prepared,
                     session,
+                    recent_sessions,
                     storage_notice,
                 );
             }
@@ -486,8 +525,9 @@ pub fn AnalysisWorkspace(
         let Ok(operation_id) = revision.begin_plan_generation() else {
             return;
         };
-        let session_id = current.id.clone();
-        on_session_change.call(session_id);
+        let expected_session_id = current.id.clone();
+        on_session_change.call(expected_session_id.clone());
+        persist_session(&current, &mut recent_sessions, &mut storage_notice);
         session.set(Some(current));
 
         let request = PlanRequest {
@@ -504,12 +544,11 @@ pub fn AnalysisWorkspace(
             let Some(mut current) = session() else {
                 return;
             };
-            let Some(revision) = current.active_revision_mut() else {
+            let Some(revision) =
+                active_revision_for_callback(&mut current, &expected_session_id, revision_id)
+            else {
                 return;
             };
-            if revision.id != revision_id {
-                return;
-            }
             match result {
                 Ok(plan) => {
                     let _ = revision.finish_plan(revision_id, operation_id, plan);
@@ -518,7 +557,7 @@ pub fn AnalysisWorkspace(
                     let _ = revision.fail_plan(revision_id, operation_id, error.message);
                 }
             }
-            persist_session(&current, &mut storage_notice);
+            persist_session(&current, &mut recent_sessions, &mut storage_notice);
             session.set(Some(current));
         });
     };
@@ -538,13 +577,14 @@ pub fn AnalysisWorkspace(
             return;
         };
         let interpretation_config = config();
-        persist_session(&current, &mut storage_notice);
+        persist_session(&current, &mut recent_sessions, &mut storage_notice);
         session.set(Some(current));
         launch_interpretation(
             interpretation_config,
             expected_session_id,
             prepared,
             session,
+            recent_sessions,
             storage_notice,
         );
     };
@@ -587,6 +627,7 @@ pub fn AnalysisWorkspace(
         let expected_session_id = current.id.clone();
         question.set(suggested_question.clone());
         on_session_change.call(expected_session_id.clone());
+        persist_session(&current, &mut recent_sessions, &mut storage_notice);
         session.set(Some(current));
 
         let request = PlanRequest {
@@ -620,7 +661,7 @@ pub fn AnalysisWorkspace(
                     let _ = revision.fail_plan(revision_id, operation_id, error.message);
                 }
             }
-            persist_session(&current, &mut storage_notice);
+            persist_session(&current, &mut recent_sessions, &mut storage_notice);
             session.set(Some(current));
         });
     };
@@ -660,6 +701,81 @@ pub fn AnalysisWorkspace(
     };
     let regenerate_plan = generate_plan.clone();
 
+    let catalog_for_recent = catalog.clone();
+    let select_recent_session = EventHandler::new(move |session_id: String| {
+        let Some(mut selected) = recent_sessions()
+            .into_iter()
+            .find(|candidate| candidate.id == session_id)
+        else {
+            return;
+        };
+        if let Some(catalog) = catalog_for_recent.as_ref() {
+            selected.reconcile_catalog(&catalog.snapshot_id);
+            if let Some(revision) = selected.active_revision() {
+                scope.set(Some(scope_for_catalog(&revision.scope, catalog)));
+            }
+        }
+        if let Some(revision) = selected.active_revision() {
+            question.set(revision.question.clone());
+        }
+        persist_session(&selected, &mut recent_sessions, &mut storage_notice);
+        on_session_change.call(selected.id.clone());
+        session.set(Some(selected));
+    });
+
+    let catalog_for_revision = catalog.clone();
+    let select_revision = EventHandler::new(move |revision_id: u64| {
+        let Some(mut current) = session() else {
+            return;
+        };
+        if current.select_revision(revision_id).is_err() {
+            return;
+        }
+        if let Some(revision) = current.active_revision() {
+            question.set(revision.question.clone());
+            if let Some(catalog) = catalog_for_revision.as_ref() {
+                scope.set(Some(scope_for_catalog(&revision.scope, catalog)));
+            } else {
+                scope.set(Some(revision.scope.clone()));
+            }
+        }
+        persist_session(&current, &mut recent_sessions, &mut storage_notice);
+        session.set(Some(current));
+    });
+
+    let catalog_for_clear = catalog.clone();
+    let clear_history = move |_| {
+        let fingerprint = catalog_for_clear
+            .as_ref()
+            .map(|catalog| {
+                analysis_session::storage_fingerprint(&catalog.database, &catalog.storage_path)
+            })
+            .or_else(|| session().map(|current| current.storage_fingerprint));
+        let Some(fingerprint) = fingerprint else {
+            return;
+        };
+        match analysis_session::clear_sessions(&fingerprint) {
+            Ok(()) => {
+                recent_sessions.set(Vec::new());
+                session.set(None);
+                question.set(String::new());
+                clear_confirmation.set(false);
+                storage_notice.set(Some("Analysis history cleared for this catalog.".into()));
+                on_session_change.call(String::new());
+            }
+            Err(message) => storage_notice.set(Some(message)),
+        }
+    };
+
+    let current_session_id = session().map(|current| current.id).unwrap_or_default();
+    let current_revision_id = session()
+        .map(|current| current.active_revision_id)
+        .unwrap_or_default();
+    let revision_history = session()
+        .map(|current| current.revisions)
+        .unwrap_or_default();
+    let timeline_now_ms = current_time_millis();
+
     rsx! {
         section { class: "analyze-workspace", aria_label: "Question-driven analysis workspace",
             header { class: "analyze-header",
@@ -668,9 +784,32 @@ pub fn AnalysisWorkspace(
                     h1 { "Ask a question. Review the plan. Run when ready." }
                     p { "Turn trajectory evidence into a bounded, read-only query without writing SQL first." }
                 }
-                button { class: "button analyze-settings-button", r#type: "button", onclick: move |_| settings_open.set(true),
-                    span { aria_hidden: "true", "⚙" }
-                    "Model settings"
+                div { class: "analyze-header-actions",
+                    if !recent_sessions().is_empty() {
+                        label { class: "analyze-recent-select",
+                            span { "Recent analysis" }
+                            select {
+                                value: "{current_session_id}",
+                                onchange: move |event| select_recent_session.call(event.value()),
+                                for saved in recent_sessions() {
+                                    option { value: "{saved.id}", "{session_label(&saved)}" }
+                                }
+                            }
+                        }
+                    }
+                    if clear_confirmation() {
+                        div { class: "analyze-clear-confirmation", role: "group", aria_label: "Confirm clearing analysis history",
+                            span { "Clear this catalog's analysis history?" }
+                            button { class: "button", r#type: "button", onclick: clear_history, "Clear" }
+                            button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(false), "Cancel" }
+                        }
+                    } else {
+                        button { class: "analyze-link-button", r#type: "button", onclick: move |_| clear_confirmation.set(true), "Clear analysis history" }
+                    }
+                    button { class: "button analyze-settings-button", r#type: "button", onclick: move |_| settings_open.set(true),
+                        span { aria_hidden: "true", "⚙" }
+                        "Model settings"
+                    }
                 }
             }
 
@@ -697,7 +836,7 @@ pub fn AnalysisWorkspace(
                                 if catalog.is_some() { "Catalog ready" } else { "Loading catalog…" }
                             }
                             span { class: "analyze-chip lock", "Read-only" }
-                            if let Some(scope) = &scope {
+                            if let Some(scope) = scope() {
                                 for item in &scope.items {
                                     span { class: "analyze-chip", "{scope_item_label(item)}" }
                                 }
@@ -735,6 +874,23 @@ pub fn AnalysisWorkspace(
                         }
                     }
 
+                    if !revision_history.is_empty() {
+                        nav { class: "analyze-revision-timeline", aria_label: "Analysis revision history",
+                            for revision in revision_history {
+                                button {
+                                    class: if revision.id == current_revision_id { "analyze-revision active" } else { "analyze-revision" },
+                                    r#type: "button",
+                                    onclick: move |_| select_revision.call(revision.id),
+                                    span { class: "analyze-revision-marker", aria_hidden: "true" }
+                                    span { class: "analyze-revision-copy",
+                                        strong { "{revision.question}" }
+                                        small { "{revision_state_label(&revision.state)} · {relative_time_label(revision.updated_at_ms, timeline_now_ms)} · {revision_row_label(&revision)}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if let Some(revision) = active_revision.as_ref() {
                         if let Some(plan) = revision.plan.as_ref() {
                             section { class: "analyze-plan-card", aria_label: "Proposed analysis plan",
@@ -765,6 +921,7 @@ pub fn AnalysisWorkspace(
                                             let Some(mut current) = session() else { return; };
                                             let Some(active) = current.active_revision_mut() else { return; };
                                             let _ = apply_manual_sql(active, event.value());
+                                            persist_session(&current, &mut recent_sessions, &mut storage_notice);
                                             session.set(Some(current));
                                         },
                                     }
@@ -772,6 +929,11 @@ pub fn AnalysisWorkspace(
                                 if revision.state == RevisionState::QueryError {
                                     if let Some(error) = revision.error.as_ref() {
                                         div { class: "analyze-error", role: "alert", strong { "Analysis could not run" } p { "{error}" } p { "The reviewed plan and SQL are unchanged. Retry when ready." } }
+                                    }
+                                }
+                                if revision.needs_rerun {
+                                    div { class: "analyze-config-callout", role: "status",
+                                        div { strong { "Rerun to restore rows" } p { "Saved summaries remain visible, but result rows are never stored in browser history." } }
                                     }
                                 }
                                 if view_model.as_ref().is_some_and(|model| model.question_out_of_date) {
@@ -788,6 +950,7 @@ pub fn AnalysisWorkspace(
                                         disabled: !view_model.as_ref().is_some_and(|model| model.run_enabled),
                                         onclick: run_analysis,
                                         if revision.state == RevisionState::Executing { span { class: "analyze-spinner", aria_hidden: "true" } "Running analysis…" }
+                                        else if revision.needs_rerun { "Rerun to restore rows" }
                                         else if view_model.as_ref().is_some_and(|model| model.primary_action == PrimaryAction::RetryAnalysis) { "Retry analysis" }
                                         else { "Run analysis" }
                                     }
@@ -856,7 +1019,7 @@ pub fn AnalysisWorkspace(
                                 div { class: "analyze-section-heading", div { span { "03" } div { h2 { "Saved interpretation" } p { "The summary was restored from this analysis session." } } } }
                                 div { class: "analyze-saved-interpretation-note", role: "note",
                                     strong { "Returned rows are not stored in the browser" }
-                                    p { "This saved interpretation remains available, but inspect or rerun the reviewed SQL to restore Result Explorer evidence." }
+                                    p { "This saved interpretation remains available. Rerun to restore rows in Result Explorer." }
                                 }
                                 InterpretationPanel {
                                     interpretation,
@@ -922,18 +1085,39 @@ pub fn AnalysisWorkspace(
     }
 }
 
-fn persist_session(session: &AnalysisSession, storage_notice: &mut Signal<Option<String>>) {
-    let mut sessions = match analysis_session::load_sessions(&session.storage_fingerprint) {
+fn persist_session(
+    session: &AnalysisSession,
+    recent_sessions: &mut Signal<Vec<AnalysisSession>>,
+    storage_notice: &mut Signal<Option<String>>,
+) {
+    let mut persisted_session = session.clone();
+    persisted_session.mark_updated();
+    let mut sessions = match analysis_session::load_sessions(&persisted_session.storage_fingerprint)
+    {
         Ok(sessions) => sessions,
         Err(message) => {
+            recent_sessions.set(vec![persisted_session]);
             storage_notice.set(Some(message));
             return;
         }
     };
-    sessions.retain(|saved| saved.id != session.id);
-    sessions.push(session.clone());
-    if let Err(message) = analysis_session::save_sessions(&session.storage_fingerprint, &sessions) {
+    sessions.retain(|saved| saved.id != persisted_session.id);
+    sessions.push(persisted_session.clone());
+    analysis_session::trim_sessions(&mut sessions);
+    if let Err(message) =
+        analysis_session::save_sessions(&persisted_session.storage_fingerprint, &sessions)
+    {
         storage_notice.set(Some(message));
+    }
+    recent_sessions.set(sessions);
+}
+
+fn scope_for_catalog(scope: &AnalysisScope, catalog: &QueryCatalog) -> AnalysisScope {
+    AnalysisScope {
+        database: catalog.database.clone(),
+        storage_path: catalog.storage_path.clone(),
+        snapshot_id: catalog.snapshot_id.clone(),
+        items: scope.items.clone(),
     }
 }
 
@@ -964,7 +1148,84 @@ fn scope_item_label(item: &AnalysisScopeItem) -> String {
             root_session_id,
             ..
         } => format!("Root · {dataset} / {root_session_id}"),
-        AnalysisScopeItem::Run { run } => format!("Run · {}", run.session_id),
+        AnalysisScopeItem::Run { run } => {
+            let mut coordinates = vec![
+                run.dataset.as_str(),
+                run.file.as_str(),
+                run.agent_id.as_str(),
+            ];
+            if let Some(root) = run.root_session_id.as_deref() {
+                coordinates.push(root);
+            }
+            coordinates.push(run.session_id.as_str());
+            if let Some(run_id) = run.run_id.as_deref() {
+                coordinates.push(run_id);
+            }
+            format!("Run · {}", coordinates.join(" / "))
+        }
+    }
+}
+
+fn session_label(session: &AnalysisSession) -> String {
+    let label = session
+        .title
+        .trim()
+        .is_empty()
+        .then(|| {
+            session
+                .active_revision()
+                .map(|revision| revision.question.trim())
+                .unwrap_or_default()
+        })
+        .filter(|question| !question.is_empty())
+        .unwrap_or_else(|| session.title.trim());
+    if label.is_empty() {
+        "New analysis".into()
+    } else {
+        label.into()
+    }
+}
+
+fn revision_state_label(state: &RevisionState) -> &'static str {
+    match state {
+        RevisionState::Draft => "Draft",
+        RevisionState::GeneratingPlan => "Planning",
+        RevisionState::PlanReady => "Plan ready",
+        RevisionState::Executing => "Running",
+        RevisionState::Interpreting => "Interpreting",
+        RevisionState::Complete => "Complete",
+        RevisionState::PlanError => "Plan error",
+        RevisionState::QueryError => "Rerun required",
+        RevisionState::InterpretationError => "Interpretation error",
+        RevisionState::Stale => "Stale",
+    }
+}
+
+fn revision_row_label(revision: &AnalysisRevision) -> String {
+    revision
+        .execution
+        .as_ref()
+        .map(|execution| format!("{} rows", execution.returned_rows))
+        .unwrap_or_else(|| "Not run".into())
+}
+
+fn current_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
+}
+
+fn relative_time_label(updated_at_ms: u64, now_ms: u64) -> String {
+    let elapsed_seconds = now_ms.saturating_sub(updated_at_ms) / 1_000;
+    if elapsed_seconds < 60 {
+        "Just now".into()
+    } else if elapsed_seconds < 60 * 60 {
+        format!("{} min ago", elapsed_seconds / 60)
+    } else if elapsed_seconds < 24 * 60 * 60 {
+        format!("{} hr ago", elapsed_seconds / (60 * 60))
+    } else {
+        format!("{} days ago", elapsed_seconds / (24 * 60 * 60))
     }
 }
 
@@ -1084,7 +1345,7 @@ mod tests {
         AnalysisEffect, AnalysisPlan, AnalysisRevision, AnalysisScope, AnalysisScopeItem,
         EvidenceReference, RevisionState, SuggestedView,
     };
-    use crate::model::QueryEvidence;
+    use crate::model::{QueryEvidence, RunSummary};
 
     fn plan_ready_revision() -> AnalysisRevision {
         let scope = AnalysisScope {
@@ -1143,6 +1404,65 @@ mod tests {
         assert!(model.manually_edited);
         assert_eq!(revision.state, RevisionState::PlanReady);
         assert!(revision.pending_effect.is_none());
+    }
+
+    #[test]
+    fn history_labels_expose_state_and_row_count() {
+        let revision = plan_ready_revision();
+        let mut session = AnalysisSession::with_revision(revision);
+        session.title.clear();
+        let empty = AnalysisSession::with_revision(AnalysisRevision::draft(
+            1,
+            "",
+            session.active_revision().unwrap().scope.clone(),
+        ));
+
+        assert_eq!(session_label(&session), "Compare run outcomes");
+        assert_eq!(session_label(&empty), "New analysis");
+        assert_eq!(
+            revision_state_label(&session.active_revision().unwrap().state),
+            "Plan ready"
+        );
+        assert_eq!(
+            revision_row_label(session.active_revision().unwrap()),
+            "Not run"
+        );
+        assert_eq!(relative_time_label(1_000, 31_000), "Just now");
+        assert_eq!(relative_time_label(1_000, 301_000), "5 min ago");
+        assert_eq!(relative_time_label(1_000, 7_201_000), "2 hr ago");
+    }
+
+    #[test]
+    fn run_scope_chip_exposes_run_and_root_coordinates() {
+        let item = AnalysisScopeItem::Run {
+            run: RunSummary {
+                dataset: "default".into(),
+                file: "source.json".into(),
+                run_id: Some("run-a".into()),
+                agent_id: "agent".into(),
+                model_name: None,
+                session_id: "session-a".into(),
+                root_session_id: Some("root-a".into()),
+                path: "agent/root-a/session-a".into(),
+                row_count: 1,
+                duplicate_event_ids: 0,
+                status: "ok".into(),
+            },
+        };
+
+        assert_eq!(
+            scope_item_label(&item),
+            "Run · default / source.json / agent / root-a / session-a / run-a"
+        );
+    }
+
+    #[test]
+    fn async_session_fence_rejects_another_session_with_the_same_revision_id() {
+        let mut session = AnalysisSession::with_revision(plan_ready_revision());
+        let expected_session_id = session.id.clone();
+
+        assert!(active_revision_for_callback(&mut session, &expected_session_id, 7).is_some());
+        assert!(active_revision_for_callback(&mut session, "another-session", 7).is_none());
     }
 
     #[test]

@@ -453,10 +453,12 @@ pub struct AnalysisSession {
 impl AnalysisSession {
     pub fn with_revision(revision: AnalysisRevision) -> Self {
         let now = now_millis();
+        let storage_fingerprint =
+            storage_fingerprint(&revision.scope.database, &revision.scope.storage_path);
         Self {
             id: format!("analysis-{}", now_nanos()),
             title: revision.question.clone(),
-            storage_fingerprint: revision.scope.storage_path.clone(),
+            storage_fingerprint,
             active_revision_id: revision.id,
             revisions: vec![revision],
             created_at_ms: now,
@@ -510,6 +512,55 @@ impl AnalysisSession {
             .find(|revision| revision.id == self.active_revision_id)
     }
 
+    pub fn active_revision(&self) -> Option<&AnalysisRevision> {
+        self.revisions
+            .iter()
+            .find(|revision| revision.id == self.active_revision_id)
+    }
+
+    pub fn reconcile_catalog(&mut self, snapshot_id: &str) {
+        let mut changed = false;
+        for revision in &mut self.revisions {
+            if revision.scope.snapshot_id == snapshot_id {
+                continue;
+            }
+            if revision.execution.is_none()
+                && revision.plan.is_some()
+                && matches!(
+                    revision.state,
+                    RevisionState::PlanReady | RevisionState::QueryError
+                )
+            {
+                revision.state = RevisionState::Stale;
+                revision.error = None;
+                revision.pending_effect = None;
+                revision.active_operation_id = None;
+                revision.touch();
+                changed = true;
+            }
+        }
+        if changed {
+            self.updated_at_ms = now_millis();
+        }
+    }
+
+    pub fn select_revision(&mut self, revision_id: u64) -> Result<(), String> {
+        if !self
+            .revisions
+            .iter()
+            .any(|revision| revision.id == revision_id)
+        {
+            return Err("The selected analysis revision is unavailable.".into());
+        }
+        self.active_revision_id = revision_id;
+        self.updated_at_ms = now_millis();
+        Ok(())
+    }
+
+    pub fn mark_updated(&mut self) {
+        self.updated_at_ms = now_millis();
+    }
+
     pub fn persisted_bytes(&self) -> Result<Vec<u8>, String> {
         let mut persisted = self.clone();
         prepare_for_storage(&mut persisted);
@@ -527,6 +578,21 @@ pub fn trim_sessions(sessions: &mut Vec<AnalysisSession>) {
             .then_with(|| right.created_at_ms.cmp(&left.created_at_ms))
     });
     sessions.truncate(MAX_ANALYSIS_SESSIONS);
+}
+
+pub fn storage_fingerprint(database: &str, storage_path: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in database
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain(std::iter::once(0))
+        .chain(storage_path.as_bytes().iter().copied())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 pub fn load_sessions(storage_fingerprint: &str) -> Result<Vec<AnalysisSession>, String> {
@@ -570,6 +636,15 @@ pub fn clear_sessions(storage_fingerprint: &str) -> Result<(), String> {
         .map_err(|_| "Could not clear local analysis sessions from browser storage.".to_string())
 }
 
+pub fn restore_session(raw: &str) -> Result<AnalysisSession, String> {
+    let mut session: AnalysisSession = serde_json::from_str(raw).map_err(|_| {
+        "Could not restore the local analysis session because the saved data is invalid."
+            .to_string()
+    })?;
+    prepare_for_storage(&mut session);
+    Ok(session)
+}
+
 pub fn analysis_href(scope: &AnalysisScope) -> String {
     let encoded = serde_json::to_string(scope).expect("analysis scopes are serializable");
     format!(
@@ -593,7 +668,28 @@ pub fn scope_from_query(query: &str) -> Result<AnalysisScope, String> {
         .map_err(|_| "The Analyze link has an invalid scope.".to_string())?;
     let scope: AnalysisScope = serde_json::from_str(&decoded)
         .map_err(|_| "The Analyze link has an invalid scope.".to_string())?;
-    if scope.database.is_empty() || scope.storage_path.is_empty() || scope.items.is_empty() {
+    if scope.database.trim().is_empty()
+        || scope.storage_path.trim().is_empty()
+        || scope.items.is_empty()
+        || scope.items.iter().any(|item| match item {
+            AnalysisScopeItem::Dataset { name } => name.trim().is_empty(),
+            AnalysisScopeItem::Root {
+                dataset,
+                file,
+                root_session_id,
+            } => {
+                dataset.trim().is_empty()
+                    || file.trim().is_empty()
+                    || root_session_id.trim().is_empty()
+            }
+            AnalysisScopeItem::Run { run } => {
+                run.dataset.trim().is_empty()
+                    || run.file.trim().is_empty()
+                    || run.agent_id.trim().is_empty()
+                    || run.session_id.trim().is_empty()
+            }
+        })
+    {
         return Err("The Analyze link has an incomplete scope.".into());
     }
     Ok(scope)
@@ -629,7 +725,11 @@ fn normalize_persisted_revision(revision: &mut AnalysisRevision) {
     revision.state = match &revision.state {
         RevisionState::GeneratingPlan => RevisionState::Draft,
         RevisionState::Executing => RevisionState::PlanReady,
-        RevisionState::Interpreting | RevisionState::InterpretationError => {
+        RevisionState::Interpreting
+        | RevisionState::InterpretationError
+        | RevisionState::Complete
+            if revision.execution.is_some() =>
+        {
             RevisionState::QueryError
         }
         state => state.clone(),
@@ -975,6 +1075,107 @@ mod tests {
     }
 
     #[test]
+    fn multi_run_scope_round_trips_through_analyze_url() {
+        let scope = AnalysisScope::from_runs(&catalog(), vec![run("left"), run("right")]);
+        let href = analysis_href(&scope);
+        let decoded = scope_from_query(href.split_once('?').unwrap().1).unwrap();
+
+        assert_eq!(decoded.items, scope.items);
+    }
+
+    #[test]
+    fn analyze_url_rejects_incomplete_scope_coordinates() {
+        let incomplete = AnalysisScope {
+            items: vec![AnalysisScopeItem::Root {
+                dataset: "default".into(),
+                file: String::new(),
+                root_session_id: "root-a".into(),
+            }],
+            ..scope()
+        };
+
+        assert!(scope_from_query(&analysis_href(&incomplete)).is_err());
+    }
+
+    #[test]
+    fn restored_session_has_summaries_but_requires_rows_to_be_rerun() {
+        let mut restored =
+            restore_session(&serde_json::to_string(&complete_session()).unwrap()).unwrap();
+        let revision = restored.active_revision().unwrap();
+
+        assert!(revision.evidence.is_none());
+        assert!(revision.execution.is_some());
+        assert!(revision.interpretation.is_some());
+        assert!(revision.needs_rerun);
+        assert_eq!(revision.state, RevisionState::QueryError);
+        assert!(restored
+            .active_revision_mut()
+            .unwrap()
+            .confirm_execution()
+            .is_ok());
+    }
+
+    #[test]
+    fn catalog_snapshot_change_marks_unexecuted_plan_stale() {
+        let mut session = plan_ready_session("snapshot-a");
+
+        session.reconcile_catalog("snapshot-b");
+
+        assert_eq!(
+            session.active_revision().unwrap().state,
+            RevisionState::Stale
+        );
+    }
+
+    #[test]
+    fn storage_fingerprint_partitions_database_and_storage_path() {
+        let baseline = storage_fingerprint("default", "tmp/test/");
+
+        assert_eq!(
+            AnalysisSession::with_revision(AnalysisRevision::draft(1, "question", scope()))
+                .storage_fingerprint,
+            baseline
+        );
+        assert_ne!(baseline, storage_fingerprint("other", "tmp/test/"));
+        assert_ne!(baseline, storage_fingerprint("default", "tmp/other/"));
+    }
+
+    #[test]
+    fn catalog_reconciliation_preserves_executed_revision_snapshot() {
+        let mut session = complete_session();
+
+        session.reconcile_catalog("snapshot-b");
+
+        let revision = session.active_revision().unwrap();
+        assert_eq!(revision.state, RevisionState::Complete);
+        assert_eq!(revision.scope.snapshot_id, "snapshot-a");
+        assert!(revision.execution.is_some());
+    }
+
+    #[test]
+    fn selecting_history_changes_only_the_active_revision() {
+        let mut session = complete_session();
+        let first_revision_id = session.active_revision_id;
+        let second_revision_id = session
+            .new_follow_up("compare only explicit failures")
+            .unwrap()
+            .id;
+
+        session.select_revision(first_revision_id).unwrap();
+
+        assert_eq!(session.active_revision_id, first_revision_id);
+        assert_eq!(
+            session.active_revision().unwrap().state,
+            RevisionState::Complete
+        );
+        assert!(session.active_revision().unwrap().pending_effect.is_none());
+        assert!(session
+            .revisions
+            .iter()
+            .any(|revision| revision.id == second_revision_id));
+    }
+
+    #[test]
     fn delayed_plan_result_cannot_complete_a_regenerated_attempt() {
         let mut revision = AnalysisRevision::draft(1, "compare failures", scope());
         let first_operation = revision.begin_plan_generation().unwrap();
@@ -1134,6 +1335,28 @@ mod tests {
     }
 
     #[test]
+    fn persisted_mutation_keeps_an_old_session_at_the_twenty_session_boundary() {
+        let mut sessions = (0..21)
+            .map(|id| {
+                let mut session = AnalysisSession::with_revision(AnalysisRevision::draft(
+                    id,
+                    format!("question {id}"),
+                    scope(),
+                ));
+                session.id = format!("session-{id}");
+                session.updated_at_ms = id;
+                session
+            })
+            .collect::<Vec<_>>();
+        sessions[0].mark_updated();
+
+        trim_sessions(&mut sessions);
+
+        assert!(sessions.iter().any(|session| session.id == "session-0"));
+        assert!(!sessions.iter().any(|session| session.id == "session-1"));
+    }
+
+    #[test]
     fn persisted_session_fits_storage_budget() {
         let session = AnalysisSession::with_revision(AnalysisRevision::draft(
             1,
@@ -1205,6 +1428,18 @@ mod tests {
             items: vec![AnalysisScopeItem::Dataset {
                 name: "default".into(),
             }],
+        }
+    }
+
+    fn catalog() -> QueryCatalog {
+        QueryCatalog {
+            snapshot_id: "snapshot-a".into(),
+            read_only: true,
+            database: "default".into(),
+            storage_path: "tmp/test/".into(),
+            path_column: "_file_".into(),
+            datasets: Vec::new(),
+            tables: Vec::new(),
         }
     }
 
@@ -1365,6 +1600,15 @@ mod tests {
                 },
             )
             .unwrap();
+        AnalysisSession::with_revision(revision)
+    }
+
+    fn plan_ready_session(snapshot_id: &str) -> AnalysisSession {
+        let mut scope = scope();
+        scope.snapshot_id = snapshot_id.into();
+        let mut revision = AnalysisRevision::draft(1, "compare failures", scope);
+        let operation_id = revision.begin_plan_generation().unwrap();
+        revision.finish_plan(1, operation_id, plan()).unwrap();
         AnalysisSession::with_revision(revision)
     }
 }

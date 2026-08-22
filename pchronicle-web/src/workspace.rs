@@ -96,6 +96,14 @@ pub fn App() -> Element {
             duplicate_event_ids: 0,
             status: "loading".into(),
         });
+    let initial_analysis_session_id = url_param("analysis_session").unwrap_or_default();
+    let initial_analysis_seed_scope = if initial_analysis_session_id.is_empty() {
+        web_sys::window()
+            .and_then(|window| window.location().search().ok())
+            .and_then(|search| crate::analysis_session::scope_from_query(&search).ok())
+    } else {
+        None
+    };
     let initial_page = if initial_run.is_some() {
         "detail"
     } else if url_param("page").as_deref() == Some("tools") {
@@ -134,6 +142,8 @@ pub fn App() -> Element {
     let mut catalog = use_signal(|| None::<QueryCatalog>);
     let mut selected_table = use_signal(String::new);
     let mut copilot_open = use_signal(|| false);
+    let mut analysis_session_id = use_signal(move || initial_analysis_session_id);
+    let mut analysis_seed_scope = use_signal(move || initial_analysis_seed_scope);
 
     use_effect(move || {
         load_runs(
@@ -181,6 +191,8 @@ pub fn App() -> Element {
     use_effect(move || {
         sync_workspace_url(
             &page(),
+            &analysis_session_id(),
+            analysis_seed_scope().is_some(),
             selected_run().as_ref(),
             &query(),
             &dataset_filter(),
@@ -253,7 +265,17 @@ pub fn App() -> Element {
                     }
                 }
                 match page().as_str() {
-                    "tools" => rsx! { crate::tools::ToolsWorkspace { catalog: catalog(), selected_table } },
+                    "tools" => rsx! {
+                        crate::analysis::AnalysisWorkspace {
+                            catalog: catalog(),
+                            initial_scope: analysis_seed_scope(),
+                            requested_session_id: (!analysis_session_id().is_empty()).then(|| analysis_session_id()),
+                            on_session_change: move |session_id: String| {
+                                analysis_session_id.set(session_id);
+                                analysis_seed_scope.set(None);
+                            },
+                        }
+                    },
                     "detail" => {
                         let path_runs = runs().map(|page| page.path_index).unwrap_or_default();
                         let selected_path = analysis().map(|value| value.run.path).or_else(|| selected_run().map(|run| run.path)).unwrap_or_default();
@@ -294,6 +316,12 @@ pub fn App() -> Element {
                                         }
                                     },
                                     on_open_copilot: move |_| copilot_open.set(true),
+                                    on_analyze: move |run: RunSummary| {
+                                        let Some(active_catalog) = catalog() else { return; };
+                                        analysis_session_id.set(String::new());
+                                        analysis_seed_scope.set(Some(run_analysis_scope(&active_catalog, run)));
+                                        page.set("tools".into());
+                                    },
                                 }
                             } else { LoadingWorkspace { label: "Building trajectory evidence…" } }
                         } }
@@ -692,6 +720,7 @@ fn RunDetailWorkspace(
     on_apply_filter: EventHandler<()>,
     on_turn: EventHandler<i64>,
     on_open_copilot: EventHandler<MouseEvent>,
+    on_analyze: EventHandler<RunSummary>,
 ) -> Element {
     let chats_active = view == "chats";
     let steps_active = view == "steps";
@@ -702,7 +731,11 @@ fn RunDetailWorkspace(
         section { class: "pc2-detail",
             header { class: "pc2-detail-head",
                 div { class: "pc2-detail-title", button { class: "pc2-back", onclick: on_back, "← Runs" } div { p { "{run.agent_id}" } h1 { title: "{run.session_id}", "{run.session_id}" } div { StatusBadge { value: run.status.clone() } if let Some(root) = &run.root_session_id { code { "root {short(root, 24)}" } } } } }
-                div { class: "pc2-head-actions", button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" } a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" } }
+                div { class: "pc2-head-actions",
+                    button { class: "button primary", onclick: on_open_copilot, "◇ Ask Copilot" }
+                    button { class: "button", onclick: { let run = run.clone(); move |_| on_analyze.call(run.clone()) }, "Analyze this run" }
+                    a { class: "button", href: "/api/export/otlp?{run.query()}", "OTLP" }
+                }
             }
             MetricsStrip { analysis: analysis.clone() }
             nav { class: "pc2-detail-tabs", aria_label: "Trajectory detail view",
@@ -1305,9 +1338,37 @@ fn url_param(name: &str) -> Option<String> {
         .get(name)
 }
 
+fn analyze_workspace_url(session_id: &str) -> String {
+    if session_id.is_empty() {
+        "/?page=tools".into()
+    } else {
+        format!(
+            "/?page=tools&analysis_session={}",
+            urlencoding::encode(session_id)
+        )
+    }
+}
+
+fn analysis_url_sync_target(session_id: &str, seed_scope_pending: bool) -> Option<String> {
+    if seed_scope_pending && session_id.is_empty() {
+        None
+    } else {
+        Some(analyze_workspace_url(session_id))
+    }
+}
+
+fn run_analysis_scope(
+    catalog: &QueryCatalog,
+    run: RunSummary,
+) -> crate::analysis_session::AnalysisScope {
+    crate::analysis_session::AnalysisScope::from_run(catalog, run)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sync_workspace_url(
     page: &str,
+    analysis_session_id: &str,
+    analysis_seed_scope_pending: bool,
     run: Option<&RunSummary>,
     query: &str,
     dataset_filter: &str,
@@ -1324,6 +1385,16 @@ fn sync_workspace_url(
     let Some(window) = web_sys::window() else {
         return;
     };
+    if page == "tools" {
+        let Some(url) = analysis_url_sync_target(analysis_session_id, analysis_seed_scope_pending)
+        else {
+            return;
+        };
+        let _ = window
+            .history()
+            .and_then(|history| history.replace_state_with_url(&JsValue::NULL, "", Some(&url)));
+        return;
+    }
     let mut params = vec![format!("page={}", urlencoding::encode(page))];
     if let Some(run) = run.filter(|_| page == "detail") {
         params.push(format!("dataset={}", urlencoding::encode(&run.dataset)));
@@ -1415,6 +1486,48 @@ mod tests {
         assert_eq!(percent(25.0, 100.0), 25.0);
         assert_eq!(percent(10.0, 0.0), 0.0);
         assert_eq!(percent(150.0, 100.0), 100.0);
+    }
+
+    #[test]
+    fn analyze_workspace_url_retains_only_the_session_id() {
+        assert_eq!(
+            analyze_workspace_url("analysis-123"),
+            "/?page=tools&analysis_session=analysis-123"
+        );
+        assert_eq!(analyze_workspace_url(""), "/?page=tools");
+    }
+
+    #[test]
+    fn bootstrap_scope_url_is_not_replaced_until_the_session_is_persisted() {
+        assert_eq!(analysis_url_sync_target("", true), None);
+        assert_eq!(
+            analysis_url_sync_target("analysis-123", false),
+            Some("/?page=tools&analysis_session=analysis-123".into())
+        );
+    }
+
+    #[test]
+    fn analyze_this_run_keeps_full_catalog_and_run_coordinates() {
+        let run = run_at("agent/root/session-a");
+        let catalog = QueryCatalog {
+            snapshot_id: "snapshot-a".into(),
+            read_only: true,
+            database: "default".into(),
+            storage_path: "/tmp/evidence".into(),
+            path_column: "_file_".into(),
+            datasets: Vec::new(),
+            tables: Vec::new(),
+        };
+
+        let scope = run_analysis_scope(&catalog, run.clone());
+
+        assert_eq!(scope.database, "default");
+        assert_eq!(scope.storage_path, "/tmp/evidence");
+        assert_eq!(scope.snapshot_id, "snapshot-a");
+        assert_eq!(
+            scope.items,
+            vec![crate::analysis_session::AnalysisScopeItem::Run { run }]
+        );
     }
 
     #[test]
