@@ -87,6 +87,11 @@ pub enum AnalysisRefinement {
 const MAX_BINS: usize = 10;
 const MAX_TOP_VALUES: usize = 10;
 
+struct CountedValue {
+    label: String,
+    count: usize,
+}
+
 pub fn profile_rows(rows: &[Value]) -> Vec<ColumnProfile> {
     let mut columns = BTreeSet::new();
     for row in rows {
@@ -195,18 +200,28 @@ fn is_identity_column(name: &str) -> bool {
     )
 }
 
-fn count_values(values: &[&Value]) -> BTreeMap<String, usize> {
+fn count_values(values: &[&Value]) -> BTreeMap<String, CountedValue> {
     let mut counts = BTreeMap::new();
     for value in values {
-        *counts.entry(canonical_label(value)).or_default() += 1;
+        let entry = counts
+            .entry(serialized_value(value))
+            .or_insert_with(|| CountedValue {
+                label: display_label(value),
+                count: 0,
+            });
+        entry.count += 1;
     }
     counts
 }
 
-fn canonical_label(value: &Value) -> String {
+fn serialized_value(value: &Value) -> String {
+    serde_json::to_string(value).expect("serde_json values always serialize")
+}
+
+fn display_label(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
-        _ => serde_json::to_string(value).expect("serde_json values always serialize"),
+        _ => serialized_value(value),
     }
 }
 
@@ -295,7 +310,15 @@ fn equal_width_histogram(values: &[f64], min: f64, max: f64) -> Vec<HistogramBin
     }
 
     let bin_count = values.len().min(MAX_BINS);
-    let width = (max - min) / bin_count as f64;
+    let range = max - min;
+    let width = range / bin_count as f64;
+    if !range.is_finite() || !width.is_finite() || width <= 0.0 {
+        return vec![HistogramBin {
+            lower: min,
+            upper: max,
+            count: values.len(),
+        }];
+    }
     let mut bins = (0..bin_count)
         .map(|index| HistogramBin {
             lower: min + width * index as f64,
@@ -315,22 +338,26 @@ fn equal_width_histogram(values: &[f64], min: f64, max: f64) -> Vec<HistogramBin
     bins
 }
 
-fn add_top_values(profile: &mut ColumnProfile, counts: BTreeMap<String, usize>) {
+fn add_top_values(profile: &mut ColumnProfile, counts: BTreeMap<String, CountedValue>) {
     let mut values = counts.into_iter().collect::<Vec<_>>();
-    values.sort_by(|(left_label, left_count), (right_label, right_count)| {
-        right_count
-            .cmp(left_count)
-            .then_with(|| left_label.cmp(right_label))
+    values.sort_by(|(left_key, left_value), (right_key, right_value)| {
+        right_value
+            .count
+            .cmp(&left_value.count)
+            .then_with(|| left_key.cmp(right_key))
     });
     profile.other_count = values
         .iter()
         .skip(MAX_TOP_VALUES)
-        .map(|(_, count)| *count)
+        .map(|(_, value)| value.count)
         .sum();
     profile.top_values = values
         .into_iter()
         .take(MAX_TOP_VALUES)
-        .map(|(label, count)| ValueCount { label, count })
+        .map(|(_, value)| ValueCount {
+            label: value.label,
+            count: value.count,
+        })
         .collect();
 }
 
@@ -466,6 +493,20 @@ mod tests {
     }
 
     #[test]
+    fn unique_count_distinguishes_json_values_with_matching_display_text() {
+        let profiles = profile_rows(&[
+            json!({"value": "true"}),
+            json!({"value": true}),
+            json!({"value": "[1]"}),
+            json!({"value": [1]}),
+        ]);
+        let mixed = profile(&profiles, "value");
+
+        assert_eq!(mixed.kind, ColumnKind::Mixed);
+        assert_eq!(mixed.unique_count, 4);
+    }
+
+    #[test]
     fn empty_and_all_null_columns_are_empty_with_separate_missing_counts() {
         assert!(profile_rows(&[]).is_empty());
 
@@ -498,6 +539,17 @@ mod tests {
             numeric.histogram.iter().map(|bin| bin.count).sum::<usize>(),
             3
         );
+    }
+
+    #[test]
+    fn extreme_finite_numeric_ranges_use_a_finite_fallback_bin() {
+        let profiles = profile_rows(&[json!({"value": -1.0e308}), json!({"value": 1.0e308})]);
+        let numeric = profile(&profiles, "value");
+
+        assert_eq!(numeric.histogram.len(), 1);
+        assert_eq!(numeric.histogram[0].count, 2);
+        assert!(numeric.histogram[0].lower.is_finite());
+        assert!(numeric.histogram[0].upper.is_finite());
     }
 
     #[test]
